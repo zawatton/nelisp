@@ -23591,6 +23591,19 @@ its own region; a direct edge must never skip that region's cleanup."
                 nelisp-aot-compiler--x86-call-containing-defun-p
                 (nelisp-aot-compiler--x86-call-free-region-plan node)))))
 
+(defvar nelisp-aot-compiler--x86-private-continuations t
+  "Use namespace-checked private U/V labels and standalone unit context.")
+
+(defun nelisp-aot-compiler--x86-continuation-label (prefix)
+  "Return a private continuation label, preserving the original counter.
+The interned gensym is only an ID seed.  The concrete label is an
+uninterned symbol whose printed name cannot export a unit defun."
+  (let ((seed (nelisp-aot-compiler--gensym prefix)))
+    (if nelisp-aot-compiler--x86-private-continuations
+        (nelisp-aot-compiler--x86-trace-label
+         (vector 'private-label :id seed) "continuation")
+      seed)))
+
 (defvar nelisp-aot-compiler--x86-cleanup-branches t
   "Keep proven zero-test outcomes through an original zero-save region.")
 
@@ -23615,8 +23628,8 @@ original MOV flushes, after body-local aliases have unwound."
 
 (defun nelisp-aot-compiler--emit-cleanup-branch-x86 (node buf label truth plan)
   "Emit NODE once, ending its original region on both condition edges."
-  (let ((taken (nelisp-aot-compiler--gensym "cj-cleanup-taken"))
-        (done (nelisp-aot-compiler--gensym "cj-cleanup-done")))
+  (let ((taken (nelisp-aot-compiler--x86-continuation-label "cj-cleanup-taken"))
+        (done (nelisp-aot-compiler--x86-continuation-label "cj-cleanup-done")))
     (nelisp-aot-compiler--emit-promoted-loop-x86
      node buf
      (lambda () (nelisp-aot-compiler--emit-cond-jump node buf taken truth))
@@ -23673,7 +23686,7 @@ all other arms retain their evaluation and zero test."
       (if (eq yes-true no-true)
           (progn
             (if nelisp-aot-compiler--x86-zero-branch-context
-                (let ((evaluated (nelisp-aot-compiler--gensym "cj-if-evaluated")))
+                (let ((evaluated (nelisp-aot-compiler--x86-continuation-label "cj-if-evaluated")))
                   ;; Preserve the original condition evaluation, including
                   ;; raw reads/faults, without starting a value-position map.
                   (nelisp-aot-compiler--emit-cond-jump test buf evaluated nil)
