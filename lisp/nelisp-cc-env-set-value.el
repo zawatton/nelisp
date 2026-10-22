@@ -74,7 +74,16 @@
     ;;
     ;; Arity 2 (even) ✓.
     (defun nelisp_env_setv_cell_hit (cell-ptr val-ptr)
-      (and (nl_cell_set_w cell-ptr val-ptr) 0))
+      ;; GNU Fsetq stores through the binding (Fsetcdr, eval.c:496-501): a Cell WORD that
+      ;; holds a plain value (header bit 8 clear: not a binding pair's) takes a canonical
+      ;; value WORD (the low three bits not zero: no legacy view) in one store.
+      (if (if (= (logand cell-ptr 7) 6)
+              (if (= (logand (shr (ptr-read-u64 (- cell-ptr 6) 0) 8) 1) 0)
+                  (/= (logand val-ptr 7) 0)
+                0)
+            0)
+          (seq (ptr-write-u64 (+ cell-ptr 2) 0 val-ptr) 0)
+        (and (nl_cell_set_w cell-ptr val-ptr) 0)))
 
     ;; nelisp_env_setv_mirror
     ;;

@@ -53127,10 +53127,16 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                      (ptr-write-u64 state 8 serial)
                      (ptr-write-u64 state 0 (+ depth 1))
                      fr))))
-               (w (let* ((cached (extern-call nl_mxcache_lookup form)))
-                    (if (= cached 0)
-                        (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
-                      (nelisp_eval_call_w cached env 0)))))
+               ;; The macro expansion cache: its table slot for FORM names FORM or a
+               ;; neighbour, so the call is made only when the slot's key is FORM.
+               (mxb (heap-read-u64 (data-addr nl_mxcache_table_base) 0))
+               (w (if (if (= mxb 0) 0
+                        (= (heap-read-u64 (+ mxb (* (logand (sar form 4) 65535) 24)) 0) form))
+                      (let* ((cached (extern-call nl_mxcache_lookup form)))
+                        (if (= cached 0)
+                            (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
+                          (nelisp_eval_call_w cached env 0)))
+                    (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0))))
           ;; The unbind of the entry, and its debug-on-exit (eval.c:2700), in line.
           (if (= n4-frame 0) w
             (let* ((r (if (= w 0)

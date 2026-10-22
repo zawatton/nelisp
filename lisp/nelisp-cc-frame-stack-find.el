@@ -626,9 +626,15 @@
             (if (if (= (logand r 1) 1) 1 (= (logand r 7) 2))
                 r
               (if (= (logand r 7) 6)
-                  (if (= (logand (ptr-read-u64 (- r 6) 0) 63) 11)
-                      (extern-call nl_cell_get_value_w r 0)
-                    r)
+                  (let* ((hdr (ptr-read-u64 (- r 6) 0)))
+                    (if (= (logand hdr 63) 11)
+                        ;; A Cell: its value WORD is the second word of the object, unless
+                        ;; the Cell holds a binding pair (header bit 8, N3's pair-backed
+                        ;; flag), which `nl_cell_get_value_w' decodes.
+                        (if (= (logand (shr hdr 8) 1) 0)
+                            (ptr-read-u64 (+ r 2) 0)
+                          (extern-call nl_cell_get_value_w r 0))
+                      r))
                 (extern-call nl_cell_get_value_w r 0)))))))
     (defun nelisp_frame_stack_find_kind_descend_m (backing-ptr i name-ptr dynamic raw _pad)
       (if (< i 0)
