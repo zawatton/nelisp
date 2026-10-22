@@ -331,6 +331,23 @@ in GNU. S1.10 measures the retained slope per float against 9 bytes and stays
 known-red until then; it is not to be downgraded to pending or dropped to
 raise the meter.
 
+Bignum as an object (recorded 2026-10-22; gc-port ledger S1.5). A Bignum is
+[header | 32-bit limbs] from the general allocator, WORD = box | 6, with the
+header 13 | sign << 6 | limb count << 8 and the limbs at box + 8, padded to
+eight bytes: an integer of two limbs retains 24 bytes (the 16-byte object and
+its vector slot) instead of 64. The sign, the limb address and the count are
+read through nl_big_sign, nl_big_limbs and nl_big_count, which serve an object
+and a legacy view alike (a view keeps its limbs at +16); eq compares
+nl_big_identity, the object's address; the number-order readers and the
+arithmetic helpers use the accessors. A Bignum view stored into a container
+becomes its object (nl_val_clone_legacy, nl_big_word); a view materialised
+from an object (nl_sexp_clone_into) points its limbs at box + 8, which is how
+nl_big_word recognises the view of an object it already has. The collector
+marks the block (a Bignum has no children) and the dump's typed accounting
+skips it. wf_word_view passes pointer WORDs through unchanged, except that it
+materialises a Bignum object as a view, because the limb readers
+(nl_bignum_prep_operand, the small-divisor helpers) take views.
+
 100 and 110 still require a kind-word load when their subtype is needed;
 only cons and the broad pointer classes can be recognized entirely from WORD
 bits. No universal "zero type-header loads" speed claim is made.

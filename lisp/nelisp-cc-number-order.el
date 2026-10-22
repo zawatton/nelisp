@@ -8,16 +8,17 @@
   '(seq
     (defun nl_number_integer_limb (word index)
       (if (= (nl_val_tag word) 13)
-          (heap-read-u32 (heap-read-u64 word 16) (* index 4))
+          (heap-read-u32 (nl_big_limbs word) (* index 4))
         (if (>= index 2) 0
           (let* ((v (nl_word_payload word)) (mag (if (< v 0) (- 0 v) v)))
             (logand (shr mag (* index 32)) 4294967295)))))
     (defun nl_number_integer_float_order (integer floatword)
       ;; Compare the exact significand and exponent, never round the integer
       ;; through f64. This also handles infinities, NaNs and subnormals.
-      (let* ((tag (nl_val_tag integer)) (v (nl_word_payload integer))
+      (let* ((tag (nl_val_tag integer))
+             (v (if (= tag 13) (nl_big_sign integer) (nl_word_payload integer)))
              (negative (if (= tag 13) v (if (< v 0) 1 0)))
-             (n (if (= tag 13) (heap-read-u64 integer 24) 2))
+             (n (if (= tag 13) (nl_big_count integer) 2))
              (bits (nl_float_bits floatword))
              (exp (logand (shr bits 52) 2047))
              (fraction (logand bits 4503599627370495))
@@ -57,9 +58,9 @@
                 (if (= negative 1) (- 0 order) order))))))))
     (defun nl_number_big_small_order (big small)
       (let* ((value (nl_word_payload small)) (negative (if (< value 0) 1 0))
-             (bsign (heap-read-u64 big 8)))
+             (bsign (nl_big_sign big)))
         (if (/= negative bsign) (if (= bsign 1) -1 1)
-          (let* ((order (nl_bignum_mag_cmp_i64 (heap-read-u64 big 16) (heap-read-u64 big 24)
+          (let* ((order (nl_bignum_mag_cmp_i64 (nl_big_limbs big) (nl_big_count big)
                                              (if (= negative 1) (- 0 value) value))))
             (if (= bsign 1) (- 0 order) order)))))
     (defun nl_number_order_words (a b)

@@ -6313,7 +6313,8 @@ REPL-facing module it feeds."
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
         (if (if (= kind 3) 0
-              (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0))
+              (if (= kind 13) 0
+                (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)))
             (seq (nl_gc_typed_add 5 box 0 64 1)
                  (if (> (heap-read-u64 state 64) before)
                      (ptr-write-u64 state 72
@@ -6633,7 +6634,7 @@ REPL-facing module it feeds."
                       ;; limb byte buffer, no Sexp children), so it is
                       ;; marked the SAME way: mark the limb buffer block,
                       ;; no recursion (there is nothing to recurse into).
-                      (if (= tag 13) (nl_gc_mark_buf (heap-read-u64 sp 16))
+                      (if (= tag 13) (nl_gc_mark_block (- (heap-read-u64 sp 16) 8))
                       (if (= tag 9) (nl_gc_mark_char_table_box (heap-read-u64 sp 8))
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
@@ -10710,7 +10711,7 @@ leave symbols unresolved at link time."
     (defun wf_raw_eq (a b)
       (if (= (nl_word_tag64 a) (nl_word_tag64 b))
           (if (= (nl_word_tag64 a) 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0)
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0)
             ;; Doc 201 §6.17: Str(5)/UnibyteStr(14) are inline {cap@8,
             ;; ptr@16, len@24}; offset 8 is the capacity, so the generic
             ;; word compare made every equal-capacity pair `eq'.  The char
@@ -10790,22 +10791,22 @@ leave symbols unresolved at link time."
     ;; Compare BIGNUM_PTR (tag 13) against INT_PTR (tag 2).  Returns
     ;; -1/0/1 for bignum < / = / > int.
     (defun nl_bignum_cmp_int (bignum_ptr int_ptr)
-      (let* ((bsign (heap-read-u64 bignum_ptr 8))
+      (let* ((bsign (nl_big_sign bignum_ptr))
              (ival (heap-read-u64 int_ptr 8))
              (isign (if (< ival 0) 1 0)))
         (if (if (= bsign 0) (= isign 1) 0) 1
           (if (if (= bsign 1) (= isign 0) 0) -1
             (let* ((imag (if (= isign 1) (- 0 ival) ival))
-                   (mc (nl_bignum_mag_cmp_i64 (heap-read-u64 bignum_ptr 16)
-                                               (heap-read-u64 bignum_ptr 24) imag)))
+                   (mc (nl_bignum_mag_cmp_i64 (nl_big_limbs bignum_ptr)
+                                               (nl_big_count bignum_ptr) imag)))
               (if (= bsign 1) (- 0 mc) mc))))))
     ;; Compare two Bignums.  Returns -1/0/1.
     (defun nl_bignum_cmp_bignum (a b)
-      (let* ((asign (heap-read-u64 a 8)) (bsign (heap-read-u64 b 8)))
+      (let* ((asign (nl_big_sign a)) (bsign (nl_big_sign b)))
         (if (if (= asign 0) (= bsign 1) 0) 1
           (if (if (= asign 1) (= bsign 0) 0) -1
-            (let* ((mc (nl_bignum_mag_cmp (heap-read-u64 a 16) (heap-read-u64 a 24)
-                                           (heap-read-u64 b 16) (heap-read-u64 b 24))))
+            (let* ((mc (nl_bignum_mag_cmp (nl_big_limbs a) (nl_big_count a)
+                                           (nl_big_limbs b) (nl_big_count b))))
               (if (= asign 1) (- 0 mc) mc))))))
     ;; Master comparator: A and B are already known (by `wf_num_pairp'
     ;; below) to both be tag 2 (Int) or tag 13 (Bignum) -- never Float
@@ -12023,12 +12024,16 @@ leave symbols unresolved at link time."
     ;; core for Phase B -- see this block's own header comment above.)
     ;; Doc 215 builtin word ABI: nl_bignum_write_w returns the result WORD (0 = signal stashed); nl_bignum_write keeps the (rc, OUT) ABI.
     (defun nl_bignum_write_w (sign limb_ptr limb_count _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (ptr-write-u8  s 0  13)
-             (ptr-write-u64 s 8  sign)
-             (ptr-write-u64 s 16 limb_ptr)
-             (ptr-write-u64 s 24 limb_count)
-             s)))
+      ;; Doc 216 S5: the Bignum object [header | limbs], answered as its WORD.
+      (let* ((box (alloc-bytes (+ 8 (logand (+ (* limb_count 4) 7) -8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 13 (+ (* sign 64) (* limb_count 256))))
+             (while (< i limb_count)
+               (seq (ptr-write-u32 box (+ 8 (* i 4)) (heap-read-u32 limb_ptr (* i 4)))
+                    (setq i (+ i 1))))
+             (if (= (logand limb_count 1) 1)
+                 (ptr-write-u32 box (+ 8 (* limb_count 4)) 0)
+               0)
+             (+ box 6))))
     ;; Old callers may use the returned slot pointer, so the adapter keeps it.
     (defun nl_bignum_write (sign limb_ptr limb_count result_slot)
       (seq (nl_abi_word_to_rc (nl_bignum_write_w sign limb_ptr limb_count 0) result_slot)
@@ -12945,7 +12950,16 @@ leave symbols unresolved at link time."
     ;; compatibility view.  Consumers must use semantic tag/payload accessors.
     ;; Use it on exit/error paths, never inside a walk.
     (defun wf_word_view (w)
-      (if (= (logand w 1) 0) w (extern-call nl_val_load w (alloc-bytes 32 8))))
+      ;; Doc 216 S5: a Bignum object is materialised as the legacy 32-byte view
+      ;; the limb readers (nl_bignum_prep_operand, nl_bignum_quot_small_w, ...)
+      ;; take; every other pointer WORD travels unchanged.
+      (if (= (logand w 1) 0)
+          (if (= (logand w 7) 6)
+              (if (= (logand (heap-read-u8 (- w 6) 0) 63) 13)
+                  (extern-call nl_val_load w (alloc-bytes 32 8))
+                w)
+            w)
+        (extern-call nl_val_load w (alloc-bytes 32 8))))
     ;; wf_word_store_out: write W into the caller's 32-byte result slot OUT
     ;; with no scratch box: copy a pointed-to box, or store an immediate
     ;; in place.
@@ -15162,7 +15176,7 @@ eval applyfn.")
             (bf_elt_list_walk_w (wf_arg_ptr args 1) (nl_word_payload np) 0)
           (if (= tag 13)
               (bf_elt_list_walk_w (wf_arg_ptr args 1)
-                                  (if (= (nl_word_payload np) 0)
+                                  (if (= (nl_big_sign np) 0)
                                       4611686018427387903
                                     -1)
                                   0)
@@ -15172,7 +15186,7 @@ eval applyfn.")
         (if (= tag 2)
             (bf_nthcdr_walk_w (nl_word_payload np) (wf_arg_word args 1) 0)
           (if (= tag 13)
-              (if (= (nl_word_payload np) 0)
+              (if (= (nl_big_sign np) 0)
                   (bf_nthcdr_walk_w 4611686018427387903 (wf_arg_word args 1) 0)
                 (wf_arg_word args 1))
             (nl_abi_fail (bf_wrong_type_integerp np) 0)))))
@@ -26857,7 +26871,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; would make most positive bignums mutually eq.  The limb
              ;; pointer at offset 16 is the real per-allocation identity.
              ((= ta 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0))
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0))
              ;; Doc 216 S5: a float compares by its bits here (recorded above),
              ;; read through `nl_float_bits' whatever its representation.
              ((= ta 3) (if (= (nl_float_bits a) (nl_float_bits b)) 1 0))
