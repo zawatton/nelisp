@@ -51915,19 +51915,21 @@ tails run against a private box), and the (rc, OUT) adapter F."
            (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
          (seq
           (ptr-write-u64 fw 0 lookup_w)
-          (if (if (= (logand lookup_w 1) 1) 0
-                (= (logior (logxor (nl_val_tag lookup_w) 7)
-                           (logxor (heap-sexp-data lookup_w) 13108)) 0))
-               (nl_n3_special_call_w lookup_w tail_ptr env 0)
-             (if (= (nl_val_tag lookup_w) 0)
-                 (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
-               (if (= (nl_val_tag lookup_w) 4)
-                   (nl_eic_alias_w (nl_apply_special_w lookup_w tail_ptr env 0)
-                                   tail_ptr env fw head_ptr form_ptr)
-                 (if (if (= (logand lookup_w 1) 1) 0
-                       (if (= (logand lookup_w 7) 6) 0 (nl_cons_is_macro lookup_w)))
-                     (nl_cons_macro_apply_eval_w form_ptr lookup_w tail_ptr env 0)
-                   (nl_eic_eval_args_w tail_ptr env fw head_ptr)))))))))
+          ;; The tag once, and the data word only of a cons (the special-form subr's
+          ;; marker is in a cons view): a closure is not asked for its data.
+          (let* ((tg (nl_val_tag lookup_w)))
+            (if (if (= (logand lookup_w 1) 1) 0
+                  (if (= tg 7) (= (heap-sexp-data lookup_w) 13108) 0))
+                (nl_n3_special_call_w lookup_w tail_ptr env 0)
+              (if (= tg 0)
+                  (nl_abi_fail (nl_cons_stash_void_function env head_ptr) 0)
+                (if (= tg 4)
+                    (nl_eic_alias_w (nl_apply_special_w lookup_w tail_ptr env 0)
+                                    tail_ptr env fw head_ptr form_ptr)
+                  (if (if (= (logand lookup_w 1) 1) 0
+                        (if (= (logand lookup_w 7) 6) 0 (nl_cons_is_macro lookup_w)))
+                      (nl_cons_macro_apply_eval_w form_ptr lookup_w tail_ptr env 0)
+                    (nl_eic_eval_args_w tail_ptr env fw head_ptr))))))))))
     ;; GNU eval.c:2634-2638: eval_sub follows the operator's whole function
     ;; chain (indirect_function, data.c:2550) before any argument is
     ;; evaluated, so an argument that redefines a later link does not change
@@ -51949,8 +51951,8 @@ tails run against a private box), and the (rc, OUT) adapter F."
             (if (or (= w 0) (= w 2) (= w 3)) (setq status 0)
               (seq (ptr-write-u64 fw 0 w)
                    (if (and (< hops 65536)
-                            (or (= (nl_val_tag w) 4)
-                                (= (nl_val_tag w) 16)))
+                            (let* ((tg (nl_val_tag w)))
+                              (if (= tg 4) 1 (= tg 16))))
                        0
                      (setq status 1))))))
          (if (= status 0) 0
@@ -51961,8 +51963,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
              (seq
               (if (or (>= hops 65536)
                       (if (= (logand w 1) 1) 0
-                        (= (logior (logxor (nl_val_tag w) 7)
-                                   (logxor (heap-sexp-data w) 13108)) 0)))
+                        (if (= (nl_val_tag w) 7) (= (heap-sexp-data w) 13108) 0)))
                   (ptr-write-u64 fw 0 first) 0)
               1))))))
     ;; FORM_PTR is the whole call form, for a macro the alias chain reaches.
