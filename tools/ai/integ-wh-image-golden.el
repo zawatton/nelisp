@@ -5,9 +5,11 @@
 ;; BIN --cold-load-from PATH --load integ-wh-image-golden.el (IG_MODE=verify)
 ;;   the restored heap answers the same names; IG_MODE=dump2 dumps a second generation.
 ;; Prints "IG MODE checks=N failures=F PASS|FAIL" last.
-(defvar ig-mode (or (getenv "IG_MODE") "dump"))
+;; setq, not defvar: a restored image already holds these from the run that dumped it.
+(defvar ig-mode nil)
 (defvar ig-checks 0)
 (defvar ig-failures 0)
+(setq ig-mode (or (getenv "IG_MODE") "dump") ig-checks 0 ig-failures 0)
 (defun ig-check (ok label)
   (setq ig-checks (1+ ig-checks))
   (unless ok
@@ -23,7 +25,8 @@
   (ig-check (eq (symbol-name ig-ab) (symbol-name ig-ab)) "eq names of the restored interned symbol")
   (ig-check (equal (symbol-name ig-x) "x") "uninterned name")
   (ig-check (eq (symbol-name ig-x) (symbol-name ig-x)) "eq names of the uninterned symbol")
-  (ig-check (null (intern-soft "x")) "make-symbol did not intern")
+  (ig-check (null (intern-soft "ig-uninterned-only")) "make-symbol did not intern")
+  (ig-check (equal (symbol-name ig-lone) "ig-uninterned-only") "the lone uninterned name")
   (ig-check (not (eq ig-x 'x)) "uninterned is not the interned x")
   (ig-check (eq (symbol-name ig-sym) ig-str) "(eq (symbol-name (make-symbol S)) S)")
   (ig-check (equal ig-str "gen-erated") "the shared string")
@@ -37,6 +40,7 @@
  ((equal ig-mode "dump")
   (defvar ig-ab (intern (concat "a" "b")))
   (defvar ig-x (make-symbol "x"))
+  (defvar ig-lone (make-symbol "ig-uninterned-only"))
   (defvar ig-str (copy-sequence "gen-erated"))
   (defvar ig-sym (make-symbol ig-str))
   (defvar ig-multi (make-symbol (copy-sequence "é-λ-名")))

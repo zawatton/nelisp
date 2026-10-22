@@ -15415,7 +15415,11 @@ leave symbols unresolved at link time."
               ;; table still costs address space, which `ulimit -v' caps.
               (if (= cok 1)
                   (let* ((nf (heap-read-u64 (+ (data-addr nl_float_state) 88) 0))
-                         (cap2 (+ (+ nf (/ nf 16)) 4096))
+                         ;; The strings' own entries (two per reached string,
+                         ;; `nl_dump_string_table') follow the walk's and are not
+                         ;; counted by pass 1; pass 2 has numbered the strings.
+                         (cap2 (+ (+ (+ nf (/ nf 16)) 4096)
+                                  (* 2 (heap-read-u64 (data-addr nl_strings_state) 176))))
                          (bytes2 (+ 16 (* cap2 8)))
                          (base2 (nl_os_alloc_chunk bytes2)))
                     (if (= base2 0) (setq cok 0)
