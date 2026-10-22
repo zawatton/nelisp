@@ -31367,6 +31367,31 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
 (defvar nelisp-standalone--prelude-source-cache nil
   "Cached prelude source variants keyed by source digest and fallback mode.")
 
+(defun nelisp-standalone--bytecode-cleanup-source ()
+  "Project the existing restoration factory with GNU's closure compiler.
+Its function cells are captured when the creator runs in the target runtime,
+never on the build host.  Keep the original Lisp factory as the reference."
+  (let* ((path (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
+                                 nelisp-standalone--repo-root))
+         (source (with-temp-buffer (insert-file-contents path) (buffer-string))))
+    (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
+      (require 'bytecomp)
+      (require 'nelisp-bytecode-cleanup)
+      (let* ((creator
+              (with-temp-buffer
+                (setq-local lexical-binding t)
+                (byte-compile (list 'lambda nil (nelisp-bytecode-cleanup-source)))))
+             (bad (append
+                   (cl-remove-if (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
+                                 (nelisp-prelude-bytecode--decode-opcodes (aref creator 1)))
+                   (nelisp-prelude-bytecode--nested-unsupported creator))))
+        (when bad (error "Buffer cleanup creator uses unsupported opcodes: %S" bad))
+        (let ((print-escape-nonascii t) (print-escape-multibyte t)
+              (print-escape-control-characters t) (print-escape-newlines t))
+          (replace-regexp-in-string
+           (regexp-quote "(eval (nelisp-bytecode-cleanup-source) t)")
+           (prin1-to-string (list 'funcall creator)) source t t))))))
+
 (defun nelisp-standalone--prelude-source-with-list-accessors ()
   "Return the prelude with exact GNU list forms after function-cell setup."
   (let* ((source (with-temp-buffer
@@ -31375,9 +31400,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                                       nelisp-standalone--repo-root))
                    (goto-char (point-max))
                    (insert "\n")
-                   (insert-file-contents
-                    (expand-file-name "lisp/nelisp-bytecode-cleanup.el"
-                                      nelisp-standalone--repo-root))
+                   (insert (nelisp-standalone--bytecode-cleanup-source))
                    (buffer-string)))
          (source (nelisp-boot-image-prelude source))
          (position (nelisp-standalone--prelude-source-boundary source))
@@ -31387,6 +31410,20 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                             (expand-file-name "lisp/nelisp-stdlib-unicode.el"
                                               nelisp-standalone--repo-root))
                            (buffer-string))
+                         "\n"
+                         ;; Compile the ordinary lexical factory with GNU, so
+                         ;; its captured buffer cells become closure constants.
+                         ;; Keep the source-only debugging configuration pure.
+                         (let ((buffer-source
+                                (with-temp-buffer
+                                  (insert-file-contents
+                                   (expand-file-name "lisp/nelisp-bytecode-buffer.el"
+                                                     nelisp-standalone--repo-root))
+                                  (buffer-string))))
+                           (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1")
+                               buffer-source
+                             (car (nelisp-prelude-bytecode-transform
+                                   buffer-source "lisp/nelisp-bytecode-buffer.el" nil t))))
                          "\n" (substring source position)))
          (source-only
           (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1"))

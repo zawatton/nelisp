@@ -1,0 +1,7 @@
+BUFFER-RESULT fbb-with ("fbb-b" 3 "fbb-home")
+BUFFER-RESULT fbb-normal ("fbb-b" nil "fbb-home")
+BUFFER-RESULT fbb-throw (17 nil "fbb-home")
+BUFFER-RESULT fbb-signal ((error "fbb") nil "fbb-home")
+BUFFER-RESULT fbb-nested ("fbb-b" 9 "fbb-home")
+BUFFER-RESULT fbb-killed ("fbb-b" nil "fbb-b")
+BUFFER-CELL 6 cases, 0 failures

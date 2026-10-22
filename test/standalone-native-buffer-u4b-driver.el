@@ -50,10 +50,12 @@
 		       (nelisp-test-native-poison native
 						  (lambda nil
 						    (funcall restore name
-							     (lambda (&rest _)
+							     (lambda (&rest arguments)
 							       (setq poison
 								     (1+ poison))
-							       'poison)))
+                                                       ;; Buffer ownership is library-extensible.
+                                                       (if (memq opcode '(112 113))
+                                                           (apply old arguments) 'poison))))
 						  (lambda nil
 						    (funcall restore name old)))
 		       args (car setting) (cadr setting))))
@@ -61,7 +63,8 @@
                           (format "opcode=%d args=%S setting=%S expected=%S actual=%S" opcode args setting expected actual))
               (setq cases (1+ cases))))))
       (u4b-assert (= cases entries) "every invocation executes native code without fallback")
-      (u4b-assert (= poison 0) "frozen values bypass public cells")
+      (u4b-assert (= poison (if (memq opcode '(112 113)) cases 0))
+                  "buffer owners are called; other intrinsic cells stay frozen")
       (when (= opcode 117)
         (let ((effect (native-buffer-u4b-effect-function)))
           (nelisp-native-cache-install 'u4b-effect effect)

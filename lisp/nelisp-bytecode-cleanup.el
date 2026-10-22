@@ -2,9 +2,11 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (defun nelisp-bytecode-cleanup-source ()
   "Return the Lisp reference factory for buffer restoration entries."
-  '(let ((current (symbol-function 'current-buffer))
+  '(let ((current (symbol-function (if (fboundp 'nelisp--bytecode-current-buffer)
+                                        'nelisp--bytecode-current-buffer 'current-buffer)))
          (live (symbol-function 'buffer-live-p))
-         (select (symbol-function 'set-buffer))
+         (select (symbol-function (if (fboundp 'nelisp--bytecode-set-buffer)
+                                       'nelisp--bytecode-set-buffer 'set-buffer)))
          (point-marker-value (symbol-function 'point-marker))
          (copy (symbol-function 'copy-marker))
          (minimum (symbol-function 'point-min)) (maximum (symbol-function 'point-max))
@@ -51,8 +53,10 @@
 SETUP returns the buffer before the caller installs a specpdl binding; SHOW
 runs while that binding is visible, before the caller pops exactly one entry."
   '(let ((evaluate (symbol-function 'eval))
-         (current (symbol-function 'current-buffer))
-         (select (symbol-function 'set-buffer))
+         (current (symbol-function (if (fboundp 'nelisp--bytecode-current-buffer)
+                                        'nelisp--bytecode-current-buffer 'current-buffer)))
+         (select (symbol-function (if (fboundp 'nelisp--bytecode-set-buffer)
+                                       'nelisp--bytecode-set-buffer 'set-buffer)))
          (live (symbol-function 'buffer-live-p))
          (create (symbol-function 'get-buffer-create))
          (erase (symbol-function 'erase-buffer))
