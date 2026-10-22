@@ -19008,7 +19008,8 @@ lexical lifetime.  Calls are allowed only in the original fallback body."
   "Describe bounded guarded closed bodies in unique same-unit DEFUNS.
 GNU31.1 emit_simple_limple_call passes evaluated rvalues to GCC; GCC14.2
 ipa-split motivates retaining a large fallback while exposing a closed arm."
-  (let ((facts (make-hash-table :test #'eq)) (names (make-hash-table :test #'eq)))
+  (let ((facts (make-hash-table :test #'eq)) (names (make-hash-table :test #'eq))
+        (unit-names (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns)))
     (dolist (d defuns)
       (let ((name (nelisp-aot-compiler--ir-get d :name)))
         (if (gethash name names) (remhash name facts)
@@ -19041,7 +19042,7 @@ ipa-split motivates retaining a large fallback while exposing a closed arm."
                          (bound (cons (cons key (list :imm (nelisp-aot-compiler--ir-get literal :value))) env))
                          (plan (nelisp-aot-compiler--x86-guarded-body-plan
                                 (nelisp-aot-compiler--ir-get body :body) bound test)))
-                    (when plan (puthash name (list :arity arity :guarded-body plan) facts))))))))))
+                    (when plan (puthash name (list :arity arity :guarded-body plan :unit-names unit-names) facts))))))))))
     facts))
 
 (defun nelisp-aot-compiler--emit-guarded-body-plan-x86 (plan buf fallback)
@@ -19081,9 +19082,11 @@ FALLBACK must preserve the plan's established ABI and stack assumptions."
 
 (defun nelisp-aot-compiler--emit-guarded-named-call-x86 (node fact buf)
   "Emit FACT at NODE's original staged call point, keeping its slow call."
-  (nelisp-aot-compiler--emit-guarded-body-plan-x86
-   (plist-get fact :guarded-body) buf
-   (lambda () (nelisp-asm-x86_64-call-rel32 buf (nelisp-aot-compiler--ir-get node :name)))))
+  (let ((nelisp-aot-compiler--x86-trace-unit-names
+         (or (plist-get fact :unit-names) nelisp-aot-compiler--x86-trace-unit-names)))
+    (nelisp-aot-compiler--emit-guarded-body-plan-x86
+     (plist-get fact :guarded-body) buf
+     (lambda () (nelisp-asm-x86_64-call-rel32 buf (nelisp-aot-compiler--ir-get node :name))))))
 
 (defun nelisp-aot-compiler--emit-named-gp-call-x86 (node buf)
   "Emit NODE's ordinary call, or its complete trivial result after staging.
