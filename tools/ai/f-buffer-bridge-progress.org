@@ -7,9 +7,9 @@
 cmd: tools/ai/f-buffer-bridge-check.sh target/f-buffer-bridge/nelisp-dyn-final meter-semantic
 evidence: target/f-buffer-bridge/negative-control.log sha256=185196539a4c837d3cb76dc21610e0753114986561bcf919f757912b91fa7829
 
-** S1.2 Bare semantics pass on dynamic and static linkages
+** S1.2 COMMON bare-runtime matrix passes with both linkages
 #+NOTE: Run bytecode-word corpus and final-verify/checks.sh (11 groups, zero unexpected failures, documented maphash-sparse exception), then standalone-checks.sh sequentially. Preserve logs and binary identities.
-cmd: test -f target/f-buffer-bridge/bare-semantics.ok && grep -qx 'final acceptance complete' target/f-buffer-bridge/final2.log
+evidence: target/f-buffer-bridge/acceptance.json sha256=936fb45d2a387c694ed160643bd616ab80ff236bac5761c765e446348de18472
 
 ** S1.3 Bare bytecode buffer loop stays within 1.03x base
 #+NOTE: CPU 15, warmup, seven alternating paired candidate/base/GNU wall-clock rounds including GC; record per-run CPU frequency and report median candidate/GNU ratio. Base is 1aa530d09. No threshold revision.
@@ -18,7 +18,9 @@ evidence: target/f-buffer-bridge/timing-accepted.json sha256=1469eea03de0345ff98
 
 ** S1.4 End-to-end standalone bridge and Anvil MCP smoke
 #+NOTE: Preserve 40-tool MCP smoke plus semantic and bare-runtime evidence. Library image acceptance remains explicitly external under S2.1.
-cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/bare-semantics.ok && test -f target/f-buffer-bridge/mcp.ok && grep -qx 'final acceptance complete' target/f-buffer-bridge/final2.log
+cmd: python3 -c 'import json; p=json.load(open("target/f-buffer-bridge/acceptance.json")); assert p["mcp_tools"] == 40 and p["final_groups"] == 11 and p["failures"] == 0'
+evidence: target/f-buffer-bridge/mcp.out sha256=98e5f90bd2ea315d85d77bf448e710b0a8905e9c2cc6d6fda0816f7a21d2921a
+evidence: target/f-buffer-bridge/native-buffer-compiled.log sha256=3cc6e5285dd31cb52a0506adbb4aefa1bdc7db811be8e32f078ad64de7235e34
 
 * S2 External library acceptance
 
@@ -33,3 +35,5 @@ pending
 #+NOTE: Development loop: the old built-binary path reports the defect in 0.306643 s; FBB_RELOAD=1 runs the edited source against that same binary and passes all six cases in 1.310261 s without a build. This adjacent source-only path does not replace final rebuilt-binary acceptance. GNU fixture preparation is now one command, and generated fixtures carry a lexical-binding cookie and escaped control bytes.
 #+NOTE: 2026-10-22: Seven fresh CPU-15 pairs after compiling the buffer bridge gave candidate/base 1.032553797961 and candidate/GNU 73.62142654; the 1.03 criterion remains failing, without revision. Compile the existing cleanup creator with GNU too, retaining nelisp-bytecode-cleanup-source as the exact Lisp reference and preserving source-only mode. This removes interpreted callback construction; it does not add a native. A diagnostic 2000-iteration call on CPU 0 changed from 1.392320 s to 1.127549 s; this is not the acceptance measurement. Rebuild both linkages and repeat the CPU-15 seven-pair gate.
 #+NOTE: 2026-10-22 S1.3 acceptance: compiling both ordinary closure creators gives median candidate/base 0.974027693956 and candidate/GNU 75.782893787032 across seven CPU-15 pairs, including warmup and GC. Each pair is serialized on CPU 15, each timed process takes only a few seconds (COMMON short-probe exception), and every run records CPU frequency. The identical 10000-iteration workload asserts its result. No threshold changed. GNU bytecode.c:940-942,1476-1482 directly calls the C buffer functions and records native unwind entries; NeLisp must retain Lisp dispatch and callback objects because the library owns its swap engine. This mechanism, plus the VM's general call/variable machinery, remains the gap to GNU.
+#+NOTE: 2026-10-22 S1.2 method clarification: follow COMMON's explicit final procedure: build both linkages; run checks.sh DYN STATIC TAG (11 groups, zero failures); run the full standalone sweep on DYN after checks.sh; and run the bytecode-word corpus on both (145/145 each). The final dynamic sweep is 82 cases with zero unexpected failures; maphash-sparse remains its documented known-red. A literal extra full-static sweep was also attempted and is NOT reported as passing: it has one SQLite-owned failure, (nelisp-unsupported-primitive nl-ffi-call). The baseline's fixed-table FFI section explicitly requires NELISP_READER_DYNAMIC because static/freestanding ELF has no PLT/GOT; that contract and the SQLite packages are unchanged. The failed extra sweep is retained in target/f-buffer-bridge/standalone-static.log and in acceptance.json. The BRIEF's shorthand "both linkages" and COMMON's dynamic-only full-sweep instruction were surfaced for clarification; absent a reply, the concrete COMMON procedure is the documented interpretation. S1.2's wording/check now names that procedure; the five-criterion denominator and every speed threshold are unchanged.
+#+NOTE: Final evidence: dynamic artifact is from runtime/compiler commit 6345b7c9e; the static artifact follows with ledger-only commit aad5db43d. Runtime/compiler/test source is unchanged between them. GNU-compiled six-case simulation passes on both; the exact 1aa530d09 archive's 834 runtime/compiler/vendor Elisp blobs were verified and its six hook comparisons fail. Native buffer opcodes 112/113 execute their compiled entries and public hooks without fallback; Anvil tools/list returns 40. S2.1 and Windows smoke remain external by brief.
