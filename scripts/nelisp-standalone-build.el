@@ -607,6 +607,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      512
      ;; `nl_exit_values': a pending nonlocal exit's tag and value WORDs.
      16
+     ;; `nl_float_state': Doc 223 typed float blocks.
+     128
      ;; `nl_cold_chunk0_domain'.
      16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
@@ -968,6 +970,17 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Float blocks": the typed float allocator's state, right after
+    ;; `nl_exit_values' (+0 free list, +8 blocks, +16 cell index of the head
+    ;; block, +24 live cells after the last sweep, +32 free cells, +40 blocks,
+    ;; +48 allocations, +56 ranked cells of a dump, +64 their array, +72 its
+    ;; bytes, +80 the image offset of the float region; +88 the pointer fields
+    ;; pass 1 of a dump visited, +96 the relocation table's capacity in entries
+    ;; (0 = unbounded, the single-chunk dump), +104 set when pass 3 would have
+    ;; written past it).
+    (list (nelisp-link-symbol "nl_float_state"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -2719,6 +2732,14 @@ the typed-block registry plays mem_find, so a symbol block is a typed block.")
   "A symbol_block cell's gcmarkbit (lisp.h:794): header bit 24, the first
 collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
 
+(defconst nelisp-standalone--float-cell-bytes 16
+  "NeLisp float cell: GNU's Lisp_Float is 8 bytes; here the kind word (3) precedes
+the double (Doc 216 S5).")
+(defconst nelisp-standalone--float-block-size
+  (/ nelisp-standalone--cons-next-offset nelisp-standalone--float-cell-bytes)
+  "Cells per float block: 2046, filling a 32 KiB typed block up to the `next' link
+it shares with cons and symbol blocks.")
+
 (defun nelisp-standalone--typed-alloc-forms ()
   "Return the Doc 223 typed-block allocation forms for arena.o."
   (let ((n nelisp-standalone--cons-block-size)
@@ -2737,7 +2758,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         (sn nelisp-standalone--symbol-block-size)
         (scell nelisp-standalone--symbol-cell-bytes)
         ;; A dumped symbol is a headered legacy block: 8 + 48 bytes.
-        (scb (+ 8 nelisp-standalone--symbol-cell-bytes)))
+        (scb (+ 8 nelisp-standalone--symbol-cell-bytes))
+        (fn nelisp-standalone--float-block-size)
+        (fcell nelisp-standalone--float-cell-bytes)
+        ;; A dumped float is a headered legacy block: 8 + 16 bytes.
+        (fcb (+ 8 nelisp-standalone--float-cell-bytes)))
     ;; The link and the block ordinal (NEXT+8) sit below the type word; the
     ;; dump's rank table holds a cell index in 16 bits.
     (unless (and (= cell 16) (= n 2030) (<= (+ next 16) ty) (< n 65535))
@@ -2745,6 +2770,9 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
     ;; Symbol cells end exactly at the shared `next' link.
     (unless (and (= scell 48) (= sn 682) (= (* sn scell) next))
       (error "Doc 226 D9 symbol block geometry changed: %S %S" sn next))
+    ;; So do float cells.
+    (unless (and (= fcell 16) (= fn 2046) (= (* fn fcell) next))
+      (error "Doc 223 float block geometry changed: %S %S" fn next))
     `(;; Registry probe start for group base G (a 512 KiB multiple).
       (defun nl_typed_hash (g mask) (logand (+ (sar g 19) (sar g 29)) mask))
       ;; Entry (16 bytes: group base, busy blocks) of group G, or 0.
@@ -2990,6 +3018,43 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                             (seq (ptr-write-u64 st 408 1) (nl_symbol_zero nb))))
                       (seq (ptr-write-u64 st 408 (+ i 1))
                            (nl_symbol_zero (+ b (* i ,scell)))))))))))))
+      ;; ---- Doc 223 typed float blocks (alloc.c:2431 float_block) ----
+      ;; Make_float's new-block branch (alloc.c:2419-2431): a type 3 block, its
+      ;; cells never allocated (zero), chained at `next'.
+      (defun nl_float_alloc_block (st fst)
+        (let ((nb (nl_ablock_alloc st 3)))
+          (if (= nb 0) 0
+            (seq
+             (ptr-write-u64 nb ,next (heap-read-u64 fst 8))
+             (ptr-write-u64 fst 8 nb)
+             (ptr-write-u64 fst 16 0)
+             (ptr-write-u64 fst 40 (+ (heap-read-u64 fst 40) 1))
+             nb))))
+      ;; make_float's allocation (alloc.c:2431-2455): pop float_free_list, else
+      ;; the next cell of the current float_block, else a new block, and charge
+      ;; the cell to the GC debt as tally_consing does.  Answers the address of
+      ;; a 16-byte cell -- the float WORD is that address | 6 and the caller
+      ;; writes the kind word (3) and the double -- or 0: typed cells disabled
+      ;; (+80 of `nl_typed_alloc'), a parallel section (268435624 = 1, whose
+      ;; free lists have a single writer) or memory exhausted; the caller then
+      ;; takes a general-heap object.
+      (defun nl_float_alloc ()
+        (let ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state)))
+          (if (= (heap-read-u64 st 80) 1) 0
+            (if (= (heap-read-u64 268435624 0) 1) 0
+              (let ((p (heap-read-u64 fst 0)))
+                (seq
+                 (ptr-write-u64 (data-addr nl_gc_stats) 0
+                                (+ (heap-read-u64 (data-addr nl_gc_stats) 0) ,fcell))
+                 (ptr-write-u64 fst 48 (+ (heap-read-u64 fst 48) 1))
+                 (if (> p 0)
+                     (seq (ptr-write-u64 fst 0 (heap-read-u64 p 8)) p)
+                   (let ((i (heap-read-u64 fst 16)) (b (heap-read-u64 fst 8)))
+                     (if (if (= b 0) 1 (if (= i ,fn) 1 0))
+                         (let ((nb (nl_float_alloc_block st fst)))
+                           (if (= nb 0) 0
+                             (seq (ptr-write-u64 fst 16 1) nb)))
+                       (seq (ptr-write-u64 fst 16 (+ i 1)) (+ b (* i ,fcell))))))))))))
       ;; ---- Live-only image dump (pdumper.c dump_object, reached from the
       ;; roots) ----
       ;; A dump copies only the objects the image walk reaches, packed in
@@ -3134,10 +3199,24 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               (if (= (logand h 33554432) 0) (nl_dump_excluded addr)
                 (+ (heap-read-u64 st 472)
                    (+ (* (sar h 32) ,scb) (+ 8 (- addr c)))))))))
+      ;; Doc 223 float blocks: image offset of ADDR inside a float_block cell: the
+      ;; float region after the symbol region, one headered 24-byte block per
+      ;; ranked cell (`nl_dump_compact_rank_floats' keeps the rank in the
+      ;; cell header's bits 32-63, bit 25 = ranked), or -1 (counted).
+      (defun nl_dump_float_logoff (addr)
+        (let* ((fst (data-addr nl_float_state))
+               (blk (logand addr -32768)) (off (- addr blk)))
+          (if (>= off ,(* fn fcell)) (nl_dump_excluded addr)
+            (let* ((idx (/ off ,fcell)) (c (+ blk (* idx ,fcell)))
+                   (h (heap-read-u64 c 0)))
+              (if (= (logand h 33554432) 0) (nl_dump_excluded addr)
+                (+ (heap-read-u64 fst 80)
+                   (+ (* (sar h 32) ,fcb) (+ 8 (- addr c)))))))))
       ;; Pass 3: image offset of ADDR, or -1 (counting heap addresses that
       ;; have none).
       (defun nl_dump_compact_logoff (addr)
         (let ((st (data-addr nl_typed_alloc)))
+          (if (= (nl_typed_find addr) 3) (nl_dump_float_logoff addr)
           (if (= (nl_typed_find addr) 2) (nl_dump_symbol_logoff addr)
           (if (= (nl_typed_find addr) 1)
               (let* ((blk (logand addr -32768)) (off (- addr blk))
@@ -3155,12 +3234,18 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (hdr (heap-read-u64 arr (* i 16))))
                   (if (< addr (+ hdr (logand (heap-read-u64 hdr 0) 4294967288)))
                       (+ (heap-read-u64 arr (+ (* i 16) 8)) (- addr hdr))
-                    (nl_dump_excluded addr)))))))))
+                    (nl_dump_excluded addr))))))))))
       ;; Restore: the live address of image offset LOGOFF, or 0.  The
       ;; symbol region (Doc 226 D9) follows the cons cells; its rank table
       ;; (+456) lists the ranked cells.
       (defun nl_dump_compact_phys (logoff)
-        (let ((st (data-addr nl_typed_alloc)))
+        (let ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state)))
+          (if (if (> (heap-read-u64 fst 56) 0) (>= logoff (heap-read-u64 fst 80)) 0)
+              (let* ((rel (- logoff (heap-read-u64 fst 80)))
+                     (r (/ rel ,fcb)) (within (- (- rel (* r ,fcb)) 8)))
+                (if (< within 0) 0
+                  (if (>= r (heap-read-u64 fst 56)) 0
+                    (+ (heap-read-u64 (heap-read-u64 fst 64) (* r 8)) within))))
           (if (if (> (heap-read-u64 st 448) 0) (>= logoff (heap-read-u64 st 472)) 0)
               (let* ((rel (- logoff (heap-read-u64 st 472)))
                      (r (/ rel ,scb)) (within (- (- rel (* r ,scb)) 8)))
@@ -3189,7 +3274,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
               (if (< i 0) 0
                 (let ((arr (heap-read-u64 st 304)))
                   (+ (heap-read-u64 arr (* i 16))
-                     (- logoff (heap-read-u64 arr (+ (* i 16) 8))))))))))))))
+                     (- logoff (heap-read-u64 arr (+ (* i 16) 8)))))))))))))))
 
 (defun nelisp-standalone--typed-gc-forms ()
   "Return the Doc 223 typed-block collector forms for reader-gc.o."
@@ -3203,7 +3288,10 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
         (sn nelisp-standalone--symbol-block-size)
         (scell nelisp-standalone--symbol-cell-bytes)
         (scb (+ 8 nelisp-standalone--symbol-cell-bytes))
-        (smark nelisp-standalone--symbol-mark-bit))
+        (smark nelisp-standalone--symbol-mark-bit)
+        (fn nelisp-standalone--float-block-size)
+        (fcell nelisp-standalone--float-cell-bytes)
+        (fcb (+ 8 nelisp-standalone--float-cell-bytes)))
     `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
       (defun nl_cons_mark_cell (box)
         (let* ((blk (logand box -32768))
@@ -3235,7 +3323,7 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
       ;; symbol_marked_p, alloc.c:4057, tests the pdumper bitmap for a
       ;; dumped symbol).  1 = newly marked.
       (defun nl_gc_mark_vbox (box)
-        (if (= (nl_typed_find box) 2) (nl_symbol_mark_cell box)
+        (if (> (nl_typed_find box) 1) (nl_symbol_mark_cell box)
           (nl_gc_mark_block box)))
       ;; process_mark_stack's Lisp_Symbol case (alloc.c:6626): BOX's dedup
       ;; mark, then name, val, function and plist (+8..+32).  Every val
@@ -3347,6 +3435,100 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (if (if (= blk (heap-read-u64 st 400)) (>= idx (heap-read-u64 st 408)) 0) 0
                   (let ((c (+ blk (* idx ,scell))))
                     (if (= (heap-read-u64 c 24) ,dead) 0 c))))))))
+      ;; ---- Doc 223 float blocks, collector side ----
+      ;; A float_block cell takes its gcmarkbit through `nl_symbol_mark_cell'
+      ;; (header bit 24, the first collector bit); a float has no children.
+      ;; Clear every float_block cell's gcmarkbit (a mark phase without a
+      ;; sweep).  An image dump's rank bits stay.
+      (defun nl_float_unmark_all ()
+        (let* ((fst (data-addr nl_float_state))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (c 0) (h 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,fcell)))
+                         (setq h (heap-read-u64 c 0))
+                         (if (= (logand h ,smark) 0) 0 (ptr-write-u64 c 0 (- h ,smark)))
+                         (setq i (+ i 1))))
+                  (setq lim ,fn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; Clear every collector bit (24 and up) of every float_block cell: the
+      ;; end of an image dump, whose ranks sat in bits 25 and 32-63.
+      (defun nl_float_clear_collector_bits ()
+        (let* ((fst (data-addr nl_float_state))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (c 0))
+          (seq
+           (while (> b 0)
+             (seq (setq i 0)
+                  (while (< i lim)
+                    (seq (setq c (+ b (* i ,fcell)))
+                         (ptr-write-u64 c 0 (logand (heap-read-u64 c 0) 16777215))
+                         (setq i (+ i 1))))
+                  (setq lim ,fn)
+                  (setq b (heap-read-u64 b ,next))))
+           0)))
+      ;; sweep_floats (alloc.c:6894): rebuild float_free_list from the
+      ;; gcmarkbits -- an unmarked cell is zeroed and takes the free-list link at
+      ;; +8, a marked one loses its mark -- and free a wholly free block once
+      ;; more than one block of free cells is held.  Live cells feed the GC debt
+      ;; threshold (nl_gc_stats+16).
+      (defun nl_sweep_floats ()
+        (let* ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state))
+               (fprev (+ fst 8))
+               (fblk (heap-read-u64 fst 8))
+               (lim (heap-read-u64 fst 16))
+               (free 0) (num_free 0) (num_used 0)
+               (i 0) (this_free 0) (c 0) (h 0))
+          (seq
+           (while (> fblk 0)
+             (seq
+              (setq i 0) (setq this_free 0)
+              (while (< i lim)
+                (seq
+                 (setq c (+ fblk (* i ,fcell)))
+                 (setq h (heap-read-u64 c 0))
+                 (if (= (logand h ,smark) 0)
+                     (seq (ptr-write-u64 c 0 0)
+                          (ptr-write-u64 c 8 free)
+                          (setq free c)
+                          (setq this_free (+ this_free 1)))
+                   (seq (ptr-write-u64 c 0 (- h ,smark))
+                        (setq num_used (+ num_used 1))))
+                 (setq i (+ i 1))))
+              (setq lim ,fn)
+              (if (if (= this_free ,fn) (> num_free ,fn) 0)
+                  (let ((nx (heap-read-u64 fblk ,next)))
+                    (seq
+                     (ptr-write-u64 fprev 0 nx)
+                     (setq free (heap-read-u64 fblk 8))
+                     (ptr-write-u64 fst 40 (- (heap-read-u64 fst 40) 1))
+                     (nl_ablock_free st fblk)
+                     (setq fblk nx)))
+                (seq (setq num_free (+ num_free this_free))
+                     (setq fprev (+ fblk ,next))
+                     (setq fblk (heap-read-u64 fblk ,next))))))
+           (ptr-write-u64 fst 0 free)
+           (ptr-write-u64 fst 24 num_used)
+           (ptr-write-u64 fst 32 num_free)
+           (ptr-write-u64 (data-addr nl_gc_stats) 16
+                          (+ (heap-read-u64 (data-addr nl_gc_stats) 16) (* num_used ,fcell)))
+           0)))
+      ;; live_float_p (alloc.c:4640): the live cell P points into, or 0.  A cell
+      ;; beyond the current block's index was never allocated; a cell whose kind
+      ;; word is not 3 is free.
+      (defun nl_live_float_holding (p)
+        (let* ((fst (data-addr nl_float_state))
+               (blk (logand p -32768))
+               (off (- p blk)))
+          (if (>= off ,(* fn fcell)) 0
+            (let ((idx (/ off ,fcell)))
+              (if (if (= blk (heap-read-u64 fst 8)) (>= idx (heap-read-u64 fst 16)) 0) 0
+                (let ((c (+ blk (* idx ,fcell))))
+                  (if (= (logand (heap-read-u64 c 0) 63) 3) c 0)))))))
       ;; Clear every cons block's mark bits (a mark phase without a sweep:
       ;; conservative failure, image walks, census-only walks).
       (defun nl_cons_unmark_all ()
@@ -3438,6 +3620,13 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 128 0) (ptr-write-u64 st 136 0) (ptr-write-u64 st 336 0)
            (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
            (ptr-write-u64 st 472 0)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 88) 0 0)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 0)
+           (ptr-write-u64 (+ (data-addr nl_float_state) 104) 0 0)
+           (ptr-write-u64 (data-addr nl_float_state) 56 0)
+           (ptr-write-u64 (data-addr nl_float_state) 64 0)
+           (ptr-write-u64 (data-addr nl_float_state) 72 0)
+           (ptr-write-u64 (data-addr nl_float_state) 80 0)
            (if (> incl 0) (nl_os_commit_range incl 0 bytes) 0)
            (if (if (> (heap-read-u64 st 208) 0) (= incl 0) 0) 0
              (seq (ptr-write-u64 st 296 1) 1)))))
@@ -3572,7 +3761,8 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                     (setq i (+ i 1))))
              (if (= ok 0) 0
                (if (= (nl_dump_compact_rank_cells st) 0) 0
-                 (nl_dump_compact_rank_symbols st)))))))
+                 (if (= (nl_dump_compact_rank_symbols st) 0) 0
+                   (nl_dump_compact_rank_floats st))))))))
       ;; Doc 226 D9: give every symbol_block cell the walk reached (its
       ;; gcmarkbit) a rank in the symbol region, which follows the cons
       ;; cells (+472 = its image offset): the rank goes to the cell header's
@@ -3609,12 +3799,49 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (ptr-write-u64 st 448 r) (ptr-write-u64 st 456 arr)
                 (ptr-write-u64 st 464 bytes)
                 1))))))
+      ;; Doc 223 float blocks: give every float_block cell the walk reached (its
+      ;; gcmarkbit) a rank in the float region, which follows the symbol region
+      ;; (+80 of `nl_float_state' = its image offset): the rank goes to the
+      ;; cell header's bits 32-63 with bit 25 as "ranked", the mark is cleared
+      ;; for pass 3's walk, and +64 lists the cells by rank (+56 of them, +72
+      ;; bytes) for the restore mapping and the writer.  1 on success.
+      (defun nl_dump_compact_rank_floats (st)
+        (let* ((fst (data-addr nl_float_state))
+               (nb (heap-read-u64 fst 40))
+               (bytes (nl_align_up (+ (* nb ,(* fn 8)) 8) 65536))
+               (arr (if (= nb 0) 0 (nl_os_alloc_chunk bytes)))
+               (b (heap-read-u64 fst 8)) (lim (heap-read-u64 fst 16))
+               (i 0) (r 0) (c 0) (h 0))
+          (seq
+           (ptr-write-u64 fst 80 (+ (heap-read-u64 st 472) (* (heap-read-u64 st 448) ,scb)))
+           (if (= nb 0) 1
+             (if (= arr 0) 0
+               (seq
+                (nl_os_commit_range arr 0 bytes)
+                (while (> b 0)
+                  (seq
+                   (setq i 0)
+                   (while (< i lim)
+                     (seq
+                      (setq c (+ b (* i ,fcell)))
+                      (setq h (heap-read-u64 c 0))
+                      (if (= (logand h ,smark) 0) 0
+                        (seq (ptr-write-u64 arr (* r 8) c)
+                             (ptr-write-u64 c 0 (logior (logand h 16777215)
+                                                        (logior 33554432 (shl r 32))))
+                             (setq r (+ r 1))))
+                      (setq i (+ i 1))))
+                   (setq lim ,fn)
+                   (setq b (heap-read-u64 b ,next))))
+                (ptr-write-u64 fst 56 r) (ptr-write-u64 fst 64 arr)
+                (ptr-write-u64 fst 72 bytes)
+                1))))))
       ;; Write the image span: every included block in address order with its
       ;; mark bits cleared, then every reached cell as a headered legacy
       ;; payload block (header, then car and cdr as swizzled), through a
       ;; 1 MiB buffer.  Returns the bytes written.
       (defun nl_dump_compact_write (fd)
-        (let* ((st (data-addr nl_typed_alloc))
+        (let* ((st (data-addr nl_typed_alloc)) (fst (data-addr nl_float_state))
                (buf (nl_os_alloc_chunk 1048576))
                (arr (heap-read-u64 st 304)) (count (heap-read-u64 st 312))
                (nb (heap-read-u64 st 136)) (pre (heap-read-u64 st 360))
@@ -3685,6 +3912,22 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                 (ptr-write-u64 buf (+ fill 48) (heap-read-u64 c 40))
                 (setq fill (+ fill ,scb))
                 (setq r (+ r 1))))
+             ;; Doc 223 float blocks: every ranked float cell as a headered
+             ;; legacy block -- header 24, then the kind word with its collector
+             ;; bits (24 and up) cleared and the double.
+             (setq r 0)
+             (while (< r (heap-read-u64 fst 56))
+               (seq
+                (if (> (+ fill ,fcb) 1048576)
+                    (seq (setq written (+ written (nl_fa_write_all fd buf fill 0)))
+                         (setq fill 0))
+                  0)
+                (setq c (heap-read-u64 (heap-read-u64 fst 64) (* r 8)))
+                (ptr-write-u64 buf fill ,fcb)
+                (ptr-write-u64 buf (+ fill 8) (logand (heap-read-u64 c 0) 16777215))
+                (ptr-write-u64 buf (+ fill 16) (heap-read-u64 c 8))
+                (setq fill (+ fill ,fcb))
+                (setq r (+ r 1))))
              (if (> fill 0) (setq written (+ written (nl_fa_write_all fd buf fill 0))) 0)
              (nl_os_free_chunk buf 1048576)
              written))))
@@ -3711,6 +3954,15 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
            (ptr-write-u64 st 448 0) (ptr-write-u64 st 456 0) (ptr-write-u64 st 464 0)
            (ptr-write-u64 st 472 0)
            (nl_symbol_clear_collector_bits)
+           (if (> (heap-read-u64 (data-addr nl_float_state) 64) 0)
+               (nl_os_free_chunk (heap-read-u64 (data-addr nl_float_state) 64)
+                                 (heap-read-u64 (data-addr nl_float_state) 72))
+             0)
+           (ptr-write-u64 (data-addr nl_float_state) 56 0)
+           (ptr-write-u64 (data-addr nl_float_state) 64 0)
+           (ptr-write-u64 (data-addr nl_float_state) 72 0)
+           (ptr-write-u64 (data-addr nl_float_state) 80 0)
+           (nl_float_clear_collector_bits)
            0)))
       ;; ---- Image objects as pdumper objects (pdumper.c:5229-5272) ----
       ;; Objects of a restored cold image are immortal.  GNU never sweeps
@@ -3944,7 +4196,11 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
           (if (= (nl_typed_find w) 2)
               (let ((c (nl_live_symbol_holding w)))
                 (seq (if (= c 0) 0 (nl_gc_mark_symbol c)) 1))
-            0))))))
+            ;; Doc 223: mark_maybe_pointer's MEM_TYPE_FLOAT case (alloc.c:4944).
+            (if (= (nl_typed_find w) 3)
+                (let ((c (nl_live_float_holding w)))
+                  (seq (if (= c 0) 0 (nl_symbol_mark_cell c)) 1))
+              0)))))))
 
 (defconst nelisp-standalone--arena-source
   (append
@@ -6312,6 +6568,7 @@ REPL-facing module it feeds."
             (seq (nl_gc_mark_word (heap-read-u64 (+ owner (* i 8)) 0))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
+      (if (= (nl_typed_find box) 3) (nl_symbol_mark_cell box)
       (if (= (nl_gc_mark_block box) 0) 0
         (let* ((header (heap-read-u64 box 0)) (kind (logand header 63))
                (n (sar header 8)))
@@ -6320,7 +6577,7 @@ REPL-facing module it feeds."
             (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))))
     (defun nl_gc_typed_vectorlike (box kind n)
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
@@ -7329,6 +7586,7 @@ REPL-facing module it feeds."
        ;; then pdumper_clear_marks (gc_sweep alloc.c:7114) for image objects.
        (nl_sweep_conses)
        (nl_sweep_symbols)
+       (nl_sweep_floats)
        (nl_boot_clear_marks)
        (if (= (nl_os_empty_chunk_reclaim_p) 1)
            (nl_gc_reclaim_swept_chunks
@@ -7640,6 +7898,7 @@ REPL-facing module it feeds."
           (setq chunk (heap-read-u64 (+ chunk 48) 0)))
         (nl_cons_unmark_all)
         (nl_symbol_unmark_all)
+        (nl_float_unmark_all)
         (nl_boot_clear_marks)
         0))
     (defun nl_gc_conserv_rollback ()
@@ -9017,11 +9276,15 @@ REPL-facing module it feeds."
                         ;; Doc 226 D9: symbols never move -- eq and eq-hash
                         ;; identity is the cell's address -- so no symbol
                         ;; cell (typed or parallel-section) may exist.
-                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 440) 0) 0))
+                        (= (heap-read-u64 (+ (data-addr nl_typed_alloc) 440) 0) 0)
+                        ;; Doc 223 float blocks: a typed float cell never moves
+                        ;; either (it holds no edge, but WORDs name its address).
+                        (= (heap-read-u64 (+ (data-addr nl_float_state) 40) 0) 0))
                  ;; The debug compaction path does not sweep; re-arm the debt
                  ;; trigger here so it cannot fire at every later boundary.
                  (nl_seq2 (nl_gc_compact ctx result out pool src cursor bsym)
-                          (nl_seq2 (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_sweep_symbols))
+                          (nl_seq2 (nl_seq2 (nl_seq2 (nl_seq2 (nl_sweep_conses) (nl_sweep_symbols))
+                                                      (nl_sweep_floats))
                                             (nl_seq2 (nl_boot_clear_marks) (nl_gc_debt_rearm)))
                                    (nl_gc_conserv_state_clear)))
                  (nl_seq2 (nl_gc_sweep)
@@ -11366,8 +11629,37 @@ leave symbols unresolved at link time."
           (+ (* (nl_conserv_selftest_hold c 0) 4) 1)
           (nelisp_cons_construct_w (if (if (< g lo) 1 (>= g hi)) 5 1) 3 0)
           0))))
+    ;; (nelisp--debug-switch 44): (LIVE FREE BLOCKS ALLOCATED) float cells, as 42
+    ;; answers for symbols; (nelisp--debug-switch 45): Doc 223 float blocks and the
+    ;; conservative scan -- a float held only by native frames survives a
+    ;; collection.  Answers (SURVIVED TYPED): TYPED 1 when the float is a
+    ;; float_block cell.
+    (defun nl_float_stats_w (_pad)
+      (let ((fst (data-addr nl_float_state)))
+        (nelisp_cons_construct_w
+         (+ (* (heap-read-u64 fst 24) 4) 1)
+         (nelisp_cons_construct_w
+          (+ (* (heap-read-u64 fst 32) 4) 1)
+          (nelisp_cons_construct_w
+           (+ (* (heap-read-u64 fst 40) 4) 1)
+           (nelisp_cons_construct_w (+ (* (heap-read-u64 fst 48) 4) 1) 3 0)
+           0)
+          0)
+         0)))
+    (defun nl_float_selftest_hold (f _pad)
+      (seq (nl_gc_collect_from_recorded_roots 0)
+           (if (= (heap-read-u64 (- f 6) 8) 4611686018427387904) 1 0)))
+    (defun nl_float_selftest_w (_pad)
+      (let* ((f (nl_float_object 4611686018427387904))
+             (typed (if (= (nl_typed_find (- f 6)) 3) 1 0)))
+        (nelisp_cons_construct_w
+         (+ (* (nl_float_selftest_hold f 0) 4) 1)
+         (nelisp_cons_construct_w (+ (* typed 4) 1) 3 0)
+         0)))
     (defun nl_symbol_selftest_w (args)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 45) (nl_float_selftest_w 0)
+        (if (= op 44) (nl_float_stats_w 0)
         (if (= op 43) (nl_conserv_selftest_w 0)
         (if (= op 40) (nl_symbol_selftest_make (wf_argval args 1))
           (if (= op 41)
@@ -11381,7 +11673,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))
+             0))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -11488,7 +11780,7 @@ leave symbols unresolved at link time."
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 45) 0)
           (nl_symbol_selftest_w args)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -11787,7 +12079,8 @@ leave symbols unresolved at link time."
          0)))
     (defun bf_arena_mr_chunks (chunk reach total)
       (if (= chunk 0)
-          (nl_seq2 (nl_seq2 (nl_cons_unmark_all) (nl_symbol_unmark_all))
+          (nl_seq2 (nl_seq2 (nl_seq2 (nl_cons_unmark_all) (nl_symbol_unmark_all))
+                            (nl_float_unmark_all))
                    (nl_boot_clear_marks))
         (nl_seq2 (bf_arena_mr_chunk chunk reach total)
                  (bf_arena_mr_chunks (heap-read-u64 (+ chunk 48) 0)
@@ -11921,7 +12214,10 @@ leave symbols unresolved at link time."
                    (heap-read-u64 (data-addr nl_fa_tbl_base) 0))))
         (nl_seq2
          (if (= dir 3)
-             (ptr-write-u64 (+ tbl (* 8 (heap-read-u64 cin 0))) 0 fldoff)
+             (if (if (= (heap-read-u64 (+ (data-addr nl_float_state) 96) 0) 0) 1
+                   (< (heap-read-u64 cin 0) (heap-read-u64 (+ (data-addr nl_float_state) 96) 0)))
+                 (ptr-write-u64 (+ tbl (* 8 (heap-read-u64 cin 0))) 0 fldoff)
+               (ptr-write-u64 (+ (data-addr nl_float_state) 104) 0 1))
            0)
          (nl_seq2
           (ptr-write-u64 cin 0 (+ (heap-read-u64 cin 0) 1))
@@ -11942,7 +12238,9 @@ leave symbols unresolved at link time."
                  (ie (heap-read-u64 (+ base 840) 0))
                  (tlog (nl_mc_logoff tgt)))
             (if (= dir 1)
-                (ptr-write-u64 loc 0 (heap-read-u64 waddr 0))
+                (seq (ptr-write-u64 (+ (data-addr nl_float_state) 88) 0
+                                    (+ (heap-read-u64 (+ (data-addr nl_float_state) 88) 0) 1))
+                     (ptr-write-u64 loc 0 (heap-read-u64 waddr 0)))
               (if (< tlog 0)
                   (if (if (< tgt ib) 0 (if (< tgt ie) 1 0))
                       (nl_fa_emit loc (+ span (- tgt ib) ptag) (+ wlog ptag)
@@ -13140,8 +13438,9 @@ leave symbols unresolved at link time."
       ;; Doc 223: this single-chunk copy dump has no converted cons region;
       ;; with cons or symbol blocks in use it refuses
       ;; (`nelisp--arena-dump-image-stream' converts them).
-      (if (> (+ (heap-read-u64 (data-addr nl_typed_alloc) 40)
-                (heap-read-u64 (data-addr nl_typed_alloc) 432)) 0)
+      (if (> (+ (+ (heap-read-u64 (data-addr nl_typed_alloc) 40)
+                   (heap-read-u64 (data-addr nl_typed_alloc) 432))
+                (heap-read-u64 (data-addr nl_float_state) 40)) 0)
           (wf_write_int_w 0 -1)
       (seq (nl_frame_stack_export_all 0 0)
       (let* ((cpath (nl_bi_make_cpath (wf_arg_ptr args 0)))
@@ -13284,7 +13583,9 @@ leave symbols unresolved at link time."
              ;; for the two counters. Anonymous mmap is demand-paged (see
              ;; `nl_os_commit_range'), so over-provisioning this scratch region
              ;; costs virtual address space only, not physical memory.
-             (tblcap (+ total 1048576))
+             ;; Passes 1 and 2 write no entry: the header block only.  Pass 3's
+             ;; table is allocated after pass 1 has counted the pointer fields.
+             (tblcap 65536)
              (tblbase (nl_os_alloc_chunk tblcap))
              (cin tblbase) (cout (+ tblbase 8)) (tbl (+ tblbase 16))
              (depth (heap-read-u64 (data-addr nl_gc_loop_ctx) 0))
@@ -13344,6 +13645,28 @@ leave symbols unresolved at link time."
                 0)
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cin cin)
               (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+              ;; Doc 223: the relocation table for pass 3, one entry per pointer
+              ;; field pass 1 visited (pdumper.c grows its tables as it dumps),
+              ;; plus 1/16 and a page of slack; the counts of both passes agree
+              ;; and pass 3 refuses to write past the capacity.  The demand-paged
+              ;; table still costs address space, which `ulimit -v' caps.
+              (if (= cok 1)
+                  (let* ((nf (heap-read-u64 (+ (data-addr nl_float_state) 88) 0))
+                         (cap2 (+ (+ nf (/ nf 16)) 4096))
+                         (bytes2 (+ 16 (* cap2 8)))
+                         (base2 (nl_os_alloc_chunk bytes2)))
+                    (if (= base2 0) (setq cok 0)
+                      (seq
+                       ,@(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+                             '((nl_os_commit_range base2 0 bytes2))
+                           nil)
+                       (nl_os_free_chunk tblbase tblcap)
+                       (setq tblbase base2) (setq tblcap bytes2)
+                       (setq cin base2) (setq cout (+ base2 8)) (setq tbl (+ base2 16))
+                       (ptr-write-u64 cin 0 0) (ptr-write-u64 cout 0 0)
+                       (ptr-write-u64 (data-addr nl_fa_tbl_base) 0 tbl)
+                       (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 cap2))))
+                0)
               (if (= cok 1)
                   (seq
                    (ptr-write-u64 (+ (data-addr nl_typed_alloc) 296) 0 2)
@@ -13351,8 +13674,11 @@ leave symbols unresolved at link time."
                                       (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 336) 0)
                                          ,(+ 8 nelisp-standalone--cons-cell-bytes)))
                                    ;; Doc 226 D9: the symbol region.
-                                   (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
-                                      ,(+ 8 nelisp-standalone--symbol-cell-bytes))))
+                                   (+ (* (heap-read-u64 (+ (data-addr nl_typed_alloc) 448) 0)
+                                         ,(+ 8 nelisp-standalone--symbol-cell-bytes))
+                                      ;; Doc 223: the float region.
+                                      (* (heap-read-u64 (+ (data-addr nl_float_state) 56) 0)
+                                         ,(+ 8 nelisp-standalone--float-cell-bytes)))))
                    (ptr-write-u64 hdr 32 (nl_mc_imgoff gbox ctotal ib ie))
                    (ptr-write-u64 hdr 40 (nl_mc_imgoff fbox ctotal ib ie))
                    (ptr-write-u64 hdr 48 (nl_mc_imgoff ubox ctotal ib ie))
@@ -13367,6 +13693,8 @@ leave symbols unresolved at link time."
               ;; a heap target the packed layout lacks would load as a stale
               ;; pointer: the dump fails instead
               (if (> (heap-read-u64 (+ (data-addr nl_typed_alloc) 384) 0) 0) (setq cok 0) 0)
+              ;; a pass 3 that outgrew its table: no image
+              (if (> (heap-read-u64 (+ (data-addr nl_float_state) 104) 0) 0) (setq cok 0) 0)
               (ptr-write-u64 hdr 8 ctotal) (ptr-write-u64 hdr 24 tlen)
               (if (= cok 1)
                   (seq
@@ -13395,6 +13723,7 @@ leave symbols unresolved at link time."
               ;; through it would be swept while still live.
               (bf_arena_mr_chunks (heap-read-u64 268436160 0) cout cout)
               (nl_dump_compact_end)
+              (ptr-write-u64 (+ (data-addr nl_float_state) 96) 0 0)
               (nl_os_free_chunk tblbase tblcap)
               (wf_write_int_w 0 ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
                                  '(if (= cok 0) -1

@@ -324,8 +324,10 @@ sits in the cold legacy clone path (nl_val_clone_legacy) and a view
 materialised from the object carries its bits (nl_sexp_clone_into); the hot
 accessors stay untouched, because a float test in nl_word_payload (about 280
 call sites) or a float branch in nl_val_clone_into (every store) measured 9-10%
-on every basic row. (c) 16-byte cells in typed float blocks with a side mark
-bitmap. (d) When word-heap S6.1 retires the 000 views, 000 becomes the
+on every basic row. (c) Landed 2026-10-22: 16-byte cells in typed float
+blocks (2046 per 32 KiB block, Doc 223 "Float blocks"), the mark in bit 24 of
+the kind word as for symbol cells instead of a side bitmap: 16 bytes retained
+instead of 24. (d) When word-heap S6.1 retires the 000 views, 000 becomes the
 dedicated float tag and a float becomes a bare 8-byte cell with a mark bit, as
 in GNU. S1.10 measures the retained slope per float against 9 bytes and stays
 known-red until then; it is not to be downgraded to pending or dropped to

@@ -193,10 +193,18 @@
     ;; +8, the WORD being box|6 (GNU's Lisp_Float, alloc.c:2431, with the
     ;; kind in the object instead of in the pointer).
     (defun nl_float_object (bits)
-      (let ((box (alloc-bytes 16 8)))
-        (seq (ptr-write-u64 box 0 3)
-             (ptr-write-u64 box 8 bits)
-             (+ box 6))))
+      ;; Doc 223 float blocks: a cell of the typed float blocks, else (a
+      ;; parallel section, typed cells disabled, memory exhausted) a general
+      ;; heap object.
+      (let ((box (nl_float_alloc)))
+        (if (= box 0)
+            (let ((g (alloc-bytes 16 8)))
+              (seq (ptr-write-u64 g 0 3)
+                   (ptr-write-u64 g 8 bits)
+                   (+ g 6)))
+          (seq (ptr-write-u64 box 0 3)
+               (ptr-write-u64 box 8 bits)
+               (+ box 6)))))
     ;; Doc 216 S5: the double of a float is read through this accessor only:
     ;; from a legacy 32-byte view (tag at +0, bits at +8) or from a float
     ;; object (kind word at +0, bits at +8) alike, the box address being
