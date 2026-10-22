@@ -954,6 +954,18 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     ;; A pending nonlocal exit's tag and value WORDs (GNU's handler val), see
     ;; `nl_exit_signal_w' in lisp/nelisp-cc-rootstack.el.
+    ;; Doc 226 D9 stage 3: the mirror record root, one WORD inside
+    ;; `nl_typed_alloc' (+480, free until now; +464 and +472 are the dump's
+    ;; symbol region).  See `nl_symcells_mirror'.
+    (list (nelisp-link-symbol "nl_symcells_root"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 480)
+                              :section 'bss :bind 'global :type 'object))
+    ;; Doc 223 "Bytecode VM safepoints": the test hook that makes every
+    ;; `nl_gc_vm_poll' collect (one WORD inside `nl_typed_alloc', +488; +496
+    ;; and +504 stay free).
+    (list (nelisp-link-symbol "nl_vm_poll_force"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 488)
+                              :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_exit_values"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512)
                               :section 'bss :bind 'global :type 'object))
@@ -2891,6 +2903,38 @@ collector bit (bits 16-23 belong to the symbols lane, Doc 226 D9).")
                        (seq (ptr-write-u64 st 16 (+ i 1)) (+ b (* i ,cell))))))))))))
       ;; GNU's dead_object marker for free cells.
       (defun nl_cons_dead_word () ,dead)
+    (defun nl_symcells_mirror ()
+        ;; Doc 226 D9 stage 3: the mirror record WORD (the globals record that
+        ;; the evaluator context views), or 0 before a mirror exists.
+        ;; `nl_alloc_symbol' has no env, so it finds the mirror here and walks
+        ;; it: ht (slot 0), buckets (ht slot 1), entry count (ht slot 2),
+        ;; cells vector (ht slot 3).  The collector marks the record beside the
+        ;; root stack (`nl_gc_mark_rootstack'), the image dump walks it
+        ;; (`nl_fa_symcells') and compaction rewrites it
+        ;; (`nl_compact_rw_symcells').  The slot is not an independent image
+        ;; root: it IS the globals record, whose pointer an image already
+        ;; stores and relocates (header goff, applied by
+        ;; `nl_cold_overwrite_globals'), and `nl_symcells_attach' re-derives it
+        ;; after the boot and after a cold load.
+        (heap-read-u64 (data-addr nl_symcells_root) 0))
+    (defun nl_symcells_set (w)
+        (ptr-write-u64 (data-addr nl_symcells_root) 0 w))
+    (defun nl_symcells_get ()
+        ;; The mirror table's cells vector WORD (record slot 3 of the table in
+        ;; the mirror's slot 0), or 0 when there is no mirror or the table has
+        ;; none.  Computed, never cached: the table replaces the vector when it
+        ;; grows (`nl_symcell_reserve').
+        (let ((m (nl_symcells_mirror)))
+          (if (= m 0) 0
+            (let ((ht (nl_record_slot_word m 0)))
+              (if (< (nl_record_length ht) 4) 0
+                (nl_record_slot_word ht 3))))))
+    (defun nl_symcells_attach (globals)
+        ;; Point the root at GLOBALS's record (the globals view: tag at +0, the
+        ;; record box at +8): after the bootstrap, and again after a cold load
+        ;; replaced the globals record.
+        (let ((box (heap-read-u64 globals 8)))
+          (nl_symcells_set (if (= box 0) 0 (+ box 6)))))
       ;; ---- Doc 226 D9 symbol blocks (alloc.c:3616-3700) ----
       ;; A symbol block holds 682 cells of GNU's 48-byte struct Lisp_Symbol
       ;; from offset 0, then the `next' block link at NEXT and the block type
@@ -6274,7 +6318,9 @@ REPL-facing module it feeds."
     (defun nl_gc_typed_vectorlike (box kind n)
       (let* ((state (data-addr nl_gc_typed_state))
              (before (heap-read-u64 state 64)))
-        (if (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)
+        (if (if (= kind 3) 0
+              (if (= kind 13) 0
+                (if (= (heap-read-u64 state 0) 1) (= (nl_gc_is_boot box) 0) 0)))
             (seq (nl_gc_typed_add 5 box 0 64 1)
                  (if (> (heap-read-u64 state 64) before)
                      (ptr-write-u64 state 72
@@ -6594,7 +6640,7 @@ REPL-facing module it feeds."
                       ;; limb byte buffer, no Sexp children), so it is
                       ;; marked the SAME way: mark the limb buffer block,
                       ;; no recursion (there is nothing to recurse into).
-                      (if (= tag 13) (nl_gc_mark_buf (heap-read-u64 sp 16))
+                      (if (= tag 13) (nl_gc_mark_block (- (heap-read-u64 sp 16) 8))
                       (if (= tag 9) (nl_gc_mark_char_table_box (heap-read-u64 sp 8))
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                           0)))))))))))))
@@ -8418,6 +8464,13 @@ REPL-facing module it feeds."
                       (nl_compact_rw_word (nl_compact_rw_word_edge (+ entry 80))))) 0)
                (setq i (+ i 1))))
            (nl_gc_symname_sweep_all)))))
+    (defun nl_compact_rw_symcells ()
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD edge like a
+      ;; vector slot (`nl_compact_rw_vec_slots'): forward it, then its
+      ;; target.  This collector never runs while a cons or symbol cell exists
+      ;; (see `nl_gc_collect'), so the rewrite is for a heap that has neither.
+      (if (= (nl_symcells_mirror) 0) 0
+        (nl_compact_rw_word (nl_compact_rw_word_edge (data-addr nl_symcells_root)))))
     (defun nl_compact_rw_roots (ctx result out pool src cursor bsym)
       (seq (nl_frame_stack_rewrite 0 0)
       (seq (nl_n4_rewrite_env ctx)
@@ -8430,6 +8483,7 @@ REPL-facing module it feeds."
            (nl_compact_rw_slot src)
            (nl_compact_rw_slot cursor)
            (nl_compact_rw_slot bsym)
+           (nl_compact_rw_symcells)
            (nl_compact_rw_slot (data-addr nl_symbol_name_nil))
            (nl_compact_rw_slot (data-addr nl_symbol_name_t))
            (nl_compact_rw_symname_entries)
@@ -8838,6 +8892,46 @@ REPL-facing module it feeds."
                (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                               (+ (heap-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
         0))
+
+    ;; Doc 223 "Bytecode VM safepoints".  GNU's maybe_gc for the bytecode
+    ;; interpreter: bytecode.c:797 polls at every Bcall and bytecode.c:861-866
+    ;; on every 256th backward branch.  `nl_gc_vm_poll' runs a mid-form
+    ;; collection when the allocator's growth or debt trigger is due (the gate
+    ;; of the `while' back edge, `nl_gc_midform_collect') and returns 0.  Cost
+    ;; with nothing due: two loads, then the gate (the armed flag, the
+    ;; reservation against the trigger, the debt test).  A call site must be a
+    ;; VM instruction boundary where
+    ;;   1. every heap value the VM uses after the poll is reachable from the GC
+    ;;      root stack (the VM frame's roots), a recorded evaluator frame, a
+    ;;      heap object reachable from those, or a native stack slot (the
+    ;;      conservative scan pins pointers, interior ones included, found in
+    ;;      [sp, stack top));
+    ;;   2. no such value lives only in a callee-saved register (the scan does
+    ;;      not read registers; DSL locals live across a call are in stack
+    ;;      slots, register promotion being limited to call-free loops);
+    ;;   3. caches of heap addresses (mirror entries, frame cursors) are
+    ;;      dropped afterwards, as after any call that can run Lisp: the
+    ;;      collector never moves objects, but a swept block is reused.
+    ;; The gate also refuses while the collector runs and parks parallel
+    ;; workers around a collection, so a worker thread needs no extra check.
+    ;; Backstop: the typed blocks (cons, symbol, vector) are mapped outside the
+    ;; arena chunks, so before the debt trigger arms (two collections after
+    ;; boot) a loop that allocates only typed cells never crosses the growth
+    ;; watermark and nothing would collect it.  Until then one chunk (64 MiB)
+    ;; of debt opens the gate, as a mapped chunk would; once armed the debt
+    ;; trigger counts typed bytes itself.  Debug switch 70 sets
+    ;; `nl_vm_poll_force': every poll then collects (the trigger is zeroed
+    ;; before the gate), 71 clears it, 72 answers the number of mid-form
+    ;; collections so far.
+    (defun nl_gc_vm_poll ()
+      (seq (if (= (heap-read-u64 (data-addr nl_vm_poll_force) 0) 1)
+               (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0)
+             (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
+                 (if (< (heap-read-u64 (data-addr nl_gc_stats) 0) 67108864) 0
+                   (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40 0))
+               0))
+           (nl_gc_midform_collect)
+           0))
     ;; Re-arm the mid-form growth trigger after a collection: fire again once
     ;; the reservation has grown by max(16 MiB, half of it).  ctx+56 keeps
     ;; the reservation it was armed from, so `nelisp--gc-pressure' can report
@@ -9461,7 +9555,7 @@ argument (reachability + in-arena bounds checks).")
                     (let* ((normalized (alloc-bytes 32 8))
                            (rc (wf_numeric_marker_copy args env normalized))
                            ;; The views are scratch boxes: nothing here can collect.
-                           (w (if (= rc 0) (let ((args normalized)) (if (= (sexp-tag (wf_arg_ptr args 0)) 13)
+                           (w (if (= rc 0) (let ((args normalized)) (if (if (= (sexp-tag (wf_arg_ptr args 0)) 13) (= (wf_has_float_nums args) 0) 0)
                      (let* ((rest (nl_cons_cdr_ptr args)))
                        (if (if (= (sexp-tag rest) 7)
                                (= (sexp-tag (nl_cons_cdr_ptr rest)) 0)
@@ -9473,7 +9567,7 @@ argument (reachability + in-arena bounds checks).")
                                    (nl_bignum_quot_small_w (wf_arg_ptr args 0) (heap-read-u64 dptr 8) 0))
                                (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
                          (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
-                   (let* ((f (wf_any_float args))
+                   (let* ((f (if (= (wf_has_float_nums args) 1) 1 (wf_any_float args)))
                           (rest (nl_cons_cdr_ptr args)))
                     (if (= f 2)
                         (nl_abi_fail (bf_wrong_type_number_or_marker (wf_first_non_number args)) 0)
@@ -9489,7 +9583,7 @@ argument (reachability + in-arena bounds checks).")
                               (nl_abi_fail (bf_arith_error) 0)
                             (wf_write_int_w 0 (/ 1 (wf_argval args 0)))))))))) 0)))
                       w)
-                  (if (= (sexp-tag (wf_arg_ptr args 0)) 13)
+                  (if (if (= (sexp-tag (wf_arg_ptr args 0)) 13) (= (wf_has_float_nums args) 0) 0)
                      (let* ((rest (nl_cons_cdr_ptr args)))
                        (if (if (= (sexp-tag rest) 7)
                                (= (sexp-tag (nl_cons_cdr_ptr rest)) 0)
@@ -9501,7 +9595,7 @@ argument (reachability + in-arena bounds checks).")
                                    (nl_bignum_quot_small_w (wf_arg_ptr args 0) (heap-read-u64 dptr 8) 0))
                                (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
                          (nl_abi_fail (bf_signal_bignum_division_unsupported) 0)))
-                   (let* ((f (wf_any_float args))
+                   (let* ((f (if (= (wf_has_float_nums args) 1) 1 (wf_any_float args)))
                           (rest (nl_cons_cdr_ptr args)))
                     (if (= f 2)
                         (nl_abi_fail (bf_wrong_type_number_or_marker (wf_first_non_number args)) 0)
@@ -9617,16 +9711,22 @@ argument (reachability + in-arena bounds checks).")
                       (nl_abi_fail (bf_wrong_type_number_or_marker bad) 0)))))
     ((:u8 "floor")    :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_ffloor p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 0)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "truncate") :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_ftrunc p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 1)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "ceiling")  :word . (let* ((p (wf_arg_ptr args 0)))
                           (if (= (heap-read-u64 p 0) 3)
-                              (wf_write_int_w 0 (wf_fceil p))
-                            (wf_write_int_w 0 (heap-read-u64 p 8)))))
+                              (wf_float_round_w p 2)
+                            (if (= (heap-read-u64 p 0) 13)
+                                (wf_arg_word args 0)
+                              (wf_write_int_w 0 (heap-read-u64 p 8))))))
     ((:u8 "=") :word . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare_w args env 0 0)
                   (let* ((r (wf_chain_eq args)))
@@ -10649,7 +10749,7 @@ leave symbols unresolved at link time."
     (defun wf_raw_eq (a b)
       (if (= (nl_word_tag64 a) (nl_word_tag64 b))
           (if (= (nl_word_tag64 a) 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0)
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0)
             ;; Doc 201 §6.17: Str(5)/UnibyteStr(14) are inline {cap@8,
             ;; ptr@16, len@24}; offset 8 is the capacity, so the generic
             ;; word compare made every equal-capacity pair `eq'.  The char
@@ -10663,7 +10763,9 @@ leave symbols unresolved at link time."
                         1
                       (if (= (nl_word_data a) (nl_word_data b)) 1 0))
                   0)
-              (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
+              (if (= (nl_word_tag64 a) 3)
+                  (if (= (nl_float_bits a) (nl_float_bits b)) 1 0)
+                (if (= (nl_word_payload a) (nl_word_payload b)) 1 0))))
         0))
     ;; --- Doc 190 Phase A: Bignum (tag 13) numeric comparison -----------
     ;; Bignum-vs-Bignum and Bignum-vs-Int ONLY (the task's own scope);
@@ -10727,22 +10829,22 @@ leave symbols unresolved at link time."
     ;; Compare BIGNUM_PTR (tag 13) against INT_PTR (tag 2).  Returns
     ;; -1/0/1 for bignum < / = / > int.
     (defun nl_bignum_cmp_int (bignum_ptr int_ptr)
-      (let* ((bsign (heap-read-u64 bignum_ptr 8))
+      (let* ((bsign (nl_big_sign bignum_ptr))
              (ival (heap-read-u64 int_ptr 8))
              (isign (if (< ival 0) 1 0)))
         (if (if (= bsign 0) (= isign 1) 0) 1
           (if (if (= bsign 1) (= isign 0) 0) -1
             (let* ((imag (if (= isign 1) (- 0 ival) ival))
-                   (mc (nl_bignum_mag_cmp_i64 (heap-read-u64 bignum_ptr 16)
-                                               (heap-read-u64 bignum_ptr 24) imag)))
+                   (mc (nl_bignum_mag_cmp_i64 (nl_big_limbs bignum_ptr)
+                                               (nl_big_count bignum_ptr) imag)))
               (if (= bsign 1) (- 0 mc) mc))))))
     ;; Compare two Bignums.  Returns -1/0/1.
     (defun nl_bignum_cmp_bignum (a b)
-      (let* ((asign (heap-read-u64 a 8)) (bsign (heap-read-u64 b 8)))
+      (let* ((asign (nl_big_sign a)) (bsign (nl_big_sign b)))
         (if (if (= asign 0) (= bsign 1) 0) 1
           (if (if (= asign 1) (= bsign 0) 0) -1
-            (let* ((mc (nl_bignum_mag_cmp (heap-read-u64 a 16) (heap-read-u64 a 24)
-                                           (heap-read-u64 b 16) (heap-read-u64 b 24))))
+            (let* ((mc (nl_bignum_mag_cmp (nl_big_limbs a) (nl_big_count a)
+                                           (nl_big_limbs b) (nl_big_count b))))
               (if (= asign 1) (- 0 mc) mc))))))
     ;; Master comparator: A and B are already known (by `wf_num_pairp'
     ;; below) to both be tag 2 (Int) or tag 13 (Bignum) -- never Float
@@ -11264,7 +11366,112 @@ leave symbols unresolved at link time."
                0)
               0)
              0))))))
+    (defun nl_symcells_selftest_record (n)
+      ;; A record box of N slots, all nil, with a nil type word.
+      (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 12 (* n 256)))
+             (ptr-write-u64 box 8 3)
+             (while (< i n)
+               (seq (ptr-write-u64 box (+ 16 (* i 8)) 3)
+                    (setq i (+ i 1))))
+             box)))
+    (defun nl_symcells_selftest_make (n hide)
+      ;; A mirror-shaped table that only the root keeps: the mirror record (3
+      ;; slots) holding the table record (4 slots: bucket count, buckets,
+      ;; entry count, cells) whose buckets and cells are vectors of N fixnums
+      ;; (bucket I holds I, cell I holds I+7).  HIDE 1 sets the root word's
+      ;; low bit, so the collector reads an immediate: the negative control.
+      (let* ((b (nl_alloc_vector n)) (c (nl_alloc_vector n))
+             (h (nl_symcells_selftest_record 4))
+             (r (nl_symcells_selftest_record 3)) (i 0))
+        (if (= b 0) 3
+          (if (= c 0) 3
+            (seq
+             (while (< i n)
+               (seq (ptr-write-u64 b (+ 8 (* i 8)) (+ (* i 4) 1))
+                    (ptr-write-u64 c (+ 8 (* i 8)) (+ (* (+ i 7) 4) 1))
+                    (setq i (+ i 1))))
+             (ptr-write-u64 h 16 (+ (* n 4) 1))
+             (ptr-write-u64 h 24 (+ b 6))
+             (ptr-write-u64 h 32 5)
+             (ptr-write-u64 h 40 (+ c 6))
+             (ptr-write-u64 r 16 (+ h 6))
+             (nl_symcells_set (if (= hide 1) (+ r 7) (+ r 6)))
+             (+ (* n 4) 1))))))
+    (defun nl_symcells_selftest_vec (w base)
+      ;; How many elements of the vector WORD W hold their index plus BASE; -1
+      ;; when W is no vector word, -2 when its header is not a vector's, -3
+      ;; when its block was freed.
+      (if (/= (logand w 7) 6) -1
+        (let* ((box (- w 6)) (h (heap-read-u64 box 0)))
+          (if (/= (logand h 63) 8) -2
+            (if (= (nl_hdr_mark (- box 8)) 2) -3
+              (let* ((n (sar h 8)) (i 0) (good 0))
+                (seq
+                 (while (< i n)
+                   (seq (if (= (heap-read-u64 box (+ 8 (* i 8))) (+ (* (+ i base) 4) 1))
+                            (setq good (+ good 1)) 0)
+                        (setq i (+ i 1))))
+                 good)))))))
+    (defun nl_symcells_selftest_check (_pad)
+      ;; The table the root keeps: the count of buckets and cells still
+      ;; holding their values (2 N for a table of N and N), or a negative code
+      ;; when a record or vector is gone (-1 no record word, -2 record header,
+      ;; -3 record block freed, -4 table not a record word, -5 table header,
+      ;; -6 table block freed, -7 a vector gone).
+      (let* ((w (nl_symcells_mirror))
+             (r (if (= (logand w 7) 7) (- w 1) w)))
+        (if (/= (logand r 7) 6) -1
+          (let* ((rb (- r 6)))
+            (if (/= (heap-read-u64 rb 0) (+ 12 (* 3 256))) -2
+              (if (= (nl_hdr_mark (- rb 8)) 2) -3
+                (let* ((hw (heap-read-u64 rb 16)))
+                  (if (/= (logand hw 7) 6) -4
+                    (let* ((hb (- hw 6)))
+                      (if (/= (heap-read-u64 hb 0) (+ 12 (* 4 256))) -5
+                        (if (= (nl_hdr_mark (- hb 8)) 2) -6
+                          (let* ((g1 (nl_symcells_selftest_vec (heap-read-u64 hb 24) 0))
+                                 (g2 (nl_symcells_selftest_vec (heap-read-u64 hb 40) 7)))
+                            (if (< g1 0) -7 (if (< g2 0) -7 (+ g1 g2)))))))))))))))
+    (defun nl_symcells_selftest_ctx (_pad)
+      ;; The evaluator context of the form being evaluated, or 0 outside one.
+      (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 0) 0) 0
+        (heap-read-u64 (+ (data-addr nl_gc_loop_ctx) 64) 0)))
+    (defun nl_symcells_selftest_w (args)
+      ;; (nelisp--debug-switch 60): `nl_symcells_get', nil when 0;
+      ;; (61 N), (62 N): `nl_symcells_selftest_make', the root visible to the
+      ;; collector, hidden from it; (63): `..._check'; (64): 1 when the root
+      ;; is the record of the evaluator context's globals, else 0, and -1
+      ;; outside a form; (65): re-derive the root from the evaluator context;
+      ;; (66): clear it.  Callers restore the root with 65.
+      (let ((op (wf_argval args 0)) (ctx (nl_symcells_selftest_ctx 0)))
+        (if (= op 60) (if (= (nl_symcells_get) 0) 3 (nl_symcells_get))
+          (if (= op 61) (nl_symcells_selftest_make (wf_argval args 1) 0)
+            (if (= op 62) (nl_symcells_selftest_make (wf_argval args 1) 1)
+              (if (= op 63) (+ (* (nl_symcells_selftest_check 0) 4) 1)
+                (if (= op 64)
+                    (+ (* (if (= ctx 0) -1
+                            (if (= (nl_symcells_mirror) (+ (heap-read-u64 ctx 8) 6)) 1 0)) 4) 1)
+                  (if (= op 65)
+                      (seq (if (= ctx 0) 0 (nl_symcells_attach ctx)) 5)
+                    (seq (nl_symcells_set 0) 5)))))))))
+        ;; (nelisp--debug-switch 70): every bytecode VM safepoint collects;
+    ;; 71: back to the allocator's triggers; 72: the number of mid-form
+    ;; collections so far (the same counter on every path, so a forced run is
+    ;; checked by its difference).  Doc 223 "Bytecode VM safepoints".
+    (defun nl_vm_poll_switch_w (args)
+      (seq
+       (if (= (wf_argval args 0) 70)
+           (ptr-write-u64 (data-addr nl_vm_poll_force) 0 1)
+         (if (= (wf_argval args 0) 71)
+             (ptr-write-u64 (data-addr nl_vm_poll_force) 0 0)
+           0))
+       (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))
     (defun bf_debug_switch_w (args _pad)
+      (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 72) 0)
+          (nl_vm_poll_switch_w args)
+      (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
+          (nl_symcells_selftest_w args)
       (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 43) 0)
           (nl_symbol_selftest_w args)
       (seq
@@ -11372,7 +11579,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
@@ -11869,12 +12076,16 @@ leave symbols unresolved at link time."
     ;; core for Phase B -- see this block's own header comment above.)
     ;; Doc 215 builtin word ABI: nl_bignum_write_w returns the result WORD (0 = signal stashed); nl_bignum_write keeps the (rc, OUT) ABI.
     (defun nl_bignum_write_w (sign limb_ptr limb_count _pad)
-      (let* ((s (alloc-bytes 32 8)))
-        (seq (ptr-write-u8  s 0  13)
-             (ptr-write-u64 s 8  sign)
-             (ptr-write-u64 s 16 limb_ptr)
-             (ptr-write-u64 s 24 limb_count)
-             s)))
+      ;; Doc 216 S5: the Bignum object [header | limbs], answered as its WORD.
+      (let* ((box (alloc-bytes (+ 8 (logand (+ (* limb_count 4) 7) -8)) 8)) (i 0))
+        (seq (ptr-write-u64 box 0 (+ 13 (+ (* sign 64) (* limb_count 256))))
+             (while (< i limb_count)
+               (seq (ptr-write-u32 box (+ 8 (* i 4)) (heap-read-u32 limb_ptr (* i 4)))
+                    (setq i (+ i 1))))
+             (if (= (logand limb_count 1) 1)
+                 (ptr-write-u32 box (+ 8 (* limb_count 4)) 0)
+               0)
+             (+ box 6))))
     ;; Old callers may use the returned slot pointer, so the adapter keeps it.
     (defun nl_bignum_write (sign limb_ptr limb_count result_slot)
       (seq (nl_abi_word_to_rc (nl_bignum_write_w sign limb_ptr limb_count 0) result_slot)
@@ -12437,6 +12648,13 @@ leave symbols unresolved at link time."
       (if (= (wf_first_non_number list_ptr) 0)
           (wf_has_float list_ptr)
         2))
+    (defun wf_has_float_nums (list_ptr)
+      ;; 1 when every element of LIST_PTR is a number or a Bignum and at least
+      ;; one is a float: the arguments of a float operation, a Bignum among them
+      ;; converting to the nearest double.
+      (if (= (wf_first_non_number_or_bignum list_ptr) 0)
+          (wf_has_float list_ptr)
+        0))
     ;; Doc 190 Phase A/B: bignum-aware sibling of `wf_any_float', used ONLY
     ;; by `+'/`-'/`*''s dispatch entries (see `wf_first_non_number_or_
     ;; bignum').  `wf_has_float' itself needs no change: it only answers 1
@@ -12450,8 +12668,10 @@ leave symbols unresolved at link time."
     (defun wf_elem_fbits (car_ptr scratch)
       (if (= (sexp-tag car_ptr) 3)
           (heap-read-u64 car_ptr 8)
-        (seq (sexp-write-float scratch (i64-to-f64 (heap-read-u64 car_ptr 8)))
-             (heap-read-u64 scratch 8))))
+        (if (= (sexp-tag car_ptr) 13)
+            (nl_bignum_f64_bits car_ptr)
+          (seq (sexp-write-float scratch (i64-to-f64 (heap-read-u64 car_ptr 8)))
+               (heap-read-u64 scratch 8)))))
     (defun wf_int_fbits (n scratch)
       (seq (sexp-write-float scratch (i64-to-f64 n)) (heap-read-u64 scratch 8)))
     (defun wf_fsum (list_ptr acc_bits scratch)
@@ -12497,17 +12717,98 @@ leave symbols unresolved at link time."
     ;; arch safe (no syscall).  Note: `round' (banker's rounding) and `float-time'
     ;; (needs a per-arch clock_gettime OS helper) are deferred.
     (defun wf_ftrunc (p)
-      (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p))))
+      (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p))))
     (defun wf_ffloor (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-lt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-lt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (- t0 1)
           t0)))
     (defun wf_fceil (p)
-      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (sexp-float-unwrap p)))))
-        (if (= (f64-gt (bits-to-f64 (sexp-float-unwrap p)) (i64-to-f64 t0)) 1)
+      (let* ((t0 (f64-to-i64-trunc (bits-to-f64 (nl_float_bits p)))))
+        (if (= (f64-gt (bits-to-f64 (nl_float_bits p)) (i64-to-f64 t0)) 1)
             (+ t0 1)
           t0)))
+    (defun nl_bignum_bitlen32 (v)
+      ;; Significant bits of the 32-bit limb V (0 for 0).
+      (let* ((w 0) (x v))
+        (seq (while (> x 0) (seq (setq w (+ w 1)) (setq x (shr x 1)))) w)))
+    (defun nl_bignum_window64 (limbs n shift)
+      ;; The 64 bits of the N-limb magnitude LIMBS starting at bit SHIFT (zero
+      ;; beyond its top).
+      (let* ((q (/ shift 32)) (r (mod shift 32))
+             (w0 (if (< q n) (heap-read-u32 limbs (* q 4)) 0))
+             (w1 (if (< (+ q 1) n) (heap-read-u32 limbs (* (+ q 1) 4)) 0))
+             (w2 (if (< (+ q 2) n) (heap-read-u32 limbs (* (+ q 2) 4)) 0)))
+        (if (= r 0) (logior w0 (shl w1 32))
+          (logior (logior (shr w0 r) (shl w1 (- 32 r))) (shl w2 (- 64 r))))))
+    (defun nl_bignum_low_nonzero (limbs shift)
+      ;; 1 when some bit strictly below bit SHIFT of the magnitude LIMBS is set.
+      (let* ((q (/ shift 32)) (r (mod shift 32)) (i 0) (nz 0))
+        (seq (while (if (< i q) (= nz 0) 0)
+               (seq (if (/= (heap-read-u32 limbs (* i 4)) 0) (setq nz 1) 0)
+                    (setq i (+ i 1))))
+             (if (= nz 0)
+                 (if (> r 0)
+                     (if (/= (logand (heap-read-u32 limbs (* q 4)) (- (shl 1 r) 1)) 0) 1 0)
+                   0)
+               1))))
+    (defun nl_bignum_f64_bits (vptr)
+      ;; The bits of the double nearest the Bignum view VPTR, ties to even, as
+      ;; GNU's bignum_to_double rounds; beyond the largest double it is an
+      ;; infinity.  A 64-bit window of the top of the magnitude gives the 53-bit
+      ;; significand, the round bit and (with the bits below the window) the
+      ;; sticky bit.
+      (let* ((sign (heap-read-u64 vptr 8))
+             (limbs (heap-read-u64 vptr 16))
+             (n (nl_bignum_canon_count limbs (heap-read-u64 vptr 24)))
+             (bl (+ (* (- n 1) 32)
+                    (nl_bignum_bitlen32 (heap-read-u32 limbs (* (- n 1) 4))))))
+        (if (<= bl 0) 0
+          (let* ((shift (if (> bl 64) (- bl 64) 0))
+                 (w (if (> bl 64) (nl_bignum_window64 limbs n shift)
+                      (shl (nl_bignum_window64 limbs n 0) (- 64 bl))))
+                 (sticky (if (> bl 64) (nl_bignum_low_nonzero limbs shift) 0))
+                 (m (shr w 11))
+                 (low (if (/= (logand w 1023) 0) 1 0))
+                 (up (if (= (logand (shr w 10) 1) 1)
+                         (if (or (= low 1) (= sticky 1) (= (logand m 1) 1)) 1 0)
+                       0))
+                 (m2 (+ m up))
+                 (carry (if (= m2 9007199254740992) 1 0))
+                 (ef (+ (+ bl carry) 1022)))
+            (logior (shl sign 63)
+                    (if (>= ef 2047) 9218868437227405312
+                      (logior (shl ef 52)
+                              (logand (if (= carry 1) 4503599627370496 m2)
+                                      4503599627370495))))))))
+    (defun nl_f64_to_int_w (bits)
+      ;; The exact Int or Bignum WORD of a finite double of magnitude at least
+      ;; 2^52 (exponent field 1075 and up), which is an integer: its 53-bit
+      ;; significand shifted left by the exponent field minus 1075, in 32-bit
+      ;; limbs.  `nl_bignum_finish_w' demotes to an Int inside the fixnum range.
+      (let* ((m (logior (logand bits 4503599627370495) 4503599627370496))
+             (e2 (- (logand (shr bits 52) 2047) 1075))
+             (q (/ e2 32)) (r (mod e2 32))
+             (n (+ q 3))
+             (buf (alloc-bytes (* n 4) 8))
+             (i 0))
+        (seq
+         (while (< i n) (seq (ptr-write-u32 buf (* i 4) 0) (setq i (+ i 1))))
+         (let* ((t0 (shl (logand m 4294967295) r))
+                (t1 (+ (shl (shr m 32) r) (shr t0 32))))
+           (seq (ptr-write-u32 buf (* q 4) (logand t0 4294967295))
+                (ptr-write-u32 buf (* (+ q 1) 4) (logand t1 4294967295))
+                (ptr-write-u32 buf (* (+ q 2) 4) (shr t1 32))))
+         (nl_bignum_finish_w (shr bits 63) buf (nl_bignum_canon_count buf n) 0))))
+    (defun wf_float_round_w (p mode)
+      ;; floor (MODE 0), truncate (1) or ceiling (2) of the float view P as an
+      ;; Int or Bignum WORD; an infinity or a NaN signals `overflow-error' (GNU's
+      ;; double_to_integer).  From 2^52 up a double is already an integer.
+      (let* ((bits (nl_float_bits p)) (ef (logand (shr bits 52) 2047)))
+        (if (= ef 2047) (nl_abi_fail (bf_signal_overflow_error) 0)
+          (if (>= ef 1075) (nl_f64_to_int_w bits)
+            (wf_write_int_w 0 (if (= mode 0) (wf_ffloor p)
+                                (if (= mode 1) (wf_ftrunc p) (wf_fceil p))))))))
     ;; float-time wrapper: the nl_os_float_time extern must be called from a
     ;; helper defun (its own frame), not inline in a dispatch arm -- an inline
     ;; extern call from the spliced dispatch if-chain aborts at runtime (same as
@@ -12701,7 +13002,16 @@ leave symbols unresolved at link time."
     ;; compatibility view.  Consumers must use semantic tag/payload accessors.
     ;; Use it on exit/error paths, never inside a walk.
     (defun wf_word_view (w)
-      (if (= (logand w 1) 0) w (extern-call nl_val_load w (alloc-bytes 32 8))))
+      ;; Doc 216 S5: a Bignum object is materialised as the legacy 32-byte view
+      ;; the limb readers (nl_bignum_prep_operand, nl_bignum_quot_small_w, ...)
+      ;; take; every other pointer WORD travels unchanged.
+      (if (= (logand w 1) 0)
+          (if (= (logand w 7) 6)
+              (if (= (logand (heap-read-u8 (- w 6) 0) 63) 13)
+                  (extern-call nl_val_load w (alloc-bytes 32 8))
+                w)
+            w)
+        (extern-call nl_val_load w (alloc-bytes 32 8))))
     ;; wf_word_store_out: write W into the caller's 32-byte result slot OUT
     ;; with no scratch box: copy a pointed-to box, or store an immediate
     ;; in place.
@@ -13550,11 +13860,26 @@ leave symbols unresolved at link time."
             (nl_seq2 (nl_fa_slot p ds span dest cin cout dir)
                      (nl_fa_rootstack_walk (+ p 32) end ds span dest cin cout dir)))
         0))
+    (defun nl_fa_symcells (ds span dest cin cout dir)
+      ;; Doc 226 D9 stage 3: the mirror record root is a WORD root in BSS: walk
+      ;; its target as `nl_fa_rootstack_walk' walks a frame slot, so the dump's
+      ;; marking and its relocation walk agree (a BSS field has no relocation
+      ;; of its own).  The image does not store the root; see
+      ;; `nl_symcells_mirror'.
+      (let ((vw (nl_symcells_mirror)))
+        (if (= vw 0) 0
+          (if (= (logand vw 1) 1) 0
+            (if (= (logand vw 7) 2)
+                (nl_fa_cons vw ds span dest cin cout dir)
+              (if (= (if (= (logand vw 7) 6) (nl_gc_mark_vbox (- vw 6)) (nl_gc_mark_block vw)) 0) 0
+                (nl_fa_slot vw ds span dest cin cout dir)))))))
     (defun nl_fa_rootstack (ds span dest cin cout dir)
-      (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
-        (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
-                              (heap-read-u64 (data-addr nl_rootstack_top) 0)
-                              ds span dest cin cout dir)))
+      (nl_seq2
+       (if (= (heap-read-u64 (data-addr nl_rootstack_top) 0) 0) 0
+         (nl_fa_rootstack_walk (data-addr nl_rootstack_region)
+                               (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                               ds span dest cin cout dir))
+       (nl_fa_symcells ds span dest cin cout dir)))
     (defun nl_fa_symentry (ds span dest cin cout dir)
       (if (= (heap-read-u64 268436328 0) 0) 0
         (if (= (nl_gc_mark_block (heap-read-u64 268436328 0)) 0) 0
@@ -14903,7 +15228,7 @@ eval applyfn.")
             (bf_elt_list_walk_w (wf_arg_ptr args 1) (nl_word_payload np) 0)
           (if (= tag 13)
               (bf_elt_list_walk_w (wf_arg_ptr args 1)
-                                  (if (= (nl_word_payload np) 0)
+                                  (if (= (nl_big_sign np) 0)
                                       4611686018427387903
                                     -1)
                                   0)
@@ -14913,7 +15238,7 @@ eval applyfn.")
         (if (= tag 2)
             (bf_nthcdr_walk_w (nl_word_payload np) (wf_arg_word args 1) 0)
           (if (= tag 13)
-              (if (= (nl_word_payload np) 0)
+              (if (= (nl_big_sign np) 0)
                   (bf_nthcdr_walk_w 4611686018427387903 (wf_arg_word args 1) 0)
                 (wf_arg_word args 1))
             (nl_abi_fail (bf_wrong_type_integerp np) 0)))))
@@ -15451,6 +15776,28 @@ above this defconst for the shadow-vs-delegate rationale.")
            (if (= k 0)
                (mut-str-push-byte ms 48)
              (m5_push_bignum_digits_emit ms digit_buf k))))))
+    (defun nl_bignum_bits_at (limbs n p g)
+      ;; The G bits (G <= 8) of the N-limb magnitude LIMBS starting at bit P.
+      (let* ((li (/ p 32)) (off (mod p 32))
+             (lo (if (< li n) (heap-read-u32 limbs (* li 4)) 0))
+             (hi (if (< (+ li 1) n) (heap-read-u32 limbs (* (+ li 1) 4)) 0)))
+        (logand (shr (logior lo (shl hi 32)) off) (- (shl 1 g) 1))))
+    (defun m5_push_bignum_radix (ms vptr bits upper)
+      ;; "%x" (BITS 4), "%X" (4, UPPER 1) and "%o" (BITS 3) of the Bignum view
+      ;; VPTR: the magnitude in the radix, a leading '-' for a negative number.
+      (let* ((limbs (heap-read-u64 vptr 16))
+             (n (nl_bignum_canon_count limbs (heap-read-u64 vptr 24)))
+             (bl (+ (* (- n 1) 32)
+                    (nl_bignum_bitlen32 (heap-read-u32 limbs (* (- n 1) 4)))))
+             (j (/ (+ bl (- bits 1)) bits)))
+        (seq
+         (if (= (heap-read-u64 vptr 8) 1) (mut-str-push-byte ms 45) 0)
+         (if (= bl 0) (mut-str-push-byte ms 48)
+           (while (> j 0)
+             (seq (setq j (- j 1))
+                  (let* ((d (nl_bignum_bits_at limbs n (* j bits) bits)))
+                    (mut-str-push-byte ms (if (< d 10) (+ 48 d)
+                                            (+ d (if (= upper 1) 55 87)))))))))))
     )
   "Doc 190 Phase A: Bignum (Sexp tag 13) construction from a decimal
 reader token (`nl_read_int_or_bignum', dispatched as the reader-only
@@ -20252,7 +20599,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (m5_wdig buf w (- D 1))
              (if (= (if (< DE -4) 1 (if (>= DE 15) (if (>= q 1) 1 0) 0)) 1) (m5_emit_sci2 ms buf D DE) (m5_emit_fixed ms buf D DE)))))
     (defun m5_push_float (ms vptr)
-      (let* ((bits (sexp-float-unwrap vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
+      (let* ((bits (nl_float_bits vptr)) (ef (logand (sar bits 52) 2047)) (mag (logand bits 9223372036854775807)))
         (seq
          (if (= (logand (sar bits 63) 1) 1) (mut-str-push-byte ms 45) 0)
          (if (= ef 2047)
@@ -22733,6 +23080,20 @@ baked build's own `<'/`>'/`=' arms need it too.")
         1))
     (defun m5_fmt_argptr (argp)
       (nl_cons_car_ptr argp))
+    ;; "%d" "%i" "%x" "%X" "%o": a Bignum argument (tag 13) prints from its
+    ;; limbs, anything else from the payload word.
+    (defun m5_fmt_push_dec (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum ms a)
+        (m5_push_dec ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_hex (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 4 0)
+        (m5_push_hex ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_hex_up (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 4 1)
+        (m5_push_hex_up ms (heap-read-u64 a 8))))
+    (defun m5_fmt_push_oct (ms a)
+      (if (= (sexp-tag a) 13) (m5_push_bignum_radix ms a 3 0)
+        (m5_push_oct ms (heap-read-u64 a 8))))
     (defun m5_fmt_loop (ms fmt i n argp)
       (if (>= i n) 1
         (let* ((c (m5_byte_at fmt i)))
@@ -22744,10 +23105,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (seq (mut-str-push-byte ms 37)
                            (m5_fmt_loop ms fmt (+ i 2) n argp))
                     (if (= d 100)
-                        (seq (m5_push_dec ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                        (seq (m5_fmt_push_dec ms (m5_fmt_argptr argp))
                              (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                       (if (= d 120)
-                          (seq (m5_push_hex ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                          (seq (m5_fmt_push_hex ms (m5_fmt_argptr argp))
                                (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                         (if (= d 102)
                             (seq (m5_emit_value ms (m5_fmt_argptr argp))
@@ -22762,13 +23123,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (seq (m5_emit_value ms (m5_fmt_argptr argp))
                                        (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                 (if (= d 105)
-                                    (seq (m5_push_dec ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                    (seq (m5_fmt_push_dec ms (m5_fmt_argptr argp))
                                          (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                   (if (= d 88)
-                                      (seq (m5_push_hex_up ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                      (seq (m5_fmt_push_hex_up ms (m5_fmt_argptr argp))
                                            (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                     (if (= d 111)
-                                        (seq (m5_push_oct ms (heap-read-u64 (m5_fmt_argptr argp) 8))
+                                        (seq (m5_fmt_push_oct ms (m5_fmt_argptr argp))
                                              (m5_fmt_loop ms fmt (+ i 2) n (nl_cons_cdr_word argp)))
                                       (if (= d 99)
                                           (seq (m5_push_char ms (heap-read-u64 (m5_fmt_argptr argp) 8))
@@ -26816,7 +27177,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
              ;; would make most positive bignums mutually eq.  The limb
              ;; pointer at offset 16 is the real per-allocation identity.
              ((= ta 13)
-              (if (= (nl_word_data a) (nl_word_data b)) 1 0))
+              (if (= (nl_big_identity a) (nl_big_identity b)) 1 0))
+             ;; Doc 216 S5: a float compares by its bits here (recorded above),
+             ;; read through `nl_float_bits' whatever its representation.
+             ((= ta 3) (if (= (nl_float_bits a) (nl_float_bits b)) 1 0))
              (t (if (= (nl_word_payload a) (nl_word_payload b)) 1 0)))
           0))))
     (defun bf_eq_w (args _pad)
@@ -44382,21 +44746,33 @@ correctly."
       ;; only the `-l'/`-f'/multi-action path this function handles) --
       ;; only `command-line-args-left' (updated incrementally as actions
       ;; are consumed, `nl_cli_set_clal') is this function's own job.
-      (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1))
-             (clal_sym (alloc-bytes 32 8)))
+      ;; The symbol of `command-line-args-left' outlives every action, so it
+      ;; is a root-stack slot (marked precisely), not an arena block that
+      ;; only the conservative scan keeps: a collection with the scan off
+      ;; (debug switch 28, the object-size probes) used to free it and the
+      ;; next `nl_cli_set_clal' read a recycled block.  The slot holds nil
+      ;; until the symbol is made, and its name buffer is allocated after the
+      ;; prelude for the same reason.
+      (let* ((clal_mark (nl_root_mark ctx))
+             (clal_slot (nl_root_reserve_checked ctx))
+             (clal_sym (if (= clal_slot 0) (alloc-bytes 32 8) clal_slot)))
         (seq
+         (if (= clal_slot 0) 0 (wf_write_nil clal_slot))
          (if (< _cl 0)
              (seq ,@(nelisp-standalone--reader-repl-prelude-forms
                      'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
            0)
          (nl_cli_ldir_apply sp0 base_idx eff_idx dd_value fbuf src cursor
                              result pool out ctx builtin_sym)
-         ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
-         (nl_alloc_symbol clal_sym_buf
-                           ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
-                           clal_sym)
-         (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
-                              pool out ctx builtin_sym clal_sym))))
+         (let* ((clal_sym_buf (alloc-bytes ,(* 8 (length (nelisp-standalone--name-words "command-line-args-left"))) 1)))
+           (seq
+            ,@(nelisp-standalone--byte-write-forms 'clal_sym_buf "command-line-args-left")
+            (nl_alloc_symbol clal_sym_buf
+                              ,(length (encode-coding-string "command-line-args-left" 'utf-8 t))
+                              clal_sym)
+            (let* ((clal_rc (nl_cli_action_loop sp0 argc eff_idx dd_value fbuf src cursor result
+                                                pool out ctx builtin_sym clal_sym)))
+              (seq (nl_root_release ctx clal_mark) clal_rc)))))))
     (defun driver (sp)
      (let* ((arena (nl_arena_init))
             ;; N5: before prelude/file/image I/O, ignore SIGPIPE like GNU.
@@ -44615,6 +44991,9 @@ correctly."
         ;; cold path: replace the fresh empty globals with the loaded image's
         ;; globals Record (frames/unbound stay fresh).  -1 = normal boot.
         (if (< _cl 0) 0 (nl_cold_overwrite_globals globals cold_image))
+        ;; Doc 226 D9 stage 3: the mirror record root names this process's
+        ;; globals record, fresh or restored from the image.
+        (nl_symcells_attach globals)
         (if (= cold_override 0) (nl_boot_image_release cold_image) 0)
         ;; Doc 221 M03/M17: static symbol ids (GNU lispsym) for dispatch.
         (nl_static_syms_init)
@@ -45433,25 +45812,23 @@ correctly."
     (defun nl_cce_clear (err_out)
       (seq (ptr-write-u64 err_out 0 0) (ptr-write-u64 (+ err_out 8) 0 0)
            (ptr-write-u64 (+ err_out 16) 0 0) (ptr-write-u64 (+ err_out 24) 0 0) 0))
-    (defun nelisp_eval_call_with_err_w (form env _pad err_out)
+    (defun nelisp_eval_call_with_err_w (form env _pad _err_out)
+      ;; Doc 216 S6.2: no error view is written here.  Answers the value
+      ;; WORD, or 0 when the form signalled (the signal stays stashed, the
+      ;; flag set, for the caller's `nl_exit_condition_into') or aborted
+      ;; otherwise.  A few low-level mirror APIs historically normalise their
+      ;; mutation helper's return value to success.  The physical mirror
+      ;; guard still stashes the signal and performs no write; a registered
+      ;; worker recovers that signal at its catch boundary so it stays
+      ;; catchable instead of becoming a stale flag.
       (let* ((w (nelisp_eval_call_w form env 0)))
         (if (/= w 0)
-            ;; A few low-level mirror APIs historically normalise their
-            ;; mutation helper's return value to success.  The physical
-            ;; mirror guard still stashes the signal and performs no write;
-            ;; recover that signal at the worker's catch boundary so it stays
-            ;; catchable instead of becoming a stale flag.
             (if (= (heap-read-u64 268435472 0) 1)
                 (if (= (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0 (nl_thread_registry_find env)) 0)
-                    (seq (nl_cce_clear err_out) w)
-                  (seq (nl_exit_condition_into err_out)
-                       0))
-              (seq (nl_cce_clear err_out) w))
-          (if (= (heap-read-u64 268435472 0) 1)
-              (seq (nl_exit_condition_into err_out)
-                   0)
-            ;; Preserve a non-signal abort without inventing an error.
-            (seq (nl_cce_clear err_out) 0)))))
+                    w
+                  0)
+              w)
+          0)))
     (defun nelisp_eval_call_with_err (form env out err_out)
       ;; Physical-view compatibility entry; do not reverse-adapt its result.
       (let* ((rc (nelisp_eval_call form env out)))

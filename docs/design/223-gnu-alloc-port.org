@@ -67,6 +67,7 @@ this stage (the blocking NeLisp layer is named). GNU source:
 | mark_memory, mark_maybe_pointer | alloc.c:4992 =mark_memory=, alloc.c:4854 =mark_maybe_pointer= | The conservative scan checks the registry first: a hit on a live cell marks it precisely (as =mark_object=); other words keep the legacy pin-and-drain path | ported for block cells | none |
 | Image objects (pdumper) | pdumper.c:5229 =pdumper_find_object_type_impl=, pdumper.c:5247 =pdumper_marked_p_impl=, pdumper.c:5259 =pdumper_set_marked_impl=; alloc.c:4854 checks =pdumper_object_p= before =mem_find= | The boot region below the watermark is the dump: image objects are never freed or swept, mark through a separate boot bitmap and are validated by a start bitmap built once per watermark. Dumping copies each cons-block cell into the image as a legacy headered payload (pdumper's object copy) | ported: the separate mark bitmap, its clearing in the sweep and the never-swept dump; adapted: the start table is a bitmap built by one header walk after restore, and the image's free blocks (hole runs) are still swept because the dump copies whole chunks | S7 (image format bump) is not needed: the build digest already rejects a foreign image |
 | GC threshold | alloc.c:5704 =consing_threshold=, alloc.c:5732 =bump_consing_until_gc=, alloc.c:5769 =maybe_garbage_collect= | Block allocations charge =nl_gc_stats+0= exactly as general allocations do; sweeps add live cell bytes to =nl_gc_stats+16=; =nl_gc_debt_rearm= keeps =max(floor, live * pct)= | adapted: the existing debt trigger already has GNU's shape (threshold from live bytes times a percentage); its policy belongs to the gc-cadence lane | none |
+| Safepoints (=maybe_gc=) | eval.c:2602 =eval_sub=, eval.c:3206 =Ffuncall=, bytecode.c:797 =Bcall=, bytecode.c:861-866 backward branches | =nl_gc_midform_collect= at the =while= back edge and in the native-bytecode poll; =nl_gc_vm_poll= is the entry a bytecode VM calls, with a force hook (debug switch 70) | adapted: GNU tests =consing_until_gc= at these sites, NeLisp tests the reservation and debt triggers there. The interpreted =while= and the native poll poll; the bytecode interpreter does not yet (see "Bytecode VM safepoints") | callpath (its VM), the F integrator (the older VM) |
 
 * Interaction with the word heap (Doc 216)
 
@@ -334,6 +335,93 @@ kinds 4 and 16):
   42 (counts) exercise the paths on this line, where no Lisp operation
   makes a symbol cell yet.  =tools/ai/gc-port-symbol-blocks.py= runs
   them, including a dump and restore, on both linkages (gc-port S1.8).
+
+** Bytecode VM safepoints (maybe_gc)
+
+The bytecode interpreter never reaches a collection point.  GNU polls
+=maybe_gc= in =exec_byte_code= at every =Bcall= (bytecode.c:797, after
+=record_in_backtrace=) and on every 256th backward branch
+(bytecode.c:861-866, =quitcounter=); eval.c polls it in =eval_sub= (2602)
+and =Ffuncall= (3206).  NeLisp's =nl_gc_midform_collect= is called from
+the interpreted =while= back edge (=lisp/nelisp-cc-sf-while.el=) and from
+the native-bytecode poll (=lisp/nelisp-native-poll.el=), nowhere else, and
+every VM activation allocates its frame vector (=nl_alloc_vector= of depth +
+1, about 48 bytes for a small function), which only a sweep frees.
+
+Measured on 2026-10-22 on the codegen lane's S5.13 workload (a GNU-compiled
+function calling another, 18,300,000 times, under the 8 GiB cap): on this
+line before the poll (c49) the run completes in 9.5 s with a peak RSS of 908
+MiB (virtual 2.1 GB), growing linearly at about 48 bytes per call from 56 MB
+and falling back only at the explicit =garbage-collect= after the loop;
+=nelisp--gc-pressure= reads 5236 % at the end of the loop and the mid-form
+collection counter is 0 before and after.  The same loop written as an
+interpreted =while= saw-tooths between about 120 and 350 MB.  The eval/core
+line allocates about 380 bytes per call in the same loop and exits 88 at
+about 6.9 GB RSS.
+
+A second gap showed once the VM polled.  The typed blocks (cons, symbol,
+vector) are mapped by =nl_ablock_new_group= outside the arena chunks, so they
+never move =chunk-bytes-reserved=, the counter the growth trigger watches; and
+the debt trigger, which does count them, arms only after two collections
+(=nl_gc_debt_due=).  A loop that allocates only typed cells therefore reaches
+neither trigger.  A call-free bytecode loop that conses once per iteration ran
+60,000,000 iterations to a peak RSS of 974 MiB with the poll in place and no
+collection.  =nl_gc_vm_poll= carries a backstop for this window: before the debt
+trigger arms, one chunk (64 MiB) of debt opens the gate, as a mapped chunk
+would.  The cadence policy itself (two collections before arming) is the
+gc-cadence lane's and is left as it is.
+
+The contract this line provides:
+
+- =nl_gc_vm_poll= (scripts/nelisp-standalone-build.el, after
+  =nl_gc_midform_collect=): runs a mid-form collection when the growth or
+  debt trigger is due, as the =while= back edge does, and returns 0.  With
+  nothing due it costs two loads and the gate (the armed flag, the
+  reservation against the trigger, the debt test); on the funcall workload the
+  polls are below the noise (9.0 s with 9 collections against 9.5 s without).
+- Call sites, GNU's: at =Bcall= entry before the callee is entered
+  (bytecode.c:797), and when a counter of backward branches (a PC lower than
+  the previous instruction's, plus the branches a fused fast loop reports)
+  reaches 256 (bytecode.c:861-866).  A third site, the entry of a VM
+  function called from a builtin (=sort=, =mapcar= with a bytecode function;
+  GNU's =Ffuncall=, eval.c:3206), has the same preconditions once the
+  arguments have been copied into the activation's frame; it is not part of
+  this contract and is not tested here.
+- Preconditions at a call site.  It is a VM instruction boundary where
+  (1) every heap value the VM uses afterwards is reachable from the GC root
+  stack (the activation's roots), a recorded evaluator frame, a heap object
+  reachable from those, or a native stack slot (the conservative scan pins
+  pointers, interior ones included, in [sp, stack top)); (2) no such value
+  lives only in a callee-saved register (the scan does not read registers,
+  see the next section; DSL locals live across a call are in stack slots
+  because register promotion is limited to call-free loops); (3) caches of
+  heap addresses (mirror entries, frame cursors) are dropped afterwards, as
+  after any call that can run Lisp: objects never move in a mid-form
+  collection, but a swept block is reused.  The gate refuses while a
+  collection runs and parks parallel workers around one, so a worker needs
+  no extra check.
+- The force hook.  =(nelisp--debug-switch 70)= makes every poll collect (the
+  trigger is zeroed before the gate), =71= restores the allocator's
+  triggers, =72= answers the number of mid-form collections so far.
+  =test/gc-port-vm-poll/force-check.el= replays the 152-case GNU bytecode
+  corpus and an allocating loop with a collection at every poll (6,710
+  collections on the reference build).
+- The bounded-memory checks, =tools/ai/gc-port-vm-poll.py=, runnable
+  against any binary: =leak= (the 18.3M-funcall workload: exit 0, the right
+  answer, peak RSS at most 400 MiB), =loop= (60M iterations of a call-free
+  bytecode loop that allocates a cons each: bounded only by the
+  backward-branch poll and the backstop), =force= (the corpus under the hook,
+  at least 100 forced collections: a VM without polls, or a binary without
+  the hook, answers 0) and =check= (all three on both linkages).
+
+Verified on a reference build, this line plus the two polls in this line's VM
+(=tools/ai/gc-port-vm-poll-reference.patch=, kept for the VM's owners; the VM
+itself belongs to the callpath lane and to the eval/core integrator): peak RSS
+151 MiB (funcall) and 121 MiB (loop) on dyn, 147 and 116 on static, 9 and 13
+collections; the corpus passes 152/152 under the hook on both linkages.
+Controls: without the polls (c49) the funcall run peaks at 908 MiB, the loop at
+973 and the hook answers 0 collections; with the polls but without the
+backstop the funcall run peaks at 349 MiB and the loop at 975.
 
 ** Planned: scanning callee-saved registers (codegen backlog)
 

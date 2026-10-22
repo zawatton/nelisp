@@ -306,6 +306,48 @@ small allocations and does not preserve the existing low-bit decoders by
 itself. It is not justified by these measurements. Float and bignum values
 initially use 110, rather than consuming a new immediate encoding.
 
+Route to GNU's 8-byte float (recorded 2026-10-22; tracked by gc-port ledger
+S1.10 "float8"). GNU's Lisp_Float is a bare 8-byte cell in a float_block
+(alloc.c:2431, swept by sweep_floats at alloc.c:6894) whose pointer class is
+the Lisp_Float tag. A 110 float cannot reach that: its kind word is 8 bytes,
+so the smallest cell is 16 bytes (kind word plus double) in a typed float
+block, twice GNU's. No pointer pattern is free while the legacy Sexp views
+exist: 001 is fixnum, 011 is only nil and 111 is only t, 010 is the direct
+cons, 100 the string, 110 the vectorlike, and 000 the 32-byte view with the
+sentinels 0 and 2. The route is therefore in steps. (b) One accessor for the
+double, nl_float_bits (the XFLOAT_DATA analogue): it reads the bits at +8 of
+the box, which is W - (W & 6), so it serves a legacy view and a float object
+alike, and the readers that take a WORD (number order, eq) use it. (a) A
+float becomes a 16-byte object [kind word 3 | double] from the general
+allocator, WORD = box | 6: 24 bytes retained instead of 40. The conversion
+sits in the cold legacy clone path (nl_val_clone_legacy) and a view
+materialised from the object carries its bits (nl_sexp_clone_into); the hot
+accessors stay untouched, because a float test in nl_word_payload (about 280
+call sites) or a float branch in nl_val_clone_into (every store) measured 9-10%
+on every basic row. (c) 16-byte cells in typed float blocks with a side mark
+bitmap. (d) When word-heap S6.1 retires the 000 views, 000 becomes the
+dedicated float tag and a float becomes a bare 8-byte cell with a mark bit, as
+in GNU. S1.10 measures the retained slope per float against 9 bytes and stays
+known-red until then; it is not to be downgraded to pending or dropped to
+raise the meter.
+
+Bignum as an object (recorded 2026-10-22; gc-port ledger S1.5). A Bignum is
+[header | 32-bit limbs] from the general allocator, WORD = box | 6, with the
+header 13 | sign << 6 | limb count << 8 and the limbs at box + 8, padded to
+eight bytes: an integer of two limbs retains 24 bytes (the 16-byte object and
+its vector slot) instead of 64. The sign, the limb address and the count are
+read through nl_big_sign, nl_big_limbs and nl_big_count, which serve an object
+and a legacy view alike (a view keeps its limbs at +16); eq compares
+nl_big_identity, the object's address; the number-order readers and the
+arithmetic helpers use the accessors. A Bignum view stored into a container
+becomes its object (nl_val_clone_legacy, nl_big_word); a view materialised
+from an object (nl_sexp_clone_into) points its limbs at box + 8, which is how
+nl_big_word recognises the view of an object it already has. The collector
+marks the block (a Bignum has no children) and the dump's typed accounting
+skips it. wf_word_view passes pointer WORDs through unchanged, except that it
+materialises a Bignum object as a view, because the limb readers
+(nl_bignum_prep_operand, the small-divisor helpers) take views.
+
 100 and 110 still require a kind-word load when their subtype is needed;
 only cons and the broad pointer classes can be recognized entirely from WORD
 bits. No universal "zero type-header loads" speed claim is made.
