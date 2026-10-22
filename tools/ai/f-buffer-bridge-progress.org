@@ -4,19 +4,21 @@
 
 ** S1.1 Simulated library calls and results match interpreted source
 #+NOTE: GNU 31.1 bytecode.c:940-942,1476-1482 uses native buffer operations; adapt those operations to NeLisp library ownership. GNU buffer.c:set_buffer_if_live skips a killed saved buffer. Compile fixtures with GNU 31.1 and demonstrate failure on 1aa530d09.
-cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/negative-control.ok
+cmd: tools/ai/f-buffer-bridge-check.sh target/f-buffer-bridge/nelisp-dyn-final meter-semantic
+evidence: target/f-buffer-bridge/negative-control.log sha256=185196539a4c837d3cb76dc21610e0753114986561bcf919f757912b91fa7829
 
 ** S1.2 Bare semantics pass on dynamic and static linkages
 #+NOTE: Run bytecode-word corpus and final-verify/checks.sh (11 groups, zero unexpected failures, documented maphash-sparse exception), then standalone-checks.sh sequentially. Preserve logs and binary identities.
-cmd: test -f target/f-buffer-bridge/bare-semantics.ok
+cmd: test -f target/f-buffer-bridge/bare-semantics.ok && grep -qx 'final acceptance complete' target/f-buffer-bridge/final2.log
 
 ** S1.3 Bare bytecode buffer loop stays within 1.03x base
 #+NOTE: CPU 15, warmup, seven alternating paired candidate/base/GNU wall-clock rounds including GC; record per-run CPU frequency and report median candidate/GNU ratio. Base is 1aa530d09. No threshold revision.
-cmd: python3 -c 'import json; p=json.load(open("target/f-buffer-bridge/timing.json")); assert p["rounds"] == 7 and p["cpu"] == 15 and p["candidate_base"] <= 1.03'
+cmd: python3 -c 'import json; p=json.load(open("target/f-buffer-bridge/timing-accepted.json")); assert p["rounds"] == 7 and p["cpu"] == 15 and p["candidate_base"] <= 1.03 and all(r.get("serialized") for r in p["runs"]) and p["artifacts"]["candidate"]["sha256"] != p["artifacts"]["base"]["sha256"]'
+evidence: target/f-buffer-bridge/timing-accepted.json sha256=1469eea03de0345ff98218eed719da277fff1a019312673535936f9daf56d311
 
 ** S1.4 End-to-end standalone bridge and Anvil MCP smoke
 #+NOTE: Preserve 40-tool MCP smoke plus semantic and bare-runtime evidence. Library image acceptance remains explicitly external under S2.1.
-cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/bare-semantics.ok && test -f target/f-buffer-bridge/mcp.ok
+cmd: test -f target/f-buffer-bridge/semantic.ok && test -f target/f-buffer-bridge/bare-semantics.ok && test -f target/f-buffer-bridge/mcp.ok && grep -qx 'final acceptance complete' target/f-buffer-bridge/final2.log
 
 * S2 External library acceptance
 
@@ -30,3 +32,4 @@ pending
 #+NOTE: 2026-10-22: Compile the ownership closure factory through the existing GNU lexical bytecode projection, adapting bytecomp.el:4165-4206 (ordinary make-closure capture into constants). Preliminary paired rounds for the interpreted bridge were 1.09818x and 1.08190x base; the 1.03 limit is unchanged. The separate Lisp factory avoids leaving the hot captured bodies interpreted; no new native or special VM opcode is added.
 #+NOTE: Development loop: the old built-binary path reports the defect in 0.306643 s; FBB_RELOAD=1 runs the edited source against that same binary and passes all six cases in 1.310261 s without a build. This adjacent source-only path does not replace final rebuilt-binary acceptance. GNU fixture preparation is now one command, and generated fixtures carry a lexical-binding cookie and escaped control bytes.
 #+NOTE: 2026-10-22: Seven fresh CPU-15 pairs after compiling the buffer bridge gave candidate/base 1.032553797961 and candidate/GNU 73.62142654; the 1.03 criterion remains failing, without revision. Compile the existing cleanup creator with GNU too, retaining nelisp-bytecode-cleanup-source as the exact Lisp reference and preserving source-only mode. This removes interpreted callback construction; it does not add a native. A diagnostic 2000-iteration call on CPU 0 changed from 1.392320 s to 1.127549 s; this is not the acceptance measurement. Rebuild both linkages and repeat the CPU-15 seven-pair gate.
+#+NOTE: 2026-10-22 S1.3 acceptance: compiling both ordinary closure creators gives median candidate/base 0.974027693956 and candidate/GNU 75.782893787032 across seven CPU-15 pairs, including warmup and GC. Each pair is serialized on CPU 15, each timed process takes only a few seconds (COMMON short-probe exception), and every run records CPU frequency. The identical 10000-iteration workload asserts its result. No threshold changed. GNU bytecode.c:940-942,1476-1482 directly calls the C buffer functions and records native unwind entries; NeLisp must retain Lisp dispatch and callback objects because the library owns its swap engine. This mechanism, plus the VM's general call/variable machinery, remains the gap to GNU.
