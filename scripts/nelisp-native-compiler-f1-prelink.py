@@ -31,7 +31,13 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     # and the symbol entry API's out-of-line paths (nl_ent_w_slow,
     # nl_ent_set_slow, nl_sym_signal_wta_integerp); step 5.2 adds
     # nl_symbol_alloc and gc-port's symbol blocks nl_gc_mark_symbol.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=320, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
+    # Policy 352 at the merge of gc-port's header-less floats, Bignums and Cells
+    # (Doc 223: nl_float_alloc, nl_float_alloc_block, nl_float_bits,
+    # nl_float_object, nl_big_count, nl_big_identity, nl_big_limbs, nl_big_sign,
+    # nl_bignum_write_w, nl_cell_box, nl_cell_pair_p, nl_cell_set_w,
+    # nl_cell_word, nl_vci_scalar) with the symbol line's 311: measured 324 on
+    # Linux; the closure also grows with the call-path and string work to come.
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=352, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",
