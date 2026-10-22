@@ -28268,9 +28268,13 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
   (while (< i (length buckets))
     (let ((tail (aref buckets i)))
       (while tail
-        (let ((entry (car tail)))
-          (cond ((equal (car entry) "set-buffer") (setq set-cell (cdr entry)))
-                ((equal (car entry) "current-buffer") (setq current-cell (cdr entry)))))
+        (let* ((entry (car tail)) (name (car entry)))
+          ;; The mirror's keys are strings on F's line and symbols once the
+          ;; symbol cells (Doc 226) are in: compare by name so both capture the
+          ;; same records.
+          (if (symbolp name) (setq name (symbol-name name)))
+          (cond ((equal name "set-buffer") (setq set-cell (cdr entry)))
+                ((equal name "current-buffer") (setq current-cell (cdr entry)))))
         (setq tail (cdr tail))))
     (setq i (1+ i)))
   (unless (and set-cell current-cell) (error "Missing runtime buffer function cells"))
