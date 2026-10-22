@@ -117,16 +117,31 @@
                 (let* ((pair-box (heap-sexp-payload pair-word)))
                   (let* ((key-word (heap-read-u64 pair-box 0))
                          (value-word (heap-read-u64 pair-box 8)))
-                    (if (= (nelisp_frame_stack_find_word_name_p key-word) 0)
-                        0
-                      (if (= (extern-call nelisp_symbol_key_equal key-word name-ptr) 1)
-                          (if (= (nelisp_frame_stack_find_word_tag_p value-word 11) 1)
-                              value-word
-                            (if (= raw 1) value-word (nl_frame_pair_cell pair-word 0)))
-                        (if (= (logand next-word 1) 1)
-                            0
-                          (nelisp_frame_stack_find_walk_bucket_m
-                           next-word name-ptr raw 0))))))))))))
+                    ;; The same WORD is the same symbol, and two different symbol
+                    ;; objects are different symbols (an interned symbol has one
+                    ;; object): only a legacy symbol view needs the polymorphic
+                    ;; compare (GNU compares the symbols with eq, eval.c Fassq).
+                    (let* ((hit (if (= key-word name-ptr) 1
+                                  (if (= (nelisp_frame_stack_find_word_name_p key-word) 0) -1
+                                    (if (if (= (logand key-word 7) 6)
+                                            (if (= (logand name-ptr 7) 6)
+                                                (if (or (= (sexp-tag key-word) 4) (= (sexp-tag key-word) 16))
+                                                    (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16)) 1 0)
+                                                  0)
+                                              0)
+                                          0)
+                                        0
+                                      (extern-call nelisp_symbol_key_equal key-word name-ptr))))))
+                      (if (= hit -1)
+                          0
+                        (if (= hit 1)
+                            (if (= (nelisp_frame_stack_find_word_tag_p value-word 11) 1)
+                                value-word
+                              (if (= raw 1) value-word (nl_frame_pair_cell pair-word 0)))
+                          (if (= (logand next-word 1) 1)
+                              0
+                            (nelisp_frame_stack_find_walk_bucket_m
+                             next-word name-ptr raw 0)))))))))))))
     (defun nelisp_frame_stack_find_walk_bucket (cell-ptr name-ptr)
       (nelisp_frame_stack_find_walk_bucket_m cell-ptr name-ptr 0 0))
 

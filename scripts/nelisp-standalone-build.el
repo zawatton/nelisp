@@ -8859,16 +8859,16 @@ REPL-facing module it feeds."
           (if (< addr (heap-read-u64 (data-addr nl_gc_stats) 56)) 0 1)
         0))
     (defun nl_mxcache_lookup (form_ptr)
-      (if (= (nl_cache_boot_p form_ptr) 1) 0
-      (if (= (heap-read-u64 (data-addr nl_mxcache_disable_lookup) 0) 1) 0
-        (let* ((base (heap-read-u64 (data-addr nl_mxcache_table_base) 0)))
-          (if (= base 0) 0
-            (let* ((slot (+ base (* (nl_mxcache_hash form_ptr) 24))))
-              (if (= (heap-read-u64 (+ slot 16) 0) (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
-                  (if (= (heap-read-u64 slot 0) form_ptr)
+      (let* ((base (heap-read-u64 (data-addr nl_mxcache_table_base) 0)))
+        (if (= base 0) 0
+          (let* ((slot (+ base (* (logand (sar form_ptr 4) 65535) 24))))
+            ;; A form that was never stored misses here, on the key alone.
+            (if (/= (heap-read-u64 slot 0) form_ptr) 0
+              (if (= (nl_cache_boot_p form_ptr) 1) 0
+                (if (= (heap-read-u64 (data-addr nl_mxcache_disable_lookup) 0) 1) 0
+                  (if (= (heap-read-u64 (+ slot 16) 0) (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
                       (nl_mxcache_lookup_claim slot form_ptr 0 0)
-                    0)
-                0)))))))
+                    0))))))))
     ;; ROOT-CAUSE FIX (found via A/B debug-compare over lisp/nelisp-artifact.el
     ;; and reduced to a two-line repro): storing exp_slot into this cache is
     ;; ITSELF an "escape into persistent state", exactly like setcar/setcdr/
