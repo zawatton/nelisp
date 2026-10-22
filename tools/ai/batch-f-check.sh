@@ -37,6 +37,8 @@
 #                     dynamic build are 16-byte aligned
 #   census            native-free-symbol census: no free-symbol site, both
 #   casetab           casetab's GNU fixtures (API 43, behaviour 47)
+#   guard             staged GNU handlers: every direct callee of a compiler-macro, gv-expander
+#                     or gv-setter handler of a staged definition is defined in both binaries
 #   ns                ns-inventory: no unpinned collision beyond 1290
 #   log KIND          pipeline evidence newer than the dynamic binary:
 #                     common mcp standalone sweep fileio aot validate win timing
@@ -63,7 +65,8 @@ say() { echo "BATCH-F $*"; }
 # The binaries may predate HEAD only by commits to this ledger's own files.
 built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' \
-    ':(exclude)tools/ai/batch-f-progress.org'
+    ':(exclude)tools/ai/batch-f-progress.org' ':(exclude)scripts/nelisp-staged-handler-guard.el' \
+    ':(exclude)test/nelisp-staged-handler-guard-test.el'
 }
 fail() { say "FAIL: $*"; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
@@ -486,8 +489,38 @@ PY
     [ -n "$n" ] && [ "$n" -le 1290 ] || fail "unpinned collisions: ${n:-?} (parents: 1290)"
     say "PASS ns ($n unpinned, as the parents)" ;;
   log) log_check "${2:?kind}" ;;
+  guard)
+    # scripts/nelisp-staged-handler-guard.el reads the build script and the pinned GNU sources of
+    # a tree and asks a binary whether the direct callees of every staged compiler-macro,
+    # gv-expander and gv-setter handler are defined.  It needs no build, only the binary.
+    [ -x "$DYN" ] && [ -x "$ST" ] || fail "missing binaries"
+    runguard() {   # runguard ROOT BINARY REPORT
+      capped "$GNU" --batch -Q -L src -L scripts -l nelisp-staged-handler-guard \
+        -f nelisp-staged-handler-guard-batch -- "$1" "$2" "$3" > /dev/null 2>&1
+    }
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      runguard "$ROOT" "$bin" "$OUT/guard.$tag.txt" || fail "the guard fails $tag: $(grep '^FAIL' "$OUT/guard.$tag.txt" | head -2 | tr '\n' ' ')"
+      n=$(sed -n 's/^declarations: \([0-9]*\) .*/\1/p' "$OUT/guard.$tag.txt")
+      [ "${n:-0}" -ge 32 ] || fail "the guard read only ${n:-0} declarations on $tag (32 expected: the scan is vacuous)"
+    done
+    # Negative control: the build before the keymap fix, with its own tree, must fail the guard
+    # on exactly the two missing helpers.
+    oldroot=${BATCH_F_OLD_ROOT:-$ROOT/target/integ/src-d29b53025}
+    olddyn=${BATCH_F_OLD_DYN:-$ROOT/target/integ/old-d29b53025/nelisp-dyn}
+    [ -f "$oldroot/scripts/nelisp-standalone-build.el" ] && [ -x "$olddyn" ] ||
+      fail "negative control needs the build before the fix ($oldroot, $olddyn)"
+    if runguard "$oldroot" "$olddyn" "$OUT/guard.old.txt"; then fail "negative control: the guard passes the build before the fix"; fi
+    grep -q '^FAIL keymap-set compiler-macro needs keymap--compile-check' "$OUT/guard.old.txt" &&
+      grep -q '^FAIL define-keymap compiler-macro needs define-keymap--compile' "$OUT/guard.old.txt" ||
+      fail "negative control fails for the wrong reason: $(head -c 300 "$OUT/guard.old.txt" | tr '\n' ' ')"
+    capped timeout 300 "$GNU" --batch -Q -L src -L scripts -L test -l ert -l test/nelisp-staged-handler-guard-test.el \
+      -f ert-run-tests-batch-and-exit > "$OUT/ert-staged-handler-guard.log" 2>&1 ||
+      fail "guard tests: $(grep -E '^(Ran|   FAILED)' "$OUT/ert-staged-handler-guard.log" | head -3 | tr '\n' ' ')"
+    say "PASS guard ($(sed -n 's/^declarations: \(.*\)$/\1/p' "$OUT/guard.dyn.txt"); direct callees $(sed -n 's/^direct callees checked: \([0-9]*\);.*/\1/p' "$OUT/guard.dyn.txt"), none missing; the build before the fix fails on the keymap pair)" ;;
   pipeline)
     for k in common standalone mcp sweep fileio aot validate win timing; do ( log_check $k ) || exit 1; done
+    ( bash "$ROOT/tools/ai/batch-f-check.sh" guard ) || exit 1
     say "PASS pipeline" ;;
   *) echo "usage: $0 CHECK [ARGS]" >&2; exit 2 ;;
 esac

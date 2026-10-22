@@ -18,12 +18,14 @@
 # is pending by design).  The bridge lane's tip, 6ccf1362a, is pinned in
 # batch-f-check.sh (BRIDGE_REV).
 #
-# 2026-10-22, later: 46 criteria.  The library owner's unfiltered base image
+# 2026-10-22, later: 47 criteria.  The library owner's unfiltered base image
 # build found 12 + 3 "Optimization failure" warnings on stderr: the build stages
 # keymap-set and define-keymap out of GNU keymap.el by name, with their compiler
 # macros, but not the helpers those call.  S2.14 and S2.15 are the GNU-golden
-# fixtures for the fix (the end-to-end fixture criterion is now S2.16); S1.5 now
-# names that fix as the only source change allowed after the provide.
+# fixtures for the fix (the end-to-end fixture criterion is now S2.16); S4.11 is
+# the guard that catches the whole class (the end-to-end pipeline criterion is
+# now S4.12); S1.5 now names the fix as the only source change allowed after
+# the provide.
 
 * S1 Merge
 ** S1.1 eval/gnu-semantics-20261022 (a00f45cdf) is merged
@@ -138,7 +140,11 @@ cmd: bash tools/ai/batch-f-check.sh ns
 cmd: bash tools/ai/batch-f-check.sh log win
 ** S4.10 Paired timing against 1aa530d09 on CPU 11 (median of 7 alternating rounds) is recorded, and every row above 1.03 has a cause
 cmd: bash tools/ai/batch-f-check.sh log timing
-** S4.11 End to end: every pipeline result is newer than the binaries and passes
+** S4.11 Staged GNU handlers: every direct callee of a compiler-macro, gv-expander or gv-setter handler of a definition the build stages from GNU is defined in the finished binary, both linkages; the build before the keymap fix fails the guard on the two missing helpers
+#+NOTE: The build stages GNU definitions by name, so a declaration comes along without the helpers GNU's file defines next to it, and nothing notices until eager expansion (a compiler macro) or setf (a gv-expander) consults the property.  scripts/nelisp-staged-handler-guard.el reads the build script and the pinned GNU sources of a tree, derives the declarations of every staged definition (144 names in 14 GNU files, 142 before the keymap fix; 32 declarations: the 28 c[ad]+r functions, zerop, eval-after-load, keymap-set, define-keymap), collects the functions each handler calls directly (the symbol itself when the handler is a name; the calls and macros of its macroexpanded body otherwise) and asks the binary which of them are void.  A void callee that stock `emacs -Q --batch' lacks as well is allowed and reported with GNU's answer; any other fails.  Scope is the direct callees only: keymap--compile-check's own callee byte-compile-warn is void in GNU 31.1 batch too and is not followed.  Nine callees are checked today and none is missing.  The check also runs the guard from the tree of the build before the fix against that build's binary (target/integ/old-d29b53025), which fails on keymap-set and define-keymap, and the guard's ERT tests (test/nelisp-staged-handler-guard-test.el).  It is a check script, not part of the build script, so the build script stays free of it for the lanes that edit that file; `emacs --batch -Q -L src -L scripts -l nelisp-staged-handler-guard -f nelisp-staged-handler-guard-batch -- ROOT BINARY [REPORT]` runs it by hand.
+#+TIMEOUT: 300
+cmd: bash tools/ai/batch-f-check.sh guard
+** S4.12 End to end: every pipeline result is newer than the binaries and passes, the guard included
 cmd: bash tools/ai/batch-f-check.sh pipeline
 
 * S5 Bytecode VM garbage-collection poll (GNU bytecode.c maybe_gc)
