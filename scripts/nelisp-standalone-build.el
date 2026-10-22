@@ -53149,13 +53149,41 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                             (let* ((d (ptr-read-u64 (- form 2) 8)))
                               (if (= (logand d 7) 2) d (extern-call nl_cons_cdr_ptr form)))
                           (extern-call nl_cons_cdr_ptr form)))
-               (n4-frame (nl_n4_push env car-ptr cdr-ptr 0)))
-          (nl_n4_finish_w
-           (let* ((cached (extern-call nl_mxcache_lookup form)))
-             (if (= cached 0)
-                 (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
-               (nelisp_eval_call_w cached env 0)))
-           env 0 n4-frame)))
+               ;; record_in_backtrace (eval.c:2630): the activation record, written in
+               ;; line (`nl_n4_push' for the first use and a full stack).
+               (state (heap-read-u64 env 176))
+               (depth (if (= state 0) 32768 (heap-read-u64 state 0)))
+               (n4-frame
+                (if (>= depth 32768)
+                    (nl_n4_push env car-ptr cdr-ptr 0)
+                  (let* ((fr (+ state (+ 64 (* depth 160))))
+                         (fd (heap-read-u64 env 40))
+                         (serial (+ (heap-read-u64 state 8) 1)))
+                    (seq
+                     (ptr-write-u64 fr 0 (if (= (logand car-ptr 7) 6) car-ptr (nl_word_canon car-ptr)))
+                     (ptr-write-u64 fr 8 (if (= (logand cdr-ptr 7) 2) cdr-ptr (nl_n4_list_word cdr-ptr)))
+                     (ptr-write-u64 fr 64 12)
+                     (ptr-write-u64 fr 72 fd)
+                     (ptr-write-u64 fr 96 (sar (heap-read-u64 fd 24) 2))
+                     (ptr-write-u64 fr 104 (logand (heap-read-u64 env 112) 2097152))
+                     (ptr-write-u64 fr 112 0)
+                     (ptr-write-u64 fr 120 0)
+                     (ptr-write-u64 fr 128 serial)
+                     (ptr-write-u64 fr 144 0)
+                     (ptr-write-u64 fr 152 0)
+                     (ptr-write-u64 state 8 serial)
+                     (ptr-write-u64 state 0 (+ depth 1))
+                     fr))))
+               (w (let* ((cached (extern-call nl_mxcache_lookup form)))
+                    (if (= cached 0)
+                        (nl_eval_inner_cons_w form car-ptr cdr-ptr env 0)
+                      (nelisp_eval_call_w cached env 0)))))
+          ;; The unbind of the entry, and its debug-on-exit (eval.c:2700), in line.
+          (if (= n4-frame 0) w
+            (let* ((r (if (= w 0) 0
+                        (if (= (heap-read-u64 n4-frame 120) 0) w (nl_n4_exit_debug_w w env))))
+                   (st (heap-read-u64 env 176)))
+              (seq (ptr-write-u64 st 0 (- (heap-read-u64 st 0) 1)) r)))))
        ((= (logand form 7) 6)
         ;; A vectorlike WORD.  GNU eval_sub of a symbol is Fassq over the lexical
         ;; environment, then Fsymbol_value (eval.c:2585-2594): a keyword is not
