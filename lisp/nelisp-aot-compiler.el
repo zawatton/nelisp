@@ -15310,15 +15310,18 @@ mask is needed):
     (nelisp-asm-x86_64-and-r8-r8 buf 'al 'cl)
     (nelisp-asm-x86_64-movzx-eax-al buf)))
 
+(defvar nelisp-aot-compiler--x86-shrink-wrap-state nil)
+
 (defun nelisp-aot-compiler--emit-let-rt-n-bindings (node buf)
   "Emit NODE's runtime `let-rt-n' initializers and spill them to slots.
 aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
 `[rbp - 8*(slot+1)]'.  The defun prologue reserves the slot frame."
-  (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
-    (let* ((slot (nth 1 binding))
-           (value-ir (nth 2 binding)))
-      (nelisp-aot-compiler--emit-value value-ir buf)
-      (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot))))
+  (unless (memq node (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :prefix))
+    (dolist (binding (nelisp-aot-compiler--ir-get node :bindings))
+      (let* ((slot (nth 1 binding))
+             (value-ir (nth 2 binding)))
+        (nelisp-aot-compiler--emit-value value-ir buf)
+        (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)))))
 
 (defun nelisp-aot-compiler--emit-frame-slot-into-reg (buf slot reg)
   "Emit a GP load from frame SLOT into REG."
@@ -16018,6 +16021,8 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
          (source (nelisp-aot-compiler--x86-frame-copy-source node))
          (forward (nelisp-aot-compiler--x86-forward-load-offset node)))
     (cond
+     ((memq node (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :prefix))
+      (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))
      (forward (funcall emit-body forward))
      (reg
         (let ((nelisp-aot-compiler--promoted-slots
@@ -16049,7 +16054,11 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
     (nelisp-aot-compiler--emit-self-tco-body-x86 buf))
    (t (let ((node (or (nelisp-aot-compiler--x86-adjacent-byte-read node) node)))
         (nelisp-aot-compiler--emit-call-free-region
-         node buf (lambda () (nelisp-aot-compiler--emit-value-unpromoted node buf)))))))
+         node buf (lambda ()
+                    (if (eq node (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :cut))
+                        (nelisp-aot-compiler--emit-value
+                         (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :cold) buf)
+                      (nelisp-aot-compiler--emit-value-unpromoted node buf))))))))
 
 (defun nelisp-aot-compiler--emit-value-unpromoted (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -24787,6 +24796,166 @@ skipped here — they're emitted separately by the orchestrator."
          (signal 'nelisp-aot-compiler-error
                  (list :unknown-ir-kind kind))))))))
 
+(defvar nelisp-aot-compiler--x86-shrink-wrap t
+  "Delay a proven call-free owner's frame until its one cold edge.")
+(defvar nelisp-aot-compiler--x86-shrink-wrap-state nil)
+
+(defun nelisp-aot-compiler--x86-shrink-wrap-guard (node)
+  "Give K's predicate planner an ordered boolean view of NODE.
+Only a guard's truth matters; source IR and value-position logic stay intact."
+  (pcase (nelisp-aot-compiler--ir-kind node)
+    ('logic
+     (let ((forms (nelisp-aot-compiler--ir-get node :forms))
+           (op (nelisp-aot-compiler--ir-get node :op)))
+       (when (and forms (memq op '(and or)))
+         (cl-labels ((chain (xs)
+                       (let ((first (nelisp-aot-compiler--x86-shrink-wrap-guard (car xs))))
+                         (if (null (cdr xs)) first
+                           (let ((rest (chain (cdr xs)))
+                                 (constant (nelisp-aot-compiler--make-ir
+                                            'imm :value (if (eq op 'and) 0 1))))
+                             (and first rest
+                                  (nelisp-aot-compiler--make-ir
+                                   'if :id (make-symbol "shrink-logic") :test first
+                                   :then (if (eq op 'and) rest constant)
+                                   :else (if (eq op 'and) constant rest))))))))
+           (chain forms)))))
+    ('if
+     (let ((test (nelisp-aot-compiler--x86-shrink-wrap-guard
+                  (nelisp-aot-compiler--ir-get node :test)))
+           (yes (nelisp-aot-compiler--x86-shrink-wrap-guard
+                 (nelisp-aot-compiler--ir-get node :then)))
+           (no (nelisp-aot-compiler--x86-shrink-wrap-guard
+                (nelisp-aot-compiler--ir-get node :else))))
+       (and test yes no (nelisp-aot-compiler--make-ir
+                        'if :id (make-symbol "shrink-if") :test test :then yes :else no))))
+    (_ node)))
+
+(defun nelisp-aot-compiler--x86-shrink-wrap-plan (owner)
+  "Plan one frameless returning prefix and the original framed cold cut.
+Adapt GCC14 shrink-wrap.cc:45-92,600-690.  K supplies every instruction
+plan and its emitter.  G supplies the bounded closed lexical/frame proof.
+No original IR, slots, cold frame dimensions or ordinary CG3 plans change."
+  (catch 'shrink-wrap-reject
+    (let* ((params (nelisp-aot-compiler--ir-get owner :params))
+           (regs (nelisp-aot-compiler--ir-get owner :param-regs))
+           (arity (if (proper-list-p params) (length params) 99))
+           (rt (nelisp-aot-compiler--ir-get owner :rt-slot-count))
+           (body (nelisp-aot-compiler--ir-get owner :body))
+           (nelisp-aot-compiler--x86-frame-copy-aliases t)
+           (env nil) (writes nil) (prefix nil) (code nil) (slots nil)
+           (budget 0) (node body)
+           (spares nil))
+      (cl-labels
+          ((fail () (throw 'shrink-wrap-reject nil))
+           (readonly-plan (n e &optional guard)
+             (let ((safe t) (count 0))
+               (nelisp-aot-compiler--walk-ir
+                n (lambda (x)
+                    (cl-incf count)
+                    (unless (memq (nelisp-aot-compiler--ir-kind x)
+                                  '(imm ref arith cmp logic if ptr-read-u64))
+                      (setq safe nil))))
+               (cl-incf budget count)
+               (unless (and safe (<= budget 128)) (fail))
+               (let ((plan (nelisp-aot-compiler--x86-guarded-body-plan n e guard)))
+                 (unless (and plan (not (assq :store plan))) (fail)) plan)))
+           (binding (n slot var value scope)
+             (unless (and (integerp slot) (symbolp var) var (not (memq slot slots))
+                          (not (memq slot writes))
+                          (not (eq (nelisp-aot-compiler--ir-kind value) 'ref))
+                          spares (< (length slots) 6)) (fail))
+             (let* ((plan (readonly-plan value scope)) (reg (pop spares)))
+               (setq code (append code plan (list (list :mov reg '(:reg rax)))))
+               (push slot slots)
+               (list (cons (cons slot var) (list :reg reg)) slot reg n))))
+        (unless (and nelisp-aot-compiler--x86-shrink-wrap
+                     (eq nelisp-aot-compiler--arch 'x86_64)
+                     (eq nelisp-aot-compiler--abi 'sysv)
+                     (eq nelisp-aot-compiler--os 'linux)
+                     (not nelisp-aot-compiler--checked-arith)
+                     (not (nelisp-aot-compiler--lisp-values-p))
+                     (proper-list-p params) (<= arity 6)
+                     (equal regs (cl-subseq '(rdi rsi rdx rcx r8 r9) 0 arity))
+                     (integerp rt) (<= 0 rt 10)
+                     (<= (+ arity (logand arity 1) rt (logand rt 1)) 12)
+                     (not (nelisp-aot-compiler--ir-get owner :internal-entry))
+                     (not (nelisp-aot-compiler--ir-get owner :internal-hidden))
+                     (not (nelisp-aot-compiler--ir-get owner :self-tco-raw))
+                     (nelisp-aot-compiler--x86-frame-alias-owner-proof owner)) (fail))
+        ;; No observer, syscall, atomic, memory writer or call may occur even
+        ;; in the cold subtree.  G's proof has checked every metadata value.
+        (let ((safe t))
+          (nelisp-aot-compiler--walk-ir
+           body (lambda (x)
+                  (let ((k (nelisp-aot-compiler--ir-kind x)))
+                    (when (or (memq k '(call extern-call syscall syscall-direct raw-syscall
+                                            atomic-fetch-add))
+                              (string-prefix-p "ptr-write" (symbol-name k))) (setq safe nil))
+                    (when (eq k 'setq-local)
+                      (push (nelisp-aot-compiler--ir-get x :slot) writes)))))
+          (unless safe (fail)))
+        (setq spares (cl-remove-if (lambda (r) (memq r regs)) '(rsi rdx rcx r8 r9)))
+        (cl-loop for p in params for r in regs for s from 0
+                 do (when (memq s writes) (fail))
+                 do (push (cons (cons s p) (list :reg r)) env))
+        (while (memq (nelisp-aot-compiler--ir-kind node) '(let-rt let-rt-n))
+          (push node prefix)
+          (pcase (nelisp-aot-compiler--ir-kind node)
+            ('let-rt
+             (let ((b (binding node (nelisp-aot-compiler--ir-get node :slot)
+                               (nelisp-aot-compiler--ir-get node :var)
+                               (nelisp-aot-compiler--ir-get node :value-ir) env)))
+               (push (car b) env)))
+            ('let-rt-n
+             (let (add)
+               (dolist (b (nelisp-aot-compiler--ir-get node :bindings))
+                 (push (car (binding node (nth 1 b) (nth 0 b) (nth 2 b) env)) add))
+               (setq env (append add env)))))
+          (setq node (nelisp-aot-compiler--ir-get node :body)))
+        (unless (and prefix (eq (nelisp-aot-compiler--ir-kind node) 'if)) (fail))
+        ;; Retain each enclosing node during cold lowering.  Existing region
+        ;; selectors see the original IR and initialized lexical slot context.
+        (let ((count 0))
+          (nelisp-aot-compiler--walk-ir
+           (nelisp-aot-compiler--ir-get node :test)
+           (lambda (_) (cl-incf count)))
+          (unless (<= count 128) (fail)))
+        (let* ((guard (nelisp-aot-compiler--x86-shrink-wrap-guard
+                       (nelisp-aot-compiler--ir-get node :test)))
+               (fast (nelisp-aot-compiler--ir-get node :then))
+               (cold (nelisp-aot-compiler--ir-get node :else))
+               (plan (and guard (readonly-plan fast env guard))))
+          (unless (and plan (assq :fallback plan)
+                       ;; A loop in the untouched cold subtree is the initial
+                       ;; finite frame-requiring barrier, not an opcode policy.
+                       (let ((loop nil))
+                         (nelisp-aot-compiler--walk-ir
+                          cold (lambda (x) (when (eq (nelisp-aot-compiler--ir-kind x) 'while)
+                                             (setq loop t)))) loop)) (fail))
+          (list :prefix prefix :cut node :cold cold :code (append code plan)
+                :snapshots (mapcar (lambda (slot)
+                                     (let ((entry (cl-find slot env :key #'caar)))
+                                       (cons slot (cadr (cdr entry)))))
+                                   (reverse slots))))))))
+
+(defun nelisp-aot-compiler--emit-shrink-wrap-prefix-x86 (plan buf)
+  "Emit PLAN before the unchanged ordinary prologue, using K's emitter."
+  (let ((cold (nelisp-aot-compiler--x86-trace-label (plist-get plan :cut) "shrink-cold")))
+    (nelisp-aot-compiler--emit-guarded-body-plan-x86
+     (plist-get plan :code) buf (lambda () (nelisp-asm-x86_64-jmp-rel32 buf cold)))
+    (nelisp-asm-x86_64--ret-inline buf)
+    (nelisp-asm-x86_64--define-label-inline buf cold)))
+
+(defun nelisp-aot-compiler--emit-shrink-wrap-snapshots-x86 (plan buf)
+  "Materialize live prefix slots after the ordinary prologue once.
+The admitted small ordinary SysV GP prologue modifies only RSP/RBP;
+argument pushes and the RBX save do not clobber the reserved spares."
+  (dolist (pair (plist-get plan :snapshots))
+    (nelisp-asm-x86_64-mov-mem-reg-disp8
+     buf 'rbp (- (* 8 (1+ (car pair)))) (cdr pair))))
+
+
 (defun nelisp-aot-compiler--emit-defun (defun-ir buf)
   "Emit a single function definition into BUF.
 The function's label is defined at the entry point; the prologue
@@ -24900,7 +25069,10 @@ return reg, untouched by epilogue)."
           (nelisp-aot-compiler--x86-self-tco-entry-plan defun-ir))
          (nelisp-aot-compiler--x86-leaf-entry-state
           (or (nelisp-aot-compiler--x86-leaf-entry-plan defun-ir)
-              (nelisp-aot-compiler--x86-terminal-entry-plan defun-ir))))
+              (nelisp-aot-compiler--x86-terminal-entry-plan defun-ir)))
+         (nelisp-aot-compiler--x86-shrink-wrap-state
+          (and (not nelisp-aot-compiler--x86-leaf-entry-state)
+               (nelisp-aot-compiler--x86-shrink-wrap-plan defun-ir))))
     (when variadic
       ;; Only the SysV AMD64 GP register surface is supported for defined
       ;; varargs (= the save-area layout above).  Win64 / aarch64 / f64
@@ -24990,6 +25162,9 @@ return reg, untouched by epilogue)."
       ;; defining the label so calls skip the NOP padding.
       (nelisp-asm-x86_64-align buf 16)
       (nelisp-asm-x86_64--define-label-inline buf name)
+      (when nelisp-aot-compiler--x86-shrink-wrap-state
+        (nelisp-aot-compiler--emit-shrink-wrap-prefix-x86
+         nelisp-aot-compiler--x86-shrink-wrap-state buf))
       ;; Prologue: push rbp; mov rbp, rsp; spill each param reg.
       (nelisp-asm-x86_64--push-inline buf 'rbp)
       (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
@@ -25270,6 +25445,9 @@ return reg, untouched by epilogue)."
         (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 16)
         (nelisp-asm-x86_64-mov-mem-reg-disp8
          buf 'rbp (- (* 8 (1+ (+ param-slot-rounded rt-slot-rounded)))) 'rbx))
+      (when nelisp-aot-compiler--x86-shrink-wrap-state
+        (nelisp-aot-compiler--emit-shrink-wrap-snapshots-x86
+         nelisp-aot-compiler--x86-shrink-wrap-state buf))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
       (if nelisp-aot-compiler--x86-leaf-entry-state
           (nelisp-aot-compiler--emit-leaf-body-x86 body buf)
