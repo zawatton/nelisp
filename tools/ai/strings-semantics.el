@@ -121,3 +121,12 @@ nil
 (strings-case 'fmt-numbered-too-few (lambda () (format "%2$s:%s" "a" "b")))
 (strings-case 'fmt-invalid-no-args (lambda () (format "%q")))
 nil
+(strings-case 'fmt-percent-property-positions
+              (lambda () (let (results)
+                           (dolist (entry '(("%%") ("%5%") ("x%%y") ("a%5sZ" "bc") ("%+5d" 7)))
+                             (dotimes (i (length (car entry)))
+                               (let ((fmt (copy-sequence (car entry))))
+                                 (put-text-property i (1+ i) 'face i fmt)
+                                 (push (strings-format-result fmt (cdr entry)) results))))
+                           (nreverse results))))
+nil

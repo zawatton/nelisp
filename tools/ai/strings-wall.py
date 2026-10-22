@@ -106,6 +106,10 @@ def main():
     assert candidate.exists() and base.exists() and gnu, "missing timing binaries"
     identities = {name: hashlib.sha256(path.read_bytes()).hexdigest()
                   for name, path in [("candidate", candidate), ("base", base), ("gnu", Path(gnu))]}
+    for role, path in [("candidate", candidate), ("base", base)]:
+        cold = Path(str(path) + ".cold")
+        if cold.exists():
+            identities[role + "-cold"] = hashlib.sha256(cold.read_bytes()).hexdigest()
     assert identities["candidate"] != identities["base"], "candidate and base are the same binary"
     commands = {"candidate": [str(candidate)], "gnu": [gnu, "-Q", "--batch"], "base": [str(base)]}
     if args.round is not None:

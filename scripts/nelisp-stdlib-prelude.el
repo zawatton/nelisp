@@ -23900,7 +23900,7 @@ argument end extends over right padding (textprop.c:2123)."
                   ;; GNU 31.1 also accepts b/B binary integers. Uppercase
                   ;; E/F/G and C99 a/A remain invalid public operations.
                   (if (= conv 37)        ; ?%
-                      (setq out (concat out (nelisp--format-field-properties (copy-sequence "%") template field-start)))
+                      (setq out (concat out (substring template j (1+ j))))
                     ;; Emacs signals when the arguments run out; this
                     ;; layer used to read (car nil) and print "nil" in
                     ;; the slot -- (format "%s %s" "one") was "one nil".

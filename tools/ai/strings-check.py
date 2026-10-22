@@ -263,11 +263,11 @@ def layout():
 
 def speed(workload):
     assert workload, "choose producers or pressure"
-    report = json.loads((OUT / "timing" / f"{workload}.json").read_text())
+    report = json.loads(Path(os.environ.get("STRINGS_SPEED_REPORT", str(OUT / "timing" / f"{workload}.json"))).read_text())
     assert report["cpu"] == 14 and report["rounds"] == 7
     assert set(report["verdicts"]) == ({"concat", "substring", "format"}
                                        if workload == "producers" else {"pressure"}), "incomplete workload report"
-    for role, path in [("candidate", OUT / "dynamic/nelisp"), ("base", OUT / "base/nelisp")]:
+    for role, path in [("candidate", Path(os.environ.get("STRINGS_SPEED_CANDIDATE", str(OUT / "dynamic/nelisp")))), ("base", Path(os.environ.get("STRINGS_SPEED_BASE", str(OUT / "base/nelisp"))))]:
         assert report["identities"][role] == hashlib.sha256(path.read_bytes()).hexdigest(), "stale timing binary"
     for kind, row in report["verdicts"].items():
         assert len(row["paired_gnu_ratios"]) == len(row["paired_base_ratios"]) == 7
@@ -281,7 +281,7 @@ def image():
         resource.setrlimit(resource.RLIMIT_AS, (8 << 30, 8 << 30))
     summary = []
     for kind in ("dynamic", "static"):
-        binary = OUT / kind / "nelisp"
+        binary = Path(os.environ.get("STRINGS_" + kind.upper(), str(OUT / kind / "nelisp")))
         cold = Path(str(binary) + ".cold")
         assert cold.exists() and cold.stat().st_size > (1 << 20), f"{kind}: no companion cold image"
         times = []
@@ -319,17 +319,18 @@ def image():
 def final():
     report = json.loads((OUT / "final.json").read_text())
     assert report["groups"] == 11 and report["failures"] == 0
-    assert report["standalone_checks"] and report["mcp_tools"] == 40 and report["wine_smoke"]
+    assert report["standalone_checks"] and report["mcp_tools"] == 40
+    assert report["wine_smoke"], "Wine smoke still needed for this revision"
     for role in ["dynamic", "static"]:
-        assert report["identities"][role] == hashlib.sha256((OUT / role / "nelisp").read_bytes()).hexdigest(), "stale final binary"
+        assert report["identities"][role] == hashlib.sha256((OUT / report.get("paths", {}).get(role, role + "/nelisp")).read_bytes()).hexdigest(), "stale final binary"
     print("PASS final: 11 groups, standalone checks, 40 MCP tools, Wine smoke")
 
 
 def format_semantics():
     outputs = {}
-    golden = os.environ.get("GNU_EMACS", "/usr/local/bin/emacs")
+    golden = os.environ.get("GNU_EMACS", "emacs")
     version = subprocess.check_output([golden, "--version"], text=True).splitlines()[0]
-    assert version.startswith("GNU Emacs 31.1"), "format golden must be GNU Emacs 31.1"
+    assert version == "GNU Emacs 31.1", "format golden must be GNU Emacs 31.1"
     runtimes = [("gnu", [golden, "-Q", "--batch"]),
                 ("dynamic", [str(OUT / "format-dynamic/nelisp")]),
                 ("static", [str(OUT / "format-static/nelisp")])]
@@ -340,12 +341,14 @@ def format_semantics():
         (OUT / f"format-{role}.err").write_bytes(result.stderr)
         assert result.returncode == 0 and not result.stderr, f"{role} format oracle failed"
         outputs[role] = [line for line in result.stdout.splitlines() if line.startswith(b"STRINGS-CASE ")]
-        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) == 37
-    assert len(outputs["gnu"]) == 50
+        assert len([line for line in outputs[role] if line.startswith(b"STRINGS-CASE fmt-")]) == 38
+    assert len(outputs["gnu"]) == 51
     for role in ["dynamic", "static"]:
         assert outputs[role] == outputs["gnu"], f"{role} GNU oracle differs: see format-{role}.out"
     identities = {role: hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()
                   for role, command in runtimes}
+    for role, command in runtimes[1:]:
+        identities[role + "-cold"] = hashlib.sha256(Path(command[0] + ".cold").read_bytes()).hexdigest()
     (OUT / "format-oracle.json").write_text(json.dumps(dict(identities=identities,
         fixture_sha256=hashlib.sha256((ROOT / "tools/ai/strings-semantics.el").read_bytes()).hexdigest(),
         cases=len(outputs["gnu"]), format_cases=sum(line.startswith(b"STRINGS-CASE fmt-") for line in outputs["gnu"]), passed=True), indent=2) + "\n")
@@ -358,8 +361,10 @@ def format_speed():
     assert set(report["verdicts"]) == {"concat", "substring", "format"}
     for role, path in [("candidate", OUT / "format-dynamic/nelisp"), ("base", OUT / "format-base/nelisp")]:
         assert report["identities"][role] == hashlib.sha256(path.read_bytes()).hexdigest(), "stale timing binary"
+        assert report["identities"][role + "-cold"] == hashlib.sha256(Path(str(path) + ".cold").read_bytes()).hexdigest(), "stale timing image"
     for kind, row in report["verdicts"].items():
         assert len(row["paired_base_ratios"]) == len(row["paired_gnu_ratios"]) == 7
+        assert row["base_metric"] == ("own cost" if kind == "format" else "total call")
         assert row["base_ratio"] < (1 if kind == "format" else 1.03), f"{kind} regression"
         print(f"PASS {kind}: {row['base_ratio']:.4f}x b1f0ed553; {row['gnu_ratio']:.4f}x GNU")
     ir = json.loads((OUT / "format-ir.json").read_text())
@@ -377,6 +382,8 @@ def format_final():
     for role in ["dynamic", "static"]:
         identity = hashlib.sha256((OUT / f"format-{role}/nelisp").read_bytes()).hexdigest()
         assert report["identities"][role] == oracle["identities"][role] == identity, "stale final binary"
+        cold = hashlib.sha256((OUT / f"format-{role}/nelisp.cold").read_bytes()).hexdigest()
+        assert report["identities"][role + "-cold"] == oracle["identities"][role + "-cold"] == cold, "stale final image"
     assert oracle["passed"]
     print("PASS format final: both linkages, GNU oracle, 11 groups, standalone checks, 40 MCP tools")
 

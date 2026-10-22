@@ -247,7 +247,9 @@ format intervals from the percent character onto each replacement before
 applying argument intervals, including GNU's trailing-padding extension
 (editfns.c:4310-4400, textprop.c:2123, adapted). It copies the replacement
 before changing properties, preserving the caller's argument. %S serializes
-string intervals. Width and precision count display columns as GNU
+string intervals. Literal %% copies the final percent and its properties
+(editfns.c:3646-3656); conversion fields inherit the opening percent.
+Width and precision count display columns as GNU
 character.c:344 does; tools/ai/strings-format-width.el regenerates the GNU
 31.1 default width ranges used when the optional display library is absent.
 No symbol storage, collector internals or concat dispatch changed.
