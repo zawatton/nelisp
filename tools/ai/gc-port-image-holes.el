@@ -7,7 +7,7 @@
 ;;   (nelisp--debug-switch 46)  bit 0 a hole map exists, bit 1 the boot structures are built,
 ;;                              bit 2 a cold image is loaded;
 ;;   (nelisp--debug-switch 47)  how many 8-byte granules the hole map marks free;
-;;   (nelisp--debug-switch 48)  1 when the hole scan marks exactly the free blocks of a synthetic
+;;   (nelisp--debug-switch 52)  1 when the hole scan marks exactly the free blocks of a synthetic
 ;;                              header run (live 48, free 64, live 32, free 32, free 32, live 48).
 ;; GCIH_EXPECT is liveonly (state 6), legacy (state 7: the older path also builds the map) or none
 ;; (state 0: no image was accepted).  Prints "GCIH EXPECT checks=N failures=F PASS|FAIL" and one
@@ -25,7 +25,7 @@
   (gcih-check (= state (cond ((equal gcih-expect "liveonly") 6) ((equal gcih-expect "legacy") 7) (t 0)))
               (format "state %S for %s" state gcih-expect))
   (gcih-check (= holes 0) (format "no granule of the image is a hole: %S" holes)))
-(gcih-check (= (nelisp--debug-switch 48) 1) "the hole scan marks exactly the free blocks of a synthetic run")
+(gcih-check (= (nelisp--debug-switch 52) 1) "the hole scan marks exactly the free blocks of a synthetic run")
 ;; Behaviour that must not depend on how the image was loaded.
 (let ((l nil))
   (dotimes (i 4000) (push (cons i (number-to-string i)) l))

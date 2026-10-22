@@ -257,7 +257,7 @@ headers), and publishes only the image's origin and end (=nl_boot_hole_map_none=
 =nl_boot_hole_p= answers 0 and every block below the watermark is boot, the
 sweep's old no-map arm).  A version 1 image (an older writer) takes the old path
 and builds its map.  =(nelisp--debug-switch 46)= answers the state (bit 0 a map,
-bit 1 the boot structures, bit 2 an image), 47 the number of hole granules, 48
+bit 1 the boot structures, bit 2 an image), 47 the number of hole granules, 52
 checks the hole scan on a synthetic header run; =tools/ai/gc-port-image-holes.py=
 loads the companion image, a copy stamped version 1 and a copy stamped version 3
 (refused) on both linkages (ledger S1.16).  Startup falls from 116.5M to 70.8M
@@ -469,7 +469,7 @@ empty string is one string, as in GNU.  Counting is on only in mode 4 of
 other collections do not pay for it, and =nl_gc_typed_slot= is no longer called on the
 marking path outside the census (mode 1) and the alias rewrite of =clear-string= (mode 2).
 
-The census stays as the reference: =(nelisp--debug-switch 49)= collects once with
+The census stays as the reference: =(nelisp--debug-switch 53)= collects once with
 the identity set and once with the counters and answers =(MASK C0..C5 K0..K5)=, the
 counters and then the census, MASK bit I set when row I differs.
 =tools/ai/gc-port-gc-stats.py= (ledger S1.18) checks MASK = 0 after each of a dozen

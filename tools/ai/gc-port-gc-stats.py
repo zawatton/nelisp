@@ -4,7 +4,7 @@
   gc-port-gc-stats.py check --dyn BIN --static BIN [--work DIR]
 
 For each binary: tools/ai/gc-port-gc-stats.el with GCS_MODE=run (scenarios: strings, vectors, symbols, conses,
-garbage, a buffer, exact deltas; after each the debug switch 49 collects with the census and with the counters and
+garbage, a buffer, exact deltas; after each the debug switch 53 collects with the census and with the counters and
 the rows must agree), dump (a population built, its rows printed, the heap dumped to WORK/NAME.img) and restore
 (under --cold-load-from that image: the image population is not counted, heap objects stored into it are, and the
 rows agree).  Every run is capped at ulimit -v 8 GiB and 300 s and must print exactly one "GCS MODE checks=N

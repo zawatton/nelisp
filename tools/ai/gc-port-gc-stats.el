@@ -4,7 +4,7 @@
 ;; symbols and conses.  GNU takes these from its sweeps; NeLisp counts a heap object when the marker
 ;; first marks its block, a legacy cons the same way, an interned symbol from the intern table's
 ;; occupancy, and a typed cell from its sweep.  The reference is the identity-set census this replaced:
-;; (nelisp--debug-switch 49) collects once with the census and once with the counters and answers
+;; (nelisp--debug-switch 53) collects once with the census and once with the counters and answers
 ;; (MASK C0..C5 K0..K5), the counters then the census, MASK bit I set when row I differs.
 ;; GCS_MODE selects the run:
 ;;   run      the scenarios below, each followed by the comparison, with the conservative scan off; exact
@@ -27,13 +27,13 @@
     (princ (format "GCS FAIL %s\n" label))))
 (defun gcs-compare (label)
   ;; Counters = census.  The answer is (MASK C0..C5 K0..K5).
-  (let ((r (nelisp--debug-switch 49)))
+  (let ((r (nelisp--debug-switch 53)))
     (gcs-check (and (consp r) (eq (car r) 0)) (format "%s: counters/census %S" label r))
     r))
 (defun gcs-compare-loose (label)
   ;; With the conservative scan on, the two collections pin whatever their stacks hold, so a few
   ;; cells may differ between them (typed cells are counted by their sweep, pinned or not).
-  (let* ((r (nelisp--debug-switch 49)) (c (cdr r)) (k (nthcdr 6 c)) (ok (consp r)) (i 0))
+  (let* ((r (nelisp--debug-switch 53)) (c (cdr r)) (k (nthcdr 6 c)) (ok (consp r)) (i 0))
     (while (and ok (< i 6))
       (when (> (abs (- (nth i c) (nth i k))) 64) (setq ok nil))
       (setq i (1+ i)))
