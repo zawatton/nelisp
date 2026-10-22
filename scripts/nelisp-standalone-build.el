@@ -19328,7 +19328,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                (let ((cl (nelisp_env_lookup_function_w
                                           (+ env 0) (+ env 64) fw 0)))
                                  (if (= cl 2) 0 cl))
-                             0)
+                             ;; An interned symbol's object is its own entry
+                             ;; (Doc 226 D9): GNU reads the symbol's function
+                             ;; slot (bytecode.c:803 XBARE_SYMBOL (call_fun)->
+                             ;; u.s.function), here slot 1 of the object.
+                             (let ((fnw (nl_record_slot_word fw 1)))
+                               (if (= (wf_bytecode_w_unbound_p env fnw) 1) 0 fnw)))
                          0))))
           (if (if (< func 4096) 1
                 (if (= (logand func 1) 1) 1
