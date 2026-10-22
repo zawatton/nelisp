@@ -336,6 +336,8 @@ Return nil without changing SYMBOL's value or properties."
       (signal 'wrong-type-argument (list 'symbolp symbol)))
     (when (boundp 'nelisp--special-variables)
       (remhash symbol nelisp--special-variables))
+    (when (fboundp 'nelisp--env-globals-op)
+      (nelisp--env-globals-op 'variable-make-non-special symbol))
     nil))
 
 ;; `defsubst' — Emacs special form for an inline-hinted function.  The

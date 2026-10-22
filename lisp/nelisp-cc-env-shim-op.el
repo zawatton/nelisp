@@ -83,7 +83,7 @@
         (entry-ptr mirror-ptr sym-ptr result-slot miss-code _pad)
       (if (= entry-ptr 0)
           miss-code
-        (and (record-slot-ref entry-ptr 0 result-slot) 1)))
+        (seq (extern-call nl_sexp_clone_into (nl_ent_ptr entry-ptr 0) result-slot) 1)))
 
     ;; nelisp_env_shim_check_lookup_fn
     ;;

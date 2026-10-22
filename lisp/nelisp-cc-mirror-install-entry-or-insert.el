@@ -45,13 +45,13 @@
                           mirror-ptr sym-ptr
                           (nl_vector_slot_word scratch-vec-ptr 6)
                           scratch-vec-ptr)))
-        (and (record-slot-set entry-ptr 0
+        (and (nl_ent_set entry-ptr 0
                               (vector-ref-ptr scratch-vec-ptr 7))
              (record-slot-set entry-ptr 1
                               (vector-ref-ptr scratch-vec-ptr 8))
              (record-slot-set entry-ptr 2
                               (vector-ref-ptr scratch-vec-ptr 9))
-             (record-slot-set entry-ptr 3
+             (nl_ent_set entry-ptr 3
                               (vector-ref-ptr scratch-vec-ptr 10)))))
     (defun nelisp_mirror_install_entry_or_insert
         (mirror-ptr sym-ptr scratch-vec-ptr _pad)

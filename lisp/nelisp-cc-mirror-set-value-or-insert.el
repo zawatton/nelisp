@@ -97,7 +97,7 @@
                           mirror-ptr sym-ptr
                           (nl_vector_slot_word scratch-vec-ptr 6)
                           scratch-vec-ptr)))
-        (and (record-slot-set entry-ptr 0
+        (and (nl_ent_set entry-ptr 0
                               (nl_vector_slot_word scratch-vec-ptr 7))
              1)))
     (defun nelisp_mirror_set_value_or_insert

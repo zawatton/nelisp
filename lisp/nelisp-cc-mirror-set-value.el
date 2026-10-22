@@ -44,7 +44,7 @@
       ;; even-arity outer with 0 mod 16 entry).
       (if (= entry-ptr 0)
           0
-        (and (record-slot-set entry-ptr 0 val-ptr) 1)))
+        (and (nl_ent_set entry-ptr 0 val-ptr) 1)))
     (defun nelisp_mirror_set_value (mirror-ptr sym-ptr val-ptr)
       ;; mirror-ptr: *const Sexp pointing at the env-mirror Record.
       ;; sym-ptr:    *const Sexp pointing at the Sexp::Symbol / Str.

@@ -181,20 +181,24 @@
                   (ptr-write-u64 dst_ptr 24 0)) dst_ptr)
         (if (= (logand src 7) 6)
             (let ((base (- src 6)))
-              (nl_sci_prog2
-               (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
-                    ;; Doc 216 S5: the view of a float carries its bits, the
-                    ;; view of a Bignum its sign, the address of its limbs
-                    ;; (box + 8) and their count.
-                    (ptr-write-u64 dst_ptr 8 (if (= (logand (heap-read-u8 base 0) 63) 3)
-                                                 (heap-read-u64 base 8)
-                                               (if (= (logand (heap-read-u8 base 0) 63) 13)
-                                                   (logand (shr (heap-read-u64 base 0) 6) 1)
-                                                 base)))
-                    (ptr-write-u64 dst_ptr 16 (if (= (logand (heap-read-u8 base 0) 63) 13)
-                                                  (+ base 8) 0))
-                    (ptr-write-u64 dst_ptr 24 (if (= (logand (heap-read-u8 base 0) 63) 13)
-                                                  (shr (heap-read-u64 base 0) 8) 0))) dst_ptr))
+              ;; Doc 226 D9: a symbol object's view also carries its name.
+              (if (or (= (logand (heap-read-u8 base 0) 63) 4)
+                      (= (logand (heap-read-u8 base 0) 63) 16))
+                  (nl_sym_view_into src dst_ptr)
+                (nl_sci_prog2
+                 (and (ptr-write-u64 dst_ptr 0 (logand (heap-read-u8 base 0) 63))
+                      ;; Doc 216 S5: the view of a float carries its bits, the
+                      ;; view of a Bignum its sign, the address of its limbs
+                      ;; (box + 8) and their count.
+                      (ptr-write-u64 dst_ptr 8 (if (= (logand (heap-read-u8 base 0) 63) 3)
+                                                   (heap-read-u64 base 8)
+                                                 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                     (logand (shr (heap-read-u64 base 0) 6) 1)
+                                                   base)))
+                      (ptr-write-u64 dst_ptr 16 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                    (+ base 8) 0))
+                      (ptr-write-u64 dst_ptr 24 (if (= (logand (heap-read-u8 base 0) 63) 13)
+                                                    (shr (heap-read-u64 base 0) 8) 0))) dst_ptr)))
           (nl_sci_dispatch src dst_ptr (heap-read-u8 src 0)))))))
   "AOT source for nl_sexp_clone_into.
 

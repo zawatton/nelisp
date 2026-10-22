@@ -1,0 +1,493 @@
+#+TITLE: Doc 226 — GNU 31.1 symbols: struct Lisp_Symbol cells and the redirect model
+#+STATUS: PLANNED
+#+LEDGER: tools/ai/symbols-progress.org
+
+* Contract
+
+GNU Emacs 31.1 is the oracle and the model (user decision 2026-10-21:
+fix the representation first, imitate GNU, judge by wall-clock time
+against GNU).  Each row below is marked =ported= (GNU's structure and
+algorithm), =adapted= (GNU's structure on a NeLisp storage that is named)
+or =blocked= (with the blocking layer).  No step is complete until its
+semantic and measurement receipts exist in the ledger.
+
+All REPLs and tests run under =ulimit -v 8388608=; builds and long runs go
+through =bin/heavy-run.sh=; wall-clock timing is pinned to CPU 13 and
+decided on paired per-round ratios (COMMON.md "Measurement").
+
+* GNU 31.1 structure
+
+- =struct Lisp_Symbol= (lisp.h:786) holds, in one object per symbol:
+  - the bit fields =redirect= (lisp.h:771: PLAINVAL, VARALIAS, LOCALIZED,
+    FORWARDED), =trapped_write= (lisp.h:779: UNTRAPPED, NOWRITE, TRAPPED),
+    =interned= (lisp.h:764) and =declared_special=;
+  - =name= (a Lisp string), the =val= union (=value=, =alias=, =blv=,
+    =fwd=), =function=, =plist= and =next= (the obarray bucket chain).
+  - It is 48 bytes on 64-bit hosts and has no object header: the tag is in
+    the Lisp_Object, and =XBARE_SYMBOL= (lisp.h:1111) is pointer
+    arithmetic from =lispsym=.  Symbols are allocated in symbol blocks
+    (alloc.c:3612) with no per-object prefix; =Fmake_symbol= (alloc.c:3675)
+    takes the name string without copying it.
+- Accessors: =SYMBOL_VAL= (lisp.h:2299), =SYMBOL_ALIAS= (lisp.h:2306),
+  =SYMBOL_BLV= (lisp.h:2312), =SYMBOL_FWD= (lisp.h:2318), =SET_SYMBOL_VAL=
+  (lisp.h:2325), =SYMBOL_CONSTANT_P= (lisp.h:400).
+- Reads: =find_symbol_value= (data.c:1619) switches on =redirect=: VARALIAS
+  follows the alias, PLAINVAL returns the cell, LOCALIZED swaps the blv in
+  (=swap_in_symval_forwarding=, data.c:1574), FORWARDED reads the C
+  variable (=do_symval_forwarding=, data.c:1337).  =default_value=
+  (data.c:1962) is the same switch with the blv's default cell.
+- Writes: =set_internal= (data.c:1678) first switches on =trapped_write=
+  (NOWRITE signals =setting-constant= except a keyword set to itself;
+  TRAPPED calls =notify_variable_watchers=, data.c:1915), then on
+  =redirect=; FORWARDED stores through =store_symval_forwarding=
+  (data.c:1470: an integer check for intfwd, =!NILP= for boolfwd) and
+  refuses unbinding ("Built-in variable may not be unbound").
+- Dynamic binding: =specbind= (eval.c:3656) follows aliases, then for
+  PLAINVAL pushes {LET, symbol, old value} and stores the cell directly
+  (=do_specbind=, eval.c:3613); LOCALIZED/FORWARDED record LET_LOCAL or
+  LET_DEFAULT.  =unbind_to= (eval.c:3940) pops records through
+  =do_one_unbind= (eval.c:3806), which stores a PLAINVAL symbol's cell
+  directly and otherwise calls =set_internal=.
+- =Fdefvaralias= (eval.c:631) refuses constants, cycles (walk from the
+  base), FORWARDED and LOCALIZED new aliases, notifies watchers, sets both
+  =declared_special= bits and copies =trapped_write=.  =Fmakunbound=
+  (data.c:767) undoes an alias in 31.1.  =Findirect_variable= (data.c:1291)
+  loops without a cycle check.
+- Obarray: =struct Lisp_Obarray= (lisp.h:2398) holds a bucket array of
+  symbol chains.  =oblookup= (lread.c:4932) hashes with =obarray_index=
+  (lread.c:4852: =hash_char_array=, fns.c:5342, a word-at-a-time hash, then
+  =knuth_hash=), walks =next= and compares byte length, char length and
+  bytes; =intern_sym= (lread.c:4674) marks keywords NOWRITE and special in
+  the initial obarray, links the bucket and grows (=grow_obarray=,
+  lread.c:5047).  =Fintern= (lread.c:4773), =Fintern_soft= (lread.c:4809),
+  =Funintern= (lread.c:4858), =Fobarray_make= (lread.c:5089) and =Fmapatoms=
+  (lread.c:5156) work on any obarray; =obarray= is the initial one.
+- GC: =mark_object= marks a symbol's name, value per redirect, function and
+  plist (alloc.c:6626); =sweep_symbols= (alloc.c:6997).
+
+* NeLisp before this lane (915e1a17a)
+
+- A symbol WORD is a 32-byte view box: tag 4 at +0, name bytes at +16,
+  length at +24 (interned), or tag 16 with an identity number at +8
+  (uninterned).  Views are created per occurrence and copied freely
+  (=wf_copy32=, =nl_sexp_clone_into=); =symbol-eq= compares name bytes.
+- Interned names live once in a permanent intern arena (outside the GC);
+  callpath-perf's step 1a gave each canonical name an 8-byte header (cell
+  index in the low 32 bits, static symbol id in the high 32 bits).
+- The global state lives in the env "mirror": a fast-hash-table keyed by
+  name whose entries are =symbol-entry= records: slot 0 value, 1 function,
+  2 plist, 3 constant flag, 4 alias target, 5 buffer-local redirect.  A key
+  may have several entries (writers prepend; readers take the first).
+  callpath-perf's slot-3 cell vector maps the cell index to the first
+  entry, so reads of a symbol with a cell skip the hash.
+- Declared-special status is a separate registry hash (=bf_special_registry=,
+  =bf_declared_special_p=) plus a Lisp hash; watchers are a Lisp hash table
+  with one global notify mode; constants are slot 3 plus name tests.
+- Dynamic binding is shallow (=nl_sb_bind_plain=): the old value is pushed
+  as a [NAME OLD] vector on the frame's name list and the entry's slot 0 is
+  written; =nl_sb_restore_list= restores by name.  Every step looks the
+  entry up again, and =nl_sb_bind= copies the name and value into scratch
+  boxes first.
+- Buffer-local values live in per-buffer cell symbols reached through
+  slot 5 (buffer-native replaces this with a blv, Doc 222).
+- No variable is forwarded: =nl_frame_stack_limit_setup= caches the
+  =max-lisp-eval-depth= entry and reads its slot 0 on every frame push.
+- Intern: a 2^20-slot open-addressing table of name buffers with a
+  byte-at-a-time FNV-1a hash (=nl_intern_hash=); symbol names come from a
+  second table (=nl_symname_probe=).  =obarray= is void; custom obarrays
+  are prelude records over an =equal= hash table of uninterned symbols;
+  global =unintern= and =mapatoms= signal =unsupported-feature=.
+
+* Operation map
+
+| operation | GNU 31.1 | NeLisp before | port |
+|-+-+-+-|
+| symbol-value | data.c:1645, find_symbol_value data.c:1619 | env lookup, cell or hashed entry, slot 4/5 classification | ported: =nl_sym_find_value= switches on the struct's redirect |
+| set | data.c:1660, set_internal data.c:1678 | =nelisp_env_set_value=, constant slot, entry insert by prepend | ported: =nl_sym_set_internal= (trapped_write, then redirect) |
+| setq | eval.c:470 | =nl_n3_setq= frame cell or env set | ported: lexical cell or =nl_sym_set_internal= |
+| let | eval.c:1133, specbind eval.c:3656 | =nl_sb_bind= (scratch copies, three lookups) | ported: =nl_sym_specbind= saves the struct's cell, stores it |
+| let* | eval.c:1076, unbind_to eval.c:3940 | frame pop, =nl_sb_restore_list= by name | ported: unbind stores the saved value into the struct's cell |
+| defvar | eval.c:944 | =bf_defvar_init_mode=, registry insert | ported: =declared_special= bit in the struct |
+| defconst | eval.c:1018 | value plus registry | ported: as GNU, no NOWRITE |
+| defvaralias | eval.c:631 | alias stage, slot 4, entry replacement | ported: redirect VARALIAS, alias slot, GNU's refusals |
+| indirect-variable | data.c:1291 | =nl_pa_terminal= | ported: loop over redirect |
+| makunbound | data.c:767 | slot 0 or alias clear | ported: 31.1 undoes an alias |
+| boundp | data.c:715 | =nelisp_mirror_is_bound= | ported: =nl_sym_find_value= is not unbound |
+| default-value | data.c:2019, default_value data.c:1962 | =nl_pa_default_w= | ported (LOCALIZED delegated) |
+| fboundp | data.c:759 | =nelisp_mirror_is_fbound= | ported: struct function cell |
+| fset | data.c:897 | =nelisp_mirror_set_function_or_insert= | ported: struct function cell |
+| symbol-function | data.c:810 | env function lookup | ported: struct function cell |
+| fmakunbound | data.c:792 | =nelisp_mirror_clear_function= | ported: struct function cell |
+| symbol-plist | data.c:818 | entry slot 2 | ported: struct plist cell |
+| get | fns.c:2648 | prelude plist walk over slot 2 | ported: struct plist cell |
+| put | fns.c:2729 | prelude plist write to slot 2 | ported: struct plist cell |
+| add-variable-watcher | data.c:1857 | Lisp hash and global notify mode | adapted: TRAPPED_WRITE bit, watchers kept in the Lisp table |
+| intern | lread.c:4773, oblookup lread.c:4932 | native table, FNV-1a per byte | ported: =hash_char_array= (fns.c:5342) word-at-a-time hash |
+| intern-soft | lread.c:4809 | native lookup / prelude | ported |
+| unintern | lread.c:4858 | global: unsupported-feature | adapted: tombstone in the native table; =eq= compares canonical buffers (D6) |
+| obarray-make | lread.c:5089 | prelude record over an equal hash | adapted: obarray record, =obarray= bound to the initial obarray |
+| mapatoms | lread.c:5156 | global: unsupported-feature | ported: walks the initial obarray |
+
+* Mirror-table census
+
+Method: =python3 tools/ai/symbols-check.py census-static REV= counts the
+call sites of mirror-table functions (=nelisp_mirror_*=, =nl_symcell_*=,
+=nelisp_fnv1a=) in native runtime functions outside the mirror module
+(=lisp/nelisp-cc-mirror-*.el=), grouped by the caller's subsystem.  The
+table is the census at 915e1a17a; =plan= recomputes it.  The dynamic census
+of S1.2 counts hashed lookups at run time instead.
+
+| subsystem | functions | call sites |
+|-+-+-|
+| env value/function cells | 15 | 30 |
+| interpreter globals ops (setq, defvaralias, watchers) | 6 | 17 |
+| variable aliases | 12 | 19 |
+| specbind (shallow binding) | 3 | 3 |
+| bytecode VM | 5 | 6 |
+| native code (FX/N4) | 5 | 5 |
+| function cells (fset, install, apply) | 3 | 7 |
+| lexical frames (name hash) | 4 | 4 |
+| builtins | 7 | 7 |
+| hashing (sxhash) | 1 | 5 |
+| other | 1 | 1 |
+| total | 62 | 104 |
+
+The lexical-frame and sxhash rows hash names for the interpreter's
+lexical environments and for =sxhash=; they are outside this lane (GNU
+keeps the interpreter's lexical environment as an alist,
+=Vinternal_interpreter_environment=).
+
+* Decisions
+
+** D1 The symbol object holds GNU's cells (adapted storage)
+
+Each symbol has exactly one symbol object: a word-heap record (compact
+vectorlike, no 32-byte header box) of type =symbol-entry=, allocated once
+and never replaced, with GNU's fields:
+
+| slot | GNU field | contents |
+|-+-+-|
+| 0 | val.value | PLAINVAL value, unbound marker when void |
+| 1 | function | function cell |
+| 2 | plist | property list |
+| 3 | trapped_write NOWRITE | legacy constant flag, kept equal to the bit |
+| 4 | val.alias | VARALIAS target symbol |
+| 5 | val.blv | LOCALIZED blv (buffer-native) |
+| 6 | redirect, trapped_write, interned, declared_special | fixnum bit fields |
+| 7 | val.fwd | FORWARDED descriptor |
+| 8 | name | canonical name string, filled on first =symbol-name= |
+
+The val union keeps three storage slots (0, 4, 5) because the alias stage
+and buffer-native's blv read them; =redirect= says which member is live,
+as in GNU.  Merging them into slot 0 is a later step once buffer-native is
+on this base.  =next= is not stored: the initial obarray is the native
+intern table (D6).
+
+** D2 From a symbol view to its object without hashing (adapted)
+
+GNU's symbol Lisp_Object addresses the struct.  A NeLisp symbol WORD is
+still a view; the blocking layer is the per-occurrence 32-byte view and
+name-based =eq=, which the header-less WORD (word-heap S3) removes.  Until
+then the view reaches its object in four dependent loads and no hash:
+view+16 -> canonical name buffer -> header index -> the symbol table (the
+mirror's slot-3 vector, GNU's =lispsym= role) -> object.  The vector is an
+ordinary heap object, so the collector, compaction and the image dumper
+need no change.  Every interned symbol that has state has its object in
+the table; an empty slot of an interned symbol means "no state" (unbound,
+void function, empty plist) and is answered without hashing.  Uninterned
+symbols (tag 16) keep the hashed mirror, keyed by identity, until their
+WORD addresses their object (S1.1).
+
+** D3 Redirect dispatch (ported)
+
+=nl_sym_find_value=, =nl_sym_set_internal=, =nl_sym_default_value= and
+=nl_sym_set_default= are GNU's four functions over the object.
+PLAINVAL and VARALIAS are complete here; FORWARDED reads and writes the
+native slot named by the descriptor; LOCALIZED calls the existing
+buffer-local path until buffer-native's blv is on this base.  All
+interpreter, bytecode, N4/FX and builtin variable paths call them.
+
+** D4 specbind and unbind_to on the cells (ported)
+
+=nl_sym_specbind= resolves aliases first, then for PLAINVAL records
+[NAME OLD OBJECT] on the frame's name list and stores the new value into
+the object; =nl_sb_restore_list= stores OLD into OBJECT with no lookup.
+The record keeps NAME for the existing name-based readers
+(=nl_ps_outer_saved=, thread unshallowing).  FORWARDED bindings go through
+=nl_sym_set_internal= with the bind flag, as GNU's LET record does.  The
+frame's name list stands in for GNU's specpdl array (adapted).
+
+** D5 FORWARDED variables (ported mechanism)
+
+A descriptor (type INT, BOOL or OBJ, and a native data address) in slot 7.
+=max-lisp-eval-depth= (GNU DEFVAR_INT) is the first: the frame-depth check
+reads its native word instead of a cached entry.  Setting checks the type
+(=wrong-type-argument integerp=), BOOL stores t or nil, =makunbound=
+signals "Built-in variable may not be unbound", =defvaralias= of it is
+refused.  Per-buffer built-ins (BUFFER_OBJFWD) belong to buffer-native.
+
+** D6 Obarray and intern (ported hash, adapted table)
+
+=intern= keeps the native open-addressing table as the initial obarray's
+storage (a permanent region the collector does not scan, so it cannot
+hold heap symbol objects), with GNU's =hash_char_array= word-at-a-time
+hash replacing the per-byte FNV-1a.  =obarray= is bound to an obarray
+object that stands for it; =intern=, =intern-soft=, =unintern= and
+=mapatoms= accept it.  Global =unintern= tombstones the name's slot (bit
+62 of its length word: no probe matches it, probe chains stay intact),
+so a later =intern= makes a new canonical buffer, a new symbol.  For that
+to be a different symbol, =eq= (=bf_eq2=) now compares two interned
+symbols by their canonical buffer, GNU's pointer identity, and keeps the
+name comparison only for a plain (non-canonical) buffer.
+
+** D7 Verify build
+
+=NELISP_SYMCELL_VERIFY=1= cross-checks every object answer against the
+hashed walk, including an empty slot meaning "absent", and exits 97 on a
+difference; =fault= corrupts answers so the check is shown to fire.
+
+** D8 S1.1 size target
+
+GNU's =struct Lisp_Symbol= is 48 bytes (it still has =next=), larger than
+the word-heap S0 threshold of 32 arena bytes, so S1.1 targets GNU's 48
+bytes per uninterned symbol (coordinator rule 2026-10-21, from the strings
+lane), with the shared name charged separately.
+
+** D9 Direct symbol objects (step 5; ported layout, adapted class)
+
+GNU (lisp.h:786) has no object header for a symbol: 48 bytes holding a
+flags word (=gcmarkbit=, =redirect=, =trapped_write=, =interned=,
+=declared_special=, =pinned=; enums lisp.h:764-784), =name=, =val= (a
+union of value, alias, blv and fwd, selected by =redirect=), =function=,
+=plist= and =next=.  A symbol Lisp_Object is the struct's address with
+the symbol tag (lisp.h:1120 =XSYMBOL=, 1144 =make_lisp_symbol=).
+=make-symbol= takes a cell from a =symbol_block= (alloc.c:3616-3700) and
+=init_symbol= (alloc.c:3660) stores the given name string, the unbound
+value, nil function and plist, PLAINVAL and UNINTERNED.  The collector
+marks function, plist and the =val= member that =redirect= selects
+(alloc.c:6625) and sweeps the blocks (alloc.c:6997).
+
+Class (adapted; coordinator decision 2026-10-21).  Doc 216's tag space
+has four pointer classes and none is free for GNU's separate symbol tag:
+010 is the cons, 100 GNU's =Lisp_String= (Doc 227), 110 the vectorlike.
+A direct symbol WORD is its backing address | 6, and the header's kind
+field (bits 0-5) carries the symbol type as GNU's pseudovector header
+carries a PVEC type.  The kind is the semantic tag, 4 interned and 16
+uninterned, so =nl_val_tag= answers unchanged.
+
+Layout (ported, 48 bytes):
+
+| offset | GNU field | contents |
+|-+-+-|
+| +0 | flags | kind (bits 0-5), =redirect= (8-9), =trapped_write= (10-11), =interned= (12-13), =declared_special= (14), =pinned= (15), FORWARDED type (16-17); bits 18-23 free; bits 24 and up belong to the collector (24 is =gcmarkbit=) |
+| +8 | name | the name string WORD |
+| +16 | val | PLAINVAL value or the unbound marker; VARALIAS target symbol; LOCALIZED blv; FORWARDED value |
+| +24 | function | function cell |
+| +32 | plist | property list |
+| +40 | next | raw: 0 for an object that is not interned; for an interned object this lane's meta word (stage 3: the name's FNV-1a hash in bits 32-63, its static symbol id in bits 20-31, its intern table slot in bits 0-19); the initial obarray is the native intern table (D6) |
+
+For kinds 4 and 16 the header bits above 7 are flags, not a length; the
+collector's walkers use the fixed layout.  =val=, =function= and =plist=
+sit at the offsets of D1's slots 0-2.  D1's slots 3-8 fold into the flags
+word and the union: constant becomes =trapped_write= NOWRITE, the alias
+target and the blv move into =val=, the declared-special bit into bit 14,
+the FORWARDED descriptor into bits 16-17, the name to +8.
+
+FORWARDED (adapted).  GNU's =val.fwd= points at a typed C variable that
+C code reads directly.  NeLisp has no C variable: the runtime reads the
+symbol's =val= (the frame-depth check, D5), so =val= keeps the value and
+the flags word keeps the forwarding type (1 integer, 2 boolean).  Every
+=val= is a WORD or an immediate, so the collector traces all four edges
+unconditionally.
+
+LOCALIZED.  =val= holds the blv; the default value lives in it, as GNU's
+=defcell= does (see the interop plan).
+
+Allocation.  =nl_symbol_alloc= returns the backing address of a zeroed
+48-byte cell, or 0 when memory is exhausted; the WORD is that address
+| 6.  gc-port allocates the cells from =symbol_block= typed
+blocks, with marking, sweeping, the image walk, relocation and the
+conservative scan, and never moves them (coordinator routing
+2026-10-21).  Until then the cells come from the general allocator (an
+8-byte prefix, 56 bytes charged) and the three vectorlike walkers trace
+kinds 4 and 16 as four inline WORDs.
+
+Stages.
+1. Every symbol object takes this layout; an interned symbol's WORD is
+   still a view that reaches its object by D2's hop.
+2. =make-symbol= returns the direct WORD (no view, no identity number, no
+   copied name buffer, no hashed walk); its name is the string given, so
+   =(eq (symbol-name s) name)= holds as in GNU.  Every symbol consumer
+   accepts the direct WORD, including the =symbol-eq=, =symbol-name-eq= and
+   =sexp-name-eq= emitters (on this branch, coordinator routing).
+3. Interned symbols' WORDs become direct once the reader and the intern
+   table hand them out; =eq= is then a pointer compare everywhere.
+   Implemented in five steps (stages 3.0 to 3.4, below).  An interned
+   symbol keeps its place in the native intern table (D6): the table's
+   canonical name buffer is what a legacy view points at, and the object
+   is reached from it, or from the object's WORD, without hashing.
+
+* LOCALIZED interop with buffer-native
+
+buffer-native (Doc 222) ports =Lisp_Buffer_Local_Value= with =where=,
+=found=, =valcell= and the default cell.  D9 places the blv in =val=,
+selected by =redirect=, and the default value in the blv as GNU's
+=defcell= (coordinator agreement 2026-10-21; buffer-native adapts its
+slot-5 reads when it is rebased onto the word-heap line).  After it is
+merged onto this base:
+1. Installing a blv stores it in =val= and sets =redirect= to LOCALIZED
+   in the flags word (one write in buffer-native's make-local and
+   make-variable-buffer-local paths); removing the last local restores
+   PLAINVAL with the default value in =val=.
+2. =nl_sym_find_value= and =nl_sym_set_internal= call buffer-native's
+   =swap_in_symval_forwarding= analog and valcell write for LOCALIZED,
+   exactly where GNU's switch does; =nl_sym_default_value= reads slot 0.
+3. =nl_sym_specbind= records LET_LOCAL (with the buffer) or LET_DEFAULT
+   as GNU's specbind does, and unbind calls the LOCALIZED write.
+4. The per-buffer cell symbols and the slot-5 name substitution retire.
+Until then the existing buffer-local path keeps its logic: from D9 stage 1
+its per-buffer redirect vector and the default value travel together in
+the blv held by =val= (redirect LOCALIZED) instead of slots 5 and 0.
+
+* Steps
+
+Each step rebuilds dynamic and static, runs the S1.3 fixture
+(=test/standalone-symbols-check.el= against GNU's =.expected=) on both,
+times the globals probe on CPU 13 and commits with the numbers.
+1. One object per symbol (D1, D2, D7).
+2. Redirect dispatch for PLAINVAL, VARALIAS and FORWARDED (D3, D5).
+3. specbind/unbind_to on the cells (D4).
+4. Obarray and intern (D6).
+5. Direct symbol objects (D9): the GNU layout for every symbol object,
+   then direct WORDs for uninterned symbols (S1.1, S1.2), then for
+   interned symbols.
+
+* Status (2026-10-21)
+
+- Step 1 (71d4a44d3): one nine-slot object per symbol, found without the
+  name hash; an empty slot of an interned symbol means "no state".
+- Steps 2-3 (002b89a59): =nl_sym_find_value_w= / =nl_sym_set_w= (GNU's
+  find_symbol_value and set_internal over the object, no frame search in
+  the main thread); FORWARDED =max-lisp-eval-depth= (intfwd) and
+  =print-escape-newlines= (boolfwd) with GNU's conversions and refusals;
+  specbind records the cell's old value directly.  Adapted storage: a
+  FORWARDED value lives in the object's slot 0, which the frame-depth
+  check reads directly (GNU reads the C variable).
+- Build constraint: functions reachable from the native compiler's F1
+  roots are capped at 296 (scripts/nelisp-native-compiler-f1-prelink.py);
+  step 1 is at 295 and steps 2-3 at 296, so new code on those paths is
+  inlined or uses helpers the closure already holds.
+- Step 4: =declared_special= becomes a bit of the object (slot 6, bit 64),
+  set by every native declaration and by the globals operations behind
+  =internal--define-uninitialized-variable= and
+  =internal-make-var-non-special=; the registry hash stays for Lisp
+  readers.  =obarray=, global =mapatoms= and global =unintern= as D6.
+- Step 5.1 (D9 preparation, no layout change): every reader and writer of a
+  symbol object's D1 slots goes through the entry API (=nl_ent_p=,
+  =nl_ent_n=, =nl_ent_w=, =nl_ent_set=, =nl_ent_ptr=): an in-line fast
+  path for the function, the plist and a PLAINVAL value of a GNU-layout
+  object, and two out-of-line slow paths (=nl_ent_w_slow=,
+  =nl_ent_set_slow=) for the rest, including GNU's
+  store_symval_forwarding conversion that steps 2-3 had copied into three
+  callers.  The slow paths are inline boundaries: the F1 prelink closure
+  bounds its function count (304), its text and its root evidence
+  (nodes), and copies of them in every caller cost edges in all three.
+  The units that call the API in that closure import the arena for the
+  inliner (=sf-env-set-value2-epoch.o=, =sf-mirror-is-const.o=).
+  Unreferenced legacy units (the alias stage: =nelisp_mirror_alias_install=
+  and its helpers) keep their record accessors; nothing calls them.
+- Step 5.2 (D9 stage 1): every symbol object is GNU's 48-byte struct
+  Lisp_Symbol from gc-port's =nl_symbol_alloc= (symbol_block cells,
+  merged from 406ae630f), kind 4 with interned INTERNED_IN_INITIAL_OBARRAY;
+  the nine-slot record is gone.  Lisp never holds the object: the
+  buffer-local layer reads and writes D1 slots 3 and 5 through the globals
+  operations =variable-entry-slot= and =variable-entry-slot-set=.  The VM's
+  Bvarref (=wf_bytecode_w_varref=, and callpath-perf's VARREF op through
+  it) and its varref cache read GNU find_symbol_value's in-line cases
+  through =nl_ent_plain_value=, everything else through
+  =nl_sym_find_value_w=.
+- Step 5.3 (D9 stage 2): an uninterned symbol is a direct object.
+  =make-symbol= (=bf_make_symbol_w=, GNU Fmake_symbol) and the C-ABI
+  writers the reader's =#:= syntax and the native =make-symbol= use build
+  a kind-16 object whose name is the given string (GNU's =name=), whose
+  value and function cells hold one shared unbound-marker view
+  (=nl_sym_unbound=, rooted at 268436336 beside the shared symentry) and
+  whose identity is its backing address.  A legacy 32-byte view of it
+  (for the Sexp-slot ABI) carries that address at +8 and the name's bytes
+  at +16/+24, and every store canonicalizes the view back to the object's
+  WORD (=nl_val_clone_into=, =nl_word_canon=).  Lookups answer the object
+  itself, so the uninterned path no longer hashes.  String accessors read
+  a symbol object's name string (=nl_word_data=, =nl_word_length=,
+  =nl_bi_strptr=/=nl_bi_strlen=, =bf_str_ptr=/=bf_str_len=, and the
+  =str-len=, =str-bytes= and =str-byte-at= emitters on x86_64 and
+  aarch64); identity readers compare payloads (=nelisp_symbol_key_equal=,
+  =nl_sexp_eq=); =symbol-name= answers the name string; the printer
+  prints it.  The collector marks an object through its view
+  (=nl_gc_mark_symview=: validated through the typed registry, a swept
+  cell skipped by its dead marker) and the shared unbound view as a root.
+  An uninterned symbol never enters the mirror's buckets, so the NeLisp
+  enumerator =nelisp--native-variable-alias-pairs= (no GNU twin: GNU's
+  mapatoms never reaches an uninterned symbol) finds uninterned aliases
+  by walking the symbol blocks in sweep_symbols' order
+  (=nl_pa_uninterned_alias_pairs= over the arena's =nl_symbol_block_first=,
+  =nl_symbol_block_next= and =nl_symbol_block_cells=).  =make-symbol=
+  costs 48 B per symbol, GNU's sizeof (struct Lisp_Symbol).
+- Stage 3 (D9 stage 3, direct interned WORDs; coordinator-approved
+  2026-10-22, steps 3.0 to 3.4, each verified on its own build).
+  - 3.0 An interned symbol's object is reached from a legacy view without
+    the hash: the view's name buffer is the intern table's canonical
+    buffer, whose header holds the symbol's index in the mirror's cells
+    vector (=nl_symcell_entry=).  An object made for a name carries its
+    meta word at +40 (hash, static id, intern slot) so that a view can be
+    derived from the object (=nl_sym_view_into=) with the canonical buffer,
+    and the builtin dispatch reads the static id from the object.
+  - 3.1 The object is made when the name is interned (GNU's
+    intern_c_string_1, lread.c, makes the Lisp_Symbol with its name): the
+    reader's leaf symbols, =intern= and =intern-soft= misses call
+    =nl_symobj_for_view=, which allocates the cell from the symbol blocks,
+    fills the name cell with the canonical name string (the box the side
+    table keeps, so every =symbol-name= answer is =eq=), the void value and
+    function (the shared unbound view), the empty plist and the meta word,
+    and registers it: the chain pair in the mirror's bucket
+    (=nl_symobj_link=) and the cell in the cells vector
+    (=nl_symobj_cell_store=).  Everything it allocates in the arena is
+    linked into the mirror, so it bumps the mutation epoch (=wf_dirty=):
+    the top-level boundary reclaim would otherwise rewind the arena over
+    it.  It makes no object in a parallel section (the mirror is read-only
+    there); such a symbol keeps its view.
+  - 3.2 Every store of a view whose symbol has an object stores the
+    object's WORD (=nl_val_clone_into=, =nl_word_canon=, =nl_symview_canon=):
+    cons cells, vector and record slots, variable cells, plists, closures,
+    the reader's forms and argument lists.  A view of an object is
+    canonical (the intern table's buffer) so it hops back to the same
+    object.  The cons accessors pass an object's WORD through
+    (=nl_cons_car_ptr=, =nl_cons_cdr_ptr=), so a symbol is not copied into
+    a 32-byte view for every consumer; the consumers that read a symbol's
+    name read it through =heap-sexp-data=, =heap-sexp-length= and the
+    =str-*= emitters, which follow a symbol object's name cell.  Identity:
+    two objects are =eq= when their WORDs are; an object and a view are
+    =eq= when the view's entry is that object (=nl_symbol_word_eq=); hash
+    functions of an object answer the meta word's hash
+    (=nelisp_fnv1a=).  The collector needs no new root: an interned symbol
+    stays reachable through the mirror, which gc-port's =nl_symcells_root=
+    marks, dumps and relocates.
+  - 3.3 The remaining comparison and dispatch sites take the WORD
+    directly (eq of two objects, the frame key compare, the special-form
+    prefilter).
+  - 3.4 The reader and =intern= / =intern-soft= answer the object WORD
+    (=nl_symobj_of=), so a symbol read or interned is never a view; the
+    reader's quote-family heads are the interned symbols (Qquote,
+    Qfunction, Qbackquote, Qcomma, Qcomma_at; the last three become static
+    names so they exist from boot).  A new interned name is registered
+    without the legacy mirror writers' scratch boxes and repeated hashing.
+  - Left as views: the heads =closure= and =builtin= that native code
+    builds (the closure of a =lambda=, the =(builtin NAME)= definitions),
+    the shared unbound marker and its copies, and views made for
+    non-canonical names.  The cold image counts them (census
+    =tools/ai/word-heap-census.py=, gc-port b7ee9ef1b): legacy symbol
+    views fell from 120,446 (stage 3.0) to 6,030 (stage 3.2).
+  - LOCALIZED stays on its existing path (the interop plan above).
+- Not reached in this lane:
+  - S2.1 own cost at GNU's level: an interned access still goes view ->
+    name buffer -> header index -> cell, plus the builtin's
+    classification, against GNU's single load.

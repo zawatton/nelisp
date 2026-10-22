@@ -189,6 +189,11 @@
       ;; `nelisp_fnv1a_step4' the same way.  A sound "not found" here is
       ;; safe: a genuinely malformed key was never a valid lexical
       ;; binding to begin with.
+      ;; Doc 226 D9: a symbol object's WORD (class 110, kind 4 or 16) lives
+      ;; in a symbol_block cell outside the chunks; its header is the check.
+      (if (= (logand name-ptr 7) 6)
+          (if (or (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 4)
+                  (= (logand (heap-read-u64 (- name-ptr 6) 0) 63) 16)) 1 0)
       (if (and (= (extern-call nl_gc_in_arena name-ptr) 0)
                (= (extern-call nl_root_pin_slot_active name-ptr) 0)
                (= (extern-call nl_rootstack_slot_active name-ptr) 0))
@@ -196,7 +201,7 @@
         (if (or (= (sexp-tag name-ptr) 4) (= (sexp-tag name-ptr) 16))
             1
           (if (or (= (sexp-tag name-ptr) 5)
-                  (= (sexp-tag name-ptr) 14)) 1 0))))
+                  (= (sexp-tag name-ptr) 14)) 1 0)))))
     (defun nelisp_frame_stack_find (frames-ptr name-ptr)
       ;; frames-ptr: *const Sexp pointing at Env::frames_record (=
       ;;             Sexp::Record(`nelisp-lexframe-stack')).

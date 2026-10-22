@@ -223,13 +223,25 @@ OBJECT can be a string or an external documentation reference."
 ;; standalone, so (sequencep 0) was `void-function' where Emacs answers nil.
 ;; Obarrays are records with a private marker and a validated native table.
 (defvar nelisp--obarray-marker (make-symbol "nelisp-obarray-marker"))
+;; Doc 226 D6: GNU's initial obarray (lread.c init_obarray_once, the value
+;; of `obarray').  Its symbols are the native intern table's; this record
+;; stands for that table wherever an obarray argument is accepted.
+(defvar nelisp--initial-obarray
+  ;; `record' is native; `nelisp--make-record' is defined much later.
+  (record 'obarray nelisp--obarray-marker 'nelisp--intern-table))
+(defvar obarray nelisp--initial-obarray
+  "Symbol table for use by `intern' and `read' (the initial obarray).")
 (defun obarrayp (object)
-  (and (recordp object)
-       (= (nelisp--record-length object) 3)
-       (eq (nelisp--record-type object) 'obarray)
-       (eq (nelisp--record-ref object 0) nelisp--obarray-marker)
-       (hash-table-p (nelisp--record-ref object 1))
-       (eq (hash-table-test (nelisp--record-ref object 1)) 'equal)))
+  (or (eq object nelisp--initial-obarray)
+      (and (recordp object)
+           (= (nelisp--record-length object) 3)
+           (eq (nelisp--record-type object) 'obarray)
+           (eq (nelisp--record-ref object 0) nelisp--obarray-marker)
+           (hash-table-p (nelisp--record-ref object 1))
+           (eq (hash-table-test (nelisp--record-ref object 1)) 'equal))))
+(defun nelisp--global-obarray-p (obarray)
+  "Non-nil when OBARRAY names the initial obarray (nil does too)."
+  (or (null obarray) (eq obarray nelisp--initial-obarray)))
 ;; `intern' takes an OBARRAY it cannot honour -- one global table here --
 ;; but Emacs type-checks the argument, and accepting anything hid the fact
 ;; that it is ignored (recorded in tools/partial-accepted.txt).
@@ -267,8 +279,8 @@ OBJECT can be a string or an external documentation reference."
           (puthash name fresh table)
           fresh))))
 (defun intern (name &optional obarray)
-  (if obarray (nelisp--obarray-intern name obarray)
-    (nelisp--native-intern name)))
+  (if (nelisp--global-obarray-p obarray) (nelisp--native-intern name)
+    (nelisp--obarray-intern name obarray)))
 ;; Absent, so a caller got `void-function' -- which reads as "the runtime
 ;; cannot do this" rather than "nobody wrote it yet".  There are no buffers
 ;; or byte-compiler here, so these answer nil and signal on a wrong type,
@@ -3098,7 +3110,7 @@ Keywords supported:  :test :test-not :key
 ;; the file), the first was pure dead code; removed rather than kept as
 ;; a fallback nothing can reach.
 (defun intern-soft (name &optional obarray)
-  (if obarray
+  (if (not (nelisp--global-obarray-p obarray))
       (let* ((table (nelisp--obarray-table obarray))
              (found (gethash (nelisp--obarray-name name) table)))
         (if (and (symbolp name) (not (eq found name))) nil found))
@@ -3116,12 +3128,14 @@ another symbol with the same name is not deleted.
   (unless (and arguments (<= (length arguments) 2))
     (signal 'wrong-number-of-arguments (list 'unintern (length arguments))))
   (let ((name (car arguments)) (obarray (cadr arguments)))
-    (if (null obarray)
-        ;; Removing entries from the native global intern table is not
-        ;; exposed to Lisp.  Keep that limitation explicit.
-        (progn
-          (nelisp--obarray-name name)
-          (signal 'unsupported-feature '(global-unintern)))
+    (if (nelisp--global-obarray-p obarray)
+        ;; GNU lread.c:4858: a symbol NAME is removed only when it is the
+        ;; interned one; the removed symbol keeps its cells, and a later
+        ;; intern of the name makes a new symbol (Doc 226 D6).
+        (let ((found (intern-soft (nelisp--obarray-name name))))
+          (if (or (null found) (and (symbolp name) (not (eq found name))))
+              nil
+            (eq (nelisp--env-globals-op 'intern-remove found) t)))
       (let* ((table (nelisp--obarray-table obarray))
              (key (nelisp--obarray-name name))
              (found (gethash key table)))
@@ -3129,10 +3143,15 @@ another symbol with the same name is not deleted.
             (progn (remhash key table) t)
           nil)))))
 (defun mapatoms (function &optional obarray)
-  (unless obarray
-    (signal 'unsupported-feature '(global-mapatoms)))
-  (maphash (lambda (_name symbol) (funcall function symbol))
-           (nelisp--obarray-table obarray))
+  ;; GNU lread.c:5156 calls FUNCTION on every symbol of OBARRAY; the
+  ;; initial obarray's symbols are the native intern table's plus nil and t.
+  (if (nelisp--global-obarray-p obarray)
+      (progn
+        (funcall function nil)
+        (funcall function t)
+        (mapc function (nelisp--intern-table-symbols)))
+    (maphash (lambda (_name symbol) (funcall function symbol))
+             (nelisp--obarray-table obarray)))
   nil)
 (unless (fboundp 'vconcat)
   (defun vconcat (&rest seqs)
@@ -21985,6 +22004,23 @@ the suggested string to use instead.  See
 ;; of the special forms, which bytecomp.el emits for a non-top-level
 ;; `defvar'/`defconst'.  Translated as evaluating the special form itself
 ;; with the value quoted, which is exactly the documented equivalence.
+(unless (fboundp 'internal--define-uninitialized-variable)
+  (defun internal--define-uninitialized-variable (symbol &optional doc)
+    "Declare SYMBOL special without assigning it a value (GNU eval.c:889)."
+    (unless (symbolp symbol)
+      (signal 'wrong-type-argument (list 'symbolp symbol)))
+    (nelisp--env-globals-op 'variable-declare-special symbol)
+    (when doc
+      (put symbol 'variable-documentation doc))
+    nil))
+(unless (fboundp 'internal-make-var-non-special)
+  (defun internal-make-var-non-special (symbol)
+    "Make SYMBOL lexically bindable by clearing its special declaration."
+    (unless (symbolp symbol)
+      (signal 'wrong-type-argument (list 'symbolp symbol)))
+    (remhash symbol nelisp--special-variables)
+    (nelisp--env-globals-op 'variable-make-non-special symbol)
+    nil))
 (unless (fboundp 'defvar-1)
   (defun defvar-1 (sym initvalue &optional docstring)
   "Declare SYM special, initialize it if void, and store DOCSTRING."
@@ -27237,6 +27273,10 @@ it)."
   (when (or (null new-alias) (eq new-alias t) (keywordp new-alias)
             (nelisp--env-globals-op 'constant-variable-p new-alias))
     (error "Cannot make a constant an alias: %s" new-alias))
+  ;; GNU eval.c:631 Fdefvaralias refuses a built-in (SYMBOL_FORWARDED)
+  ;; new alias before any binding check.
+  (when (nelisp--env-globals-op 'variable-forwarded-p new-alias)
+    (error "Cannot make a built-in variable an alias: %s" new-alias))
   (let ((kind (nelisp--env-globals-op 'variable-alias-source-kind new-alias)))
     (when (eq kind 2)
       (error "Don’t know how to make a buffer-local variable an alias: %s" new-alias))

@@ -89,23 +89,30 @@
     (defun nl_sf_setq_rest_w (rest w sym env _pad _pad6)
       (nl_sf_setq_set_w (extern-call nl_env_set_value env sym w) rest env w))
 
-    (defun nl_sf_setq_evaled_w (w sym val-cdr env _pad _pad6)
+    ;; Doc 226 D9 stage 3.2: PAIR is the form's own cons (stable under the
+    ;; evaluation); the variable is read from it after the value is
+    ;; computed.  A symbol stored as its object WORD has no 32-byte view in
+    ;; the form, so `nl_cons_car_ptr' makes a transient one, and a view
+    ;; made before the evaluation would be held across a collection by
+    ;; nothing but the native stack.
+    (defun nl_sf_setq_evaled_w (w pair val-cdr env _pad _pad6)
       (if (= w 0)
           0
         ;; The setter and its cell/mirror writers accept WORDs. A view
         ;; here would be cloned into the binding and then retained by
         ;; every cons/record that reads that scalar variable.
-        (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) w sym env 0 0)))
+        (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) w
+                           (extern-call nl_cons_car_ptr pair) env 0 0)))
 
-    (defun nl_sf_setq_val_w (val-form sym val-cdr env _pad _pad6)
+    (defun nl_sf_setq_val_w (val-form pair val-cdr env _pad _pad6)
       (nl_sf_setq_evaled_w (extern-call nelisp_eval_call_w val-form env 0)
-                           sym val-cdr env 0 0))
+                           pair val-cdr env 0 0))
 
-    (defun nl_sf_setq_sym_w (sym val-cdr env _pad)
-      (nl_sf_setq_val_w (extern-call nl_cons_car_word val-cdr) sym val-cdr env 0 0))
+    (defun nl_sf_setq_sym_w (pair val-cdr env _pad)
+      (nl_sf_setq_val_w (extern-call nl_cons_car_word val-cdr) pair val-cdr env 0 0))
 
     (defun nl_sf_setq_pair_w (val-cdr args-pair env _pad)
-      (nl_sf_setq_sym_w (extern-call nl_cons_car_ptr args-pair) val-cdr env 0))
+      (nl_sf_setq_sym_w args-pair val-cdr env 0))
 
     (defun nl_sf_setq_w (args env _pad _pad1)
       (if (= (sexp-tag args) 0)
