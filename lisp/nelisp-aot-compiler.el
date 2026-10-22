@@ -18171,6 +18171,70 @@ external data symbol."
 (defvar nelisp-aot-compiler--x86-trivial-call-folding t
   "Fold complete same-unit constant/identity callees after ABI staging.")
 
+(defvar nelisp-aot-compiler--executable-local-externs nil
+  "Non-nil only while the public executable frontend emits its passes.
+Relocatable object and link-unit frontends retain their PLT32 contracts.")
+
+(defvar nelisp-aot-compiler--x86-local-extern-facts nil
+  "Pass-local arities of unique public fixed GP C ABI definitions.")
+
+(defun nelisp-aot-compiler--x86-local-extern-facts (defuns)
+  "Describe public SysV GP signatures in unique DEFUNS, without folding bodies.
+GNU comp.c:1013-1034 selects the declared local function for a direct
+call.  An executable has no external linker to consume a PLT32 record;
+its matching public definition instead needs the normal label fixup."
+  (let ((facts (make-hash-table :test #'eq))
+        (seen (make-hash-table :test #'eq)))
+    (dolist (d defuns)
+      (let* ((name (nelisp-aot-compiler--ir-get d :name))
+             (arity (length (nelisp-aot-compiler--ir-get d :params))))
+        (if (gethash name seen)
+            (remhash name facts)
+          (puthash name t seen)
+          (when (and (symbolp name) (<= arity 6)
+                     (equal (nelisp-aot-compiler--ir-get d :param-regs)
+                            (cl-subseq '(rdi rsi rdx rcx r8 r9) 0 arity))
+                     (= arity (or (nelisp-aot-compiler--ir-get d :fixed-param-count) -1))
+                     (if (= arity 0)
+                         (null (nelisp-aot-compiler--ir-get d :param-class))
+                       (eq (nelisp-aot-compiler--ir-get d :param-class) 'gp))
+                     (= arity (length (nelisp-aot-compiler--ir-get d :param-classes)))
+                     (cl-every (lambda (c) (eq c 'gp))
+                               (nelisp-aot-compiler--ir-get d :param-classes))
+                     (not (cl-some (lambda (k) (nelisp-aot-compiler--ir-get d k))
+                                   '(:rest-p :variadic :internal-entry :internal-hidden
+                                     :gc-root-slots :self-tco-raw)))
+                     (not (eq (nelisp-aot-compiler--ir-get d :return-repr) 'f64)))
+            (puthash name arity facts)))))
+    facts))
+
+(defun nelisp-aot-compiler--x86-local-extern-target-p (node)
+  "Whether NODE names an exactly matching public executable definition."
+  (let ((arity (and (hash-table-p nelisp-aot-compiler--x86-local-extern-facts)
+                    (gethash (nelisp-aot-compiler--ir-get node :name)
+                             nelisp-aot-compiler--x86-local-extern-facts))))
+    (and nelisp-aot-compiler--executable-local-externs
+         (eq nelisp-aot-compiler--arch 'x86_64)
+         (eq nelisp-aot-compiler--abi 'sysv)
+         (not (nelisp-aot-compiler--lisp-values-p))
+         (not nelisp-aot-compiler--runtime-entry-params)
+         arity (= arity (length (nelisp-aot-compiler--ir-get node :args)))
+         (not (nelisp-aot-compiler--ir-get node :fn-value))
+         (not (nelisp-aot-compiler--ir-get node :varargs-p))
+         (not (eq (nelisp-aot-compiler--ir-get node :ret-class) 'f64))
+         (cl-every (lambda (a) (memq (nelisp-aot-compiler--ir-get a :cls) '(nil gp)))
+                   (nelisp-aot-compiler--ir-get node :args)))))
+
+(defun nelisp-aot-compiler--emit-extern-destination-x86 (node buf)
+  "Emit NODE's named destination after the existing C ABI argument staging.
+Only the destination changes: a local label call and a PLT32 call both
+occupy five bytes.  No body folding, register placement or cleanup occurs."
+  (let ((name (nelisp-aot-compiler--ir-get node :name)))
+    (if (nelisp-aot-compiler--x86-local-extern-target-p node)
+        (nelisp-asm-x86_64-call-rel32 buf name)
+      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
+      (nelisp-asm-x86_64-reloc-plt32-here buf (symbol-name name) -4 'text))))
+
 (defvar nelisp-aot-compiler--x86-trivial-call-facts nil
   "Dynamically scoped facts for this emission pass's unique definitions.")
 
@@ -19128,6 +19192,7 @@ same branch and emit the same byte count."
               (nelisp-aot-compiler--emit-trivial-into-reg a 'rax buf)
               (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
                buf dest-disp 'rax)))))
+      ;; An exact public executable-local signature uses a label fixup.
       ;; Emit the call.  For a link-time symbol NAME: `call rel32' (0xE8)
       ;; + 4-byte zero placeholder + a PLT32 reloc the linker resolves.
       ;; For an `extern-call-ptr' runtime fn-value: load the (trivial)
@@ -19141,9 +19206,7 @@ same branch and emit the same byte count."
             (nelisp-aot-compiler--emit-value fn-value buf)
             (nelisp-asm-x86_64-mov-reg-reg buf 'r11 'rax)
             (nelisp-asm-x86_64-call-reg buf 'r11))
-        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xE8))
-        (nelisp-asm-x86_64-reloc-plt32-here
-         buf (symbol-name name) -4 'text))
+        (nelisp-aot-compiler--emit-extern-destination-x86 node buf))
       ;; Reclaim the Win64 outgoing area.
       (when (and (> win64-outgoing 0) (not win64-dynamic-align-p))
         (nelisp-asm-x86_64-add-imm32 buf 'rsp win64-outgoing)))
@@ -24671,6 +24734,9 @@ helper signature.  Pass nil when no static-imm32 tables exist.
 Doc 101 §101.B Wave 5: buffer is created with the current
 `nelisp-aot-compiler--abi' so Win64 callers get a 'win64 buffer."
   (let ((nelisp-aot-compiler--table-vaddrs table-vaddrs)
+        (nelisp-aot-compiler--x86-local-extern-facts
+         (and nelisp-aot-compiler--executable-local-externs
+              (nelisp-aot-compiler--x86-local-extern-facts defuns)))
         (nelisp-aot-compiler--x86-trace-unit-names
          (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns))
         (nelisp-aot-compiler--x86-partial-call-facts
@@ -24730,6 +24796,7 @@ drift (= a Doc 92 emitter invariant violation)."
     (signal 'nelisp-aot-compiler-error
             (list :unsupported-arch arch)))
   (let* ((nelisp-aot-compiler--label-counter 0)
+         (nelisp-aot-compiler--executable-local-externs t)
          (nelisp-aot-compiler--arch arch)
          (ir (nelisp-aot-compiler--parse sexp nil))
          (collected (nelisp-aot-compiler--collect-strings ir))
