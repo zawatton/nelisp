@@ -655,6 +655,16 @@ Result (callgrind, the gc3 workload, a steady-state collection): 45.6M -> 41.0M 
 view 22.9M -> 20.3M, nl_gc_mark_block 2.27M -> 1.34M); hardware counters, alternating with GNU, 24.7M -> 22.2M instructions
 and task clock 5.81 -> 5.56 ms against GNU's 4.71; gc3 ratios x1.28/x1.27/x1.27 -> x1.23/x1.15/x1.15.
 
+Step 5, the stack scan.  =standalone-gc-conservative-cost-check.el= bounds the conservative stack scan at 1.25 times a
+collection without it.  The marker had become so much cheaper that the scan, unchanged, grew from 1.08 to 1.12 to 1.30 times (the
+final verification of the step 4 head failed it at 1.30).  The native stack is 100 KB here (frames of 0x250 to 0x2c0 bytes): a
+scan sees 12,649 words, 4,234 of them inside the heap bounds, and only 623 distinct values (212 in the image, 411 in the heap), 990 of
+them the same word as the one before; =nl_gc_conserv_word= resolved all 4,234 at about 390 instructions.  A 256-entry
+direct-mapped table of the words already taken (cleared at the start of the scan, 2 KB of BSS: =nl_gc_conserv_seen=) skips the
+repeats; taking a word twice has the effect of taking it once.  The cost ratio of the check is 1.05 to 1.07, and the collection
+is faster by more than the scan's share of instructions suggested because the scan waits on bitmap and registry lines:
+gc3 x1.22/x1.14/x1.15 -> x1.14/x1.07/x1.07 (a repeat x1.19/x1.14/x1.14 -> x1.10/x1.07/x1.07).
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls

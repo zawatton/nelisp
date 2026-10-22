@@ -611,6 +611,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      128
      ;; `nl_gc_until' and `nl_gc_until_base': the allocation budget (Doc 223).
      64
+     ;; `nl_gc_conserv_seen': the stack words the conservative scan has taken (256 direct-mapped words).
+     2048
      ;; `nl_cold_chunk0_domain'.
      16
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
@@ -1001,6 +1003,9 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_until_base"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 8)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_gc_conserv_seen"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 16)
@@ -8716,13 +8721,23 @@ REPL-facing module it feeds."
              (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
              (lo (if (= active 1) (heap-read-u64 bounds 0) 0))
              (hi (if (= active 1) (heap-read-u64 bounds 8) 0))
-             (p p0) (word 0))
-        (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
-          (setq word (heap-read-u64 p 0))
-          (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
-              (nl_gc_conserv_word word) 0)
-          (setq p (+ p 8)))
-        0)))
+             (p p0) (word 0) (i 0))
+        (seq
+         ;; A native stack of 100 KB holds about 4,000 words inside the heap bounds and about 600 distinct
+         ;; values: taking a word twice has the effect of taking it once, so a 256-entry direct-mapped table of
+         ;; the words already taken skips the repeats.
+         (while (< i 256)
+           (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* i 8) 0)
+                (setq i (+ i 1))))
+         (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
+           (setq word (heap-read-u64 p 0))
+           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+               (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
+                 (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
+                      (nl_gc_conserv_word word)))
+             0)
+           (setq p (+ p 8)))
+         0))))
     (defun nl_gc_conserv_drain ()
       (let* ((state (data-addr nl_gc_conserv_state))
              (index (data-addr nl_gc_start_index))
