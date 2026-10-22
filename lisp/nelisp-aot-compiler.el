@@ -13564,6 +13564,8 @@ functions `((NAME . ARITY) ...)'."
               (nelisp-aot-compiler--make-ir 'let-rt
                     :var var
                     :slot slot
+                    :copy-candidate (and (not root-p)
+                                         (not (nelisp-aot-compiler--lisp-values-p)))
                     :value-ir val-ir
                     :body body-ir))))))))
    (t
@@ -13739,6 +13741,8 @@ Returns one of:
               (nelisp-aot-compiler--make-ir 'let-rt
                     :var var
                     :slot slot
+                    :copy-candidate (and (not root-p)
+                                         (not (nelisp-aot-compiler--lisp-values-p)))
                     :value-ir val-ir
                     :body body-ir))))))))
    ;; (defun NAME (PARAMS...) BODY)
@@ -15270,6 +15274,54 @@ Leaf functions retain their existing lowering, including CG3 loops.")
          node buf emit plan)
       (funcall emit))))
 
+(defun nelisp-aot-compiler--x86-copy-let-source-register (node)
+  "Return a stable promoted source register for readonly lexical let NODE.
+Keep virtual slots through CG3 selection: early slot merging changes its
+placement and can lose the copy's role as a register cache.  Coalesce only
+after placement, within the alias's scope, when the source already has a
+register.  GNU comp.el:1932-1949 likewise traces a copy's original mvar."
+  (let* ((value (nelisp-aot-compiler--ir-get node :value-ir))
+         (target (nelisp-aot-compiler--ir-get node :slot))
+         (source (and (eq (nelisp-aot-compiler--ir-kind value) 'ref)
+                      (nelisp-aot-compiler--ir-get value :slot)))
+         (reg (and (integerp source)
+                   (cdr (assq source nelisp-aot-compiler--promoted-slots)))))
+    (when (and reg (eq nelisp-aot-compiler--arch 'x86_64)
+               (eq nelisp-aot-compiler--abi 'sysv)
+               (not nelisp-aot-compiler--checked-arith)
+               (nelisp-aot-compiler--ir-get node :copy-candidate)
+               (not (nelisp-aot-compiler--lisp-values-p))
+               (not (nelisp-aot-compiler--ir-get value :root-p))
+               (memq (nelisp-aot-compiler--ir-get value :class) '(nil gp)))
+      (let ((written nil))
+        (nelisp-aot-compiler--walk-ir
+         (nelisp-aot-compiler--ir-get node :body)
+         (lambda (n)
+           (when (or (and (eq (nelisp-aot-compiler--ir-kind n) 'setq-local)
+                          (memq (nelisp-aot-compiler--ir-get n :slot)
+                                (list source target)))
+                     ;; Empty value sequences retain their incoming value
+                     ;; register in the existing lowering.
+                     (and (eq (nelisp-aot-compiler--ir-kind n) 'value-seq)
+                          (null (nelisp-aot-compiler--ir-get n :forms))))
+             (setq written t))))
+        (and (not written) reg)))))
+
+(defun nelisp-aot-compiler--emit-let-rt-x86 (node buf emit-body)
+  "Emit NODE's binding, then invoke EMIT-BODY on its body.
+A readonly promoted copy uses its source register only inside that body;
+the surrounding CG3 allocation and all slot lifetimes stay unchanged."
+  (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
+         (reg (nelisp-aot-compiler--x86-copy-let-source-register node)))
+    (if reg
+        (let ((nelisp-aot-compiler--promoted-slots
+               (cons (cons slot reg) nelisp-aot-compiler--promoted-slots)))
+          (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))
+      (nelisp-aot-compiler--emit-value
+       (nelisp-aot-compiler--ir-get node :value-ir) buf)
+      (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)
+      (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))))
+
 (defun nelisp-aot-compiler--emit-value (node buf)
   "Emit NODE, keeping profitable call-free raw regions in registers."
   (nelisp-aot-compiler--emit-call-free-region
@@ -15792,13 +15844,8 @@ the node's class to consume the result correctly."
       ((= tag 33)               ; logic
        (nelisp-aot-compiler--emit-logic node buf))
       ((= tag 32)               ; let-rt
-       ;; Runtime let in value context: evaluate value-ir → rax, spill
-       ;; to frame slot, then evaluate body → rax (= function return).
-       (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
-              (value-ir (nelisp-aot-compiler--ir-get node :value-ir)))
-         (nelisp-aot-compiler--emit-value value-ir buf)
-         (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)
-         (nelisp-aot-compiler--emit-value (nelisp-aot-compiler--ir-get node :body) buf)))
+       (nelisp-aot-compiler--emit-let-rt-x86
+        node buf (lambda (body) (nelisp-aot-compiler--emit-value body buf))))
       ((= tag 89)               ; let-rt-n
        ;; Parallel multi-binding `let': initializer IR was parsed in
        ;; the original env/fenv, then the body sees all spilled slots.
@@ -16182,13 +16229,8 @@ immediate or variable reference emits nothing.  Elsewhere this is
      ((eq kind 'if)
       (nelisp-aot-compiler--emit-if-effect-x86 node buf))
      ((eq kind 'let-rt)
-      ;; As the value arm, with the body as an effect.
-      (nelisp-aot-compiler--emit-value
-       (nelisp-aot-compiler--ir-get node :value-ir) buf)
-      (nelisp-aot-compiler--emit-frame-slot-store-from-value
-       buf (nelisp-aot-compiler--ir-get node :slot))
-      (nelisp-aot-compiler--emit-effect
-       (nelisp-aot-compiler--ir-get node :body) buf))
+      (nelisp-aot-compiler--emit-let-rt-x86
+       node buf (lambda (body) (nelisp-aot-compiler--emit-effect body buf))))
      ((eq kind 'let-rt-n)
       (nelisp-aot-compiler--emit-let-rt-n-bindings node buf)
       (nelisp-aot-compiler--emit-effect
@@ -22083,15 +22125,10 @@ skipped here — they're emitted separately by the orchestrator."
        (nelisp-aot-compiler--emit-stmt
         (nelisp-aot-compiler--ir-get ir :body) buf str-offsets rodata-vaddr))
       ((= tag 32)               ; let-rt
-       ;; Runtime let: evaluate value-ir → rax, spill to frame slot,
-       ;; then walk body as statement.
-       (let* ((slot (nelisp-aot-compiler--ir-get ir :slot))
-              (value-ir (nelisp-aot-compiler--ir-get ir :value-ir)))
-         (nelisp-aot-compiler--emit-value value-ir buf)
-         (nelisp-aot-compiler--emit-frame-slot-store-from-value
-          buf slot)
-         (nelisp-aot-compiler--emit-stmt
-          (nelisp-aot-compiler--ir-get ir :body) buf str-offsets rodata-vaddr)))
+       (nelisp-aot-compiler--emit-let-rt-x86
+        ir buf (lambda (body)
+                 (nelisp-aot-compiler--emit-stmt
+                  body buf str-offsets rodata-vaddr))))
       ((= tag 89)               ; let-rt-n
        (nelisp-aot-compiler--emit-let-rt-n-bindings ir buf)
        (nelisp-aot-compiler--emit-stmt
