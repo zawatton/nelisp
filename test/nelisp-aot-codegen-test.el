@@ -294,6 +294,158 @@
           (should (= 0 (call-process binary nil nil nil))))
       (dolist (path (list object source binary)) (delete-file path)))))
 
+(ert-deftest nelisp-aot-codegen/leaf-entry-cycle-and-full-word ()
+  "Acyclic parameter references use CG3 registers, including R8/R9 cycles."
+  (let ((plans 0) (cycles 0)
+        (emit (symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)
+               (lambda (moves buf)
+                 (when nelisp-aot-compiler--x86-leaf-entry-state
+                   (setq plans (1+ plans))
+                   (when (and (member '(r8 . r9) moves) (member '(r9 . r8) moves))
+                     (setq cycles (1+ cycles))))
+                 (funcall emit moves buf))))
+      (dolist (triple '((7 11 13) (0 0 0) (-1 1 -1)
+                        (-9223372036854775808 9223372036854775807 -9223372036854775808)
+                        (9223372036854775807 -9223372036854775808 9223372036854775807)))
+        (let* ((a (nth 0 triple)) (e (nth 1 triple)) (f (nth 2 triple))
+               (expected (logand (+ (* a 5) (* f 4) (* e 3) 2 3 5) (1- (ash 1 64)))))
+          (when (>= expected (ash 1 63)) (setq expected (- expected (ash 1 64))))
+          (should
+           (= 0 (nelisp-aot-codegen-test--run
+                 `(seq
+                   (defun leaf (a b c d e f)
+                     (+ a (+ a (+ a (+ a (+ a (+ f (+ f (+ f (+ f
+                        (+ e (+ e (+ e (+ b (+ c d)))))))))))))))
+                   (exit (if (= (leaf ,a 2 3 5 ,e ,f) ,expected) 0 1)))))))))
+    (should (> plans 0))
+    (should (> cycles 0))))
+
+(ert-deftest nelisp-aot-codegen/leaf-entry-mutation-alias-and-memory ()
+  "Actual slots preserve branches, lexical shadows, aliases and memory effects."
+  (dolist (p '(0 17 -9223372036854775808 9223372036854775807))
+    (dolist (c '(-1 1))
+      (let* ((q 7) (old p) (v (+ p q)) (next-p p))
+        (if (< c 0) (setq next-p (+ p 7) v (- v next-p)) (setq next-p (- p 9)))
+        (setq v (+ v (* (+ q 3) 2)))
+        (let ((expected (logand (+ old next-p v q q) (1- (ash 1 64)))))
+          (when (>= expected (ash 1 63)) (setq expected (- expected (ash 1 64))))
+          (should
+           (= 0 (nelisp-aot-codegen-test--run
+                 `(seq
+                   (defun leaf (p q c)
+                     (let* ((old p) (v (+ p q)))
+                       (seq (if (< c 0) (seq (setq p (+ p 7)) (setq v (- v p)))
+                              (setq p (- p 9)))
+                            (let ((p (+ q 3))) (setq v (+ v (+ p p))))
+                            (+ old (+ p (+ v (+ q q)))))))
+                   (exit (if (= (leaf ,p ,q ,c) ,expected) 0 1))))))))))
+  (should
+   (= 0 (nelisp-aot-codegen-test--run
+         '(seq
+           (defun leaf (p q n)
+             (let ((alias p))
+               (seq (ptr-write-u8 p 0 19)
+                    (ptr-write-u16 q 2 4660)
+                    (setq n (+ n 1))
+                    (if (> n 0) (ptr-write-u32 alias 4 n) (ptr-write-u32 q 4 0))
+                    (ptr-write-u64 p 8 (+ n (ptr-read-u32 q 4)))
+                    (+ (ptr-read-u8 alias 0)
+                       (+ (ptr-read-u16 p 2) (+ (ptr-read-u32 q 4) (ptr-read-u64 alias 8)))))))
+           (defun mmap-page () (syscall-direct 9 0 4096 3 34 -1 0))
+           (defun main () (let ((p (mmap-page))) (if (= (leaf p p 5) 4697) 0 1)))
+           (exit (main)))))))
+
+(ert-deftest nelisp-aot-codegen/leaf-entry-protected-and-loop-fallback ()
+  "Calls, loops, implicit clobbers and protected frames retain ordinary lowering."
+  (let* ((nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
+         (nelisp-aot-compiler--checked-arith nil)
+         (nelisp-aot-compiler--runtime-entry-params nil)
+         (nelisp-aot-compiler--promoted-slots nil)
+         (nelisp-aot-compiler--x86-loop-regs '(rbx r8 r9 r12 r13 r14 r15))
+         (plain (nelisp-aot-compiler--parse '(defun leaf (x) (+ x (+ x (+ x x)))))))
+    (should (nelisp-aot-compiler--x86-leaf-entry-plan plain))
+    (should-not
+     (nelisp-aot-compiler--x86-leaf-entry-plan
+      (nelisp-aot-compiler--ir-with
+       plain :body (nelisp-aot-compiler--make-ir
+                    'value-seq :forms (list (nelisp-aot-compiler--ir-get plain :body)
+                                            (nelisp-aot-compiler--make-ir 'value-seq :forms nil))))))
+    (dolist (field '((:variadic . t) (:optional-count . 1) (:rest-p . t) (:ret-class . f64)
+                    (:gc-root-slots . (0)) (:internal-entry . t)
+                    (:param-class . f64) (:param-regs . (a b c d e f g))))
+      (should-not (nelisp-aot-compiler--x86-leaf-entry-plan
+                   (nelisp-aot-compiler--ir-with plain (car field) (cdr field)))))
+    (let ((nelisp-aot-compiler--checked-arith t))
+      (should-not (nelisp-aot-compiler--x86-leaf-entry-plan plain)))
+    (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
+      (should-not (nelisp-aot-compiler--x86-leaf-entry-plan plain)))
+    (dolist (body '((seq (while (> x 0) (setq x (- x 1))) (+ x (+ x x)))
+                    (+ x (+ x (+ x (extern-call helper x))))
+                    (+ x (+ x (+ x (alloc-bytes 16 8))))
+                    (+ x (+ x (+ x (addr-of x))))))
+      (should-not (nelisp-aot-compiler--x86-leaf-entry-plan
+                   (nelisp-aot-compiler--parse `(defun leaf (x) ,body))))))
+  (let ((selected 0) (calls 0)
+        (plan (symbol-function 'nelisp-aot-compiler--x86-leaf-entry-plan))
+        (call (symbol-function 'nelisp-aot-compiler--emit-call)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-leaf-entry-plan)
+               (lambda (ir)
+                 (let ((result (funcall plan ir)))
+                   (when (and result (eq (nelisp-aot-compiler--ir-get ir :name) 'leaf))
+                     (setq selected (1+ selected))) result)))
+              ((symbol-function 'nelisp-aot-compiler--emit-call)
+               (lambda (ir buf)
+                 (setq calls (1+ calls))
+                 (should-not nelisp-aot-compiler--promoted-slots)
+                 (funcall call ir buf))))
+      (should (= 99 (nelisp-aot-codegen-test--run
+                     '(seq (defun helper (x) (+ x 3))
+                           (defun leaf (x) (+ x (+ x (+ x (helper x)))))
+                           (exit (leaf 24)))))))
+    (should (> calls 0))
+    (should (= selected 0))))
+
+(ert-deftest nelisp-aot-codegen/leaf-entry-readonly-copy ()
+  "Late copy sharing uses the source's actual slot inside the alias scope."
+  (let ((copies 0) (copy (symbol-function 'nelisp-aot-compiler--x86-copy-let-source-register)))
+    (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-copy-let-source-register)
+               (lambda (ir)
+                 (let ((reg (funcall copy ir)))
+                   (when (and reg nelisp-aot-compiler--x86-leaf-entry-state)
+                     (setq copies (1+ copies))) reg))))
+      (should (= 92 (nelisp-aot-codegen-test--run
+                     '(seq (defun leaf (p)
+                             (let ((alias p)) (+ alias (+ alias (+ alias p)))))
+                           (exit (leaf 23)))))))
+    (should (> copies 0))))
+
+(ert-deftest nelisp-aot-codegen/leaf-entry-native-callee-saves ()
+  "Whole-body placement restores RBX and every CG3 callee-saved register."
+  (skip-unless (and (executable-find "gcc") (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
+  (let* ((object (make-temp-file "nelisp-leaf-entry-" nil ".o"))
+         (source (make-temp-file "nelisp-leaf-entry-" nil ".c"))
+         (binary (make-temp-file "nelisp-leaf-entry-"))
+         (terms (append (make-list 7 'v) (make-list 6 'a) (make-list 5 'b)
+                        (make-list 4 'c) (make-list 4 'd) (make-list 4 'e) (make-list 4 'f)))
+         (body (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t)))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object `(defun leaf (a b c d e f) (let ((v (+ a b))) ,body)) object)
+          (with-temp-file source
+            (insert "extern long leaf(long,long,long,long,long,long);\n"
+                    "int main(void) {\n"
+                    " register long b __asm__(\"rbx\")=101, c __asm__(\"r12\")=102,\n"
+                    " d __asm__(\"r13\")=103, e __asm__(\"r14\")=104, f __asm__(\"r15\")=105;\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f));\n"
+                    " long value=leaf(1,2,3,4,5,6);\n"
+                    " __asm__ volatile(\"\" : \"+r\"(b),\"+r\"(c),\"+r\"(d),\"+r\"(e),\"+r\"(f));\n"
+                    " return value!=109 || b!=101 || c!=102 || d!=103 || e!=104 || f!=105; }\n"))
+          (should (= 0 (call-process "gcc" nil nil nil "-O2" source object "-o" binary)))
+          (should (= 0 (call-process binary nil nil nil))))
+      (dolist (path (list object source binary)) (delete-file path)))))
+
 (nelisp-aot-codegen-test--deftest nelisp-aot-codegen/conditions
   "and/or chains in if, while and cond, rotated loops with zero trips."
   (seq

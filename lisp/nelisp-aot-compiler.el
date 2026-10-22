@@ -22182,6 +22182,83 @@ Slots needed outside the loop are written before ending its mapping."
                   :promotions plan :forward forward
                   :inline-exit (nelisp-aot-compiler--x86-tco-pure-ir-p terminal))))))))
 
+(defvar nelisp-aot-compiler--x86-leaf-entry-state nil
+  "CG3 whole-body placement for a profitable acyclic raw leaf.")
+
+(defun nelisp-aot-compiler--x86-leaf-entry-plan (ir)
+  "Place acyclic raw leaf values in the existing CG3 register plan.
+GNU comp.c:2409-2418 passes incoming params to mvars; comp.el:2530
+connects branch PHIs to their incoming values.  Here each IR slot gets
+one CG3 register for the whole body, so assignments at branch joins
+already meet in that register.  No frame observer or call may occur."
+  (when (and (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--ir-get ir :variadic))
+             (zerop (or (nelisp-aot-compiler--ir-get ir :optional-count) 0))
+             (not (nelisp-aot-compiler--ir-get ir :rest-p))
+             (not (eq (nelisp-aot-compiler--ir-get ir :ret-class) 'f64))
+             (not (cl-some #'consp (nelisp-aot-compiler--ir-get ir :param-regs)))
+             (not (nelisp-aot-compiler--ir-get ir :gc-root-slots))
+             (not (nelisp-aot-compiler--ir-get ir :internal-entry))
+             (memq (nelisp-aot-compiler--ir-get ir :param-class) '(nil gp))
+             (not (memq 'f64 (nelisp-aot-compiler--ir-get ir :param-classes)))
+             (<= (length (nelisp-aot-compiler--ir-get ir :param-regs)) 6))
+    (let* ((body (nelisp-aot-compiler--ir-get ir :body))
+           (arity (length (nelisp-aot-compiler--ir-get ir :param-regs)))
+           (plan (nelisp-aot-compiler--x86-promotion-plan body))
+           (safe t) (counts nil) (pairs nil) (forward nil) (gain 0))
+      (when plan
+        (nelisp-aot-compiler--walk-ir
+         body (lambda (n)
+                (let ((k (nelisp-aot-compiler--ir-kind n)))
+                  (when (or (memq k '(while recur))
+                            (and (eq k 'value-seq)
+                                 (null (nelisp-aot-compiler--ir-get n :forms)))
+                            (eq (nelisp-aot-compiler--ir-get n :class) 'f64)
+                            (eq (nelisp-aot-compiler--ir-get n :cls) 'f64)
+                            (eq (nelisp-aot-compiler--ir-get n :ret-class) 'f64))
+                    (setq safe nil))
+                  (dolist (slot (cond ((memq k '(ref setq-local let-rt))
+                                      (list (nelisp-aot-compiler--ir-get n :slot)))
+                                     ((eq k 'let-rt-n)
+                                      (mapcar #'cadr (nelisp-aot-compiler--ir-get n :bindings)))))
+                    (let ((cell (assq slot counts)))
+                      (if cell (setcdr cell (1+ (cdr cell)))
+                        (push (cons slot 1) counts)))))))
+        (dolist (p (car plan))
+          (let* ((slot (car p)) (reg (cdr p))
+                 (param (and (< slot arity) (nth slot '(rdi rsi rdx rcx r8 r9))))
+                 ;; Locals are initialized by their existing let/setq.
+                 ;; A promoted parameter loses its prologue store as well
+                 ;; as body accesses, but pays at most one incoming move.
+                 (cost (+ (if (and param (not (eq param reg))) 1 0)
+                          (if (memq reg '(r12 r13 r14 r15)) 2 0)))
+                 (saving (- (+ (cdr (assq slot counts)) (if param 1 0)) cost)))
+            (when (> saving 0)
+              (push p pairs)
+              (when param (push (list slot slot param) forward))
+              (setq gain (+ gain saving)))))
+        (when (and safe pairs (>= gain 3))
+          (list :promotions (nreverse pairs) :forward forward :gain gain))))))
+
+(defun nelisp-aot-compiler--emit-leaf-body-x86 (node buf)
+  "Emit the acyclic leaf NODE using its verified whole-body plan."
+  (let* ((state nelisp-aot-compiler--x86-leaf-entry-state)
+         (pairs (plist-get state :promotions))
+         (saved (cl-remove-if-not (lambda (r) (memq r '(r12 r13 r14 r15)))
+                                  (mapcar #'cdr pairs))))
+    (dolist (r saved) (nelisp-aot-compiler--emit-temp-push buf r))
+    (nelisp-aot-compiler--emit-tco-parallel-moves-x86
+     (mapcar (lambda (f) (cons (cdr (assq (car f) pairs)) (nth 2 f)))
+             (plist-get state :forward)) buf)
+    (let ((nelisp-aot-compiler--promoted-slots pairs))
+      (nelisp-aot-compiler--emit-value node buf))
+    ;; No call, address exposure or successor can observe these slots.
+    ;; RAX retains the result while the callee-saved registers are popped.
+    (dolist (r (reverse saved)) (nelisp-aot-compiler--emit-temp-pop buf r))))
+
 (defun nelisp-aot-compiler--emit-tco-parallel-moves-x86 (moves buf)
   "Emit parallel GP MOVES (DEST . SOURCE), breaking cycles with RAX."
   (setq moves (cl-remove-if (lambda (p) (eq (car p) (cdr p))) moves))
@@ -22709,7 +22786,9 @@ return reg, untouched by epilogue)."
          (nelisp-aot-compiler--promoted-slots nil)
          (nelisp-aot-compiler--x86-assign-memo (make-hash-table :test 'eq))
          (nelisp-aot-compiler--x86-tco-entry-state
-          (nelisp-aot-compiler--x86-self-tco-entry-plan defun-ir)))
+          (nelisp-aot-compiler--x86-self-tco-entry-plan defun-ir))
+         (nelisp-aot-compiler--x86-leaf-entry-state
+          (nelisp-aot-compiler--x86-leaf-entry-plan defun-ir)))
     (when variadic
       ;; Only the SysV AMD64 GP register surface is supported for defined
       ;; varargs (= the save-area layout above).  Win64 / aarch64 / f64
@@ -22974,10 +23053,13 @@ return reg, untouched by epilogue)."
                            buf 'rbp dst-disp 'rax))
                       (nelisp-asm-x86_64-mov-mem-reg-disp8
                        buf 'rbp dst-disp preg)))))
-            (if nelisp-aot-compiler--x86-tco-entry-state
+            (if (or nelisp-aot-compiler--x86-tco-entry-state
+                    (plist-get nelisp-aot-compiler--x86-leaf-entry-state :forward))
                 (let ((slot -1)
                       (forwarded (mapcar (lambda (f) (nth 1 f))
-                                         (plist-get nelisp-aot-compiler--x86-tco-entry-state :forward))))
+                                         (plist-get (or nelisp-aot-compiler--x86-tco-entry-state
+                                                        nelisp-aot-compiler--x86-leaf-entry-state)
+                                                    :forward))))
                   ;; Keep every frame offset and the original alignment;
                   ;; only parameters with one forwarded use lose a store.
                   (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 param-slot-rounded))
@@ -23068,7 +23150,9 @@ return reg, untouched by epilogue)."
         (nelisp-asm-x86_64-mov-mem-reg-disp8
          buf 'rbp (- (* 8 (1+ (+ param-slot-rounded rt-slot-rounded)))) 'rbx))
       ;; Body — value walked into rax (gp class) or xmm0 (f64 class).
-      (nelisp-aot-compiler--emit-value body buf)
+      (if nelisp-aot-compiler--x86-leaf-entry-state
+          (nelisp-aot-compiler--emit-leaf-body-x86 body buf)
+        (nelisp-aot-compiler--emit-value body buf))
       ;; Epilogue: restore Win64 GP callee-saves, then deallocate param
       ;; spill via mov rsp, rbp; pop rbp; ret.
       ;; Wave 20: same hand-inline rationale as the prologue above.
