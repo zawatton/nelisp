@@ -16845,16 +16845,22 @@ rdi/rsi.  No general emit-value helper or call is used."
           (nelisp-aot-compiler--x86-alu buf op dst bo)))))))
 
 (defun nelisp-aot-compiler--emit-memory-tree-binop-x86 (op a b buf)
-  "Emit pure memory-expression A OP B with register temporaries, or nil.
+  "Emit supported GP-expression A OP B with register temporaries, or nil.
 Adapt GCC expand_operands' separate result locations to three reserved
 scratch registers.  Both trees are preflighted before any emission.
-Ref-only trees and the existing direct-leaf paths keep their old code."
+Call-containing functions also admit pure arithmetic trees, as GNU
+comp.c:1198-1205 hands binary rvalues to GCC register selection.  Leaf functions
+and the existing direct-leaf paths keep their old code."
   (unless (or nelisp-aot-compiler--checked-arith
               (seq-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
                         nelisp-aot-compiler--promoted-slots))
     (let ((ai (nelisp-aot-compiler--x86-memory-tree-info a))
           (bi (nelisp-aot-compiler--x86-memory-tree-info b)))
-      (when (and ai bi (or (cdr ai) (cdr bi))
+      (when (and ai bi
+                 (or (cdr ai) (cdr bi)
+                     (and nelisp-aot-compiler--x86-call-containing-defun-p
+                          (not (nelisp-aot-compiler--x86-leaf-operand a))
+                          (not (nelisp-aot-compiler--x86-leaf-operand b))))
                  (<= (max (car ai) (1+ (car bi))) 3))
         (nelisp-aot-compiler--emit-memory-tree-x86 a buf '(rax r10 r11))
         (nelisp-aot-compiler--emit-memory-tree-x86 b buf '(r10 r11))
