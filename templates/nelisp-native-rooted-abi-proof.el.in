@@ -100,7 +100,7 @@
          (while work
            (let* ((item (car work)) (object (car item)) (depth (cdr item)))
              (setq nodes (+ nodes 1))
-             (unless (and (<= nodes 65536) (<= depth 64))
+             (unless (and (<= nodes 131072) (<= depth 64))
                (error "Root evidence node/depth bound exceeded"))
              (cond
               ((consp object)

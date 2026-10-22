@@ -30,7 +30,11 @@
     (while work
       (let* ((item (pop work)) (object (car item)) (depth (cdr item)))
         (setq nodes (+ nodes 1))
-        (unless (and (<= nodes 65536) (<= depth 64))
+        ;; 131072 nodes: the F1 closure's evidence serializes to about 65,000
+        ;; (309 functions, 1,473 relocations, 1,712 direct edges at 63,300 for
+        ;; the function records alone), and each closure function adds about
+        ;; 200; the 320-function policy therefore needs about 70,000.
+        (unless (and (<= nodes 131072) (<= depth 64))
           (error "Root evidence node/depth bound exceeded"))
         (cond
          ((consp object)
