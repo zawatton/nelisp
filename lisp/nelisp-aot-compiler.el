@@ -14946,7 +14946,7 @@ larger Doc 129 object-mode scratch/let frames."
      buf 'rax (cdr (assq slot nelisp-aot-compiler--promoted-slots))))
    (t
     (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf 'rax 'rbp (- (* 8 (1+ slot)))))))
+     buf 'rax 'rbp (- (* 8 (1+ (nelisp-aot-compiler--x86-frame-read-slot slot))))))))
 
 (defun nelisp-aot-compiler--emit-f64-ref-load (buf slot fp-dst)
   "Emit code that loads a spilled f64 parameter into FP-DST.
@@ -15330,7 +15330,7 @@ aarch64 spills to `[x29 - 16*(slot+1)]' (STUR); x86_64 to
      buf reg (cdr (assq slot nelisp-aot-compiler--promoted-slots))))
    (t
     (nelisp-asm-x86_64-mov-reg-mem-disp8
-     buf reg 'rbp (- (* 8 (1+ slot)))))))
+     buf reg 'rbp (- (* 8 (1+ (nelisp-aot-compiler--x86-frame-read-slot slot))))))))
 
 (defun nelisp-aot-compiler--emit-frame-slot-store-from-value (buf slot)
   "Store the current GP value register into frame SLOT.
@@ -15657,6 +15657,245 @@ Nil preserves the original two loads and exact E instruction selection.")
 (defvar nelisp-aot-compiler--x86-interval-leaf-p nil
   "Non-nil while emitting a complete immutable interval leaf map.")
 
+(defvar nelisp-aot-compiler--x86-frame-copy-aliases t
+  "Propagate proven private readonly copies after CG3 placement.")
+(defvar nelisp-aot-compiler--x86-frame-read-aliases nil)
+(defvar nelisp-aot-compiler--x86-frame-alias-definitions nil)
+(defvar nelisp-aot-compiler--x86-frame-alias-proof-cache nil)
+(defvar nelisp-aot-compiler--x86-frame-alias-owner-state nil)
+(defvar nelisp-aot-compiler--x86-frame-alias-proof-depth 0)
+
+(defun nelisp-aot-compiler--x86-frame-read-slot (slot)
+  "Canonical frame READ of SLOT; callers test its current register first.
+Region entry loads deliberately use the canonical frame before activating
+its new register map.  Stores retain their original virtual slot."
+  (let ((seen nil) pair)
+    (while (setq pair (assq slot nelisp-aot-compiler--x86-frame-read-aliases))
+      (when (or (memq slot seen) (>= (length seen) 64))
+        (signal 'nelisp-aot-compiler-error (list :frame-read-alias-cycle)))
+      (push slot seen)
+      (setq slot (cdr pair)))
+    slot))
+
+(defun nelisp-aot-compiler--x86-frame-alias-definitions (defuns)
+  "Index unique same-unit DEFUNS without making selection depend on names."
+  (let ((table (make-hash-table :test #'eq)))
+    (dolist (d defuns)
+      (let ((name (nelisp-aot-compiler--ir-get d :name)))
+        (puthash name (if (gethash name table) :duplicate d) table)))
+    table))
+
+(defun nelisp-aot-compiler--x86-frame-alias-keys-p (node keys)
+  "Reject unrecognised NODE metadata rather than infer a new boundary."
+  (cl-loop for i from 1 below (length node) by 2
+           always (memq (aref node i) keys)))
+
+(defconst nelisp-aot-compiler--x86-frame-alias-node-keys
+  '((arith :op :repr :a :b) (atomic-fetch-add :ptr :delta)
+    (call :name :args :repr) (extern-call :name :ret-class :args :varargs-p :f64-count)
+    (cmp :op :repr :a :b) (cond :id :clauses) (if :id :test :then :else)
+    (imm :value :cls :varargs-p) (let-rt :var :slot :copy-candidate :value-ir :body)
+    (let-rt-n :bindings :body) (logic :op :id :repr :forms)
+    (ptr-read-u64 :ptr :offset) (ptr-write-u64 :ptr :offset :val)
+    (ref :var :reg :slot :class :repr :root-p :cls :varargs-p)
+    (setq-local :var :slot :repr :value-ir) (sexp-tag :ptr) (shift :op :a :b)
+    (syscall-direct :nr :a0 :a1 :a2 :a3 :a4 :a5)
+    (value-seq :forms) (while :id :test :body))
+  "Closed non-observing RAW grammar; unknown kinds and metadata reject.")
+
+(defconst nelisp-aot-compiler--x86-frame-alias-gp-reprs
+  '(nil unknown raw-i64 raw-ptr raw-bool)
+  "Unboxed GP representations; boxed/rooted and typed representations reject.")
+
+(defun nelisp-aot-compiler--x86-frame-alias-gp-p (node)
+  "Whether every class/representation annotation of NODE is unboxed GP.
+The closed node grammar plus recursively checked children fixes the value
+class; `--ir-repr' supplies the existing computed representation for lets
+and value sequences.  Integer representation is distinct from register
+class: raw-i64 is valid here, whereas :cls must be gp."
+  (and (cl-every (lambda (key) (memq (nelisp-aot-compiler--ir-get node key) '(nil gp)))
+                 '(:class :cls :ret-class))
+       (not (nelisp-aot-compiler--ir-get node :varargs-p))
+       (memq (nelisp-aot-compiler--ir-get node :repr) nelisp-aot-compiler--x86-frame-alias-gp-reprs)
+       (memq (if (memq (nelisp-aot-compiler--ir-kind node) '(let-rt let-rt-n value-seq setq-local))
+                 ;; Children prove container results without an unbounded
+                 ;; representation recursion before the depth preflight.
+                 'unknown
+               (nelisp-aot-compiler--ir-repr node))
+             nelisp-aot-compiler--x86-frame-alias-gp-reprs)
+       (or (not (eq (nelisp-aot-compiler--ir-kind node) 'imm))
+           (integerp (nelisp-aot-compiler--ir-get node :value)))))
+
+(defun nelisp-aot-compiler--x86-frame-alias-owner-proof (owner)
+  "Prove OWNER's bounded RAW closure cannot observe its private frame.
+No collector/root, address/SP producer, opaque native/assembly boundary or
+incoming-RAX carry is admitted.  Linux mmap is non-reading here, but is
+separately forbidden throughout each alias lifetime.  Exit60 retains its
+ordinary emitted return continuation; no noreturn premise is used."
+  (when (and nelisp-aot-compiler--x86-frame-copy-aliases
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (eq nelisp-aot-compiler--os 'linux)
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             nelisp-aot-compiler--x86-frame-alias-definitions
+             (nelisp-aot-compiler--ir-node-p
+              (gethash (nelisp-aot-compiler--ir-get owner :name)
+                       nelisp-aot-compiler--x86-frame-alias-definitions)))
+    (let* ((cache nelisp-aot-compiler--x86-frame-alias-proof-cache)
+           (cached (and cache (gethash owner cache :missing))))
+      (if (and cache (not (eq cached :missing)))
+          (unless (eq cached :rejected) cached)
+        (let ((todo (list owner)) seen (nodes 0) (ok t)
+              (counts (make-hash-table :test #'eql))
+              (nelisp-aot-compiler--x86-frame-alias-proof-depth 0))
+          (cl-labels
+           ((lex (x env local-counts)
+              (let ((nelisp-aot-compiler--x86-frame-alias-proof-depth
+                     (1+ nelisp-aot-compiler--x86-frame-alias-proof-depth)))
+                (if (or (not ok) (> nelisp-aot-compiler--x86-frame-alias-proof-depth 128)
+                        (not (nelisp-aot-compiler--ir-node-p x)))
+                    (setq ok nil)
+                  (let ((k (nelisp-aot-compiler--ir-kind x)))
+                    (cl-incf nodes)
+                    (when (or (> nodes 8192)
+                              (not (nelisp-aot-compiler--x86-frame-alias-gp-p x))
+                              (not (assq k nelisp-aot-compiler--x86-frame-alias-node-keys))
+                              (not (nelisp-aot-compiler--x86-frame-alias-keys-p
+                                    x (cdr (assq k nelisp-aot-compiler--x86-frame-alias-node-keys))))
+                              (nelisp-aot-compiler--ir-get x :root-p)
+                              (and (eq k 'value-seq) (null (nelisp-aot-compiler--ir-get x :forms))))
+                      (setq ok nil))
+                    (when (memq k '(ref setq-local))
+                      (unless (and (eq (cdr (assq (nelisp-aot-compiler--ir-get x :slot) env))
+                                       (nelisp-aot-compiler--ir-get x :var))
+                                   (assq (nelisp-aot-compiler--ir-get x :slot) env)
+                                   (memq (nelisp-aot-compiler--ir-get x :class) '(nil gp)))
+                        (setq ok nil)))
+                    (when (eq k 'syscall-direct)
+                      (let ((nr (nelisp-aot-compiler--ir-get x :nr)))
+                        (unless (and (eq (nelisp-aot-compiler--ir-kind nr) 'imm)
+                                     (memq (nelisp-aot-compiler--ir-get nr :value) '(9 60)))
+                          (setq ok nil))))
+                    (when (memq k '(call extern-call))
+                      (let ((d (gethash (nelisp-aot-compiler--ir-get x :name)
+                                        nelisp-aot-compiler--x86-frame-alias-definitions)))
+                        (if (or (not (nelisp-aot-compiler--ir-node-p d))
+                                (not (nelisp-aot-compiler--x86-frame-alias-keys-p
+                                      x '(:name :args :repr :f64-count :varargs-p :ret-class)))
+                                (nelisp-aot-compiler--ir-get x :varargs-p)
+                                (/= (or (nelisp-aot-compiler--ir-get x :f64-count) 0) 0)
+                                (not (memq (nelisp-aot-compiler--ir-get x :ret-class) '(nil gp)))
+                                (/= (length (nelisp-aot-compiler--ir-get x :args))
+                                    (length (nelisp-aot-compiler--ir-get d :param-regs))))
+                            (setq ok nil)
+                          (push d todo))))
+                    (pcase k
+                      ('let-rt
+                       (let ((slot (nelisp-aot-compiler--ir-get x :slot))
+                             (var (nelisp-aot-compiler--ir-get x :var)))
+                         (puthash slot (1+ (gethash slot local-counts 0)) local-counts)
+                         (lex (nelisp-aot-compiler--ir-get x :value-ir) env local-counts)
+                         (lex (nelisp-aot-compiler--ir-get x :body) (cons (cons slot var) env) local-counts)))
+                      ('let-rt-n
+                       (let ((scope env))
+                         (dolist (b (nelisp-aot-compiler--ir-get x :bindings))
+                           (when (nth 3 b) (setq ok nil))
+                           (puthash (nth 1 b) (1+ (gethash (nth 1 b) local-counts 0)) local-counts)
+                           (lex (nth 2 b) env local-counts)
+                           (push (cons (nth 1 b) (car b)) scope))
+                         (lex (nelisp-aot-compiler--ir-get x :body) scope local-counts)))
+                      (_ (cl-loop for i from 1 below (length x) do (value (aref x i) env local-counts))))))))
+            (value (x env local-counts)
+              (let ((nelisp-aot-compiler--x86-frame-alias-proof-depth
+                     (1+ nelisp-aot-compiler--x86-frame-alias-proof-depth)))
+                (if (> nelisp-aot-compiler--x86-frame-alias-proof-depth 128) (setq ok nil)
+                  (when ok
+                    (cond ((nelisp-aot-compiler--ir-node-p x) (lex x env local-counts))
+			  ((consp x) (value (car x) env local-counts) (value (cdr x) env local-counts))
+			  ((vectorp x) (setq ok nil))))))))
+           (while (and todo ok)
+             (let ((d (pop todo)))
+               (unless (memq d seen)
+                 (push d seen)
+                 (when (or (> (length seen) 64)
+                           (not (nelisp-aot-compiler--x86-frame-alias-keys-p
+                                 d '(:name :self-tco-raw :params :param-regs :param-class :param-classes
+                                           :param-repr :rest-p :variadic :fixed-param-count :rt-slot-count
+                                           :gc-root-slots :return-repr :internal-entry :internal-hidden :body)))
+                           (nelisp-aot-compiler--ir-get d :gc-root-slots)
+                           (nelisp-aot-compiler--ir-get d :internal-hidden)
+                           (nelisp-aot-compiler--ir-get d :self-tco-raw)
+                           (not (memq (nelisp-aot-compiler--ir-get d :param-repr)
+                                      nelisp-aot-compiler--x86-frame-alias-gp-reprs))
+                           (not (memq (nelisp-aot-compiler--ir-get d :return-repr)
+                                      nelisp-aot-compiler--x86-frame-alias-gp-reprs))
+                           (nelisp-aot-compiler--ir-get d :variadic)
+                           (nelisp-aot-compiler--ir-get d :rest-p)
+                           (not (memq (nelisp-aot-compiler--ir-get d :param-class) '(nil gp)))
+                           (cl-some (lambda (c) (not (memq c '(nil gp)))) (nelisp-aot-compiler--ir-get d :param-classes))
+                           (not (= (length (nelisp-aot-compiler--ir-get d :params))
+                                   (length (nelisp-aot-compiler--ir-get d :param-regs))))
+                           (not (eql (length (nelisp-aot-compiler--ir-get d :params))
+                                     (nelisp-aot-compiler--ir-get d :fixed-param-count))))
+                   (setq ok nil))
+                 (let ((env nil) (slot 0)
+                       (local-counts (if (eq d owner) counts (make-hash-table :test #'eql))))
+                   (dolist (p (nelisp-aot-compiler--ir-get d :params))
+                     (puthash slot 1 local-counts) (push (cons slot p) env) (cl-incf slot))
+                   (lex (nelisp-aot-compiler--ir-get d :body) env local-counts)
+                   (maphash (lambda (_ n) (unless (= n 1) (setq ok nil))) local-counts))))))
+          (let ((result (and ok (list :slot-definitions counts))))
+            (when cache (puthash owner (or result :rejected) cache))
+            result))))))
+
+(defun nelisp-aot-compiler--x86-frame-alias-mmap-p (body)
+  "Non-nil if BODY's already closed same-unit scope can reach mmap."
+  (let ((todo (list body)) seen found)
+    (while (and todo (not found))
+      (let ((ir (pop todo)))
+        (unless (memq ir seen)
+          (push ir seen)
+          (nelisp-aot-compiler--walk-ir
+           ir (lambda (n)
+                (let ((k (nelisp-aot-compiler--ir-kind n)))
+                  (when (and (eq k 'syscall-direct)
+                             (eql (nelisp-aot-compiler--ir-get (nelisp-aot-compiler--ir-get n :nr) :value) 9))
+                    (setq found t))
+                  (when (memq k '(call extern-call))
+                    (push (nelisp-aot-compiler--ir-get
+                           (gethash (nelisp-aot-compiler--ir-get n :name)
+                                    nelisp-aot-compiler--x86-frame-alias-definitions) :body) todo))))))))
+    found))
+
+(defun nelisp-aot-compiler--x86-frame-copy-source (node)
+  "Return a private canonical source frame for readonly copy NODE, or nil.
+Keep virtual slots through CG3 placement, following GNU comp.el:1932-1949's
+original-copy tracing.  No register allocation is extended across calls."
+  (let* ((value (nelisp-aot-compiler--ir-get node :value-ir))
+         (target (nelisp-aot-compiler--ir-get node :slot))
+         (source (and (eq (nelisp-aot-compiler--ir-kind value) 'ref) (nelisp-aot-compiler--ir-get value :slot)))
+         (counts (plist-get nelisp-aot-compiler--x86-frame-alias-owner-state :slot-definitions)))
+    (when (and nelisp-aot-compiler--x86-frame-copy-aliases counts
+               (not (or nelisp-aot-compiler--x86-interval-leaf-p nelisp-aot-compiler--x86-trace-loop-exits))
+               (nelisp-aot-compiler--ir-get node :copy-candidate)
+               (integerp source) (integerp target) (not (= source target))
+               (= (gethash source counts 0) 1) (= (gethash target counts 0) 1)
+               (not (assq source nelisp-aot-compiler--promoted-slots))
+               (not (assq target nelisp-aot-compiler--promoted-slots))
+               (< (length nelisp-aot-compiler--x86-frame-read-aliases) 64))
+      (let ((written nil) (reads 0) (body (nelisp-aot-compiler--ir-get node :body)))
+        (nelisp-aot-compiler--walk-ir
+         body (lambda (n)
+                (when (and (eq (nelisp-aot-compiler--ir-kind n) 'setq-local)
+                           (memq (nelisp-aot-compiler--ir-get n :slot) (list source target)))
+                  (setq written t))
+                (when (and (eq (nelisp-aot-compiler--ir-kind n) 'ref)
+                           (eql (nelisp-aot-compiler--ir-get n :slot) target))
+                  (cl-incf reads))))
+        (when (and (not written) (> reads 0) (not (nelisp-aot-compiler--x86-frame-alias-mmap-p body)))
+          (nelisp-aot-compiler--x86-frame-read-slot source))))))
+
 (defun nelisp-aot-compiler--x86-copy-let-source-register (node)
   "Return a stable promoted source register for readonly lexical let NODE.
 Keep virtual slots through CG3 selection: early slot merging changes its
@@ -15776,6 +16015,7 @@ A readonly promoted copy uses its source register only inside that body;
 the surrounding CG3 allocation and all slot lifetimes stay unchanged."
   (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
          (reg (nelisp-aot-compiler--x86-copy-let-source-register node))
+         (source (nelisp-aot-compiler--x86-frame-copy-source node))
          (forward (nelisp-aot-compiler--x86-forward-load-offset node)))
     (cond
      (forward (funcall emit-body forward))
@@ -15783,6 +16023,10 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
         (let ((nelisp-aot-compiler--promoted-slots
                (cons (cons slot reg) nelisp-aot-compiler--promoted-slots)))
           (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))
+     (source
+      (let ((nelisp-aot-compiler--x86-frame-read-aliases
+             (cons (cons slot source) nelisp-aot-compiler--x86-frame-read-aliases)))
+        (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))
      (t
       (nelisp-aot-compiler--emit-value
        (nelisp-aot-compiler--ir-get node :value-ir) buf)
@@ -16476,10 +16720,12 @@ to a register (CG3)."
              (memq (or (nelisp-aot-compiler--ir-get node :class) 'gp) '(gp nil))
              (nelisp-aot-compiler--x86-slot-operand slot)))))))
 
-(defun nelisp-aot-compiler--x86-slot-operand (slot)
+(defun nelisp-aot-compiler--x86-slot-operand (slot &optional write-p)
   "Operand holding frame SLOT's current value: its register or its memory."
   (let ((reg (cdr (assq slot nelisp-aot-compiler--promoted-slots))))
-    (if reg (list :reg reg) (nelisp-aot-compiler--x86-slot-mem slot))))
+    (if reg (list :reg reg)
+      (nelisp-aot-compiler--x86-slot-mem
+       (if write-p slot (nelisp-aot-compiler--x86-frame-read-slot slot))))))
 
 (defconst nelisp-aot-compiler--x86-alu-ops
   '((+ #x03 0) (- #x2B 5) (logand #x23 4) (logior #x0B 1) (logxor #x33 6)
@@ -16636,7 +16882,7 @@ that lives in memory.  The value is not left in rax."
   (let* ((slot (nelisp-aot-compiler--ir-get node :slot))
          (value (nelisp-aot-compiler--ir-get node :value-ir))
          (target (and (integerp slot)
-                      (nelisp-aot-compiler--x86-slot-operand slot)))
+                      (nelisp-aot-compiler--x86-slot-operand slot t)))
          (vo (nelisp-aot-compiler--x86-leaf-operand value)))
     (cond
      ((null target) nil)
@@ -23527,7 +23773,8 @@ mapping before the unchanged barrier emitter reads its operands."
   "Materialize current slot values, with the innermost dynamic alias first."
   (let (seen)
     (dolist (p nelisp-aot-compiler--promoted-slots)
-      (unless (memq (car p) seen)
+      (unless (or (memq (car p) seen)
+                  (assq (car p) nelisp-aot-compiler--x86-frame-read-aliases))
         (push (car p) seen)
         (nelisp-aot-compiler--x86-op
          buf t (unibyte-string #x89) (cdr p)
@@ -23730,6 +23977,7 @@ a direct side exit.  No mapping crosses that arm or any call."
   "Flush a CG3 map and restore its private saves in their original order."
   (dolist (p pairs)
     (when (and (not (memq (car p) private-slots))
+               (not (assq (car p) nelisp-aot-compiler--x86-frame-read-aliases))
                (not (plist-get state :inline-exit))
                (or (memq (car p) written) (assq (car p) (plist-get state :forward))))
       (nelisp-aot-compiler--x86-op
@@ -23816,7 +24064,8 @@ initializers set these registers, and no use survives the region."
                     (assq (car p) (plist-get state :forward)))
           (nelisp-aot-compiler--x86-op
            buf t (unibyte-string #x8B) (cdr p)
-           (nelisp-aot-compiler--x86-slot-mem (car p)))))
+           (nelisp-aot-compiler--x86-slot-mem
+            (nelisp-aot-compiler--x86-frame-read-slot (car p))))))
       (let ((nelisp-aot-compiler--promoted-slots pairs))
         (funcall emit-loop)
         (when (plist-get state :inline-exit)
@@ -24303,6 +24552,9 @@ return reg, untouched by epilogue)."
                (not variadic)
                '(rbx r8 r9 r12 r13 r14 r15)))
          (nelisp-aot-compiler--promoted-slots nil)
+         (nelisp-aot-compiler--x86-frame-read-aliases nil)
+         (nelisp-aot-compiler--x86-frame-alias-owner-state
+          (nelisp-aot-compiler--x86-frame-alias-owner-proof defun-ir))
          (nelisp-aot-compiler--x86-assign-memo (make-hash-table :test 'eq))
          (nelisp-aot-compiler--x86-tco-entry-state
           (nelisp-aot-compiler--x86-self-tco-entry-plan defun-ir))
@@ -24739,6 +24991,9 @@ Doc 101 §101.B Wave 5: buffer is created with the current
               (nelisp-aot-compiler--x86-local-extern-facts defuns)))
         (nelisp-aot-compiler--x86-trace-unit-names
          (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns))
+        (nelisp-aot-compiler--x86-frame-alias-definitions
+         (nelisp-aot-compiler--x86-frame-alias-definitions defuns))
+        (nelisp-aot-compiler--x86-frame-alias-proof-cache (make-hash-table :test #'eq))
         (nelisp-aot-compiler--x86-partial-call-facts
          (nelisp-aot-compiler--x86-partial-call-facts defuns))
         (nelisp-aot-compiler--x86-trivial-call-facts
@@ -26540,6 +26795,9 @@ register budgeting while ELF/Mach-O keep SysV."
         (nelisp-aot-compiler--compile-to-wasm-unit defuns data-blobs)))
     (let* ((nelisp-aot-compiler--x86-trace-unit-names
             (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns))
+           (nelisp-aot-compiler--x86-frame-alias-definitions
+            (nelisp-aot-compiler--x86-frame-alias-definitions defuns))
+           (nelisp-aot-compiler--x86-frame-alias-proof-cache (make-hash-table :test #'eq))
            (nelisp-aot-compiler--x86-partial-call-facts
             (nelisp-aot-compiler--x86-partial-call-facts defuns))
            (nelisp-aot-compiler--x86-trivial-call-facts
