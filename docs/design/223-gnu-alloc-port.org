@@ -553,6 +553,37 @@ Result (callgrind, churn workload, steady-state collection): 62.6M -> 58.1M inst
 same logic (a naive stack machine: a dozen operations is 60 to 90 instructions), which the code-generation lane's
 S5 work owns.
 
+** The collection's wall time (S2.8)
+
+The criterion is wall time against GNU, not instructions.  Hardware counters (=perf_event_open=, user space, a
+12-collection delta, five repetitions, CPU 8, the Doc 220 cons churn) split one steady-state collection like this:
+
+| | cycles | instructions | IPC | L1D read misses | branch misses |
+| NeLisp, before | 20.1M | 34.7M | 1.73 | 252k (7.3 per 1000 instr) | 75k |
+| GNU 31.1 | 12.5M | 27.6M | 2.20 | 200k (7.2 per 1000 instr) | 146k |
+
+The cycle ratio x1.60 is the instruction ratio x1.26 times the IPC ratio x0.79; the miss density equals GNU's, so
+the collection is not memory-bound (an earlier reading of 4 instructions per ns came from a loaded machine).  Phase
+timestamps put 88% of a collection in marking from the recorded roots, 6% in the conservative scan, 3% in the cache
+and symbol-name roots and 2% in the sweeps: =nl_sweep_conses=, =nl_sweep_symbols= and =nl_sweep_floats= already
+are GNU's =sweep_conses= (a bitmap word of 64 cells, an all-marked fast path, only freed cells touched), and the
+chunk walk of legacy blocks, which reads every block header as GNU's =sweep_vectors= and =sweep_strings= do, is 76 us.
+
+An instruction profile of =nl_gc_mark_cons= (183,000 iterations a collection, 154 instructions each) showed where
+they went: the image test of a cons WORD ran through =nl_gc_mark_cons_payload= (the typed-block range test, then
+=nl_gc_mark_image= with its alignment and start-bit tests: 113 instructions to find an unmarked bit), every use of a
+=let=-bound =data-addr= cost four instructions where =(heap-read-u64 (data-addr X) K)= is one, and the tag of the
+argument was decoded four times.
+
+- A cons WORD inside the image takes its bit directly, as GNU's =pdumper_marked_p= and =pdumper_set_marked= and
+  nothing else: a precise cons WORD names a cons start, so neither the start bitmap nor the typed-block lookup is
+  consulted.  A cons WORD outside the image and a legacy view keep their old path.
+- =nl_gc_mark_word= reads the image bounds in place and computes the bit position after the range test.
+- =nl_cons_mark_cell= shifts by 4 instead of dividing by the cell size (the generator asserts 16).
+
+Result: 20.1M -> 16.5M cycles a collection (IPC 1.73 -> 1.75, instructions 34.7M -> 28.9M); the paired gc3 ratio to
+GNU x1.69, x1.63, x1.61 -> x1.44, x1.42, x1.42.
+
 ** Bytecode VM safepoints (maybe_gc)
 
 The bytecode interpreter never reaches a collection point.  GNU polls

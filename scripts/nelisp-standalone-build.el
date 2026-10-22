@@ -3334,7 +3334,7 @@ it shares with cons and symbol blocks.")
     `(;; XMARK_CONS (alloc.c:2550) on a cons-block cell: 1 = newly marked.
       (defun nl_cons_mark_cell (box)
         (let* ((blk (logand box -32768))
-               (idx (/ (- box blk) ,cell))
+               (idx (sar (- box blk) 4)) ; cell = 16, asserted by the generator
                (w (+ blk (+ ,marks (* (sar idx 6) 8))))
                (bit (shl 1 (logand idx 63)))
                (m (heap-read-u64 w 0)))
@@ -7163,13 +7163,14 @@ REPL-facing module it feeds."
         (if (= (logand word 7) 6)
             ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
             ;; bit is set needs neither the header read nor a call.
-            (let* ((box (- word 6)) (st (data-addr nl_typed_alloc)) (lo (heap-read-u64 st 200))
-                   (g (sar (- box lo) 3)))
-              (if (if (< box lo) 0
-                    (if (>= box (heap-read-u64 st 208)) 0
-                      (/= (logand (heap-read-u64 (+ (heap-read-u64 st 216) (* (sar g 6) 8)) 0)
-                                  (shl 1 (logand g 63)))
-                          0)))
+            (let* ((box (- word 6)))
+              (if (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 0
+                    (if (>= box (heap-read-u64 (data-addr nl_typed_alloc) 208)) 0
+                      (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3)))
+                        (/= (logand (heap-read-u64 (+ (heap-read-u64 (data-addr nl_typed_alloc) 216)
+                                                      (* (sar g 6) 8)) 0)
+                                    (shl 1 (logand g 63)))
+                            0))))
                   0
                 (let* ((k (logand (heap-read-u64 box 0) 63)))
                   (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box)))))
@@ -7269,15 +7270,29 @@ REPL-facing module it feeds."
     ;; SP is a cons view or a direct cons WORD (payload | 2, Doc 216).  The
     ;; cdr chain is followed iteratively in both representations.
     (defun nl_gc_mark_cons (sp)
+      ;; GNU process_mark_stack, case Lisp_Cons: a cons marked already ends the walk, else the
+      ;; car is expanded and the cdr continues the loop.  A cons WORD inside the image is the
+      ;; pdumper case, one bit in the mark bitmap (pdumper_marked_p, pdumper_set_marked); it
+      ;; names a cons start, so neither the start bitmap nor a typed-block lookup is consulted.
       (let ((go 1))
         (seq (while (= go 1)
           (seq (setq go 0)
-            (let ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8))))
-              (if (= (logand sp 7) 2) 0
-                (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
-                  (nl_gc_typed_slot sp 7)))
-              (let ((r (nl_gc_mark_cons_payload box)))
-               (if (= r 0) 0
+            (let* ((box (if (= (logand sp 7) 2) (- sp 2) (heap-read-u64 sp 8)))
+                   (r (if (= (logand sp 7) 2)
+                          (if (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 0
+                                (< box (heap-read-u64 (data-addr nl_typed_alloc) 208)))
+                              (let* ((g (sar (- box (heap-read-u64 (data-addr nl_typed_alloc) 200)) 3))
+                                     (wa (+ (heap-read-u64 (data-addr nl_typed_alloc) 216) (* (sar g 6) 8)))
+                                     (m (heap-read-u64 wa 0))
+                                     (bit (shl 1 (logand g 63))))
+                                (if (= (logand m bit) 0)
+                                    (seq (ptr-write-u64 wa 0 (logior m bit)) 1)
+                                  0))
+                            (nl_gc_mark_cons_payload box))
+                        (seq (if (= (logand (heap-read-u64 (data-addr nl_gc_typed_state) 0) 3) 0) 0
+                                 (nl_gc_typed_slot sp 7))
+                             (nl_gc_mark_cons_payload box)))))
+              (if (= r 0) 0
                 (seq
                   ;; A legacy heap cons marked for the first time (a cons-block cell is counted
                   ;; by sweep_conses, an image cons never).
@@ -7297,7 +7312,7 @@ REPL-facing module it feeds."
                           (if (= (nl_gc_mark_block dw) 0) 0
                             (if (= (nl_val_tag dw) 7)
                                 (seq (setq sp dw) (setq go 1))
-                              (nl_gc_mark_slot dw)))))))))))) 0))))
+                              (nl_gc_mark_slot dw))))))))))) 0))))
     ;; Doc 152 Stage 5: walk LEN inline 32-byte Sexp slots held in a raw
     ;; char-table buffer.  Entries use STRIDE=40/OFF=8 ({i64 key,Sexp});
     ;; extras use STRIDE=32/OFF=0.  The buffer membership guard precedes every
