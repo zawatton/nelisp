@@ -37,9 +37,15 @@
 #                     dynamic build are 16-byte aligned
 #   census            native-free-symbol census: no free-symbol site, both
 #   casetab           casetab's GNU fixtures (API 43, behaviour 47)
+#   marker-arith      GNU-compiled arithmetic and comparison opcodes on markers: GNU's own output is
+#                     the pin on both linkages, the VM equals the interpreter, a library's redefined
+#                     function cells are honoured; the build before the VM fix fails
+#   marker-fixture    regenerate test/fixtures/bytecode-marker-arith.eld and the check's GNU pin
+#   guard             staged GNU handlers: every direct callee of a compiler-macro, gv-expander
+#                     or gv-setter handler of a staged definition is defined in both binaries
 #   ns                ns-inventory: no unpinned collision beyond 1290
 #   log KIND          pipeline evidence newer than the dynamic binary:
-#                     common mcp standalone sweep fileio aot validate win timing
+#                     common mcp standalone sweep fileio aot validate win timing timing-vm timing-marker
 #   pipeline          every log check
 cd "$(dirname "$0")/../.." || exit 2
 ROOT=$PWD
@@ -63,7 +69,8 @@ say() { echo "BATCH-F $*"; }
 # The binaries may predate HEAD only by commits to this ledger's own files.
 built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' \
-    ':(exclude)tools/ai/batch-f-progress.org'
+    ':(exclude)tools/ai/batch-f-progress.org' ':(exclude)tools/ai/evidence' \
+    ':(exclude)scripts/nelisp-staged-handler-guard.el' ':(exclude)test/nelisp-staged-handler-guard-test.el'
 }
 fail() { say "FAIL: $*"; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
@@ -72,8 +79,8 @@ capped() { (ulimit -v 8388608; exec "$@"); }
 run_nelisp() {
   capped env LC_ALL="$3" timeout 300 "$1" -l "$2" > "$4" 2> "$5"
 }
-run_gnu() {
-  capped env LC_ALL="$2" LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> /dev/null
+run_gnu() {   # run_gnu FIXTURE LOCALE OUTFILE [ERRFILE]
+  capped env LC_ALL="$2" LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l "$1" > "$3" 2> "${4:-/dev/null}"
 }
 
 expected_for() {
@@ -86,18 +93,28 @@ expected_for() {
 }
 
 check_fixture() {
-  local name=$1 loc=${2:-C.UTF-8} fx="test/fixtures/$1.el" want
+  local name=$1 loc=${2:-C.UTF-8} fx="test/fixtures/$1.el" want wanterr="test/fixtures/$1.gnu-31.1.stderr"
   want=$(expected_for "$name" "$loc")
   [ -f "$fx" ] && [ -f "$want" ] || fail "missing $fx or $want"
-  run_gnu "$fx" "$loc" "$OUT/$name.$loc.gnu.out" || fail "$name ($loc): GNU exited $?"
+  run_gnu "$fx" "$loc" "$OUT/$name.$loc.gnu.out" "$OUT/$name.$loc.gnu.err" || fail "$name ($loc): GNU exited $?"
   cmp -s "$want" "$OUT/$name.$loc.gnu.out" || fail "$name ($loc): GNU no longer prints the pin"
+  # A .gnu-31.1.stderr pin (possibly empty) makes stderr part of the fixture: GNU and
+  # both linkages must print exactly it.  Without one, stderr must be empty.
+  if [ -f "$wanterr" ]; then
+    cmp -s "$wanterr" "$OUT/$name.$loc.gnu.err" || fail "$name ($loc): GNU's stderr no longer matches its pin"
+  fi
   local tag bin rc
   for tag in dyn static; do
     bin=$DYN; [ $tag = static ] && bin=$ST
     [ -x "$bin" ] || fail "missing $tag binary $bin"
     run_nelisp "$bin" "$fx" "$loc" "$OUT/$name.$loc.$tag.out" "$OUT/$name.$loc.$tag.err"; rc=$?
     [ $rc = 0 ] || fail "$name ($loc) $tag: exit $rc"
-    [ -s "$OUT/$name.$loc.$tag.err" ] && fail "$name ($loc) $tag: stderr not empty"
+    if [ -f "$wanterr" ]; then
+      cmp -s "$wanterr" "$OUT/$name.$loc.$tag.err" ||
+        fail "$name ($loc) $tag: stderr differs from GNU's ($(wc -c < "$OUT/$name.$loc.$tag.err") bytes against $(wc -c < "$wanterr"): $(head -c 140 "$OUT/$name.$loc.$tag.err" | tr '\n' ' '))"
+    else
+      [ -s "$OUT/$name.$loc.$tag.err" ] && fail "$name ($loc) $tag: stderr not empty"
+    fi
     cmp -s "$want" "$OUT/$name.$loc.$tag.out" ||
       fail "$name ($loc) $tag: differs from GNU ($(diff "$want" "$OUT/$name.$loc.$tag.out" | grep -c '^[<>]') lines)"
   done
@@ -175,6 +192,24 @@ for row in missing:
 sys.exit(1 if missing else 0)
 PY
             ;;
+    timing-marker) f=target/integ/timing-mk/report.txt
+            # The fast-path loops (fixnum compares and sums, float compares and sums) are held to 1.03;
+            # the loop of boxed opcodes (= <= > % max min on fixnums) pays one operand test per
+            # boxed op and is bounded at 1.05, its ratio is printed.
+            python3 - "$f" <<'PY' || fail "a fast-path loop is above 1.03, the boxed-op loop above 1.05, or a loop is missing in $f"
+import re, sys
+limits = {'bma-loop fixnum': 1.03, 'bma-loopf float': 1.03, 'bma-loop# fixnum': 1.05}
+found = {}
+for line in open(sys.argv[1], encoding='utf-8'):
+    m = re.match(r'\s*(bma-loop\S*(?: \S+)?).*?: ratio median ([0-9.]+) ', line)
+    if m:
+        if m.group(1) in limits:
+            found.setdefault(m.group(1), float(m.group(2)))
+for key, ratio in found.items():
+    print(key, ratio)
+sys.exit(0 if len(found) == 3 and all(found[k] <= limits[k] for k in limits) else 1)
+PY
+            ;;
     timing-vm) f=target/integ/timing-F/report.txt
             python3 - "$f" <<'PY' || fail "bytecode funcall or while loop above 1.03 (or missing) in $f"
 import re, sys
@@ -229,9 +264,19 @@ case ${1:-} in
         c=$(git log -1 --format=%H -S"(provide 'nelisp-elc-reader)" -- scripts/nelisp-stdlib-prelude.el)
         [ -n "$c" ] || fail "no commit introduces the provide"
         git merge-base --is-ancestor "$c" HEAD || fail "provide commit not in HEAD"
-        git diff --quiet "$c" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' ':(exclude)tools/ai/batch-f-progress.org' ||
-          fail "sources changed after the provide commit ${c:0:9}: it must be the last source commit"
-        say "PASS merged provide (last source commit ${c:0:9})" ;;
+        # The provide was the last source commit until the coordinator asked for two fixes:
+        # the keymap compiler-macro helpers (S2.14, S2.15, S4.11) and the VM's arithmetic on
+        # markers (S2.16, S2.17, S4.12).  After it only those fixes and the ledger's own files
+        # may change, and the prelude that holds the provide not at all.
+        git diff --quiet "$c" HEAD -- scripts/nelisp-stdlib-prelude.el ||
+          fail "the prelude changed after the provide commit ${c:0:9}"
+        git diff --quiet "$c" HEAD -- . ':(exclude)tools/ai/batch-f-check.sh' ':(exclude)tools/ai/batch-f-progress.org' \
+          ':(exclude)tools/ai/evidence' ':(exclude)scripts/nelisp-standalone-build.el' ':(exclude)scripts/nelisp-staged-handler-guard.el' \
+          ':(exclude)test/nelisp-staged-handler-guard-test.el' ':(exclude)test/fixtures/batch-f-keymap-cmacro*' \
+          ':(exclude)test/fixtures/bytecode-marker-arith.*' ':(exclude)test/standalone-bytecode-marker-arith-check.*' \
+          ':(exclude)test/standalone-bytecode-library-arith-check.*' ||
+          fail "sources changed after the provide commit ${c:0:9} beyond the keymap and marker-arithmetic fixes"
+        say "PASS merged provide (${c:0:9}; later source changes limited to the keymap and marker-arithmetic fixes)" ;;
       *) fail "usage: merged gnu-semantics|casefold|codegen|bridge|provide" ;;
     esac ;;
   integrity)
@@ -351,8 +396,9 @@ EOF
       ( bash "$ROOT/tools/ai/batch-f-check.sh" gnu $item ) || exit 1
     done
     for k in casefold e-fixtures closures syntax-rt; do ( bash "$ROOT/tools/ai/batch-f-check.sh" $k ) || exit 1; done
-    for f in batch-f-doc-closure batch-f-skip-load; do ( bash "$ROOT/tools/ai/batch-f-check.sh" fixture $f C.UTF-8 ) || exit 1; done
+    for f in batch-f-doc-closure batch-f-skip-load batch-f-keymap-cmacro batch-f-keymap-cmacro-invalid; do ( bash "$ROOT/tools/ai/batch-f-check.sh" fixture $f C.UTF-8 ) || exit 1; done
     ( bash "$ROOT/tools/ai/batch-f-check.sh" bridge-test ) || exit 1
+    ( bash "$ROOT/tools/ai/batch-f-check.sh" marker-arith ) || exit 1
     say "PASS all fixtures" ;;
   fixture) check_fixture "${2:?fixture name}" "${3:-C.UTF-8}" ;;
   vm-memory)
@@ -469,8 +515,79 @@ PY
     [ -n "$n" ] && [ "$n" -le 1290 ] || fail "unpinned collisions: ${n:-?} (parents: 1290)"
     say "PASS ns ($n unpinned, as the parents)" ;;
   log) log_check "${2:?kind}" ;;
+  marker-fixture)
+    # GNU compiles the fixture; the check consumes the exact function objects.
+    mkdir -p target/marker-fixture
+    cp test/fixtures/bytecode-marker-arith.el target/marker-fixture/
+    capped "$GNU" -Q --batch -f batch-byte-compile target/marker-fixture/bytecode-marker-arith.el || fail "GNU cannot compile the fixture"
+    capped "$GNU" -Q --batch --load target/marker-fixture/bytecode-marker-arith.elc --eval '
+      (with-temp-file "test/fixtures/bytecode-marker-arith.eld"
+        (insert ";;; -*- lexical-binding: t; -*- GNU 31.1 batch-byte-compile of bytecode-marker-arith.el; regenerate with tools/ai/batch-f-check.sh marker-fixture\n")
+        (let ((print-escape-nonascii t) (print-escape-multibyte t)
+              (print-escape-control-characters t) (print-escape-newlines t))
+          (dolist (name (quote (bma-eql bma-gtr bma-lss bma-leq bma-geq bma-max bma-min bma-add bma-sub
+                                bma-mul bma-quo bma-rem bma-inc bma-dec bma-neg bma-loop bma-loop2 bma-loopf)))
+            (prin1 (list (quote fset) (list (quote quote) name) (symbol-function name)) (current-buffer))
+            (insert "\n"))))' || fail "GNU cannot dump the function objects"
+    capped "$GNU" -Q --batch --load test/standalone-bytecode-marker-arith-check.el > test/standalone-bytecode-marker-arith-check.expected
+    say "regenerated test/fixtures/bytecode-marker-arith.eld and the GNU pin" ;;
+  marker-arith)
+    a=test/standalone-bytecode-marker-arith-check; b=test/standalone-bytecode-library-arith-check
+    for f in $a.el $a.expected $b.el $b.expected test/fixtures/bytecode-marker-arith.eld; do [ -f "$f" ] || fail "missing $f"; done
+    # GNU Emacs prints the pin, with a clean stderr.
+    capped timeout 300 "$GNU" -Q --batch --load $a.el > "$OUT/marker-arith.gnu.out" 2> "$OUT/marker-arith.gnu.err" || fail "GNU exits non-zero on $a.el"
+    cmp -s $a.expected "$OUT/marker-arith.gnu.out" && [ ! -s "$OUT/marker-arith.gnu.err" ] || fail "GNU no longer prints the pin $a.expected"
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      [ -x "$bin" ] || fail "missing $tag binary"
+      for t in $a $b; do
+        n=$(basename $t)
+        capped env LC_ALL=C.UTF-8 timeout 300 "$bin" --load $t.el > "$OUT/$n.$tag.out" 2> "$OUT/$n.$tag.err"; rc=$?
+        [ $rc = 0 ] && [ ! -s "$OUT/$n.$tag.err" ] && cmp -s $t.expected "$OUT/$n.$tag.out" ||
+          fail "$n on $tag: rc=$rc, $(grep -c '^FAIL' "$OUT/$n.$tag.out") interpreter mismatches, $(diff $t.expected "$OUT/$n.$tag.out" | grep -c '^[<>]') differing lines; $(tail -n 1 "$OUT/$n.$tag.out" | head -c 100)"
+      done
+    done
+    # Negative control: the build before the VM fix rejects markers in the VM.
+    old=${BATCH_F_VM_OLD:-$ROOT/target/integ/f2/nelisp-dyn}
+    [ -x "$old" ] || fail "negative control needs the build before the VM fix ($old)"
+    for t in $a $b; do
+      n=$(basename $t)
+      capped env LC_ALL=C.UTF-8 timeout 300 "$old" --load $t.el > "$OUT/$n.old.out" 2> "$OUT/$n.old.err"; rc=$?
+      if [ $rc = 0 ] && cmp -s $t.expected "$OUT/$n.old.out"; then fail "negative control: the build before the VM fix passes $n"; fi
+    done
+    say "PASS marker-arith (GNU pin and interpreter equal on both linkages; library cells honoured; the build before the fix fails $(grep -c '^FAIL' "$OUT/$(basename $a).old.out") + $(grep -c '^FAIL' "$OUT/$(basename $b).old.out") cases)" ;;
+  guard)
+    # scripts/nelisp-staged-handler-guard.el reads the build script and the pinned GNU sources of
+    # a tree and asks a binary whether the direct callees of every staged compiler-macro,
+    # gv-expander and gv-setter handler are defined.  It needs no build, only the binary.
+    [ -x "$DYN" ] && [ -x "$ST" ] || fail "missing binaries"
+    runguard() {   # runguard ROOT BINARY REPORT
+      capped "$GNU" --batch -Q -L src -L scripts -l nelisp-staged-handler-guard \
+        -f nelisp-staged-handler-guard-batch -- "$1" "$2" "$3" > /dev/null 2>&1
+    }
+    for tag in dyn static; do
+      bin=$DYN; [ $tag = static ] && bin=$ST
+      runguard "$ROOT" "$bin" "$OUT/guard.$tag.txt" || fail "the guard fails $tag: $(grep '^FAIL' "$OUT/guard.$tag.txt" | head -2 | tr '\n' ' ')"
+      n=$(sed -n 's/^declarations: \([0-9]*\) .*/\1/p' "$OUT/guard.$tag.txt")
+      [ "${n:-0}" -ge 32 ] || fail "the guard read only ${n:-0} declarations on $tag (32 expected: the scan is vacuous)"
+    done
+    # Negative control: the build before the keymap fix, with its own tree, must fail the guard
+    # on exactly the two missing helpers.
+    oldroot=${BATCH_F_OLD_ROOT:-$ROOT/target/integ/src-d29b53025}
+    olddyn=${BATCH_F_OLD_DYN:-$ROOT/target/integ/old-d29b53025/nelisp-dyn}
+    [ -f "$oldroot/scripts/nelisp-standalone-build.el" ] && [ -x "$olddyn" ] ||
+      fail "negative control needs the build before the fix ($oldroot, $olddyn)"
+    if runguard "$oldroot" "$olddyn" "$OUT/guard.old.txt"; then fail "negative control: the guard passes the build before the fix"; fi
+    grep -q '^FAIL keymap-set compiler-macro needs keymap--compile-check' "$OUT/guard.old.txt" &&
+      grep -q '^FAIL define-keymap compiler-macro needs define-keymap--compile' "$OUT/guard.old.txt" ||
+      fail "negative control fails for the wrong reason: $(head -c 300 "$OUT/guard.old.txt" | tr '\n' ' ')"
+    capped timeout 300 "$GNU" --batch -Q -L src -L scripts -L test -l ert -l test/nelisp-staged-handler-guard-test.el \
+      -f ert-run-tests-batch-and-exit > "$OUT/ert-staged-handler-guard.log" 2>&1 ||
+      fail "guard tests: $(grep -E '^(Ran|   FAILED)' "$OUT/ert-staged-handler-guard.log" | head -3 | tr '\n' ' ')"
+    say "PASS guard ($(sed -n 's/^declarations: \(.*\)$/\1/p' "$OUT/guard.dyn.txt"); direct callees $(sed -n 's/^direct callees checked: \([0-9]*\);.*/\1/p' "$OUT/guard.dyn.txt"), none missing; the build before the fix fails on the keymap pair)" ;;
   pipeline)
-    for k in common standalone mcp sweep fileio aot validate win timing; do ( log_check $k ) || exit 1; done
+    for k in common standalone mcp sweep fileio aot validate win timing timing-marker; do ( log_check $k ) || exit 1; done
+    ( bash "$ROOT/tools/ai/batch-f-check.sh" guard ) || exit 1
     say "PASS pipeline" ;;
   *) echo "usage: $0 CHECK [ARGS]" >&2; exit 2 ;;
 esac

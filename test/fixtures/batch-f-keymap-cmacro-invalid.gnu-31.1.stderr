@@ -1,0 +1,10 @@
+Warning: Optimization failure for keymap-set: Handler: keymap-set--anon-cmacro
+(void-function byte-compile-warn)
+Warning: Optimization failure for keymap-set: Handler: keymap-set--anon-cmacro
+(void-function byte-compile-warn)
+Warning: Optimization failure for define-keymap: Handler: define-keymap--compile
+(void-function byte-compile-warn-x)
+Warning: Optimization failure for define-keymap: Handler: define-keymap--compile
+(void-function byte-compile-warn-x)
+Warning: Optimization failure for define-keymap: Handler: define-keymap--compile
+(void-function byte-compile-warn-x)

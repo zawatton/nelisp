@@ -1,0 +1,8 @@
+void in this session: (nil nil t t)
+string key: (error "\"C-cc a\" is not a valid key definition; see ‘key-valid-p’")
+vector key: (error "[f1] is not a valid key definition; see ‘key-valid-p’")
+valid key: no error
+define-keymap key: (error "\"C-cc a\" is not a valid key definition; see ‘key-valid-p’")
+define-keymap keyword: (error "Invalid keyword: :bogus")
+define-keymap uneven: (error "Uneven number of key/definition pairs")
+define-keymap valid: no error

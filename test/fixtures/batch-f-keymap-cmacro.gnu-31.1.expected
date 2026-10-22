@@ -1,0 +1,20 @@
+bindings after load
+keymap-set C-c a    ignore
+keymap-set C-c b    [3 97]
+define-key C-c c    ignore
+define-key <f5>     ignore
+full       C-x C-a  ignore
+defvar-km  C-c d    ignore
+expansion
+(keymap-set m "C-c a" #'ignore)
+  unchanged t
+(keymap-set m key def)
+  unchanged t
+(keymap-set m "C-c b" "C-c a")
+  unchanged t
+(define-keymap "C-c a" #'ignore)
+  unchanged t
+(define-keymap :full t :parent nil "C-c a" #'ignore "<f5>" #'ignore)
+  unchanged t
+(define-keymap :keymap m key def)
+  unchanged t
