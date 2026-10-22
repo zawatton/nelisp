@@ -23662,7 +23662,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
          (while (if (= rc 0) (if (< k n) (if (= (logand cur 1) 0) (= (heap-sexp-tag-word cur) 7) 0) 0) 0)
            (seq (ptr-write-u64 cslot 0 cur)
                 (setq w (nl_cons_car_word cur))
-                (setq tag (nl_val_tag w))
+                (setq tag (if (= (logand w 1) 1) 0 (nl_val_tag w)))
                 (let* ((ew (if (< tag 4) w
                              (if (if (or (= tag 4) (= tag 16)) (= (nl_kw_is_keyword w) 0) 0)
                                  (nl_ei_var_w (nl_env_lookup_val_w w env 0) w env 0)
@@ -52331,25 +52331,41 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                 (nl_abi_fail (bf_wrong_number_of_args (if (= call_name 0) fn call_name) argc) 0)
               (let* ((id (nl_subr_prim desc argc)))
                 (if (= id 0) 2
-                  (if (= id 14) (nl_eic_apply_w tail env argc fn fw call_name)
-                    (if (= id 13) (nl_eic_funcall_w tail env argc fn fw call_name)
-                      (nl_eic_prim_frame_w id tail env argc fw call_name)))))))))
+                  (if (= id 14)
+                      (let* ((f (nl_eic_own_fw env fw fn)))
+                        (if (= f 0) (seq (wf_bytecode_root_exhausted) 0)
+                          (nl_eic_apply_w tail env argc fn f call_name)))
+                    (if (= id 13)
+                        (let* ((f (nl_eic_own_fw env fw fn)))
+                          (if (= f 0) (seq (wf_bytecode_root_exhausted) 0)
+                            (nl_eic_funcall_w tail env argc fn f call_name)))
+                      (nl_eic_prim_frame_w id tail env argc fw call_name fn)))))))))
+      ;; FW, or a two-slot frame of its own holding FN when the caller passed none.
+      (defun nl_eic_own_fw (env fw fn)
+        (if (/= fw 0) fw
+          (let* ((f (nl_root_frame env 2)))
+            (seq (if (/= f 0) (ptr-write-u64 f 0 fn) 0) f))))
       ;; GNU eval_sub's argvals (eval.c:2626, 2685-2693): the arguments are
       ;; evaluated into the rooted frame and the primitive runs on them; one it
       ;; declines gets the same evaluated arguments as an ordinary apply's list.
-      (defun nl_eic_prim_frame_w (id tail env argc fw call_name)
-        (let* ((base (nl_root_frame env (+ argc 1))))
+      ;; Without a caller's FW the frame also holds FN and the list for that apply:
+      ;; slots ARGC+1 and ARGC+2.
+      (defun nl_eic_prim_frame_w (id tail env argc fw call_name fn)
+        (let* ((base (nl_root_frame env (if (= fw 0) (+ argc 3) (+ argc 1)))))
           (if (= base 0) (seq (wf_bytecode_root_exhausted) 0)
-            (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
+            (let* ((fw2 (if (= fw 0) (+ base (* (+ argc 1) 8)) fw)))
               (seq
-               (m5_fx_frame_lazy env base argc 0)
-               (let* ((st (if (<= id 13)
-                              (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
-                            (nl_eic_prim2_run id base argc (+ base (* argc 8))))))
-                 (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
-                   (if (= st -3)
-                       (nl_eic_after_args_w (m5_fx_slot_list base argc) env fw call_name)
-                     0))))))))
+               (if (= fw 0) (ptr-write-u64 fw2 0 fn) 0)
+               (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
+                 (seq
+                  (m5_fx_frame_lazy env base argc 0)
+                  (let* ((st (if (<= id 13)
+                                 (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
+                               (nl_eic_prim2_run id base argc (+ base (* argc 8))))))
+                    (if (= st 0) (heap-read-u64 (+ base (* argc 8)) 0)
+                      (if (= st -3)
+                          (nl_eic_after_args_w (m5_fx_slot_list base argc) env fw2 call_name)
+                        0))))))))))
       ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
       (defun nl_eic_prim2_run (id base argc resw)
         (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
@@ -52411,11 +52427,15 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                 -1))
           -1))
       ;; A subr D = (builtin NM): its primitive, else the ordinary apply on the
-      ;; evaluated argument list.
+      ;; evaluated argument list.  FW is the caller's two-slot frame, or 0: a
+      ;; primitive then roots D in its own frame.
       (defun nl_eic_builtin_call_w (d nm tail env fw call_name)
         (let* ((p (nl_eic_primitive_w d nm tail env fw call_name)))
           (if (= p 2)
-              (nl_eic_after_args_w (nl_eval_arg_list_w tail env 0) env fw call_name)
+              (let* ((fw2 (if (= fw 0) (nl_root_frame env 2) fw)))
+                (if (= fw2 0) (seq (wf_bytecode_root_exhausted) 0)
+                  (seq (ptr-write-u64 fw2 0 d)
+                       (nl_eic_after_args_w (nl_eval_arg_list_w tail env 0) env fw2 call_name))))
             p)))
       (defun nl_eic_eval_args_w (tail_ptr env fw call_name)
         (let* ((d (heap-read-u64 fw 0))
@@ -52428,19 +52448,24 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                 w)))))
       ;; GNU eval_sub reads the car's function cell (eval.c:2634, SYMBOL_FUNCTION in
       ;; place): an interned or uninterned symbol object is its own mirror entry, so a
-      ;; subr is read from slot 1 at once.  Anything else (the unbound marker, an
-      ;; autoload cell, an alias, a macro, a closure) takes the full lookup.
-      (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark fw)
+      ;; subr is read from slot 1 at once and called with no frame of its own beyond
+      ;; its arguments'.  Anything else (the unbound marker, an autoload cell, an
+      ;; alias, a macro, a closure) takes the full lookup with its two-slot frame.
+      (defun nl_eic_symbol_w (form_ptr head_ptr tail_ptr env root_mark)
         (let* ((w (if (= (logand head_ptr 7) 6) (nl_record_slot_word head_ptr 1) 0))
                (nm (if (= w 0) 0 (nl_eic_builtin_name w))))
           (if (/= nm 0)
               (nl_cons_root_finish
                env root_mark
-               (seq (ptr-write-u64 fw 0 w)
-                    (nl_eic_builtin_call_w w nm tail_ptr env fw head_ptr)))
-            (nl_eic_after_lookup_w
-             (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
-             form_ptr head_ptr tail_ptr env root_mark fw))))
+               (nl_eic_builtin_call_w w nm tail_ptr env 0 head_ptr))
+            (let* ((fw (nl_root_frame env 2)))
+              (if (= fw 0)
+                  (nl_cons_root_finish env root_mark (seq (wf_bytecode_root_exhausted) 0))
+                (nl_eic_symbol_slot_w form_ptr head_ptr tail_ptr env root_mark fw))))))
+      (defun nl_eic_symbol_slot_w (form_ptr head_ptr tail_ptr env root_mark fw)
+        (nl_eic_after_lookup_w
+         (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) head_ptr 0)
+         form_ptr head_ptr tail_ptr env root_mark fw))
       ;; A head that is no special form goes straight to the function call.
       (defun nl_eval_inner_cons_w (form_ptr head_ptr tail_ptr env _pad)
         (if (= (nl_val_tag head_ptr) 4)
@@ -52476,7 +52501,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                   (lambda (form)
                     (and (eq (car-safe form) 'defun)
                          (memq (cadr form) '(nl_eic_primitive_w nl_eic_eval_args_w nl_eval_inner_cons_w
-                                             nl_eic_symbol_slot_w nl_eic_dolist_w))))
+                                             nl_eic_symbol_slot_w nl_eic_dolist_w nl_eic_symbol_w))))
                   nelisp-standalone--combiner-cons-word))
                 (nelisp-standalone--eval-call-defuns)
                 (nelisp-standalone--subr-desc-defuns))))
@@ -52486,11 +52511,11 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; FORM is the original canonical WORD, never an immediate view.
       (cond
        ((= (logand form 1) 1) form)
+       ((= (sexp-tag form) 7)
+        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_word form) form env 0))
        ((= (nl_kw_is_keyword form) 1) form)
        ((or (= (sexp-tag form) 4) (= (sexp-tag form) 16))
         (nl_ei_var_w (extern-call nl_env_lookup_val_w form env 0) form env 0))
-       ((= (sexp-tag form) 7)
-        (nl_ei_cons_dispatch_w (extern-call nl_cons_car_word form) form env 0))
        ((= (sexp-tag form) 11)
         (extern-call nl_cell_get_value_w form 0))
        (t form)))
@@ -52504,7 +52529,10 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     (defun nl_ei_var_w (w form env _pad)
       (if (= w 2) (nl_abi_fail (nl_stash_void_variable env form) 0) w))
     (defun nl_ei_cons_dispatch_w (car-ptr form env _pad)
-      (nl_ei_cons_tail_w (extern-call nl_cons_cdr_ptr form) car-ptr form env 0))
+      (nl_ei_cons_tail_w
+       (let* ((d (if (= (logand form 7) 2) (heap-read-u64 (- form 2) 8) 0)))
+         (if (= (logand d 7) 2) d (extern-call nl_cons_cdr_ptr form)))
+       car-ptr form env 0))
     (defun nl_ei_cons_eval_w (cdr-ptr car-ptr form env)
       (let* ((cached (extern-call nl_mxcache_lookup form)))
         (if (= cached 0)
