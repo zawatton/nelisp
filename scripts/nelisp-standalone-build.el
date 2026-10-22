@@ -18056,7 +18056,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; evaluates that form at closure creation and stores the value as
     ;; slot 4 (how an OClosure type is attached); here the form stays in
     ;; front of the body, where a string docstring would sit, and the
-    ;; prelude's `:documentation' macro makes it a no-op when the body runs.
+    ;; prelude's `:documentation' function answers nil when the body runs.
     (defun nl_closure_docmark_p (p)
       (if (= (ptr-read-u64 p 0) 7)
           (let* ((h (nl_cons_car_ptr p))

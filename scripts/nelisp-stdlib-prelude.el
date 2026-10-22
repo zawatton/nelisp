@@ -10369,9 +10369,15 @@ replacing the elements in the beginning of the constant-vector."
 ;; GNU eval.c `Ffunction' consumes a lambda's leading `(:documentation FORM)'
 ;; when the closure is created (it becomes slot 4: the OClosure type).  This
 ;; runtime keeps the form in the body, where the native slot view reads it,
-;; so running the body must skip it.
+;; so running the body must skip it.  It is a FUNCTION and not a macro: in
+;; GNU nothing macroexpands the form, and a macro that expanded to nil made
+;; the eager macroexpansion of a loaded file (and any library's
+;; `macroexpand-all') erase the form before `function' could keep it, so
+;; every OClosure lost its type slot.  Calling it costs about 1 us for a
+;; quoted FORM, less than the macro's expansion did (2.5 us measured on
+;; batch E).
 (unless (fboundp ':documentation)
-  (defmacro :documentation (&rest _form)
+  (defun :documentation (&rest _form)
     "Ignore a leading `(:documentation FORM)' of a lambda body (see `function')."
     nil))
 ;; GNU Emacs 31.1 eval.c `Fmake_interpreted_closure', over this runtime's
@@ -10386,8 +10392,8 @@ replacing the elements in the beginning of the constant-vector."
 ;; A DOCSTRING that is not a string (an OClosure type symbol, a DOC-file
 ;; offset) rides in front of BODY as the form (:documentation 'VALUE) -- the
 ;; very form GNU `function' evaluates for the same purpose -- which the
-;; native slot-4 view recognises and the `:documentation' macro below turns
-;; into a no-op when the body runs.
+;; native slot-4 view recognises and the `:documentation' function above
+;; answers nil for when the body runs.
 (unless (fboundp 'make-interpreted-closure)
   (defun make-interpreted-closure (args body env &optional docstring iform)
   "Make a closure with ARGS, BODY, ENV, DOCSTRING and interactive IFORM."
