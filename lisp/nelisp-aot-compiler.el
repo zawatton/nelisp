@@ -18067,6 +18067,91 @@ external data symbol."
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8D #x05))
       (nelisp-asm-x86_64-reloc-pc32-here buf name -4))))
 
+(defvar nelisp-aot-compiler--x86-trivial-call-folding t
+  "Fold complete same-unit constant/identity callees after ABI staging.")
+
+(defvar nelisp-aot-compiler--x86-trivial-call-facts nil
+  "Dynamically scoped facts for this emission pass's unique definitions.")
+
+(defun nelisp-aot-compiler--x86-trivial-call-facts (defuns)
+  "Describe only complete integer/GP-formal bodies in unique DEFUNS.
+GNU comp.c:2041-2050 passes evaluated argument rvalues to GCC.  GCC's
+small-function inlining can then remove a constant or identity call;
+here the original argument staging remains, including every effect."
+  (let ((facts (make-hash-table :test #'eq))
+        (seen (make-hash-table :test #'eq)))
+    (dolist (d defuns)
+      (let* ((name (nelisp-aot-compiler--ir-get d :name))
+             (params (nelisp-aot-compiler--ir-get d :params))
+             (arity (length params))
+             (body (nelisp-aot-compiler--ir-get d :body))
+             (slot (nelisp-aot-compiler--ir-get body :slot))
+             (kind (nelisp-aot-compiler--ir-kind body)))
+        (if (gethash name seen)
+            (remhash name facts)
+          (puthash name t seen)
+          (when (and (symbolp name) (<= arity 6)
+                     (= arity (length (nelisp-aot-compiler--ir-get d :param-regs)))
+                     (equal (nelisp-aot-compiler--ir-get d :param-regs)
+                            (cl-subseq '(rdi rsi rdx rcx r8 r9) 0 arity))
+                     (= arity (or (nelisp-aot-compiler--ir-get d :fixed-param-count) -1))
+                     (if (= arity 0)
+                         (null (nelisp-aot-compiler--ir-get d :param-class))
+                       (eq (nelisp-aot-compiler--ir-get d :param-class) 'gp))
+                     (= arity (length (nelisp-aot-compiler--ir-get d :param-classes)))
+                     (cl-every (lambda (c) (eq c 'gp))
+                               (nelisp-aot-compiler--ir-get d :param-classes))
+                     (not (cl-some (lambda (k) (nelisp-aot-compiler--ir-get d k))
+                                   '(:rest-p :variadic :internal-entry :internal-hidden
+                                     :gc-root-slots :self-tco-raw)))
+                     (not (eq (nelisp-aot-compiler--ir-get d :return-repr) 'f64)))
+            (cond
+             ((and (eq kind 'imm)
+                   (integerp (nelisp-aot-compiler--ir-get body :value)))
+              (puthash name (list :arity arity :value
+                                  (nelisp-aot-compiler--ir-get body :value)) facts))
+             ((and (eq kind 'ref) (integerp slot) (<= 0 slot) (< slot arity)
+                   (eq (nelisp-aot-compiler--ir-get body :var) (nth slot params))
+                   (eq (nelisp-aot-compiler--ir-get body :class) 'gp)
+                   (not (nelisp-aot-compiler--ir-get body :root-p)))
+              (puthash name (list :arity arity :param slot) facts)))))))
+    facts))
+
+(defun nelisp-aot-compiler--emit-named-gp-call-x86 (node buf)
+  "Emit NODE's ordinary call, or its complete trivial result after staging.
+Arguments and alignment have ALREADY been emitted.  No evaluation or
+frame layout changes here; the caller's original cleanup follows."
+  (let* ((name (nelisp-aot-compiler--ir-get node :name))
+         (args (nelisp-aot-compiler--ir-get node :args))
+         (fact (and nelisp-aot-compiler--x86-trivial-call-facts
+                    (gethash name nelisp-aot-compiler--x86-trivial-call-facts)))
+         (gp t))
+    (dolist (arg (cons node args))
+      (nelisp-aot-compiler--walk-ir
+       arg (lambda (n)
+             (when (or (cl-some (lambda (k)
+                                  (eq (nelisp-aot-compiler--ir-get n k) 'f64))
+                                '(:class :cls :ret-class))
+                       (string-prefix-p "f64" (symbol-name (nelisp-aot-compiler--ir-kind n)))
+                       (and (eq (nelisp-aot-compiler--ir-kind n) 'imm)
+                            (not (integerp (nelisp-aot-compiler--ir-get n :value)))))
+               (setq gp nil)))))
+    (if (and nelisp-aot-compiler--x86-trivial-call-folding fact gp
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not nelisp-aot-compiler--checked-arith)
+             (not (and nelisp-aot-compiler--native-emit-enabled (fboundp 'nl-jit-call-out-2)))
+             (not (cl-some (lambda (k) (nelisp-aot-compiler--ir-get node k))
+                           '(:fn-value :varargs-p :internal-boundary-disp)))
+             (<= (length args) 6) (= (length args) (plist-get fact :arity)))
+        (if (plist-member fact :param)
+            (nelisp-asm-x86_64-mov-reg-reg
+             buf 'rax (nth (plist-get fact :param) '(rdi rsi rdx rcx r8 r9)))
+          (nelisp-aot-compiler--emit-trivial-into-reg
+           (nelisp-aot-compiler--make-ir 'imm :value (plist-get fact :value)) 'rax buf))
+      (nelisp-asm-x86_64-call-rel32 buf name))))
+
 (defun nelisp-aot-compiler--emit-call (node buf)
   "Emit a call to NODE's named function using the current ABI.
 
@@ -18283,7 +18368,7 @@ count."
              (nelisp-aot-compiler--ir-get node :internal-boundary-disp)))
       (nelisp-asm-x86_64-call-rel32 buf (intern (format "%s$internal" name))))
      (t
-      (nelisp-asm-x86_64-call-rel32 buf name)))
+      (nelisp-aot-compiler--emit-named-gp-call-x86 node buf)))
     ;; Reclaim shadow space.
     (when (> shadow 0)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp shadow))
@@ -24119,6 +24204,8 @@ helper signature.  Pass nil when no static-imm32 tables exist.
 Doc 101 §101.B Wave 5: buffer is created with the current
 `nelisp-aot-compiler--abi' so Win64 callers get a 'win64 buffer."
   (let ((nelisp-aot-compiler--table-vaddrs table-vaddrs)
+        (nelisp-aot-compiler--x86-trivial-call-facts
+         (nelisp-aot-compiler--x86-trivial-call-facts defuns))
         (nelisp-aot-compiler--rsp-temp-depth 0)
         (buf (nelisp-asm-x86_64-make-buffer nelisp-aot-compiler--abi)))
     ;; Main `_start' body first (= the program's entry point).
@@ -25913,7 +26000,9 @@ register budgeting while ELF/Mach-O keep SysV."
     (when (eq arch 'wasm32)
       (cl-return-from nelisp-aot-compile-to-link-unit
         (nelisp-aot-compiler--compile-to-wasm-unit defuns data-blobs)))
-    (let* ((nelisp-aot-compiler--rsp-temp-depth 0)
+    (let* ((nelisp-aot-compiler--x86-trivial-call-facts
+            (nelisp-aot-compiler--x86-trivial-call-facts defuns))
+           (nelisp-aot-compiler--rsp-temp-depth 0)
            (buf (if (eq arch 'aarch64)
                     (nelisp-asm-arm64-make-buffer)
                   (nelisp-asm-x86_64-make-buffer
