@@ -283,7 +283,7 @@
       ;; environment returns before the symbol's value cell is read.  LEX is the
       ;; value, 0 for no lexical binding, -1 for a shape the loop leaves to the
       ;; general code.
-      (let* ((lex (extern-call nl_lex_read frames-ptr name-ptr)))
+      (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 2)))
         (if (if (= lex 0) 0 (if (= lex -1) 0 1))
             lex
          (if (= lex 0)

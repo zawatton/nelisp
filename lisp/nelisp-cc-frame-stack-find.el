@@ -527,70 +527,97 @@
                                        (nl_frame_push_sym1_ptr) scratch)
              (nelisp_frame_scope_mark frames))))
 
-    ;; Lexical lookup of NAME through the frames of BACKING from index I down, as
-    ;; GNU's Fassq over the lexical environment: the binding pair's Cell (RAW 0: a
-    ;; hybrid binding is given one) or its cdr as it is (RAW 1); 0 when no frame binds
-    ;; NAME lexically; -1 when a frame has a shape this loop does not take (a hash
-    ;; table, declared dynamic names, a legacy view, a non-record) or NAME is no
-    ;; symbol object, and the caller runs the general descent.  The usual frame is an
-    ;; alist of (NAME . VALUE) direct conses, newest first; the walk reads the words:
-    ;; the same WORD is the same symbol and two different symbol objects are different
-    ;; symbols.  A frame marked as a scope boundary ends the descent.  Record layout:
-    ;; header (kind in bits 0-5, slot count from bit 8) at the payload, the type at +8,
-    ;; slot K at +16+8K; a vector's element K at +8+8K; payload = WORD - 6 for a
-    ;; vectorlike, WORD - 2 for a direct cons.
-    (defun nl_frame_find_lex (backing i name raw)
+    ;; Lexical lookup of NAME through the frames of FRAMES (env+32), newest first, as
+    ;; GNU's Fassq over the lexical environment (eval.c:2594 for a read, Fsetq's
+    ;; Fassq for a write).  MODE 0 answers the binding pair's Cell for a write (a
+    ;; hybrid binding is given one), 1 the pair's cdr as it is, 2 the variable's value
+    ;; (a Cell is read, see `nl_cell_get_value_w').  The answer is 0 when no frame binds
+    ;; NAME lexically and -1 when a frame has a shape this loop does not take (a hash
+    ;; table, declared dynamic names, a legacy view, a non-record) or NAME is no symbol
+    ;; object, and the caller runs the general descent.  The usual frame is an alist of
+    ;; (NAME . VALUE) direct conses, newest first; the walk reads the words: the same
+    ;; WORD is the same symbol and two different symbol objects are different symbols.
+    ;; A frame marked as a scope boundary ends the descent.  Record layout: header (kind
+    ;; in bits 0-5, slot count from bit 8) at the payload, the type at +8, slot K at
+    ;; +16+8K; a vector's element K at +8+8K; payload = WORD - 6 for a vectorlike, WORD -
+    ;; 2 for a direct cons.
+    ;; The two loops call nothing and use only plain operators, so the compiler keeps
+    ;; their variables in registers (CG3, Doc 224); the binding found (HIT) is decoded
+    ;; after them, where the calls are.  A stop sets I to -1.
+    (defun nl_lex_walk (frames name mode)
       (if (/= (logand name 7) 6)
           -1
-        (if (/= (logand backing 7) 6)
-            -1
-          (let* ((bp (- backing 6)) (res 0) (go 1))
-            (seq
-             (while (if (= go 1) (>= i 0) 0)
-               (let* ((f (ptr-read-u64 (+ bp (+ 8 (* i 8))) 0)))
-                 (if (/= (logand f 7) 6)
-                     (seq (setq res -1) (setq go 0))
-                   (let* ((fp (- f 6)) (hdr (ptr-read-u64 (- f 6) 0)))
-                     (if (/= (logand hdr 63) 12)
-                         (seq (setq res -1) (setq go 0))
-                       (let* ((cnt (sar hdr 8)))
-                         (if (if (> cnt 1) (/= (logand (ptr-read-u64 (+ fp 24) 0) 1) 1) 0)
-                             (seq (setq res -1) (setq go 0))
-                           (let* ((cur (ptr-read-u64 (+ fp 16) 0)) (hit 0))
-                             (seq
-                              (while (if (= hit 0) (= (logand cur 7) 2) 0)
-                                (let* ((pair (ptr-read-u64 (- cur 2) 0)))
+        (let* ((rec (nl_word_payload frames))
+               (backing (heap-read-u64 (+ rec 16) 0))
+               (i (- (sar (heap-read-u64 (+ rec 24) 0) 2) 1)))
+          (if (/= (logand backing 7) 6)
+              -1
+            (let* ((bp (- backing 6)) (hit 0) (cur 0))
+              (seq
+               (while (>= i 0)
+                 (let* ((f (ptr-read-u64 (+ bp (+ 8 (* i 8))) 0)))
+                   (if (/= (logand f 7) 6)
+                       (seq (setq hit -1) (setq i -1))
+                     (let* ((hdr (ptr-read-u64 (+ f -6) 0)))
+                       (if (/= (logand hdr 63) 12)
+                           (seq (setq hit -1) (setq i -1))
+                         (seq
+                          ;; Slot 1 of a frame with one is a fixnum; the count is HDR >> 8.
+                          (if (>= hdr 512)
+                              (if (/= (logand (ptr-read-u64 (+ f 18) 0) 1) 1) (setq hit -1) 0)
+                            0)
+                          (setq cur (ptr-read-u64 (+ f 10) 0))
+                          (if (= hit 0)
+                              (while (= (logand cur 7) 2)
+                                (let* ((pair (ptr-read-u64 (+ cur -2) 0)))
                                   (seq
+                                   (setq cur (ptr-read-u64 (+ cur 6) 0))
                                    (if (= (logand pair 7) 2)
-                                       (let* ((key (ptr-read-u64 (- pair 2) 0)))
+                                       (let* ((key (ptr-read-u64 (+ pair -2) 0)))
                                          (if (= key name)
-                                             (setq hit pair)
-                                           (if (= (logand key 7) 6) 0 (setq hit -1))))
-                                     0)
-                                   (setq cur (ptr-read-u64 (- cur 2) 8)))))
-                              (if (= hit -1)
-                                  (seq (setq res -1) (setq go 0))
-                                (if (> hit 0)
-                                    (let* ((v (ptr-read-u64 (- hit 2) 8)))
-                                      (seq (setq res (if (= (logand v 7) 6)
-                                                         (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
-                                                             v
-                                                           (if (= raw 1) v (nl_frame_pair_cell hit 0)))
-                                                       (if (= raw 1) v (nl_frame_pair_cell hit 0))))
-                                           (setq go 0)))
-                                  (if (/= cur 3)
-                                      (seq (setq res -1) (setq go 0))
-                                    (if (if (> cnt 2) (/= (ptr-read-u64 (+ fp 32) 0) 3) 0)
-                                        (setq go 0)
-                                      (setq i (- i 1)))))))))))))))
-             res)))))
-    ;; The Cell of NAME's lexical binding for a write (a hybrid binding is given one):
-    ;; a Cell WORD, 0 when NAME has no lexical binding, -1 when the general code must
-    ;; decide.  FRAMES is env+32.
-    (defun nl_lex_cell (frames name)
-      (nl_frame_find_lex (nl_record_slot_word frames 0)
-                         (- (sar (nl_record_slot_word frames 1) 2) 1)
-                         name 0))
+                                             (seq (setq hit pair) (setq cur 3))
+                                           (if (= (logand key 7) 6)
+                                               0
+                                             (seq (setq hit -1) (setq cur 3)))))
+                                     0))))
+                            0)
+                          (if (/= hit 0)
+                              (setq i -1)
+                            (if (/= cur 3)
+                                (seq (setq hit -1) (setq i -1))
+                              (seq
+                               (setq i (- i 1))
+                               ;; Slot 2 of a frame with one marks a scope boundary.
+                               (if (>= hdr 768)
+                                   (if (/= (ptr-read-u64 (+ f 26) 0) 3) (setq i -1) 0)
+                                 0))))))))))
+               (if (> hit 0)
+                   (let* ((v (ptr-read-u64 (- hit 2) 8)))
+                     (if (= mode 2)
+                         ;; The binding's cdr decodes to its value (`nl_cell_get_value_w'): an
+                         ;; immediate or a direct cons is the value, and so is a vectorlike
+                         ;; that is no Cell; only a Cell, a string or a legacy view takes the
+                         ;; call, and a Cell holding a plain value is read in line (header
+                         ;; bit 8, N3's pair-backed flag, clear: the value WORD is the
+                         ;; object's second word).
+                         (if (= (logand v 1) 1)
+                             v
+                           (if (= (logand v 7) 2)
+                               v
+                             (if (= (logand v 7) 6)
+                                 (let* ((vh (ptr-read-u64 (- v 6) 0)))
+                                   (if (= (logand vh 63) 11)
+                                       (if (= (logand (shr vh 8) 1) 0)
+                                           (ptr-read-u64 (+ v 2) 0)
+                                         (extern-call nl_cell_get_value_w v 0))
+                                     v))
+                               (extern-call nl_cell_get_value_w v 0))))
+                       (if (= (logand v 7) 6)
+                           (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
+                               v
+                             (if (= mode 1) v (nl_frame_pair_cell hit 0)))
+                         (if (= mode 1) v (nl_frame_pair_cell hit 0)))))
+                 hit)))))))
     ;; The value of a plain global variable: SYM a symbol object (interned) whose redirect
     ;; is 0 (GNU SYMBOL_PLAINVAL, data.c find_symbol_value), read by the main thread with
     ;; no root pin; 2 when the cell holds the unbound marker; -1 for anything else.
@@ -612,30 +639,6 @@
                   -1)
               -1))
         -1))
-    ;; A lexical read of NAME: the value, 0 when NAME has no lexical binding, -1 when
-    ;; the general code must decide.  FRAMES is env+32.
-    (defun nl_lex_read (frames name)
-      (let* ((r (nl_frame_find_lex (nl_record_slot_word frames 0)
-                                   (- (sar (nl_record_slot_word frames 1) 2) 1)
-                                   name 1)))
-        (if (= r 0) 0
-          (if (= r -1) -1
-            ;; The binding's cdr decodes to its value (`nl_cell_get_value_w'): an
-            ;; immediate or a direct cons is the value, and so is a vectorlike
-            ;; that is no Cell; only a Cell, a string or a legacy view takes the call.
-            (if (if (= (logand r 1) 1) 1 (= (logand r 7) 2))
-                r
-              (if (= (logand r 7) 6)
-                  (let* ((hdr (ptr-read-u64 (- r 6) 0)))
-                    (if (= (logand hdr 63) 11)
-                        ;; A Cell: its value WORD is the second word of the object, unless
-                        ;; the Cell holds a binding pair (header bit 8, N3's pair-backed
-                        ;; flag), which `nl_cell_get_value_w' decodes.
-                        (if (= (logand (shr hdr 8) 1) 0)
-                            (ptr-read-u64 (+ r 2) 0)
-                          (extern-call nl_cell_get_value_w r 0))
-                      r))
-                (extern-call nl_cell_get_value_w r 0)))))))
     (defun nelisp_frame_stack_find_kind_descend_m (backing-ptr i name-ptr dynamic raw _pad)
       (if (< i 0)
           0
@@ -675,10 +678,7 @@
         (if (if (= dynamic 1) (nl_sb_mirror_only_p (- frames-ptr 32) name-ptr) 0)
             0
           (let* ((fast (if (= dynamic 0)
-                           (nl_frame_find_lex
-                            (nl_record_slot_word frames-ptr 0)
-                            (- (sar (nelisp_frame_slot_raw_word frames-ptr 1) 2) 1)
-                            name-ptr raw)
+                           (nl_lex_walk frames-ptr name-ptr raw)
                          -1))
                  (regular
                   (if (= fast -1)

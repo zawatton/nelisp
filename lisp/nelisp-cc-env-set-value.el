@@ -198,7 +198,7 @@
         ;; A symbol with a lexical binding is no constant and not localized: the
         ;; binding's Cell is set at once.  LEX is that Cell, 0 for no lexical
         ;; binding, -1 for a shape the loop leaves to the general code.
-        (let* ((lex (extern-call nl_lex_cell frames-ptr name-ptr)))
+        (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 0)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
             ;; No lexical binding: GNU's Fsetq calls Fset, whose set_internal refuses a
@@ -295,7 +295,7 @@
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
-        (let* ((lex (extern-call nl_lex_cell frames-ptr name-ptr)))
+        (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 0)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
             (let* ((direct (if (= lex 0)

@@ -48,7 +48,7 @@
       ;; GNU eval_sub of a symbol: Fassq over the lexical environment, then the
       ;; symbol's value.  R is the lexical value, 0 for no lexical binding, -1 for
       ;; a shape the loop leaves to the general code.
-      (let* ((r (extern-call nl_lex_read (+ env 32) name_ptr)))
+      (let* ((r (extern-call nl_lex_walk (+ env 32) name_ptr 2)))
         (if (= r -1)
             (nl_env_lookup_val_done_w
              (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
