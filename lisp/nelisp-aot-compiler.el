@@ -16590,6 +16590,12 @@ compared with an immediate compares in memory (CG4)."
         ;; CMP r/m64, r64: the flags of A - rax.
         (nelisp-aot-compiler--x86-op buf t (unibyte-string #x39) 'rax ao)
         nil))
+     ((and nelisp-aot-compiler--x86-call-containing-defun-p
+           (nelisp-aot-compiler--emit-memory-tree-binop-x86 'cmp a b buf))
+      ;; GNU comp.c:1389-1400 gives comparison rvalues to GCC rather than
+      ;; forcing either operand through a stack temporary.  Reuse the
+      ;; complete left-to-right tree preflight; no guard or load moves.
+      nil)
      (t
       (nelisp-aot-compiler--emit-binary-operands a b buf)
       (nelisp-asm-x86_64-cmp-reg-reg buf 'rax 'r10)
@@ -17196,6 +17202,7 @@ rdi/rsi.  No general emit-value helper or call is used."
 
 (defun nelisp-aot-compiler--emit-memory-tree-binop-x86 (op a b buf)
   "Emit supported GP-expression A OP B with register temporaries, or nil.
+OP may also be `cmp', which leaves flags instead of a value in rax.
 Adapt GCC expand_operands' separate result locations to three reserved
 scratch registers.  Both trees are preflighted before any emission.
 Call-containing functions also admit pure arithmetic trees, as GNU
