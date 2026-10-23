@@ -1,0 +1,12 @@
+# The defuns that allocate a symbol cell or store into the name word of one (decision item A, ledger S1.1), found by
+# shape by tools/ai/symbols-name-word-scan.el.  One per line: the defun, then how it makes the name cell hold a
+# String WORD (or why the shape is not a symbol's name).  A new writer fails `symbols-name-word-check.sh writers'
+# until it is read and listed here.
+nl_sym_make_uninterned    stores the argument's String WORD with nl_val_clone_into (the String itself, as Fmake_symbol); a legacy string box is converted to a String by nl_sym_name_string
+nl_symobj_for_view        both arms (the fill of an object not yet named, the creation) store the String WORD of nl_symname_word, which is also the mirror bucket's key
+nelisp_mirror_alloc_entry_w   stores the nil placeholder 3: the mirror writers' object is not handed out until nl_symobj_for_view names it
+nl_symbol_zero            zeroes a fresh cell, the name word included, before its creator fills it
+nl_symbol_selftest_make   debug arm 40, the collector's self-test: a cons view in the name cell of a cell it makes and drops; never a product
+nl_sf_cc_box              not a symbol: the condition-case box variable b
+nl_sweep_conses           not a symbol: a cons-block cell
+nl_sweep_floats           not a symbol: a float-block cell

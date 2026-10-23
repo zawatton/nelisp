@@ -1,0 +1,32 @@
+# The defuns that read the name word of a symbol object (decision item A, ledger S2.1), found by shape by
+# tools/ai/symbols-name-word-scan.el, and the emitters' redirects it cannot see.  One per line: the defun, then how it
+# reads a String WORD there (or why the shape is not a symbol's name).  An unlisted reader fails
+# `symbols-name-word-check.sh readers'.
+nl_word_data              String WORD: the data pointer of its header; legacy view: +16
+nl_word_length            String WORD: nl_string_nbytes; legacy view: +24
+nl_str_target             answers the cell; its callers read it through lowered, String-aware accessors
+bf_str_ptr                through nl_str_target and the lowered heap-read-u64 (nl_string_read64 for a String WORD)
+bf_str_len                through nl_str_target and the lowered heap-read-u64
+nl_bi_strptr              through nl_str_target and heap-sexp-data (nl_word_data)
+nl_bi_strlen              through nl_str_target and heap-sexp-length (nl_word_length)
+nl_symbol_name_value      nl_sexp_clone_into of the cell: a String WORD becomes a view of its String
+nl_symbol_name_fast       answers the cell itself when it is a String WORD (GNU's Fsymbol_name)
+bf_fmt_arg_w              prefers the cell when it is a String WORD (format %s of a symbol)
+nl_sym_make_uninterned    inspects the cell after nl_val_clone_into: a String WORD stays, a legacy box is converted
+nl_symobj_for_view        compares the cell with the nil placeholder 3
+nl_symview_object         compares the cell with the nil placeholder 3 (an unnamed object is not handed out)
+nl_symobj_state           debug arm 50: a String WORD is a named object
+nl_symname_cell_word      debug arm 54: the raw cell
+nl_symname_census_w       debug arm 55: the class of every live cell's name word
+nl_symbol_selftest_cell_ok   debug arm 40/41 self-test of a cell it made: a cons view in the name cell
+nl_ent_w_slow             slot 8 of the symbol-entry protocol is the name: the cell as a WORD value
+nl_dump_compact_write     copies the cell's words as swizzled: the String WORD was relocated as a WORD field by the walk
+nl_intern_slot_unbound_marker_p   not a symbol: the intern table slot's buffer variable b
+nl_num_cmp                not a symbol: a float or bignum object
+nl_float_selftest_hold    not a symbol: a float object
+bf_bv_equal               not a symbol: a bool-vector object
+nelisp-heap-accessors--symbol-name-operand   the lowering of the String-aware name operations: the cell, decoded by tag (String WORD or view) by the code that consumes it
+nelisp-aot-compiler--emit-symbol-object-redirect         x86-64: loads the cell; the name operations test it with emit-unless-string-word and decode it with emit-string-word-fields
+nelisp-aot-compiler--emit-symbol-object-redirect-arm64   aarch64: the same
+nelisp-aot-compiler--emit-symbol-name-redirect           x86-64: loads the cell for str-len, str-bytes and str-byte-at, which then decode a String WORD
+nelisp-aot-compiler--emit-symbol-name-redirect-arm64     aarch64: the same
