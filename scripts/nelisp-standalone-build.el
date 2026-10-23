@@ -6465,7 +6465,13 @@ it shares with cons and symbol blocks.")
             (if (= word 0) 0
               (let* ((slot (alloc-bytes 32 8)))
                 (seq (nl_string_store_view word slot)
-                     (nl_symbol_name_register 1 buf n slot)
+                     ;; An entry whose view is not a canonical String's (none is made today:
+                     ;; the reader's token, `nl_intern_private_name' and `symbol-name' all
+                     ;; register canonical views) takes this String's view, so that the
+                     ;; object and the side table agree on the one name whatever made it.
+                     (if (= entry 0)
+                         (nl_symbol_name_register 1 buf n slot)
+                       (nl_symname_copy32 slot (+ entry 40) 0))
                      word)))))))
     ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
     ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol

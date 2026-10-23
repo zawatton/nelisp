@@ -322,7 +322,7 @@ Stages.
    =sexp-name-eq= emitters (on this branch, coordinator routing).
 3. Interned symbols' WORDs become direct once the reader and the intern
    table hand them out; =eq= is then a pointer compare everywhere.
-   Implemented in five steps (stages 3.0 to 3.4, below).  An interned
+   Implemented in six steps (stages 3.0 to 3.5, below).  An interned
    symbol keeps its place in the native intern table (D6): the table's
    canonical name buffer is what a legacy view points at, and the object
    is reached from it, or from the object's WORD, without hashing.
@@ -433,7 +433,7 @@ times the globals probe on CPU 13 and commits with the numbers.
   =nl_symbol_block_next= and =nl_symbol_block_cells=).  =make-symbol=
   costs 48 B per symbol, GNU's sizeof (struct Lisp_Symbol).
 - Stage 3 (D9 stage 3, direct interned WORDs; coordinator-approved
-  2026-10-22, steps 3.0 to 3.4, each verified on its own build).
+  2026-10-22, steps 3.0 to 3.5, each verified on its own build).
   - 3.0 An interned symbol's object is reached from a legacy view without
     the hash: the view's name buffer is the intern table's canonical
     buffer, whose header holds the symbol's index in the mirror's cells
@@ -445,8 +445,8 @@ times the globals probe on CPU 13 and commits with the numbers.
     intern_c_string_1, lread.c, makes the Lisp_Symbol with its name): the
     reader's leaf symbols, =intern= and =intern-soft= misses call
     =nl_symobj_for_view=, which allocates the cell from the symbol blocks,
-    fills the name cell with the canonical name string (the box the side
-    table keeps, so every =symbol-name= answer is =eq=), the void value and
+    fills the name cell with the canonical name string (until 3.5 the box
+    the side table kept, so every =symbol-name= answer is =eq=), the void value and
     function (the shared unbound view), the empty plist and the meta word,
     and registers it: the chain pair in the mirror's bucket
     (=nl_symobj_link=) and the cell in the cells vector
@@ -488,6 +488,30 @@ times the globals probe on CPU 13 and commits with the numbers.
     Qfunction, Qbackquote, Qcomma, Qcomma_at; the last three become static
     names so they exist from boot).  A new interned name is registered
     without the legacy mirror writers' scratch boxes and repeated hashing.
+  - 3.5 Decision item A (coordinator-approved 2026-10-24): the name cell
+    of every symbol object, interned or not, holds the canonical String
+    WORD, GNU's =u.s.name=.  Until 3.5 an interned object kept a legacy
+    32-byte name box over arena bytes: a second copy of every name, unable
+    to say that ASCII bytes are multibyte, and a view-versus-WORD case in
+    every consumer.  The box is gone with =nl_alloc_str_write_legacy= and
+    =nl_symname_make=.  =nl_symname_word= answers the side table's private
+    String of an interned name, made on first use; the reader adopts its
+    own token String as that name; =intern= keeps a private copy of its
+    argument (GNU aliases the argument, so =intern= then =aset= renames the
+    symbol there; here the name stays, as the intern table's key bytes
+    do); =make-symbol= shares its argument, as =Fmake_symbol= does.
+    =symbol-name= answers the cell itself (=nl_symbol_name_fast=).  The
+    name operations read a String WORD: =symbol-name-eq=, the one name
+    operation the heap-accessor lowering leaves to the machine emitters,
+    on x86-64 and aarch64 (the aarch64 ones had no symbol-object redirect
+    at all at 63ec9640e, so =symbol-name-eq= answered false for every
+    interned symbol there), and =sexp-name-eq=, =str-len=, =str-bytes= and
+    =str-byte-at= for the callers that skip the lowering.  No collector or
+    dump change: the name word is a WORD field like the value cell.
+    Against 63ec9640e: the cold image is 1.06% smaller, the reader's first
+    read of a new name costs 0.89 times (dynamic), =symbol-name= 0.95
+    times, =intern= of a new name 1.08 times.  The criteria and their
+    evidence are tools/ai/symbols-name-word-progress.org (28 criteria).
   - Left as views: the heads =closure= and =builtin= that native code
     builds (the closure of a =lambda=, the =(builtin NAME)= definitions),
     the shared unbound marker and its copies, and views made for
