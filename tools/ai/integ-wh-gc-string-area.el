@@ -8,10 +8,11 @@
 ;;     mapping kind of the word).  A pool string: a header word marks it and sets the guard (kind 3); an sdata word
 ;;     marks nothing (kind 4 or 5) but sets the guard.  A string of the restored image (kind 6, header; the sdata is
 ;;     outside the page registry): handled, never marked, no guard (image strings are immortal).
-;; 83: a collection with the only word naming a fresh string held in the calling frame: none (the control, the string
-;;     is collected), a word inside its header (it survives), a word inside its sdata (collected).  Stale copies of the
-;;     address on the native stack can keep a string alive by chance, so each mode runs 20 times: the header word must
-;;     keep it every time, and the control and the sdata word must each lose it at least once.
+;; 83: a collection with the only word naming a fresh string held in the calling frame: none, a word inside its header
+;;     (it survives), a word inside its sdata (collected).  Stale copies of the address on the native stack can keep a
+;;     string alive by chance, so each mode runs 20 times: the header word must keep it every time, the other two must
+;;     lose it in at least 15.  85 and 86 are the control with no word in any frame: a fresh string answered as a
+;;     fixnum, Lisp's own (garbage-collect), then whether the string is still allocated.
 
 (defvar iwh-ga-fail 0)
 (defun iwh-ga (name ok &optional detail)
@@ -26,7 +27,7 @@
   (iwh-ga "pool sdata word: handled, not marked, guard, kind 4 or 5"
           (and (= (nth 0 d) 1) (= (nth 1 d) 0) (= (nth 2 d) 1) (memq (nth 3 d) '(4 5))) d))
 
-(let* ((img (symbol-name 'car))
+(let* ((img emacs-version)
        (h (iwh-ga-bits (nelisp--debug-switch 82 img)))
        (d (iwh-ga-bits (nelisp--debug-switch 84 img))))
   (if (= (nth 3 h) 6)
@@ -44,11 +45,21 @@
               (t (setq off r))))
       (setq i (1+ i)))
     (if off (list 'off off) alive)))
-(let ((control (iwh-ga-trials 0)) (header (iwh-ga-trials 1)) (sdata (iwh-ga-trials 2)))
-  (if (or (consp control) (consp header) (consp sdata))
-      (iwh-ga "the conservative scan is on" nil (list control header sdata))
+;; the control with no word in any native frame: Lisp holds a fixnum, the collection is Lisp's own
+(defun iwh-ga-control ()
+  (let ((alive 0) (i 0))
+    (while (< i 20)
+      (let ((x (nelisp--debug-switch 85 0)))
+        (garbage-collect)
+        (when (eq (nelisp--debug-switch 86 x) 1) (setq alive (1+ alive))))
+      (setq i (1+ i)))
+    alive))
+(let ((control (iwh-ga-control)) (header (iwh-ga-trials 1)) (sdata (iwh-ga-trials 2)) (none (iwh-ga-trials 0)))
+  (if (or (consp header) (consp sdata) (consp none))
+      (iwh-ga "the conservative scan is on" nil (list none header sdata))
+    (iwh-ga "control, no word anywhere: the string is collected in at least 19 of 20" (<= control 1) control)
     (iwh-ga "header word keeps the string in every trial" (= header 20) header)
-    (iwh-ga "control: no word, the string is collected at least once in 20" (< control 20) control)
-    (iwh-ga "sdata word names no object: the string is collected at least once in 20" (< sdata 20) sdata)))
+    (iwh-ga "no word held in a frame: the string is collected in at least 15 of 20" (<= none 5) none)
+    (iwh-ga "sdata word names no object: the string is collected in at least 15 of 20" (<= sdata 5) sdata)))
 
 (princ (if (= iwh-ga-fail 0) "GC-STRING-AREA PASS\n" (format "GC-STRING-AREA FAIL %d\n" iwh-ga-fail)))

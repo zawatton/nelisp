@@ -14569,14 +14569,15 @@ leave symbols unresolved at link time."
     (defun nl_gc_area_make ()
       (let* ((buf (alloc-bytes 32 1)) (i 0))
         (seq (while (< i 24) (seq (ptr-write-u8 buf i 120) (setq i (+ i 1))))
-             (logxor (- (nl_alloc_str_w buf 24 0) 4) 6148914691236517205))))
-    ;; Overwrites the stack below the caller with zeros, so that no stale word of an earlier call names the string.
-    (defun nl_gc_area_scrub (depth)
-      (let* ((a 0) (b 0) (c 0) (d 0) (e 0) (f 0) (g 0) (h 0) (i 0) (j 0) (k 0) (l 0))
+             (logxor (- (nl_alloc_str_w buf 24 0) 4) 1537228672809129301))))
+    ;; Overwrites the stack below the caller, about 100 KB at depth 2000, with values that name nothing: the
+    ;; frames of the collection that follows are tens of KB each and hold what earlier calls left.  The four
+    ;; locals depend on the depth and are used after the recursive call, so each frame stores them.
+    (defun nl_gc_area_scrub (depth acc)
+      (let* ((a (+ acc 1)) (b (+ a depth)) (c (logxor b 255)) (d (+ c a)))
         (if (> depth 0)
-            (+ (nl_gc_area_scrub (- depth 1))
-               (+ (+ (+ (+ a b) (+ c d)) (+ (+ e f) (+ g h))) (+ (+ i j) (+ k l))))
-          0)))
+            (+ (nl_gc_area_scrub (- depth 1) d) (+ (+ a b) (+ c d)))
+          d)))
     ;; (nelisp--debug-switch 83 MODE): a collection with the only word that names a fresh string kept in this frame.
     ;; MODE 0 keeps none (the control: the string must be collected), 1 a word inside its header (it must survive),
     ;; 2 a word inside its sdata (GNU drops it: the string is collected).  1 when the string is still allocated
@@ -14585,14 +14586,23 @@ leave symbols unresolved at link time."
       (let* ((mode (wf_argval args 1)))
         (if (/= (heap-read-u64 268436464 0) 1) (nl_imm_int -2)
           (let* ((disguised (nl_gc_area_make))
-                 (h (logxor disguised 6148914691236517205))
+                 (h (logxor disguised 1537228672809129301))
                  (kept (if (= mode 1) (+ h 13) (if (= mode 2) (+ (heap-read-u64 h 24) 5) 0))))
             (seq (setq h 0)
-                 (nl_gc_area_scrub 24)
+                 (nl_gc_area_scrub 2000 1)
                  (bf_garbage_collect_snapshot_w env 0)
                  (if (= kept -1) (nl_imm_int 99)
-                   (nl_imm_int (nl_string_header_p (logxor disguised 6148914691236517205)))))))))
+                   (nl_imm_int (nl_string_header_p (logxor disguised 1537228672809129301)))))))))
+    ;; (nelisp--debug-switch 85 0): a fresh string, answered as a fixnum (its header XOR a mask), so that nothing
+    ;; names it; (nelisp--debug-switch 86 X): 1 when the string X names is still allocated.  Lisp's own
+    ;; (garbage-collect) between the two is the clean control for op 83.
+    (defun nl_gc_area_fresh_w (args)
+      (if (= (wf_argval args 0) 85)
+          (nl_imm_int (nl_gc_area_make))
+        (nl_imm_int (nl_string_header_p (logxor (nl_word_payload (wf_arg_word args 1)) 1537228672809129301)))))
     (defun bf_debug_switch_w (args env)
+      (if (if (= (wf_argval args 0) 85) 1 (= (wf_argval args 0) 86))
+          (nl_gc_area_fresh_w args)
       (if (if (= (wf_argval args 0) 82) 1 (= (wf_argval args 0) 84))
           (nl_gc_area_probe_w args)
       (if (if (>= (wf_argval args 0) 83) (<= (wf_argval args 0) 83) 0)
@@ -14711,7 +14721,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
