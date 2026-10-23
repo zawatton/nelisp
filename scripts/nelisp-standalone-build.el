@@ -34059,13 +34059,25 @@ extern arms in dynamic builds."
     ;; string-as-unibyte cannot recover arbitrary bytes from a text tag:
     ;; C0/C1 are internal byte8 escapes and consume the next file byte.
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
+    ;; The result of `nl_bi_read_file_w' is a canonical String WORD (header + 4).  Its representation
+    ;; belongs to the header: a multibyte read (some byte in 80..BF is a continuation byte, so the byte-count
+    ;; heuristic of `nl_alloc_str_w' chose multibyte) is made unibyte by rewriting the fresh header -- size =
+    ;; the byte count, size_byte = -1 -- as the reader does for a fresh token.  This used to write 14 at
+    ;; word + 0, a legacy view's tag byte, which on a canonical String is a byte inside `size' and left
+    ;; size_byte alone: RAW had no effect, and `insert-file-contents-literally' of any file with a byte in
+    ;; 80..BF (every UTF-8 text with a non-ASCII character, every binary file) signalled args-out-of-range or
+    ;; inserted decoded characters instead of bytes.
     (defun nl_bi_read_file_maybe_raw_w (args _pad)
   (let* ((word (nl_bi_read_file_w args 0)))
     (seq
      (if (and (/= word 0) (/= word 2))
          (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
              (if (/= (nl_val_tag (wf_arg_word args 1)) 0)
-                 (if (= (nl_val_tag word) 5) (ptr-write-u8 word 0 14) 0) 0) 0) 0)
+                 (if (= (nl_val_tag word) 5)
+                     (let* ((s (- word 4)) (bytes (nl_string_nbytes s)))
+                       (seq (ptr-write-u64 s 0 bytes)
+                            (ptr-write-u64 s 8 -1)))
+                   0) 0) 0) 0)
      word)))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun nl_bi_slen_w (args _pad)

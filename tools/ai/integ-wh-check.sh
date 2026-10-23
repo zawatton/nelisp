@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   raw-file      literal file reads keep every byte (insert-file-contents-literally, no-conversion), against GNU
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -192,6 +193,27 @@ case ${1:-} in
     tail -n 1 "$d/smoke.log" | grep -qx 'WIN-SMOKE PASS' || fail "$(tail -n 1 "$d/smoke.log")"
     [ -s "$d/nelisp.exe.cold" ] || fail "no cold image beside the exe"
     say "PASS win ($c, exe $(sha256sum "$d/nelisp.exe" | cut -c1-16), cold $(stat -c %s "$d/nelisp.exe.cold") B, WIN-SMOKE PASS)" ;;
+  raw-file)
+    # A literal read keeps every byte: insert-file-contents-literally and insert-file-contents under no-conversion
+    # on a binary file, a UTF-8 text and a mixed file, against GNU 31.1 (the RAW argument of the read-file primitive).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/raw-file; rm -rf "$d"; mkdir -p "$d"
+    python3 - "$d" <<'PYEOF' || fail "cannot write the raw-file fixtures"
+import sys
+d = sys.argv[1]
+open(d + '/raw256.bin', 'wb').write(bytes(range(256)))
+open(d + '/utf8.txt', 'wb').write('\u65e5\u672c\u8a9e\u306e\u30c6\u30ad\u30b9\u30c8\nabc \u00e9\r\n'.encode('utf-8'))
+open(d + '/mixed.bin', 'wb').write(b'plain ascii\n' + bytes([0xc3, 0xa9, 0x80, 0xbf, 0xff, 0xc0, 0x41]) + '\u65e5'.encode('utf-8'))
+PYEOF
+    capped env IWH_RAW_DIR="$d" LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-raw-file.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env IWH_RAW_DIR="$d" LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-raw-file.el \
+      > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
+    say "PASS raw-file ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
