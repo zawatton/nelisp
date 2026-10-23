@@ -15666,13 +15666,242 @@ Nil preserves the original two loads and exact E instruction selection.")
              '(if cond logic value-seq let-rt let-rt-n))
        (nelisp-aot-compiler--x86-call-free-region-plan node)))
 
+(defvar nelisp-aot-compiler--x86-local-prefix-caches t
+  "Cache fresh ordinary GP let homes through a readonly forward prefix.
+GNU31 alloc.c6684-6704 retains local ptr/obj values.  Here every original
+home write remains, and no cache survives any actual call or backedge.")
+(defvar nelisp-aot-compiler--x86-local-prefix-facts nil)
+(defvar nelisp-aot-compiler--x86-local-prefix-state nil)
+(defvar nelisp-aot-compiler--x86-frame-read-aliases)
+(defvar nelisp-aot-compiler--x86-affine-loop-state)
+(defvar nelisp-aot-compiler--x86-leaf-entry-state)
+
+(defun nelisp-aot-compiler--x86-local-prefix-plan (owner)
+  "Analyze readonly prefixes once, with a single8192 work allowance.
+Return [PURE TRANSPARENT CANDIDATES].  Each original node is classified
+once; prefix counts use one hash per segment rather than rescanning each
+binding body.  Forward branches follow source emission order; every home
+is current, so ending a cache on one emitted arm is safe on other arms."
+  (when (and nelisp-aot-compiler--x86-local-prefix-caches
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (not nelisp-aot-compiler--checked-arith)
+             (not (nelisp-aot-compiler--lisp-values-p))
+             (not (nelisp-aot-compiler--ir-get owner :internal-entry)))
+    (catch 'prefix-no
+      (let ((work 8192) (pure (make-hash-table :test #'eq))
+            (transparent (make-hash-table :test #'eq))
+            (facts (make-hash-table :test #'eq))
+            (seen (make-hash-table :test #'eq))
+            (counts (make-hash-table :test #'equal))
+            (bindings (make-hash-table :test #'eql)) arity registers minimum maximum pending)
+        (cl-labels
+            ((no () (throw 'prefix-no nil))
+             (tick () (unless (> work 0) (no)) (cl-decf work))
+             (field (n k) (tick) (nelisp-aot-compiler--ir-get n k))
+             (items (xs)
+               (let ((tail xs) out)
+                 (while (consp tail) (tick) (push (car tail) out) (setq tail (cdr tail)))
+                 (unless (null tail) (no)) (nreverse out)))
+             (keys (n ks)
+               (tick)
+               (and (vectorp n) (<= 1 (length n) 13)
+                    (nelisp-aot-compiler--x86-frame-alias-keys-p n ks)
+                    (nelisp-aot-compiler--x86-frame-alias-gp-p n)))
+             (readonly (n depth)
+               (tick) (unless (<= depth 40) (no))
+               (let ((old (gethash n pure 'absent)))
+                 (when (eq old 'visiting) (no))
+                 (if (not (eq old 'absent)) old
+                   (puthash n 'visiting pure)
+                   (let* ((kind (and (vectorp n) (> (length n) 0) (aref n 0)))
+                          (yes
+                           (pcase kind
+                             ('imm (and (keys n '(:value :cls :repr :varargs-p))
+                                        (integerp (field n :value))))
+                             ('ref
+                              (when (keys n '(:var :slot :reg :class :repr :root-p))
+                                (let ((slot (field n :slot)) (var (field n :var))
+                                      (class (field n :class)) (root (field n :root-p))
+                                      (reg (field n :reg)))
+                                  (and (symbolp var) (integerp slot) (<= 0 slot)
+                                       (eq class 'gp) (not root)
+                                       (equal reg (and (< slot arity) (nth slot registers)))
+                                       (cons 'ref (cons slot var))))))
+                             ('data-addr (and (keys n '(:name :repr)) (symbolp (field n :name))))
+                             ((or 'arith 'cmp 'shift)
+                              (and (keys n '(:op :a :b :repr))
+                                   (memq (field n :op)
+                                         (pcase kind ('cmp '(= /= < <= > >=))
+                                           ('arith '(+ - * / % logand logior logxor))
+                                           (_ '(shl shr sar))))
+                                   (let ((a (field n :a)) (b (field n :b)))
+                                     (and (readonly a (1+ depth)) (readonly b (1+ depth))
+                                          (list 'children a b)))))
+                             ((or 'sexp-tag 'sexp-int-unwrap)
+                              (and (keys n '(:ptr :repr))
+                                   (let ((ptr (field n :ptr)))
+                                     (and (readonly ptr (1+ depth)) (list 'children ptr)))))
+                             ((or 'ptr-read-u8 'ptr-read-u16 'ptr-read-u32 'ptr-read-u64)
+                              (and (keys n '(:ptr :offset))
+                                   (let ((ptr (field n :ptr)) (offset (field n :offset)))
+                                     (and (readonly ptr (1+ depth)) (readonly offset (1+ depth))
+                                          (list 'children ptr offset)))))
+                             (_ nil))))
+                     (puthash n yes pure) yes))))
+             (reads (n)
+               (tick)
+               ;; Immutable descriptors reuse already validated fields.
+               (let ((descriptor (gethash n pure)))
+                 (pcase (car-safe descriptor)
+                   ('ref (let ((key (cdr descriptor)))
+                           (puthash key (1+ (gethash key counts 0)) counts)))
+                   ('children (reads (cadr descriptor))
+                              (when (cddr descriptor) (reads (caddr descriptor)))))))
+             (finish (candidate)
+               (tick)
+               (unless (aref candidate 3)
+                 (aset candidate 3 t)
+                 (let ((uses (- (gethash (aref candidate 1) counts 0) (aref candidate 2))))
+                   (when (>= uses 2) (puthash (aref candidate 0) uses facts)))))
+             (barrier ()
+               (dolist (c pending) (finish c))
+               (setq pending nil counts (make-hash-table :test #'equal)))
+             (scan (n depth)
+               (tick) (unless (and (<= depth 128) (vectorp n) (> (length n) 0)) (no))
+               (when (gethash n seen) (no)) (puthash n t seen)
+               (let ((kind (aref n 0)))
+                 (pcase kind
+                   ('let-rt
+                    (unless (keys n '(:var :slot :copy-candidate :value-ir :body)) (no))
+                    (let* ((value (field n :value-ir)) (slot (field n :slot))
+                           (var (field n :var)) (body (field n :body))
+                           (value-pure (readonly value 0)) candidate)
+                      (if (and (not (field n :copy-candidate)) value-pure)
+                          (progn (puthash n t transparent) (reads value))
+                        (barrier))
+                      (when (and value-pure (integerp slot) (<= minimum slot maximum)
+                                 (symbolp var) var)
+                        (when (gethash slot bindings) (no)) (puthash slot t bindings)
+                        (let ((key (cons slot var)))
+                          (setq candidate (vector n key (gethash key counts 0) nil))
+                          (push candidate pending)))
+                      (scan body (1+ depth))
+                      (when candidate
+                        (finish candidate)
+                        (when (eq (car pending) candidate) (pop pending)))))
+                   ('value-seq
+                    (unless (keys n '(:forms)) (no)) (puthash n t transparent)
+                    (dolist (c (items (field n :forms))) (scan c (1+ depth))))
+                   ('if
+                    (unless (keys n '(:id :test :then :else)) (no))
+                    (let ((test (field n :test)))
+                      (if (readonly test 0)
+                          (progn (puthash n t transparent) (reads test)) (barrier)))
+                    (scan (field n :then) (1+ depth)) (scan (field n :else) (1+ depth)))
+                   ('cond
+                    (unless (keys n '(:id :clauses)) (no))
+                    (let* ((clauses (items (field n :clauses)))
+                           (tests (cl-every (lambda (c) (tick) (and (consp c)
+                                            (or (eq (car c) 'always) (readonly (car c) 0)))) clauses)))
+                      (if tests (puthash n t transparent) (barrier))
+                      (dolist (c clauses)
+                        (tick) (unless (consp c) (no))
+                        (when (and tests (not (eq (car c) 'always))) (reads (car c)))
+                        (scan (cdr c) (1+ depth)))))
+                   ('logic
+                    (unless (keys n '(:id :op :forms :repr)) (no))
+                    (let ((forms (items (field n :forms))))
+                      (if (cl-every (lambda (c) (tick) (readonly c 0)) forms)
+                          (progn (puthash n t transparent) (dolist (c forms) (reads c))) (barrier))))
+                   ('while
+                    (unless (keys n '(:id :test :body)) (no)) (barrier)
+                    (dolist (c (items (field n :body))) (scan c (1+ depth))) (barrier))
+                   ('setq-local
+                    (unless (keys n '(:slot :var :repr :value-ir)) (no)) (barrier)
+                    (scan (field n :value-ir) (1+ depth)) (barrier))
+                   ('let-rt-n
+                    (unless (keys n '(:bindings :body)) (no)) (barrier)
+                    (scan (field n :body) (1+ depth)))
+                   (_ (if (readonly n 0) (reads n) (barrier)))))))
+          (let* ((params (items (field owner :params)))
+                 (hidden (items (field owner :internal-hidden)))
+                 (rt (field owner :rt-slot-count)))
+            (setq arity (length params) registers (items (field owner :param-regs)))
+            (unless (and (<= arity 14) (<= (length hidden) 64)
+                         (integerp rt) (<= (length hidden) rt 4096)
+                         (= arity (length registers))
+                         (not (cl-some (lambda (k) (field owner k))
+                                       '(:rest-p :variadic :param-repr :gc-root-slots)))
+                         (if (= arity 0) (null (field owner :param-class))
+                           (eq (field owner :param-class) 'gp))) (no))
+            (setq minimum (+ arity (length hidden)) maximum (1- (+ arity rt))))
+          (scan (field owner :body) 0)
+          (barrier)
+          (tick)
+          (when (> (hash-table-count facts) 0)
+            (vector pure transparent facts)))))))
+
+(defun nelisp-aot-compiler--x86-end-local-prefix ()
+  "End a cache irrevocably, including all dynamically enclosing bindings."
+  (when nelisp-aot-compiler--x86-local-prefix-state
+    (let ((state nelisp-aot-compiler--x86-local-prefix-state))
+      ;; Entries belong solely to this cache.  Destroy their keys so dynamic
+      ;; unwinding cannot revive an outer map after a call on an inner path.
+      (dolist (p (aref state 1)) (setcar p nil))
+      (aset state 0 nil) (aset state 1 nil))
+    (setq nelisp-aot-compiler--promoted-slots nil)))
+
+(defun nelisp-aot-compiler--x86-local-prefix-boundary-p (node)
+  (and nelisp-aot-compiler--x86-local-prefix-caches
+       nelisp-aot-compiler--x86-local-prefix-facts
+       (or (null nelisp-aot-compiler--promoted-slots)
+           nelisp-aot-compiler--x86-local-prefix-state)
+       (not (gethash node (aref nelisp-aot-compiler--x86-local-prefix-facts 0)))
+       (not (gethash node (aref nelisp-aot-compiler--x86-local-prefix-facts 1)))))
+
+(defun nelisp-aot-compiler--emit-local-prefix-let-body (node buf emit-body)
+  "Cache only after the original fresh binding's home store has executed."
+  (let* ((facts nelisp-aot-compiler--x86-local-prefix-facts)
+         (state nelisp-aot-compiler--x86-local-prefix-state)
+         (before (and state (aref state 0) (aref state 1)))
+         (slot (nelisp-aot-compiler--ir-get node :slot))
+         (reg (cl-find-if (lambda (r) (not (rassq r before))) '(r8 r9))))
+    (if (not (and nelisp-aot-compiler--x86-local-prefix-caches facts
+                  (gethash node (aref facts 2)) reg
+                  (or (null nelisp-aot-compiler--promoted-slots)
+                      (and before (equal before nelisp-aot-compiler--promoted-slots)))
+                  (not (or nelisp-aot-compiler--x86-frame-read-aliases
+                           nelisp-aot-compiler--x86-trace-write-through
+                           nelisp-aot-compiler--x86-trace-loop-exits
+                           nelisp-aot-compiler--x86-affine-loop-state
+                           nelisp-aot-compiler--x86-leaf-entry-state
+                           nelisp-aot-compiler--x86-shrink-wrap-state
+                           nelisp-aot-compiler--x86-tco-entry-state))))
+        (funcall emit-body (nelisp-aot-compiler--ir-get node :body))
+      (unless before (setq state (vector t nil)))
+      (let ((pairs (cons (cons slot reg) before)))
+        (aset state 1 pairs)
+        (nelisp-asm-x86_64-mov-reg-reg buf reg 'rax)
+        (let ((nelisp-aot-compiler--x86-local-prefix-state state)
+              (nelisp-aot-compiler--promoted-slots pairs))
+          (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))
+        (when (aref state 0) (aset state 1 before))))))
+
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
-  (let ((plan (nelisp-aot-compiler--x86-call-free-region-emission-plan node)))
+  (let ((plan (let ((nelisp-aot-compiler--promoted-slots
+                      (if nelisp-aot-compiler--x86-local-prefix-state nil
+                        nelisp-aot-compiler--promoted-slots)))
+                (nelisp-aot-compiler--x86-call-free-region-emission-plan node))))
     (if plan
-        (nelisp-aot-compiler--emit-promoted-loop-x86
-         node buf emit plan
-         (nelisp-aot-compiler--x86-region-private-let-slots node (car plan)))
+        (progn
+          (when nelisp-aot-compiler--x86-local-prefix-state
+            (nelisp-aot-compiler--x86-end-local-prefix))
+          (let ((nelisp-aot-compiler--x86-local-prefix-state nil))
+            (nelisp-aot-compiler--emit-promoted-loop-x86
+             node buf emit plan
+             (nelisp-aot-compiler--x86-region-private-let-slots node (car plan)))))
       (funcall emit))))
 
 (defvar nelisp-aot-compiler--x86-interval-leaf-p nil
@@ -16054,12 +16283,26 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
       (nelisp-aot-compiler--emit-value
        (nelisp-aot-compiler--ir-get node :value-ir) buf)
       (nelisp-aot-compiler--emit-frame-slot-store-from-value buf slot)
-      (funcall emit-body (nelisp-aot-compiler--ir-get node :body))))))
+      (if (and nelisp-aot-compiler--x86-local-prefix-caches
+               nelisp-aot-compiler--x86-local-prefix-facts
+               (gethash node (aref nelisp-aot-compiler--x86-local-prefix-facts 2)))
+          (nelisp-aot-compiler--emit-local-prefix-let-body node buf emit-body)
+        (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))))))
 
 (defvar nelisp-aot-compiler--x86-leaf-entry-state)
 
 (defun nelisp-aot-compiler--emit-value (node buf)
   "Emit NODE, keeping profitable call-free raw regions in registers."
+  (when (and nelisp-aot-compiler--x86-local-prefix-state
+             (not (aref nelisp-aot-compiler--x86-local-prefix-state 0)))
+    (setq nelisp-aot-compiler--promoted-slots nil))
+  (let* ((boundary (nelisp-aot-compiler--x86-local-prefix-boundary-p node))
+         (nelisp-aot-compiler--x86-local-prefix-caches
+          (and nelisp-aot-compiler--x86-local-prefix-caches
+               (or (not boundary)
+                   (memq (nelisp-aot-compiler--ir-kind node)
+                         '(if cond logic value-seq while let-rt let-rt-n setq-local))))))
+    (when boundary (nelisp-aot-compiler--x86-end-local-prefix))
   (cond
    ((assq node nelisp-aot-compiler--x86-trace-loop-exits)
     (nelisp-asm-x86_64-jmp-rel32
@@ -16076,7 +16319,7 @@ the surrounding CG3 allocation and all slot lifetimes stay unchanged."
                     (if (eq node (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :cut))
                         (nelisp-aot-compiler--emit-value
                          (plist-get nelisp-aot-compiler--x86-shrink-wrap-state :cold) buf)
-                      (nelisp-aot-compiler--emit-value-unpromoted node buf))))))))
+                      (nelisp-aot-compiler--emit-value-unpromoted node buf)))))))))
 
 (defun nelisp-aot-compiler--emit-value-unpromoted (node buf)
   "Emit code that computes value NODE into rax (or xmm0 for f64 nodes).
@@ -17024,6 +17267,16 @@ that lives in memory.  The value is not left in rax."
 
 (defun nelisp-aot-compiler--emit-effect (node buf)
   "Emit NODE's effects, keeping profitable call-free raw regions in registers."
+  (when (and nelisp-aot-compiler--x86-local-prefix-state
+             (not (aref nelisp-aot-compiler--x86-local-prefix-state 0)))
+    (setq nelisp-aot-compiler--promoted-slots nil))
+  (let* ((boundary (nelisp-aot-compiler--x86-local-prefix-boundary-p node))
+         (nelisp-aot-compiler--x86-local-prefix-caches
+          (and nelisp-aot-compiler--x86-local-prefix-caches
+               (or (not boundary)
+                   (memq (nelisp-aot-compiler--ir-kind node)
+                         '(if cond logic value-seq while let-rt let-rt-n setq-local))))))
+    (when boundary (nelisp-aot-compiler--x86-end-local-prefix))
   (when (and nelisp-aot-compiler--x86-affine-loop-state
              (eq node (plist-get nelisp-aot-compiler--x86-affine-loop-state :mismatch)))
     ;; Equality already proves RAX equals the RHS; only mismatch needs repair.
@@ -17041,7 +17294,7 @@ that lives in memory.  The value is not left in rax."
     (let ((reg (plist-get nelisp-aot-compiler--x86-affine-loop-state :reg)))
       (nelisp-aot-compiler--x86-op
        buf t (unibyte-string #x8D) reg
-       (list :mem reg nil 1 (plist-get nelisp-aot-compiler--x86-affine-loop-state :coefficient))))))
+       (list :mem reg nil 1 (plist-get nelisp-aot-compiler--x86-affine-loop-state :coefficient)))))))
 
 (defun nelisp-aot-compiler--emit-effect-unpromoted (node buf)
   "Emit NODE for its effects only; its value is discarded.
@@ -26708,7 +26961,10 @@ return reg, untouched by epilogue)."
                     176))))
          (nelisp-aot-compiler--current-defun-va-save-disp va-save-disp)
          (nelisp-aot-compiler--x86-trace-loop-owner defun-ir)
-         (nelisp-aot-compiler--x86-loop-regs
+         (nelisp-aot-compiler--x86-local-prefix-facts
+          (nelisp-aot-compiler--x86-local-prefix-plan defun-ir))
+         (nelisp-aot-compiler--x86-local-prefix-state nil)
+          (nelisp-aot-compiler--x86-loop-regs
           (and (eq nelisp-aot-compiler--arch 'x86_64)
                (eq nelisp-aot-compiler--abi 'sysv)
                (not variadic)
