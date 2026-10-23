@@ -20895,6 +20895,41 @@ line-continuation escapes, which generate nothing)."
             object))
       object)))
 
+(defun nelisp--rd-resolve-completed-label-fields (fields)
+  "Resolve, in the list FIELDS, every slot that is a completed label proxy; answer FIELDS."
+  (let ((tail fields))
+    (while tail
+      (setcar tail (nelisp--rd-resolve-completed-label-shallow (car tail)))
+      (setq tail (cdr tail))))
+  fields)
+
+(defun nelisp--rd-resolve-completed-labels-deep (object seen)
+  "Replace, in place, the placeholders of labels already completed in OBJECT; leave those still being read.
+For an object that copies what it is given (`make-interpreted-closure' copies the environment), so that a
+placeholder left in the argument could not be reached after the copy."
+  (let ((number (nelisp--rd-label-proxy-number object)))
+    (cond
+     (number
+      (let ((entry (assq number nelisp--rd-labels)))
+        (if (and entry (eq (nth 1 entry) 'done)
+                 (not (nelisp--rd-label-proxy-number (nth 2 entry))))
+            (nth 2 entry)
+          object)))
+     ((consp object)
+      (unless (memq object seen)
+        (let ((next-seen (cons object seen)))
+          (setcar object (nelisp--rd-resolve-completed-labels-deep (car object) next-seen))
+          (setcdr object (nelisp--rd-resolve-completed-labels-deep (cdr object) next-seen))))
+      object)
+     ((vectorp object)
+      (unless (memq object seen)
+        (let ((i 0) (next-seen (cons object seen)))
+          (while (< i (length object))
+            (aset object i (nelisp--rd-resolve-completed-labels-deep (aref object i) next-seen))
+            (setq i (1+ i)))))
+      object)
+     (t object))))
+
 (defun nelisp--rd-resolve-labels (object seen)
   "Replace `#N#' proxies in OBJECT, preserving sharing and cycles."
   (let ((number (nelisp--rd-label-proxy-number object)))
@@ -20922,6 +20957,18 @@ line-continuation escapes, which generate nothing)."
             (while (< i (length object))
               (aset object i
                     (nelisp--rd-resolve-labels (aref object i) next-seen))
+              (setq i (1+ i)))))
+        object)
+       ;; GNU substitute_object_recurse also walks the slots of a byte-code or interpreted closure (lread.c,
+       ;; the Lisp_Vectorlike case): the constants vector, the arglist, the environment and the rest.  A closure
+       ;; slot cannot be assigned from Lisp, so a slot that is itself a placeholder of a completed label is
+       ;; substituted when the object is built (`nelisp--rd-resolve-completed-label-fields'); here the containers
+       ;; the slots hold are substituted in place.
+       ((closurep object)
+        (unless (memq object seen)
+          (let ((i 0) (n (length object)) (next-seen (cons object seen)))
+            (while (< i n)
+              (nelisp--rd-resolve-labels (aref object i) next-seen)
               (setq i (1+ i)))))
         object)
        (t object)))))
@@ -21030,7 +21077,8 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
            (let* ((nelisp--rd-positioning nil)
                   (r (nelisp--rd-one s (+ i 1) n))
                   (vector (car r))
-                  (fields (and (vectorp vector) (append vector nil)))
+                  (fields (and (vectorp vector)
+                               (nelisp--rd-resolve-completed-label-fields (append vector nil))))
                   (count (length fields))
                   (arglist (nth 0 fields))
                   (code (nth 1 fields))
@@ -21045,22 +21093,25 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                                    (<= -2305843009213693952 arglist)
                                    (<= arglist 2305843009213693951))))
                (signal 'invalid-read-syntax (list "Invalid byte-code object")))
-             (setq code (nelisp--rd-resolve-completed-label-shallow code)
-                   constants
-                   (nelisp--rd-resolve-completed-label-shallow constants))
-             (setcar (cdr fields) code)
-             (setcar (cdr (cdr fields)) constants)
              (cond
               ((and (stringp code) (vectorp constants) (>= count 4)
                     (integerp depth) (<= 0 depth 2305843009213693951))
-               (setcar (cdr fields)
-                       (apply #'unibyte-string (string-to-list code)))
+               ;; GNU bytecode_from_rev_list keeps a unibyte code string as it is (a labelled string reused by
+               ;; another object stays `eq') and converts a multibyte one.
+               (when (multibyte-string-p code)
+                 (setcar (cdr fields)
+                         (apply #'unibyte-string (string-to-list code))))
                (cons (apply #'make-byte-code fields) (cdr r)))
               ((and (consp code) (or (null constants) (consp constants)))
                ;; GNU lread.c:3272-3306 keeps interpreted closure slots
                ;; ARGS/BODY/ENV at 0/1/2, DOC at 4 and interactive SPEC at 5.
                ;; Adapt SPEC back to make-interpreted-closure's full IFORM.
-               (let* ((spec (nth 5 fields))
+               ;; The constructor copies the environment, which the final substitution cannot reach through
+               ;; the closure: substitute the completed labels in the slots now.
+               (setq arglist (nelisp--rd-resolve-completed-labels-deep arglist nil)
+                     code (nelisp--rd-resolve-completed-labels-deep code nil)
+                     constants (nelisp--rd-resolve-completed-labels-deep constants nil))
+               (let* ((spec (nelisp--rd-resolve-completed-labels-deep (nth 5 fields) nil))
                       (iform (and (= count 6)
                                   (if (vectorp spec)
                                       (cons 'interactive
