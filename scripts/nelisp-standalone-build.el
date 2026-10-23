@@ -2605,6 +2605,10 @@ twice appears twice; readers keep the last occurrence of each unit."
            (if (bound-and-true-p nelisp-aot-compiler--x86-private-continuations)
                (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns)
              nelisp-aot-compiler--x86-trace-unit-names))
+          (nelisp-aot-compiler--x86-frame-alias-definitions
+           (nelisp-aot-compiler--x86-frame-alias-definitions defuns))
+          (nelisp-aot-compiler--x86-frame-alias-proof-cache
+           (make-hash-table :test #'eq))
           (nelisp-aot-compiler--x86-guarded-body-facts
            (nelisp-aot-compiler--x86-guarded-body-facts defuns)))
       (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf)))
