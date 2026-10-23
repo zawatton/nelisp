@@ -363,17 +363,22 @@
                 identity src-str-slot dest-slot) 0)
             -1 1)))
 
+    ;; A unibyte token (the lexer's tag 14: a raw-byte escape or an all-ASCII literal) is copied with
+    ;; the unibyte allocator.  The canonical header owns the representation, so the old way -- allocate
+    ;; with the byte-count heuristic of `nl_alloc_str', then write 14 into the view's tag byte -- left a
+    ;; unibyte view over a multibyte header: "\300\207" read as one multibyte character, the byte-code
+    ;; strings of every .elc loaded as multibyte strings whose length and aref disagree (args-out-of-range
+    ;; when a restored image printed a byte-code function).
     (defun nelisp_reader_p_copy_str (dest-slot src-str-slot)
-      (let* ((written
-              (sexp-write-str
-               dest-slot
-               (heap-read-u64 src-str-slot 16)
-               (heap-read-u64 src-str-slot 24))))
-        (if (= (sexp-tag src-str-slot) 14)
-            (nelisp_reader_p_prog2
-             (ptr-write-u8 dest-slot 0 14)
-             written)
-          written)))
+      (if (= (sexp-tag src-str-slot) 14)
+          (nl_alloc_unibyte_str
+           (heap-read-u64 src-str-slot 16)
+           (heap-read-u64 src-str-slot 24)
+           dest-slot)
+        (sexp-write-str
+         dest-slot
+         (heap-read-u64 src-str-slot 16)
+         (heap-read-u64 src-str-slot 24))))
 
     ;; ===========================================================
     ;; Hex-digit decoder.  Returns 0..15 for `0'..`9'/`a'..`f'/`A'..`F',

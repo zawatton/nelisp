@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
 #   win           the Windows exe of the same tree and its wine smoke (WIN-SMOKE PASS)
@@ -191,6 +192,18 @@ case ${1:-} in
     tail -n 1 "$d/smoke.log" | grep -qx 'WIN-SMOKE PASS' || fail "$(tail -n 1 "$d/smoke.log")"
     [ -s "$d/nelisp.exe.cold" ] || fail "no cold image beside the exe"
     say "PASS win ($c, exe $(sha256sum "$d/nelisp.exe" | cut -c1-16), cold $(stat -c %s "$d/nelisp.exe.cold") B, WIN-SMOKE PASS)" ;;
+  raw-literal)
+    # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-raw-literal.el \
+      > "$OUT/raw-literal.gnu.out" 2> "$OUT/raw-literal.gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-raw-literal.el \
+      > "$OUT/raw-literal.dyn.out" 2> "$OUT/raw-literal.dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$OUT/raw-literal.dyn.err" | tr '\n' ' ')"
+    cmp -s "$OUT/raw-literal.gnu.out" "$OUT/raw-literal.dyn.out" ||
+      fail "stdout differs from GNU: $(diff "$OUT/raw-literal.gnu.out" "$OUT/raw-literal.dyn.out" | grep '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
+    say "PASS raw-literal ($(wc -l < "$OUT/raw-literal.dyn.out") lines identical to GNU)" ;;
   view-image)
     # String views held by containers survive an image dump and restore: the library images of the census crashed
     # in the first collection after --cold-load-from (stale view boxes of the dumping process).
