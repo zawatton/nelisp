@@ -211,12 +211,13 @@ case ${1:-} in
       out=$(capped env BATCH_F_DYN="$bin" BATCH_F_STATIC="$bin" bash tools/ai/batch-f-check.sh boot 2>&1) || fail "$label boot: $out"
       summary="$summary $label $rev"
     done < <(linkages)
-    # The F1 prover's figures, when the build recorded them (NELISP_ROOT_EVIDENCE_REPORT=1): inside the policy.
-    for f in "$LOGS"/build-dyn.out "$LOGS"/build-static.out; do
+    # The F1 prover's figures, when the build recorded them (NELISP_ROOT_EVIDENCE_REPORT=1): inside the bound.  A build
+    # the prover refused to finish leaves no binary, so reaching this point already means the policy held.
+    for f in "$DYN.log" "$STATIC.log"; do
       [ -f "$f" ] || continue
       n=$(sed -n 's/.*\[root-evidence\] nodes=\([0-9]*\).*/\1/p' "$f" | sort -n | tail -n 1)
       [ -z "$n" ] || [ "$n" -le 81920 ] || fail "$f: root-evidence nodes $n above the bound 81920"
-      summary="$summary ${f##*/}:nodes=${n:-?}"
+      summary="$summary ${f##*/}:nodes=${n:-none}"
     done
     say "PASS built (HEAD's tree, booted:$summary)" ;;
   golden)
@@ -284,11 +285,11 @@ case ${1:-} in
     tail -n 1 "$log" | grep -qx "SNW-UNIT $unit PASS" || fail "$unit: the log does not end in PASS: $(tail -n 2 "$log" | tr '\n' '|' | cut -c1-200)"
     head -n 1 "$log" | grep -q '^SNW-LOG ' || fail "$unit: the log has no header"
     case $unit in
-      scale-base-*|checks-base) want_dyn=$(sha "$BASE_DYN"); want_static=$(sha "$BASE_STATIC") ;;
-      *) want_dyn=$(sha "$DYN"); want_static=$(sha "$STATIC") ;;
+      scale-base-*|checks-base) want=" base_dyn=$(sha "$BASE_DYN") base_static=$(sha "$BASE_STATIC") " ;;
+      *) want=" dyn=$(sha "$DYN") static=$(sha "$STATIC") " ;;
     esac
     hd=$(head -n 1 "$log")
-    case $hd in *" dyn=$want_dyn "*" static=$want_static "*) ;; *) fail "$unit: the log was made with other binaries than the ones now in place" ;; esac
+    case $hd in *"$want"*) ;; *) fail "$unit: the log was made with other binaries than the ones now in place" ;; esac
     case $unit in
       scale-base-*|checks-base) ;;
       *) for pair in "dyn $DYN" "static $STATIC"; do set -- $pair; built_from_head "$2" > /dev/null || fail "$unit: the $1 binary is not built from HEAD's tree"; done ;;

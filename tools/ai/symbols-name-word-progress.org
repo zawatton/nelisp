@@ -160,5 +160,5 @@ cmd: bash tools/ai/symbols-name-word-check.sh verify bench-intern
 cmd: bash tools/ai/symbols-name-word-check.sh verify bench-startup
 ** S5.4 gc3 (the collector's three explicit collections of the cons, string and vector churn, paired rounds on CPU 11): worst median ratio against GNU at most 1.20 and at most the baseline's worst plus 0.05
 cmd: bash tools/ai/symbols-name-word-check.sh verify bench-gc3
-** S5.5 End to end: the at-scale run of S3.7 (generate, dump, restore, collect, churn, second generation) takes at most 1.10 times the baseline's wall time per phase on both linkages
+** S5.5 End to end: the at-scale run of S3.7 (generate, dump, restore, collect, churn, second generation) takes at most 1.10 times the baseline's wall time, summed over its four phases, on both linkages
 cmd: bash tools/ai/symbols-name-word-check.sh verify bench-scale

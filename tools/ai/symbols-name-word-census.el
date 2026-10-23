@@ -20,13 +20,17 @@
 ;; `symbol-name' answers): there the interned names are legacy boxes and the census must report them.
 ;; The last line is "SNW-CENSUS mode=M checks=N failures=F legacy=L PASS|FAIL" and the exit status 0 or 1.
 
-(defvar snw-engine (if (fboundp 'nelisp--debug-switch) 'nelisp 'gnu))
-(defvar snw-mode (or (getenv "SNW_MODE") "producers"))
-(defvar snw-baseline (and (getenv "SNW_BASELINE") t))
+;; setq, not defvar: a restored image already holds these variables from the run that dumped it.
+(defvar snw-engine nil)
+(defvar snw-mode nil)
+(defvar snw-baseline nil)
 (defvar snw-checks 0)
 (defvar snw-failures 0)
 (defvar snw-legacy 0)
-(setq snw-checks 0 snw-failures 0 snw-legacy 0)
+(setq snw-engine (if (fboundp 'nelisp--debug-switch) 'nelisp 'gnu)
+      snw-mode (or (getenv "SNW_MODE") "producers")
+      snw-baseline (and (getenv "SNW_BASELINE") t)
+      snw-checks 0 snw-failures 0 snw-legacy 0)
 
 (defun snw-nelisp-p () (eq snw-engine 'nelisp))
 (defun snw-class (w) (nelisp--debug-switch 51 w))

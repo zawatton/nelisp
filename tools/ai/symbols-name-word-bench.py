@@ -175,7 +175,7 @@ def gc3_worst(binary, cpu):
 
 def measure_gc3():
     bins = binaries()
-    cpu = int(os.environ.get("GCP_CPU", "11"))
+    cpu = int(os.environ["GCP_CPU"]) if os.environ.get("GCP_CPU") else pick_cpu()
     rows = []
     for r in range(int(os.environ.get("SNW_GC3_RUNS", "2"))):
         order = ["base-dyn", "dyn"]
@@ -293,8 +293,11 @@ def verify(mode):
         why = check_pins(report, bins)
         if why:
             sys.exit("FAIL: " + why)
-        report_lines.append("CPU %s, frequency kHz before/after the first and last run: %s / %s" % (
-            report["cpu"], report["rows"][0]["khz"], report["rows"][-1]["khz"]))
+        if "khz" in report["rows"][0]:
+            report_lines.append("CPU %s, frequency kHz before/after the first and last run: %s / %s" % (
+                report["cpu"], report["rows"][0]["khz"], report["rows"][-1]["khz"]))
+        else:
+            report_lines.append("CPU %s" % report["cpu"])
         for linkage in ("dyn", "static"):
             base, cand = "base-" + linkage, linkage
             rows = report["rows"]
