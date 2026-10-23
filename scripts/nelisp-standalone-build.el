@@ -10080,13 +10080,37 @@ REPL-facing module it feeds."
     ;; Kept as a private compatibility name for the recorded-root helper;
     ;; callers in the precise path no longer use it.
     (defun nl_gc_conserv_owner (w) (nl_gc_conserv_pin w))
+    ;; GNU alloc.c mark_maybe_pointer for the string areas, MEM_TYPE_STRING and MEM_TYPE_NON_LISP.  A word inside one
+    ;; of the 32-byte headers of the pool (mapping kind 3) or of a restored image (kind 6) names that string:
+    ;; live_string_holding resolves an interior pointer to its struct, and a header whose data pointer is 0 is free
+    ;; and names nothing.  A word inside sdata (pool kinds 4 and 5, the image's sdata block) names no object and is
+    ;; dropped.  Neither is resolved to an owner block or queued: the image's header chunk (166 KB) and data
+    ;; chunk (1.6 MB) were, as ordinary blocks, and every collection then drained them word by word (224,400 loop
+    ;; iterations, 11 M Ir) because `nl_string_pin_word' claims neither kind 6 nor the image's sdata.  The pool
+    ;; header is marked like a precise reference (`nl_gc_mark_word'); an image string is immortal and is never
+    ;; marked, swept or moved (`nl_gc_mark_string_word').  A string area never pins an arena block, so it no longer
+    ;; sets the pinned flag that stops the arena compaction.  A word in the pool's headers or sdata still sets the
+    ;; small-string compaction guard (strings state +56): the builders of this runtime hold raw sdata pointers, which
+    ;; GNU forbids across a collection (the audit of that is in the ledger).
+    ;; Returns 1 when W lies in a string area (handled), 0 to continue on the typed and owner paths.
+    (defun nl_gc_conserv_string_area (w)
+      (let* ((st (data-addr nl_strings_state))
+             (kind (logand (nl_string_mapping_holding w) 7)))
+        (if (= kind 6) 1
+          (if (= kind 3)
+              (let ((header (logand w -32)))
+                (seq (if (= (heap-read-u64 header 24) 0) 0
+                       (seq (nl_gc_mark_word (+ header 4))
+                            (ptr-write-u64 st 56 1)))
+                     1))
+            (if (if (= kind 4) 1 (= kind 5))
+                (seq (ptr-write-u64 st 56 1) 1)
+              (nl_dump_in_string_image w))))))
     (defun nl_gc_conserv_word (w)
-      (if (= (nl_string_pin_word w) 1)
-          (seq (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
-                 (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 1)
-      (if (= (nl_gc_conserv_typed w) 1) 0
-        (let ((owner (nl_gc_conserv_resolve w)))
-          (if (= owner 0) 0 (nl_gc_conserv_pin owner))))))
+      (if (= (nl_gc_conserv_string_area w) 1) 0
+        (if (= (nl_gc_conserv_typed w) 1) 0
+          (let ((owner (nl_gc_conserv_resolve w)))
+            (if (= owner 0) 0 (nl_gc_conserv_pin owner))))))
     (defun nl_gc_regs_trace_window (p0 top)
       ;; Probe mode of `nl_gc_conserv_scan' (Doc 223, "Scanning callee-saved
       ;; registers"): the buffer named by nl_gc_regs_trace receives up to nine
@@ -10125,16 +10149,19 @@ REPL-facing module it feeds."
                 (setq i (+ i 1))))
          (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
            (setq word (heap-read-u64 p 0))
+           ;; A word in a string area is handled by `nl_gc_conserv_string_area' and goes no further.
            (if (if (= smap 0) 0 (if (>= word slo) (< word shi) 0))
-               (if (= (nl_string_pin_word word) 1)
-                   (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
-                                  (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
-             0)
-           (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
-               (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
-                 (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
-                      (nl_gc_conserv_word word)))
-             0)
+               (if (= (nl_gc_conserv_string_area word) 1) 0
+                 (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+                     (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
+                       (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
+                            (nl_gc_conserv_word word)))
+                   0))
+             (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
+                 (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
+                   (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
+                        (nl_gc_conserv_word word)))
+               0))
            (setq p (+ p 8)))
          0))))
     (defun nl_gc_conserv_drain ()
@@ -14516,7 +14543,59 @@ leave symbols unresolved at link time."
                          (if (or (= tag 5) (= tag 14))
                              (if (= (nl_string_header_p (logand (heap-read-u64 car 8) 2305843009213693951)) 1) 1 3)
                            0))))))))))))
+    ;; (nelisp--debug-switch 82 STR PROBE): what the conservative scan does with a word inside the String STR.
+    ;; PROBE 0 is a word inside its 32-byte header (header + 13), 1 a word inside its sdata (data pointer + 1).
+    ;; The answer is a fixnum: bit 0 the word was handled as a string area (`nl_gc_conserv_string_area' answered 1),
+    ;; bit 1 the string was marked, bit 2 the small-string compaction guard (strings state +56) was set, bits 4 and
+    ;; up the mapping kind of the word (3 pool header, 4 and 5 pool sdata, 6 image header, 0 none).  The mark and
+    ;; the guard are put back as they were.  GNU mark_maybe_pointer: a header word marks that string
+    ;; (live_string_holding), an sdata word names no object.  -1 when STR is no String WORD.
+    (defun nl_gc_area_probe_w (args)
+      (let* ((w (wf_arg_word args 1)) (probe (wf_argval args 2)))
+        (if (/= (logand w 7) 4) (nl_imm_int -1)
+          (let* ((s (- w 4)) (st (data-addr nl_strings_state))
+                 (addr (if (= probe 0) (+ s 13) (+ (heap-read-u64 s 24) 1)))
+                 (kind (logand (nl_string_mapping_holding addr) 7))
+                 (guard0 (heap-read-u64 st 56)) (size0 (heap-read-u64 s 0)))
+            (seq (ptr-write-u64 st 56 0)
+                 (let* ((r (nl_gc_conserv_string_area addr))
+                        (marked (if (< (heap-read-u64 s 0) 0) 1 0))
+                        (guard (if (/= (heap-read-u64 st 56) 0) 1 0)))
+                   (seq (if (= marked 1) (ptr-write-u64 s 0 size0) 0)
+                        (ptr-write-u64 st 56 guard0)
+                        (nl_imm_int (+ r (* 2 marked) (* 4 guard) (* 16 kind))))))))))
+    ;; A fresh 24-byte string, answered as its header address XOR a mask so that no word of this frame names it.
+    (defun nl_gc_area_make ()
+      (let* ((buf (alloc-bytes 32 1)) (i 0))
+        (seq (while (< i 24) (seq (ptr-write-u8 buf i 120) (setq i (+ i 1))))
+             (logxor (- (nl_alloc_str_w buf 24 0) 4) 6148914691236517205))))
+    ;; Overwrites the stack below the caller with zeros, so that no stale word of an earlier call names the string.
+    (defun nl_gc_area_scrub (depth)
+      (let* ((a 0) (b 0) (c 0) (d 0) (e 0) (f 0) (g 0) (h 0) (i 0) (j 0) (k 0) (l 0))
+        (if (> depth 0)
+            (+ (nl_gc_area_scrub (- depth 1))
+               (+ (+ (+ (+ a b) (+ c d)) (+ (+ e f) (+ g h))) (+ (+ i j) (+ k l))))
+          0)))
+    ;; (nelisp--debug-switch 83 MODE): a collection with the only word that names a fresh string kept in this frame.
+    ;; MODE 0 keeps none (the control: the string must be collected), 1 a word inside its header (it must survive),
+    ;; 2 a word inside its sdata (GNU drops it: the string is collected).  1 when the string is still allocated
+    ;; after the collection, 0 when not, -2 when the conservative scan is off.
+    (defun nl_gc_area_survive_w (args)
+      (let* ((mode (wf_argval args 1)))
+        (if (/= (heap-read-u64 268436464 0) 1) (nl_imm_int -2)
+          (let* ((disguised (nl_gc_area_make))
+                 (h (logxor disguised 6148914691236517205))
+                 (kept (if (= mode 1) (+ h 13) (if (= mode 2) (+ (heap-read-u64 h 24) 5) 0))))
+            (seq (setq h 0)
+                 (nl_gc_area_scrub 24)
+                 (nl_gc_collect_from_recorded_roots 0)
+                 (if (= kept -1) (nl_imm_int 99)
+                   (nl_imm_int (nl_string_header_p (logxor disguised 6148914691236517205)))))))))
     (defun bf_debug_switch_w (args env)
+      (if (if (>= (wf_argval args 0) 82) (<= (wf_argval args 0) 82) 0)
+          (nl_gc_area_probe_w args)
+      (if (if (>= (wf_argval args 0) 83) (<= (wf_argval args 0) 83) 0)
+          (nl_gc_area_survive_w args)
       (if (if (>= (wf_argval args 0) 80) (<= (wf_argval args 0) 81) 0)
           (nl_strview_selftest_w args)
       (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
@@ -14631,7 +14710,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a

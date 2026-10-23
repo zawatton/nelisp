@@ -20,6 +20,7 @@
 #   raw-file      literal file reads keep every byte (insert-file-contents-literally, no-conversion), against GNU
 #   string-repr   string representation across conversions, constructors, mutators, containers and file round trips, against GNU
 #   no-props      the -no-properties producers, buffer-level properties of inserted strings, and the cost of propertized inserts
+#   gc-string-area  the conservative scan and the string areas: a header word marks its string, an sdata word names none
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -251,6 +252,14 @@ PYEOF
     awk -v s="$secs" 'BEGIN { exit !(s < 6.0) }' || fail "800 propertized inserts took ${secs}s (bound 6 s)"
     [ "$growth" -le 800 ] || fail "the property side table grew by $growth for 800 propertize calls (bound 800)"
     say "PASS no-props ($(wc -l < "$d/dyn.out") lines identical to GNU; 800 propertized inserts ${secs}s, table growth $growth)" ;;
+  gc-string-area)
+    # GNU mark_maybe_pointer for strings: a conservative word inside a string's header marks that string, a word inside
+    # string data names no object, and neither is ever queued as a block (tools/ai/integ-wh-gc-string-area.el).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    capped timeout 280 "$DYN" --load tools/ai/integ-wh-gc-string-area.el > "$OUT/gc-string-area.out" 2>&1
+    tail -n 1 "$OUT/gc-string-area.out" | grep -qx 'GC-STRING-AREA PASS' ||
+      fail "$(grep -E '^(FAIL|GC-STRING-AREA)' "$OUT/gc-string-area.out" | head -n 3 | cut -c1-160 | tr '\n' '|')"
+    say "PASS gc-string-area ($(grep -c '^ok' "$OUT/gc-string-area.out") checks)" ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
