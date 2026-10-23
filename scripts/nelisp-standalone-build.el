@@ -6340,35 +6340,45 @@ it shares with cons and symbol blocks.")
                  (ptr-write-u64 268436336 0 box)
                  box))
         (heap-read-u64 268436336 0)))
+    ;; A String WORD of the bytes and kind of the legacy string box BOX (a view of
+    ;; tag 5 or 14 that is not a canonical String's, or a mutable string of tag 6 or
+    ;; 15), 0 when memory is exhausted.  Every string a Lisp program holds is a
+    ;; canonical String, so this only converts what `nl_val_clone_into' leaves as a
+    ;; box: the name cell of a symbol holds a String WORD or nothing (decision item A).
+    (defun nl_sym_name_string (box)
+      (let* ((tg (heap-read-u8 box 0))
+             (mut (if (= tg 6) 1 (if (= tg 15) 1 0)))
+             (data (if (= mut 1) (heap-read-u64 (heap-read-u64 box 8) 8) (heap-read-u64 box 16)))
+             (n (if (= mut 1) (heap-read-u64 (heap-read-u64 box 8) 16) (heap-read-u64 box 24))))
+        (nl_string_new data n
+                       (if (= tg 14) 1 (if (= tg 15) 1 (if (= (nl_string_char_count data n) n) 1 0))))))
     ;; GNU Fmake_symbol (alloc.c:3675): a new uninterned symbol whose name is
     ;; NAME (a string WORD or Sexp slot), void value and function, empty
     ;; plist.  Answers the symbol WORD, or 0 when memory is exhausted.
-    ;; SHARE 1 stores NAME itself, as GNU does, when it is a string box in
-    ;; the heap (a value the caller holds, never a scratch slot); otherwise
-    ;; the keystone stores a box of its own.
-    (defun nl_sym_make_uninterned (name share)
+    ;; Decision item A: the name cell holds the String WORD, GNU's u.s.name.
+    ;; NAME is stored as GNU does -- the String itself, so (eq (symbol-name
+    ;; (make-symbol S)) S): `nl_val_clone_into' answers the WORD of a String and of a
+    ;; view of one; any other string box is copied into a String of its own.  The
+    ;; dump relocates the String as a WORD field.  The former SHARE argument (keep
+    ;; the caller's legacy box when it lies in the arena) is gone with the box.
+    (defun nl_sym_make_uninterned (name _share)
       (let* ((b (nl_symbol_alloc)))
         (if (= b 0) 0
           (let* ((u (nl_sym_unbound)))
             (seq (ptr-write-u64 b 0 16)
                  (ptr-write-u64 b 8 3) (ptr-write-u64 b 16 u)
                  (ptr-write-u64 b 24 u) (ptr-write-u64 b 32 3)
-                 ;; SHARE stores the caller's box itself only when every word of it
-                 ;; lies in the arena (a legacy box, which the image dump relocates).
-                 ;; A view of a canonical String points into the string blocks: the
-                 ;; keystone stores that String's WORD, GNU's name object, which the
-                 ;; dump relocates as a WORD field.
-                 (if (if (= share 1)
-                         (if (= (logand name 7) 0)
-                             (if (or (= (heap-read-u8 name 0) 5) (= (heap-read-u8 name 0) 14))
-                                 (if (= (nl_string_view_header name) 0)
-                                     (nl_gc_in_arena name) 0)
-                               0)
-                           0)
-                       0)
-                     (ptr-write-u64 b 8 name)
-                   (nl_val_clone_into name (+ b 8)))
-                 (+ b 6))))))
+                 (nl_val_clone_into name (+ b 8))
+                 (let* ((nw (heap-read-u64 b 8)))
+                   (if (if (= (logand nw 7) 0)
+                           (if (< nw 4096) 0
+                             (if (or (= (heap-read-u8 nw 0) 5) (= (heap-read-u8 nw 0) 14)
+                                     (= (heap-read-u8 nw 0) 6) (= (heap-read-u8 nw 0) 15))
+                                 1 0))
+                         0)
+                       (let* ((own (nl_sym_name_string nw)))
+                         (if (= own 0) 0 (seq (ptr-write-u64 b 8 own) (+ b 6))))
+                     (+ b 6))))))))
     ;; A legacy 32-byte view of a symbol object, for the Sexp-slot ABI: the
     ;; tag, the object's backing address as its identity (the payload), and
     ;; the name's bytes.  Storing the view canonicalizes it back to the
@@ -6439,27 +6449,33 @@ it shares with cons and symbol blocks.")
                                          same))))))))
                     0)
                 0))))))
-    ;; The canonical string of the interned name BUF/N (the side table's, made
-    ;; on first use) written to OUT; answers 1, or 0 when memory is exhausted.
-    ;; The environment-free form of `nl_symbol_name_value_create'.
-    (defun nl_symname_make (buf n out)
+    ;; The name String of the interned name BUF/N as its WORD, GNU's u.s.name,
+    ;; or 0 when memory is exhausted: the side table's, made on first use.  Decision
+    ;; item A: this is what an interned symbol object's name cell holds, and what the
+    ;; mirror's bucket keeps as the key.  An entry holds a view of a private
+    ;; canonical String -- the reader's own token String (its multibyte flag set by
+    ;; `nelisp_reader_p_symbol_name_kind'), the copy `bf_intern_w' makes of its
+    ;; argument, or the String `symbol-name' made for a symbol that had no object --
+    ;; and the object shares it, so `symbol-name' answers one String however the
+    ;; symbol is reached.  Without an entry the String is made from the bytes of the
+    ;; name, unibyte unless they are a multibyte sequence (the kind
+    ;; `nl_alloc_str_write_tag' gives them), and registered.
+    (defun nl_symname_word (buf n)
       (let* ((entry (nl_symbol_name_entry_for 1 buf n))
              (vh (if (/= entry 0) (nl_string_view_header (+ entry 40)) 0)))
-        ;; An entry made for `symbol-name' holds a view of a canonical String
-        ;; (outside the arena chunks): the object's persistent name box must not
-        ;; copy that, so it gets a legacy box over arena bytes and the entry stays.
-        (if (if (/= entry 0) (= vh 0) 0)
-            (nl_symbol_name_copy_out entry out)
-          (let* ((alloc-n (if (= n 0) 1 n)) (data (alloc-bytes alloc-n 1))
-                 ;; The box is of the kind of the String it stands for: that of the
-                 ;; entry's canonical String (a raw byte keeps a unibyte name, a
-                 ;; multibyte ASCII name stays multibyte); without an entry, the
-                 ;; kind `nl_alloc_str_write_tag' gives these bytes -- unibyte
-                 ;; unless they are a multibyte sequence.
-                 (name-tag (if (/= vh 0) (nl_string_kind vh)
-                             (if (= (nl_string_char_count buf n) n) 14 5))))
-            (if (= (nl_alloc_str_write_legacy buf n alloc-n out data name-tag) 0) 0
-              (nl_symbol_name_register 1 buf n out))))))
+        (if (/= vh 0) (+ vh 4)
+          (let* ((word (nl_string_new buf n (if (= (nl_string_char_count buf n) n) 1 0))))
+            (if (= word 0) 0
+              (let* ((slot (alloc-bytes 32 8)))
+                (seq (nl_string_store_view word slot)
+                     ;; An entry whose view is not a canonical String's (none is made today:
+                     ;; the reader's token, `nl_intern_private_name' and `symbol-name' all
+                     ;; register canonical views) takes this String's view, so that the
+                     ;; object and the side table agree on the one name whatever made it.
+                     (if (= entry 0)
+                         (nl_symbol_name_register 1 buf n slot)
+                       (nl_symname_copy32 slot (+ entry 40) 0))
+                     word)))))))
     ;; The object of the interned symbol that the view VIEW (a tag-4 Sexp slot
     ;; on a canonical name buffer) stands for.  It is GNU's struct Lisp_Symbol
     ;; as the mirror's entry writers make it -- void value and function, empty
@@ -6529,17 +6545,16 @@ it shares with cons and symbol blocks.")
                 ;; lazily made object lacks.
                 (seq (if (if (> buf (+ base 16777224)) (< buf (heap-read-u64 268436296 0)) 0)
                          (seq (if (= (heap-read-u64 (- e 6) 8) 3)
-                                  (let* ((name (alloc-bytes 32 8)))
-                                    ;; The string is allocated in the arena the
-                                    ;; top-level boundary may rewind unless
-                                    ;; the mutation epoch moved (wf_dirty).
+                                  (let* ((nm (nl_symname_word buf n)))
+                                    ;; The object's persistent state is written
+                                    ;; here: keep the top-level boundary from
+                                    ;; rewinding the arena over it (wf_dirty).
                                     (seq (wf_dirty)
-                                         (if (= (nl_symname_make buf n name) 0) 0
-                                           ;; The box itself is the name: it shares
-                                           ;; the side table's bytes, so every
-                                           ;; `symbol-name' answer is `eq' and an
-                                           ;; `aset' shows through all of them.
-                                           (ptr-write-u64 (- e 6) 8 name))))
+                                         ;; The String itself is the name: it is the
+                                         ;; side table's, so every `symbol-name'
+                                         ;; answer is `eq' (GNU's u.s.name).
+                                         (if (= nm 0) 0
+                                           (ptr-write-u64 (- e 6) 8 nm))))
                                 0)
                               (if (= (heap-read-u64 (- e 6) 40) 0)
                                   (ptr-write-u64 (- e 6) 40 (nl_symobj_meta view buf n))
@@ -6552,8 +6567,7 @@ it shares with cons and symbol blocks.")
                     (if (= u 0) 0
                       (let* ((b (nl_symbol_alloc)))
                         (if (= b 0) 0
-                          (let* ((name (alloc-bytes 32 8))
-                                 (h (nl_intern_hash buf 0 n 2166136261)))
+                          (let* ((h (nl_intern_hash buf 0 n 2166136261)))
                             (seq
                              ;; Everything allocated here is linked into the
                              ;; mirror: keep the top-level boundary from
@@ -6566,13 +6580,14 @@ it shares with cons and symbol blocks.")
                              ;; lispsym index, which the builtin dispatch reads) and
                              ;; its intern table slot (`nl_symobj_meta').
                              (ptr-write-u64 b 40 (nl_symobj_meta_h buf h))
-                             ;; The name is the chain's key: without it (memory) the
-                             ;; object is not registered.
-                             (if (= (nl_symname_make buf n name) 0) 0
-                               (seq (ptr-write-u64 b 8 name)
-                                    (nl_symobj_link mp name (+ b 6) h)
-                                    (nl_symobj_cell_store mp buf n (+ b 6))
-                                    (+ b 6))))))))))))))))
+                             ;; The name String is the chain's key: without it
+                             ;; (memory) the object is not registered.
+                             (let* ((nm (nl_symname_word buf n)))
+                               (if (= nm 0) 0
+                                 (seq (ptr-write-u64 b 8 nm)
+                                      (nl_symobj_link mp nm (+ b 6) h)
+                                      (nl_symobj_cell_store mp buf n (+ b 6))
+                                      (+ b 6)))))))))))))))))
     ;; The reader's and `intern''s hook: W is the WORD they answer.  An
     ;; interned symbol's view gets its object here, so the symbol is complete
     ;; when it is first used; any other value passes through.
@@ -14223,16 +14238,66 @@ leave symbols unresolved at link time."
           sym)))
     ;; (nelisp--debug-switch 50 SYM): what SYM's interned symbol has in the
     ;; mirror: 0 no object (nil, t, no mirror yet, a name outside the intern
-    ;; arena), 1 an interned object with its name string, 2 an object whose
-    ;; name cell is still nil, 3 an entry that is not an interned symbol object.
+    ;; arena), 1 an interned object with its name string (the String WORD in its
+    ;; name cell), 2 an object whose name cell is still nil, 3 an entry that is not
+    ;; an interned symbol object.
     ;; What a WORD is, for tests: -1 an immediate, 2 a direct cons, 100 plus
-    ;; the header kind for a class-110 object, else the legacy view's tag.
+    ;; the header kind for a class-110 object, 205 a multibyte String WORD and
+    ;; 214 a unibyte one (200 plus the tag its legacy view would have), else the
+    ;; legacy view's tag.
     (defun nl_word_class (w)
       (if (= (logand w 1) 1) -1
         (if (= (logand w 7) 2) 2
-          (if (= (logand w 7) 6) (+ 100 (logand (heap-read-u64 (- w 6) 0) 63))
-            (if (< w 4096) -1 (heap-read-u8 w 0))))))
+          (if (= (logand w 7) 4) (if (< (heap-read-u64 (- w 4) 8) 0) 214 205)
+            (if (= (logand w 7) 6) (+ 100 (logand (heap-read-u64 (- w 6) 0) 63))
+              (if (< w 4096) -1 (heap-read-u8 w 0)))))))
     (defun nl_word_int_word (n) (+ (* n 4) 1))
+    ;; (nelisp--debug-switch 54 SYM): the raw name cell of SYM's symbol object as a Lisp
+    ;; value -- a String WORD (decision item A), nil for an object not yet named, a legacy
+    ;; view pointer if one is ever stored -- and nil when SYM is not a symbol object.
+    (defun nl_symname_cell_word (w)
+      (if (= (logand w 7) 6)
+          (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+            (if (= k 4) (heap-read-u64 (- w 6) 8)
+              (if (= k 16) (heap-read-u64 (- w 6) 8) 3)))
+        3))
+    ;; (nelisp--debug-switch 55): the live symbol_block cells counted by the class of their
+    ;; name cell, as (STRING-WORD LEGACY NIL OTHER LIVE): a String WORD, a legacy view or box
+    ;; pointer, the nil of an object not yet named, any other word, and every live cell.  A
+    ;; cell is live when it was allocated and does not hold the dead marker in `function'.
+    (defun nl_symname_census_w (_pad)
+      (let* ((blk (nl_symbol_block_first)) (sw 0) (lg 0) (nl 0) (ot 0) (live 0))
+        (seq
+         (while (> blk 0)
+           (let* ((lim (nl_symbol_block_cells blk)) (i 0))
+             (seq
+              (while (< i lim)
+                (let* ((c (+ blk (* i 48))))
+                  (seq
+                   (if (= (heap-read-u64 c 24) 912080) 0
+                     (if (= (logand (heap-read-u64 c 0) 63) 0) 0
+                       (let* ((nm (heap-read-u64 c 8)))
+                         (seq (setq live (+ live 1))
+                              (if (= (logand nm 7) 4) (setq sw (+ sw 1))
+                                (if (= nm 3) (setq nl (+ nl 1))
+                                  (if (= (logand nm 7) 0)
+                                      (if (< nm 4096) (setq ot (+ ot 1)) (setq lg (+ lg 1)))
+                                    (setq ot (+ ot 1)))))))))
+                   (setq i (+ i 1)))))
+              (setq blk (nl_symbol_block_next blk)))))
+         (nelisp_cons_construct_w
+          (+ (* sw 4) 1)
+          (nelisp_cons_construct_w
+           (+ (* lg 4) 1)
+           (nelisp_cons_construct_w
+            (+ (* nl 4) 1)
+            (nelisp_cons_construct_w
+             (+ (* ot 4) 1)
+             (nelisp_cons_construct_w (+ (* live 4) 1) 3 0)
+             0)
+            0)
+           0)
+          0))))
     (defun nl_symobj_state (sym)
       (let* ((mp (nl_symcells_mirror)))
         (if (= mp 0) 0
@@ -14244,7 +14309,8 @@ leave symbols unresolved at link time."
             (if (<= e 1) 0
               (if (/= (logand (heap-read-u64 (- e 6) 0) 63) 4) 3
                 (let* ((nm (heap-read-u64 (- e 6) 8)))
-                  (if (= (logand nm 7) 0) (if (< nm 4096) 2 1) 2))))))))
+                  (if (= (logand nm 7) 4) 1
+                    (if (= (logand nm 7) 0) (if (< nm 4096) 2 1) 2)))))))))
     ;; (nelisp--debug-switch 43): Doc 223 conservative-scan regression.  A
     ;; cons held only by native frames survives a collection, as
     ;; mark_maybe_pointer keeps it (alloc.c:4854).  Answers (SURVIVED
@@ -14371,6 +14437,8 @@ leave symbols unresolved at link time."
               (nelisp_cons_construct_w (+ (* mask 4) 1) lst 0)))))))
     (defun nl_symbol_selftest_w (args env)
       (let ((st (data-addr nl_typed_alloc)) (op (wf_argval args 0)))
+        (if (= op 55) (nl_symname_census_w 0)
+        (if (= op 54) (nl_symname_cell_word (wf_arg_word args 1))
         (if (= op 53) (nl_gc_stats_check_w 0)
         (if (= op 52) (nl_boot_selftest_synth 0)
         (if (= op 47) (+ (* (nl_boot_selftest_holes 0) 4) 1)
@@ -14396,7 +14464,7 @@ leave symbols unresolved at link time."
                (nelisp_cons_construct_w (+ (* (heap-read-u64 st 440) 4) 1) 3 0)
                0)
               0)
-             0))))))))))))))))
+             0))))))))))))))))))
     (defun nl_symcells_selftest_record (n)
       ;; A record box of N slots, all nil, with a nil type word.
       (let* ((box (alloc-bytes (+ 16 (* n 8)) 8)) (i 0))
@@ -14709,7 +14777,7 @@ leave symbols unresolved at link time."
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
           (nl_symcells_selftest_w args)
-      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 53) 0)
+      (if (if (>= (wf_argval args 0) 40) (<= (wf_argval args 0) 55) 0)
           (nl_symbol_selftest_w args env)
       (seq
         (if (= (wf_argval args 0) 1) (ptr-write-u64 (data-addr nl_gc_diag) 32 1)
@@ -26962,10 +27030,29 @@ baked build's own `<'/`>'/`=' arms need it too.")
         ) 0)
             out
           (nl_abi_fail 1 0))))
+    ;; Decision item A: `intern' keeps a private copy of its argument.  GNU aliases the
+    ;; caller's string (intern then aset changes the symbol's name there); here the name
+    ;; stays, as the intern table's own key bytes do.  The side table registers the
+    ;; String it is handed as the name of the new symbol and the symbol's object shares
+    ;; it (`nl_symname_word'), so the copy is made before the registration, with the
+    ;; multibyte flag of the argument.  A view of the copy, 0 when memory is exhausted.
+    (defun nl_intern_private_name (sx)
+      (let* ((h (nl_string_view_header sx))
+             (data (bf_str_ptr sx))
+             (n (bf_str_len sx))
+             (word (nl_string_new data n
+                                  (if (/= h 0) (if (= (nl_string_kind h) 14) 1 0)
+                                    (if (= (sexp-tag sx) 14) 1
+                                      (if (= (sexp-tag sx) 15) 1
+                                        (if (= (nl_string_char_count data n) n) 1 0)))))))
+        (if (= word 0) 0
+          (nl_string_store_view word (alloc-bytes 32 8)))))
     ;; Doc 215 word ABI: result WORD, 0 after the signal is stashed.
     (defun bf_intern_w (sx _pad)
-  (let* ((w (nl_alloc_symbol_named_w (bf_str_ptr sx) (bf_str_len sx) sx 0)))
-    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) (nl_symobj_of w))))
+  (let* ((copy (nl_intern_private_name sx)))
+    (if (= copy 0) (nl_abi_fail (bf_signal_memory_full) 0)
+      (let* ((w (nl_alloc_symbol_named_w (bf_str_ptr sx) (bf_str_len sx) copy 0)))
+        (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) (nl_symobj_of w))))))
     ;; Doc 163 Phase C: real soft-fail lookup backing elisp `intern-soft''s
     ;; string-argument case (lisp/nelisp-stdlib-misc.el).  `nl_intern_lookup'
     ;; (lisp/nelisp-cc-nlstr-direct-ops.el) probes the SAME open-addressing
@@ -32528,7 +32615,9 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; further than it looks: `string-equal' and everything built on it
     ;; compares a symbol by its name, so (string= nil "") was t here and nil
     ;; in Emacs, and `string-empty-p' inherited it.
-    ((:lit "symbol-name") :word . (let* ((arg (wf_arg_ptr args 0))
+    ((:lit "symbol-name") :word . (let* ((fast (nl_symbol_name_fast (wf_arg_word args 0))))
+                              (if (/= fast 0) fast
+                              (let* ((arg (wf_arg_ptr args 0))
                                       (s (if (= (sexp-tag arg) 19)
                                              (if (= (nl_positioned_flag 0) 1)
                                                  (heap-read-u64 arg 8) arg) arg))
@@ -32545,7 +32634,7 @@ into that constant unconditionally is what broke every aarch64 build."
                                       (let ((b (alloc-bytes 32 8)))
                                     (if (= (nl_symbol_name_immediate env 1 b) 1) (nl_symbol_name_result b)
                                       (nl_abi_fail (bf_signal_memory_full) 0)))
-                                    (nl_abi_fail (bf_wrong_type_symbolp s) 0))))))
+                                    (nl_abi_fail (bf_wrong_type_symbolp s) 0))))))))
     ;; intern / make-symbol: take a Str (tag 5/6), build a Symbol (tag 4).
     ;; `intern' takes a STRING.  A symbol argument used to pass through --
     ;; `(intern 'foo)' answered foo -- because `bf_str_ptr' reads a Symbol's

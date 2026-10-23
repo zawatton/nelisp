@@ -21887,11 +21887,42 @@ Strategy (= inline word check, no extern call):
 
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
+(defun nelisp-aot-compiler--emit-string-word-fields (buf word len ptr tmp)
+  "Emit LEN = the byte length and PTR = the data pointer of the String whose WORD is in WORD.
+Decision item A.  A String WORD has its low bits 100 and its header at WORD - 4
+(docs/design/227): `size' at +0, `size_byte' at +8 -- negative for a unibyte
+string, whose byte length is then `size' without its top bit, the collector's
+mark -- and the data pointer at +24, so size_byte is at WORD + 4 and the data
+pointer at WORD + 20.  Inline loads only: no call, no PLT reference.  LEN or PTR
+nil skips that register; LEN and WORD must be different registers.  TMP is
+clobbered when LEN is wanted."
+  (when len
+    (let* ((id (nelisp-aot-compiler--gensym "strw"))
+           (done (intern (format "%s-done" id))))
+      (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf len word 4)
+      (nelisp-asm-x86_64-cmp-imm32 buf len 0)
+      (nelisp-asm-x86_64-jcc-rel32 buf 'jge done)
+      (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf len word -4)
+      (nelisp-asm-x86_64-mov-imm64 buf tmp #x7FFFFFFFFFFFFFFF)
+      (nelisp-asm-x86_64-and-reg-reg buf len tmp)
+      (nelisp-asm-x86_64-define-label buf done)))
+  (when ptr
+    (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8 buf ptr word 20)))
+
+(defun nelisp-aot-compiler--emit-unless-string-word (buf reg tmp label)
+  "Emit a jump to LABEL unless REG is a String WORD (low bits 100).
+The pure predicate that `emit-unless-view' is for legacy views.  TMP is clobbered."
+  (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
+  (nelisp-asm-x86_64-and-reg-reg buf tmp reg)
+  (nelisp-asm-x86_64-cmp-imm32 buf tmp 4)
+  (nelisp-asm-x86_64-jnz-rel32 buf label))
+
 (defun nelisp-aot-compiler--emit-symbol-name-redirect (buf reg tmp)
   "Emit REG = its name string WORD when REG is a symbol object.
 Doc 226 D9: a symbol object is a class-110 WORD whose name string WORD sits
-at backing + 8 = REG + 2; string accessors then read that string's inline
-fields.  Any other WORD is left alone.  TMP is clobbered."
+at backing + 8 = REG + 2; string accessors then read that string's fields
+(`emit-string-word-fields' for a String WORD, the inline view fields for a
+legacy view).  Any other WORD is left alone.  TMP is clobbered."
   (let* ((id (nelisp-aot-compiler--gensym "symname"))
          (done (intern (format "%s-done" id))))
     (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
@@ -21905,9 +21936,11 @@ fields.  Any other WORD is left alone.  TMP is clobbered."
   "Emit REG = its name string WORD when REG is a symbol object WORD (kind 4 or 16).
 Doc 226 D9 stage 3: an interned symbol is an object as an uninterned one is,
 so the name-comparing emitters read its name cell (backing + 8 = REG + 2)
-where they read a view's inline string.  Any other WORD -- a view, an
-immediate, a string, another vectorlike -- is left as it is for the view test
-that follows.  A symbol's flags byte is its kind, 4 or 16 (bits 6 and 7 of it
+where they read a view's inline string.  Decision item A: the cell holds the
+String WORD (GNU's u.s.name), or nil (3) before it is filled; the caller tests
+it with `emit-unless-string-word' and reads it with `emit-string-word-fields'.
+Any other WORD -- a view, an immediate, a string, another vectorlike -- is left
+as it is for the tests that follow.  A symbol's flags byte is its kind, 4 or 16 (bits 6 and 7 of it
 stay clear).  With REDIRECTED-LABEL the redirect jumps there, REG holding the
 name string WORD still to be tested as a view; otherwise it falls through.
 TMP is clobbered."
@@ -21933,22 +21966,41 @@ TMP is clobbered."
     (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-len (node buf)
-  "Emit `mov rax, qword ptr [rdi + 24]' after computing NODE's :ptr."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+  "Emit the byte length of a String, a Symbol or a symbol object after computing NODE's :ptr.
+A legacy view holds it at +24; a String WORD (a bare string, or the name cell of
+a symbol object) in its header (`emit-string-word-fields')."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (nelisp-aot-compiler--gensym "strlen"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-unless-string-word buf 'rdi 'rax view)
+    (nelisp-aot-compiler--emit-string-word-fields buf 'rdi 'rax nil 'rdx)
+    (nelisp-asm-x86_64-jmp-rel32 buf done)
+    (nelisp-asm-x86_64-define-label buf view)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
-     buf 'rax 'rdi nelisp-string--offset-length)))
+     buf 'rax 'rdi nelisp-string--offset-length)
+    (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-bytes (node buf)
-  "Emit `mov rax, qword ptr [rdi + 8]' after computing NODE's :ptr."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr)))
+  "Emit the data pointer of a String, a Symbol or a symbol object after computing NODE's :ptr.
+A legacy view holds it at +16; a String WORD at WORD + 20 (the header's +24)."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (id (nelisp-aot-compiler--gensym "strbytes"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
     (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-unless-string-word buf 'rdi 'rax view)
+    (nelisp-aot-compiler--emit-string-word-fields buf 'rdi nil 'rax 'rdx)
+    (nelisp-asm-x86_64-jmp-rel32 buf done)
+    (nelisp-asm-x86_64-define-label buf view)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
-     buf 'rax 'rdi nelisp-string--offset-ptr)))
+     buf 'rax 'rdi nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-bytes-ptr (node buf)
   "Emit Doc 122 §122.H `str-bytes-ptr' — 1-arg call to `nl_str_bytes_ptr'.
@@ -21980,10 +22032,14 @@ Strategy (= 1-arg extern call, mirrors §122.D `mut-str-len' /
       (nelisp-aot-compiler--emit-temp-pop buf 'r11))))
 
 (defun nelisp-aot-compiler--emit-str-byte-at (node buf)
-  "Emit byte load from a `Sexp::Str' / `Sexp::Symbol' String buffer.
-Result: the selected UTF-8 byte zero-extended into rax."
-  (let ((ptr (nelisp-aot-compiler--ir-get node :ptr))
-        (idx (nelisp-aot-compiler--ir-get node :idx)))
+  "Emit byte load from a String, Symbol or symbol object buffer.
+Result: the selected UTF-8 byte zero-extended into rax.  A String WORD's data
+pointer is at WORD + 20, a legacy view's at +16."
+  (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
+         (idx (nelisp-aot-compiler--ir-get node :idx))
+         (id (nelisp-aot-compiler--gensym "strbyte"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-aot-compiler--emit-temp-push buf 'rax)
     (nelisp-aot-compiler--emit-value idx buf)
@@ -21991,8 +22047,13 @@ Result: the selected UTF-8 byte zero-extended into rax."
     (nelisp-aot-compiler--emit-temp-pop buf 'r10)
     (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
     (nelisp-aot-compiler--emit-symbol-name-redirect buf 'rdi 'rax)
+    (nelisp-aot-compiler--emit-unless-string-word buf 'rdi 'rax view)
+    (nelisp-aot-compiler--emit-string-word-fields buf 'rdi nil 'rax 'rdx)
+    (nelisp-asm-x86_64-jmp-rel32 buf done)
+    (nelisp-asm-x86_64-define-label buf view)
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-define-label buf done)
     (nelisp-asm-x86_64-add-reg-reg buf 'rax 'r10)
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rax)))
 
@@ -22056,12 +22117,19 @@ values whose payload layout matches Rust `String' (=`Sexp::Str' or
 check against LITERAL_LEN, then byte-loop compare against compile-time
 literal bytes.  Returns i64 0/1 in rax.
 
+The operand is a legacy symbol view (tag 4, length at +24, data at +16) or a
+symbol object WORD, which compares by its name cell: decision item A, a String
+WORD (length and data from the String's header, `emit-string-word-fields'), and
+anything else there -- nil before the cell is filled -- is not equal.  This is
+the one name operation the heap-accessor lowering leaves to the emitter, so it
+is what the runtime build compiles.
+
 Register usage:
   rdi       = `*const Sexp' SYM_PTR (caller-emitted into rax then moved)
-  rax/rdx   = scratch (tag / length / per-byte read)
-  r9        = current payload byte pointer (NlString::ptr + i)
+  rax/rdx   = scratch (tag / length / the String header's mask)
+  r9        = current payload byte pointer
 
-No PLT calls — entirely inline; the literal bytes are encoded as
+No PLT calls -- entirely inline; the literal bytes are encoded as
 `cmp imm32' immediates so each byte costs ~10 bytes of code.  A 4-byte
 literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
@@ -22069,38 +22137,34 @@ literal expands to ~50 bytes of code, a 20-byte literal to ~210 bytes."
          (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (name-lbl (intern (format "%s-name" id)))
-         (bytes-lbl (intern (format "%s-bytes" id)))
+         (compare-lbl (intern (format "%s-compare" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    ;; Doc 226 D9 stage 3: a symbol object WORD compares by its name string.
+    ;; Doc 226 D9 stage 3: a symbol object WORD compares by its name String.
     (nelisp-aot-compiler--emit-symbol-object-redirect buf 'rdi 'rax name-lbl)
     (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax false-lbl)
     ;; Tag check: byte [rdi] == Sexp::Symbol tag (= 4).
     (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-symbol)
     (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
-    (nelisp-asm-x86_64-jmp-rel32 buf bytes-lbl)
-    ;; The object's name cell: a string view, or nil before it is filled.
-    (nelisp-asm-x86_64-define-label buf name-lbl)
-    (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax false-lbl)
-    (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'rdi)
-    (nelisp-asm-x86_64-cmp-imm32 buf 'rax nelisp-sexp--tag-str)
-    (nelisp-asm-x86_64-jz-rel32 buf bytes-lbl)
-    (nelisp-asm-x86_64-cmp-imm32
-     buf 'rax nelisp-sexp-layout-tag-unibyte-str)
-    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
-    (nelisp-asm-x86_64-define-label buf bytes-lbl)
-    ;; Length check: NlString::len at offset 24 == LITERAL_LEN.
+    ;; Length check: NlString::len at offset 24 == LITERAL_LEN; r9 = NlString::ptr
+    ;; at offset 16, the start of the payload byte buffer walked below.
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'rax 'rdi nelisp-string--offset-length)
     (nelisp-asm-x86_64-cmp-imm32 buf 'rax len)
     (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
-    ;; r9 = NlString::ptr at offset 16; this is the start of the
-    ;; payload byte buffer that we'll walk byte-by-byte below.
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'r9 'rdi nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-jmp-rel32 buf compare-lbl)
+    ;; The object's name cell: a String WORD, or nil before it is filled.
+    (nelisp-asm-x86_64-define-label buf name-lbl)
+    (nelisp-aot-compiler--emit-unless-string-word buf 'rdi 'rax false-lbl)
+    (nelisp-aot-compiler--emit-string-word-fields buf 'rdi 'rax 'r9 'rdx)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax len)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    (nelisp-asm-x86_64-define-label buf compare-lbl)
     ;; Per-byte: movzx rax, byte [r9]; cmp rax, byte_i; jnz false-lbl;
     ;; add r9, 1.  The final byte's `add r9, 1' is harmless dead code
     ;; but kept for symmetry / simpler emitter.
@@ -22122,7 +22186,10 @@ check against LITERAL_LEN, then byte-loop compare against compile-time
 literal bytes.  Returns i64 0/1 in rax.
 
 Extends `symbol-name-eq' to accept Sexp::Symbol (tag 4), Sexp::Str
-(tag 5), and layout-identical Sexp::UnibyteStr (tag 14) inputs.
+(tag 5), and layout-identical Sexp::UnibyteStr (tag 14) inputs, and a
+String WORD -- a bare string, or the name cell of a symbol object, which the
+object redirect reads (decision item A).  The runtime build never reaches this
+emitter: `nelisp-heap-accessors-lower' rewrites `sexp-name-eq' first.
   movzx rax, byte [rdi]
   cmp rax, 4       ; Symbol?
   jz <bytes-check>
@@ -22131,19 +22198,26 @@ Extends `symbol-name-eq' to accept Sexp::Symbol (tag 4), Sexp::Str
   <bytes-check>: ...
 
 Register usage matches `symbol-name-eq' exactly; only the tag-check block
-differs (adds one cmp+jnz for the Str arm)."
+differs (adds one cmp+jnz for the Str arm and the String WORD arm)."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (bytes (nelisp-aot-compiler--ir-get node :bytes))
          (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (bytes-check-lbl (intern (format "%s-bytes" id)))
+         (string-lbl (intern (format "%s-string" id)))
+         (compare-lbl (intern (format "%s-compare" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-x86_64-mov-reg-reg buf 'rdi 'rax)
-    ;; Doc 226 D9 stage 3: a symbol object WORD compares by its name string,
-    ;; which the tag check below accepts (Str or UnibyteStr).
+    ;; Doc 226 D9 stage 3: a symbol object WORD compares by its name String.
     (nelisp-aot-compiler--emit-symbol-object-redirect buf 'rdi 'rax)
+    ;; A String WORD compares by its header; anything that is neither it nor a
+    ;; legacy view is not equal.
+    (nelisp-asm-x86_64-mov-imm32 buf 'rax 7)
+    (nelisp-asm-x86_64-and-reg-reg buf 'rax 'rdi)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax 4)
+    (nelisp-asm-x86_64-jz-rel32 buf string-lbl)
     (nelisp-aot-compiler--emit-unless-view buf 'rdi 'rax false-lbl)
     ;; Tag check: byte [rdi] == 4 (Symbol) → bytes_check
     ;;            byte [rdi] == 5 (Str)    → bytes_check
@@ -22166,6 +22240,12 @@ differs (adds one cmp+jnz for the Str arm)."
     ;; r9 = NlString::ptr at offset 16.
     (nelisp-heap-accessors-x86_64-mov-reg-mem-disp8
      buf 'r9 'rdi nelisp-string--offset-ptr)
+    (nelisp-asm-x86_64-jmp-rel32 buf compare-lbl)
+    (nelisp-asm-x86_64-define-label buf string-lbl)
+    (nelisp-aot-compiler--emit-string-word-fields buf 'rdi 'rax 'r9 'rdx)
+    (nelisp-asm-x86_64-cmp-imm32 buf 'rax len)
+    (nelisp-asm-x86_64-jnz-rel32 buf false-lbl)
+    (nelisp-asm-x86_64-define-label buf compare-lbl)
     ;; Per-byte comparison.
     (dolist (b bytes)
       (nelisp-heap-accessors-x86_64-movzx-reg-byte-mem buf 'rax 'r9)
@@ -23809,9 +23889,69 @@ No tag check; caller guarantees :ptr is a `Sexp::Int'."
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0))
 
+(defun nelisp-aot-compiler--emit-string-word-fields-arm64 (buf word len ptr tmp hdr)
+  "Emit LEN = the byte length and PTR = the data pointer of the String whose WORD is in WORD (aarch64).
+The twin of the x86-64 `emit-string-word-fields': the header is at WORD - 4,
+`size' at +0, `size_byte' at +8 (negative: unibyte, the byte length is `size'
+without its top bit) and the data pointer at +24.  The scaled loads reach only
+multiples of 8, so HDR = WORD - 4 is formed first (LEN may be the register WORD
+is in).  LEN or PTR nil skips that register.  TMP and HDR are clobbered."
+  (nelisp-asm-arm64-sub-imm buf hdr word 4)
+  (when len
+    (let* ((id (nelisp-aot-compiler--gensym "strw-a64"))
+           (done (intern (format "%s-done" id))))
+      (nelisp-heap-accessors-arm64-ldr-imm buf len hdr 8)
+      (nelisp-asm-arm64-cmp-imm buf len 0)
+      (nelisp-asm-arm64-b-cond buf 'ge done)
+      (nelisp-heap-accessors-arm64-ldr-imm buf len hdr 0)
+      (nelisp-asm-arm64-mov-imm64 buf tmp #x7FFFFFFFFFFFFFFF)
+      (nelisp-asm-arm64-and-reg-reg buf len len tmp)
+      (nelisp-asm-arm64-define-label buf done)))
+  (when ptr
+    (nelisp-heap-accessors-arm64-ldr-imm buf ptr hdr 24)))
+
+(defun nelisp-aot-compiler--emit-unless-string-word-arm64 (buf reg tmp label)
+  "Emit a branch to LABEL unless REG is a String WORD (low bits 100; aarch64)."
+  (nelisp-asm-arm64-mov-imm64 buf tmp 7)
+  (nelisp-asm-arm64-and-reg-reg buf tmp reg tmp)
+  (nelisp-asm-arm64-cmp-imm buf tmp 4)
+  (nelisp-asm-arm64-b-cond buf 'ne label))
+
+(defun nelisp-aot-compiler--emit-symbol-object-redirect-arm64 (buf reg tmp &optional redirected-label)
+  "Emit REG = its name cell when REG is a symbol object WORD (kind 4 or 16; aarch64).
+The twin of the x86-64 `emit-symbol-object-redirect', which the aarch64 name
+operations lacked: at 63ec9640e a symbol object WORD (low bits 110) fell into
+`emit-unless-view-arm64' and `symbol-name-eq' answered false for every interned
+symbol.  The cell (backing + 8 = REG + 2) holds the String WORD, or nil before it
+is filled.  Any other WORD is left as it is.  With REDIRECTED-LABEL the redirect
+branches there, REG holding the cell; otherwise it falls through.  TMP is
+clobbered."
+  (let* ((id (nelisp-aot-compiler--gensym "symobj-a64"))
+         (done (intern (format "%s-done" id)))
+         (take (intern (format "%s-take" id))))
+    (nelisp-asm-arm64-mov-imm64 buf tmp 7)
+    (nelisp-asm-arm64-and-reg-reg buf tmp reg tmp)
+    (nelisp-asm-arm64-cmp-imm buf tmp 6)
+    (nelisp-asm-arm64-b-cond buf 'ne done)
+    (nelisp-asm-arm64-sub-imm buf reg reg 6)
+    (nelisp-heap-accessors-arm64-ldrb-imm buf tmp reg 0)
+    (nelisp-asm-arm64-cmp-imm buf tmp 4)
+    (nelisp-asm-arm64-b-cond buf 'eq take)
+    (nelisp-asm-arm64-cmp-imm buf tmp 16)
+    (nelisp-asm-arm64-b-cond buf 'eq take)
+    (nelisp-asm-arm64-add-imm buf reg reg 6)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf take)
+    (nelisp-heap-accessors-arm64-ldr-imm buf reg reg 8)
+    (when redirected-label
+      (nelisp-asm-arm64-b buf redirected-label))
+    (nelisp-asm-arm64-define-label buf done)))
+
 (defun nelisp-aot-compiler--emit-symbol-name-redirect-arm64 (buf reg tmp)
   "Emit REG = its name string WORD when REG is a symbol object (aarch64).
-See the x86_64 twin; the load is `sub REG, REG, 6' then `ldr REG, [REG, 8]'."
+See the x86_64 twin; the load is `sub REG, REG, 6' then `ldr REG, [REG, 8]'.
+The string accessors that follow read a String WORD through its header
+(`emit-string-word-fields-arm64') and a legacy view through its inline fields."
   (let* ((id (nelisp-aot-compiler--gensym "symname-a64"))
          (done (intern (format "%s-done" id))))
     (nelisp-asm-arm64-mov-imm64 buf tmp 7)
@@ -23823,28 +23963,44 @@ See the x86_64 twin; the load is `sub REG, REG, 6' then `ldr REG, [REG, 8]'."
     (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-len-arm64 (node buf)
-  "Emit `str-len' for aarch64 — x0 = i64 length at [ptr+24]."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
-  (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-length))
+  "Emit `str-len' for aarch64 -- x0 = the byte length: a legacy view's i64 at [ptr+24], a String WORD's from its header."
+  (let* ((id (nelisp-aot-compiler--gensym "strlen-a64"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
+    (nelisp-aot-compiler--emit-unless-string-word-arm64 buf 'x0 'x12 view)
+    (nelisp-aot-compiler--emit-string-word-fields-arm64 buf 'x0 'x0 nil 'x10 'x11)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf view)
+    (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-length)
+    (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-byte-at-arm64 (node buf)
-  "Emit `str-byte-at' for aarch64 — byte at index IDX of a String buffer.
-ptr -> x1, idx -> x2; load buffer ptr from [ptr+16], add idx, LDRB;
-result (zero-extended byte) in x0."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :idx) buf)
-  (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push idx
-  (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = idx (top)
-  (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
-  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x1 'x12)
-  (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-ptr) ; x0 = buf ptr
-  (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
-  (nelisp-heap-accessors-arm64-ldrb-imm buf 'x0 'x0 0))         ; x0 = byte
+  "Emit `str-byte-at' for aarch64 -- byte at index IDX of a String buffer.
+ptr -> x1, idx -> x2; load buffer ptr from [ptr+16] (a String WORD's data
+pointer from its header), add idx, LDRB; result (zero-extended byte) in x0."
+  (let* ((id (nelisp-aot-compiler--gensym "strbyte-a64"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :idx) buf)
+    (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push idx
+    (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x2)          ; x2 = idx (top)
+    (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)          ; x1 = ptr
+    (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x1 'x12)
+    (nelisp-aot-compiler--emit-unless-string-word-arm64 buf 'x1 'x12 view)
+    (nelisp-aot-compiler--emit-string-word-fields-arm64 buf 'x1 nil 'x0 'x10 'x11) ; x0 = buf ptr
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf view)
+    (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x1 nelisp-string--offset-ptr) ; x0 = buf ptr
+    (nelisp-asm-arm64-define-label buf done)
+    (nelisp-asm-arm64-add-reg-reg buf 'x0 'x0 'x2)     ; x0 = buf + idx
+    (nelisp-heap-accessors-arm64-ldrb-imm buf 'x0 'x0 0)))         ; x0 = byte
 
 (defun nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 (buf reg imm)
   "Emit a compare of REG against IMM, using CMP #imm12 when possible."
@@ -23855,11 +24011,19 @@ result (zero-extended byte) in x0."
       (nelisp-asm-arm64-cmp-reg-reg buf reg 'x12))))
 
 (defun nelisp-aot-compiler--emit-str-bytes-arm64 (node buf)
-  "Emit `str-bytes' for aarch64 — x0 = String data pointer at +16."
-  (nelisp-aot-compiler--emit-value
-   (nelisp-aot-compiler--ir-get node :ptr) buf)
-  (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
-  (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-ptr))
+  "Emit `str-bytes' for aarch64 -- x0 = the data pointer: a legacy view's at +16, a String WORD's from its header."
+  (let* ((id (nelisp-aot-compiler--gensym "strbytes-a64"))
+         (view (intern (format "%s-view" id)))
+         (done (intern (format "%s-done" id))))
+    (nelisp-aot-compiler--emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf)
+    (nelisp-aot-compiler--emit-symbol-name-redirect-arm64 buf 'x0 'x12)
+    (nelisp-aot-compiler--emit-unless-string-word-arm64 buf 'x0 'x12 view)
+    (nelisp-aot-compiler--emit-string-word-fields-arm64 buf 'x0 nil 'x0 'x10 'x11)
+    (nelisp-asm-arm64-b buf done)
+    (nelisp-asm-arm64-define-label buf view)
+    (nelisp-heap-accessors-arm64-ldr-imm buf 'x0 'x0 nelisp-string--offset-ptr)
+    (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-bytes-ptr-arm64 (node buf)
   "Emit `str-bytes-ptr' for aarch64 via `nl_str_bytes_ptr'."
@@ -23912,15 +24076,22 @@ result (zero-extended byte) in x0."
     (nelisp-aot-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)))
 
 (defun nelisp-aot-compiler--emit-symbol-name-eq-arm64 (node buf)
-  "Emit `symbol-name-eq' for aarch64 — Symbol tag + literal byte compare."
+  "Emit `symbol-name-eq' for aarch64 -- Symbol tag + literal byte compare.
+Like the x86-64 emitter, a symbol object WORD compares by its name cell (the
+redirect the aarch64 operation lacked at 63ec9640e): a String WORD read through its
+header, anything else there -- nil before the cell is filled -- not equal.  A legacy
+symbol view keeps its inline fields."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (bytes (nelisp-aot-compiler--ir-get node :bytes))
          (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
+         (name-lbl (intern (format "%s-name" id)))
+         (compare-lbl (intern (format "%s-compare" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-aot-compiler--emit-symbol-object-redirect-arm64 buf 'x1 'x9 name-lbl)
     (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
@@ -23929,6 +24100,14 @@ result (zero-extended byte) in x0."
     (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-heap-accessors-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
+    (nelisp-asm-arm64-b buf compare-lbl)
+    ;; The object's name cell: a String WORD, or nil before it is filled.
+    (nelisp-asm-arm64-define-label buf name-lbl)
+    (nelisp-aot-compiler--emit-unless-string-word-arm64 buf 'x1 'x9 false-lbl)
+    (nelisp-aot-compiler--emit-string-word-fields-arm64 buf 'x1 'x0 'x9 'x10 'x11)
+    (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-define-label buf compare-lbl)
     (dolist (b bytes)
       (nelisp-heap-accessors-arm64-ldrb-imm buf 'x0 'x9 0)
       (nelisp-asm-arm64-cmp-imm buf 'x0 b)
@@ -23941,16 +24120,27 @@ result (zero-extended byte) in x0."
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
 (defun nelisp-aot-compiler--emit-sexp-name-eq-arm64 (node buf)
-  "Emit `sexp-name-eq' for aarch64 — Symbol/Str tag + literal byte compare."
+  "Emit `sexp-name-eq' for aarch64 -- Symbol/Str tag + literal byte compare.
+Accepts what the x86-64 emitter does: a legacy Symbol, Str or UnibyteStr view, a
+symbol object WORD (its name cell) and a String WORD (a bare string or that
+cell), the latter read through its header."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (bytes (nelisp-aot-compiler--ir-get node :bytes))
          (id (nelisp-aot-compiler--ir-get node :id))
          (len (length bytes))
          (bytes-lbl (intern (format "%s-bytes" id)))
+         (string-lbl (intern (format "%s-string" id)))
+         (compare-lbl (intern (format "%s-compare" id)))
          (false-lbl (intern (format "%s-false" id)))
          (end-lbl (intern (format "%s-end" id))))
     (nelisp-aot-compiler--emit-value ptr buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x0)
+    (nelisp-aot-compiler--emit-symbol-object-redirect-arm64 buf 'x1 'x9)
+    ;; A String WORD compares by its header; what is neither it nor a legacy view is not equal.
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x1 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 4)
+    (nelisp-asm-arm64-b-cond buf 'eq string-lbl)
     (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
@@ -23965,6 +24155,12 @@ result (zero-extended byte) in x0."
     (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
     (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
     (nelisp-heap-accessors-arm64-ldr-imm buf 'x9 'x1 nelisp-string--offset-ptr)
+    (nelisp-asm-arm64-b buf compare-lbl)
+    (nelisp-asm-arm64-define-label buf string-lbl)
+    (nelisp-aot-compiler--emit-string-word-fields-arm64 buf 'x1 'x0 'x9 'x10 'x11)
+    (nelisp-aot-compiler--emit-cmp-reg-imm64-arm64 buf 'x0 len)
+    (nelisp-asm-arm64-b-cond buf 'ne false-lbl)
+    (nelisp-asm-arm64-define-label buf compare-lbl)
     (dolist (b bytes)
       (nelisp-heap-accessors-arm64-ldrb-imm buf 'x0 'x9 0)
       (nelisp-asm-arm64-cmp-imm buf 'x0 b)

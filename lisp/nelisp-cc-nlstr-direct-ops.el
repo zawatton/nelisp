@@ -201,25 +201,6 @@ lifetime of a Sexp value.  No `let' binding needed.")
         (if (= word 0) 0 (nl_string_store_view word result-slot))))
     (defun nl_alloc_str_write (bytes-ptr n alloc-n dest-slot char-buf)
       (nl_alloc_str_write_tag bytes-ptr n alloc-n dest-slot char-buf 5))
-    ;; A legacy name box over the caller's own buffer: tag, capacity, CHAR-BUF
-    ;; (arena bytes the caller allocated) and length.  The name of an interned
-    ;; symbol object is kept so (Doc 226 D9): the box is persistent -- the object's
-    ;; name cell and the side table point at it -- and, unlike the view of a
-    ;; canonical String that `nl_alloc_str_write_tag' stores, every word of it
-    ;; lies in the arena, so the image dump relocates it.
-    (defun nl_alloc_str_write_legacy
-        (bytes-ptr n alloc-n result-slot char-buf tag)
-      (and (nl_alloc_str_copy_loop bytes-ptr char-buf 0 n)
-           (ptr-write-u64 result-slot 0 tag)
-           ;; Bit 62 of the capacity word marks a multibyte string: a legacy box
-           ;; cannot say otherwise that its ASCII bytes are multibyte (the reader
-           ;; sets it the same way, nelisp_reader_p_symbol_name_kind).
-           (ptr-write-u64 result-slot 8
-                          (if (= tag 5) (logior alloc-n 4611686018427387904) alloc-n))
-           (ptr-write-u64 result-slot 16 char-buf)
-           (ptr-write-u64 result-slot 24 n)
-           result-slot))
-
     ;; Alloc + write with n >= 0 already normalised.
     (defun nl_alloc_str_pos (bytes-ptr n dest-slot)
       (let* ((chars (nl_string_char_count bytes-ptr n))
@@ -760,6 +741,19 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_symbol_name_result (out)
       (let* ((h (nl_string_view_header out)))
         (if (= h 0) out (+ h 4))))
+    ;; GNU's Fsymbol_name answers XSYMBOL (w)->u.s.name itself.  Decision item A: the
+    ;; name cell of a symbol object W (interned or not) holds that String's WORD, which
+    ;; is the answer, with no copy of the cell into a slot; 0 when W is not a symbol
+    ;; object whose name cell holds a String WORD (an object not yet named, a view), and
+    ;; the general path answers.
+    (defun nl_symbol_name_fast (w)
+      (if (= (logand w 7) 6)
+          (let* ((k (logand (heap-read-u64 (- w 6) 0) 63))
+                 (nm (heap-read-u64 (- w 6) 8)))
+            (if (= (logand nm 7) 4)
+                (if (= k 4) nm (if (= k 16) nm 0))
+              0))
+        0))
     ;; Doc 215 word ABI: the result WORD, or 0 after a stashed generic error when the legacy form answered 0.
     ;; `nl_symbol_name_value' keeps its C-ABI (nonzero/0) and is unchanged.
     (defun nl_symbol_name_value_w (env symbol-slot _pad)
