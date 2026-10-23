@@ -23843,24 +23843,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (seq (ptr-write-u64 box 0 n)
              (ptr-write-u64 box 8 (heap-sexp-data word))
              (ptr-write-u64 box 16 0) word)))
-    ;; GNU alloc.c make-string writes one encoded character and doubles the
-    ;; initialized prefix. Header and data are allocated only once.
+    ;; (make-string LENGTH INIT &optional MULTIBYTE), GNU Fmake_string (alloc.c): allocate the exact size once, header
+    ;; and sdata together, then fill the sdata in place (memset for a one-byte character, the encoded bytes doubled
+    ;; otherwise: `nl_u8_fill').  The string was made through a counting builder, a second builder pass and a copy
+    ;; into the final sdata (1,623 Ir for 128 bytes, 16 allocations); gc-port's arm that did it in 1,242 returned a
+    ;; legacy view over a loose buffer, which the word-heap line cannot use as a String.  UNIBYTE is 1 only for a
+    ;; character below 128 that was not forced multibyte.  A multibyte string keeps its character count in the
+    ;; size field, which `nl_string_new' cannot know for an empty source.
     (defun m5_make_repeated_string (n cp unibyte)
-      (let* ((slot (alloc-bytes 32 8)))
-        (seq (m5_count_builder slot unibyte) (nl_u8_encode slot cp)
-             (let* ((box (heap-sexp-payload slot))
-                    (width (heap-read-u64 box 16)) (bytes (* width n)))
-               (seq (ptr-write-u64 box 16 bytes)
-                    (m5_builder_allocate_string slot unibyte)
-                    (if (= n 0) 0
-                      (seq (nl_u8_encode slot cp)
-                           (let* ((data (heap-read-u64 box 8)) (filled width))
-                             (while (< filled bytes)
-                               (let* ((count (if (< (- bytes filled) filled) (- bytes filled) filled)))
-                                 (nl_string_copy_bytes data (+ data filled) count)
-                                 (setq filled (+ filled count)))))))
-                    (ptr-write-u64 box 16 bytes)
-                    (m5_finish_string_w slot 0 (- 1 unibyte)))))))
+      (let* ((w (if (>= cp 4194176) 2
+                  (if (< cp 128) 1
+                    (if (< cp 2048) 2
+                      (if (< cp 65536) 3
+                        (if (< cp 2097152) 4 5))))))
+             (bytes (* w n))
+             (word (nl_string_new 0 bytes unibyte)))
+        (if (= word 0) (nl_abi_fail (bf_signal_memory_full) 0)
+          (seq (if (= bytes 0) 0 (nl_u8_fill (heap-read-u64 (- word 4) 24) n cp))
+               (if (= unibyte 1) 0 (ptr-write-u64 (- word 4) 0 n))
+               word))))
     (defun m5_make_builder (slot cap unibyte)
       (if (= unibyte 1)
           (nl_alloc_unibyte_mut_str cap slot)
@@ -26456,42 +26457,6 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (setq o (+ o w))
                        (setq i (+ i 1))))))))
          w)))
-    ;; (make-string LENGTH INIT &optional MULTIBYTE), GNU Fmake_string: allocate the exact size,
-    ;; then fill (memset for a single-byte character, the encoded bytes repeated otherwise).  The
-    ;; arm used to build the string through the mutable-string builder: 128 byte pushes at 66
-    ;; instructions and 16 allocations for 128 bytes.  The result is the string view the builder's
-    ;; finaliser wrote: tag 5 (14 for a unibyte string), the buffer size at +8 with bit 62 set for a
-    ;; multibyte string, the buffer, the byte length.  The character must be 0..#x3FFFFF
-    ;; (CHECK_CHARACTER).
-    (defun bf_make_string_w (args _pad)
-      (let* ((a0 (wf_arg_word args 0))
-             (a1 (wf_arg_word args 1))
-             (n (nl_word_payload a0))
-             (cp (nl_word_payload a1)))
-        (if (if (= (nl_word_tag64 a0) 2) (if (< n 0) 0 1) 0)
-            (if (if (= (nl_word_tag64 a1) 2)
-                    (if (< cp 0) 0 (if (> cp 4194303) 0 1)) 0)
-                (let* ((rest (nl_cons_cdr_word (nl_cons_cdr_word args)))
-                       (forced (if (= (logand rest 7) 2)
-                                   (if (= (wf_arg_word args 2) 3) 0 1) 0))
-                       (multi (if (= forced 1) 1 (if (< cp 128) 0 1)))
-                       (w (if (>= cp 4194176) 2
-                            (if (< cp 128) 1
-                              (if (< cp 2048) 2
-                                (if (< cp 65536) 3
-                                  (if (< cp 2097152) 4 5))))))
-                       (total (* n w))
-                       (alloc-n (if (= total 0) 1 total))
-                       (buf (alloc-bytes alloc-n 1))
-                       (sb (alloc-bytes 32 8)))
-                  (seq (nl_u8_fill buf n cp)
-                       (ptr-write-u8 sb 0 (if (= multi 1) 5 14))
-                       (ptr-write-u64 sb 8 (if (= multi 1) (logior alloc-n 4611686018427387904) alloc-n))
-                       (ptr-write-u64 sb 16 buf)
-                       (ptr-write-u64 sb 24 total)
-                       sb))
-              (nl_abi_fail (bf_wrong_type_characterp (wf_arg_ptr args 1)) 0))
-          (nl_abi_fail (bf_wrong_type_named (wf_arg_ptr args 0) 7887331704299284599 112 0 9) 0))))
     (defun m5_length (p)
       (let* ((tag (heap-sexp-tag-word p)))
         (if (= tag 14) (m5_strlen p)
