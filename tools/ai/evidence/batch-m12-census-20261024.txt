@@ -1,0 +1,21 @@
+m12 batch census, 2026-10-24
+Runtime: m12 a6e710746 (v1.5.0-2257-ga6e710746) nelisp-dyn sha256 865f5e0a86b0cb2128960fa3f4545c303e1c9c0e4d0ac6fc611a0ce9fceb354c, cold 35e1e4017752c9b25788d55598857de821e84b19545905eb797d9082aebfe9f0
+Library: nelisp-emacs-lib 19f0fece (feat/chartab-flip-20261022; mirrored to ccore/20261004 as 2322ea25)
+Baselines: E 3ed3be627 (dyn dd6c5eae...), f3 618171ef1 (dyn 219ea115...), images rebuilt per binary from the same library
+- base image (strict, empty stderr, stale-compiler-macro guard): PASS, m12, 124 s (E 121 s, f3 154 s)
+- gui-image --with-skk (strict, empty stderr, state equivalence): PASS, m12
+- ccore: PASS, m12. other 374/374, process 190/190, display 333/333, buffer 325/325 (ledger groups); x-gui 31/31, chars 110/110, files 97/97
+- chartab-oracle bare: PASS 16/16, m12
+- chartab-oracle image: PASS 19/19, m12
+- multibyte-oracle image: PASS 11/11, m12
+- blv3 .elc probe (S6.2): PASS e=(3 nil t) f=(4 nil t), byte-code-function, m12
+- layout S2.1: PASS 122/122, m12
+- pty: PASS 10/10, m12
+- S3.2: PASS, m12
+- S4.1: PASS, m12
+- S5.1: PASS, m12
+- elcload, SKK/evil .elc on the package image: 57/63, m12 (same as E). Remaining failures: modify-coding-system-alist, put-char-code-property, tar-mode x2, ert-set-test; skk-tut (advice-disable; fails on GNU too).
+- S1.3 (user init), sequential at load ~2-3: m12 PASS 345 s, peak VmSize 3.20 GB, VmRSS 1.01 GB. E: 345 s, 2.93/1.01 GB. f3: 597 s, 5.09/2.42 GB.
+- ifc 15k, 3 alternating rounds at load 2.1-2.7: m12 19.7/19.6/19.7, E 19.4/19.4/19.4, f3 34.6/34.3/34.4 ms/call (m12/E 1.015, m12/f3 0.57).
+- max/min (image, 2 alternating rounds): native subr. (max 3 7) 2.27 us vs E 10.9, f3 19.0; (max 3 7.5 2) 2.49 us vs E 704, f3 403; (apply #'max 800 fixnums) 49 us vs E 3974, f3 5742. Values match GNU 31.1: (max 1 2.0)=2.0, (min 1 2.0)=1, (max 'a) wrong-type-argument.
+- propertized inserts in the image, (insert (propertize "xy" 'face 'bold)) x N, 2 rounds: m12 0.42/0.93/2.82 s for 200/400/800, E 0.45/1.05/3.21, f3 1.49/1.87/9.78. The remaining superlinear term is the library's sidecar interval list (emacs-buffer--tp-add-ordered, ~52% of 800-insert time); the native nelisp-insert is 0.49 s for 800.

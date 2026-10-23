@@ -329,19 +329,23 @@ cmd: bash tools/ai/integ-wh-check.sh win
 ** S3.6 End to end: the ccore library census passes on the batch's library image
 #+NOTE: 2026-10-23, the library census is arranged by the coordinator once the batch binaries are accepted (ccore).  Pending until then; it takes the batch's dynamic binary and its .cold image (hashes in this file's header).  The four entries replace the single S3.6 of the dry run (denominator +3).
 #+NOTE: 2026-10-24, the library owner's census on E (3ed3be627, nelisp-dyn sha256 dd6c5eae...) with library nelisp-emacs-lib 19f0fece: ccore other 374/374 PASS; the summary, verbatim, is the evidence file (images, oracles, gate, elcload 57/63, and S1.3/ifc measured on D).
-evidence: tools/ai/evidence/batch-wh-census-20261024.txt sha256=888b7df40682f275522ea8b025ae8053baa7af9e34d652dc73386f5cebc490cd
+#+NOTE: 2026-10-24, the library owner's census on this batch (a6e710746, nelisp-dyn sha256 865f5e0a...) with library nelisp-emacs-lib 19f0fece: ccore other 374/374 PASS; the summary, verbatim, is the evidence file (baselines E and f3; S1.3 345 s like E, ifc 1.015 of E, max/min and propertized-insert timings).  It supersedes E's census evidence for this criterion.
+evidence: tools/ai/evidence/batch-m12-census-20261024.txt sha256=c0879cd1ef742c292a80d5177e74e49d453f3092c67d8ce8aadd2bfd83aa8321
 ** S3.7 End to end: the process library census passes on the batch's library image
 #+NOTE: 2026-10-23, the library census is arranged by the coordinator once the batch binaries are accepted (process).  Pending until then; it takes the batch's dynamic binary and its .cold image (hashes in this file's header).  The four entries replace the single S3.6 of the dry run (denominator +3).
 #+NOTE: 2026-10-24, the library owner's census on E (3ed3be627, nelisp-dyn sha256 dd6c5eae...) with library nelisp-emacs-lib 19f0fece: process 190/190 PASS; the summary, verbatim, is the evidence file (images, oracles, gate, elcload 57/63, and S1.3/ifc measured on D).
-evidence: tools/ai/evidence/batch-wh-census-20261024.txt sha256=888b7df40682f275522ea8b025ae8053baa7af9e34d652dc73386f5cebc490cd
+#+NOTE: 2026-10-24, the library owner's census on this batch (a6e710746, nelisp-dyn sha256 865f5e0a...) with library nelisp-emacs-lib 19f0fece: process 190/190 PASS; the summary, verbatim, is the evidence file (baselines E and f3; S1.3 345 s like E, ifc 1.015 of E, max/min and propertized-insert timings).  It supersedes E's census evidence for this criterion.
+evidence: tools/ai/evidence/batch-m12-census-20261024.txt sha256=c0879cd1ef742c292a80d5177e74e49d453f3092c67d8ce8aadd2bfd83aa8321
 ** S3.8 End to end: the display library census passes on the batch's library image
 #+NOTE: 2026-10-23, the library census is arranged by the coordinator once the batch binaries are accepted (display).  Pending until then; it takes the batch's dynamic binary and its .cold image (hashes in this file's header).  The four entries replace the single S3.6 of the dry run (denominator +3).
 #+NOTE: 2026-10-24, the library owner's census on E (3ed3be627, nelisp-dyn sha256 dd6c5eae...) with library nelisp-emacs-lib 19f0fece: display 333/333 PASS; the summary, verbatim, is the evidence file (images, oracles, gate, elcload 57/63, and S1.3/ifc measured on D).
-evidence: tools/ai/evidence/batch-wh-census-20261024.txt sha256=888b7df40682f275522ea8b025ae8053baa7af9e34d652dc73386f5cebc490cd
+#+NOTE: 2026-10-24, the library owner's census on this batch (a6e710746, nelisp-dyn sha256 865f5e0a...) with library nelisp-emacs-lib 19f0fece: display 333/333 PASS; the summary, verbatim, is the evidence file (baselines E and f3; S1.3 345 s like E, ifc 1.015 of E, max/min and propertized-insert timings).  It supersedes E's census evidence for this criterion.
+evidence: tools/ai/evidence/batch-m12-census-20261024.txt sha256=c0879cd1ef742c292a80d5177e74e49d453f3092c67d8ce8aadd2bfd83aa8321
 ** S3.9 End to end: the buffer library census passes on the batch's library image
 #+NOTE: 2026-10-23, the library census is arranged by the coordinator once the batch binaries are accepted (buffer).  Pending until then; it takes the batch's dynamic binary and its .cold image (hashes in this file's header).  The four entries replace the single S3.6 of the dry run (denominator +3).
 #+NOTE: 2026-10-24, the library owner's census on E (3ed3be627, nelisp-dyn sha256 dd6c5eae...) with library nelisp-emacs-lib 19f0fece: buffer 325/325 PASS; the summary, verbatim, is the evidence file (images, oracles, gate, elcload 57/63, and S1.3/ifc measured on D).
-evidence: tools/ai/evidence/batch-wh-census-20261024.txt sha256=888b7df40682f275522ea8b025ae8053baa7af9e34d652dc73386f5cebc490cd
+#+NOTE: 2026-10-24, the library owner's census on this batch (a6e710746, nelisp-dyn sha256 865f5e0a...) with library nelisp-emacs-lib 19f0fece: buffer 325/325 PASS; the summary, verbatim, is the evidence file (baselines E and f3; S1.3 345 s like E, ifc 1.015 of E, max/min and propertized-insert timings).  It supersedes E's census evidence for this criterion.
+evidence: tools/ai/evidence/batch-m12-census-20261024.txt sha256=c0879cd1ef742c292a80d5177e74e49d453f3092c67d8ce8aadd2bfd83aa8321
 
 * S4 Next batch (found by the dry run; none of them gates it)
 ** S4.1 The hashtab line's weak-table fixture matches GNU 31.1 in all 56 cases on the merged binary
