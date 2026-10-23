@@ -1,0 +1,140 @@
+#+TITLE: Symbols decision item A: a symbol object's name cell holds the String WORD (GNU u.s.name)
+
+# Decision item A of the word-heap batch (tools/ai/integ-wh-progress.org S2.9), owner: the symbols lane
+# agent.  Base: eval/core-20261017 at 63ec9640e (the batch's tip: symbols, gc-port, strings, hashtab,
+# callpath and codegen merged).  Branch: eval/symbols-name-word-20261024.
+#
+# What changes.  GNU lisp.h struct Lisp_Symbol.u.s.name is a Lisp string object.  The batch chose design B
+# (c8188b40a): the name cell of an interned symbol object keeps a legacy 32-byte name box over arena bytes
+# (nl_symname_make via nl_alloc_str_write_legacy), because the symbols lane's grammar emitters redirect a
+# symbol object to its name cell and require a legacy view there.  B costs a second copy of every name in
+# arena bytes, a legacy box cannot say that ASCII bytes are multibyte (bit 62 of the capacity word carries
+# it, fix 17), and every consumer needs the view-versus-WORD care that fixes 13, 16, 17 and 18 needed.
+# Design A: the name cell holds the canonical String WORD for interned and uninterned symbols; the producers
+# (nl_symname_make, nl_sym_make_uninterned, intern, the reader, the symbol-name side table) yield it; the
+# emitters (emit-symbol-object-redirect and the name ops, x86-64 and arm64) and the physical-read functions
+# (nelisp_env_*, nl_gc_*, the mirror) read it.  Strings layout (docs/design/227): header at WORD-4, data
+# pointer at WORD+20, size at +0 and size_byte at +8 of the header (size_byte negative = unibyte, the byte
+# length is then size with its top bit cleared).
+#
+# B's conditions from the batch stay green (integ-wh-progress S2.7 and S2.8): every name writer is
+# enumerated, a symbol's names survive a dump and a second-generation dump at scale on both linkages, and
+# (eq (symbol-name 'ab) (symbol-name 'ab)) is t through two generations.
+#
+# Coordination.  Another agent changes the collector's string-area handling and make-string on
+# eval/integ-wh-20261022-m12.  This lane does not touch those functions (S0.2 checks the changed-defun set
+# against 63ec9640e); a marker change, if the symbol arm needs one, is said so in its commit message.
+#
+# Verification limits, stated before any code change.  arm64 binaries of the runtime cannot be built or run
+# on this x86-64 machine.  The arm64 emitters are verified by compiling probe programs with the AOT
+# compiler's aarch64 back end and executing them under qemu-aarch64 (user mode, ~/bin/qemu-aarch64); that
+# proves the emitted instructions on the ISA, not a full arm64 runtime.  The arm64 name ops had no symbol
+# object redirect at all at 63ec9640e (only the x86-64 ones did): found while reading, reported, and
+# covered by S2.3.
+#
+# Binaries.  SNW_DYN and SNW_STATIC (default target/integ/nelisp-dyn and nelisp-static) are this branch's
+# builds (tools/ai/integ-wh-build.sh, LINKAGE=static for the static one); SNW_BASE_DYN and SNW_BASE_STATIC
+# (default target/base/nelisp-dyn and nelisp-static) are the batch's E binaries (built from 3ed3be627,
+# whose build inputs equal 63ec9640e's: the two commits differ only in tools/ and the ledger), copied
+# unchanged.  Evidence of the long runs is read from target/snw/logs/ (tools/ai/symbols-name-word-check.sh
+# run UNIT writes it, each log names the sha256 of the binaries it ran), as the batch ledger reads
+# target/final-verify/.
+#
+# Pre-registered measurement bounds (S5), fixed before the first measurement of the candidate: ratios are
+# candidate over baseline, medians of paired alternating rounds on one CPU (SNW_CPU, default 13): reader
+# first read of 30,000 new names at most 1.10, reader repeat at most 1.05; intern of new names at most
+# 1.10, of existing names 1.05; symbol-name per call 1.05; startup 1.05; cold image size 1.01; gc3 worst
+# median ratio against GNU at most 1.20 (the batch's bound) and at most the baseline's plus 0.05.
+#
+# Every REPL and test runs under ulimit -v 8388608; heavy units go through bin/heavy-run.sh.
+
+* S0 Baseline, boundary and tooling
+** S0.1 The baseline binaries are the batch's E build of 63ec9640e's inputs, copied unchanged, and their sha256 are pinned (dynamic dd6c5eae..., static 492d1cd1...)
+#+NOTE: 2026-10-24.  3ed3be627 (what E was built from) and 63ec9640e differ only in tools/ai/evidence, tools/ai/integ-wh-check.sh, tools/ai/integ-wh-progress.org and tools/ns-inventory-baseline.txt.  The check compares the two trees on every build input (lisp, scripts, src, templates, vendor, packages, standalone-compat, nelisp-emacs-lib, Makefile) and the hashes of the four baseline files.
+cmd: bash tools/ai/symbols-name-word-check.sh baseline
+** S0.2 The change stays out of the other lane's code: no defun of the collector's string-area handling, make-string or the string kernel differs from 63ec9640e
+#+NOTE: The compared set is pinned in tools/ai/symbols-name-word-boundary.txt (nl_gc_conserv_string_area, nl_gc_mark_string_word, the nl_string_* kernel, nl_sweep_strings, nl_compact_small_strings, the make-string builtins).  A marker change for the symbol arm belongs in nl_gc_mark_symbol_slots and is said so in its commit.
+cmd: bash tools/ai/symbols-name-word-check.sh boundary
+** S0.3 End to end: the name census detects design B on the baseline binary (negative control): it reports legacy name boxes there and fails
+#+NOTE: A census that cannot fail proves nothing.  On the baseline the interned symbols' name cells hold legacy boxes, so `census baseline' must exit non-zero and say so; this passes today and keeps passing, and it is the check that S1.2 to S1.4 are not vacuous.
+cmd: bash tools/ai/symbols-name-word-check.sh census-negative
+
+* S1 Producers: every name cell holds a String WORD
+** S1.1 The name-writer enumeration is pinned and no legacy name-box writer remains: nl_alloc_str_write_legacy and nl_symname_make are gone, nl_sym_make_uninterned has no arena-box branch, every name-cell writer is in tools/ai/symbols-name-word-writers.txt
+#+NOTE: Writers at 63ec9640e: nl_symname_make (the name box of interned objects), nl_sym_make_uninterned (make-symbol, #:, gensym, the JIT constructor), the lazy fill and the creation arm of nl_symobj_for_view (intern, intern-soft, the reader), nelisp_mirror_alloc_entry_w (name cell 3 until filled), nl_symbol_selftest_make (the debug arm 40, a collector self-test, not a producer).  The scan lists every defun that calls nl_symbol_alloc or stores into a symbol cell's name word (offset 8 of a cell reached as (- WORD 6) or as the result of nl_symbol_alloc).
+cmd: bash tools/ai/symbols-name-word-check.sh writers
+** S1.2 Every producer path leaves a String WORD in the name cell and symbol-name answers that very WORD: intern of new, multibyte, empty and long names, the reader, #:, make-symbol with fresh, shared, multibyte and unibyte-raw strings, gensym, a custom obarray, unintern and intern again; the names equal GNU's, on both linkages
+#+NOTE: tools/ai/symbols-name-word-census.el, run on each binary.  It reads the cell through debug arms of nelisp--debug-switch: 54 (new) answers the raw name cell of an object as a Lisp value, and 51 (the class of a WORD, extended) answers 205 for a multibyte and 214 for a unibyte String WORD.  Lines marked SEM are compared with GNU 31.1 (name text, multibyte flag, eq of repeated symbol-name answers, make-symbol sharing its argument); lines marked REP exist only on NeLisp.
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh census
+** S1.3 After boot, collections and a churn of 50,000 new symbols, no symbol object in the intern table (the cold image's included) or in the symbol blocks holds a legacy name box or an unknown word; unnamed objects (name cell 3, made by the mirror writers) are at most 300; on both linkages
+#+NOTE: The intern table walk uses nelisp--intern-table-symbols (7,645 symbols at the baseline: 2 without an object, 7,539 with a name, 104 objects with a nil name cell); the symbol-block walk is debug arm 55 (new: live symbol_block cells counted by the class of their name cell).
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh heap
+** S1.4 End to end: the census holds across a dump, a restore, a second-generation dump and its restore, and the names are still the cell's String WORD after each, on both linkages
+#+NOTE: tools/ai/symbols-name-word-census.el in modes dump, verify, dump2 and verify2, the batch's image procedure (integ-wh-image-golden.sh) with the census as the check.
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh image
+
+* S2 Consumers: the emitters and the physical readers read a String WORD name
+** S2.1 The pinned reader enumeration holds: every reader of a symbol object's name cell is String-WORD aware or goes through a String-aware accessor, and no unlisted reader appeared
+#+NOTE: tools/ai/symbols-name-word-readers.txt lists each defun that reads the cell (offset 8 of a symbol object) with its way of reading: nl_word_data and nl_word_length, nl_str_target, the symbol-name-operand lowering, nl_symbol_name_value, nl_symobj_state and the others found by the scan; the physical-read functions (nelisp_env_*, nl_gc_*, nelisp_mirror_*, nl_intern_*) are scanned for raw view-field reads (+0, +16, +24) of a name taken from a cell.
+cmd: bash tools/ai/symbols-name-word-check.sh readers
+** S2.2 x86-64: symbol-name-eq, sexp-name-eq, str-len, str-bytes and str-byte-at read a String WORD name through a symbol object, and still read legacy views, nil name cells, other vectorlikes and immediates as before (programs compiled by the AOT compiler and run natively)
+#+NOTE: test/nelisp-aot-symbol-name-word-test.el, x86-64 tests: a hand-built symbol object (kind 4 and 16) whose name cell holds a String WORD (multibyte, unibyte with negative size_byte, empty, 300 bytes), the same names as legacy views, a nil name cell, a record and a cons, an immediate.
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh emit x86_64
+** S2.3 arm64: the same operations on aarch64, executed under qemu-aarch64: String WORD names through symbol objects (the redirect the arm64 name ops lacked), legacy views, nil name cells, other vectorlikes, immediates
+#+NOTE: the same test file, aarch64 tests.  Not covered, and said so: a full arm64 runtime, the arm64 linker's relocation of the PLT call of symbol-eq (probe programs define nl_symbol_word_eq themselves), and arm64 performance.
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh emit aarch64
+** S2.4 End to end: the 89 symbols-semantics cases equal GNU 31.1 and the evaluator's 227 call cases pass with the VM on and with NELISP_FX_DISABLE=1, on both linkages
+#+NOTE: test/standalone-symbols-check.el against test/standalone-symbols-check.expected (GNU's own output), and python3 tools/ai/callpath-perf-check.py evalcall (the batch's S2.10).
+#+TIMEOUT: 600
+cmd: bash tools/ai/symbols-name-word-check.sh semantics
+
+* S3 The batch's conditions and checks stay green on both linkages
+** S3.1 The dynamic and static binaries are built from HEAD's tree (the F1 prelink closure inside its policy of 352 functions and 81,920 evidence nodes, the text bound 655,360 B) and boot
+#+NOTE: `built' as the batch's integ-wh-check.sh arm of that name, for each linkage; the build logs are read for the prover's lines.  Builds: tools/ai/integ-wh-build.sh (dynamic) and LINKAGE=static tools/ai/integ-wh-build.sh, each a heavy unit of about 700 s.
+cmd: bash tools/ai/symbols-name-word-check.sh built
+** S3.2 The intern/make-symbol/symbol-name golden (tools/ai/integ-wh-image-golden.sh) passes through two dump generations with (eq (symbol-name 'ab) (symbol-name 'ab)) t, on both linkages
+#+NOTE: batch S2.7, the condition B had to meet.
+#+TIMEOUT: 300
+cmd: bash tools/ai/symbols-name-word-check.sh golden
+** S3.3 reader-labels, string-repr and raw-literal pass (the batch's S2.27, S2.25 and S2.23) on both linkages
+#+TIMEOUT: 600
+cmd: bash tools/ai/symbols-name-word-check.sh arms-strings
+** S3.4 view-image and the N4 corpus (81 rows equal to live GNU 31.1) pass (the batch's S2.22 and S2.17) on both linkages
+#+TIMEOUT: 600
+cmd: bash tools/ai/symbols-name-word-check.sh arms-image
+** S3.5 With the conservative stack scan off (nelisp--debug-switch 28) only precise roots count and the symbol-object checks (51) and argument-word checks (19) pass, so a name String is reached through its symbol object alone, on both linkages
+#+TIMEOUT: 600
+cmd: bash tools/ai/symbols-name-word-check.sh precise
+** S3.6 The at-scale second-generation check (tools/ai/integ-wh-image-scale.sh: 21,000 generated symbols dumped, restored, collected, churned, dumped again) passes on both linkages
+#+NOTE: batch S2.8, about six minutes a linkage.  `symbols-name-word-check.sh run scale-dyn' and `run scale-static' (each a heavy unit) write the logs this criterion reads.
+cmd: bash tools/ai/symbols-name-word-check.sh verify scale-dyn
+cmd: bash tools/ai/symbols-name-word-check.sh verify scale-static
+** S3.7 End to end: target/final-verify/checks.sh (11 groups) has 0 failures with the dynamic binary in the standalone slot and the static one in the thread slot
+#+NOTE: batch S2.1 and S3.4; the checks.sh script is the batch's, copied by `symbols-name-word-check.sh run checks'.
+cmd: bash tools/ai/symbols-name-word-check.sh verify checks
+
+* S4 Windows
+** S4.1 The Win64 PE is built from a snapshot of HEAD's tree (tools/ai/win-smoke.sh build HEAD target/win/HEAD)
+cmd: bash tools/ai/symbols-name-word-check.sh win-built
+** S4.2 Its cold image was dumped under wine and sits beside the exe
+cmd: bash tools/ai/symbols-name-word-check.sh win-cold
+** S4.3 End to end: the wine smoke ends in WIN-SMOKE PASS (eval, bytecode corpus, printer, backtrace locals, unibyte aset, sqlite-owned, FFI, closure soak)
+cmd: bash tools/ai/symbols-name-word-check.sh win-smoke
+
+* S5 Measurement against 63ec9640e
+#+NOTE: tools/ai/symbols-name-word-bench.py measures baseline and candidate in alternating rounds on one CPU (SNW_CPU, default 13, checked idle) and writes target/snw/logs/bench-*.json with the sha256 of both binaries and the CPU frequency before and after; `symbols-name-word-check.sh verify bench' compares the ratios with the pre-registered bounds in the header.
+** S5.1 Reader: 30,000 new names read for the first time cost at most 1.10 times the baseline, and read again at most 1.05 times (dynamic and static)
+cmd: bash tools/ai/symbols-name-word-check.sh verify bench-reader
+** S5.2 intern of 30,000 new names at most 1.10 times, of the same names again at most 1.05 times, and symbol-name per call at most 1.05 times the baseline (dynamic and static)
+cmd: bash tools/ai/symbols-name-word-check.sh verify bench-intern
+** S5.3 Startup (nelisp --eval 1, median of 31 alternating runs) at most 1.05 times and the cold image at most 1.01 times the baseline's bytes (dynamic and static)
+cmd: bash tools/ai/symbols-name-word-check.sh verify bench-startup
+** S5.4 gc3 (the collector's three explicit collections of the cons, string and vector churn, paired rounds on CPU 11): worst median ratio against GNU at most 1.20 and at most the baseline's worst plus 0.05
+cmd: bash tools/ai/symbols-name-word-check.sh verify bench-gc3
+** S5.5 End to end: the at-scale run of S3.6 (generate, dump, restore, collect, churn, second generation) takes at most 1.10 times the baseline's wall time per phase on both linkages
+cmd: bash tools/ai/symbols-name-word-check.sh verify bench-scale
