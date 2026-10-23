@@ -18,6 +18,7 @@
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
 #   raw-file      literal file reads keep every byte (insert-file-contents-literally, no-conversion), against GNU
+#   string-repr   string representation across conversions, constructors, mutators, containers and file round trips, against GNU
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -214,6 +215,19 @@ PYEOF
     cmp -s "$d/gnu.out" "$d/dyn.out" ||
       fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
     say "PASS raw-file ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  string-repr)
+    # The representation of a string (unibyte, multibyte, ASCII-only multibyte) across conversions, coding functions,
+    # constructors, mutators, container round trips and file round trips, against GNU 31.1.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/string-repr; rm -rf "$d"; mkdir -p "$d"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-string-repr.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-string-repr.el > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
+    say "PASS string-repr ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
