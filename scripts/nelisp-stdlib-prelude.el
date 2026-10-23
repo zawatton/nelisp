@@ -666,7 +666,15 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
            (e (max start end)))
       (when (or (< s lo) (> e hi))
         (signal 'args-out-of-range (list b start end)))
-      (nelisp-buffer-substring s e b))))
+      ;; GNU Fbuffer_substring_no_properties (make_buffer_string (b, e, 0)) makes a
+      ;; fresh string with no intervals.  The slice of a gap string is made by the
+      ;; native `substring', which copies the source's intervals, and a gap string
+      ;; that another package assigned from a propertized string can still carry
+      ;; some, so they are stripped again here, as `substring-no-properties' does.
+      (let ((result (nelisp-buffer-substring s e b)))
+        (when (gethash result nelisp--tp-string-properties)
+          (nelisp--tp-set-intervals result nil))
+        result))))
 ;; `substring' always allocates a fresh string (native arm, like real
 ;; Emacs), never `eq' to its input, but it copies the source's text
 ;; properties onto that result (GNU Fsubstring, Doc 227), so they are
@@ -12536,6 +12544,42 @@ concatenated text is unchanged."
       (puthash b clamped nelisp-buffer--pending-point))
     clamped))
 
+;; GNU graft_intervals_into_buffer: the properties of an inserted string belong to
+;; the buffer (its property list), not to the buffer's text.  The native `concat'
+;; that appends TEXT to the gap string copies TEXT's intervals onto the result
+;; (GNU concat_to_string), so a gap string built that way carries them.  That is
+;; wrong three ways: every later `concat' and `substring' of the gap string copies
+;; its intervals again, interval by interval in Lisp, so n propertized inserts cost
+;; O(n^2) (800 inserts: 14.8 s against 0.35 s); every intermediate gap string stays
+;; alive in the identity table `nelisp--tp-string-properties'; and the properties
+;; the buffer is later given or loses (`remove-text-properties') never reach them,
+;; so `buffer-substring' returned stale ones.  The gap string stays plain text
+;; and the intervals move into the buffer's list at AT (1-based), replacing
+;; whatever `nelisp-buffer--shift-text-properties-on-insert' extended over the new
+;; text: a plain `insert' does not inherit.
+(defun nelisp-buffer--graft-string-properties (b at text)
+  "Move TEXT's intervals, copied onto B's gap string by `concat', into B's
+property list at 1-based position AT."
+  (let ((intervals (gethash text nelisp--tp-string-properties)))
+    (when intervals
+      (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil)
+      ;; The list is sorted and disjoint and has been shifted for this insertion
+      ;; already, so the only interval that can overlap [AT, END) is one that the
+      ;; shift extended over the new text: it is split around it.  One pass, no
+      ;; `nelisp--tp-rebuild', because that is O(list) per call and runs per insert.
+      (let ((end (+ at (length text))) (tail (nelisp-buffer-text-properties b)) head after)
+        (while (and tail (<= (nth 1 (car tail)) at))
+          (push (car tail) head)
+          (setq tail (cdr tail)))
+        (when (and tail (< (nth 0 (car tail)) end))
+          (let* ((iv (car tail)) (s (nth 0 iv)) (e (nth 1 iv)) (plist (nth 2 iv)))
+            (when (< s at) (push (list s at plist) head))
+            (when (> e end) (setq after (list (list end e plist))))
+            (setq tail (cdr tail))))
+        (dolist (iv intervals)
+          (push (list (+ at (nth 0 iv)) (+ at (nth 1 iv)) (copy-sequence (nth 2 iv))) head))
+        (setf (nelisp-buffer-text-properties b) (nconc (nreverse head) after tail))))))
+
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
 pending `goto-char' first (see `nelisp-buffer--settle'): this is the
@@ -12560,7 +12604,9 @@ point, since it appends TEXT straight onto it."
       (when (nelisp-buffer-overlays b)
         (nelisp-buffer--shift-overlays-on-insert b at n))
       (when (nelisp-buffer-text-properties b)
-        (nelisp-buffer--shift-text-properties-on-insert b at n))))
+        (nelisp-buffer--shift-text-properties-on-insert b at n))
+      (when (gethash text nelisp--tp-string-properties)
+        (nelisp-buffer--graft-string-properties b at text))))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
@@ -13575,7 +13621,9 @@ point advances past TEXT instead of consulting its own
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
       (nelisp-buffer--shift-overlays-on-insert b at n)
-      (nelisp-buffer--shift-text-properties-on-insert b at n))
+      (nelisp-buffer--shift-text-properties-on-insert b at n)
+      (when (gethash text nelisp--tp-string-properties)
+        (nelisp-buffer--graft-string-properties b at text)))
     nil))
 (unless (fboundp 'insert-before-markers)
   (defun insert-before-markers (&rest args)
@@ -13593,7 +13641,16 @@ inserted text -- see `nelisp-insert-before-markers'."
     nil))
 (unless (fboundp 'buffer-string)
   (defun buffer-string ()
-    (nelisp-buffer-string nelisp--current-buffer)))
+    (let* ((b nelisp--current-buffer)
+           (text (nelisp-buffer-string b)))
+      (if (nelisp-buffer-text-properties b)
+          ;; GNU Fbuffer_string (make_buffer_string (BEGV, ZV, 1)): a fresh string
+          ;; that carries the buffer's intervals.  The cached text is shared between
+          ;; calls and stays plain, so the properties go onto a copy.
+          (let ((copy (copy-sequence text)))
+            (nelisp--tp-copy-buffer-range-to-string b 1 (1+ (length copy)) copy)
+            copy)
+        text))))
 ;; `void-function' on the ~80-file census (many hits across
 ;; ../nelisp-agent/lisp/nl-agent-local-tools.el, nl-agent-task-eval.el,
 ;; nl-agent-trajectory.el, nl-agent-recurrent-config.el, always as

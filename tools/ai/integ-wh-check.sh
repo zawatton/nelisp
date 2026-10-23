@@ -19,6 +19,7 @@
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
 #   raw-file      literal file reads keep every byte (insert-file-contents-literally, no-conversion), against GNU
 #   string-repr   string representation across conversions, constructors, mutators, containers and file round trips, against GNU
+#   no-props      the -no-properties producers, buffer-level properties of inserted strings, and the cost of propertized inserts
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -228,6 +229,28 @@ PYEOF
     cmp -s "$d/gnu.out" "$d/dyn.out" ||
       fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
     say "PASS string-repr ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  no-props)
+    # The -no-properties producers return strings without intervals, a buffer keeps the properties of the strings inserted
+    # into it, and its text stays plain: tools/ai/integ-wh-no-props.el against GNU, then a cost and retention bound for a run
+    # of propertized inserts (it was O(n^2) with every intermediate gap string kept in the side table).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/no-props; rm -rf "$d"; mkdir -p "$d"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-no-props.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-no-props.el > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-100 | tr '\n' '|')"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-no-props-speed.el > "$d/speed.out" 2> "$d/speed.err" ||
+      fail "speed run exited $?"
+    secs=$(sed -n 's/^NO-PROPS-SPEED seconds=\([0-9.]*\) .*/\1/p' "$d/speed.out" | head -n 1)
+    growth=$(sed -n 's/^NO-PROPS-SPEED .* table-growth=\([0-9-]*\).*/\1/p' "$d/speed.out" | head -n 1)
+    [ -n "$secs" ] && [ -n "$growth" ] || fail "no NO-PROPS-SPEED line: $(head -c 160 "$d/speed.out" | tr '\n' ' ')"
+    # 800 propertized inserts: 0.75 s with the fix on the measurement machine, 14.8 s before it, 0.35 s on batch F
+    awk -v s="$secs" 'BEGIN { exit !(s < 6.0) }' || fail "800 propertized inserts took ${secs}s (bound 6 s)"
+    [ "$growth" -le 800 ] || fail "the property side table grew by $growth for 800 propertize calls (bound 800)"
+    say "PASS no-props ($(wc -l < "$d/dyn.out") lines identical to GNU; 800 propertized inserts ${secs}s, table growth $growth)" ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
