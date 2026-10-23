@@ -1720,7 +1720,10 @@ standalone units can call each other."
     ;; The String WORD arm of the collector's word marker (GNU MARK_STRING): an arm of
     ;; `nl_gc_mark_word', which calls it back for the intervals, so inlining it would
     ;; copy the arm into every inlined copy of the marker.
-    nl_gc_mark_string_word)
+    nl_gc_mark_string_word
+    ;; make-string's constructor (GNU Fmake_string): the allocation rows of tools/ai/gc-port-ir.py read its inclusive
+    ;; Ir by name, and inlined into `nl_apply_function_w' it has none.  The F1 closure counts it once either way.
+    m5_make_repeated_string)
   "Calls that must survive inlining.
 Authenticated evaluator entries: the F1 source/binary proof binds them as
 evaluator terminals, and inlining one into a caller would erase that
