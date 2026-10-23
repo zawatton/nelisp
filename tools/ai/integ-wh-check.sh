@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
 #   win           the Windows exe of the same tree and its wine smoke (WIN-SMOKE PASS)
 #   alloc         gc-port's allocation rows: cons at most 100, a 128-byte string 1,300 and a 16-slot vector 700 Ir
@@ -190,6 +191,13 @@ case ${1:-} in
     tail -n 1 "$d/smoke.log" | grep -qx 'WIN-SMOKE PASS' || fail "$(tail -n 1 "$d/smoke.log")"
     [ -s "$d/nelisp.exe.cold" ] || fail "no cold image beside the exe"
     say "PASS win ($c, exe $(sha256sum "$d/nelisp.exe" | cut -c1-16), cold $(stat -c %s "$d/nelisp.exe.cold") B, WIN-SMOKE PASS)" ;;
+  view-image)
+    # String views held by containers survive an image dump and restore: the library images of the census crashed
+    # in the first collection after --cold-load-from (stale view boxes of the dumping process).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    out=$(capped timeout 600 bash tools/ai/integ-wh-view-image.sh "$DYN" 2>&1) ||
+      fail "view-image: $(printf '%s\n' "$out" | tail -n 1 | cut -c1-240)"
+    say "PASS view-image ($(printf '%s\n' "$out" | tail -n 1))" ;;
   alloc)
     # gc-port's allocation rows (callgrind, the constructor's inclusive Ir per call in an interpreted loop):
     # the lane's tip measured cons 94, a 128-byte string 1,242 and a 16-slot vector 648 Ir (GNU 26, 178, 215).

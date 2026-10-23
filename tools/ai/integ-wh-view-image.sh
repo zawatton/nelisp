@@ -12,5 +12,7 @@ rc=$?
 grep -q '^VIEW-IMAGE-A dump [1-9]' "$O/a.out" || { echo "VIEW-IMAGE FAIL dump side rc=$rc: $(tail -n 2 "$O/a.out" "$O/a.err" | tr '\n' ' ' | cut -c1-200)"; exit 1; }
 (ulimit -v 8388608; timeout 300 "$BIN" --cold-load-from "$O/view.flat" --load tools/ai/integ-wh-view-image-b.el > "$O/b.out" 2> "$O/b.err")
 rc=$?
-tail -n 1 "$O/b.out" | grep -q '^VIEW-IMAGE PASS' && { tail -n 1 "$O/b.out"; exit 0; }
+if [ "$rc" = 0 ] && grep -q '^VIEW-IMAGE PASS' "$O/b.out" && ! grep -q '^VIEW-IMAGE .*FAIL' "$O/b.out"; then
+  grep '^VIEW-IMAGE PASS' "$O/b.out"; exit 0
+fi
 echo "VIEW-IMAGE FAIL restore side rc=$rc: $(grep 'FAIL' "$O/b.out" | head -n 3 | tr '\n' ' ' | cut -c1-240)"; exit 1
