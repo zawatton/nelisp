@@ -688,6 +688,56 @@ emitted byte count is the smallest multiple of 4 >= NBYTES
       (setq i (1+ i))))
   buf)
 
+(defun nelisp-asm-arm64-add-reg-shift (buf dst lhs rhs shift)
+  "Emit non-flag-setting ADD Xd,Xn,Xm,LSL #SHIFT (0..3)."
+  (unless (and (integerp shift) (<= 0 shift 3))
+    (signal 'nelisp-asm-arm64-error (list :address-shift shift)))
+  (nelisp-asm-arm64--emit-word
+   buf (logior #x8b000000 (ash (nelisp-asm-arm64--reg-num rhs) 16)
+               (ash shift 10) (ash (nelisp-asm-arm64--reg-num lhs) 5)
+               (nelisp-asm-arm64--reg-num dst))))
+
+(defun nelisp-asm-arm64-address-add-imm (buf sub-p dst src imm shift)
+  "Emit ADD/SUB immediate with SHIFT 0 or 12, preserving NZCV."
+  (nelisp-asm-arm64--imm12-check imm)
+  (unless (memq shift '(0 12))
+    (signal 'nelisp-asm-arm64-error (list :address-immediate-shift shift)))
+  (nelisp-asm-arm64--emit-word
+   buf (logior (if sub-p #xd1000000 #x91000000)
+               (if (= shift 12) #x400000 0) (ash imm 10)
+               (ash (nelisp-asm-arm64--reg-num src) 5)
+               (nelisp-asm-arm64--reg-num dst))))
+
+(defun nelisp-asm-arm64-address-memory (buf store-p width rt rn &optional rm shift disp)
+  "Emit a width-specific register or immediate address, without NZCV changes.
+RM selects unsigned X-register offset, with SHIFT zero or log2(WIDTH).
+Otherwise DISP selects unsigned scaled imm12 or signed unscaled imm9."
+  (unless (memq width '(1 2 4 8))
+    (signal 'nelisp-asm-arm64-error (list :address-width width)))
+  (let* ((size (pcase width (1 0) (2 1) (4 2) (8 3)))
+         (high (ash size 30))
+         (regs (logior (ash (nelisp-asm-arm64--reg-num rn) 5)
+                       (nelisp-asm-arm64--reg-num rt)))
+         word)
+    (if rm
+        (progn
+          (unless (or (eql shift 0) (eql shift size))
+            (signal 'nelisp-asm-arm64-error (list :address-scale width shift)))
+          (setq word (logior high (if store-p #x38206800 #x38606800) regs
+                             (ash (nelisp-asm-arm64--reg-num rm) 16)
+                             (if (zerop shift) 0 #x1000))))
+      (unless (integerp disp)
+        (signal 'nelisp-asm-arm64-error (list :address-displacement disp)))
+      (cond
+       ((and (<= 0 disp (* 4095 width)) (zerop (mod disp width)))
+        (setq word (logior high (if store-p #x39000000 #x39400000) regs
+                           (ash (/ disp width) 10))))
+       ((<= -256 disp 255)
+        (setq word (logior high (if store-p #x38000000 #x38400000) regs
+                           (ash (logand disp #x1ff) 12))))
+       (t (signal 'nelisp-asm-arm64-error (list :address-displacement disp)))))
+    (nelisp-asm-arm64--emit-word buf word)))
+
 (provide 'nelisp-asm-arm64)
 
 ;;; nelisp-asm-arm64.el ends here

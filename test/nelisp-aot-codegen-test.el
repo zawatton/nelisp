@@ -148,7 +148,7 @@
     (should (zerop folds))))
 
 (ert-deftest nelisp-aot-codegen/affine-preflight-and-registers ()
-  "Rejected displacements emit nothing, and scratch/result registers cannot be sources."
+  "Rejected displacements emit nothing; live result registers remain excluded."
   (let* ((nelisp-aot-compiler--arch 'x86_64)
          (nelisp-aot-compiler--checked-arith nil)
          (nelisp-aot-compiler--promoted-slots nil)
@@ -166,9 +166,12 @@
     (should-not (nelisp-aot-compiler--x86-address bad zero buf t))
     (should (zerop (nelisp-asm-x86_64-buffer-pos buf)))
     (should (nelisp-aot-compiler--x86-affine-address-plan good zero))
-    (dolist (reg '(rax rdi rsi r10 r11 rsp))
+    (dolist (reg '(rax r10 r11 rsp))
       (let ((nelisp-aot-compiler--promoted-slots (list (cons 0 reg))))
         (should-not (nelisp-aot-compiler--x86-affine-address-plan good zero))))
+    (dolist (reg '(rdi rsi rdx rcx))
+      (let ((nelisp-aot-compiler--promoted-slots (list (cons 0 reg))))
+        (should (nelisp-aot-compiler--x86-affine-address-plan good zero))))
     (let ((nelisp-aot-compiler--promoted-slots '((0 . r8) (1 . r9))))
       (should (nelisp-aot-compiler--x86-affine-address-plan good zero)))
     (let ((nelisp-aot-compiler--runtime-entry-params '(out)))
