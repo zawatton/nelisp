@@ -36,6 +36,9 @@
                   nelisp-standalone--inline-level
                   nelisp-standalone--inline-clone-p
                   nelisp-standalone--inline-constant-base-case
+                  nelisp-standalone--inline-tree-symbols
+                  nelisp-standalone--inline-assigned-symbols
+                  nelisp-standalone--inline-flat-plan
                   nelisp-standalone--inline-small-defuns-imports
                   nelisp-standalone--inline-source
                   nelisp-standalone--build-trace-phase
@@ -637,3 +640,66 @@
              (result (nelisp-inline-basecase-test--opt source imports)))
         (should (nelisp-inline-basecase-test--calls-p 'abi_helper
                   (nelisp-inline-basecase-test--body result 'caller)))))))
+
+;; Copy propagation: an atomic argument replaces its parameter instead of being bound by a `let*'
+;; (a function inlined at several levels of a chain otherwise nests one `let*' per argument and per pass).
+(defun nelisp-inline-import-test--caller-def (output)
+  "The defun `caller' in OUTPUT, a (seq (defun ...) ...)."
+  (cl-find 'caller (cdr output) :key #'cadr))
+
+(ert-deftest nelisp-inline-flatten-substitutes-literals-and-variables ()
+  (let* ((source '(seq (defun add (a b) (+ a b))
+                       (defun caller (v) (add v 3))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil)))
+    ;; both arguments replace their parameters: no binding is left
+    (should (equal (nth 3 (nelisp-inline-import-test--caller-def output)) '(+ v 3)))
+    (should (= (funcall (nelisp-inline-import-test--function (nelisp-inline-import-test--caller-def output)) 4) 7))))
+
+(ert-deftest nelisp-inline-flatten-keeps-the-binding-of-an-assigned-parameter ()
+  (let* ((source '(seq (defun bump (x) (seq (setq x (+ x 1)) x))
+                       (defun caller (v) (seq (bump v) v))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil))
+         (body (nth 3 (nelisp-inline-import-test--caller-def output))))
+    ;; the callee writes its parameter: the caller's variable must not be the target
+    (should (eq (car (nth 1 body)) 'let*))
+    (should (= (funcall (nelisp-inline-import-test--function (nelisp-inline-import-test--caller-def output)) 41) 41))))
+
+(ert-deftest nelisp-inline-flatten-never-substitutes-a-special-variable ()
+  (let* ((source '(seq (defvar sv 0)
+                       (defun add (a b) (+ a b))
+                       (defun caller () (add sv 1))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil))
+         (def (cl-find 'caller (cdr output) :key #'cadr))
+         (body (nth 3 def)))
+    ;; SV is dynamic: its binding keeps the value the call saw, the literal still replaces B
+    (should (eq (car body) 'let*))
+    (should (eq (cadr (car (nth 1 body))) 'sv))
+    (should (equal (nth 2 body) (list '+ (car (car (nth 1 body))) 1)))))
+
+(ert-deftest nelisp-inline-flatten-keeps-a-variable-a-later-argument-assigns ()
+  (let* ((source '(seq (defun mix (a b) (+ b (* a 10)))
+                       (defun caller (v) (mix v (seq (setq v 5) 1)))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil))
+         (fn (nelisp-inline-import-test--function (nelisp-inline-import-test--caller-def output))))
+    ;; the binding read V before the second argument ran
+    (should (= (funcall fn 7) 71))))
+
+(ert-deftest nelisp-inline-flatten-keeps-a-variable-the-body-binds ()
+  (let* ((source '(seq (defun f (x) (let* ((v 100)) (+ x v)))
+                       (defun caller (v) (f v))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil))
+         (fn (nelisp-inline-import-test--function (nelisp-inline-import-test--caller-def output))))
+    ;; substituting V for X would let the body's own V capture it (200 instead of 101)
+    (should (= (funcall fn 1) 101))))
+
+(ert-deftest nelisp-inline-flatten-keeps-non-atomic-arguments-bound-once-in-order ()
+  (let* ((source '(seq (defun mix (a b) (+ (* a 10) b))
+                       (defun caller (v)
+                         (let* ((trace 0))
+                           ;; progn: the host evaluator's stand-in for the argument expressions
+                           (mix (progn (setq trace (+ (* trace 10) 1)) v)
+                                (progn (setq trace (+ (* trace 10) 2)) trace))))))
+         (output (nelisp-standalone--inline-small-defuns-imports source nil))
+         (fn (nelisp-inline-import-test--function (nelisp-inline-import-test--caller-def output))))
+    ;; first argument 5 (trace 1), second argument trace after the second step = 12: 5 * 10 + 12
+    (should (= (funcall fn 5) 62))))

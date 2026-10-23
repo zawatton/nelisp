@@ -28,7 +28,8 @@ def verdict(ratio):
 
 
 def run(argv):
-    cmd = ['bash', '-c', 'ulimit -v 8388608; exec taskset -c 8 "$@"', 'gc3', *argv]
+    # GCP_CPU overrides the lane's CPU 8 (the integration's measurement CPU is 11).
+    cmd = ['bash', '-c', 'ulimit -v 8388608; exec taskset -c "${GCP_CPU:-8}" "$@"', 'gc3', *argv]
     out = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True).stdout
     got = {m.group(1): float(m.group(2)) for m in re.finditer(r'^GC3 (\w+) ([0-9.]+)', out, re.M)}
     if set(got) != set(KINDS):

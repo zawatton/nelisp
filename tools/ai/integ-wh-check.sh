@@ -5,7 +5,7 @@
 # /usr/local/bin/emacs (GNU_EMACS overrides).  Every NeLisp and GNU run is capped
 # at 8 GiB of address space.  Exit 0 iff the check passes.
 #
-#   merged NAME   codegen-wh | base | strings | hashtab | f-final | gc-port | callpath | callpath-final: the lane
+#   merged NAME   codegen-wh | base | strings | hashtab | f-final | gc-port | callpath | callpath-final | codegen: the lane
 #                 tip is the second
 #                 parent of a first-parent merge commit between batch F and HEAD
 #   hygiene       no conflict markers in tracked files; every Elisp file listed in
@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   gc3           gc-port's gc3 wall on the measurement CPU: worst median ratio against GNU at most 1.20
 #   inliner-ert   the import-aware pass's 41 tests and codegen's four inliner ERT files on host Emacs
 #   codegen-ert   the AOT compiler, codegen, S5 lowering, alignment, artifact and linker
 #                 ERT suites on host Emacs
@@ -45,7 +46,8 @@ built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/integ-wh-check.sh' \
     ':(exclude)tools/ai/integ-wh-progress.org' ':(exclude)tools/ai/integ-wh-build.sh' \
     ':(exclude)tools/ai/integ-wh-sanity.el' ':(exclude)tools/ai/integ-wh-mcp-smoke.sh' \
-    ':(exclude)tools/ai/integ-wh-resolved.txt' ':(exclude)tools/ai/integ-wh-*'
+    ':(exclude)tools/ai/integ-wh-resolved.txt' ':(exclude)tools/ai/integ-wh-*' \
+    ':(exclude)tools/ai/gc-port-gc3.py' ':(exclude)tools/ai/gc-port-ir.py'
 }
 
 case ${1:-} in
@@ -59,7 +61,8 @@ case ${1:-} in
       gc-port)    rev=7b8916b7f ;;
       callpath)   rev=e4755b52f ;;
       callpath-final) rev=82e68b055 ;;
-      *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath|callpath-final" ;;
+      codegen)    rev=18f180830 ;;
+      *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath|callpath-final|codegen" ;;
     esac
     git merge-base --is-ancestor $rev HEAD || fail "$2: $rev is not an ancestor of HEAD"
     git log --first-parent --merges --format='%P' "$BASE"..HEAD | awk '{print $2}' | grep -q "^$rev" ||
@@ -139,6 +142,17 @@ case ${1:-} in
       done
     done
     say "PASS codegen-ert ($total suites; $nred known-red tests, all listed)" ;;
+  gc3)
+    # gc-port's gc3 wall (three explicit collections of the cons, string and vector churn, paired rounds against GNU
+    # 31.1 on the integration's measurement CPU 11, GCP_CPU overrides): the lane's tip measured 1.07 to 1.14; the
+    # guard is the lane's worst figure plus the machine's spread.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    GCP_CPU=${GCP_CPU:-11} capped timeout 590 python3 tools/ai/gc-port-gc3.py check --dyn "$DYN" --rounds 9 > "$OUT/gc3.log" 2>&1
+    got=$(grep -E '^(PASS|FAIL) gc3 ' "$OUT/gc3.log")
+    [ "$(printf '%s\n' "$got" | wc -l)" = 3 ] || fail "gc3: no three verdicts: $(tail -n 2 "$OUT/gc3.log" | tr '\n' ' ')"
+    worst=$(printf '%s\n' "$got" | sed -n 's/.*median ratio x\([0-9.]*\).*/\1/p' | sort -n | tail -n 1)
+    awk -v w="$worst" 'BEGIN { exit !(w <= 1.20) }' || fail "gc3: worst median ratio x$worst against GNU (guard 1.20; gc-port's tip 1.14)"
+    say "PASS gc3 (worst median ratio x$worst against GNU; gc-port's tip x1.14)" ;;
   inliner-ert)
     # The word-heap line's import-aware pass (41 tests) and codegen's inliner (parallel-let, extern,
     # wrapper-initializer and hygiene suites): both must pass, except the listed known-red tests.

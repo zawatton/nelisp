@@ -1896,6 +1896,70 @@ Neither the discarded branch nor a recursive call is expanded."
                (when (nelisp-standalone--inline-body-ok-p branch name)
                  (cons params branch))))))))))
 
+;; Copy propagation for the arguments of an inlined call.  The pass used to bind every argument
+;; to a fresh variable, (let* ((p__i7 ARG) ...) BODY), so a function inlined at every level of a call
+;; chain nested one `let*' per argument and per pass; codegen's per-let analyses (the call-free-region
+;; planner, the forward-load offsets) walk the IR again at every `let', and the driver unit of the
+;; integrated tree took 27 minutes.  An argument that is a fixnum literal, or a lexical variable, replaces
+;; its parameter directly when that cannot change what the body computes:
+;;  - the body never assigns the parameter (`setq') or rebinds its name (`let*');
+;;  - a variable argument is no special variable (a top-level `defvar' of the unit), is not bound by
+;;    a `let*' inside the body (it would capture the variable), and is not assigned by a LATER argument
+;;    (the binding read it before that argument ran);
+;;  - an argument that is not an atom keeps its binding, so every argument runs once and in order.
+(defun nelisp-standalone--inline-tree-symbols (form)
+  "Hash table of the symbols that occur anywhere in FORM."
+  (let ((seen (make-hash-table :test 'eq)) (stack (list form)))
+    (while stack
+      (let ((x (pop stack)))
+        (cond ((symbolp x) (puthash x t seen))
+              ((consp x) (push (car x) stack) (push (cdr x) stack)))))
+    seen))
+
+(defun nelisp-standalone--inline-assigned-symbols (form &optional binders-only)
+  "Hash table of the symbols FORM assigns with `setq' or binds in a `let' or `let*'.
+With BINDERS-ONLY the `setq' targets are left out."
+  (let ((seen (make-hash-table :test 'eq)) (stack (list form)))
+    (while stack
+      (let ((x (pop stack)))
+        (when (consp x)
+          (cond
+           ((and (eq (car x) 'setq) (not binders-only) (proper-list-p x))
+            (let ((rest (cdr x)))
+              (while rest
+                (when (symbolp (car rest)) (puthash (car rest) t seen))
+                (push (cadr rest) stack)
+                (setq rest (cddr rest)))))
+           ((and (memq (car x) '(let let*)) (consp (cdr x)) (proper-list-p (cadr x)))
+            (dolist (b (cadr x))
+              (cond ((symbolp b) (puthash b t seen))
+                    ((consp b) (when (symbolp (car b)) (puthash (car b) t seen))
+                     (push (cdr b) stack))))
+            (push (cddr x) stack))
+           (t (push (car x) stack) (push (cdr x) stack))))))
+    seen))
+
+(defun nelisp-standalone--inline-flat-plan (params args body specials)
+  "List, one element per parameter in PARAMS, of t when its argument replaces it in BODY.
+ARGS are the expanded arguments, SPECIALS the special variables of the unit."
+  (let ((assigned (nelisp-standalone--inline-assigned-symbols body))
+        (binders nil) (arg-assigned nil) (i 0) (plan nil))
+    (dolist (p params)
+      (let ((a (nth i args)) (use nil))
+        (cond
+         ((gethash p assigned) nil)
+         ((integerp a) (setq use t))
+         ((and a (symbolp a) (not (eq a t)) (not (keywordp a)) (not (memq a specials)))
+          (unless binders (setq binders (nelisp-standalone--inline-assigned-symbols body t)))
+          (unless arg-assigned
+            (setq arg-assigned (mapcar #'nelisp-standalone--inline-assigned-symbols args)))
+          (unless (or (gethash a binders)
+                      (cl-some (lambda (table) (gethash a table)) (nthcdr (1+ i) arg-assigned)))
+            (setq use t))))
+        (push use plan)
+        (setq i (1+ i))))
+    (nreverse plan)))
+
 (defun nelisp-standalone--inline-small-defuns-imports (source &optional imports)
   "Inline small functions in SOURCE, optionally using normalized IMPORTS.
 Every local defun shadows imports, including locals that cannot be inlined.
@@ -1915,9 +1979,13 @@ and wrapper-initializer passes) runs on its output in `compile-to-unit'."
           (imported (make-hash-table :test 'eq))
           (locals (make-hash-table :test 'eq))
           (private (make-hash-table :test 'eq))
-          (seen (make-hash-table :test 'eq)) (count 0))
+          (seen (make-hash-table :test 'eq)) (count 0) (specials nil))
       (dolist (form (cdr source))
         (when (eq (car-safe form) 'defun) (puthash (cadr form) form locals)))
+      ;; the unit's special variables: the names of its top-level variable declarations
+      (dolist (form (cdr source))
+        (when (and (memq (car-safe form) '(defvar defvar-local defconst defcustom)) (symbolp (cadr form)))
+          (push (cadr form) specials)))
       (dolist (library imports)
         (when (eq (car-safe library) :source)
           (dolist (name (plist-get library :private)) (puthash name t private))))
@@ -1993,15 +2061,19 @@ and wrapper-initializer passes) runs on its output in `compile-to-unit'."
                                                  (nelisp-standalone--inline-constant-base-case
                                                   definition args))))))))
                  (if (and cand (= (length args) (length (car cand))))
-                     (let ((alist (mapcar (lambda (p)
-                                            (cons p (make-symbol (format "%s__i%d"
-                                                                    p (cl-incf nelisp-standalone--inline-counter)))))
-                                          (car cand))))
+                     (let* ((params (car cand))
+                            (fresh (mapcar (lambda (p)
+                                             (make-symbol (format "%s__i%d"
+                                                                  p (cl-incf nelisp-standalone--inline-counter))))
+                                           params))
+                            (flat (nelisp-standalone--inline-flat-plan params args (cdr cand) specials))
+                            (alist (cl-mapcar (lambda (p f a use) (cons p (if use a f))) params fresh args flat))
+                            (bindings (delq nil (cl-mapcar (lambda (f a use) (unless use (list f a)))
+                                                           fresh args flat))))
                        (setq count (1+ count))
-                       (if alist
-                           `(let* ,(cl-mapcar (lambda (c a) (list (cdr c) a)) alist args)
-                              ,(nelisp-standalone--inline-rename (cdr cand) alist))
-                         (cdr cand)))
+                       (cond ((null params) (cdr cand))
+                             (bindings `(let* ,bindings ,(nelisp-standalone--inline-rename (cdr cand) alist)))
+                             (t (nelisp-standalone--inline-rename (cdr cand) alist))))
                    (if external (cons 'extern-call (cons name args))
                      (cons (car x) args))))))))
         (let ((out (cons 'seq

@@ -33,9 +33,12 @@ gp = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gp)
 
 KINDS = {'none': 'i', 'cons': '(cons i i)', 'string': '(make-string 128 120)', 'vector': '(make-vector 16 i)'}
+# The constructor a loop reaches: gc-port's tip calls bf_make_string_w and bf_make_vector_w; the integrated tree's
+# strings line makes strings in m5_make_repeated_string and callpath's evaluator builds a vector in
+# nl_eic_prim_make_vector (only one of each pair has calls in a given binary).
 NELISP_ENTRIES = {'cons': ['nelisp_cons_construct_w'],
-                  'string': ['bf_make_string_w'],
-                  'vector': ['bf_make_vector_w']}
+                  'string': ['bf_make_string_w', 'm5_make_repeated_string'],
+                  'vector': ['bf_make_vector_w', 'nl_eic_prim_make_vector']}
 GNU_ENTRIES = {'cons': ['Fcons'], 'string': ['Fmake_string'], 'vector': ['Fmake_vector']}
 
 
