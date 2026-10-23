@@ -35,7 +35,7 @@
       (should-not (nelisp-aot-compiler--x86-zero-branch-subject (nelisp-zero-test--cmp subject))))
     (let ((nelisp-aot-compiler--abi 'win64))
       (should-not (nelisp-aot-compiler--x86-zero-branch-subject (nelisp-zero-test--cmp subject))))
-    (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-values-p) (lambda () t)))
+    (let ((nelisp-aot-compiler--runtime-entry-params t))
       (should-not (nelisp-aot-compiler--x86-zero-branch-subject (nelisp-zero-test--cmp subject))))
     (should-not (nelisp-aot-compiler--x86-zero-branch-gp-p
                  (nelisp-zero-test--ir 'ref :slot 0 :class 'f64)))

@@ -235,7 +235,7 @@
       (should-not (nelisp-aot-trace-loop-test--replan r loop)))
     (let ((nelisp-aot-compiler--abi 'win64))
       (should-not (nelisp-aot-trace-loop-test--replan r loop)))
-    (cl-letf (((symbol-function 'nelisp-aot-compiler--lisp-values-p) (lambda()t)))
+    (let ((nelisp-aot-compiler--runtime-entry-params t))
       (should-not (nelisp-aot-trace-loop-test--replan r loop)))
     (let ((nelisp-aot-compiler--native-emit-enabled t))
       (cl-letf (((symbol-function 'nl-jit-call-out-2) #'ignore))
