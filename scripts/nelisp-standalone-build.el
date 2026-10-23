@@ -6139,7 +6139,8 @@ it shares with cons and symbol blocks.")
     ;; closure gains two functions and its callers one call edge each.
     (defun nl_so_p (w)
       (if (= (logand w 7) 6)
-          (let* ((k (logand (heap-read-u64 (- w 6) 0) 63)))
+          ;; a vectorlike header (W - 6 is never a String WORD's address): a physical read
+          (let* ((k (logand (ptr-read-u64 (- w 6) 0) 63)))
             (if (= k 4) 1 (if (= k 16) 1 0)))
         0))
     (defun nl_ent_p (w)
