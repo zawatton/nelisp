@@ -95,7 +95,10 @@
                   (find-defs f)))))
     (should (= 5 (length defs)))
     (let* ((probe '(defun wi_park (env) (let ((v (nl_thread_park_safepoint env))) v)))
-           (source (cons 'seq (append defs (list probe))))
+           ;; The build lowers heap reads before the unit policy runs (compile-to-unit); the
+           ;; word-heap line's rootstack source uses heap-read-u64, which the closed-wrapper
+           ;; proof only accepts lowered.
+           (source (nelisp-heap-accessors-lower (cons 'seq (append defs (list probe)))))
            (new (nelisp-inline-wrapper-test--apply source)))
       (should (= 0 (nelisp-inline-wrapper-test--count (nelisp-inline-wrapper-test--body new 'wi_park) 'nl_thread_park_safepoint)))
       (should (= 1 (nelisp-inline-wrapper-test--count (nelisp-inline-wrapper-test--body new 'wi_park) 'ptr-read-u64)))
@@ -105,7 +108,8 @@
                           `(defun nl_thread_registry_find (env) ,bad) d)) defs)))
           (should (= 1 (nelisp-inline-wrapper-test--count
                         (nelisp-inline-wrapper-test--body
-                         (nelisp-inline-wrapper-test--apply (cons 'seq (append changed (list probe))))
+                         (nelisp-inline-wrapper-test--apply
+                          (nelisp-heap-accessors-lower (cons 'seq (append changed (list probe)))))
                          'wi_park) 'nl_thread_park_safepoint)))))))
   ;; Arithmetic with a literal actual must not expose a new overflowing fold.
   (let* ((source '(seq (defun wi_target (x) (cond ((= x 0) 0) (t x)))

@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   inliner-ert   the import-aware pass's 41 tests and codegen's four inliner ERT files on host Emacs
 #   codegen-ert   the AOT compiler, codegen, S5 lowering, alignment, artifact and linker
 #                 ERT suites on host Emacs
 #   built         the dynamic binary exists and names HEAD's tree
@@ -138,6 +139,24 @@ case ${1:-} in
       done
     done
     say "PASS codegen-ert ($total suites; $nred known-red tests, all listed)" ;;
+  inliner-ert)
+    # The word-heap line's import-aware pass (41 tests) and codegen's inliner (parallel-let, extern,
+    # wrapper-initializer and hygiene suites): both must pass, except the listed known-red tests.
+    known=$(grep -v '^#' tools/ai/integ-wh-ert-known-red.txt | grep -v '^$')
+    nred=0; ran=0
+    for t in nelisp-standalone-inline-import-test nelisp-standalone-inline-parallel-let-test \
+             nelisp-standalone-extern-inline-test nelisp-inline-wrapper-test nelisp-standalone-inline-hygiene-test; do
+      [ -f test/$t.el ] || fail "missing test/$t.el"
+      capped timeout 900 "$GNU" --batch -Q -L lisp -L src -L scripts -L test --eval '(setq load-prefer-newer t)' \
+        -l ert -l test/$t.el -f ert-run-tests-batch-and-exit > "$OUT/ert-$t.log" 2>&1
+      grep -q '^Ran ' "$OUT/ert-$t.log" || fail "$t: no ERT summary: $(tail -n 3 "$OUT/ert-$t.log" | tr '\n' ' ')"
+      ran=$((ran + $(grep -E '^Ran [0-9]+ tests' "$OUT/ert-$t.log" | awk '{print $2}')))
+      for name in $(grep -E '^   FAILED  [^ ]+$' "$OUT/ert-$t.log" | awk '{print $2}'); do
+        if printf '%s\n' "$known" | grep -qx "$name"; then nred=$((nred + 1))
+        else fail "$t: $name is red and not in tools/ai/integ-wh-ert-known-red.txt"; fi
+      done
+    done
+    say "PASS inliner-ert ($ran tests in 5 files; $nred known-red, listed)" ;;
   built)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
     v=$(capped "$DYN" --version 2>/dev/null | head -1)

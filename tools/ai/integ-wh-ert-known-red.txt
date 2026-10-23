@@ -16,3 +16,10 @@ nelisp-aot-codegen/tag-tests
 # Red at the strings tip: the host-side native-exec-general extern whitelist does not know
 # nl_word_data, which the strings lane's string accessors call ("unsupported externs").
 nelisp-artifact/native-exec-general-string-args
+
+# Red on the m9 tree already (the parallel-let ERT file is codegen's; this test compiles the pinned
+# nelisp_mirror_lookup_entry of test/perf/codegen-runtime into an isolated executable and compares n=1
+# with the base's C reference: 0x700 expected, a pointer-sized garbage word answered, at every inline
+# level.  The word-heap line rewrote the mirror lookup unit (symbol cells, D9 symbol objects) and the
+# compile pipeline (arena rewrite, heap-accessor lowering); the fixture predates both).
+nelisp-inline-parallel/actual-mirror-executable-gnu-goldens

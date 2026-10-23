@@ -43,6 +43,13 @@
                   nelisp-standalone--cached-unit
                   nelisp-standalone--glue-source
                   nelisp-standalone--unit-inline-imports
+                  nelisp-standalone--direct-only-unit-defuns
+                  nelisp-standalone--direct-only-for
+                  nelisp-standalone--xinline-table
+                  nelisp-standalone--xinline-used
+                  nelisp-standalone--runtime-reload-enabled-p
+                  nelisp-standalone--xinline-enabled-p
+                  nelisp-standalone--xinline-digest
                   nelisp-standalone--unit-for
                   nelisp-standalone--reader-driver-unit))
     (goto-char (point-min))
@@ -55,6 +62,12 @@
 (defvar nelisp-standalone--inline-import-sources nil)
 (defvar nelisp-standalone--manifest nil)
 (defvar nelisp-standalone--gc-source nil)
+(defvar nelisp-standalone--strings-source nil)
+;; Compiler policy variables the unit cache key records (the compiler is not loaded here).
+(defvar nelisp-aot-compiler--x86-jump-tables-enabled nil)
+(defvar nelisp-aot-compiler--x86-direct-only-defuns nil)
+(defvar nelisp-aot-compiler--x86-call-free-regions nil)
+(defvar nelisp-aot-compiler--x86-affine-addresses nil)
 (defvar nelisp-standalone--this-file nil)
 (defvar nelisp-standalone--build-trace-path nil)
 (defvar nelisp-standalone--build-trace-unit nil)
@@ -62,6 +75,9 @@
 (defvar nelisp-inline-import-test--feature-source nil)
 (defconst nelisp-inline-import-test--donor
   '(seq (defun donor (a b) (+ (* a 10) b))))
+;; The strings line's donor, which `nelisp-standalone--unit-inline-dependencies' adds after the allocator.
+(defconst nelisp-inline-import-test--strings-donor
+  '(seq (defun strings_donor (a) (+ a 5))))
 
 (defun nelisp-inline-import-test--host (form)
   (cond ((atom form) form)
@@ -210,19 +226,22 @@
 
 (ert-deftest nelisp-inline-import-reader-driver-binds-before-cache ()
   ;; This cold-loader path bypasses the manifest's `--unit-for' entry.
-  (let ((nelisp-standalone--manifest '(("arena.o" :glue allocator)))
+  (let ((nelisp-standalone--manifest '(("arena.o" :glue allocator) ("string-blocks.o" :glue strings)))
         (nelisp-standalone--this-file "fixture.el") observed)
     (cl-letf (((symbol-function 'nelisp-standalone--reader-driver-source)
                (lambda () '(seq (defun caller () (donor 2 7)))))
               ((symbol-function 'nelisp-standalone--glue-source)
                (lambda (name source)
-                 (should (equal name "arena.o")) (should (eq source 'allocator))
-                 nelisp-inline-import-test--donor))
+                 (pcase name
+                   ("arena.o" (should (eq source 'allocator)) nelisp-inline-import-test--donor)
+                   ("string-blocks.o" (should (eq source 'strings)) nelisp-inline-import-test--strings-donor)
+                   (_ (ert-fail (list "unexpected donor" name))))))
               ((symbol-function 'nelisp-standalone--prepare-inline-import) #'identity)
               ((symbol-function 'nelisp-standalone--cached-unit)
                (lambda (&rest _) (setq observed nelisp-standalone--inline-import-sources))))
       (nelisp-standalone--reader-driver-unit)
-      (should (equal observed (list nelisp-inline-import-test--donor))))))
+      (should (equal observed (list nelisp-inline-import-test--donor
+                                    nelisp-inline-import-test--strings-donor))))))
 
 (ert-deftest nelisp-inline-import-rejects-conflicting-definitions ()
   (should-error
@@ -272,13 +291,15 @@
 
 (ert-deftest nelisp-inline-import-resolves-target-selected-gc ()
   (let ((nelisp-standalone--manifest
-         '(("reader-gc.o" :glue nelisp-standalone--gc-source)))
-        (nelisp-standalone--gc-source '(seq (defun raw () 1))))
+         '(("reader-gc.o" :glue nelisp-standalone--gc-source)
+           ("string-blocks.o" :glue nelisp-standalone--strings-source)))
+        (nelisp-standalone--gc-source '(seq (defun raw () 1)))
+        (nelisp-standalone--strings-source nelisp-inline-import-test--strings-donor))
     (cl-letf (((symbol-function 'nelisp-standalone--target-gc-source)
                (lambda () '(seq (defun selected () 2))))
               ((symbol-function 'nelisp-standalone--prepare-inline-import) #'identity))
       (should (equal (nelisp-standalone--unit-inline-imports "arena.o")
-                     '((seq (defun selected () 2))))))))
+                     (list '(seq (defun selected () 2)) nelisp-inline-import-test--strings-donor))))))
 
 (ert-deftest nelisp-inline-import-real-gc-membership-and-negative-control ()
   (let* ((gc (with-temp-buffer
