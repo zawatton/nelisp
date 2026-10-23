@@ -184,6 +184,20 @@ case ${1:-} in
       rm -f "$img"
     done
     say "PASS weakmark (the check on the binary and on a copy without its cold image; 4 fresh-boot dumps)" ;;
+  n4)
+    # The activation-record (N4) API corpus against live GNU 31.1: 81 rows (callpath item A).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    out=$(capped timeout 280 python3 test/abi-n4-reference-test.py "$DYN" 2>&1) || fail "N4 reference: $(printf %s "$out" | tail -n 1 | cut -c1-200)"
+    case $out in *"N4-REFERENCE checks=81 PASS"*) say "PASS n4 (81 rows equal to live GNU 31.1)" ;; *) fail "N4 reference: $(printf %s "$out" | tail -n 1 | cut -c1-200)" ;; esac ;;
+  precise)
+    # With the conservative stack scan off (nelisp--debug-switch 28) only precise roots count: the symbol
+    # object roots (51 checks) and the argument words of an activation (19 checks).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    a=$(capped timeout 280 "$DYN" --load test/standalone-symbol-precise-root-check.el 2>&1 | tail -n 1)
+    b=$(capped timeout 280 "$DYN" --load test/standalone-argv-precise-root-check.el 2>&1 | tail -n 1)
+    case $a in "SYM-PRECISE checks=51 failures=0 PASS") ;; *) fail "symbol precise roots: $a" ;; esac
+    case $b in "ARGV-PRECISE checks=19 failures=0 PASS") ;; *) fail "argv precise roots: $b" ;; esac
+    say "PASS precise (51 + 19 checks with the conservative scan off)" ;;
   log)
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
     case ${2:-} in
@@ -217,9 +231,18 @@ d = json.load(open(sys.argv[1]))
 assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
 a = d["above_control"]["nelisp"]
 # callpath e4755b52f measured 1,769 and 2,429 Ir above the control on its own base; the gc-port line adds a
-# typed cons cell and the budget word to an allocation.  Without the callpath stage (m6) the rows were 7,216 and 10,286.
-assert a["plus"] <= 2000 and a["cons"] <= 3000, a
-print("Ir above control: plus %.0f cons %.0f makevec %.0f" % (a["plus"], a["cons"], a["makevec"]))
+# typed cons cell and the budget word to an allocation.  Without the callpath stage (m6) the rows were 7,216 and 10,286;
+# the final tip (m9) measured 922 and 1,280.
+assert a["plus"] <= 1000 and a["cons"] <= 1400 and a["makevec"] <= 3800, a
+# Interpreted loops per iteration and the bytecode rows, Ir per call above the control: the callpath final tip
+# on the word-heap line (m9) measured while 4,720, while3 8,016, closure 7,920, funcall 600, optional-rest 842.
+lp = d["loops"]["nelisp"]
+assert lp["while"] <= 5200 and lp["while3"] <= 8700 and lp["closure"] <= 8600, lp
+bc = d["bc"]["nelisp"]; ctl = bc["pcf-control"]
+assert bc["pcf-funcall"] - ctl <= 660 and bc["pcf-optional-rest"] - ctl <= 920, bc
+print("Ir above control: plus %.0f cons %.0f makevec %.0f; loops while %.0f while3 %.0f closure %.0f; bytecode funcall %.0f optional-rest %.0f"
+      % (a["plus"], a["cons"], a["makevec"], lp["while"], lp["while3"], lp["closure"],
+         bc["pcf-funcall"] - ctl, bc["pcf-optional-rest"] - ctl))
 PY
                   ;;
       *) fail "unknown log kind ${2:-}" ;;
