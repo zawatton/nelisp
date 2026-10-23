@@ -16727,6 +16727,24 @@ leave symbols unresolved at link time."
     ;; reference) still live in core-helpers; these reach them across the
     ;; unit boundary the same way the file-persistence group above reaches
     ;; `nl_fa_roots'/`bf_arena_mr_chunks'.
+    ;; The value of the field at WADDR, with a String view replaced by the String.  A 32-byte slot box whose
+    ;; tag is 5 or 14 and whose capacity word names a canonical string header (`nl_string_view_header') is the
+    ;; same value as that header's WORD, header + 4, and the heap holds such boxes in cons cells and other
+    ;; fields (the transport form `nl_string_store_view' writes, stored without `nl_val_clone_into').  The walk
+    ;; relocates only a view's data pointer, and as a raw address: the capacity word (the header | bit 61 or
+    ;; 62) and the sdata pointer name the dumping process's string pools, which the image does not carry, so
+    ;; a restored view held the dumping process's addresses and the collector, which trusts a bit-61 view's
+    ;; header, read through them (SIGSEGV in `nl_gc_mark_legacy_slot' at the first collection after a restore).
+    ;; The field is rewritten to the WORD before the walk records it: pass 1 then marks the string reached and
+    ;; pass 3 relocates the field like any other String WORD, and the view box is no longer referenced.
+    (defun nl_fa_norm_word (waddr)
+      (let ((w (heap-read-u64 waddr 0)))
+        (if (/= (logand w 7) 0) w
+          (if (< w 65536) w
+            (if (= (nl_gc_in_arena w) 0) w
+              (let ((s (nl_string_view_header w)))
+                (if (= s 0) w
+                  (seq (ptr-write-u64 waddr 0 (+ s 4)) (+ s 4)))))))))
     (defun nl_fa_vec_slots (data_ptr i len ds span dest cin cout dir)
       (if (= (nl_gc_in_arena data_ptr) 0) 0
         (nl_fa_word_slots data_ptr i len ds span dest cin cout dir)))
@@ -16736,7 +16754,7 @@ leave symbols unresolved at link time."
       (let ((k i))
         (while (< k len)
           (nl_seq2
-           (let ((vw (heap-read-u64 (+ data_ptr (* k 8)) 0)))
+           (let ((vw (nl_fa_norm_word (+ data_ptr (* k 8)))))
              (if (= (logand vw 1) 1) 0
                (nl_seq2 (nl_fa_word_field (+ data_ptr (* k 8)) vw ds span dest cin cout dir)
                         (if (= (logand vw 7) 2)
@@ -16758,7 +16776,7 @@ leave symbols unresolved at link time."
            (seq
             (setq go 0)
             (if (= (nl_gc_mark_cons_payload box) 0) 0
-              (let* ((cw (heap-read-u64 box 0)) (dw (heap-read-u64 box 8)))
+              (let* ((cw (nl_fa_norm_word box)) (dw (nl_fa_norm_word (+ box 8))))
                 (seq
                  (if (= (logand cw 1) 1) 0
                    (nl_seq2 (nl_fa_word_field box cw ds span dest cin cout dir)
@@ -16968,7 +16986,7 @@ leave symbols unresolved at link time."
                 (seq
                  (while (< k n)
                    (nl_seq2
-                    (let ((vw (heap-read-u64 (+ p (+ 32 (* k 8))) 0)))
+                    (let ((vw (nl_fa_norm_word (+ p (+ 32 (* k 8))))))
                       (if (= (logand vw 1) 1) 0
                         (nl_seq2 (nl_fa_word_field (+ p (+ 32 (* k 8))) vw ds span dest cin cout dir)
                                  (if (= (logand vw 7) 2)
