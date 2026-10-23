@@ -10,7 +10,7 @@
 ;;    ((VAR . INITIAL-VALUE) ...)        ; defvars, reset before the cases
 ;;    ((NAME . #[...]) ...)              ; compiled functions
 ;;    ((NAME ARGS ANSWER) ...))          ; ANSWER is GNU's `%S' text
-;; BWC_OUT names another output file.
+;; BWC_SRC names another source file and BWC_OUT another output file (test/bytecode-arith-corpus-src.el and .eld).
 ;; Cases run in file order on both sides, so their side effects line up.
 
 (require 'bytecomp)
@@ -18,7 +18,8 @@
 
 (let* ((root (file-name-directory (directory-file-name
                                    (file-name-directory load-file-name))))
-       (src (expand-file-name "test/bytecode-word-corpus-src.el" root))
+       (src (or (getenv "BWC_SRC")
+                (expand-file-name "test/bytecode-word-corpus-src.el" root)))
        (dst (or (getenv "BWC_OUT")
                 (expand-file-name "test/bytecode-word-corpus.eld" root)))
        (forms (with-temp-buffer

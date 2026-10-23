@@ -12266,6 +12266,9 @@ argument (reachability + in-arena bounds checks).")
                            (w (if (= rc 0) (wf_rem_w normalized 0) 0)))
                       (seq (nl_root_release env mark) w))
                   (wf_rem_w args 0)))
+    ;; `max' and `min' are GNU's Fmax and Fmin (data.c minmax_driver): `wf_minmax_w' above.
+    ((:u8 "max") :word . (wf_minmax_w args 1))
+    ((:u8 "min") :word . (wf_minmax_w args 0))
     ;; `/=' = 2-arg numeric not-equal (int/float via wf_num_eq).
     ((:u8 "/=") :word . (if (= (wf_numeric_has_marker args) 1)
                     (wf_numeric_marker_compare_w args env 5 0)
@@ -13463,6 +13466,46 @@ leave symbols unresolved at link time."
                               (nl_abi_fail (bf_arith_error) 0)
                             (wf_write_int_w 0 (- a (* b (/ a b))))))
                       (nl_abi_fail (bf_wrong_type_int_or_marker bad) 0)))))
+    ;; GNU data.c minmax_driver, the body of Fmax and Fmin (minimal native surface, clause 5: arithmetic on tagged numbers,
+    ;; the family of `<' and `>' above; the Lisp reference is nelisp--max-reference and nelisp--min-reference in the
+    ;; prelude).  The first argument is checked and coerced (a marker answers its position, a detached one signals
+    ;; "Marker does not point anywhere", a non-number signals number-or-marker-p), then each next one in turn, so the
+    ;; argument named in a wrong-type error is the first bad one.  A value that orders after the accumulator in the wanted
+    ;; direction replaces it (arithcompare is exact: an integer and a float are compared without rounding, a bignum
+    ;; included).  A NaN never orders, so it is the `else if (isnan)' arm that answers it, at once and with the arguments
+    ;; after it unread; a NaN that is the first argument stays only while no later one is a NaN.  The answer is the
+    ;; winning ARGUMENT, not a converted copy: (max 3 2.0) is 3, there is no float contagion since Emacs 27.  The words are
+    ;; ARGS's own or immediate positions, so nothing here allocates or collects.
+    (defun wf_float_nan_word_p (w)
+      (if (= (nl_val_tag w) 3)
+          (let ((bits (nl_float_bits w)))
+            (if (= (logand (shr bits 52) 2047) 2047)
+                (if (/= (logand bits 4503599627370495) 0) 1 0)
+              0))
+        0))
+    ;; One step of the driver on two coerced words: the winner of ACCUM and VAL.
+    (defun wf_minmax2_w (accum val want-max)
+      (if (= (wf_float_nan_word_p val) 1) val
+        (let ((order (nl_number_order_words val accum)))
+          (if (= want-max 1)
+              (if (= order 1) val accum)
+            (if (= order -1) val accum)))))
+    (defun wf_minmax_w (args want-max)
+      (let* ((accum (wf_numeric_marker_value_word_w (nl_cons_car_word args) 0 1))
+             (rest (nl_cons_cdr_word args))
+             (done 0))
+        (if (= accum 0) 0
+          (seq
+           (while (= done 0)
+             (if (= (nl_val_tag rest) 7)
+                 (let ((val (wf_numeric_marker_value_word_w (nl_cons_car_word rest) 0 1)))
+                   (if (= val 0)
+                       (seq (setq accum 0) (setq done 1))
+                     (seq (setq accum (wf_minmax2_w accum val want-max))
+                          (if (= (wf_float_nan_word_p val) 1) (setq done 1) 0)
+                          (setq rest (nl_cons_cdr_word rest)))))
+               (setq done 1)))
+           accum))))
     (defun wf_argval (args n) (nl_word_payload (wf_arg_word args n)))
     ;; ptr-call is a raw signed-i64 boundary; tag13 +8 is a sign, not a value.
     (defun wf_ptr_call_i64_fits (w)
@@ -15899,11 +15942,13 @@ leave symbols unresolved at link time."
     (defun wf_fdiff (list_ptr scratch)
       (let* ((first_b (wf_elem_fbits (nl_cons_car_ptr list_ptr) scratch))
              (rest (nl_cons_cdr_ptr list_ptr)))
-        ;; elisp `-': 1-arg = negation; n-arg = first - rest.  Negate via x*-1.0
-        ;; (sign XOR), NOT 0.0-x, so -(+0.0) yields -0.0 (Doc 159 §12).
+        ;; elisp `-': 1-arg = negation; n-arg = first - rest.  Negate by flipping the
+        ;; sign bit, as GNU's `-x' does: NOT 0.0-x, so -(+0.0) yields -0.0 (Doc 159
+        ;; §12), and not x*-1.0, which leaves the sign of a NaN alone ((- 0.0e+NaN)
+        ;; is -0.0e+NaN).
         (if (= (heap-sexp-tag-word rest) 7)
             (wf_fsubtail rest first_b scratch)
-          (let* ((result-bits (f64-bits (f64-mul (bits-to-f64 first_b) (i64-to-f64 -1)))))
+          (let* ((result-bits (logxor first_b (shl 1 63))))
             (seq (sexp-write-float scratch (bits-to-f64 result-bits))
                  (heap-read-u64 scratch 8))))))
     ;; float `/' (2-arg, mirroring the integer `/' arity): a/b in f64.
@@ -20920,13 +20965,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 (if (= left-tag 13)
                     (bf_wrong_type_number_or_marker right)
                   (bf_wrong_type_number_or_marker left))
-              (if (= want-max 1)
-                  (if (= (wf_num_gt right left) 1)
+              ;; GNU minmax_driver: a NaN second operand is the answer (it never orders, so the `else if (isnan)' arm
+              ;; returns it); a NaN first operand stays, as nothing orders after it.
+              (if (= (wf_float_nan_word_p right) 1)
+                  (wf_bytecode_copy left right)
+                (if (= want-max 1)
+                    (if (= (wf_num_gt right left) 1)
+                        (wf_bytecode_copy left right)
+                      0)
+                  (if (= (wf_num_lt right left) 1)
                       (wf_bytecode_copy left right)
-                    0)
-                (if (= (wf_num_lt right left) 1)
-                    (wf_bytecode_copy left right)
-                  0)))))))
+                    0))))))))
     (defun wf_bytecode_optional_marker_p (sym)
       ;; The descriptor walker has already checked this parameter's tag 4.
       (symbol-name-eq sym "&optional"))
@@ -22108,6 +22157,32 @@ baked build's own `<'/`>'/`=' arms need it too.")
     ;; No allocation or callout occurs; registered workers cannot mutate
     ;; the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
+    ;; GNU bytecode.c Bnegate (91), Bmax (93), Bmin (94), Bquo (165) and Brem (166) on two fixnum words, in place, for the fast
+    ;; loop below.  Bmax and Bmin keep the first operand unless the second orders after it (so a tie answers the first), Bquo and
+    ;; Brem need a divisor other than 0 and Bquo a result inside the fixnum range (only MOST_NEGATIVE_FIXNUM / -1 leaves it),
+    ;; Bnegate any fixnum but MOST_NEGATIVE_FIXNUM.  A fixnum word is (n<<2)|1 and orders as n does.  Answers the stack pointer
+    ;; after the opcode, or -1 when the case is not the fixnum one (another operand, a zero divisor, a result out of range): then
+    ;; nothing was touched and the full loop takes the opcode.
+    (defun wf_bytecode_fast_arith (mem sp raw)
+      (let* ((n (if (= raw 91) 1 2)))
+        (if (< sp n) -1
+          (let* ((a (heap-read-u64 mem (* (- sp n) 8)))
+                 (b (heap-read-u64 mem (- (* sp 8) 8))))
+            (if (or (/= (logand a 3) 1) (/= (logand b 3) 1)) -1
+              (let* ((word
+                      (if (= raw 91)
+                          (if (= a -9223372036854775807) -1 (- 2 a))
+                        (if (= raw 93) (if (> b a) b a)
+                          (if (= raw 94) (if (< b a) b a)
+                            (if (= (sar b 2) 0) -1
+                              (let* ((q (if (= raw 165)
+                                            (/ (sar a 2) (sar b 2))
+                                          (- (sar a 2) (* (sar b 2) (/ (sar a 2) (sar b 2)))))))
+                                (if (or (> q 2305843009213693951) (< q -2305843009213693952)) -1
+                                  (+ (shl q 2) 1)))))))))
+                (if (= word -1) -1
+                  (seq (ptr-write-u64 mem (* (- sp n) 8) word)
+                       (- sp (- n 1))))))))))
     (defun wf_bytecode_w_fast_run
         (data length mem depth constants nconst pc sp env cell)
       (let*
@@ -22622,7 +22697,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                   (+ a 4))
                                    (setq pc (+ pc 1)))))))
                            (if (= raw 91)
-                             (seq (setq go 0))
+                             (let* ((r (wf_bytecode_fast_arith mem sp raw)))
+                               (if (< r 0) (setq go 0)
+                                 (seq (setq sp r) (setq pc (+ pc 1)))))
                              (seq
                               (if (< sp (if (< raw 85) 1 2))
                                   (setq go 0)
@@ -22734,7 +22811,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                      (if (< raw 137)
                          (if (< raw 131)
                              (if (< raw 130)
-                                 (seq (setq go 0))
+                                 (if (< raw 95)
+                                     (let* ((r (wf_bytecode_fast_arith mem sp raw)))
+                               (if (< r 0) (setq go 0)
+                                 (seq (setq sp r) (setq pc (+ pc 1)))))
+                                   (setq go 0))
                                  (if (>= (+ pc 2) length) (setq go 0)
                                    (seq
                                     (setq target
@@ -22992,7 +23073,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                           (setq pc (+ pc 1))))
                                      0)))
                              (if (< raw 192)
-                                 (seq (setq go 0))
+                                 (if (< raw 165)
+                                     (setq go 0)
+                                   (if (< raw 167)
+                                       (let* ((r (wf_bytecode_fast_arith mem sp raw)))
+                               (if (< r 0) (setq go 0)
+                                 (seq (setq sp r) (setq pc (+ pc 1)))))
+                                     (setq go 0)))
                                  (seq
                                   (if
                                       (or (>= sp depth)
@@ -23202,14 +23289,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (if (and (<= code-len 2147483647) (>= sp 0) (<= sp depth))
                 (let* ((first-op (heap-read-u8 code-data pc)))
                   ;; Skip an unsupported batch starter without changing PC/SP.
-                  ;; Masks: 0..5,8..13; 83..90,92; 130..134,136,137.
+                  ;; Masks: 0..5,8..13; 83..94 (arithmetic and comparison, Bnegate, Bmax, Bmin); 130..134,136,137; 165, 166 (Bquo, Brem).
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
 			     (if (/= (logand 16191 (shl 1 first-op)) 0) 1 0)
 			   (if (< first-op 128)
-			       (if (/= (logand 402128896 (shl 1 (- first-op 64))) 0) 1 0)
+			       (if (/= (logand 2146959360 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
-				 (if (/= (logand 892 (shl 1 (- first-op 128))) 0) 1 0)
+				 (if (/= (logand 412316861308 (shl 1 (- first-op 128))) 0) 1 0)
 			       1))) 1)
                       (let* ((state (wf_bytecode_w_fast_run code-data code-len mem depth cdata nconst pc sp env curfp)))
                         (seq
@@ -33747,7 +33834,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((1 . 7)
       nelisp-portable-syscall)
     ((1 . many)
-      / < <= = > >= apply error format funcall nelisp--native-format nelisp-process-call-process
+      / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-connect SOCKET
@@ -38901,7 +38988,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     (dolist (f forms r) (setq r (eval f t)))))
 
 (defconst nelisp-standalone--reader-builtins
-  (append '("+" "-" "*" "/" "mod" "%" "/=" "1+" "1-" "floor" "truncate" "ceiling" "sin" "cos" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not" "special-form-p"
+  (append '("+" "-" "*" "/" "mod" "%" "max" "min" "/=" "1+" "1-" "floor" "truncate" "ceiling" "sin" "cos" "=" "<" ">" "<=" ">=" "car" "cdr" "cons" "list" "eq" "null" "not" "special-form-p"
     ;; Globals shim bridge for user-loaded .el files (`defvar' / `defconst'
     ;; in the standalone prelude lower through this entry).
     "nelisp--env-globals-op"

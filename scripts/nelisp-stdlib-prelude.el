@@ -1765,7 +1765,12 @@ from `(defvar X nil)'."
         (or (marker-position value) (error "Marker does not point anywhere"))
       (signal 'wrong-type-argument (list 'number-or-marker-p value)))))
 
-(defun max (&rest args)
+;; The Lisp reference of `max' and `min'.  GNU's Fmax and Fmin (data.c minmax_driver) are native subrs here
+;; (wf_minmax_w in scripts/nelisp-standalone-build.el: minimal native surface, clause 5), so these definitions bind the
+;; two names only on a runtime without them.  They keep the shape of the driver, but two of its rules are not reproduced
+;; by this reference: a NaN that is not the first argument is answered at once (the reference answers the first NaN it
+;; meets), and the arguments after that NaN are not read (the reference has coerced them all by then).
+(defun nelisp--max-reference (&rest args)
   ;; Name the FIRST bad argument.  The fold reported whichever one it was
   ;; holding when the comparison failed, which for (min '(1 2) '(1)) is the
   ;; second -- so the reader was pointed at the wrong one.
@@ -1789,7 +1794,7 @@ from `(defvar X nil)'."
             (setq acc candidate))))
         (setq rest (cdr rest)))
       acc)))
-(defun min (&rest args)
+(defun nelisp--min-reference (&rest args)
   ;; Name the FIRST bad argument.  The fold reported whichever one it was
   ;; holding when the comparison failed, which for (min '(1 2) '(1)) is the
   ;; second -- so the reader was pointed at the wrong one.
@@ -1813,6 +1818,8 @@ from `(defvar X nil)'."
             (setq acc candidate))))
         (setq rest (cdr rest)))
       acc)))
+(unless (fboundp 'max) (defalias 'max #'nelisp--max-reference))
+(unless (fboundp 'min) (defalias 'min #'nelisp--min-reference))
 (defun abs (x)
   (nelisp--check-number x)
   (if (< x 0) (- 0 x) x))

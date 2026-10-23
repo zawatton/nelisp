@@ -24,6 +24,9 @@
 #   interval-shape  the interval shape of a buffer built by propertized inserts (neighbours with equal plists stay apart), against GNU
 #   insert-scaling  a run of propertized inserts at the end of a buffer costs the same per insert at 200 and at 3,200 (doublings at most x2.6)
 #   reader-labels #N= labels inside and across byte-code and interpreted closure objects, against GNU
+#   maxmin        max and min as GNU's Fmax and Fmin (NaN identity, markers, exact comparison, errors, arity), against GNU
+#   bytecode-arith  Bnegate, Bmax, Bmin, Bquo and Brem on GNU-compiled byte code: 181 cases against GNU's answers
+#   bytecode-arith-rows  Ir per iteration of those five opcodes against GNU's (callgrind), each within the cap
 #   make-string-limits  make-string beyond the size limits: GNU's string_overflow error, no crash
 #   gc-builders   the string builders under a Lisp callback that allocates, normally and with a collection at every safepoint
 #   gc-collect-ir the conservative scan costs at most 2.0 M Ir of a collection and a collection at most x1.10 GNU's (callgrind)
@@ -304,6 +307,42 @@ PYEOF
     cmp -s "$d/gnu.out" "$d/dyn.out" ||
       fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-120 | tr '\n' '|')"
     say "PASS reader-labels ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  maxmin)
+    # max and min are GNU's Fmax and Fmin (data.c minmax_driver): tools/ai/integ-wh-maxmin.el against GNU 31.1.  The answer is the
+    # winning argument (no float contagion), a NaN is answered at once and the arguments after it are not read, a marker answers its
+    # position, the first bad argument is the one named, and the arity errors have a direct call's and a subr's data.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/maxmin; rm -rf "$d"; mkdir -p "$d"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-maxmin.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-maxmin.el > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-140 | tr '\n' '|')"
+    say "PASS maxmin ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  bytecode-arith)
+    # The five arithmetic opcodes that GNU's bytecode.c runs on two fixnums in place (Bnegate, Bmax, Bmin, Bquo, Brem) against the
+    # answers GNU gave when test/bytecode-arith-corpus.eld was generated (test/bytecode-arith-corpus-src.el).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    capped timeout 280 "$DYN" --load test/standalone-bytecode-arith-check.el > "$OUT/bytecode-arith.out" 2> "$OUT/bytecode-arith.err"
+    rc=$?
+    last=$(tail -n 1 "$OUT/bytecode-arith.out")
+    case $last in
+      "BYTECODE-ARITH PASS "*) [ $rc = 0 ] && say "PASS bytecode-arith (${last#BYTECODE-ARITH PASS })" || fail "rc=$rc after $last" ;;
+      *) fail "bytecode-arith: $(grep -c 'BYTECODE-ARITH FAIL' "$OUT/bytecode-arith.out") mismatches, first: $(grep -m1 'BYTECODE-ARITH FAIL' "$OUT/bytecode-arith.out" | cut -c1-160)" ;;
+    esac ;;
+  bytecode-arith-rows)
+    # Ir per loop iteration of Bnegate, Bmax, Bmin, Bquo and Brem above the control loop, NeLisp against GNU 31.1 (callgrind): the
+    # fast loop of the VM runs the fixnum case in place as bytecode.c does (tools/ai/integ-wh-bytecode-arith-rows.py).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    rm -rf "$OUT/bytecode-arith-rows"
+    capped timeout 590 python3 tools/ai/integ-wh-bytecode-arith-rows.py check --dyn "$DYN" --work "$OUT/bytecode-arith-rows" > "$OUT/bytecode-arith-rows.log" 2>&1
+    got=$(grep -E '^(PASS|FAIL) bytecode-arith-rows' "$OUT/bytecode-arith-rows.log")
+    case $got in
+      "PASS "*) say "PASS bytecode-arith-rows (${got#PASS bytecode-arith-rows: }; Ir above the reference: $(grep '^BC-ARITH' "$OUT/bytecode-arith-rows.log" | grep -v -E '^BC-ARITH (control|plus):' | sed -E -e 's/^BC-ARITH (neg): nelisp (-?[0-9]+) Ir\/iter above the control;.*/\1 \2/' -e 's/^BC-ARITH ([a-z]+): nelisp .*, (-?[0-9]+) above the plus row;.*/\1 \2/' | tr '\n' ',' | sed 's/,$//'))" ;;
+      *) fail "bytecode-arith-rows: ${got:-no verdict: $(tail -n 2 "$OUT/bytecode-arith-rows.log" | tr '\n' ' ')}" ;;
+    esac ;;
   make-string-limits)
     # make-string at and beyond the size limits (tools/ai/integ-wh-make-string-limits.el against GNU 31.1): a string of more
     # than most-positive-fixnum bytes is (error "Maximum string size exceeded") before anything is allocated; a size that
