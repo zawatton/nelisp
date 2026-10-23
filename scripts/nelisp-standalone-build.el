@@ -20020,7 +20020,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
           -2
         (let* ((flow0 (logand fw 7))
                (tag (if (= flow0 0) (heap-read-u8 fw 0)
-                      (logand (heap-read-u8 (- fw 6) 0) 63)))
+                      (logand (heap-read-u8 fw -6) 63)))
                (func (if (= tag 17) fw
                        (if (= tag 4)
                            (if (= flow0 0)
@@ -20044,7 +20044,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (let* ((lowf (if (= tag 17) flow0 (logand func 7)))
                    (ftag (if (= tag 17) 17
                            (if (= lowf 0) (ptr-read-u8 func 0)
-                             (logand (ptr-read-u8 (- func 6) 0) 63))))
+                             (logand (ptr-read-u8 func -6) 63))))
                    (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
               (if (if (/= ftag 17) 1
                     (< (sar (ptr-read-u64 p 0) 8) 4))
@@ -20061,7 +20061,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                       (if (if (/= (logand template -32768) 0) 1
                             (if (< stk slots) 1 (> stk 131063)))
                           -2
-                        (let* ((rec (heap-read-u64 (+ env 96) 0)))
+                        (let* ((rec (heap-read-u64 env 96)))
                           (if (if (< rec 100) 0
                                 (>= rec (nl_eval_depth_limit env rec)))
                               (seq (wf_bytecode_signal_nesting) -1)
@@ -20092,7 +20092,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (ptr-write-u64 frame 40 (+ fd 6))
                     (ptr-write-u64 state 0 (+ n4d 1))))
            0)
-         (ptr-write-u64 (+ env 96) 0 (+ rec 1))
+         (ptr-write-u64 env 96 (+ rec 1))
          ;; setup_frame's frame: the main thread's root stack takes it inline
          ;; (the same stores as `nl_root_frame'); anything else goes through it.
          ;; Every slot is a valid WORD before anything can allocate: the stack
@@ -20120,7 +20120,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
             (setq fp2 (+ top 32))))
          (if (= fp2 0)
              (seq (wf_bytecode_signal_overflow)
-                  (ptr-write-u64 (+ env 96) 0 rec)
+                  (ptr-write-u64 env 96 rec)
                   (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                   -1)
            (let* ((foot (+ fp2 (* (+ stk 1) 8)))
@@ -20136,7 +20136,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (if (= rest 0) (> argc maxargs) 0))
                   (seq (bf_wrong_number_of_args func argc)
                        (nl_root_release env (- fp2 32))
-                       (ptr-write-u64 (+ env 96) 0 rec)
+                       (ptr-write-u64 env 96 rec)
                        (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                        -1)
                 (let* ((pushed (if (< maxargs argc) maxargs argc))
@@ -20150,7 +20150,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              0)
            (if (> pushed 2)
                (while (< i pushed)
-                 (seq (ptr-write-u64 (+ fp2 (* i 8)) 0 (heap-read-u64 (+ src (* i 8)) 0))
+                 (seq (ptr-write-u64 fp2 (* i 8) (heap-read-u64 src (* i 8)))
                       (setq i (+ i 1))))
              0)
                    ;; More arguments than named slots: the &rest list, built in
@@ -20159,7 +20159,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                        (let* ((k (- argc 1)) (dst (+ fp2 (* maxargs 8))))
                          (while (>= k maxargs)
                            (seq (ptr-write-u64
-                                 dst 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ src (* k 8)) 0)
+                                 dst 0 (wf_bytecode_w_cons2 (heap-read-u64 src (* k 8))
                                                             (heap-read-u64 dst 0)))
                                 (setq k (- k 1)))))
                      0)
@@ -20235,17 +20235,15 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                  (seq
                                   (if (or (>= sp depth) (<= sp raw)) (setq go 0)
                                     (seq
-                                     (ptr-write-u64 (+ mem (* sp 8)) 0
-                                                    (heap-read-u64
-                                                     (+ mem (* (- sp raw 1) 8))
-                                                     0))
+                                     (ptr-write-u64 mem (* sp 8)
+                                                    (heap-read-u64 mem (* (- sp raw 1) 8)))
                                      (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
                                  (if (< raw 8)
                                      (seq (setq go 0))
                                      (if (< raw 14)
                                          (let* ((index (- raw 8)) (value 0)
                                                 (kname (if (< index nconst)
-                                                           (heap-read-u64 (+ constants (* index 8)) 0)
+                                                           (heap-read-u64 constants (* index 8))
                                                          0)))
                                            (if (>= sp depth) (setq go 0)
                                              (seq
@@ -20271,9 +20269,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                           (setq last-entry
                                                                 (wf_bytecode_w_fast_entry
                                                                  env
-                                                                 (heap-read-u64
-                                                                  (+ constants (* index 8))
-                                                                  0)))
+                                                                 (heap-read-u64 constants (* index 8))))
                                                           (if
                                                               (/= (logand last-buckets 7)
                                                                   6)
@@ -20409,9 +20405,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                            (setq pc
                                                                                  (+ pc 2)))
                                                                        (seq
-                                                                        (ptr-write-u64
-                                                                         (+ mem (* sp 8))
-                                                                         0 value)
+                                                                        (ptr-write-u64 mem (* sp 8) value)
                                                                         (setq sp (+ sp 1))
                                                                         (setq pc (+ pc 1))))
                                                                    (if
@@ -20509,9 +20503,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                             (setq pc
                                                                                   (+ pc 2)))
                                                                         (seq
-                                                                         (ptr-write-u64
-                                                                          (+ mem (* sp 8))
-                                                                          0 value)
+                                                                         (ptr-write-u64 mem (* sp 8) value)
                                                                          (setq sp (+ sp 1))
                                                                          (setq pc (+ pc 1)))))))))))))
                                          (seq (setq go 0)))))
@@ -20522,7 +20514,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                         (seq (setq last-name -1) 0)
                                                       0))
                                             (fi (- sp (+ argc 1)))
-                                            (fw (ptr-read-u64 (+ mem (* fi 8)) 0))
+                                            (fw (ptr-read-u64 mem (* fi 8)))
                                             (pcret (+ pc 1))
                                             (isp (if (if (< fw 4096) 1
                                                         (if (/= (logand (heap-read-u64 env 112) 4) 0) 1
@@ -20534,13 +20526,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                     ;; holds one.  A closure is never the unbound marker, so the cell
                                                     ;; needs no further test; a legacy view, any other kind and any
                                                     ;; other cell contents take the ordinary call.
-                                                    (let* ((k (logand (ptr-read-u8 (- fw 6) 0) 63))
+                                                    (let* ((k (logand (ptr-read-u8 fw -6) 63))
                                                            (func (if (= k 17) fw
                                                                    (if (= k 4) (ptr-read-u64 (- fw 6) 24) 0))))
                                                       (if (if (= k 17) 0
                                                             (if (< func 4096) 1
                                                               (if (/= (logand func 7) 6) 1
-                                                                (/= (logand (ptr-read-u8 (- func 6) 0) 63) 17))))
+                                                                (/= (logand (ptr-read-u8 func -6) 63) 17))))
                                                           -2
                                                         (let* ((p (- func 6)))
                                                           (if (< (sar (ptr-read-u64 p 0) 8) 4)
@@ -20556,7 +20548,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                   (if (if (/= (logand template -32768) 0) 1
                                                                         (if (< stk (+ maxargs rest)) 1 (> stk 131063)))
                                                                       -2
-                                                                    (let* ((rec (heap-read-u64 (+ env 96) 0)))
+                                                                    (let* ((rec (heap-read-u64 env 96)))
                                                                       (if (if (< rec 100) 0
                                                                             (>= rec (nl_eval_depth_limit env rec)))
                                                                           (seq (wf_bytecode_signal_nesting) -1)
@@ -20587,7 +20579,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (ptr-write-u64 frame 40 (+ fd 6))
                     (ptr-write-u64 state 0 (+ n4d 1))))
                                                        0)
-                                                     (ptr-write-u64 (+ env 96) 0 (+ rec 1))
+                                                     (ptr-write-u64 env 96 (+ rec 1))
                                                      ;; setup_frame's frame: the main thread's root stack takes it inline
                                                      ;; (the same stores as `nl_root_frame'); anything else goes through it.
                                                      ;; Every slot is a valid WORD before anything can allocate: the stack
@@ -20615,7 +20607,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                         (setq fp2 (+ top 32))))
                                                      (if (= fp2 0)
                                                          (seq (wf_bytecode_signal_overflow)
-                                                              (ptr-write-u64 (+ env 96) 0 rec)
+                                                              (ptr-write-u64 env 96 rec)
                                                               (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                                                               -1)
                                                        (let* ((cfoot (+ fp2 (* (+ stk 1) 8)))
@@ -20632,7 +20624,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                 (if (= rest 0) (> argc maxargs) 0))
                                                               (seq (bf_wrong_number_of_args func argc)
                                                                    (nl_root_release env (- fp2 32))
-                                                                   (ptr-write-u64 (+ env 96) 0 rec)
+                                                                   (ptr-write-u64 env 96 rec)
                                                                    (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                                                                    -1)
                                                             (let* ((pushed (if (< maxargs argc) maxargs argc))
@@ -20646,7 +20638,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              0)
            (if (> pushed 2)
                (while (< i pushed)
-                 (seq (ptr-write-u64 (+ fp2 (* i 8)) 0 (heap-read-u64 (+ src (* i 8)) 0))
+                 (seq (ptr-write-u64 fp2 (* i 8) (heap-read-u64 src (* i 8)))
                       (setq i (+ i 1))))
              0)
                                                                ;; More arguments than named slots: the &rest list, built in
@@ -20655,7 +20647,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                    (let* ((k (- argc 1)) (dst (+ fp2 (* maxargs 8))))
                                                                      (while (>= k maxargs)
                                                                        (seq (ptr-write-u64
-                                                                             dst 0 (wf_bytecode_w_cons2 (heap-read-u64 (+ src (* k 8)) 0)
+                                                                             dst 0 (wf_bytecode_w_cons2 (heap-read-u64 src (* k 8))
                                                                                                         (heap-read-u64 dst 0)))
                                                                             (setq k (- k 1)))))
                                                                  0)
@@ -20671,10 +20663,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                ;; their calls; the WORD came from a closure's code slot, so it is a Lisp string and
                                                                ;; needs no validation.  Anything else keeps the view's fields.
                                                                (if (= (logand cw 7) 4)
-                                                                   (let* ((sb (ptr-read-u64 (+ cw 4) 0)))
-                                                                     (seq (setq data (ptr-read-u64 (+ cw 20) 0))
+                                                                   (let* ((sb (ptr-read-u64 cw 4)))
+                                                                     (seq (setq data (ptr-read-u64 cw 20))
                                                                           (setq length (if (< sb 0)
-                                                                                           (logand (ptr-read-u64 (- cw 4) 0) 9223372036854775807)
+                                                                                           (logand (ptr-read-u64 cw -4) 9223372036854775807)
                                                                                          sb))))
                                                                  (let* ((ct (heap-read-u8 cw 0)))
                                                                    (if (if (= ct 5) 1 (= ct 14))
@@ -20711,7 +20703,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (w (heap-read-u64 top 0))
                                   (tag (if (= (logand w 1) 1) (if (= w 3) 0 255)
                                          (if (= (logand w 7) 6)
-                                             (logand (ptr-read-u8 (- w 6) 0) 63)
+                                             (logand (ptr-read-u8 w -6) 63)
                                            (if (= (logand w 7) 2) 7
                                              (if (= (logand w 7) 4) 5 (ptr-read-u8 w 0)))))))
                              (if (= tag 7)
@@ -20727,11 +20719,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                          (if (= raw 84)
                            (if (<= sp 0) (setq go 0)
                              (seq
-                              (setq a (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                              (setq a (heap-read-u64 mem (- (* sp 8) 8)))
                               (if (/= (logand a 3) 1) (setq go 0)
                                 (if (= a 9223372036854775805) (setq go 0)
                                   (seq
-                                   (ptr-write-u64 (+ mem (* (- sp 1) 8)) 0
+                                   (ptr-write-u64 mem (- (* sp 8) 8)
                                                   (+ a 4))
                                    (setq pc (+ pc 1)))))))
                            (if (= raw 91)
@@ -20741,17 +20733,11 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                   (setq go 0)
                                 (seq
                                  (setq a
-                                       (heap-read-u64
-                                        (+ mem
-                                           (*
-                                            (- sp
+                                       (heap-read-u64 mem (* (- sp
                                                (if (< raw 85) 1
-                                                 2))
-                                            8))
-                                        0))
+                                                 2)) 8)))
                                  (setq b
-                                       (heap-read-u64
-                                        (+ mem (* (- sp 1) 8)) 0))
+                                       (heap-read-u64 mem (- (* sp 8) 8)))
                                  (if
                                      (or (/= (logand a 3) 1)
                                          (/= (logand b 3) 1))
@@ -20847,8 +20833,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (if (>= raw 85)
                                            (setq sp (- sp 1))
                                          0)
-                                       (ptr-write-u64
-                                        (+ mem (* (- sp 1) 8)) 0
+                                       (ptr-write-u64 mem (- (* sp 8) 8)
                                         word)
                                        (setq pc (+ pc 1))))))))))))
                      (if (< raw 137)
@@ -20870,8 +20855,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                       (setq go 0)
                                     (seq
                                      (setq a
-                                           (heap-read-u64
-                                            (+ mem (* (- sp 1) 8)) 0))
+                                           (heap-read-u64 mem (- (* sp 8) 8)))
                                      (if (= (logand a 1) 0)
                                          (setq go 0)
                                        (seq
@@ -20939,8 +20923,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                   (ev (+ env 96))
                                                   (nt (- mem 32)))
                                              (seq
-                                              (ptr-write-u64 (+ caller (* fi 8)) 0
-                                                             (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
+                                              (ptr-write-u64 caller (* fi 8)
+                                                             (heap-read-u64 mem (- (* sp 8) 8)))
                                               (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                                                   (ptr-write-u64 (data-addr nl_rootstack_top) 0 nt)
                                                 (nl_root_release env nt))
@@ -20952,7 +20936,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (setq pc (sar (ptr-read-u64 foot 16) 2))
                                               (setq sp (+ fi 1))
                                               (setq mem caller)
-                                              (setq depth (- (ptr-read-u64 (- caller 24) 0) 7))
+                                              (setq depth (- (ptr-read-u64 caller -24) 7))
                                               (setq foot (+ caller (* (+ depth 1) 8)))
                                               (let* ((cw (ptr-read-u64 foot 24))
                                                      (kw (ptr-read-u64 foot 32))
@@ -20962,10 +20946,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                 (seq
                                                  ;; The code string, as setup_frame reads it (SDATA): see the call.
                                                  (if (= (logand cw 7) 4)
-                                                     (let* ((sb (ptr-read-u64 (+ cw 4) 0)))
-                                                       (seq (setq data (ptr-read-u64 (+ cw 20) 0))
+                                                     (let* ((sb (ptr-read-u64 cw 4)))
+                                                       (seq (setq data (ptr-read-u64 cw 20))
                                                             (setq length (if (< sb 0)
-                                                                             (logand (ptr-read-u64 (- cw 4) 0) 9223372036854775807)
+                                                                             (logand (ptr-read-u64 cw -4) 9223372036854775807)
                                                                            sb))))
                                                    (let* ((ct (heap-read-u8 cw 0)))
                                                      (if (if (= ct 5) 1 (= ct 14))
@@ -21000,15 +20984,10 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                  (<= branch 134))
                                             (seq
                                              (setq a
-                                                   (heap-read-u64
-                                                    (+ mem (* (- sp 1) 8))
-                                                    0))
+                                                   (heap-read-u64 mem (- (* sp 8) 8)))
                                              (setq b
                                                    (if (= ref 0) a
-                                                     (heap-read-u64
-                                                      (+ mem
-                                                         (* (- sp ref) 8))
-                                                      0)))
+                                                     (heap-read-u64 mem (* (- sp ref) 8))))
                                              (if
                                                  (and (= (logand a 3) 1)
                                                       (= (logand b 3) 1))
@@ -21075,13 +21054,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                    (= word
                                                                       3)
                                                                    (seq
-                                                                    (ptr-write-u64
-                                                                     (+
-                                                                      mem
-                                                                      (*
-                                                                       sp
-                                                                       8))
-                                                                     0
+                                                                    (ptr-write-u64 mem (* sp 8)
                                                                      word)
                                                                     (setq
                                                                      sp
@@ -21101,11 +21074,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                         pc
                                                                         6))
                                                                (seq
-                                                                (ptr-write-u64
-                                                                 (+ mem
-                                                                    (* sp
-                                                                       8))
-                                                                 0 word)
+                                                                (ptr-write-u64 mem (* sp 8) word)
                                                                 (setq sp
                                                                       (+
                                                                        sp
@@ -21121,12 +21090,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                        (if (or (<= sp 0) (>= sp depth))
                                            (setq go 0)
                                          (seq
-                                          (ptr-write-u64 (+ mem (* sp 8))
-                                                         0
-                                                         (heap-read-u64
-                                                          (+ mem
-                                                             (* (- sp 1) 8))
-                                                          0))
+                                          (ptr-write-u64 mem (* sp 8)
+                                                         (heap-read-u64 mem (- (* sp 8) 8)))
                                           (setq sp (+ sp 1))
                                           (setq pc (+ pc 1))))
                                      0)))
@@ -21138,11 +21103,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                           (>= (- raw 192) nconst))
                                       (setq go 0)
                                     (seq
-                                     (ptr-write-u64 (+ mem (* sp 8)) 0
-                                                    (heap-read-u64
-                                                     (+ constants
-                                                        (* (- raw 192) 8))
-                                                     0))
+                                     (ptr-write-u64 mem (* sp 8)
+                                                    (heap-read-u64 constants (- (* raw 8) 1536)))
                                      (setq sp (+ sp 1)) (setq pc (+ pc 1))))))))))))
         (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
              (ptr-write-u64 cell 0 (+ (shl (- 255 back) 2) 1))
