@@ -20515,40 +20515,25 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                             (fw (ptr-read-u64 (+ mem (* fi 8)) 0))
                                             (pcret (+ pc 1))
                                             (isp (if (if (< fw 4096) 1
-                                                        (if (= (logand fw 1) 1) 1
-                                                          (if (/= (logand (heap-read-u64 env 112) 4) 0) 1
-                                                            (if (= (logand fw 7) 0) 0 (/= (logand fw 7) 6)))))
+                                                        (if (/= (logand (heap-read-u64 env 112) 4) 0) 1
+                                                          (/= (logand fw 7) 6)))
                                                       -2
-                                                    (let* ((flow0 (logand fw 7))
-                                                           (tag (if (= flow0 0) (heap-read-u8 fw 0)
-                                                                  (logand (heap-read-u8 (- fw 6) 0) 63)))
-                                                           (func (if (= tag 17) fw
-                                                                   (if (= tag 4)
-                                                                       (if (= flow0 0)
-                                                                           (let ((cl (nelisp_env_lookup_function_w
-                                                                                      (+ env 0) (+ env 64) fw 0)))
-                                                                             (if (= cl 2) 0 cl))
-                                                                         ;; An interned symbol's object is its own entry
-                                                                         ;; (Doc 226 D9): GNU reads the symbol's function
-                                                                         ;; slot (bytecode.c:803 XBARE_SYMBOL (call_fun)->
-                                                                         ;; u.s.function), here slot 1 of the object.
-                                                                         (let ((fnw (nl_record_slot_word fw 1)))
-                                                                           (if (= (wf_bytecode_w_unbound_p env fnw) 1) 0 fnw)))
-                                                                     0))))
-                                                      ;; A closure named directly is FW itself, already known to be one; only a
-                                                      ;; function found through a symbol is checked again.
-                                                      (if (if (= tag 17) 0
+                                                    ;; docall (bytecode.c:735-750): the callee is a closure named
+                                                    ;; directly, or a symbol object whose function cell (slot 1, at
+                                                    ;; +24: bytecode.c:803 XBARE_SYMBOL (call_fun)->u.s.function)
+                                                    ;; holds one.  A closure is never the unbound marker, so the cell
+                                                    ;; needs no further test; a legacy view, any other kind and any
+                                                    ;; other cell contents take the ordinary call.
+                                                    (let* ((k (logand (ptr-read-u8 (- fw 6) 0) 63))
+                                                           (func (if (= k 17) fw
+                                                                   (if (= k 4) (ptr-read-u64 (- fw 6) 24) 0))))
+                                                      (if (if (= k 17) 0
                                                             (if (< func 4096) 1
-                                                              (if (= (logand func 1) 1) 1
-                                                                (if (= (logand func 7) 0) 0 (/= (logand func 7) 6)))))
+                                                              (if (/= (logand func 7) 6) 1
+                                                                (/= (logand (ptr-read-u8 (- func 6) 0) 63) 17))))
                                                           -2
-                                                        (let* ((lowf (if (= tag 17) flow0 (logand func 7)))
-                                                               (ftag (if (= tag 17) 17
-                                                                       (if (= lowf 0) (ptr-read-u8 func 0)
-                                                                         (logand (ptr-read-u8 (- func 6) 0) 63))))
-                                                               (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
-                                                          (if (if (/= ftag 17) 1
-                                                                (< (sar (ptr-read-u64 p 0) 8) 4))
+                                                        (let* ((p (- func 6)))
+                                                          (if (< (sar (ptr-read-u64 p 0) 8) 4)
                                                               -2
                                                             (let* ((tw (ptr-read-u64 p 16))
                                                                    (sw (ptr-read-u64 p 40)))
@@ -20557,10 +20542,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                 (let* ((template (sar tw 2))
                                                                        (stk (sar sw 2))
                                                                        (maxargs (sar template 8))
-                                                                       (rest (logand (sar template 7) 1))
-                                                                       (slots (+ maxargs rest)))
+                                                                       (rest (logand (sar template 7) 1)))
                                                                   (if (if (/= (logand template -32768) 0) 1
-                                                                        (if (< stk slots) 1 (> stk 131063)))
+                                                                        (if (< stk (+ maxargs rest)) 1 (> stk 131063)))
                                                                       -2
                                                                     (let* ((rec (heap-read-u64 (+ env 96) 0)))
                                                                       (if (if (< rec 100) 0
