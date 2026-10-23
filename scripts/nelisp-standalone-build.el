@@ -20554,7 +20554,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                           (seq (wf_bytecode_signal_nesting) -1)
                                                                         (let* ((state0 (heap-read-u64 env 176))
                                                          (state (if (= state0 0) (nl_n4_state env) state0))
-                                                         (n4d (heap-read-u64 state 0))
+                                                                 (src (+ mem (shl (+ fi 1) 3)))
+                                                                 (n4d (heap-read-u64 state 0))
                                                          (n4 (if (>= n4d 32768) 0 1))
                                                          (nslots (+ stk 7))
                                                          (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
@@ -20574,7 +20575,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                (seq (ptr-write-u64 frame 0 fw)
                     (ptr-write-u64 frame 8 3)
                     (ptr-write-u64 frame 16 fl)
-                    (ptr-write-u64 frame 24 (+ (* (+ mem (* (+ fi 1) 8)) 65536) argc))
+                    (ptr-write-u64 frame 24 (+ (shl src 16) argc))
                     (ptr-write-u64 frame 32 (sar (ptr-read-u64 fd 24) 2))
                     (ptr-write-u64 frame 40 (+ fd 6))
                     (ptr-write-u64 state 0 (+ n4d 1))))
@@ -20610,12 +20611,12 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                               (ptr-write-u64 env 96 rec)
                                                               (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                                                               -1)
-                                                       (let* ((cfoot (+ fp2 (* (+ stk 1) 8)))
+                                                       (let* ((cfoot (+ fp2 (shl (+ stk 1) 3)))
                                                               (cw (ptr-read-u64 p 24))
                                                               (kw (ptr-read-u64 p 32)))
                                                          (seq
                                                           (ptr-write-u64 cfoot 0 (+ (shl mem 2) 1))
-                                                          (ptr-write-u64 cfoot 8 (+ (shl (+ (* fi 2) n4) 2) 1))
+                                                          (ptr-write-u64 cfoot 8 (+ (shl (+ (shl fi 1) n4) 2) 1))
                                                           (ptr-write-u64 cfoot 16 (+ (shl pcret 2) 1))
                                                           (ptr-write-u64 cfoot 24 cw)
                                                           (ptr-write-u64 cfoot 32 kw)
@@ -20628,8 +20629,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                                    (if (= n4 0) 0 (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)))
                                                                    -1)
                                                             (let* ((pushed (if (< maxargs argc) maxargs argc))
-                                                                   (src (+ mem (* (+ fi 1) 8)))
-                                                                   (i 2))
+                           (i 2))
           (seq
            ;; The first two arguments in line; a loop only for more.
            (if (> pushed 0)
@@ -20909,11 +20909,13 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (n4 (logand packed 1))
                                               (state (heap-read-u64 env 176)))
                                          (if (if (= n4 1)
-                                                 (/= (heap-read-u8
-                                                      (+ state (shl (heap-read-u64 state 0) 6))
-                                                      18)
-                                                     0)
-                                               0)
+                 (if (/= (heap-read-u64 state 8) 0)
+                     (/= (heap-read-u8
+                          (+ state (shl (heap-read-u64 state 0) 6))
+                          18)
+                         0)
+                   0)
+               0)
                                              (setq go 0)
                                            ;; Breturn (bytecode.c:892-923): lisp_eval_depth--, the backtrace
                                            ;; entry popped, the data stack back to the caller's frame, whose
@@ -50021,7 +50023,9 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
               (if (= code 1) (nl_n4_locals_w env index 0)
                 (if (= code 2)
                     (let* ((value (wf_arg_word payload 1)))
-                      (seq (ptr-write-u8 frame 18 (if (= (nl_val_tag value) 0) 0 1)) value))
+                      (seq (ptr-write-u8 frame 18 (if (= (nl_val_tag value) 0) 0 1))
+                           (if (= (nl_val_tag value) 0) 0 (ptr-write-u64 state 8 1))
+                           value))
                   (nl_n4_frame_eval_w env frame (nl_apply_list_nth payload 1) 0))))))))))
 
 (defun nl_n4_frame_eval_w (env frame expression _pad)
@@ -50721,7 +50725,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 
 ;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
 ;; EvalCtx+176 points to a per-context transient mmap: a 64-byte header with depth,
-;; a spare word, raw lean/pending binding links at +16/+24, and typed recursion-variable
+;; the debug-on-exit seen flag (set once an activation has the flag; the bytecode return skips its
+;; test while it is zero), raw lean/pending binding links at +16/+24, and typed recursion-variable
 ;; caches at +32/+40/+48 and a raw redirect flag at +56, then 32768 64-byte records, GNU's
 ;; struct backtrace (lisp.h union specbinding) with what backtrace--locals needs: the function
 ;; and argument WORDs (roots, as mark_specpdl marks bt.function and bt.args), a flags word
@@ -51657,6 +51662,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                   (if (= code 2)
                       (seq (ptr-write-u8 frame 18
                             (if (= (sexp-tag (nl_apply_list_nth payload 1)) 0) 0 1))
+                           (if (= (sexp-tag (nl_apply_list_nth payload 1)) 0) 0 (ptr-write-u64 state 8 1))
                            (nl_sexp_clone_into (nl_apply_list_nth payload 1) out) 0)
                     (nl_n4_frame_eval env frame (nl_apply_list_nth payload 1) out))))))))))
     (defun nl_n4_reflection_filter_p (filter)
