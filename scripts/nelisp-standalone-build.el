@@ -10095,15 +10095,18 @@ REPL-facing module it feeds."
     ;; sets the pinned flag that stops the arena compaction.  A word in the pool's headers or sdata still sets the
     ;; small-string compaction guard (strings state +56): the builders of this runtime hold raw sdata pointers, which
     ;; GNU forbids across a collection (the audit of that is in the ledger).
-    ;; FROM-BLOCK is 1 for a word read from a pinned block, 0 for a word of the native stack.  A stack word into pool
-    ;; sdata is dropped, as GNU does: nothing may keep a raw data pointer across a collection.  A word of a pinned block
-    ;; is not a stack word: the blocks of this runtime are untyped, and two shapes in them name a string only by its
-    ;; data pointer -- the box of a mutable string builder (+8) and the frame slots that hold a legacy string view,
-    ;; whose capacity word carries the header under flag bits that no pointer test accepts and whose data pointer (+16)
-    ;; is the only word the scan can read.  The GC audit found both (tens of thousands of reports in the test suites),
-    ;; so such a word still marks its owner, by the old walk of the sdata block.
+    ;; Every sdata word is dropped, wherever it was read (the native stack or a pinned block), as GNU's MEM_TYPE_NON_LISP
+    ;; arm does: nothing may keep a raw data pointer across a collection.  Two shapes of this runtime name a string only
+    ;; by its data pointer -- the box of a mutable string builder (+8) and the frame slot that holds a legacy string view
+    ;; of a call's argument (+16 of a view whose capacity word carries the header under flag bits) -- and a first
+    ;; prototype let a data word read from a pinned block still mark its owner (the walk of the sdata block).  That walk
+    ;; was dropped after tools/ai/integ-wh-gc-discriminator.sh found nothing that needs it: with every swept string's data
+    ;; overwritten with 0xDD, the 11 groups, every standalone check with a collection at each safepoint that finishes, the
+    ;; GNU-compared goldens normally and forced, and the library's base, GUI and SKK images behave as with the walk (ledger
+    ;; S2.26).  A producer that is ever found to need it is repaired by decoding the view's header from its capacity word
+    ;; (flag bit 61 or 62) and marking that string, not by walking sdata again.
     ;; Returns 1 when W lies in a string area (handled), 0 to continue on the typed and owner paths.
-    (defun nl_gc_conserv_string_area (w from-block)
+    (defun nl_gc_conserv_string_area (w)
       (let* ((st (data-addr nl_strings_state))
              (kind (logand (nl_string_mapping_holding w) 7)))
         (if (= kind 6) 1
@@ -10114,10 +10117,10 @@ REPL-facing module it feeds."
                             (ptr-write-u64 st 56 1)))
                      1))
             (if (if (= kind 4) 1 (= kind 5))
-                (seq (if (= from-block 1) (nl_string_pin_word w) (ptr-write-u64 st 56 1)) 1)
+                (seq (ptr-write-u64 st 56 1) 1)
               (nl_dump_in_string_image w))))))
     (defun nl_gc_conserv_word (w)
-      (if (= (nl_gc_conserv_string_area w 1) 1) 0
+      (if (= (nl_gc_conserv_string_area w) 1) 0
         (if (= (nl_gc_conserv_typed w) 1) 0
           (let ((owner (nl_gc_conserv_resolve w)))
             (if (= owner 0) 0 (nl_gc_conserv_pin owner))))))
@@ -10161,7 +10164,7 @@ REPL-facing module it feeds."
            (setq word (heap-read-u64 p 0))
            ;; A word in a string area is handled by `nl_gc_conserv_string_area' and goes no further.
            (if (if (= smap 0) 0 (if (>= word slo) (< word shi) 0))
-               (if (= (nl_gc_conserv_string_area word 0) 1) 0
+               (if (= (nl_gc_conserv_string_area word) 1) 0
                  (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
                      (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
                        (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
@@ -14553,24 +14556,23 @@ leave symbols unresolved at link time."
                          (if (or (= tag 5) (= tag 14))
                              (if (= (nl_string_header_p (logand (heap-read-u64 car 8) 2305843009213693951)) 1) 1 3)
                            0))))))))))))
-    ;; (nelisp--debug-switch 82 STR), 84 and 87: what the conservative scan does with a word inside the String STR.
-    ;; 82 takes a word inside its 32-byte header (header + 13), 84 a word of the native stack inside its sdata (data
-    ;; pointer + 1), 87 the same word read from a pinned block.
+    ;; (nelisp--debug-switch 82 STR) and (nelisp--debug-switch 84 STR): what the conservative scan does with a word
+    ;; inside the String STR.  82 takes a word inside its 32-byte header (header + 13), 84 a word inside its sdata (data
+    ;; pointer + 1).
     ;; The answer is a fixnum: bit 0 the word was handled as a string area (`nl_gc_conserv_string_area' answered 1),
     ;; bit 1 the string was marked, bit 2 the small-string compaction guard (strings state +56) was set, bits 4 and
     ;; up the mapping kind of the word (3 pool header, 4 and 5 pool sdata, 6 image header, 0 none).  The mark and
     ;; the guard are put back as they were.  GNU mark_maybe_pointer: a header word marks that string
     ;; (live_string_holding), an sdata word names no object.  -1 when STR is no String WORD.
     (defun nl_gc_area_probe_w (args)
-      (let* ((w (wf_arg_word args 1)) (probe (if (= (wf_argval args 0) 82) 0 1))
-             (from-block (if (= (wf_argval args 0) 87) 1 0)))
+      (let* ((w (wf_arg_word args 1)) (probe (if (= (wf_argval args 0) 82) 0 1)))
         (if (/= (logand w 7) 4) (nl_imm_int -1)
           (let* ((s (- w 4)) (st (data-addr nl_strings_state))
                  (addr (if (= probe 0) (+ s 13) (+ (heap-read-u64 s 24) 1)))
                  (kind (logand (nl_string_mapping_holding addr) 7))
                  (guard0 (heap-read-u64 st 56)) (size0 (heap-read-u64 s 0)))
             (seq (ptr-write-u64 st 56 0)
-                 (let* ((r (nl_gc_conserv_string_area addr from-block))
+                 (let* ((r (nl_gc_conserv_string_area addr))
                         (marked (if (< (heap-read-u64 s 0) 0) 1 0))
                         (guard (if (/= (heap-read-u64 st 56) 0) 1 0)))
                    (seq (if (= marked 1) (ptr-write-u64 s 0 size0) 0)
@@ -14654,7 +14656,7 @@ leave symbols unresolved at link time."
     (defun bf_debug_switch_w (args env)
       (if (if (= (wf_argval args 0) 85) 1 (= (wf_argval args 0) 86))
           (nl_gc_area_fresh_w args)
-      (if (if (= (wf_argval args 0) 82) 1 (if (= (wf_argval args 0) 84) 1 (= (wf_argval args 0) 87)))
+      (if (if (= (wf_argval args 0) 82) 1 (= (wf_argval args 0) 84))
           (nl_gc_area_probe_w args)
       (if (if (>= (wf_argval args 0) 83) (<= (wf_argval args 0) 83) 0)
           (nl_gc_area_survive_w args env)

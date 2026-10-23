@@ -1,0 +1,77 @@
+GC discriminator: does anything rely on a string-data word to keep its string alive?  (integ-wh m12, ledger S2.26)
+2026-10-24, GNU 31.1 as the reference, every NeLisp run capped at 8 GiB of address space, each job one bin/heavy-run.sh unit.
+Variants (one dynamic build each, 643 s and 649 s): poison-pure = prototype 6 tree + the poison patch (a swept string keeps only the size word; its other data bytes are 0xDD),
+poison-hyb = prototype 7 tree + the same patch.  The pure scan drops every sdata word; the hybrid still lets a sdata word read from a pinned block mark its owner.
+Binaries: nelisp-dyn-poisondrop v1.5.0-2234-g156a8708d, nelisp-dyn-poisonhyb v1.5.0-2235-g0f967560a (branches eval/integ-wh-20261022-m12-poison-drop and -poison-hyb).
+
+1. The 11 groups of target/final-verify/checks.sh, private log directories (LC_ALL=C.UTF-8):
+   poison-pure: GATE-COUNT: 11 cases, 0 failures (141 standalone checks, known-red as before: standalone-maphash-sparse-check.el)
+   poison-hyb: GATE-COUNT: 11 cases, 0 failures (141 standalone checks, known-red as before: standalone-maphash-sparse-check.el)
+   An earlier run showed two failures on pure (standalone-symbols-check and standalone-syntax-rt-chartab-check, "GNU output mismatch") and none on hybrid.  It does not reproduce:
+   the runs above and 68 more per variant (section 2) pass.  The symptom, those two names with that message, is reproduced by two concurrent test/perf/standalone-checks.sh
+   runs of just those two tests on the pure binary that share the default log directory target/standalone-checks/ (the first run reports both failures, the second none);
+   with a private STANDALONE_CHECK_LOGDIR neither fails.  The earlier run executed in the batch worktree, whose own runs of the suite write the same directory, so that is
+   the likely cause; nothing else has been found.
+
+2. Environment padding (the layout of the native stack changes with the environment): standalone-symbols-check and standalone-syntax-rt-chartab-check,
+   17 paddings (0 to 2048 bytes by 128) x 2 repeats each, per variant:
+    SWEEP poisondrop: 68 runs, 0 differing
+    SWEEP poisonhyb: 68 runs, 0 differing
+   standalone-syntax-rt-chartab-check needs a UTF-8 locale on both variants (curved quotes); the earlier shell cannot be told from the log which it had.
+
+3. GNU-compared goldens (tools/ai/integ-wh-{no-props,string-repr,reader-labels,raw-literal,sanity}.el) and tools/ai/integ-wh-gc-builders.el (115 checks),
+   normally and after (nelisp--debug-switch 70) (a collection at every bytecode safepoint):
+   poison-pure normal  no-props      SAME
+   poison-pure normal  string-repr   SAME
+   poison-pure normal  reader-labels SAME
+   poison-pure normal  raw-literal   SAME
+   poison-pure normal  sanity        SAME
+   poison-pure normal  gc-builders   GC-BUILDERS PASS 115
+   poison-pure force   no-props      SAME
+   poison-pure force   string-repr   SAME
+   poison-pure force   reader-labels SAME
+   poison-pure force   raw-literal   SAME
+   poison-pure force   sanity        SAME
+   poison-pure force   gc-builders   GC-BUILDERS PASS 115
+   poison-hyb  normal  no-props      SAME
+   poison-hyb  normal  string-repr   SAME
+   poison-hyb  normal  reader-labels SAME
+   poison-hyb  normal  raw-literal   SAME
+   poison-hyb  normal  sanity        SAME
+   poison-hyb  normal  gc-builders   GC-BUILDERS PASS 115
+   poison-hyb  force   no-props      SAME
+   poison-hyb  force   string-repr   SAME
+   poison-hyb  force   reader-labels SAME
+   poison-hyb  force   raw-literal   SAME
+   poison-hyb  force   sanity        SAME
+   poison-hyb  force   gc-builders   GC-BUILDERS PASS 115
+
+4. Every standalone check (test/standalone-*-check.el and word-heap-vectorlike-check.el, 141 files) with (nelisp--debug-switch 70).  A test that cannot finish
+   in its time limit is TIMEOUT, which is no verdict.  Runs: 150 s for the first 55 tests, 25 s for the other 86, then 450 s for the string-related timeouts.
+   poison-pure: 141 tests: KNOWNRED 1, PASS 100, TIMEOUT 40
+   poison-hyb: 141 tests: KNOWNRED 1, PASS 98, TIMEOUT 42
+   no FAIL and no CRASH on either variant.  Verdicts that differ between the variants (a timing artifact at the limit, not a result):
+     standalone-gnu-semantics-load-check: pure PASS, hybrid TIMEOUT
+     standalone-symview-mark-check: pure PASS, hybrid TIMEOUT
+   Never finished on either variant (40): abi-environment-watch boot-libraries bytecode-word casefold-domain casetab-behaviour closure-sharing elc-load eqhash eval-call fx-call-shape gnu-call-entry gnu-semantics-printer gnu-semantics-setf gnu-semantics-syntax hash-table-growth prim-shadow prim-sort prim-sort-number printer-load recursion-limit-local recursion-limit-worker regexp-backtracking regexp-syncache regexp-tramp save-current-buffer-cell shallow-binding signal-data sqlite-owned substring symbol-canonical-store symbol-eager-object symbol-precise-root symbol-value-immediate syntax-comment syntax-rt-semantics variable-alias vm-gc-poll-memory vm-special-form-head vm-varref weak-symbol-mark
+
+5. The library images (tools/c-core-image.sh build then check, the census snapshot of nelisp-emacs-lib, NELISP_BIN = the poison binary):
+   poison-pure base  build  rc=0 130s  
+   poison-pure base  check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.065s (cap 50s)
+   poison-pure gui   build  rc=0 65s   
+   poison-pure gui   check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.065s (cap 50s)
+   poison-pure skk   build  rc=0 82s   
+   poison-pure skk   check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.116s (cap 50s)
+   poison-hyb  base  build  rc=0 129s  
+   poison-hyb  base  check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.116s (cap 50s)
+   poison-hyb  gui   build  rc=0 66s   
+   poison-hyb  gui   check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.066s (cap 50s)
+   poison-hyb  skk   build  rc=0 83s   
+   poison-hyb  skk   check  rc=0 0s    c-core-image: PASS C8.2 marker evaluated in 0.116s (cap 50s)
+   (the first SKK build of each variant ends rc=1, and its check with it: the SKK package writes "I have created an empty SKK Jisyo file for you" to stderr, which the builder counts as a failure; the dictionary exists afterwards and the second build is the real one)
+
+6. Cost (ledger S2.21 and S2.29, GNU 14.3 to 14.6 ms per gc3 collection, CPU 11): the scan costs 9.9 M Ir of a 57.5 M collection on batch D, 0.3 M (pure) and 0.4 M (hybrid) of 48.0 M; the conservative-cost check 1.16 on D, 1.03 on both.
+
+Verdict: pure is clean wherever it was exercised, and indistinguishable from the hybrid in cost (ledger S2.29: scan 0.3 M and 0.4 M Ir of a 48 M collection).
+Not proven: a producer outside these runs that reads a string through a data pointer after a collection.  If one is found, the repair is to decode the legacy
+view's header from its capacity word (flag bit 61 or 62) and mark that string; tools/ai/integ-wh-gc-hybrid.patch turns the tree into the hybrid for a comparison.

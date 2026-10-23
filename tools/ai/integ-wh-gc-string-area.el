@@ -24,11 +24,8 @@
        (h (iwh-ga-bits (nelisp--debug-switch 82 pool)))
        (d (iwh-ga-bits (nelisp--debug-switch 84 pool))))
   (iwh-ga "pool header word: handled, marked, guard, kind 3" (equal h '(1 1 1 3)) h)
-  (iwh-ga "pool sdata word of the stack: handled, not marked, guard, kind 4 or 5"
-          (and (= (nth 0 d) 1) (= (nth 1 d) 0) (= (nth 2 d) 1) (memq (nth 3 d) '(4 5))) d)
-  (let ((b (iwh-ga-bits (nelisp--debug-switch 87 pool))))
-    (iwh-ga "pool sdata word of a pinned block: handled, marks its owner, guard"
-            (and (= (nth 0 b) 1) (= (nth 1 b) 1) (= (nth 2 b) 1) (memq (nth 3 b) '(4 5))) b)))
+  (iwh-ga "pool sdata word: handled, not marked, guard, kind 4 or 5"
+          (and (= (nth 0 d) 1) (= (nth 1 d) 0) (= (nth 2 d) 1) (memq (nth 3 d) '(4 5))) d))
 
 (let* ((img emacs-version)
        (h (iwh-ga-bits (nelisp--debug-switch 82 img)))

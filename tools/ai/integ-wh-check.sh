@@ -23,6 +23,8 @@
 #   gc-string-area  the conservative scan and the string areas: a header word marks its string, an sdata word names none
 #   reader-labels #N= labels inside and across byte-code and interpreted closure objects, against GNU
 #   make-string-limits  make-string beyond the size limits: GNU's string_overflow error, no crash
+#   gc-builders   the string builders under a Lisp callback that allocates, normally and with a collection at every safepoint
+#   gc-collect-ir the conservative scan costs at most 2.0 M Ir of a collection and a collection at most x1.10 GNU's (callgrind)
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -258,7 +260,7 @@ PYEOF
     # GNU mark_maybe_pointer for strings: a conservative word inside a string's header marks that string, a word inside
     # string data names no object, and neither is ever queued as a block (tools/ai/integ-wh-gc-string-area.el).
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
-    capped timeout 280 "$DYN" --load tools/ai/integ-wh-gc-string-area.el > "$OUT/gc-string-area.out" 2>&1
+    capped timeout 280 "$DYN" -l tools/ai/integ-wh-gc-string-area.el > "$OUT/gc-string-area.out" 2>&1
     tail -n 1 "$OUT/gc-string-area.out" | grep -qx 'GC-STRING-AREA PASS' ||
       fail "$(grep -E '^(FAIL|GC-STRING-AREA)' "$OUT/gc-string-area.out" | head -n 3 | cut -c1-160 | tr '\n' '|')"
     say "PASS gc-string-area ($(grep -c '^ok' "$OUT/gc-string-area.out") checks)" ;;
@@ -289,6 +291,29 @@ PYEOF
     cmp -s "$d/gnu.out" "$d/dyn.out" ||
       fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-120 | tr '\n' '|')"
     say "PASS make-string-limits ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  gc-builders)
+    # GNU forbids a raw string-data pointer that is the only reference to its string across an allocation or a call back into
+    # Lisp (alloc.c drops every word that points into string data).  The builders of this runtime keep their partial result in a
+    # box that holds one, and the frame slot of a call's argument holds a legacy view: tools/ai/integ-wh-gc-builders.el builds
+    # strings while a Lisp function allocates and loops, normally and after (nelisp--debug-switch 70), which collects at every
+    # safepoint, and compares each result with the same string built without the callback.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    capped timeout 280 "$DYN" -l tools/ai/integ-wh-gc-builders.el > "$OUT/gc-builders.out" 2> "$OUT/gc-builders.err"
+    tail -n 1 "$OUT/gc-builders.out" | grep -q '^GC-BUILDERS PASS ' || fail "normal: $(grep -E '^(FAIL|GC-BUILDERS)' "$OUT/gc-builders.out" | head -n 3 | cut -c1-160 | tr '\n' '|')"
+    capped timeout 280 "$DYN" --eval '(nelisp--debug-switch 70)' -l tools/ai/integ-wh-gc-builders.el > "$OUT/gc-builders-forced.out" 2> "$OUT/gc-builders-forced.err"
+    tail -n 1 "$OUT/gc-builders-forced.out" | grep -q '^GC-BUILDERS PASS ' || fail "forced: $(grep -E '^(FAIL|GC-BUILDERS)' "$OUT/gc-builders-forced.out" | head -n 3 | cut -c1-160 | tr '\n' '|')"
+    say "PASS gc-builders ($(tail -n 1 "$OUT/gc-builders.out"), forced: $(tail -n 1 "$OUT/gc-builders-forced.out"))" ;;
+  gc-collect-ir)
+    # The Ir of a steady-state collection of the conservative-cost check's workload with the stack scan on and off, and GNU's
+    # (tools/ai/integ-wh-gc-collect-ir.py check): batch D spent 9.9 M of 57.5 M Ir in the scan, GNU's collection is 47.4 M.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    rm -rf "$OUT/collect-ir"
+    capped timeout 590 python3 tools/ai/integ-wh-gc-collect-ir.py check --dyn "$DYN" --work "$OUT/collect-ir" > "$OUT/collect-ir.log" 2>&1
+    got=$(grep -E '^(PASS|FAIL) gc-collect-ir' "$OUT/collect-ir.log")
+    case $got in
+      "PASS "*) say "PASS gc-collect-ir (${got#PASS gc-collect-ir: })" ;;
+      *) fail "gc-collect-ir: ${got:-no verdict: $(tail -n 2 "$OUT/collect-ir.log" | tr '\n' ' ')}" ;;
+    esac ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"

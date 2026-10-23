@@ -1,0 +1,17 @@
+diff --git a/lisp/nelisp-cc-string-blocks.el b/lisp/nelisp-cc-string-blocks.el
+index 7814d7762..4195e7229 100644
+--- a/lisp/nelisp-cc-string-blocks.el
++++ b/lisp/nelisp-cc-string-blocks.el
+@@ -498,8 +498,10 @@
+                          (setq bytes (+ bytes (+ 32 (nl_string_sdata_size (nl_string_nbytes s))))))
+                   (seq
+                    (if (/= (heap-read-u64 s 24) 0)
+-                       (let* ((d (- (heap-read-u64 s 24) 8)) (n (nl_string_nbytes s)))
+-                         (ptr-write-u64 d 0 0) (ptr-write-u64 d 8 n)) 0)
++                       (let* ((d (- (heap-read-u64 s 24) 8)) (n (nl_string_nbytes s)) (k 8))
++                         (ptr-write-u64 d 0 0) (ptr-write-u64 d 8 n)
++                         ;; POISON (not for the batch): a use of the freed bytes shows
++                         (while (<= k n) (ptr-write-u8 d (+ 8 k) 221) (setq k (+ k 1)))) 0)
+                    (ptr-write-u64 s 24 0) (ptr-write-u64 s 0 (heap-read-u64 st 8))
+                    (ptr-write-u64 st 8 s))))
+               (setq i (+ i 1)))
