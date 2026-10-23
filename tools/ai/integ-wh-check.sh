@@ -60,13 +60,13 @@ say() { echo "INTEG-WH $*"; }
 CHECK=${1:-}${2:+ $2}
 fail() { say "FAIL: $*"; printf '%s [%s] %s\n' "$(date +%T)" "$CHECK" "$*" >> "$OUT/fail.log" 2>/dev/null; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
-# The binary may predate HEAD only by commits to this dry run's own files.
+# The binary may predate HEAD only by commits to this dry run's own files (and to the namespace ratchet's pins and the evidence files, which no binary reads).
 built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/integ-wh-check.sh' \
     ':(exclude)tools/ai/integ-wh-progress.org' ':(exclude)tools/ai/integ-wh-build.sh' \
     ':(exclude)tools/ai/integ-wh-sanity.el' ':(exclude)tools/ai/integ-wh-mcp-smoke.sh' \
     ':(exclude)tools/ai/integ-wh-resolved.txt' ':(exclude)tools/ai/integ-wh-*' \
-    ':(exclude)tools/ai/gc-port-gc3.py' ':(exclude)tools/ai/gc-port-ir.py'
+    ':(exclude)tools/ai/gc-port-gc3.py' ':(exclude)tools/ai/gc-port-ir.py' ':(exclude)tools/ns-inventory-baseline.txt' ':(exclude)tools/ai/evidence/*'
 }
 
 case ${1:-} in
@@ -192,7 +192,8 @@ case ${1:-} in
     GCP_WORK="$OUT/gcport-static" bash tools/ai/integ-wh-gcport.sh "$DYN" "$S" > "$OUT/static-gcport.out" 2>&1
     grep -qx 'GC-PORT-BUDGET PASS' "$OUT/static-gcport.out" && grep -qx 'GC-PORT-VM-POLL PASS' "$OUT/static-gcport.out" ||
       fail "static: gc-port's budget or vm-poll: $(cat "$OUT/static-gcport.out" | tr '\n' ' ')"
-    [ "$(grep -c '^PASS nelisp-static \(dump\|restore\):' "$OUT/gcport-static/gc-stats.out")" = 2 ] &&
+    # The lines are named after the binary (nelisp-static, nelisp-static-E, ...).
+    [ "$(grep -c '^PASS nelisp-static[^ ]* \(dump\|restore\):' "$OUT/gcport-static/gc-stats.out")" = 2 ] &&
       [ "$(grep '^FAIL nelisp-static' "$OUT/gcport-static/gc-stats.out" | grep -vc 'dropped objects still counted (22 0 0 0 10 108)')" = 0 ] ||
       fail "static: gc-stats differs from the known vectors tolerance: $(grep '^FAIL nelisp-static' "$OUT/gcport-static/gc-stats.out" | head -n 2 | cut -c1-200)"
     say "PASS static ($rev, sanity identical to GNU, checks.sh 11 groups / 0 failures, gc-port budget and vm-poll PASS, gc-stats at its known tolerance)" ;;
@@ -514,7 +515,7 @@ assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
 print("arity sweep: %d cases over %d builtins, 0 failed" % (d["counts"]["passed"], d["counts"]["builtins"]))
 PY
                   ;;
-      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-wh2}/report.json
+      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-wh3}/report.json
                   sha=$(sha256sum "$DYN" | cut -d' ' -f1)
                   python3 - "$f" "$sha" <<'PY' || fail "the interpreted builtin-call rows are not within the callpath stage's figures ($f)"
 import json, sys

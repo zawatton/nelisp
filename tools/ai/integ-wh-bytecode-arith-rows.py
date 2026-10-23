@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Ir per loop iteration of the byte-code opcodes Bnegate, Bmax, Bmin, Bquo and Brem against GNU 31.1 (integ-wh S2.30).
+"""Ir per loop iteration of the byte-code opcodes Bnegate, Bmax, Bmin, Bquo and Brem against GNU 31.1 (integ-wh S2.34).
 
   integ-wh-bytecode-arith-rows.py measure --dyn BIN [--gnu EMACS] [--work DIR] [--no-gnu]
   integ-wh-bytecode-arith-rows.py check --dyn BIN [--gnu EMACS] [--work DIR]
@@ -17,7 +17,7 @@ above the plus row (the fast loop runs Bplus in place).  GNU's figures come from
 measurement as one heavy unit (bin/heavy-run.sh).
 
 Batch D, whose VM took each of these through the boxed path or a by-name call of the function (the fast loop stops at all
-five): the rows of the table printed by `measure' in the ledger note of S2.30.
+five): the rows of the table printed by `measure' in the ledger note of S2.34.
 """
 import argparse
 import os

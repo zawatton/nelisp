@@ -5,7 +5,7 @@
 ;; put-text-property, set-text-properties, goto-char) each line is the interval list after one operation, so the build under test
 ;; must print the same lines as the build it replaces.  Only valid intervals (start < end) are printed: the shift of an insert
 ;; turns an empty interval that a delete-region left behind into a negative one, which nothing reads and which the O(1) append
-;; path leaves alone.  Used for ledger S2.25: batch D against the tip, 12,000 lines identical.
+;; path leaves alone.  Used for ledger S2.29: batch D against the tip, 12,000 lines identical.
 
 (defvar fz-state 12345)
 (defun fz-rand (n) (setq fz-state (% (+ (* fz-state 1103515245) 12345) 2147483648)) (% (/ fz-state 65536) n))

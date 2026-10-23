@@ -2,7 +2,7 @@
 
 ;; Prints one MAXMIN-SPEED line per form: nanoseconds per iteration of an interpreted loop over the form, and the same above the
 ;; control loop (an `eq' call), best of five runs of 100,000 iterations.  Run it pinned to one CPU on a quiet machine, on the
-;; binary before and after the change (tools/ai/integ-wh-progress.org S2.30 holds both).
+;; binary before and after the change (tools/ai/integ-wh-progress.org S2.34 holds both).
 
 (defvar iwh-ms-sink nil)
 (defun iwh-ms-time (thunk n)

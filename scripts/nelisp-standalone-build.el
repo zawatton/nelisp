@@ -10103,7 +10103,7 @@ REPL-facing module it feeds."
     ;; was dropped after tools/ai/integ-wh-gc-discriminator.sh found nothing that needs it: with every swept string's data
     ;; overwritten with 0xDD, the 11 groups, every standalone check with a collection at each safepoint that finishes, the
     ;; GNU-compared goldens normally and forced, and the library's base, GUI and SKK images behave as with the walk (ledger
-    ;; S2.26).  A producer that is ever found to need it is repaired by decoding the view's header from its capacity word
+    ;; S2.30).  A producer that is ever found to need it is repaired by decoding the view's header from its capacity word
     ;; (flag bit 61 or 62) and marking that string, not by walking sdata again.
     ;; Returns 1 when W lies in a string area (handled), 0 to continue on the typed and owner paths.
     (defun nl_gc_conserv_string_area (w)

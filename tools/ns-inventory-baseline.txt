@@ -1517,7 +1517,6 @@ pinned-collision ns-collision	nelisp-get-buffer	scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-get-buffer-create	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-get-text-property	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-goto-char	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
-pinned-collision ns-collision	nelisp-insert	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-kill-buffer	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-make-marker	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-make-overlay	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
@@ -1641,7 +1640,6 @@ pinned-collision ns-collision	type-of	lisp/nelisp-stdlib-misc.el scripts/nelisp-
 pinned-collision ns-collision	insert	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	insert-char	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-buffer--shift-markers-on-insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--buffer-multibyte-table	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--buffer-multibyte-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
@@ -1828,3 +1826,10 @@ pinned-collision ns-collision	nelisp-marker--set-insertion-type	scripts/nelisp-s
 pinned-collision ns-collision	nelisp-marker-insertion-type	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision-divergent	internal--define-uninitialized-variable	packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	02c8acacb368
 pinned-collision ns-collision-divergent	internal-make-var-non-special	packages/nelisp-emacs-foundation/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	7ca3ce2a9e4b
+# integ-wh fix 27 (021c33983, 2026-10-23): the prelude's `nelisp-insert' and `nelisp-insert-before-markers' own the properties of the strings inserted
+# into a buffer (GNU graft_intervals_into_buffer), so they no longer equal the host-side copies in src/nelisp-buffer.el and lisp/nelisp-stdlib-misc.el,
+# which the standalone runtime does not load.  The two plain-duplicate pins (ns-collision) that stood for them are replaced by the divergences.
+# integ-wh item 2 (m12, 2026-10-24): both prelude definitions call nelisp-buffer--tp-after-insert now (a run of propertized inserts at the end of a buffer
+# appends without a walk), so the two digests moved with the definitions; the divergence from the host-side copies is the same one.
+pinned-collision ns-collision-divergent	nelisp-insert	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el	01e934bef8fa
+pinned-collision ns-collision-divergent	nelisp-insert-before-markers	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	887997c2c9ee
