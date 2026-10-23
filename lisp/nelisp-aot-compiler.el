@@ -15919,9 +15919,15 @@ is current, so ending a cache on one emitted arm is safe on other arms."
           (funcall emit-body (nelisp-aot-compiler--ir-get node :body)))
         (when (aref state 0) (aset state 1 before))))))
 
+;; Defined with its documentation before the promotion plan; declared here so the `let*' below binds it
+;; dynamically in a compiled file too.
+(defvar nelisp-aot-compiler--x86-promotable-memo)
+
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
-  (let ((plan (let ((nelisp-aot-compiler--promoted-slots
+  (let* ((nelisp-aot-compiler--x86-promotable-memo
+          (or nelisp-aot-compiler--x86-promotable-memo (make-hash-table :test #'eq)))
+         (plan (let ((nelisp-aot-compiler--promoted-slots
                       (if nelisp-aot-compiler--x86-local-prefix-state nil
                         nelisp-aot-compiler--promoted-slots)))
                 (nelisp-aot-compiler--x86-call-free-region-emission-plan node))))
@@ -24973,6 +24979,55 @@ Their x86-64 code neither calls, allocates, exits non-locally, reads rsp
 nor touches rbx, r8, r9 or r12-r15, so no collection, unwinding or
 callee can observe a frame slot while its variable lives in a register.")
 
+(defvar nelisp-aot-compiler--x86-promotable-memo nil
+  "Eq hash table IR node -> :yes or :no during one outermost call-free-region emission, else nil.
+`--x86-promotion-plan' walks the IR below its node and the region planner runs it at every nested
+if, cond and let of a function, so a function whose let nest is N deep cost N walks of its whole body
+(27 minutes for the integrated tree's driver unit).  Whether a subtree holds only promotable nodes
+is a property of the subtree, so it is computed once per node and a region that contains a call
+declines in constant time.  Guard, not a tuned value: the facts belong in one bottom-up pass.")
+
+(defun nelisp-aot-compiler--x86-promotable-node-p (n)
+  "Non-nil when the plan's per-node test accepts N alone (its children are not looked at)."
+  (let ((kind (nelisp-aot-compiler--ir-kind n)))
+    (and (memq kind nelisp-aot-compiler--x86-promotable-kinds)
+         (cond
+          ((eq kind 'ref)
+           (and (memq (or (nelisp-aot-compiler--ir-get n :class) 'gp) '(gp nil))
+                (let ((slot (nelisp-aot-compiler--ir-get n :slot))) (and (integerp slot) (<= 0 slot)))))
+          ((memq kind '(setq-local let-rt))
+           (let ((slot (nelisp-aot-compiler--ir-get n :slot))) (and (integerp slot) (<= 0 slot))))
+          ((eq kind 'let-rt-n)
+           (cl-every (lambda (b) (let ((slot (nth 1 b))) (and (integerp slot) (<= 0 slot))))
+                     (nelisp-aot-compiler--ir-get n :bindings)))
+          (t t)))))
+
+(defun nelisp-aot-compiler--x86-subtree-promotable-p (node)
+  "Non-nil when NODE and every IR node below it pass `--x86-promotable-node-p', memoized."
+  (let ((memo nelisp-aot-compiler--x86-promotable-memo))
+    (cl-labels
+        ((check (n)
+           (let ((hit (gethash n memo)))
+             (cond
+              ((eq hit :yes) t)
+              ((eq hit :no) nil)
+              (t (let ((ok (and (nelisp-aot-compiler--x86-promotable-node-p n)
+                                (catch 'declined
+                                  (cl-labels
+                                      ((children (value)
+                                         (cond
+                                          ((nelisp-aot-compiler--ir-node-p value)
+                                           (unless (check value) (throw 'declined nil)))
+                                          ((consp value) (children (car value)) (children (cdr value)))
+                                          ((vectorp value)
+                                           (cl-loop for i from 0 below (length value)
+                                                    do (children (aref value i)))))))
+                                    (cl-loop for i from 1 below (length n) do (children (aref n i))))
+                                  t))))
+                   (puthash n (if ok :yes :no) memo)
+                   ok))))))
+      (check node))))
+
 (defun nelisp-aot-compiler--x86-promotion-plan (node &optional terminal-barriers)
   "Return (PAIRS . WRITTEN) for promoting the variables of while NODE.
 PAIRS is an alist (SLOT . REGISTER), most used slots first; WRITTEN lists
@@ -24985,7 +25040,11 @@ loops: NeLisp's collector scans the machine stack conservatively
 without flushing registers (`nl_gc_conserv_scan'), where GNU flushes
 them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
   (when (and nelisp-aot-compiler--x86-loop-regs
-             (null nelisp-aot-compiler--promoted-slots))
+             (null nelisp-aot-compiler--promoted-slots)
+             ;; A subtree with a node outside the promotable kinds has no plan, whatever the barriers
+             ;; are not: with no barriers the memo answers without a walk.
+             (or terminal-barriers (null nelisp-aot-compiler--x86-promotable-memo)
+                 (nelisp-aot-compiler--x86-subtree-promotable-p node)))
     (let ((ok t) (counts nil) (written nil))
       (cl-flet ((use (slot write)
                   (if (and (integerp slot) (<= 0 slot))
@@ -24995,23 +25054,28 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
                           (push (cons slot 1) counts))
                         (when write (cl-pushnew slot written)))
                     (setq ok nil))))
-        (nelisp-aot-compiler--walk-ir
-         node
-         (lambda (n)
-           (let ((kind (nelisp-aot-compiler--ir-kind n)))
-             (cond
-              ((not (or (memq kind nelisp-aot-compiler--x86-promotable-kinds)
-                        (memq n terminal-barriers)))
-               (setq ok nil))
-              ((eq kind 'ref)
-               (if (memq (or (nelisp-aot-compiler--ir-get n :class) 'gp) '(gp nil))
-                   (use (nelisp-aot-compiler--ir-get n :slot) nil)
-                 (setq ok nil)))
-              ((memq kind '(setq-local let-rt))
-               (use (nelisp-aot-compiler--ir-get n :slot) t))
-              ((eq kind 'let-rt-n)
-               (dolist (b (nelisp-aot-compiler--ir-get n :bindings))
-                 (use (nth 1 b) t))))))))
+        ;; The plan is nil as soon as one node is not promotable, so the walk stops there: a region
+        ;; with a call in it (almost every region that contains another) costs the distance to the
+        ;; first call, not its size.  The planner runs at every nested if, cond and let.
+        (catch 'nelisp-aot-compiler--promotion-plan-declined
+          (nelisp-aot-compiler--walk-ir
+           node
+           (lambda (n)
+             (let ((kind (nelisp-aot-compiler--ir-kind n)))
+               (cond
+                ((not (or (memq kind nelisp-aot-compiler--x86-promotable-kinds)
+                          (memq n terminal-barriers)))
+                 (setq ok nil))
+                ((eq kind 'ref)
+                 (if (memq (or (nelisp-aot-compiler--ir-get n :class) 'gp) '(gp nil))
+                     (use (nelisp-aot-compiler--ir-get n :slot) nil)
+                   (setq ok nil)))
+                ((memq kind '(setq-local let-rt))
+                 (use (nelisp-aot-compiler--ir-get n :slot) t))
+                ((eq kind 'let-rt-n)
+                 (dolist (b (nelisp-aot-compiler--ir-get n :bindings))
+                   (use (nth 1 b) t))))
+               (unless ok (throw 'nelisp-aot-compiler--promotion-plan-declined nil)))))))
       (when (and ok counts)
         (let ((sorted (sort counts (lambda (x y) (> (cdr x) (cdr y)))))
               (regs nelisp-aot-compiler--x86-loop-regs)

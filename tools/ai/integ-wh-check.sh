@@ -17,6 +17,7 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   alloc         gc-port's allocation rows: cons at most 100, a 128-byte string 1,300 and a 16-slot vector 700 Ir
 #   gc3           gc-port's gc3 wall on the measurement CPU: worst median ratio against GNU at most 1.20
 #   inliner-ert   the import-aware pass's 41 tests and codegen's four inliner ERT files on host Emacs
 #   codegen-ert   the AOT compiler, codegen, S5 lowering, alignment, artifact and linker
@@ -153,6 +154,18 @@ case ${1:-} in
     worst=$(printf '%s\n' "$got" | sed -n 's/.*median ratio x\([0-9.]*\).*/\1/p' | sort -n | tail -n 1)
     awk -v w="$worst" 'BEGIN { exit !(w <= 1.20) }' || fail "gc3: worst median ratio x$worst against GNU (guard 1.20; gc-port's tip 1.14)"
     say "PASS gc3 (worst median ratio x$worst against GNU; gc-port's tip x1.14)" ;;
+  alloc)
+    # gc-port's allocation rows (callgrind, the constructor's inclusive Ir per call in an interpreted loop):
+    # the lane's tip measured cons 94, a 128-byte string 1,242 and a 16-slot vector 648 Ir (GNU 26, 178, 215).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    rm -rf "$OUT/alloc"; capped timeout 590 python3 tools/ai/gc-port-ir.py alloc --dyn "$DYN" --work "$OUT/alloc" > "$OUT/alloc.log" 2>&1
+    cons=$(sed -n 's/.*alloc cons: NeLisp \([0-9]*\) Ir.*/\1/p' "$OUT/alloc.log")
+    str=$(sed -n 's/.*alloc string: NeLisp \([0-9]*\) Ir.*/\1/p' "$OUT/alloc.log")
+    vec=$(sed -n 's/.*alloc vector: NeLisp \([0-9]*\) Ir.*/\1/p' "$OUT/alloc.log")
+    [ -n "$cons" ] && [ -n "$str" ] && [ -n "$vec" ] || fail "alloc: no three rows: $(tail -n 2 "$OUT/alloc.log" | tr '\n' ' ')"
+    [ "$cons" -le 100 ] && [ "$str" -le 1300 ] && [ "$vec" -le 700 ] ||
+      fail "alloc rows cons $cons (tip 94, cap 100), string $str (tip 1,242, cap 1,300), vector $vec (tip 648, cap 700)"
+    say "PASS alloc (cons $cons, string $str, vector $vec Ir; the tip's 94, 1,242, 648)" ;;
   inliner-ert)
     # The word-heap line's import-aware pass (41 tests) and codegen's inliner (parallel-let, extern,
     # wrapper-initializer and hygiene suites): both must pass, except the listed known-red tests.

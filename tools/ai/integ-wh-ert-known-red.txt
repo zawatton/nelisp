@@ -23,3 +23,11 @@ nelisp-artifact/native-exec-general-string-args
 # level.  The word-heap line rewrote the mirror lookup unit (symbol cells, D9 symbol objects) and the
 # compile pipeline (arena rewrite, heap-accessor lowering); the fixture predates both).
 nelisp-inline-parallel/actual-mirror-executable-gnu-goldens
+
+# Codegen's tests of the fused tag compare on WORDs and of the string-WORD guards at the terminal barriers
+# (new on its line, 18f180830) compile (sexp-tag W) in a standalone program and run it.  They fail with the m9
+# compiler too (the word-heap line before the codegen merge): its sexp-tag emission is the one the strings line
+# routes through nl_val_tag, which the standalone program does not define (tag-tests above is the same family).
+nelisp-aot-codegen/word-tag-tests
+nelisp-aot-codegen/terminal-barrier-late-string-word-guards
+nelisp-aot-codegen/terminal-barrier-native-callee-saves
