@@ -10266,7 +10266,7 @@ argument (reachability + in-arena bounds checks).")
       (if (>= i count) 0
         (nl_seq2
          (ptr-write-u64 (+ (data-addr nl_bt_snapshot) (+ 16 (* i 8))) 0
-                        (heap-read-u64 (+ state (+ 64 (* (+ start i) 160))) 0))
+                        (heap-read-u64 (+ state (+ 64 (shl (+ start i) 6))) 0))
          (nl_bt_capture_frames_from state start count (+ i 1)))))
     ;; The innermost twenty activation records' functions (the chunk of ENV's N4 state).
     (defun nl_bt_capture_now (env)
@@ -20077,22 +20077,22 @@ baked build's own `<'/`>'/`=' arms need it too.")
          ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
          ;; read lazily from the caller's words.
          (if (= n4 1)
-             (let* ((frame (+ state (+ 64 (* n4d 160))))
+             (let* ((frame (+ state (+ 64 (shl n4d 6))))
                     (fd (heap-read-u64 env 40))
-                    (serial (+ (heap-read-u64 state 8) 1)))
+                    (serial (+ (heap-read-u64 state 8) 1))
+                    (fl (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3))))
+               ;; +16 the flags: bytes 0 evaluated, 1 the kind, 2 debug-on-exit, 3 the
+               ;; environment's dynamic-binding mode; +24 the arguments, read lazily from
+               ;; the caller's words; +32 the frames' count; +40 the frames record as a WORD;
+               ;; +48 the serial; +56 the hidden mark `nl_n4_snapshot' fills.
                (seq (ptr-write-u64 frame 0 fw)
                     (ptr-write-u64 frame 8 3)
-                    (ptr-write-u64 frame 64 12)
-                    (ptr-write-u64 frame 72 fd)
-                    (ptr-write-u64 frame 96 (sar (ptr-read-u64 fd 24) 2))
-                    (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
-                    (ptr-write-u64 frame 112 1)
-                    (ptr-write-u64 frame 120 0)
-                    (ptr-write-u64 frame 144 1)
-                    (ptr-write-u64 frame 152
-                                   (+ (* (+ mem (* (+ fi 1) 8)) 65536) argc))
+                    (ptr-write-u64 frame 16 fl)
+                    (ptr-write-u64 frame 24 (+ (* (+ mem (* (+ fi 1) 8)) 65536) argc))
+                    (ptr-write-u64 frame 32 (sar (ptr-read-u64 fd 24) 2))
+                    (ptr-write-u64 frame 40 (+ fd 6))
                     (ptr-write-u64 state 8 serial)
-                    (ptr-write-u64 frame 128 serial)
+                    (ptr-write-u64 frame 48 serial)
                     (ptr-write-u64 state 0 (+ n4d 1))))
            0)
          (ptr-write-u64 (+ env 96) 0 (+ rec 1))
@@ -20562,23 +20562,23 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                      ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
                                                      ;; read lazily from the caller's words.
                                                      (if (= n4 1)
-                                                         (let* ((frame (+ state (+ 64 (* n4d 160))))
+                                                         (let* ((frame (+ state (+ 64 (shl n4d 6))))
                                                                 (fd (heap-read-u64 env 40))
-                                                                (serial (+ (heap-read-u64 state 8) 1)))
-                                                           (seq (ptr-write-u64 frame 0 fw)
-                                                                (ptr-write-u64 frame 8 3)
-                                                                (ptr-write-u64 frame 64 12)
-                                                                (ptr-write-u64 frame 72 fd)
-                                                                (ptr-write-u64 frame 96 (sar (ptr-read-u64 fd 24) 2))
-                                                                (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
-                                                                (ptr-write-u64 frame 112 1)
-                                                                (ptr-write-u64 frame 120 0)
-                                                                (ptr-write-u64 frame 144 1)
-                                                                (ptr-write-u64 frame 152
-                                                                               (+ (* (+ mem (* (+ fi 1) 8)) 65536) argc))
-                                                                (ptr-write-u64 state 8 serial)
-                                                                (ptr-write-u64 frame 128 serial)
-                                                                (ptr-write-u64 state 0 (+ n4d 1))))
+                    (serial (+ (heap-read-u64 state 8) 1))
+                    (fl (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3))))
+               ;; +16 the flags: bytes 0 evaluated, 1 the kind, 2 debug-on-exit, 3 the
+               ;; environment's dynamic-binding mode; +24 the arguments, read lazily from
+               ;; the caller's words; +32 the frames' count; +40 the frames record as a WORD;
+               ;; +48 the serial; +56 the hidden mark `nl_n4_snapshot' fills.
+               (seq (ptr-write-u64 frame 0 fw)
+                    (ptr-write-u64 frame 8 3)
+                    (ptr-write-u64 frame 16 fl)
+                    (ptr-write-u64 frame 24 (+ (* (+ mem (* (+ fi 1) 8)) 65536) argc))
+                    (ptr-write-u64 frame 32 (sar (ptr-read-u64 fd 24) 2))
+                    (ptr-write-u64 frame 40 (+ fd 6))
+                    (ptr-write-u64 state 8 serial)
+                    (ptr-write-u64 frame 48 serial)
+                    (ptr-write-u64 state 0 (+ n4d 1))))
                                                        0)
                                                      (ptr-write-u64 (+ env 96) 0 (+ rec 1))
                                                      ;; setup_frame's frame: the main thread's root stack takes it inline
@@ -20905,9 +20905,9 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (n4 (logand packed 1))
                                               (state (heap-read-u64 env 176)))
                                          (if (if (= n4 1)
-                                                 (/= (heap-read-u64
-                                                      (+ state (+ 64 (* (- (heap-read-u64 state 0) 1) 160)))
-                                                      120)
+                                                 (/= (heap-read-u8
+                                                      (+ state (+ 64 (shl (- (heap-read-u64 state 0) 1) 6)))
+                                                      18)
                                                      0)
                                                0)
                                              (setq go 0)
@@ -21880,7 +21880,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                 ;; backtrace_debug_on_exit
                 (if (if (= done 1)
                         (if (= n4 1)
-                            (/= (heap-read-u64 (nl_n4_record state (- (heap-read-u64 state 0) 1)) 120) 0)
+                            (/= (heap-read-u8 (nl_n4_record state (- (heap-read-u64 state 0) 1)) 18) 0)
                           0)
                       0)
                     (seq (setq val (nl_n4_exit_debug_w val env))
@@ -23460,7 +23460,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       (let* ((frame (nl_n4_push_words env sym (+ stk (* (- sp argc) 8)) argc)))
         (if (= frame 0)
             (nelisp_eval_call_stash_excessive_lisp_nesting env (nl_frame_stack_limit env 0))
-          (let* ((args (if (= argc 0) (+ frame 32) (m5_fx_word_list stk sp argc 0)))
+          (let* ((args (if (= argc 0) (nl_n4_nil_view env) (m5_fx_word_list stk sp argc 0)))
                  (fv (if (= (logand fn 1) 0) fn (seq (wf_word_store_out vslot fn) vslot))))
             (seq
              (if (= argc 0) 0 (ptr-write-u64 lslot 0 args))
@@ -23800,8 +23800,8 @@ baked build's own `<'/`>'/`=' arms need it too.")
           (if (= (heap-read-u64 state 0) 0) 0
             (let* ((frame (nl_n4_record state (- (heap-read-u64 state 0) 1))))
               (seq (ptr-write-u64 frame 8 3)
-                   (ptr-write-u64 frame 112 1)
-                   (ptr-write-u64 frame 152 (if (= argc 0) 0 (+ (* base 65536) argc)))
+                   (ptr-write-u8 frame 16 1)
+                   (ptr-write-u64 frame 24 (if (= argc 0) 0 (+ (* base 65536) argc)))
                    0))))))
     ;; A fresh list of the N argument WORDs from BASE.
     (defun m5_fx_slot_list (base n)
@@ -23882,7 +23882,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
         (if (= state 0) 0
           (let* ((depth (heap-read-u64 state 0)))
             (if (= depth 0) 0
-              (if (/= (heap-read-u64 (nl_n4_record state (- depth 1)) 120) 0) 1 0))))))
+              (if (/= (heap-read-u8 (nl_n4_record state (- depth 1)) 18) 0) 1 0))))))
     (defun m5_fx_literal_w (code _pad)
       ;; ENTRY-CHECK, CONST, RETURN. Keep the entry guard and read the
       ;; constant afterwards; no frame, allocation or callback is observable.
@@ -49877,18 +49877,18 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
        (let* ((frame (nl_n4_record state i)))
          (seq
           (nl_n4_materialize frame)
-          (ptr-write-u64 frame 136 (nl_n4_hidden state i (heap-read-u64 frame 0) (heap-read-u64 frame 144)))
+          (ptr-write-u64 frame 56 (nl_n4_hidden state i (heap-read-u64 frame 0) (heap-read-u8 frame 17)))
           (ptr-write-u64 (heap-sexp-payload item-root) 0 (nl_w_vector_make 6 0))
           (let* ((item (nl_cons_car_word item-root)))
             (seq
-             (wf_write_int value (heap-read-u64 frame 128)) (vector-slot-set item 0 value)
-             (if (= (heap-read-u64 frame 112) 0) (wf_write_nil value) (wf_write_t value))
+             (wf_write_int value (heap-read-u64 frame 48)) (vector-slot-set item 0 value)
+             (if (= (heap-read-u8 frame 16) 0) (wf_write_nil value) (wf_write_t value))
              (vector-slot-set item 1 value) (vector-slot-set item 2 (nl_n4_op_view frame))
-             (if (= (heap-read-u64 frame 112) 0) (vector-slot-set item 3 (nl_n4_args_view frame))
-               (seq (nl_bf_bind_rest_copy_spine (nl_n4_args_view frame) value) (vector-slot-set item 3 value)))
-             (if (= (heap-read-u64 frame 120) 0) (wf_write_nil value) (wf_write_t value))
+             (if (= (heap-read-u8 frame 16) 0) (vector-slot-set item 3 (nl_n4_args_view frame env))
+               (seq (nl_bf_bind_rest_copy_spine (nl_n4_args_view frame env) value) (vector-slot-set item 3 value)))
+             (if (= (heap-read-u8 frame 18) 0) (wf_write_nil value) (wf_write_t value))
              (vector-slot-set item 4 value)
-             (wf_write_int value (heap-read-u64 frame 136)) (vector-slot-set item 5 value)
+             (wf_write_int value (heap-read-u64 frame 56)) (vector-slot-set item 5 value)
              (ptr-write-u64 (heap-sexp-payload list-root) 0
                (nelisp_cons_construct_w (nl_cons_car_word item-root) (nl_cons_car_word list-root) 0))))
           (setq i (+ i 1)))))
@@ -49990,12 +49990,12 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
 (defun nl_n4_locals_w (env index _pad)
   (seq (nl_frame_stack_promote_env env 0)
    (let* ((state (nl_n4_state env)) (frame (nl_n4_record state index))
-          (entry (heap-read-u64 frame 96))
+          (entry (heap-read-u64 frame 32))
           (depth (sar (nelisp_frame_slot_raw_word (+ env 32) 1) 2))
           (end (if (< (+ index 1) (heap-read-u64 state 0))
-                   (heap-read-u64 (nl_n4_record state (+ index 1)) 96) depth))
+                   (heap-read-u64 (nl_n4_record state (+ index 1)) 32) depth))
           (start (nl_frame_stack_locals_start frame end))
-          (backing (nl_record_slot_word (+ frame 64) 0))
+          (backing (nl_record_slot_word (heap-read-u64 frame 40) 0))
           (mark (nl_root_mark env)) (result (nl_root_reserve env))
           (shadow (nl_root_reserve env)) (i (- end 1)) (lexical-index -1))
      (seq
@@ -50036,11 +50036,11 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
              (found (nl_n4_find state serial)))
         (if (= found 0) 3
           (let* ((index (- found 1)) (frame (nl_n4_record state index)))
-            (if (= code 4) (if (= (heap-read-u64 frame 120) 0) 3 7)
+            (if (= code 4) (if (= (heap-read-u8 frame 18) 0) 3 7)
               (if (= code 1) (nl_n4_locals_w env index 0)
                 (if (= code 2)
                     (let* ((value (wf_arg_word payload 1)))
-                      (seq (ptr-write-u64 frame 120 (if (= (nl_val_tag value) 0) 0 1)) value))
+                      (seq (ptr-write-u8 frame 18 (if (= (nl_val_tag value) 0) 0 1)) value))
                   (nl_n4_frame_eval_w env frame (nl_apply_list_nth payload 1) 0))))))))))
 
 (defun nl_n4_frame_eval_w (env frame expression _pad)
@@ -50054,8 +50054,8 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
              (type (alloc-bytes 32 8)) (depth-slot (alloc-bytes 32 8))
              (alist (alloc-bytes 32 8)) (pair (alloc-bytes 32 8))
              (expr (alloc-bytes 32 8)) (args (alloc-bytes 32 8))
-             (depth (heap-read-u64 frame 96)) (flags (heap-read-u64 env 112))
-             (i 0))
+             (depth (heap-read-u64 frame 32)) (flags (heap-read-u64 env 112))
+             (dyn (shl (heap-read-u8 frame 19) 21)) (i 0))
         (if (= anchor 0)
             (seq (nl_root_release env mark) (nl_abi_fail (wf_bytecode_root_exhausted) 0))
         (seq
@@ -50063,18 +50063,18 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
          (ptr-write-u64 (+ anchor 8) 0 args)
          (nl_sexp_clone_into expression expr)
          (nl_sexp_clone_into (+ env 32) saved)
-         (record-type-tag (+ frame 64) type)
+         (nl_record_type_copy (heap-read-u64 frame 40) type)
          (vector-make (+ depth 8) backing)
          (while (< i depth)
            (seq (vector-slot-set backing i
-                  (nl_vector_slot_word (nl_record_slot_word (+ frame 64) 0) i))
+                  (nl_vector_slot_word (nl_record_slot_word (heap-read-u64 frame 40) 0) i))
                 (setq i (+ i 1))))
          (record-make type 3 fresh)
          (record-slot-set fresh 0 backing)
          (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
          (wf_write_nil pair)
-         (if (= (heap-read-u64 frame 104) 0)
+         (if (= dyn 0)
              (seq (wf_word_store_out alist
                     (nl_capture_walk_frames_rooted_w backing (- depth 1) 0 3 env))
                   (wf_write_nil pair)
@@ -50082,11 +50082,11 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
                   (nl_sexp_clone_into pair alist)) 0)
          (nl_sexp_clone_into fresh (+ env 32))
          (ptr-write-u64 env 112
-                        (logior (logand flags -2097153) (heap-read-u64 frame 104)))
+                        (logior (logand flags -2097153) dyn))
          ;; Captured cells are installed directly by the N3 binder. Alist
          ;; precedence is inner-first, matching N3's explicit-alist contract.
          (wf_write_nil args)
-         (if (= (heap-read-u64 frame 104) 0)
+         (if (= dyn 0)
              (seq (if (= (sexp-tag alist) 0) (wf_write_t alist) 0)
                   (nelisp_cons_construct alist args args))
            (nelisp_cons_construct args args args))
@@ -50741,11 +50741,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 ;; N4b private activation ABI. Policy clause 2 (evaluator / GC entry).
 ;; EvalCtx+176 points to a per-context transient mmap: a 64-byte header with depth,
 ;; serial, raw lean/pending binding links at +16/+24, and typed recursion-variable
-;; caches at +32/+40/+48 and a raw redirect flag at +56, then 32768 160-byte records. Each record owns copied Sexp root views for
-;; function, arguments and shared frame stack; remaining words are entry
-;; binding depth, eval mode, evaluated, exit-debug and generation. No handles
-;; contain arena addresses. Cold restore creates a fresh EvalCtx and rebuilds
-;; this stack from execution; suspended native continuations are never dumped.
+;; caches at +32/+40/+48 and a raw redirect flag at +56, then 32768 64-byte records, GNU's
+;; struct backtrace (lisp.h union specbinding) with what backtrace--locals needs: the function
+;; and argument WORDs (roots, as mark_specpdl marks bt.function and bt.args), a flags word
+;; (bytes: evaluated, kind, debug-on-exit, dynamic-binding mode), the lazily registered
+;; argument words, the entry's binding depth, the frames record as a WORD (a root), the
+;; generation and the hidden mark.  After the records: the zero nil view, the call scratch
+;; and the argument stack.  No handles contain arena addresses. Cold restore creates a fresh
+;; EvalCtx and rebuilds this stack from execution; suspended native continuations are never
+;; dumped.
 (defconst nelisp-standalone--n4-source
   `(seq
     ;; Doc 216 S4.2. No Lisp-visible native is added. These private helpers
@@ -51189,13 +51193,13 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                 (setq i (+ i 1))))
          (+ box 6))))
     (defun nl_frame_stack_locals_start (frame end)
-  (let* ((start (heap-read-u64 frame 96))
-         (backing (nl_record_slot_word (+ frame 64) 0))
+  (let* ((start (heap-read-u64 frame 32))
+         (backing (nl_record_slot_word (heap-read-u64 frame 40) 0))
          (i start) (lexical 0) (done 0))
     (seq
      ;; A new lexical environment includes the enclosing lexical prefix.
      ;; Empty forms and dynamic-only bindings never acquire that prefix.
-     (if (/= (heap-read-u64 frame 112) 0) 0
+     (if (/= (heap-read-u8 frame 16) 0) 0
        (seq
         (while (and (< i end) (= lexical 0))
           (seq (setq lexical (nl_frame_stack_locals_lexical_p (nl_vector_slot_word backing i) 0))
@@ -51284,10 +51288,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
 
     (defun nl_n4_state (env)
       (if (= (heap-read-u64 env 176) 0)
-          ;; The activation records (64 + 32768 * 160), the call scratch (1 KiB), then the
-          ;; argument stack: its used-word count at +5243968 and 262144 words from
-          ;; +5243976 (`nl_eic_prim_frame_w', `nl_eic_closure_call_w').
-          (let* ((state (nl_os_alloc_chunk 7341200)))
+          ;; The activation records (64 + 32768 * 64), the zero nil view (32 bytes), the call
+          ;; scratch (1 KiB), then the argument stack: its used-word count at +2098272 and
+          ;; 262144 words from +2098280 (`nl_eic_prim_frame_w', `nl_eic_closure_call_w').
+          (let* ((state (nl_os_alloc_chunk 4195432)))
             (seq (ptr-write-u64 env 176 state) state))
         (heap-read-u64 env 176)))
     ;; 1 KiB of per-env scratch for the call path (a frame bind's cell view and
@@ -51297,9 +51301,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; and an env belongs to one thread.  The chunk is mapped zero-filled; a user
     ;; zeroes the slots it reads before it writes them.
     (defun nl_call_scratch (env)
-      (+ (nl_n4_state env) 5242944))
+      (+ (nl_n4_state env) 2097248))
     (defun nl_n4_record (state index)
-      (+ state (+ 64 (* index 160))))
+      (+ state (+ 64 (shl index 6))))
     (defun nl_n4_internal_p (function)
       (if (or (= (sexp-tag function) 4) (= (sexp-tag function) 16))
           (if (= (sexp-name-eq function "nelisp--env-globals-op") 1) 1
@@ -51322,7 +51326,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
         (if (or (= evaluated 1) (= depth 0)) 0
           (let* ((parent (nl_n4_record state (- depth 1))))
             (if (= (nl_n4_veneer_p (heap-read-u64 parent 0)) 1) 1
-              (heap-read-u64 parent 136))))))
+              (heap-read-u64 parent 56))))))
     (defun nl_n4_push (env function args evaluated)
       (let* ((state (nl_n4_state env)) (depth (heap-read-u64 state 0)))
         (if (>= depth 32768) 0
@@ -51331,38 +51335,36 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (seq
              ;; Word-heap S6.3: +0 the operator and +8 the argument list are
              ;; WORDs, as GNU's backtrace entry holds Lisp_Object function and
-             ;; the args (lisp.h union specbinding, bt).  +32..+63 stay a zero
-             ;; nil view, the argument list a zero-argument apply reads.  The
-             ;; evaluator can pass an immediate operator (for example (nil)).
+             ;; the args (lisp.h union specbinding, bt).  The evaluator can pass an
+             ;; immediate operator (for example (nil)).
              (nl_n4_put_words frame function args)
-             ;; The shared stack is a Record view with zero hint words.
-             ;; mmap initialized its words 16/24; only its payload changes.
-             (ptr-write-u64 frame 64 12)
-             (ptr-write-u64 frame 72 frames-data)
-             (ptr-write-u64 frame 96
-                            (sar (heap-read-u64 frames-data 24) 2))
-             (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
-             (ptr-write-u64 frame 112 evaluated)
-             (ptr-write-u64 frame 120 0)
-             ;; Visibility is classified only when inspecting a stack.
-             ;; Keep the entry kind after direct calls become evaluated.
-             (ptr-write-u64 frame 144 evaluated)
-             (ptr-write-u64 frame 152 0)
+             ;; The entry, as GNU's union specbinding bt (lisp.h) plus what backtrace--locals
+             ;; needs: +16 the flags, one byte each -- evaluated, the kind it was pushed with
+             ;; (visibility is classified when a stack is inspected, from what the entry was
+             ;; at the push, not after a direct call becomes evaluated), debug-on-exit, the
+             ;; environment's dynamic-binding mode -- +24 the lazy arguments, +32 the number
+             ;; of frames of the binding stack, +40 the frames record as a WORD, +48 the
+             ;; serial, +56 the hidden mark.
+             (ptr-write-u64 frame 16 (logior (* evaluated 257)
+                                             (shl (logand (heap-read-u64 env 112) 2097152) 3)))
+             (ptr-write-u64 frame 24 0)
+             (ptr-write-u64 frame 32 (sar (heap-read-u64 frames-data 24) 2))
+             (ptr-write-u64 frame 40 (+ frames-data 6))
              (ptr-write-u64 state 8 (+ (heap-read-u64 state 8) 1))
-             (ptr-write-u64 frame 128 (heap-read-u64 state 8))
+             (ptr-write-u64 frame 48 (heap-read-u64 state 8))
              (ptr-write-u64 state 0 (+ depth 1))
              frame)))))
     ;; A word-VM call (`m5_fx_call_words') passes its arguments as the ARGC
     ;; words at ARGP -- the caller's operand stack, untouched until the call
     ;; returns -- and consing them into a list on every call costs more than
-    ;; the call.  The frame records them lazily: args nil, +152 = ARGP*256 +
+    ;; the call.  The frame records them lazily: args nil, +24 = ARGP << 16 |
     ;; ARGC, and `nl_n4_materialize' builds the list when a backtrace reads
     ;; it.  ARGP is a raw address into a word-VM frame vector, valid while
     ;; this frame is live because the VM itself holds raw pointers into that
     ;; vector across the call (no collection moves it meanwhile).
     (defun nl_n4_push_words (env function argp argc)
       (let* ((frame (nl_n4_push_nil env function)))
-        (seq (if (= frame 0) 0 (ptr-write-u64 frame 152 (+ (* argp 65536) argc)))
+        (seq (if (= frame 0) 0 (ptr-write-u64 frame 24 (+ (* argp 65536) argc)))
              frame)))
     (defun nl_n4_push_nil (env function)
       (let* ((state (nl_n4_state env)) (depth (heap-read-u64 state 0)))
@@ -51371,37 +51373,32 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                  (frames-data (heap-read-u64 env 40)))
             (seq
              (nl_n4_put_words frame function 3)
-             (ptr-write-u64 frame 64 12)
-             (ptr-write-u64 frame 72 frames-data)
-             (ptr-write-u64 frame 96
-                            (sar (heap-read-u64 frames-data 24) 2))
-             (ptr-write-u64 frame 104 (logand (heap-read-u64 env 112) 2097152))
-             (ptr-write-u64 frame 112 1)
-             (ptr-write-u64 frame 120 0)
-             (ptr-write-u64 frame 144 1)
-             (ptr-write-u64 frame 152 0)
+             (ptr-write-u64 frame 16 (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3)))
+             (ptr-write-u64 frame 24 0)
+             (ptr-write-u64 frame 32 (sar (heap-read-u64 frames-data 24) 2))
+             (ptr-write-u64 frame 40 (+ frames-data 6))
              (ptr-write-u64 state 8 (+ (heap-read-u64 state 8) 1))
-             (ptr-write-u64 frame 128 (heap-read-u64 state 8))
+             (ptr-write-u64 frame 48 (heap-read-u64 state 8))
              (ptr-write-u64 state 0 (+ depth 1))
              frame)))))
-    ;; +152 holds ADDR*256 + N: N words in a rooted vector at ADDR.
+    ;; +24 holds ADDR << 16 | N: N words in a rooted vector at ADDR.
     (defun nl_n4_materialize (frame)
-      (let* ((lazy (heap-read-u64 frame 152)) (addr (shr lazy 16)) (n (logand lazy 255)))
+      (let* ((lazy (heap-read-u64 frame 24)) (addr (shr lazy 16)) (n (logand lazy 255)))
         (if (= lazy 0) 0
           ;; An activation whose arguments are still being evaluated shows the
           ;; unevaluated list it was pushed with (GNU: original_args, eval.c:2630).
-          (if (= (heap-read-u64 frame 112) 0) 0
-            (seq (ptr-write-u64 frame 152 0)
+          (if (= (heap-read-u8 frame 16) 0) 0
+            (seq (ptr-write-u64 frame 24 0)
                  (nl_n4_store_args frame
                                    (m5_fx_word_list addr n n 0)))))))
     ;; GNU eval_sub keeps the arguments it evaluates in an array on the C stack and
     ;; its backtrace entry points at it (record_in_backtrace / set_backtrace_args,
     ;; eval.c:144, 2626-2693); mark_specpdl marks bt.args[0..nargs] of every
     ;; SPECPDL_BACKTRACE entry, which is what roots them (alloc.c).  Ours does the same:
-    ;; +152 = ADDR << 16 | EXTENT << 8 | ARGC, EXTENT words from ADDR belong to the
+    ;; +24 = ADDR << 16 | EXTENT << 8 | ARGC, EXTENT words from ADDR belong to the
     ;; activation (0: the words are rooted by a frame of their own), the first ARGC of
     ;; them are its arguments.  The array is eight words of the activation chunk's
-    ;; argument stack (+5243976, used-word count at +5243968), taken by the function
+    ;; argument stack (+2098280, used-word count at +2098272), taken by the function
     ;; that evaluates the arguments and given back when it returns.  It is registered
     ;; before the first argument is evaluated, filled with nil, so a collection in a
     ;; later argument finds the earlier values.  The array goes with the function that
@@ -51413,12 +51410,12 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_eic_exit_hook (frame r env)
       (if (= r 0) 0
         (if (= frame 0) r
-          (if (= (heap-read-u64 frame 120) 0) r
+          (if (= (heap-read-u8 frame 18) 0) r
             (let* ((v (nl_n4_exit_debug_w r env)))
-              (seq (ptr-write-u64 frame 120 0) v))))))
+              (seq (ptr-write-u8 frame 18 0) v))))))
     ;; mark_specpdl for one activation: its registered argument words.
     (defun nl_n4_mark_args (frame)
-      (let* ((lazy (heap-read-u64 frame 152)) (ext (logand (shr lazy 8) 255)))
+      (let* ((lazy (heap-read-u64 frame 24)) (ext (logand (shr lazy 8) 255)))
         (if (= ext 0) 0
           (let* ((addr (shr lazy 16)) (j 0))
             (seq (while (< j ext)
@@ -51426,7 +51423,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                         (setq j (+ j 1))))
                  0)))))
     (defun nl_n4_rewrite_args (frame)
-      (let* ((lazy (heap-read-u64 frame 152)) (ext (logand (shr lazy 8) 255)))
+      (let* ((lazy (heap-read-u64 frame 24)) (ext (logand (shr lazy 8) 255)))
         (if (= ext 0) 0
           (let* ((addr (shr lazy 16)) (j 0))
             (seq (while (< j ext)
@@ -51452,10 +51449,15 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_op_view (frame)
       (let* ((w (heap-read-u64 frame 0)))
         (if (= (logand w 1) 1) (wf_word_view w) w)))
+    ;; The chunk's zero nil view (32 bytes after the records): the argument list of a call with
+    ;; none, as the view the apply paths take.  The chunk is mapped zero-filled and nothing
+    ;; writes those words.
+    (defun nl_n4_nil_view (env)
+      (+ (heap-read-u64 env 176) 2097216))
     ;; The argument list as a view: the WORD, or the zero nil view for nil.
-    (defun nl_n4_args_view (frame)
+    (defun nl_n4_args_view (frame env)
       (let* ((w (heap-read-u64 frame 8)))
-        (if (= (logand w 1) 1) (+ frame 32) w)))
+        (if (= (logand w 1) 1) (nl_n4_nil_view env) w)))
     (defun nl_n4_exit_debug_w (w env)
       ;; Debug-on-exit: call (debugger 'exit VALUE); its answer is the value.
       ;; Doc 216 S6.2: the argument list (exit VALUE) is one precise WORD
@@ -51480,7 +51482,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     (defun nl_n4_finish_w (w env _pad frame)
       (if (= frame 0) w
         (let* ((state (heap-read-u64 env 176))
-               (r (if (and (/= w 0) (/= (heap-read-u64 frame 120) 0))
+               (r (if (and (/= w 0) (/= (heap-read-u8 frame 18) 0))
                       (nl_n4_exit_debug_w w env)
                     w)))
           (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) r))))
@@ -51491,7 +51493,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
   ;; The legacy physical OUT is already complete. Only a debugger consumes
   ;; its value as a WORD; status-only exits must preserve all 32 bytes.
   (if (= frame 0) rc
-    (if (and (= rc 0) (/= (heap-read-u64 frame 120) 0))
+    (if (and (= rc 0) (/= (heap-read-u8 frame 18) 0))
         (nl_n4_finish_rc rc
           ;; OUT is a borrowed physical view, consumed into the debugger's
           ;; rooted argument before evaluation. It never escapes as a WORD.
@@ -51504,8 +51506,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (let* ((state (heap-read-u64 env 176))
              (frame (nl_n4_record state (- (heap-read-u64 state 0) 1))))
         (seq (ptr-write-u64 frame 8 (nl_n4_list_word args))
-             (ptr-write-u64 frame 152 0)
-             (ptr-write-u64 frame 112 1)
+             (ptr-write-u64 frame 24 0)
+             (ptr-write-u8 frame 16 1)
              ;; GNU eval.c:3151: errors name ORIGINAL_FUN, the operator
              ;; this activation recorded.
              (nl_n4_apply_raw_w function args env (nl_n4_op_view frame)))))
@@ -51518,10 +51520,10 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
       (let* ((state (heap-read-u64 env 176))
              (frame (nl_n4_record state (- (heap-read-u64 state 0) 1))))
         (seq (ptr-write-u64 frame 8 (nl_n4_list_word listw))
-             (ptr-write-u64 frame 152 0)
-             (ptr-write-u64 frame 112 1)
+             (ptr-write-u64 frame 24 0)
+             (ptr-write-u8 frame 16 1)
              (nl_n4_apply_raw_w (if (= (logand function 1) 1) (wf_word_view function) function)
-                                (nl_n4_args_view frame) env (nl_n4_op_view frame)))))
+                                (nl_n4_args_view frame env) env (nl_n4_op_view frame)))))
     (defun nl_n4_apply_name (function)
       (if (= (sexp-tag function) 18) (let* ((nw (nl_record_slot_word function 0))) (if (= (logand nw 1) 0) nw (record-slot-ref-ptr function 0)))
         (if (= (sexp-tag function) 7)
@@ -51546,7 +51548,7 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_gc_mark_word (heap-read-u64 frame 0))
                     (nl_gc_mark_word (heap-read-u64 frame 8))
-                    (nl_gc_mark_slot (+ frame 64))
+                    (nl_gc_mark_word (heap-read-u64 frame 40))
                     (nl_n4_mark_args frame)))
              (setq i (+ i 1))) 0))))
     (defun nl_n4_rewrite_env (env)
@@ -51560,14 +51562,14 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (let* ((frame (nl_n4_record state i)))
                (seq (nl_compact_rw_word (nl_compact_rw_word_edge frame))
                     (nl_compact_rw_word (nl_compact_rw_word_edge (+ frame 8)))
-                    (nl_compact_rw_slot (+ frame 64))
+                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ frame 40)))
                     (nl_n4_rewrite_args frame)))
              (setq i (+ i 1))) 0))))
     (defun nl_n4_find (state serial)
       (let* ((i (- (heap-read-u64 state 0) 1)) (found 0))
         (seq
          (while (>= i 0)
-           (if (= (heap-read-u64 (nl_n4_record state i) 128) serial)
+           (if (= (heap-read-u64 (nl_n4_record state i) 48) serial)
                (seq (setq found (+ i 1)) (setq i -1))
              (setq i (- i 1))))
          found)))
@@ -51581,23 +51583,23 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (while (< i (heap-read-u64 state 0))
            (let* ((frame (nl_n4_record state i)))
              (seq (nl_n4_materialize frame)
-                  (ptr-write-u64 frame 136
-                         (nl_n4_hidden state i (heap-read-u64 frame 0) (heap-read-u64 frame 144)))
+                  (ptr-write-u64 frame 56
+                         (nl_n4_hidden state i (heap-read-u64 frame 0) (heap-read-u8 frame 17)))
                   (vector-make 6 item)
-                  (wf_write_int value (heap-read-u64 frame 128))
+                  (wf_write_int value (heap-read-u64 frame 48))
                   (vector-slot-set item 0 value)
-                  (if (= (heap-read-u64 frame 112) 0) (wf_write_nil value)
+                  (if (= (heap-read-u8 frame 16) 0) (wf_write_nil value)
                     (wf_write_t value))
                   (vector-slot-set item 1 value)
                   (vector-slot-set item 2 (nl_n4_op_view frame))
-                  (if (= (heap-read-u64 frame 112) 0)
-                      (vector-slot-set item 3 (nl_n4_args_view frame))
-                    (seq (nl_bf_bind_rest_copy_spine (nl_n4_args_view frame) value)
+                  (if (= (heap-read-u8 frame 16) 0)
+                      (vector-slot-set item 3 (nl_n4_args_view frame env))
+                    (seq (nl_bf_bind_rest_copy_spine (nl_n4_args_view frame env) value)
                          (vector-slot-set item 3 value)))
-                  (if (= (heap-read-u64 frame 120) 0) (wf_write_nil value)
+                  (if (= (heap-read-u8 frame 18) 0) (wf_write_nil value)
                     (wf_write_t value))
                   (vector-slot-set item 4 value)
-                  (wf_write_int value (heap-read-u64 frame 136))
+                  (wf_write_int value (heap-read-u64 frame 56))
                   (vector-slot-set item 5 value)
                   (nelisp_cons_construct item list list)))
            (setq i (+ i 1)))
@@ -51625,8 +51627,8 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
              (type (alloc-bytes 32 8)) (depth-slot (alloc-bytes 32 8))
              (alist (alloc-bytes 32 8)) (pair (alloc-bytes 32 8))
              (expr (alloc-bytes 32 8)) (args (alloc-bytes 32 8))
-             (depth (heap-read-u64 frame 96)) (flags (heap-read-u64 env 112))
-             (i 0))
+             (depth (heap-read-u64 frame 32)) (flags (heap-read-u64 env 112))
+             (dyn (shl (heap-read-u8 frame 19) 21)) (i 0))
         (if (= anchor 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
         (seq
@@ -51634,18 +51636,18 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
          (ptr-write-u64 (+ anchor 8) 0 args)
          (nl_sexp_clone_into expression expr)
          (nl_sexp_clone_into (+ env 32) saved)
-         (record-type-tag (+ frame 64) type)
+         (nl_record_type_copy (heap-read-u64 frame 40) type)
          (vector-make (+ depth 8) backing)
          (while (< i depth)
            (seq (vector-slot-set backing i
-                  (nl_vector_slot_word (nl_record_slot_word (+ frame 64) 0) i))
+                  (nl_vector_slot_word (nl_record_slot_word (heap-read-u64 frame 40) 0) i))
                 (setq i (+ i 1))))
          (record-make type 3 fresh)
          (record-slot-set fresh 0 backing)
          (record-slot-set fresh 1 (+ (* depth 4) 1))
          (wf_write_nil alist)
          (wf_write_nil pair)
-         (if (= (heap-read-u64 frame 104) 0)
+         (if (= dyn 0)
              (seq (wf_word_store_out alist
                     (nl_capture_walk_frames_rooted_w backing (- depth 1) 0 3 env))
                   (wf_write_nil pair)
@@ -51653,11 +51655,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                   (nl_sexp_clone_into pair alist)) 0)
          (nl_sexp_clone_into fresh (+ env 32))
          (ptr-write-u64 env 112
-                        (logior (logand flags -2097153) (heap-read-u64 frame 104)))
+                        (logior (logand flags -2097153) dyn))
          ;; Captured cells are installed directly by the N3 binder. Alist
          ;; precedence is inner-first, matching N3's explicit-alist contract.
          (wf_write_nil args)
-         (if (= (heap-read-u64 frame 104) 0)
+         (if (= dyn 0)
              (seq (if (= (sexp-tag alist) 0) (wf_write_t alist) 0)
                   (nelisp_cons_construct alist args args))
            (nelisp_cons_construct args args args))
@@ -51672,11 +51674,11 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
             (if (= found 0) (seq (wf_write_nil out) 0)
               (let* ((index (- found 1)) (frame (nl_n4_record state index)))
                 (if (= code 4)
-                    (seq (if (= (heap-read-u64 frame 120) 0) (wf_write_nil out)
+                    (seq (if (= (heap-read-u8 frame 18) 0) (wf_write_nil out)
                            (wf_write_t out)) 0)
                  (if (= code 1) (nl_n4_locals env index out)
                   (if (= code 2)
-                      (seq (ptr-write-u64 frame 120
+                      (seq (ptr-write-u8 frame 18
                             (if (= (sexp-tag (nl_apply_list_nth payload 1)) 0) 0 1))
                            (nl_sexp_clone_into (nl_apply_list_nth payload 1) out) 0)
                     (nl_n4_frame_eval env frame (nl_apply_list_nth payload 1) out))))))))))
@@ -52312,7 +52314,7 @@ tails run against a private box), and the (rc, OUT) adapter F."
         (if (= kind 2) 2
           (let* ((frame (nl_n4_push_words env fw argp n)))
             (if (= frame 0) 2
-              (let* ((args (if (= n 0) (+ frame 32) (m5_fx_slot_list argp n))))
+              (let* ((args (if (= n 0) (nl_n4_nil_view env) (m5_fx_slot_list argp n))))
                 (seq
                  (if (= n 0) 0 (ptr-write-u64 lslot 0 args))
                  (nl_n4_finish_w (nl_apply_closure_or_lambda_w def kind args env 0)
@@ -52403,13 +52405,13 @@ tails run against a private box), and the (rc, OUT) adapter F."
           (seq
            (ptr-write-u64 (+ fw 8) 0 args_w)
            (ptr-write-u64 frame 8 (nl_n4_list_word args_w))
-           (ptr-write-u64 frame 152 0)
-           (ptr-write-u64 frame 112 1)
+           (ptr-write-u64 frame 24 0)
+           (ptr-write-u8 frame 16 1)
            (if (= (if (= (logand d 1) 1) 0
                     (if (= (logand d 7) 6) 0
-                      (bf_n2_direct_arity d (nl_n4_args_view frame) env call_name))) 0)
+                      (bf_n2_direct_arity d (nl_n4_args_view frame env) env call_name))) 0)
                (nl_n4_apply_raw_w (if (= (logand d 1) 1) (wf_word_view d) d)
-                                  (nl_n4_args_view frame) env (nl_n4_op_view frame))
+                                  (nl_n4_args_view frame env) env (nl_n4_op_view frame))
              (nl_abi_fail 1 0))))))
     (defun nl_eic_callable_w (head_ptr tail_ptr env root_mark)
       (let* ((fw (nl_root_frame env 2)))
@@ -52643,7 +52645,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; slots ARGC+1 and ARGC+2.
       (defun nl_eic_prim_frame_w (id tail env argc fw call_name fn)
         (let* ((state (heap-read-u64 env 176))
-               (used (if (= state 0) 262144 (heap-read-u64 state 5243968)))
+               (used (if (= state 0) 262144 (heap-read-u64 state 2098272)))
                (nd (if (= state 0) 0 (heap-read-u64 state 0))))
           (if (if (> argc 5) 1 (if (> used 262000) 1 (= nd 0)))
               (nl_eic_prim_rframe_w id tail env argc fw call_name fn)
@@ -52654,32 +52656,32 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
             ;; `m5_fx_eval_forms' keeps, and without a caller's FW the two slots of the
             ;; ordinary apply (FN, the list), all nil before the first evaluation.  FR is
             ;; the call form's activation (the cons evaluator pushed it, ND > 0).
-            (let* ((base (+ state (+ 5243976 (* used 8))))
-                   (fr (+ state (+ 64 (* (- nd 1) 160))))
+            (let* ((base (+ state (+ 2098280 (* used 8))))
+                   (fr (+ state (+ 64 (shl (- nd 1) 6))))
                    (fw2 (if (= fw 0) (+ base (* (+ argc 1) 8)) fw)))
               (seq
-               (ptr-write-u64 state 5243968 (+ used 8))
+               (ptr-write-u64 state 2098272 (+ used 8))
                (ptr-write-u64 base 0 3) (ptr-write-u64 base 8 3)
                (ptr-write-u64 base 16 3) (ptr-write-u64 base 24 3)
                (ptr-write-u64 base 32 3) (ptr-write-u64 base 40 3)
                (ptr-write-u64 base 48 3) (ptr-write-u64 base 56 3)
                (if (= fw 0) (ptr-write-u64 fw2 0 fn) 0)
-               (ptr-write-u64 fr 152 (+ (* base 65536)
+               (ptr-write-u64 fr 24 (+ (* base 65536)
                                         (+ (* (if (= fw 0) (+ argc 3) (+ argc 1)) 256) argc)))
                (let* ((r (if (/= (m5_fx_eval_forms tail env base argc) 0) 0
                            (seq
                             (ptr-write-u64 fr 8 3)
-                            (ptr-write-u64 fr 112 1)
+                            (ptr-write-u8 fr 16 1)
                             (let* ((st (if (<= id 13)
                                            (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
                                          (nl_eic_prim2_run id base argc (+ base (* argc 8))))))
                               (if (= st 0)
                                   (let* ((v (heap-read-u64 (+ base (* argc 8)) 0)))
-                                    (if (= (heap-read-u64 fr 120) 0) v (nl_eic_exit_hook fr v env)))
+                                    (if (= (heap-read-u8 fr 18) 0) v (nl_eic_exit_hook fr v env)))
                                 (if (= st -3)
                                     (nl_eic_after_args_w (m5_fx_slot_list base argc) env fw2 call_name)
                                   0)))))))
-                 (seq (ptr-write-u64 state 5243968 used) r)))))))
+                 (seq (ptr-write-u64 state 2098272 used) r)))))))
       ;; More than five arguments: the rooted frame, which this function releases.
       (defun nl_eic_prim_rframe_w (id tail env argc fw call_name fn)
         (let* ((mark (nl_root_mark env))
@@ -52710,9 +52712,9 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
               (let* ((nd (ptr-read-u64 state 0)))
                 (if (= nd 0) r
                   (let* ((frame (nl_n4_record state (- nd 1))))
-                    (if (= (ptr-read-u64 frame 120) 0) r
+                    (if (= (ptr-read-u8 frame 18) 0) r
                       (let* ((v (nl_n4_exit_debug_w r env)))
-                        (seq (ptr-write-u64 frame 120 0) v))))))))))
+                        (seq (ptr-write-u8 frame 18 0) v))))))))))
       ;; GNU funcall_lambda (eval.c:3350) for the usual closure.  D = (closure CAPTURED
       ;; FORMALS . BODY), read from a function cell, called with exactly as many
       ;; arguments as it has parameters, none of them &optional or &rest (GNU's
@@ -52774,27 +52776,27 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
          (ptr-write-u64 av 0 3) (ptr-write-u64 av 8 3) (ptr-write-u64 av 16 3)
          (ptr-write-u64 av 24 3) (ptr-write-u64 av 32 3) (ptr-write-u64 av 40 3)
          (ptr-write-u64 av 48 3) (ptr-write-u64 av 56 d)
-         (ptr-write-u64 fr 152 (+ (* av 65536) 2048))))
+         (ptr-write-u64 fr 24 (+ (* av 65536) 2048))))
       ;; The fast path for a caller that has D in a frame of its own (FW): its own array,
       ;; the exit hook run before the array goes, 2 with the registration undone when the
       ;; call is not taken.
       (defun nl_fl_try_w (d tail env fw call_name)
         (let* ((state (heap-read-u64 env 176))
-               (used (if (= state 0) 262144 (heap-read-u64 state 5243968)))
+               (used (if (= state 0) 262144 (heap-read-u64 state 2098272)))
                (nd (if (= state 0) 0 (heap-read-u64 state 0))))
           (if (if (> used 262000) 1 (= nd 0)) 2
-            (let* ((av (+ state (+ 5243976 (* used 8))))
-                   (fr (+ state (+ 64 (* (- nd 1) 160)))))
+            (let* ((av (+ state (+ 2098280 (* used 8))))
+                   (fr (+ state (+ 64 (shl (- nd 1) 6)))))
               (seq
-               (ptr-write-u64 state 5243968 (+ used 8))
+               (ptr-write-u64 state 2098272 (+ used 8))
                (nl_fl_av_init av d fr)
                (let* ((c (nl_fl_call_w d tail env av fr fw call_name))
-                      (r (if (= c 2) (seq (ptr-write-u64 fr 152 0) 2)
-                           (if (= (heap-read-u64 fr 120) 0) c (nl_eic_exit_hook fr c env)))))
-                 (seq (ptr-write-u64 state 5243968 used) r)))))))
+                      (r (if (= c 2) (seq (ptr-write-u64 fr 24 0) 2)
+                           (if (= (heap-read-u8 fr 18) 0) c (nl_eic_exit_hook fr c env)))))
+                 (seq (ptr-write-u64 state 2098272 used) r)))))))
       (defun nl_fl_run_w (cap formals body nf tail env av fr fw call_name)
         (seq
-         (ptr-write-u64 fr 152 (+ (* av 65536) (+ 2048 nf)))
+         (ptr-write-u64 fr 24 (+ (* av 65536) (+ 2048 nf)))
          (if (/= (m5_fx_eval_forms tail env av nf) 0) 0
            (let* ((rec (nl_apply_lambda_fx_rec cap body env 0)))
              (if (/= rec 0)
@@ -52802,7 +52804,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                  (nl_fl_rec_apply_w (ptr-read-u64 (+ av 56) 0) av nf env fw call_name)
                (seq
                 (ptr-write-u64 fr 8 3)
-                (ptr-write-u64 fr 112 1)
+                (ptr-write-u8 fr 16 1)
                 (nl_fl_apply_w cap formals body av nf env)))))))
       (defun nl_fl_rec_apply_w (d av nf env fw call_name)
         (let* ((mark (nl_root_mark env)) (fw2 (if (= fw 0) (nl_root_frame env 2) fw)))
@@ -53011,15 +53013,15 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
       ;; off (nothing then allocates one).
       (defun nl_eic_closure_call_w (d tail_ptr env call_name)
         (let* ((state (heap-read-u64 env 176))
-               (used (if (= state 0) 262144 (heap-read-u64 state 5243968)))
+               (used (if (= state 0) 262144 (heap-read-u64 state 2098272)))
                (nd (if (= state 0) 0 (heap-read-u64 state 0))))
           (if (if (> used 262000) 1 (= nd 0))
               (nl_eic_closure_rest_w d tail_ptr env call_name)
-            (let* ((av (+ state (+ 5243976 (* used 8))))
-                   (fr (+ state (+ 64 (* (- nd 1) 160))))
+            (let* ((av (+ state (+ 2098280 (* used 8))))
+                   (fr (+ state (+ 64 (shl (- nd 1) 6))))
                    (mark (if (= (nl_fx_disabled) 1) 0 (nl_root_mark env))))
               (seq
-               (ptr-write-u64 state 5243968 (+ used 8))
+               (ptr-write-u64 state 2098272 (+ used 8))
                (nl_fl_av_init av d fr)
                (let* ((r (let* ((w (m5_fx_interp_call_w d tail_ptr env 0)))
                            (if (/= w 2) w
@@ -53027,8 +53029,8 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                                (if (/= c 2) c
                                  (nl_eic_closure_rest_w d tail_ptr env call_name))))))
                       (r2 (if (= mark 0) r (nl_cons_root_finish env mark r)))
-                      (v (if (= (heap-read-u64 fr 120) 0) r2 (nl_eic_exit_hook fr r2 env))))
-                 (seq (ptr-write-u64 state 5243968 used) v)))))))
+                      (v (if (= (heap-read-u8 fr 18) 0) r2 (nl_eic_exit_hook fr r2 env))))
+                 (seq (ptr-write-u64 state 2098272 used) v)))))))
       ;; The ordinary chain for a closure the fast path does not take.
       (defun nl_eic_closure_rest_w (d tail_ptr env call_name)
         (let* ((mark (nl_root_mark env)) (fw (nl_root_frame env 2)))
@@ -53103,21 +53105,18 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                (n4-frame
                 (if (>= depth 32768)
                     (nl_n4_push env car-ptr cdr-ptr 0)
-                  (let* ((fr (+ state (+ 64 (* depth 160))))
+                  (let* ((fr (+ state (+ 64 (shl depth 6))))
                          (fd (heap-read-u64 env 40))
-                         (serial (+ (heap-read-u64 state 8) 1)))
+                         (serial (+ (heap-read-u64 state 8) 1))
+                         (fl (shl (logand (heap-read-u64 env 112) 2097152) 3)))
                     (seq
                      (ptr-write-u64 fr 0 (if (= (logand car-ptr 7) 6) car-ptr (nl_word_canon car-ptr)))
                      (ptr-write-u64 fr 8 (if (= (logand cdr-ptr 7) 2) cdr-ptr (nl_n4_list_word cdr-ptr)))
-                     (ptr-write-u64 fr 64 12)
-                     (ptr-write-u64 fr 72 fd)
-                     (ptr-write-u64 fr 96 (sar (heap-read-u64 fd 24) 2))
-                     (ptr-write-u64 fr 104 (logand (heap-read-u64 env 112) 2097152))
-                     (ptr-write-u64 fr 112 0)
-                     (ptr-write-u64 fr 120 0)
-                     (ptr-write-u64 fr 128 serial)
-                     (ptr-write-u64 fr 144 0)
-                     (ptr-write-u64 fr 152 0)
+                     (ptr-write-u64 fr 16 fl)
+                     (ptr-write-u64 fr 24 0)
+                     (ptr-write-u64 fr 32 (sar (heap-read-u64 fd 24) 2))
+                     (ptr-write-u64 fr 40 (+ fd 6))
+                     (ptr-write-u64 fr 48 serial)
                      (ptr-write-u64 state 8 serial)
                      (ptr-write-u64 state 0 (+ depth 1))
                      fr))))
@@ -53137,7 +53136,7 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
                           ;; The bounded backtrace of an uncaught error is the innermost
                           ;; entries, captured while the failing one is still on the stack.
                           (seq (if (= (nl_gc_frame_record_armed_p) 1) (nl_bt_maybe_capture env 1) 0) 0)
-                        (if (= (heap-read-u64 n4-frame 120) 0) w (nl_n4_exit_debug_w w env))))
+                        (if (= (heap-read-u8 n4-frame 18) 0) w (nl_n4_exit_debug_w w env))))
                    (st (heap-read-u64 env 176)))
               (seq (ptr-write-u64 st 0 (- (heap-read-u64 st 0) 1)) r)))))
        ((= (logand form 7) 6)
