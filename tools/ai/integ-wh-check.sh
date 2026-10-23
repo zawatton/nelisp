@@ -326,7 +326,7 @@ assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
 print("arity sweep: %d cases over %d builtins, 0 failed" % (d["counts"]["passed"], d["counts"]["builtins"]))
 PY
                   ;;
-      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-m11}/report.json
+      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-wh2}/report.json
                   sha=$(sha256sum "$DYN" | cut -d' ' -f1)
                   python3 - "$f" "$sha" <<'PY' || fail "the interpreted builtin-call rows are not within the callpath stage's figures ($f)"
 import json, sys
