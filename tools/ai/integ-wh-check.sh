@@ -60,13 +60,13 @@ say() { echo "INTEG-WH $*"; }
 CHECK=${1:-}${2:+ $2}
 fail() { say "FAIL: $*"; printf '%s [%s] %s\n' "$(date +%T)" "$CHECK" "$*" >> "$OUT/fail.log" 2>/dev/null; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
-# The binary may predate HEAD only by commits to this dry run's own files (and to the namespace ratchet's pins and the evidence files, which no binary reads).
+# The binary may predate HEAD only by commits to this dry run's own files (and to the namespace ratchet's pins, the evidence files and the symbols lane's tooling, which no binary reads).
 built_from_head_tree() {  # built_from_head_tree REV
   git diff --quiet "$1" HEAD -- . ':(exclude)tools/ai/integ-wh-check.sh' \
     ':(exclude)tools/ai/integ-wh-progress.org' ':(exclude)tools/ai/integ-wh-build.sh' \
     ':(exclude)tools/ai/integ-wh-sanity.el' ':(exclude)tools/ai/integ-wh-mcp-smoke.sh' \
     ':(exclude)tools/ai/integ-wh-resolved.txt' ':(exclude)tools/ai/integ-wh-*' \
-    ':(exclude)tools/ai/gc-port-gc3.py' ':(exclude)tools/ai/gc-port-ir.py' ':(exclude)tools/ns-inventory-baseline.txt' ':(exclude)tools/ai/evidence/*'
+    ':(exclude)tools/ai/gc-port-gc3.py' ':(exclude)tools/ai/gc-port-ir.py' ':(exclude)tools/ns-inventory-baseline.txt' ':(exclude)tools/ai/evidence/*' ':(exclude)tools/ai/symbols-name-word-*'
 }
 
 case ${1:-} in

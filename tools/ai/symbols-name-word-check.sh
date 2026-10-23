@@ -85,7 +85,9 @@ case ${1:-} in
     done
     say "PASS baseline (E build of $E_REV, build inputs equal to $BASE_REV's; dynamic ${PIN_BASE_DYN:0:8}, static ${PIN_BASE_STATIC:0:8})" ;;
   boundary)
-    bash tools/ai/symbols-name-word-defuns.sh "$BASE_REV" tools/ai/symbols-name-word-boundary.txt > "$LOGS/boundary.out" 2>&1 ||
+    # SNW_BOUNDARY_REV: the revision the boundary's defuns are compared with.  The lane's own branch compares with BASE_REV; a tree that also
+    # carries another lane's changes to those defuns (the integration of the word-heap line) compares with the revision before this lane's merge.
+    bash tools/ai/symbols-name-word-defuns.sh "${SNW_BOUNDARY_REV:-$BASE_REV}" tools/ai/symbols-name-word-boundary.txt > "$LOGS/boundary.out" 2>&1 ||
       fail "boundary: $(tail -n 3 "$LOGS/boundary.out" | tr '\n' '|' | cut -c1-300)"
     say "PASS boundary ($(tail -n 1 "$LOGS/boundary.out"))" ;;
   census-negative)
