@@ -1,0 +1,19 @@
+Word-heap batch census, 2026-10-24
+Runtime: E 3ed3be627 (v1.5.0-2228-g3ed3be627) nelisp-dyn sha256 dd6c5eaed217c091c33cf37fe145d4ba1c601fedbb55c9880f760bac7bfaef79, cold 402bba6c8afc8b842d8c0a3c23737970e3a6d950eb1a93bb66aaa74742ac97c6
+Library: nelisp-emacs-lib 19f0fece (feat/chartab-flip-20261022; mirrored to ccore/20261004 as 2322ea25)
+- base image (strict, empty stderr, stale-compiler-macro guard): PASS, E, 127 s
+- gui-image --with-skk (strict, empty stderr, state equivalence): PASS, E
+- ccore: PASS, E. other 374/374, process 190/190, display 333/333, buffer 325/325 (ledger groups); x-gui 31/31, chars 110/110, files 97/97
+- chartab-oracle bare: PASS 16/16, E
+- chartab-oracle image: PASS 19/19, E
+- multibyte-oracle image (set-buffer-multibyte, always-local slot, setting-constant): PASS 11/11, E
+- blv3 .elc probe (S6.2): PASS e=(3 nil t) f=(4 nil t), byte-code-function, E
+- layout S2.1: PASS 122/122, E
+- pty: PASS 10/10, E
+- S3.2: PASS, E
+- S4.1: PASS, E
+- S5.1: PASS, E
+- elcload, SKK/evil .elc on the package image: 57/63, E; evil-keybindings.elc loads (D 56/63). Remaining failures are library gaps (modify-coding-system-alist, put-char-code-property, tar-mode x2, ert-set-test) and skk-tut (advice-disable; fails on GNU too).
+- S1.3 (user init), measured on D 021c33983 (dyn 78b23a4e...), library a6ee08ed, alternating with f3: PASS 351 s, peak VmSize 2.94 GB, VmRSS 1.00 GB. f3: 602 s, 5.10/2.43 GB (D/f3 0.58 time, 0.41 RSS).
+- ifc 15k, measured on D, library a6ee08ed, 3 alternating rounds at load 5-7: 20.7/20.8/20.6 vs f3 35.5/35.3/35.1 ms/call (0.585). WH2 at load 2.3: 0.57.
+Library fixes this census: 9eb5c8ef (multibyte oracle, always-local enable-multibyte-characters), 65de2712 (swap engine installs the constant through the toplevel setter), eb8fda0f (functionp accepts byte-code functions and subrs), a6ee08ed (S4.1 converts without RET), 19f0fece (interval-shift fast path for propertized inserts; plain subst-char-in-region gap strings).
