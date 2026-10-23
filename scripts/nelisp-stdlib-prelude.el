@@ -25989,7 +25989,8 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
     nil))
 
 ;;;; Evaluator activation records (N4b, native policy clause 2).
-;; The private operation returns copied Lisp data plus generation handles.
+;; The private operation returns copied Lisp data plus frame handles (the index of the
+;; activation record, which stays valid while the frame is below the current depth).
 ;; Public argument checking, BASE selection and callbacks stay in Lisp.
 (defun nelisp-backtrace--snapshot ()
   (let ((raw (nelisp--env-globals-op 'backtrace 0 nil)) (frames nil))
