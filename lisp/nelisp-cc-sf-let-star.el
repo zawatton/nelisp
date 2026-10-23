@@ -121,8 +121,13 @@
           (nl_sf_let_star_next_w
            (nl_sf_let_star_one (nl_cons_car_word bindings) env)
            bindings args env 0 0)
+        ;; The end of the list: nil, else GNU's CHECK_LIST_END (VARLIST, XCAR (args))
+        ;; (eval.c, FletX) signals (wrong-type-argument listp VARLIST) with the
+        ;; whole variable list.
         (nl_sf_let_star_setup_done_w
-         (extern-call nl_let_setup bindings env 1)
+         (if (= (sexp-tag bindings) 0)
+             (extern-call nl_let_setup bindings env 1)
+           (seq (bf_wrong_type_listp (wf_word_view (nl_cons_car_word args))) 1))
          args env 0)))
 
     ;; `(let*)' with no binding list fails the form.

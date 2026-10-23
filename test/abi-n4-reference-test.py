@@ -15,7 +15,8 @@ corpus = directory / 'driver.el'
 corpus.write_text(';;; -*- lexical-binding: t; -*-\n' + ''.join('(load ' + __import__('json').dumps(str(ROOT / path)) + ' nil t)\n'
                           for path in ('packages/nelisp-emacs-foundation/src/emacs-cc-thread-1.el',
                                        'packages/nelisp-emacs-foundation/src/emacs-cc-thread-predicates-1.el',
-                                       'test/nelisp-n4b-reference.el')) + 'nil\n')
+                                       'test/nelisp-n4b-reference.el',
+                                       'test/nelisp-n4c-reference.el')) + 'nil\n')
 commands = {
     'gnu': [os.environ.get('EMACS', 'emacs'), '-Q', '--batch', '-l', str(corpus)],
     'candidate': [str(Path(sys.argv[1]).resolve()), '--load', str(corpus)],
@@ -31,11 +32,11 @@ for who, command in commands.items():
     lines = result.stdout.decode().rstrip().splitlines()
     if lines and lines[-1] == 'nil':
         lines.pop()  # standalone --load echoes its final value
-    if not lines or lines[-1] != 'N4-BACKTRACE-REFERENCE-DONE':
+    if not lines or lines[-1] != 'N4C-REFERENCE-DONE' or 'N4-BACKTRACE-REFERENCE-DONE' not in lines:
         sys.exit(f'N4-REFERENCE {who} missing completion: {directory}')
     outputs[who] = lines
 if outputs['gnu'] != outputs['candidate']:
     import difflib
     print('\n'.join(difflib.unified_diff(outputs['gnu'], outputs['candidate'], lineterm=''))[:3000])
     sys.exit(f'N4-REFERENCE output differs: {directory}')
-print(f'N4-REFERENCE checks={len(outputs["gnu"]) - 1} PASS {directory}')
+print(f'N4-REFERENCE checks={len(outputs["gnu"]) - 2} PASS {directory}')

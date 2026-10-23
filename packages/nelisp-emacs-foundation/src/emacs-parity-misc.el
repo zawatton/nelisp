@@ -800,7 +800,9 @@ Private lexical names avoid collisions with a consumer's dynamic bindings."
   (defun add-variable-watcher (symbol watch-function)
     "Register WATCH-FUNCTION for SYMBOL. Existing entries retain their order."
     (setq symbol (emacs-parity-misc--watcher-symbol symbol))
-    (when (or (null symbol) (eq symbol t) (keywordp symbol))
+    (when (or (null symbol) (eq symbol t) (keywordp symbol)
+              (and (fboundp 'nelisp--env-globals-op)
+                   (nelisp--env-globals-op 'is-constant symbol)))
       (signal 'trapping-constant (list symbol)))
     (let ((existing (gethash symbol emacs-parity-misc--variable-watchers)))
       (unless (member watch-function existing)

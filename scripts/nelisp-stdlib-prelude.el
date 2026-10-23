@@ -11938,6 +11938,22 @@ never an error, for any integer argument."
         (char-to-string char)
       (unibyte-string (logand char 255)))))
 
+(unless (fboundp 'nelisp--bset-enable-multibyte-characters)
+  (defun nelisp--bset-enable-multibyte-characters (flag)
+    "Set the current buffer's `enable-multibyte-characters' to FLAG (non-nil: t).
+`enable-multibyte-characters' is a constant (GNU buffer.c:5279), so `set', `setq'
+and `let' refuse it with `setting-constant'.  GNU's C code stores the flag with
+`bset_enable_multibyte_characters' (buffer.h), a plain field store that never goes
+through `set_internal'; this is the runtime's counterpart, for library code that
+owns buffers (`set-buffer-multibyte' is the only caller here).  It sets the
+buffer's own value, not the default, and leaves the variable constant.  Returns
+the flag as t or nil."
+    (unwind-protect
+        (progn (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters nil)
+               (set (make-local-variable 'enable-multibyte-characters) (and flag t)))
+      (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters t))
+    (and flag t)))
+
 (unless (fboundp 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
   "Set the current buffer's multibyte flag and return FLAG."
@@ -11946,7 +11962,7 @@ never an error, for any integer argument."
       ;; GNU Fset_buffer_multibyte returns before touching buffer slots
       ;; when the flag is unchanged (buffer.c:2753).
       (puthash (current-buffer) (and flag t) nelisp--buffer-multibyte-table)
-      (set (make-local-variable 'enable-multibyte-characters) (and flag t))
+      (nelisp--bset-enable-multibyte-characters flag)
       (set (make-local-variable 'buffer-undo-list) nil)))
   flag))
 ;; Doc 200 string representation primitives are native standalone builtins.
@@ -24629,6 +24645,21 @@ comment above this definition for how that value was measured."))
     "Smallest value that is a valid fixnum in this runtime.  See
 `most-positive-fixnum'."))
 
+;; GNU's C-level constants (make_symbol_constant, lisp.h): data.c:4377 and :4383
+;; (most-positive-fixnum, most-negative-fixnum), buffer.c:5279
+;; (enable-multibyte-characters), font.c:5989, :5996 and :6003 (font-weight-table,
+;; font-slant-table, font-width-table); lread.c:5209 and :5214 make nil and t
+;; constant, which they are here from the start.  A symbol marked so refuses
+;; `set', `setq', `let', `defconst', `makunbound' and the like with
+;; setting-constant (data.c set_internal).  The three font tables are unbound
+;; here; the mark is on the symbol, so a later `boundp' is unchanged.
+(let ((nelisp--constants '(most-positive-fixnum most-negative-fixnum
+                           enable-multibyte-characters font-weight-table
+                           font-slant-table font-width-table)))
+  (while nelisp--constants
+    (nelisp--env-globals-op 'set-constant (car nelisp--constants) t)
+    (setq nelisp--constants (cdr nelisp--constants))))
+
 ;; A3: native `equal' never compared vectors element-wise.  Capture native
 ;; `equal' for the atom/string/number leaves and recurse over cons + vector.
 (unless (fboundp 'nelisp--native-equal)
@@ -28017,7 +28048,8 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
  'save-current-buffer (symbol-function 'nelisp--save-current-buffer))
 
 ;;;; Evaluator activation records (N4b, native policy clause 2).
-;; The private operation returns copied Lisp data plus generation handles.
+;; The private operation returns copied Lisp data plus frame handles (the index of the
+;; activation record, which stays valid while the frame is below the current depth).
 ;; Public argument checking, BASE selection and callbacks stay in Lisp.
 (defun nelisp-backtrace--snapshot ()
   (let ((raw (nelisp--env-globals-op 'backtrace 0 nil)) (frames nil))

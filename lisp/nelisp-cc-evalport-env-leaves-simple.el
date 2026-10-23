@@ -45,9 +45,22 @@
     ;; Doc 215 word ABI: the value WORD; 2 when NAME is unbound (not found,
     ;; or an entry holding only the env+64 unbound marker); 0 on a signal.
     (defun nl_env_lookup_val_w (name_ptr env _pad)
-      (nl_env_lookup_val_done_w
-       (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
-       env 0 0))
+      ;; GNU eval_sub of a symbol: Fassq over the lexical environment, then the
+      ;; symbol's value.  R is the lexical value, 0 for no lexical binding, -1 for
+      ;; a shape the loop leaves to the general code.
+      (let* ((r (extern-call nl_lex_walk (+ env 32) name_ptr 2)))
+        (if (= r -1)
+            (nl_env_lookup_val_done_w
+             (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
+             env 0 0)
+          (if (= r 0)
+              (let* ((g (extern-call nl_gv_fast env name_ptr)))
+                (if (= g -1)
+                    (nl_env_lookup_val_done_w
+                     (extern-call nl_sym_find_value_w env name_ptr 0)
+                     env 0 0)
+                  g))
+            r))))
     ;; W is the looked-up value WORD (or 0 / 2 from the lookup); answers 2
     ;; when it is the env+64 unbound marker.
     (defun nl_env_lookup_val_done_w (w env _pad _pad1)

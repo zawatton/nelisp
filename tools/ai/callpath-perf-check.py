@@ -722,12 +722,14 @@ def evalrows_report(tag):
     tool = evalrows_tool()
     report = read(EVALROWS / tag / "report.json")
     need(report.get("schema") == 3 and report["n"] == [tool.N1, tool.N2]
-         and report["loop_n"] == [tool.LN1, tool.LN2], "unqualified evalrows protocol")
+         and report["loop_n"] == [tool.LN1, tool.LN2] and report["bc_n"] == [tool.BN1, tool.BN2],
+         "unqualified evalrows protocol")
+    auth(report["bc_fixture"])
     need(report["source"] == source_identity(), "the evalrows report is stale")
     for key in ("binary", "gnu", "producer"):
         auth(report[key])
     need(Path(report["gnu"]["path"]).name in ("emacs", "emacs-31.1"), "GNU reference is not emacs 31.1")
-    per, loops = {}, {}
+    per, loops, bc = {}, {}, {}
     for engine in ("nelisp", "gnu"):
         per[engine] = {}
         for row, expr in tool.ROWS.items():
@@ -746,7 +748,16 @@ def evalrows_report(tag):
                      f"{engine} loop {name} {n}: not the tool's program")
                 ir[n] = callgrind_total(auth(entry["cg"]))
             loops[engine][name] = (ir[tool.LN2] - ir[tool.LN1]) / (tool.LN2 - tool.LN1)
-    return report, per, loops
+        bc[engine] = {}
+        for row in tool.BC_ROWS:
+            ir = {}
+            for n in (tool.BN1, tool.BN2):
+                entry = report["files"][f"{engine}-bc-{row}-{n}"]
+                need(auth(entry["src"]).read_text() == tool.bc_program(row, n),
+                     f"{engine} bytecode {row} {n}: not the tool's program")
+                ir[n] = callgrind_total(auth(entry["cg"]))
+            bc[engine][row] = (ir[tool.BN2] - ir[tool.BN1]) / (tool.BN2 - tool.BN1)
+    return report, per, loops, bc
 
 
 def callgrind_total(path):
@@ -761,7 +772,7 @@ def callgrind_total(path):
 def check_evalrow(row, factor, tag="result"):
     """S5.1-S5.3: Ir per iteration of an interpreted builtin call, above the loop's control row, at most
     FACTOR times GNU 31.1's.  The final receipt (tag result) must come from the wall-clock result build."""
-    report, per, _ = evalrows_report(tag)
+    report, per, _, _ = evalrows_report(tag)
     if tag == "result":
         need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
     mine = per["nelisp"][row] - per["nelisp"]["control"]
@@ -772,10 +783,25 @@ def check_evalrow(row, factor, tag="result"):
     print(f"evalrow {row} PASS")
 
 
+def check_bcrow(row, factor, tag="result"):
+    """S6.1-S6.2: Ir per call of a bytecode row of the floors fixture, above its empty control loop, at most
+    FACTOR times GNU 31.1's (both engines run GNU's compiled forms).  The final receipt (tag result) must come
+    from the wall-clock result build."""
+    report, _, _, bc = evalrows_report(tag)
+    if tag == "result":
+        need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
+    mine = bc["nelisp"][row] - bc["nelisp"]["pcf-control"]
+    gnu = bc["gnu"][row] - bc["gnu"]["pcf-control"]
+    need(gnu > 0, f"{row}: GNU row not above its control")
+    print(f"evalbc {row} nelisp={mine:.0f} gnu={gnu:.0f} ratio={mine / gnu:.2f}x cap={factor}x")
+    need(mine <= factor * gnu, f"{row}: {mine / gnu:.2f}x GNU's Ir per call, above the {factor}x cap")
+    print(f"evalbc {row} PASS")
+
+
 def check_evalloop(name, factor, tag="result"):
     """S5.6-S5.7: Ir per iteration of an interpreted loop, at most FACTOR times GNU 31.1's.  The final
     receipt (tag result) must come from the wall-clock result build."""
-    report, _, loops = evalrows_report(tag)
+    report, _, loops, _ = evalrows_report(tag)
     if tag == "result":
         need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
     mine, gnu = loops["nelisp"][name], loops["gnu"][name]
@@ -820,7 +846,7 @@ def check_s5e2e():
     fixture matches GNU, and the three evalrows are measured on that very build."""
     check_final()
     check_evalcall()
-    report, _, _ = evalrows_report("result")
+    report, _, _, _ = evalrows_report("result")
     need(report["binary"]["sha256"] == s63_result_build(), "the evalrows run did not use the wall-clock result build")
     print("s5e2e PASS")
 
@@ -892,6 +918,10 @@ def main():
     for name in ("portplan", "arity", "noregress", "final", "wallbuiltin", "wallnoregress", "s63alloc", "s63e2e",
                  "stash", "s5e2e"):
         sub.add_parser(name)
+    p = sub.add_parser("bcrow")
+    p.add_argument("row", choices=("pcf-funcall", "pcf-optional-rest", "pcf-builtin"))
+    p.add_argument("factor", type=float)
+    p.add_argument("--tag", default="result", help="evalrows report tag; the final receipt is `result'")
     p = sub.add_parser("evalloop")
     p.add_argument("name", choices=("while", "closure"))
     p.add_argument("factor", type=float)
@@ -939,6 +969,8 @@ def main():
             check_s63census(args.kind)
         elif args.check == "evalrow":
             check_evalrow(args.row, args.factor, args.tag)
+        elif args.check == "bcrow":
+            check_bcrow(args.row, args.factor, args.tag)
         elif args.check == "evalloop":
             check_evalloop(args.name, args.factor, args.tag)
         elif args.check == "evalcall":

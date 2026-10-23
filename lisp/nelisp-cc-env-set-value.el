@@ -74,7 +74,16 @@
     ;;
     ;; Arity 2 (even) ✓.
     (defun nelisp_env_setv_cell_hit (cell-ptr val-ptr)
-      (and (nl_cell_set_w cell-ptr val-ptr) 0))
+      ;; GNU Fsetq stores through the binding (Fsetcdr, eval.c:496-501): a Cell WORD that
+      ;; holds a plain value (header bit 8 clear: not a binding pair's) takes a canonical
+      ;; value WORD (the low three bits not zero: no legacy view) in one store.
+      (if (if (= (logand cell-ptr 7) 6)
+              (if (= (logand (shr (ptr-read-u64 (- cell-ptr 6) 0) 8) 1) 0)
+                  (/= (logand val-ptr 7) 0)
+                0)
+            0)
+          (seq (ptr-write-u64 (+ cell-ptr 2) 0 val-ptr) 0)
+        (and (nl_cell_set_w cell-ptr val-ptr) 0)))
 
     ;; nelisp_env_setv_mirror
     ;;
@@ -189,17 +198,29 @@
         ;; A symbol with a lexical binding is no constant and not localized: the
         ;; binding's Cell is set at once.  LEX is that Cell, 0 for no lexical
         ;; binding, -1 for a shape the loop leaves to the general code.
-        (let* ((lex (extern-call nl_lex_cell frames-ptr name-ptr)))
+        (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 0)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
+            ;; No lexical binding: GNU's Fsetq calls Fset, whose set_internal refuses a
+            ;; constant.  A keyword is one (it may only be set to itself), asked after the
+            ;; lexical lookup, not before it.
+            (if (= (bf_keyword_raw name-ptr) 1)
+                (if (= (wf_bytecode_w_eqw name-ptr val-ptr) 1) 0
+                  (bf_setting_constant name-ptr))
             ;; One lookup of the symbol's object serves the constant refusal (its
             ;; trapped_write, data.c set_internal) and the LOCALIZED test.
-            (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+            (let* ((direct (if (= lex 0)
+                           (extern-call nl_sym_set_w (- frames-ptr 32) name-ptr val-ptr)
+                         1)))
+              (if (= direct 0) 0
+                (if (= direct 2) 1
+                  (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
               (if (if (= entry 0) 0
                     (if (= (nl_so_p entry) 1)
                         (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
                       (= (nl_val_tag (nl_ent_w entry 3)) 1)))
-                  1
+                  ;; set_internal (data.c) on a NOWRITE symbol: setting-constant.
+                  (bf_setting_constant name-ptr)
                 (let* ((local-p (if (= entry 0) 0
                                   (if (> (nl_ent_n entry) 5)
                                       (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
@@ -212,7 +233,7 @@
                   (if (= cell-ptr 0)
                       (nelisp_env_setv_alias_or_mirror
                        mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
-                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))
+                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))))))
 
     ;; nelisp_env_set_value
     ;;
@@ -274,15 +295,21 @@
         (mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr _pad)
       (if (= (nelisp_env_set_value_name_ok name-ptr) 0)
           1
-        (let* ((lex (extern-call nl_lex_cell frames-ptr name-ptr)))
+        (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 0)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
-            (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+            (let* ((direct (if (= lex 0)
+                           (extern-call nl_sym_set_w (- frames-ptr 32) name-ptr val-ptr)
+                         1)))
+              (if (= direct 0) 0
+                (if (= direct 2) 1
+                  (let* ((entry (extern-call nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
               (if (if (= entry 0) 0
                     (if (= (nl_so_p entry) 1)
                         (= (logand (sar (heap-read-u64 (- entry 6) 0) 10) 3) 1)
                       (= (nl_val_tag (nl_ent_w entry 3)) 1)))
-                  1
+                  ;; set_internal (data.c) on a NOWRITE symbol: setting-constant.
+                  (bf_setting_constant name-ptr)
                 (let* ((local-p (if (= entry 0) 0
                                   (if (> (nl_ent_n entry) 5)
                                       (= (nelisp_env_entry_slot_tag entry 5) 8) 0)))
@@ -297,7 +324,7 @@
                       (nelisp_env_setv_alias_or_mirror
                        mirror-ptr frames-ptr name-ptr val-ptr scratch-ptr 0 0 0)
                     ;; Frame hit: overwrite lexical cell (refcount-safe).
-                    (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))))))
+                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))))))
   "AOT source for Wave a-2 `Env::set_value' body.
 
 R11a (Doc 49 Wave 9): `let-rt' CSE hoist on the `frame_stack_find'

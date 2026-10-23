@@ -90,5 +90,83 @@
   (let ((n4-repeat nil) (n4-repeat t) (n4-repeat "value"))
     (n4-shallow-values-helper)))
 (n4-row "locals-shallow-value-classes" (n4-shallow-values-owner))
+;; Activation records as eval_sub and funcall_lambda leave them (eval.c:2585-2700, 3315-3475): a
+;; frame being evaluated shows the unevaluated forms, a finished one its values; the frames above a
+;; marker function are compared, a function object printing as `anon'.
+(defvar n4r-seen nil)
+(defvar n4r-hook nil)
+(defun n4r-norm (frames)
+  (mapcar (lambda (fr) (list (nth 0 fr) (let ((f (nth 1 fr))) (if (symbolp f) f 'anon)) (nth 2 fr))) frames))
+(defun n4r-above (marker frames)
+  (let (out)
+    (while (and frames (not (eq (nth 1 (car frames)) marker)))
+      (push (car frames) out) (setq frames (cdr frames)))
+    (nreverse out)))
+(defun n4r-mark (thunk) (funcall thunk))
+(defun n4r-outer (a b) (list a b))
+(defun n4r-cap (x) (setq n4r-seen (n4r-norm (n4r-above 'n4r-mark (backtrace-frames 'n4r-cap)))) x)
+(n4-row "record-in-flight" (n4r-mark (lambda () (n4r-outer (n4r-cap 1) 2) n4r-seen)))
+(n4-row "record-in-flight-builtin" (n4r-mark (lambda () (+ 1 (n4r-cap 5)) n4r-seen)))
+(n4-row "record-in-flight-special" (n4r-mark (lambda () (progn (n4r-cap 5)) n4r-seen)))
+(n4-row "record-in-flight-let" (n4r-mark (lambda () (let ((a (n4r-cap 5))) a) n4r-seen)))
+(n4-row "record-in-flight-nested"
+        (n4r-mark (lambda () (n4r-outer 1 (n4r-outer (n4r-cap 3) 4)) n4r-seen)))
+(n4-row "record-in-flight-three-args"
+        (n4r-mark (lambda () (list (n4r-cap 1) 2 (n4r-cap 3)) n4r-seen)))
+(defun n4r-body (x) (n4r-cap x) n4r-seen)
+(n4-row "record-closure-body" (n4r-mark (lambda () (n4r-body 9))))
+(defun n4r-funcall-body (x) (let ((f #'n4r-cap)) (funcall f x)) n4r-seen)
+(n4-row "record-funcall-body" (n4r-mark (lambda () (n4r-funcall-body 9))))
+(defun n4r-two (a b) (n4r-cap (+ a b)) n4r-seen)
+(n4-row "record-two-parameters" (n4r-mark (lambda () (n4r-two 3 4))))
+;; The same frames across a compiled function (GNU's own bytecode: Bcall records the callee).
+(defun n4r-bc-a (x) (n4r-cap (1+ x)))
+(defun n4r-bc-b (x) (n4r-bc-a (* x 2)))
+(defalias 'n4r-bc-a #[257 "\300\1T!\207" [n4r-cap] 3 "\n\n(fn X)"])
+(defalias 'n4r-bc-b #[257 "\300\1\301_!\207" [n4r-bc-a 2] 4 "\n\n(fn X)"])
+(n4-row "record-bytecode-nested" (n4r-mark (lambda () (n4r-bc-b 7) n4r-seen)))
+(n4-row "record-bytecode-from-interpreted"
+        (n4r-mark (lambda () (list (n4r-bc-b 1) n4r-seen))))
+;; The debugger's frame list when debug-on-exit calls it (backtrace-debug flags the activation).
+(defun n4r-dbg-exit (reason value)
+  (setq n4r-seen (list reason value (n4r-norm (n4r-above 'n4r-mark (backtrace-frames 'n4r-dbg-exit)))))
+  value)
+(defun n4r-target (x y) (backtrace-debug 0 t 'n4r-target) (+ x y))
+(defun n4r-target-outer (z) (list (n4r-target z 2)))
+(n4-row "debugger-frame-list"
+        (let ((debugger 'n4r-dbg-exit)) (setq n4r-seen nil)
+             (list (n4r-mark (lambda () (n4r-target-outer 5))) n4r-seen)))
+(defun n4r-target-b (x) (backtrace-debug 0 t 'n4r-target-b) (car x))
+(n4-row "debugger-not-called-on-signal"
+        (let ((debugger 'n4r-dbg-exit)) (setq n4r-seen nil)
+             (list (condition-case nil (n4r-mark (lambda () (n4r-target-b 5))) (error 'err)) n4r-seen)))
+(defun n4r-target-c (x) (backtrace-debug 0 t 'n4r-target-c) (funcall (lambda (y) (+ y 1)) x))
+(n4-row "debugger-frame-list-nested-closure"
+        (let ((debugger 'n4r-dbg-exit)) (setq n4r-seen nil)
+             (list (n4r-mark (lambda () (n4r-target-c 5))) n4r-seen)))
+(defun n4r-target-d (x) (backtrace-debug 0 t 'n4r-target-d) (backtrace-debug 0 nil 'n4r-target-d) x)
+(n4-row "debug-on-exit-cleared"
+        (let ((debugger 'n4r-dbg-exit)) (setq n4r-seen nil)
+             (list (n4r-mark (lambda () (n4r-target-d 5))) n4r-seen)))
+;; debug-on-exit of a builtin activation flagged while its arguments are evaluated, and of a
+;; closure activation flagged in its own body.
+(defun n4r-flag (level) (backtrace-debug level t) 7)
+(n4-row "debug-on-exit-builtin-flagged-in-argument"
+        (let ((debugger (lambda (reason value) (setq n4r-hook (list reason value)) value)))
+          (setq n4r-hook nil)
+          (list (n4r-mark (lambda () (+ 1 (n4r-flag 1)))) n4r-hook)))
+(defun n4r-self-flag (x) (backtrace-debug 0 t 'n4r-self-flag) (* x 2))
+(n4-row "debug-on-exit-closure-flagged-in-body"
+        (let ((debugger (lambda (reason value) (setq n4r-hook (list reason value)) value)))
+          (setq n4r-hook nil)
+          (list (n4r-mark (lambda () (n4r-self-flag 4))) n4r-hook)))
+(defun n4r-dbg-exit2 (reason value)
+  (setq n4r-hook (list reason value (n4r-norm (n4r-above 'n4r-mark (backtrace-frames 'n4r-dbg-exit2)))))
+  value)
+(defun n4r-flag-arg (x) (backtrace-debug 2 t) x)
+(n4-row "debug-on-exit-ancestor-flagged-in-argument"
+        (let ((debugger 'n4r-dbg-exit2))
+          (setq n4r-hook nil)
+          (list (n4r-mark (lambda () (list 1 (n4r-flag-arg 5)))) n4r-hook)))
 (princ "N4-BACKTRACE-REFERENCE-DONE\n")
 nil
