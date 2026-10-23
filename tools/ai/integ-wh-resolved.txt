@@ -60,3 +60,13 @@ test/standalone-vm-special-form-head-check.el
 
 # Post-merge fix 20 (m8): the weak-table marker's symbol arm
 scripts/nelisp-standalone-build.el
+
+# Merge 9: eval/callpath-perf-20261021 82e68b055 (2 conflicted files, replayed by rerere)
+scripts/nelisp-standalone-build.el
+scripts/nelisp-stdlib-prelude.el
+
+# Merge 10: eval/codegen-20261021 18f180830 (2 conflicted files; the inliner keeps both lines, DECISION 9)
+lisp/nelisp-aot-compiler.el
+scripts/nelisp-standalone-build.el
+# Edited to follow DECISION 9: the import tests call the renamed pass
+test/nelisp-standalone-inline-import-test.el

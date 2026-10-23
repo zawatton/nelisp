@@ -1,0 +1,222 @@
+;;; nelisp-standalone-inline-parallel-let-test.el --- Narrow parallel-let inlining -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'cl-lib)
+(require 'nelisp-aot-compiler)
+(require 'nelisp-standalone-build)
+
+(defun nelisp-inline-parallel-test--expand (source)
+  (let ((process-environment (copy-sequence process-environment))
+        (nelisp-standalone--inline-counter 0))
+    (setenv "NELISP_INLINE" "2")
+    (nelisp-standalone--inline-small-defuns source)))
+
+(defun nelisp-inline-parallel-test--calls (form name)
+  (let ((count 0))
+    (cl-labels ((walk (x)
+                  (when (consp x)
+                    (when (eq (car x) name) (cl-incf count))
+                    (unless (eq (car x) 'data-addr) (mapc #'walk x)))))
+      (walk form)) count))
+
+(defun nelisp-inline-parallel-test--owner (source)
+  (cl-find 'fpl_owner (cdr source) :key #'cadr))
+
+(defun nelisp-inline-parallel-test--retained (helper caller &optional extras)
+  (nelisp-inline-parallel-test--calls
+   (nelisp-inline-parallel-test--owner
+    (nelisp-inline-parallel-test--expand `(seq ,@extras ,helper (defun fpl_owner () ,caller))))
+   (cadr helper)))
+
+(ert-deftest nelisp-inline-parallel/closed-literal-admission ()
+  (should (= 0 (nelisp-inline-parallel-test--retained
+                '(defun fpl_mix (x y) (let ((a x) (b y)) (logxor a b)))
+                '(fpl_mix -9223372036854775808 9223372036854775807)))))
+
+(ert-deftest nelisp-inline-parallel/scope-freshening-and-gnu ()
+  (let* ((helper '(defun fpl_mix (x y)
+                    (let* ((state 0))
+                      (let ((x (seq (setq state (+ state 1)) (logxor x 17)))
+                            (old (seq (setq state (+ state 2)) x)))
+                        (let* ((y (logxor old y)) (z y))
+                          (logxor x (logxor z state)))))))
+         (values '((0 1) (-1 4294967296) (-9223372036854775808 9223372036854775807)))
+         (count 0))
+    (dolist (v values)
+      (let* ((source `(seq ,helper (defun fpl_owner () (let ((state__l3 999) (old 777))
+                                                       (fpl_mix ,@v)))))
+             (out (nelisp-inline-parallel-test--expand source))
+             (original (eval `(progn ,(cl-subst 'progn 'seq helper) (fpl_mix ,@v)) t))
+             (actual (eval `(progn ,(cl-subst 'progn 'seq (nelisp-inline-parallel-test--owner out))
+                                  (fpl_owner)) t)))
+        (should (= original actual))
+        (should (= 0 (nelisp-inline-parallel-test--calls
+                      (nelisp-inline-parallel-test--owner out) 'fpl_mix)))
+        (cl-incf count)))
+    (should (= count 3))))
+
+(ert-deftest nelisp-inline-parallel/fallbacks-preserve-effects-capture-and-observers ()
+  (let ((plain '(defun fpl_mix (x) (let ((a x)) a))) (count 0))
+    (dolist (caller '((let ((state 0)) (fpl_mix (seq (setq state 1) 7)))
+                      (let ((x 7)) (fpl_mix x))
+                      (seq (aot-current-sp) (fpl_mix 7))
+                      (seq (fpl_observe) (fpl_mix 7))
+                      (seq (unknown_opaque 0) (fpl_mix 7))))
+      (should (= 1 (nelisp-inline-parallel-test--retained plain caller
+                          '((defun fpl_observe () (aot-current-sp))))))
+      (cl-incf count))
+    (dolist (helper '((defun fpl_mix (x) (let ((a x)) (seq (setq x 7) a)))
+                      (defun fpl_mix (x) (let ((a x) (a 9)) a))
+                      (defun fpl_mix (x) (let ((a free_capture)) (+ a x)))
+                      (defun fpl_mix (x) (let ((a x)) (fpl_observe)))
+                      (defun fpl_mix (x) (let ((a x)) (cond ((= a 0) 1) (t 2))))
+                      (defun fpl_mix (x) (let ((a 1.5)) (+ a x)))
+                      (defun fpl_mix (x) (let ((a x)) (f64-add a 1.5)))))
+      (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)
+                          '((defun fpl_observe () (aot-current-sp))))))
+      (cl-incf count))
+    (should (= count 12))))
+
+(ert-deftest nelisp-inline-parallel/overflow-and-arity-fallbacks ()
+  (let ((count 0))
+    (dolist (pair '(((+ x 1) 9223372036854775807)
+                    ((1- x) -9223372036854775808)
+                    ((* x 2) 9223372036854775807)
+                    ((shl x 63) 1)
+                    ((/ x -1) -9223372036854775808)
+                    ((+ x 1 unknown) 9223372036854775807)))
+      (should (= 1 (nelisp-inline-parallel-test--retained
+                    `(defun fpl_mix (x) (let ((a x) (unknown (ptr-read-u64 268435456 0))) ,(car pair)))
+                    `(fpl_mix ,(cadr pair)))))
+      (cl-incf count))
+    (should (= 1 (nelisp-inline-parallel-test--retained
+                  '(defun fpl_mix (x) (let ((a x)) a)) '(fpl_mix 18446744073709551615))))
+    (should (= 1 (nelisp-inline-parallel-test--retained
+                  '(defun fpl_mix (x) (let ((a x)) a)) '(fpl_mix 1 2))))
+    (should (= count 6))))
+
+(ert-deftest nelisp-inline-parallel/extern-proof-only-and-reserved-heads ()
+  (let ((helper '(defun fpl_mix (x) (let ((a x)) (fpl_valid a))))
+        (known '((defun fpl_valid (p) (extern-call fpl_safe p))
+                 (defun fpl_safe (p) (+ p 1)))))
+    (should (= 0 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7) known)))
+    (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)
+                          '((defun fpl_valid (p) (extern-call unknown_opaque p))))))
+    (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)
+                          '((defun fpl_valid (p) (extern-call fpl_safe (:i64 p)))
+                            (defun fpl_safe (p) p)))))
+    (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)
+                          '((defun fpl_valid (p) (extern-call fpl_safe p))
+                            (defun fpl_safe (p) p) (defun fpl_safe (p) p)))))
+    (should (= 1 (nelisp-inline-parallel-test--retained
+                  '(defun fpl_mix (x) (let ((a x)) (alloc-bytes 16 8))) '(fpl_mix 7)
+                  '((defun alloc-bytes (x y) x)))))
+    ;; A normal extern body itself never joins the candidate grammar.
+    (should-not (nelisp-standalone--inline-body-ok-p '(extern-call fpl_safe x) 'fpl_valid))))
+
+(ert-deftest nelisp-inline-parallel/mode-metadata-and-special-fallbacks ()
+  (let ((helper '(defun fpl_mix (x) (let ((a x)) a))))
+    (let ((nelisp-aot-compiler--checked-arith t))
+      (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)))))
+    (let ((nelisp-aot-compiler--abi 'win64))
+      (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)))))
+    (let ((nelisp-aot-compiler--runtime-entry-params '(fpl_mix)))
+      (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)))))
+    (let ((nelisp-aot-compiler--lisp-internal-entry-names '(fpl_mix)))
+      (should (= 1 (nelisp-inline-parallel-test--retained helper '(fpl_mix 7)))))
+    (should (= 1 (nelisp-inline-parallel-test--retained
+                  '(defun fpl_mix (x) (let ((fpl_special x)) fpl_special)) '(fpl_mix 7)
+                  '((defvar fpl_special 0)))))))
+
+(ert-deftest nelisp-inline-parallel/native-fullword-ABI-scope-and-WORD ()
+  (skip-unless (and (executable-find "gcc-14") (eq system-type 'gnu/linux)))
+  (let* ((dir (make-temp-file "inline-parallel-" t))
+         (c (expand-file-name "caller.c" dir)) (obj (expand-file-name "caller.o" dir))
+         (target (expand-file-name "target.o" dir)) (bin (expand-file-name "probe" dir))
+         (values '((0 1) (-1 4294967296) (9223372036854775807 -9223372036854775808)
+                   (-9223372036854775808 9223372036854775807)))
+         (helper '(defun fpl_mix (x y)
+                    (let* ((state 0))
+                      (let ((x (seq (setq state (+ state 1)) (logxor x 17)))
+                            (old (seq (setq state (+ state 2)) x)))
+                        (let* ((y (logxor old y)) (z y))
+                          (logxor x (logxor z state)))))))
+         (defs (list helper)) (expected nil) (serial 0)
+         (nelisp-aot-compiler--vector-value-convention 'compact-word))
+    (unwind-protect
+        (progn
+          (dolist (v values)
+            (let ((name (intern (format "fpl_owner_%d" serial))))
+              (push `(defun ,name () (let ((state__l3 999) (old 777)) (fpl_mix ,@v))) defs)
+              (push (cons name (eval `(progn ,(cl-subst 'progn 'seq helper) (fpl_mix ,@v)) t)) expected)
+              (cl-incf serial)))
+          (setq defs (nreverse defs))
+          (setq defs (append defs
+                     '((defun fpl_tag (w)
+                         (let ((tag (if (= (logand w 7) 2) 7
+                                      (if (= (logand w 7) 6)
+                                          (logand (ptr-read-u8 w -6) 63) 0)))) tag))
+                       (defun fpl_cons () (fpl_tag 2))
+                       (defun fpl_vector ()
+                         (seq (syscall-direct 9 268435456 4096 3 50 -1 0)
+                              (ptr-write-u8 268435456 0 141) (fpl_tag 268435462)))
+                       (defun fpl_sp_owner () (seq (fpl_mix 1 2) (aot-current-sp)))
+                       (defun fpl_sp_control () (seq (fpl_mix 1 2) (aot-current-sp)))
+                       (defun fpl_overflow (x) (let ((a x)) (+ a 1)))
+                       (defun fpl_over_owner () (fpl_overflow 9223372036854775807)))))
+          (setq expected (append expected `((fpl_cons . 7) (fpl_vector . 13)
+                                           (fpl_over_owner . ,(+ (1- (ash 1 63)) 1)))))
+          (let* ((source (cons 'seq defs)) (out (nelisp-inline-parallel-test--expand source)))
+            (with-temp-file c
+              (insert "#include <stdint.h>\ntypedef uint64_t U;extern U fpl_sp_owner(void),fpl_sp_control(void);\n")
+              (dolist (e expected) (insert (format "extern U %s(void);\n" (car e))))
+              (insert "__asm__(\".text\\n.globl _start\\n_start:\\ncall run\\nmov %rax,%rdi\\nmov $60,%eax\\nsyscall\\n\");\n")
+              (insert "U check(U(*f)(void),U e){register U b __asm__(\"rbx\")=101;register U r12 __asm__(\"r12\")=103;register U r13 __asm__(\"r13\")=107;register U r14 __asm__(\"r14\")=109;register U r15 __asm__(\"r15\")=113;__asm__ volatile(\"\":\"+r\"(b),\"+r\"(r12),\"+r\"(r13),\"+r\"(r14),\"+r\"(r15));U v=f();__asm__ volatile(\"\":\"+r\"(b),\"+r\"(r12),\"+r\"(r13),\"+r\"(r14),\"+r\"(r15));return v!=e||b!=101||r12!=103||r13!=107||r14!=109||r15!=113;}\nU run(void){U fail=0;\n")
+              (dolist (e expected)
+                (insert (format "fail|=check(%s,UINT64_C(%d));\n" (car e) (logand (cdr e) #xffffffffffffffff))))
+              (insert "fail|=fpl_sp_owner()!=fpl_sp_control();return fail;}\n"))
+            (should (= 0 (call-process "gcc-14" nil nil nil "-O2" "-fno-omit-frame-pointer" "-fno-stack-protector" "-fno-pie" "-c" c "-o" obj)))
+            (let ((nelisp-aot-compiler--object-hidden-boundary-symbols nil))
+              (nelisp-aot-compile-to-object out target))
+            (should (= 0 (call-process "gcc-14" nil nil nil "-nostdlib" "-no-pie" obj target "-o" bin)))
+            (should (= 0 (call-process bin nil nil nil)))
+            (message "F native values and callee-saves PASS before admission gauge")
+            ;; The against-the-bug control reaches here with correct values,
+            ;; then fails this structural gauge when F is disabled.
+            (dolist (f (cdr out))
+              (when (string-prefix-p "fpl_owner_" (symbol-name (cadr f)))
+                (should (= 0 (nelisp-inline-parallel-test--calls f 'fpl_mix)))))
+            (should (= 1 (nelisp-inline-parallel-test--calls
+                          (cl-find 'fpl_sp_owner (cdr out) :key #'cadr) 'fpl_mix)))
+            (should (= 1 (nelisp-inline-parallel-test--calls
+                          (cl-find 'fpl_over_owner (cdr out) :key #'cadr) 'fpl_overflow)))
+            (should (= (length expected) 7))
+            (message "Parallel-let GNU/fullword/CABI cases: %d; guarded WORD cases: 2; SP comparison: 1; overflow: 1" (length values))))
+      (delete-directory dir t))))
+
+(defvar codegen-runtime--out)
+(defvar codegen-runtime--directory)
+(ert-deftest nelisp-inline-parallel/actual-mirror-executable-gnu-goldens ()
+  "Keep the two literal pointer actuals and real extern-dependent guards.
+The executable frontend must actually call the proven local C ABI helper;
+an unresolved CALL-next used to expose its incoming RAX after inlining."
+  (skip-unless (eq system-type 'gnu/linux))
+  (let* ((root (locate-dominating-file default-directory "AI.md"))
+         (dir (make-temp-file "inline-parallel-mirror-" t))
+         (codegen-runtime--out dir)
+         (codegen-runtime--directory nil)
+         (process-environment (copy-sequence process-environment)))
+    (unwind-protect
+        (progn
+          (setenv "NELISP_INLINE" "2")
+          (load (expand-file-name "test/perf/codegen-runtime/compile.el" root) nil t)
+          ;; Loading compile.el sets its output default; retain this test's
+          ;; temporary destination explicitly before invoking the fixture.
+          (setq codegen-runtime--out dir)
+          (load (expand-file-name "test/perf/codegen-runtime/validate.el" root) nil t)
+          (codegen-runtime-executable "nelisp_mirror_lookup_entry")
+          (should (codegen-runtime-validate
+                   "nelisp_mirror_lookup_entry"
+                   (expand-file-name "nelisp_mirror_lookup_entry.nl" dir))))
+      (delete-directory dir t))))
+
+(provide 'nelisp-standalone-inline-parallel-let-test)

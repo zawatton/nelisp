@@ -1892,14 +1892,19 @@ Neither the discarded branch nor a recursive call is expanded."
                (when (nelisp-standalone--inline-body-ok-p branch name)
                  (cons params branch))))))))))
 
-(defun nelisp-standalone--inline-small-defuns (source &optional imports)
+(defun nelisp-standalone--inline-small-defuns-imports (source &optional imports)
   "Inline small functions in SOURCE, optionally using normalized IMPORTS.
 Every local defun shadows imports, including locals that cannot be inlined.
-Only SOURCE's own forms are emitted; conflicting imported definitions fail."
+Only SOURCE's own forms are emitted; conflicting imported definitions fail.
+This is the word-heap line's pass (imported helpers are candidates, literal
+arguments select an IF branch); `nelisp-standalone--inline-source' repeats it
+once per inline level, and codegen's `nelisp-standalone--inline-unit-source'
+(`nelisp-standalone--inline-small-defuns' with its parallel-let, resolved-call
+and wrapper-initializer passes) runs on its output in `compile-to-unit'."
   ;; Some linked helper units contain just one definition. Preserve that
   ;; outer shape while giving them the same optimizer as sequence units.
   (if (eq (car-safe source) 'defun)
-      (cadr (nelisp-standalone--inline-small-defuns (list 'seq source) imports))
+      (cadr (nelisp-standalone--inline-small-defuns-imports (list 'seq source) imports))
   (if (not (and (member (nelisp-standalone--inline-level) '("1" "2" "3" "4")) (eq (car-safe source) 'seq)))
       source
     (let ((cands (make-hash-table :test 'eq))
@@ -2009,12 +2014,676 @@ Only SOURCE's own forms are emitted; conflicting imported definitions fail."
                    (hash-table-count cands) count)
           out))))))
 
+(defun nelisp-standalone--inline-used-names (source &optional table)
+  "Return all symbols in SOURCE and optional helper TABLE bodies."
+  (let ((used (make-hash-table :test 'eq)) (pending (list source)))
+    (when table (maphash (lambda (_ body) (push body pending)) table))
+    (while pending
+      (let ((x (pop pending)))
+        (cond ((symbolp x) (puthash x t used))
+              ((consp x) (push (car x) pending) (push (cdr x) pending)))))
+    used))
+
+(defun nelisp-standalone--inline-fresh-name (param suffix used)
+  "Return a fresh argument name absent from source symbols USED."
+  (let (name)
+    (while (or (null name) (gethash name used))
+      (setq name (intern (format "%s__%s%d" param suffix
+                                 (cl-incf nelisp-standalone--inline-counter)))))
+    (puthash name t used)
+    name))
+
+(defvar nelisp-standalone--inline-parallel-let-enabled t
+  "Whether narrowly proven parallel-let bodies may join ordinary inlining.")
+
+(defun nelisp-standalone--inline-parallel-mode-p ()
+  "Non-nil only for unchecked, ordinary RAW x86 SysV source units."
+  (and (eq (nelisp-standalone--target-arch) 'x86_64)
+       (eq (nelisp-standalone--target-abi) 'sysv)
+       (eq nelisp-aot-compiler--arch 'x86_64)
+       (eq nelisp-aot-compiler--abi 'sysv)
+       (not (nelisp-aot-compiler--lisp-values-p))
+       (not nelisp-aot-compiler--checked-arith)
+       (not nelisp-aot-compiler--runtime-entry-params)
+       (not nelisp-aot-compiler--lisp-internal-entry-names)
+       (not (and nelisp-aot-compiler--native-emit-enabled
+                 (fboundp 'nl-jit-call-out-2)))))
+
+(defun nelisp-standalone--inline-parallel-definitions (source)
+  "Return unique, plain, fixed GP definitions in SOURCE; duplicates are opaque."
+  (let ((defs (make-hash-table :test 'eq)) (seen (make-hash-table :test 'eq)))
+    (dolist (f (cdr source))
+      (when (and (consp f) (eq (car f) 'defun))
+        (let ((name (cadr f)) (params (nth 2 f)))
+          (if (gethash name seen)
+              (remhash name defs)
+            (when (and (= (length f) 4) (symbolp name) (proper-list-p params)
+                       (<= (length params) 6)
+                       (= (length params) (length (delete-dups (copy-sequence params))))
+                       (cl-every #'nelisp-standalone--inline-parallel-variable-p params))
+              (puthash name f defs)))
+          (puthash name t seen))))
+    defs))
+
+(defun nelisp-standalone--inline-parallel-variable-p (x)
+  "Non-nil for a plain RAW lexical binder X."
+  (and (symbolp x) x (not (eq x t)) (not (keywordp x))
+       (not (string-prefix-p "&" (symbol-name x)))
+       (not (nelisp-aot-compiler--special-var-p x))))
+
+(defun nelisp-standalone--inline-parallel-shape-p (definition &optional ordinary definitions)
+  "Check closed lexical scope and the existing size/operator policy.
+Only this new path accepts parallel let.  Existing let* candidates and their
+renamer continue to use their original path.  Assignment to formals rejects."
+  (let ((nodes 0) (parallel nil) (ok t) (params (nth 2 definition))
+        (name (cadr definition)))
+    (cl-labels
+        ((walk (x env)
+           (cond
+            ((integerp x))
+            ((symbolp x) (unless (or (null x) (memq x env)) (setq ok nil)))
+            ((not (consp x)) (setq ok nil))
+            (t
+             (cl-incf nodes)
+             (when (> nodes nelisp-standalone--inline-max-nodes) (setq ok nil))
+             (pcase (car x)
+               ('data-addr
+                (unless (and (= (length x) 2) (symbolp (cadr x))) (setq ok nil)))
+               ((or 'let 'let*)
+                (when (eq (car x) 'let) (setq parallel t))
+                (let ((scope env) (names nil) (bindings (cadr x)))
+                  (if (not (proper-list-p bindings)) (setq ok nil)
+                    (dolist (b bindings)
+                      (if (not (and (proper-list-p b) (= (length b) 2)
+                                    (nelisp-standalone--inline-parallel-variable-p (car b))
+                                    (not (memq (car b) names))))
+                          (setq ok nil)
+                        (walk (cadr b) (if (eq (car x) 'let*) scope env))
+                        (push (car b) names) (push (car b) scope)))
+                    (dolist (b (cddr x)) (walk b scope)))))
+               ('setq
+                (let ((a (cdr x)))
+                  (unless (and a (proper-list-p a) (= (% (length a) 2) 0)) (setq ok nil))
+                  (while a
+                    (unless (and (memq (car a) env) (not (memq (car a) params)))
+                      (setq ok nil))
+                    (walk (cadr a) env) (setq a (cddr a)))))
+               (_
+                (unless (and (symbolp (car x)) (not (eq (car x) name))
+                             (or (memq (car x) nelisp-standalone--inline-pure-ops)
+                                 (if ordinary
+                                     (and (gethash (car x) definitions)
+                                          (= (length (cdr x))
+                                             (length (nth 2 (gethash (car x) definitions)))))
+                                   (string-match-p "_" (symbol-name (car x))))))
+                  (setq ok nil))
+                (dolist (a (cdr x)) (walk a env))))))))
+      (walk (nth 3 definition) params))
+    (and ok (or parallel ordinary))))
+
+(defun nelisp-standalone--inline-parallel-closed-p (name definitions &optional ordinary)
+  "Prove NAME's entire same-unit closure has no physical-frame observer.
+Plain extern calls may be followed to unique same-unit GP definitions only
+for this proof: extern-call remains excluded from the inline body grammar.
+Unknown, typed, variadic, indirect and hidden boundaries remain opaque."
+  (let ((todo (list name)) (seen nil) (nodes 0) (ok t))
+    (cl-labels
+        ((walk (x env)
+           (cl-incf nodes)
+           (when (> nodes 4096) (setq ok nil))
+           (cond
+            ((integerp x))
+            ((symbolp x) (unless (or (null x) (memq x env)) (setq ok nil)))
+            ((not (consp x)) (setq ok nil))
+            (t
+             (when (or (not (symbolp (car x)))
+                       (memq (car x) '(alloc-bytes addr-of current-sp))
+                       (and (symbolp (car x))
+                            (or (string-prefix-p "aot-" (symbol-name (car x)))
+                                (string-prefix-p "va-" (symbol-name (car x))))))
+               (setq ok nil))
+             (pcase (car x)
+               ('data-addr
+                (unless (and (= (length x) 2) (symbolp (cadr x))) (setq ok nil)))
+               ((or 'let 'let*)
+                (let ((scope env) (names nil) (bindings (cadr x)))
+                  (if (not (proper-list-p bindings)) (setq ok nil)
+                    (dolist (b bindings)
+                      (if (not (and (proper-list-p b) (= (length b) 2)
+                                    (nelisp-standalone--inline-parallel-variable-p (car b))
+                                    (not (memq (car b) names)))) (setq ok nil)
+                        (walk (cadr b) (if (eq (car x) 'let*) scope env))
+                        (push (car b) names) (push (car b) scope)))
+                    (dolist (b (cddr x)) (walk b scope)))))
+               ('setq
+                (let ((a (cdr x)))
+                  (unless (and a (proper-list-p a) (= (% (length a) 2) 0)) (setq ok nil))
+                  (while a
+                    (unless (memq (car a) env) (setq ok nil))
+                    (walk (cadr a) env) (setq a (cddr a)))))
+               ('syscall-direct
+                ;; These two non-stack syscalls cover process exit and mapping;
+                ;; no general opaque OS boundary is inferred safe by its name.
+                (unless (and (= (length x) 8) (memq (cadr x) '(9 60))) (setq ok nil))
+                (dolist (a (cdr x)) (walk a env)))
+               (_
+                (let* ((external (eq (car x) 'extern-call))
+                       (target (if external (cadr x) (car x)))
+                       (args (if external (cddr x) (cdr x)))
+                       (d (gethash target definitions)))
+                  (cond
+                   ((and (not external) (memq target nelisp-standalone--inline-pure-ops)))
+                   ((and d (symbolp target)
+                         (or ordinary (string-match-p "_" (symbol-name target)))
+                         (not (memq target (append nelisp-standalone--inline-pure-ops
+                                                   '(extern-call syscall-direct quote function lambda defun)))))
+                    (unless (= (length args) (length (nth 2 d))) (setq ok nil))
+                    (push target todo))
+                   (t (setq ok nil)))
+                  (dolist (a args) (walk a env)))))))))
+      (while (and todo ok)
+        (let ((n (pop todo)))
+          (unless (memq n seen)
+            (push n seen)
+            (if (> (length seen) 32) (setq ok nil)
+              (let ((d (gethash n definitions)))
+                (if (not d) (setq ok nil)
+                  (walk (nth 3 d) (nth 2 d)))))))))
+    ok))
+
+(defun nelisp-standalone--inline-parallel-fold-safe-p (definition args)
+  "Reject newly exposed constant arithmetic outside signed 64-bit RAW.
+Adapt the recursive-context preflight, following parallel/sequential scope
+without propagating assigned locals or inventing interprocedural folding."
+  (let ((env (cl-pairlis (nth 2 definition) args)))
+    (catch 'unsafe-fold
+      (cl-labels
+          ((checked (n)
+             (unless (and (integerp n) (<= (- (ash 1 63)) n (1- (ash 1 63))))
+               (throw 'unsafe-fold nil)) n)
+           (value (x scope)
+             (cond
+              ((integerp x) (checked x)) ((null x) 0)
+              ((symbolp x) (let ((c (assq x scope))) (if c (cdr c) 'unknown)))
+              ((memq (car x) '(let let*))
+               (let ((inner scope))
+                 (dolist (b (cadr x))
+                   (let ((v (value (cadr b) (if (eq (car x) 'let*) inner scope))))
+                     (push (cons (car b)
+                                 (if (nelisp-aot-compiler--form-setqs-var-p x (car b))
+                                     'unknown v)) inner)))
+                 (let ((v 'unknown)) (dolist (b (cddr x)) (setq v (value b inner))) v)))
+              ((eq (car x) 'data-addr) 'unknown)
+              ((eq (car x) 'setq)
+               (let ((a (cdr x)))
+                 (while a (value (cadr a) scope) (setq a (cddr a)))) 'unknown)
+              (t
+               (let* ((vs (mapcar (lambda (a) (value a scope)) (cdr x)))
+                      (a (car vs)) (b (cadr vs)) (op (car x)))
+                 ;; Do not miss a newly constant overflowing prefix of a
+                 ;; variadic arithmetic form with unknown trailing inputs.
+                 (when (and (memq op '(+ - * / mod 1+ 1- shl shr sar))
+                            (/= (length vs) (if (memq op '(1+ 1-)) 1 2)))
+                   (throw 'unsafe-fold nil))
+                 (cond
+                  ((memq op '(seq progn)) (car (last vs)))
+                  ((eq op 'if) (if (integerp a) (if (= a 0) (or (nth 2 vs) 0) b) 'unknown))
+                  ((and (memq op '(1+ 1-)) (integerp a))
+                   (checked (+ a (if (eq op '1+) 1 -1))))
+                  ((and (= (length vs) 2) (integerp a) (integerp b))
+                   (cond
+                    ((memq op '(+ - *)) (checked (funcall op a b)))
+                    ((memq op '(/ mod))
+                     (when (or (= b 0) (and (= a (- (ash 1 63))) (= b -1)))
+                       (throw 'unsafe-fold nil))
+                     (checked (funcall (if (eq op '/) '/ 'mod) a b)))
+                    ((memq op '(shl shr sar))
+                     (unless (<= 0 b 63) (throw 'unsafe-fold nil))
+                     (checked (ash (if (eq op 'shr) (logand a #xffffffffffffffff) a)
+                                   (if (eq op 'shl) b (- b)))))
+                    ((memq op '(logand logior logxor)) (checked (funcall op a b)))
+                    ((memq op '(= /= < <= > >=)) (if (funcall op a b) 1 0))
+                    (t 'unknown)))
+                  ((and (memq op '(+ - * / mod 1+ 1- shl shr sar))
+                        (cl-every #'integerp vs)) (throw 'unsafe-fold nil))
+                  (t 'unknown)))))))
+        (value (nth 3 definition) env))
+      t)))
+
+(defun nelisp-standalone--inline-parallel-rename (body environment used)
+  "Freshen BODY's lexical bindings using ENVIRONMENT and source names USED."
+  (cond
+   ((symbolp body) (let ((c (assq body environment))) (if c (cdr c) body)))
+   ((not (consp body)) body)
+   ((eq (car body) 'data-addr) body)
+   ((eq (car body) 'extern-call)
+    ;; A function identifier occupies a separate namespace from lexical values.
+    (cons 'extern-call
+          (cons (cadr body)
+                (mapcar (lambda (a) (nelisp-standalone--inline-parallel-rename a environment used))
+                        (cddr body)))))
+   ((memq (car body) '(let let*))
+    (let ((scope environment) (bindings nil))
+      (dolist (b (cadr body))
+        (let ((fresh (nelisp-standalone--inline-fresh-name (car b) "l" used))
+              (init (nelisp-standalone--inline-parallel-rename
+                     (cadr b) (if (eq (car body) 'let*) scope environment) used)))
+          (push (list fresh init) bindings) (push (cons (car b) fresh) scope)))
+      (cons (car body) (cons (nreverse bindings)
+                            (mapcar (lambda (b) (nelisp-standalone--inline-parallel-rename b scope used))
+                                    (cddr body))))))
+   (t (cons (car body)
+            (mapcar (lambda (b) (nelisp-standalone--inline-parallel-rename b environment used))
+                    (cdr body))))))
+
+(defvar nelisp-standalone--inline-resolved-extern-enabled t
+  "Admit proven small fixed GP calls to unique definitions of this unit.")
+(defvar nelisp-standalone--inline-resolved-changed-definitions nil
+  "Per-unit definitions changed by the strict path in either existing pass.")
+
+(defun nelisp-standalone--inline-resolved-view (definition definitions)
+  "Return a proof-only view of exact same-unit extern calls in DEFINITION.
+The original body and all unsupported/foreign calls retain their syntax.
+No initializer is added to the expansion walk by this proof traversal."
+  (cl-labels
+      ((view (x)
+         (cond
+          ((not (consp x)) x)
+          ((eq (car x) 'data-addr) x)
+          ((memq (car x) '(let let*))
+           (cons (car x)
+                 (cons (mapcar (lambda (b)
+                                 (if (and (proper-list-p b) (= (length b) 2))
+                                     (list (car b) (view (cadr b))) b)) (cadr x))
+                       (mapcar #'view (cddr x)))))
+          ((eq (car x) 'setq)
+           (let ((a (cdr x)) out)
+             (while a (push (car a) out) (push (view (cadr a)) out) (setq a (cddr a)))
+             (cons 'setq (nreverse out))))
+          ((eq (car x) 'extern-call)
+           (let ((d (and (proper-list-p x) (symbolp (cadr x))
+                         (not (memq (cadr x) (append nelisp-standalone--inline-pure-ops
+                                                    '(extern-call syscall-direct quote function lambda defun))))
+                         (gethash (cadr x) definitions))))
+             (if (and d (= (length (cddr x)) (length (nth 2 d))))
+                 (cons (cadr x) (mapcar #'view (cddr x)))
+               x)))
+          (t (cons (car x) (mapcar #'view (cdr x)))))))
+    (list 'defun (cadr definition) (nth 2 definition) (view (nth 3 definition)))))
+
+(defun nelisp-standalone--inline-resolved-child-context (form context index)
+  "Classify an already visited cdr child, without adding any walk nodes."
+  (cond
+   ((eq context 'bindings) 'binding)
+   ((eq context 'binding) (if (= index 0) 'expression 'syntax))
+   ((not (eq context 'expression)) 'syntax)
+   ((memq (car form) '(let let*)) (if (= index 0) 'bindings 'expression))
+   ((eq (car form) 'setq) (if (= (% index 2) 0) 'syntax 'expression))
+   ((memq (car form) '(lambda function quote data-addr)) 'syntax)
+   ((eq (car form) 'defun) (if (< index 2) 'syntax 'expression))
+   ((eq (car form) 'extern-call) (if (= index 0) 'syntax 'expression))
+   (t 'expression)))
+
+(defun nelisp-standalone--inline-resolved-actuals-p (args)
+  "Arguments whose value capture does not add another observable call.
+Full owner closure separately establishes lexical scope and GP values."
+  (cl-every (lambda (a)
+              (or (and (integerp a) (<= (- (ash 1 63)) a (1- (ash 1 63))))
+                  (and (symbolp a) (nelisp-standalone--inline-parallel-variable-p a))))
+            args))
+
+(defun nelisp-standalone--inline-small-defuns (source)
+  "SOURCE (a (seq FORM...) unit) with calls to small leaf defuns inlined."
+  (if (not (and (member (nelisp-standalone--inline-level) '("1" "2" "3" "4")) (eq (car-safe source) 'seq)))
+      source
+    (let* ((nelisp-aot-compiler--special-vars
+            (append nelisp-aot-compiler--special-vars
+                    (delq nil (mapcar #'nelisp-aot-compiler--top-level-special-var-name (cdr source)))))
+          (cands (make-hash-table :test 'eq))
+          (parallel (make-hash-table :test 'eq))
+          (definitions (nelisp-standalone--inline-parallel-definitions source))
+          (resolved (make-hash-table :test 'eq))
+          (resolved-plain (make-hash-table :test 'eq))
+          (changed (or nelisp-standalone--inline-resolved-changed-definitions
+                       (make-hash-table :test 'eq)))
+          (resolved-mode (and nelisp-standalone--inline-resolved-extern-enabled
+                              (nelisp-standalone--inline-parallel-mode-p)))
+          (used-names (nelisp-standalone--inline-used-names source)) (count 0)
+          replacements)
+      (dolist (form (cdr source))
+        (pcase form
+          (`(defun ,name ,params ,body)
+           (when (and (not (memq name nelisp-standalone--inline-boundaries))
+                      (not (gethash name changed))
+                      (symbolp name) (listp params) (cl-every #'symbolp params)
+                      (not (memq '&optional params)) (not (memq '&rest params))
+                      (or (nelisp-standalone--inline-body-ok-p body name)
+                          (and nelisp-standalone--inline-parallel-let-enabled
+                               (nelisp-standalone--inline-parallel-mode-p)
+                               (gethash name definitions)
+                               (nelisp-standalone--inline-parallel-shape-p form)
+                               (nelisp-standalone--inline-parallel-closed-p name definitions)
+                               (progn (puthash name form parallel) t))))
+             (puthash name (cons params body) cands))
+           (when (and resolved-mode (not (memq name nelisp-standalone--inline-boundaries))
+                      (gethash name definitions)
+                      (not (memq name (append nelisp-standalone--inline-pure-ops
+                                              '(extern-call syscall-direct quote function lambda defun)))))
+             (let ((view (nelisp-standalone--inline-resolved-view form definitions)))
+               (when (and (nelisp-standalone--inline-parallel-shape-p view t definitions)
+                          (nelisp-standalone--inline-parallel-closed-p name definitions t)
+                          (nelisp-standalone--inline-parallel-fold-safe-p
+                           view (make-list (length params) 'unknown)))
+                 (puthash name form resolved)
+                 (when (or (gethash name changed) (not (equal (nth 3 view) body)))
+                   (puthash name form resolved-plain))))))))
+      (cl-labels
+          ((expand (x owner context)
+             (cond
+              ((not (consp x)) x)
+              ((eq (car x) 'quote) x)
+              ((eq (car x) 'data-addr) x)
+              (t
+               (let* ((external (and resolved-mode (eq context 'expression) (eq (car x) 'extern-call)
+                                     (proper-list-p x) (consp (cdr x))))
+                      (target (if external (cadr x) (car x)))
+                      (args (cl-loop for a in (if external (cddr x) (cdr x))
+                                     for i from (if external 1 0)
+                                     collect (expand a owner
+                                                     (nelisp-standalone--inline-resolved-child-context
+                                                      x context i))))
+                      (old (and (not external) (symbolp target) (gethash target cands)))
+                      (strict (and (eq context 'expression)
+                                   (if external (and (symbolp target) (gethash target resolved))
+                                     (and (not old) (gethash target resolved-plain)))))
+                      (cand (if strict (cons (nth 2 strict) (nth 3 strict)) old))
+                      (fallback (if external (cons 'extern-call (cons target args)) (cons (car x) args))))
+                 (if (and cand (= (length args) (length (car cand)))
+                          (if strict
+                              (and (nelisp-standalone--inline-resolved-actuals-p args)
+                                   (gethash owner definitions)
+                                   (nelisp-standalone--inline-parallel-closed-p owner definitions t)
+                                   (nelisp-standalone--inline-parallel-fold-safe-p
+                                    (nelisp-standalone--inline-resolved-view strict definitions)
+                                    (mapcar (lambda (a) (if (integerp a) a 'unknown)) args)))
+                            (or (not (gethash target parallel))
+                                (and (cl-every (lambda (a) (and (integerp a)
+                                                              (<= (- (ash 1 63)) a (1- (ash 1 63))))) args)
+                                     (nelisp-standalone--inline-parallel-closed-p owner definitions)
+                                     (nelisp-standalone--inline-parallel-fold-safe-p
+                                      (gethash target parallel) args)))))
+                     (let* ((alist (mapcar (lambda (p)
+                                             (cons p (nelisp-standalone--inline-fresh-name p "i" used-names)))
+                                           (car cand)))
+                            (body (if (or strict (gethash target parallel))
+                                      (nelisp-standalone--inline-parallel-rename (cdr cand) alist used-names)
+                                    (nelisp-standalone--inline-rename (cdr cand) alist)))
+                            (result (if alist
+                                        `(let* ,(cl-mapcar (lambda (c a) (list (cdr c) a)) alist args) ,body)
+                                      ;; A fresh root permits local rollback without mutating SOURCE.
+                                      (if strict (if (consp body) (copy-sequence body) (list 'seq body)) body))))
+                       (setq count (1+ count))
+                       (when strict (push (cons result fallback) replacements))
+                       result)
+                   fallback))))))
+        (let ((out (cons 'seq
+                         (mapcar (lambda (form)
+                                   (pcase form
+                                     (`(defun ,name ,params . ,body)
+                                      (if (nelisp-standalone--inline-clone-p body)
+                                          form
+                                        (let* ((_reset (setq replacements nil))
+                                               (expanded (mapcar (lambda (b) (expand b name 'expression)) body)))
+                                          ;; Validate newly exposed constants in the complete caller
+                                          ;; scope, including known local actuals.  This is a proof,
+                                          ;; not another expansion pass or initializer traversal.
+                                          (when (and replacements
+                                                     (not (nelisp-standalone--inline-parallel-fold-safe-p
+                                                           `(defun ,name ,params (seq ,@expanded))
+                                                           (make-list (length params) 'unknown))))
+                                            (setq count (- count (length replacements)))
+                                            (dolist (r replacements)
+                                              (setcar (car r) (cadr r))
+                                              (setcdr (car r) (cddr r)))
+                                            (setq replacements nil))
+                                          (when replacements (puthash name t changed))
+                                          `(defun ,name ,params ,@expanded))))
+                                     (_ form)))
+                                 (cdr source)))))
+          (push (list (hash-table-count cands) count) nelisp-standalone--inline-stats)
+          (message "nelisp-inline: %d candidates, %d call sites inlined"
+                   (hash-table-count cands) count)
+          out)))))
+
 (defun nelisp-standalone--inline-source (source imports)
-  "Expand SOURCE through the configured, bounded number of inline passes."
+  "Expand SOURCE through the configured, bounded number of import-aware inline passes."
   (dotimes (_ (pcase (nelisp-standalone--inline-level)
                 ("4" 4) ("3" 3) ("2" 2) (_ 1)))
-    (setq source (nelisp-standalone--inline-small-defuns source imports)))
+    (setq source (nelisp-standalone--inline-small-defuns-imports source imports)))
   source)
+
+(defvar nelisp-standalone--inline-wrapper-initializers-enabled t
+  "Whether initializer calls to closed binder-free wrappers may be inlined.")
+
+(defun nelisp-standalone--inline-wrapper-initializers (source originals)
+  "Inline no-slot forwarding wrappers in SOURCE using pristine ORIGINALS.
+GNU comp.c passes values to GCC, whose inliner and SSA avoid temporary
+stack bindings for immutable actuals.  This bounded adaptation runs AFTER
+ordinary inlining: original wrapper bodies add no binders, while all
+original ordinary inline budgets, fresh names and passes remain unchanged.
+Only initializer positions skipped by the ordinary walker are extended."
+  (if (not (and nelisp-standalone--inline-wrapper-initializers-enabled
+                (member (nelisp-standalone--inline-level) '("1" "2" "3" "4"))
+                (eq (nelisp-standalone--target-arch) 'x86_64)
+                (eq (nelisp-standalone--target-abi) 'sysv)
+                (eq nelisp-aot-compiler--arch 'x86_64)
+                (eq nelisp-aot-compiler--abi 'sysv)
+                (not (nelisp-aot-compiler--lisp-values-p))
+                (not nelisp-aot-compiler--checked-arith)
+                (not (and nelisp-aot-compiler--native-emit-enabled
+                          (fboundp 'nl-jit-call-out-2)))
+                (eq (car-safe source) 'seq) (eq (car-safe originals) 'seq)))
+      source
+    (let ((nelisp-aot-compiler--special-vars
+           (append nelisp-aot-compiler--special-vars
+                   (delq nil (mapcar #'nelisp-aot-compiler--top-level-special-var-name
+                                     (cdr originals)))))
+          (defs (make-hash-table :test #'eq))
+          (seen (make-hash-table :test #'eq))
+          (candidates (make-hash-table :test #'eq))
+          (primitives '(if seq progn while and or not cond let let* setq
+                        + - * / mod rem = /= < > <= >= eq
+                        logand logior logxor shl shr sar
+                        ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
+                        ptr-write-u8 ptr-write-u16 ptr-write-u32 ptr-write-u64
+                        atomic-fetch-add data-addr sexp-tag exit)))
+      (dolist (d (cdr originals))
+        (when (and (consp d) (eq (car d) 'defun) (symbolp (cadr d)))
+          (let ((name (cadr d)))
+            (if (gethash name seen) (remhash name defs)
+              (puthash name d defs))
+            (puthash name t seen))))
+      (cl-labels
+          ((observer-head-p (h)
+             (and (symbolp h)
+                  (or (memq h '(addr-of current-sp))
+                      (string-prefix-p "aot-" (symbol-name h))
+                      (string-prefix-p "va-" (symbol-name h)))))
+           (walk-values (x visit)
+             (when (consp x)
+               (funcall visit x)
+               (pcase (car x)
+                 ((or 'quote 'function 'data-addr) nil)
+                 ((or 'let 'let*)
+                  (dolist (b (cadr x))
+                    (when (consp b) (walk-values (cadr b) visit)))
+                  (dolist (b (cddr x)) (walk-values b visit)))
+                 ('cond (dolist (c (cdr x))
+                          (dolist (b c) (walk-values b visit))))
+                 ('setq (let ((a (cdr x)))
+                          (while a (walk-values (cadr a) visit) (setq a (cddr a)))))
+                 (_ (dolist (a (cdr x)) (walk-values a visit))))))
+           (raw-atoms-p (x)
+             (cond ((consp x) (and (raw-atoms-p (car x)) (raw-atoms-p (cdr x))))
+                   ((or (symbolp x) (integerp x)) t)
+                   (t nil)))
+           (gp-params-p (ps)
+             (and (proper-list-p ps)
+                  (cl-every (lambda (p) (and (symbolp p) p (not (eq p t))
+                                            (not (keywordp p))
+                                            (not (string-prefix-p "&" (symbol-name p)))
+                                            (not (nelisp-aot-compiler--special-var-p p)))) ps)))
+           (known-call-p (h)
+             ;; Intrinsic syntax wins even if a defun has the same name.
+             (and (symbolp h) (gethash h defs)
+                  (not (memq h (append primitives nelisp-standalone--inline-pure-ops
+                                        '(extern-call syscall-direct quote function lambda defun))))))
+           (closed-p (name)
+             ;; Every reached function is a same-unit known RAW body.  The
+             ;; source has no opaque/hidden/observer boundary.  Cycles below
+             ;; the wrapper are harmless; returning to the wrapper rejects it.
+             (let ((todo (list name)) (visited nil) (cells 0) (ok t))
+               (while (and todo ok)
+                 (let ((n (pop todo)))
+                   (unless (memq n visited)
+                     (push n visited)
+                     (let ((d (gethash n defs)))
+                       (unless (and d (= (length d) 4) (gp-params-p (nth 2 d))
+                                    (raw-atoms-p (nth 3 d)) (<= (length visited) 32))
+                         (setq ok nil))
+                       (when ok
+                         (walk-values (nth 3 d)
+                          (lambda (x)
+                            (let ((h (car x)))
+                              (when (or (> (cl-incf cells) 4096)
+                                        (observer-head-p h)
+                                        (memq h '(extern-call quote function lambda defun)))
+                                (setq ok nil))
+                              (cond
+                               ((memq h primitives) nil)
+                               ;; A literal exit syscall observes no frame.
+                               ((and (eq h 'syscall-direct) (eq (cadr x) 60)) nil)
+                               ((known-call-p h)
+                                (if (eq h name) (setq ok nil) (push h todo)))
+                               (t (setq ok nil)))))))))))
+               ok))
+           (binder-free-p (x params)
+             (let ((uses (make-hash-table :test #'eq)) (ok t))
+               (cl-labels ((value (v forwarded)
+                 (cond
+                  ((integerp v) nil)
+                  ((null v) nil)
+                  ((symbolp v)
+                   (if (and forwarded (memq v params))
+                       (puthash v (1+ (gethash v uses 0)) uses)
+                     (setq ok nil)))
+                  ((not (consp v)) (setq ok nil))
+                  ((eq (car v) 'data-addr) nil)
+                  ((memq (car v) '(let let* setq lambda defun quote function)) (setq ok nil))
+                  ((eq (car v) 'cond)
+                   (dolist (c (cdr v)) (dolist (a c) (value a nil))))
+                  (t (dolist (a (cdr v)) (value a (known-call-p (car v))))))))
+                 ;; Literal substitution only reaches a call actual, never
+                 ;; a new arithmetic fold (which could overflow host integers).
+                 (value x nil))
+               (and ok (cl-every (lambda (p) (= (gethash p uses 0) 1)) params))))
+           (has-wrapper-p (body)
+             (catch 'wrapper
+               (walk-values body (lambda (x)
+                 (when (gethash (car x) candidates) (throw 'wrapper t))))
+               nil))
+           (caller-observer-p (body)
+             ;; Unknown calls elsewhere in the caller do not change its slot
+             ;; geometry; known source observers may expose the lexical frame.
+             (let ((todo (list body)) (visited nil) (found nil))
+               (while (and todo (not found))
+                 (let ((x (pop todo)))
+                   (walk-values x
+                    (lambda (n)
+                      (let* ((h (car n)) (d (gethash h defs)))
+                        (when (observer-head-p h) (setq found t))
+                        (when (and d (not (memq h visited)))
+                          (push h visited) (push (nth 3 d) todo)))))))
+               found))
+           (substitute-values (x bindings)
+             (cond
+              ((symbolp x) (let ((a (assq x bindings))) (if a (cdr a) x)))
+              ((not (consp x)) x)
+              ((memq (car x) '(data-addr quote function)) x)
+              ((eq (car x) 'cond)
+               (cons 'cond (mapcar (lambda (c) (mapcar (lambda (a) (substitute-values a bindings)) c)) (cdr x))))
+              (t (cons (car x) (mapcar (lambda (a) (substitute-values a bindings)) (cdr x))))))
+           (rewrite (x env assigned init-p)
+             (cond
+              ((not (consp x)) x)
+              ((memq (car x) '(quote function data-addr)) x)
+              ((memq (car x) '(let let*))
+               (let ((scope env) (bindings nil) (sequential (eq (car x) 'let*)))
+                 (dolist (b (cadr x))
+                   (if (and (consp b) (= (length b) 2) (symbolp (car b)))
+                       (push (list (car b) (rewrite (cadr b) (if sequential scope env) assigned t)) bindings)
+                     (push b bindings))
+                   (let ((name (if (consp b) (car b) b)))
+                     (when (symbolp name) (push name scope))))
+                 (cons (car x) (cons (nreverse bindings)
+                   (mapcar (lambda (b) (rewrite b scope assigned init-p)) (cddr x))))))
+              ((eq (car x) 'setq)
+               (let ((a (cdr x)) (out nil))
+                 (while a
+                   (push (car a) out) (push (rewrite (cadr a) env assigned init-p) out)
+                   (setq a (cddr a)))
+                 (cons 'setq (nreverse out))))
+              ((eq (car x) 'cond)
+               (cons 'cond (mapcar (lambda (c) (mapcar (lambda (a) (rewrite a env assigned init-p)) c)) (cdr x))))
+              (t
+               (let* ((args (mapcar (lambda (a) (rewrite a env assigned init-p)) (cdr x)))
+                      (cand (and init-p (gethash (car x) candidates))))
+                 (if (and cand (= (length args) (length (nth 2 cand)))
+                          (cl-every (lambda (a)
+                            (or (integerp a)
+                                (and (symbolp a) (memq a env)
+                                     (not (memq a assigned))
+                                     (not (nelisp-aot-compiler--special-var-p a))))) args))
+                     (substitute-values (nth 3 cand) (cl-mapcar #'cons (nth 2 cand) args))
+                   (cons (car x) args)))))))
+        (maphash
+         (lambda (name d)
+           (let ((params (nth 2 d)) (body (nth 3 d)))
+             (when (and (= (length d) 4) (proper-list-p params) (<= (length params) 6)
+                        (cl-every (lambda (p) (and (symbolp p) p (not (eq p t))
+                                                  (not (keywordp p))
+                                                  (not (string-prefix-p "&" (symbol-name p)))
+                                                  (not (nelisp-aot-compiler--special-var-p p)))) params)
+                        (= (length params) (length (delete-dups (copy-sequence params))))
+                        (consp body) (known-call-p (car body))
+                        (nelisp-standalone--inline-body-ok-p body name)
+                        (binder-free-p body params) (closed-p name))
+               (puthash name d candidates)))) defs)
+        (cons 'seq
+          (mapcar
+           (lambda (d)
+             (if (and (consp d) (eq (car d) 'defun) (= (length d) 4)
+                      (gp-params-p (nth 2 d))
+                      (has-wrapper-p (nth 3 d))
+                      (not (caller-observer-p (nth 3 d))))
+                 (let (assigned)
+                   (walk-values (nth 3 d)
+                    (lambda (x)
+                      (when (eq (car x) 'setq)
+                        (let ((a (cdr x)))
+                          (while a (cl-pushnew (car a) assigned) (setq a (cddr a)))))))
+                   (list 'defun (nth 1 d) (nth 2 d)
+                         (rewrite (nth 3 d) (nth 2 d) assigned nil)))
+               d)) (cdr source)))))))
+
+(defun nelisp-standalone--inline-unit-source (source)
+  "Apply the production within-unit inline policy to SOURCE."
+  (let ((originals source)
+        (nelisp-standalone--inline-resolved-changed-definitions (make-hash-table :test 'eq)))
+    (setq source (nelisp-standalone--inline-small-defuns source))
+    (when (member (nelisp-standalone--inline-level) '("2" "3" "4"))
+      (setq source (nelisp-standalone--inline-small-defuns source)))
+    (nelisp-standalone--inline-wrapper-initializers source originals)))
 
 ;; CG7 (Doc 224): the small leaf helpers above are visible to every unit,
 ;; as lisp.h's inline accessors are visible to every GNU translation unit.
@@ -2038,7 +2707,11 @@ A value of `conflict' marks a name defined twice with different bodies.")
 
 (defun nelisp-standalone--xinline-enabled-p ()
   "Non-nil when cross-unit inlining applies to this build."
-  (and (member (nelisp-standalone--inline-level) '("1" "2"))
+  (and (or (member (nelisp-standalone--inline-level) '("1" "2"))
+           ;; Level 4 (the default) imports helpers through the explicit unit-dependency
+           ;; table instead; CG7's registry joins it only on request.
+           (and (member (nelisp-standalone--inline-level) '("3" "4"))
+                (equal (getenv "NELISP_XINLINE") "1")))
        (not (equal (getenv "NELISP_XINLINE") "0"))
        (not (nelisp-standalone--runtime-reload-enabled-p))))
 
@@ -2106,7 +2779,9 @@ Arguments are bound in order to fresh names by `let*', exactly as the
 within-unit pass does; one level, so a helper body is spliced as written."
   (if (not (and nelisp-standalone--xinline-table (eq (car-safe source) 'seq)))
       source
-    (let ((own (make-hash-table :test 'eq)))
+    (let ((own (make-hash-table :test 'eq))
+          (used-names (nelisp-standalone--inline-used-names
+                       source nelisp-standalone--xinline-table)))
       (dolist (form (cdr source))
         (when (eq (car-safe form) 'defun)
           (puthash (cadr form) t own)))
@@ -2123,7 +2798,7 @@ within-unit pass does; one level, so a helper body is spliced as written."
                                  (gethash (car x) nelisp-standalone--xinline-table))))
                  (if (and (consp cand) (= (length args) (length (car cand))))
                      (let ((alist (mapcar (lambda (p)
-                                            (cons p (intern (format "%s__x%d" p (cl-incf nelisp-standalone--inline-counter)))))
+                                            (cons p (nelisp-standalone--inline-fresh-name p "x" used-names)))
                                           (car cand))))
                        (puthash (car x) t nelisp-standalone--xinline-used)
                        (if alist
@@ -2282,7 +2957,12 @@ twice appears twice; readers keep the last occurrence of each unit."
          (source (nelisp-standalone-arena-rewrite-source source))
          (source (nelisp-heap-accessors-lower source))
          (imports (bound-and-true-p nelisp-standalone--inline-import-sources))
+         ;; The no-slot initializer pass needs the actual ABI even when the
+         ;; caller explicitly overrides the target default with ABI.
          (source (nelisp-standalone--inline-source source imports))
+         (source (let ((nelisp-aot-compiler--arch (nelisp-standalone--target-arch))
+                       (nelisp-aot-compiler--abi (or abi (nelisp-standalone--target-abi))))
+                   (nelisp-standalone--inline-unit-source source)))
          (resolved-abi (or abi (nelisp-standalone--target-abi)))
          (arch (nelisp-standalone--target-arch))
          (nelisp-aot-compiler--label-counter 0)
@@ -2318,7 +2998,17 @@ twice appears twice; readers keep the last occurrence of each unit."
                (- (length nelisp-aot-compiler--tco-log)
                   nelisp--tco-log-start)
                name))
-    (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf))
+    (let ((nelisp-aot-compiler--x86-trace-unit-names
+           (if (bound-and-true-p nelisp-aot-compiler--x86-private-continuations)
+               (mapcar (lambda (d) (symbol-name (nelisp-aot-compiler--ir-get d :name))) defuns)
+             nelisp-aot-compiler--x86-trace-unit-names))
+          (nelisp-aot-compiler--x86-frame-alias-definitions
+           (nelisp-aot-compiler--x86-frame-alias-definitions defuns))
+          (nelisp-aot-compiler--x86-frame-alias-proof-cache
+           (make-hash-table :test #'eq))
+          (nelisp-aot-compiler--x86-guarded-body-facts
+           (nelisp-aot-compiler--x86-guarded-body-facts defuns)))
+      (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf)))
     (let* ((arm64-linked (when (eq arch 'aarch64)
                            (nelisp-standalone--arm64-link-unit-text+relocs buf)))
            (text (if (eq arch 'aarch64)
@@ -2506,6 +3196,8 @@ can only make the key MORE discriminating -- a cache miss, never a wrong hit."
                                        nelisp-standalone--inline-max-nodes)
                                (format "jump-tables=%s\0" nelisp-aot-compiler--x86-jump-tables-enabled)
                                (format "direct-only=%S\0" nelisp-aot-compiler--x86-direct-only-defuns)
+                               (format "call-free-regions=%s\0" nelisp-aot-compiler--x86-call-free-regions)
+                               (format "affine-addresses=%s\0" nelisp-aot-compiler--x86-affine-addresses)
                                (nelisp-standalone--xinline-digest) "\0"
                                (prin1-to-string source)
                                (when (bound-and-true-p nelisp-standalone--inline-import-sources)

@@ -385,6 +385,8 @@ def static_study():
     result = {"revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "gcc": gcc, "nl": nl, "externs": lower.externs,
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "gcc_version": run([cc(), "--version"]).stdout.splitlines()[0]}
     save("census.json", result)
     return result
@@ -492,6 +494,8 @@ def wall(name):
     result = {"name": name, "cpu": cpu, "n": N, "repeats": repeats, "rounds": rounds,
               "source_revision": PINS["revision"], "source_sha256": sha(SRC / "runtime.nl.el"),
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0",
               "fixture_input_sha256": {f: sha(SRC / f) for f in
                   ("runtime.nl.el", "pins.json", "dependencies.nl.el", "heap-fields.nl.el",
@@ -519,6 +523,8 @@ def ir(name):
     count = int(os.environ.get("CODEGEN_RUNTIME_IR_N", "1000" if name == "wf_bytecode_w_fast_run" else str(N)))
     result = {"name": name, "diagnostic_only": True, "n": count, "variants": {}, "source_sha256": sha(SRC / "runtime.nl.el"),
               "compiler_sha256": sha(ROOT / "lisp/nelisp-aot-compiler.el"),
+              "standalone_build_sha256": sha(ROOT / "scripts/nelisp-standalone-build.el"),
+              "within_unit_inline_level": os.environ.get("NELISP_INLINE", "2"),
               "raw_tco_enabled": os.environ.get("NELISP_TCO") != "0"}
     for variant, exe in bins.items():
         counts, outputs, owners = [], [], []
@@ -721,7 +727,11 @@ def runtime_run(binary, name, n, gnu=False):
     args = ["taskset", "-c", cpu, binary]
     args += ["-Q", "--batch", "-l"] if gnu else ["--load"]
     args.append(SRC / "bytecode-workload.el")
+    save("runtime-attempt.json", {"binary": str(binary), "binary_sha256": sha(binary),
+         "workload": name, "n": n,
+         "address_space_limit_bytes": resource.getrlimit(resource.RLIMIT_AS)[0]})
     proc = run(args, env=env, cwd=ROOT)
+    freq_after = frequency(cpu)
     found = re.findall(r"^S5-WORK (\S+) (\d+) (\d+) ([0-9.]+)$", proc.stdout, re.M)
     if len(found) != 1 or found[0][0] != name or int(found[0][1]) != n:
         raise ValueError("missing or malformed runtime completion marker")
@@ -730,7 +740,7 @@ def runtime_run(binary, name, n, gnu=False):
     seconds = float(found[0][3])
     if value != expected or seconds <= 0:
         raise ValueError("invalid runtime result or non-positive wall time")
-    return {"seconds": seconds, "khz": freq, "answer": value}
+    return {"seconds": seconds, "khz": freq, "khz_after": freq_after, "answer": value}
 
 
 def endtoend():
@@ -744,8 +754,12 @@ def endtoend():
         raise ValueError("candidate and baseline binaries are identical")
     result = {"fixture_revision": PINS["revision"], "real_runtime_versions": {}, "workloads": {},
               "sha256": {v: sha(b) for v, b in bins.items()}, "bytecode_sha256": sha(SRC / "bytecode.eld")}
+    # The standalone reader CLI has no --version action.  Its immutable
+    # executable hash above identifies it; only GNU implements this flag.
     for label, binary in bins.items():
-        result["real_runtime_versions"][label] = run([binary, "--version"]).stdout.strip()
+        result["real_runtime_versions"][label] = (
+            run([binary, "--version"]).stdout.strip() if label == "gnu"
+            else "NeLisp reader sha256=" + result["sha256"][label])
     if "GNU Emacs 31.1" not in result["real_runtime_versions"]["gnu"]:
         raise ValueError("end-to-end golden must be GNU Emacs 31.1")
     for name in ("while", "funcall"):

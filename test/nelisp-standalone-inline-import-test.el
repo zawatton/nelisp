@@ -36,7 +36,7 @@
                   nelisp-standalone--inline-level
                   nelisp-standalone--inline-clone-p
                   nelisp-standalone--inline-constant-base-case
-                  nelisp-standalone--inline-small-defuns
+                  nelisp-standalone--inline-small-defuns-imports
                   nelisp-standalone--inline-source
                   nelisp-standalone--build-trace-phase
                   nelisp-standalone--unit-cache-key
@@ -131,8 +131,8 @@
                                             (list caller))))
                  (imports (when (eq mode 'imported)
                             (list (cons 'seq definitions))))
-                 (first (nelisp-standalone--inline-small-defuns source imports))
-                 (second (nelisp-standalone--inline-small-defuns first imports))
+                 (first (nelisp-standalone--inline-small-defuns-imports source imports))
+                 (second (nelisp-standalone--inline-small-defuns-imports first imports))
                  (body (cdddr (cl-find 'caller (cdr second) :key #'cadr))))
             (should (calls-p boundary body))
             (should-not (calls-p 'raw_apply body))
@@ -146,19 +146,19 @@
                                 (result (donor (progn (push 'left trace) 2)
                                                (progn (push 'right trace) 7))))
                            (list result trace)))))
-         (output (nelisp-standalone--inline-small-defuns
+         (output (nelisp-standalone--inline-small-defuns-imports
                   source (list nelisp-inline-import-test--donor))))
     (should (= (length (cdr output)) 1)) ; Never emit donor definitions.
     (should (equal (funcall (nelisp-inline-import-test--function (cadr output)))
                    '(27 (right left))))
     (let ((process-environment (cons "NELISP_INLINE=0" process-environment)))
-      (should (equal source (nelisp-standalone--inline-small-defuns
+      (should (equal source (nelisp-standalone--inline-small-defuns-imports
                             source (list nelisp-inline-import-test--donor)))))))
 
 (ert-deftest nelisp-inline-import-ineligible-local-still-shadows-donor ()
   (let* ((source '(seq (defun donor (a b) (progn 999))
                        (defun caller () (donor 2 7))))
-         (output (nelisp-standalone--inline-small-defuns
+         (output (nelisp-standalone--inline-small-defuns-imports
                   source (list nelisp-inline-import-test--donor))))
     (should (equal (nth 3 (nth 2 output)) '(donor 2 7)))))
 
@@ -169,7 +169,7 @@
                                           (progn (push 'left trace) 2)
                                           (progn (push 'right trace) 7))))
                            (list result trace)))))
-         (output (nelisp-standalone--inline-small-defuns
+         (output (nelisp-standalone--inline-small-defuns-imports
                   source (list nelisp-inline-import-test--donor))))
     (should (= (length (cdr output)) 1))
     (should (equal (funcall (nelisp-inline-import-test--function (cadr output)))
@@ -183,12 +183,12 @@
                   (extern-call donor 2)
                   (extern-call unknown 2 7)))
     (let ((source `(seq (defun caller () ,call))))
-      (should (equal source (nelisp-standalone--inline-small-defuns
+      (should (equal source (nelisp-standalone--inline-small-defuns-imports
                             source (list nelisp-inline-import-test--donor))))))
   (dolist (local '((defun donor (a b) (+ a b))
                    (defun donor (a b) (progn 999))))
     (let* ((source `(seq ,local (defun caller () (extern-call donor 2 7))))
-           (output (nelisp-standalone--inline-small-defuns
+           (output (nelisp-standalone--inline-small-defuns-imports
                     source (list nelisp-inline-import-test--donor))))
       (should (equal (nth 3 (nth 2 output)) '(extern-call donor 2 7))))))
 
@@ -226,7 +226,7 @@
 
 (ert-deftest nelisp-inline-import-rejects-conflicting-definitions ()
   (should-error
-   (nelisp-standalone--inline-small-defuns
+   (nelisp-standalone--inline-small-defuns-imports
     '(seq (defun caller () (donor 2 7)))
     (list nelisp-inline-import-test--donor
           '(seq (defun donor (a b) (progn 999)))))
@@ -235,7 +235,7 @@
 (ert-deftest nelisp-inline-import-keeps-arity-and-clone-guards ()
   (dolist (source '((seq (defun caller () (donor 2)))
                     (seq (defun caller () (seq (syscall-direct 56 0) (donor 2 7))))))
-    (should (equal source (nelisp-standalone--inline-small-defuns
+    (should (equal source (nelisp-standalone--inline-small-defuns-imports
                           source (list nelisp-inline-import-test--donor))))))
 
 (ert-deftest nelisp-inline-import-source-data-excluded-before-target-rewrite ()
@@ -250,12 +250,12 @@
       (should (equal (plist-get output :private) '(private_address)))
       (should (equal (nth 3 (nth 2 (plist-get output :source)))
                      '(+ (data-addr nl_arena_base) 8)))
-      (let ((rewritten (nelisp-standalone--inline-small-defuns
+      (let ((rewritten (nelisp-standalone--inline-small-defuns-imports
                         '(seq (defun caller () (+ (private_address) (shared_address))))
                         (list output))))
         (should (equal (nth 1 (nth 3 (cadr rewritten))) '(private_address))))
       (should-error
-       (nelisp-standalone--inline-small-defuns
+       (nelisp-standalone--inline-small-defuns-imports
         '(seq (defun caller () (private_address)))
         (list output '(seq (defun private_address () 999))))
        :type 'error))))
@@ -291,7 +291,7 @@
          (definition (nelisp-heap-accessors-lower
                       (cl-find 'nl_gc_in_arena (cdr gc) :key #'cadr)))
          (source '(seq (defun caller (address) (nl_gc_in_arena address))))
-         (output (nelisp-standalone--inline-small-defuns source (list (list 'seq definition))))
+         (output (nelisp-standalone--inline-small-defuns-imports source (list (list 'seq definition))))
          (reference (nelisp-inline-import-test--function definition))
          (candidate (nelisp-inline-import-test--function (cadr output)))
          (memory (make-hash-table :test 'eql))
@@ -363,7 +363,7 @@
                                  (b (donor (progn (setq trace (append trace '(second))) x) 3)))
                    (list (+ a b) trace))))
              (source (if singleton definition (list 'seq definition)))
-             (output (nelisp-standalone--inline-small-defuns
+             (output (nelisp-standalone--inline-small-defuns-imports
                       source (list nelisp-inline-import-test--donor)))
              (expanded (if singleton output (cadr output))))
         (should-not (string-match-p "(donor " (prin1-to-string expanded)))
@@ -376,7 +376,7 @@
                     (seq (defun caller (a__i1)
                            (let* ((answer (donor 2 a__i1))) answer)))))
     (let* ((nelisp-standalone--inline-counter 0)
-           (output (nelisp-standalone--inline-small-defuns
+           (output (nelisp-standalone--inline-small-defuns-imports
                     source (list nelisp-inline-import-test--donor)))
            (definition (if (eq (car output) 'defun) output (cadr output))))
       (should (= (funcall (nelisp-inline-import-test--function definition) 4) 24)))))
@@ -390,7 +390,7 @@
   (cdddr (cl-find name (cdr source) :key #'cadr)))
 (defun nelisp-inline-basecase-test--opt (source &optional imports)
   (let ((process-environment (cons "NELISP_INLINE=1" process-environment)))
-    (nelisp-standalone--inline-small-defuns source imports)))
+    (nelisp-standalone--inline-small-defuns-imports source imports)))
 (defun nelisp-inline-basecase-test--host (form)
   (cond ((atom form) form)
         ((eq (car form) 'quote) form)
@@ -574,7 +574,7 @@
 (ert-deftest nelisp-inline-basecase-disabled-unchanged ()
   (let* ((process-environment (cons "NELISP_INLINE=0" process-environment))
          (source `(seq ,nelisp-inline-basecase-test--recursive (defun caller (a) (basecase_helper a 0 9)))))
-    (should (equal source (nelisp-standalone--inline-small-defuns source)))))
+    (should (equal source (nelisp-standalone--inline-small-defuns-imports source)))))
 
 (ert-deftest nelisp-inline-basecase-c-varargs-local-imported-layouts ()
   ;; The marker consumes no ABI argument. No raw formal index may include it.
