@@ -14489,7 +14489,36 @@ leave symbols unresolved at link time."
                  (if (= (wf_argval args 0) 78)
                      (wf_write_int_w 0 (nl_gc_debt_now))
                    (wf_write_int_w 0 (heap-read-u64 (data-addr nl_gc_loop_ctx) 32))))))))))
+    ;; (nelisp--debug-switch 80 STR): a cons whose car is the VIEW box of the String STR (the 32-byte
+    ;; transport form `nl_string_store_view' writes, tag 5 or 14, the canonical header in its capacity word),
+    ;; not the String WORD: the shape a container holds when a view was stored without `nl_val_clone_into'.
+    ;; 3 (nil) when STR is no String WORD.  (nelisp--debug-switch 81 X): the car of the cons X as a fixnum, -1
+    ;; when X is no cons: 1 a view whose canonical header validates by the page index (never by a pointer
+    ;; read), 2 a String WORD, 3 a view that does not validate (a stale view), 0 anything else.  The image
+    ;; dump must hand the restored process code 2 (the dump rewrites the field to the WORD), never 3.
+    (defun nl_strview_selftest_w (args)
+      (let ((op (wf_argval args 0)) (w (wf_arg_word args 1)))
+        (if (= op 80)
+            (if (= (logand w 7) 4)
+                (let* ((view (nl_string_store_view w (alloc-bytes 32 8)))
+                       (cell (extern-call nl_cons_alloc))
+                       (box (if (= cell 0) (alloc-bytes 16 8) cell)))
+                  (seq (ptr-write-u64 box 0 view) (ptr-write-u64 box 8 3) (+ box 2)))
+              3)
+          (if (/= (logand w 7) 2) (nl_imm_int -1)
+            (let ((car (heap-read-u64 (- w 2) 0)))
+              (nl_imm_int
+               (if (= (logand car 7) 4) 2
+                 (if (/= (logand car 7) 0) 0
+                   (if (< car 65536) 0
+                     (if (= (nl_gc_in_arena car) 0) 0
+                       (let ((tag (heap-read-u8 car 0)))
+                         (if (or (= tag 5) (= tag 14))
+                             (if (= (nl_string_header_p (logand (heap-read-u64 car 8) 2305843009213693951)) 1) 1 3)
+                           0))))))))))))
     (defun bf_debug_switch_w (args env)
+      (if (if (>= (wf_argval args 0) 80) (<= (wf_argval args 0) 81) 0)
+          (nl_strview_selftest_w args)
       (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
           (nl_vm_poll_switch_w args)
       (if (if (>= (wf_argval args 0) 60) (<= (wf_argval args 0) 66) 0)
@@ -14602,7 +14631,7 @@ leave symbols unresolved at link time."
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 24) s4 s3)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 16) s3 s2)
             (wf_cons_int (heap-read-u64 (data-addr nl_gc_diag) 8) s2 s1)
-            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0))))))))
+            (wf_cons_int_w (heap-read-u64 (data-addr nl_gc_diag) 0) s1 0)))))))))
     (defun bf_debug_switch (args out)
       (nl_abi_word_to_rc (bf_debug_switch_w args 0) out))
     ;; (nelisp--gc-pressure) -> how close the next collection is, as a
