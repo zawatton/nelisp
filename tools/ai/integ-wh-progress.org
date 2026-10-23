@@ -28,6 +28,18 @@
 # Each stage is built from a snapshot and verified with tools/ai/integ-wh-battery.sh before the batch branch moves.
 #  m10 = the codegen merge (d42f56eb6) with fix 21 (d9eb31105); m11 = fixes 22-25 (eval/integ-wh-20261022-m11).
 #
+# CENSUS FIX (2026-10-23): the binaries below, built from 8285595df, are SUPERSEDED.  The library census found that every
+# cold-load of a library image segfaulted at the first collection (S2.22: string views in containers left unrelocated by the
+# image dump) and that .elc byte-code strings read as multibyte (S2.23).  The fixes are 1f3e3d5c0 (dump) and 30e09e61a (reader).
+# Binaries of the fix tip 1e0922fe8 (v1.5.0-2220-g1e0922fe8; the ledger commits after it do not change them), all built from
+# git-archive snapshots by tools/ai/integ-wh-build.sh and tools/ai/win-smoke.sh; F1 closure unchanged (346 functions, 358,519 B):
+#   target/integ/nelisp-dyn      33,754,552 B  sha256 904f7471698cb6bea4cd59f9193cce956e36c430633068df7fdb837d77dcf75c  (build 180 s, seeded)
+#     .cold  32,057,696 B  sha256 aa9947588d69fc049fdb53f656bc9ce2980f7deacbf6aeda4b404576779ccfed
+#   target/integ/nelisp-static   33,593,432 B  sha256 79a5f94bb89d1fd16c9b889a9753b85ad1538547d45bb1640ce1bbf1eae5eff7  (build 607 s)
+#     .cold  32,058,312 B  sha256 82b2222fcc6d778573ec3cbd55385766abe5056623d445d5177feeb04d9fc87f
+#   target/win/1e0922fe8/nelisp.exe  52,086,865 B  sha256 a1e195c5167fd8c1d5c6cb9ed0534c3b8964b1aea584b791143aa85e29ae038b  (build 596 s)
+#     .cold  32,398,544 B  sha256 b3aa29d286f57c3469a8e7b888f01fd24a23e198b5c014655097d87fa5f8f1d9
+#
 # Binaries of the build tip 8285595df (v1.5.0-2210-g8285595df; the ledger commits after it do not change them),
 # all built from git-archive snapshots by tools/ai/integ-wh-build.sh and tools/ai/win-smoke.sh:
 #   target/integ/nelisp-dyn      33,754,472 B  sha256 8df4508a7b4e4bd7702d7753ef0fa8dd8033cc3d3ed9d92f8e748538e8c4d95b  (build 666 s)
