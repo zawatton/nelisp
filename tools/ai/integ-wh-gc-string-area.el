@@ -1,10 +1,10 @@
 ;;; integ-wh-gc-string-area.el --- the conservative scan and the string areas (GNU mark_maybe_pointer)  -*- lexical-binding: t; -*-
 
-;; NeLisp only (it uses (nelisp--debug-switch 82 ...) and 83).  GNU alloc.c: a conservative word inside a string's
+;; NeLisp only (it uses (nelisp--debug-switch 82 ...), 83 and 84).  GNU alloc.c: a conservative word inside a string's
 ;; 32-byte struct marks that string (live_string_holding resolves an interior pointer), a word inside string data
 ;; (MEM_TYPE_NON_LISP) names no object and is dropped, and nothing is ever queued as a whole block.
 ;;
-;; 82: the classification of a word inside a string: (handled-by-the-string-area-path, marked, compaction guard,
+;; 82 and 84: the classification of a word inside a string's header and inside its sdata: (handled-by-the-string-area-path, marked, compaction guard,
 ;;     mapping kind of the word).  A pool string: a header word marks it and sets the guard (kind 3); an sdata word
 ;;     marks nothing (kind 4 or 5) but sets the guard.  A string of the restored image (kind 6, header; the sdata is
 ;;     outside the page registry): handled, never marked, no guard (image strings are immortal).
@@ -20,15 +20,15 @@
 (defun iwh-ga-bits (r) (list (logand r 1) (logand (ash r -1) 1) (logand (ash r -2) 1) (ash r -4)))
 
 (let* ((pool (copy-sequence "pool string abcdefgh"))
-       (h (iwh-ga-bits (nelisp--debug-switch 82 pool 0)))
-       (d (iwh-ga-bits (nelisp--debug-switch 82 pool 1))))
+       (h (iwh-ga-bits (nelisp--debug-switch 82 pool)))
+       (d (iwh-ga-bits (nelisp--debug-switch 84 pool))))
   (iwh-ga "pool header word: handled, marked, guard, kind 3" (equal h '(1 1 1 3)) h)
   (iwh-ga "pool sdata word: handled, not marked, guard, kind 4 or 5"
           (and (= (nth 0 d) 1) (= (nth 1 d) 0) (= (nth 2 d) 1) (memq (nth 3 d) '(4 5))) d))
 
 (let* ((img (symbol-name 'car))
-       (h (iwh-ga-bits (nelisp--debug-switch 82 img 0)))
-       (d (iwh-ga-bits (nelisp--debug-switch 82 img 1))))
+       (h (iwh-ga-bits (nelisp--debug-switch 82 img)))
+       (d (iwh-ga-bits (nelisp--debug-switch 84 img))))
   (if (= (nth 3 h) 6)
       (progn
         (iwh-ga "image header word: handled, not marked, no guard, kind 6" (equal h '(1 0 0 6)) h)

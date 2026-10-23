@@ -14543,15 +14543,16 @@ leave symbols unresolved at link time."
                          (if (or (= tag 5) (= tag 14))
                              (if (= (nl_string_header_p (logand (heap-read-u64 car 8) 2305843009213693951)) 1) 1 3)
                            0))))))))))))
-    ;; (nelisp--debug-switch 82 STR PROBE): what the conservative scan does with a word inside the String STR.
-    ;; PROBE 0 is a word inside its 32-byte header (header + 13), 1 a word inside its sdata (data pointer + 1).
+    ;; (nelisp--debug-switch 82 STR) and (nelisp--debug-switch 84 STR): what the conservative scan does with a word
+    ;; inside the String STR.  82 takes a word inside its 32-byte header (header + 13), 84 a word inside its sdata
+    ;; (data pointer + 1).
     ;; The answer is a fixnum: bit 0 the word was handled as a string area (`nl_gc_conserv_string_area' answered 1),
     ;; bit 1 the string was marked, bit 2 the small-string compaction guard (strings state +56) was set, bits 4 and
     ;; up the mapping kind of the word (3 pool header, 4 and 5 pool sdata, 6 image header, 0 none).  The mark and
     ;; the guard are put back as they were.  GNU mark_maybe_pointer: a header word marks that string
     ;; (live_string_holding), an sdata word names no object.  -1 when STR is no String WORD.
     (defun nl_gc_area_probe_w (args)
-      (let* ((w (wf_arg_word args 1)) (probe (wf_argval args 2)))
+      (let* ((w (wf_arg_word args 1)) (probe (if (= (wf_argval args 0) 82) 0 1)))
         (if (/= (logand w 7) 4) (nl_imm_int -1)
           (let* ((s (- w 4)) (st (data-addr nl_strings_state))
                  (addr (if (= probe 0) (+ s 13) (+ (heap-read-u64 s 24) 1)))
@@ -14580,7 +14581,7 @@ leave symbols unresolved at link time."
     ;; MODE 0 keeps none (the control: the string must be collected), 1 a word inside its header (it must survive),
     ;; 2 a word inside its sdata (GNU drops it: the string is collected).  1 when the string is still allocated
     ;; after the collection, 0 when not, -2 when the conservative scan is off.
-    (defun nl_gc_area_survive_w (args)
+    (defun nl_gc_area_survive_w (args env)
       (let* ((mode (wf_argval args 1)))
         (if (/= (heap-read-u64 268436464 0) 1) (nl_imm_int -2)
           (let* ((disguised (nl_gc_area_make))
@@ -14588,14 +14589,14 @@ leave symbols unresolved at link time."
                  (kept (if (= mode 1) (+ h 13) (if (= mode 2) (+ (heap-read-u64 h 24) 5) 0))))
             (seq (setq h 0)
                  (nl_gc_area_scrub 24)
-                 (nl_gc_collect_from_recorded_roots 0)
+                 (bf_garbage_collect_snapshot_w env 0)
                  (if (= kept -1) (nl_imm_int 99)
                    (nl_imm_int (nl_string_header_p (logxor disguised 6148914691236517205)))))))))
     (defun bf_debug_switch_w (args env)
-      (if (if (>= (wf_argval args 0) 82) (<= (wf_argval args 0) 82) 0)
+      (if (if (= (wf_argval args 0) 82) 1 (= (wf_argval args 0) 84))
           (nl_gc_area_probe_w args)
       (if (if (>= (wf_argval args 0) 83) (<= (wf_argval args 0) 83) 0)
-          (nl_gc_area_survive_w args)
+          (nl_gc_area_survive_w args env)
       (if (if (>= (wf_argval args 0) 80) (<= (wf_argval args 0) 81) 0)
           (nl_strview_selftest_w args)
       (if (if (>= (wf_argval args 0) 70) (<= (wf_argval args 0) 78) 0)
