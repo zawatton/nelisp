@@ -32,7 +32,7 @@
 (defconst nelisp-cc-jit-cons-car-ptr--source
   '(defun nl_cons_car_ptr (arg)
       (if (= (nl_val_tag arg) 7)
-          (let ((word (heap-read-u64 (nl_word_payload arg) 0)))
+          (let ((word (ptr-read-u64 (nl_word_payload arg) 0)))
             ;; Doc 216: a legacy view (000) and a direct cons (010) pass through
             ;; unchanged -- no transient box that could not cross an eval;
             ;; immediates and vectorlikes still materialise.
@@ -42,8 +42,8 @@
             ;; through the semantic accessors (`sexp-tag', `heap-sexp-data' ...).
             (if (= (logand word 5) 0) word
               (if (= (logand word 7) 6)
-                  (if (or (= (logand (heap-read-u64 (- word 6) 0) 63) 4)
-                          (= (logand (heap-read-u64 (- word 6) 0) 63) 16))
+                  (if (or (= (logand (ptr-read-u64 (- word 6) 0) 63) 4)
+                          (= (logand (ptr-read-u64 (- word 6) 0) 63) 16))
                       word
                     (extern-call nl_sexp_clone_into word (alloc-bytes 32 8)))
                 (extern-call nl_sexp_clone_into word (alloc-bytes 32 8))))) 0))

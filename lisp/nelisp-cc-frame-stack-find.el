@@ -555,8 +555,8 @@
       (if (/= (logand name 7) 6)
           -1
         (let* ((rec (nl_word_payload frames))
-               (backing (heap-read-u64 (+ rec 16) 0))
-               (i (- (sar (heap-read-u64 (+ rec 24) 0) 2) 1)))
+               (backing (ptr-read-u64 (+ rec 16) 0))
+               (i (- (sar (ptr-read-u64 (+ rec 24) 0) 2) 1)))
           (if (/= (logand backing 7) 6)
               -1
             (let* ((bp (- backing 6)) (hit 0) (cur 0))

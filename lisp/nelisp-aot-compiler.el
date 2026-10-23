@@ -15586,10 +15586,14 @@ build never reaches here, keeping the produced `.o' bytes unchanged."
               (nelisp-aot-compiler--byte-vec->string bytes))))
       (error nil))))
 
-(defvar nelisp-aot-compiler--x86-call-free-regions t
+(defvar nelisp-aot-compiler--x86-call-free-regions
+  (not (equal (getenv "NELISP_CALL_FREE_REGIONS") "0"))
   "Keep profitable raw call-free regions in the CG3 register pool.
 This never retains a local across a call, allocating node, checked
-arithmetic guard or Lisp-value operation.  Nil retains the old lowering.")
+arithmetic guard or Lisp-value operation.  Nil retains the old lowering.
+The environment variable NELISP_CALL_FREE_REGIONS=0 starts a build with it off: the region
+planner walks the IR again at every nested `if', `cond' and `let', and a function with a deep
+`let*' nest (the word-heap line's four inline passes make them) takes minutes.")
 
 (defvar nelisp-aot-compiler--x86-call-containing-defun-p nil
   "Non-nil within a defun whose emitted body contains a call.

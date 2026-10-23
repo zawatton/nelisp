@@ -1716,7 +1716,11 @@ standalone units can call each other."
 (defconst nelisp-standalone--inline-boundaries
   '(nl_apply_function nl_apply_function_w
     ;; Doc 226 D9: the symbol entry API's slow paths.
-    nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp)
+    nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp
+    ;; The String WORD arm of the collector's word marker (GNU MARK_STRING): an arm of
+    ;; `nl_gc_mark_word', which calls it back for the intervals, so inlining it would
+    ;; copy the arm into every inlined copy of the marker.
+    nl_gc_mark_string_word)
   "Calls that must survive inlining.
 Authenticated evaluator entries: the F1 source/binary proof binds them as
 evaluator terminals, and inlining one into a caller would erase that
@@ -8235,21 +8239,22 @@ REPL-facing module it feeds."
       ;; big to splice into its own callers.
       (let ((k (logand (heap-read-u64 box 0) 63)))
         (if (or (= k 4) (= k 16)) (nl_gc_mark_symbol box) (nl_gc_mark_vectorlike box))))
+    ;; GNU MARK_STRING: mark the canonical header directly.  The arm lives in its own function: with it
+    ;; in `nl_gc_mark_word' the marker called itself and was no longer a candidate of the inliner (80
+    ;; cells), so every car and cdr of every cons marked was a call of about 63 Ir (305,000 calls and 19 M
+    ;; Ir a collection on the m9 stage, 58,000 calls and 3 M on gc-port's tip).
+    (defun nl_gc_mark_string_word (word)
+      (let* ((s (- word 4)) (size (heap-read-u64 s 0)))
+        (if (< size 0) 0
+          (if (if (>= s (heap-read-u64 (data-addr nl_strings_state) 160))
+                  (< s (heap-read-u64 (data-addr nl_strings_state) 168)) 0)
+              0
+            (seq (nl_gc_typed_add 3 s (nl_string_nbytes s) 48 1)
+                 (ptr-write-u64 s 0 (logior size -9223372036854775808))
+                 (if (/= (heap-read-u64 s 16) 0)
+                     (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1)))))
     (defun nl_gc_mark_word (word)
       (if (= (logand word 1) 1) 0
-        (if (= (logand word 7) 4)
-            ;; GNU MARK_STRING: mark the canonical header directly. Keeping
-            ;; this in the collector also avoids a new mutually recursive
-            ;; native helper at the authenticated mark-word boundary.
-            (let* ((s (- word 4)) (size (heap-read-u64 s 0)))
-              (if (< size 0) 0
-                (if (if (>= s (heap-read-u64 (data-addr nl_strings_state) 160))
-                        (< s (heap-read-u64 (data-addr nl_strings_state) 168)) 0)
-                    0
-                (seq (nl_gc_typed_add 3 s (nl_string_nbytes s) 48 1)
-                     (ptr-write-u64 s 0 (logior size -9223372036854775808))
-                     (if (/= (heap-read-u64 s 16) 0)
-                         (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1))))
         (if (= (logand word 7) 6)
             ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
             ;; bit is set needs neither the header read nor a call.
@@ -8264,10 +8269,12 @@ REPL-facing module it feeds."
                       0)))))
           (if (= (logand word 7) 2)
               (nl_gc_mark_cons word)
-            (let* ((r (nl_gc_mark_image word)))
-              (if (>= r 0)
-                  (if (= r 0) 0 (nl_gc_mark_slot word))
-                (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))))))
+            (if (= (logand word 7) 4)
+                (nl_gc_mark_string_word word)
+              (let* ((r (nl_gc_mark_image word)))
+                (if (>= r 0)
+                    (if (= r 0) 0 (nl_gc_mark_slot word))
+                  (if (= (nl_gc_mark_block word) 0) 0 (nl_gc_mark_slot word)))))))))
     (defun nl_gc_mark_inline_words (owner offset n)
       (let* ((cap (nl_gc_block_elem_cap owner 8)) (i offset)
              (end (+ offset n)))
@@ -8626,7 +8633,16 @@ REPL-facing module it feeds."
                            (ptr-write-u64 (heap-read-u64 (data-addr nl_typed_alloc) 216) wi (logior m bit))
                            ;; A weak hash table (the hashtab line: the cons of its meta vector and its index) is
                            ;; chained for the end of the mark phase instead of being marked through.
-                           (if (if (= (logand (heap-read-u64 box 0) 7) 6) (> (nl_gc_weak_table_mode box) 0) 0)
+                           ;; Only a Vector can be the meta of a weak table (kind 8 in the header byte): a symbol
+                           ;; object or any other vectorlike car skips the call (95,000 calls, 4 M Ir a collection).
+                           ;; A car below 4096 is a sentinel, not an object, as `nl_gc_weak_table_mode' treats it.
+                           (if (let* ((cw (heap-read-u64 box 0)))
+                                 (if (= (logand cw 7) 6)
+                                     (if (>= cw 4096)
+                                         (if (= (logand (ptr-read-u8 (- cw 6) 0) 63) 8)
+                                             (> (nl_gc_weak_table_mode box) 0) 0)
+                                       0)
+                                   0))
                                (nl_gc_weak_note_table box)
                              (seq
                               (nl_gc_mark_word (heap-read-u64 box 0))
@@ -10017,6 +10033,15 @@ REPL-facing module it feeds."
              (bounds (+ (heap-read-u64 index 0) (* (heap-read-u64 index 24) 24)))
              (lo (if (= active 1) (heap-read-u64 bounds 0) 0))
              (hi (if (= active 1) (heap-read-u64 bounds 8) 0))
+             ;; The strings' address bounds, as `nl_string_mapping_op' takes them (state words 96/112 and
+             ;; 104/120, the page table at 144): a word outside them names no string, so the pin call is
+             ;; skipped (20,000 calls and 3 M Ir a collection on the m9 stage).
+             (st (data-addr nl_strings_state))
+             (slo (if (or (= (heap-read-u64 st 96) 0)
+                          (and (/= (heap-read-u64 st 112) 0) (< (heap-read-u64 st 112) (heap-read-u64 st 96))))
+                      (heap-read-u64 st 112) (heap-read-u64 st 96)))
+             (shi (if (> (heap-read-u64 st 120) (heap-read-u64 st 104)) (heap-read-u64 st 120) (heap-read-u64 st 104)))
+             (smap (heap-read-u64 st 144))
              (p p0) (word 0) (i 0))
         (seq
          ;; A native stack of 100 KB holds about 4,000 words inside the heap bounds and about 600 distinct
@@ -10027,9 +10052,11 @@ REPL-facing module it feeds."
                 (setq i (+ i 1))))
          (while (and (< p top) (= (nl_gc_conserv_failed_p) 0))
            (setq word (heap-read-u64 p 0))
-           (if (= (nl_string_pin_word word) 1)
-               (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
-                              (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
+           (if (if (= smap 0) 0 (if (>= word slo) (< word shi) 0))
+               (if (= (nl_string_pin_word word) 1)
+                   (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                                  (logior (heap-read-u64 (data-addr nl_gc_conserv_state) 32) 4)) 0)
+             0)
            (if (if (= active 1) (and (>= word lo) (< word hi)) 1)
                (if (= (heap-read-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8)) word) 0
                  (seq (ptr-write-u64 (data-addr nl_gc_conserv_seen) (* (logand (sar word 3) 255) 8) word)
@@ -29720,7 +29747,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
       ;; GNU reads sym->u.s.redirect (lisp.h:771); a symbol object keeps it in
       ;; bits 8-9 of its flags word, in the 0 1 2 3 order of this answer.
       (if (= (nl_so_p obj) 1)
-          (logand (sar (heap-read-u64 (- obj 6) 0) 8) 3)
+          (logand (sar (ptr-read-u64 (- obj 6) 0) 8) 3)
         (if (< (nl_ent_n obj) 9) 4
           (let ((a (nelisp_env_alias_slot_candidate obj 0)))
             (if (= a 0) 1
@@ -29789,7 +29816,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
            (while (= result -1)
              (if (= obj 0) (setq result 1)
                (if (if (= (nl_so_p obj) 1)
-                       (= (logand (sar (heap-read-u64 (- obj 6) 0) 10) 3) 1)
+                       (= (logand (sar (ptr-read-u64 (- obj 6) 0) 10) 3) 1)
                      (= (nl_val_tag (nl_ent_w obj 3)) 1))
                    (setq result 1)
                  (let ((r (nl_sym_redirect obj)))
@@ -55199,8 +55226,17 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
         (if (= (logand a 3) 1)
             (let* ((n (sar a 2)))
               (if (if (>= n 0) (< n 1048576) 0)
-                  (let* ((out (alloc-bytes 32 8)))
-                    (seq (vector-make n out) (bf_mv_fill out 0 n b) out))
+                  (if (/= (logand b 7) 0)
+                      ;; GNU make_vector: allocate the block, then fill it with INIT, as `bf_make_vector_w' does
+                      ;; for a WORD that is no legacy view (648 Ir for 16 slots on gc-port's tip; the 32-byte
+                      ;; view and the recursive fill below cost 2,342 on the m9 stage).
+                      (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0))
+                        (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
+                             (while (< k n)
+                               (seq (ptr-write-u64 box (+ 8 (* k 8)) b) (setq k (+ k 1))))
+                             (+ box 6)))
+                    (let* ((out (alloc-bytes 32 8)))
+                      (seq (vector-make n out) (bf_mv_fill out 0 n b) out)))
                 -1))
           -1))
       ;; A subr D = (builtin NM): its primitive, else the ordinary apply on the
@@ -55370,7 +55406,7 @@ reached through its function cell would then skip its argument count silently."
                      (ptr-write-u64 fr 8 (if (= (logand cdr-ptr 7) 2) cdr-ptr (nl_n4_list_word cdr-ptr)))
                      (ptr-write-u64 fr 16 fl)
                      (ptr-write-u64 fr 24 0)
-                     (ptr-write-u64 fr 32 (sar (heap-read-u64 fd 24) 2))
+                     (ptr-write-u64 fr 32 (sar (ptr-read-u64 fd 24) 2))
                      (ptr-write-u64 fr 40 (+ fd 6))
                      (ptr-write-u64 state 0 (+ depth 1))
                      fr))))
