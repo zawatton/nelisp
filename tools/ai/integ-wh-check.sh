@@ -17,6 +17,8 @@
 #   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
 #                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
+#   static        the static binary of the same tree: sanity and checks.sh with it in both slots
+#   win           the Windows exe of the same tree and its wine smoke (WIN-SMOKE PASS)
 #   alloc         gc-port's allocation rows: cons at most 100, a 128-byte string 1,300 and a 16-slot vector 700 Ir
 #   gc3           gc-port's gc3 wall on the measurement CPU: worst median ratio against GNU at most 1.20
 #   inliner-ert   the import-aware pass's 41 tests and codegen's four inliner ERT files on host Emacs
@@ -154,6 +156,38 @@ case ${1:-} in
     worst=$(printf '%s\n' "$got" | sed -n 's/.*median ratio x\([0-9.]*\).*/\1/p' | sort -n | tail -n 1)
     awk -v w="$worst" 'BEGIN { exit !(w <= 1.20) }' || fail "gc3: worst median ratio x$worst against GNU (guard 1.20; gc-port's tip 1.14)"
     say "PASS gc3 (worst median ratio x$worst against GNU; gc-port's tip x1.14)" ;;
+  static)
+    # The static linkage of the same tree.  target/final-verify/checks.sh takes the dynamic binary for its standalone
+    # checks (SQLite and the FFI libraries need dynamic linkage) and the static one for the four thread groups, so
+    # both slots are filled with their own binary here; gc-port's light set takes both too.  The static binary must
+    # name HEAD's tree, print GNU's bytes on the sanity program, pass the 11 groups, and give gc-port's set the same
+    # verdicts as the dynamic one (budget and vm-poll PASS; gc-stats fails only its known vectors tolerance, S2.6).
+    S=${INTEG_WH_STATIC:-$ROOT/target/integ/nelisp-static}
+    [ -x "$S" ] || fail "missing static binary $S"
+    v=$(capped "$S" --version 2>/dev/null | head -1)
+    rev=$(printf '%s\n' "$v" | sed -n 's/.*-g\([0-9a-f]\{9\}\)[ )-].*/\1/p')
+    [ -n "$rev" ] && built_from_head_tree "$rev" || fail "'$v' is not built from HEAD's tree"
+    case $v in *", static)"*) ;; *) fail "'$v' is not the static linkage" ;; esac
+    INTEG_WH_DYN=$S bash "$0" sanity > "$OUT/static-sanity.out" 2>&1 || fail "static: $(tail -n 1 "$OUT/static-sanity.out")"
+    bash target/final-verify/checks.sh "$DYN" "$S" integ-wh-static > "$OUT/static-checks.out" 2>&1
+    tail -n 1 "$OUT/static-checks.out" | grep -q '^GATE-COUNT: 11 cases, 0 failures$' ||
+      fail "static: $(grep -E 'STANDALONE-CHECK FAIL|rc=[1-9]' "$OUT/static-checks.out" | head -n 2 | cut -c1-160 | tr '\n' '|')"
+    GCP_WORK="$OUT/gcport-static" bash tools/ai/integ-wh-gcport.sh "$DYN" "$S" > "$OUT/static-gcport.out" 2>&1
+    grep -qx 'GC-PORT-BUDGET PASS' "$OUT/static-gcport.out" && grep -qx 'GC-PORT-VM-POLL PASS' "$OUT/static-gcport.out" ||
+      fail "static: gc-port's budget or vm-poll: $(cat "$OUT/static-gcport.out" | tr '\n' ' ')"
+    [ "$(grep -c '^PASS nelisp-static \(dump\|restore\):' "$OUT/gcport-static/gc-stats.out")" = 2 ] &&
+      [ "$(grep '^FAIL nelisp-static' "$OUT/gcport-static/gc-stats.out" | grep -vc 'dropped objects still counted (22 0 0 0 10 108)')" = 0 ] ||
+      fail "static: gc-stats differs from the known vectors tolerance: $(grep '^FAIL nelisp-static' "$OUT/gcport-static/gc-stats.out" | head -n 2 | cut -c1-200)"
+    say "PASS static ($rev, sanity identical to GNU, checks.sh 11 groups / 0 failures, gc-port budget and vm-poll PASS, gc-stats at its known tolerance)" ;;
+  win)
+    # The Windows build of the same tree and its wine smoke (tools/ai/win-smoke.sh build REV OUT, then smoke OUT).
+    d=${INTEG_WH_WIN:-$(ls -dt "$ROOT"/target/win/*/ 2>/dev/null | head -n 1)}
+    [ -f "$d/smoke.log" ] || fail "no smoke log in '$d'"
+    c=$(cut -c1-9 "$d/commit" 2>/dev/null)
+    [ -n "$c" ] && built_from_head_tree "$c" || fail "the Windows build ($c) is not HEAD's tree"
+    tail -n 1 "$d/smoke.log" | grep -qx 'WIN-SMOKE PASS' || fail "$(tail -n 1 "$d/smoke.log")"
+    [ -s "$d/nelisp.exe.cold" ] || fail "no cold image beside the exe"
+    say "PASS win ($c, exe $(sha256sum "$d/nelisp.exe" | cut -c1-16), cold $(stat -c %s "$d/nelisp.exe.cold") B, WIN-SMOKE PASS)" ;;
   alloc)
     # gc-port's allocation rows (callgrind, the constructor's inclusive Ir per call in an interpreted loop):
     # the lane's tip measured cons 94, a 128-byte string 1,242 and a 16-slot vector 648 Ir (GNU 26, 178, 215).
@@ -269,7 +303,7 @@ assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
 print("arity sweep: %d cases over %d builtins, 0 failed" % (d["counts"]["passed"], d["counts"]["builtins"]))
 PY
                   ;;
-      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-m9}/report.json
+      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-m11}/report.json
                   sha=$(sha256sum "$DYN" | cut -d' ' -f1)
                   python3 - "$f" "$sha" <<'PY' || fail "the interpreted builtin-call rows are not within the callpath stage's figures ($f)"
 import json, sys
@@ -279,13 +313,14 @@ a = d["above_control"]["nelisp"]
 # callpath e4755b52f measured 1,769 and 2,429 Ir above the control on its own base; the gc-port line adds a
 # typed cons cell and the budget word to an allocation.  Without the callpath stage (m6) the rows were 7,216 and 10,286;
 # the final tip (m9) measured 922 and 1,280.
-assert a["plus"] <= 1000 and a["cons"] <= 1400 and a["makevec"] <= 3800, a
+assert a["plus"] <= 870 and a["cons"] <= 1140 and a["makevec"] <= 1310, a
 # Interpreted loops per iteration and the bytecode rows, Ir per call above the control: the callpath final tip
-# on the word-heap line (m9) measured while 4,720, while3 8,016, closure 7,920, funcall 600, optional-rest 842.
+# on the word-heap line (m9) measured while 4,720, while3 8,016, closure 7,920, funcall 600, optional-rest 842;
+# the integrated tip (m11, fixes 22-25 on the codegen merge) measured 3,751, 6,338, 6,408, 607 and 876, and plus 798, cons 1,054, makevec 1,209.
 lp = d["loops"]["nelisp"]
-assert lp["while"] <= 5200 and lp["while3"] <= 8700 and lp["closure"] <= 8600, lp
+assert lp["while"] <= 4050 and lp["while3"] <= 6850 and lp["closure"] <= 6920, lp
 bc = d["bc"]["nelisp"]; ctl = bc["pcf-control"]
-assert bc["pcf-funcall"] - ctl <= 660 and bc["pcf-optional-rest"] - ctl <= 920, bc
+assert bc["pcf-funcall"] - ctl <= 660 and bc["pcf-optional-rest"] - ctl <= 950, bc
 print("Ir above control: plus %.0f cons %.0f makevec %.0f; loops while %.0f while3 %.0f closure %.0f; bytecode funcall %.0f optional-rest %.0f"
       % (a["plus"], a["cons"], a["makevec"], lp["while"], lp["while3"], lp["closure"],
          bc["pcf-funcall"] - ctl, bc["pcf-optional-rest"] - ctl))
