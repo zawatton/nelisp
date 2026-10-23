@@ -1,0 +1,11 @@
+# Code that belongs to the other lane (eval/integ-wh-20261022-m12): the collector's string-area handling and
+# make-string.  This lane (decision item A) must not change, add or remove any of these defuns or dispatch
+# entries.  A marker change the symbol arm needs belongs in nl_gc_mark_symbol_slots and is said so in its commit.
+nl_gc_conserv_*
+nl_gc_mark_string_word
+nl_gc_mark_legacy_slot
+nl_string_*
+nl_sweep_strings
+nl_compact_small_strings
+bf_make_string*
+lit:make-string

@@ -22,11 +22,13 @@ gen='(progn
   (princ "SCALE-DUMPED\n"))'
 run() {  # run LABEL FILE_FOR_STDOUT ARGS...
   local label=$1; shift
+  local t0; t0=$(date +%s.%N)
   (ulimit -v 8388608; timeout 900 "$@" > "$W/$label.out" 2> "$W/$label.err")
   local rc=$?
+  local secs; secs=$(LC_ALL=C awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN { printf "%.2f", b - a }')
   # --load echoes the form's value after the script's own output: a lone quote closes it.
   local last; last=$(grep -v '^"*$' "$W/$label.out" | tail -n 1)
-  echo "$label rc=$rc stderr=$(wc -c < "$W/$label.err")B: $last"
+  echo "$label rc=$rc stderr=$(wc -c < "$W/$label.err")B ${secs}s: $last"
   [ $rc = 0 ] && [ ! -s "$W/$label.err" ] || fail=1
   printf '%s' "$last" | grep -q 'PASS\|SCALE-DUMPED' || fail=1
 }
