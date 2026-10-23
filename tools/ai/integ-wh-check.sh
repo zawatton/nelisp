@@ -5,7 +5,7 @@
 # /usr/local/bin/emacs (GNU_EMACS overrides).  Every NeLisp and GNU run is capped
 # at 8 GiB of address space.  Exit 0 iff the check passes.
 #
-#   merged NAME   codegen-wh | base | strings | hashtab | f-final | gc-port | callpath: the lane
+#   merged NAME   codegen-wh | base | strings | hashtab | f-final | gc-port | callpath | callpath-final: the lane
 #                 tip is the second
 #                 parent of a first-parent merge commit between batch F and HEAD
 #   hygiene       no conflict markers in tracked files; every Elisp file listed in
@@ -14,6 +14,8 @@
 #   invariants    the pinned conflict points: the root-evidence node bound agrees in
 #                 its three files, the keymap extraction list is intact, and the
 #                 bytecode lean-event test reads the WORD tag, not a header
+#   constants     no unrouted write to GNU's six C-level constants (most-positive-fixnum, most-negative-fixnum,
+#                 enable-multibyte-characters, font-weight/slant/width-table): tools/ai/integ-wh-const-writes.el
 #   ns            host-Emacs ns-inventory: no unpinned collision beyond 1290
 #   codegen-ert   the AOT compiler, codegen, S5 lowering, alignment, artifact and linker
 #                 ERT suites on host Emacs
@@ -55,7 +57,8 @@ case ${1:-} in
       f-final)    rev=b994d7227 ;;
       gc-port)    rev=7b8916b7f ;;
       callpath)   rev=e4755b52f ;;
-      *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath" ;;
+      callpath-final) rev=82e68b055 ;;
+      *) fail "usage: merged codegen-wh|base|strings|hashtab|f-final|gc-port|callpath|callpath-final" ;;
     esac
     git merge-base --is-ancestor $rev HEAD || fail "$2: $rev is not an ancestor of HEAD"
     git log --first-parent --merges --format='%P' "$BASE"..HEAD | awk '{print $2}' | grep -q "^$rev" ||
@@ -97,7 +100,23 @@ case ${1:-} in
     [ -n "$body" ] || fail "wf_bytecode_w_lean_event_p is missing"
     printf '%s\n' "$body" | grep -q -E 'ptr-read-u64|heap-read-u64' && fail "the lean-event test still reads a header"
     printf '%s\n' "$body" | grep -q -E 'nl_val_tag|sexp-tag' || fail "the lean-event test does not read the WORD tag"
-    say "PASS invariants (node bound$bounds, one keymap list, lean-event reads the tag)" ;;
+    # The static symbol ids are positions: &optional and &rest stay the last two names of the extras
+    # list (GNU's Qand_optional and Qand_rest), so no id is renumbered by a merge that adds names before them.
+    ext=$(sed -n '/^(defconst nelisp-standalone--static-symbol-extras/,/^  "Static names beyond/p' scripts/nelisp-standalone-build.el)
+    printf '%s\n' "$ext" | grep -q -x '    "&optional" "&rest")' ||
+      fail "&optional and &rest are not the last two names of nelisp-standalone--static-symbol-extras"
+    say "PASS invariants (node bound$bounds, one keymap list, lean-event reads the tag, &optional and &rest last)" ;;
+  constants)
+    # GNU's six C-level constants refuse writes (callpath 467c73b19).  The scan reads every Elisp file of the
+    # runtime, the staged and vendored GNU libraries, the packages and the tests with the real reader; a
+    # write site must be in tools/ai/integ-wh-const-writes.allow, and no file may be unreadable.
+    capped timeout 590 "$GNU" -Q --batch -l tools/ai/integ-wh-const-writes.el -- scripts lisp src vendor/staged-emacs-lisp \
+      vendor/emacs-lisp vendor/emacs-lisp-api packages standalone-compat nelisp-emacs-lib test > "$OUT/constants.log" 2>&1
+    rc=$?
+    last=$(tail -n 1 "$OUT/constants.log")
+    [ $rc = 0 ] || fail "constants: rc=$rc: $(grep -v '^SITE allowed' "$OUT/constants.log" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
+    case $last in *" 0 unreadable") ;; *) fail "constants: $last" ;; esac
+    say "PASS constants ($last)" ;;
   ns)
     bash tools/ai/batch-f-check.sh ns ;;
   codegen-ert)
@@ -190,7 +209,7 @@ assert d["binary"]["sha256"] == sys.argv[2], "report is for another binary"
 print("arity sweep: %d cases over %d builtins, 0 failed" % (d["counts"]["passed"], d["counts"]["builtins"]))
 PY
                   ;;
-      evalrows)   f=target/callpath-perf/evalrows/m7f/report.json
+      evalrows)   f=target/callpath-perf/evalrows/${EVALROWS_TAG:-m9}/report.json
                   sha=$(sha256sum "$DYN" | cut -d' ' -f1)
                   python3 - "$f" "$sha" <<'PY' || fail "the interpreted builtin-call rows are not within the callpath stage's figures ($f)"
 import json, sys

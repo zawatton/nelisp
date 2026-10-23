@@ -1,0 +1,13 @@
+# Sites integ-wh-const-writes.el may report (an Emacs regexp each, matched against "file: label: form").
+# The writer GNU's C code has (bset_enable_multibyte_characters): the runtime's counterpart lifts the
+# constant mark around its own store.
+^scripts/nelisp-stdlib-prelude\.el: defun nelisp--bset-enable-multibyte-characters: 
+# The fixnum limits are defined under (unless (boundp ...)) before the six constants are marked
+# (set-constant loop in the prelude), and in the host-side stdlib, where they are already bound.
+^scripts/nelisp-stdlib-prelude\.el: defconst most-\(positive\|negative\)-fixnum: 
+^lisp/nelisp-stdlib\.el: defconst most-\(positive\|negative\)-fixnum: 
+# The callpath lane's own tests of the refusal (setting-constant) and the variable-alias corpus, which
+# aliases a fresh symbol to enable-multibyte-characters as the BASE variable (GNU allows it).
+^test/standalone-bset-multibyte-check\.el: 
+^test/standalone-eval-call-check\.el: 
+^test/perf/prim-alias-extra\.el: 
