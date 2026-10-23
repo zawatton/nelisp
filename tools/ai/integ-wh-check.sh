@@ -42,7 +42,8 @@ mkdir -p "$TMPDIR" "$XDG_CACHE_HOME"
 BASE=e98f397f7      # batch F (eval/integ-20261022f), the parent of this dry run
 
 say() { echo "INTEG-WH $*"; }
-fail() { say "FAIL: $*"; exit 1; }
+CHECK=${1:-}${2:+ $2}
+fail() { say "FAIL: $*"; printf '%s [%s] %s\n' "$(date +%T)" "$CHECK" "$*" >> "$OUT/fail.log" 2>/dev/null; exit 1; }
 capped() { (ulimit -v 8388608; exec "$@"); }
 # The binary may predate HEAD only by commits to this dry run's own files.
 built_from_head_tree() {  # built_from_head_tree REV
@@ -169,7 +170,8 @@ case ${1:-} in
     [ -n "$rev" ] && built_from_head_tree "$rev" || fail "'$v' is not built from HEAD's tree"
     case $v in *", static)"*) ;; *) fail "'$v' is not the static linkage" ;; esac
     INTEG_WH_DYN=$S bash "$0" sanity > "$OUT/static-sanity.out" 2>&1 || fail "static: $(tail -n 1 "$OUT/static-sanity.out")"
-    bash target/final-verify/checks.sh "$DYN" "$S" integ-wh-static > "$OUT/static-checks.out" 2>&1
+    # The meter exports LC_ALL=C; the standalone checks compare printed non-ASCII text with GNU's, so give them a UTF-8 locale.
+    env LC_ALL=C.UTF-8 bash target/final-verify/checks.sh "$DYN" "$S" integ-wh-static > "$OUT/static-checks.out" 2>&1
     tail -n 1 "$OUT/static-checks.out" | grep -q '^GATE-COUNT: 11 cases, 0 failures$' ||
       fail "static: $(grep -E 'STANDALONE-CHECK FAIL|rc=[1-9]' "$OUT/static-checks.out" | head -n 2 | cut -c1-160 | tr '\n' '|')"
     GCP_WORK="$OUT/gcport-static" bash tools/ai/integ-wh-gcport.sh "$DYN" "$S" > "$OUT/static-gcport.out" 2>&1
