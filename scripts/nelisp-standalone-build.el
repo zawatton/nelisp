@@ -20071,7 +20071,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
              (n4 (if (>= n4d 32768) 0 1))
              (nslots (+ stk 7))
              (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
-             (next (+ top (+ 32 (logand (+ (* nslots 8) 31) -32))))
+             (next (+ top (logand (+ (shl nslots 3) 63) -32)))
              (fp2 0))
         (seq
          ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
@@ -20528,7 +20528,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                     ;; other cell contents take the ordinary call.
                                                     (let* ((k (logand (ptr-read-u8 fw -6) 63))
                                                            (func (if (= k 17) fw
-                                                                   (if (= k 4) (ptr-read-u64 (- fw 6) 24) 0))))
+                                                                   (if (= k 4) (ptr-read-u64 fw 18) 0))))
                                                       (if (if (= k 17) 0
                                                             (if (< func 4096) 1
                                                               (if (/= (logand func 7) 6) 1
@@ -20558,7 +20558,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                                          (n4 (if (>= n4d 32768) 0 1))
                                                          (nslots (+ stk 7))
                                                          (top (heap-read-u64 (data-addr nl_rootstack_top) 0))
-                                                         (next (+ top (+ 32 (logand (+ (* nslots 8) 31) -32))))
+                                                         (next (+ top (logand (+ (shl nslots 3) 63) -32)))
                                                          (fp2 0))
                                                     (seq
                                                      ;; record_in_backtrace (bytecode.c:735-750): the callee, its arguments
@@ -20910,7 +20910,7 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                               (state (heap-read-u64 env 176)))
                                          (if (if (= n4 1)
                                                  (/= (heap-read-u8
-                                                      (+ state (+ 64 (shl (- (heap-read-u64 state 0) 1) 6)))
+                                                      (+ state (shl (heap-read-u64 state 0) 6))
                                                       18)
                                                      0)
                                                0)
@@ -20920,15 +20920,14 @@ baked build's own `<'/`>'/`=' arms need it too.")
                                            ;; pc, top, code and constants the loop takes from it.
                                            (let* ((fi (sar packed 1))
                                                   (caller (sar (ptr-read-u64 foot 0) 2))
-                                                  (ev (+ env 96))
-                                                  (nt (- mem 32)))
+                  (nt (- mem 32)))
                                              (seq
                                               (ptr-write-u64 caller (* fi 8)
                                                              (heap-read-u64 mem (- (* sp 8) 8)))
                                               (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
                                                   (ptr-write-u64 (data-addr nl_rootstack_top) 0 nt)
                                                 (nl_root_release env nt))
-                                              (ptr-write-u64 ev 0 (- (ptr-read-u64 ev 0) 1))
+                                              (ptr-write-u64 env 96 (- (ptr-read-u64 env 96) 1))
                                               (if (= n4 1)
                                                   (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
                                                 0)
