@@ -12089,7 +12089,8 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (overlays nil)
   (narrow-start nil)
   (narrow-end nil)
-  (text-properties nil))       ; list of (START END PROP-PLIST) intervals
+  (text-properties nil)        ; list of (START END PROP-PLIST) intervals
+  (tp-tail nil))               ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make-plain)
@@ -12580,6 +12581,61 @@ property list at 1-based position AT."
           (push (list (+ at (nth 0 iv)) (+ at (nth 1 iv)) (copy-sequence (nth 2 iv))) head))
         (setf (nelisp-buffer-text-properties b) (nconc (nreverse head) after tail))))))
 
+;; GNU keeps a buffer's intervals in a balanced tree whose nodes carry lengths, so offset_intervals and
+;; graft_intervals_into_buffer find the insertion point and shift what follows in O(log n).  The list here holds absolute
+;; positions, so a general insertion still walks it.  The case that matters most is text added after every interval,
+;; i.e. at the end of the buffer (a buffer built by successive inserts): then nothing shifts and the grafted intervals
+;; follow the last one, so the insertion needs the last cons and no walk.  GNU does not merge neighbours with equal
+;; plists here (two propertized inserts give two intervals), and neither does this.
+(defun nelisp-buffer--tp-last (b)
+  "Return the last cons of B's interval list, or nil when B has no intervals.
+The cons is remembered in B's `tp-tail' slot as (HEAD . LAST) and trusted while HEAD is still the first cons of
+the list and LAST still has no successor.  A writer that stores a new list (a rebuild, a property function,
+`erase-buffer', an indirect buffer's publication) fails the first test; one that appends after LAST in place, other
+than `nelisp-buffer--tp-append', which refreshes the pair, fails the second; the list is then walked once.  What this
+relies on: nothing removes a tail cons from the list in place while keeping the list's first cons.  The insert and
+delete passes only move positions with `setcar' on the intervals, and nothing else in the prelude or the library
+cuts the list."
+  (let ((list (nelisp-buffer-text-properties b)))
+    (when list
+      (let ((cache (nelisp-buffer-tp-tail b)))
+        (if (and (consp cache) (eq (car cache) list) (null (cdr (cdr cache))))
+            (cdr cache)
+          (let ((last list))
+            (while (cdr last) (setq last (cdr last)))
+            (setf (nelisp-buffer-tp-tail b) (cons list last))
+            last))))))
+
+(defun nelisp-buffer--tp-append (b at text last)
+  "Append TEXT's intervals, shifted to 1-based AT, after the list cons LAST of B's intervals.
+LAST is nil when B has none.  The result is what `nelisp-buffer--graft-string-properties' builds when AT is at or
+after the end of every interval."
+  (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil)
+  (let (new)
+    (dolist (iv (gethash text nelisp--tp-string-properties))
+      (push (list (+ at (nth 0 iv)) (+ at (nth 1 iv)) (copy-sequence (nth 2 iv))) new))
+    (setq new (nreverse new))
+    (let ((end new))
+      (while (cdr end) (setq end (cdr end)))
+      (if last
+          (setcdr last new)
+        (setf (nelisp-buffer-text-properties b) new))
+      (setf (nelisp-buffer-tp-tail b) (cons (nelisp-buffer-text-properties b) end)))))
+
+(defun nelisp-buffer--tp-after-insert (b at n text)
+  "Update B's intervals for the N characters of TEXT just inserted at 1-based AT.
+First the intervals at or after AT move (GNU offset_intervals), then TEXT's own intervals are grafted in."
+  (let* ((list (nelisp-buffer-text-properties b))
+         (last (and list (nelisp-buffer--tp-last b))))
+    (if (or (null list)
+            (let ((iv (car last)))
+              (and (< (nth 0 iv) (nth 1 iv)) (<= (nth 1 iv) at))))
+        (when (gethash text nelisp--tp-string-properties)
+          (nelisp-buffer--tp-append b at text last))
+      (nelisp-buffer--shift-text-properties-on-insert b at n)
+      (when (gethash text nelisp--tp-string-properties)
+        (nelisp-buffer--graft-string-properties b at text)))))
+
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
 pending `goto-char' first (see `nelisp-buffer--settle'): this is the
@@ -12603,10 +12659,7 @@ point, since it appends TEXT straight onto it."
         (nelisp-buffer--shift-markers-on-insert b at n))
       (when (nelisp-buffer-overlays b)
         (nelisp-buffer--shift-overlays-on-insert b at n))
-      (when (nelisp-buffer-text-properties b)
-        (nelisp-buffer--shift-text-properties-on-insert b at n))
-      (when (gethash text nelisp--tp-string-properties)
-        (nelisp-buffer--graft-string-properties b at text))))
+      (nelisp-buffer--tp-after-insert b at n text)))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
@@ -13096,8 +13149,18 @@ calls `copy_intervals_to_string'); NEWSTRING must be a fresh string not
       (let ((s (max (nth 0 iv) start)) (e (min (nth 1 iv) end)))
         (when (< s e)
           (push (list (- s start) (- e start) (nth 2 iv)) out))))
-    (when out
-      (nelisp--tp-set-intervals newstring (nelisp--tp-merge out)))))
+    ;; GNU copy_intervals keeps every interval of the range, so two neighbours with equal plists stay two.
+    (setq out (nreverse out))
+    (let ((l out) (sorted t))
+      (while (and sorted (cdr l))
+        (when (> (nth 0 (car l)) (nth 0 (cadr l))) (setq sorted nil))
+        (setq l (cdr l)))
+      (unless sorted
+        (setq out (sort out (lambda (a b) (< (nth 0 a) (nth 0 b)))))))
+    (let (kept)
+      (dolist (iv out) (when (nth 2 iv) (push iv kept)))
+      (when kept
+        (nelisp--tp-set-intervals newstring (nreverse kept))))))
 
 (defun nelisp-narrow-to-region (start end &optional buf)
   "Restrict visible range of BUF to [START, END]."
@@ -13621,9 +13684,7 @@ point advances past TEXT instead of consulting its own
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
       (nelisp-buffer--shift-overlays-on-insert b at n)
-      (nelisp-buffer--shift-text-properties-on-insert b at n)
-      (when (gethash text nelisp--tp-string-properties)
-        (nelisp-buffer--graft-string-properties b at text)))
+      (nelisp-buffer--tp-after-insert b at n text))
     nil))
 (unless (fboundp 'insert-before-markers)
   (defun insert-before-markers (&rest args)

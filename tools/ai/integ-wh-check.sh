@@ -21,6 +21,8 @@
 #   string-repr   string representation across conversions, constructors, mutators, containers and file round trips, against GNU
 #   no-props      the -no-properties producers, buffer-level properties of inserted strings, and the cost of propertized inserts
 #   gc-string-area  the conservative scan and the string areas: a header word marks its string, an sdata word names none
+#   interval-shape  the interval shape of a buffer built by propertized inserts (neighbours with equal plists stay apart), against GNU
+#   insert-scaling  a run of propertized inserts at the end of a buffer costs the same per insert at 200 and at 3,200 (doublings at most x2.6)
 #   reader-labels #N= labels inside and across byte-code and interpreted closure objects, against GNU
 #   make-string-limits  make-string beyond the size limits: GNU's string_overflow error, no crash
 #   gc-builders   the string builders under a Lisp callback that allocates, normally and with a collection at every safepoint
@@ -264,6 +266,31 @@ PYEOF
     tail -n 1 "$OUT/gc-string-area.out" | grep -qx 'GC-STRING-AREA PASS' ||
       fail "$(grep -E '^(FAIL|GC-STRING-AREA)' "$OUT/gc-string-area.out" | head -n 3 | cut -c1-160 | tr '\n' '|')"
     say "PASS gc-string-area ($(grep -c '^ok' "$OUT/gc-string-area.out") checks)" ;;
+  interval-shape)
+    # GNU keeps two neighbouring intervals with equal plists apart (graft_intervals_into_buffer does not merge, copy_intervals keeps
+    # every interval of the range): tools/ai/integ-wh-interval-shape.el against GNU 31.1, with the cases that append after the last
+    # interval and the ones that make the remembered last cons stale (delete, erase, property change, insert before or inside).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/interval-shape; rm -rf "$d"; mkdir -p "$d"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-interval-shape.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-interval-shape.el > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-120 | tr '\n' '|')"
+    say "PASS interval-shape ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  insert-scaling)
+    # A buffer built by N propertized inserts at its end has N intervals and each insert must not walk them: doubling N from 200 to
+    # 3,200 at most x2.6 in the time, in two series (tools/ai/integ-wh-insert-scaling.el; the walk measured x3.0 to x3.8).
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    if command -v taskset > /dev/null; then pin="taskset -c ${GCP_CPU:-11}"; else pin=; fi
+    capped env LC_ALL=C.UTF-8 $pin timeout 280 "$DYN" -l tools/ai/integ-wh-insert-scaling.el > "$OUT/insert-scaling.out" 2> "$OUT/insert-scaling.err"
+    last=$(tail -n 1 "$OUT/insert-scaling.out")
+    case $last in
+      "INSERT-SCALING PASS "*) say "PASS insert-scaling (${last#INSERT-SCALING PASS })" ;;
+      *) fail "insert-scaling: $last $(head -c 160 "$OUT/insert-scaling.err" | tr '\n' ' ')" ;;
+    esac ;;
   reader-labels)
     # #N= labels inside and across byte-code and interpreted closure objects: GNU's substitute_object_recurse walks their slots
     # (tools/ai/integ-wh-reader-labels.el against GNU 31.1).
