@@ -16189,6 +16189,15 @@ leave symbols unresolved at link time."
          (nl_alloc_symbol sbuf 11 sig-tag)
          (nl_exit_signal_w sig-tag 3)
          1)))
+    ;; GNU alloc.c string_overflow: error ("Maximum string size exceeded").
+    (defun bf_signal_string_overflow ()
+      (let* ((buf (alloc-bytes 32 1)))
+        (seq
+         (ptr-write-u64 buf 0 2336652894456537421)
+         (ptr-write-u64 buf 8 8295744237529625715)
+         (ptr-write-u64 buf 16 7305815396255627881)
+         (ptr-write-u64 buf 24 1684366437)
+         (nl_signal_error_literal buf 28))))
     ;; Doc 215 word-transport helpers (lane M2).  A WORD is a fixnum
     ;; (n<<2)|1, nil 3, t 7, or a pointer WORD: a legacy physical view or
     ;; a canonical tagged heap pointer.
@@ -23918,12 +23927,17 @@ baked build's own `<'/`>'/`=' arms need it too.")
                     (if (< cp 2048) 2
                       (if (< cp 65536) 3
                         (if (< cp 2097152) 4 5))))))
-             (bytes (* w n))
-             (word (nl_string_new 0 bytes unibyte)))
+             (word 0))
+        ;; GNU allocate_string_data: a string of more than STRING_BYTES_MAX = most-positive-fixnum bytes is
+        ;; `string_overflow' before anything is allocated (Fmake_string checks len * count with ckd_mul first).
+        ;; The product is tested without being formed: 5 * (2^61 - 1) does not fit a word.
+        (if (> n (/ 2305843009213693951 w)) (nl_abi_fail (bf_signal_string_overflow) 0)
+        (let* ((bytes (* w n)))
+        (setq word (nl_string_new 0 bytes unibyte))
         (if (= word 0) (nl_abi_fail (bf_signal_memory_full) 0)
           (seq (if (= bytes 0) 0 (nl_u8_fill (heap-read-u64 (- word 4) 24) n cp))
                (if (= unibyte 1) 0 (ptr-write-u64 (- word 4) 0 n))
-               word))))
+               word))))))
     (defun m5_make_builder (slot cap unibyte)
       (if (= unibyte 1)
           (nl_alloc_unibyte_mut_str cap slot)

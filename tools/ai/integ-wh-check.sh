@@ -22,6 +22,7 @@
 #   no-props      the -no-properties producers, buffer-level properties of inserted strings, and the cost of propertized inserts
 #   gc-string-area  the conservative scan and the string areas: a header word marks its string, an sdata word names none
 #   reader-labels #N= labels inside and across byte-code and interpreted closure objects, against GNU
+#   make-string-limits  make-string beyond the size limits: GNU's string_overflow error, no crash
 #   raw-literal   string literals with raw-byte escapes read unibyte, as GNU reads them (byte-code strings)
 #   view-image    string views held by containers survive an image dump and restore (the census's SIGSEGV)
 #   static        the static binary of the same tree: sanity and checks.sh with it in both slots
@@ -274,6 +275,20 @@ PYEOF
     cmp -s "$d/gnu.out" "$d/dyn.out" ||
       fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-120 | tr '\n' '|')"
     say "PASS reader-labels ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
+  make-string-limits)
+    # make-string at and beyond the size limits (tools/ai/integ-wh-make-string-limits.el against GNU 31.1): a string of more
+    # than most-positive-fixnum bytes is (error "Maximum string size exceeded") before anything is allocated; a size that
+    # passes the limit and cannot be allocated is an out-of-memory error; no crash.
+    [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
+    d=$OUT/make-string-limits; rm -rf "$d"; mkdir -p "$d"
+    capped env LC_ALL=C.UTF-8 LANG= LANGUAGE= timeout 300 "$GNU" -Q --batch -l tools/ai/integ-wh-make-string-limits.el \
+      > "$d/gnu.out" 2> "$d/gnu.err" || fail "GNU exited $?"
+    capped env LC_ALL=C.UTF-8 timeout 300 "$DYN" -l tools/ai/integ-wh-make-string-limits.el > "$d/dyn.out" 2> "$d/dyn.err"
+    rc=$?
+    [ $rc = 0 ] || fail "dynamic binary exited $rc: $(head -c 160 "$d/dyn.err" | tr '\n' ' ')"
+    cmp -s "$d/gnu.out" "$d/dyn.out" ||
+      fail "stdout differs from GNU: $(diff -a "$d/gnu.out" "$d/dyn.out" | grep -a '^[<>]' | head -n 2 | cut -c1-120 | tr '\n' '|')"
+    say "PASS make-string-limits ($(wc -l < "$d/dyn.out") lines identical to GNU)" ;;
   raw-literal)
     # String literals with raw-byte escapes read as GNU reads them, unibyte: the byte-code strings of an .elc.
     [ -x "$DYN" ] || fail "missing dynamic binary $DYN"
