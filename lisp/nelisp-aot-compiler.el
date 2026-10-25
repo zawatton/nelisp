@@ -27661,6 +27661,20 @@ Do not call a helper or change RSP/RBP.  Code size is constant at 26 bytes."
                           collect (logand (ash slots (- shift)) 255))
                         '(#xfc #xf3 #x48 #xab #x4c #x89 #xd7 #x4c #x89 #xd9))))))
 
+(defun nelisp-aot-compiler--win64-reserve-stack-frame (buf bytes)
+  "Reserve BYTES on RSP, touching each Windows guard page in BUF.
+Large unprobed frames can jump below the committed stack on cold boot.
+Use inline probes rather than a CRT __chkstk dependency; TEST changes only
+flags, preserving every incoming GP/XMM argument and the frame layout."
+  (if (< bytes 4096)
+      (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp bytes)
+    (while (> bytes 0)
+      (let ((step (min bytes 4096)))
+        (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp step)
+        ;; test byte ptr [rsp], 0: read the page before moving below it.
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #xf6 #x04 #x24 #x00))
+        (setq bytes (- bytes step))))))
+
 (defun nelisp-aot-compiler--emit-defun (defun-ir buf)
   "Emit a single function definition into BUF.
 The function's label is defined at the entry point; the prologue
@@ -27934,10 +27948,9 @@ return reg, untouched by epilogue)."
               (let* ((arity (length param-regs))
                      (frame-bytes (* 8 param-slot-rounded))
                      (win64-arg-regs nelisp-asm-x86_64--abi-win64-arg-regs))
-                ;; Allocate the spill frame in one shot (= deterministic
-                ;; byte count regardless of arity, matching pass-1 = pass-2).
+                ;; Probe large spill frames in both deterministic passes.
                 (when (> arity 0)
-                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                  (nelisp-aot-compiler--win64-reserve-stack-frame buf frame-bytes))
                 (let ((i 0))
                   (dolist (preg param-regs)
                     (let ((disp (- (* 8 (1+ i)))))
@@ -27959,7 +27972,7 @@ return reg, untouched by epilogue)."
                      (frame-bytes (* 8 param-slot-rounded))
                      (slot-idx -1))
                 (when (> arity 0)
-                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                  (nelisp-aot-compiler--win64-reserve-stack-frame buf frame-bytes))
                 (dolist (xreg param-regs)
                   (setq slot-idx (1+ slot-idx))
                   (let ((dst-disp (- (* 8 (1+ slot-idx)))))
@@ -27979,7 +27992,7 @@ return reg, untouched by epilogue)."
                      (frame-bytes (* 8 param-slot-rounded))
                      (slot-idx -1))
                 (when (> arity 0)
-                  (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp frame-bytes))
+                  (nelisp-aot-compiler--win64-reserve-stack-frame buf frame-bytes))
                 (cl-mapc
                  (lambda (preg cls)
                    (setq slot-idx (1+ slot-idx))
@@ -28009,7 +28022,7 @@ return reg, untouched by epilogue)."
             ;; callee-save slots for RBX/RDI/RSI plus one alignment pad
             ;; below every public frame slot.
             (when (> rt-slot-rounded 0)
-              (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp (* 8 rt-slot-rounded)))
+              (nelisp-aot-compiler--win64-reserve-stack-frame buf (* 8 rt-slot-rounded)))
             (nelisp-asm-x86_64--sub-imm32-inline buf 'rsp 32)
             (nelisp-asm-x86_64-mov-mem-reg-disp8
              buf 'rbp (- (* 8 (1+ win64-callee-save-slot-base))) 'rbx)

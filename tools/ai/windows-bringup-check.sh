@@ -10,8 +10,8 @@ S1|S2|S3|S4|S5|run-S4|wine-source|wine-cold)
   export TMPDIR="$PWD/target/tmp"
   mkdir -p "$TMPDIR"
   ;;
-native) ;;
-*) echo 'usage: windows-bringup-check.sh S1|S2|S3|S4|S5|run-S4|native|wine-source|wine-cold' >&2; exit 2 ;;
+native|native-check) ;;
+*) echo 'usage: windows-bringup-check.sh S1|S2|S3|S4|S5|run-S4|native|native-check|wine-source|wine-cold' >&2; exit 2 ;;
 esac
 case "$1" in
 wine-source)
@@ -71,13 +71,16 @@ EOF
   git ls-files -z '*.el' '*.eld' '*.py' '*.sh' | xargs -0 sha256sum >>target/codex/S4.sha256
   echo PASS >target/codex/S4.status
   ;;
-native)
+native|native-check)
   # Run in MSYS2 on Windows. Keep S6 pending until the coordinator records it.
   mkdir -p target/tmp
   export TMPDIR="$PWD/target/tmp"
   # Shipping images contain the post-prelude heap; optional compiler libraries
   # must remain lazy. Compiler-prepared images are a separate development mode.
-  NELISP_STANDALONE_NATIVE_COMPILER_COLD=0 NELISP_STANDALONE_COLD_IMAGE=1 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+  # native-check reuses the existing binary/image for a rebuild-free loop.
+  if test "$1" = native; then
+    NELISP_STANDALONE_NATIVE_COMPILER_COLD=0 NELISP_STANDALONE_COLD_IMAGE=1 make standalone-reader NELISP_STANDALONE_TARGET=windows-x86_64
+  fi
   test -s target/nelisp.exe.cold
   target/nelisp.exe --eval '(+ 1 2)' >target/codex/native-add.out
   grep -qx 3 target/codex/native-add.out

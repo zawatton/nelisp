@@ -1,0 +1,39 @@
+#+TITLE: GNU speed review branch native Windows update
+
+* S1 Native Windows acceptance
+
+** S1.1 Requested review commits are checked out
+#+NOTE: Follow-up commits are allowed after the user's explicit commit-and-push request; both requested review commits must remain ancestors.
+cmd: git merge-base --is-ancestor b0b375455 HEAD && git merge-base --is-ancestor bfc3e6442 HEAD
+
+** S1.2 Native Windows build and bringup pass
+#+NOTE: Original cold execution failed in rx because large Win64 frames skipped guard pages. Fixed native build and bringup now pass at the actual checkout root; full build plus checks took 775 seconds. Original failure is preserved in native-before-stack-probe.log and nelisp.exe.cold.failed. Build-host Emacs uses a separate 64 MiB-stack copy; shipping PE StackCommit remains 1 MiB.
+cmd: test "$(cat target/gnu-speed-win-20261025/native.exit)" = 0 && grep -qx NATIVE-WINDOWS-W6-AUTO-COLD-PASS target/gnu-speed-win-20261025/native.log
+evidence: target/gnu-speed-win-20261025/native.log sha256=b90e85889c5672f7edbc5c5981bf96003493a9a85afbee9b3bc1c5ec3fba985e
+
+** S1.3 Built executable passes GNU speed acceptance end to end
+#+NOTE: Adjacent cold image is restored and enabled. The requested command passes with cold startup; native plain-start median is 0.0494249 seconds, explicit-cold median 0.0492668 seconds.
+cmd: test "$(cat target/gnu-speed-win-20261025/gnu-speed-final.exit)" = 0 && grep -qx 'closurevm: PASS (24)' target/gnu-speed-win-20261025/gnu-speed-final.log && grep -qx 'switch corpus: PASS (equals GNU)' target/gnu-speed-win-20261025/gnu-speed-final.log && grep -qx 'features: PASS (8 lines equal GNU)' target/gnu-speed-win-20261025/gnu-speed-final.log
+evidence: target/nelisp.exe sha256=92d1ad4cf4f56e063d2c76b588630a56acf5e7c83246fe96fa66c93eba052dc5
+evidence: target/gnu-speed-win-20261025/gnu-speed-final.log sha256=ea25126b882da255a119e493b660ff7cd9efcc1fc903434d55b14138f3cc7036
+
+* S2 Repair cold-image execution
+
+** S2.1 Focused regression distinguishes original failure from repaired cold execution
+cmd: test "$(tr -d '\r\n' < target/gnu-speed-win-20261025/worker-validation/probe-test-red.exit)" = 1 && grep -q 'FAILED.*nelisp-win64-stack-probe/large-runtime-frame' target/gnu-speed-win-20261025/worker-validation/probe-test-red.log && grep -q '3 results as expected, 0 unexpected' target/gnu-speed-win-20261025/worker-validation/probe-test-green.log && grep -q nl_cold_overwrite_globals target/gnu-speed-win-20261025/worker-validation/cold-proof.log
+cmd: grep -q 'Ran 33 tests, 33 results as expected, 0 unexpected' target/gnu-speed-win-20261025/integrated-unit.log
+evidence: lisp/nelisp-aot-compiler.el sha256=5a0483d3a1febc5e19b11865f996d9732847a27ef1599d84cc3381c38978c510
+evidence: test/nelisp-win64-stack-probe-test.el sha256=ec99f8c36800dcb4b5c69b36f43a2ec1334ff7434dfafd9ab42ba445fb58138e
+evidence: target/gnu-speed-win-20261025/integrated-unit.log sha256=e0d976ff39e55466910341658ad6cd750e44cc8a848facc67b2957d2c9891a72
+
+** S2.2 Rebuild-free cold acceptance rejects a broken input and passes a repaired image
+#+NOTE: One isolated full build took 764 seconds; the unchanged native runtime checks took 4.026 seconds through native-check (768.026 seconds including that build versus 4.026 seconds without rebuilding). The original copied executable/image fails the same native-check in 1.73 seconds. This compares a build-inclusive workflow with checking existing artifacts, not compiler throughput.
+cmd: test "$(tr -d '\r\n' < target/gnu-speed-win-20261025/worker-validation/native-check-red.exit)" = 139 && grep -q 'Segmentation fault' target/gnu-speed-win-20261025/worker-validation/native-check-red.log && test "$(tr -d '\r\n' < target/gnu-speed-win-20261025/worker-validation/native-check.exit)" = 0 && grep -q NATIVE-WINDOWS-W6-AUTO-COLD-PASS target/gnu-speed-win-20261025/worker-validation/native-check.log
+evidence: tools/ai/windows-bringup-check.sh sha256=e33a318b1b171fe167b906391a850cf43f2f731723367036789e4f3b273b3a38
+
+** S2.3 Final executable passes native bringup and GNU acceptance with its adjacent cold image
+#+NOTE: Final artifacts are built at the original checkout root. Runtime load-path contains no isolated-worktree path. No fixed PE stack-commit workaround is used. Existing ns-inventory failures are unchanged; full compile still has pre-existing errors (24, no additions); legacy Windows cold ERT baseline had five failures and one skip. These broader existing failures are outside the six cold-regression acceptance criteria; the full suite was not run.
+cmd: test -s target/nelisp.exe.cold && test "$(cat target/gnu-speed-win-20261025/native.exit)" = 0 && test "$(cat target/gnu-speed-win-20261025/gnu-speed-final.exit)" = 0 && test "$(cat target/gnu-speed-win-20261025/buffer-fixed.exit)" = 0 && grep -q 'checked=21 findings=0' target/gnu-speed-win-20261025/buffer-fixed.log && test "$(cat target/gnu-speed-win-20261025/load-path.exit)" = 0 && ! grep -q nelisp-cold-review-fix target/gnu-speed-win-20261025/load-path.out && grep -q 'SizeOfStackCommit.*0000000000100000' target/gnu-speed-win-20261025/pe-stack.log
+evidence: target/nelisp.exe.cold sha256=5c9b9f1e972ebc9acaab2a0ba1de60f5b85153b4b79754e57e5bce328fb581c4
+evidence: target/gnu-speed-win-20261025/buffer-fixed.log sha256=7326ff87d6786ea1bdf35a5dae6226e285f7e61ecb133b569c60e9cae9ed89c8
+evidence: target/gnu-speed-win-20261025/load-path.out sha256=60a026d0a3751c98484ea44c1468256d111fef2b463276c689cf39d04e9a3667
