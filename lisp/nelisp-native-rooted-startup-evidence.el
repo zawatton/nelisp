@@ -48,8 +48,11 @@ NELISP_ROOT_EVIDENCE_REPORT logs the size of accepted evidence too."
          (t (error "Invalid root evidence type")))))
     (when (getenv "NELISP_ROOT_EVIDENCE_REPORT")
       (message "[root-evidence] nodes=%d depth=%d" nodes deepest))
-    (unless (and (<= nodes 81920) (<= deepest 64))
-      (error "Root evidence node/depth bound exceeded: %d nodes (bound 81920), depth %d (bound 64)"
+    ;; 98,304 (1.2 x 81,920) at the GNU-speed integration: the F1 closure grew
+    ;; to 352 (Linux) / 354 (Win64) helpers and the Win64 evidence reached
+    ;; 82,711 nodes (Linux 81,785).  Depth stays 64 (measured 6).
+    (unless (and (<= nodes 98304) (<= deepest 64))
+      (error "Root evidence node/depth bound exceeded: %d nodes (bound 98304), depth %d (bound 64)"
              nodes deepest))
     (let ((print-circle nil) (print-length nil) (print-level nil)
           (print-escape-newlines t) (print-escape-control-characters t)

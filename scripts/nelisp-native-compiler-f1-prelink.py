@@ -37,7 +37,12 @@ def prove(manifest, metadata, directory, data_owner, source_root, roots=ROOTS):
     # nl_bignum_write_w, nl_cell_box, nl_cell_pair_p, nl_cell_set_w,
     # nl_cell_word, nl_vci_scalar) with the symbol line's 311: measured 324 on
     # Linux; the closure also grows with the call-path and string work to come.
-    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=352, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
+    # Policy 384 at the GNU-speed integration (review/gnu-speed-20261025): the
+    # interp2 lane brought the Linux closure to exactly 352 (nl_eic_subr_call_w
+    # and the Subr-object interpreter path), with more direct-call and
+    # callback work landing; the text bound (655,360 B) is unchanged, and the
+    # root evidence node bound rose to 98,304 in the same change (Win64 82,711).  Measured counts are recorded in the commit.
+    result = prelink.prove(metadata, directory, roots, data_owner, max_functions=384, evaluator_boundary=("nl_apply_function", "nl_apply_function_w"))
     if digest != prelink.verify_manifest(manifest, metadata, directory, data_owner, source_root):
         raise ValueError("Constructor active build changed during proof")
     result.update(domain="nelisp-compiler-f1-prelink-v1",
