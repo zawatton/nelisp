@@ -250,7 +250,8 @@ ignores this var (= AAPCS64 only).")
 
 (defvar nelisp-aot-compiler-zero-fresh-frame-functions nil
   "Owner-selected functions whose fresh runtime slots and RBX pad start at zero.
-Only ordinary nonvariadic raw GP SysV x86_64 entries are qualified.  Explicit
+Only ordinary nonvariadic raw GP SysV x86_64 entries are qualified (register or
+stack-passed parameters).  Explicit
 selection of another entry shape fails rather than silently omitting zeroing.
 The alignment pad below the RBX save is included.  Parameter spills, parameter
 padding, saved register values and outgoing call areas are outside this policy.
@@ -27857,8 +27858,9 @@ return reg, untouched by epilogue)."
                    (eq param-class 'gp) (not variadic)
                    (not (nelisp-aot-compiler--lisp-values-p))
                    (not (nelisp-aot-compiler--ir-get defun-ir :gc-root-slots))
-                   (<= (length param-regs) 6)
-                   (not (cl-some #'consp param-regs))
+                   ;; Stack-passed parameters (consp entries) are copied into the same
+                   ;; rbp-negative spill slots before the runtime region exists, so the
+                   ;; zeroed region and the RBX pad do not depend on the parameter count.
                    (not (nelisp-aot-compiler--ir-get defun-ir :internal-entry))
                    (not (nelisp-aot-compiler--ir-get defun-ir :self-tco-raw)))
         (signal 'nelisp-aot-compiler-error

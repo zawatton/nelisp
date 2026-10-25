@@ -1,0 +1,19 @@
+#+TITLE: GNU parity: empty vectors, equal on records, aset type errors, forwarded variables (parity9)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 plus overlay (w1vec, w1leaf, w1var, parity8). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 (eql (vector) (vector)), (eq [] []) and (eql (make-vector 0 0) (make-vector 0 1)) behave as GNU (one shared zero-length vector); equal on records compares contents as GNU internal_equal; red/green
+cmd: python3 target/parity9/check.py source1
+** S1.2 (aset '(1 2) 0 0) and other non-array aset/aref targets signal wrong-type-argument arrayp with GNU data; the forwarded-variable case (wv-forwarded) in the w1var corpus matches GNU or is documented with the reason; red/green
+cmd: python3 target/parity9/check.py source2
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+cmd: python3 target/parity9/check.py build
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/parity9/check.py fixtures
+* S3 End to end
+** S3.1 The w1vec vector corpus, the parity8 47-form corpus and the w1var corpus equal GNU except documented items
+cmd: python3 target/parity9/check.py corpora
+** S3.2 No regression: paired elapsed (CPU 15) on s6-vec4, r4-aset, r5-aset-rem-defun and the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/parity9/check.py perf
+#+NOTE: Final functional corpus 41/41 equals GNU; inherited corpora w1vec 42, parity8 47, w1var 57 agree except the portable sxhash-equal integer. Fixtures weak 24/24, GNU 56/56, AFRT unchanged 24/25, buffer 21/21; two frozen full builds used (710 s and 712 s). S3.2 remains a failing cmd: initial s6-vec4 +6.88% and plain sum +6.14%, against the predeclared 2% elapsed bound. No criterion was removed or added.
+#+NOTE: Noise confirmation: identical-v11 control ratios and repeated candidate ratios are retained in target/parity9/{noise,repeat}/*/report.json. The repeat still regresses: s6-vec4 +6.87%, plain sum +7.91%, 0/7 pairs faster on both. This is consistent with a layout effect (inference), not an established cause; no third build or edits outside lane ownership were made.

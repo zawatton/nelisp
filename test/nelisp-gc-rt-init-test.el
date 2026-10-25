@@ -14,7 +14,8 @@
                    '(nelisp_apply_function_w nl_apply_builtin_w nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
                      nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w
                      nl_apply_builtin_frame_w nl_eic_argframe_call_w
-                     bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run))))
+                     bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run
+                     m5_fx_run_body))))
   (dolist (nelisp-standalone--target '(windows-x86_64 linux-aarch64 macos-aarch64))
     (should-not (nelisp-standalone--zero-fresh-frame-functions))))
 

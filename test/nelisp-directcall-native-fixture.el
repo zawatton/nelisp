@@ -42,6 +42,7 @@
                     (if (= (heap-read-u64 ,s 24) 2) 0
                       ,(nelisp-standalone--sid "builtin")) 0))
               (defun nelisp_env_lookup_function_w (a b c d) ,fn)
+              (defun nelisp_env_lookup_function_raw_w (a b c d) ,fn)
               (defun wf_bytecode_w_function (a b c d e f g) 2)
               (defun wf_bytecode_flat_path_int_cell (a) 0)
               (defun nl_ct_throw_words (a b c) 1)

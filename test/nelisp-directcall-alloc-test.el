@@ -59,6 +59,8 @@
                  ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v nda--mem)))
                  ((symbol-function 'ptr-read-u8) (lambda (p i) (gethash (+ p i) nda--bytes 0)))
                  ((symbol-function 'alloc-bytes) (lambda (n _a) (nda--alloc n)))
+                 ((symbol-function 'nl_alloc_vector)
+                  (lambda (n) (should (= n 0)) (puthash 40960 8 nda--mem) 40960))
                  ((symbol-function 'nelisp_cons_construct_w)
                   (lambda (a d _) (let ((c (nda--alloc 16)))
                                     (puthash c a nda--mem) (puthash (+ c 8) d nda--mem) (+ c 2))))
@@ -110,7 +112,8 @@
        (should (equal (nda--vec-slots (cdr r)) (list (nda--fix 1) 3 7)))
        (should (= (logand (cdr r) 7) 6)))
      (let ((r (nda--call 112 nil)))
-       (should (= (car r) 0)) (should (equal (nda--vec-slots (cdr r)) nil)))
+       (should (= (car r) 0)) (should (equal (nda--vec-slots (cdr r)) nil))
+       (should (= (cdr r) (+ 40960 6))) (should (= nda--allocs 0)))
      ;; A legacy view operand declines before any allocation.
      (let ((r (nda--call 112 (list (nda--fix 1) 4096))))
        (should (= (car r) -3)) (should (null (cdr r))) (should (= nda--allocs 0)))

@@ -3412,6 +3412,21 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
                        (logand obj 1073741823)))
      ((floatp obj) (nelisp--sxhash-string (number-to-string obj)))
      ((>= depth 3) 0)
+     ;; parity8: bool-vectors and records hash their contents, so equal
+     ;; objects still hash equally and unequal ones usually do not.
+     ((and (fboundp 'bool-vector-p) (bool-vector-p obj))
+      (let ((h 13) (k 0) (n (length obj)))
+        (while (and (< k n) (< k 64))
+          (setq h (logand (+ (* h 33) (if (aref obj k) 1 2)) 1073741823))
+          (setq k (1+ k)))
+        (logand (+ (* h 33) n) 1073741823)))
+     ((and (fboundp 'recordp) (recordp obj))
+      (let ((h 17) (k 0) (n (length obj)))
+        (while (< k (min n 8))
+          (setq h (logand (+ (* h 33) (nelisp--sxhash-walk (aref obj k) (1+ depth)))
+                          1073741823))
+          (setq k (1+ k)))
+        h))
      ((consp obj)
       (let ((h 7) (k 0) (cur obj))
         (while (and (consp cur) (< k 7))
@@ -11693,6 +11708,20 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
      ((and (floatp a) (floatp b)) (equal a b))
      ((and (integerp a) (integerp b)) (= a b))
      (t nil))))
+;; parity8: GNU fns.c Ffillarray.  Vectors, strings and bool-vectors are
+;; filled slot by slot; a char-table gets every character and its default.
+(unless (fboundp 'fillarray)
+  (defun fillarray (array item)
+    (cond
+     ((or (vectorp array) (stringp array)
+          (and (fboundp 'bool-vector-p) (bool-vector-p array)))
+      (let ((i 0) (n (length array)))
+        (while (< i n) (aset array i item) (setq i (1+ i)))))
+     ((and (fboundp 'char-table-p) (char-table-p array))
+      (set-char-table-range array t item)
+      (set-char-table-range array nil item))
+     (t (signal 'wrong-type-argument (list 'arrayp array))))
+    array))
 (unless (fboundp 'encode-coding-string)
   (defun encode-coding-string (str coding &optional _nocopy)
     (nelisp--check-string str)
@@ -14201,15 +14230,12 @@ Emacs's own default; nothing in this runtime overrides it per-buffer."))
 ;; (buffer_defaults.fill_column).  Needed by bytecomp.el's docstring-width
 ;; check (`byte-compile-docstring-length-max' comparison against
 ;; `fill-column'), reached via `(require 'compile)' at bytecomp.el load
-;; time.  Same treatment as `tab-width' just above: this runtime has no
-;; `make-local-variable'/`make-variable-buffer-local' (both void-function),
-;; so a genuinely per-buffer C variable is staged as a plain global default
-;; rather than a fake buffer-local.
+;; time.  The automatic-local provider below registers GNU's per-buffer
+;; behavior after it is available; the default remains 70.
 (unless (boundp 'fill-column)
   (defvar fill-column 70
     "Column beyond which automatic line-wrapping should happen.
-Emacs's own global default; nothing in this runtime overrides it
-per-buffer."))
+The global default is 70; assignment creates a buffer-local value."))
 
 (unless (fboundp 'current-column)
   (defun current-column ()
@@ -16654,6 +16680,11 @@ nil, matching the honest answer for every variable here.
   (defun kill-local-variable (variable)
     "No-op (there are no buffer-local values here); return VARIABLE."
     variable))
+
+;; GNU DEFVAR_PER_BUFFER gives fill-column an automatic local on assignment.
+;; A plain global here made default-value follow setq in a temporary buffer.
+(when (fboundp 'nelisp--native-env)
+  (make-variable-buffer-local 'fill-column))
 
 (unless (boundp 'delay-mode-hooks)
   (defvar delay-mode-hooks nil
@@ -24844,7 +24875,7 @@ comment above this definition for how that value was measured."))
     (setq nelisp--constants (cdr nelisp--constants))))
 
 ;; A3: native `equal' never compared vectors element-wise.  Capture native
-;; `equal' for the atom/string/number leaves and recurse over cons + vector.
+;; `equal' for the atom/string/number leaves and recurse over containers.
 (unless (fboundp 'nelisp--native-equal)
   (fset 'nelisp--native-equal '(builtin nelisp--equal-leaf)))
 (unless (fboundp 'nelisp--native-eq)
@@ -24901,6 +24932,18 @@ Hash tables compare only by identity; markers compare buffer and position."
          (eq (nelisp-marker-buffer a) (nelisp-marker-buffer b))
          (or (null (nelisp-marker-buffer a))
              (= (nelisp-marker-position a) (nelisp-marker-position b)))))
+   ;; GNU internal_equal walks a record's type slot and data slots, just
+   ;; like a vector.  Keep this in Lisp so nested containers recurse via
+   ;; the same production comparison rather than the atomic native leaf.
+   ((and (recordp a) (recordp b))
+    (let ((n (length a)) (i 0) (ok t))
+      (and (= n (length b))
+           (progn
+             (while (and ok (< i n))
+               (if (nelisp--equal-reference (aref a i) (aref b i))
+                   (setq i (1+ i))
+                 (setq ok nil)))
+             ok))))
    (t (nelisp--native-equal a b))))
 
 ;; The public builtin dispatches to this Lisp reference after native arity

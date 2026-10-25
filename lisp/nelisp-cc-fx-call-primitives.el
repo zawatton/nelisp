@@ -25,7 +25,12 @@
                             (if (= k 16) sym (nelisp_mirror_lookup_entry_owned env sym))))
                       (nelisp_mirror_lookup_entry_owned env sym))))
         (if (or (= entry 0) (= entry 3)) 0
-          (let* ((fn (nl_record_slot_word entry 1)))
+          (let* ((fn (let ((w0 (nl_record_slot_word entry 1)))
+                       ;; w2subr: a Subr object answers its legacy list.
+                       (if (= (logand w0 7) 6)
+                           (if (= (logand (heap-read-u8 (- w0 6) 0) 63) 20)
+                               (heap-read-u64 (- w0 6) 8) w0)
+                         w0))))
             (if (= (logand fn 7) 2) fn
               (if (= (wf_bytecode_w_unbound_p env fn) 1) 0
                 (if (= (m5_fx_word_cons_p fn 0) 1) fn 0)))))))

@@ -1,0 +1,19 @@
+#+TITLE: Lean backtrace record for non-leaf calls (w2bt)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 plus overlay (w1vec, w1leaf, w1var, parity8). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 nl_n4_push_words/nl_n4_finish_w write a compact fixed record (function WORD, packed argp/argc/flags, binding depth) with canonicalisation moved to the cold readers (backtrace-frame, backtrace--locals, snapshot/materialize, debugger); GC marking of records unchanged in effect; red/green
+#+NOTE: 2026-10-27 deviation: the record keeps its 64-byte layout and a canonical +0 WORD; canonicalisation is moved off the hot path into nl_n4_push_words_cold (a no-op for the hot case), not into the readers, which are unchanged. The cmd tests the outcome (no non-cold call in push_words/finish_w), not that mechanism.
+cmd: ! tools/ai/w2bt-check.sh ../resume-4943-20261024/target/integ-1027-build/dynamic/nelisp-dynamic >/dev/null && tools/ai/w2bt-check.sh target/w2bt-build/dynamic/nelisp-dynamic >/dev/null
+** S1.2 backtrace, backtrace-frame, backtrace--locals after let, debug-on-exit, max-lisp-eval-depth overflow and depth restore after throw/condition-case match the seed (and GNU where the native runtime supports it); ERT red/green plus a backtrace corpus
+#+TIMEOUT: 300
+cmd: tools/ai/w2bt-corpus-check.sh "$PWD/target/w2bt-build/dynamic/nelisp-dynamic" | grep -q 'corpus PASS'
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+cmd: tail -1 target/w2bt-build/dynamic/build.log | grep -q 'BUILD rc=0' && grep -q PRELINK_DIRECT_CLOSURE_PASS target/w2bt-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/w2bt-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && ! diff target/w2bt/seed/scripts/nelisp-standalone-build.el scripts/nelisp-standalone-build.el | grep -q 'data-blob'
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q 'weak 24/24 PASS' target/w2bt/fixtures.log && grep -q 'GNU 56/56 PASS' target/w2bt/fixtures.log && grep -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/w2bt/fixtures.log && grep -q 'buffer 21/21 PASS' target/w2bt/fixtures.log && grep -q 'features: PASS' target/w2bt/wincheck.log && grep -q 'closurevm: PASS' target/w2bt/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs the seed on r7-funcall-bc, r3-call, r7-mapc-bc and r4-aset or another non-leaf row (pmcrun2 two-N), results checked
+cmd: python3 target/w2bt/check_pmc.py >/dev/null
+** S3.2 Paired elapsed (CPU 13) on those rows plus the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/w2bt/check_paired.py >/dev/null

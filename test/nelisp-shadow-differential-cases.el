@@ -45,6 +45,14 @@
 ;;; Code:
 
 (list
+ ;; GNU's one empty vector is shared by the reader and constructors.
+ (list (eq [] []) (eql (vector) (vector))
+       (eql (make-vector 0 0) (make-vector 0 1))
+       (eq [] (vector)))
+ (equal (record 'parity9 '(1 2) (record 'inner 3))
+        (record 'parity9 '(1 2) (record 'inner 3)))
+ (condition-case err (aset '(1 2) 0 0) (wrong-type-argument err))
+ (condition-case err (aref 5 0) (wrong-type-argument err))
  ;; Bytecode cdr returns the contained WORD, preserving the tail's identity.
  ;; An address of the cdr slot is not a Lisp value and breaks the next car.
  (let ((tail-code (make-byte-code 257 (unibyte-string 137 65 135) [] 2))
@@ -2723,6 +2731,15 @@
  ;; GNU 31.1 requires OBARRAY, including an explicit nil for the initial one.
  (list (condition-case e (unintern "parity6-absent") (error e))
        (unintern "parity6-absent" nil))
+
+ ;; Interpreter argv primitives reuse the VM bodies and preserve the
+ ;; ordinary list entry for noncanonical arrays and numeric type errors.
+ (eval '(let ((a (make-vector 4 nil)))
+          (aset a (% 13 4) (logand 31 15 7))
+          (list (aref a 1) (length a))) t)
+ (eval '(list (aref "a日本λ" 2)
+              (condition-case e (% 13.0 4) (error e))
+              (condition-case e (aref [a b] 2) (error e))) t)
 
 )
 

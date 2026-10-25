@@ -63,6 +63,7 @@
              (defun sexp-name-eq (w text) 1)
              (defun nl_cons_car_word (w) (heap-read-u64 ,s 40))
              (defun nelisp_env_lookup_function_w (a b c d) ,bc)
+              (defun nelisp_env_lookup_function_raw_w (a b c d) ,bc)
              (defun nl_sp_nargs (w)
                (seq (ptr-write-u64 ,s 16 (+ (heap-read-u64 ,s 16) 1)) 2))
              (defun wf_arg_word (a b) 3)

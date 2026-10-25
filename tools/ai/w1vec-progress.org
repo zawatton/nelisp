@@ -1,0 +1,27 @@
+#+TITLE: Canonical boxed vectors for the word VM (w1vec)
+#+NOTE: cmd lines reference target/w1vec/* artifacts of the lane worktree. Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v11 sources). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 (vector ...) and every other constructor that yields a legacy-view vector on hot paths produce (or the FX VM aref/aset arms accept) the representation the fast arm handles; a probe shows aref-defun with (vector ...) at the make-vector cost; red/green
+cmd: grep -q 'FAILED  1/2' target/w1vec/ert-red.log
+cmd: grep -q 'Ran 2 tests, 2 results as expected' target/w1vec/ert-green1.log
+cmd: python3 -c "import json;d=json.load(open('target/w1vec/pmc.json'));assert d['r5-aref-rem-defun|cand']['instr_per_trip']<2500"
+** S1.2 Vector semantics unchanged against GNU: equal/eq, aref/aset/length/elt/vconcat/append, printing, sort, type-of, vectorp, sequencep, GC of large vectors, the cold image; ERT red/green plus a differential corpus against GNU
+cmd: grep -q 'Ran 2 tests, 2 results as expected' target/w1vec/ert-green1.log
+cmd: cmp target/w1vec/corpus-cand.out target/w1vec/corpus-base.out
+cmd: test $(wc -l < target/w1vec/corpus-cand.out) -eq 42
+cmd: test $(diff target/w1vec/corpus-cand.out target/w1vec/corpus-gnu.out | grep -c '^<') -eq 4
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: grep -q '^BUILD rc=0' target/w1vec-build/dynamic/build.log
+cmd: test -x target/w1vec-build/dynamic/nelisp-dynamic
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q 'weak 24/24 PASS' target/w1vec/fixtures.log
+cmd: grep -q 'GNU 56/56 PASS' target/w1vec/fixtures.log
+cmd: grep -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/w1vec/fixtures.log
+cmd: grep -q 'buffer 21/21 PASS' target/w1vec/fixtures.log
+cmd: test $(grep -c PASS target/w1vec/wincheck.log) -eq 3
+* S3 End to end
+** S3.1 Instructions per trip on r5-aref-rem-defun, r5-aset-rem-defun, r5-aref-rem-closure and r5-aset-rem-closure reduced vs integ-1027 (pmcrun2 two-N), results checked
+cmd: python3 -c "import json;d=json.load(open('target/w1vec/pmc.json'));[(lambda r:(d[r+'|cand']['instr_per_trip']<0.5*d[r+'|base']['instr_per_trip'],d[r+'|cand']['results']==d[r+'|base']['results']) and None)(r) for r in ('r5-aref-rem-defun','r5-aset-rem-defun','r5-aref-rem-closure','r5-aset-rem-closure')];assert all(d[r+'|cand']['instr_per_trip']<0.5*d[r+'|base']['instr_per_trip'] and d[r+'|cand']['results']==d[r+'|base']['results'] for r in ('r5-aref-rem-defun','r5-aset-rem-defun','r5-aref-rem-closure','r5-aset-rem-closure'))"
+** S3.2 Paired elapsed (CPU 11) on those rows plus s6-vec4, s6-mkvec8, s6-mkvec64, the plain sum loop and r4-aset vs integ-1027 and GNU
+cmd: python3 target/w1vec/check_paired.py

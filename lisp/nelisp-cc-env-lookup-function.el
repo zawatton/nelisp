@@ -64,7 +64,14 @@
                   (if (= (nl_val_tag w) 16)
                       (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
                     0))
-                2 w)))))
+                2
+              ;; w2subr: a Subr object (header kind 20) answers the legacy
+              ;; (builtin NAME) list it wraps, so every reader but the
+              ;; `nelisp_env_lookup_function_raw_w' callers sees a list.
+              (if (= (logand w 7) 6)
+                  (if (= (logand (heap-read-u8 (- w 6) 0) 63) 20)
+                      (heap-read-u64 (- w 6) 8) w)
+                w))))))
     ;; The (rc, OUT) form has its own body (rc 1 on a miss): it is on every
     ;; call dispatch.  It stores the slot WORD into OUT directly
     ;; (nl_abi_word_to_rc: an immediate or a 32-byte copy, 0), without the
@@ -80,7 +87,12 @@
                       (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
                     0))
                 1
-              (nl_abi_word_to_rc w out-ptr)))))))
+              (nl_abi_word_to_rc
+               (if (= (logand w 7) 6)
+                   (if (= (logand (heap-read-u8 (- w 6) 0) 63) 20)
+                       (heap-read-u64 (- w 6) 8) w)
+                 w)
+               out-ptr)))))))
   "AOT source for Wave a-2 `Env::lookup_function' body.
 
 R11a (Doc 49 Wave 9): collapsed two-defun CPS to a single defun

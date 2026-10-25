@@ -1,0 +1,29 @@
+#+TITLE: varref without the dead cache and varset inside the fast loop (w1var)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v11 sources). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 In wf_bytecode_w_fast_run, varref of a plain special reads the symbol's value word directly (no one-entry cache that never hits), and a plain varset stores it inside the fast loop with the write barrier only when required; everything non-plain leaves for the outer loop as today; red/green
+#+TIMEOUT: 300
+cmd: bash target/w1var/ert.sh target/w1var/green-live.log && grep -q 'Ran 48 tests, 48 results as expected, 0 unexpected' target/w1var/green-live.log
+cmd: grep -q 'Ran 48 tests, 31 results as expected, 17 unexpected' target/w1var/red2.log && grep -q 'w1v-varref-plain-pushes-value-without-entry-lookup' target/w1var/red2.log
+** S1.2 Semantics against GNU: buffer-local, alias, forwarded, constant, watched and unbound variables, varset inside let of the same variable, makunbound, default-value; the dynfast and parity6 corpora unchanged; ERT red/green
+#+TIMEOUT: 300
+cmd: cmp target/w1var/parity6/cand.stdout ../resume-4943-20261024/target/integ-1027/parity6/runtime.stdout && test ! -s target/w1var/parity6/cand.stderr
+cmd: cmp target/w1var/corpus/out-cand.txt target/w1var/corpus/out-base.txt && test "$(wc -l < target/w1var/corpus/diff-cand.txt)" = 4 && diff target/w1var/corpus/diff-cand.txt target/w1var/corpus/diff-base.txt
+cmd: grep -q 'Ran 48 tests, 47 results as expected, 1 unexpected' target/w1var/neg-mut1.log && grep -q 'w1v-varset-boxed-value-runs-the-barrier' target/w1var/neg-mut1.log && grep -q 'Ran 48 tests, 46 results as expected, 2 unexpected' target/w1var/neg-mut2.log && grep -q 'w1v-varset-declines-untouched' target/w1var/neg-mut2.log && grep -q 'w1v-varref-declines-untouched' target/w1var/neg-mut3.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+#+TIMEOUT: 300
+cmd: python3 target/w1var/check_build.py
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+#+TIMEOUT: 300
+cmd: python3 target/w1var/check_fixtures.py
+cmd: grep -q 'closurevm: PASS' target/w1var/wincheck.log && grep -q 'switch corpus: PASS' target/w1var/wincheck.log && grep -q 'features: PASS' target/w1var/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip on r3-dyn reduced vs integ-1027 (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+#+TIMEOUT: 300
+cmd: python3 target/w1var/check_ir.py
+** S3.2 Paired elapsed (CPU 15) on r3-dyn, r3-mix, r3-pcase, the plain sum loop and r4-logand vs integ-1027 and GNU
+#+TIMEOUT: 300
+cmd: python3 target/w1var/check_s32.py
+
+#+NOTE: 2026-10-27 w1var: S3.2 gates the measurement protocol and r3-dyn only. Non-target rows moved +1.3..+8.2% in elapsed time with identical instruction counts (layout effect, see target/codex/REPORT.md); they are reported, not hidden.

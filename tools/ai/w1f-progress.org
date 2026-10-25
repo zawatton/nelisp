@@ -1,0 +1,19 @@
+#+TITLE: concat2/substring opcodes on WORD bodies (w1f)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 plus overlay (w1vec, w1leaf, w1var, parity8). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 The fast-loop (or outer-loop) arms for the concat2..concatN and substring opcodes call the WORD-argv directcall bodies dcproto added (ids 115/116) for the cases they accept and keep the existing route otherwise; red/green
+#+TIMEOUT: 120
+cmd: python3 target/w1f/check.py s11
+** S1.2 Semantics against GNU for concat/substring opcodes: multibyte/unibyte/raw-byte strings, negative and out-of-range indices with GNU error data, vectors/lists in concat, nil arguments; corpus equal GNU
+#+NOTE: 82/84 rows equal GNU in both corpora (with and without condition-case); rows 21,22 (concat of a propertized string in compiled code) are a pre-existing divergence on the unchanged VM route, byte-identical to the v11 baseline; they decline in the new body.
+cmd: python3 target/w1f/check.py s12
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+cmd: python3 target/w1f/check.py s21
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/w1f/check.py s22
+* S3 End to end
+** S3.1 Instructions per trip reduced vs the seed on s6-concat and s6-substr (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+cmd: python3 target/w1f/check.py s31
+** S3.2 Paired elapsed (CPU 14) on s6-concat, s6-substr, s6-mkstr and the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/w1f/check.py s32

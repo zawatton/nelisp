@@ -1,0 +1,28 @@
+#+TITLE: Immutable static Subr object in the function cell (w2subr)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 plus overlay (w1vec, w1leaf, w1var, parity8). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+#+NOTE: Evidence files under target/w2subr/. Design: kind-20 Subr [header|desc<<8][legacy (builtin NAME) list]; see target/codex/REPORT.md.
+* S1 Source
+** S1.1 Builtin function cells hold an immutable static Subr object (descriptor id, arity, leaf flag; never swept, no outgoing pointers) instead of a mutable (builtin NAME) list; nl_directcall_id recognises it with a header compare and one descriptor load; legacy (builtin NAME) values stay callable on the slow path; every structural reader of (builtin NAME) is found and adapted (list them); red/green
+#+NOTE: Deviation: the Subr object has one outgoing pointer (the wrapped legacy list), walked like kind 11 by GC and dump; Subr only for the 21 directcall natives.
+#+TIMEOUT: 300
+cmd: bash target/w2subr/run-ert.sh target/w2subr/logs/ledger-ert.log test/nelisp-subr-object-test.el test/nelisp-directcall-id-test.el test/nelisp-primitive-callback-test.el test/nelisp-directcall-hash-test.el && grep -q '0 unexpected' target/w2subr/logs/ledger-ert.log
+evidence: target/w2subr/logs/red-subr-object-test.keep.log sha256=6cf8fae1b39520bf8b2b88e4f6c8a9cdc2cfe2e7a193d5e401a588bd0f28abb9
+** S1.2 Semantics against GNU: symbol-function/indirect-function/subrp/subr-arity/func-arity/describe-like printing of builtins, fset of a builtin to another builtin, to a lambda and to nil mid-loop, advice on car, defalias, the cold image round trip; ERT red/green and corpora (directcall, hash, primitive, callback walk, alloc) equal GNU
+#+NOTE: Corpus substitutes logand/length for advice/fset on car/cdr (those break the NeLisp harness itself on v11 too).
+cmd: cmp target/w2subr/gnu.cases target/w2subr/cand.cases
+evidence: target/w2subr/subr-standalone.cand.out sha256=e8c442903d4a7e33a42797dcaee801cc17a2466d275e68e0f622ce06ac17be39
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+evidence: target/w2subr/logs/build1.log sha256=71669ebb4f45a980f619e6b63e7c23fd63d843177b9c91ba26fa7c288a682273
+cmd: grep -q '^BUILD rc=0' target/w2subr/logs/build1.log
+cmd: test -x target/w2subr-build/dynamic/nelisp-dynamic
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q 'EXPECTED_BASELINE_RED_REMAINS' target/w2subr/fixtures/report.json && grep -q '"regression": false' target/w2subr/fixtures/report.json
+cmd: grep -q '^rc=0' target/w2subr/logs/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs the seed on r4-car, r4-logand, r7-gethash-eq-fix and p-mapc-car (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+cmd: python3 target/w2subr/ir-check.py
+evidence: target/w2subr/ir.json sha256=ae3d321d4b83398e0e083be5799605304672ab203f6a24a7dad91f61dd9ef2d1
+** S3.2 Paired elapsed (CPU 11) on those rows plus r3-call and the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/w2subr/paired-check.py
+evidence: target/w2subr/logs/paired.log sha256=6c3cf04c080818ac871c43ac3ba84cd11895a0f372f23fa2426e3051b03d275f

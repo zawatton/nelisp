@@ -52,6 +52,25 @@
                                              #x48 #x81 #xec 8 0 0 0
                                              #x48 #x81 #xec 32 0 0 0) selected))))
 
+(ert-deftest nelisp-fresh-frame-zeroes-region-and-pad-of-stack-parameter-entry ()
+  ;; m5_fx_run_body has eight parameters (two stack-passed).  Selection must not
+  ;; fail, must zero the runtime region and the RBX pad, and must leave the
+  ;; unselected prologue bytes untouched.
+  (let* ((ir (nelisp-fresh-frame-test--definition
+              '(defun fresh_probe (a b c d e f g h) (+ a h)) 4))
+         (plain (nelisp-fresh-frame-test--emit ir nil))
+         (selected (nelisp-fresh-frame-test--emit ir t))
+         (loop (nelisp-asm-x86_64-make-buffer))
+         ;; Pad slot: 8 * (2 + 8 parameter slots + 4 runtime slots) below RBP.
+         (pad (concat (unibyte-string #x48 #xc7 #x85)
+                      (unibyte-string #x90 #xff #xff #xff) (unibyte-string 0 0 0 0))))
+    (nelisp-aot-compiler--emit-zero-fresh-rt-slots loop 4)
+    (should (string-match-p (regexp-quote (nelisp-asm-x86_64-resolve-fixups loop)) selected))
+    (should (string-match-p (regexp-quote pad) selected))
+    (should-not (string-match-p (regexp-quote (nelisp-asm-x86_64-resolve-fixups loop)) plain))
+    (should-not (string-match-p (regexp-quote pad) plain))
+    (should (equal plain (nelisp-fresh-frame-test--emit ir nil)))))
+
 (ert-deftest nelisp-fresh-frame-rejects-unqualified-entry-paths ()
   (let ((ir (nelisp-fresh-frame-test--definition '(defun fresh_probe (a b) a) 2)))
     (should-error (nelisp-fresh-frame-test--emit ir t 'win64) :type 'nelisp-aot-compiler-error)
@@ -83,7 +102,8 @@
                           '(nelisp_apply_function_w nl_apply_builtin_w nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
                             nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w
                             nl_apply_builtin_frame_w nl_eic_argframe_call_w
-                            bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run))))))
+                            bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run
+                     m5_fx_run_body))))))
   (let* ((source '(seq (defun fresh_probe (a) a)))
          (nelisp-standalone--target 'linux-x86_64)
          (normal (nelisp-standalone--unit-cache-key source)))

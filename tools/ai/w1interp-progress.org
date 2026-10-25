@@ -1,0 +1,32 @@
+#+TITLE: Interpreter primitive table: aref/aset/length/%/logand (w1interp)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v11 sources). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+* S1 Source
+** S1.1 The interpreter's direct primitive table (the 26-entry table B-interp found) gains aref, aset, length, % and logand with GNU arity and error data, so top-level and interpreted calls skip the consed-list route; red/green
+evidence: target/w1interp/logs/ert-red.log sha256=280322bddd9c5a970bea33b08bb7d845a37e0e2c91ba3be3e2b259900216e021
+evidence: target/w1interp/logs/ert-green.log sha256=5347aa10b45690d300b6f5aeea377b24ff9d7703f62e72ba3e73bae90a26e842
+evidence: target/w1interp/logs/aset-entry-red.log sha256=8534860243105c20b56fb084e035810e58e1c1bd762a800cc09a47d069caab62
+evidence: target/w1interp/logs/ert-build2-preflight.log sha256=6b7d3238bd0fb4d11167cc96b51c6da0725a852043b6d5b3fe902bfe0c783ff0
+evidence: target/w1interp/logs/lookup-red.log sha256=167d50e79617a09efb5c709d6e28d35cf40872e795a34b3009e7a335b701b147
+evidence: target/w1interp/logs/ert-final-regression.log sha256=240bf231e086cd889f8a8900ea7c5714e1a44bc92052e7889b6427ac119711fb
+evidence: target/w1interp/logs/efficiency-final.log sha256=6a82e6fce2bbe80a8971d6d64789fc31948602645a7e8baa2a709f89a1ce75fe
+** S1.2 Semantics unchanged against GNU for those five in interpreted code: wrong-type and args-out-of-range data, markers/floats/bignums in % and logand, strings/bool-vectors/char-tables in aref/aset, redefinition and advice of the primitive; ERT red/green and a corpus against GNU
+cmd: cmp -s target/w1interp/logs/corpus-gnu.out target/w1interp/logs/corpus-cand.out && test ! -s target/w1interp/logs/corpus-cand.err && cmp -s scripts/nelisp-standalone-build.el target/w1interp-build4/dynamic/src/scripts/nelisp-standalone-build.el
+* S2 Build and regression
+#+NOTE: Build 4 (coordinator takeover) is the final source: build 3 had weak 23/24 and GNU 55/56 from a conservative false root in m5_fx_run_body's unwritten frame region (target/codex/REPORT.md, Coordinator takeover); build 4 adds m5_fx_run_body to the zero-fresh-frame policy. Native criteria compare the final generator bytes with build 4's frozen source.
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: cmp -s scripts/nelisp-standalone-build.el target/w1interp-build4/dynamic/src/scripts/nelisp-standalone-build.el
+evidence: target/w1interp/logs/build-4.json sha256=ae3b119d39047ff203e6653493b9a83a5336d86c7e9c1a17e0ffb36defb8441a
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/w1interp/criteria.py fixtures
+** S2.3 Conservative false root fixed by role: m5_fx_run_body (8 parameters, 2 stack-passed) is in the zero-fresh-frame policy (0x15c-qword rep stos plus RBX pad store), the other call-chain frames' prologues are unchanged vs build 3, and the build-3 control is red; host red/green for the stack-parameter entry
+cmd: python3 target/w1interp/criteria.py structural
+cmd: grep -q 'passed  *7/13  nelisp-fresh-frame-zeroes-region-and-pad-of-stack-parameter-entry' target/w1interp/weakroot/ert-green.log && grep -q 'FAILED  1/1  nelisp-fresh-frame-zeroes-region' target/w1interp/weakroot/ert-red.log
+evidence: target/w1interp/weakroot/e2.out sha256=2d942d6c0193ae0913984f2aa4413d9fcdabe1174d1cea644743bb7a09caa1d1
+evidence: target/w1interp/weakroot/emu2.out sha256=b6ed5edfb4c061cd04948a6d5d589fde5420ca9493be2c2afe7ff38004aca124
+* S3 End to end
+
+** S3.1 Instructions per trip on r5-aref-rem-toplevel and r5-aset-rem-toplevel reduced vs integ-1027 (pmcrun2 two-N), results checked; r5-sum-base-toplevel not worse
+cmd: python3 target/w1interp/criteria.py instructions
+
+** S3.2 Paired elapsed (CPU 12) on r5-*-toplevel rows, the plain sum loop and r4-logand vs integ-1027 and GNU
+cmd: python3 target/w1interp/criteria.py elapsed

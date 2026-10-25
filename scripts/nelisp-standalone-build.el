@@ -622,6 +622,8 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
      8
+     ;; GNU's zero_vector: one permanent, slotless vector header.
+     8
      (if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64) 160 0)))
 
 ;; Cold-image build digest.  The marker is assembled from bytes (never
@@ -969,7 +971,7 @@ storage — not an arena reservation."
     ;; Windows cold I/O counters and diagnostics are outside the dumped heap.
     (when (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
       (list (nelisp-link-symbol "nl_win_cold_io"
-                                (- (nelisp-standalone--driver-bss-size) 184)
+                                (- (nelisp-standalone--driver-bss-size) 192)
                                 :section 'bss :bind 'global :type 'object)))
     ;; Doc 216 S4.2: transient descriptor registry and opt-in counters.
     (list (nelisp-link-symbol "nl_frame_stack_registry"
@@ -1028,10 +1030,13 @@ storage — not an arena reservation."
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
-                              (- (nelisp-standalone--driver-bss-size) 24)
+                              (- (nelisp-standalone--driver-bss-size) 32)
                               :section 'bss :bind 'global :type 'object))
     ;; Transient weak-table chain; metadata slot 10 holds the next box.
     (list (nelisp-link-symbol "nl_gc_weak_head"
+                              (- (nelisp-standalone--driver-bss-size) 16)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_empty_vector"
                               (- (nelisp-standalone--driver-bss-size) 8)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_stats"
@@ -1744,6 +1749,9 @@ standalone units can call each other."
     nl_eic_argframe_call_w
     ;; Doc 226 D9: the symbol entry API's slow paths.
     nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp
+    ;; w2bt: the cold paths of the lean backtrace record (`nl_n4_push_words',
+    ;; `nl_n4_finish_w'); inlined, they would give the hot bodies their frames back.
+    nl_n4_push_words_cold nl_n4_finish_w_cold
     ;; The String WORD arm of the collector's word marker (GNU MARK_STRING): an arm of
     ;; `nl_gc_mark_word', which calls it back for the intervals, so inlining it would
     ;; copy the arm into every inlined copy of the marker.
@@ -3060,7 +3068,10 @@ Win64 and AArch64 retain their existing prologues pending ABI qualification."
     (append '(nelisp_apply_function_w nl_apply_builtin_w nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
       nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w
       nl_apply_builtin_frame_w nl_eic_argframe_call_w
-      bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run)
+      bf_garbage_collect_w bf_garbage_collect_snapshot_w nl_gc_stats_run
+      ;; Closure-body runner: its fresh runtime region (rbp-0xb30..rbp-0x40) overlays dead frames of the
+      ;; interpreter's earlier evaluation and was a conservative false root (weak-string-unrooted, w1interp).
+      m5_fx_run_body)
             nelisp-standalone--builtin-leaf-active-names)))
 
 (defun nelisp-standalone--compile-to-unit (name source &optional abi)
@@ -6190,8 +6201,9 @@ it shares with cons and symbol blocks.")
       (if (/= (logand w 7) 0) w
         (let ((b (alloc-bytes 32 8))) (seq (nl_sexp_clone_into w b) b))))
     (defun nl_w_vector_make (n _pad)
-      (let ((b (alloc-bytes 32 8)))
-        (seq (vector-make n b) b)))
+      (if (= n 0) (+ (nl_alloc_vector 0) 6)
+        (let ((b (alloc-bytes 32 8)))
+          (seq (vector-make n b) b))))
     (defun nl_vector_slot_word (sexp-ptr idx)
       (heap-read-u64 (+ (+ (nl_word_payload sexp-ptr) 8) (* idx 8)) 0))
     (defun nl_record_slot_word (sexp-ptr idx)
@@ -8382,7 +8394,7 @@ REPL-facing module it feeds."
       (let ((header (heap-read-u64 box 0)))
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
-            (if (= kind 11) (nl_gc_mark_slots box 1 1)
+            (if (or (= kind 11) (= kind 20)) (nl_gc_mark_slots box 1 1)
               (if (or (= kind 12) (= kind 17) (= kind 18)) (nl_gc_mark_slots box 1 (+ n 1))
                 (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_mark_slots (owner offset n)
@@ -8455,7 +8467,7 @@ REPL-facing module it feeds."
                 (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
               0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
-            (if (= kind 11) (nl_gc_mark_inline_words box 1 1)
+            (if (or (= kind 11) (= kind 20)) (nl_gc_mark_inline_words box 1 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
               (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))))
@@ -8463,7 +8475,7 @@ REPL-facing module it feeds."
       (let* ((state (data-addr nl_gc_typed_state))
              (mode (heap-read-u64 state 0))
              (before (heap-read-u64 state 64)))
-        (if (if (= kind 3) 0 (if (= kind 13) 0 (if (= kind 11) 0 1)))
+        (if (if (= kind 3) 0 (if (= kind 13) 0 (if (= kind 11) 0 (if (= kind 20) 0 1))))
             (if (= mode 4)
                 ;; A heap vector, record, char-table or closure marked for the first time.
                 (if (= mr 2)
@@ -11083,7 +11095,7 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
-            (if (= kind 11) (nl_compact_rw_vec_slots (+ box 8) 0 1)
+            (if (or (= kind 11) (= kind 20)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
               (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
@@ -17386,7 +17398,7 @@ list groups retain the original leaves/default exactly."
       (if (= tag 8)
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
-        (if (= tag 11)
+        (if (or (= tag 11) (= tag 20))
             (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
@@ -18156,6 +18168,55 @@ eval applyfn.")
 (defconst nelisp-standalone--applyfn-ht-helpers
   '((defun nl_ht_copy32_w (_pad src) src)
     (defun nl_ht_copy32 (dst src) (wf_copy32 dst src))
+    ;; parity8: slot comparison for vector/record keys (GNU internal_equal).
+    ;; X/Y are slot WORDS.  Two distinct immediates are never equal; anything
+    ;; else recurses with a smaller bound, so a cyclic key terminates (a miss).
+    (defun wf_key_eq_slot (x y depth)
+      (if (= x y) 1
+        (if (and (= (logand x 1) 1) (= (logand y 1) 1)) 0
+          (if (<= depth 1) 0
+            (if (= (bf_eq2 x y) 1) 1 (wf_key_eq_depth x y (- depth 1)))))))
+    (defun wf_key_eq_vec (a b depth)
+      (let* ((n (vector-len a)) (i 0) (ok 1))
+        (if (= n (vector-len b))
+            (seq (while (and (= ok 1) (< i n))
+                   (seq (if (= (wf_key_eq_slot (nl_vector_slot_word a i)
+                                               (nl_vector_slot_word b i) depth) 1)
+                            0 (setq ok 0))
+                        (setq i (+ i 1))))
+                 ok)
+          0)))
+    (defun wf_key_eq_rec (a b depth)
+      (let* ((n (nl_record_length a)) (i 0) (ok 1))
+        (if (= n (nl_record_length b))
+            (seq (if (= (wf_key_eq_slot (nl_record_type_word a) (nl_record_type_word b) depth) 1)
+                     0 (setq ok 0))
+                 (while (and (= ok 1) (< i n))
+                   (seq (if (= (wf_key_eq_slot (nl_record_slot_word a i)
+                                               (nl_record_slot_word b i) depth) 1)
+                            0 (setq ok 0))
+                        (setq i (+ i 1))))
+                 ok)
+          0)))
+    ;; Bool-vector box: +0 bit count, +8 data pointer.  Padding bits of the
+    ;; last byte are ignored.
+    (defun nl_ht_bv_mask (rem)
+      (let* ((m 1) (j 0))
+        (seq (while (< j rem) (seq (setq m (* m 2)) (setq j (+ j 1)))) (- m 1))))
+    (defun wf_key_eq_bv (a b)
+      (let* ((ba (nl_word_payload a)) (bb (nl_word_payload b)) (n (heap-read-u64 ba 0)))
+        (if (= n (heap-read-u64 bb 0))
+            (let* ((da (heap-read-u64 ba 8)) (db (heap-read-u64 bb 8))
+                   (full (/ n 8)) (rem (- n (* full 8))) (i 0) (ok 1))
+              (seq (while (and (= ok 1) (< i full))
+                     (seq (if (= (heap-read-u8 da i) (heap-read-u8 db i)) 0 (setq ok 0))
+                          (setq i (+ i 1))))
+                   (if (and (= ok 1) (> rem 0))
+                       (if (= (logand (heap-read-u8 da full) (nl_ht_bv_mask rem))
+                              (logand (heap-read-u8 db full) (nl_ht_bv_mask rem)))
+                           1 0)
+                     ok)))
+          0)))
     (defun wf_key_eq_depth (ka kb depth)
       ;; Iterative, bounded `equal'-style key comparison for hash lookup.
       ;; When the comparison exceeds the cap, return not-equal: a lookup
@@ -18218,7 +18279,16 @@ eval applyfn.")
                                      (setq sp (+ sp 1))))
                                 (if (= ta 0)
                                     0
-                                  (if (= ta 1) 0 (setq ok 0)))))))
+                                  (if (= ta 1) 0
+                                    ;; parity8: GNU internal_equal compares vectors,
+                                    ;; records and bool-vectors by contents.
+                                    (if (= ta 8)
+                                        (if (= (wf_key_eq_vec a b (- limit steps)) 1) 0 (setq ok 0))
+                                      (if (= ta 12)
+                                          (if (= (wf_key_eq_rec a b (- limit steps)) 1) 0 (setq ok 0))
+                                        (if (= ta 10)
+                                            (if (= (wf_key_eq_bv a b) 1) 0 (setq ok 0))
+                                          (setq ok 0))))))))))
                       (setq ok 0)))))))))
          ok)))
     ;; Segment G1, two independent fixes, both measured:
@@ -18410,6 +18480,36 @@ eval applyfn.")
     (defun nl_ht_float_hash (p)
       (let ((bits (nl_float_bits p)))
         (logand (logxor bits (shr bits 32)) 1073741823)))
+    (defun nl_ht_vec_hash (v depth)
+      (let* ((n (vector-len v)) (m (if (> n 7) 7 n)) (i 0)
+             (h (logand (+ 2654435761 n) 2147483647)))
+        (if (<= depth 0) h
+          (seq (while (< i m)
+                 (seq (setq h (logand (+ (* h 33) (nl_ht_key_hash (nl_vector_slot_word v i) (- depth 1)))
+                                      2147483647))
+                      (setq i (+ i 1))))
+               h))))
+    (defun nl_ht_rec_hash (v depth)
+      (let* ((n (nl_record_length v)) (m (if (> n 7) 7 n)) (i 0)
+             (h (logand (+ 1640531527 n) 2147483647)))
+        (if (<= depth 0) h
+          (seq (setq h (logand (+ (* h 33) (nl_ht_key_hash (nl_record_type_word v) (- depth 1)))
+                               2147483647))
+               (while (< i m)
+                 (seq (setq h (logand (+ (* h 33) (nl_ht_key_hash (nl_record_slot_word v i) (- depth 1)))
+                                      2147483647))
+                      (setq i (+ i 1))))
+               h))))
+    (defun nl_ht_bv_hash (v)
+      (let* ((box (nl_word_payload v)) (n (heap-read-u64 box 0)) (d (heap-read-u64 box 8))
+             (full (/ n 8)) (rem (- n (* full 8))) (m (if (> full 64) 64 full)) (i 0)
+             (h (logand (+ 40503 n) 2147483647)))
+        (seq (while (< i m)
+               (seq (setq h (logand (+ (* h 33) (heap-read-u8 d i)) 2147483647))
+                    (setq i (+ i 1))))
+             (if (> rem 0)
+                 (logand (+ (* h 33) (logand (heap-read-u8 d full) (nl_ht_bv_mask rem))) 2147483647)
+               h))))
     (defun nl_ht_key_hash (key_ptr depth)
       (let* ((tag (heap-sexp-tag-word key_ptr)))
         (if (= tag 3) (nl_ht_float_hash key_ptr)
@@ -18431,7 +18531,12 @@ eval applyfn.")
                                  (* 33 (nl_ht_key_hash (nl_cons_car_ptr key_ptr) (- depth 1)))
                                  (* 65599 (nl_ht_key_hash (nl_cons_cdr_ptr key_ptr) (- depth 1))))
                               2147483647))
-                  tag))))))))
+                  ;; parity8: vector, record and bool-vector keys hash by
+                  ;; contents like GNU sxhash_obj, so `equal' keys share a bucket.
+                  (if (= tag 8) (nl_ht_vec_hash key_ptr depth)
+                    (if (= tag 12) (nl_ht_rec_hash key_ptr depth)
+                      (if (= tag 10) (nl_ht_bv_hash key_ptr)
+                        tag)))))))))))
     (defun nl_ht_key_hash_stable_p (key_ptr depth)
       (let* ((tag (heap-sexp-tag-word key_ptr)))
         (if (= tag 0)
@@ -19258,15 +19363,22 @@ eval applyfn.")
                  (if (= (nl_val_tag fw) 17) 2 1))
           (let* ((tag (nl_val_tag fw))
                  (fn (if (or (= tag 4) (= tag 16))
-                         (nelisp_env_lookup_function_w env (+ env 64) fw 0) fw))
+                         (nelisp_env_lookup_function_raw_w env (+ env 64) fw 0) fw))
                  (id (nl_directcall_id fn fw argc)))
             (seq (ptr-write-u64 roots tslot fn)
                  (if (= id 0) 0
-                   (seq (ptr-write-u64 roots 48 (ptr-read-u64 (- fn 2) 0))
-                        (ptr-write-u64 roots 56 (ptr-read-u64 (- fn 2) 8))
-                        (ptr-write-u64 roots 64
-                          (ptr-read-u64 (- (ptr-read-u64 (- fn 2) 8) 2) 0))
-                        (+ 1017 id))))))))
+                   (if (= (logand fn 7) 6)
+                       ;; w2subr: an immutable Subr object proves itself; the
+                       ;; head/tail/name words stay zero and the name is FW.
+                       (seq (ptr-write-u64 roots 48 fn)
+                            (ptr-write-u64 roots 56 0)
+                            (ptr-write-u64 roots 64 fw)
+                            (+ 1017 id))
+                     (seq (ptr-write-u64 roots 48 (ptr-read-u64 (- fn 2) 0))
+                          (ptr-write-u64 roots 56 (ptr-read-u64 (- fn 2) 8))
+                          (ptr-write-u64 roots 64
+                            (ptr-read-u64 (- (ptr-read-u64 (- fn 2) 8) 2) 0))
+                          (+ 1017 id)))))))))
     (defun wf_cb_prim_call (env roots argc tslot kind)
       ;; One native-to-primitive callback of a walk whose id `wf_cb_kind'
       ;; fixed.  GNU's mapcar1 -> call1 -> Ffuncall -> funcall_subr reads the
@@ -19284,15 +19396,33 @@ eval applyfn.")
              (sym (if (or (= tag 4) (= tag 16)) 1 0))
              (cell (if (= m 6) (heap-read-u64 (- fw 6) 24)
                      (if (= sym 1)
-                         (nelisp_env_lookup_function_w env (+ env 64) fw 0) fw)))
+                         (nelisp_env_lookup_function_raw_w env (+ env 64) fw 0) fw)))
              (ok (if (/= cell target) 0
                    (if (/= (logand (heap-read-u64 env 112) 3145728) 0) 0
+                     (if (= (logand cell 7) 6) 1
                      (if (/= (ptr-read-u64 (- cell 2) 0) (heap-read-u64 roots 48)) 0
                        (let* ((tl (ptr-read-u64 (- cell 2) 8)))
                          (if (/= tl (heap-read-u64 roots 56)) 0
                            (if (/= (ptr-read-u64 (- tl 2) 0) (heap-read-u64 roots 64)) 0
-                             (if (/= (ptr-read-u64 (- tl 2) 8) 3) 0 1)))))))))
+                             (if (/= (ptr-read-u64 (- tl 2) 8) 3) 0 1))))))))))
         (if (= ok 1)
+          ;; w1leaf: a leaf id (below 112, see `nl_directcall_invoke') runs its
+          ;; body into the walker's rooted slot with no backtrace record; -3 is a
+          ;; decline (2) with nothing written.  The depth test stays.
+          (if (if (< kind 1129)
+                  (if (= (heap-read-u64 env 176) 0) 0
+                    (< (heap-read-u64 (heap-read-u64 env 176) 0) 32768))
+                0)
+            (let* ((id (- kind 1017))
+                   (fast (if (if (> argc 0)
+                                 (if (= id 1) 1 (if (>= id 105) (<= id 110) 0))
+                               0)
+                             (nl_directcall_fast_run id (+ roots 32) argc (+ roots 24))
+                           -4))
+                   (st (if (= fast -4)
+                           (nl_directcall_run id (+ roots 32) argc (+ roots 24) env)
+                         fast)))
+              (if (= st 0) 0 (if (= st -3) 2 1)))
             (let* ((frame (nl_n4_push_words env
                                             (if (= sym 1) fw (heap-read-u64 roots 64))
                                             (+ roots 32) argc)))
@@ -19306,7 +19436,7 @@ eval applyfn.")
                       (seq (nl_n4_finish_w 0 env 0 frame) 2)
                     (let* ((w (nl_n4_finish_w (if (= st 0) (heap-read-u64 roots 24) 0)
                                               env 0 frame)))
-                      (if (= w 0) 1 (seq (ptr-write-u64 roots 24 w) 0)))))))
+                      (if (= w 0) 1 (seq (ptr-write-u64 roots 24 w) 0))))))))
           ;; The cell changed (or the policy did): resolve it again, as the
           ;; element's own call would.  `nl_directcall_invoke' roots the
           ;; function it is given before it allocates.
@@ -22383,7 +22513,13 @@ bytes are written into a fresh 8-byte buffer instead."
                  (fcell (if (= ftag 4)
                             (let* ((slot (if (= (logand fw 7) 6) (heap-read-u64 (- fw 6) 24) 0)))
                               (if (= (logand slot 7) 2) slot
-                                (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fw 0)))
+                                ;; w2subr: a Subr object is taken as it is too.
+                                (if (if (= (logand slot 7) 6)
+                                        (if (< slot 4096) 0
+                                          (= (logand (heap-read-u64 (- slot 6) 0) 63) 20))
+                                      0)
+                                    slot
+                                  (nelisp_env_lookup_function_raw_w (+ env 0) (+ env 64) fw 0))))
                           2))
                  (target (if (= fcell 2) fw fcell))
                  (status (if (= (nl_val_tag target) 17)
@@ -22453,6 +22589,15 @@ bytes are written into a fresh 8-byte buffer instead."
          (setq word (nl_apply_function_w function tail env 0))
          (if (= word 0) 0 (ptr-write-u64 (+ mem (* fi 8)) 0 word))
          (if (= word 0) 1 0))))
+    (defun wf_bytecode_w_text_op (mem sp k id)
+      ;; w1f: concat (ID 115) or substring (ID 116) of the K operands ending
+      ;; at SP-1, straight on the WORD stack through the directcall text body.
+      ;; 0: the value replaced word SP-K (the stack is its own rooted argv and
+      ;; the body writes RESULT only after its last argv read).  -3: nothing
+      ;; was written and the unchanged route owns the case and its errors.
+      (if (< k 1) -3
+        (let* ((base (+ mem (* (- sp k) 8))))
+          (nl_directcall_text_run id base k base))))
     (defun wf_bytecode_w_boxed (env mem sp k opcode bx)
       ;; Run a still-boxed opcode body (`wf_bytecode_boxed_op') on the K
       ;; operands ending at SP-1, staged as views in the activation scratch
@@ -23016,8 +23161,9 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; are overwritten before the original hot arms use them. Do not borrow
       ;; LAST-* cache state, FAILED, the rooted frame fields, or BACK.
       ;; These leaves never run arbitrary Lisp, and none allocates except the lean
-      ;; varbind arm (two conses via wf_bytecode_w_lean_bind), which therefore drops
-      ;; the varref cache (last-name -1) afterwards. Rejecting an opcode
+      ;; varbind arm (two conses via wf_bytecode_w_lean_bind) and the w1f text
+      ;; arms (raw 79-82: one string via wf_bytecode_w_text_op), which therefore drop
+      ;; the dead varref cache flag (last-name, written by other arms) afterwards. Rejecting an opcode
       ;; leaves PC/SP/operand memory untouched; bounded list walks replay long,
       ;; circular or improper inputs in the outer handler. Eq on positioned
       ;; symbols and non-eq/custom/large switch tables also retains that path.
@@ -23025,10 +23171,7 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; GNU op_branch compares against the instruction end, including self:
       ;; target < pc+3 for 130..134; target < pc+1 for switch 183.
       (let*
-          ((foot (+ mem (* (+ depth 1) 8))) (last-owner 0) (last-table 0)
-           (last-table-data 0) (last-buckets 0) (last-count 0)
-           (last-entry-data 0) (last-slots 0) (last-name -1)
-           (last-entry 0) (last-value 0) (go 128) (raw 0) (a 0) (b 0)
+          ((foot (+ mem (* (+ depth 1) 8))) (last-name -1) (go 128) (raw 0) (a 0) (b 0)
            (target 0) (word 0) (fused 0) (ref 0) (cmp 0) (branch 0)
            (failed 0) (back (- 255 (sar (ptr-read-u64 cell 0) 2))))
         (while (> go 0)
@@ -23087,380 +23230,85 @@ bytes are written into a fresh 8-byte buffer instead."
                                                                 (* ref 8)))
                                                 (setq sp (+ sp 1))
                                                 (setq pc (+ pc a 1))))))))
-                                 (if (< raw 14)
-                                     (let*
-                                         ((index (- raw 8)) (value 0)
-                                          (kname
-                                           (if (< index nconst)
-                                               (heap-read-u64 constants
-                                                              (* index 8))
-                                             0)))
-                                       (if (>= sp depth) (setq go 0)
-                                         (seq
-                                          (if (/= kname last-name)
-                                              (if (= env 0) (setq go 0)
-                                                (if (>= index nconst)
-                                                    (setq go 0)
-                                                  (seq
-                                                   (setq last-owner
-                                                         (heap-read-u64
-                                                          env 8))
-                                                   (setq last-table
-                                                         (ptr-read-u64
-                                                          last-owner 16))
-                                                   (if
-                                                       (/=
-                                                        (logand last-table
-                                                                7)
-                                                        6)
-                                                       (setq go 0)
-                                                     (seq
-                                                      (setq
-                                                       last-table-data
-                                                       (logand last-table
-                                                               -8))
-                                                      (setq last-buckets
-                                                            (ptr-read-u64
-                                                             last-table-data
-                                                             24))
-                                                      (setq last-count
-                                                            (ptr-read-u64
-                                                             last-table-data
-                                                             32))
-                                                      (setq last-entry
-                                                            (wf_bytecode_w_fast_entry
-                                                             env
-                                                             (heap-read-u64
-                                                              constants
-                                                              (* index 8))))
-                                                      (if
-                                                          (/=
-                                                           (logand
-                                                            last-buckets 7)
-                                                           6)
-                                                          (setq go 0)
-                                                        (if
-                                                            (/=
-                                                             (logand
-                                                              last-entry 7)
-                                                             6)
-                                                            (setq go 0)
-                                                          (seq
-                                                           (setq
-                                                            last-entry-data
-                                                            (logand
-                                                             last-entry -8))
-                                                           (setq
-                                                            last-slots
-                                                            (nl_ent_n
-                                                             last-entry))
-                                                           (if
-                                                               (<
-                                                                last-slots
-                                                                4)
-                                                               (setq go 0)
-                                                             (if
-                                                                 (/=
-                                                                  (heap-read-u64
-                                                                   env 8)
-                                                                  last-owner)
-                                                                 (setq go
-                                                                       0)
-                                                               (if
-                                                                   (/=
-                                                                    (ptr-read-u64
-                                                                     last-owner
-                                                                     16)
-                                                                    last-table)
-                                                                   (setq
-                                                                    go 0)
-                                                                 (if
-                                                                     (/=
-                                                                      (ptr-read-u64
-                                                                       last-table-data
-                                                                       24)
-                                                                      last-buckets)
-                                                                     (setq
-                                                                      go 0)
-                                                                   (if
-                                                                       (/=
-                                                                        (ptr-read-u64
-                                                                         last-table-data
-                                                                         32)
-                                                                        last-count)
-                                                                       (setq
-                                                                        go
-                                                                        0)
-                                                                     (if
-                                                                         (=
-                                                                          (nl_ent_plain_value
-                                                                           last-entry)
-                                                                          0)
-                                                                         (setq
-                                                                          go
-                                                                          0)
-                                                                       (seq
-                                                                        (setq
-                                                                         last-name
-                                                                         kname)
-                                                                        (setq
-                                                                         last-value
-                                                                         0))))))))))))))))
-                                            0)
-                                          (if (> go 0)
+                                 (if (< raw 16)
+(let*
+ ((opw (if (< raw 14) 0 (if (= raw 14) 1 2)))
+  (index (if (< raw 14) (- raw 8)
+           (if (>= (+ pc opw) length) -1
+             (if (= raw 14) (heap-read-u8 data (+ pc 1))
+               (+ (heap-read-u8 data (+ pc 1))
+                  (shl (heap-read-u8 data (+ pc 2)) 8))))))
+  (value 0)
+  (kname (if (< index 0) 0
+           (if (< index nconst) (ptr-read-u64 constants (* index 8)) 0))))
+ ;; w1var: GNU Bvarref (bytecode.c:625).  The constant is the symbol object,
+ ;; which is its own value cell; no cache and no table lookup.  A plain
+ ;; special is an interned symbol object whose redirect is PLAINVAL or
+ ;; FORWARDED, read by the main thread outside root-pin capture; anything
+ ;; else, a void cell and the unbound marker leave for the outer loop.
+ (if (>= sp depth) (setq go 0)
+   (seq
+    (setq value
+          (if (= env 0) 0
+            (if (/= (logand kname 7) 6) 0
+              (let* ((hdr (ptr-read-u64 (- kname 6) 0))
+                     (rd (logand (sar hdr 8) 3)))
+                (if (/= (logand hdr 63) 4) 0
+                  (if (if (= rd 0) 0 (/= rd 3)) 0
+                    (if (/= (ptr-read-u64 env 168) 0) 0
+                      (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                        (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2) 0
+                          (ptr-read-u64 (- kname 6) 16))))))))))
+    (if (= value 0) (setq go 0)
+      (if (if (= (logand value 1) 1) 0
+            (if (= (logand value 7) 2) 0
+              (if (= (logand value 7) 4) 0
+                (wf_bytecode_w_unbound_p env value))))
+          (setq go 0)
+        (if (= opw 0)
+            (if (and (< (+ pc 2) length) (= (heap-read-u8 data (+ pc 1)) 136)) (if (and (> sp 0) (< (+ pc 6) length)) (let* ((tail-op (heap-read-u32 data (+ pc 1))) (tail-slot (+ mem (* (- sp 1) 8))) (tail-value (ptr-read-u64 tail-slot 0)) (tail-target (heap-read-u16 data (+ pc 4)))) (if (or (= (logand tail-op 16777215) 8541320) (= (logand tail-op 16777215) 8541064)) (if (= (logand tail-value 3) 1) (if (< tail-target length) (if (if (= (logand tail-op 65535) 21640) (= tail-value 9223372036854775805) (= tail-value -9223372036854775807)) (setq pc (+ pc 2)) (seq (ptr-write-u64 tail-slot 0 (if (= (logand tail-op 65535) 21640) (+ tail-value 4) (- tail-value 4))) (setq pc tail-target))) (setq pc (+ pc 2))) (setq pc (+ pc 2))) (setq pc (+ pc 2)))) (setq pc (+ pc 2))) (seq (ptr-write-u64 mem (* sp 8) value) (setq sp (+ sp 1)) (setq pc (+ pc 1))))
+          (seq (ptr-write-u64 mem (* sp 8) value)
+               (setq sp (+ sp 1))
+               (setq pc (+ pc opw 1)))))))))
+                                   ;; Opcodes 16..31.  A plain varset (16..23) is stored above; a
+                                   ;; lean varbind (24..31) runs here, on the frame's existing
+                                   ;; AUX; everything the lean binder refuses declines untouched.
+                                   (if (< raw 24)
+                                      ;; w1var: GNU Bvarset (bytecode.c:694): a plain special is
+                                      ;; stored in line.  Declined, untouched: keywords, constants
+                                      ;; and watched or trapped cells (redirect and trapped_write
+                                      ;; bits 8-11 clear), alias, buffer-local and forwarded cells,
+                                      ;; env watcher mode, workers, root-pin capture and a legacy
+                                      ;; view value (it needs the clone keystone).  The barrier
+                                      ;; runs for a non-immediate value, as nl_sym_set_w does.
+                                      (if (or (= env 0) (<= sp 0)) (setq go 0)
+                                        (seq
+                                         (setq a (if (< raw 22) 0 (if (= raw 22) 1 2)))
+                                         (if (>= (+ pc a) length) (setq go 0)
+                                           (seq
+                                            (setq b (if (< raw 22) (- raw 16)
+                                                      (if (= raw 22) (heap-read-u8 data (+ pc 1))
+                                                        (+ (heap-read-u8 data (+ pc 1))
+                                                           (shl (heap-read-u8 data (+ pc 2)) 8)))))
+                                            (if (>= b nconst) (setq go 0)
                                               (seq
-                                               (setq value
-                                                     (ptr-read-u64
-                                                      last-entry-data 16))
-                                               (if (= value 0) (setq go 0)
-                                                 (if (= value last-value)
-                                                     (if
-                                                         (and
-                                                          (< (+ pc 2)
-                                                             length)
-                                                          (=
-                                                           (heap-read-u8
-                                                            data (+ pc 1))
-                                                           136))
-                                                         (if
-                                                             (and (> sp 0)
-                                                                  (<
-                                                                   (+ pc 6)
-                                                                   length))
-                                                             (let*
-                                                                 ((tail-op
-                                                                   (heap-read-u32
-                                                                    data
-                                                                    (+ pc
-                                                                       1)))
-                                                                  (tail-slot
-                                                                   (+ mem
-                                                                      (*
-                                                                       (-
-                                                                        sp
-                                                                        1)
-                                                                       8)))
-                                                                  (tail-value
-                                                                   (ptr-read-u64
-                                                                    tail-slot
-                                                                    0))
-                                                                  (tail-target
-                                                                   (heap-read-u16
-                                                                    data
-                                                                    (+ pc
-                                                                       4))))
-                                                               (if
-                                                                   (or
-                                                                    (=
-                                                                     (logand
-                                                                      tail-op
-                                                                      16777215)
-                                                                     8541320)
-                                                                    (=
-                                                                     (logand
-                                                                      tail-op
-                                                                      16777215)
-                                                                     8541064))
-                                                                   (if
-                                                                       (=
-                                                                        (logand
-                                                                         tail-value
-                                                                         3)
-                                                                        1)
-                                                                       (if
-                                                                           (<
-                                                                            tail-target
-                                                                            length)
-                                                                           (if
-                                                                               (if
-                                                                                   (=
-                                                                                    (logand
-                                                                                     tail-op
-                                                                                     65535)
-                                                                                    21640)
-                                                                                   (=
-                                                                                    tail-value
-                                                                                    9223372036854775805)
-                                                                                 (=
-                                                                                  tail-value
-                                                                                  -9223372036854775807))
-                                                                               (setq
-                                                                                pc
-                                                                                (+
-                                                                                 pc
-                                                                                 2))
-                                                                             (seq
-                                                                              (ptr-write-u64
-                                                                               tail-slot
-                                                                               0
-                                                                               (if
-                                                                                   (=
-                                                                                    (logand
-                                                                                     tail-op
-                                                                                     65535)
-                                                                                    21640)
-                                                                                   (+
-                                                                                    tail-value
-                                                                                    4)
-                                                                                 (-
-                                                                                  tail-value
-                                                                                  4)))
-                                                                              (setq
-                                                                               pc
-                                                                               tail-target)))
-                                                                         (setq
-                                                                          pc
-                                                                          (+
-                                                                           pc
-                                                                           2)))
-                                                                     (setq
-                                                                      pc
-                                                                      (+
-                                                                       pc
-                                                                       2)))
-                                                                 (setq pc
-                                                                       (+
-                                                                        pc
-                                                                        2))))
-                                                           (setq pc
-                                                                 (+ pc 2)))
-                                                       (seq
-                                                        (ptr-write-u64 mem
-                                                                       (*
-                                                                        sp
-                                                                        8)
-                                                                       value)
-                                                        (setq sp (+ sp 1))
-                                                        (setq pc (+ pc 1))))
-                                                   (if
-                                                       (=
-                                                        (wf_bytecode_w_unbound_p
-                                                         env value)
-                                                        1)
-                                                       (setq go 0)
-                                                     (seq
-                                                      (setq last-value
-                                                            value)
-                                                      (if
-                                                          (and
-                                                           (< (+ pc 2)
-                                                              length)
-                                                           (=
-                                                            (heap-read-u8
-                                                             data (+ pc 1))
-                                                            136))
-                                                          (if
-                                                              (and
-                                                               (> sp 0)
-                                                               (< (+ pc 6)
-                                                                  length))
-                                                              (let*
-                                                                  ((tail-op
-                                                                    (heap-read-u32
-                                                                     data
-                                                                     (+ pc
-                                                                        1)))
-                                                                   (tail-slot
-                                                                    (+ mem
-                                                                       (*
-                                                                        (-
-                                                                         sp
-                                                                         1)
-                                                                        8)))
-                                                                   (tail-value
-                                                                    (ptr-read-u64
-                                                                     tail-slot
-                                                                     0))
-                                                                   (tail-target
-                                                                    (heap-read-u16
-                                                                     data
-                                                                     (+ pc
-                                                                        4))))
-                                                                (if
-                                                                    (or
-                                                                     (=
-                                                                      (logand
-                                                                       tail-op
-                                                                       16777215)
-                                                                      8541320)
-                                                                     (=
-                                                                      (logand
-                                                                       tail-op
-                                                                       16777215)
-                                                                      8541064))
-                                                                    (if
-                                                                        (=
-                                                                         (logand
-                                                                          tail-value
-                                                                          3)
-                                                                         1)
-                                                                        (if
-                                                                            (<
-                                                                             tail-target
-                                                                             length)
-                                                                            (if
-                                                                                (if
-                                                                                    (=
-                                                                                     (logand
-                                                                                      tail-op
-                                                                                      65535)
-                                                                                     21640)
-                                                                                    (=
-                                                                                     tail-value
-                                                                                     9223372036854775805)
-                                                                                  (=
-                                                                                   tail-value
-                                                                                   -9223372036854775807))
-                                                                                (setq
-                                                                                 pc
-                                                                                 (+
-                                                                                  pc
-                                                                                  2))
-                                                                              (seq
-                                                                               (ptr-write-u64
-                                                                                tail-slot
-                                                                                0
-                                                                                (if
-                                                                                    (=
-                                                                                     (logand
-                                                                                      tail-op
-                                                                                      65535)
-                                                                                     21640)
-                                                                                    (+
-                                                                                     tail-value
-                                                                                     4)
-                                                                                  (-
-                                                                                   tail-value
-                                                                                   4)))
-                                                                               (setq
-                                                                                pc
-                                                                                tail-target)))
-                                                                          (setq
-                                                                           pc
-                                                                           (+
-                                                                            pc
-                                                                            2)))
-                                                                      (setq
-                                                                       pc
-                                                                       (+
-                                                                        pc
-                                                                        2)))
-                                                                  (setq pc
-                                                                        (+
-                                                                         pc
-                                                                         2))))
-                                                            (setq pc
-                                                                  (+ pc 2)))
-                                                        (seq
-                                                         (ptr-write-u64
-                                                          mem (* sp 8)
-                                                          value)
-                                                         (setq sp (+ sp 1))
-                                                         (setq pc (+ pc 1)))))))))))))
-                                   ;; Opcodes 14..31.  Only a lean varbind (24..31) runs
-                                   ;; here, on the frame's existing AUX; varset (16..23) and
-                                   ;; everything the lean binder refuses decline untouched.
-                                   (if (< raw 24) (setq go 0)
+                                               (setq word (ptr-read-u64 constants (* b 8)))
+                                               (setq target (ptr-read-u64 mem (* (- sp 1) 8)))
+                                               (if (if (/= (logand word 7) 6) 0
+                                                     (if (= (logand target 7) 0) 0
+                                                       (let* ((hdr (ptr-read-u64 (- word 6) 0)))
+                                                         (if (/= (logand hdr 63) 4) 0
+                                                           (if (/= (logand hdr 3840) 0) 0
+                                                             (if (/= (logand (ptr-read-u64 env 112) 1048576) 0) 0
+                                                               (if (/= (ptr-read-u64 env 168) 0) 0
+                                                                 (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+                                                                   (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2) 0
+                                                                     (if (= (bf_keyword_raw word) 1) 0 1))))))))))
+                                                   (seq (if (= (logand target 1) 0) (wf_dirty) 0)
+                                                        (ptr-write-u64 (- word 6) 16 target)
+                                                        (setq sp (- sp 1))
+                                                        (setq pc (+ pc a 1)))
+                                                 (setq go 0))))))))
                                      (if (or (= env 0) (<= sp 0)) (setq go 0)
                                        (seq
                                         (setq ref (ptr-read-u64 foot 40))
@@ -24611,7 +24459,16 @@ bytes are written into a fresh 8-byte buffer instead."
                                                  0)
                                                (setq pc (+ pc 1)))
                                             (setq go 0))))
-                                     (setq go 0)))))))
+                                     (if (< raw 79) (setq go 0)
+                                       ;; w1f: substring (79) and concat2..4 (80-82) on the WORD stack through
+                                       ;; the directcall text body; -3 leaves everything untouched (go 0).
+                                       (let* ((cnt (if (= raw 79) 3 (- raw 78))))
+                                         (if (< sp cnt) (setq go 0)
+                                           (if (= (wf_bytecode_w_text_op mem sp cnt (if (= raw 79) 116 115)) 0)
+                                               (seq (setq sp (- sp (- cnt 1)))
+                                                    (setq pc (+ pc 1))
+                                                    (setq last-name -1))
+                                             (setq go 0)))))))))))
                        (if (= raw 84)
                            (if (<= sp 0) (setq go 0)
                              (seq
@@ -25558,7 +25415,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; unsupported operands replay in the outer handler.
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
-			     (if (/= (logand -2233504769127727105 (shl 1 first-op)) 0) 1 0)
+			     (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
 			   (if (< first-op 128)
 			       (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
@@ -25914,6 +25771,10 @@ bytes are written into a fresh 8-byte buffer instead."
                       (if (= (wf_bytecode_nconc2 env mem sp (wf_bytecode_scratch curfp)) 0)
                           (setq sp (- sp 1))
                         (setq done 4)))
+                     ((if (= base 79)
+                          (if (>= sp 3) (= (wf_bytecode_w_text_op mem sp 3 116) 0) 0)
+                        0)
+                      (setq sp (- sp 2)))
                      ((or (= base 147) (= base 148) (= base 149)
                           (= base 150) (= base 151) (= base 156)
                           (= base 79) (= base 158)
@@ -26075,9 +25936,11 @@ bytes are written into a fresh 8-byte buffer instead."
                       (let* ((count (if (= base 176) operand (- base 78))))
                         (if (> count sp)
                             (seq (setq bad-op raw) (setq done 2))
-                          (if (= (wf_bytecode_w_boxed env mem sp count base (wf_bytecode_scratch curfp)) 0)
+                          (if (= (wf_bytecode_w_text_op mem sp count 115) 0)
                               (setq sp (- sp (- count 1)))
-                            (setq done 4)))))
+                            (if (= (wf_bytecode_w_boxed env mem sp count base (wf_bytecode_scratch curfp)) 0)
+                                (setq sp (- sp (- count 1)))
+                              (setq done 4))))))
                      ((= base 154)
                       ;; The precise WORD stack keeps both operands live. Mode0
                       ;; uses builtin equal's private structural provider; the
@@ -30129,6 +29992,7 @@ bytes are written into a fresh 8-byte buffer instead."
              (init (wf_arg_word args 1))
              (n (nl_word_payload w0)))
         (if (if (= (nl_word_tag64 w0) 2) (if (< n 0) 0 1) 0)
+            (if (= n 0) (+ (nl_alloc_vector 0) 6)
             (if (/= (logand init 7) 0)
                 ;; GNU make_vector: allocate the block, then fill it with INIT.
                 (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0))
@@ -30139,7 +30003,7 @@ bytes are written into a fresh 8-byte buffer instead."
               (let* ((out (alloc-bytes 32 8)))
                 (seq (vector-make n out)
                      (bf_mv_fill out 0 n init)
-                     out)))
+                     out))))
           (nl_abi_fail (bf_wrong_type_wholenump w0) 0))))
     (defun bf_make_vector (args out)
       (nl_abi_word_to_rc (bf_make_vector_w args 0) out))
@@ -30153,12 +30017,28 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (heap-sexp-tag-word node) 7)
           (bf_vec_count (nl_cons_cdr_ptr node) (+ acc 1))
         acc))
+    ;; GNU Fvector: one block, header plus the argument words.  When every argument is a
+    ;; canonical WORD (low bits /= 0) the result is the same boxed vector `make-vector'
+    ;; builds, which the word VM's aref/aset/length arms accept; a legacy-view argument
+    ;; (low bits 0) keeps the 32-byte view path unchanged.
     (defun bf_vector_w (args _pad)
-      (let* ((n (bf_vec_count args 0))
-             (out (alloc-bytes 32 8)))
-        (seq (vector-make n out)
-             (bf_vec_fill out 0 args)
-             out)))
+      (let* ((n (bf_vec_count args 0)) (node args) (ok 1))
+        (if (= n 0) (+ (nl_alloc_vector 0) 6)
+        (seq (while (if (= ok 1) (= (heap-sexp-tag-word node) 7) 0)
+               (seq (if (= (logand (nl_cons_car_word node) 7) 0) (setq ok 0) 0)
+                    (setq node (nl_cons_cdr_ptr node))))
+             (if (= ok 1)
+                 (let* ((box (alloc-bytes (+ 8 (* n 8)) 8)) (k 0) (cell args))
+                   (seq (ptr-write-u64 box 0 (+ 8 (* n 256)))
+                        (while (< k n)
+                          (seq (ptr-write-u64 box (+ 8 (* k 8)) (nl_cons_car_word cell))
+                               (setq cell (nl_cons_cdr_ptr cell))
+                               (setq k (+ k 1))))
+                        (+ box 6)))
+               (let* ((out (alloc-bytes 32 8)))
+                 (seq (vector-make n out)
+                      (bf_vec_fill out 0 args)
+                      out)))))))
     ;; unibyte-string &rest BYTES -> raw byte string.  The ELF writer builds
     ;; buffers from byte values 0..255, so clamp every arg to its low byte and
     ;; append it directly to a MutStr builder instead of UTF-8 codepoint logic.
@@ -30781,10 +30661,9 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; at arr+8; see lisp/nelisp-cc-nlboolvector-alloc.el).
                   (if (= (heap-sexp-tag-word arr) 10)
                       (bf_aset_bool_vector_w arr idx (wf_arg_word args 1) val 0)
-                    ;; GNU Emacs 31: an interpreted closure is not an array.
-                    (if (= (nl_closure_shape_p arr) 1)
-                        (nl_abi_fail (bf_wrong_type_arrayp arr) 0)
-                      val)))))))))
+                    ;; GNU rejects every remaining target, including lists,
+                    ;; scalars and interpreted closures, without a write.
+                    (nl_abi_fail (bf_wrong_type_arrayp arr) 0)))))))))
     (defun bf_aset_checked (args out)
       (nl_abi_word_to_rc (bf_aset_checked_w args 0) out))
     ;; Doc 215 builtin word ABI: bf_aset_bool_vector_w returns the result WORD (0 = signal stashed).
@@ -46715,7 +46594,10 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
                  (push `(ptr-write-u64 b ,(* w 8) ,word) forms)
                  (setq w (1+ w)))
                (nreverse forms))
-           (nl_install_one globals unbound b ,len builtin_sym)))))
+           ,(let ((desc (nelisp-standalone--subr-desc nm)))
+              (if desc
+                  `(nl_install_subr globals unbound b ,len builtin_sym ,desc)
+                `(nl_install_one globals unbound b ,len builtin_sym)))))))
    ;; Base builtins + target-specific TLS names + the Step C external FFI
    ;; name.  `nelisp-runtime-reload-build' (scripts/nelisp-runtime-reload-
    ;; build.el) LET-extends `nelisp-standalone--reader-builtins' itself
@@ -56378,19 +56260,41 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; it.  ARGP is a raw address into a word-VM frame vector, valid while
     ;; this frame is live because the VM itself holds raw pointers into that
     ;; vector across the call (no collection moves it meanwhile).
+    ;; w2bt: the lean record of a non-leaf call, GNU's record_in_backtrace
+    ;; (lisp.h:3760) in one flat body.  The entry keeps its 64-byte layout, so every
+    ;; reader and `nl_n4_mark_env'/`nl_n4_rewrite_env' see what they saw.  The hot
+    ;; path has no call: an operator WORD (low bits not 0, which `nl_word_canon'
+    ;; returns unchanged), the state, and room for one more record.  A view
+    ;; operator (low bits 0), a missing state and the depth limit take the cold
+    ;; `nl_n4_push_words_cold', which canonicalises and answers 0 at the limit.
     (defun nl_n4_push_words (env function argp argc)
-      (let* ((frame (nl_n4_push_nil env function)))
-        (seq (if (= frame 0) 0 (ptr-write-u64 frame 24 (+ (* argp 65536) argc)))
-             frame)))
-    (defun nl_n4_push_nil (env function)
+      (let* ((state (heap-read-u64 env 176))
+             (depth (if (= state 0) 32768 (heap-read-u64 state 0))))
+        (if (or (>= depth 32768) (= (logand function 7) 0))
+            (nl_n4_push_words_cold env function argp argc)
+          (let* ((frame (+ state (+ 64 (shl depth 6))))
+                 (frames-data (heap-read-u64 env 40)))
+            (seq
+             (ptr-write-u64 frame 0 function)
+             (ptr-write-u64 frame 8 3)
+             (ptr-write-u64 frame 16 (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3)))
+             (ptr-write-u64 frame 24 (+ (* argp 65536) argc))
+             (ptr-write-u64 frame 32 (sar (heap-read-u64 frames-data 24) 2))
+             (ptr-write-u64 frame 40 (+ frames-data 6))
+             (ptr-write-u64 state 0 (+ depth 1))
+             frame)))))
+    ;; The general push for `nl_n4_push_words': allocates the chunk on first use,
+    ;; canonicalises a view operator, answers 0 at the 32768 limit.
+    (defun nl_n4_push_words_cold (env function argp argc)
       (let* ((state (nl_n4_state env)) (depth (heap-read-u64 state 0)))
         (if (>= depth 32768) 0
           (let* ((frame (nl_n4_record state depth))
                  (frames-data (heap-read-u64 env 40)))
             (seq
-             (nl_n4_put_words frame function 3)
+             (ptr-write-u64 frame 0 (if (= (logand function 7) 6) function (nl_word_canon function)))
+             (ptr-write-u64 frame 8 3)
              (ptr-write-u64 frame 16 (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3)))
-             (ptr-write-u64 frame 24 0)
+             (ptr-write-u64 frame 24 (+ (* argp 65536) argc))
              (ptr-write-u64 frame 32 (sar (heap-read-u64 frames-data 24) 2))
              (ptr-write-u64 frame 40 (+ frames-data 6))
              (ptr-write-u64 state 0 (+ depth 1))
@@ -56493,13 +56397,18 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
                  (nl_apply_function_w (wf_word_view fw) (heap-read-u64 root 0)
                                       env 0)))))))))
     ;; Doc 215 word ABI: W is the activation's result WORD (0 = signal).
+    ;; w2bt: the pop is one load, one test and two memory operations; a flagged
+    ;; record (debug-on-exit, +18) and a signal answer (W = 0) leave the hot body.
     (defun nl_n4_finish_w (w env _pad frame)
       (if (= frame 0) w
-        (let* ((state (heap-read-u64 env 176))
-               (r (if (and (/= w 0) (/= (heap-read-u8 frame 18) 0))
-                      (nl_n4_exit_debug_w w env)
-                    w)))
-          (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) r))))
+        (if (and (/= w 0) (/= (heap-read-u8 frame 18) 0))
+            (nl_n4_finish_w_cold w env)
+          (let* ((state (heap-read-u64 env 176)))
+            (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) w)))))
+    (defun nl_n4_finish_w_cold (w env)
+      (let* ((state (heap-read-u64 env 176))
+             (r (nl_n4_exit_debug_w w env)))
+        (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) r)))
     ;; (rc, OUT) form for the fx VM's activations: OUT holds the value.
     (defun nl_n4_finish_rc (rc r out _pad)
       (if (= r 0) (if (= rc 0) 1 rc) (nl_abi_word_to_rc r out)))
@@ -57552,7 +57461,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
     ("nth" 10 2 2) ("nthcdr" 11 2 2) ("funcall" 13 1 15) ("apply" 14 2 15)
     ("+" 15 0 2) ("-" 16 1 2) ("*" 17 2 2) ("1+" 18 1 1) ("1-" 19 1 1)
     ("=" 20 2 2) (">" 21 2 2) ("<=" 22 2 2) (">=" 23 2 2)
-    ("cons" 24 2 2) ("list" 25 0 15) ("make-vector" 26 2 2))
+    ("cons" 24 2 2) ("list" 25 0 15) ("make-vector" 26 2 2)
+    ("aref" 27 2 2) ("aset" 28 3 3) ("length" 29 1 1)
+    ("%" 30 2 2) ("logand" 31 0 15))
   "(NAME ID MIN MAX) of the builtins the interpreter calls on their evaluated
 argument WORDs (GNU eval_sub's argvals, eval.c:2626-2693), by primitive id: 1-13
 run in `m5_fx_primitive_run', 14 is apply, 15 and up in `nl_eic_prim2_run'.  MAX 15
@@ -57575,9 +57486,13 @@ it decline and the ordinary builtin runs on the same evaluated arguments.")
 Bits 0-7 the primitive id, 8-11 and 12-15 the primitive's argument range, 16-23 and
 24-31 the subr's min_args and max_args (255: MANY), GNU's SUBR record fields."
   (let* ((arities (nelisp-standalone--builtin-arities))
-         ;; Only names with a static id: a name without one would need the name-compare
-         ;; buckets on every call, and keeps its post-evaluation arity check.
-         (names (seq-filter #'nelisp-standalone--sid
+         ;; Existing static names keep their direct SID lookup.  An explicitly
+         ;; listed primitive without an SID (logand) must also enter the name
+         ;; dispatcher's existing fallback buckets; otherwise its table entry
+         ;; is unreachable.  Other SID-less builtins retain ordinary apply.
+         (names (seq-filter (lambda (name)
+                              (or (nelisp-standalone--sid name)
+                                  (assoc name nelisp-standalone--eval-prims)))
                             (delete-dups (append (mapcar #'car arities)
                                                  (mapcar #'car nelisp-standalone--eval-prims)))))
          table)
@@ -57621,6 +57536,29 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     `(defun nl_sp_gate_cell (head args name_ptr)
        ,(nelisp-standalone--applyfn-build-dispatch (nreverse table) '(nl_sp_check head args 0 -1)))))
 
+(defconst nelisp-standalone--directcall-specs
+  '(("car" 1) ("nth" 10) ("length" -16) ("aset" -15) ("logand" 27)
+    ("gethash" 101) ("puthash" 102) ("remhash" 103) ("hash-table-count" 104)
+    ("1+" 105) ("1-" 106) ("+" 107) ("-" 108)
+    ("cdr" 109) ("identity" 110) ("cons" 111)
+    ;; Allocating primitives (WORD bodies in `nl_directcall_alloc_run').
+    ("vector" 112) ("make-vector" 113) ("list" 114)
+    ("concat" 115) ("substring" 116) ("make-string" 117))
+  "Primitives with a directcall id: (NAME ID).  Their function cells hold a Subr
+object (header kind 20) wrapping the legacy (builtin NAME) list (w2subr).")
+
+(defun nelisp-standalone--subr-desc (name)
+  "The packed descriptor of the Subr object for NAME, or nil: id+17 in bits 0-7,
+the minimum argument count in 8-15, the maximum (127 = many) in 16-23 and, in bit
+24, the leaf flag (ids below 112 run no Lisp and hold no safepoint)."
+  (let* ((spec (assoc name nelisp-standalone--directcall-specs))
+         (arity (and spec (assoc name (nelisp-standalone--builtin-arities)))))
+    (and spec arity
+         (logior (+ (cadr spec) 17)
+                 (ash (nth 1 arity) 8)
+                 (ash (if (eq (nth 2 arity) 'many) 127 (nth 2 arity)) 16)
+                 (if (< (cadr spec) 112) (ash 1 24) 0)))))
+
 (defun nelisp-standalone--directcall-defuns ()
   "Private validated argv entries for existing primitives, with no public objects.
 Arity comes from the same metadata as the list route. Unknown shapes, changed
@@ -57628,13 +57566,7 @@ names and unsupported values decline before effects; the list implementation
 remains the reference. No production hit/fallback counters are emitted."
   (let* ((arities (nelisp-standalone--builtin-arities)) (dispatch 0)
          (descriptors (make-string 16384 0))
-         (specs '(("car" 1) ("nth" 10) ("length" -16) ("aset" -15) ("logand" 27)
-                  ("gethash" 101) ("puthash" 102) ("remhash" 103) ("hash-table-count" 104)
-                  ("1+" 105) ("1-" 106) ("+" 107) ("-" 108)
-                  ("cdr" 109) ("identity" 110) ("cons" 111)
-                  ;; Allocating primitives (WORD bodies in `nl_directcall_alloc_run').
-                  ("vector" 112) ("make-vector" 113) ("list" 114)
-                  ("concat" 115) ("substring" 116) ("make-string" 117)))
+         (specs nelisp-standalone--directcall-specs)
          ;; Lower only the argument reads of the existing removal operation.
          ;; Hashing, key comparison, weak storage and unlinking stay owned by
          ;; the hash implementation; its list entry remains the reference.
@@ -57697,6 +57629,19 @@ remains the reference. No production hit/fallback counters are emitted."
         ;; Read the current cell's two conses on EVERY call. No object address
         ;; survives the call: typed conses do not move, but may be swept/reused.
         (if (if (< argc 0) 1 (> argc 255)) 0
+         (if (= (logand fn 7) 6)
+          ;; w2subr: a Subr object (header kind 20, descriptor in header bits
+          ;; 8-32) is immutable, so a header compare and one descriptor load
+          ;; replace the cons walk below, which stays the route of legacy lists.
+          (if (< fn 4096) 0
+            (let* ((hdr (ptr-read-u64 (- fn 6) 0)))
+              (if (/= (logand hdr 63) 20) 0
+                (let* ((desc (sar hdr 8)))
+                  (if (< argc (logand (sar desc 8) 255)) 0
+                    (if (if (= (logand (sar desc 16) 255) 127) 0
+                          (> argc (logand (sar desc 16) 255)))
+                        0
+                      (- (logand desc 255) 17)))))))
           (if (if (< fn 4096) 1 (/= (logand fn 7) 2)) 0
             (let* ((head (ptr-read-u64 (- fn 2) 0))
                    (tail (ptr-read-u64 (- fn 2) 8)))
@@ -57735,7 +57680,35 @@ remains the reference. No production hit/fallback counters are emitted."
                                                   (= (logand original 7) 0))
                                                 (= (nl_sym_sid original) name-sid) 0))))
                                     (- (logand desc 255) 17)
-                                  (if (= name-sid 0) ,dispatch-zero ,dispatch)))))))))))))))
+                                  (if (= name-sid 0) ,dispatch-zero ,dispatch))))))))))))))))
+      (defun nelisp_env_lookup_function_raw_w (mirror-ptr unbound-ptr name-ptr _pad)
+        ;; w2subr: `nelisp_env_lookup_function_w' as it was, answering a Subr
+        ;; object as it is.  Only the directcall callers use it; every other
+        ;; reader gets the legacy (builtin NAME) list the object wraps.
+        (let ((entry (nelisp_mirror_lookup_entry_owned mirror-ptr name-ptr)))
+          (if (= entry 0) 2
+            (let ((w (nl_record_slot_word entry 1)))
+              (if (if (= (logand w 1) 1) 0
+                    (if (= (nl_val_tag w) 16)
+                        (if (= (heap-sexp-payload w) (heap-sexp-payload unbound-ptr)) 1 0)
+                      0))
+                  2 w)))))
+      (defun nl_install_subr (mirror_ptr unbound_ptr name_bytes_ptr name_len builtin_sym_slot desc)
+        ;; Boot-time `nl_install_one' for a directcall primitive: the function
+        ;; cell gets a Subr object [header = 20 | DESC << 8][legacy list WORD]
+        ;; allocated in the boot region (never swept), so a cell is never a
+        ;; mutable list for the fast path.
+        (let* ((name_slot (alloc-bytes 32 8)) (inner_slot (alloc-bytes 32 8))
+               (sent_slot (alloc-bytes 32 8)) (scratch_slot (alloc-bytes 32 8))
+               (box (alloc-bytes 16 8)))
+          (seq
+           (nl_alloc_symbol name_bytes_ptr name_len name_slot)
+           (nelisp_cons_construct name_slot 3 inner_slot)
+           (nelisp_cons_construct builtin_sym_slot inner_slot sent_slot)
+           (ptr-write-u64 box 0 (+ 20 (shl desc 8)))
+           (ptr-write-u64 box 8 (nl_word_canon sent_slot))
+           (nl_apply_build_fn_scratch unbound_ptr (+ box 6) scratch_slot)
+           (nelisp_mirror_set_function_or_insert mirror_ptr name_slot scratch_slot 0))))
       (defun nl_directcall_hash_rem (key table) ,@rem-argv)
       (defun nl_directcall_hash_run (id base argc result env)
         ;; BASE is canonical WORD argv, rooted by the caller through growth
@@ -57867,6 +57840,8 @@ remains the reference. No production hit/fallback counters are emitted."
                    (setq i (+ i 1))))
                (if (= ok 0) -3
                  (if (= id 112)
+                     (if (= argc 0)
+                         (seq (ptr-write-u64 result 0 (+ (nl_alloc_vector 0) 6)) 0)
                      ;; GNU Fvector: allocate the block, store the arguments.
                      (let* ((box (alloc-bytes (+ 8 (* argc 8)) 8)))
                        (seq (ptr-write-u64 box 0 (+ 8 (* argc 256)))
@@ -57875,7 +57850,7 @@ remains the reference. No production hit/fallback counters are emitted."
                               (seq (ptr-write-u64 box (+ 8 (* i 8)) (heap-read-u64 base (* i 8)))
                                    (setq i (+ i 1))))
                             (ptr-write-u64 result 0 (+ box 6))
-                            0))
+                            0)))
                    (if (= id 113)
                        (let* ((r (nl_eic_prim_make_vector (heap-read-u64 base 0) (heap-read-u64 base 8))))
                          (if (= r -1) -3 (seq (ptr-write-u64 result 0 r) 0)))
@@ -57966,7 +57941,7 @@ remains the reference. No production hit/fallback counters are emitted."
                      (original (heap-read-u64 base 0))
                      (tag (nl_val_tag original))
                      (fn (if (or (= tag 4) (= tag 16))
-                             (nelisp_env_lookup_function_w env (+ env 64) original 0)
+                             (nelisp_env_lookup_function_raw_w env (+ env 64) original 0)
                            original)))
                 (if (if (< nlast 0) 1 (= (nl_directcall_id fn original argc) 0)) 2
                   (let* ((mark (nl_root_mark env)) (argv (nl_root_frame env (+ argc 2))))
@@ -57994,11 +57969,16 @@ remains the reference. No production hit/fallback counters are emitted."
         (if (/= (nl_val_tag args) 7) 2
           (let* ((original (nl_cons_car_word args)) (tag (nl_val_tag original))
                  (fn (if (or (= tag 4) (= tag 16))
-                         (nelisp_env_lookup_function_w env (+ env 64) original 0)
+                         (nelisp_env_lookup_function_raw_w env (+ env 64) original 0)
                        original)))
-            (if (if (< fn 4096) 1 (/= (logand fn 7) 2)) 2
-              (if (/= (nl_sym_sid (ptr-read-u64 (- fn 2) 0))
-                      ,(nelisp-standalone--sid "builtin")) 2
+            (if (if (= (logand fn 7) 6)
+                    (if (< fn 4096) 1 (/= (logand (ptr-read-u64 (- fn 6) 0) 63) 20))
+                  (if (< fn 4096) 1
+                    (if (/= (logand fn 7) 2) 1
+                      (/= (nl_sym_sid (ptr-read-u64 (- fn 2) 0))
+                          ,(nelisp-standalone--sid "builtin")))))
+                2
+              (seq
                 (let* ((count (nl_sp_nargs args)))
                   (if (if (< count (+ applyp 1)) 1 (> count 257)) 2
                     (let* ((argc (if (= applyp 0) (- count 1)
@@ -58035,8 +58015,36 @@ remains the reference. No production hit/fallback counters are emitted."
         ;; the caller's frame), and the backtrace record holds the function name.
         ;; Debug/evaluation policy takes the old route, including its hooks;
         ;; with the policy bits clear, `nl_n4_finish_w' runs no Lisp.
+        ;;
+        ;; w1leaf: a LEAF id (every id below 112: car nth length aset logand
+        ;; the hash ids 101-104, 1+ 1- + - cdr identity cons) takes neither the
+        ;; backtrace record nor its finish on a hit.  The bodies reached for those ids
+        ;; (`nl_directcall_fast_run', `nl_directcall_run' -> `nl_directcall_hash_run',
+        ;; `nl_directcall_callback_run', `m5_fx_primitive_run', the inline logand) call no
+        ;; Lisp, hold no safepoint and start no collection (collections start only at
+        ;; `wf_bytecode_poll'/`nl_gc_vm_poll' and the form boundary; thread parks only at
+        ;; the evaluator entry and `nl_thread_join_wait'), so nothing can read the record
+        ;; or the depth count while the body runs, and BASE/OUT stay in the caller's
+        ;; rooted frame (the record held no root: +24 has EXT 0).  The depth test the
+        ;; record push made (now in `nl_n4_push_words') is kept (one load and compare):
+        ;; at the limit, or before the
+        ;; state exists, the old route below runs and declines/pushes as before.  A body
+        ;; answers 0 (OUT written) or -3 (nothing written, the reference route owns the
+        ;; error and its backtrace): -3 is 2 here without any record, as the old route's
+        ;; push, decline, pop.  The allocating ids 112 and up keep the record.
         (let* ((id (nl_directcall_id fn original argc)))
           (if (if (= id 0) 1 (/= (logand (heap-read-u64 env 112) 3145728) 0)) 2
+           (if (if (< id 112)
+                   (if (= (heap-read-u64 env 176) 0) 0
+                     (< (heap-read-u64 (heap-read-u64 env 176) 0) 32768))
+                 0)
+            (let* ((fast (if (if (> argc 0)
+                                 (if (= id 1) 1 (if (>= id 105) (<= id 110) 0))
+                               0)
+                             (nl_directcall_fast_run id base argc out)
+                           -4))
+                   (st (if (= fast -4) (nl_directcall_run id base argc out env) fast)))
+              (if (= st 0) 0 (if (= st -3) 2 1)))
             ;; GNU Bcall records call_args directly (bytecode.c:792-797).
             ;; Push the same lazy argv in one operation.
             (let* ((name (if (= (logand original 7) 6) original
@@ -58056,7 +58064,7 @@ remains the reference. No production hit/fallback counters are emitted."
                     (let* ((w (nl_n4_finish_w (if (= st 0) (heap-read-u64 out 0) 0)
                                               env 0 frame)))
                       (if (= w 0) 1
-                        (seq (ptr-write-u64 out 0 w) 0)))))))))))))
+                        (seq (ptr-write-u64 out 0 w) 0))))))))))))))
 
 (defun nelisp-standalone--eval-call-defuns ()
   "The interpreter's call of a subr on GNU eval_sub's structure (eval.c:2540-2700)."
@@ -58452,14 +58460,42 @@ remains the reference. No production hit/fallback counters are emitted."
           (if (= st2 0) w 0)))
       ;; The primitives above 13 on fixnum, cons and vector arguments.  -3: decline.
       (defun nl_eic_prim2_run (id base argc resw)
-        (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
+        ;; Reuse existing WORD bodies (native-surface clauses 1/2/5), with
+        ;; the caller's rooted argv.  No new builtin or representation:
+        ;; unsupported values decline before effects to the list reference.
+        ;; Interpreter ids 27..30 map to the VM's -14..-17; variadic logand
+        ;; uses the existing all-fixnum argv scan (zero args declines).
+        ;; Keep the existing arithmetic decision first: an extra guard on
+        ;; every +/1+ call costs four instructions per plain-loop trip.
+        (if (<= id 19)
+            (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
+                   (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
+                   (r (nl_eic_prim_arith id a b argc)))
+              (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))
+          (if (>= id 27)
+              (if (= id 31) (nl_directcall_run 27 base argc resw 0)
+                (let* ((st (m5_fx_primitive_run (- 13 id) base argc argc resw 0 0)))
+                  (if (if (= id 28) (= st -3) 0)
+                      ;; The legacy aset entry silently returns VAL for a
+                      ;; non-array.  GNU checks the index first, then reports
+                      ;; (wrong-type-argument arrayp ARRAY).  Reuse its type
+                      ;; predicate and condition constructor on this decline;
+                      ;; records and char-tables keep their existing adapters.
+                      (let* ((a (heap-read-u64 base 0)) (b (heap-read-u64 base 8)))
+                        (if (= (logand b 3) 1)
+                            (if (= (bf_arrayp_raw a) 1) -3
+                              (let* ((tag (nl_word_tag64 a)))
+                                (if (if (= tag 9) 1 (= tag 12)) -3
+                                  (bf_wrong_type_arrayp (wf_word_view a)))))
+                          -3))
+                    st)))
+          (let* ((a (if (> argc 0) (heap-read-u64 base 0) 3))
                (b (if (> argc 1) (heap-read-u64 (+ base 8) 0) 3))
-               (r (if (<= id 19) (nl_eic_prim_arith id a b argc)
-                    (if (<= id 23) (nl_eic_prim_compare id a b)
+               (r (if (<= id 23) (nl_eic_prim_compare id a b)
                       (if (= id 24) (nelisp_cons_construct_w a b 0)
                         (if (= id 25) (nl_eic_prim_list base argc resw)
-                          (if (= id 26) (nl_eic_prim_make_vector a b) -1)))))))
-          (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))
+                          (if (= id 26) (nl_eic_prim_make_vector a b) -1))))))
+          (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))
       ;; The fixnum WORD of S, or -1 when S does not fit.
       (defun nl_eic_fix_wrap (s)
         (if (= (sar (shl s 2) 2) s) (+ (shl s 2) 1) -1))
@@ -58506,6 +58542,7 @@ remains the reference. No production hit/fallback counters are emitted."
         (if (= (logand a 3) 1)
             (let* ((n (sar a 2)))
               (if (if (>= n 0) (< n 1048576) 0)
+                  (if (= n 0) (+ (nl_alloc_vector 0) 6)
                   (if (/= (logand b 7) 0)
                       ;; GNU make_vector: allocate the block, then fill it with INIT, as `bf_make_vector_w' does
                       ;; for a WORD that is no legacy view (648 Ir for 16 slots on gc-port's tip; the 32-byte
@@ -58516,7 +58553,7 @@ remains the reference. No production hit/fallback counters are emitted."
                                (seq (ptr-write-u64 box (+ 8 (* k 8)) b) (setq k (+ k 1))))
                              (+ box 6)))
                     (let* ((out (alloc-bytes 32 8)))
-                      (seq (vector-make n out) (bf_mv_fill out 0 n b) out)))
+                      (seq (vector-make n out) (bf_mv_fill out 0 n b) out))))
                 -1))
           -1))
       ;; GNU's argv lives through its result hook. The caller owns the mark
@@ -58588,7 +58625,16 @@ remains the reference. No production hit/fallback counters are emitted."
       ;; its arguments'.  Anything else (the unbound marker, an autoload cell, an
       ;; alias, a macro, a closure) takes the full lookup with its two-slot frame.
       (defun nl_eic_symbol_w (form_ptr head_ptr tail_ptr env)
-        (let* ((w (if (= (logand head_ptr 7) 6) (nl_record_slot_word head_ptr 1) 0))
+        (let* ((w (if (= (logand head_ptr 7) 6)
+                      ;; w2subr: a Subr object answers the legacy list it wraps, which
+                      ;; the shape tests below read as ever.
+                      (let* ((c (nl_record_slot_word head_ptr 1)))
+                        (if (= (logand c 7) 6)
+                            (if (< c 4096) c
+                              (if (= (logand (ptr-read-u64 (- c 6) 0) 63) 20)
+                                  (ptr-read-u64 (- c 6) 8) c))
+                          c))
+                    0))
                (nm (if (= w 0) 0 (nl_eic_builtin_name w))))
           (if (/= nm 0)
               (nl_eic_builtin_call_w w nm tail_ptr env 0 head_ptr)

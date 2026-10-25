@@ -1,0 +1,18 @@
+#+TITLE: Leaf primitives skip the root frame and backtrace record on success (w1leaf)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v11 sources). Strategy: ../resume-4943-20261024/target/strategy/STRATEGY.md.
+#+NOTE: 2026-10-27 after implementation: pending lines became cmd checks over recorded logs (criteria and denominator unchanged). S1.2 stays a failing cmd until the negative-control build (tag b) logs exist.
+* S1 Source
+** S1.1 For leaf directcall ids (no safepoint, no Lisp re-entry), the hit path writes the result WORD without nl_n4_push_words/nl_n4_finish_w; every decline and every debug policy keeps the old route with its backtrace; GC safety argued in REPORT.md per D-callproto stage A; red/green
+cmd: python3 target/w1leaf/check.py s11
+** S1.2 A scan-off run (conservative scan disabled) over leaf loops passes, and an omitted-root negative control fails it; forced collection at every poll over every leaf id passes; backtrace/error parity against GNU for failing leaf calls ((car 5), (gethash k 3), (logand 'a)) and max-lisp-eval-depth behaviour documented
+cmd: python3 target/w1leaf/check.py s12
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: python3 target/w1leaf/check.py s21
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/w1leaf/check.py s22
+* S3 End to end
+** S3.1 Instructions per trip on r4-car, r4-nth, r4-length, r4-aset, r4-logand and r7-gethash-eq-fix reduced vs integ-1027 (pmcrun2 two-N), results checked
+cmd: python3 target/w1leaf/check.py s31
+** S3.2 Paired elapsed (CPU 13) on those rows plus p-mapc-car, r7-puthash-existing and the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/w1leaf/check.py s32

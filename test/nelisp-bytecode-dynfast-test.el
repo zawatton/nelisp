@@ -207,10 +207,12 @@ cell, default fixnum-coded 8), :bind-rc, :unbind-rc, :nconst, :env."
 
 (ert-deftest dfa-starters-and-structure ()
   ;; Unbind (40..47) starts a batch; varbind (24..31) does not (a first-op
-  ;; varbind in a frame without AUX would waste a fast-run entry); varset and
-  ;; the neighbours stay outside.
+  ;; varbind in a frame without AUX would waste a fast-run entry); varref 14/15
+  ;; and varset 16..23 start one (w1var: they run in the loop); the other
+  ;; neighbours stay outside.
   (dolist (raw '(40 41 42 43 44 45 46 47)) (should (fcl--admitted raw)))
-  (dolist (raw '(14 16 23 24 25 31 38 39 48 135 179)) (should-not (fcl--admitted raw)))
+  (dolist (raw '(24 25 31 38 39 48 135 179)) (should-not (fcl--admitted raw)))
+  (dolist (raw '(14 15 16 17 22 23)) (should (fcl--admitted raw)))
   (dolist (raw '(0 13 32 37 56 61 63 64 65 71 83 94 129 134 136 137 158 162 165 166 178 182 183 192))
     (should (fcl--admitted raw)))
   ;; No pre-dispatch filter: the first test of the dispatch is unchanged.

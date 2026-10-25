@@ -1,0 +1,29 @@
+#+TITLE: GNU parity: equal hashing of vectors, fillarray, eql on vectors (parity8)
+#+NOTE: Created 2026-10-27 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 (v11) plus overlay (w1vec). Evidence: the w1vec 42-form vector corpus (../w1vec-20261027/target/codex/REPORT.md, target/w1vec/). v11 and the w1vec candidate both differ from GNU in four lines:
+#+NOTE: (1) gethash on an equal hash table with a vector key returns nil where GNU returns the value; (2) fillarray is void; (3) eql on empty vectors differs; (4) sxhash-equal values differ.
+* S1 Source
+** S1.1 equal hash tables find vector (and bool-vector, char-table, record) keys exactly as GNU (sxhash-equal consistency with equal; GNU fns.c sxhash_obj/internal_equal); red/green including a table that grows and a key mutated after insertion behaving as GNU
+cmd: test $(diff -a target/parity8/corpus-gnu.out target/parity8/corpus-cand.out | grep -c '^<') -eq 3
+cmd: ! diff -a target/parity8/corpus-gnu.out target/parity8/corpus-cand.out | grep -a '^<' | grep -aq 'gethash\|hash-table-count\|puthash'
+cmd: test $(diff -a target/parity8/corpus-gnu.out target/parity8/red.log | grep -c '^<') -ge 20
+** S1.2 fillarray exists with GNU semantics for vectors, strings, bool-vectors and char-tables; eql on vectors (empty and non-empty) matches GNU; sxhash-equal equal values hash equally (exact numbers need not match GNU); red/green
+cmd: ! grep -a 'void-function' target/parity8/corpus-cand.out
+cmd: grep -aq '(fillarray x 7) (list (aref x 65) (aref x 12345) (char-table-range x nil))) => (7 7 7)' target/parity8/corpus-cand.out
+cmd: grep -aq '^(eql (vector) (vector)) => t' target/parity8/corpus-cand.out
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: grep -q '^BUILD rc=0' target/parity8-build/dynamic/build.log
+cmd: test -x target/parity8-build/dynamic/nelisp-dynamic
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q 'weak 24/24 PASS' target/parity8/fixtures.log
+cmd: grep -q 'GNU 56/56 PASS' target/parity8/fixtures.log
+cmd: grep -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/parity8/fixtures.log
+cmd: grep -q 'buffer 21/21 PASS' target/parity8/fixtures.log
+cmd: test $(grep -c PASS target/parity8/wincheck.log) -eq 3
+* S3 End to end
+** S3.1 The w1vec vector corpus differs from GNU only in sxhash-equal numeric values (if at all), and the hashfast GNU API fixture and directcall-hash corpus still equal GNU
+cmd: grep -q 'DIRECTCALL-HASH DONE checked=67 failed=0' target/parity8/directcall-hash.log
+cmd: test $(grep -c PASS target/parity8/hashfast-cand.log) -eq 53 && ! grep -q FAIL target/parity8/hashfast-cand.log
+cmd: test $(diff -a target/parity8/w1vec-corpus-gnu.out target/parity8/w1vec-corpus-cand.out | grep -c '^<') -eq 1
+** S3.2 No regression: paired elapsed (CPU 10) on r7-gethash-equal-str, r7-gethash-eq-fix, r7-puthash-existing and the plain sum loop vs integ-1027 and GNU
+cmd: python3 target/parity8/check_paired.py

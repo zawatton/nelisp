@@ -24,6 +24,7 @@
            (puthash 10024 10002 mem)
            (should (= (nl_directcall_id 10002 20022 (nth 2 spec)) 0))
            (puthash 10024 3 mem)
+           (puthash 30000 17 mem)       ; w2subr: a class-6 cell is header-checked
            (should (= (nl_directcall_id 30006 20022 (nth 2 spec)) 0))))))))
 
 (defun ndc2--with-hash (thunk)

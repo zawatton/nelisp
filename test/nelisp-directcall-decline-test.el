@@ -65,7 +65,11 @@
        (let ((lookups 0))
          (cl-letf (((symbol-function 'nl_val_tag) (lambda (w) (if (= w 20022) 4 7)))
                    ((symbol-function 'nl_cons_car_word) (lambda (_) 20022))
+                   ;; w2subr: a class-6 target is checked for the Subr header kind.
+                   ((symbol-function 'ptr-read-u64) (lambda (&rest _) 17))
                    ((symbol-function 'nelisp_env_lookup_function_w)
+                    (lambda (&rest _) (cl-incf lookups) 30006))
+                ((symbol-function 'nelisp_env_lookup_function_raw_w)
                     (lambda (&rest _) (cl-incf lookups) 30006))
                    ((symbol-function 'nl_sp_nargs)
                     (lambda (&rest _) (ert-fail "Bytecode target counted arguments"))))
