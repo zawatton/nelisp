@@ -1,0 +1,8 @@
+hash (2646700 seven gone 42 199)
+maphash (480 16)
+mapc (2080 (2 3 4) (a b))
+switch (1 2 3 4 5 0 0)
+cond-switch (ten twenty thirty forty other)
+calls (20500 999)
+closure (45 499500 4999950000)
+dyn (300 100)

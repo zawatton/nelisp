@@ -1,0 +1,10 @@
+;;; features.el --- v7 runtime paths vs GNU, on GNU-compiled bytecode -*- lexical-binding: t; -*-
+(load (expand-file-name "features-bc.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
+(feat-out "hash" (feat-hash))
+(feat-out "maphash" (feat-maphash))
+(feat-out "mapc" (feat-mapc))
+(feat-out "switch" (mapcar #'feat-switch '(a b c d e z 1)))
+(feat-out "cond-switch" (mapcar #'feat-cond-switch '(10 20 30 40 50)))
+(feat-out "calls" (feat-calls))
+(feat-out "closure" (feat-closure))
+(feat-out "dyn" (feat-dyn))
