@@ -1,0 +1,18 @@
+#+TITLE: Layout-stable hot code: aligned dispatch targets and smaller frame zeroing (alignhot)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume after the primcb/data-blob/dynfast merges (generator 9a4dc084337e4279, compiler 840745ef8fee360e). Evidence: resume target/mispred/ (pmcsample on r3-mix, v8 vs the dynfast build, 400k trips). Instructions are equal (8669.4M), but branch mispredicts rise from 2.8-2.9M to 13.3-15.6M (cycles +17%, L2 BTB corrections +31%). The rise spreads over every function: fast_run +15k samples, nelisp_apply_function_w frame-zeroing rep stosq 78 -> 3249, execute_frame +3.8k. Every lane merge so far moved unrelated rows by 3-20% at equal instructions. nelisp_apply_function_w zeroes a 2560-byte frame with rep stosq on every call.
+* S1 Source
+** S1.1 The compiler aligns the targets that matter for prediction in hot generated code (at least function entries and the fast-loop dispatch/back-edge targets; choose and justify from measurements) with padding that is never executed or is multi-byte nops; red/green structural test on emitted bytes; output identical when the feature is off
+cmd: ulimit -v 8388608; target/alignhot/run-ert.sh target/alignhot/green-final.log test/nelisp-alignhot-test.el
+cmd: ! ( ulimit -v 8388608; ALIGNHOT_LP=target/alignhot/seed/lisp target/alignhot/run-ert.sh target/alignhot/red-final.log test/nelisp-alignhot-test.el )
+** S1.2 Fresh-frame zeroing in policy functions writes only the slots the conservative scan can misread (or uses a cheaper form that keeps every zeroed word zeroed), justified against the weak-false-root history (nelisp-weak-false-root skill); weak fixture stays 24/24; red/green
+cmd: target/alignhot/meas/s12-check.sh
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: target/alignhot/check_s21.sh
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 -c "import json;d=json.load(open('target/alignhot/fixtures/report.json'));c=d['checks'];assert c['weak24']['passed'] and c['gnu56']['passed'] and c['buffer21']['passed'] and c['afrt25']['pass_count']==24, d.get('status')"
+* S3 End to end
+** S3.1 Layout sensitivity: on r3-mix, r3-pcase, r7-funcall-bc and r7-mapc-bc the branch-mispredict count of the candidate is within 1.3x of v8's (pmcrun2 00C3) and stays so when a 4 KiB dummy function is inserted before wf_bytecode_w_fast_run in a second, throwaway build (or an equivalent perturbation), results checked
+cmd: python3 target/alignhot/check_s31.py
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 13) on the v8 matrix rows r3-mix, r3-pcase, r3-dyn, r7-funcall-bc, r7-mapc-bc, r5-sum-base-toplevel, the plain sum loop and r4-logand, vs integ-1026c and GNU
+evidence: target/alignhot/paired-table.txt sha256=ca5a377aebe8bee028b0b979dd3acc1584f4c75c62b93de39878d277be296f9e

@@ -1,0 +1,23 @@
+#+TITLE: Cheaper bytecode-to-bytecode calls in the fast loop (bccall)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume after the primcb/data-blob/dynfast merges (generator 9a4dc084337e4279). Evidence: callgrind on v8 (resume target/v5cg/v8), r7-funcall-bc 1009 instructions per trip, 986 of them self in wf_bytecode_w_fast_run. The trip is one funcall of a bytecode callee whose body is a bare return. GNU 31.1 does about 90 instructions (r7-funcall-bc 21 ns, 4.4x). R7 (resume target/gnu-speed-root-cause/s7/REPORT.md): 148 store-to-load forwards per bc->bc call against GNU's 8, because the fast-loop codegen spills its temporaries.
+* S1 Source
+** S1.1 The in-loop bytecode call and return arms of wf_bytecode_w_fast_run (frame setup, argument copy, backtrace record, depth count, return) do only the work GNU's Bcall/setup_frame/Breturn does; every removed or merged step is justified against bytecode.c in REPORT.md; nothing is added ahead of the opcode dispatch; red/green
+cmd: bash target/bccall/run-ert.sh scripts > target/bccall/logs/green.log 2>&1 && ! bash target/bccall/run-ert.sh target/bccall/seed/scripts > target/bccall/logs/red-seed-check.log 2>&1
+#+NOTE: Restart 3 (Sonnet 5.5). Production edit made: call arm only (argument copy no longer lowers to nl_string_read64 calls, dead POLLED binding became a statement, single-use PCRET/FL inlined). Return arm reviewed and unchanged. ERT is lowering/structure level (green on candidate, red on seed); native behaviour is S1.2/S3.
+** S1.2 Semantics against GNU: &optional/&rest arities, wrong-number-of-arguments data, max-lisp-eval-depth, throw/signal through nested calls, backtrace frames, redefinition of the callee between calls; ERT red/green and a differential corpus against GNU
+cmd: bash -c 'cmp target/bccall/corpus/gnu.out target/bccall/corpus/cand.out && test "$(wc -l < target/bccall/corpus/cand.out)" -ge 50 && test -s target/bccall/logs/red-seed.log && grep -q "2 unexpected" target/bccall/logs/red-seed.log'
+#+NOTE: 51-case corpus (target/bccall/corpus/src.el, GNU-compiled bytecode) is byte-identical GNU vs candidate; the baseline binary also matches GNU (base.out), so no divergence existed or was introduced. Host ERT red on seed (2 expected failures) is logs/red-seed.log.
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: bash -c 'tail -1 target/bccall-build/dynamic/build.log | grep -q "^rc=0" && grep -q PRELINK_DIRECT_CLOSURE_PASS target/bccall-build/dynamic/src/target/standalone-compiler-constructor-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/bccall-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json'
+#+NOTE: One build only (no second build needed).
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: bash -c 'grep -q "weak 24/24 PASS" target/bccall/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/bccall/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/bccall/logs/fixtures.log && grep -q "buffer 21/21 PASS" target/bccall/logs/fixtures.log'
+
+* S3 End to end
+** S3.1 Instructions per trip on r7-funcall-bc and r3-call reduced vs integ-1026c (pmcrun2 two-N difference), results checked; reg-sum-bc instructions unchanged (661)
+cmd: python3 target/bccall/check-pmc.py
+#+NOTE: r7-funcall-bc 1009.1 -> 980.1 instr/trip, r3-call 3600.2 -> 3388.2, reg-sum-bc 661.2 -> 661.2 (target/bccall/pmc.tsv).
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 14) on r7-funcall-bc, r3-call, r7-mapc-bc, r7-maphash-bc, the plain sum loop and r4-logand, vs integ-1026c and GNU
+cmd: python3 target/bccall/check-bench.py
+#+NOTE: raw data in target/bccall/bench/. The check only proves the 6 rows exist with base/cand/gnu; the speed numbers are in REPORT.md (no threshold claim).

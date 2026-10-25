@@ -256,6 +256,50 @@ The alignment pad below the RBX save is included.  Parameter spills, parameter
 padding, saved register values and outgoing call areas are outside this policy.
 Existing live frames are never cleared.")
 
+;; alignhot (2026-10-26): layout-stable hot code.  Measured on Zen 3: the same
+;; instruction stream mispredicts 5x more in one link layout (decoder redirects,
+;; i.e. taken branches the BTB does not know), so the emitter fixes the
+;; line-relative position of the code that matters instead of leaving it to
+;; wherever the previous function happened to end.
+(defvar nelisp-aot-compiler-hot-alignment
+  '(:entry 64 :arm 32 :loop 32 :unit-tail 64)
+  "Alignment policy for hot generated x86-64 code, or nil for the seed layout.
+A plist with optional keys, each a power of two:
+  :entry      function entries (otherwise 16),
+  :arm        jump-table arm, ordered-leaf and default labels (otherwise none),
+  :loop       rotated-loop heads (otherwise 16),
+  :unit-tail  pad the end of a link unit so unit sizes are multiples of this,
+              which keeps unit starts congruent modulo it in the linked text.
+Padding is multi-byte NOPs placed after an unconditional transfer or after jump
+table data, so it is not executed.  nil emits exactly the bytes of the seed.")
+
+(defvar nelisp-aot-compiler-alignhot-perturb
+  (let ((spec (getenv "NELISP_ALIGNHOT_PERTURB")))
+    (when (and spec (string-match "\\`\\(.+\\):\\([0-9]+\\)\\'" spec))
+      (cons (match-string 1 spec) (string-to-number (match-string 2 spec)))))
+  "Layout-sensitivity probe: nil, or (NAME . BYTES).
+Emit BYTES of INT3 (never executed, after the previous function's RET) before
+the entry of the defun named NAME.  Set by NELISP_ALIGNHOT_PERTURB=NAME:BYTES;
+used only by the throwaway perturbation build.")
+
+(defun nelisp-aot-compiler--hot-align (buf kind default)
+  "Align BUF to the :KIND entry of `nelisp-aot-compiler-hot-alignment'.
+Without the policy (or without that key) align to DEFAULT, or do nothing if nil."
+  (let ((n (or (and (eq nelisp-aot-compiler--arch 'x86_64)
+                    nelisp-aot-compiler-hot-alignment
+                    (plist-get nelisp-aot-compiler-hot-alignment kind))
+               default)))
+    (when n (nelisp-asm-x86_64-align buf n))))
+
+(defun nelisp-aot-compiler--hot-entry-align (buf name)
+  "Align BUF for the entry of defun NAME (16 in the seed layout)."
+  (when (and nelisp-aot-compiler-alignhot-perturb
+             (equal (symbol-name name) (car nelisp-aot-compiler-alignhot-perturb)))
+    (nelisp-asm-x86_64-emit-bytes
+     buf (apply #'unibyte-string
+               (make-list (cdr nelisp-aot-compiler-alignhot-perturb) #xCC))))
+  (nelisp-aot-compiler--hot-align buf :entry 16))
+
 (defvar nelisp-aot-compiler--vector-value-convention 'compact-word
   "Target vector ABI, selected by the caller before compilation.
 `legacy-view' keeps the NlVector capacity/data/length backing layout.
@@ -401,7 +445,7 @@ and jumps to the body entry."
          (rt (or (nelisp-aot-compiler--ir-get defun-ir :rt-slot-count) 0))
          (rt-rounded (if (zerop (logand rt 1)) rt (1+ rt)))
          (frame (+ (* 8 arity) (if (= 1 (logand arity 1)) 8 0) (* 8 rt-rounded))))
-    (nelisp-asm-x86_64-align buf 16)
+    (nelisp-aot-compiler--hot-align buf :entry 16)
     (nelisp-asm-x86_64-define-label buf (intern (format "%s$internal" name)))
     (nelisp-asm-x86_64--push-inline buf 'rbp)
     (nelisp-asm-x86_64--mov-reg-reg-inline buf 'rbp 'rsp)
@@ -25336,17 +25380,22 @@ keeps one fixed-size join jump in both compilation passes."
                             buf (cdr (assq table (nelisp-asm-x86_64-buffer-labels buf)))
                             (* 4 (1+ (- hi lo))))
         (dolist (arm arms)
+          ;; The previous arm ended in `jmp end' (or this is the first arm,
+          ;; right after the table data), so the padding is never executed.
+          (nelisp-aot-compiler--hot-align buf :arm nil)
           (nelisp-asm-x86_64-define-label buf (cdr (assq (car arm) labels)))
           (funcall emit-arm (cdr arm) buf)
           (nelisp-asm-x86_64-jmp-rel32 buf end))
         (if ordered
             (dolist (leaf leaves)
               (unless (and effectp (nelisp-aot-compiler--x86-pure-leaf-p leaf))
+                (nelisp-aot-compiler--hot-align buf :arm nil)
                 (nelisp-asm-x86_64-define-label buf (cdr (assq leaf labels)))
                 ;; Keep the ordinary conservative one-way cache invalidation.
                 ;; No earlier sibling's state is restored at this entry or join.
                 (funcall emit-arm leaf buf)
                 (nelisp-asm-x86_64-jmp-rel32 buf end)))
+          (nelisp-aot-compiler--hot-align buf :arm nil)
           (nelisp-asm-x86_64-define-label buf fallback)
           (funcall emit-arm default buf))
         (nelisp-asm-x86_64-define-label buf end))
@@ -26864,7 +26913,7 @@ emitted once; a cold return reloads fresh homes before joining it."
             (nelisp-aot-compiler--x86-deferred-loop-cut (cons call cold))
             (nelisp-aot-compiler--x86-interval-leaf-p t))
         (nelisp-asm-x86_64-jmp-rel32 buf test)
-        (nelisp-asm-x86_64-align buf 16)
+        (nelisp-aot-compiler--hot-align buf :loop 16)
         (nelisp-asm-x86_64-define-label buf body)
         (nelisp-aot-compiler--emit-let-rt-x86
          head buf (lambda (tail)
@@ -27037,7 +27086,7 @@ matches printed names, so avoid the complete unit namespace as well."
      (lambda ()
        (let ((nelisp-aot-compiler--x86-trace-loop-exits exits))
          (nelisp-asm-x86_64-jmp-rel32 buf test)
-         (nelisp-asm-x86_64-align buf 16)
+         (nelisp-aot-compiler--hot-align buf :loop 16)
          (nelisp-asm-x86_64-define-label buf body)
          (dolist (form (nelisp-aot-compiler--ir-get node :body))
            (nelisp-aot-compiler--emit-effect form buf))
@@ -27152,7 +27201,7 @@ Layout:
          (lambda ()
            (nelisp-asm-x86_64-jmp-rel32 buf test-lbl)
            ;; Adapt GCC -O2 loop-head alignment to our fixed-width jumps.
-           (nelisp-asm-x86_64-align buf 16)
+           (nelisp-aot-compiler--hot-align buf :loop 16)
            (nelisp-asm-x86_64-define-label buf start-lbl)
            (dolist (form (nelisp-aot-compiler--ir-get node :body))
              (nelisp-aot-compiler--emit-effect form buf))
@@ -27834,7 +27883,7 @@ return reg, untouched by epilogue)."
           ;; GCC -fomit-frame-pointer removes an unnecessary leaf frame.
           ;; Every accessed slot is in the existing CG3 plan; RBX joins
           ;; R12-R15's push/pop saves, and RBP is never touched.
-          (nelisp-asm-x86_64-align buf 16)
+          (nelisp-aot-compiler--hot-entry-align buf name)
           (nelisp-asm-x86_64--define-label-inline buf name)
           (nelisp-aot-compiler--emit-leaf-body-x86 body buf)
           (nelisp-asm-x86_64--ret-inline buf))
@@ -27901,7 +27950,7 @@ return reg, untouched by epilogue)."
       ;; — verified by md5sum on spike-noop.o / fact-i64.o.
       ;; GCC -O2 uses .p2align 4 for function entries.  Align before
       ;; defining the label so calls skip the NOP padding.
-      (nelisp-asm-x86_64-align buf 16)
+      (nelisp-aot-compiler--hot-entry-align buf name)
       (nelisp-asm-x86_64--define-label-inline buf name)
       (when nelisp-aot-compiler--x86-shrink-wrap-state
         (nelisp-aot-compiler--emit-shrink-wrap-prefix-x86
@@ -30083,6 +30132,10 @@ register budgeting while ELF/Mach-O keep SysV."
                    nelisp-aot-compiler--abi))))
       (dolist (d defuns)
         (nelisp-aot-compiler--emit-defun d buf))
+      ;; The last function ends in RET or a tail jump, so the pad is never
+      ;; executed; it makes this unit's size a multiple of :unit-tail.
+      (unless (eq arch 'aarch64)
+        (nelisp-aot-compiler--hot-align buf :unit-tail nil))
       ;; Runtime-helper BLs (nl_alloc_str etc.) are emitted as in-buffer
       ;; labels on arm64 so the executable/self-host path can resolve
       ;; them locally.  In a standalone link unit those labels dangle —

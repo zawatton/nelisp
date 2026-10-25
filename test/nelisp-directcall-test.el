@@ -17,6 +17,12 @@
   "Adapt IR syntax/truth and raw shifts, retaining the production algorithm."
   (cond ((atom form) form)
         ((eq (car form) 'data-addr) 'ndc--descriptors)
+        ;; Binding initialisers are code too (cbfast: `sar', 0/1 truth).
+        ((memq (car form) '(let let*))
+         (cons (car form)
+               (cons (mapcar (lambda (b) (if (consp b) (list (car b) (ndc--host (cadr b))) b))
+                             (cadr form))
+                     (mapcar #'ndc--host (cddr form)))))
         ((memq (car form) '(if while))
          (cons (car form) (cons `(ndc--truth ,(ndc--host (cadr form)))
                                (mapcar #'ndc--host (cddr form)))))
@@ -64,7 +70,9 @@
          (should (= (gethash 200 mem) 999))
          (should (= (nl_directcall_run 27 100 0 200 0) -3))
          (should (= (gethash 200 mem) 999))
-         (should (= (nl_directcall_run 1 100 1 200 0) -3))
+         ;; `car' (id 1) has a WORD body of its own; `nth' (id 10) still declines
+         ;; through the reference primitive runner.
+         (should (= (nl_directcall_run 10 100 1 200 0) -3))
          (should (= run-count 1)))))))
 
 (ert-deftest ndc-a-descriptor-validates-name-shape-and-arity ()
@@ -100,6 +108,36 @@
        (dolist (w '(0 2 3 10))
          (should (= (nl_directcall_id w 20022 1) 0)))))))
 
+(ert-deftest ndc-a-bytecode-reads-the-symbol-objects-function-slot-before-the-mirror ()
+  ;; dcproto: a symbol OBJECT (low bits 110) keeps its function at +24, which is
+  ;; what the mirror lookup answers for it; only another spelling, or a slot that
+  ;; is not a cons, takes the lookup.
+  (let* ((f (ndc--find 'wf_bytecode_call nelisp-standalone--applyfn-bytecode-helpers))
+         (run (eval (ndc--host (cons 'lambda (cddr f))) t))
+         (mem (make-hash-table :test #'eql)) (lookups 0) (invoked nil))
+    (cl-letf (((symbol-function 'heap-read-u64) (lambda (p i) (gethash (+ p i) mem)))
+              ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v mem)))
+              ((symbol-function 'nl_val_tag) (lambda (w) (if (memq w '(20022 20024)) 4 7)))
+              ((symbol-function 'nelisp_env_lookup_function_w)
+               (lambda (&rest _) (cl-incf lookups) 10002))
+              ((symbol-function 'nl_directcall_invoke)
+               (lambda (fn original _base _argc _env out)
+                 (setq invoked (list fn original)) (puthash out 13 mem) 0)))
+      (puthash 20040 10002 mem)        ; function slot of the object 20022 (= 20016 + 24)
+      ;; An object whose slot is a cons: no lookup.
+      (puthash 100 20022 mem) (puthash 108 29 mem)
+      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= lookups 0))
+      (should (equal invoked '(10002 20022)))
+      ;; A view spelling (low bits 000), and an object whose slot is not a cons:
+      ;; the mirror lookup answers.
+      (puthash 100 20024 mem) (puthash 108 29 mem)
+      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= lookups 1))
+      (puthash 20040 12 mem) (puthash 100 20022 mem) (puthash 108 29 mem)
+      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= lookups 2)))))
+
 (ert-deftest ndc-a-success-clears-dead-operands-but-error-retains-them ()
   (let* ((f (ndc--find 'wf_bytecode_call nelisp-standalone--applyfn-bytecode-helpers))
          (run (eval (ndc--host (cons 'lambda (cddr f))) t))
@@ -107,12 +145,14 @@
     (cl-letf (((symbol-function 'heap-read-u64) (lambda (p i) (gethash (+ p i) mem)))
               ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v mem)))
               ((symbol-function 'nl_val_tag) (lambda (w) (if (= w 20022) 4 7)))
+              ;; (the function slot of the object 20022 is not a cons here)
               ((symbol-function 'nelisp_env_lookup_function_w) (lambda (&rest _) 10002))
               ((symbol-function 'nl_directcall_invoke)
                (lambda (_fn _original _base _argc _env out)
                  (when (= status 0) (puthash out 13 mem)) status)))
       (dolist (st '(0 1))
         (setq status st)
+        (puthash 20040 0 mem)
         (puthash 100 20022 mem) (puthash 108 29 mem) (puthash 116 13 mem)
         (puthash 124 999 mem)
         (should (= (funcall run 200 100 3 2 0) st))

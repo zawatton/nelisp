@@ -1,0 +1,24 @@
+#+TITLE: GNU parity: buffer-local let in bytecode and unintern arity (parity6)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume after the primcb/data-blob/dynfast merges (generator 9a4dc084337e4279). Evidence: the dynfast corpus (../dynfast-20261026/target/dynfast/corpus/diff-base.txt). Both integ-1026b and the dynfast candidate print (dfc-buffer-local) => (5 (6 6)) and (dfc-buffer-local-switch) => (8 8), where GNU prints (5 (6 100)) and (7 8). The switchfast corpus showed that NeLisp accepts (unintern SYM) with one argument, while GNU 31.1 signals wrong-number-of-arguments (unintern 1).
+#+NOTE: Fresh widened-scope attempt. Required prelude ratchets were run: seven are red on the seed too; ns-gate gains one make-variable-buffer-local divergence from the package no-op (outside owned defuns). Stock-30.x emacs-parity is skipped on GNU 31.1. No baseline was broadened. See target/codex/REPORT.md.
+* S1 Source
+** S1.1 A varbind of a variable that is buffer-local (or automatically buffer-local) in the current buffer binds and restores exactly as GNU specbind (SPECPDL_LET_LOCAL / SPECPDL_LET_DEFAULT): the other buffer's value and the default value are untouched, and set-buffer inside the let sees GNU's values; red/green on the two dynfast corpus cases
+#+NOTE: Implemented automatic-local registration and non-lean default bindings with bind-time buffer identity. Source red/green, bootstrap red/green and seed ancestor evidence retained. Final candidate ERT 20/20; dynfast 39/39, including both original failures. Six existing changed definitions match the seed ancestor before editing (red-source-pins.tsv).
+cmd: grep -F 'Ran 20 tests, 20 results as expected, 0 unexpected' target/parity6/logs/ert-green.log
+** S1.2 unintern takes (NAME OBARRAY) with OBARRAY required, as GNU 31.1 (lread.c); error data equal to GNU; red/green
+#+NOTE: Required OBARRAY; explicit wrong-number-of-arguments (unintern N) matches GNU for direct interpreted calls at N=0,1,3. The existing rest wrapper keeps named GNU error data; builtin arity table unchanged. GNU bytecode invalid-arity conditions contain unreadable subr objects, so that optional comparison was stopped; valid two-argument calls run in both substrates.
+cmd: grep -F 'Ran 20 tests, 20 results as expected, 0 unexpected' target/parity6/logs/ert-green.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+#+NOTE: Attempt 1 linked/prelink PASS but bootstrap failed on early indirect-variable; raw builder exit 0 was false green and cold image absent (697.592s). Added bootstrap ERT red/green, fixed the same owned defun, then used the permitted repair build with content-addressed unit reuse (225.035s). Candidate 90a338f8...; cold d5caa2eb...; all 3 prelink closures PASS. Build verdict red on attempt 1, green on attempt 2. An unintended make emacs-parity default build was interrupted before linking.
+cmd: python3 target/parity6/build-verdict.py target/parity6-build/dynamic
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+#+NOTE: weak 24/24, GNU eqhash 56/56, buffer 21/21. AFRT 24/25 with exactly the same exit-hook-result-gc failure, exit 1 and identical case lines to the reference.
+cmd: grep EXPECTED_BASELINE_RED_REMAINS target/parity6/fixtures/report.json
+* S3 End to end
+** S3.1 The dynfast corpus (../dynfast-20261026/target/dynfast/corpus) on the candidate equals GNU on all cases, and the switchfast corpus (test/nelisp-bytecode-switch-fixture.el) still equals GNU
+#+NOTE: Exact nonempty GNU/candidate output equality: dynfast 39/39 and switch 59/59; all four processes exit 0 with empty stderr. Added two source parity forms to the shared corpus.
+cmd: cmp target/parity6/corpora/dynfast-gnu.stdout target/parity6/corpora/dynfast-candidate.stdout && cmp target/parity6/corpora/switch-gnu.stdout target/parity6/corpora/switch-candidate.stdout
+** S3.2 No speed regression: paired elapsed (gnu-gap-bench, CPU 15) on r3-dyn, the plain sum loop and r4-logand vs integ-1026c
+#+NOTE: MEASURED RED: CPU 15, 7 paired repetitions, high/low from calib.json, default FX, idle check passed, GNU third engine. Candidate/base median: r3-dyn 0.849 (7/7 faster), sum 0.989 (6/7 faster), r4-logand 1.036 (0/7 faster). The r4-logand row is slower in every pair. No speed threshold or causal attribution claimed. Raw reports and per-process stdout/stderr retained under target/parity6/bench. No padding/compiler/callback edits attempted outside ownership.
+cmd: test "$(cat target/parity6/bench/no-regression.status)" = PASS

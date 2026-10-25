@@ -1,0 +1,22 @@
+#+TITLE: Dynamic binding in the bytecode fast loop (dynfast)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume coordinator overlay after the hashword/switchfast merges (generator sha256 prefix be792f71e4df9d01). Evidence: v7 matrix (resume target/integ-1026b/matrix/REPORT.md) puts r3-dyn at 16.7x GNU. Callgrind on integ-1025c (resume target/v5cg, r3-dyn), 5843 instructions per trip of 4 varref, 1 varset, 1 varbind and 1 unbind: fast_run 1942, wf_bytecode_execute_frame 919, nl_string_read64 672 (bytecode fetches in execute_frame/unwind_step), unwind_step 262, lean_bind 243, mirror lookups 235 (4 from wf_bytecode_w_fast_entry after every fast-loop re-entry), fast_entry 220, lean_unbind 164. Prior analysis: dynbind-20261025/target/dynbind/protocol.md (S1.3: why varbind/unbind stayed in the outer loop).
+* S1 Source
+** S1.1 A plain (lean-bindable) varbind and its matching unbind run without leaving the fast loop, with the outer loop's binding state (AUX events, binding count, cleanup resumption) kept exact; everything else (watchers, aliases, buffer-local, forwarded, worker/root-pin, special unwind entries) leaves for the outer loop as today; the design note in target/dynfast/DESIGN.md is written before the code; red/green
+#+TIMEOUT: 300
+cmd: test -s target/dynfast/DESIGN.md && grep -q 'Advisor review' target/dynfast/DESIGN.md && sh target/dynfast/run-ert.sh green scripts 2>&1 | grep -q 'Ran 33 tests, 33 results as expected, 0 unexpected'
+cmd: grep -q 'Ran 33 tests, 25 results as expected, 8 unexpected' target/dynfast/logs/red.log && grep -q 'dfa-varbind-arm-runs-lean-bind-in-loop' target/dynfast/logs/red.log
+** S1.2 Semantics against GNU: nested let of specials, non-local exit (throw/signal) out of a binding inside a fast batch, condition-case and unwind-protect around bindings, backtrace/debugger frames, makunbound and default-value interaction; ERT red/green and a differential corpus against GNU
+cmd: cmp target/dynfast/corpus/out-cand.txt target/dynfast/corpus/out-base.txt && test "$(wc -l < target/dynfast/corpus/diff-cand.txt)" = 6 && diff target/dynfast/corpus/diff-cand.txt target/dynfast/corpus/diff-base.txt
+cmd: grep -q 'Ran 33 tests, 32 results as expected, 1 unexpected' target/dynfast/logs/neg-mut1.log && grep -q 'Ran 33 tests, 32 results as expected, 1 unexpected' target/dynfast/logs/neg-mut2.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: python3 target/dynfast/check_build.py
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 target/dynfast/check_fixtures.py
+* S3 End to end
+** S3.1 Instructions per trip on r3-dyn reduced vs integ-1026b (pmcrun2 two-N difference), results checked; reg-sum-bc and r3-pcase instructions unchanged
+cmd: python3 target/dynfast/matrix/check_ir.py
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 15) on r3-dyn, r3-mix, r3-pcase plus the plain sum loop and r4-logand, vs integ-1026b and GNU
+cmd: python3 target/dynfast/check_s32.py
+
+#+NOTE: 2026-10-25 dynfast lane: S1.2 corpus = 39 bytecode cases compiled by GNU (target/dynfast/corpus), candidate output equals integ-1026b output byte for byte; both differ from GNU in the same 2 buffer-local cases (pre-existing). S3.2 only checks that the paired measurement exists; the numbers (r3-dyn -15%, r3-mix +19%, r3-pcase +7.5% at identical Ir, caused by indirect-branch mispredicts) are in target/codex/REPORT.md. No criterion was added, removed or weakened.

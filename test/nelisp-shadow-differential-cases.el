@@ -2710,6 +2710,20 @@
           (funcall f 1) (funcall read-x)
           (list (funcall f 3) (funcall read-x)
                 (progn (setq x 20) (funcall f 2)) (funcall read-x))) t)
+ ;; Automatic locals preserve defaults and bind-time buffer identity.
+ (let ((sym (make-symbol "parity6-auto")))
+   (set sym 100)
+   (make-variable-buffer-local sym)
+   (with-temp-buffer
+     (set sym 5)
+     (list (local-variable-p sym) (default-value sym)
+           (eval `(let ((,sym 6))
+                    (list ,sym (default-value ',sym))) nil)
+           (symbol-value sym))))
+ ;; GNU 31.1 requires OBARRAY, including an explicit nil for the initial one.
+ (list (condition-case e (unintern "parity6-absent") (error e))
+       (unintern "parity6-absent" nil))
+
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

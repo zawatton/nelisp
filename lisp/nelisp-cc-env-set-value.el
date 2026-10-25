@@ -130,6 +130,24 @@
             ;; after the stashed signal.
             (if (= (nl_ent_set entry 0 val-ptr) 1) 0 1)))))
 
+    (defun nelisp_env_setv_automatic_local (mirror frames name)
+      ;; Only a localized terminal without a current local reaches here.
+      ;; Lisp owns registration; the setter merely calls the stored provider.
+      (let* ((entry (extern-call nelisp_mirror_lookup_entry mirror name)))
+        (if (if (= entry 0) 0
+                (if (> (nl_ent_n entry) 5)
+                    (= (nelisp_env_entry_slot_tag entry 5) 8) 0))
+            (let* ((redirect (nl_ent_w entry 5)))
+              (if (> (vector-len redirect) 2)
+                  (let* ((buffer (extern-call nelisp_env_lookup_value_w
+                                   mirror frames (nl_vector_slot_word redirect 0) 0)))
+                    (if (= (extern-call nl_sb_default_bound_here frames name buffer) 1) 0
+                      (let* ((out (alloc-bytes 32 8)))
+                        (extern-call bf_apply_named_1 (- frames 32)
+                          (nl_vector_slot_word redirect 2) name out))))
+                0))
+          0)))
+
     ;; On a frame miss, route an existing alias to its canonical variable.
     ;; SCRATCH-PTR=0 selects the lazy mirror writer; nonzero preserves the
     ;; caller's already-built write scratch. Nonaliases are routed without
@@ -158,13 +176,29 @@
                         (nelisp_env_variable_canonicalize
                          mirror-ptr frames-ptr entry name-ptr canonical-address 0))
                   (if (= status 0)
-                      (let* ((canonical-ptr (heap-read-u64 canonical-address 0))
+                      (let* ((canonical-ptr (alloc-bytes 32 8))
+                             (copied (nl_sexp_clone_into
+                                      (heap-read-u64 canonical-address 0) canonical-ptr))
+                             (auto-rc (nelisp_env_setv_automatic_local
+                                       mirror-ptr frames-ptr canonical-ptr))
+                             ;; Registration can publish a private local cell.
+                             (again (if (= auto-rc 0)
+                                        (nelisp_env_variable_canonicalize
+                                         mirror-ptr frames-ptr
+                                         (extern-call nelisp_mirror_lookup_entry
+                                                      mirror-ptr canonical-ptr)
+                                         canonical-ptr canonical-address 0) 1))
+                             (canonical-ptr (if (= again 0)
+                                                (heap-read-u64 canonical-address 0)
+                                              canonical-ptr))
                              (cell-ptr
                               (extern-call nelisp_frame_stack_find_kind
                                            frames-ptr canonical-ptr 1 0)))
                         ;; Watcher-enabled semantic writes already pass the
                         ;; canonical name through nl_n3_notify before here.
-                        (if (= (extern-call nelisp_mirror_is_constant
+                        (if (/= again 0)
+                            (setq status 1)
+                          (if (= (extern-call nelisp_mirror_is_constant
                                             mirror-ptr canonical-ptr) 1)
                             (seq (extern-call bf_setting_constant name-ptr)
                                  (setq status 1))
@@ -177,7 +211,7 @@
                                       (nelisp_env_setv_mirror
                                        mirror-ptr canonical-ptr scratch-ptr 0)))
                             (setq status
-                                  (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))
+                                  (nelisp_env_setv_cell_hit cell-ptr val-ptr))))))
                     (setq status 1))
                   (dealloc-bytes canonical-address 8 8)
                   status)))))))

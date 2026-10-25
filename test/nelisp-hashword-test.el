@@ -2,8 +2,10 @@
 
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "nelisp-hashfast-test.el"
-                        (file-name-directory load-file-name)) nil t)
+;; require, not load: other suites require the same file, and a second
+;; load redefines its tests.
+(let ((load-path (cons (file-name-directory load-file-name) load-path)))
+  (require 'nelisp-hashfast-test))
 
 (defvar hw--memory)
 (defvar hw--lengths)

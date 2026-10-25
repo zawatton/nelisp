@@ -163,7 +163,7 @@
               (if (and (/= entry 0) (> (nl_ent_n entry) 5)
                        (= (nelisp_env_entry_slot_tag entry 5) 8))
                   (let ((redirect (nl_ent_w entry 5)))
-                    (if (and (= (sexp-tag redirect) 8) (= (vector-len redirect) 2))
+                    (if (and (= (sexp-tag redirect) 8) (>= (vector-len redirect) 2))
                         (let ((buffer (if (= frames-ptr 0)
                                           ;; Mirror-only callers (notably
                                           ;; unlet) have no frame record.

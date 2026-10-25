@@ -117,7 +117,7 @@
               ((symbol-function 'nl_vector_slot_word) (lambda (v i) (aref v i)))
               ((symbol-function 'wf_word_view) #'identity)
               ((symbol-function 'wf_cb_kind)
-               (lambda (_env r tslot) (puthash (+ r tslot) 100 roots) kind-value))
+               (lambda (_env r tslot _argc) (puthash (+ r tslot) 100 roots) kind-value))
               ((symbol-function 'wf_cb_target)
                (lambda (_env _fw) (if (and target-after (> calls 0)) target-after 100)))
               ((symbol-function 'nl_n4_push_words) (lambda (&rest _) 0))

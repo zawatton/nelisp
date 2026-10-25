@@ -108,8 +108,9 @@ existing varset arm for the same input, with the same helper adapters."
     (should-not (plist-get r :sets))))
 
 (ert-deftest db-varset-starters-and-binding-deferral ()
-  (dolist (raw '(14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
-                   40 41 42 43 44 45 46 47))
+  ;; dynfast: unbind (40..47) now starts a batch; see
+  ;; nelisp-bytecode-dynfast-test.el.  Varset and varbind starters stay out.
+  (dolist (raw '(14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31))
     (should-not (fcl--admitted raw))))
 
 (ert-deftest db-return-starter-deferred ()

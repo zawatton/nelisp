@@ -1,0 +1,23 @@
+#+TITLE: GNU parity: mapcar over circular lists and bool-vectors (parity7)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v9 + parity6 + bccall). Evidence: cbfast REPORT (../cbfast-20261026/target/codex/REPORT.md). On v8 and later, (mapcar FN CIRCULAR-LIST) never ends: GNU Fmapcar runs Flength first and signals circular-list. (mapcar FN BOOL-VECTOR) signals listp, while GNU maps over the bits.
+* S1 Source
+** S1.1 mapcar (and mapconcat/mapcan via nelisp--check-seq-list) signal circular-list (detection tail) and wrong-type-argument listp before calling FN, as GNU Flength; red on seed (red-ert.log), green on the build (green-ert.log)
+cmd: rg -q '^   FAILED.*mapcar-circular' target/parity7/red-ert.log
+cmd: ! rg -q 'FAILED' target/parity7/green-ert.log
+cmd: rg -q 'Ran 64 tests, 64 results as expected, 0 unexpected' target/parity7/green-ert.log
+** S1.2 mapcar over a bool-vector, string, unibyte string and vector matches GNU element for element; red on seed, green on the build
+cmd: rg -q '^   FAILED.*mapcar-bool' target/parity7/red-ert.log
+cmd: ! rg -q 'FAILED.*mapcar-(bool|string|unibyte|vector)' target/parity7/green-ert.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (linked, runs)
+cmd: rg -q 'linked 121 units' target/parity7-build/dynamic/build.log
+cmd: test "$(target/parity7-build/dynamic/nelisp-dynamic --version | head -c 6)" = NeLisp
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; check.sh passes on the build
+cmd: rg -q 'weak 24/24 PASS' target/parity7/fixtures.log && rg -q 'GNU 56/56 PASS' target/parity7/fixtures.log && rg -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/parity7/fixtures.log && rg -q 'buffer 21/21 PASS' target/parity7/fixtures.log
+cmd: ! rg -q 'FAIL' target/parity7/check-sh.log && rg -q 'features: PASS' target/parity7/check-sh.log
+* S3 End to end
+** S3.1 Differential corpus of 32 mapcar/mapconcat/mapcan cases equals GNU in interpreted and bytecode modes (GNU 64/64, native 64/64, incl. circular mapconcat/mapcan)
+cmd: rg -q 'Ran 64 tests, 64 results as expected' target/parity7/gnu-final-ert.log
+cmd: rg -q 'Ran 64 tests, 64 results as expected' target/parity7/green-ert.log
+** S3.2 No regression: paired elapsed (CPU 15, 5 reps, base=integ-1026d, cand, GNU) on r7-mapcar-bc, p-mapcar-car, r3-list, r7-mapc-bc, p-mapc-car and the sum loop (reg-sum-bc); raw data kept, no threshold claim
+cmd: test "$(ls target/parity7/bench/*/report.json | wc -l)" -eq 6

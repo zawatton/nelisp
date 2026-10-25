@@ -1,0 +1,21 @@
+#+TITLE: Directcall from bytecode: hit protocol and allocating primitives (dcproto)
+#+NOTE: Criteria 1-6 turned from pending to cmd checks 2026-10-26 after the work (the criteria and the denominator are unchanged; S3.1 stays a failing cmd for s6-concat and s6-substr, see REPORT.md). Created 2026-10-26 before implementation; 6 criteria. Seed = coordinator HEAD d815f9c4 plus overlay (v9 + parity6 + bccall). Evidence: callgrind on v9 (resume target/v5cg/v9).
+#+NOTE: r7-gethash-eq-fix 4522 instructions per trip, with 2 directcalls per trip. nl_directcall_id costs 614, about 307 per call, which is the cold name-dispatch cost (cbfast fixed the tag-6 symbol case only for callbacks). Also per trip: invoke 313, wf_bytecode_call 252, n4_push_words 208, env lookup 118 + mirror 94, root frame 110 + mark/release, test_mode 174, hash_table_p 149.
+#+NOTE: r4-car 1656 instructions per trip: id 161, call 118, invoke 113, n4_push 104, env lookup 59 + mirror 47, root frame 55 + mark/release 42.
+#+NOTE: s6-vec4 6321 instructions per trip: vector goes through the generic apply route (nl_n4_apply_raw_w 491, nelisp_apply_function_w 485, nl_apply_builtin_w 368, view clones 602, allocation about 1100).
+#+NOTE: v9/GNU: gethash 11.7-12.2x, r4 calls 5.6-6.6x, vector 3.2x.
+* S1 Source
+** S1.1 On the bytecode call route (wf_bytecode_call -> nl_directcall_invoke), a static-SID primitive whose constant is any spelling of its symbol (object word or view) hits the descriptor without the name-dispatch chain; per hit, only steps GNU's Bcall also does remain, each cited in REPORT.md (backtrace record kept); red/green
+cmd: python3 target/dcproto/check.py s11
+** S1.2 vector, make-vector, list, concat (string arguments), substring and make-string are directcall entries with WORD-argv bodies that allocate the result directly and decline before any effect on every case they do not handle; GNU semantics including error data; red/green and the directcall corpus against GNU
+cmd: python3 target/dcproto/check.py s12
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); the Windows target's generated forms still contain no data-blob (per-target form check as in resume worklog 2026-10-25)
+cmd: python3 target/dcproto/check.py s21
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes on the build
+cmd: python3 target/dcproto/check.py s22
+* S3 End to end
+** S3.1 Instructions per trip reduced vs integ-1026d on r7-gethash-eq-fix, r4-car, r4-logand, s6-vec4, s6-concat, s6-substr and s6-mkstr (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+cmd: python3 target/dcproto/check.py s31
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 14) on those rows plus r7-puthash-existing, the plain sum loop and p-mapc-car, vs integ-1026d and GNU
+cmd: python3 target/dcproto/check.py s32

@@ -205,8 +205,15 @@ OBJECT can be a string or an external documentation reference."
   (defun nelisp--check-seq-list (seq)
     (unless (sequencep seq) (signal 'wrong-type-argument (list 'sequencep seq)))
     (when (consp seq)
-      (let ((l seq))
-        (while (consp l) (setq l (cdr l)))
+      ;; GNU Flength: FOR_EACH_TAIL's Brent walk.  A cycle signals
+      ;; (circular-list TAIL) with the tail where it was detected, before any
+      ;; callback runs; a dotted list names its non-list tail.
+      (let ((l seq) (slow seq) (power 2) (left 2))
+        (while (consp l)
+          (setq l (cdr l) left (1- left))
+          (if (= left 0)
+              (setq power (* power 2) left power slow l)
+            (when (eq l slow) (signal 'circular-list (list l)))))
         (when l (signal 'wrong-type-argument (list 'listp l)))))
     seq))
 (unless (fboundp 'nelisp--check-symbol)
@@ -3150,8 +3157,8 @@ Keywords supported:  :test :test-not :key
 NAME may be a string or a symbol.  A symbol must belong to OBARRAY;
 another symbol with the same name is not deleted.
 
-(fn NAME &optional OBARRAY)"
-  (unless (and arguments (<= (length arguments) 2))
+(fn NAME OBARRAY)"
+  (unless (= (length arguments) 2)
     (signal 'wrong-number-of-arguments (list 'unintern (length arguments))))
   (let ((name (car arguments)) (obarray (cadr arguments)))
     (if (nelisp--global-obarray-p obarray)
@@ -6119,16 +6126,17 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
 Doc 22 A6: arrays are iterated by index via `aref'/`length' (cons-cell
 walking only works for lists)."
   (nelisp--check-seq-list seq)
-  (if (or (vectorp seq) (stringp seq))
+  (if (or (vectorp seq) (stringp seq) (bool-vector-p seq))
       (let ((n (length seq)) (i 0) (acc nil))
         (while (< i n)
           (setq acc (cons (funcall fn (aref seq i)) acc))
           (setq i (1+ i)))
         (nreverse acc))
-    (let ((acc nil))
-      (while seq
+    ;; GNU mapcar1: at most the length taken before the first call.
+    (let ((acc nil) (n (length seq)) (i 0))
+      (while (and (< i n) (consp seq))
         (setq acc (cons (funcall fn (car seq)) acc))
-        (setq seq (cdr seq)))
+        (setq seq (cdr seq) i (1+ i)))
       (nreverse acc))))
 (unless (fboundp 'mapcar)
   (defun mapcar (fn seq) (nelisp--mapcar-slow fn seq)))
@@ -16580,28 +16588,29 @@ load without a `void-function' error.
 (fn &optional KILL-PERMANENT)"
     nil))
 
-;; `make-variable-buffer-local'/`make-local-variable' are both real,
-;; C-level primitives (src/data.c) this substrate cannot give genuine
-;; buffer-local semantics to -- same "no buffer-local variable
-;; distinction" reduction as `kill-all-local-variables' just above
-;; (`setq-local'/`setq-default' are plain `setq' aliases).  Each is a
-;; pure no-op beyond returning VARIABLE, matching real Emacs's own
-;; return-value contract, so calling code that only checks the return
-;; value (or ignores it, the common case) sees no difference.  Needed
-;; for real: `woman.el''s own top-level `(defvar woman-imenu-generic-
-;; expression ...)' region calls `(make-variable-buffer-local 'X)' for
-;; several `woman-*' variables directly.
+;; Automatic locals share the explicit-local provider's redirect cells.
+;; A third slot names the Lisp registration operation; native assignment
+;; invokes it only when this buffer has neither a local nor a default let.
 (unless (fboundp 'make-variable-buffer-local)
   (defun make-variable-buffer-local (variable)
-    "Make VARIABLE become buffer-local whenever it is set.
-At any time, the value for the current buffer is in effect,
-unless the variable has never been set in this buffer,
-in which case the default value is in effect.
-Note that binding the variable with `let', or setting it while
-a `let'-style binding made in this buffer is in effect,
-does not make the variable buffer-local.  Return VARIABLE.
-
-(fn VARIABLE)"
+    "Make VARIABLE buffer-local on assignment, except under a let in this buffer.
+Return VARIABLE.  Registration alone does not create a local value."
+    (let* ((name (if (fboundp 'indirect-variable)
+                     (indirect-variable variable) variable))
+           (redirect (progn
+                       (unless (symbolp variable)
+                         (signal 'wrong-type-argument (list 'symbolp variable)))
+                       (when (or (memq name '(nil t)) (keywordp name)
+                                 (nelisp--env-globals-op 'variable-entry-slot name 3))
+                         (signal 'setting-constant (list variable)))
+                       (nelisp--env-globals-op 'variable-entry-slot-create name 5))))
+      ;; GNU initializes a previously void default to nil on registration.
+      (unless (default-boundp name) (set-default name nil))
+      (unless (and (vectorp redirect) (> (length redirect) 2))
+        (nelisp--env-globals-op
+         'variable-entry-slot-set name
+         (cons 5 (vector 'nelisp--current-buffer
+                         (and (vectorp redirect) (aref redirect 1)) 'make-local-variable)))))
     variable))
 
 (unless (fboundp 'make-local-variable)

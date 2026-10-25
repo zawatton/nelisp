@@ -1,0 +1,17 @@
+#+TITLE: Per-element cost of primitive callbacks in mapc/maphash (cbfast)
+#+NOTE: Criteria 1-6 turned from pending to cmd checks 2026-10-25 after the work (the criteria themselves are unchanged; the denominator stays 6). Created 2026-10-26 before implementation; 6 criteria. Seed = resume coordinator overlay after the hashword/switchfast/primcb merges (generator sha256 prefix ec97b64cd0cdeba2). Evidence: callgrind on the primcb build (resume target/v5cg/pcb, per element), p-mapc-car 1300 instructions: nl_directcall_id 309, wf_mapc_w 208, nl_directcall_invoke 118, m5_fx_primitive_run 109, nl_n4_push_words 104, wf_mapc_length_w 91 + bf_plist_cons_identity 67, nelisp_env_lookup_function_w 63 + mirror lookup 50, root frame/mark/release 99, nl_n4_finish_w 31. p-maphash-plus 2077 instructions per entry on a pre-hashword seed. GNU does about 40 instructions per mapc element. The v7 matrix with primcb: mapc car about 10x GNU, maphash + about 12.6x.
+* S1 Source
+** S1.1 The primitive-callback route does per walk what is invariant per walk (directcall id, descriptor, root frame) and per element only what GNU does (read the function cell, call, record the backtrace entry); the cause of the 309-instruction nl_directcall_id cost on this route is found and fixed; mapc's length walk compares words for its cycle check; car/cdr/+/1+ run from a WORD body, not m5_fx_primitive_run; red/green
+cmd: python3 target/cbfast/check.py s11
+** S1.2 Semantics unchanged against GNU: a cell changed during the walk (a primitive redefined from a debugger or by an advised callee), signals out of the primitive with GNU error data, circular and dotted lists, a table mutated during maphash; ERT red/green and the primcb corpus against GNU
+cmd: python3 target/cbfast/check.py s12
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: python3 target/cbfast/check.py s21
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 target/cbfast/check.py s22
+* S3 End to end
+** S3.1 Instructions per element on p-mapc-car, p-maphash-plus, p-mapcar-car and r7-mapc-bc reduced vs integ-1026c (pmcrun2 two-N difference), results checked
+cmd: python3 target/cbfast/check.py s31
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 12) on p-mapc-car, p-maphash-plus, p-mapcar-car, r3-list, r7-mapc-bc, r7-maphash-bc plus the plain sum loop and r4-logand, vs integ-1026c and GNU
+cmd: python3 target/cbfast/check.py s32
