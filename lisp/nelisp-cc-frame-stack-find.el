@@ -554,7 +554,11 @@
     (defun nl_lex_walk (frames name mode)
       (if (/= (logand name 7) 6)
           -1
-        (let* ((rec (nl_word_payload frames))
+        ;; FRAMES is a record WORD or the env's persistent record view.
+        ;; Keep this entire probe call-free; uncommon Cell decoding and
+        ;; hybrid-to-Cell promotion belong to the existing general descent.
+        (let* ((rec (if (= (logand frames 7) 6) (- frames 6)
+                      (ptr-read-u64 frames 8)))
                (backing (ptr-read-u64 (+ rec 16) 0))
                (i (- (sar (ptr-read-u64 (+ rec 24) 0) 2) 1)))
           (if (/= (logand backing 7) 6)
@@ -616,14 +620,14 @@
                                    (if (= (logand vh 63) 11)
                                        (if (= (logand (shr vh 8) 1) 0)
                                            (ptr-read-u64 (+ v 2) 0)
-                                         (extern-call nl_cell_get_value_w v 0))
+                                         -1)
                                      v))
-                               (extern-call nl_cell_get_value_w v 0))))
+                               -1)))
                        (if (= (logand v 7) 6)
                            (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
                                v
-                             (if (= mode 1) v (nl_frame_pair_cell hit 0)))
-                         (if (= mode 1) v (nl_frame_pair_cell hit 0)))))
+                             (if (= mode 1) v -1))
+                         (if (= mode 1) v -1))))
                  hit)))))))
     ;; The value of a plain global variable: SYM a symbol object (interned) whose redirect
     ;; is 0 (GNU SYMBOL_PLAINVAL, data.c find_symbol_value), read by the main thread with

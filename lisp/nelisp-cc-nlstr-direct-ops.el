@@ -900,8 +900,17 @@ lifetime of a Sexp value.  No `let' binding needed.")
     (defun nl_intern_lookup_pos_w (bytes-ptr n _pad)
       (if (= (nl_name_is_nil bytes-ptr n) 1) 3
         (if (= (nl_name_is_t bytes-ptr n) 1) 7
-          (let ((object (alloc-bytes 32 8)))
-            (if (/= (nl_intern_lookup_pos bytes-ptr n object) 0) object 3)))))
+          (let* ((table (heap-read-u64 268436288 0))
+                 (slot (if (= table 0) 0
+                         (nl_intern_probe table
+                                          (logand (nl_intern_hash bytes-ptr 0 n 2166136261) 1048575)
+                                          bytes-ptr n 0))))
+            (if (= slot 0) 3
+              (if (= (heap-read-u64 slot 0) 0) 3
+                ;; A miss creates no view. On a hit, allocation may run callbacks that
+                ;; unintern or replace the probed name, so repeat the original lookup.
+                (let ((object (alloc-bytes 32 8)))
+                  (if (/= (nl_intern_lookup_pos bytes-ptr n object) 0) object 3))))))))
 
     ;; Public entry: nl_intern_lookup(bytes_ptr, len, result_slot).
     ;; Returns 0 (RESULT-SLOT left untouched) when NAME has never been

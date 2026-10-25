@@ -29,12 +29,13 @@ null	native-must-stay	type predicate on tag bits
 not	native-review	No classification row; review against Doc 211 §6.
 special-form-p	native-must-stay	Minimal native surface clause 2: N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/ and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation.
 nelisp--env-globals-op	native-must-stay	Minimal native surface clauses 1/2: symbol-entry access and N3 evaluator entry; rooted watcher callbacks or special-form function cells. Lisp references retained in packages/nelisp-sys/eval-port/, lisp/nelisp-buffer-local.el (legacy entry reader) and test/nelisp-n3-reference.el; Lisp watcher policy in library foundation. variable-entry returns an existing mirror-owned record through WORD transport without exposing raw pointers.
-make-hash-table	native-review	No classification row; review against Doc 211 §6.
+make-hash-table	native-must-stay	Clause 1: tagged table/vector allocation; native keyword fast path retains nelisp--make-hash-table-reference for custom tests and GNU errors (explicit hashfast brief).
 puthash	native-must-stay	hash-table core
 gethash	native-must-stay	Minimal native surface clause 1: tagged hash-table buckets; eq/eql string identity fallback after byte mutation (GNU reference test/nelisp-n2-reference.el)
 remhash	native-must-stay	hash-table core
 hash-table-count	native-must-stay	hash-table core
-maphash	native-review	No classification row; review against Doc 211 §6.
+maphash	native-demotable	Explicit hashfast brief: clause 2 evaluator callback entry plus clause 1 tagged pair access; retained nelisp--maphash-reference permits later compiler-based demotion.
+mapc	native-demotable	Explicit hashfast brief: clause 2 evaluator callback entry plus clause 1 sequence access; retained nelisp--mapc-reference permits later compiler-based demotion.
 nelisp--hash-table-make-raw	native-review	No classification row; review against Doc 211 §6.
 nelisp--cell-value	native-review	No classification row; review against Doc 211 §6.
 nelisp--assoc-raw	native-review	No classification row; review against Doc 211 §6.

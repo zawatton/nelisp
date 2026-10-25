@@ -1,0 +1,101 @@
+#+TITLE: Fundamental execution-cost differences from GNU Emacs
+#+DATE: 2026-10-24
+
+* Conclusion and scope
+
+The evidence identifies differences in general execution machinery, beyond individual array operations or the size of a Lisp value. The current generated runtime combines large native temporary frames, conservative-root initialization, repeated interpreter boundaries, stack-resident execution state, and remaining WORD/view adapters. Reducing values from 32 to 8 bytes did not remove these costs.
+
+This is a diagnosis of the frozen D7 runtime, not evidence of completed GNU speed parity. D7 binary SHA256 is 0331d5f334200fbe61054431fa4286bf13264fd84da69ecf8ae2e81ebb33d6fa; GNU 31.1 is 7a73e7e5db25275f09753fba330b96ecd44c64b3af9c5298fe343a44084bf5d7. Source/shared-bytecode modes are separate. Both runtimes execute the same inputs within each comparison; bytecode comparisons use the same GNU-produced objects.
+
+Evidence is retained under =target/gnu-speed-root-cause/=. =profile-summary.json= summarizes six completed profile/baseline pairs; =ablations-attempt-3/report.json= retains 132 causal rows. Independent Astra/ultra reviews are =astra/first-pass.md=, =astra/causal-review.md= and =astra/time-profile-review.md=. =source-route-trace.md= pins generated-machine-code and compiler-origin evidence.
+
+* Large temporary frames make ordinary calls expensive
+
+The source evaluator's generated builtin groups clear a large native temporary region on every entry:
+
+| Generated function | Zeroed native temporary bytes | Actual ELF instruction |
+|--------------------+-------------------------------+------------------------|
+| nl_apply_builtin_group_0_w | 20,752 | REP STOSQ at 0x1e31dc4 |
+| nl_apply_builtin_group_1_w | 22,496 | REP STOSQ at 0x1e9d244 |
+
+In the source-length profile, 170 of 1319 body-selected CPU-clock samples land at the group-1 clearing instruction: 12.89% of sampled body CPU time. Group-1's entire leaf count is 184. Source-aref has 361/2400 samples at that instruction, 15.04%. Source-aset has 206+201 out of 2969 samples at the two clearing instructions, 13.71%. These are weighted leaf-PC observations; they are not inclusive call costs or the fraction of GNU-relative slowdown removable by a fix.
+
+The initialization is an intentional GC policy for fresh native temporary slots. It prevents stale bits from becoming false conservative roots. It is not Lisp heap allocation and must not simply be deleted. Frozen generator =scripts/nelisp-standalone-build.el:3028= selects these entries; frozen =lisp/nelisp-aot-compiler.el:27884= sizes the region and =:27434= emits the zeroing block. The initial runtime-slot allocator uses a shared function-wide counter across disjoint branches. Later compaction was not exhaustively audited, so the final amount safely reusable is unmeasured. The generator, frame sizing and exact bytes are traced in =source-route-trace.md=.
+
+This couples the shape of generated dispatch functions to GC cost: entering a handler group initializes temporary storage belonging to a much larger function than the selected handler. GNU eval resolves a subr and calls its implementation using a local argument array; it does not enter an equivalent giant generated group temporary frame. Both systems have GC-root concerns; this comparison does not claim GNU uses only precise roots.
+
+* Bytecode has an expensive common execution floor
+
+With array operations removed, the shared-bytecode sum loop takes median 95.28 ns per step in D7 and 14.82 ns in GNU, approximately 6.43 times. The step still includes comparison, branch, stack/local access, accumulation and induction updates. This rules out array memory access as the sole explanation. It does not isolate dispatch latency from the rest of the loop.
+
+GNU's actual =exec_byte_code= uses indexed threaded dispatch and maintains raw instruction/operand state in optimized C locals. D7's generated code uses compare/branch dispatch and repeatedly stores/reloads PC, SP and intermediate values from native stack slots. The actual emitted machine code, rather than static instruction counts alone, establishes this difference.
+
+D7 splits execution between =wf_bytecode_w_fast_run= and =wf_bytecode_execute_frame=. The fast admission mask excludes length/aref/aset, forcing repeated exits, outer dispatch and re-entry. Body-filtered CPU-clock samples show:
+
+| Shared-bytecode loop | Two D7 executors, leaf CPU share | Fast-entry/reset range, subset | Operation helper, leaf CPU share |
+|----------------------+---------------------------------+--------------------------------+---------------------------------|
+| length | 76.35% | 6.24% | bf_length_checked_w: 3.44% |
+| aref | 87.71% | 9.56% | wf_bytecode_vector_primitive: 4.88% |
+| aset | 87.12% | 6.92% | wf_bytecode_vector_primitive: 6.75% |
+
+The entire fast-run share must not be attributed to entry initialization. The hot dispatch branch at 0x1d731aa receives about 8% of body samples in each loop; sampling skid and the absence of hardware branch measurements prevent interpreting that as branch-misprediction time. Direct vector helpers already use WORD slots with bounds/type checks; a generic argument-list allocation explanation is inappropriate for these bytecodes.
+
+* Representation adapters and generic calls add separate costs
+
+Length's helper already returns a WORD. The outer interpreter expands it to a legacy view and converts it back to a WORD through =nl_sexp_clone_into= and =nl_val_clone_into=. Those helpers have combined 8.62% leaf CPU share across the whole length-loop body; unavailable caller-sensitive evidence prevents assigning all those samples to this one adapter. Other adapters/scratch lookup are separate. The 128-byte scratch buffer is allocated once per activation and cached; repeated scratch allocation has not been established.
+
+The within-round length-minus-baseline workload contrast is median +79.899 ns per D7 step versus +1.872 ns for GNU. It includes the target operation, adapters and execution-route changes. It is not isolated primitive latency. Unrolling length 16 times shortens D7 by only about 8.2%; it retains per-target arithmetic and boundaries and cannot isolate all loop overhead.
+
+Replacing remainder indexing with =logand= changes execution route: GNU compiles an ordinary function call for logand. Both choose the same indices for this nonnegative induction variable. The additional bytecode workload cost is approximately 756 ns per D7 aref step and 753 ns per aset step, versus approximately 8.6 ns for GNU. This points to general call/argument/result handling plus the resolved logand implementation, not expensive hardware bitwise AND. Do not recommend this replacement as a speed optimization.
+
+Source-mode EIC admission can avoid the generic argument-cons builder for proven handlers, but these three ordinary source-call bodies fail its structural proof. Length uses =wf_arg_ptr=; aref/aset pass the whole args list to their bridge helpers. They are also absent from the source interpreter's separate primitive-ID table. These specific calls therefore evaluate into rooted WORD slots, construct an argument list, and pass through repeated identity/arity/list checks. This establishes the route for these functions, not every builtin; the profiles do not isolate its allocation cost from its other work. The separate FX vector specializations and direct shared-bytecode vector path must not be conflated with this route.
+
+The =nl_string_read64= samples in bytecode loops are generic logical object/header reads. Ordinary opcode fetch is an inline byte load at 0x1d73196. The helper's name is not evidence of application string processing or a helper call on every instruction fetch.
+
+* What the measurements do and do not establish
+
+All 132 causal rows record zero actual completed collection-count increments in both engines. Collection execution therefore does not explain those measured small-loop differences. This does not establish zero allocation, equal collector policy, or zero GC poll/root-initialization overhead.
+
+The six profiling pairs use 1000 Hz userspace CPU-clock sampling, exact child CLOCK_REALTIME body windows, pinned executable/fixture inputs, checked results and completed child processes. Startup, warmup, explicit pre-GC and result serialization are outside the selected interval. Source loops use N=1000000; bytecode loops use N=10000000. The two modes are not compared as identical workloads.
+
+Candidate DWARF callchains are unavailable, so only leaf PCs are attributed. GNU profiles have 136-409 selected samples; candidate profiles have 1319-2969. Zero observed collector leaf samples would not prove zero collection time.
+
+Profile/baseline elapsed ratios are unstable: candidate source aref/aset are 0.511/0.630, candidate bytecode aref is 1.489, and GNU bytecode aset is 1.659. CPU12 affinity was enforced, but frequency/background activity was uncontrolled. These single pairs cannot bound profiler overhead independently of environmental or runtime variation. They are not new qualified GNU speed ratios, and no overhead subtraction is applied. The 132-row contrasts are also exploratory, with 117 intervals below 150 ms. Neither campaign establishes final GNU speed parity.
+
+* Improvement order and causal acceptance
+
+1. Reduce the native temporary region initialized on ordinary builtin entry through general compiler lifetime/slot allocation or generated handler partitioning. Preserve required initialization and all actual roots. Verify generated frame size/zeroed bytes, weak-reference behavior, callbacks, nonlocal exits and paired elapsed execution. Do not disable zeroing merely to improve a benchmark.
+2. Reduce the common bytecode floor: retain execution state across ordinary opcode boundaries, eliminate redundant native-stack traffic through general code generation, and measure dispatch changes independently. Preserve bounds/type errors, GC safepoints and interrupt behavior. Reset costs alone cannot explain the observed floor.
+3. Remove the demonstrated length WORD/view round trip using the existing WORD-returning API. Measure this as a separate change, without a new primitive or benchmark shortcut.
+4. Trace and improve general function admission and argument/result transport on the generic call route. Confirm actual resolved function objects and execution PCs before assigning its entire penalty to one component.
+
+One controlled implementation change at a time is needed to establish removable cost. The present measurements locate expensive mechanisms but cannot predict that any single fix will achieve GNU-equivalent speed. Existing speed/GC failures remain failing in their original ledgers; the bounded diagnosis has its own three criteria and does not move the parent objective's denominator.
+
+* Better target architecture
+
+The current broad clear is a necessary protection within the current frame/collector contract. The expensive contract itself should change: function selection should precede reservation of handler-local working storage. A generated router should authenticate the current function identity and select an independently compiled handler with a small native frame. The handler boundary must survive every inlining path; the current boundary registry alone does not gate all cross-inline/initializer candidate paths. These are generated internal functions, not new public Lisp primitives or hand-written benchmark accelerators.
+
+Separate two migrations so their effect can be measured:
+
+1. Outline canonical handler leaves into independent generated functions, retaining the complete existing guarded list ABI, fallbacks, evaluation semantics and GC-safe fresh-frame initialization. The router owns only routing state. Measure actual final emitted frame sizes and zeroed bytes after owner lowering/inlining; raw-IR cost estimates are insufficient. This changes frame organization without simultaneously changing argument semantics.
+2. Introduce an authenticated descriptor-to-handler route with rooted WORD argv/result slots for supported handlers. Preserve function-cell changes, aliases/advice, errors and nonlocal exits. Keep list/view conversion at the explicit compatibility boundary. Existing descriptors currently encode arity/primitive IDs, not handler addresses; direct-address dispatch requires new private metadata and validation. Remove repeated arity/list checks only after proving the new boundary has the same GNU-visible validation/evaluation order.
+
+General compiler temporary lifetime/slot reuse is complementary: mutually exclusive branches should not require the sum of their temporary storage. It must preserve representation joins and actual live references at every collecting callback, not merely reduce a counter.
+
+Live-root maps and frame ownership are a later, broader improvement. Existing static annotated root-slot support is not a complete safepoint/liveness map for these raw handlers. Adding precise roots alone still lets the conservative scanner see stale bits in the same native frame. Removing broad clears requires verified exclusion of mapped native regions, complete live-root publication, and coverage for registers, unmapped helpers, reentry and exceptional exits. Retain conservative fallback for unconverted frames. This avoids coupling an immediate frame-size improvement to a collector-wide migration.
+
+The target is a coherent call contract: select the function, pass rooted WORD arguments, execute only that function's working frame, and publish the references that remain live when collection is possible. The source and bytecode evaluator floor remains a separate compiler/interpreter workstream; smaller handler frames alone do not establish GNU speed parity.
+
+The independent Astra/ultra [[file:../../target/gnu-speed-root-cause/astra/design-alternatives.md][design audit]] endorses this staged direction. The Sol6.1/xhigh [[file:../../target/gnu-speed-root-cause/handler-design-feasibility.md][feasibility trace]] identifies fixed symbol registries, owner units, inlining gates and ABI/cache integration points. The initial experiment should retain balanced direct calls; an indirect function-pointer table is optional and not yet qualified. That diagnosis checkpoint preceded runtime implementation; the subsequent implementation evidence is recorded below.
+
+* Implementation and calibration checkpoint
+
+The isolated leaf lane now emits 341 independent handlers (287 list ABI, 54 frame ABI). Actual ELF frames for length, aref and aset are 192, 224 and 240 fresh bytes; the largest handler is 9,392 bytes. The direct routers preserve original bodies, guards and fallback semantics. The first candidate's controlled source campaign showed shorter length/array elapsed intervals, but it also newly retained two weak string keys and was rejected. Those raw timings are not accepted as the corrected candidate's measurements.
+
+Read-only hardware-watchpoint and first-mark traces found the retaining value in an untouched hole at nl_apply_builtin_w RBP-0x500. A retired nl_eval_inner_cons_w frame had written a result container at that same address; the next wrapper reused the stack and conservatively retained its string children. Immutable D7's corresponding slot happened to contain zero. This exposes an existing frame-initialization hazard through changed stack reuse, rather than establishing a collector-internal root-boundary bug. The approved containment adds only this wrapper to the existing Linux fresh-frame policy. Its corrected final ELF clears its own 1,456 fresh bytes and excludes parameter spills. All 341 leaves remain independent. Original weak24, GNU56 and buffer21 fixtures pass completely; native-only object liveness and corrected-candidate elapsed qualification remain separate obligations. This localized repair does not replace the longer-term slot-lifetime/root-publication design.
+
+The constrained bytecode code-generation candidate forwards only proven nonpointer values in 0..255 through the new assignment-prefix cache, preserving the original stack home, the old let policy and existing work allowance. Independent final-ELF review confirms a byte fetch followed by the home write, R8 copy and register comparisons. Six balanced sum-only elapsed pairs give candidate/D7 median 0.9588968634 (4.11% shorter), with candidate/GNU median 6.0127. Every measured interval has zero actual GC events. The predeclared acceptance requires at least 5%; this result remains below that threshold. Instruction-count improvements are not substituted for elapsed acceptance. A general ordered-integer-tree jump-table extension is the next scoped experiment, not a claim of achieved parity.
+
+The original AFRT exit-hook-result-gc failure needs execution-mode calibration. Default D7 and the constrained bytecode candidate both remain 24/25. Expanded diagnostic catch data shows hook count zero and the original hash table returned; a same-base lookup immediately before backtrace-debug finds no make-hash-table activation. GNU interpreted execution passes 25/25 and has that activation during argument evaluation. Explicitly byte-compiling the same GNU helper reproduces the same 24/25 failure, missing lookup and zero hook count. This supports a compiled/interpreted activation-visibility difference, not a debugger result lost by GC. Disabled-FX execution was used only as a labeled diagnostic contrast; it is not an acceptance workaround. The original red criterion stays visible, and transparent source-JIT observability must be specified explicitly before prescribing extra activation records in every compiled call.
+
+Artifacts are under =target/gnu-core-improve/=. Separate Astra reviews pin source, final ELF, default-GC fixtures, the rejected first candidate and the calibrated failure. The six-criterion implementation ledger remains distinct from the unchanged parent GNU-equivalent speed objective. No shared runtime source integration or GNU speed parity is claimed at this checkpoint.

@@ -1,0 +1,75 @@
+#+TITLE: Isolated early-identity semantic qualification
+
+* Exact scope
+
+Production remains =scripts/nelisp-stdlib-prelude.el= SHA256
+=1d504eb9fc550d474bdb7695f1e578b8911ee9aac13e092a80b10503e51e9c9f=.
+There is no production change in this stage.  The prior diff and wall
+receipt remain frozen; no timing sample was repeated.  The independent
+semantic receipt is =target/equal-identity-semantic/receipt.json=.
+
+Three fresh children use real GNU Emacs, unchanged D5, and that same D5
+with only the exact source overlay.  Each child returns rc0, emits exactly
+87 distinct protocol lines including its engine record and footer, and has
+empty stderr.  The unchanged and replaced function/body identities, real
+FX records, actual private native-eq callable and live public equal/eq/
+stringp cells are checked.  The native ELF and cold-image hashes match the
+previous frozen D5 pins.  This is source-overlay evidence, not a new cold
+image or combined D5 acceptance.
+
+* Why the fresh probe differs
+
+The original hostile-eq fixture used public =fset= to install a raising
+replacement.  Its wrapper calls =(eq (car-safe definition) 'macro)= after
+the underlying installation, so that fixture aborts during setup before
+the intended provider probe.  Astra identified this source/backtrace path.
+Its failed raw children and all earlier reports remain unchanged.
+
+The fresh fixture captures the actual =nelisp--fx-plain-fset= callable
+(GNU uses native =fset=) for installing/restoring only the nonmacro test
+replacements.  Objects and replacement code exist before mutation.  Each
+provider call is unrolled at top level; its counter is captured immediately
+before any reporter, list construction, helper call, control or restoration.
+The same installed counting replacement must observe exactly one direct
+public =eq= control call.  There is no subtraction or waived expected count.
+
+* Actual outcomes
+
+All ten candidate identity windows, including string, symbol, fixnum,
+cons, vector, marker, record, hash table, float and same-object NaN, return
+t with zero public-eq calls.  Their direct public-eq controls each return t
+and count exactly one.  Hostile always-nil, always-t and raising public-eq
+replacements preserve those identity results.  Public stringp counting
+also observes zero calls in candidate identity windows.  The corresponding
+unchanged-provider structural windows observe positive calls, proving the
+changed path.  No identity expectation was weakened.
+
+Eight distinct equal/unequal string/list/vector and numeric cases, under
+the hostile replacements as well as normally, have no remaining candidate
+provider differences from GNU.  No new provider differences are observed
+within these fixed cases.  This does not assert every Emacs value or all
+existing NeLisp compatibility behavior is covered.
+
+The public-fset setup regression is tested separately after restoring all
+provider windows: GNU reports nil; unchanged D5 and overlaid D5 report
+error.  That existing regression remains red, independent of the passing
+provider qualification.  The old unexplained aggregate five-call count is
+not subtracted; its polluted window is superseded by direct zero windows.
+
+* Reproduction and handoff
+
+From this lane, set =NOTES_ROOT=, =D5_BIN= and =GNU_EMACS= to the pinned
+paths in the receipt and choose a new result directory:
+
+#+begin_src sh
+(ulimit -v 8388608;
+ "$NOTES_ROOT/bin/heavy-run.sh" python3 test/equal-identity-semantic.py \
+   --native "$D5_BIN" --gnu "$GNU_EMACS" \
+   --output target/equal-identity-semantic-new-output)
+#+end_src
+
+No further execution is needed for this handoff.  The coordinator will
+trigger the separate Astra completion audit.  Main promotion is pending
+that audit.  The independent semantic progress ledger keeps that criterion
+pending; combined D5 acceptance remains blocked by its separate known
+failures.

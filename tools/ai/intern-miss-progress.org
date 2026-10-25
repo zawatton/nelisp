@@ -1,0 +1,13 @@
+#+TITLE: Intern lookup miss allocation removal
+#+NOTE: This bounded unit does not remove retained symbol aliases or satisfy word-heap S5/S6. The final criterion requires a rebuilt runtime candidate; no full build is authorized in this lane.
+
+* S1 Pure lookup misses
+
+** S1.1 Production lookup definitions execute natively with zero miss allocations and unchanged intern state
+cmd: ulimit -v 8388608; python3 test/intern-miss-native-test.py --out target/intern-miss/candidate --check
+
+** S1.2 Original allocate-before-probe implementation fails the native zero-allocation control
+cmd: ulimit -v 8388608; python3 test/intern-miss-native-test.py --out target/intern-miss/old-control --old-control --check
+
+** S1.3 A runtime candidate containing the change preserves actual native intern behavior against GNU
+pending

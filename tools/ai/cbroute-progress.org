@@ -1,0 +1,24 @@
+#+TITLE: Native-to-bytecode callback route for mapc/maphash (cbroute)
+#+NOTE: Created 2026-10-25 before implementation; 6 criteria (header said 7 by mistake; corrected 2026-10-25, no criterion changed). Seed = resume coordinator overlay after the closurevm merge (generator sha256 prefix b239818ce1a56d59). Evidence: resume target/integ-1025c/matrix/REPORT.md (maphash 22x, mapc 13.9x GNU) and target/v5cg (callgrind on v5: 2324 instructions per mapc element with a return-only bytecode callee; the per-element cost is nl_apply_function_w with a consed arglist, wf_word_view, nl_n4_named_apply_w, nl_n4_apply_raw_w, wf_bytecode_function_result_w, nl_root_frame and name lookups).
+* S1 Source
+** S1.1 wf_mapc_w and wf_maphash_w call a bytecode callee (bytecode object, or a symbol whose function cell holds one) through a direct frame entry with WORD arguments: no consed argument list, no view box, no by-name re-resolution per element; the function cell is revalidated on every element and any other callee or any change keeps the old route; red/green
+cmd: grep -q '(wf_cb_call_words env roots 1 40 kind)' scripts/nelisp-standalone-build.el && grep -q '(wf_cb_call_words env roots 2 16 kind)' scripts/nelisp-standalone-build.el
+cmd: grep -q 'Ran 13 tests, 13 results as expected, 0 unexpected' target/cbroute/logs/ert-green.log && grep -q 'FAILED  hf-maphash-bytecode-direct-route' target/cbroute/logs/ert-red.log && ! grep -q '^exit 0' target/cbroute/logs/ert-red.log
+evidence: target/cbroute/logs/ert-green.log sha256=2284f34435bbc8dc1bbcf05c7b0b449c2e3752af68ae3a6bf0fd7bd376e0a6dd
+evidence: target/cbroute/logs/ert-red.log sha256=c158cad44ed7f2d89906640cc9da8122e977e14e47081e6e3011c0c7489149a4
+** S1.2 Semantics match GNU fns.c (Fmapc, Fmaphash with DOHASH_SAFE): non-local exits, errors, debug/backtrace frames, mutation of the list or table during the walk, redefinition of the callee during the walk; ERT red/green and the shadow differential corpus against GNU
+cmd: python3 target/cbroute/checks.py corpus
+evidence: target/cbroute/corpus/out-new.txt sha256=c1df33648a4c7f0f33c598bc674d46a9ed171efefae980f379a4c7f109a9bd64
+evidence: target/cbroute/corpus/out-gnu.txt sha256=449a9ce5082bde02741350bc603475e4433f289db607dfb5abeff68744f105a7
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: tail -1 target/cbroute-build/dynamic/build.log | grep -q '^exit 0' && grep -q PRELINK_DIRECT_CLOSURE_PASS target/cbroute-build/dynamic/src/target/standalone-compiler-constructor-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/cbroute-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && grep -q PRELINK_DIRECT_CLOSURE_PASS target/cbroute-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json
+evidence: target/cbroute-build/dynamic/nelisp-dynamic sha256=532ff87504e108946d037396a6de1cf6fae7d8595975721ff0406d6539f8027c
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 target/cbroute/checks.py fixtures
+evidence: target/cbroute/fixtures.log sha256=129bf9105bc51dd14683fc67f6fdffb4faa08b48406d548665510df6486f1cd0
+* S3 End to end
+** S3.1 r7-mapc-bc and r7-maphash-bc instructions per element reduced vs integ-1025c (callgrind two-N difference), results checked
+cmd: python3 target/cbroute/checks.py callgrind
+** S3.2 Paired elapsed (gnu-gap-bench, assigned CPU) on r7-mapc-bc, r7-maphash-bc, r7-mapcar-bc plus the plain sum loop and r4-logand regression rows, vs integ-1025c and GNU
+cmd: python3 target/cbroute/checks.py bench

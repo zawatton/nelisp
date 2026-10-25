@@ -499,8 +499,12 @@ PYEOF
                   grep -qx 'STANDALONE-CHECKS PASS' "$f" 2>/dev/null || fail "test/perf/standalone-checks.sh not PASS in $f" ;;
       fchecks)    f=target/final-verify/integ-wh-fchecks.log
                   tail -n 1 "$f" 2>/dev/null | grep -q '^FCHECKS PASS ' || fail "batch F's fixture checks not all PASS in $f" ;;
-      gcport)     f=target/final-verify/integ-wh-gcport.log
-                  [ "$(grep -c '^GC-PORT-[A-Z-]* PASS' "$f" 2>/dev/null)" = 3 ] || fail "gc-port's light set not 3 PASS in $f" ;;
+      gcport)     # Run integ-wh-gcport.py run --dyn BIN --static BIN --out target/final-verify first.
+                  # INTEG_WH_GCPORT_RECEIPT overrides the default hash-bound receipt; no legacy log fallback.
+                  f=${INTEG_WH_GCPORT_RECEIPT:-target/final-verify/integ-wh-gcport.json}
+                  STATIC=${INTEG_WH_STATIC:-$ROOT/target/integ/nelisp-static}
+                  capped python3 tools/ai/integ-wh-gcport.py check --dyn "$DYN" --static "$STATIC" --receipt "$f" \
+                    || fail "gc-port's light-set receipt is missing, failed or stale ($f)" ;;
       mcp)        f=target/final-verify/integ-wh-mcp.log
                   sed -n 2p "$f" 2>/dev/null | grep -qx '2 tools=40' || fail "MCP not 40 tools in $f" ;;
       scale)      f=target/final-verify/integ-wh-scale.log

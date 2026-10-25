@@ -1,0 +1,26 @@
+#+TITLE: Interpreter (FX-off path) evaluation floor (R5 fixes)
+#+NOTE: Created 2026-10-24 before implementation; 7 criteria. Seed generator b840048f, compiler dece6298. Evidence base: resume target/gnu-speed-root-cause/s5/eval-floor.json (sum loop 6368 vs GNU 2007 instructions/step). This path runs closures (funcall of let-bound lambdas, fset lambdas) and top-level forms even with FX on.
+* S1 Source (red on seed, green after)
+** S1.1 nl_lex_walk cheaper entry and a first-frame fast path in variable lookup and set (GNU eval.c eval_sub symbol path / Fassq), semantics unchanged (dynamic/special, shadowing, closures capturing frames)
+evidence: target/evalfast/source-evidence.json sha256=3194a6b07fa0d0259eed4f3043cfcc169511ab6e6259113358ff03f4e8b1c22b
+** S1.2 setq and while fast paths for the direct-cons, lexically bound case (GNU Fsetq, Fwhile); inline direct cons reads; quit/GC poll on the while back edge kept
+evidence: target/evalfast/source-evidence.json sha256=3194a6b07fa0d0259eed4f3043cfcc169511ab6e6259113358ff03f4e8b1c22b
+** S1.3 Eval entry and activation-record overhead reduced (nelisp_eval_call_w / nl_eval_inner_w, macro-cache probe) with backtrace/debugger behaviour unchanged; or a recorded decision to defer
+evidence: target/evalfast/eval-entry-decision.json sha256=f0cc64df71bd684e1b67804abcaed0844640df4eb4bcfebc6308fc0d14086556
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink closure checks PASS)
+#+NOTE: Coordinator identified the RBX save-area pad; selected prologues now initialize it. The snapshot_w policy line is retained. Pad red/green is 1/2 -> 14/14; six pre-fix nonpolicy full-byte hashes are unchanged. One follow-up build: exit 0, 675.059 seconds, prelink 106/346/84 PASS. Native pad stores confirmed at apply_w rbp-0xa30 and snapshot_w rbp-0xf0.
+evidence: target/evalfast-init-build/dynamic/build-result.json sha256=63c1601b91f255b0253ca28426582c033fa7b126269d2de2ff5fdae772093d3a
+evidence: target/evalfast/pad-fix/source-evidence.json sha256=176c1f636e1c6f3deabc1410f99f981e5d6e4d2c2c9f7a0c4303a66e863ab119
+evidence: target/evalfast/pad-fix/native-prologue.json sha256=bb4fc9d04607183fd5d64a3ef5faaf23640114cf05d9257fd8fb3509ddef1364
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; plus FX on/off parity of the R5 workloads
+#+NOTE: Corrected default-GC binary: weak 24/24, GNU 56/56, AFRT 24/25 identical exit-hook-result-gc red (native exit 1), buffer 21/21. New environment parity 18/18 in each FX mode; R5 parity 40/40 per engine. Earlier failed receipts remain under target/evalfast/fixtures and fresh-policy.
+cmd: python3 target/evalfast/check-results-init.py fixtures
+evidence: target/evalfast/pad-fix/qualification.json sha256=ca150a89e571e2881e3567738da37bb095f306dd3c636c324bd33b06be6fd12d
+* S3 End to end
+** S3.1 R5 sum-base (FX off and closure/top-level FX on): instructions per step reduced vs 13c7c026, results checked
+#+NOTE: CPU 11 Callgrind, N=2000/12000; checked results in 18 processes. Corrected instructions/step 5491.3075, 5491.3129, 5280.3015; baseline 6368.3055, 6368.3061, 6427.3069. The earlier uncleared control is recorded separately.
+evidence: target/evalfast/pad-fix/instructions-evidence.json sha256=d15e9dae337cb0fd3ed8e3e779f6d62026b7caf42b709708fea5e53d22814e6c
+** S3.2 Paired elapsed on those workloads vs 13c7c026, CPU 11, raw runs kept (evidence)
+#+NOTE: CPU 11, 7 alternating fresh-process repetitions per engine at N=200000/1000000, 126 raw samples. Corrected median ns/step: 519.6010 / 516.0831 / 483.6475 vs baseline 560.7461 / 547.9258 / 544.9861. Policy-minus-uncleared deltas include clearing and code layout; no intrinsic pad-store latency or speed-threshold claim.
+evidence: target/evalfast/pad-fix/wall-evidence.json sha256=83b65ffd235aff2d9cc1a245fa1f760020b21f81c3b1a0da9555f90f848f1c6f

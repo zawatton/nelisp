@@ -1,0 +1,16 @@
+#+TITLE: Separate generated list and frame handler groups
+
+* S1 Transport-specialized generated handlers
+
+** S1.1 Existing host controls and new routing/transport/mutation contracts pass
+#+NOTE: Seeded only required generator/compiler/argframe module and focused tests from current integration, with pre/post SHA256 in target/transport-split/seed.json. Known Anvil arrayp caller-analysis failure uses the explicitly authorized narrow source fallback, with no new index scans/restarts. Original vector source/tests/handoffs remain frozen.
+cmd: (ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-aot-fresh-frame-test.el -l test/nelisp-applyfn-name-split-test.el -l test/nelisp-argframe-lowering-test.el -l test/nelisp-argframe-generation-test.el -l test/nelisp-fx-ordinary-vector-test.el -l test/nelisp-transport-group-split-test.el --eval '(unless (= 32 (length (ert-select-tests t t))) (error "Missing focused controls"))' --eval '(ert-run-tests-batch-and-exit t)')
+
+** S1.2 Actual production-lowered specialized groups and emitted native controls qualify
+#+NOTE: Must retain initialized list and frame entries, pure resolver, no mode tests/frame reads in list handlers, no list reads/mode tests in admitted frame handlers, exact missing0/nil3, arity and native parameter/boundary controls. Actual owner-context frame/node counts and all failed attempts are preserved. Raw cost is not wall speed; no inferred final F1 cap claim.
+cmd: (ulimit -v 8388608; timeout 60 ../../../../../bin/heavy-run.sh emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-transport-group-split-test.el --eval '(condition-case e (nelisp-transport-split-emit-native) (error (princ (format "%.1000S" e)) (kill-emacs 1)))')
+#+NOTE: This remains red: the actual production sample's unresolved nl_string_read64 dependency is preserved after adding real wf_cdr_has_more. No stub or toy implementation was substituted. The full production owner preprocessing hit the60s bound; raw source/counts are explicitly not final lowered frames. Coordinator may authorize an experimental build after source audit; native qualification/caps are incomplete.
+
+** S1.3 Final combined runtime passes correctness, cap and unchanged performance gates
+#+NOTE: Requires coordinator approval and actual built native validation. Existing D5 warmed weak-key retention and unchanged old7023 symbol-name1.1091032668>1.10 failures stay red; this generator split does not claim either is repaired.
+cmd: (ulimit -v 8388608; python3 -c 'import json; r=json.load(open("target/fx-vector-acceptance/D5-warm-v2-qualified/report.json")); assert r["status"] == "NO_NEW_DIVERGENCE", "Preserved D5 warmed weak-key regression"')

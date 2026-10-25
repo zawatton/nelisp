@@ -1,0 +1,29 @@
+#+TITLE: Dynamic binding opcodes in the fast loop (fastloop group d)
+#+NOTE: Created 2026-10-25 before implementation; 7 criteria. Seed = resume integrated tree. Evidence: integ-1025 matrix r3-dyn 15.6x GNU, 3.0 outer trips per iteration (varset, varbind, unbind); fastloop REPORT group (d) deferral notes.
+#+NOTE: Coordinator follow-up adds S3.3 before revision implementation: denominator 7 -> 8. Return-starter regression must be fixed. Varset may be retained only with a demonstrated nonregressing cheaper implementation; otherwise remove it. Original trip-reduction criterion remains visible even if removal makes it fail.
+* S1 Source
+** S1.1 State-publication discipline of the existing call arm (32-37) documented from source: how pc/sp/mem/bindings are published before code that can allocate, GC, signal or throw
+evidence: target/dynbind/protocol.md sha256=850e6b6ab1ec8960fba6c7146605b7b44798398c777477571c25e27025b83ba2
+** S1.2 varset guarded fast path, or coordinator-authorized removal when a cheaper nonregressing placement is not demonstrated; red/green return-starter fix and safe replay
+#+NOTE: Follow-up explicitly permits removal. V1 was 4.83% slower; removed varset entirely and restored its starter bits. The only runtime delta is exclusion of 135 from batch starters. Revised suite red 5/23 on v1, return assertion red on seed; green 23/23 in 0.670722 s. Old implementation evidence remains under target/dynbind/.
+evidence: target/dynbind-v2/green-final.log sha256=7c7861219265b1c3adcb40eef2501d4042cfec469b27979ee097bba491ac57e1
+** S1.3 varbind/unbind inside fast_run using the specpdl/AUX/BINDINGS protocol exactly as the outer loop does, with unwind on throw and signal correct; red/green; or a recorded decision with the reason
+#+NOTE: Decision: retain the outer implementation. AUX allocation, BINDINGS ownership, frame reload and cleanup-resume state are absent from the fast runner. See the source-derived protocol review.
+evidence: target/dynbind/protocol.md sha256=850e6b6ab1ec8960fba6c7146605b7b44798398c777477571c25e27025b83ba2
+* S2 Build and regression
+** S2.1 Dedicated full dynamic builds per brief and coordinator follow-up (prelink PASS)
+#+NOTE: One additional rebuild explicitly requested for the return-mask fix and varset removal: rc=0, 682.885 s, three prelink closures PASS. ELF c87d7d07609571c35c6710395a41d39d18a087fc48b06601f5723823f365cc0b. Two builds total across the original task and this follow-up; no third build.
+evidence: target/dynbind-v2-build/dynamic/build-result.json sha256=53bfb3f0e81093924fc509b3100475841d381aa146fa76865bc1e4882ef14bc4
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; fastloop 17 ERT and stackset 6 ERT
+#+NOTE: Rebuilt final mask-only binary: weak24 GNU56 buffer21 PASS; AFRT24/25 same exit-hook-result-gc red. Focused ERT23/23 (0.676767 s), including inherited17/stackset6; log target/dynbind-v2/postbuild-ert.log, sha256=95c16d49f18467137c5fb9d83d5fc6d2fc6616d17c60c3ef8a8974c12797a2eb.
+evidence: target/dynbind-v2/fixtures/report.json sha256=f8f79d20bc6d9362972703eb6d6f12e4e291e709b3c0b1e341bcc23cb18caaa1
+* S3 End to end
+** S3.1 r3-dyn outer trips per iteration reduced vs integ-1025, results checked
+#+NOTE: Final mask-only candidate restores 3.004 trips/iteration, matching integ-1025. Keep the original strict reduction criterion red, not downgraded or weakened. The coordinator explicitly authorized removing the regressing varset leaf.
+cmd: python3 target/dynbind-v2/check-trips.py > target/dynbind-v2/trip-verdict.log
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 13): r3-dyn, r7-mapcar-bc, r7-mapc-bc, r3-switch and the plain sum loop vs integ-1025 and GNU; stackset paired on both R7 rows
+#+NOTE: 238 checked fresh processes, seven pairs per engine/row, default FX/GC. No --allow-busy override; preflight CPU13/29 utilization 0/2% dyn and sum, 0/0% switch/mapcar/mapc. Internal ns/iteration baseline/candidate/GNU: dyn625.6200075/629.736662/38.7665035; mapcar20667.696/19518.6138/5443.3822; mapc69825.1009/67680.5974/1040.3633; switch1477.33569/1487.1943/190.45353; sum41.27573975/41.087985/14.02717825. R7 stackset medians: mapcar18367.2905, mapc65634.3937. V1 measurements remain under target/dynbind/.
+evidence: target/dynbind-v2/elapsed.json sha256=2609caabe09eac8fbcb002e4ba617f6a84b09a5ede35f757a9b4d1dbf1c80320
+** S3.3 r7-mapcar-bc not slower than stackset
+#+NOTE: Primary metric fixed before measurement: paired runner internal median ns/iteration, candidate <= stackset. Candidate19518.6138 > stackset18367.2905 (+6.27%); criterion remains red. Corrupt-result driver controls and a synthetic slower-candidate verifier control are retained.
+cmd: python3 target/dynbind-v2/check-mapcar.py > target/dynbind-v2/mapcar-verdict.log

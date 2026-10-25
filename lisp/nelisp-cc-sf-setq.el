@@ -98,11 +98,18 @@
     (defun nl_sf_setq_evaled_w (w pair val-cdr env _pad _pad6)
       (if (= w 0)
           0
+        (if (if (= (logand pair 7) 2)
+                (if (= (logand val-cdr 7) 2) (= (ptr-read-u64 val-cdr 6) 3) 0)
+              0)
+            ;; Read NAME after evaluation, as on the general path. No
+            ;; transient symbol view or binding pointer crosses that call.
+            (let* ((rc (extern-call nl_env_set_value env (ptr-read-u64 (- pair 2) 0) w)))
+              (if (= rc 0) w (nl_abi_fail rc 0)))
         ;; The setter and its cell/mirror writers accept WORDs. A view
         ;; here would be cloned into the binding and then retained by
         ;; every cons/record that reads that scalar variable.
         (nl_sf_setq_rest_w (nl_sf_setq_cdr_word val-cdr) w
-                           (extern-call nl_cons_car_ptr pair) env 0 0)))
+                           (extern-call nl_cons_car_ptr pair) env 0 0))))
 
     (defun nl_sf_setq_val_w (val-form pair val-cdr env _pad _pad6)
       (nl_sf_setq_evaled_w (extern-call nelisp_eval_call_w val-form env 0)
@@ -115,9 +122,16 @@
       (nl_sf_setq_sym_w args-pair val-cdr env 0))
 
     (defun nl_sf_setq_w (args env _pad _pad1)
-      (if (= (sexp-tag args) 0)
+      (if (= (logand args 7) 2)
+          (let* ((tail (ptr-read-u64 args 6)))
+            (if (if (= (logand tail 7) 2) (= (ptr-read-u64 tail 6) 3) 0)
+                (nl_sf_setq_evaled_w
+                 (extern-call nelisp_eval_call_w (ptr-read-u64 (- tail 2) 0) env 0)
+                 args tail env 0 0)
+              (nl_sf_setq_pair_w (extern-call nl_cons_cdr_ptr args) args env 0)))
+        (if (= (sexp-tag args) 0)
           3
-        (nl_sf_setq_pair_w (extern-call nl_cons_cdr_ptr args) args env 0)))
+        (nl_sf_setq_pair_w (extern-call nl_cons_cdr_ptr args) args env 0))))
 
     ;; (rc, OUT) adapter.
     (defun nl_sf_setq (args env out _pad)

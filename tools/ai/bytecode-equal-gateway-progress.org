@@ -1,0 +1,13 @@
+#+TITLE: Bytecode equal uses the existing rooted builtin gateway
+
+* S1 Opcode154 semantic route
+
+** S1.1 Actual immutable D6 shared-GNU-bytecode vector counterexample is preserved
+cmd: (ulimit -v 8388608; python3 test/nelisp-bytecode-equal-gateway.py check-red)
+
+** S1.2 Focused production-source routing, roots, success/error ordering and old-route mutations pass
+cmd: (ulimit -v 8388608; python3 test/nelisp-bytecode-equal-gateway.py host)
+
+** S1.3 Produced combined runtime passes the unchanged smoke and rooted callback matrix
+#+NOTE: Requires a coordinator-approved built candidate. Missing provider, callback GC/reentry/nonlocal exit, public advice/redefinition immunity and the original five-case shared-bytecode smoke remain mandatory. No execution-mode, GC telemetry, timing or speed qualification follows from host checks.
+pending

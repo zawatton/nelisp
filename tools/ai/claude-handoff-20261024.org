@@ -1,0 +1,154 @@
+#+TITLE: Claude handoff — NeLisp GNU runtime speed work
+#+DATE: 2026-10-24
+#+NOTE: Checkpoint requested by the user. All worker jobs are stopped. No new full build, source integration, commit or push was performed at handoff.
+
+* Read first
+
+The user wants GNU-equivalent elapsed speed and practical behavior, with builtin-frame organization and the roughly6.4x bytecode-loop gap addressed in parallel. GNU parity is NOT achieved. Instruction counts alone are not speed evidence.
+
+The next concrete actions are to integrate the reviewed A package carefully and diagnose the current B production gate before another full build. A is ready but UNINTEGRATED. B's latest ordered-tree experiment is unfinished and must not be presented as an optimization success.
+
+Read the applicable Notes/dev/repository AGENTS instructions and nelisp-development skill. User-facing prose is Japanese; repository prose, coordination and worklogs are English. The user approved gpt-6.1-sol implementation, including GC internals. Separate delegated audits use the highest available Astra family and its highest effort; this run used gpt-6-astra/ultra. Do not silently change models on quota/provider errors.
+
+* Work areas and immutable baseline
+
+All paths below are relative to the Notes workspace unless noted otherwise.
+
+| Role | Path |
+|------+------|
+| Coordinator / integration target | dev/nelisp/target/agent-worktrees/resume-4943-20261024 |
+| A leaf implementation | dev/nelisp/target/agent-worktrees/builtin-leaf-20261024 |
+| B compiler implementation | dev/nelisp/target/agent-worktrees/bytecode-core-20261024 |
+| Unused combined seed | dev/nelisp/target/agent-worktrees/core-combined-20261024 |
+
+Coordinator branch is codex/resume-4943-20261024 at a14b1a2e4dc81b975135e73c8763821cb3484354. There are inherited uncommitted runtime changes and a65-file seeded overlay. Do not use a broad git diff/copy/reset/stash to integrate this work. Do not modify the shared dev/nelisp checkout as a side effect.
+
+The coordinator's runtime sources are STILL the initial seed:
+- scripts/nelisp-standalone-build.el: 4ae54c9d22f377e9e1947dca3ac53fd879443b5b0f9ce37ca56a041307db27e3.
+- lisp/nelisp-aot-compiler.el: dece6298ab8aeaa67eae2007e55ac1ba61d4bc95f7e7f183dba416d0c53d7ec5.
+
+Immutable D7 is coordinator-relative target/resume-gc-bytecode-build/dynamic/nelisp-dynamic:
+- ELF: 0331d5f334200fbe61054431fa4286bf13264fd84da69ecf8ae2e81ebb33d6fa.
+- Cold: 567d968191e3bf886fb4bf228630589afe3fe7859271faafebf7ec218b093039.
+- Source identity: f01b9f4fadc20af3f03a0486817c56eb7a5436b2496956edf60022358986c31f.
+- GNU31.1 ELF: 7a73e7e5db25275f09753fba330b96ecd44c64b3af9c5298fe343a44084bf5d7.
+
+* A — independent builtin frames, corrected and reviewed
+
+A replaces two large generated handler groups with341 independent generated functions:287 list ABI handlers and54 frame ABI handlers. Balanced direct routers preserve complete guards, fallbacks, evaluation/error behavior and existing argument semantics. Every owner/inliner/cache path protects the leaves from reinlining; private leaves retain direct-only admission. No new public Lisp native primitive was added.
+
+Final ELF fresh frames are length192bytes, aref224, aset240; largest leaf9392. The old20,752/22,496-byte group entry clears are avoided on those ordinary routes. Values remain8-byte WORDs; these frame sizes are native temporary regions, not object sizes.
+
+The first A candidate newly retained two weak string keys and was rejected. Hardware-watchpoint/first-mark evidence proved an old evaluator result container survived in an untouched hole at active nl_apply_builtin_w RBP-0x500. Its last writer was a retired nl_eval_inner_cons_w frame. The paired D7 slot happened to be zero. This was not collector-internal temporary storage.
+
+The reviewed containment adds only nl_apply_builtin_w to existing Linux fresh-frame initialization. Actual ELF clears exactly1456 fresh bytes and excludes parameter spills. Native-only keep/drop evidence proves a live string is first rooted from the saved-RBX slot at RBP-0x5d8 outside that clear; dropping the test-owned reference produces no target mark and actual death. Both perform one default collection. This validates the concrete containment, not every register/collector behavior.
+
+Corrected build: A-relative target/builtin-leaf-init-build/dynamic/nelisp-dynamic.
+- Source identity: 1afe0fdd9925672e03272b75a28e1ac4f947f4905ddbe1b591b52c9415d203c3.
+- Generator: c18c1b773c5dc7e896d2352a74443e389a74665e480e07e3cac20bab7ea58393.
+- ELF: cb88d713ed20c2aa634a1f672a30039c4645ff2e1a878b1ee60872d8d37bf27f.
+- Cold: db7030b9a757e6a395b2606c41d4fd427cb88db16881857d12441874f946c5f4.
+- Build exit0 in613.432seconds; prelink F1/constructor/rooted closures346/106/84 PASS.
+
+Validation: host49/49; original weak24/24; original GNU56/56; buffer21/21; raw-v2 ABI62; WORD-frame21 byte-identical to fresh D7 and pinned GNU; source contracts10; argument-list root checks2; genuine old-A missing-admission negative control; native-only keep/drop with first-mark provenance. Original AFRT stays24/25; full_default_gc_qualification remains FALSE. Broad U7A corpus, full lower-phase/namespace/compile suites were not run for this final A package. Existing broader baseline failures remain separate.
+
+** Controlled source elapsed results
+
+These are same-workload whole-body wall times, not intrinsic single-function latency. There are90 raw records: five workloads, three engines, six complete role permutations. Fresh processes, CPU12, all six heavy locks, unchanged GNU-calibrated counts, no profiling, warmup/pre-GC outside timing, natural GC inside timing, checked results and vector state. All target medians and all six paired target ratios meet the unchanged acceptance rule.
+
+| Source workload | Time reduction against D7 | Corrected A / GNU elapsed ratio |
+|-----------------+---------------------------+----------------------------------|
+| length | 8.85% | about8.97x |
+| aref with remainder index | 12.01% | about12.77x |
+| aset with remainder index | 11.53% | about12.31x |
+| aref with mask index | 9.47% | about15.80x |
+
+The source sum control also falls5.46%, unexpectedly; do not assign this to handler clearing without causal evidence. D7/A natural GC deltas per five cases are0,0,2,2,4; GNU is0. Default policies are observed, not claimed identical. Minimum interval0.498981seconds; maximum clock drift plus uncertainty1.57microseconds; endpoint fraction0.0003425903. Seven corrupted-proof controls and four read-only GDB children/twelve actual-body markers validate representative corrected source/bytecode engines. This is not GNU-equivalent speed.
+
+Coordinator-relative evidence:
+- target/gnu-core-improve/leaf-init-source-1/report.json: 5b947d46678e65853670fff6a2c13134169de9a7baf30205a84575839c902df6.
+- target/gnu-core-improve/leaf-init-engine-witness-1/report.json: 47cf67bc0e8c87ea3ea90b1c424dc9587b8d7f13d01a3ef5ad184810179e1bce.
+- target/gnu-core-improve/audit/claude-handoff-audit.md: 5b606728d7aaaf59a70057542ccc309db62d29e2995481836125e85636f24d92. This independent Astra final audit indexes the source, ELF, native-root, elapsed and engine reviews.
+
+** Exact A integration package — still unapplied
+
+A-relative target/builtin-leaf/wrapper-init-fix/:
+- integration-final-20261024-02.json: 07e885b0965f3fe96bba847a574ff4b6ffd0b15c2cdda268827f37fe85c17830.
+- integration-final-20261024-02.patch: 3707efbe62de978c89cff0ded2e7123a25072776fe422cd0dc12fc0f21ef0dff.
+- final-validation-receipt.json: a778a96382f3d4147a07d4c815bef79e5f32cecf34e6ced43c17159a1c919630.
+
+Exactly seven authored files: generator; three existing structural-test adaptations; new leaf ERT test; native contract fixture; native-only probe. Existing ERT names/counts/assertions remain. The final probe was added AFTER runtime freeze and is separately pinned110427709ec48382f90affe56ca0bae5f9d77961e1b34038f5f5a808b15fe6c1. Do not claim it is part of source manifest1afe0. The first direct-BF probe failed its dropped-root calibration; only the final wrapper route plus keep/drop/first-mark evidence is accepted.
+
+First read-only resume check, run from Notes:
+#+begin_src sh
+resume_dir="$PWD/dev/nelisp/target/agent-worktrees/resume-4943-20261024"
+leaf_dir="$PWD/dev/nelisp/target/agent-worktrees/builtin-leaf-20261024"
+(cd "$resume_dir"; ulimit -v 8388608; git apply --check "$leaf_dir/target/builtin-leaf/wrapper-init-fix/integration-final-20261024-02.patch")
+#+end_src
+
+Before actual application, recheck each manifest seed hash/absence against the current coordinator and each candidate hash. Integrate ONLY those seven files, retaining inherited changes. Codex must use apply_patch for manual source edits. Verify post-integration hashes and use the already qualified dedicated image; do not rebuild merely to repeat passing checks. No commit/push has been requested.
+
+* B — SAFE cache measured; ordered-tree experiment not production-qualified
+
+** Preserved SAFE counterfactual
+
+B-relative target/bytecode-safe-build/dynamic/nelisp-dynamic:
+- Source: 33262ad832d1f34b0fa09c8f12a6887332180c58e2c4b61c1ccc59733e2eb0a4.
+- SAFE compiler: ebc40f81f6568cd3040f6b4723a9ec8588050cfc29acbac56ed5940a0b92c90b.
+- ELF: a29a4946cf4772fdcb96a0f5c251d5a2a121d4110c4763f269ae88a370a3aad9.
+- Cold: 4a90186bd9b7e1b2afd6ab62929e678ad4c2649e379607e083fd42ef7ff4ba3a.
+
+SAFE write-through assignment-prefix caching admits only proven0..255 nonpointer results, keeps the original stack home, preserves prior let policy and the8192 work bound, and invalidates across effects/joins. Actual final ELF uses R8 after the byte load for four opcode comparisons. Seven focused checks and prior host40 are recorded; weak24/GNU56 pass both D7 and SAFE, with original AFRT24/25 unchanged.
+
+Six same-GNU-bytecode sum pairs give4.11% shorter time (median candidate/D7=0.9588968634); candidate/GNU=6.0127. This FAILS the predeclared minimum5% reduction, despite all six being below one. Do not lower the threshold. Four expensive practical SAFE-only timing cases were intentionally deferred once the basic-loop gate failed. The older broad prototype also failed its real production gate; preserve that historical failure.
+
+Coordinator evidence: target/gnu-core-improve/bytecode-safe-sum-1/report.json, SHAaa863d014f5c283ffbaa4d60f893f46c978ac4ed9ffaec003537af24d01a5aee. SAFE build/source/semantic receipts remain frozen in the B lane and coordinator bytecode-artifacts snapshots.
+
+** Current ordered-tree source — first task is the failed production gate
+
+Astra approved a general bounded pure signed-integer < tree lowering through existing relative jump tables. Actual fast-run tree has19guards, depth6,20 opaque leaves; finite interval6..191 needs186 entries/744bytes, with distinct signed lower/upper tails. Each leaf must emit once. Keep exact reference metadata, interval-aware occurrence traversal, active-path cycle detection,65 occurrence visits,32guard/depth8/span256 bounds, one-way cache invalidation, unchanged equality behavior and direct-only/F1 policies. The declared code-growth cap is not evidence of a code-size or speed win.
+
+Current B compiler: 11357ebf60d28de5c08a24cdcdcd4c330e2c9eea547ffe71e7e8b1f13a23aa4b.
+New test test/nelisp-bytecode-core-ordered-test.el: ce22fddb3f6895fba4a571cb4279329ba884a1b33794f1f33e00aee92e19afcc.
+Delta against SAFE: compiler+130/-12, one new planner defun/feature variable, dense emitter changes; six new ERT checks. Five PASS (including native signed tails/effects/trap and unchanged equality bytes), one actual-production check FAIL. Pre-change/feature-OFF selector controls fail as intended. The actual producer ON object still has only old28/16-byte tables and NO744-byte first-dispatch table, although the bare planner admits the captured owner. No new full build, speed claim or full host/regression qualification exists for this source.
+
+Read B-relative target/bytecode-core/claude-handoff.json first (SHA9a9063350e28812e85bd5b7bf63c4e8ab7b12851ef91e6565c3ca5c472b06495). Its next_when_resumed.precise_command runs the bounded real-producer test with exact planner advice/context logging. Check whether requiring standalone-build reloads the old emitter, then inspect actual owner/ABI/representation/promotion/policy at the raw<93 gate. Do not blindly raise budgets or broaden eligibility. Logs, source map, SAFE-to-ordered.patch and lane-seed-to-current.patch are indexed there.
+
+Do not start another full runtime build until the real producer ON/OFF gate and source audit pass. After that, a single experimental combined build with the corrected A generator may avoid a redundant B-only build, but source pins/counterfactuals must be preserved and combined gains must be labeled honestly. No A generator has been copied into B, no combined build has started, and no B source has been integrated into the coordinator.
+
+* Original AFRT red — calibrated, not silently waived
+
+Default original AFRT is24/25 on D7, SAFE and corrected A; failing case exit-hook-result-gc. Expanded diagnostic error is wrong-type-argument arrayp with the original hash table, hook count0 and frame nil. A lookup immediately before backtrace-debug also finds no make-hash-table activation during FX argument evaluation.
+
+GNU interpreted execution passes25/25 and has that activation. Explicitly byte-compiling ONLY the same GNU helper reproduces the identical24/25 failure, missing lookup/hook and14collections. The source mechanism is late activation creation after argument evaluation in compiled execution. It is not evidence that GC lost a debugger replacement value. Disabled-FX was a labeled diagnostic contrast only; its fx-records-present check correctly failed.
+
+Preserve the original failing check and expected value. Clarify transparent-source-JIT observability versus GNU-compiled behavior before prescribing a global activation redesign or changing expectations. Do not add observer-name-only deoptimization or turn the calibration into full GC PASS. Evidence: coordinator target/gnu-core-improve/callback-calibration-checkpoint.json and audit/baseline-afrt-callback-diagnosis.md.
+
+* Progress ledger checkpoint
+
+No denominator changed. The current B production failure is now an additional failing cmd under S2.1, while SAFE's separate approved evidence remains preserved.
+
+| Ledger | Last meter output | Stage breakdown / outstanding checks |
+|--------+-------------------+--------------------------------------|
+| gnu-core-speed-improvement-progress.org |33.3% of6defined criteria| S1=2PASS/1FAIL; S2=0PASS/3FAIL. Original AFRT contract, current ordered production gate, bytecode default/elapsed qualification remain red. |
+| gnu-runtime-speed-progress.org |22.2% of9defined criteria| Stored parent meter unchanged; S1=2/3, S2=0/3, S3=0/3. GNU-equivalence target unchanged. |
+| gnu-speed-root-cause-progress.org |66.7% of3defined criteria| Profiling overhead-bound criterion remains red; diagnosis does not establish parity. |
+
+The latest core meter was run after the handoff ledger update. Other values are retained stored meter outputs, not rerun estimates. Meter snapshots are coordinator-relative target/progress/. The8-byte WORD/16-byte cons migration context is inherited; legacy32-byte views and final zero-old-representation/memory evaluation remain unfinished and were not re-audited in this speed slice. Preserve tools/ai/word-heap-progress.org.
+
+* Operating constraints and tool state
+
+- Every test/REPL: ulimit -v8388608. Heavy jobs: Notes bin/heavy-run.sh, maximum six machine-wide. Put execution timeout after admission; do not raise the cap. Close REPLs after use.
+- Elapsed owner is CPU12; ordinary heavy-run affinity excludes it. Rigorous campaigns reserved all six locks and restored taskset-c12 inside the wrapper. All our locks/processes are now released. Do not kill unrelated shared jobs.
+- Reuse target/gnu-core-improve/measure.py and frozen-counts.json. Exact source and GNU-produced bytecode modes are separate; same operation/input/count within each comparison, no profiling, strict result/clock/exit checks. Negative controls/A-A evidence are preserved. Never mix source FX against GNU interpreter and call it matched parity.
+- Small Anvil standalone code-context/dependency/worklog calls work. Giant compiler/generator/prelude context queries fail wrong-type-argument arrayp(buffer). Use pinned scoped extracts and bounded caller maps; generated DSL functions are not top-level Elisp definitions. Do not enqueue giant index scans or restart shared servers. This run recovered a failed giant prelude request by a404-character extract and a successful real code-context call.
+- Manual hashes unchanged: code-context-workflow.ja.md5622637d17e16ac8a58bbb609cdae3cffc44733e9843f5499788ef3072da6939; capabilities.ja.md44acf576810a7a965c8f42b1309d994ea7a19e1c12e1ec158668300ef6a2a9bc.
+- Worklogs are DB-primary via anvil-standalone worklog-add. Do not append journals/MEMORY.md/legacy worklog files. Root checkpoints94732fbb0b7bc8125ab95467bc04ea45051207b0 andddfb6509639270087400682d8d9a89e4bd2fb474; A row1781927973; B row1781927974/d600639917f843a235593aef433babd27ffcc314. A final root handoff worklog follows this file.
+
+* Recommended resumption order
+
+1. Verify the final A package/seed hashes, read its independent final audit, then integrate only the reviewed seven-file package into the coordinator. Keep original AFRT red and do not claim full GC/GNU parity.
+2. Diagnose B's missing actual-production table using the exact bounded command in its handoff. Fix/test the producer-context issue before any expensive build; preserve all failed evidence.
+3. Complete focused negative/native tests, retain old equality/direct-only/GC contracts, obtain separate Astra source review, then freeze a candidate and perform one dedicated full build.
+4. Verify actual final ELF (not an isolated diagnostic object), run exact default weak/GNU/callback/real-engine fixtures, and use controlled same-GNU-bytecode elapsed comparisons. Keep >=5% gate; GNU-equivalent target remains <=1, not merely improvement.
+5. Update ledgers with machine evidence and worklog-add. Broader PC/SP/operand state and root-publication design is the next architectural option if dispatch lowering remains insufficient; the current work does not establish parity.

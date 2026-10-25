@@ -1,0 +1,33 @@
+#+TITLE: Two GC entry fresh RT initialization
+
+* S1 Bounded source and emitted-frame validation
+
+** S1.1 The 55-file frozen seed and exact two-name selector delta are verified
+#+NOTE: The original exact selector-only source check passed and remains frozen in receipt.json. Following independent Astra audit, this check now pins the combined generator, which adds only the separate audited opcode154/blob slice to the selector repair. The denominator stays four.
+cmd: python3 -I -c 'import hashlib,pathlib; assert hashlib.sha256(pathlib.Path("scripts/nelisp-standalone-build.el").read_bytes()).hexdigest()=="4ae54c9d22f377e9e1947dca3ac53fd879443b5b0f9ce37ca56a041307db27e3"; print("Audited combined GC selector source PASS")'
+evidence: target/astra-bytecode-equal-source-slice-audit.md sha256=7cd3700c1a9daf0468be4c6a2c4d4217a99e3846fcc6e50b5e0b52294be5158c
+
+** S1.2 All existing 32 host controls and focused GC selection controls pass
+#+NOTE: The integrated run includes the real ignored seed manifest missing from the original sandbox. All 35 controls pass; the combined run additionally executes five opcode controls, for 40 expected results and exit0. The original 34/35 sandbox failure is preserved.
+evidence: target/combined-source-host-receipt.json sha256=9e2c02d89cc42d80b43c72b97326524327559f01c3b88652df31086de7542b36
+cmd: python3 -I -c 'import hashlib,json,pathlib; r=json.load(open("target/combined-source-host-receipt.json")); assert r["observed_exit_code"]==0 and r["tests"]=={"executed":40,"expected":40,"unexpected":0}; assert all(hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()==h for p,h in r["files"].items()); print("Combined host40 PASS")'
+
+** S1.3 Production emitter eligibility and bounded native ABI frame controls pass
+#+NOTE: The original owner-source exporter failed before emission and remains frozen. A stronger actual produced-ELF proof now checks all nine entry regions, both collector epilogues, two native positives and six corrupt-prefix rejections; independent Astra completion audit verifies the binary mappings and pins. This replaces the blocked exporter route rather than claiming it succeeded.
+evidence: target/resume-acceptance/d7-elf-attempt-1/evidence.json sha256=95f23b624d452a65481c8247832ef2697cf038d1063ec4b7c7bc264ef2ec419c
+evidence: target/astra-d7-gc-completion-audit.md sha256=fc6db784289f1c0e2e7f5931f43c35f60708b5e9f34f35018a9db0ec72119780
+cmd: python3 -I -c 'import json; r=json.load(open("target/resume-acceptance/d7-elf-attempt-1/evidence.json")); assert r["status"]=="FRAME_AND_PREFIX_ABI_PASS" and len(r["selected_entries"])==9 and r["prefix_abi"]["initialized_passes"]==2 and r["prefix_abi"]["negative_controls_rejected"]==6; print("Actual nine-entry ELF/prefix ABI PASS")'
+
+** S1.4 Actual combined candidate passes the default-scan weak/GC/ABI matrix
+#+NOTE: D7 passes full56, unchanged weak24, five default-scan minimal dead/live cases and the bytecode private-provider callback matrix. Wider unchanged argument-transport default acceptance still fails exit-hook-result-gc with wrong-type-argument (24/25; 14 real collections observed). This real failure keeps end-to-end completion red; advice/forced-GC stress remains outstanding. Main GNU denominator is unchanged.
+evidence: target/resume-acceptance/d7-argframe-default/D7-default.json sha256=a67cf915a31cda792174a8cefd9f63d28d57063f17886fa7650c226890ec7b6b
+cmd: python3 -I -c 'import json,sys; r=json.load(open("target/resume-acceptance/d7-argframe-default/D7-default.json")); print("D7 broad callback/GC acceptance:","PASS" if r["pass"] else "FAIL"); sys.exit(0 if r["pass"] else 1)'
+* Frozen validation checkpoint
+The production delta adds only bf_garbage_collect_w and nl_gc_stats_run.
+The source check passed. The bounded host run executed all 32 existing cases
+and three added cases: 34 passed; the existing vector scope case failed on its
+missing ignored target/fx-vector/seed-manifest.json. All added cases passed.
+The real-owner emitter failed before emission with :unknown-form on a nested
+definition list. No native prefix or full collector result is claimed.
+The failing host/frame cmd criteria and pending real candidate E2E remain.
+

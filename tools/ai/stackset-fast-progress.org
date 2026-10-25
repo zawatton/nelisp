@@ -1,0 +1,32 @@
+#+TITLE: Bytecode stack-set inside the fast loop
+#+NOTE: Created 2026-10-24 before implementation; 6 criteria. Seed: a14b1a2e4 + resume-4943 overlay, generator c18c1b77 (post-A), compiler dece6298. Motivation: R1 attribution (resume target/gnu-speed-root-cause/s2/attribution.json) - stack-set (178) is excluded from fast-run admission and has no fast_run leaf; on sum-base each of 2 stack-sets per step forces an outer execute_frame trip (~481 of 1298 instr/step).
+#+NOTE: The implementer turns each pending item into a cmd:/evidence: line in the same change that completes it. A known-red check stays a failing cmd.
+
+* S1 Source
+** S1.1 Structural ERT: fast_run handles 178 (and 179 only if the outer loop already does) and the batch-starter mask admits them; red on the seed generator, green after
+evidence: target/stackset/red.log sha256=e2facc95868c315bc253c3dd11d6ce32f7c8e489214ec568c9a2f88b7c0ff3fa
+evidence: target/stackset/green-final.log sha256=be550371734f542c05b7ef41a6d2a7294eb8c80eab5bb6afe44c49ba7e2ede57
+#+NOTE: Seed structural ERT exit 1 (2/2 unexpected); final suite exit 0 (6/6). Only 178 is implemented: the outer dispatcher neither decodes nor implements 179. Mask 1126312223703932 adds exactly bit 50.
+** S1.2 Semantics match GNU bytecode.c Bstack_set/Bstack_set2 and the outer handler (index = sp - operand - 1, bounds failure leaves state untouched for the outer loop to signal); native or IR-level test of valid, boundary and invalid indexes
+evidence: target/stackset/green-final.log sha256=be550371734f542c05b7ef41a6d2a7294eb8c80eab5bb6afe44c49ba7e2ede57
+evidence: target/stackset/seed-convention.log sha256=922d6e15d8c727044042a198d8f5e22a1f25ef2235a3092487a0b03af77b6f1b
+#+NOTE: Full generated fast-loop source IR executed with checked host memory primitives, compared with the actual outer 178 arm and GNU's independent index formula. Five valid/boundary cases, five invalid cases, truncated operand, and three existing stack-ref invalid cases. Invalid fast-loop cases preserve packed PC/SP and all memory; no stack read or write occurs. First semantics run exposed the test adapter treating integer zero as host truth; the adapter was corrected and its zero-false behavior is tested. Runtime source did not change for that repair.
+
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build from this worktree succeeds (prelink F1/constructor/rooted closures checks PASS as in the A build)
+evidence: target/stackset-build/dynamic/build-result.json sha256=6e9c8ba649119aef00dca094a9435d575221d70a6e0e2f52032471ca26ba1d4c
+#+NOTE: One frozen-source dynamic build, exit 0, 671.825 seconds. Source identity dc171ab10a1ef324d5956ef089282ab7b33c5665f2fb8507bbac40fc2e54b9eb. ELF 13c7c026c66a1b5759127bc8ece74e749113c791b353c8c539c39caef582ea82; cold 18c7054be6d6a018d2148c515e6edf8bf0c5cc73f65a95fcf2f8b402f7ae9735. Constructor 106, F1 346 and rooted protocol 84 functions: all prelink PASS. No rebuild.
+** S2.2 Existing fixtures on the new binary: weak 24/24, GNU 56/56, AFRT 24/25 with the same exit-hook-result-gc red, buffer 21/21
+evidence: target/stackset/fixtures/report.json sha256=8874ffe4ff8a627c56405fb000f8f537c6d610b364b1ddb7662e804b6728e2aa
+#+NOTE: Exact existing A-lane fixture inputs: weak 24/24, GNU eqhash 56/56, buffer 21/21. AFRT 24/25 (native exit 1): exit-hook-result-gc remains RED, with every case and the summary identical to the post-A receipt. No new failure; this criterion accepts the stated unchanged baseline red and does not claim full default-GC qualification.
+
+* S3 End to end
+** S3.1 sum-base on the new binary: stack-set causes 0 outer trips per step, and fast-loop re-entries stay at or below the back-edge poll floor (callgrind/R1 harness), result checked
+#+NOTE: Criterion redefined by the coordinator 2026-10-24. The original literal "outer trips == 0" ignored the intentional 255-back-edge poll (GNU bytecode.c op_branch polls maybe_gc/maybe_quit every 256 back edges via quitcounter). That literal check was RED twice (target/stackset/zero-trips.log, zero-trips-meter.log) and those logs are kept.
+#+TIMEOUT: 600
+cmd: python3 target/stackset/check-stackset-trips.py
+evidence: target/stackset/callgrind/report.json sha256=3ffb6a112d1945337ed2611bf9ac20b99ef762c33a57bfe04e295e96b9aa2fcf
+#+NOTE: Literal long-run criterion remains RED. R1 N=20k/120k: baseline fast-loop calls 45016/245408 (2.00392/step), stackset 4480/4872 (0.00392/step). Outer stack-set body delta is exactly 2/step baseline and 0/step candidate. The remaining 392 calls per 100k steps are the unchanged 255-back-edge poll, outside the allowed leaf/mask scope. N=128/224, below that poll boundary: baseline 2/step, candidate exactly 0/step. Every run checks the complete result. No rounding to zero and no claim that S3.1 passed.
+** S3.2 Paired elapsed sum-base ns/step, new binary vs the post-A baseline binary, recorded with raw runs (evidence; no speed threshold claimed)
+evidence: target/stackset/wall/report.json sha256=b004d41483569bdcd9f50f505a9545baba13f3d51750f0f51fcf24fa74f99d21
+#+NOTE: CPU 12 (sampled utilization of its logical pair 2.0%, 0.0%). Seven paired repetitions per binary, each N=1M and N=5M in fresh processes; alternating binary order, all results checked. External elapsed delta / 4M: baseline median 96.9329535 ns/step, stackset median 49.5455445 ns/step. Raw 28 process samples, internal elapsed, stdout/stderr and pins retained in target/stackset/wall/. No threshold or ratio claim.

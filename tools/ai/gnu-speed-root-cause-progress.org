@@ -1,0 +1,37 @@
+#+TITLE: Matched-mode GNU runtime root-cause diagnosis
+
+#+NOTE: Created before diagnostic implementation on 2026-10-24. This bounded diagnosis supports, but does not replace, the nine-criterion GNU speed objective. Time-based profiles or bounded causal elapsed experiments are required; instruction counts alone cannot establish execution-time shares. Preserve D7 and all earlier measurements unchanged.
+#+NOTE: Evidence updated on 2026-10-24; the denominator remains three. Six real profile/baseline pairs locate CPU hotspots, but the observed elapsed variability does not independently bound profiling overhead. S1.1 remains a failing command rather than being downgraded to pending. The original GNU speed objective is unchanged.
+
+* S1 Explain the matched-mode vector gap
+
+** S1.1 Actual GNU and D7 body-time profiles identify the hot paths with qualified scope
+#+NOTE: Requires pinned binaries, common workload, real completed processes, bounded profiling overhead, and explicit startup/GC/sample limits. An unavailable sampling facility is not a passing profile.
+evidence: target/gnu-speed-root-cause/profile-summary.json sha256=6fa5f4d34dce7f0b491ced4823f9002fe7ed720a97a89f7c1116610a486d8213
+evidence: target/gnu-speed-root-cause/summary-negative-controls.json sha256=1c0f0d72a9f27923891285f2502c359f68126b453e142528f477fdbcefdf01ff
+cmd: python3 -I -c 'import json,sys; r=json.load(open("target/gnu-speed-root-cause/profile-summary.json")); ok=r.get("profiling_overhead_independently_bounded") is True; print("Body-profile overhead qualification:", "PASS" if ok else "FAIL: unstable profile/baseline pairs; leaf hotspots remain exploratory"); sys.exit(0 if ok else 1)'
+
+** S1.2 Paired elapsed ablations distinguish loop dispatch, vector access, value conversion and GC
+#+NOTE: Require identical operation/input/trip counts per comparison, checked results, preserved raw timings, and a negative control. Label marginal workload differences as such rather than isolated call latency.
+evidence: target/gnu-speed-root-cause/ablations-attempt-3/report.json sha256=d8d68b3d237d0d396434f82cbf736b79e99e665a0027e01a745273eef41e9cc0
+evidence: target/gnu-speed-root-cause/ablation-worker/compiler-smoke-v4/receipt.json sha256=e4eb5253f9be1623602a34e7644b2c289e70ce232e4dbc57a239e10f2fe71377
+evidence: target/gnu-speed-root-cause/astra/causal-review.md sha256=878dca0b3eb9188d5c57ba2ee152782310f7eaaa4d2d301c9493af4b168b29eb
+
+** S1.3 Independent Astra review connects every three-operation/mode gap to evidence and concrete improvements
+#+NOTE: End-to-end diagnosis must distinguish measured facts, source-supported mechanisms, and unquantified hypotheses. This criterion does not claim GNU-equivalent performance or approve a new native primitive.
+evidence: target/gnu-speed-root-cause/astra/time-profile-review.md sha256=daef33751e9b9742e44bb740882be398b6d32c3577cd3a29d1bd66b6e255e54c
+evidence: target/gnu-speed-root-cause/astra/time-profile-summary.json sha256=6ddcf3cfff33724c0ec07bc9ed0e3b10cb8841c88e70205e25be77c5a018653e
+evidence: target/gnu-speed-root-cause/source-route-trace.md sha256=6b5dd9b400b54b30873d2686a33b5d2f7dee1f35071b67fdbd276887192e546e
+evidence: target/gnu-speed-root-cause/astra/design-alternatives.md sha256=10ddfc17b074fffae238a3ba437aed28765fa8cd821a8eb79551d4ad08a70269
+evidence: target/gnu-speed-root-cause/handler-design-feasibility.md sha256=d579b810166555e6426970aa17ca3e35ccaf174af5f9007bfa3f2d25827f80af
+
+* S2 Attribute the bytecode floor to compiler quality versus GC-root model (added 2026-10-24; denominator 3 -> 5)
+#+NOTE: Added at the user's request to compare GNU's C core with NeLisp's self-compiled runtime. Verdict in cycles/wall, not Ir. Workload: shared-bytecode sum-base (no primitive), D7 95.28 ns/step vs GNU 14.82.
+
+** S2.1 Per-category attribution of the sum-base gap (stack traffic, frame clearing/rooting, tag checks, calls/adapters, dispatch) with hardware counters for D7 and GNU
+#+NOTE: R1 (Sonnet 5.5) 2026-10-24: D7 415 cyc/1298 instr per step vs GNU 64/218; 89% of the excess is interpreter state/dispatch and the fast/outer split (stack-set excluded from fast-run admission). Category cycles are an allocation of measured totals.
+evidence: target/gnu-speed-root-cause/s2/attribution.json sha256=4ba1b7e9047e5633bf2207ada02468c32ec2fae50ca88ffc82c9757c5394ed20
+
+** S2.2 Same-function C translation of wf_bytecode_w_fast_run compiled by GCC, rooting kept vs GNU-style, measured on sum-base against D7 and GNU
+#+NOTE: R2 (Sonnet 5.5) 2026-10-24: same IR via gcc -O2 halves fast_run cycles (250 -> 121 in harness); rooting kept vs dropped differs by ~13 cycles/step; gcc still runs 619 instr/step vs GNU 218, so most of the gap is structure, not codegen.
+evidence: target/gnu-speed-root-cause/s2/c-translation-receipt.json sha256=9c87980173aa58af98147ba8ae723477ed23dc14569732963d9deae812334ea3

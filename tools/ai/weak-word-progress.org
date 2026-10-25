@@ -1,0 +1,58 @@
+#+TITLE: Native weak WORD liveness dispatch
+
+* S1 Focused source repair
+
+** S1.1 Pre-edit source snapshot is preserved
+evidence: target/weak-word-baseline/pre-edit.sha256 sha256=6969523ee31e2f14064d59cdf4148559f6572ce708df75dd26348d54232a91a5
+cmd: test "$(sha256sum target/weak-word-baseline/nelisp-standalone-build.el | cut -d ' ' -f 1)" = 92e37d86e029643b59bb39bb2b86852847a2e9167c2a292a9f84df5a01a211ea
+
+** S1.2 Source regression rejects the baseline and both mark mutations
+evidence: target/weak-word-baseline/red-final.log sha256=279dc3657f496505608cbb4e3137ee9d825978dd48975ffcd3540be09bc87011
+evidence: target/weak-word-baseline/traversal-red.log sha256=c73fb74aeeeeab455fa8430a3422c730dd575a45f54761f1c415032422cc0df9
+cmd: ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-standalone-weak-word-test.el -l test/nelisp-standalone-inline-import-test.el --eval '(ert-run-tests-batch-and-exit "nelisp-weak-word\\|nelisp-inline.*gc\\|nelisp-inline.*source")'
+#+NOTE: Baseline separately reads invalid cons address 0x20002a and String address 0x50001c. Eight focused tests plus three existing source-generation tests pass. The provisional d570... source fails new pinned/boot untraced-child and legacy physical-mark-2 controls; corrected bfdbf859... distinguishes survival from traversal and normalizes positive physical changes. Always-live, always-dead, and missing-fixed-point-change mutations are rejected. No criteria were added or removed.
+
+** S1.3 Pinned baseline native execution demonstrates actual weak-row mismatches
+evidence: target/weak-word-baseline/native/report.json sha256=4093b3cfd726af02ab0096f1ad045e44b712c0a04c0c8383187376b6009dbbc5
+cmd: python3 -c 'import json; r=json.load(open("target/weak-word-baseline/native/report.json")); assert r["rc"] == 0 and r["complete"] and not r["match"] and len(r["mismatches"]) == 19 and r["binary_sha256"] == "865f5e0a86b0cb2128960fa3f4545c303e1c9c0e4d0ac6fc611a0ce9fceb354c"'
+#+NOTE: Criterion meaning changed after coordinator review: actual baseline native E2E replaces host-only extraction. Binary 865f5e0a... completed all 24 rows with 19 actual GNU mismatches, no stderr, exit 0, 0.427917148 s. Absence, timeout, and execution error cannot pass.
+#+NOTE: Median of seven GNU processes: full 56-row loop 0.269957834 s; focused unchanged 24-row weak slice 0.242625043 s (10.1% lower). Source generator does not modify the original fixture or pinned oracle. Native timing remains unmeasured; native acceptance is S2.
+
+* S2 Native acceptance after coordinator review
+
+** S2.1 Isolated candidate native build is available
+#+NOTE: Observed D3 builds completed with exit 0 on Linux dynamic/static and Windows. These are preserved candidate-build results, not performance acceptance. No criteria were added or removed by this evidence update.
+evidence: target/resume-final-build/source-manifest.json sha256=8ea901f35e6cc90a2d53ec6de1390d4b834731e37f4a976be21cbb821dd3f1d0
+evidence: target/resume-final-build/dynamic/build-result.json sha256=5023b56580e5cd6619aca67c3e00b9d6559268e6992f5bf25f2a3841e234f0dc
+evidence: target/resume-final-build/static/build-result.json sha256=1fd4577093f8673b55a6643892c5378b859961f49f4648a89293b93fd3cc811d
+evidence: target/resume-final-build/windows/build-result.json sha256=b649cc0c8afe4263d76fc5ca6288f6f4a4253f5a3298772bd6e900ed2e7ff1ff
+evidence: target/resume-final-build/dynamic/nelisp-dynamic sha256=be6da0507a589e53290705136ba525af243f9d75db16be2455a5be1fe448e8c5
+evidence: target/resume-final-build/static/nelisp-static sha256=e102b46628662268696cedde15360fa048995204371799e9e64d1e6c22403a2a
+evidence: target/resume-final-build/windows/nelisp.exe sha256=d34fb973dcb566fb6ba602754a30d2876e02d6045e848a86393c676e6f29c1ea
+
+** S2.2 Native retention and missing-mark controls reject broken liveness
+pending
+#+NOTE: Avoid three full mutant runtime builds. Production DSL controls reject always-live, always-dead, and missing fixed-point changes. After candidate build, probe root-retention/drop controls can test the native verifier without rebuilding; they do not replace runtime mark mutation evidence.
+
+** S2.3 Native focused weak corpus matches the GNU oracle
+#+NOTE: Actual D3 default-scanning runs pass 24/24 unchanged rows on both Linux linkages, exit 0 and empty stderr. The earlier 6fdf361d candidate failed and remains historical evidence; its identity is not relabelled as passing. Saved results are checked without repeating the runtime tests.
+evidence: target/resume-acceptance/d3-critical/dynamic-weak/report.json sha256=23968ce9f40870ab776b7821abbf962908138ff5bb8ac0cee1364dd3cea67964
+evidence: target/resume-acceptance/d3-critical/static-weak/report.json sha256=0b6925033db2616aa493e41ecb4979011b304e191b45958d395295c01ce3f695
+evidence: target/resume-acceptance/d3-critical/results.json sha256=446ee08daf01abe041d9352b5df3e1a5b7472a1397b4607e38d1fa54267c935e
+
+* S3 Stable canonical String identity hashing
+
+** S3.1 Pre-edit source is the reviewed bfdb weak GC implementation
+cmd: test "$(sha256sum target/string-identity/pre-fix.el | cut -d ' ' -f 1)" = bfdbf85992b97b8750ad167465867d2440beba2d8d309c062b72253cd351e9c4
+
+** S3.2 Production DSL String hash regression and old-data mutation control pass
+evidence: target/string-identity/red.log sha256=83bb9aabb260d496e6219ee073b6cf395e7d4d0c46e7bc0594a0e93fb33195fd
+cmd: ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-standalone-string-identity-test.el -f ert-run-tests-batch-and-exit
+#+NOTE: Stable canonical header hashing resolves compact, canonical views, and exact borrowed sdata aliases after owned-region bounds and header/backreference/byte-length validation. Pool small/large and restored-image aliases retain the eq/hash law. Empty hash5, Bignum/eql, genuine legacy fallback, epochs, GC and equal hashing are unchanged. Five host checks pass, including old movable-data mutation rejection; candidate native and closure delta remain unverified.
+#+NOTE: Proposed source SHA256 8262cc1c054b86d55c271a6a9eaa17f3480fc5c3c8fc5426343567ec695bf4d5. Actual native diagnosis uses pre-hash candidate 6fdf361d...: rooted key hash237262158 becomes237261549 after two precise collections; gethash misses while maphash still reports the same eq key. This records the defect, not candidate acceptance.
+
+** S3.3 Actual default native weak corpus matches the unchanged GNU oracle
+evidence: target/resume-acceptance/d3-critical/results.json sha256=446ee08daf01abe041d9352b5df3e1a5b7472a1397b4607e38d1fa54267c935e
+evidence: target/resume-acceptance/d3-critical/dynamic-full.stdout sha256=ebbf5662a9f44f1df5473c79e2a26dababb235a6fde2d63b76955430d2468eb4
+evidence: target/resume-acceptance/d3-critical/static-full.stdout sha256=ebbf5662a9f44f1df5473c79e2a26dababb235a6fde2d63b76955430d2468eb4
+#+NOTE: Added three criteria before String hash implementation; denominator changed from 6 to 9. After reviewed D3 build and actual default-scanning acceptance, both Linux variants pass full56 and weak24. Source-only mutation evidence and native small/large/restored-image eq/hash law evidence remain separately recorded. This closes correctness only: D3 real wall throughput remains failing in dispatch-frame-progress.org and gnu-runtime-speed-progress.org.

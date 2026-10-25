@@ -1,0 +1,15 @@
+#+TITLE: Fail-closed private MCP smoke
+
+* S1 Repair and actual candidate validation
+
+** S1.1 Snapshot pins the original false-green smoke
+cmd: test "$(sha256sum target/mcp-smoke/old-smoke.sh | cut -d ' ' -f 1)" = cdf01027049ae43143c0eded5e98430492c062352e140cc17a80b7ab86613d1b
+
+** S1.2 Fake-child controls reject invalid responses and unexpected child failure
+cmd: ulimit -v 8388608; mcp_heavy_root="$PWD"; while test ! -x "$mcp_heavy_root/bin/heavy-run.sh" && test "$mcp_heavy_root" != /; do mcp_heavy_root=$(dirname "$mcp_heavy_root"); done; MCP_SMOKE_TEST_ARTIFACTS=target/mcp-smoke/cases "$mcp_heavy_root/bin/heavy-run.sh" python3 test/integ-wh-mcp-smoke-test.py && { python3 test/integ-wh-mcp-smoke-test.py --old-control target/mcp-smoke/old-smoke.sh > target/mcp-smoke/old-control.log 2>&1; old_mcp_control_rc=$?; test "$old_mcp_control_rc" -eq 1 && python3 -c 'from pathlib import Path; lines=Path("target/mcp-smoke/old-control.log").read_text().splitlines(); assert lines.count("OLD-SMOKE-CHILD-EXIT 0") == 1 and lines.count("4 isError FTS syntax error") == 1'; }
+#+NOTE: Three tests exercise one valid launcher and sixteen invalid scenarios, including malformed notification error/result envelopes, continuously readable valid-notification flood, unterminated flood, and an exited launcher with a SIGTERM-ignoring descendant holding stdout. Tests inspect descendants before their own fallback cleanup, require no running survivors, and use reduced 0.6s/0.2s bounds. The source-pinned original false-green control is rerun, not accepted from a historical log. Response-driven repair avoids fixed 60-second sleeps. No smoke DB writes or shared server operations.
+
+** S1.3 Actual D3 native candidate passes all four private MCP responses
+evidence: target/mcp-smoke/d3-receipt.json sha256=6bd8a6cc92ceda3a27988e4d2d1e9a0d1120bb7ae7b5606c1784540ee21923bb
+cmd: ulimit -v 8388608; python3 -c 'import hashlib,json; from pathlib import Path; r=json.loads(Path("target/mcp-smoke/d3-receipt.json").read_text()); assert r["actual_native_pass"] and r["rc"] == 0 and not r["process_survivors"]; assert all(hashlib.sha256(Path(x["path"]).read_bytes()).hexdigest() == x["sha256"] for x in r["artifacts"].values())'
+#+NOTE: Observed actual D3 binary be6da0507a589e53290705136ba525af243f9d75db16be2455a5be1fe448e8c5 and cold ea1fa9460291644c1328bb73e44060988437cfa6258c5ed8fdbb6dafb3d3f89e pass initialize, 40 distinct tools, memory-search (1 row), and quoted worklog-search (2 rows); rc 0. Receipt binds the exact binary, cold companion, reviewed script/test, external launcher, four raw responses, stdout/stderr summaries, and exit status. Own child group has no survivors. Read-only requests, no shared server restart. Existing passing fake-child tests were not rerun for this evidence update.

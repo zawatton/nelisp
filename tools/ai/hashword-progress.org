@@ -1,0 +1,21 @@
+#+TITLE: Allocation-free hash-table hits (hashword)
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume coordinator overlay after the cbroute/dcid merges (generator sha256 prefix 1d5a6694ca13ed10). Evidence: resume target/v5cg (callgrind on integ-1025c, r7-gethash-eq-fix, 6753 instructions per trip). nl_cons_car_ptr is called once per trip from each of nl_ht_custom_function_w, nl_ht_entry_value, nl_ht_find_index and nl_ht_identity_sync, and nl_cons_cdr_ptr once more. Each call clones a 32-byte view (nl_sexp_clone_into 455, nl_alloc_bytes 440, nl_alloc_bytes_uncheck 365, nl_chunk_try_alloc 335, nl_freelist_bucket_pop 235 instructions per trip). GNU does no allocation in gethash/puthash on an existing key.
+* S1 Source
+** S1.1 The hit paths of gethash, puthash on an existing key and remhash allocate nothing: the hash helpers read the table's cons/vector words through WORD accessors instead of view-cloning ones; red/green with an allocation-count or GC-count check
+evidence: target/hashword/red-final.log sha256=8f1b41df5e9eecddd6a776ee1806b6ed4001425c7bb4b340f73ccca56e783f53
+evidence: target/hashword/green-final-v2.log sha256=120f2ab1d0c1dbf6fd5e5caf531dc31a2d15179eacb3bf821d929f48c58d0aa8
+evidence: target/hashword/native/alloc-base-report.json sha256=b3bc7430a6e503006c5780e0899fc72758951fda05df836f0110de692a5b3b61
+evidence: target/hashword/native/alloc-cand-report.json sha256=4631c82b679a6155600fc21580bb83e6e842de724cedac3c4838b2bbe9b45c48
+** S1.2 Hash semantics unchanged: eq/eql/equal and custom tests, weak tables, resize, the hashfast GNU API fixture and the directcall-hash corpus against GNU
+evidence: target/hashword/green-final-v2.log sha256=120f2ab1d0c1dbf6fd5e5caf531dc31a2d15179eacb3bf821d929f48c58d0aa8
+evidence: target/hashword/native/parity-report.json sha256=6ad54444f0ea3dd7f1ffdea9c98a05206d4ff13d37b1f565c87635926d4f952d
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+evidence: target/hashword-build/dynamic/build-result.json sha256=bb1c2da5c2ce590f8048d19340f0166d375cde7b24d75191bc1d4f5ec7e7b5a5
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+evidence: target/hashword/fixtures/report.json sha256=fc1090d52ef03ac5dcb952a04df87fa9f3b842e525feb2427b8a01b65a9e042d
+* S3 End to end
+** S3.1 Instructions per trip on r7-gethash-eq-fix, r7-gethash-eq-sym, r7-gethash-equal-str and r7-puthash-existing reduced vs integ-1026 (pmcrun2 or callgrind two-N difference), results checked
+evidence: target/hashword/pmc-summary.json sha256=17e4df6700de96e0536179a9a0b34de730ef5998a94a923b7f908c2867eee4c0
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 13) on those rows plus r7-maphash-bc, r7-make-hash-table, the plain sum loop and r4-logand, vs integ-1026 and GNU
+evidence: target/hashword/wall-summary.json sha256=8ec699a28d9c91c4db36d5ce68235a6be19e69548b38ee1e19f49a52ef151b90

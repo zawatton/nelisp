@@ -1,0 +1,56 @@
+#+TITLE: General builtin-frame and bytecode-loop speed improvements
+#+DATE: 2026-10-24
+#+NOTE: Created before implementation. This six-criterion implementation objective supports the unchanged nine-criterion GNU speed objective; it does not redefine GNU-equivalent speed. D7 is the immutable baseline. Each lane needs actual final machine code, negative controls, default-GC semantics and paired elapsed evidence. Static instruction counts or raw-IR frame estimates do not establish speedup.
+
+* S1 Independent generated builtin frames
+
+** S1.1 Canonical handler coverage and emitted small-frame boundaries survive all lowering/inlining paths
+#+NOTE: Preserve complete guarded list/frame bodies, fallback and fresh-frame initialization. Verify final frames for ordinary and allocating handlers and a negative control that re-inlines or regroups them. No new public Lisp native functionality.
+evidence: target/gnu-core-improve/leaf-artifacts/emitted-frames.json sha256=5f060dec4724afda51e4411c84329276c9ab58678b973daba17e064612d6da19
+evidence: target/gnu-core-improve/audit/builtin-leaf-elf-review.md sha256=f2157b0338631a4a0d512de3f84194e2230e31781d497b1ae0ce379591e83c4d
+evidence: target/gnu-core-improve/audit/builtin-leaf-source-review.md sha256=ec6da429d57771a5dfd51cc768b6a515a93bade312042f95faf10a4e7eaf3582
+evidence: target/gnu-core-improve/leaf-artifacts/corrected-emitted-frames.json sha256=c584a32f368fe8aa17670ad661f7d5011b92489361773dc933ab521ac4f3a0d7
+evidence: target/gnu-core-improve/audit/leaf-wrapper-corrected-elf-review.md sha256=b1ac2f97aed10246621ed9a4cd61b3b3a10cc05f95a2b894f8e5bbfecbf9c0d4
+
+** S1.2 Default-GC weak references, callbacks, nonlocal exits and ordinary call semantics remain qualified
+#+NOTE: Preserve baseline tests and counts. Keep the pre-existing D7 callback/GC failure visible; no initializers, scan modes or checks may be disabled to obtain green results. Record any blocked full qualification explicitly.
+#+NOTE: First leaf candidate newly retains two weak string keys: weak23/24 versus paired D7 24/24; GNU corpus55/56 versus D7 56/56. This is a new regression and blocks integration, distinct from the unchanged baseline AFRT24/25 failure.
+evidence: target/gnu-core-improve/leaf-artifacts/default-gc-regression-1.json sha256=1eb0adea41fdddad645437af73fd1cfbdc1f0a62a24922f32a94496e57a5474e
+#+NOTE: Corrected A recovers weak24/24 and GNU56/56; its authentic native-only keep/drop control also passes. Original AFRT remains24/25, reproduced by a matched GNU bytecompiled helper but not interpreted GNU. The execution-mode contract is unresolved, so full qualification stays false and the original red remains visible.
+evidence: target/gnu-core-improve/leaf-artifacts/corrected-default-gc-1.json sha256=83b58413b6722f1008a3d622f46845fcdefd815d8f25585bcc5928826eb89d6a
+evidence: target/gnu-core-improve/audit/leaf-native-root-review.md sha256=85a0e2cd6a8ef653f379eabb16394c9c606849dc1e12ce29fdc2ec71947b17c1
+cmd: python3 -I -c 'import json,pathlib,sys; p=pathlib.Path("target/gnu-core-improve/leaf-default-gc-qualified.json"); r=json.loads(p.read_text()) if p.is_file() else {}; ok=r.get("full_default_gc_qualification") is True; print("Builtin leaf default-GC qualification:", "PASS" if ok else "FAIL: original AFRT red and execution-mode contract unresolved; new weak-string regression is repaired"); sys.exit(0 if ok else 1)'
+
+** S1.3 Repeated matched source workloads show a checked elapsed improvement against immutable D7
+#+NOTE: Same operation/input/trip counts and actual executor; balanced unprofiled fresh processes, pinned artifacts, sufficiently long intervals and retained raw samples. GNU remains a separately identified comparison and the parent target stays unchanged.
+#+NOTE: Corrected A source intervals are independently qualified: 90 raw records, unchanged protocol, checked clocks/results/pins and actual corrected-identity source/bytecode engine witnesses. Four target reductions are8.85/12.01/11.53/9.47 percent; every paired target series passes. Sum also improves5.46 percent but has no established handler-causal attribution. GC policy differences and original AFRT red remain separate from this elapsed criterion.
+evidence: target/gnu-core-improve/leaf-init-source-1/report.json sha256=5b947d46678e65853670fff6a2c13134169de9a7baf30205a84575839c902df6
+evidence: target/gnu-core-improve/leaf-init-engine-witness-1/report.json sha256=47cf67bc0e8c87ea3ea90b1c424dc9587b8d7f13d01a3ef5ad184810179e1bce
+evidence: target/gnu-core-improve/audit/leaf-init-elapsed-review.md sha256=88cd88dc422ad12ecfda928ef77ec54dc7d450785cc7f35e0b173ef15d678ad0
+evidence: target/gnu-core-improve/audit/leaf-init-engine-review.md sha256=10f6ab3ef61d77708df08bc9ceb46afed85bf252d5960f39d9efc9e2f735b0dd
+
+* S2 Common bytecode executor and code generation
+
+** S2.1 A general execution-state or code-generation change reduces demonstrated common-loop overhead
+#+NOTE: Preserve opcode coverage, stack effects, rooting and entry/exit semantics. Inspect actual emitted code and require pre-change/mutated negative controls. No benchmark-specific operation or handwritten native accelerator.
+#+NOTE: The first B whole-runtime build retained stack comparisons despite an isolated-object success. This known failure remains explicit until the actual production-lowered replacement is verified; the experimental artifact is preserved.
+#+NOTE: The constrained BSAFE replacement now passes independent final-ELF review: unsigned-byte fetch keeps its original stack home and forwards R8 into four comparisons. The new policy accepts only proven 0..255 nonpointer values, preserves the existing let policy and work limit, and has genuine pre-change and disabled-feature negative controls. This resolves the production-code generation failure without making an elapsed acceptance claim.
+evidence: target/gnu-core-improve/bytecode-production-qualification.json sha256=c43389dfc700fbbd3a591bd93f068a9d23ea6eb1f7cebdba85956d9a512ca2ee
+evidence: target/gnu-core-improve/production-state-qualified.json sha256=7054d284f9395525f3888a96129d630694a2a78463b964614e5a5086d5c429cd
+evidence: target/gnu-core-improve/audit/bytecode-safe-final-elf-review.md sha256=f4a874833dd25a424ba965e2d0cda7b1e6815b268c6947689f849143cb95df1b
+cmd: python3 -I -c 'import json,pathlib,sys; p=pathlib.Path("target/gnu-core-improve/production-state-qualified.json"); r=json.loads(p.read_text()) if p.is_file() else {}; ok=r.get("production_state_cache") is True and r.get("bounded_nonpointer_policy") is True and r.get("negative_controls_pass") is True; print("Production state-cache qualification:","PASS" if ok else "FAIL: final production-lowered constrained policy not yet verified"); sys.exit(0 if ok else 1)'
+#+NOTE: BSAFE above remains a separately approved historical candidate. The subsequent current ordered-tree experiment passes five focused tests but FAILS its actual production-owner gate: the intended744-byte table is absent despite bare-planner admission. No full build or speed qualification exists for the current compiler11357ebf. This known failure remains an executable failing check under the same criterion; the denominator is unchanged.
+evidence: target/gnu-core-improve/ordered-production-checkpoint.json sha256=f2487a262924455bc36cec3ca9fd4d6851da559243d35f72c2e732304be84f2e
+cmd: python3 -I -c 'import json,pathlib,sys; p=pathlib.Path("target/gnu-core-improve/ordered-production-qualified.json"); r=json.loads(p.read_text()) if p.is_file() else {}; ok=r.get("ordered_production_dispatch") is True and r.get("negative_controls_pass") is True; print("Current ordered-tree production qualification:","PASS" if ok else "FAIL: actual production owner is missing the744-byte dispatch table"); sys.exit(0 if ok else 1)'
+
+** S2.2 Shared GNU bytecode, errors, default-GC callbacks and executor identity remain qualified
+#+NOTE: Preserve existing semantic cases, equal opcode154 fix and real-engine witnesses. Label baseline-red behavior and unrun broad gates explicitly rather than weakening acceptance.
+#+NOTE: Paired immutable D7 and BSAFE both pass the original weak24 and GNU56 fixtures completely. AFRT remains 24/25 for both, with the same exit-hook-result-gc failure and 14 observed collections. There is no new divergence, but this is not full default-GC qualification and the known failure remains a failing command.
+evidence: target/gnu-core-improve/bytecode-artifacts/safe-default-gc-1.json sha256=940cb0650842f6dd76bef826e64ca5ef7f162772f01aaa241008595319d74fae
+cmd: python3 -I -c 'import json,pathlib,sys; p=pathlib.Path("target/gnu-core-improve/bytecode-default-gc-qualified.json"); r=json.loads(p.read_text()) if p.is_file() else {}; ok=r.get("full_default_gc_qualification") is True and r.get("actual_engine_witness") is True; print("Bytecode default-GC qualification:","PASS" if ok else "FAIL: baseline exit-hook-result-gc and full engine qualification unresolved"); sys.exit(0 if ok else 1)'
+
+** S2.3 Repeated operation-free and practical bytecode workloads show checked elapsed improvement against D7
+#+NOTE: Measure array-free sum/branch loop and the same array/generic-call corpus using identical GNU-produced objects. Preserve all samples, CPU/environment details and any regressions; no speed share inferred from instruction counts.
+#+NOTE: The constrained BSAFE final ELF reduces sum-only elapsed by 4.11% over six balanced pairs (candidate/D7 median 0.9588968634; range 0.9542890166 to 0.9595102369). The predeclared acceptance requires at least 5%, so this remains FAIL. Candidate/GNU paired median is 6.0127. All three roles have zero actual GC events within the measured intervals. Practical cases and independent qualification remain outstanding; the threshold is unchanged.
+evidence: target/gnu-core-improve/bytecode-safe-elapsed-checkpoint.json sha256=432bde337efb87e40c4d8e2b2e046e063b995595db9fbdf95bb84d7d097cbddc
+cmd: python3 -I -c 'import json,pathlib,sys; p=pathlib.Path("target/gnu-core-improve/bytecode-elapsed-qualified.json"); r=json.loads(p.read_text()) if p.is_file() else {}; ok=r.get("sum_and_practical_elapsed_pass") is True and r.get("independent_qualification") is True; print("Bytecode elapsed qualification:","PASS" if ok else "FAIL: sum-only reduction below predeclared 5% and practical qualification incomplete"); sys.exit(0 if ok else 1)'

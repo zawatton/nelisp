@@ -1,0 +1,33 @@
+#+TITLE: Directcall hit cost: id resolution and per-call frame protocol (dcid)
+#+NOTE: Created 2026-10-25 before implementation; 7 criteria. Seed = resume coordinator overlay after the closurevm merge (generator sha256 prefix b239818ce1a56d59). Evidence: resume target/v5cg (callgrind on integ-1025c, r4-logand, per trip of 12 opcodes and one logand call: 1876 instructions; nl_directcall_id 329 (called once, from nl_directcall_invoke), nl_directcall_invoke 164, wf_bytecode_call 126, nl_n4_push 94, nelisp_env_lookup_function_w 59, nl_root_frame 55, nelisp_mirror_lookup_entry_owned 47, m5_fx_frame_lazy 41, nl_n4_finish_w 31, root mark/release 42). GNU does about 220 instructions per trip.
+* S1 Source
+** S1.1 nl_directcall_id no longer walks the name/sid dispatch chain on a hit: a validated cache (for example keyed by the function-cell word with the cons contents rechecked) or an equivalent that still revalidates the current function cell on every call; misses and any changed, aliased, advised or mutated cell keep the old route; red/green
+evidence: target/dcid/green-compiler-fixed.log sha256=00f7c8cbcae217478edbcd271f37cf3ac338fce14a7aeca5cf635a98f691b504
+evidence: target/dcid/runtime/qualification.json sha256=c0ca06f82af781955215ab638a3d14088900b9feef9ad7e1ba57ab64176ad9e9
+#+NOTE: Source implemented and host ERT 23/23; GNU/base/candidate hash 67/67 and directcall GNU 46/46, native 47/47. Canonical SID hits use one readonly indexed descriptor and two SID reads; current cons words are reread. Candidate instructions remain unmeasured under S3.1.
+
+** S1.2 The remaining per-hit protocol (root frame, n4 backtrace frame, fx frame, mark/release) is reduced only where GNU's Bcall does no equivalent work; every removed step is justified against GNU bytecode.c/eval.c in REPORT.md, backtrace and debugger behaviour unchanged; red/green
+evidence: target/dcid/green-compiler-fixed.log sha256=00f7c8cbcae217478edbcd271f37cf3ac338fce14a7aeca5cf635a98f691b504
+evidence: target/dcid/runtime/qualification.json sha256=c0ca06f82af781955215ab638a3d14088900b9feef9ad7e1ba57ab64176ad9e9
+#+NOTE: Existing nl_n4_push_words combines duplicate registration. Backtrace activation, roots and debugger-aware finish remain. Host lazy-argv/root/debug-policy checks and real runtime corpora pass. GNU bytecode.c:792-797 and 826-829 justify the kept protocol; full debugger suites were not run.
+
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+evidence: target/dcid-build/dynamic/build-result.json sha256=0573e52965e98e9e6bc79952bf088c6fb6509d3559023eb586f0f6d697eacab5
+#+NOTE: One frozen dynamic build, exit 0 in 684.352 s. All three prelink closures PASS; ELF 77dcba67ece1e058c126ffa4fe6e01f867ed97e4f1749b182c8fe328588a9a7a. No second build.
+
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; directcall and directcall-hash ERT green
+evidence: target/dcid/fixtures/report.json sha256=4cf4a42e617fa6aa2c1423acc1498f1d592b077372a537bd6dc5173b9d37fb9a
+#+NOTE: Weak 24/24, GNU 56/56, buffer 21/21; AFRT 24/25 with identical exit-hook-result-gc failure, native exit 1. Host ERT 23/23. The expected AFRT red stays a failing command below, as COMMON.md requires; this is not a new regression.
+#+TIMEOUT: 180
+cmd: (ulimit -v 8388608; TMPDIR="$PWD/target/tmp" XDG_CACHE_HOME="$PWD/target/xdg-cache" ../../../../../bin/heavy-run.sh timeout 120 target/dcid-build/dynamic/nelisp-dynamic --load ../resume-4943-20261024/target/argframe-produced-acceptance/test/argframe-runtime-acceptance.el)
+
+* S3 End to end
+** S3.1 r4 rows (car, nth, length, aset, logand) instructions per trip reduced vs integ-1025c (pmcrun2 or callgrind two-N difference), results checked
+pending
+#+NOTE: Blocked by the required two-consecutive-failures rule in benchmark-driver preparation. Failed receipts: target/dcid/driver-controls.log and target/dcid/driver-controls-fixed.log. No instruction campaign was run.
+** S3.2 Paired elapsed (gnu-gap-bench, assigned CPU) on the r4 rows and the gethash/puthash rows plus the plain sum loop, vs integ-1025c and GNU
+pending
+#+NOTE: Blocked by the same benchmark-driver preparation stop. No paired elapsed campaign was run; no performance ratio is claimed.
+
+#+NOTE: The supplied brief/header says 7 criteria, but this ledger contains 6 numbered criteria; no seventh was invented.

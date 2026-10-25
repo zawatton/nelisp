@@ -137,7 +137,32 @@
 
     ;; `status' is the sole across-call local (§11.14).
     (defun nl_sf_while_w (args env _pad _pad1)
-      (if (= (sexp-tag args) 0)
+      (if (= (logand args 7) 2)
+          ;; The evaluator's arity gate already validated this proper list.
+          ;; Canonical cons WORDs can be read directly; retain the generic
+          ;; helpers for a legacy view encountered in the body.
+          (let ((status 0) (body 3) (w 3))
+            (seq
+             (while (= status 0)
+               (seq
+                (setq w (extern-call nelisp_eval_call_w (ptr-read-u64 (- args 2) 0) env 0))
+                (if (= w 0) (setq status 1)
+                  (if (= w 3) (setq status 2)
+                    (seq
+                     (setq body (ptr-read-u64 args 6))
+                     (while (= (logand body 7) 2)
+                       (seq
+                        (setq w (extern-call nelisp_eval_call_w (ptr-read-u64 (- body 2) 0) env 0))
+                        (if (= w 0)
+                            (seq (setq status 1) (setq body 3))
+                          ;; Read the cdr only after possible GC / mutation.
+                          (setq body (ptr-read-u64 body 6)))))
+                     (if (= status 0)
+                         (if (/= body 3) (setq status (nl_sf_while_forms body env 0 0)) 0)
+                       0)
+                     (if (= status 0) (nl_sf_while_midform_collect 0 0 0 0) 0))))))
+             (if (= status 1) 0 3)))
+        (if (= (sexp-tag args) 0)
           3
         (let ((status 0))
           (seq
@@ -147,7 +172,7 @@
               (if (= status 0)
                   (nl_sf_while_midform_collect 0 0 0 0)
                 0)))
-           (if (= status 1) 0 3)))))
+           (if (= status 1) 0 3))))))
 
     ;; (rc, OUT) adapter.
     (defun nl_sf_while (args env out _pad)

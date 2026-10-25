@@ -1,0 +1,27 @@
+#+TITLE: Hash tables, maphash, mapc (R7 fixes 1-7)
+#+NOTE: Created 2026-10-25 before implementation; 9 criteria. Seed = resume integrated tree (A, stack-set, B, fxvm, fastloop-pre-fix, SAFEFIX, parity5, directcall). Evidence base: resume target/gnu-speed-root-cause/s7/REPORT.md, hash-map.json.
+#+NOTE: Coordinator waived the known giant-file Anvil limitation and its stop-rule application. Continued using exact lexical extracts pinned in target/hashfast/context/manifest.json; semantic completeness is not claimed. Source IR 8/8 and GNU public fixture 38/38 passed before the dedicated build. Previous tool errors remain in target/hashfast/context-call.stdout and context-stackset-call.stdout.
+#+NOTE: Native justification: the brief explicitly requests the three native implementations. make-hash-table allocates tagged vectors/cons storage (clause 1); maphash/mapc enter evaluator callbacks (clause 2) over tagged storage (clause 1). The walkers remain classified as demotable; the three nelisp--*-reference Lisp implementations are retained. Timings will be recorded after the candidate build; no performance qualification is claimed yet.
+#+NOTE: Final measurements: 30 workloads / 360 fresh processes / 3 counter repetitions on CPU12, all 27 target gross retired-instruction rows reduced. Gross high-minus-low counts include the driver loop; matching-loop-adjusted values are optional and the 65536-key control was not collected. Native constructor eq 60431 to 7724 instructions/call; maphash bytecode 16 entries 26361 to 3146 instructions/entry; mapc bytecode 7392 to 2386 instructions/element. Paired ns/call census, S1.4 elapsed and any external 55-second timing remain unqualified: CPU12/SMT28 idle admission refused the required plain-sum row twice. Plain sum retired instructions increased 669.1 to 949.1 per step; no elapsed nonregression claim. Final report and receipts: target/codex/REPORT.md and target/hashfast/elapsed-status.json.
+#+NOTE: Final checker refinement uses the real constructor error helper rather than a mock: GNU eval.c:signal_error intentionally flattens proper-list data. A temporary contrary runtime change was reverted exactly; runtime/prelude match the sole built candidate. Final source tests 8/8, GNU public fixture 42/42, native public fixture 53/53. Four additional list-argument cases were verified without rebuilding; there is still one full build.
+* S1 Source (red on seed, green after; GNU semantics)
+** S1.1 Native maphash (walk the pairs vector, call per entry as wf_mapcar_step does), incl. mutation-during-walk semantics as GNU (fns.c Fmaphash)
+evidence: target/hashfast/qualification.json sha256=6e98a7acfc178e3b055e9111d8282ce8b0131aa7692ee18fd395844be39fd959
+** S1.2 Native make-hash-table honouring :test (eq/eql/equal/custom), :size, :weakness and the remaining keywords, with errors as GNU
+evidence: target/hashfast/qualification.json sha256=6e98a7acfc178e3b055e9111d8282ce8b0131aa7692ee18fd395844be39fd959
+** S1.3 Float key hash mixes both halves of the double and does not collapse short-mantissa floats (GNU sxhash_float); eq/eql/equal float lookups O(1)
+evidence: target/hashfast/qualification.json sha256=6e98a7acfc178e3b055e9111d8282ce8b0131aa7692ee18fd395844be39fd959
+** S1.4 Native mapc with GNU semantics (returns the sequence; list/vector/string/bool-vector)
+evidence: target/hashfast/qualification.json sha256=6e98a7acfc178e3b055e9111d8282ce8b0131aa7692ee18fd395844be39fd959
+** S1.5 Symbol hashing by stable id or cached hash (not name bytes), table test cached as an integer, word-at-a-time string hash; dumped/cold-image tables stay consistent
+evidence: target/hashfast/qualification.json sha256=6e98a7acfc178e3b055e9111d8282ce8b0131aa7692ee18fd395844be39fd959
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+evidence: target/hashfast-build/dynamic/build-result.json sha256=122a1f74647dc2fff70ad71be4b96b9bfa32088818d307cbdf9b3190c85361c0
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+evidence: target/hashfast/fixtures/report.json sha256=311374b40c7b6d8e82aeb8667162dda48cafd25e11251ad952a54d3682200ad8
+* S3 End to end
+** S3.1 R7 workloads (gethash eq/eql/equal by key kind, float keys 256-4096, make-hash-table, maphash, mapc): instructions per op reduced vs 13c7c026, results checked
+evidence: target/hashfast/instructions-summary.json sha256=d7af6d18a2c9666d045a9bfd62a72c691a3519234e8e9e2ebdcfc3d9cd13b6b6
+** S3.2 Paired elapsed on those workloads plus the plain sum loop (not regressed) vs 13c7c026, CPU 12, raw runs kept
+cmd: taskset -c 0 python3 target/hashfast/check-elapsed.py

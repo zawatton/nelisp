@@ -1,0 +1,16 @@
+#+TITLE: Ordinary-vector FX primitives
+
+* S1 Existing authenticated FX primitive path
+
+** S1.1 Exact arity, ordinary-vector representation and no-effect fallback contracts are checked
+#+NOTE: New internal kinds must avoid funcall13, globals21/22 and the separate interpreter descriptor namespace. The bounded Anvil caller query for the enclosing quoted source failed with the already-known arrayp(1) error; scoped syntactic consumers and signed site-cache encoding are recorded in target/fx-vector. No generator/compiler/authentication edits are permitted.
+cmd: (ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-fx-ordinary-vector-test.el --eval '(progn (unless (ert-select-tests "^nelisp-fx-vector-" t) (error "Missing vector controls")) (ert-run-tests-batch-and-exit "^nelisp-fx-vector-"))')
+
+** S1.2 Actual production-emitted primitive code passes native access/store/decline controls and the missing-kind seed fails
+#+NOTE: The native unit uses the production ID/run definitions and real representation/storage kernels. Any isolated dependencies are named explicitly; it does not claim live resolver authentication, callbacks or collector safety. Frame/node changes and all raw results are retained under target/fx-vector.
+#+NOTE: The frozen small unit passes 231 candidate cases and rejects the missing-kind seed and SAR-to-SHR cache mutation. It emits the same 23 functions: primitive_id RT slots122->143, IR nodes2019->2425; primitive_run slots24->31, nodes610->903. These are focused-unit counts; final owner-unit/node/F1 caps remain integration gates. The active EIC descriptor classifier is unchanged and does not use the new negative FX kinds.
+cmd: (ulimit -v 8388608; python3 test/nelisp-fx-ordinary-vector-native.py --check target/fx-vector/native-receipt.json)
+
+** S1.3 The final combined runtime preserves live function replacement/advice, fallback errors and forced-GC/default oracle behavior
+#+NOTE: Requires the coordinator's reviewed combined build. No standalone build is authorized in this lane. Verify actual FX entry use, ordinary-vector mutation/returned WORD, length7/other representations, bounds/type error fallback, live function replacement/advice, forced GC and the unchanged default conservative-scan GNU oracle. Host or stubbed native controls cannot satisfy this criterion. Main GNU speed ledger and limits are unchanged.
+pending

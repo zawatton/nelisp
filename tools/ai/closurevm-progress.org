@@ -1,0 +1,26 @@
+#+TITLE: Closures and top-level forms on the word VM (fxvm S1.3)
+#+NOTE: Created 2026-10-25 before implementation; 7 criteria. Seed = resume integrated tree (integ-1025 sources). Evidence: resume target/integ-1025/matrix/report.json (closure/top-level aref/aset 10-17x GNU, sum 4.3x; the defun route is 0.51x GNU) and s5/REPORT.md section 9.
+* S1 Source
+** S1.1 Closures (funcall of a let-bound lambda, fset/defalias of a lambda value, mapcar/funcall of a lambda) run on the VM, cached by code identity, with captured-variable mutation visible both ways, re-entry and recursion correct; red/green
+#+NOTE: DECISION (closurevm-2): anonymous closures whose captured environment holds no lexical binding (the R5 closure rows are of this kind) are registered by body identity on first call. A closure over a variable stays on the interpreter, so shared-cell semantics hold by construction; running a Cell word in a VM slot via nl_cell_get_value_w / nl_n3_cell_set is not done (phase 2). The check is the live fixture on the candidate with CV_REQUIRE_VM=1 (VM records for no-capture closures, none for captured ones), exit 0 and checked=23.
+cmd: bash target/closurevm/live-check.sh
+** S1.2 Top-level forms (eval of a while loop, load-time forms) reach the VM where the defun route already does, or a recorded decision with the reason; red/green
+#+NOTE: Explicit decision: top-level interception belongs to evaluator/load dispatch outside this lane; no top-level production change or red/green claim. Its unchanged rows are retained in the measurements.
+evidence: target/closurevm/decision.json sha256=e397ea659dba72da103e2916b5184d087bbb3a06d9fc4923f53d9347ea0102f9
+** S1.3 FX on/off parity of the R5 matrix and the shadow differential corpus
+#+NOTE: Build 9 (coordinator-finished after the Sonnet agent stalled): candidate matrix 15 + shadow 493 equal to baseline; shadow-on stdout cmp-equal to the baseline run.
+evidence: target/closurevm/final9/parity.log sha256=afebb7dde93dfeda6b6c71ab5ae160a9355e671bf04087b6a7ae6f2486902622
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+#+NOTE: One build, 660.849s, process exit 0, all three prelink reports PASS; cold sidecar absent and 20 uncaught startup errors. The added artifact check rejects this false green without rebuilding (0.020875s); a known-good fxvm receipt passes (0.053851s).
+cmd: python3 test/nelisp-closurevm-build-check.py --build target/closurevm-build/dynamic
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+#+NOTE: Build 9: weak 24/24, GNU 56/56, AFRT 24/25 (unchanged exit-hook-result-gc red), buffer 21/21.
+evidence: target/closurevm/final9/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+* S3 End to end
+** S3.1 R5 closure/top-level rows (sum, aref-rem, aset-rem) instructions per step reduced vs integ-1025, results checked
+#+NOTE: Build 9 instructions per step (base integ-1025 / cand / GNU): sum closure 5453/829/1869, aref closure 13678/5223/2615, aset closure 15420/5886/3101; top-level rows and plain sum unchanged.
+evidence: target/closurevm/pmc/report.json sha256=4c5cf7c6bd52a882e7b3cc31dc367c80c9324292f4adf0ec5362f154192f065c
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 15) on those rows plus the plain sum loop, vs integ-1025 and GNU
+#+NOTE: Build 9 elapsed ns/step (base/cand/GNU): sum closure 552/69.7/107.5, aref closure 1813/664/148, aset closure 2061/744/178; plain sum 39.8/39.8/13.6; top-level 0.91-0.98x base.
+evidence: target/closurevm/wall/report.json sha256=a5c8b9a1bd0aa6b13ed575edf4222cc905c91b6e3654a38c4e911854577c458e

@@ -1,0 +1,64 @@
+#+TITLE: Fresh dispatcher frame initialization
+
+* S1 Explicit fresh-temporary initialization
+
+** S1.1 Production prologue zeroing has a failing uninitialized control and preserves parameters and ABI state
+#+NOTE: Linux x86_64 only. The production-emitted prologue control retains 0xdeadbeef; the selected initializer clears it and preserves arguments and both native boundary canaries. Explicit Win64/AArch64 selection is rejected; their runtime builds remain unselected and unchanged. Entry-forwarding/prefix/internal alternatives cannot bypass initialization. One bounded Anvil caller request failed with wrong-type-argument arrayp; source callers were inspected narrowly without index scans or server changes.
+cmd: (ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-aot-fresh-frame-test.el --eval '(ert-run-tests-batch-and-exit "^nelisp-fresh-frame-")')
+
+** S1.2 Native builtin throughput has no more than ten percent regression and retains existing primitive call-floor caps
+#+NOTE: Pending actual combined binaries. Measure identical repeated arithmetic/list builtin calls in fresh processes with baseline samples before and after the candidate; retain stdout, exit status, binary identities and elapsed times. A fresh-frame microbenchmark only measures initialization cost and cannot satisfy this criterion.
+#+NOTE: Initial five-sample production-prologue scalar-loop microbenchmark: median 579.1302 ns/call for the no-initialization control and 2209.7708 ns/call initialized, adding 1630.6406 ns for 59,504 bytes / 7,438 qword stores. The approved CLD+REP refinement keeps RDI/RCX and exact bounds; SysV requires DF=0 and CLD explicitly normalizes direction. Pinned CPU 0 five-sample comparison measured control 599.1842 ns, scalar 2288.8518 ns and REP 1083.0534 ns median per call. These include matched ctypes overhead and do not satisfy builtin throughput acceptance. Use a hot builtin proven by native tracing to traverse nelisp_apply_function_w, matched source/image and CPU placement, at least five samples with baseline samples bracketing the candidate; retain the existing primitive call-floor instruction caps. The coordinator explicitly retained the ten-percent builtin ratio criterion on 2026-10-24; it remains unresolved.
+#+NOTE: 2026-10-24 actual D3 wall-time gate FAIL. CPU 0, five alternating rounds, 90 successful timed child processes, native N=200000 and GNU N=2000000 normalized per iteration. Old/new/GNU microseconds: symbol-name 1.92863/2.32635/0.095812; vectorp 2.02948/2.46584/0.0909733; string-bytes 1.82293/2.24444/0.0895493. Candidate/old ratios 1.206/1.215/1.231 exceed the unchanged 1.10 cap. These are fresh-process wall-time slopes including loop/evaluation work. D3 remains immutable red history; a subsequent architecture candidate must satisfy the same cap and native correctness tests.
+evidence: target/dispatch-throughput/run-D3/results.json sha256=8dd4b406e561b463f79804f6f6a73f68b94f2b20800e9b043c9288da2eb112e9
+evidence: target/dispatch-throughput/run-D3/manifest.json sha256=644110104dff9d97ff15467434f145e69ce959547f5953fd7c1a0dd5cab52125
+#+NOTE: 2026-10-24 D4 actual grouped dynamic candidate passes the unchanged gate: candidate/old 1.092081/1.067677/1.061116, respectively. All 90 timed children and both native dispatcher call-path proofs pass. D4/GNU remains 21.6608/24.5357/21.7792; this criterion measures regression containment, not GNU parity. D3 evidence above remains immutable.
+evidence: target/dispatch-throughput/run-D4/results.json sha256=10fb39ba97f948723536b715703e85a8666019b118b51fdc6679d257a649ca56
+evidence: target/dispatch-throughput/run-D4/manifest.json sha256=14ecb6f456b6f9670e803125f3174c0075b91857fbd89b776ae76131c04b30ac
+#+NOTE: D5 actual rooted-argument/vector/equal candidate FAILS the unchanged gate. Five alternating rounds and all 90 timed children complete successfully; candidate/old ratios are symbol-name 1.1091032668, vectorp 0.8168669771, string-bytes 1.0919642087. The first exceeds 1.10. Candidate/GNU ratios remain 22.30398/18.92327/22.14675. D4 passing history remains immutable; thresholds and the old baseline are unchanged. D5 entry proofs additionally distinguish the legitimate private vectorp frame route from public routes; the separate Astra review is pending. No criterion was added or removed.
+evidence: target/dispatch-throughput/run-D5/results.json sha256=270c7038adf6fe70cc6624ac315ec0801269c8e117b2e652c9c4550a6b105ca6
+evidence: target/dispatch-throughput/run-D5/manifest.json sha256=e7c63bd6452dbb46f4840d89eece62072dea3aecdd4fbe9709a3215dd136077f
+#+NOTE: Subsequent separate gpt-6-astra ultra audit found no material weakening in the D5 measurement adapter. It confirms actual group initialization growth but does not establish timing causality. The unchanged failed result remains authoritative.
+evidence: target/astra-speed-d5-audit.md sha256=fc9a00d5b83db2257b1707c0f65c43e24e13a8e25bfc9bf95a0c855443d9c615
+cmd: python3 -I -c 'import json,sys; r=json.load(open("target/dispatch-throughput/run-D5/results.json")); ok=set(r)=={"symbol-name","vectorp","string-bytes"} and all(0<v["ratio"]<=1.10 and v["maximum"]==1.10 and v["passed"] for v in r.values()); print("D5 wall throughput:", "PASS" if ok else "FAIL", {k:v["ratio"] for k,v in r.items()}); sys.exit(0 if ok else 1)'
+
+** S1.3 Default conservative scanning passes the unchanged 56-row native GNU hash-table oracle
+#+NOTE: Known red on baseline 6fdf361dbfc7a5624bb76e81ccc89908127b818c63e8b4ccc87e0ad8a914904b. No scan override or oracle change is permitted. The coordinator will supply the combined candidate after integration; no full runtime build is authorized in this unit.
+#+NOTE: 2026-10-24 D3 default 56/56 and focused weak 24/24 pass on both Linux linkages; no scan override. Dynamic be6da0507a589e53290705136ba525af243f9d75db16be2455a5be1fe448e8c5, static e102b46628662268696cedde15360fa048995204371799e9e64d1e6c22403a2a; observed receipts and raw output are under target/resume-acceptance/d3-critical. This correctness result does not close the failing throughput criterion.
+cmd: (ulimit -v 8388608; test "$(sha256sum target/resume-final-build/dynamic/nelisp-dynamic | cut -d ' ' -f 1)" = be6da0507a589e53290705136ba525af243f9d75db16be2455a5be1fe448e8c5 && EQHASH_FIXTURE_OUT="$PWD/target/dispatch-frame/default56" bash tools/ai/integ-wh-eqhash-fixture.sh target/resume-final-build/dynamic/nelisp-dynamic)
+
+#+NOTE: Six criteria were added in the implementation lane before outlining; this integration changes the main denominator from 3 to 9 and retains the observed D3 failure. Owner-context unit evidence is explicitly the frozen dispatch-frame lane with nlstr983; actual combined nlstr00ee runtime qualification is still required by the end-to-end checks.
+
+* S2 Allocation-free builtin name resolution boundary
+
+** S2.1 Generator preserves SID, first match, representations, fallback and N5 order with failing mutation controls
+#+NOTE: Internal native helper justification: existing tagged Symbol/String access (native-surface clause 1) is moved across a proven no-GC boundary; no new Lisp builtin is introduced. The Lisp generator remains its reference. Only literal comparisons move; SID and name-length metadata stay in the initialized outer dispatcher. The helper must remain out of line.
+cmd: (ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-applyfn-name-split-test.el --eval '(ert-run-tests-batch-and-exit "^nelisp-name-split-")')
+
+** S2.2 Actual owner-context lowering has a smaller initialized frame and a call-free native resolver
+#+NOTE: Qualify exact runtime/compiler/import identities, lowered operation whitelist, zero emitted calls/relocations, native representation controls and allocating/parking mutations. The lane nlstr-direct-ops seed is 983ac757; main's independent approved 00ee90dc patch is coordinator-owned and must remain unchanged when integrating this delta. F1 count/node caps remain an actual-build gate.
+cmd: (ulimit -v 8388608; python3 ../dispatch-frame-20261024/test/nelisp-applyfn-name-split-native.py --check ../dispatch-frame-20261024/target/dispatch-name-split/qualification.json)
+
+** S2.3 The split candidate passes the unchanged default conservative-scan native GNU 56-row oracle
+#+NOTE: No full standalone build is authorized in this implementation unit. The coordinator supplies the reviewed dedicated candidate. Missing candidate remains a failing command.
+#+NOTE: Actual combined D4 ae4e8dbe0adc619d7d5b111315afaee72582f34a50cf5e6f60cf963f69a02447, image a6c26e04f975556d7e4fc449689d43fc9f53009ce96a4383287f7b89b5a05bff; default GNU56/56 and focused weak24/24 passed with exit 0 and empty stderr. This replaces the missing-candidate check with the observed end-to-end result; no criteria were added or removed.
+evidence: target/resume-grouped-build/dynamic/build-result.json sha256=f86a98b8de209c53ff4ba5fce35cecbe4d1c4cfb1131d8553b98c69aa2389e62
+evidence: target/resume-acceptance/d4-critical/full/eqhash-fixture.out sha256=edaa1cea7374730d20c070c9c147b0bf161e1c65b6b9e30b2ec8c2ad1289238b
+evidence: target/resume-acceptance/d4-critical/weak/report.json sha256=6cbc0354be5a35252e9702ee8309fd811da929540b3d3d3b1ac27b39461542a6
+
+* S3 Two initialized generated handler groups
+
+** S3.1 Numeric routing preserves all original arms and defaults and both six-argument entries are initialized
+#+NOTE: The TREE-only owner has 5403 RT slots versus 7419 monolithic; ineffective String-reader noinline was measured and removed. Generic grouping uses actual per-arm raw IR cost, never builtin names. No new purity exemption is introduced.
+cmd: (ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -l test/nelisp-applyfn-name-split-test.el --eval '(progn (unless (ert-select-tests "^nelisp-handler-group-" t) (error "Missing handler group controls")) (ert-run-tests-batch-and-exit "^nelisp-handler-group-"))')
+
+** S3.2 Actual owner IR and native entries preserve the resolver effect boundary and both group ABI canaries
+#+NOTE: Frozen runtime 37c150a802e67f0387138620cf33006f51e5e19241a9bd336e02c634dc5fbbc2; actual owner RT slots outer32, groups2578/2827 and pure resolver2033. Selected zeroing per route is 20880/22880 bytes versus 59360 monolithic. Qualification receipt 8f91c43bcf7b706af4b3d95a670897da8eedcec055353e3aac7e4075599cd43d and native receipt 14e56683158149587263e39d81ed8aeb5a35c8bd1fcc709b811e11d0645f11d5 passed 287 assembled names/9021 native checks, six-argument spills, exact canaries and failing uninitialized/effect controls. All16 ERT cases passed, including six preserved fresh-frame cases. Group/outer native controls substitute bounded bodies into actual production frame shapes; full group execution/default GC/F1 caps remain actual-build gates. Route-cost receipt 46bab1b16d43a6b038714cd5764759726a2efe255508644b528560243d77a8f5 is diagnostic only: CPU0 five-sample medians control756.58ns/monolithic1100.61ns/routes789.42ns,819.64ns; control drift902→602ns prevents a quiet timing claim. Neither the unchanged1.10 regression limit nor GNU1.0 speed goal is satisfied by this measurement.
+cmd: (ulimit -v 8388608; python3 ../dispatch-frame-20261024/test/nelisp-applyfn-name-split-native.py --check ../dispatch-frame-20261024/target/dispatch-name-split/qualification.json)
+
+** S3.3 The actual grouped candidate passes the unchanged default conservative-scan native GNU oracle
+#+NOTE: D4 completed in 653.109 seconds, exit 0, F1 346 functions and 80397 maximum evidence nodes (depth 6). Observed source identity 0967b6732a20aa6865060c0af91aa83b0b95c0c8f4e64d06f80b7aa990bf71e8. Default scanning and original oracles are unchanged; static and Windows variants are not yet qualified for this candidate.
+evidence: target/resume-grouped-build/source-manifest.json sha256=febca245e35e64e2418c0bf5317543d3f6977d893608308a0e3d59a187bda1eb
+evidence: target/resume-grouped-build/dynamic/build-result.json sha256=f86a98b8de209c53ff4ba5fce35cecbe4d1c4cfb1131d8553b98c69aa2389e62
+evidence: target/resume-acceptance/d4-critical/full/eqhash-fixture.out sha256=edaa1cea7374730d20c070c9c147b0bf161e1c65b6b9e30b2ec8c2ad1289238b
+evidence: target/resume-acceptance/d4-critical/weak/report.json sha256=6cbc0354be5a35252e9702ee8309fd811da929540b3d3d3b1ac27b39461542a6

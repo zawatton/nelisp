@@ -1,0 +1,18 @@
+#+TITLE: Primitive callees for mapcar/mapc/maphash on the direct call route (primcb)
+#+NOTE: Final evidence under target/primcb: source red/green (5 new failures then 41/41); one frozen dynamic build; pinned corpus/fixtures; pmcrun2 and paired elapsed CPU 12. Known GNU debugger and AFRT exit-hook-result-gc reds retain failing commands. Native names remain unchanged; these are private argv adapters for existing clause 1/5 operations.
+#+NOTE: Created 2026-10-26 before implementation; 6 criteria. Seed = resume coordinator overlay after the cbroute/dcid merges (generator sha256 prefix 1d5a6694ca13ed10). Evidence: resume target/v5cg/v6 (callgrind on integ-1026, r3-list 91451 instructions per trip). Its mapcar of 1+ over 16 elements calls 1+ 16 times through nelisp_apply_function_w -> nl_apply_builtin_w -> nl_n4_apply_raw_w (17 calls per trip each), with 3 view clones per call (nl_cons_car_ptr from leaf_56, apply_builtin, apply_list_nth and apply_raw) and wf_sum_w for 1+. Quick check at N=20 on integ-1026 vs GNU: mapcar car about 8x, mapc car about 18x, maphash + about 17x.
+* S1 Source
+** S1.1 wf_mapcar_step, wf_mapc_w and wf_maphash_w call a primitive callee that the directcall route admits through nl_directcall_invoke with rooted WORD argv (no consed argument list, no view box), revalidating the function cell per element; the directcall table gains common callback primitives (at least 1+, 1-, +, -, cdr, identity, cons) with GNU arity and semantics; anything else keeps the old route; red/green
+cmd: python3 target/primcb/check.py source
+** S1.2 Semantics against GNU: wrong-type errors and their data, arity errors, overflow to bignum for 1+/+, markers/floats in +, redefinition/advice of the primitive during the walk, debugger/backtrace frames; ERT red/green and the directcall corpus against GNU
+cmd: python3 target/primcb/check.py semantics
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: python3 target/primcb/check.py build
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 target/primcb/check.py fixtures
+* S3 End to end
+** S3.1 Instructions per trip on p-mapcar-car, p-mapc-car, p-maphash-plus and r3-list reduced vs integ-1026 (pmcrun2 two-N difference), results checked
+cmd: python3 target/primcb/check.py pmc
+** S3.2 Paired elapsed (gnu-gap-bench, CPU 12) on p-mapcar-car, p-mapc-car, p-maphash-plus, r3-list, r7-mapcar-bc plus the plain sum loop and r4-logand, vs integ-1026 and GNU
+cmd: python3 target/primcb/check.py wall

@@ -4005,7 +4005,7 @@ trailing newline) that `message' would otherwise do.")
   (and (consp x)
        (let ((m (car x)))
          (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
-(defun maphash (fn table)
+(defun nelisp--maphash-reference (fn table)
   (nelisp--hash-capacity table)
   ;; GNU Fmaphash reads slots in increasing index order, including reuse.
   (let ((i 0))
@@ -4016,6 +4016,8 @@ trailing newline) that `message' would otherwise do.")
                    (aref (aref m 11) (1+ (* i 2))))))
       (setq i (1+ i))))
   nil)
+(unless (fboundp 'maphash)
+  (fset 'maphash (symbol-function 'nelisp--maphash-reference)))
 
 
 (unless (fboundp 'hash-table-test)
@@ -4095,40 +4097,32 @@ trailing newline) that `message' would otherwise do.")
   (nelisp--hash-capacity table)
   (length (cdr table)))
 
-(defun make-hash-table (&rest keys)
-  ;; Preserve the common no-key / test-only fast paths during bootstrap.
-  (if (or (null keys)
-          (and (eq (car keys) :test)
-               (memq (cadr keys) '(eq eql equal))
-               (null (cddr keys))))
-      (nelisp--hash-new (if keys (cadr keys) 'eql) 0)
-    (let ((ks keys))
-      ;; GNU 31.1 fns.c:Fmake_hash_table validates arity before keywords.
-      (when (= (logand (length keys) 1) 1)
-        (signal 'error (list "Odd number of arguments")))
-      (while ks
-        (let ((k (car ks)) (rest (cdr ks)))
-          (unless (and (consp rest)
-                       (memq k '(:test :size :rehash-size :rehash-threshold
-                                 :weakness :purecopy)))
-            (nelisp--signal-invalid "Invalid keyword argument" k))
-          (let ((v (car rest)))
-            (cond
-             ((eq k :test)
-              (unless (or (memq v '(eq eql equal))
-                          (and (symbolp v) (get v 'hash-table-test)))
-                (nelisp--signal-invalid "Invalid hash table test" v)))
-             ((eq k :size)
-              (unless (natnump v)
-                (nelisp--signal-invalid "Invalid hash table size" v)))
-             ((eq k :weakness)
-              (unless (memq v '(nil key value key-or-value key-and-value t))
-                (nelisp--signal-invalid "Invalid hash table weakness" v)))))
-          (setq ks (cdr rest)))))
-    (nelisp--hash-new (or (plist-get keys :test) 'eql)
-                      (or (plist-get keys :size) 0)
-                      (let ((weakness (plist-get keys :weakness)))
-                        (if (eq weakness t) 'key-and-value weakness)))))
+(defun nelisp--make-hash-table-reference (&rest keys)
+  "GNU 31.1 constructor reference and cold path for user-defined tests."
+  (when (= (logand (length keys) 1) 1)
+    (signal 'error (list "Odd number of arguments")))
+  (let ((ks (reverse keys)) test size weakness)
+    (while ks
+      (let ((value (car ks)) (key (cadr ks)))
+        (cond ((eq key :test) (setq test value))
+              ((eq key :size) (setq size value))
+              ((eq key :weakness) (setq weakness value))
+              ((memq key '(:rehash-size :rehash-threshold :purecopy)))
+              (t (nelisp--signal-invalid "Invalid keyword argument" key))))
+      (setq ks (cddr ks)))
+    (unless (memq test '(nil eq eql equal))
+      ;; Fget deliberately diagnoses a non-symbol before an invalid test.
+      (let ((descriptor (get test 'hash-table-test)))
+        (unless (and (consp descriptor) (consp (cdr descriptor)))
+          (nelisp--signal-invalid "Invalid hash table test" test))))
+    (unless (or (null size) (natnump size))
+      (nelisp--signal-invalid "Invalid hash table size" size))
+    (unless (memq weakness '(nil key value key-or-value key-and-value t))
+      (nelisp--signal-invalid "Invalid hash table weakness" weakness))
+    (nelisp--hash-new (or test 'eql) (or size 0)
+                      (if (eq weakness t) 'key-and-value weakness))))
+(unless (fboundp 'make-hash-table)
+  (fset 'make-hash-table (symbol-function 'nelisp--make-hash-table-reference)))
 
 
 
@@ -6139,16 +6133,20 @@ walking only works for lists)."
 (unless (fboundp 'mapcar)
   (defun mapcar (fn seq) (nelisp--mapcar-slow fn seq)))
 
-(defun mapc (fn seq)
+(defun nelisp--mapc-reference (fn seq)
   "Apply FN to each element of SEQ for side effect; return SEQ.
 Doc 22 A6: arrays are iterated by index."
-  (nelisp--check-seq-list seq)
-  (if (or (vectorp seq) (stringp seq))
+  (let ((limit (length seq)))
+  (when (char-table-p seq) (signal 'wrong-type-argument (list 'listp seq)))
+  (if (or (vectorp seq) (stringp seq) (bool-vector-p seq))
       (let ((n (length seq)) (i 0))
         (while (< i n) (funcall fn (aref seq i)) (setq i (1+ i)))
         seq)
-    (let ((orig seq))
-      (while seq (funcall fn (car seq)) (setq seq (cdr seq))) orig)))
+    (let ((orig seq) (i 0))
+      (while (and (< i limit) (consp seq))
+        (funcall fn (car seq)) (setq seq (cdr seq) i (1+ i))) orig))))
+(unless (fboundp 'mapc)
+  (fset 'mapc (symbol-function 'nelisp--mapc-reference)))
 
 (unless (fboundp 'nelisp--check-plist)
   (defun nelisp--check-plist (x)
@@ -24840,22 +24838,25 @@ comment above this definition for how that value was measured."))
 ;; `equal' for the atom/string/number leaves and recurse over cons + vector.
 (unless (fboundp 'nelisp--native-equal)
   (fset 'nelisp--native-equal '(builtin nelisp--equal-leaf)))
+(unless (fboundp 'nelisp--native-eq)
+  (fset 'nelisp--native-eq '(builtin eq)))
 (defun nelisp--equal-reference (a b)
   "Return t when A and B have equal structure and contents.
-Keep atomic comparisons on the native fast path.  Check identity before
-structural descent, including self-referential conses, vectors and records.
+Check native identity before predicates or structural descent, including
+self-referential conses, vectors and records.  Keep atomic comparisons native.
 Hash tables compare only by identity; markers compare buffer and position."
   (cond
+   ;; Intrinsic identity must not call an advised or redefined public `eq'.
+   ((nelisp--native-eq a b) t)
    ;; Strings, symbols and integers can never be a cons, vector or marker
    ;; case below, so the native comparison decides them outright.  Testing
    ;; them first spares every string/symbol comparison (the bulk of `equal'
    ;; calls) the cons/vector/bool-vector/marker predicate chain.
    ((or (stringp a) (symbolp a) (integerp a) (symbol-with-pos-p a)) (nelisp--native-equal a b))
-   ((eq a b) t)
    ((and (consp a) (consp b))
     ;; Native tables use cons storage, but GNU does not compare contents.
     (and (not (hash-table-p a))
-         (equal (car a) (car b)) (equal (cdr a) (cdr b))))
+         (nelisp--equal-reference (car a) (car b)) (nelisp--equal-reference (cdr a) (cdr b))))
    ((and (char-table-p a) (char-table-p b) (fboundp 'nelisp--char-table-equal))
     (nelisp--char-table-equal a b))
    ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
@@ -24866,7 +24867,7 @@ Hash tables compare only by identity; markers compare buffer and position."
           (if (= n (length b))
               (let ((i 0) (ok t))
                 (while (and ok (< i n))
-                  (if (equal (aref a i) (aref b i))
+                  (if (nelisp--equal-reference (aref a i) (aref b i))
                       (setq i (1+ i))
                     (setq ok nil)))
                 ok)
@@ -28980,6 +28981,8 @@ Never signals: a failure leaves NAME to the interpreter."
 
 (defun nelisp--fx-defer (name &optional tries)
   "Note NAME's closure for compilation on its first call; return NAME."
+  (condition-case nil (when (fboundp name) (nelisp--fx-note-named (symbol-function name)))
+    (error nil))
   (condition-case nil
       (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
         (let ((fn (symbol-function name)))
@@ -29002,15 +29005,79 @@ appended to it as \"START-TIME NAME MILLISECONDS macros|plain\"."
             (cons process-environment (and v (> (length v) 0) v)))))
   (cdr nelisp--fx-env-trace))
 
-(defun nelisp--fx-first-call (body)
+(defvar nelisp--fx-anon-seen (make-hash-table :test 'eq :weakness 'key)
+  "Anonymous closure body -> calls still to wait before it is compiled.
+A compilation costs about a millisecond, so a lambda is compiled on its
+second call only when its body holds a loop (one call may run for long);
+any other waits `nelisp--fx-anon-calls' calls.  The boot applies hundreds of
+small lambdas a few times each, which must stay interpreted.")
+
+(defconst nelisp--fx-anon-calls 256
+  "Calls of a loop-free anonymous lambda before it is compiled.")
+
+(defun nelisp--fx-loopy-p (body)
+  "Non-nil when BODY, scanned to a bounded size, contains a loop form."
+  (let ((todo (list body)) (budget 4000) (found nil))
+    (while (and todo (not found) (> budget 0))
+      (let ((x (pop todo)))
+        (while (and (consp x) (not found) (> budget 0))
+          (setq budget (1- budget))
+          (if (memq (car x) '(while dolist dotimes cl-loop loop))
+              (setq found t)
+            (when (consp (car x)) (push (car x) todo)))
+          (setq x (cdr x)))))
+    found))
+
+(defvar nelisp--fx-named (make-hash-table :test 'eq :weakness 'key)
+  "Body -> t for every closure body installed as a function or macro.
+Only a body outside this set is an anonymous lambda: a function the prelude
+defined before the registration hooks, and a macro's expander, are never
+compiled behind their definition's back.")
+
+(defun nelisp--fx-note-named (fn)
+  "Record FN's body (a closure, or a macro whose cdr is one) as named."
+  (let ((f (if (eq (car-safe fn) 'macro) (cdr fn) fn)))
+    (when (eq (car-safe f) 'closure)
+      (puthash (nthcdr 3 f) t nelisp--fx-named))))
+
+(defvar nelisp--fx-anon-ready nil
+  "Non-nil once the prelude's own functions are all marked named (below).
+Until then a body not deferred by name is a prelude function the boot is
+still running, not an anonymous lambda.")
+
+(defvar nelisp--fx-anon-callees (make-hash-table :test 'eq)
+  "Function -> weak set of anonymous closure bodies whose code calls it.
+The anonymous counterpart of `nelisp--fx-callees' (which holds names).")
+
+(defun nelisp--fx-first-call (body &optional captured formals)
   "Compile BODY, a closure body just applied for the first time.
 Called by the runtime with re-entry blocked; leaves BODY in
-`nelisp--fx-table' (its record, or `none') whatever happens."
+`nelisp--fx-table' (its record, or `none') whatever happens.  CAPTURED and
+FORMALS are the applied closure's environment and formal list: a body no
+name was deferred for is an anonymous lambda, compiled (on its second call;
+the first leaves the table untouched) from them when the
+environment holds no lexical binding (`nelisp--fx-env-ok-p').  A closure
+over a variable never gets here: the runtime checks the environment first,
+and `nelisp--fx-register-fn' repeats the check."
+  (let ((first-sight nil))
   (condition-case nil
       (let ((name (gethash body nelisp--fx-pending))
             (nelisp--fx-tries (gethash body nelisp--fx-pending-tries 0)))
         (remhash body nelisp--fx-pending)
         (remhash body nelisp--fx-pending-tries)
+        (when (and (null name) (consp body) (listp formals)
+                   nelisp--fx-anon-ready
+                   (not (gethash body nelisp--fx-named))
+                   (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
+          (let ((left (gethash body nelisp--fx-anon-seen)))
+            (if (null left)
+                (setq left (if (nelisp--fx-loopy-p body) 1 (1- nelisp--fx-anon-calls)))
+              (setq left (1- left)))
+            (if (> left 0)
+                (progn (puthash body left nelisp--fx-anon-seen)
+                       (setq first-sight t))
+              (nelisp--fx-register-fn
+               nil (cons 'closure (cons captured (cons formals body)))))))
         (when (and name (fboundp name)
                    (eq (nthcdr 3 (symbol-function name)) body))
           (let ((trace (nelisp--fx-trace-file)) (t0 (float-time)))
@@ -29025,10 +29092,10 @@ Called by the runtime with re-entry blocked; leaves BODY in
                 (error nil))))))
     (error nil))
   (condition-case nil
-      (unless (gethash body nelisp--fx-table)
+      (unless (or first-sight (gethash body nelisp--fx-table))
         (puthash body 'none nelisp--fx-table))
     (error nil))
-  nil)
+  nil))
 
 (defvar nelisp--fx-called nil
   "Bound by `nelisp--fx-register-1': functions the compiled code calls.")
@@ -29078,7 +29145,14 @@ Defining it as a function compiles them again.")
 
 (defun nelisp--fx-register-1 (name)
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
-    (let ((fn (symbol-function name)))
+    (nelisp--fx-register-fn name (symbol-function name))))
+
+(defun nelisp--fx-register-fn (name fn)
+  "Compile closure FN = (closure ENV ARGS . BODY) into `nelisp--fx-table'.
+NAME is the function it is defined as, or nil for an anonymous lambda; only
+a named function takes part in the retry queues."
+  (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
+    (progn
       (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
         (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
                (nelisp--fx-declared (remq t (nth 1 fn)))
@@ -29098,7 +29172,7 @@ Defining it as a function compiles them again.")
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
                         (error (setq failed t) nil))))
               (if c (setq nelisp--fx-compiled-ok t)
-                (when (and failed (< nelisp--fx-tries 3))
+                (when (and name failed (< nelisp--fx-tries 3))
                   (push (cons name (1+ nelisp--fx-tries)) nelisp--fx-errored)))
               (when c
                 ;; Compiler-private -2 selects the nullary constant path.
@@ -29111,9 +29185,14 @@ Defining it as a function compiles them again.")
                 (dolist (m macros)
                   (push m nelisp--fx-called))
                 (dolist (op nelisp--fx-called)
-                  (unless (memq name (gethash op nelisp--fx-callees))
-                    (push name (gethash op nelisp--fx-callees)))))
-              (when (and (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
+                  (if name
+                      (unless (memq name (gethash op nelisp--fx-callees))
+                        (push name (gethash op nelisp--fx-callees)))
+                    (let ((set (or (gethash op nelisp--fx-anon-callees)
+                                   (puthash op (make-hash-table :test 'eq :weakness 'key)
+                                            nelisp--fx-anon-callees))))
+                      (puthash body t set)))))
+              (when (and name (null c) nelisp--fx-missing (not (eq nelisp--fx-missing name)))
                 (push name (gethash nelisp--fx-missing nelisp--fx-waiting)))
               (puthash body (if c
                                 (prog1 (vector (car c) (cdr c) (nth 1 shape)
@@ -29551,6 +29630,7 @@ are skipped.")
   ;; NAME is now a macro: either a function compiled code called, or a
   ;; macro whose old expansion compiled code holds.  Either way its callers
   ;; are compiled again against the current definition.
+  (when (macrop name) (nelisp--fx-retire-anon-callers name))
   (let ((callers (gethash name nelisp--fx-callees)))
     (when (and callers (macrop name))
       (remhash name nelisp--fx-callees)
@@ -29576,6 +29656,18 @@ it)."
     (when (and (vectorp rec) (> (length rec) 7)) (aset rec 7 t))
     (remhash body nelisp--fx-table)))
 
+(defun nelisp--fx-retire-anon-callers (name)
+  "NAME is now a macro: retire the anonymous bodies whose code calls it.
+They are not deferred again; the next call of each compiles it afresh."
+  (let ((set (gethash name nelisp--fx-anon-callees)))
+    (when set
+      (remhash name nelisp--fx-anon-callees)
+      (let ((bodies nil))
+        (maphash (lambda (b _v) (push b bodies)) set)
+        (dolist (b bodies)
+          (when (vectorp (gethash b nelisp--fx-table))
+            (nelisp--fx-retire b)))))))
+
 (defun nelisp--fx-table-put (body rec)
   "Install REC as BODY's entry, marking a compiled record it replaces retired."
   (let ((old (gethash body nelisp--fx-table)))
@@ -29590,8 +29682,16 @@ it)."
         (lambda (symbol definition)
           (prog1 (nelisp--fx-plain-fset symbol definition)
             (when (and (eq (car-safe definition) 'macro) (nelisp--fx-active-p))
+              (nelisp--fx-note-named definition)
               (nelisp--fx-check-macro symbol)
               (nelisp--fx-retry-waiters symbol))))))
+
+;; What the prelude defined before the hooks above is named too.
+(dolist (n nelisp--fx-early-names)
+  (condition-case nil
+      (when (fboundp n) (nelisp--fx-note-named (symbol-function n)))
+    (error nil)))
+(setq nelisp--fx-anon-ready t)
 
 ;; BEGIN GENERATED CASETAB SOURCES
 ;;; emacs-cc-casetab-1.el --- casetab.c primitives -*- lexical-binding: t; -*-

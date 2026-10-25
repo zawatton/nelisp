@@ -48,7 +48,51 @@
       ;; GNU eval_sub of a symbol: Fassq over the lexical environment, then the
       ;; symbol's value.  R is the lexical value, 0 for no lexical binding, -1 for
       ;; a shape the loop leaves to the general code.
-      (let* ((r (extern-call nl_lex_walk (+ env 32) name_ptr 2)))
+      (let* ((first -1))
+        (seq
+         ;; Probe only the newest lexical frame. A miss or any declaration,
+         ;; legacy shape, or pair-backed Cell retains the full lookup below.
+         (if (= (logand name_ptr 7) 6)
+             (let* ((rec (ptr-read-u64 env 40))
+                    (depth (sar (ptr-read-u64 rec 24) 2))
+                    (backing (ptr-read-u64 rec 16)))
+               (if (if (> depth 0) (= (logand backing 7) 6) 0)
+                   (let* ((frame (ptr-read-u64 (+ backing 2) (* (- depth 1) 8))))
+                     (if (= (logand frame 7) 6)
+                         (let* ((hdr (ptr-read-u64 (- frame 6) 0)))
+                           (if (if (= (logand hdr 63) 12)
+                                   (if (>= hdr 512) (= (logand (ptr-read-u64 frame 18) 1) 1) 1)
+                                 0)
+                               (let* ((cur (ptr-read-u64 frame 10)))
+                                 (while (= (logand cur 7) 2)
+                                   (let* ((pair (ptr-read-u64 (- cur 2) 0)))
+                                     (seq
+                                      (setq cur (ptr-read-u64 cur 6))
+                                      (if (= (logand pair 7) 2)
+                                          (let* ((key (ptr-read-u64 (- pair 2) 0)))
+                                            (if (= key name_ptr)
+                                                (let* ((v (ptr-read-u64 pair 6)))
+                                                  (seq
+                                                   (setq cur 3)
+                                                   (setq first
+                                                         (if (= (logand v 1) 1) v
+                                                           (if (= (logand v 7) 2) v
+                                                             (if (= (logand v 7) 6)
+                                                                 (let* ((vh (ptr-read-u64 (- v 6) 0)))
+                                                                   (if (= (logand vh 63) 11)
+                                                                       (if (= (logand vh 256) 0)
+                                                                           (ptr-read-u64 v 2) -1)
+                                                                     v))
+                                                               -1))))))
+                                              (if (= (logand key 7) 6) 0 (setq cur 3))))
+                                        0)))))
+                             0))
+                       0))
+                 0))
+           0)
+         (let* ((r (if (= first -1)
+                       (extern-call nl_lex_walk (+ env 32) name_ptr 2)
+                     first)))
         (if (= r -1)
             (nl_env_lookup_val_done_w
              (nelisp_env_lookup_value_w (+ env 0) (+ env 32) name_ptr 0)
@@ -60,7 +104,7 @@
                      (extern-call nl_sym_find_value_w env name_ptr 0)
                      env 0 0)
                   g))
-            r))))
+            r))))))
     ;; W is the looked-up value WORD (or 0 / 2 from the lookup); answers 2
     ;; when it is the env+64 unbound marker.
     (defun nl_env_lookup_val_done_w (w env _pad _pad1)

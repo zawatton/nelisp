@@ -198,7 +198,46 @@
         ;; A symbol with a lexical binding is no constant and not localized: the
         ;; binding's Cell is set at once.  LEX is that Cell, 0 for no lexical
         ;; binding, -1 for a shape the loop leaves to the general code.
-        (let* ((lex (extern-call nl_lex_walk frames-ptr name-ptr 0)))
+        (let* ((first -1))
+          (seq
+           ;; Same first-frame guard as the lexical reader. Only an actual
+           ;; Cell is writable here; hybrid bindings keep their promotion path.
+           (if (= (logand name-ptr 7) 6)
+               (let* ((rec (if (= (logand frames-ptr 7) 6) (- frames-ptr 6)
+                             (ptr-read-u64 frames-ptr 8)))
+                      (depth (sar (ptr-read-u64 rec 24) 2))
+                      (backing (ptr-read-u64 rec 16)))
+                 (if (if (> depth 0) (= (logand backing 7) 6) 0)
+                     (let* ((frame (ptr-read-u64 (+ backing 2) (* (- depth 1) 8))))
+                       (if (= (logand frame 7) 6)
+                           (let* ((hdr (ptr-read-u64 (- frame 6) 0)))
+                             (if (if (= (logand hdr 63) 12)
+                                     (if (>= hdr 512) (= (logand (ptr-read-u64 frame 18) 1) 1) 1)
+                                   0)
+                                 (let* ((cur (ptr-read-u64 frame 10)))
+                                   (while (= (logand cur 7) 2)
+                                     (let* ((pair (ptr-read-u64 (- cur 2) 0)))
+                                       (seq
+                                        (setq cur (ptr-read-u64 cur 6))
+                                        (if (= (logand pair 7) 2)
+                                            (let* ((key (ptr-read-u64 (- pair 2) 0)))
+                                              (if (= key name-ptr)
+                                                  (let* ((v (ptr-read-u64 pair 6)))
+                                                    (seq
+                                                     (setq cur 3)
+                                                     (if (= (logand v 7) 6)
+                                                         (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
+                                                             (setq first v) 0)
+                                                       0)))
+                                                (if (= (logand key 7) 6) 0 (setq cur 3))))
+                                          0)))))
+                               0))
+                         0))
+                   0))
+             0)
+           (let* ((lex (if (= first -1)
+                           (extern-call nl_lex_walk frames-ptr name-ptr 0)
+                         first)))
           (if (> lex 0)
               (nelisp_env_setv_cell_hit lex val-ptr)
             ;; No lexical binding: GNU's Fsetq calls Fset, whose set_internal refuses a
@@ -233,7 +272,7 @@
                   (if (= cell-ptr 0)
                       (nelisp_env_setv_alias_or_mirror
                        mirror-ptr frames-ptr name-ptr val-ptr 0 unbound-ptr 0 0)
-                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))))))
+                    (nelisp_env_setv_cell_hit cell-ptr val-ptr)))))))))))))))
 
     ;; nelisp_env_set_value
     ;;

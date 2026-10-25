@@ -1,0 +1,33 @@
+#+TITLE: Direct primitive call route (R4)
+#+NOTE: Created 2026-10-24 before implementation; 7 criteria. Seed generator b840048f, compiler dece6298. Evidence base: resume target/gnu-speed-root-cause/s4/call-route.json (D7). Design must be approved by the coordinator before implementation.
+* S1 Design
+** S1.1 Re-baseline the call route on the stack-set binary 13c7c026 (post-A): per-call cycles/instructions for logand, car, length, nth, aset from bytecode and source
+#+NOTE: CPU 14; ELF 13c7c026c66a1b5759127bc8ece74e749113c791b353c8c539c39caef582ea82; 168 PMC samples (7 fresh processes at each of two N), 24 Callgrind samples, 12 full-result smokes. Source evaluator uses NELISP_FX_DISABLE=1. Per-call metrics, remaining self-cost stages, raw hashes and caveats are in the evidence; no speed-threshold claim.
+evidence: target/directcall/call-route.json sha256=bfd5c6959b926423a42ed175f0b9aa48796183deb3d1e70299d4e0d660142e83
+** S1.2 Design doc approved by the coordinator: symbol-function visibility unchanged, function cell read every call, advice/defalias/fset/autoload fall back, arg frame vs list, GNU eval.c funcall_subr reference
+#+NOTE: Coordinator approved Phase 2 with extended ownership and the ordered bytecode, apply/funcall, source steps. Logand is fixnum-only; no general scan/fold generator, compiler/m5_fx edits or production counters. Approval identifies its reviewer as Claude Opus, not Astra.
+evidence: target/directcall/APPROVAL.md sha256=e595c9da2da4fa774e700ae0917ce5696e59a4ce8b4a2e8d55491288f5751cff
+evidence: target/directcall/DESIGN.md sha256=89c4deef2bb065b76b7ad1c2f938ab62811e1e59a90c1f86ee07a37cbf7036d8
+* S2 Source
+** S2.1 Red/green ERT for the direct route, including redefinition, advice and fset fallbacks producing GNU results
+#+NOTE: Fresh B red on A and B green established; actual WORD entries, early decline and dead operand cleanup have red/green controls. Focused regression 21/21; expanded native fixture 20 checks, including root exhaustion. Primary seven-group semantics pass 43/43 on GNU/baseline/candidate (FX off/default). Additional edges expose a pre-existing GNU gap: redefine-while-advised passes GNU but fails identically on baseline and candidate (6/7 native edge cases). No unauthorized provider/defalias fix; this criterion stays FAIL. Optional C remains deferred; its prototype/code/tests are preserved under target/directcall/phase2/c-*.
+cmd: test "$(cat target/directcall/phase2/final-focused.exit)" = 0 && test "$(cat target/directcall/phase2/semantics-candidate.exit 2>/dev/null)" = 0
+evidence: target/directcall/phase2/semantics-report.json sha256=de6c72133d7f298408642fe3b3c67afa484f5b935d8fb20a91db115325124fd5
+cmd: test "$(cat target/directcall/phase2/edges-candidate.exit)" = 0
+evidence: target/directcall/phase2/edges-report.json sha256=e17566157139a6fa195909258437da1438a9b69995ec12154611ecaa1204effc
+evidence: target/directcall/phase2/native-expanded-report.json sha256=1c346f3d2d12bf2d1a0cdbd08f9105bffa1057eaa4475f51a4a50becb107e92a
+* S3 Build and regression
+** S3.1 One dedicated full dynamic build (prelink closure checks PASS)
+#+NOTE: Final corrected build: exit 0, 617.859 seconds, ELF 8b0ace34aa27d5f7b14401a53c70a087eb307953137c02fffe2f774fe45c9753, all three prelink closure checks PASS (106/346/84 functions). COMMON.md's second-build-after-fix exception was used once: first build 698.174 seconds exposed weak retention and a missing WORD entry connection; that artifact is preserved under target/directcall-build-first. No third build.
+evidence: target/directcall-build/dynamic/build-result.json sha256=33adcee429d8ccb6c17baa6c27a65f93e83a08db6fa356c8fac86c3d0a09c401
+** S3.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+#+NOTE: Corrected candidate: weak 24/24, GNU 56/56, AFRT 24/25 with exactly the prior exit-hook-result-gc failure, buffer 21/21. Default GC, no overrides. First failed run (22/24 weak matches) and native ablation diagnostics are preserved; final runner status proves no new regression.
+cmd: test -f target/directcall/fixtures/report.json && python3 -c 'import json; assert json.load(open("target/directcall/fixtures/report.json"))["status"] == "EXPECTED_BASELINE_RED_REMAINS"'
+evidence: target/directcall/fixtures/report.json sha256=cc56d2c40c85e9bac1f6388febe20acd26143d51fc4d3e49f1c28b5010f04e10
+* S4 End to end
+** S4.1 R4 workloads: per-call instructions reduced vs 13c7c026, results checked
+#+NOTE: Corrected A+B candidate versus 13c7c026, CPU 14: 336 fresh-process PMC samples, seven at each N=200000/1000000 for both engines and both modes. All full results checked. All five enabled bytecode routes reduce net instructions/call: logand 4050.72->823.00, car 2223.07->877.93, length 3083.14->1356.00, nth 3210.21->1585.93, aset 4964.37->1269.00. Source-mode instruction counts are effectively unchanged; optional C is deferred, not claimed implemented.
+evidence: target/directcall/r4-pmc/report.json sha256=97ca51a02c6e864be363b17f2c3e889928b970746ba882a974595934beef6903
+** S4.2 Paired elapsed per R4 workload vs 13c7c026, CPU 14, raw runs kept (evidence)
+#+NOTE: 336 separate wall-time runs, CPU 14, seven repetitions at N=200000/1000000, alternate baseline/candidate and reverse order on odd repetitions. Complete results and stderr validated, raw rows retained. Bytecode gross ns/step medians baseline/candidate: logand 738.48/196.01, car 412.55/211.12, length 518.24/252.80, nth 543.57/294.48, aset 765.31/252.40. All source rows, ranges and load are retained too; their medians are slightly higher and no source speedup or threshold claim is made.
+evidence: target/directcall/r4-wall/report.json sha256=5de288aa78f93e7e273a03b74bfbe5150ae06dbc414b970629849ca614f9f959

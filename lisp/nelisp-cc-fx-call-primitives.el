@@ -52,6 +52,7 @@
            ((= (sexp-name-eq name "cdr") 1) 2)
            ((or (= (sexp-name-eq name "null") 1) (= (sexp-name-eq name "not") 1)) 3)
            ((= (sexp-name-eq name "consp") 1) 4)
+           ((= (sexp-name-eq name "length") 1) -16)
            ((= (sexp-name-eq name "funcall") 1) 13)
            (t 0))
         (if (= argc 2)
@@ -63,12 +64,48 @@
              ((= (sexp-name-eq name "string<") 1) 9)
              ((= (sexp-name-eq name "nth") 1) 10)
              ((= (sexp-name-eq name "nthcdr") 1) 11)
+             ((= (sexp-name-eq name "aref") 1) -14)
+             ((= (sexp-name-eq name "%") 1) -17)
+             ((= (sexp-name-eq name "logand") 1) -18)
              ((= (sexp-name-eq name "funcall") 1) 13)
              (t 0))
-          (if (if (> argc 0) (= (sexp-name-eq name "funcall") 1) 0) 13 0))))
+          ;; Negative internal kinds do not overlap the interpreter's
+          ;; positive descriptor IDs or FX globals21/22. The site's signed
+          ;; fixnum cache preserves them; -3 remains a return status only.
+          (if (if (= argc 3) (= (sexp-name-eq name "aset") 1) 0) -15
+            (if (if (> argc 0) (= (sexp-name-eq name "funcall") 1) 0) 13 0)))))
     ;; Primitive ID on the ARGC words ending at STK[SP-1]: 0 with the value
     ;; in RESW, -3 when it declines (a type it leaves to the full builtin).
     (defun m5_fx_primitive_run (id stk sp argc resw env scratch)
+      (if (or (= id -14) (= id -15) (= id -16))
+          ;; Only canonical ordinary vectors enter unchecked storage APIs.
+          ;; Seven-element vectors include the nemacs char-table bridge;
+          ;; leave all of them, other representations and errors to APPLY.
+          (if (if (= id -16) (= argc 1) (if (= id -14) (= argc 2) (= argc 3)))
+              (let* ((a (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)))
+                (if (if (= (logand a 7) 6) (> a 4096) 0)
+                    (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
+                        (let* ((n (vector-len a)))
+                          (if (if (>= n 0) (/= n 7) 0)
+                              (if (= id -16)
+                                  (seq (ptr-write-u64 resw 0 (+ (shl n 2) 1)) 0)
+                                (let* ((b (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0)))
+                                  (if (= (logand b 3) 1)
+                                      (let* ((index (sar b 2)))
+                                        (if (if (>= index 0) (< index n) 0)
+                                            (if (= id -14)
+                                                (seq (ptr-write-u64 resw 0 (nl_vector_slot_word a index)) 0)
+                                              (let* ((value (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0))
+                                                     (canonical (nl_word_canon value)))
+                                                (seq (wf_dirty)
+                                                     (vector-slot-set a index canonical)
+                                                     (ptr-write-u64 resw 0 value) 0)))
+                                          -3))
+                                    -3)))
+                            -3))
+                      -3)
+                  -3))
+            -3)
       (let* ((a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3))
              (b (if (> argc 1) (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0) 3))
              (tag (nl_word_tag64 a)) (r -1))
@@ -92,8 +129,20 @@
              ((or (= id 10) (= id 11))
               (if (and (= (m5_fx_int_p a) 1) (>= (wf_bytecode_w_int a) 0))
                   (m5_fx_primitive_nth b (wf_bytecode_w_int a) (if (= id 11) 1 0)) -1))
+             ;; Tagged arithmetic (native-surface clause 5), not new Lisp
+             ;; builtins. Nonfixnums and nonbinary calls keep ordinary APPLY.
+             ((= id -17)
+              (if (and (= argc 2) (= (logand a 3) 1) (= (logand b 3) 1) (/= b 1))
+                  (let* ((x (sar a 2)) (y (sar b 2)))
+                    ;; Truncating quotient matches GNU Frem, including
+                    ;; negative dividends. Fixnums cannot overflow raw /.
+                    (+ (shl (- x (* (/ x y) y)) 2) 1))
+                -1))
+             ((= id -18)
+              (if (and (= argc 2) (= (logand a 3) 1) (= (logand b 3) 1))
+                  (logand a b) -1))
              (t -1)))
-           (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))
+           (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))))))
     (defun m5_fx_primitive_named (name stk sp argc resw env scratch)
       (let* ((id (m5_fx_primitive_id name argc)))
         (if (= id 0) -3 (m5_fx_primitive_run id stk sp argc resw env scratch))))

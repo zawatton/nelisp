@@ -1,0 +1,20 @@
+#+TITLE: GNU parity for % and logand edge cases (fxvm findings)
+#+NOTE: Created 2026-10-24 before implementation; 5 criteria. Seed = resume integrated tree (generator 53c0d01f). Evidence base: target/parity5/fxvm-runtime/ (5 differences: % with bignum divisor; marker in unary/binary/3-arg logand).
+* S1 Source
+** S1.1 Ground truth: each of the 5 cases run on GNU 31.1 and on the seed binary, with the direction of each difference stated (which side NeLisp must change)
+cmd: python3 target/parity5/check.py ground-truth
+#+NOTE: GNU: rem-big-divisor=13; marker-left=2, marker-right=4, unary=6, ternary=2. Seed signals wrong-type-argument on all five (integer-or-marker-p, except binary marker-right names number-or-marker-p). Full data in ground-truth/{gnu,seed}-printable/runtime.stdout. GNU ERT 18/18; seed red 5/18, 13 failures, including all five target cases. No inference from diff headers.
+** S1.2 Fix in the % and logand handlers (not fast_run, not the VM, not wf_bytecode_call) so all 5 match GNU; red/green ERT plus the fxvm runtime corpus equal to GNU, with FX on and off
+cmd: python3 target/parity5/check.py fixed
+#+NOTE: GNU Frem/Flogand/arith_driver read in data.c. Only the % arm, wf_rem_w, logand arm and new wf_logand_general_w changed. Shared validators and fast_run/VM/apply paths untouched. Red: seed-ert-red-printable.log (5/18 pass, 13 failures, including all five targets). Green: candidate-ert-{on,off}.log (18/18 each); full error symbol/data covered. Native surface unchanged. Existing general bignum-division limitations remain outside these five findings.
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS)
+cmd: python3 target/parity5/check.py build
+#+NOTE: One frozen dynamic build, rc=0, 690.732 seconds, 121 units. PRELINK_DIRECT_CLOSURE_PASS: constructor 106, rooted protocol 84; PRELINK_F1_BOUNDARY_PASS: 346. ELF f9f4a3c1fcca711b7f46273210070d06c8ae10f0e630e3254fc21e00152bbbf1; cold 6e54f3acc24995cda86ad6e72c5dd5568b4fc7ded2eea927eea2ecccdc3ecea8. Evidence: target/parity5-build/dynamic/{build-result.json,invocation.json,build.log}.
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+cmd: python3 target/parity5/check.py fixtures
+#+NOTE: weak 24/24, GNU eqhash 56/56, buffer 21/21. AFRT 24/25; exit-hook-result-gc still signals unexpected wrong-type-argument, native rc=1. Cases, summary and stderr match the original A-lane receipt exactly. This cmd intentionally returns the real AFRT rc=1; the known red is not converted to green. Evidence: target/parity5/fixtures/report.json and raw receipts. No new regressions.
+* S3 End to end
+** S3.1 The fxvm runtime corpus on the new binary matches GNU 31.1 byte for byte (FX on and off)
+cmd: python3 target/parity5/check.py runtime
+#+NOTE: 43 existing FX runtime cases + original FX corpus case + new parity corpus case, 45/45 per mode, byte-for-byte GNU 31.1 equality with FX on and off. All nine process receipts rc=0, empty stderr and completion/count witnesses. Seed independently reproduces five differing existing-fixture lines per mode. Evidence: target/parity5/runtime-{seed,candidate}/report.json, *.stdout, *.stderr, *.process.json, *-gnu.diff. No elapsed measurement or speed claim in this lane.

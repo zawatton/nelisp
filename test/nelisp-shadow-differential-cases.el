@@ -2652,6 +2652,64 @@
          (hash-table-count nelisp-shadow-copy-result)
          (hash-table-count nelisp-shadow-copy-source)))
 
+ ;; FX entry representation and binary fixnum arithmetic also have a
+ ;; standalone/GNU corpus form; the extended error/marker/bignum cases live
+ ;; in nelisp-fxvm-runtime-fixture.el.
+ (eval '(progn
+         (defun nelisp-shadow-fxvm (v x y)
+           (aset v 1 23)
+           (list (length v) (aref v 1) (% x y) (logand x y)))
+         (nelisp-shadow-fxvm [3 5 7 11] 9 4)
+         (nelisp-shadow-fxvm (vector 3 5 7 11) -17 4)) t)
+
+ ;; GNU Frem/Flogand: a bignum divisor and marker operands of each arity.
+ (let ((marker (make-marker)) (big (* most-positive-fixnum 8)))
+   (with-temp-buffer
+     (insert "abcdefghijklmnop")
+     (set-marker marker 6)
+     (prog1 (list (% 13 big) (logand marker 3) (logand 13 marker)
+                  (logand marker) (logand marker 15 3))
+       (set-marker marker nil))))
+
+ ;; A selected primitive observes its function cell again on the next call.
+ (let ((original (symbol-function 'logand)))
+   (unwind-protect
+       (list (funcall 'logand 7 3)
+             (progn (fset 'logand (lambda (_a _b) 41))
+                    (apply 'logand '(7 3))))
+     (fset 'logand original)))
+
+ ;; Fixnum argv and declined bignum paths have the same value semantics.
+ (list (apply 'logand '(7 3 15))
+       (funcall 'logand (ash 1 80) 3)
+       (funcall 'length "あい😀x"))
+
+
+ ;; Lexical interpreter probes: mutation after capture, shadowing and
+ ;; single-pair setq in while must retain the same frame semantics.
+ (eval '(let ((f (let ((x 10)) (lambda (d) (setq x (+ x d)) x))))
+          (garbage-collect) (list (funcall f 1) (funcall f 2))) t)
+ (eval '(let ((x 7)) (list (let ((x 11)) (setq x 13) x) x)) t)
+ (eval '(let ((i 0) (sum 0))
+          (while (< i 12) (setq sum (+ sum i)) (setq i (1+ i)))
+          (list i sum)) t)
+
+ ;; Directcall misses retain ordinary primitive and bytecode semantics.
+ (let ((identity-bc #[257 "\207" [] 1]))
+   (list (funcall 'vector 3 5 7 11)
+         (apply 'make-vector '(3 9))
+         (funcall 'make-string 3 120)
+         (funcall identity-bc 41)
+         (apply identity-bc '(42))))
+ ;; Anonymous closures: one capturing nothing (VM), one over shared variables.
+ (eval '(let ((f (eval '(lambda (n) (let ((i 0) (s 0)) (while (< i n) (setq s (+ s i)) (setq i (1+ i))) s)) t)))
+          (list (funcall f 5) (funcall f 5) (funcall f 100))) t)
+ (eval '(let* ((x 0) (f nil) (read-x (lambda () x)))
+          (setq f (lambda (n) (if (= n 0) x
+                               (setq x (1+ x)) (funcall f (1- n)))))
+          (funcall f 1) (funcall read-x)
+          (list (funcall f 3) (funcall read-x)
+                (progn (setq x 20) (funcall f 2)) (funcall read-x))) t)
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

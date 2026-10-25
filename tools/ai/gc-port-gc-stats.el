@@ -116,11 +116,12 @@
   (gcs-compare-loose "scan on")
   (nelisp--debug-switch 28))
 
-(defun gcs-exact ()
-  ;; Exact deltas of the reported rows: N distinct strings, V vectors of 3 slots, S uninterned symbols
-  ;; and C conses, held by a vector that already exists; then the same objects dropped.
-  (let* ((n 400) (holder (make-vector 4 nil)) (a (progn (setq gcs-keep (cons holder gcs-keep)) (gcs-stats)))
-         (i 0) (strs nil) (vecs nil) (syms nil) (conses nil))
+(defun gcs-exact-measure (n)
+  ;; Keep assertions outside this shared measurement shape: their first evaluation can populate
+  ;; evaluator metadata even for N=0.  Warm this helper only with an empty population.
+  (let* ((holder (make-vector 4 nil)) (i 0) (strs nil) (vecs nil) (syms nil) (conses nil)
+         (a nil) (kept nil) (comparison nil))
+    (setq gcs-keep (cons holder gcs-keep) a (gcs-stats))
     (while (< i n)
       (setq strs (cons (concat "exact-" (number-to-string (+ 100000 i))) strs))
       (setq vecs (cons (vector i i i) vecs))
@@ -128,7 +129,26 @@
       (setq conses (cons (cons i i) conses))
       (setq i (1+ i)))
     (aset holder 0 strs) (aset holder 1 vecs) (aset holder 2 syms) (aset holder 3 conses)
-    (let* ((b (gcs-stats)) (d (gcs-delta a b)))
+    (setq kept (gcs-delta a (gcs-stats)))
+    ;; Compare the live population with the full census, before removing its last references.
+    (setq comparison (nelisp--debug-switch 53))
+    (aset holder 0 nil) (aset holder 1 nil) (aset holder 2 nil) (aset holder 3 nil)
+    (setq strs nil vecs nil syms nil conses nil)
+    (list kept (gcs-delta a (gcs-stats)) comparison)))
+
+(defun gcs-exact ()
+  ;; Exact deltas of N distinct strings, vectors of 3 slots, uninterned symbols and conses.
+  ;; The two steady controls must agree and add no non-cons objects.  Subtract only that verified
+  ;; control, never the first-use overhead: otherwise a growing evaluator delta could hide garbage.
+  (gcs-exact-measure 0)
+  (let* ((control (gcs-exact-measure 0)) (again (gcs-exact-measure 0)))
+    (gcs-check (and (equal (car control) (car again)) (equal (nth 1 control) (nth 1 again))
+                    (equal (cdr (car control)) '(0 0 0 0 0))
+                    (equal (cdr (nth 1 control)) '(0 0 0 0 0))
+                    (eq (car (nth 2 control)) 0) (eq (car (nth 2 again)) 0))
+               (format "zero-population control %S -> %S" control again))
+    (let* ((n 400) (actual (gcs-exact-measure n))
+           (d (gcs-delta (car again) (car actual))))
       ;; conses: n for the objects, n for the four lists' cells (strs, vecs, syms, conses), n for the
       ;; pairs of `conses'; vectors: n; strings: n and the n names of the new symbols (a name is a
       ;; string, as in GNU); bytes: 12 * n and the names; symbols: n; slots: 3 * n.  The evaluator may
@@ -138,12 +158,11 @@
       (gcs-check (and (>= (nth 4 d) n) (<= (nth 4 d) (+ n 8))) (format "vectors delta %S" d))
       (gcs-check (and (>= (nth 5 d) (* 3 n)) (<= (nth 5 d) (+ (* 3 n) 64))) (format "vector-slots delta %S" d))
       (gcs-check (>= (nth 1 d) n) (format "symbols delta %S" d))
-      (gcs-check (>= (nth 0 d) (* 3 n)) (format "conses delta %S" d)))
-    (gcs-compare "exact")
-    (aset holder 0 nil) (aset holder 1 nil) (aset holder 2 nil) (aset holder 3 nil)
-    (setq strs nil vecs nil syms nil conses nil)
-    (let* ((c (gcs-stats)) (d (gcs-delta a c)))
-      (gcs-check (and (<= (nth 2 d) 8) (<= (nth 4 d) 8)) (format "dropped objects still counted %S" d)))))
+      (gcs-check (>= (nth 0 d) (* 3 n)) (format "conses delta %S" d))
+      (let ((r (nth 2 actual)))
+        (gcs-check (and (consp r) (eq (car r) 0)) (format "exact: counters/census %S" r)))
+      (let ((d (gcs-delta (nth 1 again) (nth 1 actual))))
+        (gcs-check (and (<= (nth 2 d) 8) (<= (nth 4 d) 8)) (format "dropped objects still counted %S" d))))))
 
 (defun gcs-build-pop ()
   (let ((v (make-vector 1000 nil)) (i 0))

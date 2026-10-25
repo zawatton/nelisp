@@ -1,0 +1,31 @@
+#+TITLE: Intrinsic identity isolated from public-fset setup
+
+* S1 Exact provider windows
+
+** S1.1 Real public-eq controls observe one call and saved equal observes zero
+cmd: (ulimit -v 8388608; python3 -I -c 'import json,sys; r=json.load(open("target/equal-identity-semantic/receipt.json")); sys.exit(0 if r["zero_eq_windows"] and r["control_failure_detected"] and r["old_negative_control"] else 1)')
+
+** S1.2 Actual GNU and D5 overlay hostile-eq semantics agree, with old negative control
+cmd: (ulimit -v 8388608; python3 -I -c 'import json,sys; r=json.load(open("target/equal-identity-semantic/receipt.json")); sys.exit(0 if r["pass"] and r["hostile_identity_pass"] and r["live_authentication"] and not r["remaining_differences"] else 1)')
+
+** S1.3 Independent receipt and Astra completion audit approve the unchanged source overlay
+evidence: target/astra-equal-identity-completion-audit.md sha256=50a90eb6e1ab39439bace3a06d05593687d9ce2326cd70669247b17e5a6b25f9
+evidence: target/equal-identity-semantic/receipt.json sha256=99d3a66b1667281b33d615ce53fe7f1c6fab5499f34687b7e9e7382149e22d08
+cmd: (ulimit -v 8388608; python3 -I -c 'import json,hashlib,sys; r=json.load(open("target/equal-identity-semantic/receipt.json")); s=hashlib.sha256(open("scripts/nelisp-stdlib-prelude.el","rb").read()).hexdigest(); sys.exit(0 if r["pass"] and s==r["source_sha256"]=="1d504eb9fc550d474bdb7695f1e578b8911ee9aac13e092a80b10503e51e9c9f" else 1)')
+
+Previous failed hostile-eq results and wall samples remain frozen.  Public
+fset calls public eq while installing the replacement; this existing setup
+regression is separate from provider execution.  This stage captures the
+actual underlying fset callable for nonmacro replacement setup/restore.
+Only an exact zero-count provider window is accepted; no count subtraction
+or expected-value relaxation is allowed.  At most four semantic children;
+no timing retry or production edit.
+
+Actual result: three semantic children completed, rc0,87 exact protocol
+lines each, empty stderr. The separate Astra completion audit approves exact
+experimental source integration. S1.3 now binds that audit, the real semantic
+receipt and the integrated source hash. No criterion was added or removed;
+the commands additionally isolate Python from optimization environment flags.
+This slice does not establish cold-image, GC or whole-GNU equality acceptance.
+Existing public-fset setup regression is separately recorded as GNU nil,
+unchanged/overlaid D5 error.  It is not promoted to a passing provider case.

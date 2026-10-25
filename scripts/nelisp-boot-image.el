@@ -179,8 +179,10 @@ memory must be available before the first Lisp form or heap restoration."
                          (bad (or (< exe_status 0) (< image_status 0)
                                   (/= (logand mode 61440) 32768)
                                   (/= (logand mode 18) 0)
-                                  (/= ,(if arm '(heap-read-u32 image_stat 20)
-                                         '(heap-read-u64 image_stat 16)) 1)
+                                  ;; Aliases share this inode's checked owner and
+                                  ;; mode; only an unlinked inode is rejected.
+                                  (<= ,(if arm '(heap-read-u32 image_stat 20)
+                                         '(heap-read-u64 image_stat 16)) 0)
                                   (/= (heap-read-u32 exe_stat ,(if arm 24 28))
                                       (heap-read-u32 image_stat ,(if arm 24 28))))))
                     (seq
@@ -192,6 +194,8 @@ memory must be available before the first Lisp form or heap restoration."
                          (seq
                           ;; Keep the checked inode open across both arena and
                           ;; globals reads. A pathname replacement cannot swap it.
+                          ;; This does not stop writes by the trusted owner or
+                          ;; through a previously authorized writable descriptor.
                           (ptr-write-u64 scratch 4640 image)
                           ,@(nelisp-standalone--byte-write-forms 'pinned "/proc/self/fd/")
                           (let ((digits (nl_boot_image_decimal (+ pinned 14) image)))
@@ -226,6 +230,8 @@ memory must be available before the first Lisp form or heap restoration."
       ;; token (an installed executable may belong to an administrator).
       ;; READ_CONTROL failure rejects discovery. FILE_SHARE_READ alone denies
       ;; writers and deletion throughout validation and both restore reads.
+      ;; Positive link counts permit aliases of the same checked inode. The SID
+      ;; check does not claim Linux-equivalent ACL/mode filtering.
       (let ((info (+ scratch 65536))
             (exe_sd (+ scratch 65600)) (image_sd (+ scratch 66624))
             (length (+ scratch 67648)) (exe_owner (+ scratch 67656))
@@ -233,7 +239,7 @@ memory must be available before the first Lisp form or heap restoration."
         (if (or (/= (extern-call GetFileType image) 1)
                 (= (extern-call GetFileInformationByHandle image info) 0)
                 (/= (logand (heap-read-u32 info 0) 1040) 0)
-                (/= (heap-read-u32 info 40) 1)
+                (<= (heap-read-u32 info 40) 0)
                 (= (extern-call GetKernelObjectSecurity executable 1 exe_sd 1024 length) 0)
                 (= (extern-call GetKernelObjectSecurity image 1 image_sd 1024 length) 0)
                 (= (extern-call GetSecurityDescriptorOwner exe_sd exe_owner defaulted) 0)

@@ -1,0 +1,32 @@
+#+TITLE: Word VM (FX) coverage (R5 FX-on findings)
+#+NOTE: Created 2026-10-24 before implementation; 8 criteria. Seed generator b840048f, compiler dece6298. Evidence base: resume target/gnu-speed-root-cause/s5/fx-on/fx-on.json.
+* S1 Investigation and source
+** S1.1 Cause of the fresh (vector ...) funcall-argument decline of inline length/aref/aset identified (bounded) and fixed or recorded as unfixed
+evidence: target/fxvm/s1-decisions.json sha256=cbbcbdfb781ea7bfa7167ccdc229ac1d29c99055dfde4f71d9367ed0364dbd38
+#+NOTE: Cause reproduced; trial entry normalization withdrawn after weak-string-unrooted regression. Final source leaves the decline unchanged, as allowed by this criterion.
+** S1.2 % and logand fixnum fast paths in the VM with the existing m5_fx_call_list fallback otherwise; red/green ERT, GNU semantics (float/bignum/variadic fall back)
+cmd: cmp target/fxvm/runtime-final/arithmetic-on.stdout target/fxvm/runtime/gnu.stdout
+evidence: target/fxvm/runtime-final/report.json sha256=1ecc8b553aba2530e10c07594d1efc1290e11ada0e569a7e70146ab9cdbd801a
+evidence: target/fxvm/ert-final.log sha256=fcaf73a7b6cc9d96b72c24da5dd526a63da4dfacacc7d680812d541fe5228f43
+evidence: target/fxvm/native/report.json sha256=846c96b73aef1ee4db3f8837b2613ebc65f3796322619cdf37ae35f9be5afc28
+#+NOTE: Known RED retained: five pre-existing GNU differences (identical on baseline); all 43 candidate FX-on/off outcomes agree. Two arithmetic tests fail on seed and pass on final source; the third test records the unfixed fresh-vector cause.
+** S1.3 VM registration for closures and top-level forms keyed by code identity with captured-environment semantics preserved; or a recorded decision to defer, with the reason
+evidence: target/fxvm/s1-decisions.json sha256=cbbcbdfb781ea7bfa7167ccdc229ac1d29c99055dfde4f71d9367ed0364dbd38
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink closure checks PASS)
+evidence: target/fxvm-build/dynamic/build-result.json sha256=71406772dd9580b231f8543f11e0c22d02a43eda1af28ed6b1364e394e7fe371
+#+NOTE: Second and final permitted build, 638.373 s, after withdrawing entry canonicalization. First build 671.144 s is archived in target/fxvm-build-attempt1; it failed weak-string-unrooted. Final constructor/F1/rooted prelink closure checks all PASS.
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21
+evidence: target/fxvm/fixtures/report.json sha256=33ba803d43ded498f723e9d935a6347cb22dc1b50d70b2c05fc07ba90b8bd190
+#+NOTE: Weak 24/24, GNU 56/56, buffer 21/21; AFRT 24/25 with exactly the same exit-hook-result-gc red and exit 1. The stated baseline-red acceptance is not full default-GC qualification.
+** S2.3 FX on/off parity: R5 workloads give identical results with NELISP_FX_DISABLE=1 and unset
+evidence: target/fxvm/parity/report.json sha256=f1588b19ff9d53d448b217b203933da7b96eb674de4d3a3576e2c1a28fcf423a
+evidence: target/fxvm/runtime-final/report.json sha256=1ecc8b553aba2530e10c07594d1efc1290e11ada0e569a7e70146ab9cdbd801a
+#+NOTE: All 15 R5 workload/form combinations at N=80000 agree with FX disabled and unset; every run asserts the complete expected result.
+* S3 End to end
+** S3.1 R5 FX-on matrix (defun, closure, top-level x sum/length/aref-rem/aref-mask/aset-rem) on the new binary vs 13c7c026: cycles per step recorded, results checked
+evidence: target/fxvm/pmc/report.json sha256=32225ef230d3d291b1c3eeccb543fcc48dfe3dd757cee4139ca82710651cb66f
+#+NOTE: CPU 15, ASLR disabled, N=20000/80000, seven paired repetitions per binary and workload/form combination; 420 fresh process samples, all full results checked. Raw outputs, pins, ranges and per-pair differences retained; no speed threshold.
+** S3.2 Paired elapsed on the same matrix vs 13c7c026, CPU 15, raw runs kept (evidence)
+evidence: target/fxvm/wall/report.json sha256=6adff3a5c312faa435157b35c93a447be00c9c4b9d2819192920c6cf46b88988
+#+NOTE: CPU 15, ASLR disabled, N=20000/80000, seven paired repetitions per binary and workload/form combination; 420 fresh process samples, all full results checked. Raw outputs, pins, ranges and per-pair differences retained; no speed threshold.

@@ -1,0 +1,14 @@
+#+TITLE: Generic rooted argument-frame transport
+
+* S1 Structural admission and native argument transport
+
+** S1.1 Generated lowering admits fixed indexed reads and rejects escaping uses
+evidence: target/argframe/host-tests.log sha256=b523867c003eb7170e65de56521cdf4cbbe1e6b3faf6b33ab54defdd7247b5a0
+
+** S1.2 Native production-DSL fixture removes argument cons allocation with a red old-source control
+evidence: target/argframe/native-protocol.stdout sha256=8bc42322f4a45ad3f76a885166e8c3e88ae9e1cfa1f5311acf7bc0c0001de61e
+evidence: target/argframe/native-fx.stdout sha256=c14093a7d7b441f60d477adf7dacaaacc6c6046309945bfd8dff84001542e580
+evidence: target/argframe/native-reads.stdout sha256=af5570f5a1810b7af78caf4bc70a660f0df51e42baf91d4de5b2328de0e83dfc
+
+** S1.3 Rebuilt-runtime semantics, GC, ABI bounds and practical performance end-to-end acceptance
+pending
