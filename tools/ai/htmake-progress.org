@@ -1,0 +1,28 @@
+#+TITLE: make-hash-table without per-call symbol allocation (htmake)
+#+NOTE: Created 2026-10-29 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay (smap1, w3spec, interp2, hashres, primx, cbmaph, cgreg) = v13 sources; baseline binary integ-1030 (v13).
+* S1 Source
+** S1.1 make-hash-table (both nl_ht_make_args_w and the directcall id-118 body) allocates no symbol and interns nothing per call: the marker/test symbol words nl_ht_make_w / nl_ht_write_eql_sym_w write are created once and reused (GC-rooted), and the remaining per-call steps are compared to GNU's Fmake_hash_table/make_hash_table in REPORT.md; red/green
+#+NOTE: 2026-10-25 S1.1: marker/eql name buffers are cached (control-page words 268436528/268436536, validated against the intern arena and name bytes on every use); each table still gets a fresh 32-byte legacy view, so GC/compaction/image semantics are unchanged. Red log = the same cmd on the seed source (rc=1). GNU comparison in target/codex/REPORT.md.
+cmd: python3 tools/ai/htmake-check.py src scripts/nelisp-standalone-build.el
+evidence: target/htmake/logs/s11-red-seed.log sha256=efacbd771a922db2cb454741de5274e2bee6eae72c9d39ac733613d11974230e
+** S1.2 Semantics against GNU: every :test/:size/:weakness combination, hash-table-test/weakness/count/size of the result, copy-hash-table, equality of tables, printing, define-hash-table-test tables still on the reference route, GC between creations; hashres/primx corpora unchanged
+#+NOTE: 2026-10-25 S1.2: target/htmake/sem.el (492 checks) passes 492/492 on the new binary and on v13 (evidence). Run on GNU 31.1 (logs/sem-gnu.log): 472 pass, 20 differ, ALL 20 are the :test eq float-key gethash (GNU boxed floats are not eq; NeLisp inline floats are), identical on v13 and unrelated to this lane. Every other check, including test/weakness/size/count/copy/print/custom test/errors, equals GNU. Host primx ERT not rerun (mocks nl_ht_make_w).
+cmd: python3 tools/ai/htmake-check.py sem target/htmake/logs/sem-new.log
+evidence: target/htmake/logs/sem-v13.log sha256=2cc6d150a9ef53a65ce96602cd23385b53c2be9d01c303e529e5af763271d6c7
+evidence: target/htmake/logs/sem-gnu.log sha256=093ba7a9f9a6a4f6293f9dfaf2740110755a18abf09d5a900832194abda9ab58
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: 2026-10-25 S2.1: build rc=0; PRELINK_DIRECT_CLOSURE_PASS (x2) and PRELINK_F1_BOUNDARY_PASS (353 F1 records, policy 384; v13 closure 352), root evidence max 82175 <= 98304; Win64 data-blob = host ERT w2s-windows-forms-still-carry-no-data-blob passes (no Windows build was made).
+cmd: python3 tools/ai/htmake-check.py build target/htmake/logs/build1.log && grep -rq PRELINK_F1_BOUNDARY_PASS target/htmake-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && grep -rq PRELINK_DIRECT_CLOSURE_PASS target/htmake-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json && grep -q "passed  1/1  w2s-windows-forms-still-carry-no-data-blob" target/htmake/logs/datablob.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 tools/ai/htmake-check.py fix target/htmake/logs/fixtures.log
+cmd: python3 tools/ai/htmake-check.py win target/htmake/logs/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v13 on r7-make-hash-table (pmcrun2 two-N), results checked; r7-gethash-eq-fix and reg-sum-bc unchanged
+#+NOTE: 2026-10-25 S3.1: instructions via pmcrun2 (ins:00c0), two N (hi, hi/4), 2 reps each: make-hash-table 5087.2 -> 3974.2 per trip; gethash-eq-fix 2461.0 and reg-sum-bc 513.1 unchanged.
+cmd: python3 tools/ai/htmake-check.py pmc target/htmake/logs/pmc-twoN.log
+** S3.2 Paired elapsed (CPU 15) on r7-make-hash-table, r7-gethash-eq-fix and the plain sum loop vs v13 and GNU
+#+NOTE: 2026-10-25 S3.2: paired elapsed CPU 15, 7 reps: make-hash-table base 514.9 cand 408.9 gnu 391.8 ns/step; gethash 239.1/223.4/44.6; sum 42.0/37.1/14.2 (sum and gethash instructions are identical, so their elapsed gain is layout/noise, not a claim).
+evidence: target/htmake/logs/bench-r7-make-hash-table.log sha256=a7aded534f189aad0a955f5bbf832291d64e00563f57697823413ec28cbb0096
+evidence: target/htmake/logs/bench-r7-gethash-eq-fix.log sha256=2aed796aeb1b53a6534297d614c09963e7e0251864281d7788f8b0db91d42ebb
+evidence: target/htmake/logs/bench-reg-sum-bc.log sha256=dcfe0f3b4a385624a550f3c2f590494b22e223d5d177cfca9ade1394e1385c13

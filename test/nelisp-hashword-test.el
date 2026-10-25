@@ -16,6 +16,7 @@
   "Adapt the production DSL, including extern calls, to host Elisp."
   (cond ((atom form) form)
         ((eq (car form) 'extern-call) (hw--host (cdr form)))
+        ((consp (car form)) (mapcar #'hw--host form))
         ((memq (car form) '(if while))
          (cons (car form) (cons `(hf--truth ,(hw--host (cadr form)))
                                 (mapcar #'hw--host (cddr form)))))
@@ -48,7 +49,8 @@
 (defun hw--vector (values)
   (let ((base hw--next))
     (setq hw--next (+ base 512))
-    (hw--write base 0 8)
+    ;; GNU vector header: kind 8 in the low bits, the length from bit 8.
+    (hw--write base 0 (logior 8 (ash (length values) 8)))
     (puthash base (length values) hw--lengths)
     (cl-loop for v in values for i from 0 do (hw--write base (+ 8 (* i 8)) v))
     (+ base 6)))

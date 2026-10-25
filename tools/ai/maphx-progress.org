@@ -1,0 +1,32 @@
+#+TITLE: Per-entry cost of the maphash/mapc walkers (maphx)
+#+NOTE: Created 2026-10-29 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay (smap1, w3spec, interp2, hashres, primx, cbmaph, cgreg) = v13 sources; baseline binary integ-1030 (v13).
+* S1 Source
+** S1.1 Per entry, the bytecode-callback route of maphash/mapc reserves at most one root frame per walk (not per entry) where GNU's call1 needs none, and wf_maphash_w's own per-entry work (about 325 instructions at cbmaph build 3) is reduced to the steps GNU's Fmaphash loop does (read key/value, skip empty, call), each removed step justified in REPORT.md; red/green
+cmd: python3 target/maphx/checks.py s11
+evidence: target/maphx/logs/ert-green1.log sha256=555f4596beca2bcc9111c5cb7ec5079928a991c4a0ace18ad55175b38fcf581f
+evidence: target/maphx/logs/ert-red-seed.log sha256=a4ffbb22cfcb7db609112d4d064c4f80b94e2ef7474028e80ab192b1e16cb14e
+evidence: target/maphx/logs/ert-set-new.log sha256=9bd86fcf0f94e06a997ddb69443bb38fae7e2292e2c01d78e842d71f057486db
+evidence: target/maphx/maphx.patch sha256=69658cfdae66ab055333788ef4e9e7f67378a7aaf01c84c85710bd9ee6333565
+** S1.2 Semantics against GNU: throw/signal out of the callback, puthash/remhash of the current and other keys during maphash, list mutation during mapc, GC during the walk (weak tables too), redefinition of the callee mid-walk; cbroute/cbwalk/cbmaph corpora unchanged
+cmd: python3 target/maphx/checks.py corpus
+evidence: target/maphx/corpus/out-new.txt sha256=77373c46c9ab63789688a97bb1d602db5b43bf590abfa9f8f165458b559f6eca
+evidence: target/maphx/corpus/out-base.txt sha256=77373c46c9ab63789688a97bb1d602db5b43bf590abfa9f8f165458b559f6eca
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+cmd: tail -n 1 target/maphx-build2/dynamic/build.log | grep -q '^BUILD rc=0' && grep -q PRELINK_DIRECT_CLOSURE_PASS target/maphx-build2/dynamic/src/target/standalone-compiler-constructor-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/maphx-build2/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && grep -q PRELINK_DIRECT_CLOSURE_PASS target/maphx-build2/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json && grep -o 'root-evidence. nodes=[0-9]*' target/maphx-build2/dynamic/build.log | awk -F= '$2>98304{f=1} END{exit f}'
+cmd: ! grep -q data-blob target/maphx/maphx.patch
+evidence: target/maphx-build2/dynamic/nelisp-dynamic sha256=2822fa811e72c908f8fc051622380ecf06f0ead3903643c7760fdbb0a3537c8f
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/maphx/checks.py fixtures
+evidence: target/maphx/fixtures.log sha256=129bf9105bc51dd14683fc67f6fdffb4faa08b48406d548665510df6486f1cd0
+evidence: target/maphx/logs/wincheck.log sha256=fd83eab675e23542fd6dd711a2cd6a95f3c02c48d2e85b3dbb02583d433ee257
+* S3 End to end
+** S3.1 Instructions per element reduced vs v13 on r7-maphash-bc, r7-mapc-bc and r7-mapcar-bc (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+cmd: python3 target/maphx/checks.py pmc
+evidence: target/maphx/pmc.log sha256=6a2ed1ef2d5cfcf9d6b6170f8c8534d460d1daa2e2fd30eb9a58b1994d858090
+** S3.2 Paired elapsed (CPU 11) on those rows plus p-mapc-car and the plain sum loop vs v13 and GNU
+cmd: python3 target/maphx/checks.py bench
+evidence: target/maphx/bench/r7-maphash-bc/report.json sha256=8503b88da0c25d66e3445e01c979dc804e1e543e3ed88e854efef2e78fb191e7
+
+#+NOTE: 2026-10-29 two builds (build 1 failed the corpus case maphash-rest: stale &rest slot in the reused frame; build 2 nil-fills the stack and result slots per entry). Criteria evidence is build 2 (v1.5.0-maphx2). S2.1 says "one" build; two were used within the lane budget of two.
+#+NOTE: S3.2 CPU 11 elapsed: maphash 0.972, mapc 0.975, mapcar 0.979, p-mapc-car 0.827; the plain sum loop shows 0.839 at identical instruction counts (alignment effect, not credited). Only linux-x86_64 built; Windows per-target forms not generated.

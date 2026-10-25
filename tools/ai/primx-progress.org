@@ -1,0 +1,22 @@
+#+TITLE: More primitives on the WORD-argv direct call route (primx)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12) plus overlay (smap1, w3spec, interp2). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/ (ROW.top).
+* S1 Source
+** S1.1 Primitives that hot rows still send through the generic apply route (find them from the v12 profiles: at least the ones r3-mix and r7-make-hash-table use, e.g. plist-get, memq, assq, make-hash-table) become directcall entries with WORD bodies that decline before any effect on unusual cases; make-hash-table stops allocating/interning a symbol per call; red/green
+#+NOTE: plist-get (leaf id 100) and make-hash-table (id 118) are entries. memq/nth/car-safe are bytecode ops in w3-mix (no generic route), so memq/assq were not added. The "no symbol per call" clause is NOT met: the two symbols come from nl_ht_write_marker_sym_w/nl_ht_write_eql_sym_w inside nl_ht_make_w (hashres-owned); proposed fix in REPORT.md. Red log is the new tests against the seed script.
+cmd: test -s target/primx/logs/red.log && grep -q "3 unexpected" target/primx/logs/red.log && grep -q "3 results as expected, 0 unexpected" target/primx/logs/green.log
+cmd: ! sed -n '/(defun nl_ht_make_w /,/(defun nl_ht_make /p' scripts/nelisp-standalone-build.el | grep -q 'nl_ht_write_eql_sym_w'
+** S1.2 Semantics against GNU for every new entry (error data, arity, optional/keyword arguments of make-hash-table, :test/:size/:weakness), redefinition/advice falls back; directcall and alloc corpora plus a new corpus equal GNU
+#+NOTE: New corpus (55 cases) equals the seed binary exactly; against GNU it has 2 pre-existing diffs that also exist on the seed (eq on floats in an eq table, advice call count). Existing alloc/id/leaf/hash/subr-object host ERT pass except ndc-decline-symbol-miss-precedes-descriptor-reads, which also fails on the seed script.
+cmd: cmp target/primx/logs/corpus-seed.out target/primx/logs/corpus-new.out && [ $(diff target/primx/logs/corpus-gnu.out target/primx/logs/corpus-new.out | grep -c '^>') -le 2 ]
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS including the F1 helper bound); Windows per-target generated forms still contain no data-blob
+#+NOTE: build rc=0 in 1061 s; F1 closure 352 functions (no new defun, bound untouched).
+cmd: grep -q "^BUILD rc=0" target/primx-build/dynamic/build.log && test -x target/primx-build/dynamic/nelisp-dynamic && grep -q "passed.*w2s-windows-forms-still-carry-no-data-blob" target/primx/logs/existing.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q "weak 24/24 PASS" target/primx/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/primx/logs/fixtures.log && grep -q "AFRT 24/25" target/primx/logs/fixtures.log && grep -q "buffer 21/21 PASS" target/primx/logs/fixtures.log && grep -q "features: PASS" target/primx/logs/wincheck.log && grep -q "switch corpus: PASS" target/primx/logs/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs the seed on r3-mix and r7-make-hash-table (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+cmd: python3 -c "import re;t=open('target/primx/logs/pmc.log').read();g=lambda w:[float(x) for x in re.search(w+r' .*?seed ins/trip=([\d.]+).*?new ins/trip=([\d.]+).*results_equal=True',t).groups()];a,b=g('r3-mix');c,d=g('r7-make-hash-table');e,f=g('reg-sum-bc');assert b<a and d<c and e==f"
+** S3.2 Paired elapsed (CPU 13) on r3-mix, r7-make-hash-table, r3-list and the plain sum loop vs the seed build and GNU
+#+NOTE: r3-mix 0.718x seed (GNU 0.111x); r7-make-hash-table 0.634x; r3-list 1.032x and reg-sum-bc 1.028x with equal instruction counts (layout/cycle noise, not a source change).
+cmd: for w in r3-mix r7-make-hash-table r3-list reg-sum-bc; do grep -q "^gnu " target/primx/logs/bench-$w.log || exit 1; done

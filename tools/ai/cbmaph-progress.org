@@ -1,0 +1,28 @@
+#+TITLE: Per-entry cost of bytecode callbacks in maphash/mapc (cbmaph)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12) plus overlay (smap1, w3spec, interp2). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/ (ROW.top).
+* S1 Source
+** S1.1 Per element/entry, the bytecode-callback route (wf_cb_call_words -> wf_bytecode_w_function -> execute_frame) does no name-string work (nl_bi_strlen/strptr), no per-entry root frame allocation where one per walk suffices, and enters the callee frame as wf_bytecode_call's in-loop path does; each removed step justified against GNU call1/funcall_lambda/exec_byte_code; red/green
+pending
+** S1.2 Semantics against GNU: throw/signal out of the callback, debugger/backtrace frames for the callee, table mutation during maphash, list mutation during mapc, redefinition of the callee during the walk; cbroute/cbwalk corpora unchanged
+cmd: python3 target/cbmaph/checks.py corpus
+evidence: target/cbmaph/corpus/out-new.txt sha256=c1df33648a4c7f0f33c598bc674d46a9ed171efefae980f379a4c7f109a9bd64
+evidence: target/cbmaph/corpus/out-base.txt sha256=c1df33648a4c7f0f33c598bc674d46a9ed171efefae980f379a4c7f109a9bd64
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS including the F1 helper bound); Windows per-target generated forms still contain no data-blob
+cmd: tail -1 target/cbmaph-build/dynamic/build.log | grep -q '^BUILD rc=0' && grep -q PRELINK_DIRECT_CLOSURE_PASS target/cbmaph-build/dynamic/src/target/standalone-compiler-constructor-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/cbmaph-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && grep -q PRELINK_DIRECT_CLOSURE_PASS target/cbmaph-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json
+cmd: ! grep -q data-blob target/cbmaph/cbmaph.patch
+evidence: target/cbmaph-build/dynamic/nelisp-dynamic sha256=b98100f977338ff41614d1bedbbde711e9c5691bd241b2bf382aebc16cee4f11
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/cbmaph/checks.py fixtures
+evidence: target/cbmaph/fixtures.log sha256=129bf9105bc51dd14683fc67f6fdffb4faa08b48406d548665510df6486f1cd0
+evidence: target/cbmaph/logs/wincheck.log sha256=70b1763d6f25ee6ed2b89811d72ada1ca06593686bc2298745c881fd7728df0d
+* S3 End to end
+** S3.1 Instructions per element reduced vs the seed on r7-maphash-bc and r7-mapc-bc (pmcrun2 two-N), results checked
+cmd: python3 target/cbmaph/checks.py pmc
+evidence: target/cbmaph/pmc.log sha256=507b2a8f96b89afdb51b5ba5b2de82eb173f68ab31d4ec9e15e2273ab93f6215
+** S3.2 Paired elapsed (CPU 15) on r7-maphash-bc, r7-mapc-bc, r7-mapcar-bc, p-mapc-car and the plain sum loop vs the seed build and GNU
+cmd: python3 target/cbmaph/checks.py bench
+evidence: target/cbmaph/bench/r7-maphash-bc/report.json sha256=21dd20beb616478692f495010278d07d01b6e146c0c221aab29ed82562a595d4
+
+#+NOTE: 2026-10-28 build 3 (rev3 + coordinator-sanctioned guarded-functions list in lisp/nelisp-heap-accessors.el): instructions per element r7-mapc-bc 1269.0 -> 1103.7 (-13.0%), r7-maphash-bc 1567.1 -> 1400.7 (-10.6%); paired elapsed 0.889 / 0.937 (7/7 faster). Builds 1 and 2 (earlier notes in REPORT.md) gave -2 Ir/element.
+#+NOTE: S1.1 stays pending: the activation cell + frame (2 x nl_root_frame per entry) is still allocated per entry; the optional third item was not attempted. S2.1/S2.2: only linux-x86_64 was built; Windows per-target forms were not generated in this lane (the patch adds no data-blob). F1 closure = 352 records (no bound raise needed). No source-level red exists for a semantics-preserving refactor (ERT seed control and green both 13/13); evidence is corpus identity plus the instruction delta.

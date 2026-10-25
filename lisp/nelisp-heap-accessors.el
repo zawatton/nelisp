@@ -107,7 +107,10 @@ from one, or a call to a record accessor."
 (defconst nelisp-heap-accessors-guarded-functions
   '(nl_apply_sym_eq_w nl_apply_sym_eq_bytes nl_apply_name_classify nelisp_fnv1a
     nl_ht_test_mode m5_push_str_promoted m5_forced_multibyte_p nl_str_aref_byte_off
-    nl_str_sub_byte_off bf_keyword_raw nl_positioned_flag m5_fmt_loop)
+    nl_str_sub_byte_off bf_keyword_raw nl_positioned_flag m5_fmt_loop
+    wf_bytecode_execute_frame wf_bytecode_w_function wf_bytecode_scratch
+    wf_bytecode_call wf_bytecode_w_fast_run wf_bytecode_w_lean_bind
+    nl_directcall_invoke nl_apply_builtin_w nl_sb_plain_entry_p)
   "Value readers on hot paths. Their String-aware slot reads test the WORD tag
 inline and call nl_string_read64 only for a String WORD.")
 

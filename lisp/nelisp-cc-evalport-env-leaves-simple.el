@@ -48,7 +48,7 @@
       ;; GNU eval_sub of a symbol: Fassq over the lexical environment, then the
       ;; symbol's value.  R is the lexical value, 0 for no lexical binding, -1 for
       ;; a shape the loop leaves to the general code.
-      (let* ((first -1))
+      (let* ((first -1) (skip 0))
         (seq
          ;; Probe only the newest lexical frame. A miss or any declaration,
          ;; legacy shape, or pair-backed Cell retains the full lookup below.
@@ -63,7 +63,7 @@
                            (if (if (= (logand hdr 63) 12)
                                    (if (>= hdr 512) (= (logand (ptr-read-u64 frame 18) 1) 1) 1)
                                  0)
-                               (let* ((cur (ptr-read-u64 frame 10)))
+                               (let* ((cur (ptr-read-u64 frame 10)) (st 1))
                                  (while (= (logand cur 7) 2)
                                    (let* ((pair (ptr-read-u64 (- cur 2) 0)))
                                      (seq
@@ -73,6 +73,7 @@
                                             (if (= key name_ptr)
                                                 (let* ((v (ptr-read-u64 pair 6)))
                                                   (seq
+                                                   (setq st 2)
                                                    (setq cur 3)
                                                    (setq first
                                                          (if (= (logand v 1) 1) v
@@ -84,14 +85,25 @@
                                                                            (ptr-read-u64 v 2) -1)
                                                                      v))
                                                                -1))))))
-                                              (if (= (logand key 7) 6) 0 (setq cur 3))))
-                                        0)))))
+                                              (if (= (logand key 7) 6) 0 (seq (setq st 2) (setq cur 3)))))
+                                        0))))
+                                 ;; interp2: the newest frame ended properly with no
+                                 ;; binding of NAME and is no scope boundary (slot 2 of a
+                                 ;; frame with one is nil unless it marks one): the
+                                 ;; general walk starts below it.
+                                 (if (if (= st 1)
+                                         (if (= cur 3)
+                                             (if (>= hdr 768) (= (ptr-read-u64 frame 26) 3) 1)
+                                           0)
+                                       0)
+                                     (setq skip 1)
+                                   0))
                              0))
                        0))
                  0))
            0)
          (let* ((r (if (= first -1)
-                       (extern-call nl_lex_walk (+ env 32) name_ptr 2)
+                       (extern-call nl_lex_walk (+ env 32) name_ptr (if (= skip 1) 6 2))
                      first)))
         (if (= r -1)
             (nl_env_lookup_val_done_w

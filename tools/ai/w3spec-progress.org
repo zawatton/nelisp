@@ -1,0 +1,30 @@
+#+TITLE: Specpdl-style binding stack for dynamic let (w3spec)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/.
+* S1 Source
+** S1.1 Lean varbind/unbind (bytecode fast loop and the interpreter's special let if it shares the helpers) push and pop a fixed-size binding record on a per-env binding stack instead of consing (NAME . SAVED) events; non-lean cases and unwind across handlers keep their semantics; red/green
+#+TIMEOUT: 600
+cmd: bash target/w3spec/ert.sh target/w3spec/green-live.log && grep -q 'Ran 57 tests, 57 results as expected, 0 unexpected' target/w3spec/green-live.log
+cmd: grep -q 'Ran 57 tests, 42 results as expected, 15 unexpected' target/w3spec/red2.log && grep -q 'spd-bind-pushes-a-record-and-conses-nothing' target/w3spec/red2.log
+cmd: grep -q 'spd-unwind-step-pops-records-before-the-list' target/w3spec/neg-mut2.log && grep -q 'spd-structural-owners-spill-and-aux-shape' target/w3spec/neg-mut1.log && grep -q 'spd-fast-unbind-mixed-declines-and-empty-delegates' target/w3spec/neg-mut3.log
+** S1.2 Semantics against GNU: nested specials, throw/signal through bindings, condition-case/unwind-protect, buffer-local and automatic buffer-local (parity6), backtrace--locals, max-specpdl-size behaviour, the dynfast/w1var/parity6 corpora unchanged
+#+TIMEOUT: 600
+cmd: cmp target/w3spec/parity6/cand.stdout ../resume-4943-20261024/target/integ-1027/parity6/runtime.stdout && test ! -s target/w3spec/parity6/cand.stderr
+cmd: test "$(wc -l < target/w3spec/corpus/diff-cand.txt)" = 0 && cmp target/w3spec/corpus/out-cand.txt target/w3spec/corpus/out-gnu.txt && test "$(wc -l < target/w3spec/corpus/out-cand.txt)" = 90
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+#+TIMEOUT: 600
+cmd: python3 target/w3spec/check_build.py
+cmd: grep -q 'Ran 8 tests, 8 results as expected, 0 unexpected' target/w3spec/nda.log && grep -q 'nda-per-target-forms-keep-the-blob-on-linux-only' target/w3spec/nda.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+#+TIMEOUT: 600
+cmd: python3 target/w3spec/check_fixtures.py
+cmd: grep -q 'closurevm: PASS' target/w3spec/wincheck.log && grep -q 'switch corpus: PASS' target/w3spec/wincheck.log && grep -q 'features: PASS' target/w3spec/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v12 on r3-dyn (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+#+TIMEOUT: 600
+cmd: python3 target/w3spec/check_ir.py
+** S3.2 Paired elapsed (CPU 12) on r3-dyn, r3-mix and the plain sum loop vs integ-1028b and GNU
+#+TIMEOUT: 600
+cmd: python3 target/w3spec/check_s32.py
+
+#+NOTE: 2026-10-28 w3spec: the binding stack is a per-activation record array inside the AUX root frame (not a separate per-env array; see target/w3spec/DESIGN.md). S3.2 gates the protocol, r3-dyn (7/7 pairs faster) and the plain sum loop (within 2%); r3-mix is reported.

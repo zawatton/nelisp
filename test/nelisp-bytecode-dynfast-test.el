@@ -20,7 +20,7 @@
 (defconst dfa--env 16384)
 
 (defun dfa--run-helper (events handlers n &optional missing)
-  "Run `wf_bytecode_w_fast_unbind' on EVENTS (list of (NAME . SAVED)) with the
+  "Run `wf_bytecode_w_fast_unbind_list' (the list path of `wf_bytecode_w_fast_unbind`, w3spec) on EVENTS (list of (NAME . SAVED)) with the
 head HANDLER's saved-unwinds given as an index into EVENTS (or nil).
 Return plist :rc :unwinds (remaining event names) :writes :dirty :lean-calls."
   (setq dfa--cells (make-hash-table) dfa--next 100000)
@@ -67,7 +67,7 @@ Return plist :rc :unwinds (remaining event names) :writes :dirty :lean-calls."
                        (push (list :lean (car c)) writes)))
                    0)))
         (let* ((fn (eval (cons 'lambda (cddr (sst--host-form
-                                              (sst--function 'wf_bytecode_w_fast_unbind)))) t))
+                                              (sst--function 'wf_bytecode_w_fast_unbind_list)))) t))
                (rc (funcall fn dfa--env dfa--aux n))
                (names nil) (cur (gethash (+ dfa--aux 8) words)))
           ;; Event cells hold the event id as car; map back to the name.
@@ -222,9 +222,13 @@ cell, default fixnum-coded 8), :bind-rc, :unbind-rc, :nconst, :env."
                      (lambda (x) (equal x '(wf_bytecode_w_fast_unbind env (sar ref 2) b)))))
   (should (sst--find (sst--function 'wf_bytecode_w_fast_run)
                      (lambda (x) (equal (car-safe x) 'wf_bytecode_w_lean_bind))))
-  (should (sst--function 'wf_bytecode_w_fast_unbind))
-  ;; Neither helper allocates.
+  (should (sst--function 'wf_bytecode_w_fast_unbind_list))
+  ;; w3spec: the dispatcher pops in-place records and delegates; no helper allocates.
+  (should (sst--find (sst--function 'wf_bytecode_w_fast_unbind)
+                     (lambda (x) (eq x 'wf_bytecode_w_pop_lean))))
   (should-not (sst--find (sst--function 'wf_bytecode_w_fast_unbind)
+                         (lambda (x) (memq x '(alloc-bytes nl_alloc_consbox wf_bytecode_w_cons2)))))
+  (should-not (sst--find (sst--function 'wf_bytecode_w_fast_unbind_list)
                          (lambda (x) (memq x '(alloc-bytes nl_alloc_consbox wf_bytecode_w_cons2))))))
 
 (provide 'nelisp-bytecode-dynfast-test)

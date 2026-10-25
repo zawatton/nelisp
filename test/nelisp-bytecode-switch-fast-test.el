@@ -33,8 +33,10 @@
          (if (null (cdr form)) 0
            `(if (swf--truth ,(swf--host (cadr form))) 1
               ,(swf--host (cons 'or (cddr form))))))
-        (t (cons (pcase (car form) ('seq 'progn) (_ (car form)))
+        ((consp (car form)) (mapcar #'swf--host form))
+        (t (cons (pcase (car form) ('seq 'progn) ('sar 'swf--sar) (_ (car form)))
                  (mapcar #'swf--host (cdr form))))))
+(defun swf--sar (x n) (ash x (- n)))
 
 (defun swf--run (key mode pairs hashes next buckets &optional fast target-limit)
   "Execute the production indexed search or opcode arm on checked storage.
@@ -47,13 +49,29 @@ semantics; the collision walk and all opcode state updates are production IR."
     (eval (swf--host (swf--definition 'wf_bytecode_switch_find)) t)
     (cl-letf (((symbol-function 'nl_ht_identity_sync) (lambda (_) (cl-incf syncs) 0))
               ((symbol-function 'nl_ht_meta_slot) (lambda (_) meta))
-              ((symbol-function 'nl_ht_data_slot) (lambda (_) buckets))
-              ((symbol-function 'nl_ht_marker_word)
-               (lambda (_ i) (pcase i (11 pairs) (12 hashes) (14 next))))
-              ((symbol-function 'nl_ht_int) (lambda (v i) (aref v i)))
-              ((symbol-function 'nl_vector_slot_word)
-               (lambda (v i) (cl-incf probes) (aref v i)))
-              ((symbol-function 'vector-len) #'length)
+              ;; Raw storage model: META's slots 11/12/14 name the pairs, hashes
+              ;; and next vectors and the table's cdr names the bucket vector;
+              ;; each vector word is its own payload (nl_word_payload = identity)
+              ;; and its slot 0 sits at word+8.  Hashes, next links and buckets are
+              ;; fixnum words; every read of the pairs vector is one probe.
+              ((symbol-function 'nl_ht_data_slot) (lambda (_) #x50000))
+              ((symbol-function 'nl_word_payload) #'identity)
+              ((symbol-function 'ptr-read-u64)
+               (lambda (p off)
+                 (let ((a (+ p off)))
+                   (cond ((= a (+ 12296 88)) #x20000)
+                         ((= a (+ 12296 96)) #x30000)
+                         ((= a (+ 12296 112)) #x40000)
+                         ((= a #x50000) (ash (length buckets) 8))
+                         ((and (>= a #x20008) (< a #x30000))
+                          (cl-incf probes) (aref pairs (/ (- a #x20008) 8)))
+                         ((and (>= a #x30008) (< a #x40000))
+                          (1+ (* 4 (aref hashes (/ (- a #x30008) 8)))))
+                         ((and (>= a #x40008) (< a #x50000))
+                          (1+ (* 4 (aref next (/ (- a #x40008) 8)))))
+                         ((>= a #x50008)
+                          (1+ (* 4 (aref buckets (/ (- a #x50008) 8)))))
+                         (t (error "Unexpected raw read %S" a))))))
               ((symbol-function 'nl_ht_hash) (lambda (k _) (ash k -2)))
               ((symbol-function 'nl_ht_hash_index) (lambda (h n) (mod h n)))
               ((symbol-function 'nl_so_p)

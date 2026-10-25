@@ -16,7 +16,7 @@ source = "#include <stdint.h>\n"
 for macro, name, signature in [
     ("ARITH", "wf_bytecode_small_arithmetic", "int64_t (*)(uintptr_t,int64_t,int64_t)"),
     ("VECTOR", "wf_bytecode_vector_primitive", "int64_t (*)(uintptr_t,int64_t,int64_t)"),
-    ("EXECUTE", "wf_bytecode_execute_frame", "int64_t (*)(uintptr_t,uintptr_t,int64_t,uintptr_t,uintptr_t,uintptr_t,int64_t,int64_t,int64_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t)"),
+    ("EXECUTE", "wf_bytecode_execute_frame", "int64_t (*)(uintptr_t,uintptr_t,int64_t,uintptr_t,uintptr_t,uintptr_t,int64_t,int64_t,int64_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t)"),
 ]:
     source += f"#define {macro} (({signature}) {symbols[name]}ULL)\n"
 source += r'''
@@ -41,7 +41,7 @@ static int vm(uintptr_t env, int op, uint64_t a, uint64_t b, uint64_t want) {
   uint64_t data[2]={a,b}, header[3]={2,(uintptr_t)data,2};
   uint64_t constants[4]={8,(uintptr_t)header,0,0}, out[4]={0}, result=0;
   int64_t rc=EXECUTE((uintptr_t)code,(uintptr_t)constants,2,env,(uintptr_t)out,
-                     0,0,0,0,0,0,(uintptr_t)&result,3);
+                     0,0,0,0,0,0,(uintptr_t)&result,3,0);
   return rc==0 && result==want;
 }
 int64_t abi_vm_integers(uintptr_t env) {

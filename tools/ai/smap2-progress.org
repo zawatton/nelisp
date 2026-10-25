@@ -1,0 +1,42 @@
+#+TITLE: Liveness stack maps, stage 2: map-only scanning (smap2)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12) plus overlay (smap1 stage 1: maps, table unit, shadow mode behind debug switches 90-96). Design: target/smap2/DESIGN-input.md; stage 1 results: target/smap2/SMAP1-REPORT.md. User direction 2026-10-27: false roots must be made impossible, not patched by zeroing.
+* S1 Source
+** S1.1 A map-only mode (debug switch and/or NELISP_STACKMAP setting, default still conservative) makes the collector scan, for every mapped frame on the main stack, only the slots its map marks live at that return address (plus documented always-scanned areas: callee-saved register save slots, outgoing/temp words per DESIGN stage 2b if not yet modelled), and keeps the full-frame scan for unmapped/foreign/outermost frames; red/green
+cmd: sh target/smap2/checks/s11.sh
+evidence: target/smap2/logs/red-s11-smap1b3.log sha256=a24cadbce7959a03eba75c6292df4a4a15904de20f7f03e6b36d46245088ebcb
+evidence: target/smap2/logs/green-s11-mode2.log sha256=eeaca96c523154ad14898005dd93854959ff2616bcb87c69565afdf5dad23022
+evidence: target/smap2/fx-b1-m2/report.json sha256=1bf629e4c8875c0e8ab6f7ac4ce34200c5f27652deba9ae2a45acaaa3a3aa358
+** S1.2 Soundness controls: (a) a mutation control that drops one live slot from one map (throwaway build or switch) makes a GC test crash or fail; (b) poison mode (overwrite unmapped frame words with a recognisable non-pointer pattern before a forced collection, under a switch) passes the fixtures; (c) the safepoint-invariant guard test from DESIGN.md exists and passes
+#+TIMEOUT: 600
+cmd: sh target/smap2/checks/s12.sh
+evidence: target/smap2/logs/red-s12-smap1b3-canary.log sha256=47802b691068fa7827102a3b17658b935edd250201369ace2e7521be1ea0b411
+evidence: target/smap2/logs/green-s12-canary-b1.log sha256=e429838da3b555024550a8728d448070d208a3512b1d68270d3c89d7094b7f4a
+evidence: target/smap2/logs/green-s12-gnu56-mode3.log sha256=e40b37c638381fc7bc4539fc69768a1be1c1c6ba855e66da1841d61a710e3ec2
+evidence: target/smap2/logs/green-s12-guard-ert.log sha256=76a352d82a45780ce62eac463ab689d0316e02de2b12609148fb26c77fff3d09
+* S2 Build and regression
+** S2.1 Dedicated full dynamic build(s) (prelink PASS); Windows per-target forms still contain no data-blob
+#+TIMEOUT: 600
+cmd: sh target/smap2/checks/s21.sh
+evidence: target/smap2/logs/s21-evidence.txt sha256=d6003fca975ef1a8c67d5f0ca17f5b10ac283617c787a5fb6dd1f91d872e287b
+** S2.2 With map-only ON and with the m5_fx_run_body zeroing removed (in a throwaway build or by a switch that skips that policy entry): weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21, GC fixtures and a forced-poll (switch 70) run over the fixtures; with the default mode the same fixtures and gnu-speed-win-check pass
+cmd: sh target/smap2/checks/s22.sh
+evidence: target/smap2/fx-b1-m0/report.json sha256=8cd7a1f2c4a035f8c6c236a365ab7c7065417062eae056ed2183835d48e45ab7
+evidence: target/smap2/fx-b2-m2/report.json sha256=3edac5cb0f54d4537c84df0f7f9a0c9017e24773f7500065b5e8f62c5c769ef4
+evidence: target/smap2/logs/winchk-b1.log sha256=749eaac7321aebf41fdbdd6b22ef4d9fd5c18d8c49924c7e6a6a4e62ff40ea4c
+evidence: target/smap2/logs/forced-b2-weak-m2.out sha256=4bb6ee296992c79bcfdf0816547e9d1e885baf5131bfccd4084bd46076112289
+evidence: target/smap2/logs/forced-b2-buf-m2.out sha256=7f5d81dc9b234fd09491f3892d77a5f4460c7090ad7ed4e033c87eacff0bade7
+evidence: target/smap2/logs/forced-weak-m3.out sha256=4bb6ee296992c79bcfdf0816547e9d1e885baf5131bfccd4084bd46076112289
+evidence: target/smap2/logs/forced-buf-m3.out sha256=7f5d81dc9b234fd09491f3892d77a5f4460c7090ad7ed4e033c87eacff0bade7
+* S3 End to end
+** S3.1 The false-root incident reproduced by smap1 build 2 (weak-string-unrooted retaining 2 keys when m5_fx_run_body is not zeroed) is fixed by map-only scanning alone, with no zeroing of that frame; evidence log shows the stale slots excluded
+cmd: sh target/smap2/checks/s31.sh
+evidence: target/smap2/logs/s31-b2-m0.out sha256=4aae6e9d8fa8d90e37cf1a906e85b071baad5b913f899e14bfa0b91161e8cd52
+evidence: target/smap2/logs/s31-b2-m2.out sha256=4bb6ee296992c79bcfdf0816547e9d1e885baf5131bfccd4084bd46076112289
+evidence: target/smap2/logs/s31-evidence.txt sha256=fe1b0fa39a2318dc00ac3a810f33dfc85473cb4e75c79bf5afd5b7002f31fd67
+** S3.2 Cost: paired elapsed (CPU 14) map-only vs conservative on a GC-heavy row (r7-mapcar-bc or r3-list) and on reg-sum-bc / r5-sum-base-closure; GC time per collection recorded
+cmd: sh target/smap2/checks/s32.sh
+evidence: target/smap2/logs/s32-evidence.txt sha256=34764782c8a736dd0d78d7ccce5b770bf74a38423b39c84f77f651c66310d2b7
+evidence: target/smap2/logs/pmc-table.txt sha256=0f456cdba858a51bce76c37cf846a02fe46c1ef1fd341d4b9473ea6a8e17cdf1
+evidence: target/smap2/logs/gccost2-b1.log sha256=93adafa5519cd3cf13ab73cbffccd64e0f2d098c0284bb31299dc3e9cc23c43f
+#+NOTE: 2026-10-25 reality differs in four places, no criterion reworded.  (1) S1.2(a): a dropped live word is NOT visible to the GNU-56 or probe fixtures in mode 2 (K=1..6400 all pass; live fixed-frame words are redundant with the precise roots there); the control that does see it is the debug-switch-43 canary (a cons held only by a native frame: lost with K=6, kept with K=0) and, with poison (mode 3), K=2/5 crash GNU-56.  (2) S2.2: the map-only fixtures run through a wrapper (target/smap2/mkmapbin.sh) that sets the mode and loads the fixture, because the mode is a debug switch, not a boot default; the real binary is hashed in REPORT.md.  (3) S3.1: shown on build 2 (throwaway, m5_fx_run_body removed from the zero list); in mode 0 it reproduces 2 keys, in mode 2/3 it is 0.  (4) S3.2 measured with the wrapper as both engines (m0 = mode 0, m2 = mode 2), GNU 31.1 third.
+#+NOTE: (5) S2.2 'GC fixtures': tools/ai/integ-wh-gc-builders.el and the gc-port checks named in DESIGN section 4 do not exist in this tree (no file of that name under tools/ai/ of the seed or the reference worktree), so the GC coverage is the GNU-56 weak cases, the weak-24 unrooted cases, the buffer smoke, the switch-43 canary and the forced-poll (switch 70) runs, on build 1 and build 2.

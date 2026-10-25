@@ -189,4 +189,48 @@
       (should (= (nl_sf_while_w 16386 0 0 0) 0))
       (should (= eft--polls 0)))))
 
+;; interp2: after the in-line probe read the newest frame to its end with no binding of
+;; the name, the general walk starts below that frame (MODE 6: mode 2 and one frame
+;; skipped); any frame the probe does not take, a scope boundary, or a binding it found
+;; but could not decode, is walked from the top (MODE 2).
+(ert-deftest eft-first-frame-clean-miss-skips-the-newest-frame ()
+  (eft--setup)
+  (let ((skips nil))
+    (cl-letf (((symbol-function 'nl_lex_walk)
+               (lambda (_frames _name mode) (push mode skips) 29)))
+      ;; 25030 is bound in no frame of the fixture: a clean miss of the newest frame.
+      (should (= (nl_env_lookup_val_w 25030 0 0) 29))
+      (should (equal skips '(6)))
+      ;; A hit never walks.
+      (setq skips nil)
+      (should (= (nl_env_lookup_val_w 24582 0 0) 29))
+      (should (equal skips nil))
+      ;; A frame with the scope-boundary mark in slot 2 ends the descent below it:
+      ;; the walk must see it (SKIP 0).
+      (eft--write 12320 0 5)
+      (setq skips nil)
+      (nl_env_lookup_val_w 25030 0 0)
+      (should (equal skips '(2)))
+      ;; Declarations in slot 1 keep the probe from reading the frame at all.
+      (eft--write 12320 0 3)
+      (eft--write 12312 0 16386)
+      (setq skips nil)
+      (nl_env_lookup_val_w 25030 0 0)
+      (should (equal skips '(2)))
+      ;; A hit whose value the probe cannot decode (pair-backed Cell) is walked
+      ;; from the top.
+      (eft--write 12312 0 1)
+      (eft--write 28672 0 267)
+      (setq skips nil)
+      (nl_env_lookup_val_w 24582 0 0)
+      (should (equal skips '(2))))))
+
+(ert-deftest eft-lex-walk-skips-the-newest-frames-by-mode ()
+  (eft--setup)
+  (cl-letf (((symbol-function 'nl_word_payload) (lambda (p) (eft--read p 8))))
+    (should (= (nl_lex_walk 32 24582 2) 29))
+    (should (= (nl_lex_walk 32 24582 6) 0))
+    (should (= (nl_lex_walk 32 24582 1) 28678))
+    (should (= (nl_lex_walk 32 24582 5) 0))))
+
 (provide 'nelisp-evalfast-test)

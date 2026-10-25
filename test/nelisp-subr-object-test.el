@@ -17,6 +17,10 @@
     (while (string-match re text pos) (setq n (1+ n) pos (match-end 0)))
     n))
 
+(defun w2s--spec (name)
+  (or (assoc name nelisp-standalone--directcall-specs)
+      (assoc name nelisp-standalone--eval-prims)))
+
 (defun w2s--has (x form)
   (or (equal x form) (and (consp form) (or (w2s--has x (car form)) (w2s--has x (cdr form))))))
 
@@ -26,11 +30,30 @@
     (should (= (logand car-d 255) (+ 1 17)))
     (should (= (logand (ash car-d -8) 255) 1))
     (should (= (logand (ash car-d -16) 255) 1))
-    (should (= (ash car-d -24) 1))                    ; leaf
+    (should (= (logand (ash car-d -24) 1) 1))         ; leaf
     (should (= (logand list-d 255) (+ 114 17)))
     (should (= (logand (ash list-d -16) 255) 127))    ; many
-    (should (= (ash list-d -24) 0))                   ; allocating
-    (should-not (nelisp-standalone--subr-desc "eq"))))
+    (should (= (logand (ash list-d -24) 1) 0))        ; allocating
+    ;; interp2: bits 25-54 hold the interpreter's descriptor.  A primitive of the
+    ;; interpreter table with no directcall id has 0 in bits 0-7 (no id), and a
+    ;; name in neither table has no descriptor at all.
+    (should (= (logand (nelisp-standalone--subr-desc "eq") 255) 0))
+    (should (> (ash (nelisp-standalone--subr-desc "eq") -25) 0))
+    (should-not (nelisp-standalone--subr-desc "no-such-builtin"))))
+
+(ert-deftest w2s-interp-descriptor-round-trips-the-subr-table ()
+  ;; The header's packed copy of `nl_subr_desc' undoes to the table's own value:
+  ;; (logior (logand P 63) (shl (shr P 6) 8)).
+  (dolist (spec nelisp-standalone--eval-prims)
+    (let* ((name (car spec))
+           (d (nelisp-standalone--subr-desc name)))
+      (when d
+        (let* ((p (ash d -25))
+               (full (logior (logand p 63) (ash (ash p -6) 8))))
+          (should (= (logand full 255) (nth 1 spec)))                    ; primitive id
+          (should (= (logand (ash full -8) 15) (nth 2 spec)))            ; primitive min
+          (should (= (logand (ash full -12) 15) (nth 3 spec)))))))       ; primitive max
+  (should (< (ash (nelisp-standalone--subr-desc "<") -25) (ash 1 30))))
 
 (ert-deftest w2s-id-of-a-subr-object-is-a-header-compare-and-one-load ()
   (ndc--with-definitions
@@ -68,7 +91,8 @@
     (dolist (f subr)
       (let ((spec (cl-find-if (lambda (sp) (w2s--has
                                             (car (nelisp-standalone--name-words (car sp))) f))
-                              nelisp-standalone--directcall-specs)))
+                              (append nelisp-standalone--directcall-specs
+                                      nelisp-standalone--eval-prims))))
         (should spec)
         (should (w2s--has (nelisp-standalone--subr-desc (car spec)) f)))
       (should-not (ndc--contains 'nl_install_one f)))
@@ -116,7 +140,11 @@
   ;; The interpreter's fast path reads the cell itself; a Subr must not send it
   ;; down the generic lookup (r5-sum-base-toplevel regression).
   (let ((src (w2s--src)))
-    (should (string-match-p
-             "(ptr-read-u64 (- c 6) 0) 63) 20)\n *(ptr-read-u64 (- c 6) 8) c))" src))))
+    ;; interp2: the header is read once; the list is its second word and the
+    ;; interpreter's descriptor its bits 33-62.
+    (should (string-match-p "(subr (= (logand hdr 63) 20))" src))
+    (should (string-match-p "(w (if subr (ptr-read-u64 (- c 6) 8) c))" src))
+    (should (string-match-p "(dsc (if subr (shr hdr 33) 0))" src))
+    (should (string-match-p "(nl_eic_subr_call_w w dsc tail_ptr env head_ptr)" src))))
 
 (provide 'nelisp-subr-object-test)

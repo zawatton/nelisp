@@ -1,0 +1,41 @@
+#+TITLE: Leaner interpreter call path and lexical lookup (interp2)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria (criteria not reworded; checks filled in 2026-10-25 after build 2). Seed = coordinator HEAD 7461fa879 (v12). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/.
+* S1 Source
+** S1.1 Interpreted calls of builtins read the subr descriptor from the w2subr Subr object (no name-based nl_subr_desc/nl_eic_builtin_name work), lexical variable reference/setq use a direct path for the common environment shapes, and at least one layer of the eval_inner -> eic -> prim_frame chain is fused, each cut justified against GNU eval_sub in REPORT.md; red/green
+evidence: target/interp2/ert-red.log sha256=22cfa0b17c2eeae823784437f49b3f91d865ee1c9c118a8cc954db1995782d69
+evidence: target/interp2/ert-green.log sha256=8e84f4e2e252c6fed113afabe0c76cf2fee7b21680a97ecd11e24064d23ba5d9
+cmd: grep -q 'Ran 11 tests, 11 results as expected' target/interp2/ert-green.log && grep -q '2 unexpected' target/interp2/ert-red.log
+cmd: grep -q '(nl_eic_subr_call_w w dsc tail_ptr env head_ptr)' scripts/nelisp-standalone-build.el && grep -q '(defun nl_eic_subr_call_w (fn dsc tail env call_name)' scripts/nelisp-standalone-build.el && grep -q '(dsc (if subr (shr hdr 33) 0))' scripts/nelisp-standalone-build.el
+cmd: grep -q 'passed .*eft-first-frame-write-avoids-walker' target/interp2/ert-green.log && grep -q 'passed .*eft-first-frame-clean-miss-skips-the-newest-frame' target/interp2/ert-green.log
+cmd: grep -q 'eval_sub' target/codex/REPORT.md && grep -q '^## Cuts against GNU eval_sub' target/codex/REPORT.md
+** S1.2 Semantics against GNU: the B-interp per-form corpus, w1interp interpreter-primitive corpus, closures capturing lexicals, setq on specials vs lexicals, macros, special forms, backtraces of interpreted calls
+evidence: target/interp2/corpus-gnu.out sha256=435171deb4ed25f14ccb722acd2fa9744ad15ec1b4c1d3386956298c3cb22e9d
+evidence: target/interp2/corpus-v12.out sha256=bfa58c46c055974b12aab9f459fab6fa3f471b99ace2ab8dcabf0c730bfce555
+evidence: target/interp2/corpus-cand.out sha256=bfa58c46c055974b12aab9f459fab6fa3f471b99ace2ab8dcabf0c730bfce555
+cmd: python3 target/interp2/criteria.py corpus
+cmd: ! python3 target/interp2/criteria.py corpus corrupt
+cmd: cmp -s target/interp2/prim-corpus-gnu.out target/interp2/prim-corpus-cand.out
+cmd: grep -q 'Ran 29 tests, 29 results as expected' target/interp2/ert-subr-mine.log && grep -q 'FAILED  *25/29  w2s-interp-descriptor-round-trips' target/interp2/ert-subr-seed.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+evidence: target/interp2/build2.log sha256=17cfef40f8c88147c7338e753c0d1b06b675a2c2505a727368b398e85fe26c86
+evidence: target/interp2/build1-failed.log sha256=9f39febd2fc646211b9150c43d7ade5edf4b26afb82f7fd09087d691c8bb064d
+cmd: grep -q '^BUILD rc=0' target/interp2/build2.log && test -x target/interp2-build/dynamic/nelisp-dynamic
+cmd: for f in scripts/nelisp-standalone-build.el lisp/nelisp-cc-frame-stack-find.el lisp/nelisp-cc-evalport-env-leaves-simple.el; do cmp -s $f target/interp2-build/dynamic/src/$f || exit 1; done
+cmd: python3 -c "import glob,json;f=glob.glob('target/interp2-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json');j=json.load(open(f[0]));assert j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])==352"
+cmd: grep -q 'passed .*w2s-windows-forms-still-carry-no-data-blob' target/interp2/ert-subr-mine.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+evidence: target/interp2/fixtures/report.json sha256=54e3818f1e52ebf7d2c6260017af4b73f9f2237dbe5ffdba68f7cff1a3e65010
+evidence: target/interp2/wincheck.log sha256=eb79b51a420516330fe00c4de3f9aca4e35a9b3a9dcca315d8a73741d2b7634d
+cmd: python3 target/interp2/criteria.py fixtures
+cmd: grep -q 'closurevm: PASS' target/interp2/wincheck.log && grep -q 'switch corpus: PASS' target/interp2/wincheck.log && grep -q 'features: PASS' target/interp2/wincheck.log && grep -q '^rc=0' target/interp2/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v12 on r5-aref-rem-toplevel, r5-aset-rem-toplevel and r5-sum-base-toplevel (pmcrun2 two-N), results checked
+evidence: target/interp2/ir.json sha256=4057ad6979700fd844d6fd915a5ece5a3f01a5e557e38029767dfe29be896fcd
+cmd: python3 target/interp2/criteria.py ir
+cmd: ! python3 target/interp2/criteria.py ir v12
+** S3.2 Paired elapsed (CPU 13) on those rows plus r3-list and the plain sum loop vs integ-1028b and GNU
+evidence: target/interp2/paired/r5-aref-rem-toplevel/report.json sha256=6eaa8fdd2a4c1536e6e904eef8dfaa474d2a77094f89053bd95431b3bb54ba4c
+evidence: target/interp2/paired/reg-sum-bc/report.json sha256=2a8df2bff4c2d0130e72cce31d231e4668a8035c43bce7939388b65e0d9f86d8
+cmd: python3 target/interp2/criteria.py elapsed
+cmd: ! python3 target/interp2/criteria.py elapsed v12

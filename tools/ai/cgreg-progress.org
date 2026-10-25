@@ -1,0 +1,36 @@
+#+TITLE: Raw VM state in callee-saved registers across the bytecode fast loop (cgreg)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12) plus overlay (smap1, w3spec, interp2). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/ (ROW.top).
+#+NOTE: Filled 2026-10-28 by lane cgreg. All checks read recorded logs under target/cgreg/ (the runs are in REPORT.md); no criterion was reworded.
+* S1 Source
+** S1.1 The compiler keeps the raw (non-Lisp-reference) VM state of wf_bytecode_w_fast_run (at least pc and sp; also code base/length and stack base if measured useful) in callee-saved registers across the whole loop including its call arms, writing them back to their frame slots/footer only where the protocol reads them (call/return/exit points); Lisp references stay in frame slots; Win64 uses its own callee-saved pool (never r8/r9); red/green on emitted code
+#+NOTE: Promoted: pc sp raw(opcode) data(code base) -> r12 r13 r14 r15 (length and stack base measured too, no register left; rbx is the dynamic-alignment register). No write-back is emitted because nothing reads those slots' memory: pc/sp are passed as arguments and returned as (PC<<17)|SP, MEM is published separately (dynbind protocol.md); the parameter spill and the let initial store stay. Mechanical disassembly proof below; the base disassembly is the negative control.
+cmd: grep -q "Ran 6 tests, 2 results as expected, 4 unexpected" target/cgreg/logs/red-seed.log
+cmd: grep -q "Ran 6 tests, 6 results as expected, 0 unexpected" target/cgreg/logs/green2.log
+cmd: python3 -I target/cgreg/probe/check.py target/cgreg/probe/fast_run.new.dis --assert | grep -q "ASSERT OK"
+cmd: python3 -I target/cgreg/probe/check.py target/cgreg/probe/fast_run.win64.dis --assert | grep -q "ASSERT OK"
+cmd: python3 -I target/cgreg/probe/check.py target/cgreg/probe/fast_run.base.dis --assert >/dev/null; [ $? -eq 1 ]
+cmd: grep -q "nelisp-vmreg: wf_bytecode_w_fast_run admit pc=slot6->r12 sp=slot7->r13 raw=slot.*->r14 data=slot0->r15" target/cgreg-build/dynamic/build.log
+** S1.2 Non-local exits (throw/signal through the fast loop) restore or never rely on the promoted registers; the unwinder's handling of callee-saved registers is established from source and tested (throw-through and condition-case corpus against GNU); all bytecode corpora (switch, dynfast/specpdl, bccall, closurevm, textop) unchanged
+#+NOTE: Gate (target/cgreg/DESIGN.md): exits are return codes (nl_exit_signal_w), no stack unwinder; aot-landing kinds are declined. Native corpora run: closurevm 24, switch, features (check.sh), bytecode arith 181 and word 196 against GNU, signal-data, exits corpus (new equals v12; both differ from GNU only by the existing `\e1` symbol print quirk). dynfast/bccall/closurevm/evalfast etc. host ERT suites (the coordinator's load-tests.el list, 203 tests, 0 unexpected, 83 skipped) were run; they evaluate IR on the host and do not execute the new machine code. vm-gc-poll-stress with the conservative scan OFF (switch 28) is red in v12 (195/196, loop 1000 invalid-function) and aborts in the new build at the same case (word ABI failure); with the scan ON it passes in both. See REPORT.md.
+cmd: grep -q "Gate result: PASS" target/cgreg/DESIGN.md
+cmd: cmp target/cgreg/exits/exits.native target/cgreg/exits/exits.seed.native
+cmd: grep -q "closurevm: PASS (24)" target/cgreg/logs/wincheck.log && grep -q "switch corpus: PASS" target/cgreg/logs/wincheck.log && grep -q "features: PASS" target/cgreg/logs/wincheck.log
+cmd: grep -q "BYTECODE-ARITH PASS 181/181" target/cgreg/corp/standalone-bytecode-arith-check.new.out && grep -q "BYTECODE-WORD PASS 196/196" target/cgreg/corp/standalone-bytecode-word-check.new.out
+cmd: cmp target/cgreg/corp/standalone-signal-data-check.new.out target/cgreg/corp/standalone-signal-data-check.seed.out
+cmd: grep -q "VM-GC-POLL-STRESS PASS" target/cgreg/gcdbg/scanon.new.out
+cmd: grep -q "0 unexpected" target/cgreg/logs/host-ert.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS including the F1 helper bound); Windows per-target generated forms still contain no data-blob
+#+NOTE: Build rc=0 in 908 s (prelink gates are inside the build, so rc=0 includes the F1 bound; no coordinator-sanctioned raise was needed). The change is compiler-side Elisp, no generated defun was added.
+cmd: grep -q "^BUILD rc=0" target/cgreg-build/dynamic/build.log
+cmd: test -x target/cgreg-build/dynamic/nelisp-dynamic
+cmd: grep -q "WIN-OK blobs=0" target/cgreg/logs/winmode.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q "weak 24/24 PASS" target/cgreg/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/cgreg/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/cgreg/logs/fixtures.log && grep -q "buffer 21/21 PASS" target/cgreg/logs/fixtures.log
+cmd: [ $(grep -c "PASS" target/cgreg/logs/wincheck.log) -ge 3 ] && ! grep -q "FAIL" target/cgreg/logs/wincheck.log
+* S3 End to end
+** S3.1 Instructions and cycles per trip reduced vs the seed on reg-sum-bc, r7-funcall-bc, r3-call, r3-pcase and r3-mix (pmcrun2 two-N), results checked
+#+NOTE: Results are checked by paired_bench (identical BENCH-CHECK result across engines at both N). Table in target/cgreg/bench-table.md.
+cmd: python3 -I target/cgreg/agg.py | awk -F'|' 'BEGIN{n=0} $2 ~ /reg-sum-bc|r7-funcall-bc|r3-call|r3-pcase|r3-mix/ {gsub(/[+%]/,"",$11); gsub(/[+%]/,"",$14); if ($11+0<0 && $14+0<0) n++} END{exit (n==5)?0:1}'
+** S3.2 Paired elapsed (CPU 12) on those rows plus r3-dyn and r4-car vs the seed build and GNU
+cmd: python3 -I target/cgreg/agg.py | awk -F'|' '$2 ~ /reg-sum-bc|r7-funcall-bc|r3-call|r3-pcase|r3-mix|r3-dyn|r4-car/ {n++; split($8,f,"/"); if ($6+0 < 1 && f[1]+0 >= 4) ok++} END{exit (n==7 && ok==7)?0:1}'

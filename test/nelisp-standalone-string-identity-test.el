@@ -43,7 +43,7 @@
   (let* ((names '(bf_identity_hash bf_eq2 nl_word_tag64 nl_val_tag nl_word_payload
                  nl_word_data nl_word_length nl_string_nbytes nl_string_view_header
                  nl_ht_identity_key_hash heap-read-u64 heap-read-u8 nl_string_header_p
-                 heap-sexp-tag-word nl_positioned_flag nl_ht_key_hash nl_string_mapping_holding))
+                 heap-sexp-tag-word nl_positioned_flag nl_ht_key_hash nl_string_mapping_holding ptr-read-u64))
          (saved (mapcar (lambda (name) (cons name (and (fboundp name) (symbol-function name)))) names))
          (nelisp-string-identity-test--memory (make-hash-table :test 'eql))
          (nelisp-string-identity-test--headers '(#x500000 #x500020 #x500040 #x500060 #x500080 #x5000a0 #x5000c0 #x600000)))
@@ -55,6 +55,7 @@
                        hash-mutation (nelisp-string-identity-test--definition name))) t))
           (fset 'heap-read-u64 #'nelisp-string-identity-test--read)
           (fset 'heap-read-u8 #'nelisp-string-identity-test--read)
+          (fset 'ptr-read-u64 #'nelisp-string-identity-test--read)
           (fset 'nl_string_header_p (lambda (s) (if (memq s nelisp-string-identity-test--headers) 1 0)))
           (fset 'heap-sexp-tag-word (lambda (w) (nl_val_tag w)))
           (fset 'nl_positioned_flag (lambda (_) 0))

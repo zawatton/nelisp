@@ -551,6 +551,10 @@
     ;; The two loops call nothing and use only plain operators, so the compiler keeps
     ;; their variables in registers (CG3, Doc 224); the binding found (HIT) is decoded
     ;; after them, where the calls are.  A stop sets I to -1.
+    ;; interp2: bits 2 and up of MODE, a count, are the newest frames not walked.  A caller
+    ;; that has just read the newest frame in line, to its proper end with no binding of
+    ;; NAME and no scope boundary, passes 4 + MODE (one function: the F1 prelink closure
+    ;; holds exactly 352 functions, its bound).
     (defun nl_lex_walk (frames name mode)
       (if (/= (logand name 7) 6)
           -1
@@ -560,7 +564,7 @@
         (let* ((rec (if (= (logand frames 7) 6) (- frames 6)
                       (ptr-read-u64 frames 8)))
                (backing (ptr-read-u64 (+ rec 16) 0))
-               (i (- (sar (ptr-read-u64 (+ rec 24) 0) 2) 1)))
+               (i (- (- (sar (ptr-read-u64 (+ rec 24) 0) 2) 1) (shr mode 2))))
           (if (/= (logand backing 7) 6)
               -1
             (let* ((bp (- backing 6)) (hit 0) (cur 0))
@@ -604,7 +608,7 @@
                                  0))))))))))
                (if (> hit 0)
                    (let* ((v (ptr-read-u64 (- hit 2) 8)))
-                     (if (= mode 2)
+                     (if (= (logand mode 3) 2)
                          ;; The binding's cdr decodes to its value (`nl_cell_get_value_w'): an
                          ;; immediate or a direct cons is the value, and so is a vectorlike
                          ;; that is no Cell; only a Cell, a string or a legacy view takes the
@@ -626,8 +630,8 @@
                        (if (= (logand v 7) 6)
                            (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
                                v
-                             (if (= mode 1) v -1))
-                         (if (= mode 1) v -1))))
+                             (if (= (logand mode 3) 1) v -1))
+                         (if (= (logand mode 3) 1) v -1))))
                  hit)))))))
     ;; The value of a plain global variable: SYM a symbol object (interned) whose redirect
     ;; is 0 (GNU SYMBOL_PLAINVAL, data.c find_symbol_value), read by the main thread with

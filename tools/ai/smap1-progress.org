@@ -1,0 +1,40 @@
+#+TITLE: Liveness stack maps, stage 1: emission and shadow mode (smap1)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD a313497a0 plus overlay (v12 sources). Design: target/smap1/DESIGN-input.md (copy of resume target/strategy/E-stackmaps/DESIGN.md). User direction 2026-10-27: false roots must be made impossible, not patched by zeroing.
+* S1 Source
+** S1.1 The compiler emits, for every call site in every generated function with a frame pointer, a map of the frame slots live after the call (type-conservative, liveness-exact as in DESIGN.md, with the documented full-frame fallbacks), into a self-relative table usable on SysV and PE; the per-target no-data-blob rule holds; emitted-table red/green on small functions with known liveness
+#+NOTE: Liveness is per fixed-frame word (slot number = word index below rbp), flow-sensitive on the IR (seq, let-rt, let-rt-n, setq, if, cond, logic, while to a fixpoint), order independent as in DESIGN.md 2 (a node's set is live-after U slots read inside it). Sites are the E8 call placeholders of the final text (relocs and label fixups), attributed to the innermost emitted node range; a site in no range would be FULL (none occurred). Documented FULL functions: variadic, gc-root-slots, internal-entry, self-tco-raw, observer kinds (aot-*, va-*, frame-alloc, syscall, wasm), alias plans, frameless leaves, every non-SysV or non-x86_64 function (so Win64/PE gets the table format with FULL entries only; Win64 slot maps are a later stage). Private-let functions are mapped but flagged (fflags bit1) for the stage-2 audit. No hook in the assembler: lisp/nelisp-asm-x86_64.el is untouched. Red = seed compiler fails all 12 tests (red-seed.log), green = 12/12.
+#+TIMEOUT: 120
+cmd: sh target/smap1/checks/s11.sh
+evidence: target/smap1/logs/red-seed.log sha256=31a2a1e81185dd7c3b49ae167effa1fbc722cf4c65f250fa9be7c36297a57e75
+evidence: target/smap1/logs/green-final.log sha256=de0dbe5c29c65e1975a2d1b9ed3a8acc6ba4b0e6d4a984806519ca76b203514e
+** S1.2 Shadow mode: under a debug switch, the collector walks the rbp chain, looks up each return address, and logs every word the conservative scan marks that the maps exclude (with frame, function, slot offset); default behaviour (switch off) is byte-identical in what it marks; a negative control shows the walker detects a deliberately wrong map entry
+#+NOTE: Mode, counters and log buffer live in stackmap.o's own bss block (nl_stackmap_state); switches 90 (enable), 91, 92 K (read word K), 93 (clear), 94 V (INVERT every map bit: the negative control), 95 V (stderr log, 4000-line cap), 96 K. The walk runs after the real nl_gc_conserv_scan loop and only reads (nl_gc_conserv_resolve / nl_string_mapping_holding), so a collection marks exactly what it marked before; with the switch on, its own stack frames leave residue, so marks of LATER collections can differ (seen with the negative control), which is why only switch-off equality is claimed. The live-role check is a geometry check (live bit on a non-slot word = 0, frame region >= fixed words = 0 violations); the control flips every bit and trips it (400 on the probe).
+#+TIMEOUT: 300
+cmd: sh target/smap1/checks/s12.sh
+evidence: target/smap1/logs/shadow-log-1.err sha256=56ace51403288e4815cefba10a44cdfd931840dc6ec4e8103295cf3684bb0e2e
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); binary growth recorded; Windows per-target forms still contain no data-blob
+#+NOTE: Three dedicated builds were used (build 1 first candidate, build 2 throwaway with m5_fx_run_body unzeroed for S3.1, build 3 final = build 1 + mapping of terminal-plan frames); the criterion's single build is build 3 (the others are listed in REPORT.md). Growth 688,768 B (+2.00%), table 686,003 B.
+#+TIMEOUT: 300
+cmd: sh target/smap1/checks/s21.sh
+evidence: target/smap1-build3/dynamic/build.log sha256=78e3ebabc0cff6424188b95e7c7d89db50747fe42d1b9ede146e3e7438c916dc
+** S2.2 Fixtures with the switch off: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: sh target/smap1/checks/s22.sh
+evidence: target/smap1/fixtures-b3/report.json sha256=c60410ad74905e5259c703b5adba8766eb07b7d82ad46a0134b664e7f09988ba
+evidence: target/smap1/logs/winchk-b3.log sha256=5f0debae1efb653214575c5b9467d4d41800029f3bedee5b87788e691d3e2c36
+* S3 End to end
+** S3.1 Shadow mode on the weak fixture and the GC fixtures logs the stale words behind the known incidents (at least the m5_fx_run_body rbp-0x5a0 class when its zeroing is disabled in a throwaway build or by switch) and never a word the maps mark live that the program later needs (no crash, results equal with shadow mode on)
+#+NOTE: The exact rbp-0x5a0 word (slot 179) did not show in these runs; the class did: with m5_fx_run_body unzeroed (build 2) weak-string-unrooted regresses (2 instead of 0) and the shadow log lists 62 distinct stale rt-slot positions (179 words) of m5_fx_run_body; with the zeroing (build 3) the fixture passes and 3 positions (241, 243, 246: dead after use, which zeroing does not cover) remain. Forced-poll runs (switch 70, 4.47 M frames on the weak fixture, 6.17 M on the buffer smoke) show 100% frames mapped, 0 violations, 0 live-role words, results equal. Build 2 differs from build 3 only in the zero list and the leaf-frame mapping.
+#+TIMEOUT: 300
+cmd: sh target/smap1/checks/s31.sh
+evidence: target/smap1/logs/s31dA.err sha256=4b6e62cd374a7fd567f9a35eeecbe363552897794c6075b4811c21c76cad995c
+evidence: target/smap1/logs/s31dA-b3.err sha256=1389571d08bc641c2f1f780b0108a399b908892e177e01aa1c2cf5cac8fe2cba
+evidence: target/smap1/logs/s31b3-weak-f1.err sha256=d1b7938d1b8f256b14f5b3b038c529d907664cd0a9181438247f5cd919322acc
+** S3.2 Cost: paired elapsed (CPU 14) with the switch off on reg-sum-bc, r3-call and r5-sum-base-closure vs integ-1028 shows no regression beyond layout noise (instructions per trip equal or explained); GC-time cost of the walk in shadow mode measured on a GC-heavy row
+#+NOTE: Paired elapsed median ns/step (7 reps, CPU 14, base=integ-1028, cand=build 3, switch off): reg-sum-bc 40.95 -> 41.38 (+1.0%), r3-call 344.71 -> 297.74 (-13.6%, layout: instructions per step identical), r5-sum-base-closure 71.88 -> 72.44 (+0.8%). Instructions per step equal to 0.01% on all three. Shadow-mode GC cost: 300 explicit collections 3.155 s off vs 3.231 s on (+2.4%, +0.25 ms per collection).
+cmd: sh target/smap1/checks/s32.sh
+evidence: target/smap1/bench-b3/reg-sum-bc/report.json sha256=14f2a0b8b5df97535dbf70f3e7b7ea98c5dd0a810cc630d4f06b273e33940d2b
+evidence: target/smap1/bench-b3/r3-call/report.json sha256=c0b927be4cb35feed2c926308524a167228edfe568f6ea87b607f51c34401a54
+evidence: target/smap1/bench-b3/r5-sum-base-closure/report.json sha256=297abe2e273a68514fc225a427022c78b4022f875f03ad1495400de62df07144
+evidence: target/smap1/logs/instr-b3.txt sha256=72cfc70e08c6d2650e5d9d72b5a2c76f0b09bd4285be55cc644ea9457820e848
+evidence: target/smap1/logs/gccost-b3.log sha256=23bd802f77936d9a4d863e50ecbbd7e673dca67958b53773fe75268129c77d2f

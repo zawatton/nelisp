@@ -64,7 +64,7 @@
         (meta (vector 0 0 0 3 nil 0 0 0 nil nil 0
                       (vector nil 10 'b 20 'c 30) (vector 1 2 3)))
         (seen nil) (released nil))
-    (cl-letf (((symbol-function 'wf_arg_word) (lambda (_ i) (if (= i 0) 'callback 'table)))
+    (cl-letf (((symbol-function 'wf_arg_word) (lambda (_ i) (if (= i 0) 'callback 8)))
               ((symbol-function 'bf_hash_table_p_raw) (lambda (_) 1))
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
@@ -96,20 +96,22 @@
 ;; cbroute: native mapc/maphash enter a bytecode callee through
 ;; `wf_cb_call_words' (the Bcall frame entry) with the argument words in the
 ;; rooted frame, not through a consed argument list.
-(defun hf--cb-run (kind-value target-after bytecode-status &optional name-check)
+(defvar hf--pres nil "PRE arguments `wf_bytecode_w_function' received, newest first.")
+(defun hf--cb-run (kind-value target-after bytecode-status &optional name-check pre-word)
   "Walk a 3-entry table with `wf_maphash_w'.  Answers (RESULT DIRECT OLD)."
   (hf--install '(wf_maphash_w wf_cb_call_words))
   (let ((roots (make-hash-table :test 'eql))
         (meta (vector 0 0 0 3 nil 0 0 0 nil nil 0
                       (vector 1 10 2 20 3 30) (vector 1 2 3)))
         (direct nil) (old nil) (calls 0))
-    (cl-letf (((symbol-function 'wf_arg_word) (lambda (_ i) (if (= i 0) 'callback 'table)))
+    (cl-letf (((symbol-function 'wf_arg_word) (lambda (_ i) (if (= i 0) 'callback 8)))
               ((symbol-function 'bf_hash_table_p_raw) (lambda (_) 1))
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
+              ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) roots)))
               ((symbol-function 'nl_root_release) (lambda (&rest _) nil))
               ((symbol-function 'nl_ht_meta_slot) (lambda (_) meta))
               ((symbol-function 'nl_ht_int) (lambda (m i) (aref m i)))
@@ -123,8 +125,9 @@
               ((symbol-function 'nl_n4_push_words) (lambda (&rest _) 0))
               ((symbol-function 'nl_n4_finish_w) (lambda (w &rest _) w))
               ((symbol-function 'wf_bytecode_w_function)
-               (lambda (func mem first argc _env outw out)
+               (lambda (func mem first argc _env outw out pre)
                  (cl-incf calls)
+                 (push pre hf--pres)
                  (should (= func 100))
                  (should (= outw (+ mem 24)))
                  (should (= first 4))
@@ -138,6 +141,8 @@
                (lambda (a b _) (cons a (if (equal b 3) nil b))))
               ((symbol-function 'nl_apply_function_w)
                (lambda (_ args _env _pad) (push args old) 3)))
+      (setq hf--pres nil)
+      (puthash 1072 (or pre-word 3) roots)
       (list (wf_maphash_w 'args 99) (nreverse direct) (nreverse old)))))
 
 (ert-deftest hf-maphash-bytecode-direct-route ()
@@ -237,9 +242,9 @@
                (lambda (_ recompute)
                  (should (= recompute 1)) (cl-incf reindexes)
                  ;; The migration must publish its cache before recursing.
-                 (should (= (nl_ht_test_mode 'table) 1)) 0)))
-      (should (= (nl_ht_test_mode 'table) 1))
-      (dotimes (_ 10) (should (= (nl_ht_test_mode 'table) 1)))
+                 (should (= (nl_ht_test_mode 1000) 1)) 0)))
+      (should (= (nl_ht_test_mode 1000) 1))
+      (dotimes (_ 10) (should (= (nl_ht_test_mode 1000) 1)))
       (should (= reads 2))
       (should (= reindexes 1)))))
 
@@ -250,6 +255,9 @@
     (cl-letf (((symbol-function 'nl_word_tag64) (lambda (_) 4))
               ((symbol-function 'heap-sexp-tag-word) (lambda (_) 4))
               ((symbol-function 'nl_ht_str_hash) (lambda (_) (error "Symbol name was hashed")))
+              ;; The symbol-object prologue reads the header kind (4 = interned).
+              ((symbol-function 'ptr-read-u64)
+               (lambda (p off) (if (and (= p 8192) (= off 0)) 4 (error "Unexpected raw read %S %S" p off))))
               ((symbol-function 'heap-read-u64)
                (lambda (p off)
                  (cond ((= p 268436288) base)
@@ -293,3 +301,79 @@
               (should (= words 32)) (should (= singles 0)))))))))
 
 (provide 'nelisp-hashfast-test)
+
+;; maphx: the walker reserves the activation cell once per walk
+;; (`wf_cb_reserve', address fixnum-coded in ROOTS+48) and every bytecode entry
+;; hands it to `wf_bytecode_w_function'; a walk without one passes 0.
+(ert-deftest hf-maphash-bytecode-passes-prereserved-cell ()
+  (let ((r (hf--cb-run 2 nil 0 nil (+ (* 5000 4) 1))))
+    (should (= (car r) 3))
+    (should (equal hf--pres '(5000 5000 5000)))))
+
+(ert-deftest hf-maphash-bytecode-without-cell-passes-zero ()
+  (let ((r (hf--cb-run 2 nil 0)))
+    (should (= (car r) 3))
+    (should (equal hf--pres '(0 0 0)))))
+
+(defun hf--fake-table (kv markers cap)
+  "Fake memory for a table WORD 4098: cons at 4096 -> meta vector word 8198.
+Returns (MEMORY . TABLE-WORD).  Slot 3 of the meta is CAP, 11 the pairs, 12
+the index vector, all vectorlike WORDS (low bits 6)."
+  (let ((mem (make-hash-table :test 'eql)) (fix (lambda (n) (+ (* n 4) 1))))
+    (puthash 4096 8198 mem)
+    (puthash (+ 8192 8 (* 3 8)) (funcall fix cap) mem)
+    (puthash (+ 8192 8 (* 11 8)) 12294 mem)
+    (puthash (+ 8192 8 (* 12 8)) 16390 mem)
+    (let ((k 0)) (dolist (w kv) (puthash (+ 12288 8 (* k 8)) w mem) (cl-incf k)))
+    (let ((k 0)) (dolist (m markers) (puthash (+ 16384 8 (* k 8)) (funcall fix m) mem) (cl-incf k)))
+    (cons mem 4098)))
+
+(defun hf--fast-walk (table-mem mutate)
+  "Walk the fake table with `wf_maphash_w'; MUTATE runs on the first callback."
+  (hf--install '(wf_maphash_w))
+  (let ((seen nil) (generic 0) (mem (car table-mem)))
+    (cl-letf (((symbol-function 'wf_arg_word) (lambda (_ i) (if (= i 0) 'callback (cdr table-mem))))
+              ((symbol-function 'bf_hash_table_p_raw) (lambda (_) 1))
+              ((symbol-function 'nl_root_mark) (lambda (_) 17))
+              ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
+              ((symbol-function 'nl_word_canon) #'identity)
+              ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v mem)))
+              ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem)))
+              ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) mem)))
+              ((symbol-function 'nl_root_release) (lambda (&rest _) nil))
+              ((symbol-function 'nl_ht_meta_slot) (lambda (_) (cl-incf generic) 0))
+              ((symbol-function 'nl_ht_int) (lambda (&rest _) (cl-incf generic) 0))
+              ((symbol-function 'wf_word_view) #'identity)
+              ((symbol-function 'wf_cb_kind) (lambda (&rest _) 0))
+              ((symbol-function 'nelisp_cons_construct_w) (lambda (a b _) (cons a (if (equal b 3) nil b))))
+              ((symbol-function 'nl_apply_function_w)
+               (lambda (_ args _env _pad)
+                 (push (mapcar (lambda (w) (sar-fix w)) args) seen)
+                 (when (= (length seen) 1) (funcall mutate mem))
+                 3)))
+      (list (wf_maphash_w 'args 99) (nreverse seen) generic))))
+(defun sar-fix (w) (ash w -2))
+
+(ert-deftest hf-maphash-physical-table-reads-skip-unused ()
+  ;; Three slots; the middle index is unused (-1).  GNU DOHASH_SAFE reads the
+  ;; size, the index and the pairs directly and calls only for used entries;
+  ;; no generic accessor runs.
+  (let* ((fix (lambda (n) (+ (* n 4) 1)))
+         (tm (hf--fake-table (mapcar fix '(1 10 2 20 3 30)) '(0 -1 2) 3))
+         (r (hf--fast-walk tm #'ignore)))
+    (should (= (car r) 3))
+    (should (equal (nth 1 r) '((1 10) (3 30))))
+    (should (= (nth 2 r) 0))))
+
+(ert-deftest hf-maphash-physical-table-rereads-after-callback ()
+  ;; The callback grows the capacity and swaps the pairs and index vectors;
+  ;; the next trip must read the new ones (DOHASH_SAFE refetches every trip).
+  (let* ((fix (lambda (n) (+ (* n 4) 1)))
+         (tm (hf--fake-table (mapcar fix '(1 10 2 20 3 30)) '(0 1 2) 3))
+         (r (hf--fast-walk
+             tm (lambda (mem)
+                  (puthash (+ 8192 8 (* 3 8)) (funcall fix 4) mem)
+                  (dotimes (k 8) (puthash (+ 12288 8 (* k 8)) (funcall fix (* 7 (1+ k))) mem))
+                  (puthash (+ 16384 8 (* 3 8)) (funcall fix 3) mem)))))
+    (should (= (car r) 3))
+    (should (equal (nth 1 r) '((1 10) (21 28) (35 42) (49 56))))))

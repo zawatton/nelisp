@@ -1,0 +1,26 @@
+#+TITLE: Hash-table hit and switch lookup without per-op test recompute (hashres)
+#+NOTE: Created 2026-10-28 before implementation; 6 criteria. Seed = coordinator HEAD 7461fa879 (v12). Evidence: callgrind of v12 in ../resume-4943-20261024/target/v5cg/v12b/.
+* S1 Source
+** S1.1 The table's test is cached in its metadata (no per-op comparison of the test symbol's name), bf_hash_table_p_raw and nl_ht_identity_sync cost a tag/kind check on eq/eql tables, and wf_bytecode_switch_find uses them; red/green
+#+NOTE: 2026-10-28 reality differs from the framing: the seed already caches the decoded test in meta slot 5 (lazily, on the first op). What was per-op is the marker-symbol/name checks in bf_hash_table_p_raw and the accessor-call chains. The lane (a) writes the cache at construction in nl_ht_make_args_w (not nl_ht_make_w: the raw/prelude path sets the test symbol after it returns) and (b) makes the cached read, the marker check, identity sync, descriptor read and entry read a few raw loads with the unchanged general body as fallback. Cmd: host ERT test/nelisp-hashres-test.el red on the seed copy (helper-call counts), green on the lane source, red on a mutated copy.
+#+TIMEOUT: 120
+cmd: sh target/hashres/redgreen.sh
+** S1.2 Semantics against GNU: eq/eql/equal and custom tests (define-hash-table-test), weak tables, tables created before and after the cache, copy-hash-table, clrhash, the switch corpus and the hashfast/directcall-hash corpora
+#+NOTE: Corpus = target/hashres/corpus/corpus.el (all tests, custom test, weak, copy/clr/rem/grow, non-tables, maphash, switch, pcase): GNU 31.1, seed and lane binary print identical transcripts. Existing standalone corpora give identical output to the seed (the identity line differs only in timings; maphash-sparse is red on both: order=nil). Seven host ERT suites green, four of them adapted to the raw-storage model (hashfast, hashword, switch-fast, string-identity).
+#+TIMEOUT: 300
+cmd: sh target/hashres/check_s12.sh
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS); Windows per-target generated forms still contain no data-blob
+#+NOTE: Two builds were used: build 1 (kept in target/hashres-build1) exposed that bf_hash_table_p_raw's fast path missed native-table marker shapes; build 2 is the measured one (target/hashres-build). A third shape (marker symbol object whose name string keeps its byte count in the header word) is still on the slow path in build 2; the fix is in target/hashres/hashres-flagged.patch, host-tested only, NOT built.
+cmd: tail -1 target/hashres-build/dynamic/build.log | grep -q 'BUILD rc=0' && grep -q PRELINK_DIRECT_CLOSURE_PASS target/hashres-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json && grep -q PRELINK_F1_BOUNDARY_PASS target/hashres-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json && ! diff target/hashres/seed/scripts/nelisp-standalone-build.el scripts/nelisp-standalone-build.el | grep -q 'data-blob'
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q 'weak 24/24 PASS' target/hashres/fixtures.log && grep -q 'GNU 56/56 PASS' target/hashres/fixtures.log && grep -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/hashres/fixtures.log && grep -q 'buffer 21/21 PASS' target/hashres/fixtures.log && grep -q 'closurevm: PASS' target/hashres/wincheck.log && grep -q 'switch corpus: PASS' target/hashres/wincheck.log && grep -q 'features: PASS' target/hashres/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v12 on r7-gethash-eq-fix, r7-gethash-eq-sym, r7-gethash-equal-str, r7-puthash-existing, r3-pcase and r3-switch (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+#+NOTE: Instructions per trip (pmcrun2, hi and hi/4 from calib.json, CPU 11, seed = integ-1028b): see target/hashres/pmc.json and REPORT.md. The r3 rows gain less than the r7 rows because the loaded pcase/switch tables still take the slow marker check in build 2 (see S2.1 note).
+cmd: python3 target/hashres/check_pmc.py >/dev/null
+** S3.2 Paired elapsed (CPU 11) on those rows plus r7-maphash-bc, r7-make-hash-table and the plain sum loop vs integ-1028b and GNU
+#+NOTE: 2026-10-28 known red kept visible: the plain sum loop (reg-sum-bc) is 9.4% slower in elapsed with IDENTICAL instruction count (661.1/trip, same taken branches and mispredictions, cycles +8%): a code-layout effect of the changed function sizes, not of any executed code of the lane. The third cmd (sum loop within 3%) fails for that reason and is not downgraded.
+cmd: python3 target/hashres/check_paired.py complete >/dev/null
+cmd: python3 target/hashres/check_paired.py faster >/dev/null
+cmd: python3 target/hashres/check_paired.py sumloop >/dev/null
