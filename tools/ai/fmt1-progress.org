@@ -1,0 +1,30 @@
+#+TITLE: format and the printer at GNU cost (fmt1)
+#+NOTE: Evidence build is b2 (fresh cache; b1 was invalidated by a seeded unit cache). Baseline binary is v14 (integ-1031-build), not v13. S2.1 no-data-blob is the host ERT run (no Win64 cross-build was made). Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (34 files). Evidence: ../resume-4943-20261024/target/xroot/REPORT.md and rows.json (root causes, retimed ratios), survey2 drivers in ../resume-4943-20261024/target/survey2/drv.
+* S1 Source
+** S1.1 format/format-message handle width, precision, flags, %S, %c, %x, %o, %e/%f/%g and field padding in native code or one compiled pass (no per-character elisp parser, no per-character string-width when no width is given), and prin1/princ/print/prin1-to-string of nested data build output in one buffer without per-node concat and without falling into the source interpreter; red/green
+#+TIMEOUT: 120
+cmd: sh tools/ai/fmt1-checks.sh s11
+evidence: target/fmt1/logs/red-v14-native-check.log sha256=c608ef9b4e7a74a143bd07dac826bb3e71fa0f53ccc44ab7248ce39d40e1e82d
+evidence: target/fmt1/logs/green-b2-native-check.log sha256=66fa965c91d0e8d39ace85f4991cc7c150e14bcf7653b7abccd018ed18b9cb98
+** S1.2 Output is byte-identical to GNU 31.1 on a format/print corpus (all specs and flags, multibyte and wide chars, text properties propagation in format, print-escape-*, print-length/print-level, print-circle, floats, symbols needing escapes, nested records/vectors/strings)
+#+TIMEOUT: 60
+cmd: sh tools/ai/fmt1-checks.sh s12
+evidence: target/fmt1/corpus/b2.out sha256=44547c26b05e30e82b5086fb59a3113533539e78e3af2c091952fd51fb61668c
+evidence: target/fmt1/corpus/v14.out sha256=44547c26b05e30e82b5086fb59a3113533539e78e3af2c091952fd51fb61668c
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+TIMEOUT: 60
+cmd: sh tools/ai/fmt1-checks.sh s21
+evidence: target/fmt1/logs/nodatablob-early.log sha256=bb4fc86fc8433adde7297b733cb4b45d623740a3dee6a005a3b99ed7c0323c82
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+#+TIMEOUT: 60
+cmd: sh tools/ai/fmt1-checks.sh s22
+evidence: target/fmt1/logs/fixtures-b2.log sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+* S3 End to end
+** S3.1 Elapsed ratio to GNU on strings-fmt-mix-bc, strings-fmt-sS-bc/-i, print-format-S-nested-bc, print-prin1-nested-bc/-i, print-prin1-noquote-bc and print-prin1-bigdata-bc reduced (paired_bench, CPU 10), per-row table; geomean of these rows reduced at least 10x vs v14
+cmd: python3 -c "import re;t=open('target/fmt1/logs/bench-table.txt').read();g=re.findall(r'reduction +(\d+)x',t);assert g and all(int(x)>=10 for x in g),g"
+evidence: target/fmt1/logs/bench-table.txt sha256=085252fc5da646671125d5bf874d765646bbf81a187b634957ef4100e4e198ed
+evidence: target/fmt1/logs/bench-reports.tar sha256=2f28c9bef104f67ba2b7e070737efd6c2debf6cb564acaf9c21cc29ab16e598f
+** S3.2 43-row matrix rows reg-sum-bc and r3-mix not slower than v14 beyond noise (paired, CPU 10)
+cmd: python3 -c "import json;[(lambda m:(lambda b,v:(_ for _ in ()).throw(AssertionError((n,b,v))) if b>v*1.05 else 0)(m['b2'],m['v14']))({k:x['inner_ns_per_step']['median'] for k,x in json.load(open('target/fmt1/bench/R/%s/report.json'%n))['engines'].items()}) for n in ('reg-sum-bc','r3-mix')]"
+evidence: target/fmt1/logs/bench-reports.tar sha256=2f28c9bef104f67ba2b7e070737efd6c2debf6cb564acaf9c21cc29ab16e598f

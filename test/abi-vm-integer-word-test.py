@@ -38,10 +38,11 @@ static int vm(uintptr_t env, int op, uint64_t a, uint64_t b, uint64_t want) {
   int unary=op==83 || op==84, length=4;
   if (unary) { bytes[1]=op; bytes[2]=135; length=3; }
   uint64_t code[4]={5,length,(uintptr_t)bytes,length};
-  uint64_t data[2]={a,b}, header[3]={2,(uintptr_t)data,2};
+  /* Compact vector box: (length << 8) | kind 8 at +0, then the element WORDs inline. */
+  uint64_t header[3]={(2<<8)|8,a,b};
   uint64_t constants[4]={8,(uintptr_t)header,0,0}, out[4]={0}, result=0;
   int64_t rc=EXECUTE((uintptr_t)code,(uintptr_t)constants,2,env,(uintptr_t)out,
-                     0,0,0,0,0,0,(uintptr_t)&result,3,0);
+                     0,0,0,0,0,0,(uintptr_t)&result,0,0);
   return rc==0 && result==want;
 }
 int64_t abi_vm_integers(uintptr_t env) {
@@ -90,13 +91,13 @@ int64_t abi_vm_integers(uintptr_t env) {
   if (ARITH((uintptr_t)short_stack,1,92)!=2 || short_stack[0]!=word(1)) return -420;
   count++;
   for (int boxed=0; boxed<2; boxed++) {
-    uint64_t data[2]={word(17),3}, header[3]={2,(uintptr_t)data,2};
+    uint64_t header[3]={(2<<8)|8,word(17),3};
     uint64_t array[4]={8,(uintptr_t)header,0,0}, index[4]={2,0,0,0};
     uint64_t mem[3]={(uintptr_t)array,boxed ? (uintptr_t)index : word(0),7};
     if (VECTOR((uintptr_t)mem,2,72)!=0 || mem[0]!=word(17)) return -500;
     count++;
     index[1]=1; mem[0]=(uintptr_t)array; mem[1]=boxed ? (uintptr_t)index : word(1);
-    if (VECTOR((uintptr_t)mem,3,73)!=0 || mem[0]!=7 || data[1]!=7) return -501;
+    if (VECTOR((uintptr_t)mem,3,73)!=0 || mem[0]!=7 || header[2]!=7) return -501;
     count++;
     for (int j=-1; j<=2; j+=3) {
       index[1]=(uint64_t)j; mem[0]=(uintptr_t)array;

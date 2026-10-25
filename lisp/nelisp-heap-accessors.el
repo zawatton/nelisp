@@ -110,9 +110,58 @@ from one, or a call to a record accessor."
     nl_str_sub_byte_off bf_keyword_raw nl_positioned_flag m5_fmt_loop
     wf_bytecode_execute_frame wf_bytecode_w_function wf_bytecode_scratch
     wf_bytecode_call wf_bytecode_w_fast_run wf_bytecode_w_lean_bind
-    nl_directcall_invoke nl_apply_builtin_w nl_sb_plain_entry_p)
+    nl_directcall_invoke nl_apply_builtin_w nl_sb_plain_entry_p
+    ;; strguard: measured v13 callers (callgrind, 43 matrix rows, startup removed).
+    nl_bind_frame_param nl_ali_bind_done nl_ali_body_tail_nil wf_bytecode_try_jit_frame_w
+    wf_cb_prim_call wf_bytecode_call_named_value nl_mut_str_push_byte nl_mut_str_finalize
+    nl_mut_str_len nelisp_reader_p_depth_ok_p nelisp_reader_p_label_proxy_number
+    bf_mark_declared_special nl_n4_bind_declared bf_declared_special_p nl_sb_set
+    wf_word_view nl_directcall_alloc_run m5_make_repeated_string)
   "Value readers on hot paths. Their String-aware slot reads test the WORD tag
 inline and call nl_string_read64 only for a String WORD.")
+
+;; strguard: the list above was hand-maintained and missed callers.  A defun that
+;; is not a storage internal (the physical families above) is guarded by rule
+;; when its String-aware slot-read site count is at most
+;; `nelisp-heap-accessors-guard-max-sites'; larger bodies keep the out-of-line
+;; call, so inlined text growth per function stays bounded.  Both forms are
+;; semantically identical: nl_string_read64 starts with the same tag test.
+(defconst nelisp-heap-accessors-guard-max-sites -1
+  "Largest number of String-aware slot reads one defun may inline-guard.")
+
+(defconst nelisp-heap-accessors-unguarded-functions
+  '(driver nelisp_project_driver nelisp_reader_p_leaf_w nelisp_reader_p_seq_dispatch_w
+    nl_bi_process_call_process_w nl_ct_coalesce nl_float_alloc nl_jit_sxhash_dispatch
+    nl_sexp_eq nl_stackmap_shadow nl_str_to_float nl_strview_selftest_w
+    nl_symcells_selftest_check nl_tls_encrypt_all wf_bytecode_handlers_push wf_bytecode_pending_exit
+    wf_bytecode_rem wf_diff_w wf_prod_w wf_subtail_w
+    nl_ent_w_slow wf_bytecode_unwind_step)
+  "Defuns that keep the out-of-line nl_string_read64 call.
+Guarding one of these would push its lowered body from at most 80 nodes to more
+(`nelisp-standalone--inline-max-nodes'), so the unit inliner would stop copying
+it into its callers and the F1 closure would gain a live function.  Measured on
+v13 by the strguard census, none of them is a hot nl_string_read64 caller.")
+
+(defun nelisp-heap-accessors--count-read-sites (form)
+  "Count heap-read-u64/u8 slot reads of FORM that the String guard applies to."
+  (cond ((not (consp form)) 0)
+        ((memq (car form) '(quote function)) 0)
+        (t (let ((n (if (and (memq (car form) '(heap-read-u64 heap-read-u8))
+                             (consp (cdr form)) (consp (cddr form))
+                             (if (eq (car form) 'heap-read-u8) (eql (nth 2 form) 0)
+                               (memq (nth 2 form) '(0 8 16 24))))
+                        1 0)))
+             (while (consp form)
+               (setq n (+ n (nelisp-heap-accessors--count-read-sites (car form))))
+               (setq form (cdr form)))
+             n))))
+
+(defun nelisp-heap-accessors--rule-guarded-p (source)
+  "Non-nil when the defun SOURCE is guarded by rule or by the explicit list."
+  (and (not (memq (cadr source) nelisp-heap-accessors-unguarded-functions))
+       (or (memq (cadr source) nelisp-heap-accessors-guarded-functions)
+           (<= (nelisp-heap-accessors--count-read-sites (cdddr source))
+               nelisp-heap-accessors-guard-max-sites))))
 
 (defvar nelisp-heap-accessors--string-guarded nil
   "Non-nil inside a function listed in `nelisp-heap-accessors-guarded-functions'.")
@@ -247,7 +296,7 @@ Every operand is retained exactly once; dotted data is preserved."
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
          ((and (eq (car source) 'defun)
-               (memq (cadr source) nelisp-heap-accessors-guarded-functions))
+               (nelisp-heap-accessors--rule-guarded-p source))
           (let ((nelisp-heap-accessors--string-guarded t))
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))

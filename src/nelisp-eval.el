@@ -1254,12 +1254,21 @@ primitive installation for entries nothing in a given run needs."
              nelisp--functions)))
 
 (defun nelisp--install-vendor-association-functions ()
-  "Install exact pinned GNU association helpers in the NeLisp evaluator."
+  "Install exact pinned GNU association helpers in the NeLisp evaluator.
+The standalone runtime binds a native `alist-get' arm (a subr); installing
+GNU's Lisp definition over it would shadow that arm, so it is skipped there.
+On a host Emacs `alist-get' is Lisp (byte- or native-compiled), the test below
+is nil, and the evaluator keeps installing its pinned GNU copy."
   (let ((forms
          (nelisp-read-all
           (nelisp-vendor-source-forms
            "vendor/staged-emacs-lisp/subr.el"
-           '(alist-get assoc-default assoc-delete-all assq-delete-all)))))
+           (if (let ((f (and (fboundp 'alist-get) (symbol-function 'alist-get))))
+                 (and (subrp f)
+                      (not (and (fboundp 'subr-native-elisp-p)
+                                (subr-native-elisp-p f)))))
+               '(assoc-default assoc-delete-all assq-delete-all)
+             '(alist-get assoc-default assoc-delete-all assq-delete-all))))))
     (while forms
       (nelisp-eval-form (car forms) nil)
       (setq forms (cdr forms)))))

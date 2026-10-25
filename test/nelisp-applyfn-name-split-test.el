@@ -163,7 +163,6 @@
                  '(let* () (if (< nl_dk 2) (if (= nl_dk 1) 11 90) (if (= nl_dk 2) 22 91)))))
   (let ((nelisp-standalone--target 'linux-x86_64))
     (dolist (name '(nelisp_apply_function_w nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w))
-      (should (memq name (nelisp-standalone--zero-fresh-frame-functions)))
       (when (not (eq name 'nelisp_apply_function_w))
         (should (memq name nelisp-standalone--inline-boundaries))))))
 
@@ -299,30 +298,21 @@
            (buf (nelisp-asm-x86_64-make-buffer 'sysv))
            (nelisp-aot-compiler--abi 'sysv)
            (nelisp-aot-compiler--arch 'x86_64)
-           (nelisp-aot-compiler-zero-fresh-frame-functions
-            (nelisp-standalone--zero-fresh-frame-functions))
            pairs group-records)
-      (unless (equal nelisp-aot-compiler-zero-fresh-frame-functions
-                     '(nelisp_apply_function_w nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
-                       nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w
-                       nl_apply_builtin_frame_w nl_eic_argframe_call_w
-                       bf_garbage_collect_w nl_gc_stats_run))
-        (error "Initialized outer selection changed"))
       (make-directory "target/dispatch-name-split" t)
       (let* ((outer-buf (nelisp-asm-x86_64-make-buffer 'sysv))
-             (rt (nelisp-aot-compiler--ir-get outer :rt-slot-count))
-             (zero (nelisp-asm-x86_64-make-buffer 'sysv)))
+             (rt (nelisp-aot-compiler--ir-get outer :rt-slot-count)))
         ;; Keep the measured production frame and four-argument ABI while
         ;; emitting a bounded entry control. Full handler emission belongs
         ;; to the coordinator's actual standalone build.
         (funcall emit (nelisp-aot-compiler--ir-with
                        outer :body (nelisp-aot-compiler--make-ir 'imm :value 0 :class 'gp))
                  outer-buf)
-        (nelisp-aot-compiler--emit-zero-fresh-rt-slots zero (+ rt (logand rt 1)))
         (let ((code (nelisp-asm-x86_64-resolve-fixups outer-buf)))
-          (unless (string-match-p
-                   (regexp-quote (nelisp-asm-x86_64-resolve-fixups zero)) code)
-            (error "Actual outer emission lost its exact frame initializer"))
+          ;; smapz: no fresh-frame initializer exists any more; the frame is mapped (or scanned whole).
+          (when (string-match-p (regexp-quote (unibyte-string #xfc #xf3 #x48 #xab)) code)
+            (error "Outer emission contains a fresh-frame rep stos"))
+          (ignore rt)
           (let ((coding-system-for-write 'binary))
             (with-temp-file "target/dispatch-name-split/dispatcher-prologue.bin"
               (set-buffer-multibyte nil) (insert code)))))
@@ -346,26 +336,15 @@
                (probe (car (nelisp-aot-compiler--collect-defuns
                             (nelisp-aot-compiler--parse `(defun ,name ,params ,body)))))
                (probe (nelisp-aot-compiler--ir-with probe :rt-slot-count slots))
-               (loop-buf (nelisp-asm-x86_64-make-buffer 'sysv))
                hashes)
           (unless (= (length (nelisp-aot-compiler--ir-get group :params)) 6)
             (error "Unexpected handler group ABI"))
-          (dolist (control '(nil t))
-            (let* ((entry (nelisp-asm-x86_64-make-buffer 'sysv))
-                   (file (format "target/dispatch-name-split/%s-%s.bin" name (if control "control" "initialized")))
-                   (coding-system-for-write 'binary))
-              (if control
-                  (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-zero-fresh-rt-slots) (lambda (&rest _) nil)))
-                    (funcall emit probe entry))
-                (funcall emit probe entry))
-              (with-temp-file file
-                (set-buffer-multibyte nil) (insert (nelisp-asm-x86_64-resolve-fixups entry)))
-              (push (cons file (nelisp-name-split-test--sha file)) hashes)))
-          (nelisp-aot-compiler--emit-zero-fresh-rt-slots loop-buf (+ slots (logand slots 1)))
-          (let ((file (format "target/dispatch-name-split/%s-loop.bin" name))
-                (coding-system-for-write 'binary))
+          (let* ((entry (nelisp-asm-x86_64-make-buffer 'sysv))
+                 (file (format "target/dispatch-name-split/%s-entry.bin" name))
+                 (coding-system-for-write 'binary))
+            (funcall emit probe entry)
             (with-temp-file file
-              (set-buffer-multibyte nil) (insert (nelisp-asm-x86_64-resolve-fixups loop-buf)))
+              (set-buffer-multibyte nil) (insert (nelisp-asm-x86_64-resolve-fixups entry)))
             (push (cons file (nelisp-name-split-test--sha file)) hashes))
           (push (list :name (symbol-name name) :rt_slots slots :params 6 :files hashes) group-records)))
       (unless (equal input-before

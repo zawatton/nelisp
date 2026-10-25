@@ -38,7 +38,13 @@
   (overlays nil)
   (narrow-start nil)
   (narrow-end nil)
-  (text-properties nil))  ; list of (START END PROP-PLIST) intervals, §3.2
+  (text-properties nil)   ; list of (START END PROP-PLIST) intervals, §3.2
+  (tick 0)                ; text-change counter (formerly the `nelisp-buffer--tick' table)
+  (pend nil)              ; pending `goto-char' target, or nil (formerly `nelisp-buffer--pending-point')
+  (blen 0)                ; (length before-gap), exact at all times
+  (len 0)                 ; total text length, exact at all times
+  (tcache nil)            ; (TICK . STRING) whole-text memo (formerly `nelisp-buffer--text-cache')
+  (ins nil))              ; plain strings inserted at the gap, newest first, not yet in before-gap
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make-plain)
@@ -150,8 +156,8 @@ Deliberately NOT bumped by `nelisp-goto-char': a pending point (see
 text, only which position a later `nelisp-insert' will settle to.")
 
 (defun nelisp-buffer--bump-tick (buf)
-  "Invalidate BUF's cached whole-buffer text (see `nelisp-buffer--tick')."
-  (puthash buf (1+ (gethash buf nelisp-buffer--tick 0)) nelisp-buffer--tick))
+  "Invalidate BUF's cached whole-buffer text (see `nelisp-buffer-tick')."
+  (setf (nelisp-buffer-tick buf) (1+ (nelisp-buffer-tick buf))))
 
 (defvar nelisp-buffer--pending-point (make-hash-table :test 'eq)
   "BUF -> a point value `nelisp-goto-char' recorded but has not yet
@@ -160,19 +166,41 @@ sits exactly at BUF's current point (`(1+ (length before-gap))' is
 already correct).  See `nelisp-buffer--settle' and the PERF block
 comment above `nelisp-buffer--text-cache'.")
 
-(defun nelisp-buffer--settle (buf)
-  "Physically move BUF's gap to its pending point, if one is
-outstanding, then clear it.  O(distance from the gap's CURRENT
-physical position to the pending target) -- paid once, lazily, right
-before an operation (`nelisp-insert' et al.) that needs the gap
-actually at point, rather than on every `goto-char' that got it there."
-  (let ((pending (gethash buf nelisp-buffer--pending-point)))
+(defun nelisp-buffer--settle (buf &optional flush-only)
+  "Make BUF's gap strings current.  First append the pending inserts in
+the INS slot to `before-gap' (one concat of a grouped list, so a run of
+small inserts costs O(total) instead of O(n^2)); then, unless FLUSH-ONLY,
+physically move the gap to the pending point.  Moving is O(distance from
+the gap's CURRENT physical position to the pending target) -- paid once,
+lazily, right before an operation (`nelisp-insert' et al.) that needs the
+gap actually at point."
+  (let ((parts (nreverse (nelisp-buffer-ins buf))))
+    (when parts
+      (setf (nelisp-buffer-ins buf) nil)
+      (while (cdr parts)
+        (let ((out nil))
+          (while parts
+            (let ((chunk nil) (k 0))
+              (while (and parts (< k 256))
+                (setq chunk (cons (car parts) chunk) parts (cdr parts) k (1+ k)))
+              (setq out (cons (apply #'concat (nreverse chunk)) out))))
+          (setq parts (nreverse out))))
+      (setf (nelisp-buffer-before-gap buf)
+            (concat (nelisp-buffer-before-gap buf) (car parts)))))
+  (let ((pending (and (not flush-only) (nelisp-buffer-pend buf))))
     (when pending
-      (let* ((total (nelisp-buffer-string buf))
-             (idx (1- pending)))
-        (setf (nelisp-buffer-before-gap buf) (substring total 0 idx))
-        (setf (nelisp-buffer-after-gap buf) (substring total idx)))
-      (remhash buf nelisp-buffer--pending-point))))
+      (let ((idx (1- pending)) (blen (nelisp-buffer-blen buf)))
+        (if (< idx blen)
+            (let ((before (nelisp-buffer-before-gap buf)))
+              (setf (nelisp-buffer-after-gap buf)
+                    (concat (substring before idx) (nelisp-buffer-after-gap buf)))
+              (setf (nelisp-buffer-before-gap buf) (substring before 0 idx)))
+          (let ((k (- idx blen)) (after (nelisp-buffer-after-gap buf)))
+            (setf (nelisp-buffer-before-gap buf)
+                  (concat (nelisp-buffer-before-gap buf) (substring after 0 k)))
+            (setf (nelisp-buffer-after-gap buf) (substring after k))))
+        (setf (nelisp-buffer-blen buf) idx)
+        (setf (nelisp-buffer-pend buf) nil)))))
 
 ;; Defined with their initial values below; declared here for the reset.
 (defvar nelisp-buffer--blen-cache)
@@ -289,105 +317,85 @@ Signals `error' when neither argument nor current is set."
   "BUF -> (TICK . TOTAL-SIZE); see the PERF comment above.")
 
 (defun nelisp-buffer--before-length (buf)
-  "Cached `(length (nelisp-buffer-before-gap BUF))'; see the PERF
-comment above."
-  (let* ((tick (gethash buf nelisp-buffer--tick 0))
-         (cached (gethash buf nelisp-buffer--blen-cache)))
-    (if (and cached (= (car cached) tick))
-        (cdr cached)
-      (let ((blen (length (nelisp-buffer-before-gap buf))))
-        (puthash buf (cons tick blen) nelisp-buffer--blen-cache)
-        blen))))
+  "Return the length of BUF's before-gap string (the BLEN slot)."
+  (nelisp-buffer-blen buf))
 
 (defun nelisp-buffer-size (&optional buf)
   "Return the length of BUF's visible (unrestricted) text."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (tick (gethash b nelisp-buffer--tick 0))
-         (cached (gethash b nelisp-buffer--size-cache)))
-    (if (and cached (= (car cached) tick))
-        (cdr cached)
-      (let ((sz (+ (nelisp-buffer--before-length b)
-                   (length (nelisp-buffer-after-gap b)))))
-        (puthash b (cons tick sz) nelisp-buffer--size-cache)
-        sz))))
+  (nelisp-buffer-len (or buf nelisp-buffer--current
+                         (error "No NeLisp current buffer"))))
 
 (defun nelisp-point (&optional buf)
   "Return the current point in BUF (1-based).
-Prefers a pending, not-yet-settled `goto-char' target (see
-`nelisp-buffer--pending-point') over the gap's physical position,
-which is what makes that target correct without moving anything."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (or (gethash b nelisp-buffer--pending-point)
-        (1+ (nelisp-buffer--before-length b)))))
+A pending, not-yet-settled `goto-char' target wins over the gap's
+physical position -- see `nelisp-buffer-pend'."
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
 
 (defun nelisp-point-min (&optional buf)
   "Return the narrowed point-min of BUF (defaults to 1)."
   (or (nelisp-buffer-narrow-start
-       (nelisp-buffer--ambient buf))
+       (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
       1))
 
 (defun nelisp-point-max (&optional buf)
   "Return the narrowed point-max of BUF."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (or (nelisp-buffer-narrow-end b)
-        (1+ (nelisp-buffer-size b)))))
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
 
 (defun nelisp-buffer-string (&optional buf)
   "Return the entire text of BUF as a new string.
-Memoized against `nelisp-buffer--tick' (see that variable and
-`nelisp-buffer--text-cache'): O(1) whenever BUF's text has not
-changed since the last call, O(buffer size) to rebuild otherwise.
-The returned string may be the SAME object handed back on a later
-cache hit, so treat it as read-only -- mutating it via `aset' would
-corrupt what that later call sees."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (tick (gethash b nelisp-buffer--tick 0))
-         (cached (gethash b nelisp-buffer--text-cache)))
-    (if (and cached (= (car cached) tick))
+Memoized against `nelisp-buffer-tick': O(1) when BUF's text has not
+changed since the last call, O(buffer size) to rebuild otherwise.  The
+returned string may be shared across calls -- treat it as read-only."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (cached (nelisp-buffer-tcache b)))
+    (if (and cached (= (car cached) (nelisp-buffer-tick b)))
         (cdr cached)
-      (let ((s (concat (nelisp-buffer-before-gap b)
-                        (nelisp-buffer-after-gap b))))
-        (puthash b (cons tick s) nelisp-buffer--text-cache)
+      (let ((s (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (concat (nelisp-buffer-before-gap b)
+                       (nelisp-buffer-after-gap b)))))
+        (setf (nelisp-buffer-tcache b) (cons (nelisp-buffer-tick b) s))
         s))))
 
 (defun nelisp-buffer-substring (start end &optional buf)
   "Return the substring between 1-based START and END in BUF.
-Slices directly from `before-gap'/`after-gap' (concatenating the two
-only when [START, END) itself straddles the gap boundary), costing
-O(END - START) regardless of BUF's total size."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
+Slices directly from `before-gap'/`after-gap' -- O(END - START)
+regardless of BUF's total size -- rather than building the whole
+buffer text first via `nelisp-buffer-string'."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
          (si (1- start))
          (ei (1- end)))
     (cond
-     ((<= ei blen) (substring before si ei))
+     ((<= ei blen) (substring (nelisp-buffer-before-gap b) si ei))
      ((>= si blen) (substring (nelisp-buffer-after-gap b) (- si blen) (- ei blen)))
-     (t (concat (substring before si)
+     (t (concat (substring (nelisp-buffer-before-gap b) si)
                 (substring (nelisp-buffer-after-gap b) 0 (- ei blen)))))))
 
 (defun nelisp-char-after (&optional pos buf)
   "Return the character at POS (default point) in BUF, or nil."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (p (or pos (nelisp-point b)))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
-         (idx (1- p)))
-    (and (>= idx 0) (< idx (nelisp-buffer-size b))
-         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (idx (1- (or pos (nelisp-buffer-pend b) (1+ blen)))))
+    (and (>= idx 0) (< idx (nelisp-buffer-len b))
+         (if (< idx blen)
+             (aref (nelisp-buffer-before-gap b) idx)
+           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 (defun nelisp-char-before (&optional pos buf)
   "Return the character before POS (default point) in BUF, or nil.
-Doc 204 P1 -- no body for this existed in either copy before; written
-in the same shape as `nelisp-char-after' just above, one index earlier
-(the character before POS sits at POS - 2 in the 0-based string)."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (p (or pos (nelisp-point b)))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
-         (idx (- p 2)))
-    (and (>= idx 0) (< idx (nelisp-buffer-size b))
-         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+The character before POS sits at POS - 2 in the 0-based string."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (idx (- (or pos (nelisp-buffer-pend b) (1+ blen)) 2)))
+    (and (>= idx 0) (< idx (nelisp-buffer-len b))
+         (if (< idx blen)
+             (aref (nelisp-buffer-before-gap b) idx)
+           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 ;;; Marker / overlay / text-property shift helpers -------------------
 ;;
@@ -492,25 +500,16 @@ shift endpoints past END backwards by (END - START)."
 
 (defun nelisp-goto-char (pos &optional buf)
   "Move point to POS in BUF.  POS is clamped into [point-min,
-point-max] per Emacs semantics.  Records the move in
-`nelisp-buffer--pending-point' -- O(1) -- instead of physically
-re-splitting `before-gap'/`after-gap': with plain (immutable) strings,
-producing a new `before-gap' of length K always costs O(K) via
-`concat'/`substring', REGARDLESS of how much of that K is actually
-new, so even moving the gap by one character costs O(current
-position); a `search-forward' loop calling this once per match paid
-that cost every match.  See the PERF block comment above
-`nelisp-buffer--text-cache' for the measurement and full rationale.
-Does not touch `nelisp-buffer--tick': the concatenated text is
-unchanged, only which position a later `nelisp-insert' settles to."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (lo (nelisp-point-min b))
-         (hi (nelisp-point-max b))
-         (clamped (max lo (min hi pos)))
-         (physical (1+ (nelisp-buffer--before-length b))))
-    (if (= clamped physical)
-        (remhash b nelisp-buffer--pending-point)
-      (puthash b clamped nelisp-buffer--pending-point))
+point-max] per Emacs semantics.  Records the move in the PEND slot --
+O(1) -- instead of physically re-splitting `before-gap'/`after-gap'.
+Does not bump the tick: the concatenated text is unchanged."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (clamped (max (or (nelisp-buffer-narrow-start b) 1)
+                       (min (or (nelisp-buffer-narrow-end b)
+                                (1+ (nelisp-buffer-len b)))
+                            pos))))
+    (setf (nelisp-buffer-pend b)
+          (if (= clamped (1+ (nelisp-buffer-blen b))) nil clamped))
     clamped))
 
 (defun nelisp-insert (text &optional buf)
@@ -518,22 +517,25 @@ unchanged, only which position a later `nelisp-insert' settles to."
 Markers / overlays / text-property intervals at or past point
 advance by the length of TEXT; anything strictly before point is
 untouched.  Settles any pending `goto-char' first (see
-`nelisp-buffer--settle'): this is the one place that genuinely needs
-`before-gap' to already end exactly at point, since it appends TEXT
-straight onto it."
+`nelisp-buffer--settle'): the gap must sit at point.  TEXT is then
+queued in the INS slot and joined to `before-gap' lazily, so a run of
+inserts costs one concat."
   (unless (stringp text)
     (signal 'wrong-type-argument (list 'stringp text)))
-  (let ((b (nelisp-buffer--ambient buf)))
-    (nelisp-buffer--settle b)
-    (let* ((before (nelisp-buffer-before-gap b))
-           (at (1+ (length before)))
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (when (nelisp-buffer-pend b)
+      (nelisp-buffer--settle b))
+    (let* ((blen (nelisp-buffer-blen b))
+           (at (1+ blen))
            (n (length text)))
-      (setf (nelisp-buffer-before-gap b) (concat before text))
+      (setf (nelisp-buffer-ins b) (cons text (nelisp-buffer-ins b)))
+      (setf (nelisp-buffer-blen b) (+ blen n))
+      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
       (when (nelisp-buffer-narrow-end b)
         (setf (nelisp-buffer-narrow-end b)
               (+ (nelisp-buffer-narrow-end b) n)))
       (setf (nelisp-buffer-modified b) t)
-      (nelisp-buffer--bump-tick b)
+      (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
       ;; Empty metadata is the common case; skip the interpreted helpers then.
       (when (nelisp-buffer-markers b)
         (nelisp-buffer--shift-markers-on-insert b at n))
@@ -544,42 +546,62 @@ straight onto it."
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
-  "Delete the text between 1-based START and END in BUF.
-END is exclusive per Emacs convention.  Signals `args-out-of-range'
-if the range is inverted or outside the buffer."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (size (nelisp-buffer-size b))
-         (point-before (nelisp-point b))
-         (lo 1)
-         (hi (1+ size))
+  "Delete the text between 1-based START and END (exclusive) in BUF."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (len (nelisp-buffer-len b))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (point-before (or (nelisp-buffer-pend b) (1+ blen)))
          (s (min start end))
          (e (max start end)))
-    (when (or (< s lo) (> e hi))
+    (when (or (< s 1) (> e (1+ len)))
       (signal 'args-out-of-range (list start end)))
-    (let* ((total (nelisp-buffer-string b))
-           (si (1- s))
+    (let* ((si (1- s))
            (ei (1- e))
            (delta (- e s))
            (old-min (nelisp-buffer-narrow-start b))
            (old-max (nelisp-buffer-narrow-end b))
            (new-point (cond ((<= point-before s) point-before)
                             ((>= point-before e) (- point-before delta))
-                            (t s)))
-           (map-position (lambda (position)
-                           (cond ((<= position s) position)
-                                 ((>= position e) (- position delta))
-                                 (t s)))))
-      (setf (nelisp-buffer-before-gap b) (substring total 0 si))
-      (setf (nelisp-buffer-after-gap b) (substring total ei))
+                            (t s))))
+      ;; Cut [si, ei) out of whichever gap string holds it; only the
+      ;; string(s) touching the cut are copied.
+      (cond
+       ((<= ei blen)
+        (let ((before (nelisp-buffer-before-gap b)))
+          (setf (nelisp-buffer-before-gap b)
+                (concat (substring before 0 si) (substring before ei)))
+          (setf (nelisp-buffer-blen b) (- blen delta))))
+       ((>= si blen)
+        (let ((after (nelisp-buffer-after-gap b)))
+          (setf (nelisp-buffer-after-gap b)
+                (concat (substring after 0 (- si blen))
+                        (substring after (- ei blen))))))
+       (t
+        (setf (nelisp-buffer-before-gap b)
+              (substring (nelisp-buffer-before-gap b) 0 si))
+        (setf (nelisp-buffer-after-gap b)
+              (substring (nelisp-buffer-after-gap b) (- ei blen)))
+        (setf (nelisp-buffer-blen b) si)))
+      (setf (nelisp-buffer-len b) (- len delta))
       (when old-min
-        (setf (nelisp-buffer-narrow-start b) (funcall map-position old-min)))
+        (setf (nelisp-buffer-narrow-start b)
+              (cond ((<= old-min s) old-min)
+                    ((>= old-min e) (- old-min delta))
+                    (t s))))
       (when old-max
-        (setf (nelisp-buffer-narrow-end b) (funcall map-position old-max)))
+        (setf (nelisp-buffer-narrow-end b)
+              (cond ((<= old-max s) old-max)
+                    ((>= old-max e) (- old-max delta))
+                    (t s))))
       (setf (nelisp-buffer-modified b) t)
-      (nelisp-buffer--bump-tick b)
-      (nelisp-buffer--shift-markers-on-delete b s e)
-      (nelisp-buffer--shift-overlays-on-delete b s e)
-      (nelisp-buffer--shift-text-properties-on-delete b s e)
+      (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
+      (when (nelisp-buffer-markers b)
+        (nelisp-buffer--shift-markers-on-delete b s e))
+      (when (nelisp-buffer-overlays b)
+        (nelisp-buffer--shift-overlays-on-delete b s e))
+      (when (nelisp-buffer-text-properties b)
+        (nelisp-buffer--shift-text-properties-on-delete b s e))
       (nelisp-goto-char new-point b)))
   nil)
 
@@ -588,14 +610,17 @@ if the range is inverted or outside the buffer."
   (let ((b (nelisp-buffer--ambient buf)))
     (setf (nelisp-buffer-before-gap b) "")
     (setf (nelisp-buffer-after-gap b) "")
+    (setf (nelisp-buffer-ins b) nil)
+    (setf (nelisp-buffer-blen b) 0)
+    (setf (nelisp-buffer-len b) 0)
     (setf (nelisp-buffer-narrow-start b) nil)
     (setf (nelisp-buffer-narrow-end b) nil)
     (setf (nelisp-buffer-modified b) t)
     (nelisp-buffer--bump-tick b)
     ;; A pending point from before the erase would otherwise be read back
     ;; by `nelisp-point' as if still valid -- out of range for the now-
-    ;; empty buffer, since `before-gap'/`after-gap' just went to "".
-    (remhash b nelisp-buffer--pending-point)
+    ;; empty buffer.
+    (setf (nelisp-buffer-pend b) nil)
     (dolist (m (nelisp-buffer-markers b))
       (when (nelisp-marker-p m)
         (setf (nelisp-marker-position m) 1)))

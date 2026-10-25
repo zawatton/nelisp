@@ -930,6 +930,8 @@ check is `b.cs fail' straight after the mmap `svc #0x80'."
     (should (nelisp-standalone--reader-ffi-live-p))
     (should (equal imports
                    '("toupper" "tolower" "sqrt" "pow" "sin" "cos"
+                     "exp" "log" "log10" "log2" "tan" "asin" "acos" "atan"
+                     "atan2" "floor" "ceil" "trunc" "rint"
                      "hypot" "ldexp")))
     (should-not (member "gnutls_global_init" imports))
     ;; The table's sqrt signature must survive into this exact Win64 path;
@@ -3020,12 +3022,13 @@ without the async core and process adapter that define the standard names."
     (if (member (car contract)
                 '("nelisp--declare-local-special"
                   "nelisp--native-pin-copy" "nelisp--native-pin-eq-slots"
-                  "nelisp--native-unbox-reference" "ptr-call"))
+                  "nelisp--native-unbox-reference" "ptr-call" "nelisp--pow"))
         ;; These private reader bridges have no Emacs subr counterpart.  Their
         ;; accepted/rejected calls are exercised by native runtime suites.
         (should (= (cdr contract)
                    (cond ((equal (car contract) "ptr-call") 7)
-                         ((equal (car contract) "nelisp--native-pin-eq-slots")
+                         ((member (car contract)
+                                  '("nelisp--native-pin-eq-slots" "nelisp--pow"))
                           2)
                          ((member (car contract)
                                   '("nelisp--native-pin-copy"

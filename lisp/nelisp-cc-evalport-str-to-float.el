@@ -512,6 +512,34 @@
                                        (up0 (nlf_t91_round_remainder q0 a b cap))
                                        (sg (+ q0 up0)))
                                   (nlf_t91_write_subnormal slot sg neg)))))))))))
+                ;; num1: fast path before the bignum long division.  MANT is the
+                ;; decimal significand (at most 18 digits, so below 2^60 and
+                ;; non-negative as an i64) and NET the decimal exponent.  Returns
+                ;; 1 with the correctly rounded double written to SLOT, or 0 to
+                ;; leave the conversion to the exact bignum path.  The sources
+                ;; of the result bits, in order: zero; Clinger (an exact integer
+                ;; below 2^53 scaled by an exact power of ten up to 10^22, one
+                ;; IEEE rounding); Eisel-Lemire (nl_lem_compute, which declines
+                ;; the halfway ambiguity); the exact 128/256-bit tables for the
+                ;; exponents they cover.  Exact halfway cases exist only for
+                ;; net in [-27,55]; there Eisel-Lemire as written here rounds a
+                ;; tie the wrong way and nlf_exact_fallback segfaulted in the
+                ;; reader (build b2), so those go to the bignum path; outside
+                ;; it Eisel-Lemire is used.
+                (defun nlf_fast (mant net neg slot)
+                  (let* ((sign (if (= neg 1) (shl 1 63) 0)))
+                    (if (= mant 0)
+                        (seq (nl_write_float_bits slot sign) 1)
+                      (if (and (< mant 9007199254740992)
+                               (and (>= net -22) (<= net 22)))
+                          (let* ((pb (nl_stf_pow10hi (if (>= net 0) net (- 0 net))))
+                                 (rb (if (>= net 0)
+                                         (f64-bits (f64-mul (i64-to-f64 mant) (bits-to-f64 pb)))
+                                       (f64-bits (f64-div (i64-to-f64 mant) (bits-to-f64 pb))))))
+                            (seq (nl_write_float_bits slot (logior sign rb)) 1))
+                        (if (and (>= net -27) (<= net 55))
+                            0
+                          (nl_lem_compute mant net neg slot))))))
                 (defun nl_str_to_float (bytes_ptr len slot)
                   (if (= len 0) (nl_stf_write_nil slot)
                     (let* ((b0 (heap-native-read-u8 bytes_ptr 0))
@@ -532,12 +560,17 @@
                                (if (= (nlf_t91_parse bytes_ptr len mem 1024 meta start) 1)
                                    (let ((net (+ (heap-read-u64 meta 24)
                                                  (- 0 (heap-read-u64 meta 8)))))
+                                     (if (and (<= (heap-read-u64 meta 16) 18)
+                                              (or (= (heap-read-u64 meta 16) 0)
+                                                  (<= net 308))
+                                              (= (nlf_fast (heap-read-u64 mem 0) net neg slot) 1))
+                                         1
                                      (if (> net 308)
                                          (nlf_t91_write_inf slot neg)
                                        (nlf_t91_convert
                                         mem 1024 slot neg net
                                         (heap-read-u64 meta 8)
-                                        (heap-read-u64 meta 16) mem)))
+                                        (heap-read-u64 meta 16) mem))))
                                  (nl_stf_write_nil slot))))))))))))
 
 ;; The approximation path can double-round when the decimal mantissa exceeds

@@ -1,0 +1,56 @@
+#+TITLE: Source interpreter per-form cost (B-interp stage 2-3) (interp3)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay = v14 sources; baseline binary integ-1031 (v14).
+#+NOTE: 2026-10-30 final (build 2). Criteria text unchanged. Stage 2 "read the subr descriptor from the function cell" had already landed in interp2 (nl_eic_subr_call_w); this lane added the setq and let arms (nl_eic_setq_w, nl_eic_let_w) to nl_eval_inner_cons_w.
+#+NOTE: S1.1 "a let with no special variables skips the specpdl work (cached per let form)": the per-form cache was NOT built. The work skipped is frame-state dependent (local declarations), not form dependent, and its invalidation writers (nl_sym_set_special, bf_declare_local_status, bf_mark_declared_special) belong to other lanes; instead each let walks the frames once (nl_eic_let_scope_clean) and reads each variable's header. See REPORT.md.
+#+NOTE: S1.2 corpus excludes four cases where v14 already differs from GNU before this lane (setq of a non-symbol: word ABI failure message; setq / let of an int-forwarded built-in with a non-integer: no wrong-type-argument); GNU 31.1 itself crashes on a setq of a keyword reached through a function frame, so that one case is skipped in the function-frame pass.
+#+NOTE: S3.2 names CPU 7, but heavy-run.sh pins its jobs to CPUs 0-7 and 16-23 so CPU 7 is never idle; per the coordinator the paired timing was done on CPU 13 (--cpu 13). The earlier CPU 7 run is kept in target/interp3/paired-cpu7/ (ratios 0.807, 0.857, 0.871; same direction).
+#+NOTE: S2.1 two dedicated builds were run (build 1 for qualification, build 2 added nl_eic_let_values_w and an inlined unbound test in m5_fx_eval_forms); the evidence is build 2, the final tree.
+* S1 Source
+** S1.1 Evaluating a builtin form in the source interpreter goes through one dispatch with the subr descriptor read from the function cell (no name lookup per call), lexical setq is a direct store, and a let with no special variables skips the specpdl work (cached per let form), following ../resume-4943-20261024/target/strategy/B-interp/REPORT.md stages 2-3; each change compared to GNU's eval_sub/Flet/Fsetq; red/green
+evidence: target/interp3/ert-red.log sha256=e06249729fe6cef007c97b9fb371554cc062da8cc1ac32fb8b0b2512117974ff
+evidence: target/interp3/ert-green.log sha256=81dc2b67a9ab66ba0cce046058866efca3bab1c0aeea0fd877d200b0346aee67
+evidence: target/interp3/ert-mutant1.log sha256=4477a32ce6045e30ce4c8596375702cb79c0adb4ac55331715a294c6e88e8d0f
+evidence: target/interp3/ert-mutant2.log sha256=8961cb8890fe19ac2450689d12083335c4b7f35f35109bdbe723be1ff6355f21
+evidence: target/interp3/ert-mutant3.log sha256=d0520e65079d64738abb77ab15c84fc3ad3bc691838c7f292aa89692329de61f
+evidence: target/interp3/ir-let.json sha256=01f785456336221d3e653e227b0b654df1ef9d230111c6ac072104c3ea8b28b3
+cmd: grep -q 'Ran 13 tests, 13 results as expected' target/interp3/ert-green.log && grep -q 'Ran 13 tests, 0 results as expected, 13 unexpected' target/interp3/ert-red.log && grep -q 'Missing interpreter definition nl_eic_let_w' target/interp3/ert-red.log
+cmd: for m in 1 2 3; do grep -q 'Ran 13 tests, 12 results as expected, 1 unexpected' target/interp3/ert-mutant$m.log || exit 1; done
+cmd: grep -q '(defun nl_eic_setq_store_w (tail env w)' scripts/nelisp-standalone-build.el && grep -q '(defun nl_eic_let_run_w (tail env n)' scripts/nelisp-standalone-build.el && grep -q '(nl_eic_let_w form_ptr head_ptr tail_ptr env)' scripts/nelisp-standalone-build.el && grep -q 'passed .*i3-dispatch-routes-setq-and-let-before-the-special-dispatch' target/interp3/ert-green.log
+cmd: python3 target/interp3/criteria.py let
+cmd: ! python3 target/interp3/criteria.py let v14
+cmd: grep -q 'eval_sub' target/codex/REPORT.md && grep -q '^## Cuts against GNU eval_sub, Flet and Fsetq' target/codex/REPORT.md
+** S1.2 Semantics against GNU for the interpreter corpus: special vs lexical let, setq of special/lexical/constant, macro expansion, debug-on-error/backtrace frames, redefinition of a builtin between evaluations, max-lisp-eval-depth; existing interpreter corpora (evalfast, interp-primitives, w1interp) unchanged
+evidence: target/interp3/corpus-gnu.out sha256=b4957d2e58760668efcbbe022f53a5f1cda68e6b1061e9c91944edde70f20947
+evidence: target/interp3/corpus-v14.out sha256=b4957d2e58760668efcbbe022f53a5f1cda68e6b1061e9c91944edde70f20947
+evidence: target/interp3/corpus-cand.out sha256=b4957d2e58760668efcbbe022f53a5f1cda68e6b1061e9c91944edde70f20947
+evidence: target/interp3/ert-existing.log sha256=4bec6a7d119c400b85b1b22b90df7f52a78bac8f0ff386e3c0b8176efa9f8b10
+cmd: python3 target/interp3/criteria.py corpus
+cmd: ! python3 target/interp3/criteria.py corpus corrupt
+cmd: cmp -s target/interp3/nelisp-interp2-corpus-2.out target/interp3/nelisp-interp2-corpus-3.out && cmp -s target/interp3/nelisp-interp-primitives-corpus-2.out target/interp3/nelisp-interp-primitives-corpus-3.out
+cmd: grep -q 'Ran 58 tests, 58 results as expected' target/interp3/ert-existing.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+evidence: target/interp3/build2.log sha256=771e80906680484a85e3a5f7cab8c5b856ea2be5c4eebee5419670cb038d2ad5
+evidence: target/interp3/prelink-closure.json sha256=d21d566d518cf6eb90df78ea8e3de0dd748ae05cf8d59b931042800dc6944285
+cmd: grep -q '^BUILD rc=0' target/interp3/build2.log && test -x target/interp3-build/dynamic/nelisp-dynamic
+cmd: for f in scripts/nelisp-standalone-build.el lisp/nelisp-aot-compiler.el; do cmp -s $f target/interp3-build/dynamic/src/$f || exit 1; done
+cmd: python3 target/interp3/criteria.py prelink
+cmd: python3 -c "import re;n=[int(x) for x in re.findall(r'root-evidence. nodes=(\d+)',open('target/interp3/build2.log').read())];assert n and max(n)<=98304,n"
+cmd: grep -q 'passed .*w2s-windows-forms-still-carry-no-data-blob' target/interp3/ert-existing.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+evidence: target/interp3/fixtures/report.json sha256=33ad40801027fb084efac3c2280e3c3a72db208c9801a22c4dfd37f6a7ab9606
+evidence: target/interp3/wincheck.log sha256=354420c87a7c82804140f349514658aa1dd9405e7b075bd9ff594eda2fce8f59
+cmd: python3 target/interp3/criteria.py fixtures
+cmd: grep -q 'closurevm: PASS' target/interp3/wincheck.log && grep -q 'switch corpus: PASS' target/interp3/wincheck.log && grep -q 'features: PASS' target/interp3/wincheck.log && grep -q '^rc=0' target/interp3/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v14 on r5-sum-base-toplevel, r5-aref-rem-toplevel and r5-aset-rem-toplevel (pmcrun2 two-N), results checked; bytecode rows unchanged
+evidence: target/interp3/ir.json sha256=208cb96013aeb9a373189815a4d3a99815f242e0b6e21e3fd05db64f24213a94
+cmd: python3 target/interp3/criteria.py ir
+cmd: ! python3 target/interp3/criteria.py ir v14
+** S3.2 Paired elapsed (CPU 7) on those three rows plus the plain sum loop vs v14 and GNU
+evidence: target/interp3/paired/r5-aref-rem-toplevel/report.json sha256=193c20a4d277e254374032eda23a57b06062d36e55fac83296720657ce075a25
+evidence: target/interp3/paired/r5-aset-rem-toplevel/report.json sha256=c8f27f0c9e7be76e93a8bea7520a98b18f7f93545dc8af75eb28448b9480cb4a
+evidence: target/interp3/paired/r5-sum-base-toplevel/report.json sha256=8887b76b34e4dcc1cd87ce0bb19d1072d94eb22ee62271d1532ab894a868c3ea
+evidence: target/interp3/paired/reg-sum-bc/report.json sha256=9e8435deee424a308c0c582df54a53330e6d66cb6160379ed8c8e11e54ca8b71
+cmd: python3 target/interp3/criteria.py elapsed
+cmd: ! python3 target/interp3/criteria.py elapsed v14

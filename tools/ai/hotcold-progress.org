@@ -1,0 +1,29 @@
+#+TITLE: Hot/cold block layout in the hot runtime functions (hotcold)
+#+NOTE: Created 2026-10-29 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay (v13 sources + htmake + smap2).
+* S1 Source
+** S1.1 The compiler places blocks that are cold by construction (decline/slow paths, signal/error exits, the out-of-line String branch of guarded slot reads, GC-poll slow paths, overflow fallbacks) after the hot code of the function, for at least wf_bytecode_w_fast_run and the functions with an alignhot entry, with branch sense chosen so the hot path falls through; semantics unchanged (IR-level and emitted-code tests, red/green)
+#+NOTE: Cold arms: loop-guard decline stores (effect if, either arm) and the nl_string_read64 call arm of value-position guarded reads; they are queued per defun and emitted after the epilogue ret and the internal entry. 81 arms in the host compile of fast_run. Red = seed compiler (5 of 8 fail), green = 8 tests, negative control = flipped branch polarity makes the e2e tests fail. Signal exits, GC-poll slow paths and overflow fallbacks of fast_run are not separate IR shapes here (they are the decline stores or calls to other units), so only the two shapes above are moved. Other alignhot-entry functions (execute_frame, w_function, ...) were NOT measured for deferred arms: the site gate needs a guarded while loop (declines) or a nl_string_read64 call, and prefix-cache facts absent, so many of them may defer nothing; the criterion is met on fast_run only.
+cmd: grep -q "Ran 8 tests, 3 results as expected, 5 unexpected" target/hotcold/red-1.log
+cmd: grep -q "Ran 8 tests, 8 results as expected, 0 unexpected" target/hotcold/green-final.log
+cmd: grep -q "Ran 8 tests, 6 results as expected, 2 unexpected" target/hotcold/neg-polarity.log
+cmd: grep -q "nelisp-vmreg: wf_bytecode_w_fast_run admit" target/hotcold-build/dynamic/build.log
+** S1.2 The hot path of reg-sum-bc, r7-funcall-bc and r3-call in wf_bytecode_w_fast_run spans fewer 64-byte code windows than in v13 (static count from the emitted code and its symbol map), and the layout no longer moves when unrelated cold code in the function grows (a control: add dead cold code and recount)
+#+NOTE: Windows = 64-byte windows holding an instruction executed at least 1 percent as often as the hottest one, from callgrind --dump-instr on the built binaries (target/hotcold/windows.txt), not a purely static count: the emitted code alone cannot say which blocks are hot. Control = ERT test that grows the cold arm by 40 stores and checks every hot label offset is unchanged (and moves on the seed layout).
+cmd: python3 -I target/hotcold/s12.py
+cmd: grep -q "hot-labels-do-not-move-when-cold-code-grows" target/hotcold/green-final.log && grep -q "seed-layout-moves-with-cold-code" target/hotcold/green-final.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: Build rc=0 in 1036 s; prelink gates run inside the build. Compiler-side change only.
+cmd: grep -q "^BUILD rc=0" target/hotcold-build/dynamic/build.log
+cmd: test -x target/hotcold-build/dynamic/nelisp-dynamic
+cmd: grep -q "WIN-OK blobs=0" target/hotcold/winmode.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q "weak 24/24 PASS" target/hotcold/fixtures.log && grep -q "GNU 56/56 PASS" target/hotcold/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/hotcold/fixtures.log && grep -q "buffer 21/21 PASS" target/hotcold/fixtures.log
+cmd: [ $(grep -c PASS target/hotcold/wincheck.log) -ge 3 ] && ! grep -q FAIL target/hotcold/wincheck.log
+* S3 End to end
+** S3.1 Op-cache accesses (pmcrun2 ochit:20000038F) and cycles per step reduced vs v13 on reg-sum-bc, r7-funcall-bc and r3-call at equal instructions (two-N), results checked
+#+NOTE: KNOWN RED: r3-call is not reduced (cycles 1205 -> 1654 per step at equal instructions, deredirects 0.27M -> 4.3M, L2 BTB 1.6M -> 16M per 1M steps); reg-sum-bc and r7-funcall-bc are reduced. Kept as a failing cmd on purpose. fast_run starts at 48 mod 64 in v13 and 32 mod 64 in this build (unit start is not 64-aligned in the link; alignhot :unit-tail is not wired in the generator).
+cmd: python3 -I target/hotcold/s31.py
+** S3.2 Paired elapsed (CPU 14) on reg-sum-bc, r7-funcall-bc, r3-call, r3-pcase, r3-mix and the plain sum loop vs v13 and GNU; geomean of those rows reported
+#+NOTE: Report-type criterion: the table with the geomean is target/hotcold/geomean.txt. The geomean (cand/base 0.931) is dominated by reg-sum-bc; r3-call regresses by 39 percent.
+cmd: python3 -I target/hotcold/s32.py

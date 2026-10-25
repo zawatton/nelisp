@@ -262,22 +262,23 @@ adjusts those positions before calling this function."
       (when (and (not (eq buffer source)) (buffer-live-p buffer))
         (let ((position (nelisp-point buffer))
               (ext (emacs-buffer--ensure-text-property-ext buffer)))
+          (when (nelisp-buffer-ins source) (nelisp-buffer--settle source t))
           (setf (nelisp-buffer-before-gap buffer)
                 (nelisp-buffer-before-gap source))
           (setf (nelisp-buffer-after-gap buffer)
                 (nelisp-buffer-after-gap source))
+          (setf (nelisp-buffer-ins buffer) nil
+                (nelisp-buffer-blen buffer) (nelisp-buffer-blen source)
+                (nelisp-buffer-len buffer) (nelisp-buffer-len source))
           (setf (nelisp-buffer-text-properties buffer)
                 (nelisp-buffer-text-properties source))
           (setf (nelisp-buffer-modified buffer) (nelisp-buffer-modified source))
           (when source-ext
             (setf (emacs-buffer--ext-text-props ext)
                   (emacs-buffer--ext-text-props source-ext)))
-          (puthash buffer (gethash source nelisp-buffer--tick 0)
-                   nelisp-buffer--tick)
-          (remhash buffer nelisp-buffer--text-cache)
-          (remhash buffer nelisp-buffer--blen-cache)
-          (remhash buffer nelisp-buffer--size-cache)
-          (remhash buffer nelisp-buffer--pending-point)
+          (setf (nelisp-buffer-tick buffer) (nelisp-buffer-tick source)
+                (nelisp-buffer-tcache buffer) nil
+                (nelisp-buffer-pend buffer) nil)
           (nelisp-goto-char position buffer))))))
 
 (defun emacs-buffer-builtins--indirect-edit (operation orig &rest args)
@@ -329,7 +330,7 @@ adjusts those positions before calling this function."
                 (nelisp-buffer--shift-markers-on-delete peer start end)
                 (nelisp-buffer--shift-overlays-on-delete peer start end))
               ;; Record the mapped point without clamping to the old text size.
-              (puthash peer position nelisp-buffer--pending-point)))
+              (setf (nelisp-buffer-pend peer) position)))
           (emacs-buffer-builtins--share-text buffer))))))
 
 (defvar combine-after-change-calls nil
@@ -513,14 +514,18 @@ buffer creation and killing hooks in the new buffer."
                (ext (emacs-buffer--ensure-text-property-ext buffer))
                (base-ext (emacs-buffer--ensure-text-property-ext base)))
           (setf (emacs-buffer--ext-base-buffer ext) root)
+          (when (nelisp-buffer-ins base) (nelisp-buffer--settle base t))
           (setf (nelisp-buffer-before-gap buffer) (nelisp-buffer-before-gap base))
           (setf (nelisp-buffer-after-gap buffer) (nelisp-buffer-after-gap base))
+          (setf (nelisp-buffer-ins buffer) nil
+                (nelisp-buffer-blen buffer) (nelisp-buffer-blen base)
+                (nelisp-buffer-len buffer) (nelisp-buffer-len base))
           (setf (nelisp-buffer-narrow-start buffer) (nelisp-buffer-narrow-start base))
           (setf (nelisp-buffer-narrow-end buffer) (nelisp-buffer-narrow-end base))
           (setf (nelisp-buffer-text-properties buffer) (nelisp-buffer-text-properties base))
           (setf (nelisp-buffer-modified buffer) (nelisp-buffer-modified base))
           (setf (emacs-buffer--ext-text-props ext) (emacs-buffer--ext-text-props base-ext))
-          (puthash buffer (gethash base nelisp-buffer--tick 0) nelisp-buffer--tick)
+          (setf (nelisp-buffer-tick buffer) (nelisp-buffer-tick base))
           (nelisp-goto-char (nelisp-point base) buffer)
           (when clone
             (when (eq base (current-buffer))
@@ -1729,7 +1734,7 @@ buffers are returned regardless."
     (unless (bufferp buffer)
       (signal 'wrong-type-argument (list 'bufferp buffer)))
     (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
-        (1+ (gethash buffer nelisp-buffer--tick 0))
+        (1+ (nelisp-buffer-tick buffer))
       (1+ (nelisp-ec-buffer-text-tick buffer)))))
 
 ;;;; --- positions ---------------------------------------------------------
@@ -1886,7 +1891,10 @@ recording replacement undo."
                     (substring replacement 0 (1- saved-point)))
               (setf (nelisp-buffer-after-gap buffer)
                     (substring replacement (1- saved-point)))
-              (remhash buffer nelisp-buffer--pending-point)
+              (setf (nelisp-buffer-blen buffer) (1- saved-point)
+                    (nelisp-buffer-len buffer) (length replacement)
+                    (nelisp-buffer-ins buffer) nil
+                    (nelisp-buffer-pend buffer) nil)
               (nelisp-buffer--bump-tick buffer)
               (setf (nelisp-buffer-modified buffer) t)
               (emacs-buffer-builtins--share-text buffer)

@@ -360,11 +360,17 @@ ACC and BYTES are unibyte-strings or vectors; BYTES may be nil."
                   (t (nelisp-link--vec->ubstring bytes)))))
     (concat a b)))
 
+(defconst nelisp-link-x86-text-alignment 64
+  "Start alignment of every x86-64 text unit and of the linked text.
+The generator (`nelisp-aot-compiler-hot-alignment') aligns hot entries
+relative to the unit start (:entry 64) and pads unit ends to 64 (:unit-tail),
+so the entries are absolutely 64-aligned only if every unit start is.")
+
 (defun nelisp-link--unit-section-alignment (section-name machine)
   "Return the required start alignment for SECTION-NAME on MACHINE."
   (if (eq section-name 'text)
       (cond ((eq machine 'aarch64) 4)
-            ((memq machine '(x86_64 62)) 16)
+            ((memq machine '(x86_64 62)) nelisp-link-x86-text-alignment)
             (t 1))
     1))
 
@@ -621,7 +627,8 @@ Returns 0 if the section entry is absent."
 COMBINED is the alist returned by `nelisp-link-combine-sections'.
 BASE-VA defaults to `nelisp-link--default-base-va' (= #x400000),
 PAGE-SIZE defaults to `nelisp-link--default-page-size' (= 4 KB).
-TEXT-ALIGNMENT defaults to 1; x86-64 callers pass 16, matching the writer.
+TEXT-ALIGNMENT defaults to 1; x86-64 callers pass
+`nelisp-link-x86-text-alignment', matching the writer.
 Returns an alist `((SECTION-NAME . VA) ...)' covering `text',
 `rodata', `data', `bss'.  Placement strategy mirrors
 `nelisp-elf--build-rich': Ehdr + Phdrs precede `.text', `.rodata'
@@ -695,6 +702,41 @@ deterministic order (= sorted by name)."
           ((stringp b) b)
           (t (nelisp-link--vec->ubstring b)))))
 
+(defconst nelisp-link-hot-entry-symbols
+  '("wf_bytecode_w_fast_run" "wf_bytecode_execute_frame" "wf_bytecode_w_function")
+  "Hot entries whose absolute address is asserted 64-aligned when present.")
+
+(defun nelisp-link--check-hot-alignment (units combined layout &optional symtab machine)
+  "Signal `nelisp-link-error' unless hot entries land 64-aligned absolutely.
+UNITS are the linked units (units without text are skipped); COMBINED and LAYOUT are the combined sections and section VA layout of a link.
+Every non-empty x86-64 text unit must start on a multiple of
+`nelisp-link-x86-text-alignment' (the compiler aligns :entry 64 relative to its
+unit start), and each of `nelisp-link-hot-entry-symbols' found in SYMTAB must
+have an address that is 0 mod 64.  Other machines are not checked."
+  (when (memq (or machine 'x86_64) '(x86_64 62))
+    (let* ((n nelisp-link-x86-text-alignment)
+           (text-va (cdr (assq 'text layout)))
+           (offs (plist-get (cdr (assq 'text combined)) :offsets)))
+      (unless (zerop (mod text-va n))
+        (signal 'nelisp-link-error (list :text-start-misaligned text-va n)))
+      (dolist (cell offs)
+        (unless (or (zerop (mod (+ text-va (cdr cell)) n))
+                    (let ((u (cl-find (car cell) units
+                                      :key (lambda (x) (plist-get x :name))
+                                      :test #'equal)))
+                      (zerop (nelisp-link--section-length
+                              (nelisp-link--unit-section u 'text) 'text))))
+          (signal 'nelisp-link-error
+                  (list :unit-start-misaligned (car cell)
+                        (+ text-va (cdr cell)) n))))
+      (when symtab
+        (dolist (name nelisp-link-hot-entry-symbols)
+          (let ((rec (nelisp-link-symtab-lookup symtab name)))
+            (when (and rec (not (zerop (mod (plist-get rec :value) 64))))
+              (signal 'nelisp-link-error
+                      (list :hot-entry-misaligned name
+                            (plist-get rec :value))))))))))
+
 (defun nelisp-link-units (file-path units
                                     &optional entry-sym section-layout
                                     machine entry-symbol-only)
@@ -717,7 +759,8 @@ relocs are fully resolved into the bytes already, so the writer
 must NOT emit a `.rela.text' section).  Returns FILE-PATH."
   (require 'nelisp-elf-write)
   (let* ((mach (or machine 'x86_64))
-         (text-alignment (if (memq mach '(x86_64 62)) 16 1))
+         (text-alignment (if (memq mach '(x86_64 62))
+                             nelisp-link-x86-text-alignment 1))
          (combined (nelisp-link-combine-sections units mach))
          (layout (or section-layout
                      (nelisp-link--compute-layout
@@ -725,6 +768,7 @@ must NOT emit a `.rela.text' section).  Returns FILE-PATH."
          (link-result (nelisp-link-units-2pass units layout mach))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
+         (_check (nelisp-link--check-hot-alignment units combined layout symtab mach))
          (symbols (nelisp-link--export-symtab symtab layout))
          (text (nelisp-link--bytes-or-empty bytes 'text))
          (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
@@ -923,6 +967,7 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
          (link-result (nelisp-link-units-2pass all-units layout machine))
          (bytes (plist-get link-result :bytes))
          (symtab (plist-get link-result :symtab))
+         (_check (nelisp-link--check-hot-alignment all-units combined layout symtab machine))
          (text (nelisp-link--bytes-or-empty bytes 'text))
          (rodata (nelisp-link--bytes-or-empty bytes 'rodata))
          (data (concat (nelisp-link--bytes-or-empty bytes 'data)
@@ -1045,6 +1090,7 @@ GOT + section VAs pinned here match the emitted bytes.  Returns FILE-PATH
                        (cons 'data   (plist-get lay :data-vaddr))
                        (cons 'bss    (plist-get lay :bss-vaddr))))
          (symtab (nelisp-link--collect-defined-symbols units combined layout)))
+    (nelisp-link--check-hot-alignment units combined layout symtab 'x86_64)
     (dolist (g got-alist)
       (nelisp-link-symtab-add
        symtab (nelisp-link-symbol (concat "__got_" (car g)) (cdr g))))

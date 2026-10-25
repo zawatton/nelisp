@@ -15,7 +15,14 @@
     (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
         (progn
           ;; Unicode titles can change byte width and character count.
-          (let* ((before (nelisp-buffer-before-gap buffer)) (index (1- position)))
+          (let* ((before (progn (when (nelisp-buffer-ins buffer)
+                                  (nelisp-buffer--settle buffer t))
+                                (nelisp-buffer-before-gap buffer)))
+                 (index (1- position)))
+            (when (and (/= delta 0) (< index (length before)))
+              (setf (nelisp-buffer-blen buffer) (+ (nelisp-buffer-blen buffer) delta)))
+            (unless (= delta 0)
+              (setf (nelisp-buffer-len buffer) (+ (nelisp-buffer-len buffer) delta)))
             (if (< index (length before))
                 (setf (nelisp-buffer-before-gap buffer)
                       (concat (substring before 0 index) replacement
@@ -28,9 +35,9 @@
           (unless (= delta 0)
             ;; GNU case conversion preserves marker positions even when a
             ;; title expands. Point still follows its converted character.
-            (let ((pending (gethash buffer nelisp-buffer--pending-point)))
+            (let ((pending (nelisp-buffer-pend buffer)))
               (when (and pending (> pending position))
-                (puthash buffer (+ pending delta) nelisp-buffer--pending-point)))
+                (setf (nelisp-buffer-pend buffer) (+ pending delta))))
             (when (and (nelisp-buffer-narrow-start buffer)
                        (> (nelisp-buffer-narrow-start buffer) position))
               (setf (nelisp-buffer-narrow-start buffer)

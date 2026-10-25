@@ -221,7 +221,10 @@ ANCESTORS prevents recursion through cyclic prefix maps."
                       (substring result 0 (1- saved-point)))
                 (setf (nelisp-buffer-after-gap buffer)
                       (substring result (1- saved-point)))
-                (remhash buffer nelisp-buffer--pending-point)
+                (setf (nelisp-buffer-blen buffer) (1- saved-point)
+                      (nelisp-buffer-len buffer) (length result)
+                      (nelisp-buffer-ins buffer) nil
+                      (nelisp-buffer-pend buffer) nil)
                 (nelisp-buffer--bump-tick buffer)
                 (setf (nelisp-buffer-modified buffer) t)
                 (when (fboundp 'emacs-buffer-builtins--share-text)

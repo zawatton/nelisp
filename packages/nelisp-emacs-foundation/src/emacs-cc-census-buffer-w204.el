@@ -178,7 +178,10 @@
           (substring replacement 0 (1- new-point)))
     (setf (nelisp-buffer-after-gap buffer)
           (substring replacement (1- new-point)))
-    (remhash buffer nelisp-buffer--pending-point)
+    (setf (nelisp-buffer-blen buffer) (1- new-point)
+          (nelisp-buffer-len buffer) (length replacement)
+          (nelisp-buffer-ins buffer) nil
+          (nelisp-buffer-pend buffer) nil)
     (nelisp-buffer--bump-tick buffer)
     (setf (nelisp-buffer-modified buffer) t)
     (when (fboundp 'emacs-buffer-builtins--share-text)

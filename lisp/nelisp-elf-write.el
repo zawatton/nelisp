@@ -953,7 +953,7 @@ Returns a plist of offsets/sizes/VAs + the .dynstr/.dynsym/.hash blobs +
                          (push (cons s (+ base plt-off (* i plt-stub-size))) m)
                          (setq i (1+ i)))
                        (nreverse m)))
-         (text-off (nelisp-elf--align-up (+ plt-off plt-sz) 16))
+         (text-off (nelisp-elf--align-up (+ plt-off plt-sz) 64))
          (text-vaddr (+ base text-off))
          (rodata-off (nelisp-elf--align-up (+ text-off text-size) 16))
          (rodata-vaddr (+ base rodata-off))

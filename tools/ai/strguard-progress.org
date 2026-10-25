@@ -1,0 +1,42 @@
+#+TITLE: Inline string-aware slot reads on every hot path (strguard)
+#+NOTE: Created 2026-10-29 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay (smap1, w3spec, interp2, hashres, primx, cbmaph, cgreg) = v13 sources; baseline binary integ-1030 (v13).
+* S1 Source
+** S1.1 The heap-accessor lowering stops emitting an out-of-line nl_string_read64 call where an inline tag test is equivalent, for every function that calls it on any of the 43 matrix rows (profiled on v13), either by extending the guarded list from measured callers or by a general rule with a size bound; the lowering stays semantically identical (red/green on a lowering unit test that compares outputs for String, view and raw operands)
+#+NOTE: Red log (seed, 2/5 fail) and green log (5/5). General rule chosen: every non-physical defun is guarded (cap 256 sites, 22 inline-limit exemptions). Alternative list-only patch: target/strguard/strguard-list.patch.
+cmd: sh -c 'ulimit -v 8388608; timeout 50 /usr/local/bin/emacs --batch -Q -L lisp -L test -l test/nelisp-heap-accessors-strguard-test.el -f ert-run-tests-batch-and-exit'
+evidence: target/strguard/logs/ert-seed.log sha256=25d80df0e2efd0d0d954fa8bfd7b7c0faa9d5d4d712d33b0a818f76036c04ffc
+evidence: target/strguard/logs/ert-new.log sha256=5df7e61b2095d7dea7e06be797187486066c9d15ef7ee25fdc2d0dbf876b0037
+evidence: target/strguard/strguard.patch sha256=084533612ae7a57771664ca20ad1e46fbc01499af2073a6741bf70d2b91208ca
+
+** S1.2 The same treatment is evaluated for the other out-of-line lowerings in nelisp-heap-accessors.el that hot rows call (string tag / name-eq / str-eq helpers), with per-helper call counts from v13 profiles; binary text growth reported and bounded (at most +1%)
+#+NOTE: Helpers nl_val_tag, nl_word_data, nl_word_payload evaluated per trip (diff2.json); no lowering change: their steady-state call counts are 0 and the pre-JIT counts are on non-String operands. Text growth +0.285% (limit 1%).
+cmd: python3 target/strguard/check.py s12
+evidence: target/strguard/prof/diff2.json sha256=a0f8537b382d75628aad5e80c4079b7623bb65ddb510790334077320660008d1
+
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: Windows data-blob: host ERT smap-table-unit-has-no-data-blob-on-any-target (all four targets); no Windows build was run (limitation).
+cmd: python3 target/strguard/check.py s21
+evidence: target/strguard-build/dynamic/build.log sha256=d98be87914f9bba7fbc253a4d9c6676987e04fa3f87b58a0b658ee4920f9fc88
+
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+evidence: target/strguard/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+evidence: target/strguard/logs/wincheck.log sha256=0444c641dea21beaea7248178452ba4dfa7e04e351ce5aaf5f726c52a254385e
+cmd: grep -q 'weak 24/24 PASS' target/strguard/logs/fixtures.log && grep -q 'GNU 56/56 PASS' target/strguard/logs/fixtures.log && grep -q 'AFRT 24/25; unchanged' target/strguard/logs/fixtures.log && grep -q 'buffer 21/21 PASS' target/strguard/logs/fixtures.log && ! grep -q FAIL target/strguard/logs/wincheck.log
+
+* S3 End to end
+** S3.1 Calls to nl_string_read64 (and any other helper changed) per trip reduced to near zero on r3-mix, r3-call, r7-funcall-bc, r7-gethash-eq-fix, r3-pcase and r4-car (callgrind or pmcrun2 two-N), results checked; reg-sum-bc unchanged
+#+NOTE: Callgrind two-N (3x trips) differences, results checked by the drivers. Steady-state instructions per trip (pmcrun2, hi/4 and hi) are identical on v13 and the new binary for all rows, i.e. the hot loops no longer reach nl_string_read64; the calls removed are in the pre-JIT/warm-up window of r3-call (28/trip) and r7-funcall-bc (6/trip).
+cmd: python3 target/strguard/check.py s31
+evidence: target/strguard/prof/diff2.json sha256=a0f8537b382d75628aad5e80c4079b7623bb65ddb510790334077320660008d1
+
+** S3.2 Paired elapsed (CPU 13) on those rows plus the plain sum loop vs v13 and GNU
+#+NOTE: Elapsed deltas (-5% .. +21%) occur with identical steady-state instruction counts (layout effects); r3-call +21% is reproduced (cycles +21.9% at equal instr, cyc.py). The list-only variant is in target/strguard/bench2.
+cmd: python3 target/strguard/check.py s32
+evidence: target/strguard/bench/reg-sum-bc/report.json sha256=72b1f354608fca9666e9a3e4e0f95fe43b2534722ef958405433a015c1aa31a4
+evidence: target/strguard/bench/r3-call/report.json sha256=321f6d0f2e694e29ac0c3044d20f371ab927c82da8b24023e0c003bf323408c6
+evidence: target/strguard/bench/r3-mix/report.json sha256=6eda6a01d0069866b39f0eb2b9b863fbd4e8d9f75c8b1a18a6ce03542652884f
+evidence: target/strguard/bench/r7-funcall-bc/report.json sha256=debbc95a79cb1ae3b7787080694ef51a7b97bd75a9cc53cce8e6b10968ef81c2
+evidence: target/strguard/bench/r7-gethash-eq-fix/report.json sha256=cc25ffb71bbde20c85ac80a689343c7f1b27f41162d24ac2196701f86276398e
+evidence: target/strguard/bench/r3-pcase/report.json sha256=046a003124b3641d3593981a528dd4944ab7ae12743114475e266a7914bd09ed
+evidence: target/strguard/bench/r4-car/report.json sha256=1ae55e68eb88a6b812706b706bc1b8181da8067af1c13c62623d96055f5c90f0

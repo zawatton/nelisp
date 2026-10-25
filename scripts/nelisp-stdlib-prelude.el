@@ -332,7 +332,7 @@ OBJECT can be a string or an external documentation reference."
     (unless (and (integerp length) (>= length 0))
       (signal 'wrong-type-argument (list 'wholenump length)))
     (make-vector length (and init t))))
-(unless (fboundp 'log)
+(unless (and (fboundp 'log) (condition-case nil (progn (log 1.0) t) (error nil)))
   (defun nelisp--dd-div (x y)
     "Double-double X / Y, each a (HI . LO) pair."
     (let* ((q (/ (car x) (car y)))
@@ -541,7 +541,7 @@ a negative, and signalling there turned a limit into a failure."
                   (setq hit candidate))))))
         (setq dirs (cdr dirs)))
       hit)))
-(unless (fboundp 'exp)
+(unless (and (fboundp 'exp) (condition-case nil (progn (exp 0.0) t) (error nil)))
   (defun nelisp--two-sum (a b)
     "A+B as an exact pair (SUM . ERR)."
     (let* ((s (+ a b)) (bb (- s a)))
@@ -1844,21 +1844,36 @@ from `(defvar X nil)'."
 ;; docstring closed early, the rest of it parsed as forms, and `mapconcat'
 ;; answered void-variable.
 (defun mapconcat (fn seq &optional sep)
+  ;; GNU Fmapconcat: the length is taken first (Flength), then mapcar1 calls FN
+  ;; on that many elements, reading the sequence live (a list is followed by
+  ;; its cdrs after each call, a vector or string by index).  Elements FN adds
+  ;; to the end of a list are never visited.  A list FN shortens makes
+  ;; mapcar1 stop early; GNU 31.1 then concatenates the unfilled argument
+  ;; slots and signals wrong-type-argument (its eassert(nmapped == leni)
+  ;; is compiled out), so this does too.
   (nelisp--check-seq-list seq)
-  ;; Collect the pieces and concatenate once: appending to OUT per item was
-  ;; O(n^2) in the total length (2.2ms for a 20-element path join).
-  (let* ((items (if (if (null seq) 1 (consp seq)) seq (append seq nil)))
+  (let* ((n (length seq))
+         (i 0)
          (parts nil)
-         (first t)
-         (joiner (or sep ""))
-         (tail items))
-    (while tail
-      (unless first
-        (setq parts (cons joiner parts)))
-      (setq parts (cons (funcall fn (car tail)) parts))
-      (setq first nil)
-      (setq tail (cdr tail)))
-    (apply #'concat (nreverse parts))))
+         (tail seq))
+    (if (listp seq)
+        (while (and (< i n) (consp tail))
+          (setq parts (cons (funcall fn (car tail)) parts))
+          (setq tail (cdr tail))
+          (setq i (1+ i)))
+      (while (< i n)
+        (setq parts (cons (funcall fn (aref seq i)) parts))
+        (setq i (1+ i))))
+    (when (< i n) (signal 'wrong-type-argument (list 'sequencep nil)))
+    ;; GNU: a nil or empty separator is not interleaved.
+    (if (or (null sep) (and (stringp sep) (= (length sep) 0)))
+        (apply #'concat (nreverse parts))
+      (let ((out nil) (first t) (rest (nreverse parts)))
+        (while rest
+          (if first (setq first nil) (setq out (cons sep out)))
+          (setq out (cons (car rest) out))
+          (setq rest (cdr rest)))
+        (apply #'concat (nreverse out))))))
 
 (defun nelisp--case-pair-p (c lo hi even-is-upper)
   "Non-nil when C sits in the LO..HI block of alternating case pairs."
@@ -2482,18 +2497,14 @@ Return (FROM . TO).  STR, START, and END are used only for the
       (let ((l nil) (i (1- (length s))))
         (while (>= i 0) (setq l (cons (aref s i) l)) (setq i (1- i)))
         l))))
+(defun nelisp--alist-get-slow (key alist &optional default _remove testfn)
+  "Delegate of the native `alist-get' for a TESTFN other than nil, `eq' or `equal'.
+subr.el: (cdr (assq/assoc KEY ALIST [TESTFN])) or DEFAULT; REMOVE is ignored."
+  (let ((x (if (not testfn) (assq key alist) (assoc key alist testfn))))
+    (if x (cdr x) default)))
 (unless (fboundp 'alist-get)
-  (defun alist-get (key alist &optional default _remove testfn)
-    (unless (proper-list-p alist)
-      (signal 'wrong-type-argument (list 'listp alist)))
-    (let ((cur alist) (found nil))
-      (while (and cur (not found))
-        (let ((e (car cur)))
-          (if (and (consp e)
-                   (if testfn (funcall testfn key (car e)) (eq key (car e))))
-              (setq found e)
-            (setq cur (cdr cur)))))
-      (if found (cdr found) default))))
+  (defun alist-get (key alist &optional default remove testfn)
+    (nelisp--alist-get-slow key alist default remove testfn)))
 ;; GNU Emacs 31.1 src/fns.c, DEFUN "copy-alist": copies the alist's own
 ;; spine (a fresh list) and, for each element that is itself a cons, a
 ;; fresh top-level cons cell for that pair -- but shares the car/cdr
@@ -3446,7 +3457,10 @@ loop for the exponent (= no `expt' / `float' primitive needed)."
           (setq k (1+ k)))
         h))
      (t 0)))
-  (defun sxhash-equal (obj) (nelisp--sxhash-walk obj 0))
+  (defun sxhash-equal (obj) (nelisp--sxhash-walk obj 0)))
+;; core1: the standalone binds `sxhash-equal' natively, which skips the block
+;; above; `sxhash' (GNU's obsolete alias) must exist either way.
+(unless (fboundp 'sxhash)
   (defun sxhash (obj) (sxhash-equal obj)))
 ;; Doc 201 §6.17: `sxhash-eq' hashes identity, which only the runtime can
 ;; see -- the standalone installs it as a native arm (`bf_identity_hash' in
@@ -3752,41 +3766,52 @@ error handler continues from where it left off."
     (nelisp--check-number x)
     (if (floatp x) x (+ x 0.0))))
 (unless (fboundp 'expt)
-  (defun expt (b e)
-  (nelisp--check-number b)
-  (nelisp--check-number e)
-    (cond ((and (integerp e) (>= e 0) (integerp b))
-           (let ((r 1) (i 0))
-             (while (< i e)
-               (let ((next (* r b)))
-                 ;; Doc 190 Phase B regression, found by the fencepost check
-                 ;; ("expt overflow-check unaffected") this same phase's own
-                 ;; smoke inherited from Phase A: `*' now PROMOTES a fixnum-
-                 ;; boundary crossing to an exact Bignum instead of
-                 ;; signalling, so `next' can genuinely be a Bignum here now
-                 ;; -- something the div-round-trip check below was never
-                 ;; written to expect (it assumes NEXT is always a plain
-                 ;; fixnum).  `/' does not support a Bignum operand (Phase
-                 ;; A's own recorded, still-unchanged gap), so falling
-                 ;; through to `(/ next b)' on a promoted `next' signalled
-                 ;; the WRONG condition, `wrong-type-argument', instead of
-                 ;; `overflow-error'.  `expt' itself is OUT OF SCOPE for
-                 ;; Phase B's promotion (this doc's own task brief: `+'/`-'/
-                 ;; `*' only) -- it still signals `overflow-error' exactly
-                 ;; as it did before, just via an explicit `bignump' guard
-                 ;; now instead of (coincidentally, pre-Phase-B) always
-                 ;; being pre-empted by the native `*''s OWN overflow signal
-                 ;; before `next' could ever be bound to anything else.  The
-                 ;; div-round-trip half stays as defense in depth for a true
-                 ;; 64-bit-register wrap, even though `*' promoting rather
-                 ;; than wrapping means it should no longer be reachable in
-                 ;; practice.
-                 (when (or (bignump next) (and (/= b 0) (/= (/ next b) r)))
-                   (signal 'overflow-error nil))
-                 (setq r next))
-               (setq i (1+ i)))
-             r))
-          ;; A non-negative integer E against a non-integer (typically
+  ;; libm-less (static) builds keep the pre-FFI elisp float branch; the native
+  ;; `nelisp--pow' signals there.
+  (if (condition-case nil (progn (nelisp--pow 2.0 2.0) t) (error nil))
+    (defun expt (b e)
+      (if (and (integerp b) (natnump e))
+          (cond
+           ((eq b 1) 1)
+           ((eq b 0) (if (eq e 0) 1 0))
+           ((eq b -1) (if (eq (logand e 1) 0) 1 -1))
+           ((eq e 0) 1)
+           ((> (* e (logb (if (< b 0) (- b) b)))
+               (if (boundp 'integer-width) integer-width 65536))
+            (signal 'overflow-error nil))
+           (t (let ((r 1) (x b) (n e))
+                (while (> n 0)
+                  (when (eq (logand n 1) 1) (setq r (* r x)))
+                  (setq n (ash n -1))
+                  (when (> n 0) (setq x (* x x))))
+                (when (> (1+ (logb (if (< r 0) (- r) r)))
+                         (if (boundp 'integer-width) integer-width 65536))
+                  (signal 'overflow-error nil))
+                r)))
+        (nelisp--pow b e)))
+    (defun expt (b e)
+      (nelisp--check-number b)
+      (nelisp--check-number e)
+      (if (and (integerp b) (natnump e))
+        (cond
+         ((eq b 1) 1)
+         ((eq b 0) (if (eq e 0) 1 0))
+         ((eq b -1) (if (eq (logand e 1) 0) 1 -1))
+         ((eq e 0) 1)
+         ((> (* e (logb (if (< b 0) (- b) b)))
+             (if (boundp 'integer-width) integer-width 65536))
+          (signal 'overflow-error nil))
+         (t (let ((r 1) (x b) (n e))
+              (while (> n 0)
+                (when (eq (logand n 1) 1) (setq r (* r x)))
+                (setq n (ash n -1))
+                (when (> n 0) (setq x (* x x))))
+              (when (> (1+ (logb (if (< r 0) (- r) r)))
+                       (if (boundp 'integer-width) integer-width 65536))
+                (signal 'overflow-error nil))
+              r)))
+      
+(cond ;; A non-negative integer E against a non-integer (typically
           ;; float) B used to be a flat `(while (< i e) (setq r (* r b)) ...)'
           ;; loop -- fine for a small E, but E arrives here as a huge integer
           ;; two different ways a large float exponent actually takes: E
@@ -3846,8 +3871,8 @@ error handler continues from where it left off."
           ((= (* 2 e) (float (truncate (* 2 e))))
            (let ((n (truncate (- e 0.5))))
              (* (float (expt b n)) (sqrt (float b)))))
-          (t (exp (* e (log (float b))))))))
-(unless (fboundp 'sqrt)
+          (t (exp (* e (log (float b))))))))))
+(unless (and (fboundp 'sqrt) (condition-case nil (progn (sqrt 4.0) t) (error nil)))
   (defun nelisp--f64-split (a)
     "Dekker's split: A as HI + LO with HI carrying 26 significant bits."
     (let* ((c (* 134217729.0 a)) (hi (- c (- c a)))) (cons hi (- a hi))))
@@ -3898,21 +3923,21 @@ TYPE flowing into whatever the caller does next."
       (cond ((stringp seq) (apply #'string kept))
             ((vectorp seq) (apply #'vector kept))
             (t kept)))))
-(unless (fboundp 'ffloor)
+(unless (and (fboundp 'ffloor) (condition-case nil (progn (ffloor 1.0) t) (error nil)))
   (defun ffloor (x)
     ;; A FLOAT, not any number: (ffloor 65) signals in Emacs while
     ;; (floor 65) is 65.  The `f' family is the strict one.
     (unless (floatp x) (signal 'wrong-type-argument (list 'floatp x)))
     (float (floor x))))
-(unless (fboundp 'fceiling)
+(unless (and (fboundp 'fceiling) (condition-case nil (progn (fceiling 1.0) t) (error nil)))
   (defun fceiling (x)
     (unless (floatp x) (signal 'wrong-type-argument (list 'floatp x)))
     (float (ceiling x))))
-(unless (fboundp 'ftruncate)
+(unless (and (fboundp 'ftruncate) (condition-case nil (progn (ftruncate 1.0) t) (error nil)))
   (defun ftruncate (x)
     (unless (floatp x) (signal 'wrong-type-argument (list 'floatp x)))
     (float (truncate x))))
-(unless (fboundp 'fround)
+(unless (and (fboundp 'fround) (condition-case nil (progn (fround 1.0) t) (error nil)))
   (defun fround (x)
     (unless (floatp x) (signal 'wrong-type-argument (list 'floatp x)))
     (float (round x))))
@@ -5734,7 +5759,7 @@ quotes in OBJECTS are preserved.
 ;; case-insensitive lookup got a case-sensitive one and no indication.
 ;; Folding is `downcase', so it reaches as far as `downcase' does: ASCII
 ;; today, which is where this was failing anyway.
-(defun assoc-string (key alist &optional case-fold)
+(defun nelisp--assoc-string-slow (key alist &optional case-fold)
   (unless (listp alist) (setq alist nil))
   (let* ((k0 (cond ((symbolp key) (symbol-name key))
                    ((stringp key) key)
@@ -5754,6 +5779,11 @@ quotes in OBJECTS are preserved.
             (setq found entry)
           (setq alist (cdr alist)))))
     found))
+;; core1: the native `assoc-string' handles a string KEY without CASE-FOLD and
+;; delegates every other call here.
+(unless (fboundp 'assoc-string)
+  (defun assoc-string (key alist &optional case-fold)
+    (nelisp--assoc-string-slow key alist case-fold)))
 
 ;; Doc 143 pure list utilities.
 ;;
@@ -12132,7 +12162,13 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (narrow-start nil)
   (narrow-end nil)
   (text-properties nil)        ; list of (START END PROP-PLIST) intervals
-  (tp-tail nil))               ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
+  (tp-tail nil)                ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
+  (tick 0)                     ; text-change counter (formerly the `nelisp-buffer--tick' table)
+  (pend nil)                   ; pending `goto-char' target, or nil (formerly `nelisp-buffer--pending-point')
+  (blen 0)                     ; (length before-gap), exact at all times
+  (len 0)                      ; total text length, exact at all times
+  (tcache nil)                 ; (TICK . STRING) whole-text memo (formerly `nelisp-buffer--text-cache')
+  (ins nil))               ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make-plain)
@@ -12252,8 +12288,12 @@ explicitly instead, see the section header comment above); kept so
 ;; costs O(current position) via `concat'/`substring' on plain
 ;; (immutable) strings, no matter how small the actual move is.  See
 ;; `nelisp-buffer--pending-point' below.
+;; The five tables below (text-cache, tick, pending-point, blen-cache and
+;; size-cache) are OBSOLETE: that state now lives in the `tcache', `tick',
+;; `pend', `blen' and `len' slots of `nelisp-buffer'.  The tables stay
+;; defined, empty, for code that still names them.
 (defvar nelisp-buffer--text-cache (make-hash-table :test 'eq)
-  "BUF -> cached whole-buffer text; see `nelisp-buffer--tick'.")
+  "Obsolete (always empty); see the `tcache' slot of `nelisp-buffer'.")
 
 (defvar nelisp-buffer--tick (make-hash-table :test 'eq)
   "BUF -> monotonic counter, bumped by `nelisp-buffer--bump-tick' once per
@@ -12263,27 +12303,49 @@ NOT bumped by `nelisp-goto-char': a pending point (see `nelisp-buffer--
 pending-point') changes nothing about the concatenated text.")
 
 (defun nelisp-buffer--bump-tick (buf)
-  "Invalidate BUF's cached whole-buffer text (see `nelisp-buffer--tick')."
-  (puthash buf (1+ (gethash buf nelisp-buffer--tick 0)) nelisp-buffer--tick))
+  "Invalidate BUF's cached whole-buffer text (see `nelisp-buffer-tick')."
+  (setf (nelisp-buffer-tick buf) (1+ (nelisp-buffer-tick buf))))
 
 (defvar nelisp-buffer--pending-point (make-hash-table :test 'eq)
   "BUF -> a point value `nelisp-goto-char' recorded but has not yet
 physically moved BUF's gap to match.  Absent means the gap already
 sits exactly at BUF's current point.  See `nelisp-buffer--settle'.")
 
-(defun nelisp-buffer--settle (buf)
-  "Physically move BUF's gap to its pending point, if one is
-outstanding, then clear it.  O(distance from the gap's CURRENT
-physical position to the pending target) -- paid once, lazily, right
-before an operation (`nelisp-insert' et al.) that needs the gap
-actually at point."
-  (let ((pending (gethash buf nelisp-buffer--pending-point)))
+(defun nelisp-buffer--settle (buf &optional flush-only)
+  "Make BUF's gap strings current.  First append the pending inserts in
+the INS slot to `before-gap' (one concat of a grouped list, so a run of
+small inserts costs O(total) instead of O(n^2)); then, unless FLUSH-ONLY,
+physically move the gap to the pending point.  Moving is O(distance from
+the gap's CURRENT physical position to the pending target) -- paid once,
+lazily, right before an operation (`nelisp-insert' et al.) that needs the
+gap actually at point."
+  (let ((parts (nreverse (nelisp-buffer-ins buf))))
+    (when parts
+      (setf (nelisp-buffer-ins buf) nil)
+      (while (cdr parts)
+        (let ((out nil))
+          (while parts
+            (let ((chunk nil) (k 0))
+              (while (and parts (< k 256))
+                (setq chunk (cons (car parts) chunk) parts (cdr parts) k (1+ k)))
+              (setq out (cons (apply #'concat (nreverse chunk)) out))))
+          (setq parts (nreverse out))))
+      (setf (nelisp-buffer-before-gap buf)
+            (concat (nelisp-buffer-before-gap buf) (car parts)))))
+  (let ((pending (and (not flush-only) (nelisp-buffer-pend buf))))
     (when pending
-      (let* ((total (nelisp-buffer-string buf))
-             (idx (1- pending)))
-        (setf (nelisp-buffer-before-gap buf) (substring total 0 idx))
-        (setf (nelisp-buffer-after-gap buf) (substring total idx)))
-      (remhash buf nelisp-buffer--pending-point))))
+      (let ((idx (1- pending)) (blen (nelisp-buffer-blen buf)))
+        (if (< idx blen)
+            (let ((before (nelisp-buffer-before-gap buf)))
+              (setf (nelisp-buffer-after-gap buf)
+                    (concat (substring before idx) (nelisp-buffer-after-gap buf)))
+              (setf (nelisp-buffer-before-gap buf) (substring before 0 idx)))
+          (let ((k (- idx blen)) (after (nelisp-buffer-after-gap buf)))
+            (setf (nelisp-buffer-before-gap buf)
+                  (concat (nelisp-buffer-before-gap buf) (substring after 0 k)))
+            (setf (nelisp-buffer-after-gap buf) (substring after k))))
+        (setf (nelisp-buffer-blen buf) idx)
+        (setf (nelisp-buffer-pend buf) nil)))))
 
 (defun nelisp-kill-buffer (buf)
   "Remove BUF from the registry.  Returns t on success."
@@ -12386,62 +12448,45 @@ actually at point."
 `nelisp-buffer--ambient'.")
 
 (defun nelisp-buffer--before-length (buf)
-  "Cached `(length (nelisp-buffer-before-gap BUF))' -- O(1) once BUF's
-current tick has been seen once; see the PERF block comment above
-`nelisp-buffer--ambient'."
-  (let* ((tick (gethash buf nelisp-buffer--tick 0))
-         (cached (gethash buf nelisp-buffer--blen-cache)))
-    (if (and cached (= (car cached) tick))
-        (cdr cached)
-      (let ((blen (length (nelisp-buffer-before-gap buf))))
-        (puthash buf (cons tick blen) nelisp-buffer--blen-cache)
-        blen))))
+  "Return the length of BUF's before-gap string (the BLEN slot)."
+  (nelisp-buffer-blen buf))
 
 (defun nelisp-buffer-size (&optional buf)
   "Return the length of BUF's visible (unrestricted) text."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (tick (gethash b nelisp-buffer--tick 0))
-         (cached (gethash b nelisp-buffer--size-cache)))
-    (if (and cached (= (car cached) tick))
-        (cdr cached)
-      (let ((sz (+ (nelisp-buffer--before-length b)
-                   (length (nelisp-buffer-after-gap b)))))
-        (puthash b (cons tick sz) nelisp-buffer--size-cache)
-        sz))))
+  (nelisp-buffer-len (or buf nelisp-buffer--current
+                         (error "No NeLisp current buffer"))))
 
 (defun nelisp-point (&optional buf)
   "Return the current point in BUF (1-based).
-Prefers a pending, not-yet-settled `goto-char' target over the gap's
-physical position -- see `nelisp-buffer--pending-point'."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (or (gethash b nelisp-buffer--pending-point)
-        (1+ (nelisp-buffer--before-length b)))))
+A pending, not-yet-settled `goto-char' target wins over the gap's
+physical position -- see `nelisp-buffer-pend'."
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
 
 (defun nelisp-point-min (&optional buf)
   "Return the narrowed point-min of BUF (defaults to 1)."
   (or (nelisp-buffer-narrow-start
-       (nelisp-buffer--ambient buf))
+       (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
       1))
 
 (defun nelisp-point-max (&optional buf)
   "Return the narrowed point-max of BUF."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (or (nelisp-buffer-narrow-end b)
-        (1+ (nelisp-buffer-size b)))))
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
 
 (defun nelisp-buffer-string (&optional buf)
   "Return the entire text of BUF as a new string.
-Memoized against `nelisp-buffer--tick': O(1) when BUF's text has not
+Memoized against `nelisp-buffer-tick': O(1) when BUF's text has not
 changed since the last call, O(buffer size) to rebuild otherwise.  The
 returned string may be shared across calls -- treat it as read-only."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (tick (gethash b nelisp-buffer--tick 0))
-         (cached (gethash b nelisp-buffer--text-cache)))
-    (if (and cached (= (car cached) tick))
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (cached (nelisp-buffer-tcache b)))
+    (if (and cached (= (car cached) (nelisp-buffer-tick b)))
         (cdr cached)
-      (let ((s (concat (nelisp-buffer-before-gap b)
-                        (nelisp-buffer-after-gap b))))
-        (puthash b (cons tick s) nelisp-buffer--text-cache)
+      (let ((s (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (concat (nelisp-buffer-before-gap b)
+                       (nelisp-buffer-after-gap b)))))
+        (setf (nelisp-buffer-tcache b) (cons (nelisp-buffer-tick b) s))
         s))))
 
 (defun nelisp-buffer-substring (start end &optional buf)
@@ -12449,39 +12494,39 @@ returned string may be shared across calls -- treat it as read-only."
 Slices directly from `before-gap'/`after-gap' -- O(END - START)
 regardless of BUF's total size -- rather than building the whole
 buffer text first via `nelisp-buffer-string'."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
          (si (1- start))
          (ei (1- end)))
     (cond
-     ((<= ei blen) (substring before si ei))
+     ((<= ei blen) (substring (nelisp-buffer-before-gap b) si ei))
      ((>= si blen) (substring (nelisp-buffer-after-gap b) (- si blen) (- ei blen)))
-     (t (concat (substring before si)
+     (t (concat (substring (nelisp-buffer-before-gap b) si)
                 (substring (nelisp-buffer-after-gap b) 0 (- ei blen)))))))
 
 (defun nelisp-char-after (&optional pos buf)
   "Return the character at POS (default point) in BUF, or nil."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (p (or pos (nelisp-point b)))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
-         (idx (1- p)))
-    (and (>= idx 0) (< idx (nelisp-buffer-size b))
-         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (idx (1- (or pos (nelisp-buffer-pend b) (1+ blen)))))
+    (and (>= idx 0) (< idx (nelisp-buffer-len b))
+         (if (< idx blen)
+             (aref (nelisp-buffer-before-gap b) idx)
+           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 (defun nelisp-char-before (&optional pos buf)
   "Return the character before POS (default point) in BUF, or nil.
-Doc 204 P1 -- no body for this existed in either copy before; written
-in the same shape as `nelisp-char-after' just above, one index earlier
-(the character before POS sits at POS - 2 in the 0-based string)."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (p (or pos (nelisp-point b)))
-         (before (nelisp-buffer-before-gap b))
-         (blen (nelisp-buffer--before-length b))
-         (idx (- p 2)))
-    (and (>= idx 0) (< idx (nelisp-buffer-size b))
-         (if (< idx blen) (aref before idx) (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+The character before POS sits at POS - 2 in the 0-based string."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (idx (- (or pos (nelisp-buffer-pend b) (1+ blen)) 2)))
+    (and (>= idx 0) (< idx (nelisp-buffer-len b))
+         (if (< idx blen)
+             (aref (nelisp-buffer-before-gap b) idx)
+           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
 
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN."
@@ -12571,20 +12616,16 @@ ones."
 
 (defun nelisp-goto-char (pos &optional buf)
   "Move point to POS in BUF.  POS is clamped into [point-min,
-point-max] per Emacs semantics.  Records the move in
-`nelisp-buffer--pending-point' -- O(1) -- instead of physically
-re-splitting `before-gap'/`after-gap' (see that variable's docstring
-for why a physical move costs O(current position) regardless of how
-small the move is).  Does not bump `nelisp-buffer--tick': the
-concatenated text is unchanged."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (lo (nelisp-point-min b))
-         (hi (nelisp-point-max b))
-         (clamped (max lo (min hi pos)))
-         (physical (1+ (nelisp-buffer--before-length b))))
-    (if (= clamped physical)
-        (remhash b nelisp-buffer--pending-point)
-      (puthash b clamped nelisp-buffer--pending-point))
+point-max] per Emacs semantics.  Records the move in the PEND slot --
+O(1) -- instead of physically re-splitting `before-gap'/`after-gap'.
+Does not bump the tick: the concatenated text is unchanged."
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (clamped (max (or (nelisp-buffer-narrow-start b) 1)
+                       (min (or (nelisp-buffer-narrow-end b)
+                                (1+ (nelisp-buffer-len b)))
+                            pos))))
+    (setf (nelisp-buffer-pend b)
+          (if (= clamped (1+ (nelisp-buffer-blen b))) nil clamped))
     clamped))
 
 ;; GNU graft_intervals_into_buffer: the properties of an inserted string belong to
@@ -12680,65 +12721,99 @@ First the intervals at or after AT move (GNU offset_intervals), then TEXT's own 
 
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
-pending `goto-char' first (see `nelisp-buffer--settle'): this is the
-one place that genuinely needs `before-gap' to already end exactly at
-point, since it appends TEXT straight onto it."
+pending `goto-char' first (see `nelisp-buffer--settle'): the gap must
+sit at point.  A plain string is then queued in the INS slot and joined
+to `before-gap' lazily (one concat for a whole run of inserts); a string
+that carries text properties is concatenated at once, because the
+intervals `concat' copies onto the gap string are cleared right after."
   (unless (stringp text)
     (signal 'wrong-type-argument (list 'stringp text)))
-  (let ((b (nelisp-buffer--ambient buf)))
-    (nelisp-buffer--settle b)
-    (let* ((before (nelisp-buffer-before-gap b))
-           (at (1+ (length before)))
-           (n (length text)))
-      (setf (nelisp-buffer-before-gap b) (concat before text))
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (when (nelisp-buffer-pend b)
+      (nelisp-buffer--settle b))
+    (let* ((blen (nelisp-buffer-blen b))
+           (at (1+ blen))
+           (n (length text))
+           (propertized (gethash text nelisp--tp-string-properties)))
+      (if propertized
+          (progn
+            (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+            (setf (nelisp-buffer-before-gap b)
+                  (concat (nelisp-buffer-before-gap b) text)))
+        (setf (nelisp-buffer-ins b) (cons text (nelisp-buffer-ins b))))
+      (setf (nelisp-buffer-blen b) (+ blen n))
+      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
       (when (nelisp-buffer-narrow-end b)
         (setf (nelisp-buffer-narrow-end b)
               (+ (nelisp-buffer-narrow-end b) n)))
       (setf (nelisp-buffer-modified b) t)
-      (nelisp-buffer--bump-tick b)
+      (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
       ;; Empty metadata is the common case; skip the interpreted helpers then.
       (when (nelisp-buffer-markers b)
         (nelisp-buffer--shift-markers-on-insert b at n))
       (when (nelisp-buffer-overlays b)
         (nelisp-buffer--shift-overlays-on-insert b at n))
-      (nelisp-buffer--tp-after-insert b at n text)))
+      (when (or propertized (nelisp-buffer-text-properties b))
+        (nelisp-buffer--tp-after-insert b at n text))))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
   "Delete the text between 1-based START and END (exclusive) in BUF."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (size (nelisp-buffer-size b))
-         (point-before (nelisp-point b))
-         (lo 1)
-         (hi (1+ size))
+  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
+         (len (nelisp-buffer-len b))
+         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                      (nelisp-buffer-blen b)))
+         (point-before (or (nelisp-buffer-pend b) (1+ blen)))
          (s (min start end))
          (e (max start end)))
-    (when (or (< s lo) (> e hi))
+    (when (or (< s 1) (> e (1+ len)))
       (signal 'args-out-of-range (list start end)))
-    (let* ((total (nelisp-buffer-string b))
-           (si (1- s))
+    (let* ((si (1- s))
            (ei (1- e))
            (delta (- e s))
            (old-min (nelisp-buffer-narrow-start b))
            (old-max (nelisp-buffer-narrow-end b))
            (new-point (cond ((<= point-before s) point-before)
                             ((>= point-before e) (- point-before delta))
-                            (t s)))
-           (map-position (lambda (position)
-                           (cond ((<= position s) position)
-                                 ((>= position e) (- position delta))
-                                 (t s)))))
-      (setf (nelisp-buffer-before-gap b) (substring total 0 si))
-      (setf (nelisp-buffer-after-gap b) (substring total ei))
+                            (t s))))
+      ;; Cut [si, ei) out of whichever gap string holds it; only the
+      ;; string(s) touching the cut are copied.
+      (cond
+       ((<= ei blen)
+        (let ((before (nelisp-buffer-before-gap b)))
+          (setf (nelisp-buffer-before-gap b)
+                (concat (substring before 0 si) (substring before ei)))
+          (setf (nelisp-buffer-blen b) (- blen delta))))
+       ((>= si blen)
+        (let ((after (nelisp-buffer-after-gap b)))
+          (setf (nelisp-buffer-after-gap b)
+                (concat (substring after 0 (- si blen))
+                        (substring after (- ei blen))))))
+       (t
+        (setf (nelisp-buffer-before-gap b)
+              (substring (nelisp-buffer-before-gap b) 0 si))
+        (setf (nelisp-buffer-after-gap b)
+              (substring (nelisp-buffer-after-gap b) (- ei blen)))
+        (setf (nelisp-buffer-blen b) si)))
+      (setf (nelisp-buffer-len b) (- len delta))
       (when old-min
-        (setf (nelisp-buffer-narrow-start b) (funcall map-position old-min)))
+        (setf (nelisp-buffer-narrow-start b)
+              (cond ((<= old-min s) old-min)
+                    ((>= old-min e) (- old-min delta))
+                    (t s))))
       (when old-max
-        (setf (nelisp-buffer-narrow-end b) (funcall map-position old-max)))
+        (setf (nelisp-buffer-narrow-end b)
+              (cond ((<= old-max s) old-max)
+                    ((>= old-max e) (- old-max delta))
+                    (t s))))
       (setf (nelisp-buffer-modified b) t)
-      (nelisp-buffer--bump-tick b)
-      (nelisp-buffer--shift-markers-on-delete b s e)
-      (nelisp-buffer--shift-overlays-on-delete b s e)
-      (nelisp-buffer--shift-text-properties-on-delete b s e)
+      (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
+      (when (nelisp-buffer-markers b)
+        (nelisp-buffer--shift-markers-on-delete b s e))
+      (when (nelisp-buffer-overlays b)
+        (nelisp-buffer--shift-overlays-on-delete b s e))
+      (when (nelisp-buffer-text-properties b)
+        (nelisp-buffer--shift-text-properties-on-delete b s e))
       (nelisp-goto-char new-point b)))
   nil)
 
@@ -12747,13 +12822,16 @@ point, since it appends TEXT straight onto it."
   (let ((b (nelisp-buffer--ambient buf)))
     (setf (nelisp-buffer-before-gap b) "")
     (setf (nelisp-buffer-after-gap b) "")
+    (setf (nelisp-buffer-ins b) nil)
+    (setf (nelisp-buffer-blen b) 0)
+    (setf (nelisp-buffer-len b) 0)
     (setf (nelisp-buffer-narrow-start b) nil)
     (setf (nelisp-buffer-narrow-end b) nil)
     (setf (nelisp-buffer-modified b) t)
     (nelisp-buffer--bump-tick b)
     ;; A pending point from before the erase would otherwise be read back
     ;; as if still valid -- out of range now that the buffer is empty.
-    (remhash b nelisp-buffer--pending-point)
+    (setf (nelisp-buffer-pend b) nil)
     (dolist (m (nelisp-buffer-markers b))
       (when (nelisp-marker-p m)
         (setf (nelisp-marker-position m) 1)))
@@ -12793,15 +12871,15 @@ point, since it appends TEXT straight onto it."
 (unless (fboundp 'buffer-modified-tick)
   (defun buffer-modified-tick (&optional buffer)
     "Return BUFFER's text-change counter; nil means the current buffer."
-    ;; GNU buffer.c:628 initializes MODIFF to 1; the cache counter is 0-based.
-    (1+ (gethash (nelisp-buffer--ambient buffer) nelisp-buffer--tick 0)))
+    ;; GNU buffer.c:628 initializes MODIFF to 1; the slot counter is 0-based.
+    (1+ (nelisp-buffer-tick (nelisp-buffer--ambient buffer))))
   (put 'buffer-modified-tick 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-chars-modified-tick)
   (defun buffer-chars-modified-tick (&optional buffer)
     "Return BUFFER's character-change counter; nil means the current buffer."
     ;; GNU buffer.c:629 initializes CHARS_MODIFF to the same initial tick.
-    (1+ (gethash (nelisp-buffer--ambient buffer) nelisp-buffer--tick 0)))
+    (1+ (nelisp-buffer-tick (nelisp-buffer--ambient buffer))))
   (put 'buffer-chars-modified-tick 'emacs-stub-bulk t))
 
 (defun nelisp-markerp (obj)
@@ -13302,25 +13380,39 @@ this file was committed).")
 (unless (fboundp 'bufferp)
   (defun bufferp (obj) (nelisp-buffer-p obj)))
 (unless (fboundp 'point-min)
-  (defun point-min () (nelisp-point-min nelisp--current-buffer)))
+  (defun point-min ()
+    (or (nelisp-buffer-narrow-start
+         (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+        1)))
 (unless (fboundp 'point-max)
-  (defun point-max () (nelisp-point-max nelisp--current-buffer)))
+  (defun point-max ()
+    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+      (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))))
 (unless (fboundp 'point)
-  (defun point () (nelisp-point nelisp--current-buffer)))
+  (defun point ()
+    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+      (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))))
 (unless (fboundp 'goto-char)
   ;; GNU Emacs 31.1 editfns.c `Fgoto_char': POSITION is an integer or a
   ;; marker (a marker goes through `set_point_from_marker', which signals
   ;; when it points nowhere), anything else is `integer-or-marker-p', and
-  ;; the value is POSITION itself.  A marker used to reach `min' raw and
-  ;; fail there -- `display-warning' does (goto-char warning-series).
+  ;; the value is POSITION itself.  The integer case is flat: it clamps and
+  ;; records the pending point without further calls.
   (defun goto-char (pos)
-    (nelisp-goto-char
-     (cond ((integerp pos) pos)
-           ((markerp pos)
-            (or (marker-position pos)
-                (error "Marker does not point anywhere")))
-           (t (signal 'wrong-type-argument (list 'integer-or-marker-p pos))))
-     nelisp--current-buffer)
+    (if (integerp pos)
+        (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+               (clamped (max (or (nelisp-buffer-narrow-start b) 1)
+                             (min (or (nelisp-buffer-narrow-end b)
+                                      (1+ (nelisp-buffer-len b)))
+                                  pos))))
+          (setf (nelisp-buffer-pend b)
+                (if (= clamped (1+ (nelisp-buffer-blen b))) nil clamped)))
+      (nelisp-goto-char
+       (cond ((markerp pos)
+              (or (marker-position pos)
+                  (error "Marker does not point anywhere")))
+             (t (signal 'wrong-type-argument (list 'integer-or-marker-p pos))))
+       nelisp--current-buffer))
     pos))
 (unless (fboundp 'generate-new-buffer)
   (defun generate-new-buffer (name &optional _inhibit-buffer-hooks)
@@ -13372,15 +13464,17 @@ stale pointer into the dead buffer."
 (unless (fboundp 'eobp)
   (defun eobp ()
     "Non-nil when point is at the end of the accessible portion.
-Narrowing-aware because `nelisp-point-max' is (probed against Emacs 30.1:
+Narrowing-aware because the end bound is (probed against Emacs 30.1:
 under `narrow-to-region' both answer the narrowed bound)."
-    (= (nelisp-point nelisp--current-buffer)
-       (nelisp-point-max nelisp--current-buffer))))
+    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+      (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+         (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))))
 (unless (fboundp 'bobp)
   (defun bobp ()
     "Non-nil when point is at the beginning of the accessible portion."
-    (= (nelisp-point nelisp--current-buffer)
-       (nelisp-point-min nelisp--current-buffer))))
+    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+      (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+         (or (nelisp-buffer-narrow-start b) 1)))))
 (unless (fboundp 'buffer-name)
   (defun buffer-name (&optional buffer)
   "Return BUFFER's name, or nil if it was killed; default to current buffer."
@@ -13652,14 +13746,18 @@ Emacs exactly (verified: a float, a negative integer, a symbol, and
 nil all signal this in real Emacs, not `wrong-type-argument stringp'
 as this runtime's own `nelisp-insert' primitive would signal
 unconverted)."
-    (let ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer)))
-      (dolist (a args)
-        (nelisp-insert
-         (cond
-          ((stringp a) a)
-          ((integerp a) (nelisp--char-arg-to-string a multibyte))
-          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
-         nelisp--current-buffer)))
+    (let ((rest args))
+      (while rest
+        (let ((a (car rest)))
+          (nelisp-insert
+           (cond
+            ((stringp a) a)
+            ((integerp a)
+             (nelisp--char-arg-to-string
+              a (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+            (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+           nelisp--current-buffer))
+        (setq rest (cdr rest))))
     nil))
 (unless (fboundp 'insert-char)
   (defun insert-char (character &optional count _inherit)
@@ -13722,6 +13820,8 @@ point advances past TEXT instead of consulting its own
            (at (1+ (length before)))
            (n (length text)))
       (setf (nelisp-buffer-before-gap b) (concat before text))
+      (setf (nelisp-buffer-blen b) (+ (nelisp-buffer-blen b) n))
+      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
@@ -13767,8 +13867,8 @@ inserted text -- see `nelisp-insert-before-markers'."
 ;; `point-min'/`point-max' above already take one.
 (unless (fboundp 'buffer-size)
   (defun buffer-size (&optional buffer)
-    (let ((buf (or buffer nelisp--current-buffer)))
-      (- (nelisp-point-max buf) (nelisp-point-min buf)))))
+    ;; GNU's `buffer-size' counts the whole buffer, narrowing or not.
+    (nelisp-buffer-len (or buffer nelisp--current-buffer (nelisp-buffer--ambient nil)))))
 
 ;; ---- Doc 188 P2: current-buffer / set-buffer / buffer-substring /
 ;; erase-buffer -- the four names §3's P2 bullet lists as still void
@@ -13847,19 +13947,20 @@ wrapper instead of touching that file."
       (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
     (unless (integerp end)
       (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    (let* ((b nelisp--current-buffer)
-           (lo (nelisp-point-min b))
-           (hi (nelisp-point-max b))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
            (s (min start end))
            (e (max start end)))
-      (when (or (< s lo) (> e hi))
+      (when (or (< s (or (nelisp-buffer-narrow-start b) 1))
+                (> e (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
         (signal 'args-out-of-range (list b start end)))
       ;; Doc 210: the returned string carries B's properties over
       ;; [S, E), same as real Emacs (`buffer-substring-no-properties'
       ;; below calls `nelisp-buffer-substring' directly instead, so it
-      ;; never reaches this attachment step).
+      ;; never reaches this attachment step).  A buffer without
+      ;; properties has none to copy.
       (let ((str (nelisp-buffer-substring s e b)))
-        (nelisp--tp-copy-buffer-range-to-string b s e str)
+        (when (nelisp-buffer-text-properties b)
+          (nelisp--tp-copy-buffer-range-to-string b s e str))
         str))))
 
 (unless (fboundp 'erase-buffer)
@@ -13889,10 +13990,35 @@ over."
 ;; here; `nelisp--current-buffer' is threaded in as BUF explicitly.
 (unless (fboundp 'char-after)
   (defun char-after (&optional pos)
-    (nelisp-char-after pos nelisp--current-buffer)))
+    "Return the character at POS (default point), or nil outside the
+accessible portion.  POS is an integer or a marker."
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (p (cond ((null pos)
+                     (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+                    ((integerp pos) pos)
+                    ((markerp pos)
+                     (or (marker-position pos)
+                         (error "Marker does not point anywhere")))
+                    (t (signal 'wrong-type-argument
+                               (list 'integer-or-marker-p pos))))))
+      (and (>= p (or (nelisp-buffer-narrow-start b) 1))
+           (< p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+           (progn
+             (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+             (let ((blen (nelisp-buffer-blen b)) (idx (1- p)))
+               (if (< idx blen)
+                   (aref (nelisp-buffer-before-gap b) idx)
+                 (aref (nelisp-buffer-after-gap b) (- idx blen)))))))))
 (unless (fboundp 'char-before)
   (defun char-before (&optional pos)
-    (nelisp-char-before pos nelisp--current-buffer)))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
+                        (nelisp-buffer-blen b)))
+           (idx (- (or pos (nelisp-buffer-pend b) (1+ blen)) 2)))
+      (and (>= idx 0) (< idx (nelisp-buffer-len b))
+           (if (< idx blen)
+               (aref (nelisp-buffer-before-gap b) idx)
+             (aref (nelisp-buffer-after-gap b) (- idx blen)))))))
 (unless (fboundp 'delete-region)
   (defun delete-region (start end)
     (nelisp-delete-region start end nelisp--current-buffer)))
@@ -13915,20 +14041,25 @@ over."
          (byte-delta (- (string-bytes replacement)
                         (if (nelisp--buffer-multibyte-p buffer)
                             (string-bytes (char-to-string (char-after position))) 1)))
-         (before (nelisp-buffer-before-gap buffer)) (index (1- position)))
-    (if (< index (length before))
+         (before (progn (when (nelisp-buffer-ins buffer) (nelisp-buffer--settle buffer t))
+                        (nelisp-buffer-before-gap buffer)))
+         (blen (nelisp-buffer-blen buffer)) (index (1- position)))
+    (if (< index blen)
         (setf (nelisp-buffer-before-gap buffer)
               (concat (substring before 0 index) replacement
                       (substring before (1+ index))))
       (let* ((after (nelisp-buffer-after-gap buffer))
-             (offset (- index (length before))))
+             (offset (- index blen)))
         (setf (nelisp-buffer-after-gap buffer)
               (concat (substring after 0 offset) replacement
                       (substring after (1+ offset))))))
     (unless (= delta 0)
-      (let ((pending (gethash buffer nelisp-buffer--pending-point)))
+      (setf (nelisp-buffer-len buffer) (+ (nelisp-buffer-len buffer) delta))
+      (when (< index blen)
+        (setf (nelisp-buffer-blen buffer) (+ blen delta)))
+      (let ((pending (nelisp-buffer-pend buffer)))
         (when (and pending (> pending position))
-          (puthash buffer (+ pending delta) nelisp-buffer--pending-point)))
+          (setf (nelisp-buffer-pend buffer) (+ pending delta))))
       (when (and (nelisp-buffer-narrow-start buffer)
                  (> (nelisp-buffer-narrow-start buffer) position))
         (setf (nelisp-buffer-narrow-start buffer)
@@ -13970,7 +14101,7 @@ over."
           (when (and (boundp 'buffer-read-only) buffer-read-only
                      (not (and (boundp 'inhibit-read-only) inhibit-read-only)))
             (signal 'buffer-read-only (list (current-buffer))))
-          (let ((position low))
+          (let ((position (if (nelisp-buffer-text-properties (current-buffer)) low high)))
             (while (< position high)
               (let ((readonly (get-text-property position 'read-only)))
                 (when (and readonly
@@ -13980,6 +14111,53 @@ over."
                                        inhibit-read-only))))
                   (signal 'text-read-only nil)))
               (setq position (1+ position))))
+          (if (let* ((b (current-buffer))
+                     (text (nelisp-buffer-substring low high b))
+                     (n (length text)) (k 0))
+                ;; Fast path: an all-ASCII region (same width in every case,
+                ;; so no marker, property or narrowing moves) is converted in
+                ;; place and spliced into the gap strings in one step.
+                (while (and (< k n) (< (aref text k) 128)) (setq k (1+ k)))
+                (and (= k n)
+                     (let* ((new (cond
+                                  ((and (memq action '(upper lower))
+                                        (eq (current-case-table) (standard-case-table)))
+                                   (let ((out (copy-sequence text)) (i 0)
+                                         (up (eq action 'upper)))
+                                     (while (< i n)
+                                       (let ((c (aref out i)))
+                                         (if up
+                                             (when (and (>= c ?a) (<= c ?z)) (aset out i (- c 32)))
+                                           (when (and (>= c ?A) (<= c ?Z)) (aset out i (+ c 32)))))
+                                       (setq i (1+ i)))
+                                     out))
+                                  ((eq action 'upper) (upcase text))
+                                  ((eq action 'lower) (downcase text))
+                                  ((eq action 'capitalize) (capitalize text))
+                                  (t (upcase-initials text))))
+                            (blen (nelisp-buffer-blen b))
+                            (si (1- low)) (ei (1- high)))
+                       (setf (nelisp-buffer-modified b) t)
+                       (unless (equal new text)
+                         (cond
+                          ((<= ei blen)
+                           (setf (nelisp-buffer-before-gap b)
+                                 (concat (substring (nelisp-buffer-before-gap b) 0 si) new
+                                         (substring (nelisp-buffer-before-gap b) ei))))
+                          ((>= si blen)
+                           (setf (nelisp-buffer-after-gap b)
+                                 (concat (substring (nelisp-buffer-after-gap b) 0 (- si blen)) new
+                                         (substring (nelisp-buffer-after-gap b) (- ei blen)))))
+                          (t (setf (nelisp-buffer-before-gap b)
+                                   (concat (substring (nelisp-buffer-before-gap b) 0 si)
+                                           (substring new 0 (- blen si)))
+                                   (nelisp-buffer-after-gap b)
+                                   (concat (substring new (- blen si))
+                                           (substring (nelisp-buffer-after-gap b) (- ei blen)))))))
+                       (dotimes (_ (nelisp--case-modiff-ticks (- high low)))
+                         (nelisp-buffer--bump-tick b))
+                       t)))
+              nil
           (let ((table (nelisp--case-prepare-table))
                 (multibyte (nelisp--buffer-multibyte-p (current-buffer)))
                 (position low) (inword nil))
@@ -14017,7 +14195,7 @@ over."
                                (nelisp--case-region-replace position piece))))
                   (setq high (+ high delta) position (+ position 1 delta)
                         inword word))))
-            (nelisp-buffer--bump-tick (current-buffer)))))))
+            (nelisp-buffer--bump-tick (current-buffer))))))))
   nil)
 
 (unless (fboundp 'upcase-region)
@@ -14065,43 +14243,49 @@ over."
   "Return the 1-based position of the start of the line containing POS
 in BUF: the char after the nearest preceding newline, or `point-min'
 when there is none.  A POS that is itself a line start answers itself."
-  (let ((lo (nelisp-point-min buf)))
+  (let ((lo (or (nelisp-buffer-narrow-start buf) 1)))
     (if (<= pos lo)
         lo
-      ;; Scan backward in geometrically growing (x2) chunks ending at POS:
-      ;; O(distance to the line start), not O(POS - point-min).
-      (let ((to pos) (chunk 64) (found nil))
-        (while (and (> to lo) (not found))
-          (let* ((from (max lo (- to chunk)))
-                 (text (nelisp-buffer-substring from to buf))
-                 (i (1- (length text))))
-            (while (and (>= i 0) (not found))
-              (if (eq (elt text i) ?\n)
-                  (setq found (+ from i))
-                (setq i (1- i))))
-            (setq to from)
-            (setq chunk (* chunk 2))))
-        (if found (1+ found) lo)))))
+      ;; Walk back over the gap strings in place: O(distance to the line
+      ;; start), not O(POS - point-min).
+      (let* ((blen (progn (when (nelisp-buffer-ins buf) (nelisp-buffer--settle buf t))
+                          (nelisp-buffer-blen buf)))
+             (fl (1- lo))               ; lowest accessible 0-based index
+             (i (- pos 2)))             ; 0-based index of the char before POS
+        (when (>= i blen)
+          (let ((after (nelisp-buffer-after-gap buf)) (j (- i blen)))
+            (while (and (>= j 0) (>= (+ blen j) fl)
+                        (not (eq (aref after j) ?\n)))
+              (setq j (1- j)))
+            (setq i (if (and (>= j 0) (>= (+ blen j) fl)) (+ blen j) (1- blen)))))
+        (when (and (< i blen) (>= i fl))
+          (let ((before (nelisp-buffer-before-gap buf)))
+            (while (and (>= i fl) (not (eq (aref before i) ?\n)))
+              (setq i (1- i)))))
+        ;; I is now the 0-based index of the newline, or below the
+        ;; accessible start when there is none: the line starts right after
+        ;; the newline.
+        (if (>= i fl) (+ i 2) lo)))))
 
 (defun nelisp--motion-eol (pos buf)
   "Return the 1-based position of the end of the line containing POS in
 BUF: the position of the next newline at/after POS, or `point-max' when
 the line runs to the end of the (accessible) buffer with none."
-  (let ((hi (nelisp-point-max buf)))
+  (let ((hi (or (nelisp-buffer-narrow-end buf) (1+ (nelisp-buffer-len buf)))))
     (if (>= pos hi)
         hi
-      ;; Scan forward in geometrically growing (x2) chunks starting at POS:
-      ;; O(distance to the line end), not O(point-max - POS).
-      (let ((from pos) (chunk 64) (found nil))
-        (while (and (< from hi) (not found))
-          (let* ((to (min hi (+ from chunk)))
-                 (text (nelisp-buffer-substring from to buf))
-                 (i (string-match "\n" text)))
-            (if i
-                (setq found (+ from i))
-              (setq from to)
-              (setq chunk (* chunk 2)))))
-        (or found hi)))))
+      ;; Search the gap strings in place: O(distance to the newline).
+      (let* ((blen (progn (when (nelisp-buffer-ins buf) (nelisp-buffer--settle buf t))
+                          (nelisp-buffer-blen buf)))
+             (i (1- pos))
+             (p (and (< i blen)
+                     (string-search "\n" (nelisp-buffer-before-gap buf) i))))
+        (unless p
+          (let ((k (string-search "\n" (nelisp-buffer-after-gap buf)
+                                  (max 0 (- i blen)))))
+            (when k (setq p (+ blen k)))))
+        ;; P is the 0-based index of the newline, i.e. its position - 1.
+        (if (and p (< (1+ p) hi)) (1+ p) hi)))))
 
 (defun nelisp--motion-prev-bol (pos buf)
   "Return the start of the line immediately before the line that starts
@@ -14118,22 +14302,32 @@ and a non-empty final line at the end counts as one line moved for a
 positive N that runs out of newlines.  Never touches real point -- both
 `forward-line' and `line-beginning-position'/`line-end-position' below
 share this so the latter two can compute without moving anything."
-  (let ((lo (nelisp-point-min buf))
-        (hi (nelisp-point-max buf)))
+  (let ((lo (or (nelisp-buffer-narrow-start buf) 1))
+        (hi (or (nelisp-buffer-narrow-end buf) (1+ (nelisp-buffer-len buf)))))
     (cond
      ((= n 0)
       (cons (nelisp--motion-bol pos buf) 0))
      ((> n 0)
       (let ((cur pos) (remaining n) (ran-out nil))
-        (while (and (> remaining 0) (not ran-out))
-          (if (>= cur hi)
-              (setq ran-out t)
-            (let ((nl (nelisp--motion-eol cur buf)))
-              (if (< nl hi)
-                  (progn (setq cur (1+ nl))
-                         (setq remaining (1- remaining)))
-                (setq cur hi)
-                (setq ran-out t)))))
+        (if (> n 1)
+            ;; Many lines: one pass over the memoized text.
+            (let ((text (nelisp-buffer-string buf)) (j nil))
+              (while (and (> remaining 0) (not ran-out))
+                (if (>= cur hi)
+                    (setq ran-out t)
+                  (setq j (string-search "\n" text (1- cur)))
+                  (if (and j (< (1+ j) hi))
+                      (setq cur (+ j 2) remaining (1- remaining))
+                    (setq cur hi ran-out t)))))
+          (while (and (> remaining 0) (not ran-out))
+            (if (>= cur hi)
+                (setq ran-out t)
+              (let ((nl (nelisp--motion-eol cur buf)))
+                (if (< nl hi)
+                    (progn (setq cur (1+ nl))
+                           (setq remaining (1- remaining)))
+                  (setq cur hi)
+                  (setq ran-out t))))))
         ;; Reaching the end on an unterminated last line still counts as
         ;; one line successfully moved (probed: `forward-line' docstring's
         ;; own "Exception" paragraph, confirmed against a no-trailing-
@@ -14141,7 +14335,7 @@ share this so the latter two can compute without moving anything."
         (when (and (> remaining 0)
                    (= cur hi)
                    (or (= cur lo)
-                       (/= (nelisp--motion-char-at (1- cur) buf) ?\n)))
+                       (/= (nelisp-char-before cur buf) ?\n)))
           (setq remaining (1- remaining)))
         (cons cur remaining)))
      (t
@@ -14149,7 +14343,7 @@ share this so the latter two can compute without moving anything."
              (cur (nelisp--motion-bol pos buf))
              (remaining m) (stalled nil))
         (while (and (> remaining 0) (not stalled))
-          (let ((prev (nelisp--motion-prev-bol cur buf)))
+          (let ((prev (if (<= cur lo) lo (nelisp--motion-bol (1- cur) buf))))
             (if (= prev cur)
                 (setq stalled t)
               (setq cur prev)
@@ -14158,23 +14352,9 @@ share this so the latter two can compute without moving anything."
 
 (unless (fboundp 'forward-char)
   (defun forward-char (&optional n)
-  "Move point N characters forward (backward if N negative; default 1).
-Probed against Emacs 30.1: point is clamped to the buffer bound even
-when the full move does not fit, and `end-of-buffer'/`beginning-of-
-buffer' is still signaled in that case (data nil, matching Emacs); a
-move that fits fully returns nil and signals nothing."
-  (interactive "^p")
-  (when n (nelisp--check-integer n))
-  (let* ((b nelisp--current-buffer)
-         (count (or n 1))
-         (lo (nelisp-point-min b))
-         (hi (nelisp-point-max b))
-         (target (+ (nelisp-point b) count))
-         (clamped (max lo (min hi target))))
-    (nelisp-goto-char clamped b)
-    (cond
-     ((> target hi) (signal 'end-of-buffer nil))
-     ((< target lo) (signal 'beginning-of-buffer nil))))))
+    "Move point N characters forward (backward if N negative; default 1)."
+    (interactive "^p")
+    (nelisp--motion-forward-char n)))
 
 (unless (fboundp 'forward-line)
   (defun forward-line (&optional n)
@@ -14182,23 +14362,68 @@ move that fits fully returns nil and signals nothing."
 N=1.  Returns the shortfall (probed against Emacs 30.1): 0 when the
 move completed, otherwise how many lines were left uncompleted (N minus
 lines moved forward; N plus lines moved backward).  Never signals."
-    (when n (nelisp--check-integer n))
-    (let* ((b nelisp--current-buffer)
-           (result (nelisp--motion-forward-line b (nelisp-point b) (or n 1))))
+    (or (null n) (integerp n) (nelisp--check-integer n))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (result (nelisp--motion-forward-line
+                    b (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+                    (or n 1))))
       (nelisp-goto-char (car result) b)
       (cdr result))))
+
+(defun nelisp--motion-forward-char (n)
+  "Move point N characters forward (backward if N negative; default 1).
+This is the body of `forward-char', kept apart so that the VM compiles it:
+`forward-char' itself carries an `interactive' form, which the VM never
+covers.  Probed against Emacs 30.1: point is clamped to the buffer bound
+even when the full move does not fit, and `end-of-buffer'/`beginning-of-
+buffer' is still signaled in that case (data nil, matching Emacs); a
+move that fits fully returns nil and signals nothing."
+  (or (null n) (integerp n) (nelisp--check-integer n))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (blen (nelisp-buffer-blen b))
+         (target (+ (or (nelisp-buffer-pend b) (1+ blen)) (or n 1)))
+         (lo (or (nelisp-buffer-narrow-start b) 1))
+         (hi (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+    (cond
+     ((> target hi)
+      (nelisp-goto-char hi b)
+      (signal 'end-of-buffer nil))
+     ((< target lo)
+      (nelisp-goto-char lo b)
+      (signal 'beginning-of-buffer nil))
+     (t (setf (nelisp-buffer-pend b) (if (= target (1+ blen)) nil target))
+        nil))))
+
+(defun nelisp--motion-delete-region (s e)
+  "Delete the text between S and E (integers, either order) in the
+current buffer, with the argument checks of the bytecode `delete-region'
+instruction: the range must lie in the accessible portion, and a
+read-only buffer refuses a nonempty range."
+  (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+    (unless (and (<= (or (nelisp-buffer-narrow-start b) 1) (min s e))
+                 (<= (max s e)
+                     (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+      (signal 'args-out-of-range (list nelisp--current-buffer s e)))
+    (when (and (boundp 'buffer-read-only) buffer-read-only
+               (not (and (boundp 'inhibit-read-only) inhibit-read-only)) (/= s e))
+      (signal 'buffer-read-only (list nelisp--current-buffer)))
+    (nelisp-delete-region s e b)))
 
 (unless (fboundp 'bolp)
   (defun bolp ()
     "T when point is at the beginning of a line (or `point-min')."
-    (let ((b nelisp--current-buffer))
-      (= (nelisp-point b) (nelisp--motion-bol (nelisp-point b) b)))))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (or (<= pt (or (nelisp-buffer-narrow-start b) 1))
+          (eq (nelisp-char-before pt b) ?\n)))))
 
 (unless (fboundp 'eolp)
   (defun eolp ()
     "T when point is at the end of a line (or `point-max')."
-    (let ((b nelisp--current-buffer))
-      (= (nelisp-point b) (nelisp--motion-eol (nelisp-point b) b)))))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (or (>= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+          (eq (nelisp-char-after pt b) ?\n)))))
 
 (unless (fboundp 'line-beginning-position)
   (defun line-beginning-position (&optional n)
@@ -14207,19 +14432,110 @@ lines moved forward; N plus lines moved backward).  Never signals."
 against Emacs 30.1 -- same line arithmetic as `forward-line' on N-1,
 clamped at the buffer bounds, applied to a copy of point rather than
 point itself."
-    (when n (nelisp--check-integer n))
-    (let ((b nelisp--current-buffer))
-      (car (nelisp--motion-forward-line b (nelisp-point b) (1- (or n 1)))))))
+    (or (null n) (integerp n) (nelisp--check-integer n))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (if (or (null n) (eq n 1))
+          (nelisp--motion-bol pt b)
+        (car (nelisp--motion-forward-line b pt (1- n)))))))
 
 (unless (fboundp 'line-end-position)
   (defun line-end-position (&optional n)
     "Return the position of the end of the Nth line from point's line
 \(default N=1\); does not move point.  Same line as
 `line-beginning-position' N, then that line's end (probed 30.1)."
-    (when n (nelisp--check-integer n))
-    (let* ((b nelisp--current-buffer)
-           (bol (car (nelisp--motion-forward-line b (nelisp-point b) (1- (or n 1))))))
-      (nelisp--motion-eol bol b))))
+    (or (null n) (integerp n) (nelisp--check-integer n))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (nelisp--motion-eol
+       (if (or (null n) (eq n 1))
+           pt
+         (car (nelisp--motion-forward-line b pt (1- n))))
+       b))))
+
+(unless (fboundp 'delete-char)
+  (defun delete-char (n &optional _killflag)
+    "Delete N characters after point (before it when N is negative).
+Signals `end-of-buffer' or `beginning-of-buffer' when the range leaves the
+accessible portion, as GNU's cmds.c does; point stays put in that case."
+    (unless (integerp n)
+      (signal 'wrong-type-argument (list 'fixnump n)))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+           (pos (+ pt n)))
+      (cond
+       ((< pos (or (nelisp-buffer-narrow-start b) 1))
+        (signal 'beginning-of-buffer nil))
+       ((> pos (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+        (signal 'end-of-buffer nil))
+       (t (nelisp-delete-region pt pos b))))
+    nil))
+
+(unless (fboundp 'subst-char-in-region)
+  (defun subst-char-in-region (start end fromchar tochar &optional _noundo)
+    "From START to END, replace FROMCHAR with TOCHAR each time it occurs.
+Markers and text properties stay where they are (the replacement is
+spliced into the gap strings); the buffer is marked modified only when
+a character changed."
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (lo (min start end)) (hi (max start end)))
+      (unless (and (>= lo (or (nelisp-buffer-narrow-start b) 1))
+                   (<= hi (or (nelisp-buffer-narrow-end b)
+                              (1+ (nelisp-buffer-len b)))))
+        (signal 'args-out-of-range (list start end)))
+      (let* ((text (nelisp-buffer-substring lo hi b))
+             (new (let ((out (copy-sequence text)) (i 0) (n (length text)))
+                    (while (< i n)
+                      (when (eq (aref out i) fromchar) (aset out i tochar))
+                      (setq i (1+ i)))
+                    out)))
+        (unless (equal new text)
+          (if (= (string-bytes (char-to-string fromchar))
+                 (string-bytes (char-to-string tochar)))
+              (let ((blen (nelisp-buffer-blen b)) (si (1- lo)) (ei (1- hi)))
+                (cond
+                 ((<= ei blen)
+                  (setf (nelisp-buffer-before-gap b)
+                        (concat (substring (nelisp-buffer-before-gap b) 0 si) new
+                                (substring (nelisp-buffer-before-gap b) ei))))
+                 ((>= si blen)
+                  (setf (nelisp-buffer-after-gap b)
+                        (concat (substring (nelisp-buffer-after-gap b) 0 (- si blen)) new
+                                (substring (nelisp-buffer-after-gap b) (- ei blen)))))
+                 (t (setf (nelisp-buffer-before-gap b)
+                          (concat (substring (nelisp-buffer-before-gap b) 0 si)
+                                  (substring new 0 (- blen si)))
+                          (nelisp-buffer-after-gap b)
+                          (concat (substring new (- blen si))
+                                  (substring (nelisp-buffer-after-gap b) (- ei blen))))))
+                (setf (nelisp-buffer-modified b) t)
+                (nelisp-buffer--bump-tick b))
+            ;; Different widths: positions shift, so redo the region.
+            (let ((pt (point)))
+              (nelisp-delete-region lo hi b)
+              (nelisp-goto-char lo b)
+              (nelisp-insert new b)
+              (nelisp-goto-char pt b))))))
+    nil))
+
+(unless (fboundp 'move-to-column)
+  (defun move-to-column (column &optional _force)
+    "Move point to column COLUMN in the current line; return the column
+reached (tabs expand per `tab-width').  Stops at the end of the line."
+    (unless (and (integerp column) (>= column 0))
+      (signal 'wrong-type-argument (list 'wholenump column)))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pos (nelisp--motion-bol (nelisp-point b) b))
+           (eol (nelisp--motion-eol pos b))
+           (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
+           (col 0))
+      (while (and (< pos eol) (< col column))
+        (setq col (if (eq (nelisp-char-after pos b) ?\t)
+                      (* width (1+ (/ col width)))
+                    (1+ col)))
+        (setq pos (1+ pos)))
+      (nelisp-goto-char pos b)
+      col)))
 
 (unless (boundp 'tab-width)
   (defvar tab-width 8
@@ -14257,14 +14573,22 @@ case)."
 (unless (fboundp 'following-char)
   (defun following-char ()
     "Return the character after point, or 0 at `point-max' (probed 30.1)."
-    (let ((b nelisp--current-buffer))
-      (or (nelisp--motion-char-at (nelisp-point b) b) 0))))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (or (and (>= pt (or (nelisp-buffer-narrow-start b) 1))
+               (< pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+               (nelisp-char-after pt b))
+          0))))
 
 (unless (fboundp 'preceding-char)
   (defun preceding-char ()
     "Return the character before point, or 0 at `point-min' (probed 30.1)."
-    (let ((b nelisp--current-buffer))
-      (or (nelisp--motion-char-at (1- (nelisp-point b)) b) 0))))
+    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (or (and (> pt (or (nelisp-buffer-narrow-start b) 1))
+               (<= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+               (nelisp-char-before pt b))
+          0))))
 
 (defun nelisp--motion-parse-skip-spec (spec)
   "Parse SPEC in `skip-chars-forward' syntax into (NEGATE . SET).
@@ -14308,20 +14632,47 @@ supported -- out of Doc 204 P2 scope, no consumer here needs them."
           (when (= ch item) (setq hit t)))))
     hit))
 
+(defun nelisp--motion-skip-table (spec)
+  "Return (NEGATE TABLE REST) for SPEC: TABLE is a 128-character string whose
+byte at C is 1 when ASCII character C is in the set, and REST is the parsed
+set used for non-ASCII characters.  The last SPEC seen is remembered on the
+symbol's plist."
+  (let ((cached (get 'nelisp--motion-skip-table 'last)))
+    (if (and cached (equal (car cached) spec))
+        (cdr cached)
+      (let* ((parsed (nelisp--motion-parse-skip-spec spec))
+             (table (make-string 128 0))
+             (set (cdr parsed))
+             (hit nil))
+        (while set
+          (let ((item (car set)))
+            (if (consp item)
+                (let ((c (car item)) (hi (min (cdr item) 127)))
+                  (while (<= c hi) (aset table c 1) (setq c (1+ c))))
+              (when (< item 128) (aset table item 1))))
+          (setq set (cdr set)))
+        (setq hit (list (car parsed) table (cdr parsed)))
+        (put 'nelisp--motion-skip-table 'last (cons spec hit))
+        hit))))
+
 (defun nelisp--motion-skip-forward (spec lim)
   "Move point forward while it matches SPEC; return the distance moved
 \(0 or positive\).  LIM caps the position point may reach."
+  (nelisp--check-string spec)
   (let* ((b nelisp--current-buffer)
-         (parsed (nelisp--motion-parse-skip-spec spec))
-         (negate (car parsed))
-         (set (cdr parsed))
+         (info (nelisp--motion-skip-table spec))
+         (negate (car info))
+         (table (nth 1 info))
+         (rest (nth 2 info))
          (start (nelisp-point b))
          (hi (if lim (min lim (nelisp-point-max b)) (nelisp-point-max b)))
          (text (nelisp-buffer-string b))
          (cur start))
     (while (and (< cur hi)
-                (let ((matches (nelisp--motion-charset-member-p
-                                 (aref text (1- cur)) set)))
+                (let* ((ch (aref text (1- cur)))
+                       (matches (if (< ch 128)
+                                    (eq (aref table ch) 1)
+                                  (nelisp--motion-charset-member-p ch rest))))
                   (if negate (not matches) matches)))
       (setq cur (1+ cur)))
     (nelisp-goto-char cur b)
@@ -14331,17 +14682,21 @@ supported -- out of Doc 204 P2 scope, no consumer here needs them."
   "Move point backward while the character before it matches SPEC;
 return the distance moved (0 or negative).  LIM floors the position
 point may reach."
+  (nelisp--check-string spec)
   (let* ((b nelisp--current-buffer)
-         (parsed (nelisp--motion-parse-skip-spec spec))
-         (negate (car parsed))
-         (set (cdr parsed))
+         (info (nelisp--motion-skip-table spec))
+         (negate (car info))
+         (table (nth 1 info))
+         (rest (nth 2 info))
          (start (nelisp-point b))
          (lo (if lim (max lim (nelisp-point-min b)) (nelisp-point-min b)))
          (text (nelisp-buffer-string b))
          (cur start))
     (while (and (> cur lo)
-                (let ((matches (nelisp--motion-charset-member-p
-                                 (aref text (- cur 2)) set)))
+                (let* ((ch (aref text (- cur 2)))
+                       (matches (if (< ch 128)
+                                    (eq (aref table ch) 1)
+                                  (nelisp--motion-charset-member-p ch rest))))
                   (if negate (not matches) matches)))
       (setq cur (1- cur)))
     (nelisp-goto-char cur b)
@@ -17222,10 +17577,11 @@ that copying a nowhere-pointing marker produces another nowhere-
 pointing marker regardless of which buffer happens to be current."
     (unless (or (null position) (integerp position) (nelisp-marker-p position))
       (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
-    (let ((new (nelisp-marker--make)))
+    (let ((new (nelisp-marker--make-plain)))
       (set-marker new position
                   (and (nelisp-marker-p position) (nelisp-marker-buffer position)))
-      (nelisp-marker--set-insertion-type new (and type t))
+      ;; A plain marker already has insertion type nil.
+      (when type (nelisp-marker--set-insertion-type new t))
       new)))
 
 (unless (fboundp 'marker-position)
@@ -20193,7 +20549,15 @@ projection per cell and one slot vector per function for this print call."
     ;; the float-heavy case this file exists to make fast, and changes
     ;; nothing observable (a non-nil OVERRIDES is still validated).
     (when overrides (nelisp--check-print-overrides overrides))
-    (nelisp--prn-to-string object (not noescape))))
+    ;; fmt1: one native pass (the print buffer of GNU print.c) answers plain
+    ;; data -- numbers, ordinary symbols, ASCII strings, lists and vectors of
+    ;; them -- while every printer variable is at its default; nil sends
+    ;; everything else (records, hash tables, circular data, print-length,
+    ;; escapes, text properties ...) through the Lisp printer below.
+    (or (and (null overrides)
+             (or (not noescape) (not (stringp object)))
+             (nelisp--native-format (if noescape "%s" "%S") object))
+        (nelisp--prn-to-string object (not noescape)))))
 
 ;; Doc 210: strings DO carry text properties now, via the identity-keyed
 ;; side table `nelisp--tp-string-properties' (Doc 200's unibyte/multibyte
@@ -21616,11 +21980,11 @@ cursor cache.  What the native reader declines (spellings it does not
 decode, and every incomplete or malformed form) is first classified by
 `nelisp--read-buffer-scan', so that end of input and stray brackets
 are reported the way GNU does, and the rest takes `read-from-string'."
-  (let* ((cached (gethash buf nelisp-buffer--text-cache))
+  (let* ((cached (nelisp-buffer-tcache buf))
          ;; Inlined memo check of `nelisp-buffer-string': one call less
          ;; per form, which is measurable at ten thousand forms.
          (full (if (and cached (= (car cached)
-                                  (gethash buf nelisp-buffer--tick 0)))
+                                  (nelisp-buffer-tick buf)))
                    (cdr cached)
                  (nelisp-buffer-string buf)))
          (end (or end (length full)))
@@ -21667,24 +22031,23 @@ are reported the way GNU does, and the rest takes `read-from-string'."
     ;; read is always inside the accessible portion.  As in GNU, point is
     ;; left after the form, after a stray bracket, or at the end of the
     ;; accessible portion when the text ran out.
-    (let* ((pend (gethash stream nelisp-buffer--pending-point))
-           (start (1- (or pend (1+ (nelisp-buffer--before-length stream)))))
+    (let* ((pend (nelisp-buffer-pend stream))
+           (start (1- (or pend (1+ (nelisp-buffer-blen stream)))))
            (ne (nelisp-buffer-narrow-end stream))
            (end (and ne (1- ne)))
            (ns (nelisp-buffer-narrow-start stream))
            (r (nelisp--read-buffer-form stream start end (if ns (1- ns) 0))))
       (cond
        ((null r)
-        (puthash stream (or ne (1+ (nelisp-buffer-size stream)))
-                 nelisp-buffer--pending-point)
+        (setf (nelisp-buffer-pend stream) (or ne (1+ (nelisp-buffer-size stream))))
         (signal 'end-of-file (list stream)))
        ((vectorp r)
-        (puthash stream (+ 2 (aref r 1)) nelisp-buffer--pending-point)
+        (setf (nelisp-buffer-pend stream) (+ 2 (aref r 1)))
         (signal 'invalid-read-syntax
                 (list (if (= (aref (nelisp-buffer-string stream) (aref r 1)) 41)
                           ")" "]")
                       (aref r 2) (aref r 3))))
-       (t (puthash stream (1+ (cdr r)) nelisp-buffer--pending-point)
+       (t (setf (nelisp-buffer-pend stream) (1+ (cdr r)))
           (car r)))))
    ((nelisp-marker-p stream)
     (let ((mbuf (nelisp-marker-buffer stream)))
@@ -24510,143 +24873,124 @@ signals an error rather than passing text through unexpanded."
     (if bytes
         (cons (apply 'concat (nreverse bytes)) chunks)
       chunks)))
-(unless (fboundp 'base64-encode-string)
-  (defun base64-encode-string (string &optional _no-line-break)
-  (nelisp--check-string string)
-    ;; `aref' answers the CHARACTER at a char index, decoding UTF-8 (Doc
-    ;; 161) -- correct for text, wrong here.  STRING is arbitrary bytes
-    ;; (this is the encoder `nelisp-artifact.el' calls on a compiled
-    ;; object's raw content), and a byte >= 128 does not stand alone as
-    ;; a valid UTF-8 sequence, so `aref' misreads both the byte value
-    ;; and the char/byte boundary -- and `length' undercounts the same
-    ;; string for the same reason (this is `nelisp-elf--byte-length's
-    ;; `length'-vs-`string-bytes' defect again, one caller upstream: a
-    ;; write-region call that now passes its own count check can still
-    ;; carry a corrupted `:object-base64' payload from here).  `string-
-    ;; byte' / `string-bytes' are the byte-clean pair: raw byte at a
-    ;; byte index, and a byte count that does not shrink for high bytes.
-    ;; Fill one exact-sized ASCII result. The byte reads, bit extraction,
-    ;; padding and existing no-wrap policy are unchanged; no tiny strings or
-    ;; lists are allocated for each input triple.
-    (let* ((alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-           (i 0) (out 0) (len (string-bytes string))
-           ;; ASCII is unibyte on GNU; state this explicitly so the standalone
-           ;; writer never needs a character-to-byte walk for an output index.
-           (result (string-as-unibyte (make-string (* 4 (/ (+ len 2) 3)) 61))))
+(defun nelisp--base64-encode-ref (string line-break pad url)
+  "Lisp reference for `nelisp--base64-encode', a port of GNU base64_encode_1.
+LINE-BREAK wraps after 76 output characters, PAD appends `=', URL selects
+the -_ alphabet.  A multibyte character above 127 signals GNU's error unless
+it is a raw byte."
+  (let ((bytes (if (multibyte-string-p string)
+                   (let ((i 0) (n (length string)) (acc nil))
+                     (while (< i n)
+                       (let ((c (aref string i)))
+                         (cond ((< c 128) (setq acc (cons c acc)))
+                               ((>= c #x3fff80) (setq acc (cons (- c #x3fff00) acc)))
+                               (t (signal 'error (list "Multibyte character in data for base64 encoding")))))
+                       (setq i (1+ i)))
+                     (apply #'unibyte-string (nreverse acc)))
+                 string)))
+    (let* ((alphabet (if url
+                         "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+                       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"))
+           (len (string-bytes bytes))
+           (groups (/ (+ len 2) 3))
+           (rem (% len 3))
+           (breaks (if (and line-break (> groups 0)) (/ (1- groups) 19) 0))
+           (size (- (+ (* 4 groups) breaks)
+                    (if pad 0 (cond ((= rem 1) 2) ((= rem 2) 1) (t 0)))))
+           (result (string-as-unibyte (make-string size 61)))
+           (i 0) (out 0) (counter 0))
       (while (< i len)
-        (let* ((a (string-byte string i))
+        (when line-break
+          (if (< counter 19)
+              (setq counter (1+ counter))
+            (aset result out 10)
+            (setq out (1+ out) counter 1)))
+        (let* ((a (string-byte bytes i))
                (have-b (< (1+ i) len))
                (have-c (< (+ i 2) len))
-               (b (if have-b (string-byte string (1+ i)) 0))
-               (c (if have-c (string-byte string (+ i 2)) 0))
-               (triple (logior (ash a 16) (ash b 8) c)))
-          (aset result out (aref alphabet (logand (ash triple -18) 63)))
-          (aset result (1+ out) (aref alphabet (logand (ash triple -12) 63)))
+               (b (if have-b (string-byte bytes (1+ i)) 0))
+               (c (if have-c (string-byte bytes (+ i 2)) 0)))
+          (aset result out (aref alphabet (logand (ash a -2) 63)))
+          (aset result (+ out 1) (aref alphabet (logior (ash (logand a 3) 4) (ash b -4))))
           (when have-b
-            (aset result (+ out 2) (aref alphabet (logand (ash triple -6) 63))))
+            (aset result (+ out 2) (aref alphabet (logior (ash (logand b 15) 2) (ash c -6)))))
           (when have-c
-            (aset result (+ out 3) (aref alphabet (logand triple 63)))))
+            (aset result (+ out 3) (aref alphabet (logand c 63)))))
         (setq i (+ i 3) out (+ out 4)))
       result)))
+
+(defun nelisp--base64-char-value (c url)
+  "GNU base64_char_to_value: 0 invalid, -1 ignorable, else 1 + the value."
+  (cond ((and (>= c ?A) (<= c ?Z)) (- c 64))
+        ((and (>= c ?a) (<= c ?z)) (- c 70))
+        ((and (>= c ?0) (<= c ?9)) (+ c 5))
+        ((= c (if url ?- ?+)) 63)
+        ((= c (if url ?_ ?/)) 64)
+        ((memq c '(32 9 10 12 13)) -1)
+        (t 0)))
+
+(defun nelisp--base64-decode-ref (string url ignore)
+  "Lisp reference for `nelisp--base64-decode', a port of GNU base64_decode_1.
+Return the decoded unibyte string, or nil for invalid base64 data."
+  (let* ((bytes (if (multibyte-string-p string) (encode-coding-string string 'utf-8-emacs t) string))
+         (n (string-bytes bytes)) (p 0) (phase 0) (acc 0) (out nil) (err nil) (done nil))
+    (while (not done)
+      (while (and (< p n)
+                  (let ((v (nelisp--base64-char-value (string-byte bytes p) url)))
+                    (or (< v 0) (and (= v 0) ignore))))
+        (setq p (1+ p)))
+      (if (>= p n)
+          (progn (setq done t)
+                 (cond ((= phase 0))
+                       ((= phase 1) (setq err t))
+                       ((not (or url ignore)) (setq err t))))
+        (let* ((c (string-byte bytes p))
+               (v (nelisp--base64-char-value c url)))
+          (setq p (1+ p))
+          (cond
+           ((= phase 0)
+            (if (= v 0) (setq err t done t)
+              (setq acc (* (1- v) 262144) phase 1)))
+           ((= phase 1)
+            (if (= v 0) (setq err t done t)
+              (setq acc (+ acc (* (1- v) 4096)))
+              (setq out (cons (logand (/ acc 65536) 255) out) phase 2)))
+           ((= phase 2)
+            (if (= c ?=)
+                (let ((q p))
+                  (while (and (< q n) (< (nelisp--base64-char-value (string-byte bytes q) url) 0))
+                    (setq q (1+ q)))
+                  (if (and (< q n) (= (string-byte bytes q) ?=))
+                      (setq p (1+ q) phase 0)
+                    (setq err t done t)))
+              (if (= v 0) (setq err t done t)
+                (setq acc (+ acc (* (1- v) 64)))
+                (setq out (cons (logand (/ acc 256) 255) out) phase 3))))
+           (t
+            (cond ((= c ?=) (setq phase 0))
+                  ((= v 0) (setq err t done t))
+                  (t (setq acc (+ acc (1- v)))
+                     (setq out (cons (logand acc 255) out) phase 0))))))))
+    (if err nil (apply #'unibyte-string (nreverse out)))))
+
+(unless (fboundp 'base64-encode-string)
+  (defun base64-encode-string (string &optional no-line-break)
+    "Base64-encode STRING, breaking lines every 76 characters unless NO-LINE-BREAK."
+    (or (nelisp--base64-encode string (not no-line-break) t nil)
+        (progn (nelisp--check-string string)
+               (nelisp--base64-encode-ref string (not no-line-break) t nil)))))
+(unless (fboundp 'base64url-encode-string)
+  (defun base64url-encode-string (string &optional no-pad)
+    "Base64url-encode STRING; NO-PAD omits the `=' padding."
+    (or (nelisp--base64-encode string nil (not no-pad) t)
+        (progn (nelisp--check-string string)
+               (nelisp--base64-encode-ref string nil (not no-pad) t)))))
 (unless (fboundp 'base64-decode-string)
   (defun base64-decode-string (string &optional base64url ignore-invalid)
-    ;; Bytes, not characters.  `char-to-string' builds the CHARACTER whose
-    ;; code is the byte, and a byte >= 128 is then held in its multi-byte
-    ;; UTF-8 form, so decoding "yMnK" answered (195 136 195 137 195 138)
-    ;; where every other base64 answers (200 201 202) -- the payload silently
-    ;; doubled and no longer matched what was encoded.
-    ;;
-    ;; The ENCODER above was already byte-clean (`string-byte' /
-    ;; `string-bytes', see its own comment); this is the same defect on the
-    ;; way back, so the pair did not round-trip for any input with a high
-    ;; byte -- which is most compiled output.  `unibyte-string' keeps the byte.
-    (nelisp--check-string string)
-    ;; Emacs REFUSES what it cannot decode: a character outside the alphabet
-    ;; and a group short of four both signal, and skipping them quietly
-    ;; produced a shorter string that read as a successful decode.  In
-    ;; base64url mode the padding is optional, which is why the same input
-    ;; can be an error in one mode and two bytes in the other.
-    (let ((j 0) (n (length string)) (kept 0))
-      (while (< j n)
-        (let ((ch (aref string j)))
-          (cond
-           ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32)) nil)
-           ((= ch ?=) (setq kept (1+ kept)))
-           ((and base64url (or (= ch ?-) (= ch ?_))) (setq kept (1+ kept)))
-           ((>= (nelisp--base64-value ch) 0) (setq kept (1+ kept)))
-           (t (unless ignore-invalid (signal 'error (list "Invalid base64 data"))))))
-        (setq j (1+ j)))
-      (if (or base64url ignore-invalid)
-          (when (= 1 (mod kept 4)) (signal 'error (list "Invalid base64 data")))
-        (unless (= 0 (mod kept 4))
-          (signal 'error (list "Invalid base64 data")))))
-    (let ((i 0)
-          (len (length string))
-          (vals-count 0)
-          (a 0)
-          (b 0)
-          (c 0)
-          (d 0)
-          (bytes nil)
-          (byte-count 0)
-          (chunks nil))
-      (while (< i len)
-        (let ((ch (aref string i)))
-          (cond
-           ((= ch ?=)
-            (cond
-             ((= vals-count 0) (setq a -2))
-             ((= vals-count 1) (setq b -2))
-             ((= vals-count 2) (setq c -2))
-             (t (setq d -2)))
-            (setq vals-count (1+ vals-count)))
-           ((or (= ch 10) (= ch 13) (= ch 9) (= ch 32))
-            nil)
-           (t
-            (let ((v (nelisp--base64-value ch)))
-              (when (>= v 0)
-                (cond
-                 ((= vals-count 0) (setq a v))
-                 ((= vals-count 1) (setq b v))
-                 ((= vals-count 2) (setq c v))
-                 (t (setq d v)))
-                (setq vals-count (1+ vals-count))))))
-          (when (= vals-count 4)
-            (let ((triple (logior (ash a 18)
-                                  (ash b 12)
-                                  (if (= c -2) 0 (ash c 6))
-                                  (if (= d -2) 0 d))))
-              (setq bytes
-                    (cons (unibyte-string (logand (ash triple -16) 255))
-                          bytes))
-              (setq byte-count (1+ byte-count))
-              (unless (= c -2)
-                (setq bytes
-                      (cons (unibyte-string (logand (ash triple -8) 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (unless (= d -2)
-                (setq bytes
-                      (cons (unibyte-string (logand triple 255))
-                            bytes))
-                (setq byte-count (1+ byte-count)))
-              (when (>= byte-count 128)
-                (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-                (setq bytes nil)
-                (setq byte-count 0))
-              (setq vals-count 0))))
-        (setq i (1+ i)))
-      (when (>= vals-count 2)
-        ;; A PADDING character reached this flush as -2 and was shifted in as
-        ;; a value, so an ignore-invalid decode of "a!b=" produced two bytes
-        ;; of noise instead of one byte of answer.
-        (let ((triple (logior (ash a 18) (ash b 12)
-                              (if (and (>= vals-count 3) (>= c 0)) (ash c 6) 0))))
-          (setq bytes (cons (unibyte-string (logand (ash triple -16) 255)) bytes))
-          (when (and (>= vals-count 3) (>= c 0))
-            (setq bytes (cons (unibyte-string (logand (ash triple -8) 255)) bytes)))))
-      (setq chunks (nelisp--base64-flush-chunk bytes chunks))
-      (apply 'concat (nreverse chunks)))))
+    "Base64-decode STRING to a unibyte string; signal an error for invalid data."
+    (or (nelisp--base64-decode string base64url ignore-invalid)
+        (progn (nelisp--check-string string)
+               (signal 'error (list "Invalid base64 data"))))))
 ;; nelisp stdlib lowering helpers (referenced by the dotimes/loop macro
 ;; expansions in nelisp-stdlib-eval-special; their definitions live in
 ;; nelisp-stdlib.el which aborts on load standalone).  They are trivial
@@ -24683,7 +25027,8 @@ signals an error rather than passing text through unexpanded."
 (unless (fboundp 'json-serialize)
   (defun json-serialize (object &rest args)
   "Encode OBJECT as JSON with configurable null and false objects."
-  (let ((text (nelisp--w302-json-encode object (nelisp--w302-json-options args nil) nil)))
+  (let ((text (or (and (null args) (nelisp--json-serialize-fast object))
+                  (nelisp--w302-json-encode object (nelisp--w302-json-options args nil) nil))))
     (encode-coding-string text 'utf-8 t))))
 
 ;; ---- Doc 22 reader-core gap fixes (A1/A2/A3/A5/A10/A12) ----
@@ -24732,6 +25077,9 @@ signals an error rather than passing text through unexpanded."
 
 (defun floor (x &optional div)
   "Return the largest integer <= X (1-arg) or <= X/DIV (2-arg)."
+  (if (and (null div) (numberp x))
+      (nelisp--native-floor x)
+    (progn
   (nelisp--check-number x)
   (when div
     (nelisp--check-number div)
@@ -24739,7 +25087,7 @@ signals an error rather than passing text through unexpanded."
   (cond
    ((null div) (nelisp--native-floor x))
    ((and (integerp x) (integerp div)) (nelisp--int-floor-div x div))
-   (t (nelisp--native-floor (/ x div)))))
+   (t (nelisp--native-floor (/ x div)))))))
 
 ;; `round' was missing entirely, next to `floor'/`ceiling'/`truncate'.
 ;; Emacs rounds halves to EVEN, not away from zero: (round 0.5)=0 and
@@ -24762,6 +25110,9 @@ A half is rounded to the even neighbour, as in Emacs."
 
 (defun ceiling (x &optional div)
   "Return the smallest integer >= X (1-arg) or >= X/DIV (2-arg)."
+  (if (and (null div) (numberp x))
+      (nelisp--native-ceiling x)
+    (progn
   (nelisp--check-number x)
   (when div
     (nelisp--check-number div)
@@ -24770,10 +25121,13 @@ A half is rounded to the even neighbour, as in Emacs."
    ((null div) (nelisp--native-ceiling x))
    ((and (integerp x) (integerp div))
     (- (nelisp--int-floor-div (- x) div)))
-   (t (nelisp--native-ceiling (/ x div)))))
+   (t (nelisp--native-ceiling (/ x div)))))))
 
 (defun truncate (x &optional div)
   "Truncate X (1-arg) or X/DIV (2-arg) toward zero."
+  (if (and (null div) (numberp x))
+      (nelisp--native-truncate x)
+    (progn
   (nelisp--check-number x)
   (when div
     (nelisp--check-number div)
@@ -24781,7 +25135,7 @@ A half is rounded to the even neighbour, as in Emacs."
   (cond
    ((null div) (nelisp--native-truncate x))
    ((and (integerp x) (integerp div)) (/ x div))
-   (t (nelisp--native-truncate (/ x div)))))
+   (t (nelisp--native-truncate (/ x div)))))))
 
 ;; Rust-min batch 6l (2026-05-06): `mod' migrated from Rust to
 ;; elisp.  Reproduces the previous `bi_mod' contract exactly:
@@ -24880,71 +25234,107 @@ comment above this definition for how that value was measured."))
   (fset 'nelisp--native-equal '(builtin nelisp--equal-leaf)))
 (unless (fboundp 'nelisp--native-eq)
   (fset 'nelisp--native-eq '(builtin eq)))
+;; core1: `nelisp--equal-reference' is a port of GNU fns.c internal_equal_1 /
+;; internal_equal_cycle.  The native `equal' arm decides every ordinary
+;; comparison itself and delegates the whole call here only for records,
+;; char-tables, symbol-with-pos, nesting deeper than 10 and cyclic lists, so
+;; speed does not matter and fidelity does: cons chains are walked with Brent's
+;; tortoise (FOR_EACH_TAIL_BASIC); a cycle in the first list is resolved by
+;; looking for one in the second (internal_equal_cycle) and never signals; from
+;; depth 11 an eq hash table remembers (O1 . O2s) pairs and a repeated pair is
+;; equal; depth 201 signals "Stack overflow in equal".
+(defun nelisp--equal-container-p (o)
+  (or (consp o) (vectorp o) (recordp o) (char-table-p o)
+      (and (fboundp 'bool-vector-p) (bool-vector-p o))))
+
+(defun nelisp--equal-seen (o1 o2 depth ht)
+  "fns.c:2860-2884: non-nil when the pair (O1 O2) was already visited."
+  (when (> depth 200) (error "Stack overflow in equal"))
+  (unless (car ht) (setcar ht (make-hash-table :test 'eq)))
+  (when (nelisp--equal-container-p o1)
+    (let ((o2s (gethash o1 (car ht) 'none)))
+      (if (eq o2s 'none)
+          (progn (puthash o1 (list o2) (car ht)) nil)
+        (if (memq o2 o2s) t
+          (puthash o1 (cons o2 o2s) (car ht))
+          nil)))))
+
+(defun nelisp--equal-cycle (o1 o2 depth ht)
+  "fns.c internal_equal_cycle: O1 and O2 are conses and O2 is circular."
+  (let ((tort o1) (mx 2) (q 2) (r 'loop))
+    (while (and (eq r 'loop) (consp o1))
+      (cond ((not (consp o2)) (setq r nil))
+            ((not (nelisp--equal-1 (car o1) (car o2) (1+ depth) ht)) (setq r nil))
+            (t (setq o2 (cdr o2))
+               (if (eq (cdr o1) o2) (setq r t)
+                 (setq o1 (cdr o1) q (1- q))
+                 (if (/= q 0)
+                     (when (eq o1 tort) (setq r t))
+                   (setq mx (* mx 2) q mx tort o1))))))
+    (if (eq r 'loop) nil r)))
+
+(defun nelisp--equal-slots (o1 o2 depth ht)
+  (let ((n (length o1)) (i 0) (ok t))
+    (and (= n (length o2))
+         (progn
+           (while (and ok (< i n))
+             (if (nelisp--equal-1 (aref o1 i) (aref o2 i) (1+ depth) ht)
+                 (setq i (1+ i))
+               (setq ok nil)))
+           ok))))
+
+(defun nelisp--equal-1 (o1 o2 depth ht)
+  (let ((res 'again))
+    (while (eq res 'again)
+      (setq res
+            (cond
+             ((and (> depth 10) (nelisp--equal-seen o1 o2 depth ht)) t)
+             ((nelisp--native-eq o1 o2) t)
+             ((or (stringp o1) (symbolp o1) (integerp o1) (symbol-with-pos-p o1))
+              (nelisp--native-equal o1 o2))
+             ;; Native tables use cons storage, but GNU compares them by identity.
+             ((hash-table-p o1) nil)
+             ((consp o1)
+              (if (not (consp o2)) nil
+                (let ((tort o1) (mx 2) (q 2) (r 'loop))
+                  (while (and (eq r 'loop) (consp o1))
+                    (cond ((not (consp o2)) (setq r nil))
+                          ((not (nelisp--equal-1 (car o1) (car o2) (1+ depth) ht))
+                           (setq r nil))
+                          (t (setq o2 (cdr o2))
+                             (if (eq (cdr o1) o2) (setq r t)
+                               (setq o1 (cdr o1) q (1- q))
+                               (if (/= q 0)
+                                   (when (eq o1 tort)
+                                     (setq r (and (consp o2)
+                                                  (nelisp--equal-cycle o2 o1 depth ht))))
+                                 (setq mx (* mx 2) q mx tort o1))))))
+                  (if (eq r 'loop)
+                      (progn (setq depth (1+ depth)) 'again)
+                    r))))
+             ((and (char-table-p o1) (char-table-p o2) (fboundp 'nelisp--char-table-equal))
+              (nelisp--char-table-equal o1 o2))
+             ((and (or (vectorp o1) (and (fboundp 'bool-vector-p) (bool-vector-p o1)))
+                   (or (vectorp o2) (and (fboundp 'bool-vector-p) (bool-vector-p o2))))
+              (if (eq (and (fboundp 'bool-vector-p) (bool-vector-p o1) t)
+                      (and (fboundp 'bool-vector-p) (bool-vector-p o2) t))
+                  (nelisp--equal-slots o1 o2 depth ht)
+                nil))
+             ;; A `nelisp-marker' is a record: equal when it shares the buffer
+             ;; and, only for a non-nil buffer, the position (insertion type
+             ;; ignored); two detached markers are equal (probed against 31.1).
+             ((or (nelisp-marker-p o1) (nelisp-marker-p o2))
+              (and (nelisp-marker-p o1) (nelisp-marker-p o2)
+                   (eq (nelisp-marker-buffer o1) (nelisp-marker-buffer o2))
+                   (or (null (nelisp-marker-buffer o1))
+                       (= (nelisp-marker-position o1) (nelisp-marker-position o2)))))
+             ((and (recordp o1) (recordp o2)) (nelisp--equal-slots o1 o2 depth ht))
+             (t (nelisp--native-equal o1 o2)))))
+    res))
+
 (defun nelisp--equal-reference (a b)
-  "Return t when A and B have equal structure and contents.
-Check native identity before predicates or structural descent, including
-self-referential conses, vectors and records.  Keep atomic comparisons native.
-Hash tables compare only by identity; markers compare buffer and position."
-  (cond
-   ;; Intrinsic identity must not call an advised or redefined public `eq'.
-   ((nelisp--native-eq a b) t)
-   ;; Strings, symbols and integers can never be a cons, vector or marker
-   ;; case below, so the native comparison decides them outright.  Testing
-   ;; them first spares every string/symbol comparison (the bulk of `equal'
-   ;; calls) the cons/vector/bool-vector/marker predicate chain.
-   ((or (stringp a) (symbolp a) (integerp a) (symbol-with-pos-p a)) (nelisp--native-equal a b))
-   ((and (consp a) (consp b))
-    ;; Native tables use cons storage, but GNU does not compare contents.
-    (and (not (hash-table-p a))
-         (nelisp--equal-reference (car a) (car b)) (nelisp--equal-reference (cdr a) (cdr b))))
-   ((and (char-table-p a) (char-table-p b) (fboundp 'nelisp--char-table-equal))
-    (nelisp--char-table-equal a b))
-   ((and (or (vectorp a) (and (fboundp 'bool-vector-p) (bool-vector-p a)))
-         (or (vectorp b) (and (fboundp 'bool-vector-p) (bool-vector-p b))))
-    (if (= (if (and (fboundp 'bool-vector-p) (bool-vector-p a)) 1 0)
-           (if (and (fboundp 'bool-vector-p) (bool-vector-p b)) 1 0))
-        (let ((n (length a)))
-          (if (= n (length b))
-              (let ((i 0) (ok t))
-                (while (and ok (< i n))
-                  (if (nelisp--equal-reference (aref a i) (aref b i))
-                      (setq i (1+ i))
-                    (setq ok nil)))
-                ok)
-            nil))
-      nil))
-   ;; Marker slice 1/2: GNU's own `internal_equal' (print.c/fns.c family)
-   ;; special-cases markers -- two markers are `equal' when they share a
-   ;; buffer AND, only if that buffer is non-nil, the same position;
-   ;; two markers both pointing nowhere are `equal' unconditionally,
-   ;; their leftover charpos never compared (probed against Emacs 31.1:
-   ;; `(equal (make-marker) (make-marker))' is t even when one was
-   ;; previously attached and detached at a different position than the
-   ;; other ever was).  `insertion-type' is never part of the
-   ;; comparison.  A `nelisp-marker' is a record, not a `vectorp'/
-   ;; `consp' value (same distinction the printer's dispatch above
-   ;; relies on), so without this clause it fell through to the native
-   ;; `equal' below, which -- being a generic record comparison -- does
-   ;; not know to skip `insertion-type' or to short-circuit the nowhere-
-   ;; pointing case.
-   ((or (nelisp-marker-p a) (nelisp-marker-p b))
-    (and (nelisp-marker-p a) (nelisp-marker-p b)
-         (eq (nelisp-marker-buffer a) (nelisp-marker-buffer b))
-         (or (null (nelisp-marker-buffer a))
-             (= (nelisp-marker-position a) (nelisp-marker-position b)))))
-   ;; GNU internal_equal walks a record's type slot and data slots, just
-   ;; like a vector.  Keep this in Lisp so nested containers recurse via
-   ;; the same production comparison rather than the atomic native leaf.
-   ((and (recordp a) (recordp b))
-    (let ((n (length a)) (i 0) (ok t))
-      (and (= n (length b))
-           (progn
-             (while (and ok (< i n))
-               (if (nelisp--equal-reference (aref a i) (aref b i))
-                   (setq i (1+ i))
-                 (setq ok nil)))
-             ok))))
-   (t (nelisp--native-equal a b))))
+  "Return t when A and B are `equal' (GNU internal_equal)."
+  (nelisp--equal-1 a b 0 (list nil)))
 
 ;; The public builtin dispatches to this Lisp reference after native arity
 ;; checking; the saved leaf primitive remains private.
@@ -25109,7 +25499,7 @@ field-width layer."
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."
-  (let ((text (if (symbolp arg) (symbol-name arg) (nelisp--prn-to-string arg nil))))
+  (let ((text (if (symbolp arg) (symbol-name arg) (prin1-to-string arg t))))
     (if (or (stringp arg) (symbolp arg)) text
       ;; Aggregate princ omits quotes but serializes nested raw bytes as
       ;; octal. Ordinary Unicode characters retain their representation.
@@ -25554,6 +25944,46 @@ field-width layer."
   "GNU 31.1 non-default character widths, in ordered inclusive ranges.")
 ;; END GNU 31.1 format width data
 
+(defun nelisp--char-width-ref (char)
+  "Lisp reference for `nelisp--string-width-fast': GNU CHARACTER_WIDTH of CHAR."
+  (cond ((and (>= char 32) (< char 127)) 1)
+        ((= char 9) (if (and (boundp 'tab-width) (integerp tab-width)
+                             (> tab-width 0) (<= tab-width 1000)) tab-width 8))
+        ((= char 10) 0)
+        ((<= char 127) (if (and (boundp 'ctl-arrow) (null ctl-arrow)) 4 2))
+        (t (let ((lo 0) (hi (/ (length nelisp--format-width-ranges) 3)) (width 1))
+             (while (< lo hi)
+               (let* ((mid (/ (+ lo hi) 2)) (slot (* mid 3)))
+                 (cond ((< char (aref nelisp--format-width-ranges slot)) (setq hi mid))
+                       ((> char (aref nelisp--format-width-ranges (1+ slot))) (setq lo (1+ mid)))
+                       (t (setq width (aref nelisp--format-width-ranges (+ slot 2)) lo hi)))))
+             width))))
+
+(unless (fboundp 'char-width)
+  (defun char-width (char)
+    "Return the number of columns CHAR occupies when displayed."
+    (or (and (integerp char) (nelisp--string-width-fast char nelisp--format-width-ranges))
+        (progn
+          (unless (characterp char)
+            (signal 'wrong-type-argument (list 'characterp char)))
+          (nelisp--char-width-ref char)))))
+
+(unless (fboundp 'string-width)
+  (defun string-width (string &optional from to)
+    "Return the display width of STRING (or its FROM..TO part) in columns."
+    (or (and (null from) (null to)
+             (nelisp--string-width-fast string nelisp--format-width-ranges))
+        (progn
+          (unless (stringp string)
+            (signal 'wrong-type-argument (list 'stringp string)))
+          (when (or from to) (setq string (substring string from to)))
+          (or (nelisp--string-width-fast string nelisp--format-width-ranges)
+              (let ((i 0) (n (length string)) (w 0))
+                (while (< i n)
+                  (setq w (+ w (nelisp--char-width-ref (aref string i))) i (1+ i)))
+                w))))))
+
+
 (defun nelisp--format-char-width (char)
   "GNU CHARACTER_WIDTH for the default standalone display policy."
   (cond ((and (>= char 32) (< char 127)) 1)
@@ -25768,7 +26198,8 @@ argument end extends over right padding (textprop.c:2123)."
                         (let ((epos (nelisp--fmt-epos body)))
                           (setq body (if epos (concat (substring body 0 epos) "." (substring body epos))
                                        (concat body ".")))))
-                      (let ((measure (and text-conversion (nelisp--format-string-width body prec))))
+                      ;; Measuring only matters when a precision can truncate.
+                      (let ((measure (and text-conversion prec (nelisp--format-string-width body prec))))
                         (when (and measure (< (car measure) (length body)))
                           (setq body (substring body 0 (car measure)))))
                       ;; `#' is the alternate form, and it reaches only o/x/X
@@ -25799,9 +26230,10 @@ argument end extends over right padding (textprop.c:2123)."
                                  (not (and (> (length body) 0) (= (aref body 0) 45))))
                         (cond (fplus (setq body (concat "+" body)))
                               (fspace (setq body (concat " " body)))))
-                      (let ((body-width (if text-conversion
-                                            (cdr (nelisp--format-string-width body nil))
-                                          (length body))))
+                      (let ((body-width (and width
+                                             (if text-conversion
+                                                 (cdr (nelisp--format-string-width body nil))
+                                               (length body)))))
                       (when (and width (< body-width width))
                         (let ((pad (- width body-width)))
                           (unless f- (setq leading-pad pad))
@@ -25963,12 +26395,13 @@ any other -- to find the final function binding and return it."
        symbolp symbol-with-pos-p bare-symbol integerp bignump natnump numberp floatp vectorp functionp
        bool-vector-p char-table-p recordp
        length symbol-name symbol-value symbol-function fboundp boundp makunbound
-       make-symbol type-of identity abs sin cos 1+ 1- number-to-string string-bytes
+       make-symbol type-of identity abs sin cos tan asin acos exp sqrt float logb
+       ffloor fceiling ftruncate fround 1+ 1- number-to-string string-bytes
        char-to-string string-to-char lognot special-form-p
        nelisp--declare-local-special)
     (2 nelisp--equal-leaf nelisp--string-mark-intervals cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
        nelisp--native-pin-eq-slots
-       string< make-vector fset ash)
+       string< make-vector fset ash nelisp--pow)
     (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference)
     (4 nelisp--native-pin-copy-v2)
     (7 ptr-call))
@@ -26162,7 +26595,7 @@ sat at/after that position (elisp manual, `Output Streams'); else stdout."
     (if (or (null s) (eq s t))
         (nelisp--native-princ object)
       (nelisp--emit-to-stream
-       (nelisp--prn-to-string object nil) s)))
+       (prin1-to-string object t) s)))
   object)
 
 (defun prin1 (object &optional stream overrides)
@@ -28089,9 +28522,203 @@ no-op function, without wiring a real menu-bar item into MAPS."
 ;;; runtime (generator-embedded source or macro-generated definitions).
 ;;; Appended last so they replace those definitions when the prelude loads.
 
+;; strings1: JSON fast paths (staging copy, spliced into the prelude).
+;; Both answer for the default options only and bail out (nil) at the first
+;; irregularity, so the reference parser/encoder (nelisp--w302-json-*) still
+;; produces every error value and every unusual encoding.
+
+(defun nelisp--jf-ws (s st)
+  "Advance ST's position in S past JSON whitespace."
+  (let ((pos (aref st 0)) (n (aref st 1)) (go t))
+    (while (and go (< pos n))
+      (let ((c (aref s pos)))
+        (if (or (= c 32) (= c 10) (= c 13) (= c 9))
+            (setq pos (1+ pos))
+          (setq go nil))))
+    (aset st 0 pos)))
+
+(defun nelisp--jf-string (s st)
+  "Read a simple string whose opening quote is at ST's position, else decline."
+  (let* ((start (1+ (aref st 0)))
+         (end (string-search "\"" s start))
+         (i start))
+    (unless end (throw 'nelisp--jf nil))
+    (let ((uni (not (multibyte-string-p s))))
+      (while (< i end)
+        (let ((c (aref s i)))
+          (when (or (< c 32) (= c 92) (> c 1114111) (and uni (>= c 128)))
+            (throw 'nelisp--jf nil)))
+        (setq i (1+ i))))
+    (aset st 0 (1+ end))
+    (substring s start end)))
+
+(defun nelisp--jf-digits (s st)
+  "Skip one or more ASCII digits at ST's position, else decline."
+  (let ((pos (aref st 0)) (n (aref st 1)) (start (aref st 0)))
+    (while (and (< pos n) (>= (aref s pos) 48) (<= (aref s pos) 57))
+      (setq pos (1+ pos)))
+    (when (= pos start) (throw 'nelisp--jf nil))
+    (aset st 0 pos)))
+
+(defun nelisp--jf-number (s st)
+  "Read a JSON number at ST's position."
+  (let ((start (aref st 0)) (n (aref st 1)) (float nil))
+    (when (= (aref s start) 45) (aset st 0 (1+ start)))
+    (let ((pos (aref st 0)))
+      (if (and (< pos n) (= (aref s pos) 48))
+          (aset st 0 (1+ pos))
+        (nelisp--jf-digits s st)))
+    (let ((pos (aref st 0)))
+      (when (and (< pos n) (= (aref s pos) 46))
+        (setq float t)
+        (aset st 0 (1+ pos))
+        (nelisp--jf-digits s st)))
+    (let ((pos (aref st 0)))
+      (when (and (< pos n) (or (= (aref s pos) 69) (= (aref s pos) 101)))
+        (setq float t)
+        (setq pos (1+ pos))
+        (when (and (< pos n) (or (= (aref s pos) 43) (= (aref s pos) 45)))
+          (setq pos (1+ pos)))
+        (aset st 0 pos)
+        (nelisp--jf-digits s st)))
+    (let ((number (string-to-number (substring s start (aref st 0)))))
+      (when (and float (nelisp--w302-json-nonfinite-p number))
+        (throw 'nelisp--jf nil))
+      number)))
+
+(defun nelisp--jf-literal (s st word value)
+  "Read the literal WORD at ST's position and return VALUE."
+  (let* ((pos (aref st 0)) (len (length word)) (end (+ pos len)))
+    (unless (and (<= end (aref st 1)) (string= (substring s pos end) word))
+      (throw 'nelisp--jf nil))
+    (when (< end (aref st 1))
+      (let ((c (aref s end)))
+        (when (or (and (>= c 48) (<= c 57)) (and (>= c 65) (<= c 90))
+                  (and (>= c 97) (<= c 122)) (= c 95))
+          (throw 'nelisp--jf nil))))
+    (aset st 0 end)
+    value))
+
+(defun nelisp--jf-value (s st)
+  "Read one JSON value from S at ST's position."
+  (nelisp--jf-ws s st)
+  (let ((pos (aref st 0)))
+    (when (>= pos (aref st 1)) (throw 'nelisp--jf nil))
+    (let ((c (aref s pos)))
+      (cond
+       ((= c 34) (nelisp--jf-string s st))
+       ((= c 123)
+        (aset st 0 (1+ pos))
+        (let ((table (make-hash-table :test 'equal)) (done nil))
+          (nelisp--jf-ws s st)
+          (if (and (< (aref st 0) (aref st 1)) (= (aref s (aref st 0)) 125))
+              (aset st 0 (1+ (aref st 0)))
+            (while (not done)
+              (nelisp--jf-ws s st)
+              (unless (and (< (aref st 0) (aref st 1)) (= (aref s (aref st 0)) 34))
+                (throw 'nelisp--jf nil))
+              (let ((key (nelisp--jf-string s st)))
+                (nelisp--jf-ws s st)
+                (unless (and (< (aref st 0) (aref st 1)) (= (aref s (aref st 0)) 58))
+                  (throw 'nelisp--jf nil))
+                (aset st 0 (1+ (aref st 0)))
+                (puthash key (nelisp--jf-value s st) table))
+              (nelisp--jf-ws s st)
+              (let ((p (aref st 0)))
+                (unless (< p (aref st 1)) (throw 'nelisp--jf nil))
+                (let ((d (aref s p)))
+                  (aset st 0 (1+ p))
+                  (cond ((= d 125) (setq done t))
+                        ((= d 44) nil)
+                        (t (throw 'nelisp--jf nil)))))))
+          table))
+       ((= c 91)
+        (aset st 0 (1+ pos))
+        (let ((items nil) (done nil))
+          (nelisp--jf-ws s st)
+          (if (and (< (aref st 0) (aref st 1)) (= (aref s (aref st 0)) 93))
+              (aset st 0 (1+ (aref st 0)))
+            (while (not done)
+              (setq items (cons (nelisp--jf-value s st) items))
+              (nelisp--jf-ws s st)
+              (let ((p (aref st 0)))
+                (unless (< p (aref st 1)) (throw 'nelisp--jf nil))
+                (let ((d (aref s p)))
+                  (aset st 0 (1+ p))
+                  (cond ((= d 93) (setq done t))
+                        ((= d 44) nil)
+                        (t (throw 'nelisp--jf nil)))))))
+          (vconcat (nreverse items))))
+       ((= c 116) (nelisp--jf-literal s st "true" t))
+       ((= c 102) (nelisp--jf-literal s st "false" :false))
+       ((= c 110) (nelisp--jf-literal s st "null" :null))
+       ((or (= c 45) (and (>= c 48) (<= c 57))) (nelisp--jf-number s st))
+       (t (throw 'nelisp--jf nil))))))
+
+(defun nelisp--json-parse-fast (string)
+  "Parse STRING with the default options; (VALUE) or nil to decline."
+  (catch 'nelisp--jf
+    (let* ((st (vector 0 (length string)))
+           (value (nelisp--jf-value string st)))
+      (nelisp--jf-ws string st)
+      (if (< (aref st 0) (aref st 1))
+          nil
+        (list value)))))
+
+(defun nelisp--jf-plain-string-p (string)
+  "Non-nil when STRING needs no escaping or encoding checks."
+  (let ((i 0) (n (length string)) (ok t) (uni (not (multibyte-string-p string))))
+    (while (and ok (< i n))
+      (let ((c (aref string i)))
+        (if (or (< c 32) (= c 34) (= c 92) (> c 1114111) (and uni (>= c 128)))
+            (setq ok nil)
+          (setq i (1+ i)))))
+    ok))
+
+(defun nelisp--jf-encode (object depth)
+  "Return OBJECT's JSON text for the default options, or throw to decline."
+  (cond
+   ((eq object :null) "null")
+   ((eq object :false) "false")
+   ((eq object t) "true")
+   ((integerp object) (number-to-string object))
+   ((floatp object)
+    (when (nelisp--w302-json-nonfinite-p object) (throw 'nelisp--jf nil))
+    (number-to-string object))
+   ((stringp object)
+    (unless (nelisp--jf-plain-string-p object) (throw 'nelisp--jf nil))
+    (concat "\"" object "\""))
+   ((> depth 40) (throw 'nelisp--jf nil))
+   ((vectorp object)
+    (let ((i 0) (n (length object)) (parts nil))
+      (while (< i n)
+        (setq parts (cons (nelisp--jf-encode (aref object i) (1+ depth)) parts))
+        (setq i (1+ i)))
+      (concat "[" (mapconcat #'identity (nreverse parts) ",") "]")))
+   ((hash-table-p object)
+    (let ((parts nil))
+      (maphash
+       (lambda (key value)
+         (unless (and (stringp key) (nelisp--jf-plain-string-p key)) (throw 'nelisp--jf nil))
+         (setq parts (cons (concat "\"" key "\":" (nelisp--jf-encode value (1+ depth))) parts)))
+       object)
+      (concat "{" (mapconcat #'identity (nreverse parts) ",") "}")))
+   (t (throw 'nelisp--jf nil))))
+
+(defun nelisp--json-serialize-fast (object)
+  "Encode OBJECT with the default options; the text, or nil to decline."
+  (catch 'nelisp--jf (nelisp--jf-encode object 0)))
+
 (defun json-parse-string (string &rest args)
   "Parse JSON STRING using the representation and sentinel options in ARGS."
   (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+  (let ((fast (and (null args) (nelisp--json-parse-fast string))))
+    (if fast
+        (car fast)
+      (nelisp--w302-json-parse-reference string args))))
+
+(defun nelisp--w302-json-parse-reference (string args)
+  "Reference parser behind `json-parse-string'; ARGS are its option arguments."
   (let* ((state (vector string 0 (nelisp--w302-json-options args t)))
          (value (nelisp--w302-json-value state)))
     (nelisp--w302-json-space state)
@@ -28473,6 +29100,30 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
     (when (= result -32)
       (signal 'file-error (list "Write error" "Broken pipe" filename)))
     (>= result 0)))
+;; strings1: ASCII fast path for `upcase'/`downcase'.  Defined before
+;; the bytecode providers freeze `upcase'/`downcase' (F2 U2b below); the Lisp
+;; core `nelisp--case-object' remains the reference and the fallback.  MODE is 0 for
+;; downcase and 1 for upcase.  The native answer is used only when it is exact
+;; (ASCII char or ASCII-only string, a case table with its derived slots,
+;; every ASCII entry mapping inside ASCII, no text properties on the string);
+;; this is also the call a case-region implementation can make per character
+;; or per string: (nelisp--casify-simple OBJECT MODE ACTION).
+(defun nelisp--casify-simple (object mode action)
+  (let ((r (and (fboundp 'current-case-table)
+                (nelisp--casify-fast object mode (current-case-table)))))
+    (if (and r (or (integerp r)
+                   (not (gethash object nelisp--tp-string-properties))))
+        r
+      (nelisp--case-object object action))))
+
+(defun upcase (object)
+  "Convert character or string OBJECT to uppercase using the current case table."
+  (nelisp--casify-simple object 1 'upper))
+
+(defun downcase (object)
+  "Convert character or string OBJECT to lowercase using the current case table."
+  (nelisp--casify-simple object 0 'lower))
+
 ;; F2 U2b: freeze existing source-owned Lisp providers before user code runs.
 ;; Neither bytecode instructions nor native primitive initializers consult the
 ;; corresponding public function cells after this point. No new native name.
@@ -28499,7 +29150,7 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (let ((point-value (symbol-function 'point))
       (min-value (symbol-function 'point-min)) (max-value (symbol-function 'point-max))
       (goto-value (symbol-function 'goto-char)) (insert-value (symbol-function 'insert))
-      (after-value (symbol-function 'nelisp-char-after))
+      (after-value (symbol-function 'char-after))
       (column-value (symbol-function 'current-column))
       (marker-value (symbol-function 'markerp)) (position-value (symbol-function 'marker-position)))
   (setq nelisp--bytecode-lisp-providers
@@ -28507,26 +29158,12 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                 (list
                  (cons 'point point-value) (cons 'point-min min-value) (cons 'point-max max-value)
                  (cons 'insert insert-value)
-                 (cons 'goto-char
-                       (lambda (pos)
-                         ;; Bgoto_char accepts fixnums or markers; its bignum
-                         ;; error differs from the general public function.
-                         (unless (or (and (integerp pos) (<= -2305843009213693952 pos)
-                                          (< pos 2305843009213693952))
-                                     (funcall marker-value pos))
-                           (signal 'wrong-type-argument (list 'integer-or-marker-p pos)))
-                         (funcall goto-value pos)))
-                 (cons 'char-after
-                       (lambda (pos)
-                         (let ((p (cond ((null pos) (funcall point-value))
-                                        ((integerp pos) pos)
-                                        ((funcall marker-value pos)
-                                         (or (funcall position-value pos)
-                                             (error "Marker does not point anywhere")))
-                                        (t (signal 'wrong-type-argument
-                                                   (list 'integer-or-marker-p pos))))))
-                           (and (<= (funcall min-value) p) (< p (funcall max-value))
-                                (funcall after-value p nelisp--current-buffer)))))
+                 ;; Bgoto_char takes fixnums or markers.  This runtime has no
+                 ;; bignums, so the public function's integer case is the same.
+                 (cons 'goto-char goto-value)
+                 ;; The public `char-after' is compiled by the VM and has the
+                 ;; full semantics (nil/integer/marker, accessible bounds).
+                 (cons 'char-after after-value)
                  (cons 'following-char (symbol-function 'following-char))
                  (cons 'previous-char (symbol-function 'preceding-char))
                  (cons 'current-column column-value)
@@ -28617,7 +29254,7 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                                           (and (integerp n) (<= -2305843009213693952 n)
                                                (< n 2305843009213693952)))
                                 (signal 'wrong-type-argument (list 'fixnump n)))
-                              (funcall char-value n)))
+                              (nelisp--motion-forward-char n)))
                       (cons 'current-buffer current-value)
                       (cons 'set-buffer set-value)))))
 
@@ -28672,17 +29309,16 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
                          (funcall syntax-value character)))
                  (cons 'buffer-substring
                        (lambda (start end)
-                         (funcall substring-value (funcall position-value start) (funcall position-value end))))
+                         (if (and (integerp start) (integerp end))
+                             (funcall substring-value start end)
+                           (funcall substring-value (funcall position-value start)
+                                    (funcall position-value end)))))
                  (cons 'delete-region
                        (lambda (start end)
-                         (let ((s (funcall position-value start)) (e (funcall position-value end)))
-                           (unless (and (<= (funcall min-value) (min s e))
-                                        (<= (max s e) (funcall max-value)))
-                             (signal 'args-out-of-range (list nelisp--current-buffer s e)))
-                           (when (and (boundp 'buffer-read-only) buffer-read-only
-                                      (not (and (boundp 'inhibit-read-only) inhibit-read-only)) (/= s e))
-                             (signal 'buffer-read-only (list nelisp--current-buffer)))
-                           (funcall delete-value s e))))
+                         (if (and (integerp start) (integerp end))
+                             (nelisp--motion-delete-region start end)
+                           (nelisp--motion-delete-region (funcall position-value start)
+                                                         (funcall position-value end)))))
                  (cons 'narrow-to-region
                        (lambda (start end)
                          (let ((s (funcall position-value start)) (e (funcall position-value end)))

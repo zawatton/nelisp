@@ -1,0 +1,22 @@
+#+TITLE: GNU behaviour backlog and stale ABI tests (parity10)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay = v14 sources; baseline binary integ-1031 (v14).
+* S1 Source
+** S1.1 Each backlog divergence is fixed to GNU behaviour or documented with evidence why it cannot be in this lane: (a) concat of a propertized string keeps text properties on every route (VM concat opcode, directcall, interpreter); (b) char-tables as equal hash keys hash and compare by content like GNU sxhash-equal/internal_equal; (c) debug-on-error invokes the debugger (or the configured debugger function) natively as GNU signal_or_quit does; (d) mapconcat behaves as GNU when FN extends or mutates the list; each with red/green
+#+NOTE: (a) VM concat2..concatN keeps text properties (opcodes, Bcall of concat, concat held in a variable, builtin and interpreter all equal GNU in corpus.el; tools/nelisp-bytecode-opcode-parity.el rows concat2/3-properties promoted from known-gap and compared through format); (b) char-tables are equal hash keys by content; (d) mapconcat takes the length first and reads the sequence live. (c) debug-on-error is DOCUMENTED, not fixed: GNU signal_or_quit needs a signal-time hook and the condition-case handler chain (clause lookup); the standalone runtime unwinds by return codes and has neither, and the condition-case/eval paths belong to interp3/dynbind2. Red = v14 baseline logs, green = lane binary; gapc proves the remaining divergence.
+cmd: python3 target/parity10/check.py red
+cmd: python3 target/parity10/check.py corpora
+cmd: python3 target/parity10/check.py gapc
+** S1.2 The two stale tests are made truthful against the current runtime without weakening them: test/abi-vm-integer-word-test.py (fails -201 on every build since integ-1024: its hand-built frame no longer matches wf_bytecode_execute_frame's ABI) and nelisp-fx-vector-scope-and-old-kinds (reads a seed snapshot from a deleted temp dir); each now passes for the right reason and fails on a mutated binary/source (negative control)
+cmd: python3 target/parity10/check.py stale
+cmd: python3 test/abi-vm-integer-word-test.py target/parity10-build/dynamic/nelisp-dynamic
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+cmd: python3 target/parity10/check.py build
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/parity10/check.py fixtures
+* S3 End to end
+** S3.1 A parity corpus covering (a)-(d) plus every case in the earlier parity6-9 corpora prints the same transcript on GNU 31.1 and on the lane binary (differences only where REPORT.md documents an accepted, pre-existing divergence)
+cmd: python3 target/parity10/check.py corpora
+** S3.2 Paired elapsed (CPU 3) on s6-concat, s6-substr, r7-gethash-equal-str and the plain sum loop vs v14 and GNU shows no regression beyond noise (fixes must not slow the hot paths)
+#+NOTE: CPU 3 or its sibling 19 was never below the 5% idle threshold (heavy-run workers of other lanes run there; about 100 attempts), so the rows were measured with --allow-busy: instructions per trip are exact (cand/base within 0.01%), elapsed ratios are noisy and are NOT an idle-core measurement; re-measure on an idle core to confirm.
+cmd: python3 target/parity10/check.py perf

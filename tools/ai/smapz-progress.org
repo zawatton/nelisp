@@ -1,0 +1,49 @@
+#+TITLE: Stack maps by default, fresh-frame zeroing deleted (Wave 2.5 stage 3) (smapz)
+#+NOTE: Reality notes (criteria not reworded): (1) the zero-list held 349 emitted rep-stos sites in v13 (brief said 348); 4 of them (nl_apply_builtin_[frame_]leaf_207/208_w) are observer-full syscall leaves that call nothing able to poll, so they cannot be live at a collection. (2) Win64 never had zeroing and keeps the conservative default: its spill block differs (rbx rbp rdi rsi r12-r15) so the stackmap table is emitted empty for non-Linux targets; Win64 weak stays 20/24 exactly as the v14 baseline (target/smapz/logs/weak-win-baseline-v14.out); enabling map-only on Win64 is the next stage. (3) S3.1 forced-poll fixtures run on the default path and on poison mode 3. (4) S3.2 passes on deterministic instruction counts plus paired elapsed; elapsed on the sum rows is noisy under machine load, see target/smapz/logs/s32-evidence.txt.
+#+NOTE: Created 2026-10-29 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay (v13 sources + htmake + smap2).
+* S1 Source
+** S1.1 The collector scans native frames by their stack maps by default (smap2 mode 2 becomes the default; the conservative scan stays reachable behind a debug switch for diagnosis), and the zero-fresh-frame policy is deleted: no rep-stos fresh-frame zeroing remains in emitted code (count 348 -> 0 or each survivor justified), including the m5_fx_run_body stopgap; red/green
+cmd: sh target/smapz/checks/s11.sh
+evidence: target/smapz/logs/red-s11-ert.log sha256=b4b07d5c74710dfefde96b0e3de2428c1ff04db4be347392f62927b2ed4884dd
+evidence: target/smapz/logs/green-s11-ert.log sha256=62a81b1cb7141516f070ee639442df0cfe505f664e65c5ded7f4cf0a87bdc42d
+evidence: target/smapz/logs/dm-v13.out sha256=a15e1e99d3b1d4a3b74cb13159174917c341507b743e98e51b9710b0eab6ae4f
+evidence: target/smapz/logs/dm-b1.out sha256=60ee45761ea21a1270858816c5666dd5c531d4b91dd84c8648a88bcd6874b7b6
+evidence: target/smapz/logs/s31-b1-m0.out sha256=58e9a2e37cb534180907a6884d8f0d13fc68c4a10e59db2026b13774c4611924
+evidence: target/smapz/logs/s31-b1-m-1.out sha256=4bb6ee296992c79bcfdf0816547e9d1e885baf5131bfccd4084bd46076112289
+** S1.2 Coverage and safety: every frame that can be live at a safepoint is either mapped or scanned whole (no silent gap; the smap2 shadow/mismatch checks rerun with 0 mismatches under forced polls), the mutation control (drop one live slot -> canary lost) still fires, and Win64 emits no unmapped zeroing dependency
+#+TIMEOUT: 600
+cmd: sh target/smapz/checks/s12.sh
+evidence: target/smapz/logs/big-m-1.out sha256=318abc356584c9ea6bb9dc5bec5a4517c56ce8bd21b8f2c6527f557aeaef94a6
+evidence: target/smapz/logs/big-m3.out sha256=22a355d4e59e98190fa4bed092b7a3af93e284fbce568ea60d003001673660c1
+evidence: target/smapz/logs/pm-b1-m3f3F1N10D0.out sha256=8e32758439129c95a671d2276d27945b69e670c4230e382500ddf1eb32fd534e
+evidence: target/smapz/logs/green-s12-canary.log sha256=e6ef902dd25e85bf0014856445307957ef68060d89a26e9880ab5d3a63afab48
+evidence: target/smapz/logs/green-s12-gnu56.log sha256=ad4ab6112929afa9d73fcfacd148488730a6d41438017e5b483267768babd21d
+evidence: target/smapz/logs/dm-win.out sha256=d5cf732bca0f967ac3616882a81b21698c2effb460e6c1e2ec4b517d82216485
+evidence: target/smapz/logs/s12-guard-live.log sha256=b52d39811da73f6342049d770c53c829b518883696a234bb2cca07a7524fa8f6
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+TIMEOUT: 600
+cmd: sh target/smapz/checks/s21.sh
+evidence: target/smapz/logs/check-s21-nodatablob.log sha256=fbbfe691d8f9e939cc7a64b552744f49625cad393665c31373f219fde97cb1ff
+evidence: target/smapz/win/win.log sha256=c3171943868f55c4a7c755041830ac1908e3a05bb25e066837344b8a1b131f06
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: sh target/smapz/checks/s22.sh
+evidence: target/smapz/fx-b1/out/report.json sha256=9b65a74fa5422c754ee1d6ba8ef4f5cc2a46aa0585e15323028a801c07474b3f
+evidence: target/smapz/logs/fixtures-b1.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+evidence: target/smapz/logs/wincheck-linux.log sha256=109cf151486d5457a13b92a8eaed81a67a01fcd93b3a2bb269a6d68d9bdc49bb
+evidence: target/smapz/logs/wincheck-wine.log sha256=68c8e434de98a9ab02852018bdaf4ef7a042af530baa6f82def7d0bc25432357
+* S3 End to end
+** S3.1 Weak 24/24 with no zeroing (including weak-string-unrooted and weak-cycle-key), GNU 56/56, AFRT 24/25 same red, buffer 21/21, forced-poll fixtures; plus a Win64 cross-build of the lane under Wine (closurevm, switch corpus and features equal GNU)
+#+TIMEOUT: 600
+cmd: sh target/smapz/checks/s31.sh
+evidence: target/smapz/logs/s31-b1-m3.out sha256=4bb6ee296992c79bcfdf0816547e9d1e885baf5131bfccd4084bd46076112289
+evidence: target/smapz/logs/forced.out sha256=1f3bbe64c75d826592721ab93d2d981ef90c7e40b694b78322bea7436f10982d
+evidence: target/smapz/logs/weak-win.out sha256=77de9847bb84a935971ca013e6c4e4e6d883c606cdee739aab3defff1e7466a3
+evidence: target/smapz/logs/weak-win-baseline-v14.out sha256=77de9847bb84a935971ca013e6c4e4e6d883c606cdee739aab3defff1e7466a3
+evidence: target/smapz/logs/green-s12-gnu56.log sha256=ad4ab6112929afa9d73fcfacd148488730a6d41438017e5b483267768babd21d
+** S3.2 Paired elapsed (CPU 15) on r5-sum-base-closure, r5-aref-rem-closure, r5-aset-rem-closure, r3-call, r7-funcall-bc, r3-list and the plain sum loop vs v13 and GNU (the closure rows carried the zeroing stopgap cost)
+cmd: sh target/smapz/checks/s32.sh
+evidence: target/smapz/logs/s32-evidence.txt sha256=3bfb19a1caf8ff245904527f77cddcd98dd508d97f18eccc4ab335b737d4f7b5
+evidence: target/smapz/logs/pmc-table.txt sha256=3624530ae62dbde2842d9abe0e9e09cb22e3e72ba54b1676b61de04bb1ae3f57
+evidence: target/smapz/logs/bench-run1-reg-sum-bc.log sha256=be5283728d6cba60a82bffdf84ef8d8ccb17465d4d07c6cab8face68e24ab87a
+evidence: target/smapz/logs/bench-run2-reg-sum-bc.log sha256=71693a415c6a0a17d0d53d11eb860dd1f87db7c7ffe5fb52718d33f05f22c28b

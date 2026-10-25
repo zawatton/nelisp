@@ -729,13 +729,16 @@
              (byte-code (unibyte-string 192 159 135)
                         (vector (list 'a 'b)) 2))
          (fset 'nreverse original))))
-    (concat2-properties-known-gap
+    ;; The standalone CLI's value echo does not print text properties, so the
+    ;; concatenation is compared through `format' (parity10: the VM now copies
+    ;; the intervals, as GNU Fconcat does).
+    (concat2-properties
      (let ((text (propertize "a" 'face 'bold)))
-       (byte-code (unibyte-string 192 193 80 135) (vector text "b") 3)))
-    (concat3-properties-known-gap
+       (format "%S" (byte-code (unibyte-string 192 193 80 135) (vector text "b") 3))))
+    (concat3-properties
      (let ((text (propertize "a" 'face 'bold)))
-       (byte-code (unibyte-string 192 193 194 81 135)
-                  (vector text "b" "c") 4)))
+       (format "%S" (byte-code (unibyte-string 192 193 194 81 135)
+                               (vector text "b" "c") 4))))
     (max-bignum-float-known-gap
      (condition-case e
          (byte-code (unibyte-string 192 193 93 135)
@@ -904,9 +907,7 @@
       (format "host=%s\nstandalone=%s\n" host-status standalone-status))
      (if (string-match-p "-known-gap\\'" (symbol-name name))
          (if (cond
-              ((memq name '(concat2-properties-known-gap
-                            concat3-properties-known-gap
-                            max-bignum-float-known-gap
+              ((memq name '(max-bignum-float-known-gap
                             min-bignum-float-known-gap
                             aset-wrong-type-known-gap
                             aset-out-of-range-known-gap))

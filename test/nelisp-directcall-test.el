@@ -117,6 +117,8 @@
          (mem (make-hash-table :test #'eql)) (lookups 0) (invoked nil))
     (cl-letf (((symbol-function 'heap-read-u64) (lambda (p i) (gethash (+ p i) mem)))
               ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v mem)))
+              ;; leafprim: the leaf arm declines, so the unchanged route below is the one tested.
+              ((symbol-function 'wf_bytecode_call_leaf) (lambda (&rest _) 2))
               ((symbol-function 'nl_val_tag) (lambda (w) (if (memq w '(20022 20024)) 4 7)))
               ((symbol-function 'nelisp_env_lookup_function_raw_w)
                (lambda (&rest _) (cl-incf lookups) 10002))
@@ -144,6 +146,7 @@
          (mem (make-hash-table :test #'eql)) (status 0))
     (cl-letf (((symbol-function 'heap-read-u64) (lambda (p i) (gethash (+ p i) mem)))
               ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v mem)))
+              ((symbol-function 'wf_bytecode_call_leaf) (lambda (&rest _) 2))
               ((symbol-function 'nl_val_tag) (lambda (w) (if (= w 20022) 4 7)))
               ;; (the function slot of the object 20022 is not a cons here)
               ((symbol-function 'nelisp_env_lookup_function_raw_w) (lambda (&rest _) 10002))

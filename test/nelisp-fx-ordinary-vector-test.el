@@ -12,17 +12,46 @@
   (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally file)
                     (secure-hash 'sha256 (current-buffer))))
 
+;; The old and new sources are read from git at pinned commits (content hash
+;; verified), so the test is reproducible in any clone that has the history.
+(defconst nelisp-fx-vector--seed-commit "a14b1a2e4dc81b975135e73c8763821cb3484354"
+  "Commit holding the pre-vector-scope source (the fx-vector lane base).")
+(defconst nelisp-fx-vector--seed-sha256
+  "13c6c67527a98e4e9401049c2a5861db793499b33ab682d889812ce293cf68a6"
+  "SHA-256 of lisp/nelisp-cc-fx-call-primitives.el at the seed commit.")
+(defconst nelisp-fx-vector--landed-commit "bfc3e644270911ab2384837895429add39c274a1"
+  "Commit that integrated the vector scope (aref/aset/length kinds).")
+(defconst nelisp-fx-vector--landed-sha256 "2f76d6b46f0f4051dbf722d9b8e8e55a0ffff0258ea0f53b2b3d5f4905412056"
+  "SHA-256 of lisp/nelisp-cc-fx-call-primitives.el at the landed commit.")
+(defconst nelisp-fx-vector--later-changes '(m5_fx_cached_function)
+  "Definitions legitimately changed after the vector scope landed (v12 w2subr:
+a Subr object answers its legacy list); every other definition must still equal
+the landed one.")
+
+(defun nelisp-fx-vector--source-at (commit sha256)
+  "Read the production source at COMMIT from git, checking its SHA-256."
+  (with-temp-buffer
+    (set-buffer-multibyte nil)
+    (let ((default-directory nelisp-fx-vector--root))
+      (unless (eq 0 (call-process "git" nil t nil "show"
+                                  (concat commit ":lisp/nelisp-cc-fx-call-primitives.el")))
+        (error "Commit %s is not available in this clone" commit)))
+    (unless (equal (secure-hash 'sha256 (current-buffer)) sha256)
+      (error "Source at %s differs from the pinned hash" commit))
+    (set-buffer-multibyte t)
+    (goto-char (point-min))
+    (let (form answer)
+      (condition-case nil
+          (while t (setq form (read (current-buffer)))
+                 (when (eq (car-safe form) 'defconst) (setq answer (cadr (nth 2 form)))))
+        (end-of-file nil))
+      answer)))
+
 (defun nelisp-fx-vector--seed ()
-  (let* ((manifest (json-read-file (expand-file-name "target/fx-vector/seed-manifest.json" nelisp-fx-vector--root)))
-         (file (expand-file-name "nelisp-cc-fx-call-primitives.el" (alist-get 'snapshot manifest))))
-    (with-temp-buffer
-      (insert-file-contents file)
-      (let (form answer)
-        (condition-case nil
-            (while t (setq form (read (current-buffer)))
-                   (when (eq (car-safe form) 'defconst) (setq answer (cadr (nth 2 form)))))
-          (end-of-file nil))
-        answer))))
+  (nelisp-fx-vector--source-at nelisp-fx-vector--seed-commit nelisp-fx-vector--seed-sha256))
+
+(defun nelisp-fx-vector--landed ()
+  (nelisp-fx-vector--source-at nelisp-fx-vector--landed-commit nelisp-fx-vector--landed-sha256))
 
 (defun nelisp-fx-vector--def (source name)
   (or (cl-find name (cdr source) :key #'cadr) (error "Missing production definition %s" name)))
@@ -33,11 +62,19 @@
         (t 0)))
 
 (ert-deftest nelisp-fx-vector-scope-and-old-kinds ()
-  (let* ((seed (nelisp-fx-vector--seed)) (new nelisp-cc-fx-call-primitives--source)
+  (let* ((seed (nelisp-fx-vector--seed)) (landed (nelisp-fx-vector--landed))
+         (new nelisp-cc-fx-call-primitives--source)
          (names '(m5_fx_primitive_id m5_fx_primitive_run)))
+    (should (= (length seed) (length landed)))
     (should (= (length seed) (length new)))
+    ;; Scope at landing: only the two named definitions differ from the base.
     (dolist (form (cdr seed))
-      (unless (memq (cadr form) names) (should (equal form (nelisp-fx-vector--def new (cadr form))))))
+      (unless (memq (cadr form) names)
+        (should (equal form (nelisp-fx-vector--def landed (cadr form))))))
+    ;; Scope now: nothing but the named and the documented later changes moved.
+    (dolist (form (cdr landed))
+      (unless (or (memq (cadr form) names) (memq (cadr form) nelisp-fx-vector--later-changes))
+        (should (equal form (nelisp-fx-vector--def new (cadr form))))))
     (cl-labels ((lower (x) (cond ((atom x) x)
                                 ((eq (car x) 'sexp-name-eq) `(if (equal ,(cadr x) ,(nth 2 x)) 1 0))
                                 ((memq (car x) '(= >)) `(if (,(car x) ,@(mapcar #'lower (cdr x))) 1 0))

@@ -1,0 +1,31 @@
+#+TITLE: Regexp and search at GNU's algorithmic cost (rx1)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (25 files). Evidence: survey2 rows at ../resume-4943-20261024/target/survey2 (out/<row>/report.json, drv/, specs.json, extreme-rows.json), measured on v14.
+* S1 Source
+** S1.1 For each regexp/search row of survey2 at >=100x GNU (strings-match-*, buffers-re-search-*, buffers-looking-at, buffers-search-forward, strings-replace-regexp, strings-string-trim), REPORT.md names the root cause measured by callgrind on v14 (pattern recompilation per call, backtracking engine shape, per-char allocation, string/buffer access cost, case-fold tables) next to GNU's regex-emacs.c / search.c (compile cache searchbufs, re_search_2, re_match_2_internal, boyer-moore for search-forward)
+#+NOTE: root causes per row in target/rx1/s11-root-causes.tsv (18 rows); callgrind (v14, two trip counts, six rows) split in target/rx1/cg/cat.out; admission evidence: v14 rejected 12 nlre defuns (point/point-max/goto-char/current-buffer/buffer-substring/negate opcodes) and the generator wrappers are plain source, so they ran interpreted.
+evidence: target/rx1/s11-root-causes.tsv sha256=39fe71d1539009b64ab8fa825f07f8f1300bbd46df3e58a627835bcecc09a08a
+evidence: target/rx1/cg/cat.out sha256=62bac00cce2ea55420008d3c046e173dd9b4f0e4d476170930d8f5481f282857
+cmd: test $(wc -l < target/rx1/s11-root-causes.tsv) -ge 19 && grep -q buffers-looking-at-bc target/rx1/s11-root-causes.tsv && grep -q strings-string-trim-bc target/rx1/s11-root-causes.tsv
+** S1.2 The dominant causes are fixed: compiled-pattern cache keyed like GNU's (pattern, translate, syntax table), a matcher whose per-character cost is constant (no allocation per char), literal search via a skip table; match-data semantics, case-fold-search, char classes, backrefs and syntax classes match GNU on a regexp corpus (red/green)
+#+NOTE: Done: public entry points and buffer-facing functions admitted as byte-code, ASCII first-character map, set-run plan, literal plan with MAX-END, anchored looking-at, fewer buffer-layer calls, memoized buffer-search-regexp, cache compare with string=. Corpus: 4280 lines identical to GNU (parity-corpus). NOT done: the backtracker still allocates per step (the last check below stays failing) and there is no Boyer-Moore skip table.
+cmd: grep -q "Ran 7 tests, 7 results as expected" target/rx1/green-rx1f.log
+cmd: cmp -s target/rx1/parity/gnu.out target/rx1/parity/rx1.out
+cmd: grep -q "FAILED" target/rx1/red-rx1f.log
+cmd: ! grep -q "(append (car branches) rest)" lisp/nelisp-stdlib-regexp.el
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: F1 prelink policy evidence was not located in build.log; the nodes bound 82,315 <= 98,304 and rc=0 are what is checked. Linux dynamic build only (build 1 of 2, 977 s). The Windows target was not built within the two-build budget; the change touches no per-target generation, but that is not demonstrated, so the last check stays failing.
+cmd: grep -q "BUILD rc=0" target/rx1-build/dynamic/build.log
+cmd: test $(grep -o 'nodes=[0-9]*' target/rx1-build/dynamic/build.log | cut -d= -f2 | sort -n | tail -1) -le 98304
+cmd: test -f target/rx1/win/check-run.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+evidence: target/rx1/fix.out sha256=b6e63d36c37eccc105ac5aa8ff23fd510710bd342bdb67f34e346af04865bd2f
+cmd: grep -q "weak 24/24 PASS" target/rx1/fix.out && grep -q "GNU 56/56 PASS" target/rx1/fix.out && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/rx1/fix.out && grep -q "buffer 21/21 PASS" target/rx1/fix.out
+cmd: grep -q "closurevm: PASS" target/rx1/fix.out && grep -q "switch corpus: PASS" target/rx1/fix.out && grep -q "features: PASS" target/rx1/fix.out
+* S3 End to end
+** S3.1 Elapsed ratio to GNU on every survey2 regexp/search row reduced (paired_bench with the survey2 drivers, results checked), with a per-row before/after table; the geomean of those rows reduced at least 10x vs v14
+#+NOTE: paired_bench on CPU 12, v14 as base, GNU as third engine; per-row table via check-s3.py table
+cmd: python3 target/rx1/check-s3.py 1
+** S3.2 The existing regexp tests/corpora unchanged; 43-row matrix rows reg-sum-bc and r3-mix not slower than v14 by more than noise (paired, CPU 12)
+cmd: python3 target/rx1/check-s3.py 2
+cmd: grep -q "SAME standalone-regexp-backtracking-check" target/rx1/cmp-checks.out && grep -q "SAME standalone-regexp-syncache-check" target/rx1/cmp-checks.out && grep -q "SAME standalone-literal-search-check" target/rx1/cmp-checks.out

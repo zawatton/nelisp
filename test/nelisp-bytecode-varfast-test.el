@@ -17,12 +17,17 @@
 (defconst w1v--sym 60000)
 (defconst w1v--word (+ 60000 6))
 (defconst w1v--unbound 70006)
+;; dynbind2: the keyword test reads the symbol's name String in line: name cell
+;; at +8 holds a String WORD (tag 4); its header is at WORD-4: +8 nbytes (a
+;; negative value takes the length from +0), +24 the data address.
+(defconst w1v--name 62004)
+(defconst w1v--ndata 63000)
 
 (defun w1v--run (code stack &optional opts)
   "Run the fast loop on CODE (a vector) with STACK words.
 OPTS: :hdr :value :env168 :env112 :reg :pin48 :consts :keywords :env.
 Return (:state :sp :pc :mem :words :dirty :entry)."
-  (let* ((words (make-hash-table :test #'eql)) (dirty 0) (entry 0) (writes nil)
+  (let* ((words (make-hash-table :test #'eql)) (dirty 0) (entry 0) (writes nil) (kwcalls 0)
          (depth 16) (sp (length stack))
          (hdr (or (plist-get opts :hdr) 4))
          (value (if (plist-member opts :value) (plist-get opts :value) 21))
@@ -37,6 +42,11 @@ Return (:state :sp :pc :mem :words :dirty :entry)."
     (puthash (+ w1v--cell 16) 3 words)
     (puthash w1v--sym hdr words)
     (puthash (+ w1v--sym 16) value words)
+    (puthash (+ w1v--sym 8) (if (plist-member opts :name) (plist-get opts :name) w1v--name) words)
+    (puthash (- w1v--name 4) (or (plist-get opts :nhdr0) 0) words)
+    (puthash (+ (- w1v--name 4) 8) (if (plist-member opts :nlen) (plist-get opts :nlen) 3) words)
+    (puthash (+ (- w1v--name 4) 24) w1v--ndata words)
+    (puthash w1v--ndata (if (memq w1v--word keywords) 58 97) words)
     (puthash (+ w1v--env 168) (or (plist-get opts :env168) 0) words)
     (puthash (+ w1v--env 112) (or (plist-get opts :env112) 0) words)
     (puthash w1v--reg (or (plist-get opts :reg) 0) words)
@@ -70,7 +80,7 @@ Return (:state :sp :pc :mem :words :dirty :entry)."
                 ((symbol-function 'wf_bytecode_w_unbound_p)
                  (lambda (_e w) (if (= w w1v--unbound) 1 0)))
                 ((symbol-function 'bf_keyword_raw)
-                 (lambda (w) (if (memq w keywords) 1 0)))
+                 (lambda (w) (cl-incf kwcalls) (if (memq w keywords) 1 0)))
                 ((symbol-function 'wf_bytecode_w_fast_entry)
                  (lambda (&rest _) (cl-incf entry) 0)))
         (let* ((fn (eval (cons 'lambda (cddr (sst--host-form
@@ -79,7 +89,7 @@ Return (:state :sp :pc :mem :words :dirty :entry)."
                (state (funcall fn w1v--data (length code) w1v--mem depth w1v--cdata
                                (length consts) 0 sp env w1v--cell)))
           (list :state state :pc (ash state -17) :sp (logand state 131071)
-                :words words :dirty dirty :entry entry
+                :words words :dirty dirty :entry entry :kwcalls kwcalls
                 :writes (cl-remove-if (lambda (x) (<= w1v--cell (car x) (+ w1v--cell 31))) writes)
                 :top (gethash (+ w1v--mem (* (1- (logand state 131071)) 8)) words)
                 :value (gethash (+ w1v--sym 16) words)))))))
@@ -218,6 +228,51 @@ Return (:state :sp :pc :mem :words :dirty :entry)."
 (ert-deftest w1v-fast-loop-no-longer-uses-fast-entry ()
   (should-not (sst--find (sst--function 'wf_bytecode_w_fast_run)
                          (lambda (x) (eq x 'wf_bytecode_w_fast_entry)))))
+
+;; ---- dynbind2: the keyword test of the varset arm is in line ------------------
+
+(ert-deftest w1v-varset-keyword-test-reads-the-name-string-in-line ()
+  ;; A keyword (name starts with ':') declines untouched; any other name stores.
+  ;; Neither path calls out to `bf_keyword_raw' for a String-WORD name.
+  (let ((r (w1v--run [16] '(9) (list :keywords (list w1v--word)))))
+    (should (= (plist-get r :pc) 0)) (should (= (plist-get r :sp) 1))
+    (should (null (plist-get r :writes))) (should (= (plist-get r :value) 21))
+    (should (= (plist-get r :kwcalls) 0)))
+  (let ((r (w1v--run [16] '(9))))
+    (should (= (plist-get r :pc) 1)) (should (= (plist-get r :sp) 0))
+    (should (= (plist-get r :value) 9))
+    (should (= (plist-get r :kwcalls) 0))))
+
+(ert-deftest w1v-varset-keyword-test-length-rules ()
+  ;; An empty name is no keyword even when the data byte reads ':'.
+  (let ((r (w1v--run [16] '(9) (list :keywords (list w1v--word) :nlen 0))))
+    (should (= (plist-get r :pc) 1)) (should (= (plist-get r :value) 9)))
+  ;; A negative +8 word takes the byte count from +0 with the sign bit cleared.
+  (let ((r (w1v--run [16] '(9) (list :keywords (list w1v--word) :nlen -1 :nhdr0 0))))
+    (should (= (plist-get r :pc) 1)) (should (= (plist-get r :value) 9)))
+  (let ((r (w1v--run [16] '(9) (list :keywords (list w1v--word) :nlen -1
+                                     :nhdr0 (logior (ash 1 63) 2)))))
+    (should (= (plist-get r :pc) 0)) (should (= (plist-get r :value) 21))
+    (should (= (plist-get r :kwcalls) 0))))
+
+(ert-deftest w1v-varset-other-name-shapes-use-the-out-of-line-test ()
+  ;; A legacy-view name cell (low bits 000) is answered by `bf_keyword_raw'.
+  (let ((r (w1v--run [16] '(9) (list :name 0 :keywords (list w1v--word)))))
+    (should (= (plist-get r :pc) 0)) (should (= (plist-get r :kwcalls) 1))
+    (should (null (plist-get r :writes))))
+  (let ((r (w1v--run [16] '(9) (list :name 0))))
+    (should (= (plist-get r :pc) 1)) (should (= (plist-get r :kwcalls) 1))))
+
+;; dynbind2: the folded header mask of varref keeps the trapped_write bits out of it
+;; (GNU Bvarref reads a watched or NOWRITE plain cell in line) and the raw>=14 forms.
+(ert-deftest w1v-varref-reads-trapped-write-cells-in-line ()
+  (dolist (hdr '(#x404 #x804 #xc04 #x704 #x7c4))
+    (let ((r (w1v--run [8] '() (list :hdr hdr))))
+      (should (= (plist-get r :sp) 1))
+      (should (= (plist-get r :top) 21))))
+  (dolist (hdr '(#x4 #x44 #xc4))   ; bits 6-7 are not part of the kind or redirect
+    (let ((r (w1v--run [14 1] '() (list :hdr hdr :consts (list 3 w1v--word)))))
+      (should (= (plist-get r :pc) 2)) (should (= (plist-get r :top) 21)))))
 
 (provide 'nelisp-bytecode-varfast-test)
 ;;; nelisp-bytecode-varfast-test.el ends here

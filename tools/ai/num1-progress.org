@@ -1,0 +1,27 @@
+#+TITLE: Floating point at libm cost (num1)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (34 files). Evidence: ../resume-4943-20261024/target/xroot/REPORT.md and rows.json (root causes, retimed ratios), survey2 drivers in ../resume-4943-20261024/target/survey2/drv.
+* S1 Source
+** S1.1 exp, log, sqrt, expt, sin/cos/tan/atan (add atan, missing), float, truncate/floor/ceiling/round of floats, ffloor/fceiling/fround/ftruncate, logb and the float arithmetic route call the platform libm/hardware (the extern table already has sqrt/pow/sin/cos; add what is missing for Linux and Win64) or native WORD bodies, not double-double elisp series; red/green
+cmd: python3 target/num1/ledger/chk.py s11
+cmd: ! grep -q 'void-function' target/num1/out/b3-corpus.nl
+#+NOTE: red on v14: its corpus run dies at (sqrt +inf) after 22 lines (exit 88) and (expt 2 61) signals overflow-error (target/num1/out/v14-p0.txt); these two checks record that red state.
+cmd: test $(wc -l < target/num1/out/v14-corpus.nl) -lt 100
+cmd: grep -q 'overflow-error) (overflow-error) 18446744073709551616' target/num1/out/v14-p0.txt
+evidence: target/num1/out/b3-corpus.nl sha256=b4df5f287f3b60c8de41db5f4b7f5f4c634a647bdffb1966180a98d582a03808
+** S1.2 Results are bit-identical to GNU 31.1 on a corpus of edge cases (signed zero, NaN, infinities, subnormals, overflow/range errors, integer arguments, bignum arguments, (expt 2 61) and larger which currently overflow-error) and the reader converts decimal float literals correctly rounded without bignum long division (bit-identical to GNU on a reader corpus)
+cmd: python3 target/num1/ledger/chk.py s12
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+cmd: python3 target/num1/ledger/chk.py s21
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: python3 target/num1/ledger/chk.py s22
+cmd: grep -q 'Ran 8 tests, 5 results as expected, 3 unexpected\|5 unexpected' target/num1/out/static-s0.log
+cmd: grep -q 'Ran 8 tests, 8 results as expected, 0 unexpected' target/num1/out/static-s1.log
+#+NOTE: static build red/green: s0 = b2 source built without NELISP_READER_DYNAMIC (float-exp-range test 5 of 8 fail, exp/sqrt/log unsupported), s1 = final tree static (8 of 8 pass).
+* S3 End to end
+** S3.1 Elapsed ratio to GNU on numbers-libm-bc, numbers-sqrt-trunc-bc/-i, numbers-float-int-conv-bc, print-read-bigdata-bc and print-read-from-string-bc/-i reduced (paired_bench with the survey2 drivers on CPU 9), per-row before/after table; libm row at most 10x GNU
+cmd: python3 target/num1/ledger/chk.py s31
+** S3.2 43-row matrix rows reg-sum-bc and r3-mix not slower than v14 beyond noise (paired, CPU 9); Win64 cross-build of the lane under Wine passes closurevm/switch/features and the float corpus
+cmd: python3 target/num1/ledger/chk.py s32
+
+#+NOTE: 2026-10-26 state: two Linux builds used (b1, b2) and the Win64 build once. Source in the tree is b2 plus three small UNBUILT edits made after b2 (log10/log2/atan/pow/unary no NaN-sign fix, since GNU keeps libm's own NaN there; reader: only Clinger plus Eisel-Lemire outside net -27..55, because nlf_exact_fallback segfaulted in the reader and Eisel-Lemire rounds exact ties wrong). S1.2, S3.1 and S3.2 stay failing cmds for that reason: b2's reader corpus stops at literal 12 (a halfway tie), libm row is 17.3x GNU (limit 10x). Evidence for S3 comes from the b1 binary (same speed paths as b2). Pre-existing: (abs -0.0) and abs of NaN differ from GNU.

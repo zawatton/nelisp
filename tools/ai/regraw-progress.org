@@ -1,0 +1,50 @@
+#+TITLE: Register allocation for raw (non-reference) values in hot functions (regraw)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (hotcold, leafprim, callbc, strguard list-only).
+* S1 Source
+** S1.1 The compiler keeps raw (provably non-Lisp-reference: fixnum-tagged arithmetic results, untagged integers, byte/opcode values, addresses into non-GC memory, loop counters) locals of hot functions in registers instead of frame slots, across calls via the callee-saved pool and within call-free ranges via caller-saved registers, chosen by liveness (linear scan or interval colouring); Lisp references stay in frame slots (they need register maps, stack-map stage 4); applied at least to wf_bytecode_w_fast_run, wf_bytecode_call_leaf, wf_bytecode_execute_frame and the nl_ht_* / directcall hot helpers; Win64 uses its own callee-saved pool, never r8/r9 across calls; red/green on emitted code
+#+NOTE: Filled 2026-10-30 by lane regraw; every check reads a recorded artifact under target/regraw/ (details in target/codex/REPORT.md). Mechanism: the cgreg vm-register map (r12-r15) now has rbx as a fifth SysV register (never Win64), is opted in per function, and call-free CG3 regions (r8/r9) run beside it. Applied: wf_bytecode_w_fast_run (pc sp raw data mem->rbx), wf_bytecode_execute_frame (arg-index done depth). wf_bytecode_call_leaf was applied in build 1, measured +13 instr per r4-car trip, and removed from the source list (final source differs from build 1 only by that entry; its emitted bytes equal the seed's). The nl_ht_*/directcall helpers were not reached within the two builds: the last check below is a known-red cmd for that part of the claim.
+cmd: grep -q "Ran 13 tests, 7 results as expected, 6 unexpected" target/regraw/logs/red-seed.log
+cmd: grep -q "Ran 13 tests, 13 results as expected, 0 unexpected" target/regraw/logs/green-final.log
+cmd: python3 -I target/regraw/probe/check2.py target/regraw/probe/fast_run.regraw2.dis 6=pc 7=sp 0=data 30=raw 2=mem | grep -q "ASSERT OK"
+cmd: python3 -I target/regraw/probe/check2.py target/regraw/probe/wf_bytecode_execute_frame.regraw2.dis 50=arg-index 53=done 2=depth | grep -q "ASSERT OK"
+cmd: python3 -I target/regraw/probe/check2.py target/regraw/probe/fast_run.cgreg.dis 6=pc 7=sp 0=data 30=raw 2=mem >/dev/null; [ $? -eq 1 ]
+cmd: [ "$(grep -cE "\b(r8|r9)\b" target/regraw/probe/fast_run.regraw2.dis)" -gt 100 ] && [ "$(grep -cE "\b(r8|r9)\b" target/regraw/probe/fast_run.cgreg.dis)" -lt 10 ]
+cmd: grep -q "nelisp-vmreg: wf_bytecode_w_fast_run admit pc=slot6->r12 sp=slot7->r13 raw=slot30->r14 data=slot0->r15 mem=slot2->rbx" target/regraw-build/dynamic/build.log
+cmd: grep -q "nelisp-vmreg: wf_bytecode_execute_frame admit arg-index=slot.*->r12 done=slot.*->r13 depth=slot2->r14" target/regraw-build/dynamic/build.log
+cmd: grep -q "nelisp-vmreg: wf_bytecode_w_fast_run admit" target/regraw/win/build/build.log && ! (grep "nelisp-vmreg" target/regraw/win/build/build.log | grep -q rbx)
+cmd: grep -q "nelisp-vmreg: nl_ht_" target/regraw-build/dynamic/build.log
+** S1.2 The raw-ness proof is conservative and checked: a value is promoted only when every definition is raw by construction; a test plants a Lisp reference into a would-be-promoted local and the compiler refuses it (negative control), and the stack maps (smap1) still describe every Lisp-reference slot (maps unchanged for reference slots)
+#+NOTE: The proof is a forward dataflow over the IR (docstring above `--vm-reg-analyze' in lisp/nelisp-aot-compiler.el). Two tiers, stated plainly: a LET variable named in the opt-in list must be proven raw or unwrapped at every definition (strict); a PARAMETER named in the list is declared raw (the IR cannot see its callers) and is only checked against known references (allocations, root slots, undeclared Lisp-typed parameters, and values computed from them), so a 64-bit load into a declared parameter passes. The negative controls plant a reference into a declared parameter (refused), a word load into a let variable (refused), and a rebuilt shifted word (refused). Stack maps: smap1 is type-conservative (every live slot is in the map whether or not it was promoted), emission is unchanged, and the [stackmap] statistics line of the candidate and seed-state builds is identical.
+cmd: grep -q "FAILED .*regraw-proof-refuses-planted-reference" target/regraw/logs/red-seed.log
+cmd: grep -q "passed .*regraw-proof-refuses-planted-reference" target/regraw/logs/green-final.log && grep -q "passed .*regraw-proof-let-variable-needs-raw-definitions" target/regraw/logs/green-final.log && grep -q "passed .*regraw-proof-shift-back-is-not-raw" target/regraw/logs/green-final.log
+cmd: grep -q "passed .*regraw-stackmap-masks-unchanged-by-promotion" target/regraw/logs/green-final.log
+cmd: grep -q "Ran 12 tests, 12 results as expected, 0 unexpected" target/regraw/logs/host-final-stackmap-test.log
+cmd: [ -n "$(grep '^\[stackmap\]' target/regraw-build/dynamic/build.log)" ] && [ "$(grep '^\[stackmap\]' target/regraw-build/dynamic/build.log)" = "$(grep '^\[stackmap\]' target/regraw-base-build/dynamic/build.log)" ]
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build plus one Win64 cross-build (prelink PASS within the F1 policy 384 and root evidence bound 98,304)
+#+NOTE: Two Linux builds were made: the candidate and a seed-state baseline (same tree, `nelisp-aot-compiler-regraw' nil, byte-identical fast_run to the seed compiler's), because no v13 binary existed. One Win64 cross-build. No separate F1-policy line is printed; the helper bound and the root-evidence bound are enforced inside the build, so rc=0 covers them (cgreg's reading). Root evidence max nodes 82175 is below 98,304.
+cmd: grep -q "^BUILD rc=0" target/regraw-build/dynamic/build.log && test -x target/regraw-build/dynamic/nelisp-dynamic
+cmd: grep -q "^BUILD rc=0" target/regraw-base-build/dynamic/build.log && test -x target/regraw-base-build/dynamic/nelisp-dynamic
+cmd: grep -q "build win rc=0" target/regraw/win/win.log && test -s target/regraw/win/build/nelisp.exe.cold
+cmd: [ "$(grep '^\[root-evidence\]' target/regraw-build/dynamic/build.log | sed 's/.*nodes=\([0-9]*\).*/\1/' | sort -n | tail -1)" -le 98304 ]
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes; Win64 under Wine closurevm/switch/features equal GNU; bytecode arith/word, closurevm, switch, exits and bccall corpora unchanged
+#+NOTE: AFRT 24/25 is the same single red as the seed. The bccall corpus is the 60-line callbc corpus (51 + 9 nested cases) run on both Linux builds and GNU. Not run: VM_POLL_BUDGET=all (the stock stress with the conservative scan off is already red in the seed; the scan-on variant passes).
+cmd: grep -q "weak 24/24 PASS" target/regraw/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/regraw/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/regraw/logs/fixtures.log && grep -q "buffer 21/21 PASS" target/regraw/logs/fixtures.log
+cmd: [ "$(grep -c PASS target/regraw/logs/wincheck-cand.log)" -ge 3 ] && ! grep -q FAIL target/regraw/logs/wincheck-cand.log
+cmd: [ "$(grep -c PASS target/regraw/win/check.log)" -ge 3 ] && ! grep -q FAIL target/regraw/win/check.log && grep -q "x86_64-windows" target/regraw/win/check.log
+cmd: grep -q "BYTECODE-ARITH PASS 181/181" target/regraw/corp/standalone-bytecode-arith-check.cand.out && grep -q "BYTECODE-WORD PASS 196/196" target/regraw/corp/standalone-bytecode-word-check.cand.out
+cmd: cmp target/regraw/corp/standalone-signal-data-check.cand.out target/regraw/corp/standalone-signal-data-check.v14.out
+cmd: cmp target/regraw/exits/exits.cand.native target/regraw/exits/exits.native
+cmd: grep -q "VM-GC-POLL-STRESS PASS" target/regraw/gcdbg/scanon.cand.out
+cmd: cmp target/regraw/bccall/cand.out target/regraw/bccall/gnu.out && cmp target/regraw/bccall/cand.out target/regraw/bccall/base.out
+* S3 End to end
+** S3.1 Instructions and cycles per trip reduced vs the seed on reg-sum-bc, r3-call, r7-funcall-bc, r4-car, r3-mix and r3-pcase (pmcrun2 two-N), results checked; frame-slot memory operations per trip in fast_run counted before/after (callgrind or static count on the hot path)
+#+NOTE: Seed state = regraw-base-build. Instructions per trip are callgrind two-N differences (target/regraw/cg/ab-table.md) and pmcrun2 two-N (target/regraw/bench, agg.py); results are checked by paired_bench. Measured on the binary that also had call_leaf promoted (since removed from the source). KNOWN RED: cycles per trip are not lower on all six rows: r3-mix is +1.3% cycles (instructions -2.2%, store-to-load forwards 1732->1377 per trip, op-cache misses 462->515 per trip, branch mispredicts equal), so the cycles check below fails honestly. r4-car instructions -0.1% (fast_run -14, call_leaf +13).
+cmd: python3 -I target/regraw/agg.py | awk -F'|' 'BEGIN{n=0} $2 ~ /reg-sum-bc|r7-funcall-bc|r3-call|r4-car|r3-mix|r3-pcase/ {gsub(/[+%]/,"",$11); if ($11+0<0) n++} END{exit (n==6)?0:1}'
+cmd: python3 -I target/regraw/agg.py | awk -F'|' 'BEGIN{n=0} $2 ~ /reg-sum-bc|r7-funcall-bc|r3-call|r4-car|r3-mix|r3-pcase/ {gsub(/[+%]/,"",$14); if ($14+0<0) n++} END{exit (n==6)?0:1}'
+cmd: python3 -I target/regraw/cg/check-ab.py > /dev/null
+** S3.2 Paired elapsed (CPU 11) on those rows plus the plain sum loop vs the seed state and GNU
+#+NOTE: CPU 11 was intermittently used by another lane's process, so the paired runs for three rows were repeated until the core was idle; no run used --allow-busy. Table: target/regraw/bench-table.md.
+cmd: [ "$(ls target/regraw/bench/*/report.json | wc -l)" -eq 7 ]
+cmd: python3 -I target/regraw/agg.py | awk -F'|' '$2 ~ /r5-sum-base-defun/ {exit ($6+0<=1.02)?0:1}'
+cmd: python3 -I target/regraw/agg.py | awk -F'|' '$2 ~ /reg-sum-bc|r7-funcall-bc|r3-call|r4-car|r3-mix|r3-pcase|r5-sum-base-defun/ {n++; if ($8 ~ /[0-9]\/5/ && $5+0>0) ok++} END{exit (n==7 && ok==7)?0:1}'

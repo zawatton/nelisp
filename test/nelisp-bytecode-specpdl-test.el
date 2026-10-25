@@ -16,6 +16,7 @@
 (defvar spd--dirty 0)
 (defvar spd--calls nil)
 (defvar spd--keywords nil)
+(defvar spd--kwcalls 0)
 
 (defun spd--sym (i) (+ 100000 (* i 64) 6))
 (defun spd--cell (i) (+ 100000 (* i 64) 16))
@@ -26,7 +27,8 @@
 (defun spd--fresh (&optional opts)
   "Reset the model.  Symbols 0..29: header kind 4, cell value 21 + 4 I."
   (setq spd--words (make-hash-table :test #'eql) spd--cells (make-hash-table)
-        spd--next 200000 spd--dirty 0 spd--calls nil spd--keywords (plist-get opts :keywords))
+        spd--next 200000 spd--dirty 0 spd--calls nil spd--kwcalls 0
+        spd--keywords (plist-get opts :keywords))
   (cl-loop for off from 0 to 184 by 8 do (puthash (+ spd--aux off) 3 spd--words))
   (puthash (+ spd--aux 24) 1 spd--words)
   (puthash (+ spd--aux 96) 1 spd--words)
@@ -36,7 +38,15 @@
   (puthash (+ 50100 48) (or (plist-get opts :pin) 0) spd--words)
   (cl-loop for i below 30 do
            (puthash (+ 100000 (* i 64)) 4 spd--words)
-           (puthash (+ 100000 (* i 64) 16) (+ 21 (* 4 i)) spd--words)))
+           (puthash (+ 100000 (* i 64) 16) (+ 21 (* 4 i)) spd--words)
+           ;; dynbind2: name cell +8 holds a String WORD; header at WORD-4:
+           ;; +8 nbytes, +24 data address; the data byte is ':' for a keyword.
+           (puthash (+ 100000 (* i 64) 8)
+                    (if (memq i (plist-get opts :legacy-names)) 0 (+ 300000 (* i 64) 4)) spd--words)
+           (puthash (+ 300000 (* i 64)) 0 spd--words)
+           (puthash (+ 300000 (* i 64) 8) 3 spd--words)
+           (puthash (+ 300000 (* i 64) 24) (+ 400000 (* i 8)) spd--words)
+           (puthash (+ 400000 (* i 8)) (if (memq (spd--sym i) spd--keywords) 58 97) spd--words)))
 
 (defun spd--rd (p o)
   (let ((v (gethash (+ p o) spd--words 'absent)))
@@ -48,13 +58,14 @@
   (declare (indent 1))
   `(cl-letf (((symbol-function 'heap-read-u64) #'spd--rd)
              ((symbol-function 'ptr-read-u64) #'spd--rd)
+             ((symbol-function 'heap-read-u8) #'spd--rd)
              ((symbol-function 'ptr-write-u64) #'spd--wr)
              ((symbol-function 'data-addr)
               (cons 'macro (lambda (n) (if (eq n 'nl_thread_registry) 50000 50100))))
              ((symbol-function 'wf_dirty) (lambda () (cl-incf spd--dirty) 1))
              ((symbol-function 'nl_word_canon) #'identity)
              ((symbol-function 'bf_keyword_raw)
-              (lambda (w) (if (memq w spd--keywords) 1 0)))
+              (lambda (w) (cl-incf spd--kwcalls) (if (memq w spd--keywords) 1 0)))
              ((symbol-function 'wf_bytecode_w_cons2) #'spd--cons)
              ((symbol-function 'wf_bytecode_w_consp)
               (lambda (w) (if (gethash w spd--cells) 1 0)))
@@ -239,5 +250,37 @@
     (dolist (sym '(wf_bytecode_w_cons2 nelisp_mirror_lookup_entry nl_sb_plain_entry_p nl_cons_alloc))
       (should-not (funcall has 'wf_bytecode_w_lean_bind sym)))
     (should-not (funcall has 'wf_bytecode_w_pop_lean 'nelisp_mirror_lookup_entry))))
+
+;; ---- dynbind2: the keyword test of the lean binder is in line ----------------
+
+(ert-deftest spd-keyword-test-reads-the-name-string-in-line ()
+  ;; A keyword name declines untouched, any other name binds; neither answer
+  ;; goes through `bf_keyword_raw' when the name cell holds a String WORD.
+  (spd--fresh (list :keywords (list (spd--sym 3))))
+  (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_lean_bind)
+    (should (= (spd--bind 3 1002) 1))
+    (should (= (spd--count) 0))
+    (should (= (spd--bind 4 9) 0))
+    (should (= (spd--count) 1))
+    (should (= spd--kwcalls 0))))
+
+(ert-deftest spd-keyword-test-length-rules-and-fallback ()
+  (spd--fresh (list :keywords (list (spd--sym 3))))
+  (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_lean_bind)
+    ;; empty name: not a keyword whatever the data byte says
+    (puthash (+ 300000 (* 3 64) 8) 0 spd--words)
+    (should (= (spd--bind 3 1002) 0))
+    ;; negative +8: length from +0 with the sign bit cleared
+    (puthash (+ 300000 (* 4 64) 8) -1 spd--words)
+    (puthash (+ 300000 (* 4 64)) (logior (ash 1 63) 2) spd--words)
+    (puthash (+ 400000 (* 4 8)) 58 spd--words)
+    (should (= (spd--bind 4 9) 1))
+    (should (= spd--kwcalls 0)))
+  ;; a legacy-view name cell is answered out of line
+  (spd--fresh (list :keywords (list (spd--sym 3)) :legacy-names '(3 5)))
+  (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_lean_bind)
+    (should (= (spd--bind 3 1002) 1))
+    (should (= (spd--bind 5 9) 0))
+    (should (= spd--kwcalls 2))))
 
 (provide 'nelisp-bytecode-specpdl-test)

@@ -1,0 +1,23 @@
+#+TITLE: Absolute 64-byte alignment of hot entries in every link (unitalign)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 (v14) plus overlay (hotcold merged).
+* S1 Source
+** S1.1 Every link path that produces a runnable image (dynamic ELF writer, static linker, Win64 PE writer, cold image) places the text so that compiler-aligned hot entries (alignhot :entry 64, :unit-tail 64) land on absolute 64-byte boundaries: text start and every unit start 64-aligned (or each hot entry checked absolutely); red/green on a link-level test
+#+NOTE: Cold image = heap dump (data only; text is the linked executable), so it needs no placement change. Single-unit path aot-compiler.el:29221 passes :text-alignment 16 to the writer (not owned, not on the runnable-image path). Win64 PE text RVA is 0x1000 (section alignment), unit starts come from the shared linker rule.
+cmd: bash target/unitalign/check_s11.sh
+** S1.2 A build-time check fails the build (or a gate test fails) if any function with an alignhot :entry alignment is not 64-aligned at its absolute address in the linked image, with a negative control (perturbed unit start -> red)
+#+NOTE: Check = nelisp-link--check-hot-alignment, called from nelisp-link-units, -dynamic and -pe32 (fails the link). The cmd also confirms check_align.py rejects the unaligned v14 image.
+cmd: bash target/unitalign/check_s12.sh
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build plus one Win64 cross-build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); in both, wf_bytecode_w_fast_run, wf_bytecode_execute_frame and wf_bytecode_w_function are at absolute addresses = 0 mod 64
+#+NOTE: Linux build #1 (ua1) failed at link because the new check wrongly flagged a data-only unit; fixed (units without text skipped) and rebuilt as ua2, the candidate. ua2 and the Win64 build use identical linker/writer sources (see frozen-hashes).
+cmd: bash target/unitalign/check_s21.sh
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes; Win64 under Wine closurevm/switch/features equal GNU
+#+NOTE: Wine features step needed features-bc.el/features-src.el copied from integ-1031/win; rerun EQ-GNU.
+cmd: bash target/unitalign/check_s22.sh
+* S3 End to end
+** S3.1 r3-call no longer regresses with hotcold: elapsed at or below v14 (paired, CPU 14), with mispredicts and L2 BTB events per step (pmcrun2) back to v14 levels or lower; reg-sum-bc keeps hotcold's gain (at or below 0.75 of v14)
+#+NOTE: Known red on the reg-sum-bc clause: ua2/v14 = 0.83 (hotcold 0.70, hotcold fast_run sits at 32 mod 64). r3-call clause is met (0.99, misp/l2btb at v14 level).
+cmd: python3 target/unitalign/check_s31.py
+** S3.2 Paired elapsed (CPU 14) on reg-sum-bc, r7-funcall-bc, r3-call, r3-pcase, r3-mix, r4-car and the plain sum loop vs v14 and GNU, and the same rows on a second build with an unrelated cold-code perturbation show equal timing within noise (layout stability)
+#+NOTE: Paired table done for all 7 rows. The perturbed second Linux build was NOT run: the two-Linux-build cap was consumed by the failed ua1 plus ua2. Known red.
+cmd: python3 target/unitalign/check_s32.py

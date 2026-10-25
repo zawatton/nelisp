@@ -42,7 +42,7 @@
                                      :rt-slots (nelisp-aot-compiler--ir-get ir :rt-slot-count)
                                      :nodes nodes
                                      :zero-selected
-                                     (if (memq name (nelisp-standalone--zero-fresh-frame-functions)) t :json-false)
+                                     :json-false
                                      :calls (vconcat (delete-dups calls))) records)))))))
              ;; The production preprocessing/owner-context/inlining pipeline runs;
              ;; machine emission is deliberately omitted by this source audit.

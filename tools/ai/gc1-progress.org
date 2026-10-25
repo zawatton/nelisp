@@ -1,0 +1,41 @@
+#+TITLE: GC fixed cost per collection (gc1)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (34 files). Evidence: ../resume-4943-20261024/target/xroot/REPORT.md and rows.json (root causes, retimed ratios), survey2 drivers in ../resume-4943-20261024/target/survey2/drv.
+* S1 Source
+** S1.1 The collector's per-collection cost no longer has the ~91M-instruction floor independent of the live set measured by xroot (nl_gc_index_fill_boot re-indexing chunk 0 header by header, whole-heap sweep): the boot chunk index is built once and maintained, sweeping is proportional to what changed or is done lazily/incrementally per chunk, as GNU's mark/sweep is proportional to the heap but without the fixed re-index; the trigger policy is documented against GNU's gc-cons-threshold; red/green
+#+NOTE: KNOWN RED, measured 2026-10-26. nl_gc_index_fill_boot is still called once per collection and still walks every header created since the last sweep; the walk and the sweep were tightened (fixture 59.2 -> 40.1 and 64.1 -> 39.5 Ir/block, identical checksums; in situ -32% fill_boot and -26% sweep_merge_range) but the per-collection total on buffers-char-after-bc is 105.9M Ir, above the 91M floor. A maintained index needs bit/predecessor upkeep in the allocator split paths (not a gc1 defun); see REPORT.md cross-lane request. Trigger policy documented at nl_gc_debt_limit_for.
+#+TIMEOUT: 120
+cmd: sh target/gc1/checks/s11.sh
+evidence: target/gc1/results/micro.txt sha256=eff64f8d3763a1abc6cd9226ee3a89059741b73fd81173a72027ffe3d40aa673
+evidence: target/gc1/results/ir.txt sha256=d65414744883d1157c280f895ac276caeb683307649c4aabedfe7e2c91a19318
+** S1.2 GC correctness unchanged: weak tables (24/24), finalizers, compaction (moving) still update every precise root, forced-poll and stack-map mismatch checks (smap2/smapz tools) 0 mismatches, a GC stress corpus with mutation control (drop one live object -> detected)
+#+NOTE: nl_gc_compact ran 0 times in every profile taken (conservative pins skip compaction), so compaction updating precise roots is not exercised by this evidence. Weak 24/24, stress corpus with mutation control (drop one live object -> DETECTED), forced polls m=-1 and m=3, stack-map mismatches=0 over 13185 collections.
+#+TIMEOUT: 120
+cmd: sh target/gc1/checks/s12.sh
+evidence: target/gc1/logs/stress-new.log sha256=ee7341f955283bbdeadffe998b686065fc776cbb510da1395e166828ec7ae9c0
+evidence: target/gc1/logs/stress-mutate-new.log sha256=f7632394a21a0389007474089901a9c074cf2079e55bad312bbe63f8c4c91710
+evidence: target/gc1/logs/forced.out sha256=1f3bbe64c75d826592721ab93d2d981ef90c7e40b694b78322bea7436f10982d
+evidence: target/gc1/logs/smap-big-m-1.out sha256=0d8a089c86286266065641703181e65bfc3a5d88ef2bf2c02190affc0f59055c
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: one build used for the change (second build unused). Wine/Win64 cross-build not run (ledger does not ask).
+#+TIMEOUT: 120
+cmd: sh target/gc1/checks/s21.sh
+evidence: target/gc1/logs/nodatablob.log sha256=a88615ae2d19482db94ba56c67f3754c615347dd73b91e6ac43a1389f5883cb1
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+#+TIMEOUT: 120
+cmd: sh target/gc1/checks/s22.sh
+evidence: target/gc1/logs/fixtures.log sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+evidence: target/gc1/logs/wincheck-linux.log sha256=e52b6d4791670e7284b6b64c2f7c7a3981dda38ce19febc1e6b2cde8b3695ec4
+* S3 End to end
+** S3.1 Instructions per collection reduced at least 5x on a small-live-set collection (garbage-collect in a loop, callgrind) and on the survey rows where GC dominates (buffers-char-after-bc, print-prin1-bigdata-bc, a cons-heavy loop): per-row Ir and elapsed before/after (paired, CPU 15)
+#+NOTE: KNOWN RED, measured: 1.34x on the whole GC subtree of buffers-char-after-bc (142.1M -> 105.9M per collection) of which only about 12.5M (1.1x) is attributable to gc1; the rest is smapz already in the seed but not in v13. About 40M per collection is marking the restored image (nl_gc_mark_cons 23.5M, vectorlike 6.3M, mark_word 4.5M, weak 5M), measured at 53M per collection with nothing to sweep; GNU also traverses pdumper objects every cycle. Cons-heavy rows never reach the arena walks (0 fill_boot calls; nl_sweep_conses is the bitmap sweep). Paired elapsed in target/gc1/paired (CPU 15, 7 reps).
+#+TIMEOUT: 200
+cmd: sh target/gc1/checks/s31.sh
+evidence: target/gc1/paired/buffers-char-after-bc/report.json sha256=b57e475b7780b6cb6824a6b70085d9161e5c861ad896f8b359e4325bad6e2fcf
+evidence: target/gc1/paired/print-prin1-bigdata-bc/report.json sha256=8a872bddbf22070b5e472456acb01132ad84cfba10f117e0ae843d5f38bdf130
+** S3.2 43-row matrix rows r3-list, s6-cons1, p-mapcar-car and reg-sum-bc not slower than v14 beyond noise (paired, CPU 15)
+#+NOTE: base is v13, which is not exactly the seed (it lacks smapz), so ratios below 1 are not all attributable to gc1; the check only asserts not slower.
+#+TIMEOUT: 120
+cmd: sh target/gc1/checks/s32.sh
+evidence: target/gc1/paired/s6-cons1/report.json sha256=1295eb12ede2a3d036a4e83572e32d81a5c7afeb404e044863daf64d36c47b21
+evidence: target/gc1/paired/reg-sum-bc/report.json sha256=1cd1ad40cd7906d9572a6a5d6ad61ceed409b18c9af378709828528441fc14e0

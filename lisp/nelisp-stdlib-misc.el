@@ -2005,6 +2005,8 @@ loaded alongside this file in the hosted image)."
            (at (1+ (length before)))
            (n (length text)))
       (setf (nelisp-buffer-before-gap b) (concat before text))
+      (setf (nelisp-buffer-blen b) (+ (nelisp-buffer-blen b) n))
+      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)

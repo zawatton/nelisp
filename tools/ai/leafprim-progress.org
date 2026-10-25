@@ -1,0 +1,34 @@
+#+TITLE: Bytecode funcall of a primitive held in a variable (leafprim)
+#+NOTE: Created 2026-10-30 before implementation; 6 criteria. Seed = coordinator HEAD 3f82929d3 plus overlay = v14 sources; baseline binary integ-1031 (v14).
+* S1 Source
+** S1.1 When bytecode calls a function value that is a primitive symbol or Subr object held in a variable (not a constant; the r4 rows), the call reaches the primitive's WORD body by the same descriptor route the constant-symbol case uses, with no name-string dispatch, no generic apply and no consed argument list; each remaining step matches a step of GNU's Bcall -> funcall_subr (src/bytecode.c, src/eval.c), cited in REPORT.md; red/green
+#+NOTE: Constant-symbol and variable-held calls already shared one route in v14 (s4-logand's constant 'logand and s4-car's stack-held f gave the same callgrind chain). The cut is therefore on the shared route: new wf_bytecode_call_leaf unpacks the Subr descriptor once instead of wf_bytecode_call + nl_directcall_id + nl_directcall_invoke + m5_fx_primitive_run. Evidence is v13 callgrind (v14 profiled via pmcrun2) and the host ERT red/green.
+cmd: grep -q "0 unexpected" target/leafprim/logs/green-leafprim-test.log
+cmd: ! grep -q "0 unexpected" target/leafprim/logs/red-leafprim-test.log
+cmd: grep -q "void-function wf_bytecode_call_leaf" target/leafprim/logs/red-leafprim-test.log
+** S1.2 Semantics against GNU for the r4 primitives and a wider set (car nth aset length logand aref cdr cons eq + -): wrong-type/args-out-of-range error data, arity errors, redefinition/advice/fset of the symbol between calls falls back, funcall of a non-function signals invalid-function, backtrace frames; directcall and leaf corpora unchanged
+#+NOTE: Native corpus (target/leafprim/corpus/run.el, 98 cases: errors, arity, funcall of void/nil/int/string, redefinition/advice of nth, held subr, backtrace names) is byte-identical between v14 and the leafprim build; both differ from GNU only in the pre-existing innermost backtrace name and advice-remove of an anonymous-free advice. Directcall host corpora: 36/37, the one red (ndc-decline-symbol-miss-precedes-descriptor-reads) is red on the seed too.
+#+NOTE: Existing standalone corpora run on both binaries: directcall (47 checked, 1 failed in v14 and leafprim alike, outputs identical), leaf (outputs identical), leaf-gc (mode=both 13 checks, 0 failures, 4951 collections, identical).
+cmd: cmp target/leafprim/corpus/v14.out target/leafprim/corpus/new.out
+cmd: cmp target/leafprim/sc/dc.v14.out target/leafprim/sc/dc.new.out
+cmd: cmp target/leafprim/sc/leaf.v14.out target/leafprim/sc/leaf.new.out
+cmd: cmp target/leafprim/sc/leaf-gc.v14.out target/leafprim/sc/leaf-gc.new.out && grep -q "failures=0 collections=.* PASS" target/leafprim/sc/leaf-gc.new.out
+cmd: grep -q "Ran 37 tests, 36 results as expected, 1 unexpected" target/leafprim/logs/green-existing-directcall.log
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304); Windows per-target generated forms still contain no data-blob
+#+NOTE: build rc=0 (1088 s); PRELINK_F1_BOUNDARY_PASS and PRELINK_DIRECT_CLOSURE_PASS present; root evidence max nodes=82175 (equal to v14) <= 98304; Win64 data-blob via host ERT w2s-windows-forms-still-carry-no-data-blob.
+cmd: grep -q "^BUILD rc=0" target/leafprim-build/dynamic/build.log
+cmd: test -x target/leafprim-build/dynamic/nelisp-dynamic
+cmd: grep -rq PRELINK_F1_BOUNDARY_PASS target/leafprim-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json
+cmd: grep -rq PRELINK_DIRECT_CLOSURE_PASS target/leafprim-build/dynamic/src/target/standalone-rooted-protocol-*/prelink-closure.json
+cmd: grep -q "passed  1/1  w2s-windows-forms-still-carry-no-data-blob" target/leafprim/logs/datablob.log
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: grep -q "weak 24/24 PASS" target/leafprim/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/leafprim/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/leafprim/logs/fixtures.log && grep -q "buffer 21/21 PASS" target/leafprim/logs/fixtures.log
+cmd: [ $(grep -c "PASS" target/leafprim/logs/wincheck.log) -ge 3 ] && ! grep -q "FAIL" target/leafprim/logs/wincheck.log
+* S3 End to end
+** S3.1 Instructions per trip reduced vs v14 on r4-car, r4-nth, r4-aset, r4-length and r4-logand (pmcrun2 two-N), results checked; reg-sum-bc unchanged
+#+NOTE: Table in target/leafprim/bench-table.md (agg.py over paired_bench raw.json with pmcrun2, two N, results checked by BENCH-CHECK). Gains are modest because the compiler keeps every local on the stack.
+cmd: python3 -I target/leafprim/agg.py | awk -F'|' '$2 ~ /r4-car|r4-nth|r4-aset|r4-length|r4-logand/ {gsub(/[+ ]/,"",$5); if ($5+0<0) n++} $2 ~ /reg-sum-bc/ {gsub(/[+ ]/,"",$5); if ($5+0==0) z=1} END{exit (n==5 && z==1)?0:1}'
+** S3.2 Paired elapsed (CPU 11) on those rows plus the plain sum loop vs v14 and GNU
+#+NOTE: CPU 11, 5 paired reps, GNU /usr/local/bin/emacs as third engine; r4-aset was rerun once because CPU 11 was briefly busy. reg-sum-bc ns moved -10% with identical instructions (layout), reported as is.
+cmd: python3 -I target/leafprim/agg.py | awk -F'|' '$2 ~ /reg-sum-bc|r4-car|r4-nth|r4-aset|r4-length|r4-logand/ {n++; if ($9+0<1) ok++} END{exit (n==6 && ok==6)?0:1}'
