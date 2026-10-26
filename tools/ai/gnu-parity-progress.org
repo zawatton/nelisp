@@ -2,27 +2,33 @@
 #+NOTE: Objective defined 2026-10-26 by the user ("次でGNUと同等、もしくはそれ以上の速さになるようにして"; scope chosen: "網羅調査の中央値もGNU以上"). Created before implementation. 9 criteria.
 #+NOTE: Ratio = NeLisp ns/step / GNU ns/step, paired_bench (nelisp-gnu-gap-bench skill), results checked. Done means ratio <= 1.0.
 #+NOTE: Starting point: v18 matrix geomean 1.75 (integ-1035). Survey medians: survey2 not computed (geomean 72 on v16), survey3 14 (v16), survey4 28.6 (v17).
+#+NOTE: 2026-10-26 v19 baseline (resurvey19; target/resurvey19/REPORT.md): matrix geomean 1.824; survey2 median 14.05 (geomean 15.6); survey3 median 10.12; survey4 interp median 30.49. Correction: the "survey2 geomean 72" above has no source; survey2/REPORT.md gives 26.8 on v14.
+#+NOTE: 2026-10-26 S0 criteria turned to evidence and S1.1/S2.x to failing cmd checks with the same wording; the denominator is unchanged (9). Set PARITY_MATRIX to the candidate matrix dir (e.g. target/integ-1037/matrix) and PARITY_RESULTS to a re-survey results dir with survey{2,3,4}.jsonl.
 #+NOTE: All three surveys are re-measured on one integrated binary. S0 fixes the v19 baseline; later stages re-run the same specs on the candidate binary.
 
 * S0 Baseline
 ** S0.1 survey2, survey3 and survey4 re-measured on the v19 integrated binary with one tool; medians and per-family breakdown recorded
-pending
+evidence: target/resurvey19/REPORT.md sha256=f614b67ef9375417c3ba44eebc3a57281ed3dff7a355a6eccede989cc6b1a8d8
 ** S0.2 Family ranking: the rows above 1.0, grouped by implementing function family, ordered by how much each family moves the medians
-pending
+evidence: target/resurvey19/survey2.jsonl sha256=c69879a4f2f147d1bf351da554cf1322ce056dabf3f6834700435fae95b9de56
 
 * S1 Core matrix
 ** S1.1 43-row matrix geomean v/GNU <= 1.0 on the integrated candidate
-pending
+#+REQUIRES: PARITY_MATRIX
+cmd: python3 tools/ai/gnu-parity/medians.py --matrix $PARITY_MATRIX --max-geomean 1.0
 ** S1.2 No matrix row above 2.0x GNU
 pending
 
 * S2 Survey medians
 ** S2.1 survey2 median ratio <= 1.0 on the integrated candidate
-pending
+#+REQUIRES: PARITY_RESULTS
+cmd: python3 tools/ai/gnu-parity/medians.py $PARITY_RESULTS 2 --max-median 1.0
 ** S2.2 survey3 median ratio <= 1.0 on the integrated candidate
-pending
+#+REQUIRES: PARITY_RESULTS
+cmd: python3 tools/ai/gnu-parity/medians.py $PARITY_RESULTS 3 --max-median 1.0
 ** S2.3 survey4 median ratio <= 1.0 on the integrated candidate
-pending
+#+REQUIRES: PARITY_RESULTS
+cmd: python3 tools/ai/gnu-parity/medians.py $PARITY_RESULTS 4 --max-median 1.0
 
 * S3 End to end
 ** S3.1 One integrated build reaches S1.1 and S2.1-S2.3 at the same time and passes the fixtures (weak 24/24, GNU 56/56, AFRT 24/25 with only the known red, buffer 21/21) and gnu-speed-win-check
