@@ -1,0 +1,18 @@
+;;; smoke.el --- first check of the native route in a standalone build  -*- lexical-binding: t; -*-
+(let ((ok t))
+  (unless (fboundp 'nelisp--rx-exec) (princ "NO rx-exec\n") (setq ok nil))
+  (dolist (c '(("o+" "foo bar" 1 3) ("\\(b\\)\\(a\\)" "xxbar" 2 4) ("[0-9]+" "ab123c" 2 5) ("z" "abc" nil nil) ("a*?b" "aab" 0 3)))
+    (let* ((case-fold-search nil) (r (string-match (car c) (nth 1 c))))
+      (unless (and (eql r (nth 2 c)) (or (null r) (eql (match-end 0) (nth 3 c))))
+        (princ (format "MISMATCH %S got %S end %S\n" c r (match-end 0))) (setq ok nil))))
+  (with-temp-buffer
+    (insert "alpha 12 beta 345 gamma")
+    (goto-char (point-min))
+    (let ((n 0)) (while (re-search-forward "[0-9]+" nil t) (setq n (1+ n)))
+      (unless (= n 2) (princ (format "BUFFER COUNT %S\n" n)) (setq ok nil)))
+    (goto-char (point-min))
+    (unless (and (search-forward "beta" nil t) (= (point) 14)) (princ (format "SF point %S\n" (point))) (setq ok nil))
+    (goto-char 7)
+    (unless (looking-at "[0-9]+") (princ "LOOKING-AT\n") (setq ok nil))
+    (unless (and (looking-at-p " *") (equal (match-string 0) "12")) (princ "LOOKING-AT-P\n") (setq ok nil)))
+  (princ (if ok "SMOKE OK\n" "SMOKE FAIL\n")))

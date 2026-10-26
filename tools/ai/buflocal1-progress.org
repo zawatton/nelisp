@@ -1,0 +1,52 @@
+#+TITLE: buflocal1: correct and GNU-cost buffer-locals, buffer lifecycle and narrowing
+
+* S1 Cause with evidence
+
+** S1.1 v17 diverges from GNU on the buffer-local corpus (setq-local is setq, no cleanup)
+evidence: target/buflocal1/evidence/v17/nl-local.txt sha256=0eb9e7e32d5cd5f92ba69dd9984bd5da5d4e84984f58e0a3513b8be178fdb071
+
+** S1.2 v17 diverges from GNU on the narrowing/lifecycle corpus
+evidence: target/buflocal1/evidence/v17/nl-narrow.txt sha256=9e0269e56e19d8814bd6c9b85d69c3967eb93dad474026acdbff8851d20bc0c8
+
+** S1.3 root causes recorded in the lane report
+cmd: grep -q "setq-local" target/buflocal1/REPORT.md && grep -q "redirect alist" target/buflocal1/REPORT.md
+
+* S2 Fix with red/green checks
+
+** S2.1 changed Elisp files have balanced parens (host reader)
+cmd: emacs -Q --batch --eval '(dolist (f (list "scripts/nelisp-stdlib-prelude.el" "lisp/nelisp-buffer-local.el" "src/nelisp-buffer.el" "lisp/nelisp-stdlib-misc.el")) (with-temp-buffer (insert-file-contents f) (goto-char (point-min)) (condition-case e (while t (read (current-buffer))) (end-of-file nil))))'
+
+** S2.2 buffer-local corpus equals GNU 31.1 on the built binary
+#+REQUIRES: BL_BIN
+cmd: tools/ai/buflocal1/check-parity.sh "$BL_BIN" local 0
+
+** S2.3 narrowing/lifecycle corpus equals GNU 31.1 on the built binary
+#+REQUIRES: BL_BIN
+cmd: tools/ai/buflocal1/check-parity.sh "$BL_BIN" narrow 0
+
+** S2.4 A2 loop is linear at N and 4N and leaves no buffers or extra cells
+#+REQUIRES: BL_BIN
+cmd: tools/ai/buflocal1/check-a2.sh "$BL_BIN"
+
+** S2.5 negative control: the v17 binary fails the buffer-local corpus
+#+REQUIRES: V17_BIN
+cmd: ! tools/ai/buflocal1/check-parity.sh "$V17_BIN" local 0 >/dev/null
+
+* S3 One integrated build passing fixtures
+
+** S3.1 integrated build succeeded (build 2 of 2; build 1 was the first end-to-end run of the same change)
+cmd: grep -q "^BUILD rc=0" target/buflocal1-build2/dynamic/build.log && test -x target/buflocal1-build2/dynamic/nelisp-dynamic
+
+** S3.2 fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red), buffer 21/21 on build 2
+cmd: grep -q "^weak 24/24 PASS" target/buflocal1/fixtures2.log && grep -q "^GNU 56/56 PASS" target/buflocal1/fixtures2.log && grep -q "^AFRT 24/25" target/buflocal1/fixtures2.log && grep -q "^buffer 21/21 PASS" target/buflocal1/fixtures2.log
+
+** S3.3 gnu-speed-win-check passes on build 2
+cmd: test "$(grep -c PASS target/buflocal1/speedwin2.log)" = 3
+
+* S4 Paired timing
+
+** S4.1 paired timing recorded for the buffer-local, set-buffer, narrowing and count-lines rows (28 rows)
+cmd: test "$(wc -l < target/buflocal1/timing/rows.jsonl)" -ge 28 && python3 tools/ai/buflocal1/summarize-timing.py target/buflocal1/timing/rows.jsonl target/buflocal1/timing-summary.md >/dev/null; test -s target/buflocal1/timing-summary.md
+
+** S4.2 regression rows reg-sum-bc and r3-mix within 10% of v17
+cmd: python3 tools/ai/buflocal1/summarize-timing.py target/buflocal1/timing/rows.jsonl target/buflocal1/timing-summary.md

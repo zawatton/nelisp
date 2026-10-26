@@ -1,0 +1,73 @@
+#+TITLE: textprop1 -- text properties as a balanced interval tree
+
+Run with TP_BASE=<v17 binary> TP_BIN=<candidate binary> (target/textprop1/env.sh sets them).
+
+* S1 Cause with evidence
+
+** S1.1 Causes documented with survey4 evidence
+evidence: target/textprop1/CAUSES.md sha256=b6d4529dd94216855662e94997be4c567107ff740cb1ab94851eac08f3e27775
+
+** S1.2 Baseline v17 fails the scaling probes (red)
+#+REQUIRES: TP_BASE
+#+TIMEOUT: 600
+cmd: python3 tools/ai/textprop1-scale.py --bin $TP_BASE --expect red
+
+** S1.3 Baseline v17 fails the GNU parity corpus (red)
+#+REQUIRES: TP_BASE
+cmd: ! sh tools/ai/textprop1-check.sh corpus $TP_BASE
+
+* S2 Fix with red/green checks
+
+** S2.1 Engine green on the v17 binary through the dev overlay (corpus)
+#+REQUIRES: TP_BASE
+cmd: sh tools/ai/textprop1-check.sh corpus $TP_BASE target/textprop1/dev/overlay.el
+
+** S2.2 Random-operation fuzz equals GNU (overlay)
+#+REQUIRES: TP_BASE
+#+TIMEOUT: 300
+cmd: sh tools/ai/textprop1-check.sh fuzz $TP_BASE target/textprop1/dev/overlay.el
+
+** S2.3 Scaling probes green (overlay)
+#+REQUIRES: TP_BASE
+#+TIMEOUT: 600
+cmd: python3 tools/ai/textprop1-scale.py --bin $TP_BASE --overlay target/textprop1/dev/overlay.el
+
+** S2.4 Patch file exists and has the prelude hunks
+cmd: grep -q 'a/scripts/nelisp-stdlib-prelude.el' target/textprop1/textprop1.patch
+
+* S3 Integrated build
+
+** S3.1 Candidate builds and corpus equals GNU
+#+REQUIRES: TP_BIN
+cmd: sh tools/ai/textprop1-check.sh corpus $TP_BIN
+
+** S3.2 Fuzz and smoke on the candidate
+#+REQUIRES: TP_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/textprop1-check.sh fuzz $TP_BIN && sh tools/ai/textprop1-check.sh smoke $TP_BIN
+
+** S3.3 Fixtures weak 24/24, GNU 56/56, AFRT 24/25, buffer 21/21
+evidence: target/textprop1/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+cmd: grep -q 'weak 24/24 PASS' target/textprop1/fixtures.log && grep -q 'GNU 56/56 PASS' target/textprop1/fixtures.log && grep -q 'AFRT 24/25' target/textprop1/fixtures.log && grep -q 'buffer 21/21 PASS' target/textprop1/fixtures.log
+
+** S3.4 gnu-speed-win-check passes, F1 prelink records <= 384
+evidence: target/textprop1/wincheck.log sha256=302c104ca482e601b16dde33194b1c91f16637e2cfa062734082e5bb65cf51c0
+cmd: python3 -c "import json,glob;d=json.load(open(glob.glob('target/textprop1-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));assert len(d['records'])<=384"
+
+* S4 Paired timing
+
+** S4.1 Scaling probes green on the candidate
+#+REQUIRES: TP_BIN
+#+TIMEOUT: 600
+cmd: python3 tools/ai/textprop1-scale.py --bin $TP_BIN
+
+** S4.2 survey4 textprop rows paired vs v17 and GNU recorded
+evidence: target/textprop1/timing-table.txt sha256=eda9184ea2394f136c593428b8b12386592830b9e37aa2a60517bed880463509
+cmd: python3 -c "import glob;assert len(glob.glob('target/textprop1/timing/tp-*/report.json'))>=20"
+
+** S4.3 regression rows reg-sum-bc and r3-mix within 5 percent of v17
+cmd: python3 -c "import json;[(lambda e:(lambda r:r<=1.05 or (_ for _ in ()).throw(SystemExit(1)))(e['cand']['inner_ns_per_step']['median']/e['base']['inner_ns_per_step']['median']))(json.load(open('target/textprop1/timing/%s/report.json'%n))['engines']) for n in ('reg-sum-bc','r3-mix')]"
+
+** S4.4 REPORT.md and patch delivered
+evidence: target/textprop1/REPORT.md sha256=ff78212f8b81cb837d0fca4c0376a51fb7d4ca8cf673ca76c72d3bda4b0dce59
+cmd: test -s target/textprop1/textprop1.patch

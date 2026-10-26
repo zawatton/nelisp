@@ -98,16 +98,15 @@ operations; the symbol object itself never reaches Lisp."
   (let* ((redirect (nelisp-buffer-local--redirect-vector variable t))
          (buffer (current-buffer)))
     (unless (assq buffer (aref redirect 1))
-      (let ((cell (intern (format "nelisp-buffer-local--cell-%d"
-                                 (setq nelisp-buffer-local--serial
-                                       (1+ nelisp-buffer-local--serial))))))
-        (eval (list 'defvar cell))
+      ;; Cells are recycled: a killed buffer or local returns its cell.
+      (let ((cell (nelisp-buffer-local--new-cell)))
         ;; Populate the private cell before publishing its watcher identity:
         ;; make-local-variable itself must not notify public variable watchers.
         (when (boundp variable) (set cell (symbol-value variable)))
         (put cell 'nelisp--buffer-local-buffer buffer)
         (put cell 'nelisp--buffer-local-variable (indirect-variable variable))
-        (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))))
+        (aset redirect 1 (cons (cons buffer cell) (aref redirect 1)))
+        (nelisp-buffer-local--note buffer (indirect-variable variable) cell)))
     variable))
 (defun nelisp-buffer-local-p (variable &optional buffer)
   "Return non-nil for an explicit local cell in BUFFER, including void cells."
@@ -144,7 +143,11 @@ operations; the symbol object itself never reaches Lisp."
       (when redirect
         ;; CREATE authenticates the mutation guard even when no resize is needed.
         (nelisp-buffer-local--redirect-vector variable t)
-        (aset redirect 1 (assq-delete-all (current-buffer) (aref redirect 1))))))
+        (let ((pair (assq (current-buffer) (aref redirect 1))))
+          (when pair
+            (aset redirect 1 (delq pair (aref redirect 1)))
+            (nelisp-buffer-local--release (car pair) (indirect-variable variable)
+                                          (cdr pair)))))))
   variable)
 (when (fboundp 'nelisp--native-env)
   ;; The provider reports this built-in as local even in a fresh buffer.

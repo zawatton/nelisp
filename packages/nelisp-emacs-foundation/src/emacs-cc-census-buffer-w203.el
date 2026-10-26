@@ -116,8 +116,10 @@
 				emacs-buffer--state)))
          (offset (if string 0 1))
          (intervals (if ext (emacs-buffer--ext-text-props ext)
-                      (if string (gethash object nelisp--tp-string-properties)
-                        (nelisp-buffer-text-properties object))))
+                      (nelisp--tp-list
+                       (if string (gethash object nelisp--tp-string-properties)
+                         (nelisp-buffer-text-properties object))
+                       offset t)))
          (result nil))
     (dolist (interval intervals)
       (push (list (- (car interval) offset)

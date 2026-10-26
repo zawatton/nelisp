@@ -1220,52 +1220,19 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
 ;; Hooks: add-hook / remove-hook / run-hooks / run-hook-with-args /
 ;; run-hook-with-args-until-success / run-hook-with-args-until-failure.
 ;;
-;; Emacs 30 semantics over ordinary symbol values, measured against
-;; Emacs 30.1 (2026-08-22).  There are no buffers in this runtime, so a
-;; hook variable cannot have a value distinct per buffer: `add-hook' and
-;; `remove-hook' accept LOCAL and IGNORE it.  This is a DOCUMENTED
-;; DIVERGENCE from Emacs, not an oversight -- a silent no-op is the
-;; honest choice precisely because the local/global split LOCAL exists
-;; to select cannot exist here at all.  Emacs would instead call
-;; `make-local-variable' on HOOK and splice a `t' marker into the new
-;; buffer-local value (that marker is still handled below, because a
-;; hand-built hook list can contain one even without buffer-locals).
-;;
-;; DEPTH ordering (`add-hook'): default depth 0; a plain (non-`t', non-
-;; integer) DEPTH argument is Emacs's documented backward-compatibility
-;; case and means 90.  Insertion keeps the hook's list sorted ascending
-;; by depth; a NEW function at the same depth as an existing one goes
-;; AFTER it when DEPTH is strictly positive and BEFORE it otherwise
-;; (Emacs's own wording) -- which is why two `(add-hook 'h f)' calls at
-;; the shared default depth 0 leave the most-recently-added function
-;; FIRST.  Emacs does not store per-function depths in the hook's own
-;; list value (there is no room: the list holds functions and, DEPTH-
-;; blind, the `t' marker) -- they live in a private table, and neither
-;; does this runtime: `nelisp--hook-depths' maps HOOK to an alist of
-;; (FUNCTION . DEPTH).  A function already present in the hook's value
-;; with no recorded depth (spliced in by hand, not via `add-hook') is
-;; treated as depth 0, Emacs's own documented default.  Re-adding a
-;; function that is already a member is a no-op -- notably, it does NOT
-;; move the function to a newly-requested depth; `add-hook' checks
-;; membership before it ever looks at DEPTH (measured: adding a function
-;; at depth -10, then again at depth 50, leaves it exactly where the
-;; first call put it).
-;;
-;; The `t' element (Emacs: "run the global value here too") is honored
-;; even though it can only ever mean "run this same value again": with
-;; no buffer-local/global split, a hook's own value doubles as its own
-;; "global value".  Measured against Emacs 30.1 with a plain (non-
-;; buffer-local) hook list containing `t': the first pass runs the list
-;; once; each `t' met on the first pass triggers ONE re-run of the
-;; WHOLE value from its start (fetched once and cached, then re-walked
-;; -- not re-fetched -- on every subsequent `t'), and any `t' met DURING
-;; that re-run is skipped rather than triggering a further expansion (or
-;; this would never terminate).  `(fn1 t fn2 t)' therefore calls fn1
-;; three times and fn2 three times, in the order fn1 fn1 fn2 fn2 fn1
-;; fn2 -- reproduced exactly by `nelisp--run-hook-value' below.
-(unless (boundp 'nelisp--hook-depths)
-  (defvar nelisp--hook-depths (make-hash-table :test 'eq)
-    "HOOK symbol -> alist of (FUNCTION . DEPTH), for `add-hook' ordering."))
+;; `add-hook' and `remove-hook' are GNU subr.el 31.1: with LOCAL the hook
+;; becomes buffer-local and its local value holds a `t' element that means
+;; "run the default value here"; DEPTH ordering lives in the hook's
+;; `hook--depth-alist' property, an (uninterned) variable that is made local
+;; together with the hook.  `run-hooks' and friends are eval.c
+;; run_hook_with_args: a `t' element in the value runs the hook's DEFAULT
+;; value (ignoring any `t' inside it), so with a purely global hook the
+;; whole list runs again, exactly as before buffer-locals existed.
+(defun nelisp--hook-alist-set (cell key value)
+  "Return alist CELL with KEY mapped to VALUE (GNU `setf' of `alist-get')."
+  (let ((pair (assq key cell)))
+    (if pair (progn (setcdr pair value) cell)
+      (cons (cons key value) cell))))
 
 (unless (fboundp 'nelisp--hook-list-p)
   (defun nelisp--hook-list-p (val)
@@ -1279,52 +1246,104 @@ a cons at all (typically a symbol naming a function)."
 (unless (fboundp 'add-hook)
   (defun add-hook (hook function &optional depth local)
     "Add to the value of HOOK the function FUNCTION.
-FUNCTION is not added if already present (`equal').  See Emacs's
-`add-hook' for DEPTH; LOCAL is accepted and ignored -- see the block
-comment above this definition for why that is the honest behavior here.
+FUNCTION is not added if already present.  With non-nil LOCAL, make HOOK
+buffer-local and add FUNCTION to the local value.  See Emacs's `add-hook'
+for DEPTH.
 
 (fn HOOK FUNCTION &optional DEPTH LOCAL)"
-    (ignore local)
-    (let ((d (cond ((null depth) 0) ((integerp depth) depth) (t 90))))
-      (unless (boundp hook) (set hook nil))
-      (let ((val (symbol-value hook)))
-        (when (and val (not (nelisp--hook-list-p val)))
-          (setq val (list val)))
-        (unless (member function val)
-          (let ((depths (gethash hook nelisp--hook-depths))
-                (before nil) (cur val) (done nil))
-            (while (and cur (not done))
-              (let ((fd (or (cdr (assoc (car cur) depths)) 0)))
-                (if (or (> fd d) (and (= fd d) (<= d 0)))
-                    (setq done t)
-                  (push (car cur) before)
-                  (setq cur (cdr cur)))))
-            (setq val (append (nreverse before) (list function) cur))
-            (puthash hook (cons (cons function d) depths) nelisp--hook-depths))
-          (set hook val))))
+    (or (boundp hook) (set hook nil))
+    (or (default-boundp hook) (set-default hook nil))
+    (unless (numberp depth) (setq depth (if depth 90 0)))
+    (if local
+        (unless (local-variable-if-set-p hook)
+          (set (make-local-variable hook) (list t)))
+      ;; Detect the case where make-local-variable was used on a hook
+      ;; and do what we used to do.
+      (when (and (local-variable-if-set-p hook)
+                 (not (and (consp (symbol-value hook))
+                           (memq t (symbol-value hook)))))
+        (setq local t)))
+    (let ((hook-value (if local (symbol-value hook) (default-value hook))))
+      ;; If the hook value is a single function, turn it into a list.
+      (when (or (not (listp hook-value)) (functionp hook-value))
+        (setq hook-value (list hook-value)))
+      (unless (member function hook-value)
+        (let ((depth-sym (get hook 'hook--depth-alist)))
+          (unless (zerop depth)
+            (unless depth-sym
+              (setq depth-sym (make-symbol "depth-alist"))
+              (set depth-sym nil)
+              (put hook 'hook--depth-alist depth-sym))
+            (if local (make-local-variable depth-sym))
+            (let ((alist (if local (symbol-value depth-sym) (default-value depth-sym))))
+              (setq alist (nelisp--hook-alist-set alist function depth))
+              (if local (set depth-sym alist) (set-default depth-sym alist))))
+          (setq hook-value
+                (if (< 0 depth)
+                    (append hook-value (list function))
+                  (cons function hook-value)))
+          (when depth-sym
+            (let ((depth-alist (if local (symbol-value depth-sym)
+                                 (default-value depth-sym))))
+              (when depth-alist
+                (setq hook-value
+                      (sort (if (< 0 depth) hook-value (copy-sequence hook-value))
+                            (lambda (f1 f2)
+                              (< (let ((c (assq f1 depth-alist))) (if c (cdr c) 0))
+                                 (let ((c (assq f2 depth-alist))) (if c (cdr c) 0)))))))))))
+      (if local
+          (progn
+            ;; If HOOK isn't a permanent local, but FUNCTION wants to survive
+            ;; a change of modes, mark HOOK as partially permanent.
+            (and (symbolp function)
+                 (get function 'permanent-local-hook)
+                 (not (get hook 'permanent-local))
+                 (put hook 'permanent-local 'permanent-local-hook))
+            (set hook hook-value))
+        (set-default hook hook-value)))
     nil))
 
 (unless (fboundp 'remove-hook)
   (defun remove-hook (hook function &optional local)
     "Remove from the value of HOOK the function FUNCTION.
-LOCAL is accepted and ignored; see `add-hook'.
+With non-nil LOCAL, operate on the buffer-local value.
 
 (fn HOOK FUNCTION &optional LOCAL)"
-    (ignore local)
-    (when (boundp hook)
-      (let ((val (symbol-value hook)))
-        (if (not (nelisp--hook-list-p val))
-            (when (equal val function) (set hook nil))
-          (when (member function val)
-            (let (acc)
-              (dolist (f val) (unless (equal f function) (push f acc)))
-              (set hook (nreverse acc)))
-            (let ((depths (gethash hook nelisp--hook-depths)))
-              (when depths
-                (let (kept)
-                  (dolist (pair depths)
-                    (unless (equal (car pair) function) (push pair kept)))
-                  (puthash hook (nreverse kept) nelisp--hook-depths))))))))
+    (or (boundp hook) (set hook nil))
+    (or (default-boundp hook) (set-default hook nil))
+    ;; Do nothing if LOCAL is t but this hook has no local binding.
+    (unless (and local (not (local-variable-p hook)))
+      ;; Detect the case where make-local-variable was used on a hook
+      ;; and do what we used to do.
+      (when (and (local-variable-p hook)
+                 (not (and (consp (symbol-value hook))
+                           (memq t (symbol-value hook)))))
+        (setq local t))
+      (let ((hook-value (if local (symbol-value hook) (default-value hook)))
+            (old-fun nil))
+        ;; Remove the function, for both the list and the non-list cases.
+        (if (or (not (listp hook-value)) (eq (car hook-value) 'lambda))
+            (when (equal hook-value function)
+              (setq old-fun hook-value)
+              (setq hook-value nil))
+          (when (setq old-fun (car (member function hook-value)))
+            (setq hook-value (remq old-fun hook-value))))
+        (when old-fun
+          ;; Remove auxiliary depth info to avoid leaks.
+          (let* ((depth-sym (get hook 'hook--depth-alist))
+                 (depth-alist (if depth-sym (if local (symbol-value depth-sym)
+                                              (default-value depth-sym))))
+                 (di (assq old-fun depth-alist)))
+            (when di
+              (if local
+                  (set depth-sym (remq di depth-alist))
+                (set-default depth-sym (remq di depth-alist))))))
+        ;; Set the actual variable
+        (if (not local)
+            (set-default hook hook-value)
+          (if (equal hook-value '(t))
+              (kill-local-variable hook)
+            (set hook hook-value)))))
     nil))
 
 (unless (fboundp 'nelisp--run-hook-call)
@@ -1340,10 +1359,11 @@ outcomes only through the throw or the final return of the walk)."
     nil))
 
 (unless (fboundp 'nelisp--run-hook-value)
-  (defun nelisp--run-hook-value (val args mode)
+  (defun nelisp--run-hook-value (val args mode &optional hook)
     "Run hook value VAL against ARGS per MODE (`all' / `until-success' /
-`until-failure') and return the MODE-appropriate result.  See the block
-comment above `add-hook' for the `t'-element algorithm this reproduces."
+`until-failure') and return the MODE-appropriate result.  A `t' element
+runs the DEFAULT value of HOOK (eval.c run_hook_with_args), skipping any
+`t' inside it; without HOOK it runs VAL itself."
     (catch 'nelisp--run-hook
       (cond
        ((null val) (if (eq mode 'until-failure) t nil))
@@ -1351,19 +1371,18 @@ comment above `add-hook' for the `t'-element algorithm this reproduces."
         (nelisp--run-hook-call val args mode)
         nil)
        (t
-        (let ((global nil) (have-global nil) (cur val))
+        (let ((cur val))
           (while cur
             (let ((elt (car cur)))
               (if (eq elt t)
-                  (progn
-                    (unless have-global
-                      (setq have-global t)
-                      (setq global (if (nelisp--hook-list-p val) val (list val))))
-                    (let ((gcur global))
-                      (while gcur
-                        (unless (eq (car gcur) t)
-                          (nelisp--run-hook-call (car gcur) args mode))
-                        (setq gcur (cdr gcur)))))
+                  (let ((global (if hook (default-value hook) val)))
+                    (if (not (nelisp--hook-list-p global))
+                        (when global (nelisp--run-hook-call global args mode))
+                      (let ((gcur global))
+                        (while gcur
+                          (unless (eq (car gcur) t)
+                            (nelisp--run-hook-call (car gcur) args mode))
+                          (setq gcur (cdr gcur))))))
                 (nelisp--run-hook-call elt args mode)))
             (setq cur (cdr cur)))
           (if (eq mode 'until-failure) t nil)))))))
@@ -1376,7 +1395,7 @@ error.  See `add-hook' for what a hook's value may be.
 
 (fn &rest HOOKS)"
     (dolist (hook hooks)
-      (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) nil 'all))
+      (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) nil 'all hook))
     nil))
 
 (unless (fboundp 'run-hook-with-args)
@@ -1385,7 +1404,7 @@ error.  See `add-hook' for what a hook's value may be.
 is unspecified, matching Emacs.  A void HOOK is a no-op.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'all)
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'all hook)
     nil))
 
 (unless (fboundp 'run-hook-with-args-until-success)
@@ -1395,7 +1414,7 @@ non-nil, and return that value.  Return nil if all functions return
 nil, if there are none to call, or if HOOK is void.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-success)))
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-success hook)))
 
 (unless (fboundp 'run-hook-with-args-until-failure)
   (defun run-hook-with-args-until-failure (hook &rest args)
@@ -1404,7 +1423,7 @@ nil, and return nil.  Otherwise (all functions return non-nil, there
 are none to call, or HOOK is void) return non-nil.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-failure)))
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-failure hook)))
 
 ;; ---------------------------------------------------------------------
 ;; map.el subset: map-elt / map-put! / map-delete / map-keys / map-values

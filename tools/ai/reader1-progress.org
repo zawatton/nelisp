@@ -1,0 +1,92 @@
+#+TITLE: Reader defects found by GNU's own tests: duplicate #N= labels, \N{NAME}, bignum #x literals, modifier-string speed (reader1)
+#+NOTE: Created after the first overlay edits (the ledger should have come first); criteria below are what the lane claims. S2-S4 need ELN_PROGRESS_BIN=<repo>/target/reader1-build/dynamic/nelisp-dynamic and GNU Emacs 31.1 as `emacs` plus its test tree. Red logs are from the v17 baseline.
+
+* S1 Causes (evidence)
+
+** S1.1 Causes measured on v17 and recorded
+evidence: target/reader1/CAUSES.md sha256=e37f30d2f6e3a41b6c9e19f8770212795f293e6e7ba11d5ffc8d46617be8b3e4
+
+** S1.2 Baseline is red on the label corpus (60 lines, 39 differ: Duplicate #N= and buffer end-of-file)
+evidence: target/reader1/red/corpus-labels.log sha256=bba61ef5ef7a6dd1c648af2b339424ccb163053c1b9e53a45537922a0dbcb4b9
+
+** S1.3 Baseline is red on the \N{NAME} corpus (162 lines, 147 differ)
+evidence: target/reader1/red/corpus-names.log sha256=73253f15d78d744a73933015fc28ac6467ec0126c677498ac70334a29d2874cc
+
+** S1.4 Baseline is red on the radix corpus (204 lines, 89 differ: bignum #x read as -1, #b as 0, #x as a symbol on the fallback path)
+evidence: target/reader1/red/corpus-radix.log sha256=0374e4c491eceea449871f2a83d7fc684330655dd2f2ec126118b19bbb06f564
+
+** S1.5 Baseline GNU test files: print-tests and subr-tests do not load, lread-tests 25 pass
+evidence: target/reader1/red/gnu-tests-v17.out sha256=6b672984dd8792ea1ee773ded570cfcf77e2078c56d87be9e2ed65ac306ac20e
+
+** S1.6 Baseline lread-many-modifiers takes 4.6 s (limit 0.5 s)
+evidence: target/reader1/red/many-modifiers.log sha256=aa168f411307183150c351aea55785cdc5cc7bd0a77f8bab41e74ea114b07e91
+
+* S2 Fix with red/green and GNU parity
+#+NOTE: S2 checks need the reader1 build (ELN_PROGRESS_BIN).
+
+** S2.1 Label corpus (redefinition of #N=, nested, vectors, records, errors) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN labels
+
+** S2.2 \N{NAME} corpus (names, old names, case, whitespace, VARIATION SELECTOR, CJK COMPATIBILITY, errors, surrogates) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN names
+
+** S2.3 Radix corpus (#x #o #b #NNr, fixnum edge, bignum, malformed) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN radix
+
+** S2.4 Modifier-escape corpus (1356 lines) and misc corpus equal GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 250
+cmd: sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN mods && sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN misc
+
+** S2.5 GNU's lread-many-modifiers form (500000 \M- in one string) reads in under 0.5 s
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 60
+cmd: $ELN_PROGRESS_BIN --load tools/ai/reader1/many-modifiers.el --
+
+** S2.6 GNU test/src/lread-tests.el loads and at least 45 tests pass (v17: 25)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/reader1/gnu-tests.sh $ELN_PROGRESS_BIN lread 45
+
+** S2.7 GNU print-tests.el (no reader failure; two circular-literal forms still hang at eval), json-tests.el and subr-tests.el now load
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 400
+cmd: ALLOW_LOADHANG=1 sh tools/ai/reader1/gnu-tests.sh $ELN_PROGRESS_BIN print 7 && sh tools/ai/reader1/gnu-tests.sh $ELN_PROGRESS_BIN json 4 && sh tools/ai/reader1/gnu-tests.sh $ELN_PROGRESS_BIN subr 11
+
+* S3 Integrated build
+#+NOTE: Build 2 (1041 s) = seed plus this lane's patch; build 1 differed only by an NBSP arm in bf_read_one_native_compatible_p, removed after it was suspected of a slowdown (it was not the cause).
+
+** S3.1 Build succeeds and fixtures pass (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21)
+evidence: target/reader1/fixtures.log sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+
+** S3.2 gnu-speed-win-check passes
+evidence: target/reader1/speedwin.log sha256=a9e579b2621e467509793496be2821f51408c1bb64e3bfa5d692e8f738ca6be4
+
+** S3.3 Build log ends BUILD rc=0
+cmd: tail -1 target/reader1-build/dynamic/build.log | grep -q 'BUILD rc=0'
+
+** S3.4 Whole-lane end-to-end: S2.1-S2.5 all pass on the built binary
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: for s in labels names radix mods misc; do sh tools/ai/reader1/check.sh $ELN_PROGRESS_BIN $s || exit 1; done
+
+* S4 Timing (CPU 11, shared machine, --allow-busy, 5 pairs, v17 vs build 2)
+#+NOTE: Table in target/reader1/timing-table.md.  rp-read-deep is a known red (1.22x), left as a failing cmd.
+
+** S4.1 No survey3 reader row or the large-file load is more than 5 percent slower than v17
+cmd: python3 tools/ai/reader1/timing-check.py
+
+** S4.2 Timing table recorded
+evidence: target/reader1/timing-table.md sha256=e52441d0d1b028265185cf4e3618926a40a525e0b1e9907f450a416f5e5c715c
+
+** S4.3 Regression rows reg-sum-bc and r3-mix are within 5 percent of v17 (1.032 and 1.030, 1 of 5 and 0 of 5 pairs faster)
+cmd: python3 -c "import json;[(lambda e:(_ for _ in ()).throw(SystemExit(1)) if e['cand']['inner_ns_per_step']['median']/e['base']['inner_ns_per_step']['median']>1.05 else 0)(json.load(open('target/reader1/timing/%s/report.json'%i))['engines']) for i in ('reg-sum-bc','r3-mix')]"
+
+** S4.4 Report written
+evidence: target/reader1/REPORT.md sha256=15d4142fecb7f0cff69f870c947c69cc5f669091860ef8b66b1376ebaffb5a6d

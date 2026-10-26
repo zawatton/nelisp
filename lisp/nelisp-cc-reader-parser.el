@@ -423,6 +423,53 @@
            str-ptr (+ i 1) n base
            (+ (* acc base) digit)))))
 
+    ;; GNU's `read_integer' rules for a kind-25 payload [marker][sign][digits]:
+    ;; the token is valid only when it has at least one digit and every digit
+    ;; belongs to BASE.  Returns the number of SIGNIFICANT digits (leading zeros
+    ;; excluded), or -1 for an invalid token; `_', `.', a letter past BASE and an
+    ;; empty body all give -1 and decline the form to the interpreted reader, which
+    ;; reads `#x1_0' as 1 followed by a symbol and signals GNU's "integer, radix
+    ;; N" for the rest.  Before this check the decoder silently stopped at the
+    ;; first bad byte and wrapped on overflow (`#xffffffffffffffffffff' was -1).
+    (defun nelisp_reader_p_radix_sig_step (str-ptr i n base sig seen)
+      (if (>= i n)
+          (if (> seen 0) sig -1)
+        (let* ((d (nelisp_reader_p_hex_digit (str-byte-at str-ptr i))))
+          (if (< d 0)
+              -1
+            (if (>= d base)
+                -1
+              (nelisp_reader_p_radix_sig_step
+               str-ptr (+ i 1) n base
+               (if (= sig 0) (if (= d 0) 0 1) (+ sig 1))
+               (+ seen 1)))))))
+
+    (defun nelisp_reader_p_radix_base (payload-slot)
+      (let* ((marker (str-byte-at payload-slot 0)))
+        (if (= marker 120) 16 (if (= marker 111) 8 (if (= marker 98) 2 0)))))
+
+    (defun nelisp_reader_p_radix_sig (payload-slot)
+      (let* ((base (nelisp_reader_p_radix_base payload-slot))
+             (n (str-len payload-slot))
+             (start (if (>= n 2)
+                        (if (= (str-byte-at payload-slot 1) 45) 2
+                          (if (= (str-byte-at payload-slot 1) 43) 2 1))
+                      1)))
+        (if (= base 0)
+            -1
+          (nelisp_reader_p_radix_sig_step payload-slot start n base 0 0))))
+
+    ;; Value of a valid kind-25 token: SIG significant digits fit the fixnum
+    ;; decoder when SIG * log2(BASE) <= 60 (15 hex, 20 octal, 60 binary digits);
+    ;; longer tokens go through the bignum-aware reader, which writes back a
+    ;; fixnum when the value fits after all.
+    (defun nelisp_reader_p_radix_value_w (payload-slot sig)
+      (let* ((base (nelisp_reader_p_radix_base payload-slot))
+             (maxsig (if (= base 16) 15 (if (= base 8) 20 60))))
+        (if (> sig maxsig)
+            (nl_read_radix_or_bignum_w payload-slot base)
+          (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))))
+
     (defun nelisp_reader_p_decode_radix (payload-slot)
       ;; Payload layout: [base-byte] [opt-sign] [digits...].  We have
       ;; already consumed byte 0 to dispatch on BASE.
@@ -723,7 +770,11 @@
                    ;; read, and the reader answers that object's WORD.
                    (if (= w 0) 0 (extern-call nl_symobj_of w))))))
        ((= kind 24) (nl_imm_int (nelisp_reader_p_decode_char payload-slot)))
-       ((= kind 25) (nl_imm_int (nelisp_reader_p_decode_radix payload-slot)))
+       ((= kind 25)
+        (let* ((sig (nelisp_reader_p_radix_sig payload-slot)))
+          (if (< sig 0)
+              (nl_abi_fail -1 0)
+            (nelisp_reader_p_radix_value_w payload-slot sig))))
        ((= kind 21)
         (let ((object (alloc-bytes 32 8)))
           (if (= (extern-call nl_str_to_float
@@ -815,24 +866,25 @@
     (defun nelisp_reader_p_label_set_count (pool count)
       (ptr-write-u64 (nelisp_reader_p_slot pool 3) 8 count))
 
-    (defun nelisp_reader_p_label_find_kind (pool label i)
-      (if (>= i (nelisp_reader_p_label_count pool))
-          0
+    ;; Index of the newest definition (kind 1 or 2) of LABEL at or below I, or
+    ;; -1.  GNU lets `#N=' be read again: the later definition replaces the
+    ;; earlier one for the references that follow it, so a reference binds to
+    ;; the newest entry current when it is read.
+    (defun nelisp_reader_p_label_find_latest (pool label i)
+      (if (< i 0)
+          -1
         (let* ((meta (nelisp_reader_p_label_meta pool i))
                (kind (heap-read-u64 meta 8)))
           (if (and (or (= kind 1) (= kind 2))
                    (= (heap-read-u64 meta 16) label))
-              kind
-            (nelisp_reader_p_label_find_kind pool label (+ i 1))))))
+              i
+            (nelisp_reader_p_label_find_latest pool label (- i 1))))))
 
-    (defun nelisp_reader_p_label_find_value (pool label i)
-      (if (>= i (nelisp_reader_p_label_count pool))
-          0
-        (let* ((meta (nelisp_reader_p_label_meta pool i))
-               (kind (heap-read-u64 meta 8)))
-          (if (and (= kind 2) (= (heap-read-u64 meta 16) label))
-              (heap-read-u64 (nelisp_reader_p_label_value pool i) 0)
-            (nelisp_reader_p_label_find_value pool label (+ i 1))))))
+    ;; Value WORD of definition entry I once it is complete (kind 2), else 0.
+    (defun nelisp_reader_p_label_done_value (pool i)
+      (if (= (heap-read-u64 (nelisp_reader_p_label_meta pool i) 8) 2)
+          (heap-read-u64 (nelisp_reader_p_label_value pool i) 0)
+        0))
 
     (defun nelisp_reader_p_label_add_pending (pool depth label)
       (let* ((count (nelisp_reader_p_label_count pool))
@@ -850,7 +902,9 @@
              (nelisp_reader_p_label_set_count pool (+ count 1))
              meta)))))
 
-    (defun nelisp_reader_p_label_add_proxy (pool depth label proxy)
+    ;; A reference proxy entry (kind 3) records its label at +16 and the index of
+    ;; the definition entry it was bound to at +24.
+    (defun nelisp_reader_p_label_add_proxy (pool depth label proxy def)
       (let* ((count (nelisp_reader_p_label_count pool))
              (entry-index (nelisp_reader_p_label_entry_index count)))
         (if (<= entry-index (nelisp_reader_p_spare_idx depth))
@@ -861,7 +915,7 @@
              (ptr-write-u64 meta 0 0)
              (ptr-write-u64 meta 8 3)
              (ptr-write-u64 meta 16 label)
-             (ptr-write-u64 meta 24 0)
+             (ptr-write-u64 meta 24 def)
              (nelisp_reader_p_word_slot_set value proxy)
              (nelisp_reader_p_label_set_count pool (+ count 1))
              1)))))
@@ -874,7 +928,7 @@
           (if (and (= (heap-read-u64 meta 8) 3)
                    (= (nl_val_tag object) 7)
                    (= (nl_word_payload object) (nl_word_payload proxy)))
-              (heap-read-u64 meta 16)
+              (heap-read-u64 meta 24)
             (nelisp_reader_p_label_proxy_number object pool (+ i 1))))))
 
     (defun nelisp_reader_p_parse_label_def (str-ptr cursor-slot result-slot pool depth)
@@ -883,19 +937,17 @@
           (if (= w 2) 2 (seq (nl_abi_word_to_rc w result-slot) 1)))))
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_p_parse_label_def_w (str-ptr cursor-slot _pad pool depth)
-  (let* ((label (nelisp_reader_p_atoi (nelisp_reader_p_slot pool 1))))
-    (if (/= (nelisp_reader_p_label_find_kind pool label 0) 0)
-        (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-      (let* ((meta (nelisp_reader_p_label_add_pending pool depth label)))
-        (if (= meta 0) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-          (let* ((w (nelisp_reader_p_parse_at_w str-ptr cursor-slot 0 pool (+ depth 1))))
-            (if (or (= w 0) (= w 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-              (let* ((proxy-label (nelisp_reader_p_label_proxy_number w pool 0)))
-                (if (>= proxy-label 0)
-                    (setq w (nelisp_reader_p_label_find_value pool proxy-label 0)) 0)
-                (if (= w 0) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-                  (seq (nelisp_reader_p_word_slot_set (+ meta 32) w)
-                       (ptr-write-u64 meta 8 2) w))))))))))
+  (let* ((label (nelisp_reader_p_atoi (nelisp_reader_p_slot pool 1)))
+         (meta (nelisp_reader_p_label_add_pending pool depth label)))
+    (if (= meta 0) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
+      (let* ((w (nelisp_reader_p_parse_at_w str-ptr cursor-slot 0 pool (+ depth 1))))
+        (if (or (= w 0) (= w 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
+          (let* ((proxy-def (nelisp_reader_p_label_proxy_number w pool 0)))
+            (if (>= proxy-def 0)
+                (setq w (nelisp_reader_p_label_done_value pool proxy-def)) 0)
+            (if (= w 0) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
+              (seq (nelisp_reader_p_word_slot_set (+ meta 32) w)
+                   (ptr-write-u64 meta 8 2) w))))))))
 
     (defun nelisp_reader_p_parse_label_ref (result-slot pool depth)
       (let* ((w (nelisp_reader_p_parse_label_ref_w 0 pool depth)))
@@ -904,10 +956,11 @@
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_p_parse_label_ref_w (_pad pool depth)
   (let* ((label (nelisp_reader_p_atoi (nelisp_reader_p_slot pool 1)))
-         (kind (nelisp_reader_p_label_find_kind pool label 0)))
-    (if (= kind 0) (nl_abi_fail -1 0)
+         (def (nelisp_reader_p_label_find_latest
+               pool label (- (nelisp_reader_p_label_count pool) 1))))
+    (if (< def 0) (nl_abi_fail -1 0)
       (let* ((proxy (nelisp_cons_construct_w (nl_imm_int label) 3 0)))
-        (if (= (nelisp_reader_p_label_add_proxy pool depth label proxy) 1)
+        (if (= (nelisp_reader_p_label_add_proxy pool depth label proxy def) 1)
             proxy (nl_abi_fail -1 0))))))
 
     (defun nelisp_reader_p_label_resolve_vector (vec pool i n)
@@ -932,9 +985,9 @@
             record pool (+ i 1) n)))))
 
     (defun nelisp_reader_p_label_resolve (object pool)
-      (let* ((label (nelisp_reader_p_label_proxy_number object pool 0)))
-        (if (>= label 0)
-            (nelisp_reader_p_label_find_value pool label 0)
+      (let* ((def (nelisp_reader_p_label_proxy_number object pool 0)))
+        (if (>= def 0)
+            (nelisp_reader_p_label_done_value pool def)
           (cond
            ((= (nl_val_tag object) 7)
             (let* ((car-value

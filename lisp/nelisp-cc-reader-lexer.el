@@ -495,7 +495,11 @@
             (if (and (or (= selector 117) (= selector 85) (= selector 78))
                      (> code 1114111)) -1
               (if (= selector 78)
-                  (if (and (< next n) (= (str-byte-at src next) 125))
+                  ;; GNU rejects a surrogate named by \N{U+XXXX}
+                  ;; (`character_name_to_code'); the interpreted reader
+                  ;; then signals its error.
+                  (if (and (< next n) (= (str-byte-at src next) 125)
+                           (or (< code 55296) (> code 57343)))
                       (nelisp_reader_escape_pack (+ next 1) code 0)
                     -1)
                 (nelisp_reader_escape_pack
@@ -528,12 +532,16 @@
           (if (or (and (>= b 48) (<= b 55))
                   (= b 120) (= b 117) (= b 85) (= b 78))
               (nelisp_reader_escape_numeric src at n b)
-            (nelisp_reader_escape_pack
-             (+ at 1)
-             (cond ((= b 97) 7) ((= b 98) 8) ((= b 100) 127)
-                   ((= b 101) 27) ((= b 102) 12) ((= b 110) 10)
-                   ((= b 114) 13) ((= b 115) 32) ((= b 116) 9)
-                   ((= b 118) 11) (t b)) 0)))))
+            ;; `?\<newline>' is an error in GNU (`read_char_escape'), also as
+            ;; the target of a modifier prefix; decline it to the interpreted
+            ;; reader.  A string's own `\<newline>' never gets here.
+            (if (= b 10) -1
+              (nelisp_reader_escape_pack
+               (+ at 1)
+               (cond ((= b 97) 7) ((= b 98) 8) ((= b 100) 127)
+                     ((= b 101) 27) ((= b 102) 12) ((= b 110) 10)
+                     ((= b 114) 13) ((= b 115) 32) ((= b 116) 9)
+                     ((= b 118) 11) (t b)) 0))))))
     (defun nelisp_reader_escape_resolve (packed mods control mode)
       (if (< packed 0) -1
         (let* ((next (/ packed 4294967296))

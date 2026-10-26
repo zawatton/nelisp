@@ -1621,12 +1621,20 @@ that threshold is disabled."
   (defvar emacs-load--unicode-name-cache (make-hash-table :test 'equal))
 
   (defun emacs-load--unicode-name-code (name)
-    "Resolve NAME through the host Python Unicode database.
-The standalone reader carries numeric Unicode escapes but no name database.
-Python is already a launcher prerequisite; keep this source-loader adapter
-out of the evaluator.  Unknown names and named sequences are reader errors."
+    "Resolve NAME to a character code, as the reader does for \\N{NAME}.
+`char-from-name' answers from GNU Emacs's own character-name table (the
+reader's source of truth, lread.c `character_name_to_code'); runs of
+whitespace in NAME count as one space, and an unknown name or a surrogate is
+a reader error.  Only a runtime without `char-from-name' falls back to the
+host Python Unicode database, which knows different names."
     (or (gethash name emacs-load--unicode-name-cache)
         (let ((code
+               (if (fboundp 'char-from-name)
+                   (let ((c (char-from-name
+                             (replace-regexp-in-string "[ \t\n\v\f\r]+" " " name) t)))
+                     (unless (and (integerp c) (not (and (>= c #xD800) (<= c #xDFFF))))
+                       (signal 'invalid-read-syntax (list (format "\\N{%s}" name))))
+                     c)
                (with-temp-buffer
                  (unless (equal
                           (call-process
@@ -1635,7 +1643,7 @@ out of the evaluator.  Unknown names and named sequences are reader errors."
                            name)
                           0)
                    (signal 'invalid-read-syntax '("Unknown character name")))
-                 (string-to-number (buffer-string)))))
+                 (string-to-number (buffer-string))))))
           (puthash name code emacs-load--unicode-name-cache)
           code)))
 

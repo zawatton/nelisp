@@ -504,6 +504,11 @@ Stops at \\| , \\) , or end."
             (if (< j n)
                 (let ((q (aref pat j)))
                   (cond
+                   ;; GNU regex-emacs.c: `*', `+' and `?' right after `^' are
+                   ;; ordinary characters (nothing to repeat).
+                   ((and (eq (car atom) :bol) (memq q '(?* ?+ ??))
+                         (eq (aref pat (1- j)) ?^))
+                    (setq nodes (cons atom nodes)))
                    ;; A `?' after *, + or ? makes the quantifier non-greedy.
                    ;; It was consumed as a separate `:opt' over the quantified
                    ;; node, which is not the same thing: "a.*?b" against
@@ -669,7 +674,7 @@ Return (REVERSED-EXPANSION-NODES . newpos)."
                 (setq j (1+ j)))
               (let ((name (substring pat (+ i 2) j)))
                 (setq ranges (append (nlre--posix-ranges name) ranges))
-                (when (member name '("digit" "xdigit" "ascii"
+                (when (member name '("digit" "xdigit" "ascii" "nonascii" "multibyte" "unibyte"
                                      "alpha" "alnum" "word" "upper" "lower"
                                      "space" "blank" "punct" "cntrl" "graph" "print"))
                   (setq classes (cons name classes))))
@@ -1659,6 +1664,9 @@ standalone VM does not admit, and the predicates below stay byte-code."
       (or (and (>= c ?0) (<= c ?9)) (and (>= c ?a) (<= c ?f))
           (and (>= c ?A) (<= c ?F))))
      ((equal name "ascii") (< c 128))
+     ((equal name "nonascii") (>= c 128))
+     ((equal name "multibyte") (>= c 128))
+     ((equal name "unibyte") (< c 128))
      ((equal name "alpha")
       (if (< c 128)
           (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z)))
@@ -2355,6 +2363,452 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
     (nlre--match-list (list x) s pos n))
    (t (nlre--match-atom1 x s pos n))))
 
+;; ---- native matcher program (rxnative) ----
+;; The matcher core is the native word `nelisp--rx-exec' (scripts/nelisp-
+;; standalone-build.el, `m5_rx_*'), a backtracking VM over a program kept in
+;; a unibyte string, as GNU keeps a compiled pattern in a buffer
+;; (regex-emacs.c, regex_compile / re_match_2_internal).  This is the compiler
+;; from the parsed pattern.  Anything it does not model makes it decline
+;; (value nil), and the caller then runs the Lisp matcher below instead.
+;; Program words are u32, little endian:
+;;   [0] total registers  [1] groups  [2] flags (1 anchored at \=`, 2 first-byte
+;;   map usable, 4 fold)  [3] entry word  [4] 0  [5..36] 128-byte first map
+;;   [37..] code.
+;; Code: 0 MATCH, 1 CHAR c, 2 CHAR2 lc uc, 3 ANY, 4 SET hf m0..m31 (128 bytes),
+;; 5 BOL, 6 EOL, 7 BOS, 8 EOS, 9 SAVE r, 10 SPLIT a b (try a, fail to b),
+;; 11 JMP a, 12 LOOPSET k, 13 LOOPCHK k a (jump when no progress since
+;; LOOPSET), 14 BACKREF g, 15 REP min max ATOM... (greedy single-char loop).
+(defvar nlre--nat-code nil)
+(defvar nlre--nat-pc 0)
+(defvar nlre--nat-ng 1)
+(defvar nlre--nat-nloops 0)
+(defvar nlre--nat-fold nil)
+(defvar nlre--nat-closed nil)
+(defconst nlre--nat-inf 4294967295)
+(defconst nlre--nat-header 37)
+(defconst nlre--nat-max-words 6000)
+
+(defun nlre--nat-decline () (throw 'nlre--nat-decline nil))
+
+(defun nlre--nat-emit (&rest words)
+  (while words
+    (when (>= nlre--nat-pc nlre--nat-max-words) (nlre--nat-decline))
+    (aset nlre--nat-code nlre--nat-pc (car words))
+    (setq nlre--nat-pc (1+ nlre--nat-pc) words (cdr words))))
+
+(defun nlre--nat-letter-p (c)
+  (or (and (>= c ?a) (<= c ?z)) (and (>= c ?A) (<= c ?Z))))
+
+(defun nlre--nat-pack (bytes)
+  "Pack the 128 values of vector BYTES into 32 little-endian u32 words."
+  (let ((i 0) (out nil))
+    (while (< i 128)
+      (setq out (cons (+ (aref bytes i) (* 256 (aref bytes (+ i 1)))
+                         (* 65536 (aref bytes (+ i 2)))
+                         (* 16777216 (aref bytes (+ i 3))))
+                      out)
+            i (+ i 4)))
+    (nreverse out)))
+
+(defun nlre--nat-set-map (node)
+  "Return the 128-element 0/1 membership vector of set NODE for ASCII."
+  (let ((m (make-vector 128 0)) (c 0))
+    (while (< c 128)
+      (when (nlre--set-node-match node c nil) (aset m c 1))
+      (setq c (1+ c)))
+    m))
+
+(defun nlre--nat-set-hf (node map)
+  "Non-zero when a byte >= 128 must make the native matcher decline."
+  (let ((hf 0) (ranges (nth 2 node)) (classes (nth 3 node)))
+    (when (nth 1 node) (setq hf 1))
+    (while ranges
+      (when (>= (cdr (car ranges)) 128) (setq hf 1))
+      (setq ranges (cdr ranges)))
+    (while classes
+      (when (member (car classes) '("space" "word")) (nlre--nat-decline))
+      (unless (member (car classes) '("digit" "xdigit" "ascii" "cntrl")) (setq hf 1))
+      (setq classes (cdr classes)))
+    ;; K and S have non-ASCII case partners (KELVIN SIGN, LONG S).
+    (when (and nlre--nat-fold
+               (or (= 1 (aref map ?k)) (= 1 (aref map ?K))
+                   (= 1 (aref map ?s)) (= 1 (aref map ?S))))
+      (setq hf 1))
+    hf))
+
+(defun nlre--nat-atom-words (node)
+  "Return the program words of single-character NODE, or nil."
+  (let ((tag (car node)))
+    (cond
+     ((eq tag :lit)
+      (let ((c (nth 1 node)))
+        (when (or (not (integerp c)) (>= c 128) (< c 0)) (nlre--nat-decline))
+        (if (and nlre--nat-fold (nlre--nat-letter-p c))
+            (list 2 (if (<= c ?Z) (+ c 32) c) (if (>= c ?a) (- c 32) c))
+          (list 1 c))))
+     ((eq tag :any) (list 3))
+     ((eq tag :set)
+      (let ((map (nlre--nat-set-map node)))
+        (cons 4 (cons (nlre--nat-set-hf node map) (nlre--nat-pack map)))))
+     (t nil))))
+
+(defun nlre--nat-new-loop ()
+  (prog1 (+ (* 2 nlre--nat-ng) nlre--nat-nloops)
+    (setq nlre--nat-nloops (1+ nlre--nat-nloops))))
+
+(defun nlre--nat-repeat (x min max)
+  "Emit X repeated MIN..MAX times, greedily (single-character X only)."
+  (apply #'nlre--nat-emit 15 min max (nlre--nat-atom-words x)))
+
+(defun nlre--nat-star (x lazy)
+  "Emit the loop of X (a star), greedy or LAZY, with GNU's empty-iteration stop."
+  (let* ((l1 nlre--nat-pc) (k (nlre--nat-new-loop)) exit-a exit-b)
+    (nlre--nat-emit 10 0 0)
+    (if lazy
+        (progn (aset nlre--nat-code (+ l1 2) (+ l1 3)) (setq exit-a (+ l1 1)))
+      (aset nlre--nat-code (+ l1 1) (+ l1 3)) (setq exit-a (+ l1 2)))
+    (nlre--nat-emit 12 k)
+    (nlre--nat-node x)
+    (nlre--nat-emit 13 k 0)
+    (setq exit-b (1- nlre--nat-pc))
+    (nlre--nat-emit 11 l1)
+    (aset nlre--nat-code exit-a nlre--nat-pc)
+    (aset nlre--nat-code exit-b nlre--nat-pc)))
+
+(defun nlre--nat-opt (x lazy)
+  (let ((l1 nlre--nat-pc))
+    (nlre--nat-emit 10 0 0)
+    (if lazy
+        (aset nlre--nat-code (+ l1 2) (+ l1 3))
+      (aset nlre--nat-code (+ l1 1) (+ l1 3)))
+    (nlre--nat-node x)
+    (aset nlre--nat-code (if lazy (+ l1 1) (+ l1 2)) nlre--nat-pc)))
+
+(defun nlre--nat-bounded (x extra)
+  "Emit X? nested EXTRA deep, an empty iteration ending the chain."
+  (when (> extra 16) (nlre--nat-decline))
+  (let ((k (nlre--nat-new-loop)) (fixups nil) (i 0))
+    (while (< i extra)
+      (let ((l nlre--nat-pc))
+        (nlre--nat-emit 10 (+ l 3) 0)
+        (setq fixups (cons (+ l 2) fixups))
+        (nlre--nat-emit 12 k)
+        (nlre--nat-node x)
+        (when (< (1+ i) extra)
+          (nlre--nat-emit 13 k 0)
+          (setq fixups (cons (1- nlre--nat-pc) fixups))))
+      (setq i (1+ i)))
+    (dolist (f fixups) (aset nlre--nat-code f nlre--nat-pc))))
+
+(defun nlre--nat-node (node)
+  (let ((tag (car node)))
+    (cond
+     ((memq tag '(:lit :any :set))
+      (apply #'nlre--nat-emit (nlre--nat-atom-words node)))
+     ((eq tag :bol) (nlre--nat-emit 5))
+     ((eq tag :eol) (nlre--nat-emit 6))
+     ((eq tag :bos) (nlre--nat-emit 7))
+     ((eq tag :eos) (nlre--nat-emit 8))
+     ((eq tag :seq) (nlre--nat-nodes (nth 1 node)))
+     ((eq tag :alt)
+      (let ((branches (nth 1 node)) (jumps nil))
+        (while branches
+          (if (cdr branches)
+              (let ((l nlre--nat-pc))
+                (nlre--nat-emit 10 (+ l 3) 0)
+                (nlre--nat-nodes (car branches))
+                (nlre--nat-emit 11 0)
+                (setq jumps (cons (1- nlre--nat-pc) jumps))
+                (aset nlre--nat-code (+ l 2) nlre--nat-pc))
+            (nlre--nat-nodes (car branches)))
+          (setq branches (cdr branches)))
+        (dolist (j jumps) (aset nlre--nat-code j nlre--nat-pc))))
+     ((eq tag :group)
+      (let ((g (nth 1 node)))
+        (when (or (< g 1) (>= g nlre--nat-ng)) (nlre--nat-decline))
+        (nlre--nat-emit 9 (* 2 g))
+        (nlre--nat-node (nth 2 node))
+        (nlre--nat-emit 9 (1+ (* 2 g)))
+        (setq nlre--nat-closed (cons g nlre--nat-closed))))
+     ((eq tag :backref)
+      (unless (memq (nth 1 node) nlre--nat-closed) (nlre--nat-decline))
+      (nlre--nat-emit 14 (nth 1 node)))
+     ((eq tag :star)
+      (if (nlre--nat-atom-words (nth 1 node))
+          (nlre--nat-repeat (nth 1 node) 0 nlre--nat-inf)
+        (nlre--nat-star (nth 1 node) nil)))
+     ((eq tag :plus)
+      (if (nlre--nat-atom-words (nth 1 node))
+          (nlre--nat-repeat (nth 1 node) 1 nlre--nat-inf)
+        (nlre--nat-node (nth 1 node))
+        (nlre--nat-star (nth 1 node) nil)))
+     ((eq tag :opt)
+      (if (nlre--nat-atom-words (nth 1 node))
+          (nlre--nat-repeat (nth 1 node) 0 1)
+        (nlre--nat-opt (nth 1 node) nil)))
+     ((eq tag :lazystar) (nlre--nat-star (nth 1 node) t))
+     ((eq tag :lazyplus)
+      (nlre--nat-node (nth 1 node))
+      (nlre--nat-star (nth 1 node) t))
+     ((eq tag :lazyopt) (nlre--nat-opt (nth 1 node) t))
+     ((eq tag :bounded)
+      (if (nlre--nat-atom-words (nth 1 node))
+          (nlre--nat-repeat (nth 1 node) 0 (nth 2 node))
+        (nlre--nat-bounded (nth 1 node) (nth 2 node))))
+     (t (nlre--nat-decline)))))
+
+(defun nlre--nat-nodes (nodes)
+  (while nodes
+    (nlre--nat-node (car nodes))
+    (setq nodes (cdr nodes))))
+
+(defun nlre--nat-first-atom (node fm)
+  (let ((tag (car node)) (c 0))
+    (cond
+     ((eq tag :lit)
+      (let ((ch (nth 1 node)))
+        (aset fm ch 1)
+        (when (and nlre--nat-fold (nlre--nat-letter-p ch))
+          (aset fm (if (<= ch ?Z) (+ ch 32) (- ch 32)) 1))))
+     ((eq tag :any)
+      (while (< c 128) (unless (= c 10) (aset fm c 1)) (setq c (1+ c))))
+     (t
+      (let ((m (nlre--nat-set-map node)))
+        (while (< c 128) (when (= 1 (aref m c)) (aset fm c 1)) (setq c (1+ c))))))))
+
+(defun nlre--nat-first-node (node fm)
+  "Add the possible first characters of NODE to FM; non-nil when NODE can be empty."
+  (let ((tag (car node)))
+    (cond
+     ((memq tag '(:lit :any :set)) (nlre--nat-first-atom node fm) nil)
+     ((memq tag '(:bol :eol :bos :eos)) t)
+     ((eq tag :seq) (nlre--nat-first-seq (nth 1 node) fm))
+     ((eq tag :alt)
+      (let ((n nil))
+        (dolist (b (nth 1 node)) (when (nlre--nat-first-seq b fm) (setq n t)))
+        n))
+     ((eq tag :group) (nlre--nat-first-node (nth 2 node) fm))
+     ((memq tag '(:star :opt :lazystar :lazyopt :bounded))
+      (nlre--nat-first-node (nth 1 node) fm) t)
+     ((memq tag '(:plus :lazyplus)) (nlre--nat-first-node (nth 1 node) fm))
+     ((eq tag :backref) (let ((c 0)) (while (< c 128) (aset fm c 1) (setq c (1+ c)))) t)
+     (t (nlre--nat-decline)))))
+
+(defun nlre--nat-first-seq (nodes fm)
+  (let ((nullable t))
+    (while (and nodes nullable)
+      (setq nullable (nlre--nat-first-node (car nodes) fm) nodes (cdr nodes)))
+    nullable))
+
+(defun nlre--nat-words-string (words)
+  (let ((out nil))
+    (dolist (w words)
+      (setq out (cons (logand (/ w 16777216) 255)
+                      (cons (logand (/ w 65536) 255)
+                            (cons (logand (/ w 256) 255)
+                                  (cons (logand w 255) out))))))
+    (setq out (nreverse out))
+    (let ((s nil) (chunk nil) (k 0))
+      (while out
+        (setq chunk (cons (car out) chunk) out (cdr out) k (1+ k))
+        (when (or (null out) (>= k 128))
+          (let ((piece (apply #'unibyte-string (nreverse chunk))))
+            (setq s (if s (concat s piece) piece) chunk nil k 0))))
+      s)))
+
+(defun nlre--nat-compile (pat fold)
+  "Return the native program string for regexp PAT under FOLD, or nil."
+  (let ((i 0) (n (length pat)) (ascii t))
+    (while (and ascii (< i n))
+      (when (>= (aref pat i) 128) (setq ascii nil))
+      (setq i (1+ i)))
+    (and ascii (> n 0)
+     (catch 'nlre--nat-decline
+      (let* ((nlre--fold fold) (nlre--translate-table nil)
+             (compiled (nlre--compiled-pattern pat))
+             (ast (aref compiled 0))
+             (nlre--nat-ng (aref compiled 1))
+             (nlre--nat-code (make-vector nlre--nat-max-words 0))
+             (nlre--nat-pc nlre--nat-header)
+             (nlre--nat-nloops 0)
+             (nlre--nat-fold fold)
+             (nlre--nat-closed nil)
+             (fm (make-vector 128 0))
+             (top (nlre--seq-nodes ast))
+             (flags (if fold 4 0)))
+        (when (> nlre--nat-ng 100) (nlre--nat-decline))
+        (nlre--nat-node ast)
+        (nlre--nat-emit 0)
+        (unless (nlre--nat-first-node ast fm)
+          (setq flags (logior flags 2)))
+        (when (eq (car-safe (car top)) :bos) (setq flags (logior flags 1)))
+        (let ((words (append (list (+ (* 2 nlre--nat-ng) nlre--nat-nloops)
+                                   nlre--nat-ng flags nlre--nat-header 0)
+                             (nlre--nat-pack fm)
+                             (let ((l nil) (j nlre--nat-header))
+                               (while (< j nlre--nat-pc)
+                                 (setq l (cons (aref nlre--nat-code j) l) j (1+ j)))
+                               (nreverse l)))))
+          (nlre--nat-words-string words)))))))
+
+
+;; ---- native matcher: cache and entry points ----
+(defvar nlre--nat-have (fboundp 'nelisp--rx-exec)
+  "Non-nil when the native matcher word is linked into this image.")
+(defvar nlre--nat-progs (make-hash-table :test 'equal)
+  "Regexp -> (PROGRAM . GROUPS), or :no when it declined; case-sensitive.")
+(defvar nlre--nat-progs-fold (make-hash-table :test 'equal)
+  "Like `nlre--nat-progs' for case-folding searches.")
+(defvar nlre--nat-lits (make-hash-table :test 'equal)
+  "Literal search string -> (PROGRAM . GROUPS) or :no, case-sensitive.")
+(defvar nlre--nat-lits-fold (make-hash-table :test 'equal)
+  "Like `nlre--nat-lits' for case-folding searches.")
+(defvar nlre--nat-scratch nil
+  "Preallocated registers, undo log and backtrack frames of `nelisp--rx-exec'.")
+(defvar nlre--nat-caps (make-vector 204 -1)
+  "Capture positions written by `nelisp--rx-exec' (two per group).")
+(defvar nlre--nat-seen nil
+  "(BUFFER . TICK) of the last buffer search that found no usable text memo.")
+
+(defun nlre--nat-program (re fold literal)
+  "Return (PROGRAM . GROUPS) for RE (a literal string when LITERAL), or nil."
+  (let* ((tbl (if literal (if fold nlre--nat-lits-fold nlre--nat-lits)
+                (if fold nlre--nat-progs-fold nlre--nat-progs)))
+         (p (gethash re tbl)))
+    (if p (if (eq p :no) nil p)
+      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
+      (let* ((src (if literal (regexp-quote re) re))
+             (prog (nlre--nat-compile src fold))
+             (entry (and prog (cons prog (aref (nlre--compiled-pattern src) 1)))))
+        (puthash (copy-sequence re) (or entry :no) tbl)
+        entry))))
+
+(defun nlre--nat-fold-default-p ()
+  "Non-nil when the current buffer folds case with the built-in mapping."
+  (and (eq (funcall nlre--current-buffer-function) nlre--translate-memo-buffer)
+       (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
+       (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner)
+       (null nlre--translate-memo)))
+
+(defun nlre--nat-run (entry string start limit anchored n)
+  "Run ENTRY on STRING.  Return t (declined), nil (no match) or the packed span."
+  (nelisp--rx-exec (car entry) string start limit (if anchored (1+ (* 2 n)) (* 2 n))
+                   nlre--nat-caps
+                   (or nlre--nat-scratch
+                       (setq nlre--nat-scratch (make-string 3200000 0)))))
+
+(defun nlre--nat-publish (ng offset)
+  "Store the captures the native matcher left in `nlre--nat-caps' as
+`nlre--last-caps'; return the match start.  (The unsupported division opcode
+keeps this off the packed result.)"
+  (let* ((s (aref nlre--nat-caps 0)) (e (aref nlre--nat-caps 1)))
+    (if (= ng 1)
+        (setq nlre--last-caps (vector (cons (+ s offset) (+ e offset))))
+      (let ((v (make-vector ng nil)) (caps nlre--nat-caps) (g 1))
+        (aset v 0 (cons (+ s offset) (+ e offset)))
+        (while (< g ng)
+          (let ((a (aref caps (* 2 g))))
+            (when (>= a 0)
+              (aset v g (cons (+ a offset) (+ (aref caps (1+ (* 2 g))) offset)))))
+          (setq g (1+ g)))
+        (setq nlre--last-caps v)))
+    (+ s offset)))
+
+(defun nlre--nat-sm (regexp string start max-end anchored)
+  "Native `string-match'.  Return t when declined, else what it answers."
+  (let ((fold (and case-fold-search t)))
+   (if (or search-spaces-regexp nlre--cap-track
+          (and fold (not (nlre--nat-fold-default-p))))
+      t
+    (let ((entry (nlre--nat-program regexp fold nil)))
+      (if (null entry) t
+        (let* ((n (length string))
+               (r (nlre--nat-run entry string (or start 0)
+                                 (if max-end (max 0 (min n max-end)) n) anchored n)))
+          (cond ((eq r t) t)
+                ((null r) nil)
+                (t (nlre--nat-publish (cdr entry) 0)))))))))
+
+(defun nlre--nat-buffer-text (b)
+  "The memoized whole text of buffer B (an unnarrowed buffer), or nil.
+Slots follow `nelisp-buffer': 11 tick, 15 text memo."
+  (let ((tc (aref b 15)))
+    (if (and tc (= (car tc) (aref b 11)))
+        (cdr tc)
+      ;; Rebuild the memo only for a buffer that did not change since the
+      ;; previous search, so an edit-search loop keeps the windowed search.
+      (let ((seen nlre--nat-seen) (tick (aref b 11)))
+        (if (and seen (eq (car seen) b) (= (cdr seen) tick))
+            (nelisp-buffer-string b)
+          (setq nlre--nat-seen (cons b tick))
+          nil)))))
+
+(defun nlre--nat-bsearch (regexp bound noerror literal)
+  "Native forward search from point.  Return t when declined."
+  (let ((b nelisp--current-buffer))
+    (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
+            search-spaces-regexp
+            (and bound (not (integerp bound)))
+            (and case-fold-search (not (nlre--nat-fold-default-p))))
+        t
+      (let ((entry (and (> (length regexp) 0)
+                        (nlre--nat-program regexp (and case-fold-search t) literal))))
+        (if (null entry) t
+          (let* ((blen (aref b 13))
+                 (pt (or (aref b 12) (1+ blen)))
+                 (pmax (1+ (aref b 14)))
+                 (lim (if bound (min bound pmax) pmax))
+                 (text (and (>= lim pt) (nlre--nat-buffer-text b))))
+            (if (null text) t
+              (let ((r (nlre--nat-run entry text (1- pt) (1- lim) nil (aref b 14))))
+                (cond
+                 ((eq r t) t)
+                 ((null r)
+                  (cond ((null noerror) (signal 'search-failed (list regexp)))
+                        ((eq noerror t) nil)
+                        (t (aset b 12 (if (= lim (1+ blen)) nil lim)) nil)))
+                 (t
+                  (nlre--nat-publish (cdr entry) 1)
+                  (setq nlre--last-buffer b)
+                  (let ((np (1+ (aref nlre--nat-caps 1))))
+                    (aset b 12 (if (= np (1+ blen)) nil np))
+                    np)))))))))))
+
+(defun nlre--nat-looking-at (regexp)
+  "Native `looking-at'.  Return t when declined."
+  (let ((b nelisp--current-buffer))
+    (if (or (null b) (not (stringp regexp)) (not (nlre--nat-layout-ok b)) (aref b 7) (aref b 8)
+            search-spaces-regexp
+            (and case-fold-search (not (nlre--nat-fold-default-p))))
+        t
+      (let ((entry (nlre--nat-program regexp (and case-fold-search t) nil)))
+        (if (null entry) t
+          (let* ((pt (or (aref b 12) (1+ (aref b 13))))
+                 (text (nlre--nat-buffer-text b)))
+            (if (null text) t
+              (let ((r (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14))))
+                (cond ((eq r t) t)
+                      ((null r) nil)
+                      (t (nlre--nat-publish (cdr entry) 1)
+                         (setq nlre--last-buffer b)
+                         'yes))))))))))
+
+(defvar nlre--nat-layout 'unknown
+  "t when `nelisp-buffer' slots are laid out as `nlre--nat-bsearch' expects.")
+(defun nlre--nat-layout-ok (b)
+  (when (eq nlre--nat-layout 'unknown)
+    (setq nlre--nat-layout
+          (and nlre--nat-have (recordp b) (fboundp 'nelisp-buffer-pend)
+               (= (length b) 17)
+               (eq (aref b 7) (nelisp-buffer-narrow-start b))
+               (eq (aref b 8) (nelisp-buffer-narrow-end b))
+               (= (aref b 11) (nelisp-buffer-tick b))
+               (eq (aref b 12) (nelisp-buffer-pend b))
+               (= (aref b 13) (nelisp-buffer-blen b))
+               (= (aref b 14) (nelisp-buffer-len b))
+               (eq (aref b 15) (nelisp-buffer-tcache b)))))
+  nlre--nat-layout)
+
 ;; ---- public entry ----
 
 (defvar nlre--last-caps nil "Capture vector of the last successful match.")
@@ -2413,6 +2867,11 @@ its start position, or nil.  This is either a bare `:lit'/`:any'/`:set'/
       (aset v k nil))))
 
 (defun nlre-string-match (regexp string &optional start max-end)
+  "`string-match' through the native matcher, else the Lisp one below."
+  (let ((r (if nlre--nat-have (nlre--nat-sm regexp string start max-end nil) t)))
+    (if (eq r t) (nlre-string-match-lisp regexp string start max-end) r)))
+
+(defun nlre-string-match-lisp (regexp string &optional start max-end)
   "Pure-elisp `string-match'; return match start index, or nil.
 START is the first candidate start.  If MAX-END is non-nil, require the
 match to end at or before that index while preserving anchors against all
@@ -2824,7 +3283,20 @@ non-nil; the caller owns `nlre--last-buffer' and restoring match data."
     (when result (nlre--caps-offset wb))
     result))
 
-(defun nlre--looking-at (regexp)
+(defun nlre--looking-at (regexp &optional inhibit-modify)
+  (if inhibit-modify
+      (let ((saved nlre--last-caps) (saved-buffer nlre--last-buffer))
+        (prog1 (nlre--looking-at-1 regexp)
+          (setq nlre--last-caps saved nlre--last-buffer saved-buffer)))
+    (nlre--looking-at-1 regexp)))
+
+(defun nlre--looking-at-1 (regexp)
+  (let ((r (if nlre--nat-have (nlre--nat-looking-at regexp) t)))
+    (cond ((eq r t) (nlre--looking-at-lisp regexp))
+          ((eq r 'yes) t)
+          (t nil))))
+
+(defun nlre--looking-at-lisp (regexp)
   (let* ((nlre--inhibit-search-fastmap t) (old-caps nlre--last-caps)
          (old-buffer nlre--last-buffer)
          (base (funcall nlre--point-function))
@@ -2888,6 +3360,12 @@ The scan of REGEXP is memoized: it depends only on the pattern's text."
                 (apply #'unibyte-string (append quoted nil))))))))))
 
 (defun nlre--re-search-forward (regexp &optional bound noerror count)
+  (let ((r (if (and nlre--nat-have (or (null count) (eql count 1)))
+               (nlre--nat-bsearch regexp bound noerror nil)
+             t)))
+    (if (eq r t) (nlre--re-search-forward-lisp regexp bound noerror count) r)))
+
+(defun nlre--re-search-forward-lisp (regexp &optional bound noerror count)
   ;; Two pre-existing (not perf-related) parity gaps found while adding
   ;; the timing/parity matrix for the fix above; both probed against
   ;; Emacs 31.1 rather than assumed, and both fixed here since they sit
@@ -3195,6 +3673,12 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
 ;; so the build admits it.  Installed only where the prelude's literal-search
 ;; helper exists.  Case-folded searches take the matcher's folding literal plan.
 (defun nlre--search-forward-entry (string &optional bound noerror count)
+  (let ((r (if (and nlre--nat-have (or (null count) (eql count 1)))
+               (nlre--nat-bsearch string bound noerror t)
+             t)))
+    (if (eq r t) (nlre--search-forward-entry-lisp string bound noerror count) r)))
+
+(defun nlre--search-forward-entry-lisp (string &optional bound noerror count)
   (if (and (stringp string) (or (null count) (eql count 1))
            (> (length string) 0)
            (not case-fold-search)
@@ -3234,6 +3718,10 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
 
 (unless (fboundp 'looking-at)
   (fset 'looking-at (symbol-function 'nlre--looking-at)))
+(unless (fboundp 'looking-at-p)
+  (defun looking-at-p (regexp)
+    "Return non-nil if text after point matches REGEXP, leaving match data alone."
+    (nlre--looking-at regexp t)))
 (unless (fboundp 're-search-forward)
   (fset 're-search-forward (symbol-function 'nlre--re-search-forward)))
 (unless (fboundp 're-search-backward)

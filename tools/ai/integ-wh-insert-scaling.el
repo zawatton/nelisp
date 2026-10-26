@@ -14,7 +14,7 @@
       (if (eq series 'same)
           (dotimes (_ n) (insert (propertize "xy" 'face 'bold)))
         (dotimes (i n) (insert (propertize "line of text " 'p i)) (insert "plain\n")))
-      (setq count (length (nelisp-buffer-text-properties nelisp--current-buffer))))
+      (setq count (length (nelisp--tp-list (nelisp-buffer-text-properties nelisp--current-buffer) 1))))
     (cons (- (float-time) t0) count)))
 
 (defun iwh-sc-best (series n)

@@ -13420,6 +13420,13 @@ argument (reachability + in-arena bounds checks).")
                                         (if (< idx 0)
                                             3
                                           (wf_write_int_w 0 idx))))
+    ;; rxnative: (nelisp--rx-exec PROG TEXT START LIMIT FLAGS CAPVEC SCRATCH);
+    ;; nil no match, t decline (Lisp matcher decides), else packed span.
+    ((:lit "nelisp--rx-exec") :word .
+     (let* ((r (m5_rx_search (wf_arg_ptr args 0) (wf_arg_ptr args 1)
+                             (wf_argval args 2) (wf_argval args 3) (wf_argval args 4)
+                             (wf_arg_word args 5) (wf_arg_ptr args 6))))
+       (if (= r -2) 7 (if (= r -1) 3 (wf_write_int_w 0 r)))))
     ((:lit "nelisp--arena-stats") :word . (bf_arena_stats_w 0))
     ((:lit "nelisp--gc-pressure") :word . (bf_gc_pressure_w 0))
     ((:lit "nelisp--arena-walk-verify") :word . (bf_arena_walk_verify_w 0))
@@ -20737,6 +20744,38 @@ above this defconst for the shadow-vs-delegate rationale.")
              (nl_bignum_write_w neg scratch count 0))))))
     (defun nl_read_int_or_bignum (sp result_slot)
       (nl_abi_word_to_rc (nl_read_int_or_bignum_w sp 0) result_slot))
+    ;; `#x' `#o' `#b' token with more significant digits than a fixnum holds
+    ;; (lread.c `read_integer' -> `string_to_number' makes a bignum).  SP is the
+    ;; lexer's radix payload: a base marker byte, an optional sign, then BASE-digits
+    ;; that the reader has already validated (nonempty, each a digit of BASE).
+    ;; Same accumulation and canonical write-back as `nl_read_int_or_bignum_w';
+    ;; the limb scratch is sized for two decimal-token digits per radix digit, which
+    ;; covers BASE 16 (8 digits per 32-bit limb) with room to spare.
+    (defun nl_read_radix_or_bignum_w (sp base)
+      (let* ((n (m5_strlen sp))
+             (c1 (if (> n 1) (m5_byte_at sp 1) 48))
+             (neg (if (= c1 45) 1 0))
+             (start (if (if (= c1 45) 1 (if (= c1 43) 1 0)) 2 1))
+             (dcount (- n start))
+             (max (nl_bignum_scratch_limbs (* dcount 2)))
+             (scratch (alloc-bytes (* max 4) 4)))
+        (seq
+         (nl_alloc_zero_fill scratch 0 (* max 4))
+         (let* ((i start))
+           (seq
+            (while (< i n)
+              (let* ((b (m5_byte_at sp i))
+                     (d (if (<= b 57) (- b 48) (if (>= b 97) (- b 87) (- b 55)))))
+                (seq (nl_bignum_mulsmall_add_loop scratch max base d)
+                     (setq i (+ i 1)))))
+            0))
+         (let* ((top (nl_bignum_top_limb scratch max))
+                (count (if (< top 0) 1 (+ top 1)))
+                (bound_hi (if (= neg 1) 536870912 536870911))
+                (bound_lo (if (= neg 1) 0 4294967295)))
+           (if (= (nl_bignum_mag_le_bound scratch count bound_hi bound_lo) 1)
+               (nl_bignum_write_int_w scratch count neg 0)
+             (nl_bignum_write_w neg scratch count 0))))))
     ;; --- decimal printing (prin1/princ/number-to-string round-trip) ----
     ;; Copy N limbs SRC -> DST (used to get a disposable working copy
     ;; before the destructive divide-by-10 pass below -- printing must
@@ -20946,7 +20985,10 @@ bytes are written into a fresh 8-byte buffer instead."
                       (wf_bytecode_w_cons2
                        (heap-read-u64 (+ mem (* (+ first (- k 1)) 8)) 0) arglist))
                 (setq k (- k 1))))
-         (nl_alloc_symbol name name_len sym)
+         ;; The callee has no constant in a constants vector here (an opcode
+         ;; names a primitive), so its interned name is remembered instead of
+         ;; re-hashed on every call (`nl_alloc_symbol_cached').
+         (nl_alloc_symbol_cached name name_len sym)
          ;; Apply a source-owned Lisp provider only when the opcode table
          ;; explicitly requests one; ordinary names use builtin tokens.
          (if (= lisp_provider 1)
@@ -20954,11 +20996,8 @@ bytes are written into a fresh 8-byte buffer instead."
            (let ((builtin-name (alloc-bytes 8 8))
                  (builtin-sym (alloc-bytes 32 8)))
              (seq
-              (ptr-write-u8 builtin-name 0 98) (ptr-write-u8 builtin-name 1 117)
-              (ptr-write-u8 builtin-name 2 105) (ptr-write-u8 builtin-name 3 108)
-              (ptr-write-u8 builtin-name 4 116) (ptr-write-u8 builtin-name 5 105)
-              (ptr-write-u8 builtin-name 6 110) (ptr-write-u8 builtin-name 7 0)
-              (nl_alloc_symbol builtin-name 7 builtin-sym)
+              (ptr-write-u64 builtin-name 0 31078196194145634)
+              (nl_alloc_symbol_cached builtin-name 7 builtin-sym)
               (setq func (wf_bytecode_w_cons2 builtin-sym (wf_bytecode_w_cons2 sym 3))))))
          ;; Use the same evaluator boundary as the generic native gateway.
          ;; Core symbol-cell operations (FSET and SYMBOL-FUNCTION, including
@@ -28649,10 +28688,19 @@ bytes are written into a fresh 8-byte buffer instead."
              (name (if (= cache 0) sym (nl_vector_slot_word cache 0)))
              (cached (if (or (= cache 0) (= (nl_sb_worker_p env) 1))
                          0 (m5_fx_cached_function cache env)))
-             (fn (if (= cached 0)
-                     (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)
-                   cached)))
-        (if (or (= fn 2) (= (nl_word_tag64 fn) 0))
+             (fn0 (if (= cached 0)
+                      (nelisp_env_lookup_function_w (+ env 0) (+ env 64) name 0)
+                    cached))
+             ;; GNU eval_sub / funcall_general: a function cell holding
+             ;; `(autoload FILE ...)' is loaded (Fautoload_do_load) and the
+             ;; call proceeds on the new definition; a load that leaves the
+             ;; cell undefined signals there.  The load rewrites the cell,
+             ;; so the site cache (keyed by definition) refills by itself.
+             (fn (if (or (= (logand fn0 1) 1) (< fn0 4096)) fn0
+                   (if (= (nl_autoload_cell_p fn0) 1)
+                       (nl_lookup_fn_autoload_load_cell_w (+ env 0) (+ env 64) name fn0)
+                     fn0))))
+        (if (or (= fn 0) (or (= fn 2) (= (nl_word_tag64 fn) 0)))
             (nl_cons_stash_void_function env name)
           (seq
            (ptr-write-u64 xw 0 fn)
@@ -34893,15 +34941,19 @@ bytes are written into a fresh 8-byte buffer instead."
                       (bf_read_one_hex_run_ok src (+ at 4) end 0 1114111)
                     0))
               0))
-           ((= esc 77) 0)              ; \\M-
-           ;; \S-/\H-/\A- (shift/hyper/alt) are not implemented by the
-           ;; bootstrap decoder at all -- it silently drops the backslash
-           ;; and keeps the letter, rather than either folding shift onto
-           ;; a same-case letter or signalling "Invalid modifier in
-           ;; string" the way GNU/`nelisp--rd-*' do.  Always defer.
-           ((= esc 83) 0)              ; \\S-
-           ((= esc 72) 0)              ; \\H-
-           ((= esc 65) 0)              ; \\A-
+           ;; \\M- \\S- \\H- \\A- (meta, shift, hyper, alt) are decoded by the
+           ;; lexer's shared escape scanner (`nelisp_reader_escape_scan', string
+           ;; mode), the same code `load' and the one-argument native reader run:
+           ;; it folds or refuses each combination as GNU's `read_char_escape' and
+           ;; `read_string_literal' do, and a spelling it refuses declines the
+           ;; whole form to the interpreted reader, which signals GNU's error.
+           ;; This predicate used to defer all four unconditionally, which sent
+           ;; every string with a modifier -- 500000 `\\M-' in GNU's
+           ;; lread-many-modifiers -- to the interpreted reader (4.9 s, GNU 62 ms).
+           ((= esc 77) 1)              ; \\M-
+           ((= esc 83) 1)              ; \\S-
+           ((= esc 72) 1)              ; \\H-
+           ((= esc 65) 1)              ; \\A-
            ;; GNU consumes the whole nonempty hex run, as the lexer does; it
            ;; signals above #x3FFFFF and reads #x3FFF80..#x3FFFFF as raw bytes
            ;; (a unibyte string), which the lexer would encode as characters.
@@ -37868,7 +37920,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((5 . 5)
       nelisp--syscall-mount nelisp-thread-spawn)
     ((7 . 7)
-      ptr-call syscall-direct)
+      nelisp--rx-exec ptr-call syscall-direct)
     ((8 . 8)
       ptr-call-typed)
     )
@@ -43227,7 +43279,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "string-as-unibyte" "string-to-unibyte" "string-make-unibyte"
     "string-as-multibyte" "string-to-multibyte" "string-make-multibyte"
     "char-to-string" "string-to-char" "number-to-string" "string-to-number" "format"
-    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--ascii-downcase" "nelisp--casify-fast" "nelisp--string-width-fast" "nelisp--base64-encode" "nelisp--base64-decode" "nelisp--fx-run" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
+    "nelisp--repr" "nelisp--json-encode" "nelisp--sha256" "nelisp--sha256-bytes" "nelisp--string-search" "nelisp--string-search-chars" "nelisp--rx-exec" "nelisp--ascii-downcase" "nelisp--casify-fast" "nelisp--string-width-fast" "nelisp--base64-encode" "nelisp--base64-decode" "nelisp--fx-run" "nelisp--arena-stats" "nelisp--gc-pressure" "garbage-collect"
     "nelisp--fmt-float" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--native-substring" "nelisp--native-format" "nelisp--equal-leaf" "nelisp--build-digest"
     "nelisp--debug-switch" "nelisp--gc-diag" "nelisp--arena-force-grow-smoke" "nelisp--size-census" "nelisp--arena-walk-verify"
     "nelisp--alloc-check-report"
@@ -56917,8 +56969,11 @@ patches operate on the same combiner-apply source.  Keeps lisp/ pristine."
     (if (/= (nl_apply_single_list_valid
              (nl_apply_list_last_word (nl_cons_cdr_word args))) 0) 0
     (let* ((name (nl_cons_car_word args)) (tag (nl_val_tag name))
+           ;; GNU Fapply resolves FUN through funcall_general, which loads an
+           ;; autoload cell (Fautoload_do_load) before calling; `funcall' above
+           ;; does the same.
            (function (if (or (= tag 4) (= tag 16))
-                         (nelisp_env_lookup_function_w env (+ env 64) name 0) name)))
+                         (nl_lookup_fn_autoload_w env (+ env 64) name 0) name)))
       (if (or (= function 0) (= function 2) (= function 3))
           (seq (nl_cons_stash_void_function env (wf_word_view name)) 0)
         (let* ((rest (nl_cons_cdr_word args))
@@ -65286,6 +65341,242 @@ retains the checkout default. Application outputs still go to OUTPUT."
                                 (setq phase 0))))))))))))
          (if (= err 1) 3 (seq (mut-str-finalize sb sb) sb)))))
        )))
+
+;; rxnative lane: native regexp matcher (`nelisp--rx-exec').  The program is
+;; compiled by `nlre--nat-compile' (lisp/nelisp-stdlib-regexp.el, format
+;; documented there); tools/ai/rxnative/refvm.el is the step-for-step Lisp
+;; reference of this VM.  Shifts are avoided (`ash' is not linked here).
+;; Scratch layout (a >= 3200000 byte string kept by the caller): registers at
+;; 0 (8-byte), undo entries at 8192 (16 bytes, 65536 of them), backtrack
+;; frames at 1056768 (32 bytes, 65536 of them).  Answers: >= 0 the packed
+;; (start * 2^31 + end) in characters; FLAGS = anchored + 2 * the text's character count, -1 no match, -2 decline (nothing was
+;; written but the scratch and the caller's capture vector).
+(setq nelisp-standalone--applyfn-m5-helpers
+      (append
+       nelisp-standalone--applyfn-m5-helpers
+       '(
+    (defun m5_rx_w (pp i) (heap-read-u32 pp (* i 4)))
+    (defun m5_rx_alen (op)
+      (if (= op 1) 2 (if (= op 2) 3 (if (= op 3) 1 34))))
+    ;; One character B against the atom at word APC: 1 match, 0 no, -1 decline.
+    (defun m5_rx_one (pp apc b)
+      (let* ((op (m5_rx_w pp apc)))
+        (if (= op 1) (if (= b (m5_rx_w pp (+ apc 1))) 1 0)
+          (if (= op 2)
+              (if (= b (m5_rx_w pp (+ apc 1))) 1
+                (if (= b (m5_rx_w pp (+ apc 2))) 1
+                  (if (>= b 128)
+                      (if (= (m5_rx_w pp (+ apc 1)) 107) -1
+                        (if (= (m5_rx_w pp (+ apc 1)) 115) -1 0))
+                    0)))
+            (if (= op 3) (if (= b 10) 0 (if (>= b 128) -1 1))
+              (if (>= b 128)
+                  (if (= (m5_rx_w pp (+ apc 1)) 1) -1 0)
+                (heap-read-u8 pp (+ (* (+ apc 2) 4) b))))))))
+    ;; Undo register writes down to entry UH; answers the new undo height.
+    (defun m5_rx_unwind (rb ub usp uh)
+      (let* ((u usp))
+        (seq (while (> u uh)
+               (seq (setq u (- u 1))
+                    (ptr-write-u64 (+ rb (* (ptr-read-u64 (+ ub (* u 16)) 0) 8)) 0
+                                   (ptr-read-u64 (+ ub (* u 16)) 8))))
+             u)))
+    ;; Compare the captured text at S with the text at POS: 1 equal, 2 differ,
+    ;; -2 decline (a non-ASCII byte under case folding).
+    (defun m5_rx_bref (tp s pos len fold)
+      (let* ((i 0) (st 0))
+        (seq (while (= st 0)
+               (if (>= i len) (setq st 1)
+                 (let* ((a (heap-read-u8 tp (+ s i))) (b (heap-read-u8 tp (+ pos i))))
+                   (if (= fold 1)
+                       (if (if (>= a 128) 1 (>= b 128)) (setq st -2)
+                         (seq (if (if (>= a 65) (<= a 90) 0) (setq a (+ a 32)) 0)
+                              (if (if (>= b 65) (<= b 90) 0) (setq b (+ b 32)) 0)
+                              (if (= a b) (setq i (+ i 1)) (setq st 2))))
+                     (if (= a b) (setq i (+ i 1)) (setq st 2))))))
+             st)))
+    ;; Run the program from word PC0 at byte POS0.  Answers the end byte, -1
+    ;; (no match here; the registers are restored) or -2 (decline).
+    (defun m5_rx_run (pp tp n lim pc0 pos0 sc)
+      (let* ((pc pc0) (pos pos0) (sp 0) (usp 0) (res -3) (failing 0)
+             (rb sc) (ub (+ sc 8192)) (fb (+ sc 1056768))
+             (fold (if (= (logand (m5_rx_w pp 2) 4) 0) 0 1)))
+        (seq
+         (while (= res -3)
+           (if (= failing 1)
+               (if (= sp 0)
+                   (seq (setq usp (m5_rx_unwind rb ub usp 0)) (setq res -1))
+                 (let* ((f (+ fb (* (- sp 1) 32))) (w0 (ptr-read-u64 f 0)))
+                   (seq (setq usp (m5_rx_unwind rb ub usp (ptr-read-u64 f 16)))
+                        (if (>= w0 1099511627776)
+                            (seq (setq pos (ptr-read-u64 f 8))
+                                 (setq pc (- w0 1099511627776))
+                                 (if (> pos (ptr-read-u64 f 24))
+                                     (ptr-write-u64 f 8 (- pos 1))
+                                   (setq sp (- sp 1))))
+                          (seq (setq pos (ptr-read-u64 f 8))
+                               (setq pc w0)
+                               (setq sp (- sp 1))))
+                        (setq failing 0))))
+             (let* ((op (m5_rx_w pp pc)))
+               (if (= op 0) (setq res pos)
+                 (if (< op 5)
+                     (if (>= pos lim) (setq failing 1)
+                       (let* ((r (m5_rx_one pp pc (heap-read-u8 tp pos))))
+                         (if (= r 1)
+                             (seq (setq pos (+ pos 1)) (setq pc (+ pc (m5_rx_alen op))))
+                           (if (= r 0) (setq failing 1) (setq res -2)))))
+                   (if (= op 5)
+                       (if (= pos 0) (setq pc (+ pc 1))
+                         (if (= (heap-read-u8 tp (- pos 1)) 10) (setq pc (+ pc 1))
+                           (setq failing 1)))
+                     (if (= op 6)
+                         (if (= pos n) (setq pc (+ pc 1))
+                           (if (= (heap-read-u8 tp pos) 10) (setq pc (+ pc 1))
+                             (setq failing 1)))
+                       (if (= op 7)
+                           (if (= pos 0) (setq pc (+ pc 1)) (setq failing 1))
+                         (if (= op 8)
+                             (if (= pos n) (setq pc (+ pc 1)) (setq failing 1))
+                           (if (if (= op 9) 1 (= op 12))
+                               (if (>= usp 65536) (setq res -2)
+                                 (let* ((r (m5_rx_w pp (+ pc 1))))
+                                   (seq (ptr-write-u64 (+ ub (* usp 16)) 0 r)
+                                        (ptr-write-u64 (+ ub (* usp 16)) 8
+                                                       (ptr-read-u64 (+ rb (* r 8)) 0))
+                                        (setq usp (+ usp 1))
+                                        (ptr-write-u64 (+ rb (* r 8)) 0 pos)
+                                        (setq pc (+ pc 2)))))
+                             (if (= op 10)
+                                 (if (>= sp 65536) (setq res -2)
+                                   (let* ((f (+ fb (* sp 32))))
+                                     (seq (ptr-write-u64 f 0 (m5_rx_w pp (+ pc 2)))
+                                          (ptr-write-u64 f 8 pos)
+                                          (ptr-write-u64 f 16 usp)
+                                          (ptr-write-u64 f 24 0)
+                                          (setq sp (+ sp 1))
+                                          (setq pc (m5_rx_w pp (+ pc 1))))))
+                               (if (= op 11) (setq pc (m5_rx_w pp (+ pc 1)))
+                                 (if (= op 13)
+                                     (if (<= pos (ptr-read-u64 (+ rb (* (m5_rx_w pp (+ pc 1)) 8)) 0))
+                                         (setq pc (m5_rx_w pp (+ pc 2)))
+                                       (setq pc (+ pc 3)))
+                                   (if (= op 14)
+                                       (let* ((g (m5_rx_w pp (+ pc 1)))
+                                              (s (ptr-read-u64 (+ rb (* (* 2 g) 8)) 0))
+                                              (e (ptr-read-u64 (+ rb (* (+ (* 2 g) 1) 8)) 0)))
+                                         (if (< s 0) (setq failing 1)
+                                           (if (< e 0) (setq failing 1)
+                                             (if (< e s) (setq res -2)
+                                               (if (> (+ pos (- e s)) lim) (setq failing 1)
+                                                 (let* ((st (m5_rx_bref tp s pos (- e s) fold)))
+                                                   (if (= st 1)
+                                                       (seq (setq pos (+ pos (- e s)))
+                                                            (setq pc (+ pc 2)))
+                                                     (if (= st 2) (setq failing 1)
+                                                       (setq res -2)))))))))
+                                     (if (= op 15)
+                                         (let* ((mn (m5_rx_w pp (+ pc 1)))
+                                                (mx (m5_rx_w pp (+ pc 2)))
+                                                (apc (+ pc 3))
+                                                (nxt (+ apc (m5_rx_alen (m5_rx_w pp apc))))
+                                                (k 0) (st 0))
+                                           (seq
+                                            (while (= st 0)
+                                              (if (< k mx)
+                                                  (if (< (+ pos k) lim)
+                                                      (let* ((r (m5_rx_one pp apc (heap-read-u8 tp (+ pos k)))))
+                                                        (if (= r 1) (setq k (+ k 1))
+                                                          (if (= r 0) (setq st 1) (setq st -2))))
+                                                    (setq st 1))
+                                                (setq st 1)))
+                                            (if (= st -2) (setq res -2)
+                                              (if (< k mn) (setq failing 1)
+                                                (seq
+                                                 (if (> k mn)
+                                                     (if (>= sp 65536) (setq st -2)
+                                                       (let* ((f (+ fb (* sp 32))))
+                                                         (seq (ptr-write-u64 f 0 (+ nxt 1099511627776))
+                                                              (ptr-write-u64 f 8 (+ pos (- k 1)))
+                                                              (ptr-write-u64 f 16 usp)
+                                                              (ptr-write-u64 f 24 (+ pos mn))
+                                                              (setq sp (+ sp 1)))))
+                                                   0)
+                                                 (if (= st -2) (setq res -2)
+                                                   (seq (setq pos (+ pos k)) (setq pc nxt))))))))
+                                       (setq res -2))))))))))))))))
+         res)))
+    ;; PROG hay START LIMIT FLAGS(1 = only at START) CAPVEC SCRATCH; see above.
+    (defun m5_rx_search (prog hay start lim flags capw scr)
+      (let* ((pt (sexp-tag prog)) (ht (sexp-tag hay)) (st (sexp-tag scr)))
+        (if (= (m5_unibyte_tag_p pt) 0) -2
+          (if (= (m5_string_tag_p ht) 0) -2
+            (if (= ht 6) -2
+              (if (= (m5_string_tag_p st) 0) -2
+                (if (< start 0) -2
+                  (if (< lim start) -2
+                    (if (< (m5_strlen scr) 3200000) -2
+                      (let* ((pp (nl_bi_strptr prog)) (tp (nl_bi_strptr hay)) (sc (nl_bi_strptr scr))
+                             (hnb (m5_strlen hay))
+                             (huni (if (= (m5_unibyte_tag_p ht) 1) 1 (if (= hnb (/ flags 2)) 1 0)))
+                             (nreg (m5_rx_w pp 0)) (ng (m5_rx_w pp 1)) (pflags (m5_rx_w pp 2))
+                             (fold (if (= (logand pflags 4) 0) 0 1)))
+                        (if (> nreg 1000) -2
+                          (if (< (nl_vector_length capw) (* 2 ng)) -2
+                            (if (if (= huni 1) (> lim hnb) 0) -2
+                              (let* ((sb (if (= huni 1) start (nl_str_sub_byte_off hay hnb start)))
+                                     (lb (if (= huni 1) lim (nl_str_sub_byte_off hay hnb lim))))
+                                (if (< sb 0) -2
+                                  (if (< lb 0) -2
+                                    (if (> lb hnb) -2
+                                      (m5_rx_scan pp tp hay start sb lb flags capw sc))))))))))))))))))
+    (defun m5_rx_scan (pp tp hay start sb lb flags capw sc)
+      (let* ((rb sc)
+             (hnb (m5_strlen hay))
+             (huni (if (= (m5_unibyte_tag_p (sexp-tag hay)) 1) 1 (if (= hnb (/ flags 2)) 1 0)))
+             (nreg (m5_rx_w pp 0)) (ng (m5_rx_w pp 1)) (pflags (m5_rx_w pp 2))
+             (i sb) (done 0) (found -1) (endb 0) (rr 0) (j 0)
+             (entry (m5_rx_w pp 3))
+             (usef (if (= (logand pflags 2) 0) 0 1))
+             (anch (if (= (- flags (* (/ flags 2) 2)) 1) 1 (logand pflags 1))))
+        (seq
+         (while (< j nreg)
+           (seq (ptr-write-u64 (+ rb (* j 8)) 0 -1) (setq j (+ j 1))))
+         (if (= (logand pflags 1) 1) (if (> sb 0) (setq done 1) 0) 0)
+         (while (= done 0)
+           (if (> i lb) (setq done 1)
+             (let* ((skip (if (= usef 1)
+                              (if (>= i lb) 2
+                                (let* ((b (heap-read-u8 tp i)))
+                                  (if (< b 128)
+                                      (if (= (heap-read-u8 pp (+ 20 b)) 0) 1 0)
+                                    0)))
+                            0)))
+               (if (= skip 2) (setq done 1)
+                 (if (= skip 1)
+                     (if (= anch 1) (setq done 1) (setq i (+ i 1)))
+                   (seq (setq rr (m5_rx_run pp tp hnb lb entry i sc))
+                        (if (>= rr 0)
+                            (seq (setq found i) (setq endb rr) (setq done 1))
+                          (if (= rr -2) (seq (setq found -2) (setq done 1))
+                            (if (= anch 1) (setq done 1) (setq i (+ i 1)))))))))))
+         (if (< found 0) found
+           (let* ((cs (if (= huni 1) found (+ start (m5_count_chars hay sb found))))
+                  (delta (- cs found)))
+             (if (> (+ endb delta) 1073741823) -2
+               (seq
+                (wf_dirty)
+                (let* ((g 0) (base (+ (nl_word_payload capw) 8)))
+                  (while (< g ng)
+                    (let* ((s (if (= g 0) found (ptr-read-u64 (+ rb (* (* 2 g) 8)) 0)))
+                           (e (if (= g 0) endb (ptr-read-u64 (+ rb (* (+ (* 2 g) 1) 8)) 0))))
+                      (seq (ptr-write-u64 (+ base (* (* 2 g) 8)) 0
+                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (+ s delta)))))
+                           (ptr-write-u64 (+ base (* (+ (* 2 g) 1) 8)) 0
+                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (+ e delta)))))
+                           (setq g (+ g 1))))))
+                (+ (* cs 2147483648) (+ endb delta)))))))))
+    )))
 
 (provide 'nelisp-standalone-build)
 

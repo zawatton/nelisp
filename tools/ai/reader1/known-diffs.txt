@@ -1,0 +1,6 @@
+"(a .\xa0b)"	rfs
+"(a .\xa0b)"	str
+"(a .\xa0b)"	buf
+"(a .\xa0)"	rfs
+"(a .\xa0)"	str
+"(a .\xa0)"	buf

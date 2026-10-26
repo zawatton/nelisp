@@ -1,0 +1,8 @@
+14c14
+< 14 (make-overlay (with-temp-buffer (insert "xyz") (copy-marker 2)) 5) => ERR (error "Marker points into wrong buffer" #<marker in no buffer>)
+---
+> 14 (make-overlay (with-temp-buffer (insert "xyz") (copy-marker 2)) 5) => ERR (error "Marker points into wrong buffer" #<marker at 2 in  *temp*>)
+60c60
+< 60 (let ((o (make-overlay 1 5)) (p (make-overlay 3 8)) (q (make-overlay 2 9))) (overlay-put o 'priority 'x) (overlay-put q 'priority "s") (overlays-at 4 t)) => ((ov 2 9 t (priority "s")) (ov 1 5 t (priority x)) (ov 3 8 t nil))
+---
+> 60 (let ((o (make-overlay 1 5)) (p (make-overlay 3 8)) (q (make-overlay 2 9))) (overlay-put o 'priority 'x) (overlay-put q 'priority "s") (overlays-at 4 t)) => ((ov 3 8 t nil) (ov 2 9 t (priority "s")) (ov 1 5 t (priority x)))

@@ -1,0 +1,45 @@
+#+TITLE: Function-call path: opcode-primitive symbol interning and fx autoload call-out
+
+* S1 Cause with evidence
+
+** S1.1 Baseline callgrind: nl_alloc_symbol called from wf_bytecode_call_named_value (24/search trip on v17)
+evidence: target/callpath1/cg/a4-800.cg sha256=b46a28df748a2a70cd789666dfc5a7ef7b649e702df3dad8f37bb5dcdf871145
+
+** S1.2 Baseline autoload failure reproduced on v17 (defun body calling an unloaded autoload)
+#+REQUIRES: CP_BASE
+cmd: sh target/callpath1/check.sh autoload-red
+
+* S2 Fix with red/green checks and GNU parity corpus
+
+** S2.1 Autoload call-out probes equal GNU on the new binary
+#+REQUIRES: CP_BIN
+cmd: sh target/callpath1/check.sh autoload-green
+
+** S2.2 Call-path parity corpus equal GNU on the new binary
+#+REQUIRES: CP_BIN
+cmd: sh target/callpath1/check.sh parity
+
+** S2.3 Negative control: symbol cache probe corpus fails on a deliberately wrong expectation
+#+REQUIRES: CP_BIN
+cmd: sh target/callpath1/check.sh negative-control
+
+** S2.4 nl_alloc_symbol calls per a4 trip from the opcode call path at most 1 (callgrind differential)
+#+REQUIRES: CP_BIN
+#+TIMEOUT: 600
+cmd: sh target/callpath1/check.sh symcount
+
+* S3 One integrated build passing fixtures
+
+** S3.1 Build rc=0, prelink records <= 384, fixtures pass (weak 24, GNU 56, AFRT 24/25, buffer 21, speed-win)
+#+REQUIRES: CP_BIN
+#+TIMEOUT: 600
+cmd: sh target/callpath1/check.sh fixtures
+
+* S4 Paired timing
+
+** S4.1 Paired timing recorded vs v17 and GNU: a4, strings-replace-regexp-bc, buffers-search-forward-bc, reg-sum-bc, r3-mix, r3-call
+evidence: target/callpath1/timing/RESULT.json sha256=f4b66e6ceb14c6c65afe6c7510f41d0fcf7e631776d921f614d95019f7c6340f
+
+** S4.2 End to end: a4 search loop faster than v17 and no regression row above noise
+#+REQUIRES: CP_BIN
+cmd: sh target/callpath1/check.sh e2e

@@ -700,16 +700,9 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   (defun equal-including-properties (a b)
     (and (equal a b)
          (if (and (stringp a) (stringp b))
-             (let ((la (nelisp--tp-get-intervals a))
-                   (lb (nelisp--tp-get-intervals b)))
-               (or (and (null la) (null lb))
-                   (let ((n (length a)) (i 0) (ok t))
-                     (while (and ok (< i n))
-                       (unless (equal (nelisp--tp-plist-at i la)
-                                       (nelisp--tp-plist-at i lb))
-                         (setq ok nil))
-                       (setq i (1+ i)))
-                     ok)))
+             (or (and (null (gethash a nelisp--tp-string-properties))
+                      (null (gethash b nelisp--tp-string-properties)))
+                 (nelisp--tp-strings-equal a b))
            t))))
 (unless (fboundp 'locate-file)
   (defun locate-file (filename path &optional suffixes _predicate)
@@ -1465,13 +1458,31 @@ Compare binary digits, preserving distinctions lost by float division."
 Read by the `nelisp--setf-1' clause that gives these accessors a working
 `setf' place; see the accessors themselves, defined just above.")
 
-(defmacro setq-default (&rest pairs)
-  "NeLisp has no buffer-local distinction; alias to `setq'."
-  (cons 'setq pairs))
+(defmacro setq-default (&rest args)
+  "Set the default value of each VAR to its VALUE (GNU subr.el)."
+  (let ((exps nil))
+    (while args
+      (setq exps (cons (list 'set-default (list 'quote (car args)) (car (cdr args))) exps))
+      (setq args (cdr (cdr args))))
+    (cons 'progn (nreverse exps))))
 
 (defmacro setq-local (&rest pairs)
-  "NeLisp has no buffer-local distinction; alias to `setq'."
-  (cons 'setq pairs))
+  "Make each VARIABLE local to the current buffer and set it to its VALUE.
+GNU subr.el: the VALUE is computed first, then the variable is made local,
+then assigned, so a VALUE may read the previous binding."
+  (unless (= (% (length pairs) 2) 0)
+    (signal 'wrong-number-of-arguments (list 'setq-local (length pairs))))
+  (let ((expr nil))
+    (while pairs
+      (unless (symbolp (car pairs))
+        (error "Attempting to set a non-symbol: %s" (car pairs)))
+      (setq expr
+            (cons (list 'setq (car pairs)
+                        (list 'prog1 (car (cdr pairs))
+                              (list 'make-local-variable (list 'quote (car pairs)))))
+                  expr))
+      (setq pairs (cdr (cdr pairs))))
+    (if (cdr expr) (cons 'progn (nreverse expr)) (car expr))))
 
 ;; Declaration metadata is separate from the value cell: an initializer can
 ;; fail, or a value can later become unbound, without removing the declaration.
@@ -1510,9 +1521,18 @@ from `(defvar X nil)'."
       (list 'funcall '(quote (builtin nelisp--declare-local-special))
             (list 'quote name)))))
 
-(defmacro defvar-local (name &optional value docstring)
-  "Alias for `defvar' in the standalone."
-  (cons 'defvar (cons name (cons value (cons docstring nil)))))
+(defmacro defvar-local (symbol &rest args)
+  "Define SYMBOL as a variable that becomes buffer-local wherever it is set.
+GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
+
+(fn SYMBOL &optional VALUE DOCSTRING)"
+  (let ((value (car-safe args))
+        (docstring (car-safe (cdr-safe args))))
+    (list 'progn
+          (if (= (length args) 0)
+              (list 'defvar symbol)
+            (list 'defvar symbol value docstring))
+          (list 'make-variable-buffer-local (list 'quote symbol)))))
 
 (defvar lexical-binding t
   "Standalone default: evaluated source is treated as lexical.")
@@ -2073,13 +2093,12 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
                     piece) parts)
             (setq inword word i (1+ i))))
         (if unibyte
-            (let ((result (apply #'unibyte-string (nreverse parts))) (position 0))
-              ;; GNU copies the unibyte input, including its properties.
-              (while (< position n)
-                (let ((end (or (next-property-change position object) n)))
-                  (set-text-properties position end
-                                       (text-properties-at position object) result)
-                  (setq position end)))
+            ;; GNU do_casify_unibyte_string: copy the input, properties included,
+            ;; then store the cased bytes.
+            (let ((result (copy-sequence object)) (k 0))
+              (dolist (byte (nreverse parts))
+                (aset result k byte)
+                (setq k (1+ k)))
               result)
           (string-make-multibyte (apply #'concat (nreverse parts)))))))))
 
@@ -3013,13 +3032,95 @@ Keywords supported:  :test :test-not :key
 (unless (fboundp 'cl-second) (defun cl-second (l) (nth 1 l)))
 (unless (fboundp 'cl-third) (defun cl-third (l) (nth 2 l)))
 (unless (fboundp 'cl-rest) (defun cl-rest (l) (cdr l)))
+(defvar nelisp-cl-typep--predicates
+  ;; `function' is consed up: a quoted `(function . functionp)' is
+  ;; rewritten by the loader's quote handling.
+  (cons (cons 'function 'functionp)
+  '((integer . integerp) (number . numberp) (float . floatp)
+    (string . stringp) (symbol . symbolp) (cons . consp) (list . listp)
+    (vector . vectorp) (null . null) (atom . atom) (sequence . sequencep)
+    (array . arrayp) (boolean . booleanp) (natnum . natnump)
+    (keyword . keywordp) (character . characterp) (fixnum . fixnump)
+    (bignum . bignump) (hash-table . hash-table-p) (buffer . bufferp)
+    (marker . markerp) (real . numberp)
+    (number-or-marker . number-or-marker-p)
+    (integer-or-marker . integer-or-marker-p) (bool-vector . bool-vector-p)
+    (char-table . char-table-p) (record . recordp) (overlay . overlayp)
+    (window . windowp) (frame . framep) (process . processp) (subr . subrp)
+    (compiled-function . compiled-function-p)
+    (byte-code-function . byte-code-function-p)
+    (interpreted-function . interpreted-function-p)
+    (special-form . special-form-p) (command . commandp)))
+  "Predicates for GNU's built-in and preloaded derived types, as (TYPE . FUN).")
+
+(defun nelisp-cl-typep--atomic (val type)
+  "`cl-typep' for the atomic type symbol TYPE without a `cl-deftype' entry."
+  (let ((pred (cdr (assq type nelisp-cl-typep--predicates))))
+    (cond
+     ((eq type 'number-or-marker) (or (numberp val) (markerp val)))
+     ((eq type 'integer-or-marker) (or (integerp val) (markerp val)))
+     ((and pred (fboundp pred)) (funcall pred val))
+     ((eq type 'cl-structure-object)
+      (and (recordp val)
+           (assq (nelisp--record-type val) nelisp-cl-macros--struct-info)
+           t))
+     ((assq type nelisp-cl-macros--struct-info)
+      (and (recordp val)
+           (nelisp-cl-macros--struct-isa (nelisp--record-type val) type)
+           t))
+     (t
+      ;; GNU: fall back to TYPEp, TYPE-p, then TYPE itself as a predicate.
+      (let* ((name (symbol-name type))
+             (namep (intern (concat name "p"))))
+        (cond ((fboundp namep) (funcall namep val))
+              ((fboundp (setq namep (intern (concat name "-p"))))
+               (funcall namep val))
+              ((fboundp type) (funcall type val))
+              (t (error "Unknown type %S" type))))))))
+
 (unless (fboundp 'cl-typep)
   (defun cl-typep (val type)
-    (cond ((eq type 'integer) (integerp val)) ((eq type 'number) (numberp val))
-          ((eq type 'float) (floatp val)) ((eq type 'string) (stringp val))
-          ((eq type 'symbol) (symbolp val)) ((eq type 'cons) (consp val))
-          ((eq type 'list) (listp val)) ((eq type 'vector) (vectorp val))
-          ((eq type 'null) (null val)) ((eq type 't) t) (t nil))))
+    "Return t if VAL is of type TYPE, nil otherwise (GNU `cl-typep')."
+    (cond
+     ((null type) nil)
+     ((eq type t) t)
+     ((symbolp type)
+      (let ((sat (get type 'cl-deftype-satisfies)))
+        (cond (sat (and (funcall sat val) t))
+              ((get type 'cl-deftype-handler)
+               (cl-typep val (funcall (get type 'cl-deftype-handler))))
+              (t (and (nelisp-cl-typep--atomic val type) t)))))
+     ((consp type)
+      (let ((name (car type)) (args (cdr type)))
+        (cond
+         ((and (null args) (symbolp name) (get name 'cl-deftype-satisfies))
+          (and (funcall (get name 'cl-deftype-satisfies) val) t))
+         ((and (symbolp name) (get name 'cl-deftype-handler))
+          (cl-typep val (apply (get name 'cl-deftype-handler) args)))
+         ((memq name '(integer float number))
+          (let ((min (car args)) (max (car (cdr args))))
+            (and (cl-typep val name)
+                 (or (memq min '(* nil))
+                     (if (consp min) (> val (car min)) (>= val min)))
+                 (or (memq max '(* nil))
+                     (if (consp max) (< val (car max)) (<= val max)))
+                 t)))
+         ((eq name 'not) (not (cl-typep val (car args))))
+         ((eq name 'and)
+          (let ((ok t))
+            (while (and ok args)
+              (setq ok (cl-typep val (car args)) args (cdr args)))
+            (and ok t)))
+         ((eq name 'or)
+          (let ((ok nil))
+            (while (and (not ok) args)
+              (setq ok (cl-typep val (car args)) args (cdr args)))
+            (and ok t)))
+         ((eq name 'eql) (and (eql val (car args)) t))
+         ((eq name 'member) (and (memql val args) t))
+         ((eq name 'satisfies) (and (funcall (car args) val) t))
+         (t (error "Bad type spec: %S" type)))))
+     (t (error "Bad type spec: %S" type)))))
 (unless (fboundp 'cl-list*)
   (defun cl-list* (&rest args)
     (if (cdr args)
@@ -6087,7 +6188,11 @@ FRESH buffer (the old `(t seq)' arm returned the same object, so a following
    ;; Reuse the existing spine copier. Besides avoiding a second reversal,
    ;; APPEND preserves fresh cons identity and the improper-tail condition.
    ((consp seq) (append seq nil))
-   ((stringp seq) (concat seq))
+   ((stringp seq)
+    (let ((copy (concat seq)))
+      (if (gethash seq nelisp--tp-string-properties)
+          (nelisp--tp-copy-all seq copy)
+        copy)))
    ((and (char-table-p seq) (fboundp 'nelisp--copy-char-table))
     (nelisp--copy-char-table seq))
    ((and (char-table-p seq) (fboundp 'nelisp-casetab--copy-char-table))
@@ -7944,7 +8049,7 @@ when absent.  Used by the constructor expanded from `cl-defstruct'."
         (formals nil)
         (aux-bindings nil)
         (value-syms nil)
-        (in-aux nil))
+        (in-aux nil) (in-key nil) (in-opt nil) (key-sym nil))
     (while cur
       (let ((item (car cur)))
         (cond
@@ -7955,12 +8060,29 @@ when absent.  Used by the constructor expanded from `cl-defstruct'."
                 (init (and (consp item) (consp (cdr item)) (cadr item))))
             (push (list var init) aux-bindings)
             (push var value-syms)))
+         ((eq item '&key)
+          (setq in-key t)
+          (unless key-sym
+            (setq key-sym (make-symbol "cl-defstruct--keys"))
+            (push '&rest formals)
+            (push key-sym formals)))
          ((memq item '(&optional &rest))
+          (setq in-key nil in-opt (eq item '&optional))
           (push item formals))
+         (in-key
+          (let* ((var (if (consp item) (car item) item))
+                 (init (and (consp item) (consp (cdr item)) (cadr item)))
+                 (kw (intern (format ":%s" var))))
+            (push (list var (list 'nelisp-cl-macros--struct-arg
+                                  (list 'quote kw) key-sym init))
+                  aux-bindings)
+            (push var value-syms)))
          ((consp item)
           (let ((var (car item)))
             (push var formals)
-            (push var value-syms)))
+            (push var value-syms)
+            (when (and in-opt (consp (cdr item)))
+              (push (list var (list 'if var var (cadr item))) aux-bindings))))
          (t
           (push item formals)
           (push item value-syms))))
@@ -8007,6 +8129,10 @@ Returns:
 
 ;;;; --- defstruct registry (Stage 4f-4 :include) -------------------------
 
+(defvar nelisp-cl-generic--epoch 0
+  "Bumped whenever the struct registry changes; cached effective methods
+older than the current epoch are discarded (see `nelisp-cl-generic--invoke').")
+
 (defvar nelisp-cl-macros--struct-info nil
   "Alist of (NAME . PLIST) describing every defined cl-defstruct.
 PLIST has keys :slot-names (list of symbols, parent-first when
@@ -8022,23 +8148,63 @@ push, which keeps re-loading idempotent.")
 `setf' consults this at expansion time to rewrite
 `(setf (ACCESSOR REC) VAL)' into `(nelisp--record-set REC INDEX VAL)'.")
 
-(defun nelisp-cl-macros--struct-record (name parent slot-names &optional conc-name)
+(defun nelisp-cl-macros--struct-record (name parent slot-names &optional conc-name defaults type named)
   "Push (NAME . (:slot-names SLOT-NAMES :parent PARENT)) into the
 runtime struct registry.  Re-pushes shadow earlier entries — the
 front-of-list wins on lookup.  Also (re-)registers every accessor's
 slot index in `nelisp-cl-macros--accessor-info' so `setf' can find it.
 CONC-NAME is the accessor-name prefix (default \"NAME-\"); pass \"\" for
 `:conc-name nil'.  Must match the prefix the accessors are generated with."
+  (setq nelisp-cl-generic--epoch (1+ nelisp-cl-generic--epoch))
   (setq nelisp-cl-macros--struct-info
-        (cons (cons name (list :slot-names slot-names :parent parent))
+        (cons (cons name (list :slot-names slot-names :parent parent
+                               :defaults defaults :type type :named named))
               nelisp-cl-macros--struct-info))
-  (let ((i 0)
-        (prefix (or conc-name (concat (symbol-name name) "-"))))
-    (dolist (s slot-names)
-      (let ((acc (intern (concat prefix (symbol-name s)))))
-        (setq nelisp-cl-macros--accessor-info
-              (cons (cons acc i) nelisp-cl-macros--accessor-info)))
-      (setq i (1+ i)))))
+  ;; `setf' rewrites record accessors to `nelisp--record-set'; typed
+  ;; (:type list/vector) structs go through the accessors' compiler macro.
+  (unless type
+    (let ((i 0)
+          (prefix (or conc-name (concat (symbol-name name) "-"))))
+      (dolist (s slot-names)
+        (let ((acc (intern (concat prefix (symbol-name s)))))
+          (setq nelisp-cl-macros--accessor-info
+                (cons (cons acc i) nelisp-cl-macros--accessor-info)))
+        (setq i (1+ i))))))
+
+(defun nelisp-cl-macros--struct-lookup-defaults (name)
+  "Return the slot default forms (aligned with the slot names) of struct NAME."
+  (let ((info (cdr (assq name nelisp-cl-macros--struct-info))))
+    (car (cdr (memq :defaults info)))))
+
+(defun nelisp-cl-macros--struct-lookup-prop (name prop)
+  "Return registry property PROP (:type or :named) of struct NAME."
+  (let ((info (cdr (assq name nelisp-cl-macros--struct-info))))
+    (car (cdr (memq prop info)))))
+
+(defun nelisp-cl-macros--struct-check-keys (args allowed)
+  "Signal GNU's error for a keyword in ARGS not in ALLOWED, unless
+`:allow-other-keys' is given."
+  (unless (memq :allow-other-keys args)
+    (let ((cur args))
+      (while cur
+        (unless (memq (car cur) allowed)
+          (error "Keyword argument %S not one of %S" (car cur) allowed))
+        (setq cur (cdr (cdr cur)))))))
+
+(unless (fboundp 'cl-struct-slot-value)
+(defun cl-struct-slot-value (struct-type slot-name inst)
+  "Return the value of slot SLOT-NAME in INST of STRUCT-TYPE."
+  (let* ((names (nelisp-cl-macros--struct-lookup-slots struct-type))
+         (i (let ((n 0) (c names))
+              (while (and c (not (eq (car c) slot-name)))
+                (setq c (cdr c) n (1+ n)))
+              (and c n)))
+         (type (nelisp-cl-macros--struct-lookup-prop struct-type :type))
+         (off (if (nelisp-cl-macros--struct-lookup-prop struct-type :named) 1 0)))
+    (unless i (signal 'cl-struct-unknown-slot (list struct-type slot-name)))
+    (cond ((eq type 'list) (nth (+ i off) inst))
+          ((eq type 'vector) (aref inst (+ i off)))
+          (t (nelisp--record-ref inst i))))))
 
 (defun nelisp-cl-macros--struct-isa (tag target)
   "Return non-nil iff TAG = TARGET or one of TAG's :include ancestors
@@ -8111,10 +8277,35 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
          (parent-slot-names
           (and parent (nelisp-cl-macros--struct-lookup-slots parent)))
          (slot-names (append parent-slot-names own-slot-names))
-         (slot-defaults
-          (let ((pads nil) (rem parent-slot-names))
-            (while rem (setq pads (cons nil pads)) (setq rem (cdr rem)))
-            (append pads own-slot-defaults)))
+         ;; Inherited slot defaults come from the parent's registry entry;
+         ;; `(:include PARENT (SLOT DEFAULT)...)' overrides some of them.
+         (include-overrides (cdr (cdr (assq :include options))))
+         (parent-defaults
+          (let ((out nil) (names parent-slot-names)
+                (defs (and parent
+                           (nelisp-cl-macros--struct-lookup-defaults parent))))
+            (while names
+              (let ((ov nil) (os include-overrides))
+                (while (and os (not ov))
+                  (when (eq (if (consp (car os)) (car (car os)) (car os))
+                            (car names))
+                    (setq ov (car os)))
+                  (setq os (cdr os)))
+                (setq out (cons (if ov (car (cdr-safe ov)) (car defs)) out)))
+              (setq names (cdr names) defs (cdr defs)))
+            (nreverse out)))
+         (slot-defaults (append parent-defaults own-slot-defaults))
+         ;; `:type list' / `:type vector' build plain sequences; `:named'
+         ;; keeps the type name as element 0.  Both are inherited.
+         (type-opt (nelisp-cl-macros--struct-opt :type options))
+         (struct-type (cond ((not (eq type-opt nelisp-cl-macros--struct-absent))
+                             type-opt)
+                            (parent (nelisp-cl-macros--struct-lookup-prop
+                                     parent :type))))
+         (named (or (null struct-type) (memq :named options)
+                    (and parent (nelisp-cl-macros--struct-lookup-prop
+                                 parent :named))))
+         (offset (if (and struct-type named) 1 0))
          (slot-default-alist
           (let ((names slot-names)
                 (defaults slot-defaults)
@@ -8175,8 +8366,21 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
     ;; Expansion-time registry update so subsequent (cl-defstruct
     ;; (CHILD (:include NAME)) ...)  macros expanded in this same
     ;; pass can resolve our slot list.
-    (nelisp-cl-macros--struct-record name parent slot-names conc-name)
+    (nelisp-cl-macros--struct-record name parent slot-names conc-name
+                                     slot-defaults struct-type
+                                     (and struct-type (and named t)))
     (let ((forms nil)
+          ;; Builds the construction form for a list of slot-value forms.
+          (mk (lambda (vals)
+                (cond
+                 ((eq struct-type 'list)
+                  (cons 'list (if named (cons (list 'quote name) vals) vals)))
+                 ((eq struct-type 'vector)
+                  (cons 'vector (if named (cons (list 'quote name) vals) vals)))
+                 (t (cons 'apply
+                          (cons (list 'quote 'nelisp--make-record)
+                                (cons (list 'quote name)
+                                      (list (cons 'list vals)))))))))
           (args-sym (make-symbol "cl-defstruct--args"))
           (rec-sym (make-symbol "cl-defstruct--rec"))
           (src-sym (make-symbol "cl-defstruct--src"))
@@ -8215,19 +8419,37 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                   (list 'quote name)
                   (list 'quote parent)
                   (list 'quote slot-names)
-                  conc-name)
+                  conc-name
+                  (list 'quote slot-defaults)
+                  (list 'quote struct-type)
+                  (and struct-type (and named t)))
             forms)
       ;; Predicate form — uses --struct-isa for chain matching so
       ;; descendant records still satisfy the parent predicate when
       ;; this struct is later used as someone else's `:include'.
       ;; `:predicate nil' suppresses it (predicate = nil here).
-      (when predicate
+      (when (and predicate (or (null struct-type) named))
         (push (list 'defun predicate (list 'obj)
-                    (list 'and
-                          (list 'recordp 'obj)
-                          (list 'nelisp-cl-macros--struct-isa
-                                (list 'nelisp--record-type 'obj)
-                                (list 'quote name))))
+                    (cond
+                     ((eq struct-type 'list)
+                      (list 'and (list 'consp 'obj)
+                            (list 'nelisp-cl-macros--struct-isa
+                                  (list 'car 'obj) (list 'quote name))))
+                     ((eq struct-type 'vector)
+                      (list 'and (list 'vectorp 'obj)
+                            (list '> (list 'length 'obj) 0)
+                            (list 'nelisp-cl-macros--struct-isa
+                                  (list 'aref 'obj 0) (list 'quote name))))
+                     (t
+                      (list 'and
+                            (list 'recordp 'obj)
+                            (list 'nelisp-cl-macros--struct-isa
+                                  (list 'nelisp--record-type 'obj)
+                                  (list 'quote name))))))
+              forms)
+        ;; GNU registers the predicate as the type's `cl-deftype-satisfies'.
+        (push (list 'put (list 'quote name) ''cl-deftype-satisfies
+                    (list 'quote predicate))
               forms))
       ;; Constructor forms (keyword args by default; positional
       ;; `(:constructor NAME ARGLIST)' when an arglist is given).  cl-lib
@@ -8243,36 +8465,31 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                      (ctor-aux-bindings (cadr ctor-parts))
                      (ctor-value-syms (caddr ctor-parts))
                      (body
-                      (cons 'apply
-                            (cons (list 'quote 'nelisp--make-record)
-                                  (cons (list 'quote name)
-                                        (list
-                                         (cons
-                                          'list
-                                          (mapcar
-                                           (lambda (slot)
-                                             (if (memq slot ctor-value-syms)
-                                                 slot
-                                               (cdr (assq slot slot-default-alist))))
-                                           slot-names))))))))
+                      (funcall mk
+                               (mapcar
+                                (lambda (slot)
+                                  (if (memq slot ctor-value-syms)
+                                      slot
+                                    (cdr (assq slot slot-default-alist))))
+                                slot-names))))
                 (push (list 'defun constructor ctor-formals
                             (if ctor-aux-bindings
-                                (list 'let ctor-aux-bindings body)
+                                (list 'let* ctor-aux-bindings body)
                               body))
                       forms))
             (push (list 'defun constructor (list '&rest args-sym)
-                        (cons 'apply
-                              (cons (list 'quote 'nelisp--make-record)
-                                    (cons (list 'quote name)
-                                          (list (cons 'list slot-arg-forms))))))
+                        (list 'nelisp-cl-macros--struct-check-keys args-sym
+                              (list 'quote
+                                    (mapcar (lambda (sl) (intern (format ":%s" sl)))
+                                            slot-names)))
+                        (funcall mk slot-arg-forms))
                   forms))))
       ;; Copier form (shallow copy via record-ref / make-record).
       (when copier
         (push (list 'defun copier (list src-sym)
-                    (cons 'apply
-                          (cons (list 'quote 'nelisp--make-record)
-                                (cons (list 'quote name)
-                                      (list (cons 'list copy-arg-forms))))))
+                    (if struct-type
+                        (list 'copy-sequence src-sym)
+                      (funcall mk copy-arg-forms)))
               forms))
       ;; Accessor forms — one per slot, indexed positionally.  Names use
       ;; CONC-NAME (default "NAME-"); `:conc-name' / `:conc-name nil' change it.
@@ -8280,7 +8497,11 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
       (dolist (s slot-names)
         (let ((acc (intern (concat conc-name (symbol-name s)))))
           (push (list 'defun acc (list rec-sym)
-                      (list 'nelisp--record-ref rec-sym i))
+                      (cond ((eq struct-type 'list)
+                             (list 'nth (+ i offset) rec-sym))
+                            ((eq struct-type 'vector)
+                             (list 'aref rec-sym (+ i offset)))
+                            (t (list 'nelisp--record-ref rec-sym i))))
                 forms)
           ;; GNU cl-defstruct exposes slot access through define-inline's
           ;; compiler-macro metadata.  Retain the same GV route and the
@@ -8289,8 +8510,15 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
           (push (list 'put (list 'quote acc) (list 'quote 'compiler-macro)
                       (list 'quote
                             (list 'lambda (list '_form rec-sym)
-                                  (list 'list (list 'quote 'aref)
-                                        rec-sym (1+ i)))))
+                                  (cond
+                                   ((eq struct-type 'list)
+                                    (list 'list (list 'quote 'nth)
+                                          (+ i offset) rec-sym))
+                                   ((eq struct-type 'vector)
+                                    (list 'list (list 'quote 'aref)
+                                          rec-sym (+ i offset)))
+                                   (t (list 'list (list 'quote 'aref)
+                                            rec-sym (1+ i)))))))
                 forms)
           (push (list 'put (list 'quote acc)
                       (list 'quote 'document-generalized-variable) t)
@@ -8502,11 +8730,136 @@ a loud `error' naming NAME and the position."
       (setq out (plist-put out :specializers (nreverse specializers)))
       (cons (nreverse plain) out))))
 
-(defun nelisp-cl-generic--builtin-type-p (type-name)
-  "Non-nil iff TYPE-NAME is one of `cl-typep''s ten frozen builtins
-(Doc 185 §2.1a -- `cl-typep' itself is never widened)."
-  (memq type-name '(integer number float string symbol cons list vector null t)))
+(defconst nelisp-cl-generic--builtin-parents
+  ;; The `function' entry is built with `list': a quoted `(function atom)'
+  ;; is rewritten into a closure by the loader's quote handling.
+  (cons (list 'function 'atom)
+  '((t) (atom t)
+    (hash-table atom) (frame atom) (buffer atom) (window atom) (process atom)
+    (finalizer atom) (window-configuration atom) (overlay atom) (terminal atom)
+    (font-object atom) (font-entity atom) (font-spec atom) (condvar atom)
+    (mutex atom) (thread atom) (obarray atom) (native-comp-unit atom)
+    (tree-sitter-compiled-query atom) (tree-sitter-node atom)
+    (tree-sitter-parser atom) (user-ptr atom)
+    (number-or-marker atom) (symbol atom)
+    (sequence t) (list sequence) (array sequence atom)
+    (number number-or-marker) (float number)
+    (integer-or-marker number-or-marker) (integer number integer-or-marker)
+    (marker integer-or-marker) (bignum integer) (fixnum integer)
+    (boolean symbol) (symbol-with-pos symbol)
+    (vector array) (record atom) (bool-vector array) (char-table array)
+    (string array) (null boolean list) (cons list)
+    (compiled-function function) (closure function)
+    (byte-code-function compiled-function closure) (subr atom)
+    (module-function compiled-function) (interpreted-function closure)
+    (special-form subr) (native-comp-function subr compiled-function)
+    (primitive-function subr compiled-function)
+    (cl-structure-object record)))
+  "Direct supertypes of GNU Emacs 31.1's built-in classes (cl-preloaded.el
+`cl--define-built-in-type' forms), as (TYPE . PARENTS).")
 
+(defvar nelisp-cl-generic--allparents-memo nil
+  "Memo alist of (TYPE . ALLPARENTS) for `nelisp-cl-generic--type-allparents'.")
+
+(defun nelisp-cl-generic--builtin-type-p (type-name)
+  "Non-nil iff TYPE-NAME names one of GNU's built-in classes (see
+`nelisp-cl-generic--builtin-parents')."
+  (and (assq type-name nelisp-cl-generic--builtin-parents) t))
+
+(defun nelisp-cl-generic--type-allparents (type)
+  "TYPE's class precedence list, TYPE first -- GNU's `cl--class-allparents'
+over the built-in hierarchy (C3 merge via `merge-ordered-lists')."
+  (let ((hit (assq type nelisp-cl-generic--allparents-memo)))
+    (if hit
+        (cdr hit)
+      (let* ((cell (assq type nelisp-cl-generic--builtin-parents))
+             (parents (if cell (cdr cell) '(atom)))
+             (aps (mapcar #'nelisp-cl-generic--type-allparents parents))
+             (res (cons type
+                        (if (null (cdr aps))
+                            (car aps)
+                          (merge-ordered-lists
+                           (nconc aps (list (copy-sequence parents))))))))
+        (setq nelisp-cl-generic--allparents-memo
+              (cons (cons type res) nelisp-cl-generic--allparents-memo))
+        res))))
+
+(unless (fboundp 'cl-type-of)
+  (defun cl-type-of (object)
+    "Return a symbol representing the type of OBJECT, like GNU `cl-type-of'."
+    (cond ((null object) 'null)
+          ((eq object t) 'boolean)
+          ((integerp object)
+           (if (or (> object most-positive-fixnum) (< object most-negative-fixnum))
+               'bignum 'fixnum))
+          ((and (recordp object) (symbolp (nelisp--record-type object)))
+           (nelisp-cl-generic--record-type-name (nelisp--record-type object)))
+          (t (let ((ty (type-of object)))
+               (if (eq ty 'subr)
+                   (if (special-form-p object) 'special-form 'primitive-function)
+                 ty))))))
+
+(defun nelisp-cl-generic--record-type-name (tag)
+  "The GNU type name for the record type TAG: NeLisp's own object records
+\(`nelisp-buffer', `nelisp-marker', ...) answer to the built-in class named
+without the `nelisp-' prefix."
+  (let ((name (symbol-name tag)))
+    (if (and (> (length name) 7) (string= (substring name 0 7) "nelisp-"))
+        (let ((base (intern (substring name 7))))
+          (if (assq base nelisp-cl-generic--builtin-parents) base tag))
+      tag)))
+
+(defvar nelisp-cl-generic--derived-types
+  (list (cons 'natnum (cons 'integer 'natnump))
+        (cons 'keyword (cons 'symbol 'keywordp)))
+  "Derived types GNU defines with `cl-deftype' and `(declare (parents ..))'
+in cl-preloaded.el, as (NAME PARENT . PREDICATE); dispatch on them merges
+their precedence into the one of the value's built-in type.")
+
+(defun nelisp-cl-generic--precedence (value)
+  "VALUE's type precedence list, most specific first: the `:include' chain
+of a struct instance, then GNU's built-in supertypes (GNU
+`cl--generic-type-specializers' applied to `cl-type-of')."
+  (if (recordp value)
+      (let ((tag (nelisp--record-type value)))
+        (cond
+         ((and (recordp tag) (fboundp 'cl--class-p) (cl--class-p tag))
+          (cl--class-allparents tag))
+         ((and tag (symbolp tag)
+               (not (eq (nelisp-cl-generic--record-type-name tag) tag)))
+          (nelisp-cl-generic--type-allparents
+           (nelisp-cl-generic--record-type-name tag)))
+         ((and tag (symbolp tag) (assq tag nelisp-cl-macros--struct-info))
+          (let ((chain nil) (cur tag)
+                (bound (1+ (length nelisp-cl-macros--struct-info))))
+            (while (and cur (> bound 0))
+              (setq chain (cons cur chain)
+                    cur (nelisp-cl-generic--struct-parent cur)
+                    bound (1- bound)))
+            (append (nreverse chain)
+                    (nelisp-cl-generic--type-allparents 'cl-structure-object))))
+         (t (cons tag (nelisp-cl-generic--type-allparents 'record)))))
+    (let ((base (nelisp-cl-generic--type-allparents (cl-type-of value)))
+          (found nil))
+      (dolist (d nelisp-cl-generic--derived-types)
+        (when (funcall (cdr (cdr d)) value)
+          (setq found (cons d found))))
+      (if (null found)
+          base
+        (merge-ordered-lists
+         (append (mapcar (lambda (d)
+                           (cons (car d)
+                                 (nelisp-cl-generic--type-allparents
+                                  (car (cdr d)))))
+                         found)
+                 (list base)))))))
+
+(defun nelisp-cl-generic--prec-index (type prec)
+  "Position of TYPE in the precedence list PREC, or nil."
+  (let ((i 0))
+    (while (and prec (not (eq (car prec) type)))
+      (setq prec (cdr prec) i (1+ i)))
+    (and prec i)))
 (defun nelisp-cl-generic--type-match (val type)
   "Match builtin types, CL struct ancestry, or genuine class precedence."
   (cond
@@ -8606,6 +8959,8 @@ the next call rebuilds it."
          (if existing
              (mapcar (lambda (e) (if (eq e existing) entry e)) methods)
            (cons entry methods)))
+    (let ((st (get name 'nelisp-cl-generic--state)))
+      (when st (aset st 0 -1)))
     (put name 'nelisp-cl-generic--dispatch-cache nil)))
 
 ;; T-clgen-subclass fix: real Emacs's own `cl--class-allparents' (the
@@ -8883,52 +9238,18 @@ defined-first; filtering preserves that order, exactly like
     (nreverse hits)))
 
 (defun nelisp-cl-generic--ordered-type-matches (methods value)
-  "The `:type'-tier METHODS applicable to VALUE, most specific first
-(Doc 185 §3.3).  Struct matches are ordered by
-`nelisp-cl-generic--struct-depth' from VALUE's own runtime type -- always
-a strict total order for one value, since `cl-defstruct''s `:include' is
-single-parent only (§6.1), so every applicable struct specializer for a
-given VALUE necessarily lies on that value's one ancestry chain.  Builtin
-`cl-typep' matches carry no such order in this subset (§2.1a does not add
-a type lattice on top of `cl-typep''s ten-symbol contract): two or more
-DIFFERENT builtin type-names both matching the same VALUE is an ambiguous
-dispatch, signalled loudly here rather than guessed at (§3.5).
-
-Doc 185 §2.2's `:extra' extension: several methods can now share the
-exact same specializer (struct type-name, or builtin type-name) -- that
-is NOT ambiguous, just several applicable methods at that one
-specificity tier, ordered newest-defined-first.  Grouping by
-type-name/depth (an `assq'-keyed accumulator, each group's own methods
-appended in METHODS' incoming, already newest-first order via `nconc' --
-never `push', which would silently re-reverse an `:extra' group back to
-oldest-first) keeps that distinct from a genuine cross-type-name tie,
-which still errors exactly as before this extension."
-  (let (struct-hits builtin-groups)
-    (dolist (e methods)
-      (let ((tn (plist-get e :type-name)))
-        (when (nelisp-cl-generic--type-match value tn)
-          (if (nelisp-cl-generic--builtin-type-p tn)
-              (let ((cell (assq tn builtin-groups)))
-                (if cell
-                    (setcdr cell (nconc (cdr cell) (list e)))
-                  (push (cons tn (list e)) builtin-groups)))
-            (let* ((depth (nelisp-cl-generic--struct-depth
-                           (nelisp--record-type value) tn))
-                   (cell (assq depth struct-hits)))
-              (if cell
-                  (setcdr cell (nconc (cdr cell) (list e)))
-                (push (cons depth (list e)) struct-hits)))))))
-    (when (> (length builtin-groups) 1)
-      (error "cl-generic: ambiguous dispatch -- builtin-type methods %S \
-all match %S"
-             (mapcar #'car builtin-groups)
-             value))
-    (append
-     (apply #'append
-            (mapcar #'cdr
-                    (sort struct-hits (lambda (a b) (< (car a) (car b))))))
-     (and builtin-groups (cdr (car builtin-groups))))))
-
+  "The `:type'-tier METHODS applicable to VALUE, most specific first.
+The order follows VALUE's type precedence list (GNU's class precedence:
+struct `:include' chain, then the built-in type hierarchy), so
+overlapping specializers such as `symbol'/`null' or `number'/`integer'
+are ordered rather than ambiguous.  Methods sharing one type-name stay in
+METHODS' own (newest-defined-first) order."
+  (let ((out nil))
+    (dolist (ty (nelisp-cl-generic--precedence value))
+      (dolist (e methods)
+        (when (eq (plist-get e :type-name) ty)
+          (setq out (cons e out)))))
+    (nreverse out)))
 (defun nelisp-cl-generic--method-specializers (method)
   "Return METHOD's dispatch specializers as a position alist.
 The fallback keeps method entries created by older expansions readable."
@@ -8989,14 +9310,22 @@ below: the single-dispatch fast path only ever consults `(car args)')."
           (setq i (1+ i) cur (cdr cur)))
         (nreverse positions))))
 
-(defun nelisp-cl-generic--method-specializer-rank-at (method position)
-  "Return METHOD's specificity rank at argument POSITION."
+(defun nelisp-cl-generic--method-specializer-rank-at (method position &optional args)
+  "Return METHOD's specificity rank at argument POSITION.  Kind priorities
+are scaled by 1000 so that, with ARGS given, type specializers are further
+ranked by their place in the argument's type precedence list."
   (let ((entry (assq position
                      (nelisp-cl-generic--method-specializers method))))
     (if entry
-        (nelisp-cl-generic--dispatch-specializer-rank (cdr entry))
+        (let* ((sp (cdr entry))
+               (base (* 1000 (nelisp-cl-generic--dispatch-specializer-rank sp))))
+          (if (and args (eq (plist-get sp :kind) 'type))
+              (let ((idx (nelisp-cl-generic--prec-index
+                          (plist-get sp :type-name)
+                          (nelisp-cl-generic--precedence (nth position args)))))
+                (+ base 999 (- (or idx 999))))
+            base))
       0)))
-
 (defun nelisp-cl-generic--multi-applicable-methods (name args)
   "Return methods applicable to all their dispatch arguments.
 Methods are ordered lexicographically by argument-precedence priority, with
@@ -9031,7 +9360,7 @@ total priority and method-table order breaking exact ties."
             (while order
               (setq ranks
                     (cons (nelisp-cl-generic--method-specializer-rank-at
-                           method (car order)) ranks)
+                           method (car order) args) ranks)
                     order (cdr order)))
             (push (list score index method (nreverse ranks)) indexed))))
       (setq index (1+ index)))
@@ -9071,91 +9400,194 @@ extension) are newest-defined-first, matching real Emacs."
      (nelisp-cl-generic--ordered-type-matches (plist-get table :type) value)
      (plist-get table :unspecialized))))))
 
-(defun nelisp-cl-generic--invoke-combined (name args before after around primary)
-  "Run one generic-function call once `nelisp-cl-generic--invoke' has
-partitioned its applicable methods into BEFORE/AFTER/AROUND/PRIMARY
-lists (each most-specific/most-recently-defined first; Doc 185 §2.2's
-`:extra' extension -- reachable via bare `:before'/`:after'/`:around'
-or `:extra STRING' plus one of them).  Mirrors real Emacs's own
-`cl--generic-standard-method-combination' exactly: every BEFORE method
-runs first, most-specific first, for effect only; then the PRIMARY chain
-runs (walkable via `cl-call-next-method'/`cl-next-method-p' exactly as
-when there is no combinator at all -- `:extra' primary variants
-included, newest first); then every AFTER method runs, LEAST-specific
-first (the reverse of BEFORE); the whole before/primary/after
-combination's return value is the PRIMARY chain's own value, before/
-after never affect it.  AROUND methods wrap that whole combination, most-
-specific outermost, each able to reach the next (a less-specific
-`:around', or the before/primary/after combination itself) via
-`cl-call-next-method', exactly like a primary method.
+(defun nelisp-cl-generic--state (name)
+  "NAME's dispatch state vector [EPOCH CACHE KIND SPEC NAME], created on
+first use and shared with NAME's dispatcher.  EPOCH -1 or stale makes the
+next call rebuild KIND/SPEC and empty CACHE (`nelisp-cl-generic--refresh').
+CACHE maps a dispatch key (the per-argument tags GNU's generalizers would
+compute) to an already-combined effective method.  KIND is 0 (no argument
+is specialized), 1 (only argument 0, by type), 4 (only argument 0, with `eql'/`head'
+specializers; SPEC is (EQLS HEADS)), 2 (general: SPEC lists
+\(POSITION EQL-VALUES HEAD-VALUES) for arguments and `&context' forms) or 3
+\(not cacheable)."
+  (or (get name 'nelisp-cl-generic--state)
+      (let ((st (vector -1 nil 3 nil name)))
+        (put name 'nelisp-cl-generic--state st)
+        st)))
 
-The `combined' lambda and the around-chain below are only ever invoked
-SYNCHRONOUSLY, within this function's own dynamic extent (directly, or
-via `cl-call-next-method' called from a running `:around' method's body,
-still inside this same call) -- unlike `nelisp-cl-generic--make-dispatcher'
-\(which must build a lambda as literal DATA because that one is stored
-via `defalias' and invoked arbitrarily later, long after its defining
-call has returned), BEFORE/AFTER/PRIMARY/ARGS/NAME here are ordinary
-function parameters of this call, still live on the stack, so both
-lexical closure (the host-loadable mirror copy of this block at the same
-line in `lisp/nelisp-cl-macros.el', `lexical-binding: t') and dynamic
-scoping (this file, `lexical-binding: nil') resolve them correctly -- no
-data-lambda trick needed here."
-  (let* ((primary-fns (mapcar (lambda (e) (plist-get e :fn)) primary))
-         (combined
-          (lambda (&rest call-args)
-            (let ((use-args (if call-args call-args args)))
-              (dolist (bf before) (apply (plist-get bf :fn) use-args))
-              (prog1
-                  (let ((nelisp-cl-generic--next-methods (cdr primary-fns))
-                        (nelisp-cl-generic--call-args use-args)
-                        (nelisp-cl-generic--current-name name))
-                    (apply (car primary-fns) use-args))
-                (dolist (af (reverse after))
-                  (apply (plist-get af :fn) use-args)))))))
-    (if (null around)
-        (apply combined args)
-      (let ((around-fns (mapcar (lambda (e) (plist-get e :fn)) around)))
+(defun nelisp-cl-generic--refresh (st)
+  "Rebuild state ST of its generic from the current method list."
+  (let ((tab nil) (nocache nil))
+    (dolist (m (get (aref st 4) 'nelisp-cl-generic--methods))
+      (dolist (en (nelisp-cl-generic--method-specializers m))
+        (let* ((pos (car en)) (sp (cdr en)) (k (plist-get sp :kind))
+               (cell (assoc pos tab)))
+          (unless cell
+            (setq cell (list pos nil nil) tab (cons cell tab)))
+          (cond ((eq k 'eql)
+                 (setcar (cdr cell) (cons (plist-get sp :value) (cadr cell))))
+                ((eq k 'head)
+                 (setcar (cddr cell) (cons (plist-get sp :head-value) (car (cddr cell)))))
+                ((eq k 'subclass) (setq nocache t))))))
+    ;; Turn each cell's EQL / HEAD value lists into `eql' hash sets.
+    (dolist (cell tab)
+      (let ((eqls (cadr cell)) (heads (car (cddr cell))))
+        ;; Each set maps a specializer value to its (memoized) tag cons, as
+        ;; GNU's `cl--generic-eql-used' does, so the cache can be `eq'.
+        (when eqls
+          (let ((h (make-hash-table :test 'eql)))
+            (dolist (x eqls) (puthash x (cons 'eql x) h))
+            (setcar (cdr cell) h)))
+        (when heads
+          (let ((h (make-hash-table :test 'eql)))
+            (dolist (x heads) (puthash x (cons 'head x) h))
+            (setcar (cddr cell) h)))))
+    (aset st 2 (cond (nocache 3)
+                     ((null tab) 0)
+                     ((and (null (cdr tab)) (eq (car (car tab)) 0))
+                      (if (and (null (cadr (car tab))) (null (car (cddr (car tab)))))
+                          1
+                        4))
+                     (t 2)))
+    (aset st 1 (make-hash-table :test (if (eq (aref st 2) 2) 'equal 'eq)))
+    (aset st 3 (if (eq (aref st 2) 4)
+                   (cdr (car tab))
+                 (nreverse tab)))
+    (aset st 0 nelisp-cl-generic--epoch)
+    st))
+
+(defun nelisp-cl-generic--integer-tag (v)
+  "Dispatch tag of the integer V: fixnum or bignum, negative or not (the
+`natnum' derived type only matches non-negative integers)."
+  (if (< v 0)
+      (if (< v most-negative-fixnum) 'bignum 'fixnum)
+    (if (> v most-positive-fixnum) 'natbignum 'natnum)))
+
+(defun nelisp-cl-generic--value-tag (v eqls heads)
+  "Dispatch tag of V, or nil when V cannot be cached on."
+  (cond ((and eqls (gethash v eqls)))
+        ((and heads (consp v) (gethash (car v) heads)))
+        ((null v) 'null)
+        ((eq v t) 'boolean)
+        ((integerp v) (nelisp-cl-generic--integer-tag v))
+        ((recordp v) (let ((tag (nelisp--record-type v)))
+                       (and (symbolp tag) tag)))
+        (t (let ((ty (type-of v)))
+             (if (and (eq ty 'symbol) (keywordp v)) 'keyword ty)))))
+
+(defun nelisp-cl-generic--general-key (spec args)
+  "The dispatch key of ARGS for a KIND 2 SPEC, or nil when uncacheable."
+  (let ((key nil) (ok t))
+    (dolist (cell spec)
+      (let* ((pos (car cell))
+             (tag (if (nelisp-cl-generic--context-position-p pos)
+                      (nelisp-cl-generic--value-tag
+                       (eval (cdr pos) t) (cadr cell) (car (cddr cell)))
+                    (let ((tail (nthcdr pos args)))
+                      (if (consp tail)
+                          (nelisp-cl-generic--value-tag
+                           (car tail) (cadr cell) (car (cddr cell)))
+                        'nelisp-cl-generic--absent)))))
+        (if tag (setq key (cons tag key)) (setq ok nil))))
+    (and ok key)))
+
+(defun nelisp-cl-generic--compute-em (name args)
+  "Compute NAME's effective method for ARGS: (0 PRIMARY) when only primary
+methods apply, (1 BEFORE AFTER AROUND PRIMARY) for the full standard
+combination, (2) for no applicable method, (3) for no primary method.
+The lists hold method functions -- BEFORE/AROUND/PRIMARY most specific
+first, AFTER least specific first (its run order)."
+  (let ((applicable (nelisp-cl-generic--applicable-methods name args))
+        before after around primary)
+    (dolist (e applicable)
+      (let ((c (plist-get e :combinator)) (f (plist-get e :fn)))
+        (cond
+         ((eq c :before) (setq before (cons f before)))
+         ((eq c :after) (setq after (cons f after)))
+         ((eq c :around) (setq around (cons f around)))
+         (t (setq primary (cons f primary))))))
+    (setq primary (nreverse primary))
+    (cond ((null applicable) (list 2))
+          ((null primary) (list 3))
+          ((and (null before) (null after) (null around)) (list 0 primary))
+          (t (list 1 (nreverse before) after (nreverse around) primary)))))
+
+(defun nelisp-cl-generic--invoke-fns (name args before after around primary)
+  "Run one effective method: BEFORE fns, the PRIMARY chain, AFTER fns
+\(already in run order), all wrapped by the AROUND chain; same semantics
+as ``nelisp-cl-generic--invoke-fns'."
+  (if (and (null around) (null before) (null after))
+      (let ((nelisp-cl-generic--next-methods (cdr primary))
+            (nelisp-cl-generic--call-args args)
+            (nelisp-cl-generic--current-name name))
+        (apply (car primary) args))
+    (let ((combined
+           (lambda (&rest call-args)
+             (let ((use-args (if call-args call-args args)))
+               (dolist (bf before) (apply bf use-args))
+               (prog1
+                   (let ((nelisp-cl-generic--next-methods (cdr primary))
+                         (nelisp-cl-generic--call-args use-args)
+                         (nelisp-cl-generic--current-name name))
+                     (apply (car primary) use-args))
+                 (dolist (af after) (apply af use-args)))))))
+      (if (null around)
+          (apply combined args)
         (let ((nelisp-cl-generic--next-methods
-               (append (cdr around-fns) (list combined)))
+               (append (cdr around) (list combined)))
               (nelisp-cl-generic--call-args args)
               (nelisp-cl-generic--current-name name))
-          (apply (car around-fns) args))))))
+          (apply (car around) args))))))
+
+(defun nelisp-cl-generic--call (st args)
+  "Dispatch a call with ARGS through generic state ST.  Like GNU's generated
+dispatcher: compute the argument tags, look the key up in the cache of
+effective methods, and only on a miss compute the applicable methods and
+combine them (`nelisp-cl-generic--compute-em').  Redefining a method, or a
+struct, discards the cache.  Signals `cl-no-applicable-method' /
+`cl-no-primary-method' as GNU does."
+  (unless (eq (aref st 0) nelisp-cl-generic--epoch)
+    (nelisp-cl-generic--refresh st))
+  (let* ((kind (aref st 2))
+         (key (cond ((eq kind 1)
+                     (let ((v (car args)))
+                       (cond ((null v) 'null)
+                             ((integerp v)
+                              (if (< v 0)
+                                  (if (< v most-negative-fixnum) 'bignum 'fixnum)
+                                (if (> v most-positive-fixnum) 'natbignum 'natnum)))
+                             ((eq v t) 'boolean)
+                             (t (nelisp-cl-generic--value-tag v nil nil)))))
+                    ((eq kind 0) t)
+                    ((eq kind 4)
+                     (nelisp-cl-generic--value-tag
+                      (car args) (car (aref st 3)) (car (cdr (aref st 3)))))
+                    ((eq kind 2)
+                     (nelisp-cl-generic--general-key (aref st 3) args))))
+         (em (and key (gethash key (aref st 1)))))
+    (unless em
+      (setq em (nelisp-cl-generic--compute-em (aref st 4) args))
+      (and key (puthash key em (aref st 1))))
+    (let ((status (car em)))
+      (cond
+       ((eq status 0)
+        (let* ((primary (car (cdr em)))
+               (nelisp-cl-generic--next-methods (cdr primary))
+               (nelisp-cl-generic--call-args args)
+               (nelisp-cl-generic--current-name (aref st 4)))
+          (apply (car primary) args)))
+       ((eq status 1)
+        (nelisp-cl-generic--invoke-fns (aref st 4) args (nth 1 em) (nth 2 em)
+                                       (nth 3 em) (nth 4 em)))
+       ((eq status 2)
+        ;; Data shape is `(cons name args)' -- `(GENERIC ARG1 ARG2 ...)',
+        ;; flat, as real Emacs signals.
+        (signal 'cl-no-applicable-method (cons (aref st 4) args)))
+       (t (signal 'cl-no-primary-method (cons (aref st 4) args)))))))
 
 (defun nelisp-cl-generic--invoke (name args)
-  "Dispatch a call to generic NAME with ARGS (Doc 185 §3-§3.5, extended
-by §2.2's `:extra' combination): find the applicable methods for
-`(car ARGS)', most specific first, partition them by combinator
-(`:before'/`:after'/`:around'/primary -- bare or `:extra STRING' plus one
-of the three), and run them via `nelisp-cl-generic--invoke-combined'.
-Signals `cl-no-applicable-method' when nothing at all matches, or
-`cl-no-primary-method' when something matches but none of it is a
-primary (or `:extra'-primary) method."
-  (let* ((applicable (nelisp-cl-generic--applicable-methods name args))
-         before after around primary)
-    (dolist (e applicable)
-      (let ((c (plist-get e :combinator)))
-        (cond
-         ((eq c :before) (push e before))
-         ((eq c :after) (push e after))
-         ((eq c :around) (push e around))
-         (t (push e primary)))))
-    (setq before (nreverse before) after (nreverse after)
-          around (nreverse around) primary (nreverse primary))
-    (cond
-     ((null applicable)
-      ;; Data shape is `(cons name args)' -- `(GENERIC ARG1 ARG2 ...)',
-      ;; flat -- measured against real Emacs 30.1 this session (not the
-      ;; nested `(list generic-name args)' Doc 185 §3.5's table text
-      ;; says; that reading does not match what real `cl-generic'
-      ;; actually signals, confirmed empirically, so this follows the
-      ;; measured behaviour over the doc's imprecise transcription).
-      (signal 'cl-no-applicable-method (cons name args)))
-     ((null primary)
-      (signal 'cl-no-primary-method (cons name args)))
-     (t
-      (nelisp-cl-generic--invoke-combined name args before after around primary)))))
-
+  "Dispatch a call to generic NAME with ARGS (see `nelisp-cl-generic--call')."
+  (nelisp-cl-generic--call (nelisp-cl-generic--state name) args))
 (defun cl-call-next-method (&rest new-args)
   "Call the next-most-specific applicable method in the `cl-defmethod'
 dispatch chain currently running (Doc 185 §2.2).  With no NEW-ARGS,
@@ -9176,18 +9608,16 @@ reuses the current call's own arguments (matches real Emacs
   (and nelisp-cl-generic--next-methods t))
 
 (defun nelisp-cl-generic--make-dispatcher (name)
-  "Build NAME's dispatcher as a literal lambda FORM (data), with NAME
-spliced in as a quoted constant rather than closed over.  Required
-because `scripts/nelisp-stdlib-prelude.el' loads with
-`lexical-binding: nil' -- a `(lambda (&rest args) (... name ...))' built
-by a running function would look up `name' by DYNAMIC scoping at call
-time there, long after this function's own local binding is gone, not
-capture it.  The same technique `cl-defstruct''s own constructor/accessor
-codegen above already uses, for the same reason."
-  (list 'lambda '(&rest nelisp-cl-generic--dispatch-args)
-        (list 'nelisp-cl-generic--invoke (list 'quote name)
-              'nelisp-cl-generic--dispatch-args)))
-
+  "Build NAME's dispatcher: a closure over NAME's dispatch state vector
+\(`nelisp-cl-generic--state'), created with `eval' and lexical binding so
+the call needs neither a symbol-plist lookup nor dynamic scoping to find
+its state.  This file loads with `lexical-binding: nil', hence the
+explicit `eval'."
+  (eval (list 'lambda '(&rest nelisp-cl-generic--dispatch-args)
+              (list 'nelisp-cl-generic--call
+                    (list 'quote (nelisp-cl-generic--state name))
+                    'nelisp-cl-generic--dispatch-args))
+        t))
 (defun nelisp-cl-generic--ensure (name)
   "Make NAME callable as a Doc 185 generic function, once.  Idempotent
 and callable from both `cl-defgeneric' and `cl-defmethod' -- real
@@ -10347,11 +10777,43 @@ cons made them use nil as the usage line."
 ;; (`cl-generic-define') and register methods; full type-dispatch additionally
 ;; needs the cl-preloaded built-in-class hierarchy, which is C-core-coupled and a
 ;; separate reader item (Doc 156).
+(defun nelisp--cl-function-defs-formals (formals)
+  "FORMALS with a leading `&cl-defs (DEF . ALIST)' applied: a plain symbol
+after `&optional' or `&key' becomes (SYMBOL DEFAULT) with DEFAULT taken
+from ALIST or DEF, as cl-macs.el does (used by `cl-deftype' to default
+parameters to `*')."
+  (if (not (eq (car-safe formals) '&cl-defs))
+      formals
+    (let* ((defs (car (cdr formals)))
+           (def (car defs)) (alist (cdr defs))
+           (out nil) (cur (cdr (cdr formals))) (mode nil))
+      (while cur
+        (let ((x (car cur)))
+          (cond
+           ((memq x '(&optional &key)) (setq mode x out (cons x out)))
+           ((memq x '(&rest &body &aux &allow-other-keys))
+            (setq mode nil out (cons x out)))
+           ((and mode (symbolp x))
+            (setq out (cons (list x (let ((hit (assq x alist)))
+                                      (if hit (car (cdr hit)) def)))
+                            out)))
+           (t (setq out (cons x out)))))
+        (setq cur (cdr cur)))
+      (nreverse out))))
+
 (unless (fboundp 'cl-function)
-  ;; Minimal: a plain `(function FUNC)'.  The real `cl-function' also rewrites
-  ;; Common-Lisp lambda-lists (&key/&aux/destructuring); cl-generic methods reach
-  ;; it with the specializer already stripped, so a simple arglist suffices here.
-  (defmacro cl-function (func) (list 'function func)))
+  (defmacro cl-function (func)
+    "Like `function', but a `lambda' FUNC may use a Common Lisp lambda list
+  \(&optional defaults, &key, &cl-defs), handled as `cl-defun' does."
+    (if (and (eq (car-safe func) 'lambda) (fboundp 'cl-defun))
+        (let ((exp (macroexpand-1
+                    (cons 'cl-defun
+                          (cons 'nelisp--cl-function
+                                (cons (nelisp--cl-function-defs-formals
+                                       (car (cdr func)))
+                                      (cdr (cdr func))))))))
+          (list 'function (cons 'lambda (cdr (cdr exp)))))
+      (list 'function func))))
 (unless (fboundp 'macroexp--fgrep)
   (defun macroexp--fgrep (bindings sexp)
     "Conservative: return the BINDINGS whose variable appears anywhere in SEXP.
@@ -11455,8 +11917,14 @@ bindings provide.  &rest is honoured."
         ;; bound; the correctly-selected `cond-let--when-let*' does not).
         (cons (list 'equal value-form (list 'quote (car rest))) nil))
        ((eq head 'pred)
+        ;; (pred F), (pred (F ARG...)) -- called as (F ARG... VALUE) -- or
+        ;; (pred (not F)).
         (let ((fn (car rest)))
-          (cons (list 'funcall (list 'function fn) value-form) nil)))
+          (if (eq (car-safe fn) 'not)
+              (let ((inner (nelisp-pcase--test (list 'pred (car (cdr fn)))
+                                               value-form)))
+                (cons (list 'not (car inner)) nil))
+            (cons (nelisp-pcase--app-call fn value-form) nil))))
        ((eq head 'guard)
         (cons (car rest) nil))
        ((eq head 'let)
@@ -11505,6 +11973,21 @@ bindings provide.  &rest is honoured."
        ;; Built into the engine rather than registered through a
        ;; `pcase-macroexpander' property, because this prelude loads before
        ;; `get'/`put' exist.  Real Emacs registers it in cl-macs.el.
+       ;; (cl-struct TYPE FIELD...): FIELD is SLOT or (SLOT PATTERN); GNU
+       ;; expands it to a type test plus one `app' per field.
+       ((eq head 'cl-struct)
+        (let ((type (car rest)) (fields (cdr rest)) (subs nil))
+          (dolist (f fields)
+            (let ((slot (if (consp f) (car f) f))
+                  (pat (if (consp f) (car (cdr f)) f)))
+              (setq subs
+                    (cons (list 'app
+                                (list 'cl-struct-slot-value
+                                      (list 'quote type) (list 'quote slot))
+                                pat)
+                          subs))))
+          (nelisp-pcase--and
+           (cons (list 'cl-type type) (nreverse subs)) value-form)))
        ((eq head 'cl-type)
         (nelisp-pcase--test
          (list 'pred (list 'lambda (list 'v)
@@ -11659,6 +12142,19 @@ only arms with one unambiguous binding set are accepted here."
             (append (cdr head-build) (cdr tail-build)))))
    ((null pat)
     (cons (list 'null value-form) nil))
+   ((vectorp pat)
+    ;; `[P0 P1 ...] matches a vector of the same length whose elements
+    ;; match P0, P1, ... as backquote patterns.
+    (let ((tests (list (list '= (list 'length value-form) (length pat))
+                       (list 'vectorp value-form)))
+          (bindings nil) (i 0) (n (length pat)))
+      (while (< i n)
+        (let ((built (nelisp-pcase--backquote
+                      (aref pat i) (list 'aref value-form i))))
+          (setq tests (cons (car built) tests)
+                bindings (append bindings (cdr built))))
+        (setq i (1+ i)))
+      (cons (cons 'and (nreverse tests)) bindings)))
    (t
     (cons (list 'equal value-form (list 'quote pat)) nil))))
 
@@ -11712,6 +12208,49 @@ Rust-min migration (= moved out of build-tool/src/eval/special_forms.rs)."
             (cons 'cond forward)))))
 
 ;; nelisp-pcase.el ends here
+(unless (fboundp 'pcase-exhaustive)
+(defmacro pcase-exhaustive (exp &rest cases)
+  "Like `pcase', but signal an error when no clause matches EXP."
+  (let ((x (make-symbol "x")))
+    (list 'let (list (list x exp))
+          (cons 'pcase
+                (cons x
+                      (append cases
+                              (list (list '_ (list 'error "No clause matching `%S'" x))))))))))
+(unless (fboundp 'pcase-setq)
+(defmacro pcase-setq (pat val &rest args)
+  "Assign values to variables by destructuring with `pcase' patterns.
+\(fn PATTERN VALUE PATTERN VALUE...)"
+  (let ((forms nil))
+    (while pat
+      (let* ((v (make-symbol "val"))
+             (built (nelisp-pcase--test pat v))
+             (assigns (mapcar (lambda (b) (list 'setq (car b) (car (cdr b))))
+                              (cdr built))))
+        (setq forms
+              (cons (list 'let (list (list v val))
+                          (list 'if (car built)
+                                (cons 'progn (or assigns (list nil)))))
+                    forms)))
+      (setq pat (car args) val (car (cdr args)) args (cdr (cdr args))))
+    (cons 'progn (nreverse forms)))))
+(unless (fboundp 'pcase-lambda)
+(defmacro pcase-lambda (lambda-list &rest body)
+  "Like `lambda' but each argument may be a `pcase' pattern."
+  (let ((args nil) (binds nil) (n 0))
+    (dolist (a lambda-list)
+      (if (or (symbolp a) )
+          (setq args (cons a args))
+        (let ((g (make-symbol (format "arg%d" n))))
+          (setq args (cons g args)
+                binds (cons (list a g) binds))))
+      (setq n (1+ n)))
+    (list 'function
+          (cons 'lambda
+                (cons (nreverse args)
+                      (if binds
+                          (list (cons 'pcase-let (cons (nreverse binds) body)))
+                        body)))))))
 (unless (fboundp 'keywordp)
   (defun keywordp (x)
     (and (symbolp x)
@@ -12275,6 +12814,14 @@ otherwise every later edit would walk the capacity left by markers long dead."
   (let ((tbl (nelisp-buffer-markers buf)))
     (when tbl (remhash marker tbl))))
 
+(defun nelisp-buffer--detach-markers (buf)
+  "Point every marker of BUF nowhere and empty its chain (GNU unchain_marker
+for a killed buffer: `marker-buffer' of such a marker answers nil)."
+  (let ((tbl (nelisp-buffer-markers buf)))
+    (when tbl
+      (maphash (lambda (m _v) (setf (nelisp-marker-buffer m) nil)) tbl)
+      (setf (nelisp-buffer-markers buf) nil))))
+
 (defun nelisp-marker--make (&rest args)
   "Make a marker from the keywords :buffer, :position and :insertion-type."
   (let ((buffer (plist-get args :buffer))
@@ -12292,15 +12839,1079 @@ otherwise every later edit would walk the capacity left by markers long dead."
   (aset marker 0 (if type 'nelisp-marker-ins 'nelisp-marker))
   type)
 
+(defvar nelisp--current-buffer)
+
+;; ---------------------------------------------------------------------
+;; Overlays (overlay1): a port of GNU Emacs 31.1 `src/itree.c' and the
+;; overlay half of `src/buffer.c'.
+;;
+;; Since Emacs 29 an overlay IS an interval-tree node: the Lisp object
+;; carries the tree links, the (lazily offset) begin/end, the subtree
+;; `limit' and the advance flags, and the buffer owns only the tree
+;; (`nelisp-buffer-overlays' is nil or a `nelisp-itree').  The tree is a
+;; red-black tree ordered by BEGIN, augmented with LIMIT (the largest END
+;; in the subtree).  An insertion or deletion does not walk every overlay:
+;; `nelisp-itree-insert-gap'/`-delete-gap' shift whole right subtrees by
+;; bumping their OFFSET and the tree OTICK, and a node folds its pending
+;; OFFSET into BEGIN/END/LIMIT only when something reads it (the iterators,
+;; `nelisp-itree--validate').  Queries are O(log n + k).
+;;
+;; A node is "clean" when its OTICK equals the tree's; a dirty node's
+;; BEGIN/END/LIMIT are stale until `nelisp-itree--inherit-offset' folds the
+;; OFFSETs of its ancestors (parents first) into it.  Every function below
+;; follows the GNU function of the same name; `nil' is the NULL node.
+;; Positions are never read raw from a node that may be dirty.
+
+;; Representation.  The overlay object a program sees is a small record (the
+;; handle: buffer, plist, node, allocation order).  The interval-tree node is
+;; a plain vector, and so is the tree: slot access on a vector is far cheaper
+;; than on a record here, and the tree code is nothing but slot access.
+;; Node slots: 0 the handle, 1 parent, 2 left, 3 right, 4 begin, 5 end,
+;; 6 limit, 7 offset, 8 otick, 9 red, 10 front-advance, 11 rear-advance.
+;; Tree slots: 0 root, 1 otick (the offset tick), 2 size, 3 flags.  FLAGS only
+;; records that some overlay of the tree has ever had a front-advance start (2),
+;; one of the three modification hook properties (1) or `evaporate' (4); a
+;; `category' property sets 1 and 4.  Without them the corresponding scans below
+;; (which would find nothing) are skipped; they never clear while the tree lives.
+
 (cl-defstruct (nelisp-overlay
-               (:constructor nelisp-overlay--make)
-               (:copier nil))
-  (buffer nil)
-  (start 1)
-  (end 1)
-  (front-advance nil)
-  (rear-advance nil)
-  (props nil))
+               (:constructor nelisp-ov--make)
+               (:copier nil)
+               (:conc-name nelisp-ov--))
+  (node nil)
+  (buffer nil)                  ; the owning buffer, or nil when detached
+  (plist nil)
+  (id 0))                       ; allocation order, the tie-break GNU takes from the address
+
+(defmacro nelisp-itn-ov (n) `(aref ,n 0))
+(defmacro nelisp-itn-parent (n) `(aref ,n 1))
+(defmacro nelisp-itn-left (n) `(aref ,n 2))
+(defmacro nelisp-itn-right (n) `(aref ,n 3))
+(defmacro nelisp-itn-begin (n) `(aref ,n 4))
+(defmacro nelisp-itn-end (n) `(aref ,n 5))
+(defmacro nelisp-itn-limit (n) `(aref ,n 6))
+(defmacro nelisp-itn-offset (n) `(aref ,n 7))
+(defmacro nelisp-itn-otick (n) `(aref ,n 8))
+(defmacro nelisp-itn-red (n) `(aref ,n 9))
+(defmacro nelisp-itn-front-advance (n) `(aref ,n 10))
+(defmacro nelisp-itn-rear-advance (n) `(aref ,n 11))
+(defmacro nelisp-itree-root (tr) `(aref ,tr 0))
+(defmacro nelisp-itree-otick (tr) `(aref ,tr 1))
+(defmacro nelisp-itree-size (tr) `(aref ,tr 2))
+(defmacro nelisp-itree-flags (tr) `(aref ,tr 3))
+
+(defun nelisp-itree--make ()
+  (vector nil 1 0 0))
+
+(defvar nelisp-ov--serial 0
+  "Number of overlays allocated so far; stamps `nelisp-ov--id'.")
+
+(defmacro nelisp-itree--red-p (node)
+  (let ((v (make-symbol "n")))
+    `(let ((,v ,node)) (and ,v (nelisp-itn-red ,v)))))
+
+(defmacro nelisp-itree--black-p (node)
+  (let ((v (make-symbol "n")))
+    `(let ((,v ,node)) (or (null ,v) (not (nelisp-itn-red ,v))))))
+
+(defun nelisp-itree--newlimit (node)
+  "Return the limit NODE should have: the maximum END of NODE and its children."
+  (let ((m (nelisp-itn-end node))
+        (l (nelisp-itn-left node))
+        (r (nelisp-itn-right node)))
+    (when l
+      (let ((v (+ (nelisp-itn-limit l) (nelisp-itn-offset l))))
+        (when (> v m) (setq m v))))
+    (when r
+      (let ((v (+ (nelisp-itn-limit r) (nelisp-itn-offset r))))
+        (when (> v m) (setq m v))))
+    m))
+
+(defun nelisp-itree--update-limit (node)
+  (when node
+    (setf (nelisp-itn-limit node) (nelisp-itree--newlimit node))))
+
+(defun nelisp-itree--inherit-offset (otick node)
+  "Fold NODE's pending OFFSET into it and hand it on to its children."
+  (unless (= (nelisp-itn-otick node) otick)
+    (let ((off (nelisp-itn-offset node)))
+      (unless (= off 0)
+        (setf (nelisp-itn-begin node) (+ (nelisp-itn-begin node) off))
+        (setf (nelisp-itn-end node) (+ (nelisp-itn-end node) off))
+        (setf (nelisp-itn-limit node) (+ (nelisp-itn-limit node) off))
+        (let ((l (nelisp-itn-left node)))
+          (when l (setf (nelisp-itn-offset l) (+ (nelisp-itn-offset l) off))))
+        (let ((r (nelisp-itn-right node)))
+          (when r (setf (nelisp-itn-offset r) (+ (nelisp-itn-offset r) off))))
+        (setf (nelisp-itn-offset node) 0)))
+    (let ((p (nelisp-itn-parent node)))
+      (when (or (null p) (= (nelisp-itn-otick p) otick))
+        (setf (nelisp-itn-otick node) otick)))))
+
+(defmacro nelisp-itree--inherit (otick node)
+  "`nelisp-itree--inherit-offset' with the clean-node test inlined."
+  (let ((o (make-symbol "otick")) (n (make-symbol "node")))
+    `(let ((,o ,otick) (,n ,node))
+       (unless (= (nelisp-itn-otick ,n) ,o)
+         (nelisp-itree--inherit-offset ,o ,n)))))
+
+(defun nelisp-itree--propagate-limit (node)
+  "Recompute the limit of NODE and of its ancestors while it changes."
+  (when node
+    (let ((done nil) (nl 0) (l nil) (r nil) (v 0))
+      (while (not done)
+        ;; `nelisp-itree--newlimit', inlined.
+        (setq nl (nelisp-itn-end node))
+        (setq l (nelisp-itn-left node))
+        (setq r (nelisp-itn-right node))
+        (when l
+          (setq v (+ (nelisp-itn-limit l) (nelisp-itn-offset l)))
+          (when (> v nl) (setq nl v)))
+        (when r
+          (setq v (+ (nelisp-itn-limit r) (nelisp-itn-offset r)))
+          (when (> v nl) (setq nl v)))
+        (if (= nl (nelisp-itn-limit node))
+            (setq done t)
+          (setf (nelisp-itn-limit node) nl)
+          (setq l (nelisp-itn-parent node))
+          (if l (setq node l) (setq done t)))))))
+
+(defun nelisp-itree--validate (tree node)
+  "Clean NODE and its ancestors so its BEGIN and END can be read."
+  (unless (= (nelisp-itree-otick tree) (nelisp-itn-otick node))
+    (unless (eq node (nelisp-itree-root tree))
+      (nelisp-itree--validate tree (nelisp-itn-parent node)))
+    (nelisp-itree--inherit (nelisp-itree-otick tree) node))
+  node)
+
+(defun nelisp-itree--rotate-left (tree node)
+  (let ((right (nelisp-itn-right node))
+        (otick (nelisp-itree-otick tree)))
+    (nelisp-itree--inherit otick node)
+    (nelisp-itree--inherit otick right)
+    (setf (nelisp-itn-right node) (nelisp-itn-left right))
+    (when (nelisp-itn-left right)
+      (setf (nelisp-itn-parent (nelisp-itn-left right)) node))
+    (setf (nelisp-itn-parent right) (nelisp-itn-parent node))
+    (if (eq node (nelisp-itree-root tree))
+        (setf (nelisp-itree-root tree) right)
+      (if (eq node (nelisp-itn-left (nelisp-itn-parent node)))
+          (setf (nelisp-itn-left (nelisp-itn-parent node)) right)
+        (setf (nelisp-itn-right (nelisp-itn-parent node)) right)))
+    (setf (nelisp-itn-left right) node)
+    (setf (nelisp-itn-parent node) right)
+    (nelisp-itree--update-limit node)
+    (nelisp-itree--update-limit right)))
+
+(defun nelisp-itree--rotate-right (tree node)
+  (let ((left (nelisp-itn-left node))
+        (otick (nelisp-itree-otick tree)))
+    (nelisp-itree--inherit otick node)
+    (nelisp-itree--inherit otick left)
+    (setf (nelisp-itn-left node) (nelisp-itn-right left))
+    (when (nelisp-itn-right left)
+      (setf (nelisp-itn-parent (nelisp-itn-right left)) node))
+    (setf (nelisp-itn-parent left) (nelisp-itn-parent node))
+    (if (eq node (nelisp-itree-root tree))
+        (setf (nelisp-itree-root tree) left)
+      (if (eq node (nelisp-itn-right (nelisp-itn-parent node)))
+          (setf (nelisp-itn-right (nelisp-itn-parent node)) left)
+        (setf (nelisp-itn-left (nelisp-itn-parent node)) left)))
+    (setf (nelisp-itn-right left) node)
+    (setf (nelisp-itn-parent node) left)
+    (nelisp-itree--update-limit left)
+    (nelisp-itree--update-limit node)))
+
+(defun nelisp-itree--insert-fix (tree node)
+  (while (nelisp-itree--red-p (nelisp-itn-parent node))
+    (let* ((parent (nelisp-itn-parent node))
+           (grand (nelisp-itn-parent parent)))
+      (if (eq parent (nelisp-itn-left grand))
+          (let ((uncle (nelisp-itn-right grand)))
+            (if (nelisp-itree--red-p uncle)
+                (progn
+                  (setf (nelisp-itn-red parent) nil)
+                  (setf (nelisp-itn-red uncle) nil)
+                  (setf (nelisp-itn-red grand) t)
+                  (setq node grand))
+              (when (eq node (nelisp-itn-right parent))
+                (setq node parent)
+                (nelisp-itree--rotate-left tree node))
+              (setf (nelisp-itn-red (nelisp-itn-parent node)) nil)
+              (setf (nelisp-itn-red (nelisp-itn-parent (nelisp-itn-parent node))) t)
+              (nelisp-itree--rotate-right tree (nelisp-itn-parent (nelisp-itn-parent node)))))
+        (let ((uncle (nelisp-itn-left grand)))
+          (if (nelisp-itree--red-p uncle)
+              (progn
+                (setf (nelisp-itn-red parent) nil)
+                (setf (nelisp-itn-red uncle) nil)
+                (setf (nelisp-itn-red grand) t)
+                (setq node grand))
+            (when (eq node (nelisp-itn-left parent))
+              (setq node parent)
+              (nelisp-itree--rotate-right tree node))
+            (setf (nelisp-itn-red (nelisp-itn-parent node)) nil)
+            (setf (nelisp-itn-red (nelisp-itn-parent (nelisp-itn-parent node))) t)
+            (nelisp-itree--rotate-left tree (nelisp-itn-parent (nelisp-itn-parent node))))))))
+  (setf (nelisp-itn-red (nelisp-itree-root tree)) nil))
+
+(defun nelisp-itree--insert-node (tree node)
+  "Link NODE, whose BEGIN and END are set and whose OTICK is the tree's."
+  (let ((parent nil)
+        (child (nelisp-itree-root tree))
+        (otick (nelisp-itree-otick tree))
+        (nbegin (nelisp-itn-begin node))
+        (nend (nelisp-itn-end node)))
+    (while child
+      (nelisp-itree--inherit otick child)
+      (setq parent child)
+      (when (> nend (nelisp-itn-limit child))
+        (setf (nelisp-itn-limit child) nend))
+      (setq child (if (<= nbegin (nelisp-itn-begin child))
+                      (nelisp-itn-left child)
+                    (nelisp-itn-right child))))
+    (cond
+     ((null parent) (setf (nelisp-itree-root tree) node))
+     ((<= nbegin (nelisp-itn-begin parent)) (setf (nelisp-itn-left parent) node))
+     (t (setf (nelisp-itn-right parent) node)))
+    (setf (nelisp-itn-parent node) parent)
+    (setf (nelisp-itn-left node) nil)
+    (setf (nelisp-itn-right node) nil)
+    (setf (nelisp-itn-offset node) 0)
+    (setf (nelisp-itn-limit node) nend)
+    (setf (nelisp-itree-size tree) (1+ (nelisp-itree-size tree)))
+    (if (eq node (nelisp-itree-root tree))
+        (setf (nelisp-itn-red node) nil)
+      (setf (nelisp-itn-red node) t)
+      (nelisp-itree--insert-fix tree node))))
+
+(defun nelisp-itree-insert (tree node begin end)
+  (setf (nelisp-itn-begin node) begin)
+  (setf (nelisp-itn-end node) end)
+  (setf (nelisp-itn-otick node) (nelisp-itree-otick tree))
+  (nelisp-itree--insert-node tree node))
+
+(defun nelisp-itree--subtree-min (otick node)
+  (when node
+    (nelisp-itree--inherit otick node)
+    (while (nelisp-itn-left node)
+      (setq node (nelisp-itn-left node))
+      (nelisp-itree--inherit otick node))
+    node))
+
+(defun nelisp-itree--remove-fix (tree node parent)
+  (while (and parent (nelisp-itree--black-p node))
+    (if (eq node (nelisp-itn-left parent))
+        (let ((other (nelisp-itn-right parent)))
+          (when (nelisp-itn-red other)
+            (setf (nelisp-itn-red other) nil)
+            (setf (nelisp-itn-red parent) t)
+            (nelisp-itree--rotate-left tree parent)
+            (setq other (nelisp-itn-right parent)))
+          (if (and (nelisp-itree--black-p (nelisp-itn-left other))
+                   (nelisp-itree--black-p (nelisp-itn-right other)))
+              (progn
+                (setf (nelisp-itn-red other) t)
+                (setq node parent)
+                (setq parent (nelisp-itn-parent node)))
+            (when (nelisp-itree--black-p (nelisp-itn-right other))
+              (setf (nelisp-itn-red (nelisp-itn-left other)) nil)
+              (setf (nelisp-itn-red other) t)
+              (nelisp-itree--rotate-right tree other)
+              (setq other (nelisp-itn-right parent)))
+            (setf (nelisp-itn-red other) (nelisp-itn-red parent))
+            (setf (nelisp-itn-red parent) nil)
+            (setf (nelisp-itn-red (nelisp-itn-right other)) nil)
+            (nelisp-itree--rotate-left tree parent)
+            (setq node (nelisp-itree-root tree))
+            (setq parent nil)))
+      (let ((other (nelisp-itn-left parent)))
+        (when (nelisp-itn-red other)
+          (setf (nelisp-itn-red other) nil)
+          (setf (nelisp-itn-red parent) t)
+          (nelisp-itree--rotate-right tree parent)
+          (setq other (nelisp-itn-left parent)))
+        (if (and (nelisp-itree--black-p (nelisp-itn-right other))
+                 (nelisp-itree--black-p (nelisp-itn-left other)))
+            (progn
+              (setf (nelisp-itn-red other) t)
+              (setq node parent)
+              (setq parent (nelisp-itn-parent node)))
+          (when (nelisp-itree--black-p (nelisp-itn-left other))
+            (setf (nelisp-itn-red (nelisp-itn-right other)) nil)
+            (setf (nelisp-itn-red other) t)
+            (nelisp-itree--rotate-left tree other)
+            (setq other (nelisp-itn-left parent)))
+          (setf (nelisp-itn-red other) (nelisp-itn-red parent))
+          (setf (nelisp-itn-red parent) nil)
+          (setf (nelisp-itn-red (nelisp-itn-left other)) nil)
+          (nelisp-itree--rotate-right tree parent)
+          (setq node (nelisp-itree-root tree))
+          (setq parent nil)))))
+  (when node (setf (nelisp-itn-red node) nil)))
+
+(defun nelisp-itree--replace-child (tree source dest)
+  "Put SOURCE where DEST is in the tree."
+  (cond
+   ((eq dest (nelisp-itree-root tree)) (setf (nelisp-itree-root tree) source))
+   ((eq dest (nelisp-itn-left (nelisp-itn-parent dest)))
+    (setf (nelisp-itn-left (nelisp-itn-parent dest)) source))
+   (t (setf (nelisp-itn-right (nelisp-itn-parent dest)) source)))
+  (when source
+    (setf (nelisp-itn-parent source) (nelisp-itn-parent dest))))
+
+(defun nelisp-itree--transplant (tree source dest)
+  (nelisp-itree--replace-child tree source dest)
+  (setf (nelisp-itn-left source) (nelisp-itn-left dest))
+  (when (nelisp-itn-left source)
+    (setf (nelisp-itn-parent (nelisp-itn-left source)) source))
+  (setf (nelisp-itn-right source) (nelisp-itn-right dest))
+  (when (nelisp-itn-right source)
+    (setf (nelisp-itn-parent (nelisp-itn-right source)) source))
+  (setf (nelisp-itn-red source) (nelisp-itn-red dest)))
+
+(defun nelisp-itree-remove (tree node)
+  "Unlink NODE, which must be clean (see `nelisp-itree--validate'), from TREE."
+  (nelisp-itree--inherit (nelisp-itree-otick tree) node)
+  (let* ((splice (if (or (null (nelisp-itn-left node)) (null (nelisp-itn-right node)))
+                     node
+                   (nelisp-itree--subtree-min (nelisp-itree-otick tree)
+                                              (nelisp-itn-right node))))
+         (subtree (or (nelisp-itn-left splice) (nelisp-itn-right splice)))
+         (subtree-parent (if (eq (nelisp-itn-parent splice) node)
+                             splice
+                           (nelisp-itn-parent splice))))
+    (nelisp-itree--replace-child tree subtree splice)
+    (let ((removed-black (not (nelisp-itn-red splice))))
+      (unless (eq splice node)
+        (nelisp-itree--transplant tree splice node)
+        (nelisp-itree--propagate-limit subtree-parent)
+        (unless (eq splice subtree-parent)
+          (nelisp-itree--update-limit splice)))
+      (nelisp-itree--propagate-limit (nelisp-itn-parent splice))
+      (setf (nelisp-itree-size tree) (1- (nelisp-itree-size tree)))
+      (when removed-black
+        (nelisp-itree--remove-fix tree subtree subtree-parent)))
+    (setf (nelisp-itn-red node) nil)
+    (setf (nelisp-itn-right node) nil)
+    (setf (nelisp-itn-left node) nil)
+    (setf (nelisp-itn-parent node) nil)
+    (setf (nelisp-itn-limit node) 0)
+    node))
+
+;; Iterators.  An iterator is [NODE BEGIN END OTICK ORDER]; ORDER is 0
+;; ascending, 1 descending, 2 pre-order, 3 post-order.  NODE is the node
+;; the next `nelisp-itree--iter-next' starts from.
+
+(defun nelisp-itree--intersects (node begin end)
+  (or (and (< begin (nelisp-itn-end node)) (< (nelisp-itn-begin node) end))
+      (and (= (nelisp-itn-begin node) (nelisp-itn-end node))
+           (= begin (nelisp-itn-begin node)))))
+
+(defun nelisp-itree--iter-next-in-subtree (node it)
+  (let ((order (aref it 4))
+        (otick (aref it 3))
+        (ibegin (aref it 1))
+        (iend (aref it 2))
+        (next nil))
+    (cond
+     ((eq order 0)
+      (setq next (nelisp-itn-right node))
+      (if (null next)
+          (progn
+            (while (and (setq next (nelisp-itn-parent node))
+                        (eq (nelisp-itn-right next) node))
+              (setq node next))
+            (if (null next)
+                (setq node nil)
+              (setq node next)))
+        (setq node next)
+        (nelisp-itree--inherit otick node)
+        (while (and (setq next (nelisp-itn-left node))
+                    (progn (nelisp-itree--inherit otick next)
+                           (<= ibegin (nelisp-itn-limit next))))
+          (setq node next)))
+      (if (and node (> (nelisp-itn-begin node) iend)) nil node))
+     ((eq order 1)
+      (setq next (nelisp-itn-left node))
+      (if (or (null next)
+              (progn (nelisp-itree--inherit otick next)
+                     (< (nelisp-itn-limit next) ibegin)))
+          (progn
+            (while (and (setq next (nelisp-itn-parent node))
+                        (eq (nelisp-itn-left next) node))
+              (setq node next))
+            (if (null next)
+                (setq node nil)
+              (setq node next)))
+        (setq node next)
+        (while (and (<= (nelisp-itn-begin node) iend)
+                    (setq next (nelisp-itn-right node)))
+          (nelisp-itree--inherit otick next)
+          (setq node next)))
+      node)
+     ((eq order 2)
+      (setq next (nelisp-itn-left node))
+      (if (and next
+               (progn (nelisp-itree--inherit otick next)
+                      (not (< (nelisp-itn-limit next) ibegin))))
+          next
+        (setq next (nelisp-itn-right node))
+        (if (and (<= (nelisp-itn-begin node) iend) next)
+            (progn (nelisp-itree--inherit otick next) next)
+          (let ((result nil) (done nil))
+            (while (and (not done) (setq next (nelisp-itn-parent node)))
+              (if (eq (nelisp-itn-right next) node)
+                  (setq node next)
+                (setq node next)
+                (setq next (nelisp-itn-right node))
+                (when (and (<= (nelisp-itn-begin node) iend) next)
+                  (nelisp-itree--inherit otick next)
+                  (setq result next)
+                  (setq done t))))
+            result))))
+     (t
+      (setq next (nelisp-itn-parent node))
+      (if (or (null next) (eq (nelisp-itn-right next) node))
+          next
+        (setq node next)
+        (setq next (nelisp-itn-right node))
+        (if (not (and (<= (nelisp-itn-begin node) iend) next))
+            node
+          (setq node next)
+          (nelisp-itree--inherit otick node)
+          (while (or (and (setq next (nelisp-itn-left node))
+                          (progn (nelisp-itree--inherit otick next)
+                                 (<= ibegin (nelisp-itn-limit next))))
+                     (and (<= (nelisp-itn-begin node) iend)
+                          (setq next (nelisp-itn-right node))
+                          (progn (nelisp-itree--inherit otick next) t)))
+            (setq node next))
+          node))))))
+
+(defun nelisp-itree--iter-first-node (tree it)
+  (let ((node (nelisp-itree-root tree))
+        (order (aref it 4))
+        (otick (aref it 3))
+        (ibegin (aref it 1))
+        (iend (aref it 2))
+        (next nil))
+    (when node
+      (nelisp-itree--inherit otick node)
+      (cond
+       ((eq order 0)
+        (while (and (setq next (nelisp-itn-left node))
+                    (progn (nelisp-itree--inherit otick next)
+                           (<= ibegin (nelisp-itn-limit next))))
+          (setq node next))
+        (if (> (nelisp-itn-begin node) iend) nil node))
+       ((eq order 1)
+        (if (< (nelisp-itn-limit node) ibegin)
+            nil
+          (while (and (<= (nelisp-itn-begin node) iend)
+                      (setq next (nelisp-itn-right node)))
+            (nelisp-itree--inherit otick next)
+            (setq node next))
+          node))
+       ((eq order 2) node)
+       (t
+        (while (or (and (setq next (nelisp-itn-left node))
+                        (progn (nelisp-itree--inherit otick next)
+                               (<= ibegin (nelisp-itn-limit next))))
+                   (and (<= (nelisp-itn-begin node) iend)
+                        (setq next (nelisp-itn-right node))
+                        (progn (nelisp-itree--inherit otick next) t)))
+          (setq node next))
+        node)))))
+
+(defun nelisp-itree--iter-start (tree begin end order)
+  (let ((it (vector nil begin end (nelisp-itree-otick tree) order)))
+    (aset it 0 (nelisp-itree--iter-first-node tree it))
+    it))
+
+(defun nelisp-itree--iter-next (it)
+  "Return the next node of iterator IT that intersects its range, or nil."
+  (let ((node (aref it 0))
+        (ibegin (aref it 1))
+        (iend (aref it 2)))
+    (while (and node (not (nelisp-itree--intersects node ibegin iend)))
+      (setq node (nelisp-itree--iter-next-in-subtree node it)))
+    (aset it 0 (and node (nelisp-itree--iter-next-in-subtree node it)))
+    node))
+
+(defun nelisp-itree--iter-narrow (it begin end)
+  (when (> begin (aref it 1)) (aset it 1 begin))
+  (when (< end (aref it 2)) (aset it 2 end)))
+
+(defun nelisp-itree-insert-gap (tree pos length before-markers)
+  "Account for LENGTH characters inserted at POS (GNU `itree_insert_gap')."
+  (when (and tree (> length 0) (nelisp-itree-root tree))
+    (let ((saved nil))
+      ;; Nodes with front_advance starting at POS may break the order of the
+      ;; tree, so take them out first.  Not needed for before-markers, where
+      ;; everything at POS moves alike.
+      (unless (or before-markers (= 0 (logand (nelisp-itree-flags tree) 2)))
+        (let ((it (nelisp-itree--iter-start tree pos (1+ pos) 2))
+              (node nil))
+          (while (setq node (nelisp-itree--iter-next it))
+            (when (and (= (nelisp-itn-begin node) pos)
+                       (nelisp-itn-front-advance node)
+                       (or (/= (nelisp-itn-begin node) (nelisp-itn-end node))
+                           (nelisp-itn-rear-advance node)))
+              (push node saved)))))
+      (let ((rest (reverse saved)))
+        (while rest
+          (nelisp-itree-remove tree (car rest))
+          (setq rest (cdr rest))))
+      (when (nelisp-itree-root tree)
+        (let ((stack (list (nelisp-itree-root tree)))
+              (node nil))
+          (while stack
+            (setq node (car stack))
+            (setq stack (cdr stack))
+            (nelisp-itree--inherit (nelisp-itree-otick tree) node)
+            (unless (> pos (nelisp-itn-limit node))
+              (let ((right (nelisp-itn-right node))
+                    (left (nelisp-itn-left node)))
+                (when right
+                  (if (> (nelisp-itn-begin node) pos)
+                      (progn
+                        (setf (nelisp-itn-offset right) (+ (nelisp-itn-offset right) length))
+                        (setf (nelisp-itree-otick tree) (1+ (nelisp-itree-otick tree))))
+                    (setq stack (cons right stack))))
+                (when left (setq stack (cons left stack)))
+                (when (if before-markers
+                          (>= (nelisp-itn-begin node) pos)
+                        (> (nelisp-itn-begin node) pos))
+                  (setf (nelisp-itn-begin node) (+ (nelisp-itn-begin node) length)))
+                (when (or (> (nelisp-itn-end node) pos)
+                          (and (= (nelisp-itn-end node) pos)
+                               (or before-markers (nelisp-itn-rear-advance node))))
+                  (setf (nelisp-itn-end node) (+ (nelisp-itn-end node) length))
+                  (nelisp-itree--propagate-limit node)))))))
+      ;; Reinsert the nodes that started at POS with front-advance.
+      (let ((notick (nelisp-itree-otick tree)))
+        (while saved
+          (let ((node (car saved)))
+            (setq saved (cdr saved))
+            (setf (nelisp-itn-begin node) (+ (nelisp-itn-begin node) length))
+            (setf (nelisp-itn-end node) (+ (nelisp-itn-end node) length))
+            (setf (nelisp-itn-otick node) notick)
+            (nelisp-itree--insert-node tree node)))))))
+
+(defun nelisp-itree-delete-gap (tree pos length)
+  "Account for LENGTH characters deleted at POS (GNU `itree_delete_gap')."
+  (when (and tree (> length 0) (nelisp-itree-root tree))
+    (let ((stack (list (nelisp-itree-root tree)))
+          (node nil))
+      (while stack
+        (setq node (car stack))
+        (setq stack (cdr stack))
+        (nelisp-itree--inherit (nelisp-itree-otick tree) node)
+        (unless (> pos (nelisp-itn-limit node))
+          (let ((right (nelisp-itn-right node))
+                (left (nelisp-itn-left node)))
+            (when right
+              (if (> (nelisp-itn-begin node) (+ pos length))
+                  (progn
+                    (setf (nelisp-itn-offset right) (- (nelisp-itn-offset right) length))
+                    (setf (nelisp-itree-otick tree) (1+ (nelisp-itree-otick tree))))
+                (setq stack (cons right stack))))
+            (when left (setq stack (cons left stack)))
+            (when (< pos (nelisp-itn-begin node))
+              (setf (nelisp-itn-begin node)
+                    (max pos (- (nelisp-itn-begin node) length))))
+            (when (> (nelisp-itn-end node) pos)
+              (setf (nelisp-itn-end node)
+                    (max pos (- (nelisp-itn-end node) length)))
+              (nelisp-itree--propagate-limit node))))))))
+
+(defun nelisp-itree-set-region (tree node begin end)
+  "Move NODE (in TREE) to BEGIN..END (GNU `itree_node_set_region')."
+  (nelisp-itree--validate tree node)
+  (cond
+   ((/= begin (nelisp-itn-begin node))
+    (nelisp-itree-remove tree node)
+    (setf (nelisp-itn-begin node) begin)
+    (setf (nelisp-itn-end node) (max begin end))
+    (nelisp-itree--insert-node tree node))
+   ((/= end (nelisp-itn-end node))
+    (setf (nelisp-itn-end node) (max begin end))
+    (nelisp-itree--propagate-limit node))))
+
+;; ---- overlays proper (buffer.c) --------------------------------------
+
+(defun nelisp-ov--check (ov)
+  (unless (nelisp-overlay-p ov)
+    (signal 'wrong-type-argument (list 'overlayp ov)))
+  ov)
+
+(defun nelisp-ov--start (ov)
+  "OVERLAY_START: the start of attached OV, else -1."
+  (let ((b (nelisp-ov--buffer ov)))
+    (if b
+        (let ((node (nelisp-ov--node ov)))
+          (nelisp-itree--validate (nelisp-buffer-overlays b) node)
+          (nelisp-itn-begin node))
+      -1)))
+
+(defun nelisp-ov--stop (ov)
+  "OVERLAY_END: the end of attached OV, else -1."
+  (let ((b (nelisp-ov--buffer ov)))
+    (if b
+        (let ((node (nelisp-ov--node ov)))
+          (nelisp-itree--validate (nelisp-buffer-overlays b) node)
+          (nelisp-itn-end node))
+      -1)))
+
+(defun nelisp-ov--pos (x)
+  "CHECK_FIXNUM_COERCE_MARKER."
+  (cond
+   ((integerp x) x)
+   ((nelisp-marker-p x)
+    (if (nelisp-marker-buffer x)
+        (nelisp-marker-position x)
+      (error "Marker does not point anywhere")))
+   (t (signal 'wrong-type-argument (list 'integer-or-marker-p x)))))
+
+(defun nelisp-ov--build (front-advance rear-advance plist)
+  (setq nelisp-ov--serial (1+ nelisp-ov--serial))
+  (let* ((ov (nelisp-ov--make :plist plist :id nelisp-ov--serial))
+         (node (vector ov nil nil nil -1 -1 0 0 0 nil front-advance rear-advance)))
+    (setf (nelisp-ov--node ov) node)
+    ov))
+
+(defun nelisp-ov--prop-flags (prop)
+  "The tree flags a non-nil PROP on an overlay implies."
+  (cond
+   ((or (eq prop 'modification-hooks) (eq prop 'insert-in-front-hooks)
+        (eq prop 'insert-behind-hooks))
+    1)
+   ((eq prop 'evaporate) 4)
+   ((eq prop 'category) 5)
+   (t 0)))
+
+(defun nelisp-ov--plist-flags (plist)
+  (let ((fl 0))
+    (while (consp plist)
+      (when (car-safe (cdr plist))
+        (setq fl (logior fl (nelisp-ov--prop-flags (car plist)))))
+      (setq plist (cdr-safe (cdr plist))))
+    fl))
+
+(defun nelisp-ov--scan-p (b bit)
+  "Non-nil when overlays of B may carry a property of kind BIT (see the tree flags)."
+  (let ((tree (nelisp-buffer-overlays b)))
+    (and tree
+         (or (/= 0 (logand (nelisp-itree-flags tree) bit))
+             (and (boundp 'char-property-alias-alist) char-property-alias-alist)))))
+
+(defun nelisp-ov--add (b ov begin end)
+  "add_buffer_overlay."
+  (let ((tree (nelisp-buffer-overlays b)))
+    (unless tree
+      (setq tree (nelisp-itree--make))
+      (setf (nelisp-buffer-overlays b) tree))
+    (setf (nelisp-ov--buffer ov) b)
+    (nelisp-itree-insert tree (nelisp-ov--node ov) begin end)
+    (let ((fl (logior (if (nelisp-itn-front-advance (nelisp-ov--node ov)) 2 0)
+                      (nelisp-ov--plist-flags (nelisp-ov--plist ov)))))
+      (unless (= fl 0)
+        (setf (nelisp-itree-flags tree) (logior (nelisp-itree-flags tree) fl))))))
+
+(defun nelisp-ov--detach (b ov)
+  "remove_buffer_overlay: OV must be attached to B."
+  (let ((tree (nelisp-buffer-overlays b)))
+    (nelisp-itree--validate tree (nelisp-ov--node ov))
+    (nelisp-itree-remove tree (nelisp-ov--node ov))
+    (setf (nelisp-ov--buffer ov) nil)
+    (when (= (nelisp-itree-size tree) 0)
+      (setf (nelisp-buffer-overlays b) nil))))
+
+(defun nelisp-ov--delete-all (b)
+  "delete_all_overlays."
+  (let ((tree (nelisp-buffer-overlays b)))
+    (when tree
+      (let ((it (nelisp-itree--iter-start tree -1 most-positive-fixnum 3))
+            (node nil))
+        (while (setq node (nelisp-itree--iter-next it))
+          (setf (nelisp-ov--buffer (nelisp-itn-ov node)) nil)
+          (setf (nelisp-itn-parent node) nil)
+          (setf (nelisp-itn-left node) nil)
+          (setf (nelisp-itn-right node) nil)))
+      (setf (nelisp-buffer-overlays b) nil))))
+
+(defun nelisp-ov--get (ov prop)
+  "Foverlay_get: look up PROP in OV's plist, with the `category' fallback."
+  (if (null (nelisp-ov--plist ov))
+      nil
+   (let ((tail (nelisp-ov--plist ov))
+        (fallback nil)
+        (found nil)
+        (value nil))
+    (while (and (consp tail) (not found))
+      (let ((key (car tail)))
+        (if (eq prop key)
+            (progn (setq found t) (setq value (car-safe (cdr tail))))
+          (when (eq key 'category)
+            (let ((cat (car-safe (cdr tail))))
+              (when (and cat (symbolp cat))
+                (setq fallback (get cat prop))))))
+        (setq tail (cdr-safe (cdr tail)))))
+    (cond
+     (found value)
+     (fallback fallback)
+     ((and (boundp 'char-property-alias-alist) char-property-alias-alist)
+      (let ((alias (assq prop char-property-alias-alist)) (res nil))
+        (when alias
+          (let ((alts (cdr alias)))
+            (while (and (null res) (consp alts))
+              (setq res (plist-get (nelisp-ov--plist ov) (car alts)))
+              (setq alts (cdr alts)))))
+        res))
+     (t nil)))))
+
+(defun nelisp-ov--delete (ov)
+  "Fdelete_overlay."
+  (let ((b (nelisp-ov--buffer ov)))
+    (when b
+      (nelisp-ov--detach b ov))
+    nil))
+
+(defun nelisp-ov--make-overlay (b beg end front-advance rear-advance)
+  "Fmake_overlay in buffer B."
+  (unless (buffer-live-p b)
+    (error "Attempt to create overlay in a dead buffer"))
+  (when (and (nelisp-marker-p beg) (not (eq (nelisp-marker-buffer beg) b)))
+    (signal 'error (list "Marker points into wrong buffer" beg)))
+  (when (and (nelisp-marker-p end) (not (eq (nelisp-marker-buffer end) b)))
+    (signal 'error (list "Marker points into wrong buffer" end)))
+  (let ((beg (nelisp-ov--pos beg))
+        (end (nelisp-ov--pos end)))
+    (when (> beg end)
+      (let ((tem beg)) (setq beg end) (setq end tem)))
+    (let* ((z (1+ (nelisp-buffer-len b)))
+           (obeg (max 1 (min beg z)))
+           (oend (max obeg (min end z)))
+           (ov (nelisp-ov--build (and front-advance t) (and rear-advance t) nil)))
+      (nelisp-ov--add b ov obeg oend)
+      ov)))
+
+(defun nelisp-ov--move-overlay (ov beg end buffer)
+  "Fmove_overlay.  BUFFER is a buffer or nil (OV's buffer, else the current one)."
+  (nelisp-ov--check ov)
+  (let ((buffer (or buffer (nelisp-ov--buffer ov) nelisp--current-buffer)))
+    (unless (nelisp-buffer-p buffer)
+      (signal 'wrong-type-argument (list 'bufferp buffer)))
+    (unless (buffer-live-p buffer)
+      (error "Attempt to move overlay to a dead buffer"))
+    (when (and (nelisp-marker-p beg) (not (eq (nelisp-marker-buffer beg) buffer)))
+      (signal 'error (list "Marker points into wrong buffer" beg)))
+    (when (and (nelisp-marker-p end) (not (eq (nelisp-marker-buffer end) buffer)))
+      (signal 'error (list "Marker points into wrong buffer" end)))
+    (let ((beg (nelisp-ov--pos beg))
+          (end (nelisp-ov--pos end)))
+      (when (> beg end)
+        (let ((tem beg)) (setq beg end) (setq end tem)))
+      (let* ((obuffer (nelisp-ov--buffer ov))
+             (z (1+ (nelisp-buffer-len buffer)))
+             (n-beg (max 1 (min beg z)))
+             (n-end (max n-beg (min end z))))
+        (if (not (eq buffer obuffer))
+            (progn
+              (when obuffer (nelisp-ov--detach obuffer ov))
+              (nelisp-ov--add buffer ov n-beg n-end))
+          (nelisp-itree-set-region (nelisp-buffer-overlays buffer) (nelisp-ov--node ov) n-beg n-end))
+        (when (and (= n-beg n-end) (nelisp-ov--get ov 'evaporate))
+          (nelisp-ov--delete ov))
+        ov))))
+
+(defun nelisp-ov--put (ov prop value)
+  "Foverlay_put."
+  (nelisp-ov--check ov)
+  (let ((tail (nelisp-ov--plist ov))
+        (found nil))
+    (while (and (consp tail) (consp (cdr tail)) (not found))
+      (if (eq (car tail) prop)
+          (progn (setcar (cdr tail) value) (setq found t))
+        (setq tail (cdr (cdr tail)))))
+    (unless found
+      (setf (nelisp-ov--plist ov)
+            (cons prop (cons value (nelisp-ov--plist ov)))))
+    (when (and value (nelisp-ov--buffer ov))
+      (let ((fl (nelisp-ov--prop-flags prop)))
+        (unless (= fl 0)
+          (let ((tree (nelisp-buffer-overlays (nelisp-ov--buffer ov))))
+            (setf (nelisp-itree-flags tree) (logior (nelisp-itree-flags tree) fl))))))
+    (when (and (nelisp-ov--buffer ov)
+               (eq prop 'evaporate) value
+               (= (nelisp-ov--start ov) (nelisp-ov--stop ov)))
+      (nelisp-ov--delete ov)))
+  value)
+
+;; Ordering (make_sortvec_item / compare_overlays / sort_overlays).
+(defun nelisp-ov--sortvec (ov)
+  (let ((tem (nelisp-ov--get ov 'priority)))
+    (vector ov (nelisp-ov--start ov) (nelisp-ov--stop ov)
+            (cond ((null tem) 0)
+                  ((integerp tem) tem)
+                  ((consp tem) (if (integerp (car tem)) (car tem) 0))
+                  (t 0))
+            (cond ((null tem) 0)
+                  ((integerp tem) 0)
+                  ((consp tem) (if (integerp (cdr tem)) (cdr tem) 0))
+                  (t 0)))))
+
+(defun nelisp-ov--compare (s1 s2)
+  "Positive when S1 takes precedence over S2, negative when S2 does, else 0."
+  (cond
+   ((/= (aref s1 3) (aref s2 3)) (if (< (aref s1 3) (aref s2 3)) -1 1))
+   ((< (aref s1 1) (aref s2 1))
+    (if (and (< (aref s1 2) (aref s2 2)) (> (aref s1 4) (aref s2 4))) 1 -1))
+   ((> (aref s1 1) (aref s2 1))
+    (if (and (> (aref s1 2) (aref s2 2)) (< (aref s1 4) (aref s2 4))) -1 1))
+   ((/= (aref s1 2) (aref s2 2)) (if (< (aref s2 2) (aref s1 2)) -1 1))
+   ((/= (aref s1 4) (aref s2 4)) (if (< (aref s1 4) (aref s2 4)) -1 1))
+   ((eq (aref s1 0) (aref s2 0)) 0)
+   (t (if (< (nelisp-ov--id (aref s1 0)) (nelisp-ov--id (aref s2 0))) -1 1))))
+
+(defun nelisp-ov--msort (vec tmp lo n)
+  "Sort the N sortvecs of VEC from LO by `nelisp-ov--compare', as glibc's merge sort does.
+`compare_overlays' is not transitive for partially overlapping overlays, so the
+result depends on the algorithm; GNU's `qsort' on glibc is this top-down merge."
+  (when (> n 1)
+    (let* ((n1 (/ n 2))
+           (n2 (- n n1))
+           (b1 lo)
+           (b2 (+ lo n1))
+           (k 0))
+      (nelisp-ov--msort vec tmp b1 n1)
+      (nelisp-ov--msort vec tmp b2 n2)
+      (let ((m1 n1) (m2 n2))
+        (while (and (> m1 0) (> m2 0))
+          (if (<= (nelisp-ov--compare (aref vec b1) (aref vec b2)) 0)
+              (progn (aset tmp k (aref vec b1)) (setq b1 (1+ b1)) (setq m1 (1- m1)))
+            (aset tmp k (aref vec b2)) (setq b2 (1+ b2)) (setq m2 (1- m2)))
+          (setq k (1+ k)))
+        (while (> m1 0)
+          (aset tmp k (aref vec b1)) (setq b1 (1+ b1)) (setq m1 (1- m1)) (setq k (1+ k))))
+      ;; The unmerged tail of the right half is already in place.
+      (let ((i 0))
+        (while (< i k)
+          (aset vec (+ lo i) (aref tmp i))
+          (setq i (1+ i)))))))
+
+(defun nelisp-ov--sort (overlays)
+  "sort_overlays: OVERLAYS by increasing priority."
+  (let ((items nil) (n 0))
+    (dolist (ov overlays)
+      (when (and (nelisp-overlay-p ov) (nelisp-ov--buffer ov))
+        (setq items (cons (nelisp-ov--sortvec ov) items))
+        (setq n (1+ n))))
+    (let ((vec (vconcat (nreverse items))) (out nil))
+      (nelisp-ov--msort vec (make-vector n nil) 0 n)
+      (let ((i (1- n)))
+        (while (>= i 0)
+          (setq out (cons (aref (aref vec i) 0) out))
+          (setq i (1- i))))
+      out)))
+
+(defun nelisp-ov--in (b beg end empty trailing)
+  "overlays_in on buffer B.  Return (OVERLAYS . NEXT)."
+  (let ((tree (nelisp-buffer-overlays b))
+        (z (1+ (nelisp-buffer-len b)))
+        (acc nil))
+    (let ((next z) (search-end z))
+      (when tree
+        (when (and (>= end z) (or empty trailing))
+          (setq search-end (1+ search-end)))
+        (let ((it (nelisp-itree--iter-start tree beg search-end 0))
+              (node nil)
+              (done nil))
+          (while (and (not done) (setq node (nelisp-itree--iter-next it)))
+            (let ((nb (nelisp-itn-begin node)) (ne (nelisp-itn-end node)))
+              (cond
+               ((> nb end)
+                (setq next (min next nb))
+                (setq done t))
+               (t
+                (when (= nb end)
+                  (setq next nb)
+                  (cond
+                   ((and (or (not empty) (< end z)) (< beg end))
+                    (setq done t))
+                   ((and empty (/= nb ne))
+                    (setq done 'skip))))
+                (cond
+                 ((eq done 'skip) (setq done nil))
+                 (done nil)
+                 ((and (not empty) (= nb ne)) nil)
+                 (t (setq acc (cons (nelisp-itn-ov node) acc))))))))))
+      (cons (nreverse acc) next))))
+
+(defun nelisp-ov--next-change (b pos)
+  "next_overlay_change on buffer B."
+  (let* ((tree (nelisp-buffer-overlays b))
+         (zv (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+         (next zv))
+    (when tree
+      (let ((it (nelisp-itree--iter-start tree pos next 0))
+            (node nil)
+            (done nil))
+        (while (and (not done) (setq node (nelisp-itree--iter-next it)))
+          (cond
+           ((> (nelisp-itn-begin node) pos)
+            (setq next (nelisp-itn-begin node))
+            (setq done t))
+           ((and (< (nelisp-itn-begin node) (nelisp-itn-end node))
+                 (< (nelisp-itn-end node) next))
+            (setq next (nelisp-itn-end node))
+            (nelisp-itree--iter-narrow it pos next))))))
+    next))
+
+(defun nelisp-ov--previous-change (b pos)
+  "previous_overlay_change on buffer B."
+  (let* ((tree (nelisp-buffer-overlays b))
+         (prev (or (nelisp-buffer-narrow-start b) 1)))
+    (when tree
+      (let ((it (nelisp-itree--iter-start tree prev pos 1))
+            (node nil))
+        (while (setq node (nelisp-itree--iter-next it))
+          (if (< (nelisp-itn-end node) pos)
+              (setq prev (nelisp-itn-end node))
+            (setq prev (max prev (nelisp-itn-begin node))))
+          (nelisp-itree--iter-narrow it prev pos))))
+    prev))
+
+;; Buffer edits.  `nelisp-ov--inhibit-adjust' is bound by the callers that
+;; adjust overlays themselves in one step (GNU `replace_range').
+(defvar nelisp-ov--inhibit-adjust nil
+  "Non-nil while the caller accounts for the overlays of a replacement itself.")
+
+(defun nelisp-ov--adjust-insert (b pos length before-markers)
+  "adjust_overlays_for_insert."
+  (unless nelisp-ov--inhibit-adjust
+    (nelisp-itree-insert-gap (nelisp-buffer-overlays b) pos length before-markers)))
+
+(defun nelisp-ov--adjust-delete (b pos length)
+  "adjust_overlays_for_delete: close the gap, then drop the empty `evaporate' overlays at POS."
+  (unless nelisp-ov--inhibit-adjust
+    (let ((tree (nelisp-buffer-overlays b)))
+      (when tree
+        (nelisp-itree-delete-gap tree pos length)
+        (setq tree (nelisp-buffer-overlays b))
+        (when (and tree (nelisp-ov--scan-p b 4))
+          (let ((hit nil)
+                (it (nelisp-itree--iter-start tree pos pos 0))
+                (node nil))
+            (while (setq node (nelisp-itree--iter-next it))
+              (when (and (= (nelisp-itn-end node) pos)
+                         (= (nelisp-itn-begin node) pos)
+                         (nelisp-ov--get (nelisp-itn-ov node) 'evaporate))
+                (setq hit (cons (nelisp-itn-ov node) hit))))
+            (while hit
+              (nelisp-ov--delete (car hit))
+              (setq hit (cdr hit)))))))))
+
+(defun nelisp-buffer--shift-overlays-on-insert (buf at inserted-len &optional before-markers)
+  "Account for INSERTED-LEN characters inserted at AT in BUF."
+  (nelisp-ov--adjust-insert buf at inserted-len before-markers))
+
+(defun nelisp-buffer--shift-overlays-on-delete (buf start end)
+  "Account for the deletion of [START, END) in BUF."
+  (nelisp-ov--adjust-delete buf start (- end start)))
+
+;; Modification hooks (report_overlay_modification).
+(defvar nelisp-ov--last-hooks nil
+  "The (FUNCTIONS . OVERLAY) pairs the last before-change report collected.")
+
+(defun nelisp-ov--report-modification (b start end after arg1 arg2 arg3)
+  "Run the overlay modification hooks of buffer B, the current buffer."
+  (let ((insertion (if after (eql arg3 0) (eql start end))))
+    (unless after
+      (setq nelisp-ov--last-hooks nil)
+      (let ((tree (nelisp-buffer-overlays b)))
+        (when (and tree (nelisp-ov--scan-p b 1))
+          (let ((it (nelisp-itree--iter-start
+                     tree (- start (if insertion 1 0)) (+ end (if insertion 1 0)) 0))
+                (acc nil)
+                (node nil))
+            (while (setq node (nelisp-itree--iter-next it))
+              (let ((obegin (nelisp-itn-begin node))
+                    (oend (nelisp-itn-end node)))
+                (when (and insertion (or (eql start obegin) (eql end obegin)))
+                  (let ((prop (nelisp-ov--get (nelisp-itn-ov node) 'insert-in-front-hooks)))
+                    (when prop (setq acc (cons (cons prop (nelisp-itn-ov node)) acc)))))
+                (when (and insertion (or (eql start oend) (eql end oend)))
+                  (let ((prop (nelisp-ov--get (nelisp-itn-ov node) 'insert-behind-hooks)))
+                    (when prop (setq acc (cons (cons prop (nelisp-itn-ov node)) acc)))))
+                (when (and (> end obegin) (< start oend))
+                  (let ((prop (nelisp-ov--get (nelisp-itn-ov node) 'modification-hooks)))
+                    (when prop (setq acc (cons (cons prop (nelisp-itn-ov node)) acc)))))))
+            (setq nelisp-ov--last-hooks (nreverse acc))))))
+    (let ((entries nelisp-ov--last-hooks))
+      (while entries
+        (let ((functions (car (car entries)))
+              (ov (cdr (car entries))))
+          (when (eq (nelisp-ov--buffer ov) b)
+            (while (consp functions)
+              (if (null arg3)
+                  (funcall (car functions) ov after arg1 arg2)
+                (funcall (car functions) ov after arg1 arg2 arg3))
+              (setq functions (cdr functions)))))
+        (setq entries (cdr entries))))))
+
+(unless (boundp 'inhibit-modification-hooks)
+  (defvar inhibit-modification-hooks nil
+    "Non-nil inhibits the buffer change hooks, including overlay modification hooks."))
+
+(defun nelisp-ov--before-change (b start end)
+  "The overlay half of GNU `signal_before_change' for [START, END) in B."
+  (when (and (nelisp-buffer-overlays b) (not inhibit-modification-hooks))
+    (let ((inhibit-modification-hooks t))
+      (nelisp-ov--report-modification b start end nil start end nil))))
+
+(defun nelisp-ov--after-change (b charpos lendel lenins)
+  "The overlay half of GNU `signal_after_change'."
+  (when (and (nelisp-buffer-overlays b) (not inhibit-modification-hooks))
+    (let ((inhibit-modification-hooks t))
+      (nelisp-ov--report-modification b charpos (+ charpos lenins) t
+                                      charpos (+ charpos lenins) lendel))))
+
+(defun nelisp-ov--adjust-replace (b from old new)
+  "adjust_markers_for_replace, overlay part: OLD characters at FROM became NEW."
+  (nelisp-ov--adjust-insert b (+ from old) new t)
+  (nelisp-ov--adjust-delete b from old))
+
+(defun nelisp-ov--replace-range (b from to text)
+  "Replace [FROM, TO) with TEXT the way GNU `replace_range' treats overlays.
+The insertion goes after the old text and counts as before-markers, then
+the old text is deleted, so an overlay that covered the old text covers the
+new text.  Point ends after TEXT."
+  (nelisp-ov--before-change b from to)
+  (let ((nelisp-ov--inhibit-adjust t)
+        (inhibit-modification-hooks t))
+    (goto-char from)
+    (delete-region from to)
+    (insert text))
+  (nelisp-ov--adjust-replace b from (- to from) (length text))
+  (nelisp-ov--after-change b from (- to from) (length text)))
+
+(defun nelisp-ov--case-after (b low ohigh nhigh old)
+  "Report the change a case operation made to [LOW, OHIGH), now [LOW, NHIGH)."
+  (let* ((new (nelisp-buffer-substring low nhigh b))
+         (olen (length old))
+         (nlen (length new))
+         (m (min olen nlen))
+         (p 0))
+    (while (and (< p m) (eq (aref old p) (aref new p)))
+      (setq p (1+ p)))
+    (when (or (< p olen) (< p nlen))
+      (let ((s 0)
+            (m2 (- m p)))
+        (while (and (< s m2) (eq (aref old (- olen 1 s)) (aref new (- nlen 1 s))))
+          (setq s (1+ s)))
+        (nelisp-ov--after-change b (+ low p) (- olen p s) (- nlen p s))))))
 
 (defvar nelisp-buffer--registry
   ;; A raw native table: policy adoption preserves the raw leaf's
@@ -12338,6 +13949,32 @@ explicitly instead, see the section header comment above); kept so
   (setq nelisp-buffer--order nil)
   (setq nelisp-buffer--current nil))
 
+(defvar nelisp-buffer--new-mode nil
+  "nil until the first buffer is made, then `fast' or `keyword'.")
+(defun nelisp-buffer--new-fast (name)
+  "Positional equivalent of (nelisp-buffer--make :name NAME)."
+  (nelisp--make-record 'nelisp-buffer name "" "" nil nil nil nil nil nil nil 0 nil 0 0 nil nil))
+(defun nelisp-buffer--new (name)
+  "Return a fresh empty `nelisp-buffer' named NAME.
+The keyword constructor parses a plist per slot and costs about 60
+microseconds, the dominant part of creating a buffer, so the positional
+form is used.  It must track the slot list of `nelisp-buffer': the first
+call checks it against the keyword constructor and falls back to that
+constructor if they ever disagree."
+  (let ((mode nelisp-buffer--new-mode))
+    (unless mode
+      ;; Compare slot by slot: `equal' on two records is not reliable this
+      ;; early in the prelude (it answered nil for identical records).
+      (let* ((a (nelisp-buffer--new-fast "x")) (b (nelisp-buffer--make :name "x"))
+             (i 0) (same (= (length a) (length b))))
+        (while (and same (< i (length a)))
+          (unless (equal (aref a i) (aref b i)) (setq same nil))
+          (setq i (1+ i)))
+        (setq mode (setq nelisp-buffer--new-mode (if same 'fast 'keyword)))))
+    (if (eq mode 'fast)
+        (nelisp-buffer--new-fast name)
+      (nelisp-buffer--make :name name))))
+
 (defun nelisp-generate-new-buffer (name)
   "Return a fresh `nelisp-buffer', uniquifying NAME via `<N>' suffix."
   (let* ((base name)
@@ -12346,7 +13983,7 @@ explicitly instead, see the section header comment above); kept so
     (while (gethash final nelisp-buffer--registry)
       (setq count (1+ count))
       (setq final (format "%s<%d>" base count)))
-    (let ((buf (nelisp-buffer--make :name final)))
+    (let ((buf (nelisp-buffer--new final)))
       (puthash final buf nelisp-buffer--registry)
       (setq nelisp-buffer--order (cons buf nelisp-buffer--order))
       buf)))
@@ -12354,7 +13991,7 @@ explicitly instead, see the section header comment above); kept so
 (defun nelisp-get-buffer-create (name)
   "Return the buffer named NAME, creating it if absent."
   (or (gethash name nelisp-buffer--registry)
-      (let ((buf (nelisp-buffer--make :name name)))
+      (let ((buf (nelisp-buffer--new name)))
         (puthash name buf nelisp-buffer--registry)
         (setq nelisp-buffer--order (cons buf nelisp-buffer--order))
         buf)))
@@ -12441,14 +14078,21 @@ gap actually at point."
 (defun nelisp-kill-buffer (buf)
   "Remove BUF from the registry.  Returns t on success."
   (let ((name (nelisp-buffer-name buf)))
-    (when (gethash name nelisp-buffer--registry)
+    (when (eq (gethash name nelisp-buffer--registry) buf)
       (remhash name nelisp-buffer--registry)
       (setq nelisp-buffer--order (delq buf nelisp-buffer--order))
+      (when (nelisp-buffer-overlays buf)
+        (nelisp-ov--delete-all buf))
       (remhash buf nelisp-buffer--text-cache)
       (remhash buf nelisp-buffer--tick)
       (remhash buf nelisp-buffer--pending-point)
       (remhash buf nelisp-buffer--blen-cache)
       (remhash buf nelisp-buffer--size-cache)
+      (nelisp-buffer--detach-markers buf)
+      ;; GNU Fkill_buffer reset_buffer_local_variables (b, 1): the killed
+      ;; buffer's locals go with it, and their cells are recycled.
+      (when (fboundp 'nelisp-buffer-local--kill-buffer-locals)
+        (nelisp-buffer-local--kill-buffer-locals buf))
       (when (eq nelisp-buffer--current buf)
         (setq nelisp-buffer--current nil))
       t)))
@@ -12642,68 +14286,21 @@ The character before POS sits at POS - 2 in the 0-based string."
            (t
             (setf (nelisp-marker-position m) start))))))))
 
-(defun nelisp-buffer--shift-overlays-on-insert (buf at inserted-len)
-  "Update overlay endpoints when INSERTED-LEN chars land at AT."
-  (dolist (o (nelisp-buffer-overlays buf))
-    (when (nelisp-overlay-p o)
-      (let ((s (nelisp-overlay-start o))
-            (e (nelisp-overlay-end o)))
-        (cond
-         ((< s at) nil)
-         ((and (= s at) (null (nelisp-overlay-front-advance o))) nil)
-         (t (setf (nelisp-overlay-start o) (+ s inserted-len))))
-        (cond
-         ((< e at) nil)
-         ((and (= e at) (null (nelisp-overlay-rear-advance o))) nil)
-         (t (setf (nelisp-overlay-end o) (+ e inserted-len))))))))
-
-(defun nelisp-buffer--shift-overlays-on-delete (buf start end)
-  "Collapse overlay endpoints falling in [START, END] to START; shift
-endpoints past END backwards by (END - START)."
-  (let ((delta (- end start)))
-    (dolist (o (nelisp-buffer-overlays buf))
-      (when (nelisp-overlay-p o)
-        (let ((s (nelisp-overlay-start o))
-              (e (nelisp-overlay-end o)))
-          (setf (nelisp-overlay-start o)
-                (cond
-                 ((<= s start) s)
-                 ((>= s end) (- s delta))
-                 (t start)))
-          (setf (nelisp-overlay-end o)
-                (cond
-                 ((<= e start) e)
-                 ((>= e end) (- e delta))
-                 (t start))))))))
-
 (defun nelisp-buffer--shift-text-properties-on-insert (buf at len)
-  "Expand text-property intervals straddling AT; shift those past AT."
-  (dolist (ival (nelisp-buffer-text-properties buf))
-    (let ((s (nth 0 ival))
-          (e (nth 1 ival)))
-      (cond ((< s at) nil)
-            (t (setcar ival (+ s len))))
-      (cond ((< e at) nil)
-            ((= e at) nil)
-            (t (setcar (cdr ival) (+ e len)))))))
+  "Grow B's intervals for LEN characters inserted at 1-based AT, the new text
+inheriting by stickiness (GNU offset_intervals)."
+  (let ((root (nelisp-buffer-text-properties buf)))
+    (when root
+      (setf (nelisp-buffer-text-properties buf)
+            (nelisp--tp-adjust-insert root (1- at) len)))))
 
 (defun nelisp-buffer--shift-text-properties-on-delete (buf start end)
-  "Collapse text-property intervals within [START, END] and shift later
-ones."
-  (let ((delta (- end start)))
-    (dolist (ival (nelisp-buffer-text-properties buf))
-      (let ((s (nth 0 ival))
-            (e (nth 1 ival)))
-        (setcar ival
-                (cond
-                 ((<= s start) s)
-                 ((>= s end) (- s delta))
-                 (t start)))
-        (setcar (cdr ival)
-                (cond
-                 ((<= e start) e)
-                 ((>= e end) (- e delta))
-                 (t start)))))))
+  "Drop the intervals' share of [START, END) (1-based) of B (GNU
+adjust_intervals_for_deletion)."
+  (let ((root (nelisp-buffer-text-properties buf)))
+    (when root
+      (setf (nelisp-buffer-text-properties buf)
+            (nelisp--tp-delete root (1- start) (1- end))))))
 
 (defun nelisp-goto-char (pos &optional buf)
   "Move point to POS in BUF.  POS is clamped into [point-min,
@@ -12719,96 +14316,41 @@ Does not bump the tick: the concatenated text is unchanged."
           (if (= clamped (1+ (nelisp-buffer-blen b))) nil clamped))
     clamped))
 
-;; GNU graft_intervals_into_buffer: the properties of an inserted string belong to
-;; the buffer (its property list), not to the buffer's text.  The native `concat'
-;; that appends TEXT to the gap string copies TEXT's intervals onto the result
-;; (GNU concat_to_string), so a gap string built that way carries them.  That is
-;; wrong three ways: every later `concat' and `substring' of the gap string copies
-;; its intervals again, interval by interval in Lisp, so n propertized inserts cost
-;; O(n^2) (800 inserts: 14.8 s against 0.35 s); every intermediate gap string stays
-;; alive in the identity table `nelisp--tp-string-properties'; and the properties
-;; the buffer is later given or loses (`remove-text-properties') never reach them,
-;; so `buffer-substring' returned stale ones.  The gap string stays plain text
-;; and the intervals move into the buffer's list at AT (1-based), replacing
-;; whatever `nelisp-buffer--shift-text-properties-on-insert' extended over the new
-;; text: a plain `insert' does not inherit.
-(defun nelisp-buffer--graft-string-properties (b at text)
-  "Move TEXT's intervals, copied onto B's gap string by `concat', into B's
-property list at 1-based position AT."
-  (let ((intervals (gethash text nelisp--tp-string-properties)))
-    (when intervals
-      (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil)
-      ;; The list is sorted and disjoint and has been shifted for this insertion
-      ;; already, so the only interval that can overlap [AT, END) is one that the
-      ;; shift extended over the new text: it is split around it.  One pass, no
-      ;; `nelisp--tp-rebuild', because that is O(list) per call and runs per insert.
-      (let ((end (+ at (length text))) (tail (nelisp-buffer-text-properties b)) head after)
-        (while (and tail (<= (nth 1 (car tail)) at))
-          (push (car tail) head)
-          (setq tail (cdr tail)))
-        (when (and tail (< (nth 0 (car tail)) end))
-          (let* ((iv (car tail)) (s (nth 0 iv)) (e (nth 1 iv)) (plist (nth 2 iv)))
-            (when (< s at) (push (list s at plist) head))
-            (when (> e end) (setq after (list (list end e plist))))
-            (setq tail (cdr tail))))
-        (dolist (iv intervals)
-          (push (list (+ at (nth 0 iv)) (+ at (nth 1 iv)) (copy-sequence (nth 2 iv))) head))
-        (setf (nelisp-buffer-text-properties b) (nconc (nreverse head) after tail))))))
-
-;; GNU keeps a buffer's intervals in a balanced tree whose nodes carry lengths, so offset_intervals and
-;; graft_intervals_into_buffer find the insertion point and shift what follows in O(log n).  The list here holds absolute
-;; positions, so a general insertion still walks it.  The case that matters most is text added after every interval,
-;; i.e. at the end of the buffer (a buffer built by successive inserts): then nothing shifts and the grafted intervals
-;; follow the last one, so the insertion needs the last cons and no walk.  GNU does not merge neighbours with equal
-;; plists here (two propertized inserts give two intervals), and neither does this.
-(defun nelisp-buffer--tp-last (b)
-  "Return the last cons of B's interval list, or nil when B has no intervals.
-The cons is remembered in B's `tp-tail' slot as (HEAD . LAST) and trusted while HEAD is still the first cons of
-the list and LAST still has no successor.  A writer that stores a new list (a rebuild, a property function,
-`erase-buffer', an indirect buffer's publication) fails the first test; one that appends after LAST in place, other
-than `nelisp-buffer--tp-append', which refreshes the pair, fails the second; the list is then walked once.  What this
-relies on: nothing removes a tail cons from the list in place while keeping the list's first cons.  The insert and
-delete passes only move positions with `setcar' on the intervals, and nothing else in the prelude or the library
-cuts the list."
-  (let ((list (nelisp-buffer-text-properties b)))
-    (when list
-      (let ((cache (nelisp-buffer-tp-tail b)))
-        (if (and (consp cache) (eq (car cache) list) (null (cdr (cdr cache))))
-            (cdr cache)
-          (let ((last list))
-            (while (cdr last) (setq last (cdr last)))
-            (setf (nelisp-buffer-tp-tail b) (cons list last))
-            last))))))
-
-(defun nelisp-buffer--tp-append (b at text last)
-  "Append TEXT's intervals, shifted to 1-based AT, after the list cons LAST of B's intervals.
-LAST is nil when B has none.  The result is what `nelisp-buffer--graft-string-properties' builds when AT is at or
-after the end of every interval."
-  (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil)
-  (let (new)
-    (dolist (iv (gethash text nelisp--tp-string-properties))
-      (push (list (+ at (nth 0 iv)) (+ at (nth 1 iv)) (copy-sequence (nth 2 iv))) new))
-    (setq new (nreverse new))
-    (let ((end new))
-      (while (cdr end) (setq end (cdr end)))
-      (if last
-          (setcdr last new)
-        (setf (nelisp-buffer-text-properties b) new))
-      (setf (nelisp-buffer-tp-tail b) (cons (nelisp-buffer-text-properties b) end)))))
-
+;; GNU graft_intervals_into_buffer: the properties of an inserted string belong to the
+;; buffer's interval tree, not to its text.  The native `concat' that appends TEXT to the gap
+;; string copies TEXT's intervals onto the result, so they are cleared from it again here and
+;; grafted into the buffer at AT.  A plain `insert' gives the new text no properties; only
+;; `insert-and-inherit' (`nelisp--tp-inherit') lets it inherit by stickiness.
 (defun nelisp-buffer--tp-after-insert (b at n text)
   "Update B's intervals for the N characters of TEXT just inserted at 1-based AT.
-First the intervals at or after AT move (GNU offset_intervals), then TEXT's own intervals are grafted in."
-  (let* ((list (nelisp-buffer-text-properties b))
-         (last (and list (nelisp-buffer--tp-last b))))
-    (if (or (null list)
-            (let ((iv (car last)))
-              (and (< (nth 0 iv) (nth 1 iv)) (<= (nth 1 iv) at))))
-        (when (gethash text nelisp--tp-string-properties)
-          (nelisp-buffer--tp-append b at text last))
-      (nelisp-buffer--shift-text-properties-on-insert b at n)
-      (when (gethash text nelisp--tp-string-properties)
-        (nelisp-buffer--graft-string-properties b at text)))))
+GNU offset_intervals followed by graft_intervals_into_buffer: the properties of
+TEXT belong to the buffer's interval tree, not to its text; a plain `insert' does
+not inherit, `insert-and-inherit' does."
+  (let* ((root (nelisp-buffer-text-properties b))
+         (src (gethash text nelisp--tp-string-properties))
+         (inherit nelisp--tp-inherit)
+         (pos (1- at)) (size (nelisp-buffer-len b)))
+    (when src (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil))
+    (when root (setq root (nelisp--tp-pad root (- size n))))
+    (cond (root
+           (setq root (if inherit (nelisp--tp-adjust-insert root pos n)
+                        (nelisp--tp-insert-nil root pos n))))
+          (src (setq root (nelisp--tp-node size nil))))
+    (when (and root src)
+      (setq root (nelisp--tp-graft root pos src n inherit)))
+    (setf (nelisp-buffer-text-properties b) root)))
+
+(unless (fboundp 'insert-and-inherit)
+  (defun insert-and-inherit (&rest args)
+    "Insert the arguments at point, the text inheriting sticky properties."
+    (let ((nelisp--tp-inherit t))
+      (apply #'insert args))))
+
+(unless (fboundp 'insert-before-markers-and-inherit)
+  (defun insert-before-markers-and-inherit (&rest args)
+    "Insert the arguments before markers, the text inheriting sticky properties."
+    (let ((nelisp--tp-inherit t))
+      (apply #'insert-before-markers args))))
 
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
@@ -12825,7 +14367,10 @@ intervals `concat' copies onto the gap string are cleared right after."
     (let* ((blen (nelisp-buffer-blen b))
            (at (1+ blen))
            (n (length text))
-           (propertized (gethash text nelisp--tp-string-properties)))
+           (propertized (gethash text nelisp--tp-string-properties))
+           (ovt (nelisp-buffer-overlays b)))
+      (when ovt
+        (nelisp-ov--before-change b at at))
       (if propertized
           (progn
             (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
@@ -12842,10 +14387,12 @@ intervals `concat' copies onto the gap string are cleared right after."
       ;; Empty metadata is the common case; skip the interpreted helpers then.
       (when (nelisp-buffer-markers b)
         (nelisp-buffer--shift-markers-on-insert b at n))
-      (when (nelisp-buffer-overlays b)
+      (when ovt
         (nelisp-buffer--shift-overlays-on-insert b at n))
       (when (or propertized (nelisp-buffer-text-properties b))
-        (nelisp-buffer--tp-after-insert b at n text))))
+        (nelisp-buffer--tp-after-insert b at n text))
+      (when ovt
+        (nelisp-ov--after-change b at 0 n))))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
@@ -12856,9 +14403,12 @@ intervals `concat' copies onto the gap string are cleared right after."
                       (nelisp-buffer-blen b)))
          (point-before (or (nelisp-buffer-pend b) (1+ blen)))
          (s (min start end))
-         (e (max start end)))
+         (e (max start end))
+         (ovt (nelisp-buffer-overlays b)))
     (when (or (< s 1) (> e (1+ len)))
       (signal 'args-out-of-range (list start end)))
+    (when (and ovt (< s e))
+      (nelisp-ov--before-change b s e))
     (let* ((si (1- s))
            (ei (1- e))
            (delta (- e s))
@@ -12901,16 +14451,22 @@ intervals `concat' copies onto the gap string are cleared right after."
       (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
       (when (nelisp-buffer-markers b)
         (nelisp-buffer--shift-markers-on-delete b s e))
-      (when (nelisp-buffer-overlays b)
+      (when ovt
         (nelisp-buffer--shift-overlays-on-delete b s e))
       (when (nelisp-buffer-text-properties b)
         (nelisp-buffer--shift-text-properties-on-delete b s e))
-      (nelisp-goto-char new-point b)))
+      (nelisp-goto-char new-point b)
+      (when (and ovt (< s e))
+        (nelisp-ov--after-change b s delta 0))))
   nil)
 
 (defun nelisp-erase-buffer (&optional buf)
   "Clear BUF entirely.  Markers / overlays collapse to `point-min'."
-  (let ((b (nelisp-buffer--ambient buf)))
+  (let* ((b (nelisp-buffer--ambient buf))
+         (oldlen (nelisp-buffer-len b))
+         (ovt (nelisp-buffer-overlays b)))
+    (when (and ovt (> oldlen 0))
+      (nelisp-ov--before-change b 1 (1+ oldlen)))
     (setf (nelisp-buffer-before-gap b) "")
     (setf (nelisp-buffer-after-gap b) "")
     (setf (nelisp-buffer-ins b) nil)
@@ -12926,11 +14482,10 @@ intervals `concat' copies onto the gap string are cleared right after."
     (nelisp-buffer--do-markers (m b)
       (when (nelisp-marker-p m)
         (setf (nelisp-marker-position m) 1)))
-    (dolist (o (nelisp-buffer-overlays b))
-      (when (nelisp-overlay-p o)
-        (setf (nelisp-overlay-start o) 1)
-        (setf (nelisp-overlay-end o) 1)))
-    (setf (nelisp-buffer-text-properties b) nil))
+    (setf (nelisp-buffer-text-properties b) nil)
+    (when (and ovt (> oldlen 0))
+      (nelisp-ov--adjust-delete b 1 oldlen)
+      (nelisp-ov--after-change b 1 oldlen 0)))
   nil)
 
 (defun nelisp-buffer-modified-p (&optional buf)
@@ -13017,6 +14572,11 @@ intervals `concat' copies onto the gap string are cleared right after."
   (setf (nelisp-marker-buffer marker) nil)
   nil)
 
+;; ---- overlay API under the `nelisp-' names (overlay1) ------------------
+;; The engine is in the overlay section near the top of this model; these
+;; are the `nelisp-' entry points with the explicit BUF argument.  The
+;; standard names are defined further down, after `with-current-buffer'.
+
 (defun nelisp-overlayp (obj)
   "Return non-nil when OBJ is a `nelisp-overlay'."
   (nelisp-overlay-p obj))
@@ -13024,86 +14584,74 @@ intervals `concat' copies onto the gap string are cleared right after."
 (defun nelisp-make-overlay (start end &optional buf
                                   front-advance rear-advance)
   "Create an overlay covering [START, END) in BUF."
-  (let* ((b (nelisp-buffer--ambient buf))
-         (o (nelisp-overlay--make :buffer b :start start :end end
-                                  :front-advance front-advance
-                                  :rear-advance rear-advance)))
-    (push o (nelisp-buffer-overlays b))
-    o))
+  (nelisp-ov--make-overlay (nelisp-buffer--ambient buf) start end
+                           front-advance rear-advance))
 
 (defun nelisp-delete-overlay (o)
-  "Unlink O from its buffer's overlay list.  Returns nil."
-  (when-let* ((b (nelisp-overlay-buffer o)))
-    (setf (nelisp-buffer-overlays b)
-          (delq o (nelisp-buffer-overlays b))))
-  (setf (nelisp-overlay-buffer o) nil)
-  nil)
+  "Detach O from its buffer.  Returns nil."
+  (nelisp-ov--check o)
+  (nelisp-ov--delete o))
 
 (defun nelisp-overlay-put (o prop val)
-  "Store (PROP . VAL) on overlay O.  Returns VAL."
-  (let ((cell (assq prop (nelisp-overlay-props o))))
-    (if cell
-        (setcdr cell val)
-      (push (cons prop val) (nelisp-overlay-props o))))
-  val)
+  "Store PROP and VAL on overlay O.  Returns VAL."
+  (nelisp-ov--put o prop val))
 
 (defun nelisp-overlay-get (o prop)
   "Return the value of PROP stored on O, or nil."
-  (cdr (assq prop (nelisp-overlay-props o))))
+  (nelisp-ov--check o)
+  (nelisp-ov--get o prop))
+
+(defun nelisp-overlay-buffer (o)
+  "Return the buffer of overlay O, or nil when it is detached."
+  (nelisp-ov--check o)
+  (nelisp-ov--buffer o))
+
+(defun nelisp-overlay-start (o)
+  "Return the start of overlay O, or nil when it is detached."
+  (nelisp-ov--check o)
+  (and (nelisp-ov--buffer o) (nelisp-ov--start o)))
+
+(defun nelisp-overlay-end (o)
+  "Return the end of overlay O, or nil when it is detached."
+  (nelisp-ov--check o)
+  (and (nelisp-ov--buffer o) (nelisp-ov--stop o)))
 
 (defun nelisp-overlays-at (pos &optional buf)
-  "Return the list of overlays in BUF whose range covers POS."
-  (let ((b (nelisp-buffer--ambient buf))
-        result)
-    (dolist (o (nelisp-buffer-overlays b))
-      (when (nelisp-overlayp o)
-        (when (and (>= pos (nelisp-overlay-start o))
-                   (< pos (nelisp-overlay-end o)))
-          (push o result))))
-    (nreverse result)))
+  "Return the overlays in BUF that cover the character at POS."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (car (nelisp-ov--in b pos (1+ pos) nil t))))
 
 (defun nelisp-overlays-in (start end &optional buf)
-  "Return the list of overlays in BUF overlapping [START, END)."
-  (let ((b (nelisp-buffer--ambient buf))
-        result)
-    (dolist (o (nelisp-buffer-overlays b))
-      (when (nelisp-overlayp o)
-        (let ((s (nelisp-overlay-start o))
-              (e (nelisp-overlay-end o)))
-          (when (and (< s end) (> e start))
-            (push o result)))))
-    (nreverse result)))
+  "Return the overlays in BUF that overlap [START, END], empty ones included."
+  (let ((b (nelisp-buffer--ambient buf)))
+    (car (nelisp-ov--in b start end t nil))))
 
 ;; ---- text-property engine (Doc 210) -----------------------------------
-;; Intervals are `(START END PLIST)' triples forming a non-overlapping
-;; partition of whichever coordinate space the caller is in -- 1-based
-;; for a BUFFER (matching `point-min'/`point-max'), 0-based for a STRING
-;; (matching `length'; strings cannot be narrowed).  A position not
-;; covered by any interval has an implicit empty PLIST, so an entirely
-;; property-free object is simply an empty (or absent) interval list --
-;; there is no need to store a "no properties" placeholder interval.
+;; GNU keeps the text properties of a string or buffer in one balanced tree of
+;; intervals (intervals.c), every node carrying its own length and the total length
+;; of its subtree, so that a position is found by descending, an insertion or a
+;; deletion adjusts the nodes on one path, and the changes of a property are found
+;; by walking the intervals, never the positions.  The tree here is a treap keyed
+;; implicitly by position: a node is a vector [LEFT RIGHT LEN PLIST TOTAL PRIO].
+;; The root covers [0, TOTAL) of the object without gaps, 0-based for a STRING and
+;; (position - 1) for a BUFFER, and equals `length' of the string (the buffer's
+;; size); an object that has no intervals has no root (nil).  An interval with an
+;; empty PLIST is a real interval, and neighbours with equal plists are merged only
+;; where GNU merges them (`set-text-properties', insertion stickiness), so the
+;; boundaries printed as #("..." 0 2 (a 1) 2 4 (a 1)) are GNU's.
 ;;
-;; Buffers keep their intervals in the existing `nelisp-buffer-text-
-;; properties' struct slot (mutated in place by `nelisp-buffer--shift-
-;; text-properties-on-insert/-delete' below on every `nelisp-insert'/
-;; `nelisp-delete-region' -- unchanged by this doc).  Strings have no
-;; field of their own to hold one (Doc 200's unibyte/multibyte tags
-;; leave no room), so `nelisp--tp-string-properties' is a side table
-;; keyed by the string's own identity (`eq'); a plain string never
-;; propertized never appears in it.
-;;
-;; Every mutator funnels through `nelisp--tp-rebuild', which cuts the
-;; existing partition at the operation's START/END, replaces the
-;; covered sub-ranges via an UPDATER callback, and re-merges adjacent
-;; sub-ranges whose PLISTs name the same properties with `eq'-identical
-;; values -- the same rule Emacs's own interval code uses to decide two
-;; intervals may merge (`textprop.c'/`intervals.c' compare with EQ, not
-;; `equal').  That is also why boundary-scan and merge-decision helpers
-;; below compare with `eq': `next-single-property-change' et al. must
-;; not report a change where Emacs's own `eq'-based interval merge
-;; would already have produced one interval.
+;; Buffers keep the root in the `nelisp-buffer-text-properties' struct slot
+;; (adjusted by `nelisp-buffer--tp-after-insert' and
+;; `nelisp-buffer--shift-text-properties-on-delete' on every
+;; `nelisp-insert'/`nelisp-delete-region').  Strings have no field of their own to
+;; hold one, so `nelisp--tp-string-properties' is a side table keyed by the
+;; string's own identity (`eq'); a plain string never propertized never appears in
+;; it.  The mutators are ports of textprop.c's add_text_properties_1,
+;; Fremove_text_properties and set_text_properties, which split an interval only
+;; where it changes.
+
 (defvar nelisp--tp-string-properties (make-hash-table :test 'eq)
-  "STRING (by identity) -> its text-property interval list, 0-based.")
+  "STRING (by identity) -> the root of its text-property interval tree.")
 
 ;; GNU fns.c:951-1021 (concat_to_string) tests string_intervals (arg) inside
 ;; its native copy loop and calls add_text_properties_from_list only for a
@@ -13121,59 +14669,6 @@ intervals `concat' copies onto the gap string are cleared right after."
 ;; substring consult no marker.
 (unless (fboundp 'nelisp--string-mark-intervals)
   (defun nelisp--string-mark-intervals (_string flag) flag))
-(defun nelisp--tp-copy-range (source from to shift)
-  (let (result)
-    (dolist (iv (gethash source nelisp--tp-string-properties))
-      (let ((start (max from (nth 0 iv))) (end (min to (nth 1 iv))))
-        (when (< start end)
-          (push (list (+ shift (- start from)) (+ shift (- end from))
-                      (copy-sequence (nth 2 iv))) result))))
-    (nreverse result)))
-(defun nelisp--tp-cat-props (result &rest sources)
-  "Copy the intervals of the strings in SOURCES onto RESULT, concat's output."
-  (let ((position 0) intervals)
-    (dolist (source sources)
-      (when (stringp source)
-        (setq intervals
-              (append intervals (nelisp--tp-copy-range
-                                 source 0 (length source) position))))
-      (setq position (+ position (length source))))
-    (when intervals (nelisp--tp-set-intervals result intervals))
-    result))
-(defun nelisp--tp-sub-props (result source &optional from to)
-  "Copy the intervals of SOURCE's [FROM, TO) onto RESULT, substring's output."
-  (when (stringp source)
-    (let* ((n (length source)) (start (or from 0)) (end (or to n))
-           (intervals (nelisp--tp-copy-range
-                       source (if (< start 0) (+ n start) start)
-                       (if (< end 0) (+ n end) end) 0)))
-      (when intervals (nelisp--tp-set-intervals result intervals))))
-  result)
-
-(defun nelisp--tp-plist-at (pos intervals)
-  "Return the PLIST covering POS in INTERVALS, or nil if none does."
-  (catch 'nelisp--tp-found
-    (dolist (iv intervals)
-      (when (and (>= pos (nth 0 iv)) (< pos (nth 1 iv)))
-        (throw 'nelisp--tp-found (nth 2 iv))))
-    nil))
-
-(defun nelisp--tp-value-at (pos prop intervals)
-  "Return PROP's value at POS in INTERVALS, or nil."
-  (plist-get (nelisp--tp-plist-at pos intervals) prop))
-
-(defun nelisp--tp-plist-value-eq (a b)
-  "Return non-nil if A and B name the same properties with `eq'
--identical values -- Emacs's own interval-merge/boundary-change rule."
-  (and (= (length a) (length b))
-       (catch 'nelisp--tp-differ
-         (let ((l a))
-           (while l
-             (let ((m (plist-member b (car l))))
-               (unless (and m (eq (cadr m) (cadr l)))
-                 (throw 'nelisp--tp-differ nil)))
-             (setq l (cddr l))))
-         t)))
 
 (defun nelisp--tp-plist-set (plist prop val)
   "Return a plist like PLIST with PROP set to VAL, sharing no structure
@@ -13197,71 +14692,521 @@ key, distinguishable from `put-text-property' PROP nil via
   (let (out (l plist))
     (while l
       (unless (memq (car l) keys)
-        (push (cadr l) out)
-        (push (car l) out))
+        (push (car l) out)
+        (push (cadr l) out))
       (setq l (cddr l)))
-    out))
+    (nreverse out)))
 
-(defun nelisp--tp-merge (intervals)
-  "Sort INTERVALS by START, drop empty-PLIST entries, and coalesce
-adjacent entries whose PLISTs are `nelisp--tp-plist-value-eq'."
-  (let ((sorted (sort (copy-sequence intervals)
-                       (lambda (a b) (< (nth 0 a) (nth 0 b)))))
-        result)
-    (dolist (iv sorted)
-      (when (nth 2 iv)
-        (if (and result
-                 (= (nth 1 (car result)) (nth 0 iv))
-                 (nelisp--tp-plist-value-eq (nth 2 (car result)) (nth 2 iv)))
-            (setcar (cdr (car result)) (nth 1 iv))
-          (push (list (nth 0 iv) (nth 1 iv) (nth 2 iv)) result))))
-    (nreverse result)))
+;; ---- tree core, range mutators and stickiness (GNU intervals.c, textprop.c) ----
 
-(defun nelisp--tp-rebuild (intervals start end updater)
-  "Return INTERVALS with UPDATER applied across [START, END).  UPDATER
-takes the PLIST currently covering a position in that range (nil if
-none) and returns its replacement (nil meaning \"no properties
-there\"); positions outside [START, END) are untouched.  A no-op when
-START >= END, matching Emacs (`put-text-property' etc. with an empty
-range change nothing)."
-  (if (>= start end)
-      intervals
-    ;; INTERVALS is sorted and nonoverlapping.  Emit the untouched pieces,
-    ;; updated pieces and gaps in order, without a boundary list or lookups.
-    (let ((pos start) pieces result)
-      (dolist (iv intervals)
-        (let ((s (car iv)) (e (cadr iv)) (pl (nth 2 iv)) new)
-          (when (< s start) (push (list s (min e start) pl) pieces))
-          (when (and (< pos end) (> s pos))
-            (setq new (funcall updater nil))
-            (when new (push (list pos (min s end) new) pieces))
-            (setq pos (min s end)))
-          (when (and (< s end) (> e start))
-            (setq new (funcall updater pl))
-            (when new (push (list (max s start) (min e end) new) pieces))
-            (setq pos (min e end)))
-          (when (> e end) (push (list (max s end) e pl) pieces))))
-      (when (< pos end)
-        (let ((new (funcall updater nil)))
-          (when new (push (list pos end new) pieces))))
-      ;; Coalesce in linear time, copying cells so the input is never mutated.
-      (dolist (iv (nreverse pieces))
-        (when (nth 2 iv)
-          (if (and result (= (cadr (car result)) (car iv))
-                   (nelisp--tp-plist-value-eq (nth 2 (car result)) (nth 2 iv)))
-              (setcar (cdr (car result)) (cadr iv))
-            (push iv result))))
-      (nreverse result))))
+(defvar nelisp--tp-seed 48271)
 
-(defun nelisp--tp-boundaries-between (intervals lo hi)
-  "Sorted, deduped INTERVALS start/end points strictly between LO and HI
--- the candidate positions where a merged property value can change."
-  (let (pts)
-    (dolist (iv intervals)
-      (let ((s (nth 0 iv)) (e (nth 1 iv)))
-        (when (and (> s lo) (< s hi)) (push s pts))
-        (when (and (> e lo) (< e hi)) (push e pts))))
-    (sort (delete-dups pts) #'<)))
+(defvar nelisp--tp-fs 0 "Start offset of the node found by `nelisp--tp-find'.")
+
+(defvar nelisp--tp-changed nil "Set by the range mutators when a plist changed.")
+
+(defvar nelisp--tp-inherit nil "Non-nil while `insert-and-inherit' inserts.")
+
+(defvar nelisp--tp-vs 0 "Tree offset of the start of the last validated range.")
+
+(defvar nelisp--tp-ve 0 "Tree offset of the end of the last validated range.")
+
+(defvar nelisp--tp-vabs 0 "Absolute (BEG-based) start of the last validated range.")
+
+(unless (boundp 'text-property-default-nonsticky)
+  (defvar text-property-default-nonsticky
+    '((composition . t) (syntax-table . t) (display . t))))
+
+(defun nelisp--tp-node (len plist)
+  "Return a fresh interval node of LEN characters carrying PLIST."
+  (setq nelisp--tp-seed (% (* nelisp--tp-seed 48271) 2147483647))
+  (vector nil nil len plist len nelisp--tp-seed))
+
+(defun nelisp--tp-fix (n)
+  "Recompute N's subtree total from its children and its own length."
+  (let ((l (aref n 0)) (r (aref n 1)))
+    (aset n 4 (+ (aref n 2) (if l (aref l 4) 0) (if r (aref r 4) 0)))
+    n))
+
+(defun nelisp--tp-join (a b)
+  "Concatenate the trees A and B (A before B)."
+  (cond ((null a) b)
+        ((null b) a)
+        ((> (aref a 5) (aref b 5))
+         (aset a 1 (nelisp--tp-join (aref a 1) b))
+         (nelisp--tp-fix a))
+        (t (aset b 0 (nelisp--tp-join a (aref b 0)))
+           (nelisp--tp-fix b))))
+
+(defun nelisp--tp-split (n k)
+  "Split N at offset K into (LEFT . RIGHT); LEFT covers [0, K).
+A node that straddles K is cut in two, GNU split_interval_left/right followed by
+copy_properties: the right part gets its own copy of the plist."
+  (if (null n)
+      (cons nil nil)
+    (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)))
+      (cond ((<= k lt)
+             (let ((r (nelisp--tp-split l k)))
+               (aset n 0 (cdr r))
+               (nelisp--tp-fix n)
+               (setcdr r n)
+               r))
+            ((>= k (+ lt len))
+             (let ((r (nelisp--tp-split (aref n 1) (- k lt len))))
+               (aset n 1 (car r))
+               (nelisp--tp-fix n)
+               (setcar r n)
+               r))
+            (t (let* ((cut (- k lt))
+                      (old-right (aref n 1))
+                      (rn (nelisp--tp-node (- len cut) (copy-sequence (aref n 3)))))
+                 ;; The right part gets a fresh priority: sharing N's would make
+                 ;; every piece cut from one interval a tie and degrade the tree.
+                 (aset n 1 nil)
+                 (aset n 2 cut)
+                 (nelisp--tp-fix n)
+                 (cons n (nelisp--tp-join rn old-right))))))))
+
+(defun nelisp--tp-cut (root k)
+  "Return ROOT with an interval boundary at offset K."
+  (let ((p (nelisp--tp-split root k)))
+    (nelisp--tp-join (car p) (cdr p))))
+
+(defun nelisp--tp-find (n k)
+  "Return the node containing offset K of the tree N (the last node when K is
+the total length) and leave its start offset in `nelisp--tp-fs'."
+  (let ((base 0) found)
+    (while (and n (not found))
+      (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)))
+        (cond ((< k (+ base lt)) (setq n l))
+              ((or (< k (+ base lt len)) (null (aref n 1)))
+               (setq nelisp--tp-fs (+ base lt) found n))
+              (t (setq base (+ base lt len) n (aref n 1))))))
+    found))
+
+(defun nelisp--tp-grow (n k delta)
+  "Add DELTA to the length of the node of N containing offset K (the last node
+when K is the total) and to the totals on the path to it.  Return N."
+  (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)) (r (aref n 1)))
+    (cond ((< k lt) (nelisp--tp-grow l k delta))
+          ((or (< k (+ lt len)) (null r)) (aset n 2 (+ len delta)))
+          (t (nelisp--tp-grow r (- k lt len) delta)))
+    (aset n 4 (+ (aref n 4) delta))
+    n))
+
+(defun nelisp--tp-leftmost (n)
+  (while (aref n 0) (setq n (aref n 0)))
+  n)
+
+(defun nelisp--tp-rightmost (n)
+  (while (aref n 1) (setq n (aref n 1)))
+  n)
+
+(defun nelisp--tp-walk (n base lo fn)
+  "Call FN with (START NODE) for each node of N, in order, that ends after LO;
+BASE is the offset of N.  Stop at the first non-nil answer of FN and return it."
+  (when (and n (> (+ base (aref n 4)) lo))
+    (let* ((l (aref n 0)) (s (+ base (if l (aref l 4) 0))))
+      (or (nelisp--tp-walk l base lo fn)
+          (and (> (+ s (aref n 2)) lo) (funcall fn s n))
+          (nelisp--tp-walk (aref n 1) (+ s (aref n 2)) lo fn)))))
+
+(defun nelisp--tp-walk-back (n base hi fn)
+  "Like `nelisp--tp-walk', but from the end, over the nodes starting before HI."
+  (when (and n (< base hi))
+    (let* ((l (aref n 0)) (s (+ base (if l (aref l 4) 0))))
+      (or (nelisp--tp-walk-back (aref n 1) (+ s (aref n 2)) hi fn)
+          (and (< s hi) (funcall fn s n))
+          (nelisp--tp-walk-back l base hi fn)))))
+
+(defun nelisp--tp-build-range (v lo hi depth maxd band)
+  (when (< lo hi)
+    (let* ((mid (/ (+ lo hi) 2)) (node (aref v mid)))
+      (setq nelisp--tp-seed (% (* nelisp--tp-seed 48271) 2147483647))
+      ;; A parent always draws from a higher band than its children (heap order).
+      (aset node 5 (+ (* (- maxd depth) band) (% nelisp--tp-seed band)))
+      (aset node 0 (nelisp--tp-build-range v lo mid (1+ depth) maxd band))
+      (aset node 1 (nelisp--tp-build-range v (1+ mid) hi (1+ depth) maxd band))
+      (nelisp--tp-fix node))))
+
+(defun nelisp--tp-build (nodes)
+  "A balanced tree from the list NODES of fresh childless nodes, in order, in O(n)."
+  (let* ((v (vconcat nodes)) (n (length v)) (maxd 1) (k n))
+    (while (> k 0) (setq maxd (1+ maxd) k (/ k 2)))
+    (nelisp--tp-build-range v 0 n 0 maxd (/ 2147483647 (1+ maxd)))))
+
+(defun nelisp--tp-pad (root total)
+  "Return ROOT adjusted to cover exactly TOTAL characters (nil when TOTAL <= 0)."
+  (cond ((<= total 0) nil)
+        ((null root) nil)
+        ((= (aref root 4) total) root)
+        ((< (aref root 4) total)
+         (nelisp--tp-join root (nelisp--tp-node (- total (aref root 4)) nil)))
+        (t (car (nelisp--tp-split root total)))))
+
+(defun nelisp--tp-pl-find (plist prop)
+  "Return the tail of PLIST whose car is PROP (compared with `eq'), or nil."
+  (while (and (consp plist) (not (eq (car plist) prop)))
+    (setq plist (cdr (cdr plist))))
+  (and (consp plist) plist))
+
+(defun nelisp--tp-textget (plist prop)
+  "GNU textget: PROP's value in PLIST, through `category' and the alias tables."
+  (if (null plist)
+      nil
+    (let ((tail plist) (fallback nil) (res nil) (found nil))
+      (while (and (consp tail) (not found))
+        (let ((tem (car tail)))
+          (cond ((eq prop tem) (setq res (car (cdr tail)) found t))
+                ((eq tem 'category)
+                 (let ((c (car (cdr tail))))
+                   (when (symbolp c) (setq fallback (get c prop)))))))
+        (unless found (setq tail (cdr (cdr tail)))))
+      (cond (found res)
+            (fallback fallback)
+            (t (let ((alias (and (boundp 'char-property-alias-alist)
+                                 (assq prop char-property-alias-alist))))
+                 (when alias
+                   (let ((l (cdr alias)))
+                     (while (and (null fallback) (consp l))
+                       (setq fallback (car (cdr (nelisp--tp-pl-find plist (car l))))
+                             l (cdr l)))))
+                 (when (and (null fallback) (boundp 'default-text-properties)
+                            (consp default-text-properties))
+                   (setq fallback (car (cdr (nelisp--tp-pl-find
+                                             default-text-properties prop)))))
+                 fallback))))))
+
+(defun nelisp--tp-plists-equal (a b use-equal)
+  "GNU intervals_equal_1 for the plists A and B: the same properties with
+`eq' (or `equal' when USE-EQUAL) values, in any order."
+  (cond ((and (null a) (null b)) t)
+        ((or (null a) (null b)) nil)
+        (t (let ((ok t) (la 0) (lb 0) (p a))
+             (while (and ok (consp p))
+               (let ((m (nelisp--tp-pl-find b (car p))))
+                 (if (and m (consp (cdr m))
+                          (if use-equal (equal (car (cdr m)) (car (cdr p)))
+                            (eq (car (cdr m)) (car (cdr p)))))
+                     (setq la (1+ la))
+                   (setq ok nil)))
+               (setq p (cdr (cdr p))))
+             (when ok
+               (setq p b)
+               (while (consp p) (setq lb (1+ lb) p (cdr (cdr p)))))
+             (and ok (= la lb))))))
+
+(defun nelisp--tp-validate-plist (list)
+  "GNU validate_plist: LIST itself, nil, or (LIST nil) for a non-list."
+  (cond ((null list) nil)
+        ((consp list)
+         (let ((tail list))
+           (while (consp tail)
+             (setq tail (cdr tail))
+             (unless (consp tail) (error "Odd length text property list"))
+             (setq tail (cdr tail))))
+         list)
+        (t (list list nil))))
+
+(defun nelisp--tp-has-all (props plist)
+  "Non-nil when PLIST has every property of PROPS with an `eq' value."
+  (let ((ok t) (p props))
+    (while (and ok (consp p))
+      (let ((m (nelisp--tp-pl-find plist (car p))))
+        (unless (and m (eq (car (cdr m)) (car (cdr p)))) (setq ok nil)))
+      (setq p (cdr (cdr p))))
+    ok))
+
+(defun nelisp--tp-has-some (keys plist plistp)
+  "Non-nil when PLIST has some property named by KEYS (a plist when PLISTP)."
+  (let ((found nil) (p keys))
+    (while (and (not found) (consp p))
+      (when (nelisp--tp-pl-find plist (car p)) (setq found t))
+      (setq p (if plistp (cdr (cdr p)) (cdr p))))
+    found))
+
+(defun nelisp--tp-add-props (props node)
+  "GNU add_properties on NODE: new properties are consed on the front, an
+existing property gets its value replaced in place.  Return non-nil on change."
+  (let ((changed nil) (p props))
+    (while (consp p)
+      (let* ((sym (car p)) (val (car (cdr p)))
+             (tail (nelisp--tp-pl-find (aref node 3) sym)))
+        (if tail
+            (unless (eq val (car (cdr tail)))
+              (setcar (cdr tail) val)
+              (setq changed t))
+          (aset node 3 (cons sym (cons val (aref node 3))))
+          (setq changed t)))
+      (setq p (cdr (cdr p))))
+    changed))
+
+(defun nelisp--tp-remove-props (keys plistp node)
+  "GNU remove_properties on NODE.  Return non-nil when something was removed."
+  (let ((out nil) (changed nil) (l (aref node 3)) (ks nil) (p keys))
+    (while (consp p)
+      (push (car p) ks)
+      (setq p (if plistp (cdr (cdr p)) (cdr p))))
+    (while (consp l)
+      (if (memq (car l) ks)
+          (setq changed t)
+        (push (car l) out)
+        (push (car (cdr l)) out))
+      (setq l (cdr (cdr l))))
+    (when changed (aset node 3 (nreverse out)))
+    changed))
+
+(defun nelisp--tp-add1 (n base s e key val)
+  "`nelisp--tp-add-props' of the single property KEY=VAL over the nodes of N that
+overlap [S, E), one recursion and no callback per node (the put-text-property case)."
+  (when (and n (> (+ base (aref n 4)) s) (< base e))
+    (let* ((l (aref n 0)) (st (+ base (if l (aref l 4) 0))) (len (aref n 2)))
+      (nelisp--tp-add1 l base s e key val)
+      (when (and (> (+ st len) s) (< st e))
+        (let ((pl (aref n 3)))
+          (while (and (consp pl) (not (eq (car pl) key)))
+            (setq pl (cdr (cdr pl))))
+          (if (consp pl)
+              (unless (eq (car (cdr pl)) val)
+                (setcar (cdr pl) val)
+                (setq nelisp--tp-changed t))
+            (aset n 3 (cons key (cons val (aref n 3))))
+            (setq nelisp--tp-changed t))))
+      (nelisp--tp-add1 (aref n 1) (+ st len) s e key val))))
+
+(defun nelisp--tp-add (root s e props)
+  "GNU add_text_properties_1 on the tree ROOT over [S, E), 0 <= S < E <= total.
+An interval is split at S or E only when it lacks some of PROPS (GNU splits
+no interval it does not change).  Return the new root and set `nelisp--tp-changed'."
+  (setq nelisp--tp-changed nil)
+  (let* ((first (nelisp--tp-find root s)) (fs nelisp--tp-fs)
+         (last (nelisp--tp-find root (1- e)))
+         (le (+ nelisp--tp-fs (aref last 2)))
+         (first-lacks (not (nelisp--tp-has-all props (aref first 3))))
+         (last-lacks (not (nelisp--tp-has-all props (aref last 3)))))
+    (when (and first-lacks (< fs s)) (setq root (nelisp--tp-cut root s)))
+    (when (and last-lacks (> le e)) (setq root (nelisp--tp-cut root e)))
+    (if (null (cdr (cdr props)))
+        (nelisp--tp-add1 root 0 s e (car props) (car (cdr props)))
+      (nelisp--tp-walk root 0 s
+                       (lambda (st n)
+                         (if (>= st e)
+                             t
+                           (when (nelisp--tp-add-props props n)
+                             (setq nelisp--tp-changed t))
+                           nil))))
+    root))
+
+(defun nelisp--tp-remove (root s e keys plistp)
+  "GNU Fremove_text_properties on the tree ROOT over [S, E).  KEYS is a plist
+when PLISTP, else a list of properties.  Set `nelisp--tp-changed'."
+  (setq nelisp--tp-changed nil)
+  (let* ((first (nelisp--tp-find root s)) (fs nelisp--tp-fs)
+         (last (nelisp--tp-find root (1- e)))
+         (le (+ nelisp--tp-fs (aref last 2)))
+         (first-has (nelisp--tp-has-some keys (aref first 3) plistp))
+         (last-has (nelisp--tp-has-some keys (aref last 3) plistp)))
+    (when (and first-has (< fs s)) (setq root (nelisp--tp-cut root s)))
+    (when (and last-has (> le e)) (setq root (nelisp--tp-cut root e)))
+    (nelisp--tp-walk root 0 s
+                     (lambda (st n)
+                       (if (>= st e)
+                           t
+                         (when (nelisp--tp-remove-props keys plistp n)
+                           (setq nelisp--tp-changed t))
+                         nil)))
+    root))
+
+(defun nelisp--tp-set (root s e props)
+  "GNU set_text_properties_1: [S, E) of ROOT becomes one interval with a copy of PROPS."
+  (let* ((p (nelisp--tp-split root s))
+         (q (nelisp--tp-split (cdr p) (- e s))))
+    (nelisp--tp-join (nelisp--tp-join (car p) (nelisp--tp-node (- e s) (copy-sequence props)))
+                     (cdr q))))
+
+(defun nelisp--tp-delete (root a b)
+  "GNU adjust_intervals_for_deletion: drop offsets [A, B) from ROOT; nil when
+nothing is left.  An interval shrinks, it is not cut in two."
+  (let ((tot (aref root 4)))
+    (cond ((>= a tot) root)
+          (t (when (> b tot) (setq b tot))
+             (if (and (= a 0) (= b tot))
+                 nil
+               (let* ((n (nelisp--tp-find root a)) (ns nelisp--tp-fs))
+                 (if (and (> a ns) (< b (+ ns (aref n 2))))
+                     (nelisp--tp-grow root a (- a b))
+                   (let* ((p (nelisp--tp-split root a))
+                          (q (nelisp--tp-split (cdr p) (- b a))))
+                     (nelisp--tp-join (car p) (cdr q))))))))))
+
+(defun nelisp--tp-tmem (sym set)
+  "GNU TMEM: SYM is in the list SET, or SET is a non-nil non-list."
+  (if (consp set) (and (memq sym set) t) (and set t)))
+
+(defun nelisp--tp-merge-sticky (pleft pright)
+  "GNU merge_properties_sticky: the plist new text between PLEFT and PRIGHT inherits."
+  (let ((props nil) (front nil) (rear nil)
+        (lfront (nelisp--tp-textget pleft 'front-sticky))
+        (lrear (nelisp--tp-textget pleft 'rear-nonsticky))
+        (rfront (nelisp--tp-textget pright 'front-sticky))
+        (rrear (nelisp--tp-textget pright 'rear-nonsticky))
+        (tail1 pright))
+    (while (consp tail1)
+      (let ((sym (car tail1)))
+        (unless (or (eq sym 'rear-nonsticky) (eq sym 'front-sticky))
+          (let* ((rval (car (cdr tail1)))
+                 (tail2 (nelisp--tp-pl-find pleft sym))
+                 (lpresent (and tail2 t))
+                 (lval (and tail2 (car (cdr tail2))))
+                 (tmp (assq sym text-property-default-nonsticky))
+                 (use-left (and lpresent
+                                (not (or (nelisp--tp-tmem sym lrear)
+                                         (and (consp tmp) (cdr tmp))))))
+                 (use-right (or (nelisp--tp-tmem sym rfront)
+                                (and (consp tmp) (null (cdr tmp))))))
+            (when (and use-left use-right)
+              (if (null lval) (setq use-left nil)
+                (when (null rval) (setq use-right nil))))
+            (cond (use-left
+                   (setq props (cons lval (cons sym props)))
+                   (when (nelisp--tp-tmem sym lfront) (setq front (cons sym front)))
+                   (when (nelisp--tp-tmem sym lrear) (setq rear (cons sym rear))))
+                  (use-right
+                   (setq props (cons rval (cons sym props)))
+                   (when (nelisp--tp-tmem sym rfront) (setq front (cons sym front)))
+                   (when (nelisp--tp-tmem sym rrear) (setq rear (cons sym rear))))))))
+      (setq tail1 (cdr (cdr tail1))))
+    (let ((tail2 pleft))
+      (while (consp tail2)
+        (let ((sym (car tail2)))
+          (unless (or (eq sym 'rear-nonsticky) (eq sym 'front-sticky)
+                      (nelisp--tp-pl-find pright sym))
+            (let ((lval (car (cdr tail2)))
+                  (tmp (assq sym text-property-default-nonsticky)))
+              (cond ((not (or (nelisp--tp-tmem sym lrear)
+                              (and (consp tmp) (cdr tmp))))
+                     (setq props (cons lval (cons sym props)))
+                     (when (nelisp--tp-tmem sym lfront) (setq front (cons sym front))))
+                    ((or (nelisp--tp-tmem sym rfront)
+                         (and (consp tmp) (null (cdr tmp))))
+                     (setq front (cons sym front))
+                     (when (nelisp--tp-tmem sym rrear) (setq rear (cons sym rear))))))))
+        (setq tail2 (cdr (cdr tail2)))))
+    (setq props (nreverse props))
+    (when rear (setq props (cons 'rear-nonsticky (cons (nreverse rear) props))))
+    (let ((cat (nelisp--tp-textget props 'category)))
+      (when (and front
+                 (not (and cat (symbolp cat) (eq (get cat 'front-sticky) t))))
+        (setq props (cons 'front-sticky (cons (nreverse front) props)))))
+    props))
+
+(defun nelisp--tp-sticky-problem (plist)
+  "Non-nil when new text inserted inside an interval with PLIST must not just
+join it: GNU adjust_intervals_for_insertion then splits the interval."
+  (let ((rear (nelisp--tp-textget plist 'rear-nonsticky))
+        (front (nelisp--tp-textget plist 'front-sticky)))
+    (cond ((and (not (consp rear)) rear) (and plist t))
+          ((and (not (consp front)) front) nil)
+          (t (let ((tail plist) (broke nil))
+               (while (and (consp tail) (not broke))
+                 (let ((prop (car tail)))
+                   (cond ((and (consp front) (memq prop front)) nil)
+                         ((and (consp rear) (memq prop rear)) (setq broke t))
+                         ((consp (assq prop text-property-default-nonsticky))
+                          (setq broke t))))
+                 (unless broke (setq tail (cdr (cdr tail)))))
+               broke)))))
+
+(defun nelisp--tp-insert-boundary (root pos len)
+  "Insert LEN characters at the interval boundary POS of ROOT (or its end), the
+new text taking the properties it inherits from its neighbours."
+  (let* ((tot (aref root 4))
+         (prev (and (> pos 0) (nelisp--tp-find root (1- pos))))
+         (i (and (< pos tot) (nelisp--tp-find root pos)))
+         (newp (nelisp--tp-merge-sticky (and prev (aref prev 3)) (and i (aref i 3)))))
+    (cond ((null prev)
+           (if (nelisp--tp-plists-equal (aref i 3) newp nil)
+               (nelisp--tp-grow root pos len)
+             (nelisp--tp-join (nelisp--tp-node len newp) root)))
+          ((nelisp--tp-plists-equal (aref prev 3) newp nil)
+           (nelisp--tp-grow root (1- pos) len))
+          ((and i (nelisp--tp-plists-equal newp (aref i 3) nil))
+           (nelisp--tp-grow root pos len))
+          (t (let ((p (nelisp--tp-split root pos)))
+               (nelisp--tp-join (nelisp--tp-join (car p) (nelisp--tp-node len newp))
+                                (cdr p)))))))
+
+(defun nelisp--tp-adjust-insert (root pos len)
+  "GNU adjust_intervals_for_insertion: grow ROOT by LEN characters at offset POS,
+the new text inheriting by stickiness.  ROOT must be non-nil."
+  (let ((tot (aref root 4)))
+    (if (>= pos tot)
+        (nelisp--tp-insert-boundary root tot len)
+      (let* ((i (nelisp--tp-find root pos)) (si nelisp--tp-fs))
+        (cond ((= pos si) (nelisp--tp-insert-boundary root pos len))
+              ((nelisp--tp-sticky-problem (aref i 3))
+               (nelisp--tp-insert-boundary (nelisp--tp-cut root pos) pos len))
+              (t (nelisp--tp-grow root pos len)))))))
+
+(defun nelisp--tp-insert-nil (root pos len)
+  "Insert LEN characters without properties at offset POS of the non-nil ROOT."
+  (let ((tot (aref root 4)))
+    (when (< tot pos)
+      (setq root (nelisp--tp-join root (nelisp--tp-node (- pos tot) nil))))
+    (let ((p (nelisp--tp-split root pos)))
+      (nelisp--tp-join (nelisp--tp-join (car p) (nelisp--tp-node len nil)) (cdr p)))))
+
+(defun nelisp--tp-graft (root pos src len inherit)
+  "GNU graft_intervals_into_buffer: the LEN characters at offset POS of ROOT get
+the intervals of the tree SRC.  With INHERIT the properties already there stay
+and SRC's are added where missing; otherwise SRC's plists replace them."
+  (let* ((p (nelisp--tp-split root pos))
+         (q (nelisp--tp-split (cdr p) len))
+         (under (and inherit (car q) (aref (nelisp--tp-leftmost (car q)) 3)))
+         (mid nil))
+    (nelisp--tp-walk
+     src 0 0
+     (lambda (_st n)
+       (let ((plist (copy-sequence (if inherit under nil)))
+             (o (aref n 3)))
+         (if inherit
+             (while (consp o)
+               (unless (nelisp--tp-pl-find plist (car o))
+                 (setq plist (cons (car o) (cons (car (cdr o)) plist))))
+               (setq o (cdr (cdr o))))
+           (setq plist (copy-sequence o)))
+         (push (nelisp--tp-node (aref n 2) plist) mid))
+       nil))
+    (nelisp--tp-join (nelisp--tp-join (car p) (nelisp--tp-build (nreverse mid))) (cdr q))))
+
+(defun nelisp--tp-copy-clipped (root a b)
+  "GNU copy_intervals: a fresh tree for offsets [A, B) of ROOT, plists copied,
+or nil where GNU answers no intervals."
+  (when (and root (< a b))
+    (let* ((i (nelisp--tp-find root a)) (is nelisp--tp-fs))
+      (unless (and (null (aref i 3)) (< (+ (- a is) 1 (- b a)) (aref i 2)))
+        (let ((nodes nil))
+          (nelisp--tp-walk
+           root 0 a
+           (lambda (st n)
+             (if (>= st b)
+                 t
+               (push (nelisp--tp-node (- (min (+ st (aref n 2)) b) (max st a))
+                                      (copy-sequence (aref n 3)))
+                     nodes)
+               nil)))
+          (nelisp--tp-build (nreverse nodes)))))))
+
+(defun nelisp--tp-list (root base &optional all)
+  "The intervals of ROOT as a list of (START END PLIST), offset by BASE.  Only
+intervals with properties unless ALL."
+  (let (out)
+    (nelisp--tp-walk root 0 0
+                     (lambda (st n)
+                       (when (or all (aref n 3))
+                         (push (list (+ st base) (+ st base (aref n 2)) (aref n 3)) out))
+                       nil))
+    (nreverse out)))
 
 (defun nelisp--tp-check-object (object)
   "Signal `wrong-type-argument' unless OBJECT is nil, a string, or a
@@ -13270,14 +15215,14 @@ range change nothing)."
     (signal 'wrong-type-argument (list 'buffer-or-string-p object))))
 
 (defun nelisp--tp-get-intervals (object)
-  "Return the current interval list for OBJECT (nil = current buffer)."
+  "Return the interval tree of OBJECT (nil = current buffer), nil when it has none."
   (nelisp--tp-check-object object)
   (if (stringp object)
       (gethash object nelisp--tp-string-properties)
     (nelisp-buffer-text-properties (or object nelisp--current-buffer))))
 
 (defun nelisp--tp-set-intervals (object new)
-  "Store NEW as OBJECT's interval list (nil = current buffer)."
+  "Store the tree NEW as OBJECT's intervals (nil = current buffer)."
   (if (stringp object)
       (if new
           (progn (puthash object new nelisp--tp-string-properties)
@@ -13287,8 +15232,7 @@ range change nothing)."
     (setf (nelisp-buffer-text-properties (or object nelisp--current-buffer)) new)))
 
 (defun nelisp--tp-lo (object)
-  "Return OBJECT's lowest valid position (0 for a string, `point-min'
-for a buffer)."
+  "Return OBJECT's lowest valid position (0 for a string, `point-min' for a buffer)."
   (if (stringp object) 0 (nelisp-point-min (or object nelisp--current-buffer))))
 
 (defun nelisp--tp-hi (object)
@@ -13296,78 +15240,226 @@ for a buffer)."
 `point-max' for a buffer)."
   (if (stringp object) (length object) (nelisp-point-max (or object nelisp--current-buffer))))
 
-;; ---- low-level buffer helpers (kept for `nelisp-*'-prefixed callers,
-;; e.g. test/nelisp-marker-test.el, which predate the standard names) --
+(defun nelisp--tp-validate (object begin end point force)
+  "GNU validate_interval_range.  OBJECT is a string or buffer.  Return the interval
+tree covering BEGIN..END, or nil when GNU answers no interval (an empty range
+unless POINT, an empty object, no properties and not FORCE).  FORCE creates the
+root.  The range, normalized, is left in `nelisp--tp-vs'/`nelisp--tp-ve' as tree
+offsets and in `nelisp--tp-vabs' as the absolute start."
+  (let ((b0 begin) (e0 end) (str (stringp object)))
+    (unless (or str (nelisp-buffer-p object))
+      (signal 'wrong-type-argument (list 'buffer-or-string-p object)))
+    (setq begin (nelisp--w202-position begin)
+          end (nelisp--w202-position end))
+    (if (and (= begin end) (not point))
+        nil
+      (when (> begin end)
+        (let ((x begin)) (setq begin end end x)))
+      (let* ((base (if str 0 1))
+             (lo (if str 0 (nelisp-point-min object)))
+             (hi (if str (length object) (nelisp-point-max object))))
+        (unless (and (<= lo begin) (<= end hi))
+          (signal 'args-out-of-range (list b0 e0)))
+        (setq nelisp--tp-vs (- begin base) nelisp--tp-ve (- end base)
+              nelisp--tp-vabs begin)
+        (if (= lo hi)
+            nil
+          (let ((root (if str (gethash object nelisp--tp-string-properties)
+                        (nelisp-buffer-text-properties object)))
+                (size (if str hi (nelisp-buffer-len object))))
+            (cond ((null root)
+                   (when force
+                     (setq root (nelisp--tp-node size nil))
+                     (nelisp--tp-set-intervals object root))
+                   root)
+                  ((= (aref root 4) size) root)
+                  (t (setq root (nelisp--tp-pad root size))
+                     (nelisp--tp-set-intervals object root)
+                     root))))))))
+
+(defun nelisp--tp-plist-at (pos root)
+  "Return the plist at the 0-based offset POS of the tree ROOT, nil past its end."
+  (when (and root (>= pos 0) (< pos (aref root 4)))
+    (aref (nelisp--tp-find root pos) 3)))
+
+(defun nelisp--tp-value-at (pos prop root)
+  "Return PROP's value at the 0-based offset POS of the tree ROOT, or nil."
+  (nelisp--tp-textget (nelisp--tp-plist-at pos root) prop))
+
+(defun nelisp--tp-cat-props (result &rest sources)
+  "GNU concat_to_string's add_text_properties_from_list: copy the intervals of
+the strings in SOURCES onto RESULT, concat's output.  The result starts without
+properties and every source interval lands on a fresh part of it, so GNU's chain of
+add_text_properties calls yields one interval per source interval (its plist built by
+add_properties, i.e. reversed) with property-less gaps; they are built in one pass."
+  (let ((delta 0) (total (length result)) (pos 0) (nodes nil))
+    (dolist (source sources)
+      (when (stringp source)
+        (let ((sroot (gethash source nelisp--tp-string-properties)) (d delta))
+          (when sroot
+            (nelisp--tp-walk
+             sroot 0 0
+             (lambda (st n)
+               (when (aref n 3)
+                 (let ((s (+ d st)) (nn (nelisp--tp-node (aref n 2) nil)))
+                   (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
+                   (nelisp--tp-add-props (aref n 3) nn)
+                   (push nn nodes)
+                   (setq pos (+ s (aref n 2)))))
+               nil)))))
+      (when (or (stringp source) (consp source) (vectorp source))
+        (setq delta (+ delta (length source)))))
+    (when nodes
+      (when (< pos total) (push (nelisp--tp-node (- total pos) nil) nodes))
+      (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes))))
+    result))
+
+(defun nelisp--tp-sub-props (result source &optional from to)
+  "GNU copy_text_properties for Fsubstring: copy the intervals of SOURCE's
+[FROM, TO) onto RESULT (built in one pass, see `nelisp--tp-cat-props')."
+  (when (stringp source)
+    (let* ((sroot (gethash source nelisp--tp-string-properties))
+           (n (length source)) (start (or from 0)) (end (or to n))
+           (pos 0) (nodes nil))
+      (when (< start 0) (setq start (+ n start)))
+      (when (< end 0) (setq end (+ n end)))
+      (when (and sroot (< start end))
+        (nelisp--tp-walk
+         sroot 0 start
+         (lambda (st nd)
+           (if (>= st end)
+               t
+             (when (aref nd 3)
+               (let ((s (- (max st start) start)) (e (- (min (+ st (aref nd 2)) end) start)))
+                 (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
+                 (let ((nn (nelisp--tp-node (- e s) nil)))
+                   (nelisp--tp-add-props (aref nd 3) nn)
+                   (push nn nodes))
+                 (setq pos e)))
+             nil)))
+        (when nodes
+          (when (< pos (- end start)) (push (nelisp--tp-node (- (- end start) pos) nil) nodes))
+          (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes)))))))
+  result)
+
+(defun nelisp--tp-copy-buffer-range-to-string (buf start end newstring)
+  "GNU copy_intervals_to_string: give NEWSTRING the intervals of BUF's [START, END)."
+  (let ((new (nelisp--tp-copy-clipped (nelisp-buffer-text-properties buf)
+                                      (1- start) (1- end))))
+    (when new (nelisp--tp-set-intervals newstring new))))
+
+(defun nelisp--tp-copy-all (source result)
+  "Give RESULT an exact copy of SOURCE's intervals (GNU Fcopy_sequence)."
+  (let ((new (nelisp--tp-copy-clipped (gethash source nelisp--tp-string-properties)
+                                      0 (length source))))
+    (when new (nelisp--tp-set-intervals result new))
+    result))
+
+(defun nelisp--tp-strings-equal (a b)
+  "GNU compare_string_intervals: A and B (equal text) carry `equal' properties."
+  (let ((ra (gethash a nelisp--tp-string-properties))
+        (rb (gethash b nelisp--tp-string-properties))
+        (pos 0) (end (length a)) (ok t))
+    (while (and ok (< pos end))
+      (let* ((na (and ra (nelisp--tp-find ra pos))) (ea (if na (+ nelisp--tp-fs (aref na 2)) end))
+             (nb (and rb (nelisp--tp-find rb pos))) (eb (if nb (+ nelisp--tp-fs (aref nb 2)) end)))
+        (unless (nelisp--tp-plists-equal (and na (aref na 3)) (and nb (aref nb 3)) t)
+          (setq ok nil))
+        (setq pos (min ea eb))))
+    ok))
+
+(defun nelisp--tp-boundaries-between (root lo hi)
+  "Sorted interval start/end points of the tree ROOT strictly between LO and HI."
+  (let (pts)
+    (nelisp--tp-walk
+     root 0 lo
+     (lambda (st n)
+       (if (>= st hi)
+           t
+         (when (and (> st lo) (< st hi)) (push st pts))
+         (let ((e (+ st (aref n 2)))) (when (and (> e lo) (< e hi)) (push e pts)))
+         nil)))
+    (sort (delete-dups pts) #'<)))
+
+(defun nelisp--tp-copy-range (source from to shift)
+  "SOURCE's intervals (a string) clipped to [FROM, TO) as (START END PLIST) triples
+moved by SHIFT - FROM."
+  (let (result)
+    (nelisp--tp-walk
+     (gethash source nelisp--tp-string-properties) 0 from
+     (lambda (st n)
+       (if (>= st to)
+           t
+         (let ((s (max from st)) (e (min to (+ st (aref n 2)))))
+           (when (and (< s e) (aref n 3))
+             (push (list (+ shift (- s from)) (+ shift (- e from)) (copy-sequence (aref n 3)))
+                   result)))
+         nil)))
+    (nreverse result)))
+
+(defun nelisp--tp-rebuild (root start end updater)
+  "Apply UPDATER to the plist of every interval of ROOT in [START, END) (0-based
+offsets), splitting at the edges; UPDATER's answer replaces the plist.  Return the
+new root.  A no-op when START >= END."
+  (if (>= start end)
+      root
+    (let ((root (or root (nelisp--tp-node end nil))))
+      (when (< (aref root 4) end)
+        (setq root (nelisp--tp-pad root end)))
+      (setq root (nelisp--tp-cut (nelisp--tp-cut root start) end))
+      (nelisp--tp-walk root 0 start
+                       (lambda (st n)
+                         (if (>= st end)
+                             t
+                           (aset n 3 (funcall updater (aref n 3)))
+                           nil)))
+      root)))
+
+(defun nelisp--tp-merge (intervals)
+  "Sort the list INTERVALS by START, drop empty-PLIST entries, and coalesce
+adjacent entries whose PLISTs are `eq'-equal."
+  (let ((sorted (sort (copy-sequence intervals) (lambda (a b) (< (nth 0 a) (nth 0 b)))))
+        result)
+    (dolist (iv sorted)
+      (when (nth 2 iv)
+        (if (and result
+                 (= (nth 1 (car result)) (nth 0 iv))
+                 (nelisp--tp-plists-equal (nth 2 (car result)) (nth 2 iv) nil))
+            (setcar (cdr (car result)) (nth 1 iv))
+          (push (list (nth 0 iv) (nth 1 iv) (nth 2 iv)) result))))
+    (nreverse result)))
+
+(defun nelisp--tp-plist-value-eq (a b)
+  (nelisp--tp-plists-equal a b nil))
+
 (defun nelisp-put-text-property (start end prop val &optional buf)
   "Store PROP=VAL for text in [START, END) of BUF."
-  (setf (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))
-        (nelisp--tp-rebuild (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))
-                             start end
-                             (lambda (old) (nelisp--tp-plist-set old prop val))))
+  (put-text-property start end prop val (nelisp-buffer--ambient buf))
   val)
 
 (defun nelisp-get-text-property (pos prop &optional buf)
   "Return the value of PROP at POS in BUF, or nil."
-  (nelisp--tp-value-at pos prop
-                        (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
+  (get-text-property pos prop (nelisp-buffer--ambient buf)))
 
 (defun nelisp-text-properties-at (pos &optional buf)
   "Return the full property list covering POS in BUF."
-  (nelisp--tp-plist-at pos (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
+  (text-properties-at pos (nelisp-buffer--ambient buf)))
 
 (defun nelisp-text-property-intervals (&optional buf)
-  "Return a shallow copy of BUF's text-property interval list."
-  (copy-sequence
-   (nelisp-buffer-text-properties (nelisp-buffer--ambient buf))))
+  "Return BUF's text-property intervals as (START END PLIST) triples."
+  (nelisp--tp-list (nelisp-buffer-text-properties (nelisp-buffer--ambient buf)) 1))
 
 (defun nelisp-add-text-properties (start end props &optional buf)
-  "Merge PROPS onto [START, END) of BUF, keeping properties not named
-in PROPS."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (setf (nelisp-buffer-text-properties b)
-          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
-                               (lambda (old) (nelisp--tp-plist-add old props)))))
+  (add-text-properties start end props (nelisp-buffer--ambient buf))
   nil)
 
 (defun nelisp-set-text-properties (start end props &optional buf)
-  "Replace the property list of [START, END) of BUF with PROPS wholesale."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (setf (nelisp-buffer-text-properties b)
-          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
-                               (lambda (_old) (copy-sequence props)))))
+  (set-text-properties start end props (nelisp-buffer--ambient buf))
   nil)
 
 (defun nelisp-remove-text-properties (start end props &optional buf)
-  "Drop each key in PROPS from [START, END) of BUF."
-  (let ((b (nelisp-buffer--ambient buf)))
-    (setf (nelisp-buffer-text-properties b)
-          (nelisp--tp-rebuild (nelisp-buffer-text-properties b) start end
-                               (lambda (old) (nelisp--tp-plist-remove old props)))))
+  (remove-text-properties start end props (nelisp-buffer--ambient buf))
   nil)
-
-(defun nelisp--tp-copy-buffer-range-to-string (buf start end newstring)
-  "Copy BUF's text-property intervals overlapping [START, END) onto
-NEWSTRING, 0-based and offset by START.  What `buffer-substring'
-returns must carry BUF's properties (real Emacs's `make_buffer_string'
-calls `copy_intervals_to_string'); NEWSTRING must be a fresh string not
-`eq' to anything else already carrying properties."
-  (let (out)
-    (dolist (iv (nelisp-buffer-text-properties buf))
-      (let ((s (max (nth 0 iv) start)) (e (min (nth 1 iv) end)))
-        (when (< s e)
-          (push (list (- s start) (- e start) (nth 2 iv)) out))))
-    ;; GNU copy_intervals keeps every interval of the range, so two neighbours with equal plists stay two.
-    (setq out (nreverse out))
-    (let ((l out) (sorted t))
-      (while (and sorted (cdr l))
-        (when (> (nth 0 (car l)) (nth 0 (cadr l))) (setq sorted nil))
-        (setq l (cdr l)))
-      (unless sorted
-        (setq out (sort out (lambda (a b) (< (nth 0 a) (nth 0 b)))))))
-    (let (kept)
-      (dolist (iv out) (when (nth 2 iv) (push iv kept)))
-      (when kept
-        (nelisp--tp-set-intervals newstring (nreverse kept))))))
 
 (defun nelisp-narrow-to-region (start end &optional buf)
   "Restrict visible range of BUF to [START, END]."
@@ -13465,7 +15557,10 @@ this file was committed).")
           "x86_64-pc-linux-gnu")))))
 
 (unless (fboundp 'bufferp)
-  (defun bufferp (obj) (nelisp-buffer-p obj)))
+  ;; Direct tag test: the generated predicate walks the struct ancestry on
+  ;; every call, and `nelisp-buffer' has no children.
+  (defun bufferp (obj)
+    (and (recordp obj) (eq (nelisp--record-type obj) 'nelisp-buffer))))
 (unless (fboundp 'point-min)
   (defun point-min ()
     (or (nelisp-buffer-narrow-start
@@ -13519,30 +15614,67 @@ this file was committed).")
 `nelisp-kill-buffer' only removes the registry entry (the struct itself
 carries no separate liveness flag), so a stale reference is live iff
 the registry still maps its name back to this exact object."
-    (and (nelisp-buffer-p buffer)
-         (eq buffer (nelisp-get-buffer (nelisp-buffer-name buffer))))))
+    ;; Slot 1 of the record is NAME (slot 0 is the type tag).
+    (and (recordp buffer) (eq (nelisp--record-type buffer) 'nelisp-buffer)
+         (eq buffer (gethash (aref buffer 1) nelisp-buffer--registry)))))
+(defun nelisp--buffer-arg (buffer-or-name)
+  "Resolve BUFFER-OR-NAME to a buffer object, as GNU `Fget_buffer' + nsberror."
+  (cond ((nelisp-buffer-p buffer-or-name) buffer-or-name)
+        ((stringp buffer-or-name)
+         (or (nelisp-get-buffer buffer-or-name)
+             (signal 'error (list (format "No buffer named %s" buffer-or-name)))))
+        (t (signal 'wrong-type-argument (list 'stringp buffer-or-name)))))
+
+(unless (fboundp 'other-buffer)
+  (defun other-buffer (&optional buffer _visible-ok _frame)
+    "Return a live buffer other than BUFFER (default: the current one),
+preferring buffers whose names do not start with a space; `*scratch*' is
+created when nothing else exists.
+
+(fn &optional BUFFER VISIBLE-OK FRAME)"
+    (let ((avoid (or buffer nelisp--current-buffer)) (fallback nil) (found nil)
+          (tail (nelisp-buffer-list)))
+      (while (and tail (not found))
+        (let ((b (car tail)))
+          (unless (eq b avoid)
+            (if (eq (aref (nelisp-buffer-name b) 0) ?\s)
+                (unless fallback (setq fallback b))
+              (setq found b))))
+        (setq tail (cdr tail)))
+      (or found fallback (nelisp-get-buffer-create "*scratch*")))))
+
+(defvar kill-buffer-hook nil
+  "Hook run (in the buffer being killed) before it is killed.")
+
 (unless (fboundp 'kill-buffer)
   (defun kill-buffer (&optional buffer-or-name)
-    "Kill BUFFER-OR-NAME, defaulting to the CURRENT buffer per the Emacs
-contract -- the old stub answered t for a nil argument without killing
-anything (Doc 188 §2.2).
+    "Kill BUFFER-OR-NAME, defaulting to the current buffer.  Return t when
+a buffer was killed, nil when it was already dead (GNU buffer.c).  Run
+`kill-buffer-hook' in the buffer, make another buffer current when the
+current one dies, then detach its markers and drop its local variables.
 
-Marker slice 1/2: every marker still pointing into B is detached first
-\(buffer set nil, dropped from B's own list\), matching real Emacs's
-`unchain_marker' contract that a dead buffer's markers ARE unlinked
--- `marker-buffer'/`marker-position' probed against Emacs 31.1 both
-answer nil for a marker whose buffer has since been killed, never a
-stale pointer into the dead buffer."
-    (let ((b (if buffer-or-name (get-buffer buffer-or-name) nelisp--current-buffer)))
-      (unless b (signal 'error (list "No buffer to kill")))
-      (nelisp-buffer--do-markers (m b)
-        (setf (nelisp-marker-buffer m) nil))
-      (setf (nelisp-buffer-markers b) nil)
-      (when (eq b nelisp--current-buffer) (setq nelisp--current-buffer nil))
-      ;; GNU frees the buffer's syntax_table slot with the buffer.
-      (when (fboundp 'nelisp--syntax-forget-buffer)
-        (nelisp--syntax-forget-buffer b))
-      (or (nelisp-kill-buffer b) t))))
+(fn &optional BUFFER-OR-NAME)"
+    (let ((b (if buffer-or-name (nelisp--buffer-arg buffer-or-name) nelisp--current-buffer))
+          (hook-ran nil))
+      (cond
+       ((null b) (signal 'error (list "No buffer to kill")))
+       ((not (buffer-live-p b)) nil)
+       (t
+        (when (or (default-value 'kill-buffer-hook)
+                  (assq 'kill-buffer-hook (gethash b nelisp-buffer-local--owned)))
+          (setq hook-ran t)
+          (let ((current nelisp--current-buffer))
+            (unwind-protect
+                (progn (set-buffer b) (run-hooks 'kill-buffer-hook))
+              (when (buffer-live-p current) (set-buffer current)))))
+        (when (or (not hook-ran) (buffer-live-p b))
+          (when (eq b nelisp--current-buffer)
+            (set-buffer (other-buffer b)))
+          ;; GNU frees the buffer's syntax_table slot with the buffer.
+          (when (fboundp 'nelisp--syntax-forget-buffer)
+            (nelisp--syntax-forget-buffer b))
+          (nelisp-kill-buffer b)
+          t))))))
 ;; Doc 205 P1: eight more standard names onto the same model.  Every one of
 ;; them already had its implementation here under a `nelisp-' name -- these
 ;; are bridges, not new buffer code.  They are what
@@ -13603,17 +15735,30 @@ under `narrow-to-region' both answer the narrowed bound)."
       name)))
 (unless (fboundp 'narrow-to-region)
   (defun narrow-to-region (start end)
-  "Restrict the current buffer to the positions between START and END."
-  (let* ((first (nelisp--w201-position start 'integer-or-marker-p))
-         (last (nelisp--w201-position end 'integer-or-marker-p))
-         (limit (1+ (nelisp-buffer-size nelisp--current-buffer))))
-    (unless (and (>= first 1) (<= first limit)
-                 (>= last 1) (<= last limit))
-      (signal 'args-out-of-range (list start end)))
-    (nelisp-narrow-to-region first last nelisp--current-buffer))))
+    "Restrict the current buffer to the positions between START and END
+\(GNU editfns.c): both must lie in the whole buffer; point is moved into
+the accessible portion."
+    (let* ((b nelisp--current-buffer)
+           (first (if (integerp start) start (nelisp--w201-position start 'integer-or-marker-p)))
+           (last (if (integerp end) end (nelisp--w201-position end 'integer-or-marker-p)))
+           (limit (1+ (nelisp-buffer-len b))))
+      (unless (and (>= first 1) (<= first limit)
+                   (>= last 1) (<= last limit))
+        (signal 'args-out-of-range (list start end)))
+      (when (> first last)
+        (let ((tmp first)) (setq first last last tmp)))
+      (setf (nelisp-buffer-narrow-start b) first)
+      (setf (nelisp-buffer-narrow-end b) last)
+      (let ((pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+        (cond ((< pt first) (nelisp-goto-char first b))
+              ((> pt last) (nelisp-goto-char last b))))
+      nil)))
 (unless (fboundp 'widen)
   (defun widen ()
-    (nelisp-widen nelisp--current-buffer)))
+    (let ((b nelisp--current-buffer))
+      (setf (nelisp-buffer-narrow-start b) nil)
+      (setf (nelisp-buffer-narrow-end b) nil))
+    nil))
 
 ;; `save-restriction' is real Emacs's own special form (src/editfns.c),
 ;; not staged from any Lisp file; built here on this substrate's own
@@ -13630,6 +15775,32 @@ under `narrow-to-region' both answer the narrowed bound)."
 ;; form ... saves the current buffer's restrictions", not "the buffer
 ;; current at exit"'s).  Needed for real: `lisp/simple.el''s own
 ;; `count-lines' (staged below) wraps its whole body in this.
+(defun nelisp--buffer-narrowed-p (b)
+  "Non-nil when B's accessible portion is smaller than the whole buffer."
+  (let ((begv (nelisp-buffer-narrow-start b)))
+    (and begv
+         (or (/= begv 1)
+             (/= (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+         t)))
+(defun nelisp--save-restriction ()
+  "GNU save_restriction_save: the buffer itself when it is not narrowed,
+else a (BEG-MARKER . END-MARKER) pair that follows edits."
+  (let ((b nelisp--current-buffer))
+    (if (nelisp--buffer-narrowed-p b)
+        (cons (copy-marker (nelisp-buffer-narrow-start b) nil)
+              (copy-marker (nelisp-buffer-narrow-end b) t))
+      b)))
+(defun nelisp--restore-restriction (state)
+  "GNU save_restriction_restore."
+  (if (nelisp-buffer-p state)
+      (when (buffer-live-p state) (nelisp-widen state))
+    (let ((b (marker-buffer (car state))))
+      (when b
+        (nelisp-narrow-to-region (marker-position (car state))
+                                 (marker-position (cdr state)) b))
+      (set-marker (car state) nil)
+      (set-marker (cdr state) nil)))
+  nil)
 (unless (fboundp 'save-restriction)
   (defmacro save-restriction (&rest body)
     "Execute BODY, saving and restoring current buffer's restrictions.
@@ -13645,18 +15816,11 @@ The value returned is the value of the last form in BODY.
 
 (fn &rest BODY)"
     (declare (indent 0) (debug t))
-    (let ((buf (make-symbol "sr-buf"))
-          (beg (make-symbol "sr-beg"))
-          (end (make-symbol "sr-end")))
-      `(let ((,buf (current-buffer))
-             (,beg (copy-marker (point-min) nil))
-             (,end (copy-marker (point-max) t)))
+    (let ((state (make-symbol "sr-state")))
+      `(let ((,state (nelisp--save-restriction)))
          (unwind-protect
              (progn ,@body)
-           (when (buffer-live-p ,buf)
-             (with-current-buffer ,buf
-               (widen)
-               (narrow-to-region (marker-position ,beg) (marker-position ,end)))))))))
+           (nelisp--restore-restriction ,state))))))
 
 ;; `selective-display' is a real, `DEFVAR_PER_BUFFER' C variable
 ;; (src/buffer.c), default nil -- this substrate has no buffer-local
@@ -13695,6 +15859,22 @@ When IGNORE-INVISIBLE-LINES is non-nil, invisible lines are not
 included in the count.
 
 (fn START END &optional IGNORE-INVISIBLE-LINES)"
+    (if (not (or ignore-invisible-lines (eq selective-display t)))
+        ;; Same result as the narrowing loop below for the plain case: the
+        ;; number of newlines in the region, plus one when the region does
+        ;; not end at a line start.  Counting them in one native scan avoids
+        ;; the save-excursion/save-restriction/narrow/search round trip.
+        (let* ((b nelisp--current-buffer)
+               (s (nelisp--w201-position start 'integer-or-marker-p))
+               (e (nelisp--w201-position end 'integer-or-marker-p))
+               (lo (min s e)) (hi (max s e)))
+          (when (or (< lo 1) (> hi (1+ (nelisp-buffer-len b))))
+            (signal 'args-out-of-range (list start end)))
+          (if (= lo hi)
+              0
+            (let* ((text (nelisp-buffer-substring lo hi b))
+                   (n (str-count-nl text (string-bytes text))))
+              (if (eq (aref text (1- (length text))) ?\n) n (1+ n)))))
     (save-excursion
       (save-restriction
         (narrow-to-region start end)
@@ -13732,7 +15912,7 @@ included in the count.
                (goto-char (point-max))
                (if (bolp)
                    (1- (line-number-at-pos))
-                 (line-number-at-pos))))))))
+                 (line-number-at-pos)))))))))
 
 ;; Staged verbatim from GNU Emacs 31.1 lisp/subr.el:2286 (preloaded, not
 ;; autoloaded).  Needed for real: `man.el''s own top-level `(defvar
@@ -13785,14 +15965,25 @@ Unlike `line-beginning-position', which computes without moving, Emacs's
 ;; (and therefore `nelisp-char-after'/`nelisp-char-before'/`nelisp-
 ;; delete-region', ported verbatim from src/nelisp-buffer.el) resolves
 ;; correctly inside them without being passed an explicit BUF.
+(defun nelisp--live-buffer-arg (buffer-or-name)
+  "Return the live buffer BUFFER-OR-NAME names, else signal as GNU `set-buffer'."
+  (let ((b (cond ((and (recordp buffer-or-name)
+                       (eq (nelisp--record-type buffer-or-name) 'nelisp-buffer))
+                  buffer-or-name)
+                 ((stringp buffer-or-name)
+                  (or (gethash buffer-or-name nelisp-buffer--registry)
+                      (signal 'error (list (format "No buffer named %s" buffer-or-name)))))
+                 (t (signal 'wrong-type-argument (list 'stringp buffer-or-name))))))
+    ;; Slot 1 of the record is NAME (slot 0 is the type tag).
+    (unless (eq b (gethash (aref b 1) nelisp-buffer--registry))
+      (signal 'error (list "Selecting deleted buffer")))
+    b))
 (unless (fboundp 'with-current-buffer)
   (defmacro with-current-buffer (buffer-or-name &rest body)
     (let ((b (make-symbol "buf")))
-      `(let ((,b (get-buffer ,buffer-or-name)))
-         (unless ,b (signal 'error (list (format "No such buffer: %S" ,buffer-or-name))))
+      `(let ((,b (nelisp--live-buffer-arg ,buffer-or-name)))
          (let ((nelisp--current-buffer ,b)
                (nelisp-buffer--current ,b))
-           (nelisp-goto-char (nelisp-point ,b) ,b)
            ,@body)))))
 ;; This only reads VARIABLE's value while BUFFER is current -- it does
 ;; not give VARIABLE a value that is local TO buffer-local-value's own
@@ -13802,10 +15993,25 @@ Unlike `line-beginning-position', which computes without moving, Emacs's
 ;; attempt (`setq-local' here is presently only an alias for `setq').
 (unless (fboundp 'buffer-local-value)
   (defun buffer-local-value (variable buffer)
-    "Return VARIABLE's value in BUFFER, as if BUFFER were current.
-Does not itself make VARIABLE buffer-local (see the commentary above
-this definition)."
-    (with-current-buffer buffer (symbol-value variable))))
+    "Return VARIABLE's value in BUFFER, without selecting BUFFER.
+GNU buffer.c: BUFFER's own binding when it has one, else the default value.
+
+(fn VARIABLE BUFFER)"
+    (unless (symbolp variable) (signal 'wrong-type-argument (list 'symbolp variable)))
+    (unless (bufferp buffer) (signal 'wrong-type-argument (list 'bufferp buffer)))
+    (let* ((redirect (nelisp-buffer-local--redirect variable))
+           (pair (and redirect (assq buffer (aref redirect 1)))))
+      (if pair
+          (if (boundp (cdr pair))
+              (symbol-value (cdr pair))
+            (signal 'void-variable (list variable)))
+        (default-value variable)))))
+(unless (fboundp 'buffer-local-boundp)
+  (defun buffer-local-boundp (symbol buffer)
+    "Return non-nil if SYMBOL is bound in BUFFER."
+    (condition-case nil
+        (progn (buffer-local-value symbol buffer) t)
+      (void-variable nil))))
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body)
     (let ((b (make-symbol "buf")))
@@ -13847,7 +16053,7 @@ unconverted)."
         (setq rest (cdr rest))))
     nil))
 (unless (fboundp 'insert-char)
-  (defun insert-char (character &optional count _inherit)
+  (defun insert-char (character &optional count inherit)
     "Insert COUNT (default 1) copies of CHARACTER at point.
 
 CHARACTER is converted exactly like an integer argument to `insert'
@@ -13856,10 +16062,8 @@ above (Doc D1 item 2).  A non-integer CHARACTER signals
 float or a string both signal this, not `characterp' via a different
 mechanism and not silently coerced).  COUNT <= 0 inserts nothing,
 matching Emacs (verified: `(insert-char ?a 0)' and a negative COUNT
-both leave the buffer empty, no error).  INHERIT (text-property
-inheritance for adjacent sticky properties) is accepted for signature
-compatibility only and otherwise ignored: this runtime has no
-sticky/rear-sticky text-property machinery to inherit into.
+both leave the buffer empty, no error).  A non-nil INHERIT lets the new
+text inherit sticky text properties, as `insert-and-inherit' does.
 
 (fn CHARACTER &optional COUNT INHERIT)"
     (unless (integerp character)
@@ -13868,8 +16072,9 @@ sticky/rear-sticky text-property machinery to inherit into.
       (when (> n 0)
         (let* ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer))
                (piece (nelisp--char-arg-to-string character multibyte)))
-          (nelisp-insert (apply #'concat (make-list n piece))
-                         nelisp--current-buffer))))
+          (let ((nelisp--tp-inherit (and inherit t)))
+            (nelisp-insert (apply #'concat (make-list n piece))
+                           nelisp--current-buffer)))))
     nil))
 ;; Doc D1 item 2: `insert-before-markers' was `void-function' entirely
 ;; (not merely missing integer-argument support).  Its ONLY documented
@@ -13905,14 +16110,19 @@ point advances past TEXT instead of consulting its own
     (let* ((b (nelisp-buffer--ambient buf))
            (before (nelisp-buffer-before-gap b))
            (at (1+ (length before)))
-           (n (length text)))
+           (n (length text))
+           (ovt (nelisp-buffer-overlays b)))
+      (when ovt
+        (nelisp-ov--before-change b at at))
       (setf (nelisp-buffer-before-gap b) (concat before text))
       (setf (nelisp-buffer-blen b) (+ (nelisp-buffer-blen b) n))
       (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
-      (nelisp-buffer--shift-overlays-on-insert b at n)
+      (when ovt
+        (nelisp-buffer--shift-overlays-on-insert b at n t)
+        (nelisp-ov--after-change b at 0 n))
       (nelisp-buffer--tp-after-insert b at n text))
     nil))
 (unless (fboundp 'insert-before-markers)
@@ -13932,7 +16142,16 @@ inserted text -- see `nelisp-insert-before-markers'."
 (unless (fboundp 'buffer-string)
   (defun buffer-string ()
     (let* ((b nelisp--current-buffer)
-           (text (nelisp-buffer-string b)))
+           (begv (nelisp-buffer-narrow-start b)))
+      ;; GNU Fbuffer_string is make_buffer_string (BEGV, ZV, 1): only the
+      ;; accessible portion, with its properties.
+      (if (and begv (or (/= begv 1)
+                        (/= (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+          (buffer-substring begv (nelisp-buffer-narrow-end b))
+        (nelisp--buffer-string-whole b)))))
+(defun nelisp--buffer-string-whole (b)
+  "Return the whole text of B with its text properties."
+  (let ((text (nelisp-buffer-string b)))
       (if (nelisp-buffer-text-properties b)
           ;; GNU Fbuffer_string (make_buffer_string (BEGV, ZV, 1)): a fresh string
           ;; that carries the buffer's intervals.  The cached text is shared between
@@ -13940,7 +16159,7 @@ inserted text -- see `nelisp-insert-before-markers'."
           (let ((copy (copy-sequence text)))
             (nelisp--tp-copy-buffer-range-to-string b 1 (1+ (length copy)) copy)
             copy)
-        text))))
+        text)))
 ;; `void-function' on the ~80-file census (many hits across
 ;; ../nelisp-agent/lisp/nl-agent-local-tools.el, nl-agent-task-eval.el,
 ;; nl-agent-trajectory.el, nl-agent-recurrent-config.el, always as
@@ -13975,30 +16194,14 @@ inserted text -- see `nelisp-insert-before-markers'."
   (defun set-buffer (buffer-or-name)
     "Make BUFFER-OR-NAME current and return it.
 
-Error wording probed against Emacs 30.1 (Doc 188 P2): a NAME that
-resolves to no buffer signals `(error \"No buffer named %s\")'; a
-buffer object that has since been killed signals `(error \"Selecting
-deleted buffer\")' even though `get-buffer' happily returns a dead
-buffer object unchanged.  Wrong-type input (`(set-buffer 42)') is
-handled by `get-buffer' itself re-used below -- Emacs's own error
-there, `(wrong-type-argument stringp 42)', already matches what
-`get-buffer' already signals (Doc 188 P1)."
-    (let ((b (get-buffer buffer-or-name)))
-      (cond
-       ((null b)
-        (signal 'error (list (format "No buffer named %s" buffer-or-name))))
-       ((not (buffer-live-p b))
-        (signal 'error (list "Selecting deleted buffer")))
-       (t
-        (setq nelisp--current-buffer b)
-        ;; Doc 204 §1.4/P1: keep the ambient tracker in step too, same
-        ;; reasoning as the `with-current-buffer'/`with-temp-buffer' fix
-        ;; above -- `set-buffer' is the third of the three P1 binding
-        ;; sites, and unlike the macros it SETs rather than lexically
-        ;; unwinding, so there is no `let' to attach a second binding to.
-        (setq nelisp-buffer--current b)
-        (nelisp-goto-char (nelisp-point b) b)
-        b)))))
+A NAME that resolves to no buffer signals `(error \"No buffer named %s\")';
+a killed buffer object signals `(error \"Selecting deleted buffer\")'
+\(GNU buffer.c).  Point and narrowing are per-buffer state, so selecting
+a buffer only has to change the two current-buffer trackers."
+    (let ((b (nelisp--live-buffer-arg buffer-or-name)))
+      (setq nelisp--current-buffer b)
+      (setq nelisp-buffer--current b)
+      b)))
 ;; `void-function' on the ~80-file census
 ;; (../nelisp-agent/lisp/nl-agent-ui.el:349: `(pop-to-buffer buffer)',
 ;; the last statement of a connection-setup function whose return value
@@ -14098,21 +16301,599 @@ accessible portion.  POS is an integer or a marker."
                  (aref (nelisp-buffer-after-gap b) (- idx blen)))))))))
 (unless (fboundp 'char-before)
   (defun char-before (&optional pos)
+    "Return the character preceding POS (default point), or nil outside the
+accessible portion (GNU editfns.c: POS <= BEGV or POS > ZV)."
     (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
            (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
                         (nelisp-buffer-blen b)))
-           (idx (- (or pos (nelisp-buffer-pend b) (1+ blen)) 2)))
-      (and (>= idx 0) (< idx (nelisp-buffer-len b))
+           (p (cond ((null pos) (or (nelisp-buffer-pend b) (1+ blen)))
+                    ((integerp pos) pos)
+                    ((markerp pos)
+                     (or (marker-position pos)
+                         (error "Marker does not point anywhere")))
+                    (t (signal 'wrong-type-argument
+                               (list 'integer-or-marker-p pos)))))
+           (idx (- p 2)))
+      (and (> p (or (nelisp-buffer-narrow-start b) 1))
+           (<= p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
            (if (< idx blen)
                (aref (nelisp-buffer-before-gap b) idx)
              (aref (nelisp-buffer-after-gap b) (- idx blen)))))))
 (unless (fboundp 'delete-region)
   (defun delete-region (start end)
-    (nelisp-delete-region start end nelisp--current-buffer)))
+    "Delete the text between START and END (GNU editfns.c validate_region):
+both must lie in the accessible portion, else `args-out-of-range'."
+    (let* ((b nelisp--current-buffer)
+           (s (nelisp--w201-position start 'integer-or-marker-p))
+           (e (nelisp--w201-position end 'integer-or-marker-p))
+           (lo (min s e)) (hi (max s e)))
+      (when (or (< lo (or (nelisp-buffer-narrow-start b) 1))
+                (> hi (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+        (signal 'args-out-of-range (list b start end)))
+      (nelisp-delete-region lo hi b))))
+;; ---- GNU editfns.c / buffer.c accessors that follow BEGV/ZV ----------------
+(unless (fboundp 'buffer-narrowed-p)
+  (defun buffer-narrowed-p ()
+    "Return non-nil if the current buffer is narrowed."
+    (nelisp--buffer-narrowed-p nelisp--current-buffer)))
+(unless (fboundp 'buffer-end)
+  (defun buffer-end (arg)
+    "Return the \"far end\" position of the buffer, in direction ARG."
+    (if (> arg 0) (point-max) (point-min))))
+(unless (fboundp 'pos-bol)
+  (defun pos-bol (&optional n)
+    "Return the position of the beginning of the Nth line, ignoring fields."
+    (line-beginning-position n)))
+(unless (fboundp 'pos-eol)
+  (defun pos-eol (&optional n)
+    "Return the position of the end of the Nth line, ignoring fields."
+    (line-end-position n)))
+(unless (fboundp 'backward-char)
+  (defun backward-char (&optional n)
+    "Move point N characters backward (forward if N is negative)."
+    (if n
+        (progn (unless (integerp n) (signal 'wrong-type-argument (list 'fixnump n)))
+               (forward-char (- n)))
+      (forward-char -1))))
+(unless (fboundp 'backward-word)
+  (defun backward-word (&optional arg)
+    "Move backward until encountering the beginning of a word."
+    (forward-word (- (or arg 1)))))
+(unless (fboundp 'delete-and-extract-region)
+  (defun delete-and-extract-region (start end)
+    "Delete the text between START and END and return it."
+    (let* ((s (nelisp--w201-position start 'integer-or-marker-p))
+           (e (nelisp--w201-position end 'integer-or-marker-p))
+           (lo (min s e)) (hi (max s e)))
+      (if (= lo hi)
+          (progn (delete-region lo hi) "")
+        (prog1 (buffer-substring lo hi) (delete-region lo hi))))))
+(unless (fboundp 'filter-buffer-substring)
+  (defun filter-buffer-substring (beg end &optional delete)
+    "Return the buffer substring between BEG and END, deleting it if DELETE."
+    (if delete (delete-and-extract-region beg end) (buffer-substring beg end))))
+(defun nelisp--insert-buffer-substring (buffer start end props)
+  "Insert BUFFER's text between START and END (default: accessible portion)."
+  (let* ((src (nelisp--live-buffer-arg buffer))
+         (lo (or start (nelisp-point-min src)))
+         (hi (or end (nelisp-point-max src))))
+    (setq lo (nelisp--w201-position lo 'integer-or-marker-p)
+          hi (nelisp--w201-position hi 'integer-or-marker-p))
+    (let ((a (min lo hi)) (z (max lo hi)))
+      (when (or (< a (nelisp-point-min src)) (> z (nelisp-point-max src)))
+        (signal 'args-out-of-range (list start end)))
+      (insert (if props
+                  (let ((nelisp--current-buffer src) (nelisp-buffer--current src))
+                    (buffer-substring a z))
+                (nelisp-buffer-substring a z src))))
+    nil))
+(unless (fboundp 'insert-buffer-substring)
+  (defun insert-buffer-substring (buffer &optional start end)
+    "Insert before point a substring of BUFFER, with its text properties."
+    (nelisp--insert-buffer-substring buffer start end t)))
+(unless (fboundp 'insert-buffer-substring-no-properties)
+  (defun insert-buffer-substring-no-properties (buffer &optional start end)
+    "Insert before point a substring of BUFFER, without text properties."
+    (nelisp--insert-buffer-substring buffer start end nil)))
+(unless (fboundp 'buffer-list)
+  (defun buffer-list (&optional _frame)
+    "Return a list of all live buffers, in creation order.
+
+(fn &optional FRAME)"
+    (nelisp-buffer-list)))
+(defvar buffer-list-update-hook nil
+  "Hook run when the buffer list changes.")
+(unless (fboundp 'rename-buffer)
+  (defun rename-buffer (newname &optional unique)
+    "Change current buffer's name to NEWNAME and return it.
+With non-nil UNIQUE, pick a different name when NEWNAME is in use."
+    (unless (stringp newname) (signal 'wrong-type-argument (list 'stringp newname)))
+    (when (= (length newname) 0)
+      (signal 'error (list "Empty string is invalid as a buffer name")))
+    (let* ((b nelisp--current-buffer)
+           (old (nelisp-buffer-name b))
+           (other (nelisp-get-buffer newname)))
+      (cond
+       ((eq other b) newname)
+       (t
+        (when other
+          (if unique
+              (setq newname (generate-new-buffer-name newname old))
+            (signal 'error (list (format "Buffer name `%s' is in use" newname)))))
+        (remhash old nelisp-buffer--registry)
+        (setf (nelisp-buffer-name b) newname)
+        (puthash newname b nelisp-buffer--registry)
+        newname)))))
+(unless (fboundp 'with-restriction)
+  (defmacro with-restriction (start end &rest rest)
+    "Execute BODY with restrictions set to START and END (GNU subr.el).
+A leading `:label LABEL' pair is accepted; labels do not lock `widen' here.
+
+(fn START END [:label LABEL] BODY...)"
+    (declare (indent 2) (debug t))
+    (when (eq (car rest) :label) (setq rest (cddr rest)))
+    `(save-restriction (narrow-to-region ,start ,end) ,@rest)))
+(unless (fboundp 'without-restriction)
+  (defmacro without-restriction (&rest rest)
+    "Execute BODY without restrictions (GNU subr.el).
+
+(fn [:label LABEL] BODY...)"
+    (declare (indent 0) (debug t))
+    (when (eq (car rest) :label) (setq rest (cddr rest)))
+    `(save-restriction (widen) ,@rest)))
 ;; GNU casefiddle.c's region loop replaces one source character at a time,
 ;; preserving marker positions and text properties while point follows any
 ;; changed character count.  The bootstrap's gap-string buffer is the only
 ;; adaptation; casing uses the same prepared context as string operations.
+;; ---- standard overlay names (overlay1) ---------------------------------
+;; GNU Emacs 31.1 `buffer.c' (overlays), `textprop.c' (get-char-property
+;; and the char-property-change family), `editfns.c' (get-pos-property),
+;; `subr.el' (copy-overlay, remove-overlays).
+
+(unless (boundp 'text-property-default-nonsticky)
+  (defvar text-property-default-nonsticky
+    '((syntax-table . t) (display . t) (composition . t) (cursor . t))
+    "Alist of properties vs the insertion types that do not inherit them."))
+
+(unless (fboundp 'overlayp)
+  (defun overlayp (object)
+    "Return non-nil if OBJECT is an overlay."
+    (nelisp-overlay-p object)))
+
+(unless (fboundp 'make-overlay)
+  (defun make-overlay (beg end &optional buffer front-advance rear-advance)
+    "Create a new overlay with range BEG to END in BUFFER and return it.
+If omitted, BUFFER defaults to the current buffer.
+BEG and END may be integers or markers.
+The fourth arg FRONT-ADVANCE, if non-nil, makes the marker
+for the front of the overlay advance when text is inserted there
+\(which means the text *is not* included in the overlay).
+The fifth arg REAR-ADVANCE, if non-nil, makes the marker
+for the rear of the overlay advance when text is inserted there
+\(which means the text *is* included in the overlay)."
+    (cond ((null buffer) (setq buffer nelisp--current-buffer))
+          ((not (nelisp-buffer-p buffer))
+           (signal 'wrong-type-argument (list 'bufferp buffer))))
+    (nelisp-ov--make-overlay buffer beg end front-advance rear-advance)))
+
+(unless (fboundp 'move-overlay)
+  (defun move-overlay (overlay beg end &optional buffer)
+    "Set the endpoints of OVERLAY to BEG and END in BUFFER.
+If BUFFER is omitted, leave OVERLAY in the same buffer it inhabits now.
+If BUFFER is omitted, and OVERLAY is in no buffer, put it in the current
+buffer."
+    (nelisp-ov--move-overlay overlay beg end buffer)))
+
+(unless (fboundp 'delete-overlay)
+  (defun delete-overlay (overlay)
+    "Delete the overlay OVERLAY from its buffer."
+    (nelisp-ov--check overlay)
+    (nelisp-ov--delete overlay)))
+
+(unless (fboundp 'delete-all-overlays)
+  (defun delete-all-overlays (&optional buffer)
+    "Delete all overlays of BUFFER.
+BUFFER omitted or nil means delete all overlays of the current
+buffer."
+    (cond ((null buffer) (setq buffer nelisp--current-buffer))
+          ((not (nelisp-buffer-p buffer))
+           (signal 'wrong-type-argument (list 'bufferp buffer))))
+    (nelisp-ov--delete-all buffer)
+    nil))
+
+(unless (fboundp 'overlay-start)
+  (defun overlay-start (overlay)
+    "Return the position at which OVERLAY starts, or nil if it is deleted."
+    (nelisp-ov--check overlay)
+    (and (nelisp-ov--buffer overlay) (nelisp-ov--start overlay))))
+
+(unless (fboundp 'overlay-end)
+  (defun overlay-end (overlay)
+    "Return the position at which OVERLAY ends, or nil if it is deleted."
+    (nelisp-ov--check overlay)
+    (and (nelisp-ov--buffer overlay) (nelisp-ov--stop overlay))))
+
+(unless (fboundp 'overlay-buffer)
+  (defun overlay-buffer (overlay)
+    "Return the buffer OVERLAY belongs to, or nil if it is deleted."
+    (nelisp-ov--check overlay)
+    (nelisp-ov--buffer overlay)))
+
+(unless (fboundp 'overlay-properties)
+  (defun overlay-properties (overlay)
+    "Return a list of the properties on OVERLAY."
+    (nelisp-ov--check overlay)
+    (copy-sequence (nelisp-ov--plist overlay))))
+
+(unless (fboundp 'overlay-get)
+  (defun overlay-get (overlay prop)
+    "Get the property of overlay OVERLAY with property name PROP."
+    (nelisp-ov--check overlay)
+    (nelisp-ov--get overlay prop)))
+
+(unless (fboundp 'overlay-put)
+  (defun overlay-put (overlay prop value)
+    "Set one property of overlay OVERLAY: give property PROP value VALUE."
+    (nelisp-ov--put overlay prop value)))
+
+(unless (fboundp 'overlays-at)
+  (defun overlays-at (pos &optional sorted)
+    "Return a list of the overlays that contain the character at POS.
+If SORTED is non-nil, then sort them in decreasing priority order."
+    (let ((pos (nelisp-ov--pos pos))
+          (b nelisp--current-buffer))
+      (if (null (nelisp-buffer-overlays b))
+          nil
+        (let ((overlays (car (nelisp-ov--in b pos (1+ pos) nil t))))
+          (if sorted
+              (nreverse (nelisp-ov--sort overlays))
+            overlays))))))
+
+(unless (fboundp 'overlays-in)
+  (defun overlays-in (beg end)
+    "Return a list of the overlays that overlap the region BEG ... END."
+    (let ((beg (nelisp-ov--pos beg))
+          (end (nelisp-ov--pos end))
+          (b nelisp--current-buffer))
+      (if (null (nelisp-buffer-overlays b))
+          nil
+        (car (nelisp-ov--in b beg end t nil))))))
+
+(unless (fboundp 'next-overlay-change)
+  (defun next-overlay-change (pos)
+    "Return the next position after POS where an overlay starts or ends."
+    (let ((pos (nelisp-ov--pos pos))
+          (b nelisp--current-buffer))
+      (if (null (nelisp-buffer-overlays b))
+          (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))
+        (nelisp-ov--next-change b pos)))))
+
+(unless (fboundp 'previous-overlay-change)
+  (defun previous-overlay-change (pos)
+    "Return the previous position before POS where an overlay starts or ends."
+    (let ((pos (nelisp-ov--pos pos))
+          (b nelisp--current-buffer))
+      (if (null (nelisp-buffer-overlays b))
+          (or (nelisp-buffer-narrow-start b) 1)
+        (nelisp-ov--previous-change b pos)))))
+
+(unless (fboundp 'overlay-lists)
+  (defun overlay-lists ()
+    "Return a list giving all the overlays of the current buffer."
+    (let* ((b nelisp--current-buffer)
+           (tree (nelisp-buffer-overlays b))
+           (overlays nil))
+      (when tree
+        (let ((it (nelisp-itree--iter-start tree 1 (1+ (nelisp-buffer-len b)) 1))
+              (node nil))
+          (while (setq node (nelisp-itree--iter-next it))
+            (setq overlays (cons (nelisp-itn-ov node) overlays)))))
+      (cons overlays nil))))
+
+(unless (fboundp 'overlay-recenter)
+  (defun overlay-recenter (pos)
+    "Do nothing.  Overlays no longer use a recentering gap."
+    (nelisp-ov--pos pos)
+    nil))
+
+(unless (fboundp 'copy-overlay)
+  (defun copy-overlay (o)
+    "Return a copy of overlay O."
+    (let ((o1 (if (overlay-buffer o)
+                  (make-overlay (overlay-start o) (overlay-end o)
+                                (overlay-buffer o))
+                (let ((o1 (make-overlay (point-min) (point-min))))
+                  (delete-overlay o1)
+                  o1)))
+          (props (overlay-properties o)))
+      (while props
+        (overlay-put o1 (car props) (car (cdr props)))
+        (setq props (cdr (cdr props))))
+      o1)))
+
+(unless (fboundp 'remove-overlays)
+  (defun remove-overlays (&optional beg end name val)
+    "Remove overlays between BEG and END that have property NAME with value VAL.
+Overlays might be moved and/or split.  If any targeted overlays
+start before BEG, the overlays will be altered so that they end
+at BEG.  Likewise, if the targeted overlays end after END, they
+will be altered so that they start at END.  Overlays that start
+at or after BEG and end before END will be removed completely.
+
+Empty overlays will be removed if they are at BEG, between BEG
+and END, or at END provided END denotes the position at the end
+of the buffer.
+
+BEG and END default respectively to the beginning and end of the
+buffer.
+Values are compared with `eq'.
+If either NAME or VAL are specified, both should be specified."
+    (unless beg (setq beg (point-min)))
+    (unless end (setq end (point-max)))
+    (overlay-recenter end)
+    (if (< end beg)
+        (setq beg (prog1 end (setq end beg))))
+    (save-excursion
+      (dolist (o (overlays-in beg end))
+        (when (eq (overlay-get o name) val)
+          (if (< (overlay-start o) beg)
+              (if (> (overlay-end o) end)
+                  (progn
+                    (move-overlay (copy-overlay o)
+                                  (overlay-start o) beg)
+                    (move-overlay o end (overlay-end o)))
+                (move-overlay o (overlay-start o) beg))
+            (if (> (overlay-end o) end)
+                (move-overlay o end (overlay-end o))
+              (delete-overlay o))))))))
+
+;; get-char-property and friends.  The overlay half is
+;; `nelisp-ov--char-property-and-overlay'; the rest defers to the
+;; text-property lookup (`get-text-property').
+
+(defun nelisp-ov--char-property-and-overlay (position prop object)
+  "Return (VALUE . OVERLAY) for the overlay that supplies PROP at POSITION.
+OBJECT is nil or a buffer.  Return nil when no overlay of a buffer OBJECT
+has PROP there (GNU `get_char_property_and_overlay' then asks the text
+properties)."
+  (let ((b (cond ((null object) nelisp--current-buffer)
+                 ((nelisp-buffer-p object) object))))
+    (when b
+      (let ((pos (nelisp-ov--pos position))
+            (best nil)
+            (best-value nil))
+        (unless (and (<= (or (nelisp-buffer-narrow-start b) 1) pos)
+                     (<= pos (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+          (signal 'args-out-of-range (list position)))
+        (let ((tree (nelisp-buffer-overlays b)))
+          (when tree
+            (let ((it (nelisp-itree--iter-start tree pos (1+ pos) 0))
+                  (node nil))
+              (while (setq node (nelisp-itree--iter-next it))
+                (let ((tem (nelisp-ov--get (nelisp-itn-ov node) prop)))
+                  (unless (or (null tem) (< (nelisp-itn-end node) (1+ pos)))
+                    (let ((this (nelisp-ov--sortvec (nelisp-itn-ov node))))
+                      (when (or (null best) (< (nelisp-ov--compare best this) 0))
+                        (setq best this)
+                        (setq best-value tem)))))))))
+        (and best (cons best-value (aref best 0)))))))
+
+(unless (fboundp 'get-char-property)
+  (defun get-char-property (position prop &optional object)
+    "Return the value of POSITION's property PROP, in OBJECT.
+Both overlay properties and text properties are checked."
+    (let ((found (nelisp-ov--char-property-and-overlay position prop object)))
+      (if found
+          (car found)
+        (get-text-property (nelisp-ov--pos position) prop object)))))
+
+(unless (fboundp 'get-char-property-and-overlay)
+  (defun get-char-property-and-overlay (position prop &optional object)
+    "Like `get-char-property', but return (VALUE . OVERLAY)."
+    (let ((found (nelisp-ov--char-property-and-overlay position prop object)))
+      (if found
+          (cons (car found) (cdr found))
+        (cons (get-text-property (nelisp-ov--pos position) prop object) nil)))))
+
+(defun nelisp-ov--text-property-stickiness (prop pos buffer)
+  "GNU `text_property_stickiness': 1, -1 or 0 for text inserted at POS."
+  (let* ((prev-pos (1- pos))
+         (defalt (assq prop text-property-default-nonsticky))
+         (ignore-prev (<= pos (or (nelisp-buffer-narrow-start buffer) 1)))
+         (rear-sticky t)
+         (front-sticky nil))
+    (if (or ignore-prev (and (consp defalt) (cdr defalt)))
+        (setq rear-sticky nil)
+      (let ((rns (get-text-property prev-pos 'rear-nonsticky buffer)))
+        (when (if (consp rns) (memq prop rns) rns)
+          (setq rear-sticky nil))))
+    (let ((fs (get-text-property pos 'front-sticky buffer)))
+      (when (or (eq fs t) (and (consp fs) (memq prop fs)))
+        (setq front-sticky t)))
+    (cond
+     ((and rear-sticky (not front-sticky)) -1)
+     ((and (not rear-sticky) front-sticky) 1)
+     ((and (not rear-sticky) (not front-sticky)) 0)
+     ((or ignore-prev (null (get-text-property prev-pos prop buffer))) 1)
+     (t -1))))
+
+(unless (fboundp 'get-pos-property)
+  (defun get-pos-property (position prop &optional object)
+    "Return the value of POSITION's property PROP, in OBJECT.
+Almost identical to `get-char-property' except for the following difference:
+Whereas `get-char-property' returns the property of the char at (i.e. right
+after) POSITION, this pays attention to properties's stickiness and overlays's
+advancement settings, in order to find the property of POSITION itself,
+i.e. the property that a char would inherit if it were inserted
+at POSITION."
+    (let ((position (nelisp-ov--pos position)))
+      (if (null object) (setq object nelisp--current-buffer))
+      (if (not (nelisp-buffer-p object))
+          (get-text-property position prop object)
+        (let ((tree (nelisp-buffer-overlays object))
+              (best nil)
+              (res nil))
+          (when tree
+            (let ((it (nelisp-itree--iter-start tree (1- position) (1+ position) 0))
+                  (node nil))
+              (while (setq node (nelisp-itree--iter-next it))
+                (let ((tem (nelisp-ov--get (nelisp-itn-ov node) prop)))
+                  (unless (or (null tem)
+                              (and (= (nelisp-itn-begin node) position)
+                                   (nelisp-itn-front-advance node))
+                              (and (= (nelisp-itn-end node) position)
+                                   (not (nelisp-itn-rear-advance node)))
+                              (> (nelisp-itn-begin node) position)
+                              (< (nelisp-itn-end node) position))
+                    (let ((this (nelisp-ov--sortvec (nelisp-itn-ov node))))
+                      (when (or (null best) (< (nelisp-ov--compare best this) 0))
+                        (setq best this)
+                        (setq res tem))))))))
+          (if res
+              res
+            (let ((stickiness (nelisp-ov--text-property-stickiness prop position object)))
+              (cond
+               ((> stickiness 0) (get-text-property position prop object))
+               ((and (< stickiness 0)
+                     (> position (or (nelisp-buffer-narrow-start object) 1)))
+                (get-text-property (1- position) prop object))
+               (t nil)))))))))
+
+(unless (fboundp 'next-char-property-change)
+  (defun next-char-property-change (position &optional limit)
+    "Return the position of next text property or overlay change.
+This scans characters forward in the current buffer from POSITION till
+it finds a change in some text property, or the beginning or end of an
+overlay, and returns the position of that."
+    (let ((temp (next-overlay-change position)))
+      (when limit
+        (setq limit (nelisp-ov--pos limit))
+        (when (< limit temp) (setq temp limit)))
+      (next-property-change position nil temp))))
+
+(unless (fboundp 'previous-char-property-change)
+  (defun previous-char-property-change (position &optional limit)
+    "Return the position of previous text property or overlay change.
+Scans characters backward in the current buffer from POSITION till it
+finds a change in some text property, or the beginning or end of an
+overlay, and returns the position of that."
+    (let ((temp (previous-overlay-change position)))
+      (when limit
+        (setq limit (nelisp-ov--pos limit))
+        (when (> limit temp) (setq temp limit)))
+      (previous-property-change position nil temp))))
+
+(defun nelisp-ov--with-object (object function)
+  "Call FUNCTION with OBJECT current when it is a buffer other than the current one."
+  (when object
+    (unless (nelisp-buffer-p object)
+      (signal 'wrong-type-argument (list 'bufferp object))))
+  (if (and object (not (eq object nelisp--current-buffer)))
+      (with-current-buffer object (funcall function))
+    (funcall function)))
+
+(unless (fboundp 'next-single-char-property-change)
+  (defun next-single-char-property-change (position prop &optional object limit)
+    "Return the position of next text property or overlay change for a specific property.
+Scans characters forward from POSITION till it finds
+a change in the PROP property, then returns the position of the change.
+If the optional third argument OBJECT is a buffer (or nil, which means
+the current buffer), POSITION is a buffer position (integer or marker).
+If OBJECT is a string, POSITION is a 0-based index into it.
+If the optional fourth argument LIMIT is non-nil, don't search
+past position LIMIT; return LIMIT if nothing is found before LIMIT.
+If no property change is found, return `point-max'."
+    (if (stringp object)
+        (progn
+          (setq position (next-single-property-change position prop object limit))
+          (if (null position)
+              (if (null limit) (length object) (progn (nelisp-ov--pos limit) limit))
+            position))
+      (let ((b (or object nelisp--current-buffer)))
+        (when object
+          (unless (nelisp-buffer-p object)
+            (signal 'wrong-type-argument (list 'bufferp object))))
+        (with-current-buffer b
+          (let ((zv (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+            (setq position (nelisp-ov--pos position))
+            (let ((initial-value (get-char-property position prop object))
+                  (value nil))
+              (setq limit (if (null limit) zv (nelisp-ov--pos limit)))
+              (if (>= position limit)
+                  (progn
+                    (setq position limit)
+                    (when (> position zv) (setq position zv)))
+                (let ((done nil))
+                  (while (not done)
+                    (setq position (next-char-property-change position limit))
+                    (cond
+                     ((>= position limit) (setq position limit) (setq done t))
+                     (t
+                      (setq value (get-char-property position prop object))
+                      (cond
+                       ((not (eq value initial-value)) (setq done t))
+                       ((>= position zv) (setq done t))))))))
+              position)))))))
+
+(unless (fboundp 'previous-single-char-property-change)
+  (defun previous-single-char-property-change (position prop &optional object limit)
+    "Return the position of previous text property or overlay change for a specific property.
+Scans characters backward from POSITION till it finds
+a change in the PROP property, then returns the position of the change.
+If the optional third argument OBJECT is a buffer (or nil, which means
+the current buffer), POSITION is a buffer position (integer or marker).
+If OBJECT is a string, POSITION is a 0-based index into it.
+If the optional fourth argument LIMIT is non-nil, don't search back
+past position LIMIT; return LIMIT if nothing is found before LIMIT.
+If no property change is found, return `point-min'."
+    (if (stringp object)
+        (progn
+          (setq position (previous-single-property-change position prop object limit))
+          (if (null position)
+              (if (null limit) 0 (progn (nelisp-ov--pos limit) limit))
+            position))
+      (let ((b (or object nelisp--current-buffer)))
+        (when object
+          (unless (nelisp-buffer-p object)
+            (signal 'wrong-type-argument (list 'bufferp object))))
+        (with-current-buffer b
+          (let ((begv (or (nelisp-buffer-narrow-start b) 1)))
+            (setq position (nelisp-ov--pos position))
+            (setq limit (if (null limit) begv (nelisp-ov--pos limit)))
+            (if (<= position limit)
+                (progn
+                  (setq position limit)
+                  (when (< position begv) (setq position begv)))
+              (let ((initial-value
+                     (get-char-property (- position (if (<= 0 position) 1 0))
+                                        prop object))
+                    (done nil))
+                (while (not done)
+                  (setq position (previous-char-property-change position limit))
+                  (if (<= position limit)
+                      (progn (setq position limit) (setq done t))
+                    (let ((value (get-char-property (1- position) prop object)))
+                      (unless (eq value initial-value) (setq done t)))))))
+            position))))))
+
+(unless (fboundp 'cl--map-overlays)
+  (defun cl--map-overlays (func &optional buffer start end arg)
+    (or buffer (setq buffer (current-buffer)))
+    (let (ovl)
+      (with-current-buffer buffer
+        (setq ovl (overlay-lists))
+        (if start (setq start (copy-marker start)))
+        (if end (setq end (copy-marker end))))
+      (setq ovl (nconc (car ovl) (cdr ovl)))
+      (while (and ovl
+                  (or (not (overlay-start (car ovl)))
+                      (and end (>= (overlay-start (car ovl)) end))
+                      (and start (<= (overlay-end (car ovl)) start))
+                      (not (funcall func (car ovl) arg))))
+        (setq ovl (cdr ovl)))
+      (if start (set-marker start nil))
+      (if end (set-marker end nil)))))
+
 (defvar region-extract-function nil)
 
 (defun nelisp--case-modiff-ticks (length)
@@ -14141,6 +16922,8 @@ accessible portion.  POS is an integer or a marker."
               (concat (substring after 0 offset) replacement
                       (substring after (1+ offset))))))
     (unless (= delta 0)
+      (when (nelisp-buffer-overlays buffer)
+        (nelisp-ov--adjust-replace buffer position 1 (length replacement)))
       (setf (nelisp-buffer-len buffer) (+ (nelisp-buffer-len buffer) delta))
       (when (< index blen)
         (setf (nelisp-buffer-blen buffer) (+ blen delta)))
@@ -14155,11 +16938,11 @@ accessible portion.  POS is an integer or a marker."
                  (> (nelisp-buffer-narrow-end buffer) position))
         (setf (nelisp-buffer-narrow-end buffer)
               (+ (nelisp-buffer-narrow-end buffer) delta)))
-      (dolist (interval (nelisp-buffer-text-properties buffer))
-        (when (>= (car interval) position)
-          (setcar interval (+ (car interval) delta)))
-        (when (> (cadr interval) position)
-          (setcar (cdr interval) (+ (cadr interval) delta)))))
+      (when (nelisp-buffer-text-properties buffer)
+        (if (> delta 0)
+            (nelisp-buffer--shift-text-properties-on-insert buffer position delta)
+          (nelisp-buffer--shift-text-properties-on-delete
+           buffer position (- position delta)))))
     ;; GNU replace_range_2 accounts for its deleted and inserted lengths.
     (when (or (/= delta 0) (/= byte-delta 0))
       (dotimes (_ (nelisp--case-modiff-ticks (1+ (length replacement))))
@@ -14198,6 +16981,11 @@ accessible portion.  POS is an integer or a marker."
                                        inhibit-read-only))))
                   (signal 'text-read-only nil)))
               (setq position (1+ position))))
+          (let* ((ovb (current-buffer))
+                 (ohigh high)
+                 (ovold (and (nelisp-buffer-overlays ovb)
+                             (progn (nelisp-ov--before-change ovb low high)
+                                    (nelisp-buffer-substring low high ovb)))))
           (if (let* ((b (current-buffer))
                      (text (nelisp-buffer-substring low high b))
                      (n (length text)) (k 0))
@@ -14282,7 +17070,9 @@ accessible portion.  POS is an integer or a marker."
                                (nelisp--case-region-replace position piece))))
                   (setq high (+ high delta) position (+ position 1 delta)
                         inword word))))
-            (nelisp-buffer--bump-tick (current-buffer))))))))
+            (nelisp-buffer--bump-tick (current-buffer))))
+          (when ovold
+            (nelisp-ov--case-after ovb low ohigh high ovold)))))))
   nil)
 
 (unless (fboundp 'upcase-region)
@@ -14534,11 +17324,15 @@ point itself."
     (or (null n) (integerp n) (nelisp--check-integer n))
     (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
            (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (nelisp--motion-eol
-       (if (or (null n) (eq n 1))
-           pt
-         (car (nelisp--motion-forward-line b pt (1- n))))
-       b))))
+      (if (or (null n) (eq n 1))
+          (nelisp--motion-eol pt b)
+        (let ((moved (nelisp--motion-forward-line b pt (1- n))))
+          ;; GNU find_before_next_newline: when the Nth line from point does
+          ;; not exist before the start of the accessible portion, the answer
+          ;; is that start, not the end of the first line.
+          (if (and (< n 1) (< (cdr moved) 0))
+              (or (nelisp-buffer-narrow-start b) 1)
+            (nelisp--motion-eol (car moved) b)))))))
 
 (unless (fboundp 'delete-char)
   (defun delete-char (n &optional _killflag)
@@ -17061,21 +19855,91 @@ events for an unbound prefix.
             (setq tail (cdr tail)))))
       result)))
 
+;; ---- Buffer-local bookkeeping (GNU buffer.c local_var_alist) -------------
+;; The native evaluator resolves a localized variable through its redirect
+;; vector [CURRENT-BUFFER-SYMBOL ((BUFFER . CELL-SYMBOL) ...) REGISTER-FN].
+;; GNU keeps the same information per buffer (BVAR local_var_alist) so a
+;; killed buffer drops its locals with it.  Here the per-buffer side is a
+;; weak table BUFFER -> ((VARIABLE . CELL) ...) and the cells are recycled:
+;; killing a buffer (or a local) returns its cells to a free list, so the
+;; number of cell symbols is bounded by the peak count of live locals and
+;; no redirect alist keeps a dead buffer reachable.
+(defvar nelisp-buffer-local--serial 0)
+(defvar nelisp-buffer-local--free-cells nil
+  "Cell symbols released by killed locals, ready for reuse.")
+(defvar nelisp-buffer-local--owned (make-hash-table :test 'eq :weakness 'key)
+  "BUFFER -> ((VARIABLE . CELL) ...), newest first; GNU local_var_alist.")
+
+(defun nelisp-buffer-local--new-cell ()
+  "Return a void cell symbol for a new buffer-local value."
+  (let ((cell (car nelisp-buffer-local--free-cells)))
+    (if cell
+        (setq nelisp-buffer-local--free-cells (cdr nelisp-buffer-local--free-cells))
+      (setq cell (intern (format "nelisp-buffer-local--cell-%d"
+                                 (setq nelisp-buffer-local--serial
+                                       (1+ nelisp-buffer-local--serial)))))
+      (eval (list 'defvar cell)))
+    cell))
+
+(defun nelisp-buffer-local--note (buffer variable cell)
+  "Record that BUFFER holds CELL as the local value of VARIABLE."
+  (puthash buffer (cons (cons variable cell) (gethash buffer nelisp-buffer-local--owned))
+           nelisp-buffer-local--owned))
+
+(defun nelisp-buffer-local--free (cell)
+  "Reset CELL and return it to the free list."
+  (setplist cell nil)
+  (makunbound cell)
+  (setq nelisp-buffer-local--free-cells (cons cell nelisp-buffer-local--free-cells)))
+
+(defun nelisp-buffer-local--release (buffer variable cell)
+  "Forget BUFFER's local VARIABLE (its alist entry is already gone)."
+  (let ((owned (gethash buffer nelisp-buffer-local--owned)))
+    (when owned
+      (let ((rest (delq (assq variable owned) owned)))
+        (if rest
+            (puthash buffer rest nelisp-buffer-local--owned)
+          (remhash buffer nelisp-buffer-local--owned)))))
+  (nelisp-buffer-local--free cell))
+
+(defun nelisp-buffer-local--kill-buffer-locals (buffer)
+  "Drop every local value of BUFFER (GNU Fkill_buffer reset_buffer_local_variables)."
+  (let ((owned (gethash buffer nelisp-buffer-local--owned)))
+    (when owned
+      (remhash buffer nelisp-buffer-local--owned)
+      (while owned
+        (let* ((entry (car owned))
+               (redirect (nelisp-buffer-local--redirect (car entry)))
+               (pair (and redirect (assq buffer (aref redirect 1)))))
+          (when pair (aset redirect 1 (delq pair (aref redirect 1))))
+          (nelisp-buffer-local--free (cdr entry)))
+        (setq owned (cdr owned))))))
+
 (unless (fboundp 'kill-all-local-variables)
-  (defun kill-all-local-variables (&optional _kill-permanent)
-    "No-op in this substrate: there is no buffer-local variable
-distinction (`setq-local'/`setq-default' above are plain `setq'), so
-there is nothing to reset to a buffer's default value.  Exists so
-`define-derived-mode's nil-PARENT expansion -- which calls this instead
-of a parent mode function -- and code written against the real Emacs API
-load without a `void-function' error.
+  (defun kill-all-local-variables (&optional kill-permanent)
+    "Switch to Fundamental mode by killing current buffer's local variables.
+Ignore local variables whose `permanent-local' property is non-nil, unless
+KILL-PERMANENT.  A `permanent-local-hook' hook keeps only the functions
+that carry that property.  Run `change-major-mode-hook' first.
 
 (fn &optional KILL-PERMANENT)"
+    (run-hooks 'change-major-mode-hook)
+    (dolist (entry (copy-sequence (gethash (current-buffer) nelisp-buffer-local--owned)))
+      (let* ((var (car entry)) (prop (get var 'permanent-local)))
+        (cond
+         ((or (null prop) kill-permanent) (kill-local-variable var))
+         ((eq prop 'permanent-local-hook)
+          (let ((val (symbol-value var)) (keep nil))
+            (if (consp val)
+                (progn
+                  (dolist (f val)
+                    (when (or (eq f t) (and (symbolp f) (get f 'permanent-local-hook)))
+                      (setq keep (cons f keep))))
+                  (set var (nreverse keep)))
+              (unless (and (symbolp val) (get val 'permanent-local-hook))
+                (kill-local-variable var))))))))
     nil))
 
-;; Automatic locals share the explicit-local provider's redirect cells.
-;; A third slot names the Lisp registration operation; native assignment
-;; invokes it only when this buffer has neither a local nor a default let.
 (unless (fboundp 'make-variable-buffer-local)
   (defun make-variable-buffer-local (variable)
     "Make VARIABLE buffer-local on assignment, except under a let in this buffer.
@@ -17092,11 +19956,42 @@ Return VARIABLE.  Registration alone does not create a local value."
       ;; GNU initializes a previously void default to nil on registration.
       (unless (default-boundp name) (set-default name nil))
       (unless (and (vectorp redirect) (> (length redirect) 2))
+        ;; A slot that already holds a (shorter) redirect vector ignores a
+        ;; direct replacement, so clear it first; the alist is carried over.
+        (when (vectorp redirect)
+          (nelisp--env-globals-op 'variable-entry-slot-set name (cons 5 nil)))
         (nelisp--env-globals-op
          'variable-entry-slot-set name
          (cons 5 (vector 'nelisp--current-buffer
                          (and (vectorp redirect) (aref redirect 1)) 'make-local-variable)))))
     variable))
+
+;; GNU Flocal_variable_if_set_p: t for an automatically local variable.
+(unless (fboundp 'local-variable-if-set-p)
+  (defun local-variable-if-set-p (variable &optional buffer)
+    "Non-nil if VARIABLE is local in BUFFER or becomes local when set there.
+
+(fn VARIABLE &optional BUFFER)"
+    (let ((redirect (nelisp-buffer-local--redirect variable)))
+      (if (and redirect (> (length redirect) 2))
+          t
+        (local-variable-p variable buffer)))))
+
+(unless (fboundp 'buffer-local-variables)
+  (defun buffer-local-variables (&optional buffer)
+    "Return an alist of BUFFER's local variable bindings.
+A variable whose local value is void appears as a bare symbol.
+
+(fn &optional BUFFER)"
+    (let ((b (or buffer (current-buffer))) (result nil))
+      (unless (bufferp b) (signal 'wrong-type-argument (list 'bufferp b)))
+      (dolist (entry (gethash b nelisp-buffer-local--owned))
+        (setq result
+              (cons (if (boundp (cdr entry))
+                        (cons (car entry) (symbol-value (cdr entry)))
+                      (car entry))
+                    result)))
+      (nreverse result))))
 
 (unless (fboundp 'make-local-variable)
   (defun make-local-variable (variable)
@@ -17579,9 +20474,11 @@ With STRING, return an edited copy; otherwise edit the current buffer."
              (replacement (nelisp--cc03-expand-replacement newtext literal string action)))
         (if string
             (concat (substring string 0 b) replacement (substring string e))
-          (goto-char b)
-          (delete-region b e)
-          (insert replacement)
+          (if (nelisp-buffer-overlays nelisp--current-buffer)
+              (nelisp-ov--replace-range nelisp--current-buffer b e replacement)
+            (goto-char b)
+            (delete-region b e)
+            (insert replacement))
           nil))))))
 
 (unless (fboundp 'check-parens)
@@ -20464,6 +23361,47 @@ projection per cell and one slot vector per function for this print call."
             (while (> i 0)
               (setq i (1- i) work (cons (nelisp--record-ref obj i) work))))
           (setq work (cons (nelisp--record-type obj) work))))))))))
+(defun nelisp--prn-charset-mode (obj root)
+  "GNU print_prune_string_charset: nil to print every interval, `strip' to print
+without the `charset' property, `plain' to print the string without intervals."
+  (let ((var (if (boundp 'print-charset-text-property) print-charset-text-property 'default))
+        (non nil) (unsafe nil))
+    (if (eq var t)
+        nil
+      (nelisp--tp-walk
+       root 0 0
+       (lambda (st n)
+         (let ((pl (aref n 3)))
+           (when pl
+             (let ((cs (nelisp--tp-pl-find pl 'charset)))
+               (if (null cs)
+                   (setq non t)
+                 (unless (and (eq cs pl) (null (cdr (cdr cs)))) (setq non t))
+                 (let ((i st) (e (+ st (aref n 2))))
+                   (while (and (not unsafe) (< i e))
+                     (when (> (aref obj i) 127) (setq unsafe t))
+                     (setq i (1+ i))))))))
+         nil))
+      (if (or (null var) (not unsafe))
+          (if non 'strip 'plain)
+        nil))))
+(defun nelisp--prn-propertized (obj root depth)
+  "GNU print_object for a string with intervals: #(\"TEXT\" START END PLIST ...)."
+  (let ((mode (nelisp--prn-charset-mode obj root)))
+    (if (eq mode 'plain)
+        (concat "\"" (nelisp--prn-string-escaped obj) "\"")
+      (let ((out (concat "#(\"" (nelisp--prn-string-escaped obj) "\"")))
+        (nelisp--tp-walk
+         root 0 0
+         (lambda (st n)
+           (let ((pl (if (eq mode 'strip) (nelisp--tp-plist-remove (aref n 3) '(charset))
+                       (aref n 3))))
+             (when pl
+               (setq out (concat out " " (number-to-string st) " "
+                                 (number-to-string (+ st (aref n 2))) " "
+                                 (nelisp--prn-to-string pl t depth)))))
+           nil))
+        (concat out ")")))))
 (defun nelisp--prn-to-string (obj escape &optional depth)
   (if (not (nelisp--prn-graph-p obj))
       (nelisp--prn-object obj escape depth)
@@ -20521,7 +23459,11 @@ projection per cell and one slot vector per function for this print call."
         (nelisp--prn-symbol-escaped (symbol-name obj))
       (symbol-name obj)))
    ((stringp obj)
-    (if escape (concat "\"" (nelisp--prn-string-escaped obj) "\"") obj))
+    (let ((root (gethash obj nelisp--tp-string-properties)))
+      (cond ((null root)
+             (if escape (concat "\"" (nelisp--prn-string-escaped obj) "\"") obj))
+            (escape (nelisp--prn-propertized obj root depth))
+            (t (substring-no-properties obj)))))
    ;; Tagged objects print as themselves.  A buffer came out as
    ;; [buffer "x" "" t], a hash table as its 2048-slot bucket vector, and a
    ;; closure as the (closure ENV ARGS . BODY) list it is made of -- each of
@@ -20568,7 +23510,9 @@ projection per cell and one slot vector per function for this print call."
    ;; red on the `generate-new-buffer' calls already in
    ;; test/nelisp-shadow-differential-cases.el before this fix landed.
    ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p obj))
-    (concat "#<buffer " (nelisp-buffer-name obj) ">"))
+    (if (eq obj (gethash (nelisp-buffer-name obj) nelisp-buffer--registry))
+        (concat "#<buffer " (nelisp-buffer-name obj) ">")
+      "#<killed buffer>"))
    ;; Marker slice 1/2: same reasoning as the buffer clause just above --
    ;; without this, a marker fell through to the generic `nelisp--prn-
    ;; record' arm below and printed as `#s(nelisp-marker ...)' instead of
@@ -20667,90 +23611,109 @@ projection per cell and one slot vector per function for this print call."
              (nelisp--native-format (if noescape "%s" "%S") object))
         (nelisp--prn-to-string object (not noescape)))))
 
-;; Doc 210: strings DO carry text properties now, via the identity-keyed
-;; side table `nelisp--tp-string-properties' (Doc 200's unibyte/multibyte
-;; string layout still has no field of its own for one, so a side table
-;; keyed by `eq' is where a propertized string's intervals live).  The
-;; block comment this replaced argued the opposite and was correct about
-;; the layout, wrong about the conclusion: absence of a struct field
-;; means a side table is needed, not that properties cannot exist.  The
-;; public names below, plus `add-text-properties'/`set-text-properties'/
-;; `remove-text-properties'/`next-single-property-change'/`previous-
-;; single-property-change'/`next-property-change'/`previous-property-
-;; change'/`text-property-any'/`text-property-not-all', are all defined
-;; together with the buffer-side low-level helpers and the shared
-;; interval engine above (search for "text-property engine (Doc 210)"),
-;; since OBJECT nil/buffer routes through the buffer struct's own
-;; `text-properties' slot and OBJECT a string routes through this file's
-;; side table -- both need the same rebuild/merge/boundary machinery.
+;; Doc 210: strings and buffers carry text properties in the interval tree above (a
+;; string's root lives in the identity table `nelisp--tp-string-properties', a
+;; buffer's in its `text-properties' slot).  The public names below are the
+;; textprop.c functions over it.
+
 (unless (fboundp 'get-text-property)
-  (defun get-text-property (pos prop &optional object)
-    (nelisp--tp-value-at pos prop (nelisp--tp-get-intervals object))))
+  (defun get-text-property (position prop &optional object)
+    (nelisp--tp-textget (text-properties-at position object) prop)))
+
 (unless (fboundp 'text-properties-at)
-  (defun text-properties-at (pos &optional object)
-    (nelisp--tp-plist-at pos (nelisp--tp-get-intervals object))))
+  (defun text-properties-at (position &optional object)
+    (let* ((object (or object nelisp--current-buffer))
+           (root (and (integerp position)
+                      ;; The common call: an integer inside the object, whose tree
+                      ;; already covers it; everything else takes the full validation.
+                      (if (stringp object)
+                          (and (>= position 0) (<= position (length object))
+                               (let ((r (gethash object nelisp--tp-string-properties)))
+                                 (and r (= (aref r 4) (length object)) r)))
+                        (and (nelisp-buffer-p object)
+                             (let ((r (nelisp-buffer-text-properties object)))
+                               (and r (>= position (nelisp-point-min object))
+                                    (<= position (nelisp-point-max object))
+                                    (< (nelisp-point-min object) (nelisp-point-max object))
+                                    (= (aref r 4) (nelisp-buffer-len object)) r)))))))
+      (if root
+          (let* ((p (if (stringp object) position (1- position)))
+                 (n (nelisp--tp-find root p)))
+            (if (= p (+ nelisp--tp-fs (aref n 2))) nil (aref n 3)))
+        (setq root (nelisp--tp-validate object position position t nil))
+        (when root
+          (let ((n (nelisp--tp-find root nelisp--tp-vs)))
+            (if (= nelisp--tp-vs (+ nelisp--tp-fs (aref n 2))) nil (aref n 3))))))))
+
 (unless (fboundp 'propertize)
   (defun propertize (string &rest properties)
-    "Return a copy of STRING with PROPERTIES set over its whole length."
-    (let ((new (copy-sequence string)))
-      (when properties
-        (nelisp--tp-set-intervals
-         new
-         (nelisp--tp-rebuild nil 0 (length new)
-                              (lambda (_old) (copy-sequence properties)))))
+    "Return a copy of STRING with PROPERTIES added (GNU Fpropertize)."
+    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+    (when (= (% (length properties) 2) 1)
+      (signal 'wrong-number-of-arguments (list 'propertize (1+ (length properties)))))
+    (let ((new (copy-sequence string)) (rev nil) (l properties))
+      (while l
+        (setq rev (cons (car l) (cons (car (cdr l)) rev)) l (cdr (cdr l))))
+      (add-text-properties 0 (length new) rev new)
       new)))
+
 (unless (fboundp 'put-text-property)
-  (defun put-text-property (start end prop value &optional object)
-    (nelisp--tp-set-intervals
-     object
-     (nelisp--tp-rebuild (nelisp--tp-get-intervals object) start end
-                          (lambda (old) (nelisp--tp-plist-set old prop value))))
+  (defun put-text-property (start end property value &optional object)
+    (add-text-properties start end (list property value) object)
     nil))
+
 (unless (fboundp 'add-text-properties)
   (defun add-text-properties (start end properties &optional object)
-    "Merge PROPERTIES onto [START, END) of OBJECT.  Return t if any
-property actually changed, nil otherwise (Emacs's own contract)."
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (changed nil))
-      (when (and properties (< start end))
-        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
-          (let ((cur (nelisp--tp-plist-at p intervals)) (l properties))
-            (while l
-              (unless (eq (plist-get cur (car l)) (cadr l)) (setq changed t))
-              (setq l (cddr l))))))
-      (when changed
-        (nelisp--tp-set-intervals
-         object
-         (nelisp--tp-rebuild intervals start end
-                              (lambda (old) (nelisp--tp-plist-add old properties)))))
-      changed)))
+    "Merge PROPERTIES onto [START, END) of OBJECT.  Return t if any property
+  actually changed, nil otherwise (GNU add_text_properties_1)."
+    (setq properties (nelisp--tp-validate-plist properties))
+    (if (null properties)
+        nil
+      (let* ((object (or object nelisp--current-buffer))
+             (root (nelisp--tp-validate object start end nil t)))
+        (when root
+          (let ((new (nelisp--tp-add root nelisp--tp-vs nelisp--tp-ve properties)))
+            (nelisp--tp-set-intervals object new)
+            nelisp--tp-changed))))))
+
 (unless (fboundp 'set-text-properties)
   (defun set-text-properties (start end properties &optional object)
     "Replace the property list of [START, END) of OBJECT with PROPERTIES
-wholesale (a nil PROPERTIES removes every property in the range)."
-    (nelisp--tp-set-intervals
-     object
-     (nelisp--tp-rebuild (nelisp--tp-get-intervals object) start end
-                          (lambda (_old) (copy-sequence properties))))
-    nil))
+  wholesale (GNU set_text_properties)."
+    (setq properties (nelisp--tp-validate-plist properties))
+    (let ((object (or object nelisp--current-buffer)))
+      (if (and (null properties) (stringp object) (eql start 0) (eql end (length object)))
+          (if (gethash object nelisp--tp-string-properties)
+              (progn (nelisp--tp-set-intervals object nil) t)
+            nil)
+        (let ((root (nelisp--tp-validate object start end nil nil)))
+          (when (and (null root) properties)
+            (setq root (nelisp--tp-validate object start end nil t)))
+          (when root
+            (nelisp--tp-set-intervals
+             object (nelisp--tp-set root nelisp--tp-vs nelisp--tp-ve properties))
+            t))))))
+
 (unless (fboundp 'remove-text-properties)
   (defun remove-text-properties (start end properties &optional object)
-    "Drop each key in PROPERTIES from [START, END) of OBJECT.  Return t
-if any property was actually removed, nil otherwise."
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (keys nil) (l properties) (changed nil))
-      (while l (push (car l) keys) (setq l (cddr l)))
-      (when (and keys (< start end))
-        (dolist (p (cons start (nelisp--tp-boundaries-between intervals start end)))
-          (let ((cur (nelisp--tp-plist-at p intervals)))
-            (dolist (k keys)
-              (when (plist-member cur k) (setq changed t))))))
-      (when changed
-        (nelisp--tp-set-intervals
-         object
-         (nelisp--tp-rebuild intervals start end
-                              (lambda (old) (nelisp--tp-plist-remove old keys)))))
-      changed)))
+    "Drop each key in the plist PROPERTIES from [START, END) of OBJECT.  Return t
+  if any property was actually removed, nil otherwise."
+    (let* ((object (or object nelisp--current-buffer))
+           (root (nelisp--tp-validate object start end nil nil)))
+      (when root
+        (let ((new (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve properties t)))
+          (nelisp--tp-set-intervals object new)
+          nelisp--tp-changed)))))
+
+(unless (fboundp 'remove-list-of-text-properties)
+  (defun remove-list-of-text-properties (start end list-of-properties &optional object)
+    "Remove the properties named in LIST-OF-PROPERTIES from [START, END) of OBJECT."
+    (let* ((object (or object nelisp--current-buffer))
+           (root (nelisp--tp-validate object start end nil nil)))
+      (when root
+        (let ((new (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve list-of-properties nil)))
+          (nelisp--tp-set-intervals object new)
+          nelisp--tp-changed)))))
 (defun nelisp--w202-position (position)
   "Return POSITION as an integer, checking integer and marker arguments."
   (cond
@@ -20762,81 +23725,97 @@ if any property was actually removed, nil otherwise."
               (list 'integer-or-marker-p position)))))
 
 (defun nelisp--w202-property-change (position object limit backward single prop)
-  "Find a property boundary after validating POSITION, OBJECT and LIMIT."
-  ;; GNU checks LIMIT before OBJECT and POSITION, even for an empty object.
-  (when limit (setq limit (nelisp--w202-position limit)))
-  (nelisp--tp-check-object object)
-  (setq position (nelisp--w202-position position))
-  (let* ((lo (nelisp--tp-lo object))
-         (hi (nelisp--tp-hi object)))
-    (when (or (< position lo) (> position hi))
-      (signal 'args-out-of-range (list position position)))
-    (let* ((intervals (nelisp--tp-get-intervals object))
-           (eff (if backward (if limit (max limit lo) lo)
-                  (if limit (min limit hi) hi))))
-      (if (if backward (<= position eff) (>= position eff))
+  "GNU Fnext_property_change and its three siblings: a boundary after validating
+POSITION, OBJECT and LIMIT.  The intervals are walked, never the positions."
+  (let ((str nil) root base end-abs)
+    (unless (or (eq limit t) (null limit)) (setq limit (nelisp--w202-position limit)))
+    (when (and (eq limit t) (or backward single))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p limit)))
+    (setq object (or object nelisp--current-buffer))
+    (nelisp--tp-check-object object)
+    (setq position (nelisp--w202-position position))
+    (setq str (stringp object) base (if str 0 1)
+          root (nelisp--tp-validate object position position t nil)
+          end-abs (if str (length object) (nelisp-point-max object)))
+    (if (eq limit t)
+        ;; Only `next-property-change' accepts t: the next interval edge, equal or not.
+        (if (null root)
+            end-abs
+          (let* ((i (nelisp--tp-find root nelisp--tp-vs))
+                 (ns (+ nelisp--tp-fs (aref i 2))))
+            (if (>= ns (aref root 4)) end-abs (+ ns base))))
+      (if (null root)
           limit
-        (let* ((initial (if backward (1- position) position))
-               (cells intervals) reverse-cells current value boundary next)
-          ;; Find the containing interval (or gap) once.  A singly linked
-          ;; list needs a reversed prefix for backward traversal; do not sort
-          ;; boundaries or rescan from the head at each candidate.
-          (if backward
-              (progn
-                (while (and cells (<= (car (car cells)) initial))
-                  (push (car cells) reverse-cells)
-                  (setq cells (cdr cells)))
-                (setq cells reverse-cells)
-                (when (and cells (< initial (cadr (car cells))))
-                  (setq current (car cells) cells (cdr cells))))
-            (while (and cells (<= (cadr (car cells)) initial))
-              (setq cells (cdr cells)))
-            (when (and cells (<= (car (car cells)) initial))
-              (setq current (car cells) cells (cdr cells))))
-          (setq value (if single (plist-get (nth 2 current) prop)
-                        (nth 2 current)))
-          (catch 'nelisp--w202-boundary
-            (while (or current cells)
-              (setq boundary (if current
-                                 (if backward (car current) (cadr current))
-                               (if backward (cadr (car cells)) (car (car cells)))))
-              (when (if backward (<= boundary eff) (>= boundary eff))
-                (throw 'nelisp--w202-boundary limit))
-              ;; Crossing an interval edge can enter the adjacent interval or
-              ;; a gap; crossing a gap always enters the next interval.
-              (setq next nil)
-              (when (and cells
-                         (or (not current)
-                             (= boundary (if backward (cadr (car cells))
-                                           (car (car cells))))))
-                (setq next (car cells) cells (cdr cells)))
-              (unless (if single (eq value (plist-get (nth 2 next) prop))
-                        (nelisp--tp-plist-value-eq value (nth 2 next)))
-                (throw 'nelisp--w202-boundary boundary))
-              (setq current next))
-            limit))))))
+        (let* ((tot (aref root 4)) (p0 nelisp--tp-vs)
+               (i (nelisp--tp-find root p0)) (is nelisp--tp-fs)
+               (res nil) (done nil))
+          (if (not backward)
+              (let* ((here (and single (nelisp--tp-textget (aref i 3) prop)))
+                     (cur i) (cs is) (nxt nil) (nstart nil))
+                (while (not done)
+                  (let ((ns (+ cs (aref cur 2))))
+                    (if (>= ns tot)
+                        (setq nxt nil done t)
+                      (setq cur (nelisp--tp-find root ns) cs ns)
+                      (if (and (if single (eq here (nelisp--tp-textget (aref cur 3) prop))
+                                 (nelisp--tp-plists-equal (aref i 3) (aref cur 3) nil))
+                               (or (null limit) (< (+ cs base) limit)))
+                          nil
+                        (setq nxt cur nstart cs done t)))))
+                (setq res (if (or (null nxt) (>= (+ nstart base) (if (integerp limit) limit end-abs)))
+                              limit
+                            (+ nstart base))))
+            ;; backward
+            (let ((cur i) (cs is))
+              (when (= is p0)
+                (if (> is 0)
+                    (setq cur (nelisp--tp-find root (1- is)) cs nelisp--tp-fs)
+                  (setq cur nil)))
+              (if (null cur)
+                  (setq res limit)
+                (let ((here (and single (nelisp--tp-textget (aref cur 3) prop)))
+                      (pv nil) (pstart 0))
+                  (when (> cs 0)
+                    (setq pv (nelisp--tp-find root (1- cs)) pstart nelisp--tp-fs))
+                  (while (and pv
+                              (if single (eq here (nelisp--tp-textget (aref pv 3) prop))
+                                (nelisp--tp-plists-equal (aref pv 3) (aref cur 3) nil))
+                              (or (null limit) (> (+ pstart (aref pv 2) base) limit)))
+                    (if (> pstart 0)
+                        (setq pv (nelisp--tp-find root (1- pstart)) pstart nelisp--tp-fs)
+                      (setq pv nil)))
+                  (setq res (if (or (null pv)
+                                    (<= (+ pstart (aref pv 2) base)
+                                        (if (integerp limit) limit
+                                          (if str 0 (nelisp-point-min object)))))
+                                limit
+                              (+ pstart (aref pv 2) base)))))))
+          res)))))
 
 (defun nelisp--w202-property-find (start end prop value object different)
-  "Find a character in START to END whose PROP equals VALUE, or differs.
-DIFFERENT selects the inequality test.  Normalize reversed endpoints."
+  "GNU Ftext_property_any / Ftext_property_not_all: the first character in START
+to END whose PROP is `eq' to VALUE, or (DIFFERENT) is not.  Walks the intervals."
+  (setq object (or object nelisp--current-buffer))
   (nelisp--tp-check-object object)
-  (setq start (nelisp--w202-position start)
-        end (nelisp--w202-position end))
-  ;; Empty ranges have no characters to validate, including outside OBJECT.
-  (unless (= start end)
-    (let ((lo (min start end)) (hi (max start end)))
-      (when (or (< lo (nelisp--tp-lo object))
-                (> hi (nelisp--tp-hi object)))
-        (signal 'args-out-of-range (list start end)))
-      (let ((intervals (nelisp--tp-get-intervals object)))
-        (catch 'nelisp--w202-found
-          (dolist (pos (cons lo (nelisp--tp-boundaries-between intervals lo hi)))
-            (when (if different
-                      (not (eq (nelisp--tp-value-at pos prop intervals) value))
-                    (eq (nelisp--tp-value-at pos prop intervals) value))
-              (throw 'nelisp--w202-found pos)))
-          nil)))))
-
+  (let ((root (nelisp--tp-validate object start end nil nil)))
+    (if (null root)
+        (if (= (nelisp--w202-position start) (nelisp--w202-position end))
+            nil
+          (let ((s (min (nelisp--w202-position start) (nelisp--w202-position end))))
+            (if different
+                (if (null value) nil s)
+              (if value nil s))))
+      (let* ((s nelisp--tp-vs) (e nelisp--tp-ve) (base (if (stringp object) 0 1))
+             (r (nelisp--tp-walk
+                 root 0 s
+                 (lambda (st n)
+                   (cond ((>= st e) 'stop)
+                         ((if different
+                              (not (eq (nelisp--tp-textget (aref n 3) prop) value))
+                            (eq (nelisp--tp-textget (aref n 3) prop) value))
+                          (+ base (max st s)))
+                         (t nil))))))
+        (and (integerp r) r)))))
 (defun nelisp--w202-regexp-error (message)
   "Signal an invalid regexp with MESSAGE as its error data."
   (signal 'invalid-regexp (list message)))
@@ -21088,7 +24067,8 @@ through the next unit separator.  Only file streams use the byte count."
       (setq go nil)
       (while (and (< i n)
                   (let ((c (aref s i)))
-                    (or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12))))
+                    ;; GNU's read0 also skips NO-BREAK SPACE (U+00A0).
+                    (or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12) (= c 160))))
         (setq i (1+ i)))
       (when (and (< i n) (= (aref s i) 59)) ; ;
         (while (and (< i n) (not (= (aref s i) 10))) (setq i (1+ i)))
@@ -21108,7 +24088,7 @@ through the next unit separator.  Only file streams use the byte count."
           ;; A symbol backslash quotes the following character, so it cannot
           ;; terminate this atom even when it normally would.
           (setq i (if (< (1+ i) n) (+ i 2) (1+ i))))
-         ((or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12)
+         ((or (= c 32) (= c 9) (= c 10) (= c 13) (= c 12) (= c 160)
               (= c 40) (= c 41) (= c 91) (= c 93)
               (= c 34) (= c 39) (= c 96) (= c 44) (= c 59))
           (setq stop t))
@@ -21213,33 +24193,166 @@ Return (CODE . NEXT-POS)."
       (when (> code #x10FFFF) (error "Invalid Unicode escape"))
       (cons code end))))
 
+(defvar nelisp--ucs-names-text nil
+  "Text of lisp/nelisp-ucs-names.txt, read on first use by `char-from-name'.
+Generated by tools/ai/reader1/gen-ucs-names.el from GNU Emacs's own `ucs-names'
+table: a leading newline, one \"NAME<TAB>HEX\" line per character name, then
+a \"#RANGES\" line and one \"PREFIX<TAB>START<TAB>END\" line per run of
+characters that GNU names algorithmically as PREFIX-HEX.")
+
+(defun nelisp--ucs-names-text ()
+  "Return the character-name table text, loading it on first use."
+  (or nelisp--ucs-names-text
+      (let ((file (locate-file "nelisp-ucs-names.txt" load-path)))
+        (unless file
+          (error "Unicode character names unavailable: nelisp-ucs-names.txt is not in load-path"))
+        (setq nelisp--ucs-names-text
+              (with-temp-buffer
+                (insert-file-contents-literally file)
+                (buffer-string))))))
+
+(defun nelisp--ucs-hex-value (string start end)
+  "Value of the hexadecimal digits of STRING in [START, END), or nil if any other character is there."
+  (let ((i start) (value 0) (ok (< start end)))
+    (while (and ok (< i end))
+      (let ((v (nelisp--rd-hex-digit-value (aref string i))))
+        (if v (setq value (+ (* value 16) v)) (setq ok nil)))
+      (setq i (1+ i)))
+    (and ok value)))
+
+(defun nelisp--ucs-algorithmic-name (code)
+  "Return the algorithmic Unicode name of CODE (PREFIX-HEX), or nil.
+Covers what GNU's `name' property computes and `ucs-names' leaves out: the
+ideograph blocks and their kin listed after the #RANGES line of the table,
+and the variation selectors."
+  (cond
+   ((and (>= code #xFE00) (<= code #xFE0F))
+    (format "VARIATION SELECTOR-%d" (- code #xFDFF)))
+   ((and (>= code #xE0100) (<= code #xE01EF))
+    (format "VARIATION SELECTOR-%d" (- code #xE00EF)))
+   (t
+    (let* ((text (nelisp--ucs-names-text))
+           (pos (string-search "\n#RANGES\n" text))
+           (end (length text))
+           (result nil))
+      (when pos
+        (setq pos (+ pos 9))
+        (while (and (not result) (< pos end))
+          (let* ((eol (or (string-search "\n" text pos) end))
+                 (t1 (string-search "\t" text pos))
+                 (t2 (and t1 (string-search "\t" text (1+ t1)))))
+            (when (and t1 t2 (< t2 eol))
+              (let ((lo (nelisp--ucs-hex-value text (1+ t1) t2))
+                    (hi (nelisp--ucs-hex-value text (1+ t2) eol)))
+                (when (and lo hi (>= code lo) (<= code hi))
+                  (setq result (format "%s-%04X" (substring text pos t1) code)))))
+            (setq pos (1+ eol)))))
+      result))))
+
+(unless (fboundp 'char-from-name)
+  (defun char-from-name (string &optional ignore-case)
+    "Return a character as a number from its Unicode name STRING.
+If optional IGNORE-CASE is non-nil, ignore case in STRING.
+Return nil if STRING does not name a character.
+The names are those of GNU Emacs's `ucs-names' (the `name' and `old-name'
+character properties), including its \"-HEX\" fallback for names that are
+computed rather than tabulated (CJK COMPATIBILITY IDEOGRAPH-F900,
+VARIATION SELECTOR-17)."
+    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+    (let* ((key (if ignore-case (upcase string) string))
+           (text (nelisp--ucs-names-text))
+           (pos (and (not (string-search "\t" key))
+                     (not (string-search "\n" key))
+                     (string-search (concat "\n" key "\t") text))))
+      (if pos
+          (let* ((start (+ pos (length key) 2))
+                 (eol (string-search "\n" text start)))
+            (nelisp--ucs-hex-value text start eol))
+        ;; GNU: parse names like "VARIATION SELECTOR-17" and "CJK
+        ;; COMPATIBILITY IDEOGRAPH-F900" that are not in `ucs-names'.
+        (let* ((n (length string))
+               (minus (let ((i (1- n)))
+                        (while (and (>= i 0) (nelisp--rd-hex-digit-value (aref string i)))
+                          (setq i (1- i)))
+                        (and (>= i 0) (< i (1- n)) (= (aref string i) 45) i)))
+               (vs (and minus
+                        (let ((prefix "VARIATION SELECTOR-"))
+                          (and (>= n (length prefix))
+                               (if ignore-case
+                                   (string= (upcase (substring string 0 (length prefix))) prefix)
+                                 (string= (substring string 0 (length prefix)) prefix)))))))
+          (when minus
+            ;; MAG is the number after the hyphen (decimal for a variation
+            ;; selector, where `string-to-number' stops at the first non-digit).
+            (let* ((mag (if vs
+                            (let ((i (1+ minus)) (v 0))
+                              (while (and (< i n) (>= (aref string i) 48) (<= (aref string i) 57))
+                                (setq v (+ (* v 10) (- (aref string i) 48)) i (1+ i)))
+                              v)
+                          (nelisp--ucs-hex-value string (1+ minus) n)))
+                   (code (+ (if vs (if (> mag 16) #xE00EF #xFDFF) 0) mag))
+                   (name (and (>= code 0) (<= code #x10FFFF)
+                              (nelisp--ucs-algorithmic-name code))))
+              (and name
+                   (if ignore-case (string= (upcase string) name) (string= string name))
+                   code))))))))
+
 (defun nelisp--rd-named-unicode-escape (body pos n)
-  "Decode GNU's numeric `\\N{U+HEX}' form in BODY at POS.
-Return (CODE . NEXT-POS)."
+  "Decode GNU's `\\N{NAME}' escape in BODY, where POS is the index of the `N'.
+Mirror `read_char_escape' and `character_name_to_code' (lread.c): runs of
+whitespace in NAME read as one space, `U+HEX' names the code point, anything
+else is looked up with (`char-from-name' NAME t), and surrogates and values
+past #x10FFFF are rejected.  Return (CODE . NEXT-POS)."
   (unless (and (< (1+ pos) n) (= (aref body (1+ pos)) 123))
-    (signal 'invalid-read-syntax (list "Invalid \\N escape")))
-  (let ((end (+ pos 2)))
-    (while (and (< end n) (not (= (aref body end) 125)))
-      (setq end (1+ end)))
-    (when (>= end n)
-      (signal 'invalid-read-syntax (list "Unterminated \\N escape")))
-    (let ((digit-start (+ pos 4)) (i (+ pos 4)) (valid t))
-      ;; Full Unicode character-name lookup needs Emacs's name database,
-      ;; which the standalone does not carry.  The U+ notation is numeric
-      ;; and can be decoded locally without broadening that runtime surface.
-      (unless (and (< digit-start end)
-                   (= (aref body (+ pos 2)) 85)
-                   (= (aref body (+ pos 3)) 43))
-        (signal 'invalid-read-syntax (list "Unknown character name")))
-      (while (< i end)
-        (unless (nelisp--rd-hex-digit-value (aref body i)) (setq valid nil))
-        (setq i (1+ i)))
-      (unless valid
-        (signal 'invalid-read-syntax (list "Invalid character code")))
-      (let ((code (string-to-number (substring body digit-start end) 16)))
-        (when (> code #x10FFFF)
-          (signal 'invalid-read-syntax (list "Invalid character code")))
-        (cons code (1+ end))))))
+    (signal 'invalid-read-syntax (list "Expected opening brace after \\N")))
+  (let ((i (+ pos 2)) (chars nil) (length 0) (space nil) (done nil))
+    (while (not done)
+      (when (>= i n) (signal 'end-of-file nil))
+      (let ((c (aref body i)))
+        (setq i (1+ i))
+        (cond
+         ((= c 125) (setq done t))
+         ((>= c 128)
+          (signal 'invalid-read-syntax
+                  (list (format "Invalid character U+%04X in character name" c))))
+         ((or (= c 32) (and (>= c 9) (<= c 13)))
+          ;; GNU: multiple adjacent whitespace characters count as one space.
+          (unless space
+            (setq chars (cons 32 chars) length (1+ length) space t)))
+         (t (setq chars (cons c chars) length (1+ length) space nil)))
+        (when (>= length 201)
+          (signal 'invalid-read-syntax (list "Character name too long")))))
+    (when (= length 0)
+      (signal 'invalid-read-syntax (list "Empty character name")))
+    (let* ((name (apply #'string (nreverse chars)))
+           (code (if (and (>= length 2) (= (aref name 0) 85) (= (aref name 1) 43))
+                     (nelisp--ucs-hex-value name 2 length)
+                   (char-from-name name t))))
+      (unless (and (integerp code) (>= code 0) (<= code #x10FFFF)
+                   (not (and (>= code #xD800) (<= code #xDFFF))))
+        (signal 'invalid-read-syntax (list (format "\\N{%s}" name))))
+      (cons code i))))
+
+(defun nelisp--rd-radix-integer (s k n base)
+  "Read the digits of a radix-BASE integer in S from index K (limit N).
+Mirror GNU's `read_integer' (lread.c): an optional sign, then every following
+alphanumeric character belongs to the token, and the token is valid only
+when it is nonempty and each of its characters is a digit of BASE (`#xfg',
+`#b12', `#x' and `#x-' signal `invalid-read-syntax' \"integer, radix BASE\").
+Any other character ends the number (`#x1_0' reads 1).  Return (VALUE . NEXT);
+VALUE is a bignum when it does not fit a fixnum."
+  (let ((negative nil) (value 0) (digits 0) (valid t))
+    (when (and (< k n) (or (= (aref s k) 43) (= (aref s k) 45)))
+      (setq negative (= (aref s k) 45) k (1+ k)))
+    (while (and (< k n) (nelisp-stdlib--digit-value (aref s k) 36))
+      (let ((v (nelisp-stdlib--digit-value (aref s k) 36)))
+        (if (>= v base)
+            (setq valid nil)
+          (setq value (+ (* value base) v)))
+        (setq digits (1+ digits) k (1+ k))))
+    (when (or (= digits 0) (not valid))
+      (signal 'invalid-read-syntax (list (format "integer, radix %d" base))))
+    (cons (if negative (- value) value) k)))
 
 (defun nelisp--rd-string-ctrl-char (c)
   "Return GNU's general control-code fold of C, or nil when C isn't foldable.
@@ -21301,6 +24414,9 @@ pending modifier resolves in `nelisp--rd-string-escape' below."
       (let ((c (aref body i)))
         (setq i (1+ i))
         (cond
+         ;; GNU: `?\\LF' is an error, probably a user mistake (string literals
+         ;; consume `\\LF' before they reach here).
+         ((= c 10) (signal 'error (list "Invalid escape char syntax: \\<newline>")))
          ((= c 97)  (setq chr 7   done t))
          ((= c 98)  (setq chr 8   done t))
          ((= c 100) (setq chr 127 done t))
@@ -21518,7 +24634,7 @@ placeholder left in the argument could not be reached after the copy."
           (let ((target (nth 2 entry)))
             ;; `#1=#1#' has no container whose identity could close the cycle.
             (when (nelisp--rd-label-proxy-number target)
-              (signal 'invalid-read-syntax (list (format "#%d=" number))))
+              (signal 'invalid-read-syntax (list "nonsensical self-reference")))
             target))
       (cond
        ((consp object)
@@ -21535,6 +24651,15 @@ placeholder left in the argument could not be reached after the copy."
             (while (< i (length object))
               (aset object i
                     (nelisp--rd-resolve-labels (aref object i) next-seen))
+              (setq i (1+ i)))))
+        object)
+       ;; Records (`#s(NAME ...)') hold their slots like a vector does; the
+       ;; slots are written back because a slot may itself be a placeholder.
+       ((recordp object)
+        (unless (memq object seen)
+          (let ((i 0) (n (length object)) (next-seen (cons object seen)))
+            (while (< i n)
+              (aset object i (nelisp--rd-resolve-labels (aref object i) next-seen))
               (setq i (1+ i)))))
         object)
        ;; GNU substitute_object_recurse also walks the slots of a byte-code or interpreted closure (lread.c,
@@ -21589,7 +24714,11 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
              ((>= k n) (signal 'end-of-file nil))
              ((= (aref s k) 41) (setq k (1+ k)) (setq done t))
              ((and (= (aref s k) 46) (< (1+ k) n)
-                   (let ((nc (aref s (1+ k)))) (or (= nc 32) (= nc 9) (= nc 10) (= nc 13))))
+                   ;; GNU read0: a `.' followed by whitespace, NO-BREAK SPACE
+                   ;; or one of these delimiters is the dot token.
+                   (let ((nc (aref s (1+ k))))
+                     (or (<= nc 32) (= nc 160)
+                         (memq nc '(34 39 59 40 91 35 63 96 44)))))
               ;; `(. X)' and `(A . )' are invalid, as in GNU; a dotted tail
               ;; must be followed by the closing paren.
               (when (null items)
@@ -21648,6 +24777,10 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
             (cons (logior (nth 0 r) (nth 1 r)) next))))
        ((= c 35) ; #
          (cond
+          ;; GNU read0: `#' at the end of the input or before whitespace
+          ;; names nothing (the dispatch's default arm).
+          ((or (>= (1+ i) n) (<= (aref s (1+ i)) 32) (= (aref s (1+ i)) 160))
+           (signal 'invalid-read-syntax (list "#")))
           ;; `#[...]' byte-code closure.  Validate the GNU reader's six-slot
           ;; maximum and descriptor/depth types before calling the permissive
           ;; constructor; the native path declines invalid shapes into here.
@@ -21699,6 +24832,14 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                         arglist code constants (nth 4 fields) iform)
                        (cdr r))))
               (t (signal 'invalid-read-syntax (list "Invalid byte-code object"))))))
+          ;; `#x' `#o' `#b' (and upper case): radix integers, as GNU's
+          ;; read0 dispatches them to `read_integer'.
+          ((and (< (1+ i) n) (memq (aref s (1+ i)) '(120 88 111 79 98 66)))
+           (nelisp--rd-radix-integer
+            s (+ i 2) n
+            (cond ((memq (aref s (1+ i)) '(120 88)) 16)
+                  ((memq (aref s (1+ i)) '(111 79)) 8)
+                  (t 2))))
           ;; `#:' reads a new uninterned symbol on every occurrence.  Keep
           ;; its decoded name independent from the global intern table.
           ((and (< (1+ i) n) (= (aref s (1+ i)) 58))
@@ -21843,9 +24984,22 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                         (delimiter (aref s j)))
                    (if (= delimiter 61) ; #N=OBJECT
                        (progn
-                         (when (assq number nelisp--rd-labels)
-                           (signal 'invalid-read-syntax
-                                   (list (format "Duplicate #%d=" number))))
+                         ;; GNU lets a number be defined again (read0 replaces
+                         ;; the entry of the read-objects map): references read
+                         ;; before this `#N=' stay with the earlier definition
+                         ;; and later ones see the new one.  Retire the earlier
+                         ;; entry under a fresh negative number, and re-point
+                         ;; the proxies already handed out for it, so exactly
+                         ;; one entry per number is current.
+                         (let ((old (assq number nelisp--rd-labels)))
+                           (when old
+                             (let ((fresh (- (1+ (length nelisp--rd-labels))))
+                                   (p nelisp--rd-label-proxies))
+                               (while p
+                                 (when (eql (cdr (car p)) number)
+                                   (setcdr (car p) fresh))
+                                 (setq p (cdr p)))
+                               (setcar old fresh))))
                          ;; Install the entry before descending so a reference
                          ;; inside OBJECT can denote the container being read.
                          (let ((entry (list number 'pending nil)))
@@ -21867,28 +25021,11 @@ from the top-level empty read that callers turn into `end-of-file' or nil."
                          (cons proxy (1+ j))))))
                (if (and (> j (1+ i)) (< j n)
                         (or (= (aref s j) 114) (= (aref s j) 82)))
-                 (let* ((base (string-to-number (substring s (1+ i) j)))
-                        (k (1+ j)) (negative nil) (digits 0) (value 0)
-                        (bad nil) (done nil))
+                 (let ((base (string-to-number (substring s (1+ i) j))))
                    (when (or (< base 2) (> base 36))
                      (signal 'invalid-read-syntax
                              (list (format "integer, radix %d" base))))
-                   (when (and (< k n)
-                              (or (= (aref s k) 43) (= (aref s k) 45)))
-                     (setq negative (= (aref s k) 45)
-                           k (1+ k)))
-                   (while (and (< k n) (not done))
-                     (let ((v (nelisp-stdlib--digit-value (aref s k) 36)))
-                       (cond
-                        ((null v) (setq done t))
-                        ((>= v base) (setq bad t done t))
-                        (t (setq value (+ (* value base) v)
-                                 digits (1+ digits)
-                                 k (1+ k))))))
-                   (when (or (= digits 0) bad)
-                     (signal 'invalid-read-syntax
-                             (list (format "integer, radix %d" base))))
-                   (cons (if negative (- value) value) k))
+                   (nelisp--rd-radix-integer s (1+ j) n base))
                  (let* ((e (nelisp--rd-atom-end s i n))
                         (tok (substring s i e)))
                    (cons (intern (nelisp--rd-symbol-unescape tok)) e))))))))
@@ -22034,7 +25171,9 @@ reader."
        ((= c 35)
         (let ((c1 (and (< (1+ i) n) (aref s (1+ i)))))
           (cond
-           ((null c1) (setq res nil))
+           ;; A lone `#' is not text that could be completed: GNU's read0
+           ;; signals (invalid-read-syntax "#") at once, so let the reader.
+           ((null c1) (setq res t))
            ((or (= c1 64) (= c1 36)) (setq res t))
            ((= c1 39) (setq i (+ i 2)))
            ((= c1 40) (setq i (1+ i)))
@@ -22047,7 +25186,9 @@ reader."
               (setq j (1+ j)))
             (if (and (< j n) (= (aref s j) 61))
                 (setq i (1+ j))
-              (setq i j)
+              ;; `#N#' is one token: step over its closing `#' so it is not
+              ;; taken for the start of another `#' dispatch.
+              (setq i (if (and (< j n) (= (aref s j) 35)) (1+ j) j))
               (when (= depth 0) (setq res t))))
            (t (setq j (+ i 2)
                     i (progn
@@ -22179,7 +25320,8 @@ are reported the way GNU does, and the rest takes `read-from-string'."
             (car r))))))
    ((functionp stream)
     (let (chars c)
-      (while (setq c (funcall stream))
+      ;; GNU's `readchar': the function answers nil, or -1, at end of input.
+      (while (and (setq c (funcall stream)) (not (and (integerp c) (< c 0))))
         (push c chars))
       (let* ((text (apply #'string (nreverse chars)))
              (r (read-from-string text))
@@ -25432,6 +28574,15 @@ comment above this definition for how that value was measured."))
              ;; A `nelisp-marker' is a record: equal when it shares the buffer
              ;; and, only for a non-nil buffer, the position (insertion type
              ;; ignored); two detached markers are equal (probed against 31.1).
+             ;; An overlay is equal to another when it has the same buffer, start,
+             ;; end and (equal) properties (GNU `internal_equal', PVEC_OVERLAY).
+             ((or (nelisp-overlay-p o1) (nelisp-overlay-p o2))
+              (and (nelisp-overlay-p o1) (nelisp-overlay-p o2)
+                   (eq (nelisp-ov--buffer o1) (nelisp-ov--buffer o2))
+                   (= (nelisp-ov--start o1) (nelisp-ov--start o2))
+                   (= (nelisp-ov--stop o1) (nelisp-ov--stop o2))
+                   (nelisp--equal-1 (nelisp-ov--plist o1) (nelisp-ov--plist o2)
+                                    (1+ depth) ht)))
              ((or (nelisp-marker-p o1) (nelisp-marker-p o2))
               (and (nelisp-marker-p o1) (nelisp-marker-p o2)
                    (eq (nelisp-marker-buffer o1) (nelisp-marker-buffer o2))
@@ -25608,7 +28759,10 @@ field-width layer."
 
 (defun nelisp--format-princ (arg)
   "Render a %s argument with GNU string-serialization byte escaping."
-  (let ((text (if (symbolp arg) (symbol-name arg) (prin1-to-string arg t))))
+  (let ((text (cond ((symbolp arg) (symbol-name arg))
+                    ;; `format' maps the argument's own intervals onto the field.
+                    ((stringp arg) arg)
+                    (t (prin1-to-string arg t)))))
     (if (or (stringp arg) (symbolp arg)) text
       ;; Aggregate princ omits quotes but serializes nested raw bytes as
       ;; octal. Ordinary Unicode characters retain their representation.
@@ -26138,7 +29292,8 @@ Only the percent character's properties cover the replacement.  Argument
 intervals override those properties, and an interval ending at the old
 argument end extends over right padding (textprop.c:2123)."
   (let ((props (text-properties-at position template))
-        (intervals (and source (gethash source nelisp--tp-string-properties))))
+        (intervals (and source (nelisp--tp-list
+                                (gethash source nelisp--tp-string-properties) 0))))
     (when (or props source)
       (setq body (copy-sequence body))
       (set-text-properties 0 (length body) props body))
@@ -26161,15 +29316,7 @@ argument end extends over right padding (textprop.c:2123)."
 
 (defun nelisp--format-prin1 (arg)
   "Serialize a propertized string as GNU's %S does."
-  (let ((intervals (and (stringp arg) (gethash arg nelisp--tp-string-properties))))
-    (if (and intervals (or (not (boundp 'print-text-properties)) print-text-properties))
-        (let ((body (concat "#(" (prin1-to-string (substring-no-properties arg)))))
-          (dolist (iv intervals)
-            (setq body (concat body " " (number-to-string (nth 0 iv))
-                               " " (number-to-string (nth 1 iv))
-                               " " (prin1-to-string (nth 2 iv)))))
-          (concat body ")"))
-      (prin1-to-string arg))))
+  (prin1-to-string arg))
 
 (defun nelisp--format-full (template args)
   "The full elisp `format' layer over TEMPLATE and the list ARGS; see `format'."
@@ -26794,52 +29941,19 @@ returns the global value on the bare reader; use a direct reference."
 ;; Hooks: add-hook / remove-hook / run-hooks / run-hook-with-args /
 ;; run-hook-with-args-until-success / run-hook-with-args-until-failure.
 ;;
-;; Emacs 30 semantics over ordinary symbol values, measured against
-;; Emacs 30.1 (2026-08-22).  There are no buffers in this runtime, so a
-;; hook variable cannot have a value distinct per buffer: `add-hook' and
-;; `remove-hook' accept LOCAL and IGNORE it.  This is a DOCUMENTED
-;; DIVERGENCE from Emacs, not an oversight -- a silent no-op is the
-;; honest choice precisely because the local/global split LOCAL exists
-;; to select cannot exist here at all.  Emacs would instead call
-;; `make-local-variable' on HOOK and splice a `t' marker into the new
-;; buffer-local value (that marker is still handled below, because a
-;; hand-built hook list can contain one even without buffer-locals).
-;;
-;; DEPTH ordering (`add-hook'): default depth 0; a plain (non-`t', non-
-;; integer) DEPTH argument is Emacs's documented backward-compatibility
-;; case and means 90.  Insertion keeps the hook's list sorted ascending
-;; by depth; a NEW function at the same depth as an existing one goes
-;; AFTER it when DEPTH is strictly positive and BEFORE it otherwise
-;; (Emacs's own wording) -- which is why two `(add-hook 'h f)' calls at
-;; the shared default depth 0 leave the most-recently-added function
-;; FIRST.  Emacs does not store per-function depths in the hook's own
-;; list value (there is no room: the list holds functions and, DEPTH-
-;; blind, the `t' marker) -- they live in a private table, and neither
-;; does this runtime: `nelisp--hook-depths' maps HOOK to an alist of
-;; (FUNCTION . DEPTH).  A function already present in the hook's value
-;; with no recorded depth (spliced in by hand, not via `add-hook') is
-;; treated as depth 0, Emacs's own documented default.  Re-adding a
-;; function that is already a member is a no-op -- notably, it does NOT
-;; move the function to a newly-requested depth; `add-hook' checks
-;; membership before it ever looks at DEPTH (measured: adding a function
-;; at depth -10, then again at depth 50, leaves it exactly where the
-;; first call put it).
-;;
-;; The `t' element (Emacs: "run the global value here too") is honored
-;; even though it can only ever mean "run this same value again": with
-;; no buffer-local/global split, a hook's own value doubles as its own
-;; "global value".  Measured against Emacs 30.1 with a plain (non-
-;; buffer-local) hook list containing `t': the first pass runs the list
-;; once; each `t' met on the first pass triggers ONE re-run of the
-;; WHOLE value from its start (fetched once and cached, then re-walked
-;; -- not re-fetched -- on every subsequent `t'), and any `t' met DURING
-;; that re-run is skipped rather than triggering a further expansion (or
-;; this would never terminate).  `(fn1 t fn2 t)' therefore calls fn1
-;; three times and fn2 three times, in the order fn1 fn1 fn2 fn2 fn1
-;; fn2 -- reproduced exactly by `nelisp--run-hook-value' below.
-(unless (boundp 'nelisp--hook-depths)
-  (defvar nelisp--hook-depths (make-hash-table :test 'eq)
-    "HOOK symbol -> alist of (FUNCTION . DEPTH), for `add-hook' ordering."))
+;; `add-hook' and `remove-hook' are GNU subr.el 31.1: with LOCAL the hook
+;; becomes buffer-local and its local value holds a `t' element that means
+;; "run the default value here"; DEPTH ordering lives in the hook's
+;; `hook--depth-alist' property, an (uninterned) variable that is made local
+;; together with the hook.  `run-hooks' and friends are eval.c
+;; run_hook_with_args: a `t' element in the value runs the hook's DEFAULT
+;; value (ignoring any `t' inside it), so with a purely global hook the
+;; whole list runs again, exactly as before buffer-locals existed.
+(defun nelisp--hook-alist-set (cell key value)
+  "Return alist CELL with KEY mapped to VALUE (GNU `setf' of `alist-get')."
+  (let ((pair (assq key cell)))
+    (if pair (progn (setcdr pair value) cell)
+      (cons (cons key value) cell))))
 
 (unless (fboundp 'nelisp--hook-list-p)
   (defun nelisp--hook-list-p (val)
@@ -26853,52 +29967,104 @@ a cons at all (typically a symbol naming a function)."
 (unless (fboundp 'add-hook)
   (defun add-hook (hook function &optional depth local)
     "Add to the value of HOOK the function FUNCTION.
-FUNCTION is not added if already present (`equal').  See Emacs's
-`add-hook' for DEPTH; LOCAL is accepted and ignored -- see the block
-comment above this definition for why that is the honest behavior here.
+FUNCTION is not added if already present.  With non-nil LOCAL, make HOOK
+buffer-local and add FUNCTION to the local value.  See Emacs's `add-hook'
+for DEPTH.
 
 (fn HOOK FUNCTION &optional DEPTH LOCAL)"
-    (ignore local)
-    (let ((d (cond ((null depth) 0) ((integerp depth) depth) (t 90))))
-      (unless (boundp hook) (set hook nil))
-      (let ((val (symbol-value hook)))
-        (when (and val (not (nelisp--hook-list-p val)))
-          (setq val (list val)))
-        (unless (member function val)
-          (let ((depths (gethash hook nelisp--hook-depths))
-                (before nil) (cur val) (done nil))
-            (while (and cur (not done))
-              (let ((fd (or (cdr (assoc (car cur) depths)) 0)))
-                (if (or (> fd d) (and (= fd d) (<= d 0)))
-                    (setq done t)
-                  (push (car cur) before)
-                  (setq cur (cdr cur)))))
-            (setq val (append (nreverse before) (list function) cur))
-            (puthash hook (cons (cons function d) depths) nelisp--hook-depths))
-          (set hook val))))
+    (or (boundp hook) (set hook nil))
+    (or (default-boundp hook) (set-default hook nil))
+    (unless (numberp depth) (setq depth (if depth 90 0)))
+    (if local
+        (unless (local-variable-if-set-p hook)
+          (set (make-local-variable hook) (list t)))
+      ;; Detect the case where make-local-variable was used on a hook
+      ;; and do what we used to do.
+      (when (and (local-variable-if-set-p hook)
+                 (not (and (consp (symbol-value hook))
+                           (memq t (symbol-value hook)))))
+        (setq local t)))
+    (let ((hook-value (if local (symbol-value hook) (default-value hook))))
+      ;; If the hook value is a single function, turn it into a list.
+      (when (or (not (listp hook-value)) (functionp hook-value))
+        (setq hook-value (list hook-value)))
+      (unless (member function hook-value)
+        (let ((depth-sym (get hook 'hook--depth-alist)))
+          (unless (zerop depth)
+            (unless depth-sym
+              (setq depth-sym (make-symbol "depth-alist"))
+              (set depth-sym nil)
+              (put hook 'hook--depth-alist depth-sym))
+            (if local (make-local-variable depth-sym))
+            (let ((alist (if local (symbol-value depth-sym) (default-value depth-sym))))
+              (setq alist (nelisp--hook-alist-set alist function depth))
+              (if local (set depth-sym alist) (set-default depth-sym alist))))
+          (setq hook-value
+                (if (< 0 depth)
+                    (append hook-value (list function))
+                  (cons function hook-value)))
+          (when depth-sym
+            (let ((depth-alist (if local (symbol-value depth-sym)
+                                 (default-value depth-sym))))
+              (when depth-alist
+                (setq hook-value
+                      (sort (if (< 0 depth) hook-value (copy-sequence hook-value))
+                            (lambda (f1 f2)
+                              (< (let ((c (assq f1 depth-alist))) (if c (cdr c) 0))
+                                 (let ((c (assq f2 depth-alist))) (if c (cdr c) 0)))))))))))
+      (if local
+          (progn
+            ;; If HOOK isn't a permanent local, but FUNCTION wants to survive
+            ;; a change of modes, mark HOOK as partially permanent.
+            (and (symbolp function)
+                 (get function 'permanent-local-hook)
+                 (not (get hook 'permanent-local))
+                 (put hook 'permanent-local 'permanent-local-hook))
+            (set hook hook-value))
+        (set-default hook hook-value)))
     nil))
 
 (unless (fboundp 'remove-hook)
   (defun remove-hook (hook function &optional local)
     "Remove from the value of HOOK the function FUNCTION.
-LOCAL is accepted and ignored; see `add-hook'.
+With non-nil LOCAL, operate on the buffer-local value.
 
 (fn HOOK FUNCTION &optional LOCAL)"
-    (ignore local)
-    (when (boundp hook)
-      (let ((val (symbol-value hook)))
-        (if (not (nelisp--hook-list-p val))
-            (when (equal val function) (set hook nil))
-          (when (member function val)
-            (let (acc)
-              (dolist (f val) (unless (equal f function) (push f acc)))
-              (set hook (nreverse acc)))
-            (let ((depths (gethash hook nelisp--hook-depths)))
-              (when depths
-                (let (kept)
-                  (dolist (pair depths)
-                    (unless (equal (car pair) function) (push pair kept)))
-                  (puthash hook (nreverse kept) nelisp--hook-depths))))))))
+    (or (boundp hook) (set hook nil))
+    (or (default-boundp hook) (set-default hook nil))
+    ;; Do nothing if LOCAL is t but this hook has no local binding.
+    (unless (and local (not (local-variable-p hook)))
+      ;; Detect the case where make-local-variable was used on a hook
+      ;; and do what we used to do.
+      (when (and (local-variable-p hook)
+                 (not (and (consp (symbol-value hook))
+                           (memq t (symbol-value hook)))))
+        (setq local t))
+      (let ((hook-value (if local (symbol-value hook) (default-value hook)))
+            (old-fun nil))
+        ;; Remove the function, for both the list and the non-list cases.
+        (if (or (not (listp hook-value)) (eq (car hook-value) 'lambda))
+            (when (equal hook-value function)
+              (setq old-fun hook-value)
+              (setq hook-value nil))
+          (when (setq old-fun (car (member function hook-value)))
+            (setq hook-value (remq old-fun hook-value))))
+        (when old-fun
+          ;; Remove auxiliary depth info to avoid leaks.
+          (let* ((depth-sym (get hook 'hook--depth-alist))
+                 (depth-alist (if depth-sym (if local (symbol-value depth-sym)
+                                              (default-value depth-sym))))
+                 (di (assq old-fun depth-alist)))
+            (when di
+              (if local
+                  (set depth-sym (remq di depth-alist))
+                (set-default depth-sym (remq di depth-alist))))))
+        ;; Set the actual variable
+        (if (not local)
+            (set-default hook hook-value)
+          (if (equal hook-value '(t))
+              (kill-local-variable hook)
+            (set hook hook-value)))))
     nil))
 
 (unless (fboundp 'nelisp--run-hook-call)
@@ -26914,10 +30080,11 @@ outcomes only through the throw or the final return of the walk)."
     nil))
 
 (unless (fboundp 'nelisp--run-hook-value)
-  (defun nelisp--run-hook-value (val args mode)
+  (defun nelisp--run-hook-value (val args mode &optional hook)
     "Run hook value VAL against ARGS per MODE (`all' / `until-success' /
-`until-failure') and return the MODE-appropriate result.  See the block
-comment above `add-hook' for the `t'-element algorithm this reproduces."
+`until-failure') and return the MODE-appropriate result.  A `t' element
+runs the DEFAULT value of HOOK (eval.c run_hook_with_args), skipping any
+`t' inside it; without HOOK it runs VAL itself."
     (catch 'nelisp--run-hook
       (cond
        ((null val) (if (eq mode 'until-failure) t nil))
@@ -26925,19 +30092,18 @@ comment above `add-hook' for the `t'-element algorithm this reproduces."
         (nelisp--run-hook-call val args mode)
         nil)
        (t
-        (let ((global nil) (have-global nil) (cur val))
+        (let ((cur val))
           (while cur
             (let ((elt (car cur)))
               (if (eq elt t)
-                  (progn
-                    (unless have-global
-                      (setq have-global t)
-                      (setq global (if (nelisp--hook-list-p val) val (list val))))
-                    (let ((gcur global))
-                      (while gcur
-                        (unless (eq (car gcur) t)
-                          (nelisp--run-hook-call (car gcur) args mode))
-                        (setq gcur (cdr gcur)))))
+                  (let ((global (if hook (default-value hook) val)))
+                    (if (not (nelisp--hook-list-p global))
+                        (when global (nelisp--run-hook-call global args mode))
+                      (let ((gcur global))
+                        (while gcur
+                          (unless (eq (car gcur) t)
+                            (nelisp--run-hook-call (car gcur) args mode))
+                          (setq gcur (cdr gcur))))))
                 (nelisp--run-hook-call elt args mode)))
             (setq cur (cdr cur)))
           (if (eq mode 'until-failure) t nil)))))))
@@ -26950,7 +30116,7 @@ error.  See `add-hook' for what a hook's value may be.
 
 (fn &rest HOOKS)"
     (dolist (hook hooks)
-      (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) nil 'all))
+      (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) nil 'all hook))
     nil))
 
 (unless (fboundp 'run-hook-with-args)
@@ -26959,7 +30125,7 @@ error.  See `add-hook' for what a hook's value may be.
 is unspecified, matching Emacs.  A void HOOK is a no-op.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'all)
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'all hook)
     nil))
 
 (unless (fboundp 'run-hook-with-args-until-success)
@@ -26969,7 +30135,7 @@ non-nil, and return that value.  Return nil if all functions return
 nil, if there are none to call, or if HOOK is void.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-success)))
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-success hook)))
 
 (unless (fboundp 'run-hook-with-args-until-failure)
   (defun run-hook-with-args-until-failure (hook &rest args)
@@ -26978,7 +30144,7 @@ nil, and return nil.  Otherwise (all functions return non-nil, there
 are none to call, or HOOK is void) return non-nil.
 
 (fn HOOK &rest ARGS)"
-    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-failure)))
+    (nelisp--run-hook-value (if (boundp hook) (symbol-value hook) nil) args 'until-failure hook)))
 
 ;; ---------------------------------------------------------------------
 ;; map.el subset: map-elt / map-put! / map-delete / map-keys / map-values
@@ -32283,3 +35449,14 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
     (when (eq (indirect-variable variable) variable)
       (signal 'error (list "Cannot undeclare a variable that is not an alias" variable)))
     (makunbound variable)))
+
+;; GNU DEFVAR_PER_BUFFER (buffer.c) and bindings.el: these variables become
+;; local to a buffer on assignment.  Missing ones get GNU's initial default;
+;; only variables that exist are registered, so nothing is invented.
+(when (fboundp 'nelisp--native-env)
+  (dolist (spec '((left-margin . 0) (truncate-lines . nil) (word-wrap . nil)
+                  (fill-prefix . nil) (comment-column . 40)))
+    (unless (boundp (car spec)) (set (car spec) (cdr spec))))
+  (dolist (var '(tab-width indent-tabs-mode case-fold-search major-mode mode-name
+                 left-margin truncate-lines word-wrap fill-prefix comment-column))
+    (make-variable-buffer-local var)))

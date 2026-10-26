@@ -19,7 +19,7 @@
           (t (propertize s 'p 1 'face 'italic)))))
 (defun fz-dump (tag)
   (let (valid (n 0))
-    (dolist (iv (nelisp-buffer-text-properties nelisp--current-buffer))
+    (dolist (iv (nelisp--tp-list (nelisp-buffer-text-properties nelisp--current-buffer) 1))
       (if (< (nth 0 iv) (nth 1 iv)) (push iv valid) (setq n (1+ n))))
     (princ (format "%s %S\n" tag (nreverse valid)))))
 (let ((seed 1))

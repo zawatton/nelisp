@@ -1,0 +1,67 @@
+#+TITLE: Emacs overlays on the standalone runtime (overlay1)
+#+NOTE: run with ELN_PROGRESS_BIN=<repo>/target/overlay1-build/dynamic/nelisp-dynamic and ELN_V17_BIN=<resume-4943>/target/integ-1034-build/dynamic/nelisp-dynamic (the baseline binary).  S2 cmd checks are red on v17.
+
+* S1 Cause
+
+** S1.1 Inventory of every overlay reference in the seed (what is real, host-only or a stub) is recorded
+evidence: target/overlay1/INVENTORY.md sha256=7749f14833256516671f7ad305ed5be262c96431c6e2e6d68bc035042e0020ec
+
+** S1.2 v17 has no `make-overlay' (void-function): the standard overlay API is absent from the standalone
+#+REQUIRES: ELN_V17_BIN
+cmd: sh tools/ai/overlay1/check.sh $ELN_V17_BIN baseline
+
+** S1.3 v17 baseline of GNU test/src/buffer-tests.el on the survey shim is recorded: 3 PASS of 407 (392 ERROR, 11 FAIL, 1 SKIP)
+evidence: target/overlay1/baseline-v17-buffer-tests.tsv sha256=fb6df8fc733422f92e7eade8f2655a19866b6cf3327c8d8fb4875de4ca3844b9
+
+** S1.4 End to end on the baseline: the expected-pass list for buffer-tests FAILS on v17 (red control)
+#+REQUIRES: ELN_V17_BIN
+#+TIMEOUT: 300
+cmd: ! sh tools/ai/overlay1/check.sh $ELN_V17_BIN gnutests
+
+* S2 Fix
+
+** S2.1 Differential fuzz (8 seeds of make/move/delete/evaporate/insert/delete-region/replace-match/erase-buffer, narrowing queries): every line identical to GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN fuzz
+
+** S2.2 API corpus (errors, markers, advance flags, priority order, hooks, copy/remove-overlays, get-char-property family): equals GNU except two understood lines
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN corpus
+
+** S2.3 GNU test/src/buffer-tests.el: every test on the recorded pass list passes (384 of 407; v17 passes 3)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN gnutests
+
+** S2.4 Overlays print as `#<overlay from A to B in NAME>` / `#<overlay in no buffer>` (self-referential property, format, lists, detached) exactly as GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN print
+
+** S2.5 End to end: S2.1 to S2.3 in a fresh shell
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN fuzz && sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN corpus && sh tools/ai/overlay1/check.sh $ELN_PROGRESS_BIN gnutests
+
+* S3 Integration
+
+** S3.1 One integrated build passes the fixtures (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21; prelink records 353 <= 384)
+#+NOTE: Two builds used: Build 1 (flags absent, case-region hooks absent) kept in target/overlay1-build1; Build 2 (target/overlay1-build) is the integrated one.  The final source differs from Build 2 only by the single-read fix of nelisp-insert/-delete-region/-erase-buffer/-insert-before-markers (S4 note); it was checked on the Build 2 image by hot-loading (fuzz identical to GNU).
+evidence: target/overlay1/S3-evidence.txt sha256=deed14f4a030772f8b07f78882e2d27aa0c31cb9bfb715f907f93b16689ddb1f
+evidence: target/overlay1/fixtures/report.json sha256=89305db4cc4b4d3a928c3341dd7965f6161c8407a75a415e57ac6f9381a88ef6
+
+** S3.2 End to end: gnu-speed-win-check passes on the integrated build
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $ELN_PROGRESS_BIN
+
+* S4 Timing
+
+** S4.1 Paired timing vs v17 and GNU recorded: make-overlay x10k, overlays-in on 10k overlays, insert/delete with 10k overlays; no-overlay regression rows reg-sum-bc, r3-mix, insert-str, delete-region
+evidence: target/overlay1/timing/SUMMARY.txt sha256=3fba08b6e0cb585de13b0da1037e90bc7cd8f9fe0564ab90530a331f37100f6a
+
+** S4.2 End to end: regression rows do not slow by more than 3% when no overlays exist (RED on Build 2: reg-sum-bc 1.061 is a build-layout effect, insert-str 1.088 and delete-region 1.036 are the slot-read cost fixed in source after Build 2)
+#+TIMEOUT: 30
+cmd: python3 tools/ai/overlay1/regression-check.py

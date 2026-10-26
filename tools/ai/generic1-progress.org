@@ -1,0 +1,53 @@
+#+TITLE: generic1 -- cl-generic dispatch cache + cl-typep/cl-defstruct/pcase correctness
+
+* S1 Root cause with evidence
+
+** S1.1 Per-call recomputation of applicable methods and the other causes are documented with v17 measurements
+evidence: target/generic1/evidence/s1-cause.txt sha256=d4d1608f7af05c51b7f1cad4e10d821025086ccb706b909c60ec3574a9f2ac6e
+
+* S2 Fix with red/green checks and GNU-parity corpora (ELN_PROGRESS_BIN = binary under test; red on v17)
+
+** S2.1 cl-generic corpus (primary/:around/:before/:after, next-method, eql/head/struct/built-in overlaps, &context, redefinition, no-applicable) equals GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: bash tools/ai/generic1-checks/check-corpus.sh $ELN_PROGRESS_BIN generic
+
+** S2.2 cl-typep / cl-deftype corpus equals GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: bash tools/ai/generic1-checks/check-corpus.sh $ELN_PROGRESS_BIN typep
+
+** S2.3 cl-defstruct corpus (:include defaults, :type list/vector, :named, constructors, copier, predicate) equals GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: bash tools/ai/generic1-checks/check-corpus.sh $ELN_PROGRESS_BIN defstruct
+
+** S2.4 pcase corpus (nested vector backquote, cl-struct, app/pred/guard, pcase-setq/exhaustive/lambda) equals GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: bash tools/ai/generic1-checks/check-corpus.sh $ELN_PROGRESS_BIN pcase
+
+** S2.5 Steady-state dispatch cost is flat at 1, 5 and 20 methods and <= 45 us per call
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: bash tools/ai/generic1-checks/check-flat.sh $ELN_PROGRESS_BIN
+
+* S3 One integrated build passes the standard fixtures
+
+** S3.1 Integrated build exists and answers
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: $ELN_PROGRESS_BIN --eval '(princ (+ 1 2))' | grep -q 3
+
+** S3.2 Standard fixtures (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21), gnu-speed-win-check and F1 prelink 353 <= 384 pass
+evidence: target/generic1/evidence/s3-fixtures.txt sha256=2eb83d82e95849fd523b07c6c70f01166067f1732f69797af07e1453192578ce
+
+** S3.3 End to end: all four corpora and the flat check pass on the integrated build
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: for c in generic typep defstruct pcase; do bash tools/ai/generic1-checks/check-corpus.sh $ELN_PROGRESS_BIN $c || exit 1; done; bash tools/ai/generic1-checks/check-flat.sh $ELN_PROGRESS_BIN
+
+* S4 Paired timing against v17 and GNU
+
+** S4.1 Paired timing of survey4 generic rows and survey2 control/cl-generic recorded (cand >= 10x faster than v17 on every row)
+evidence: target/generic1/evidence/s4-timing-generic.txt sha256=6b80dc387ce09e9c9eac71eefba86ce1d5f39317199d62baece763b8ea8542f2
+cmd: for f in g4-eql-1meth g4-eql-10meth g4-type-int g4-type-str g4-type-mix g4-2arg g2-control-cl-generic-bc; do python3 tools/ai/generic1-checks/check-ratio.py target/generic1/timing/$f.log cand 0.11 || exit 1; done
+
+** S4.2 Regression rows reg-sum-bc and r3-mix within 3 percent of v17 (known red: reg-sum-bc x1.05 vs v17, seed-only control x1.02; r3-mix x1.03 vs control x1.04)
+#+NOTE: evidence in target/generic1/evidence/s4-regression.txt; r3-mix shift is inherited from the seed lanes, reg-sum-bc is bimodal (layout), about +3 percent over the control
+cmd: python3 tools/ai/generic1-checks/check-ratio.py target/generic1/timing/ctl-reg-sum-bc-d.log cand 1.03 && python3 tools/ai/generic1-checks/check-ratio.py target/generic1/timing/ctl-r3-mix-b.log cand 1.03

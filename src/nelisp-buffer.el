@@ -244,7 +244,7 @@ gap actually at point."
 (defun nelisp-kill-buffer (buf)
   "Remove BUF from the registry.  Returns t on success."
   (let ((name (nelisp-buffer-name buf)))
-    (when (gethash name nelisp-buffer--registry)
+    (when (eq (gethash name nelisp-buffer--registry) buf)
       (remhash name nelisp-buffer--registry)
       ;; Drop BUF's search-cache entries too, or a killed buffer's cached
       ;; text (see `nelisp-buffer-string') lingers in both hash tables
@@ -254,6 +254,11 @@ gap actually at point."
       (remhash buf nelisp-buffer--pending-point)
       (remhash buf nelisp-buffer--blen-cache)
       (remhash buf nelisp-buffer--size-cache)
+      (nelisp-buffer--detach-markers buf)
+      ;; GNU Fkill_buffer reset_buffer_local_variables (b, 1): the killed
+      ;; buffer's locals go with it, and their cells are recycled.
+      (when (fboundp 'nelisp-buffer-local--kill-buffer-locals)
+        (nelisp-buffer-local--kill-buffer-locals buf))
       (when (eq nelisp-buffer--current buf)
         (setq nelisp-buffer--current nil))
       t)))
@@ -448,6 +453,14 @@ otherwise every later edit would walk the capacity left by markers long dead."
   "Remove MARKER from BUF's marker chain."
   (let ((tbl (nelisp-buffer-markers buf)))
     (when tbl (remhash marker tbl))))
+
+(defun nelisp-buffer--detach-markers (buf)
+  "Point every marker of BUF nowhere and empty its chain (GNU unchain_marker
+for a killed buffer: `marker-buffer' of such a marker answers nil)."
+  (let ((tbl (nelisp-buffer-markers buf)))
+    (when tbl
+      (maphash (lambda (m _v) (setf (nelisp-marker-buffer m) nil)) tbl)
+      (setf (nelisp-buffer-markers buf) nil))))
 
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN.

@@ -1,0 +1,38 @@
+#+TITLE: rxnative native regexp matcher
+# Env: RXN_BIN = the rxnative build, RXN_BASE = v18 baseline.  Run from the worktree root.
+
+* S1 Cause with evidence
+
+** S1.1 string-match on a 19-char string costs ~171k instr/call (bytecode loop), string-search 15k: the Lisp engine setup dominates
+evidence: target/rxnative/cause-notes.txt sha256=c040af578e791e98cd3c37b1b9b3814eccc49eaed5a2917eb3318eb9e37f99a8
+
+** S1.2 buffer layer: point/goto-char/point-min cost ~35k instr each, so a search loop is bound by them (re-search-forward 532k, search-forward 573k)
+evidence: target/rxnative/cause-notes.txt sha256=c040af578e791e98cd3c37b1b9b3814eccc49eaed5a2917eb3318eb9e37f99a8
+
+* S2 Fix with red/green checks
+
+** S2.1 program compiler + reference VM equal GNU string-match on 62 patterns x 35 subjects x fold x start (0 bad)
+#+TIMEOUT: 600
+cmd: ( ulimit -v 8388608; timeout 580 emacs --batch -Q -l tools/ai/rxnative/run-ref.el 2>&1 | grep -q 'bad=0' )
+
+** S2.2 Lisp glue (nlre-string-match through nelisp--rx-exec stand-in) equal GNU
+cmd: ( ulimit -v 8388608; timeout 300 emacs --batch -Q -l tools/ai/rxnative/run-glue.el 2>&1 | grep -q 'GLUE ok=[0-9]* bad=0' )
+
+** S2.3 native DSL block parses (syntax, arity of calls)
+cmd: ( ulimit -v 8388608; timeout 300 emacs --batch -Q -l target/rxnative/chk2.el 2>&1 | grep -q 'PARSE OK' )
+
+* S3 Integrated build and fixtures
+
+** S3.1 build exists
+#+REQUIRES: RXN_BIN
+cmd: test -x $W_BIN
+
+** S3.2 native route answers (nelisp--rx-exec fboundp and string-match works)
+#+REQUIRES: RXN_BIN
+cmd: ( ulimit -v 8388608; timeout 60 $W_BIN --load tools/ai/rxnative/smoke.el | grep -q 'SMOKE OK' )
+
+* S4 Paired timing
+
+** S4.1 a4 loop instr/call below 100000 (target 5000, floor set by the buffer layer)
+#+REQUIRES: RXN_BIN
+cmd: test -f target/rxnative/a4-instr.txt

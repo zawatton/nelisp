@@ -1,0 +1,31 @@
+#+TITLE: NeLisp at or above GNU Emacs 31.1 speed: core matrix and survey medians
+#+NOTE: Objective defined 2026-10-26 by the user ("次でGNUと同等、もしくはそれ以上の速さになるようにして"; scope chosen: "網羅調査の中央値もGNU以上"). Created before implementation. 9 criteria.
+#+NOTE: Ratio = NeLisp ns/step / GNU ns/step, paired_bench (nelisp-gnu-gap-bench skill), results checked. Done means ratio <= 1.0.
+#+NOTE: Starting point: v18 matrix geomean 1.75 (integ-1035). Survey medians: survey2 not computed (geomean 72 on v16), survey3 14 (v16), survey4 28.6 (v17).
+#+NOTE: All three surveys are re-measured on one integrated binary. S0 fixes the v19 baseline; later stages re-run the same specs on the candidate binary.
+
+* S0 Baseline
+** S0.1 survey2, survey3 and survey4 re-measured on the v19 integrated binary with one tool; medians and per-family breakdown recorded
+pending
+** S0.2 Family ranking: the rows above 1.0, grouped by implementing function family, ordered by how much each family moves the medians
+pending
+
+* S1 Core matrix
+** S1.1 43-row matrix geomean v/GNU <= 1.0 on the integrated candidate
+pending
+** S1.2 No matrix row above 2.0x GNU
+pending
+
+* S2 Survey medians
+** S2.1 survey2 median ratio <= 1.0 on the integrated candidate
+pending
+** S2.2 survey3 median ratio <= 1.0 on the integrated candidate
+pending
+** S2.3 survey4 median ratio <= 1.0 on the integrated candidate
+pending
+
+* S3 End to end
+** S3.1 One integrated build reaches S1.1 and S2.1-S2.3 at the same time and passes the fixtures (weak 24/24, GNU 56/56, AFRT 24/25 with only the known red, buffer 21/21) and gnu-speed-win-check
+pending
+** S3.2 The GNU test-suite parity count (survey5 shim) does not drop below the v19 count on the same binary
+pending

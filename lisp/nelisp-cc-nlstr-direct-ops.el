@@ -515,7 +515,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
     ;; one-time cell-index counter, the header alignment and the header.
     (defun nl_intern_arena_fits (n)
       (if (<= (+ (heap-read-u64 268436296 0) (+ 24 (if (= n 0) 1 n)))
-              (+ (heap-read-u64 268436288 0) 67108864))
+              (+ (heap-read-u64 268436288 0) 67104768))
           1
         0))
     ;; GNU lisp.h:786-822: a symbol owns its value and function cells.  A
@@ -626,7 +626,54 @@ lifetime of a Sexp value.  No `let' binding needed.")
           (let ((object (alloc-bytes 32 8)))
             (seq (nl_alloc_symbol bytes-ptr len object) object)))))
 
-    ;; The miss-only heap fallback allocates before rereading the rooted input
+    ;; A front cache for `nl_alloc_symbol': callers that intern the same
+    ;; fixed name on every call (the bytecode VM's opcode primitives) skip the
+    ;; FNV hash and the table probe.  GNU's Bcall reads the callee symbol out
+    ;; of the constants vector and never interns; these callers have no
+    ;; constant, so the interned name buffer (permanent, outside the GC) is
+    ;; remembered instead.  256 entries of (buffer, length) live in the last
+    ;; 4096 bytes of the intern region's mapping, which `nl_intern_arena_fits'
+    ;; keeps out of the name arena; a fresh mapping is zero, and the dump
+    ;; covers only [base, bump), so the cache starts empty in every process.
+    ;; An entry is used only when its length matches, its buffer lies inside
+    ;; the name arena, and the bytes compare equal, so a stale or torn entry
+    ;; falls back to `nl_alloc_symbol'.  The symbol written is the one
+    ;; `nl_alloc_symbol' writes for the same name: the same interned buffer.
+    (defun nl_symcache_index (p n)
+      (logand (+ (+ (* n 31) (* (heap-read-u8 p 0) 7))
+                 (+ (* (heap-read-u8 p (- n 1)) 13) (heap-read-u8 p (sar n 1))))
+              255))
+    ;; N bytes of P against BUF, a word at a time: both buffers hold at
+    ;; least N bytes, so no word read reaches past either.
+    (defun nl_symcache_eq (p buf n)
+      (let* ((i 0) (same 1))
+        (seq (while (if (= same 1) (<= (+ i 8) n) 0)
+               (seq (if (= (heap-read-u64 p i) (heap-read-u64 buf i)) 0 (setq same 0))
+                    (setq i (+ i 8))))
+             (while (if (= same 1) (< i n) 0)
+               (seq (if (= (heap-read-u8 p i) (heap-read-u8 buf i)) 0 (setq same 0))
+                    (setq i (+ i 1))))
+             same)))
+    (defun nl_alloc_symbol_cached (bytes-ptr len result-slot)
+      (let* ((base (heap-read-u64 268436288 0)))
+        (if (= base 0) (nl_alloc_symbol bytes-ptr len result-slot)
+          (if (< len 1) (nl_alloc_symbol bytes-ptr len result-slot)
+            (let* ((ent (+ (+ base 67104768) (* (nl_symcache_index bytes-ptr len) 16)))
+                   (buf (heap-read-u64 ent 0)))
+              (if (and (= (heap-read-u64 ent 8) len)
+                       (and (>= buf (+ base 16777224))
+                            (and (< buf (heap-read-u64 268436296 0))
+                                 (= (nl_symcache_eq bytes-ptr buf len) 1))))
+                  (nl_intern_write_sexp result-slot buf len)
+                (seq
+                 (nl_alloc_symbol bytes-ptr len result-slot)
+                 (let* ((nb (heap-read-u64 result-slot 16)))
+                   (if (and (>= nb (+ base 16777224))
+                            (< nb (heap-read-u64 268436296 0)))
+                       (seq (ptr-write-u64 ent 0 nb) (ptr-write-u64 ent 8 len))
+                     0))
+                 result-slot)))))))
+        ;; The miss-only heap fallback allocates before rereading the rooted input
     ;; string. A GC during `alloc-bytes' may move its byte buffer.
     (defun nl_alloc_symbol_plain_named (name-slot n result-slot)
       (let* ((alloc-n (if (= n 0) 1 n))
