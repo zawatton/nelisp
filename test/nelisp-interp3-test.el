@@ -135,8 +135,8 @@
 (ert-deftest i3-setq-evaluates-then-stores-and-falls-back-before-evaluating ()
   (i3--setup) (i3--install 'nl_eic_setq_w)
   (let (order)
-    (cl-letf (((symbol-function 'nelisp_eval_call_w)
-               (lambda (form env _) (push (list 'eval form env) order) 77))
+    (cl-letf (((symbol-function 'nl_eic_eval_w)
+               (lambda (form env) (push (list 'eval form env) order) 77))
               ((symbol-function 'nl_eic_setq_store_w)
                (lambda (tail env w) (push (list 'store tail env w) order) w))
               ((symbol-function 'nl_apply_special_w)
@@ -230,14 +230,16 @@
     (cl-letf (((symbol-function 'nl_eic_let_scope_clean) (lambda (_) clean))
               ((symbol-function 'nl_eic_let_plain_p) (lambda (v) (if (eq plain t) 1 (if (eql v plain) 1 0))))
               ((symbol-function 'nl_sexp_clone_into) (lambda (w to) (push (list 'clone w to) events) 0))
-              ((symbol-function 'nl_bind_frame_fast) (lambda (frames name val) (push (list 'fast frames name val) events) 1))
+              ((symbol-function 'nl_eic_bind_pair_w) (lambda (&rest _) 0))
+              ((symbol-function 'nl_bind_frame_param) (lambda (frames name val) (push (list 'fast frames name val) events) 1))
               ((symbol-function 'nl_let_bind_one) (lambda (env var w) (push (list 'generic env var w) events) 1)))
       (setq plain t)
       (should (= (nl_eic_let_bind_w 50002 0 70000) 0))
       (setq events (reverse events))
-      ;; The immediate value is passed as it is; the pointer word is cloned into a view.
+      ;; interp4: a plain variable is bound as a function parameter is, by its word and the
+      ;; value word as they are (no legacy view of either).
       (should (equal (cl-remove-if-not (lambda (e) (eq (car e) 'fast)) events)
-                     `((fast 32 700000 5) (fast 32 700064 ,(+ 700064 32)))))
+                     '((fast 32 24582 5) (fast 32 24614 70010))))
       (should-not (cl-find 'generic events :key #'car))
       ;; A frame with local declarations, or a special variable, takes the generic binder.
       (setq events nil clean 0)
@@ -268,10 +270,12 @@
   (i3--cons 50066 24622 50130) (i3--cons 50130 200 3)         ; (c F), F = 200
   (i3--cons 50098 24630 50146) (i3--cons 50146 300 3)         ; (d G), G = 300
   (let (events (fail nil))
-    (cl-letf (((symbol-function 'nelisp_eval_call_w)
-               (lambda (form env _)
-                 (push (list 'eval form env (gethash 70008 i3--memory) (gethash 70016 i3--memory)) events)
-                 (if (and fail (= form fail)) 0 (+ form 1)))))
+    ;; interp4: the immediate form is passed to `nl_eic_eval_w', which answers it as it is.
+    (cl-letf (((symbol-function 'nl_eic_eval_w)
+               (lambda (form env)
+                 (if (= (logand form 1) 1) form
+                   (push (list 'eval form env (gethash 70008 i3--memory) (gethash 70016 i3--memory)) events)
+                   (if (and fail (= form fail)) 0 (+ form 1))))))
       (should (= (nl_eic_let_values_w 50002 0 70000) 0))
       (should (equal (reverse events) '((eval 200 0 15 nil) (eval 300 0 15 201))))
       (should (equal (list (gethash 70000 i3--memory) (gethash 70008 i3--memory)
@@ -295,7 +299,7 @@
               ((symbol-function 'nl_eic_let_bind_w) (lambda (&rest _) (push 'bind log) bind-rc))
               ((symbol-function 'nl_root_release) (lambda (_ m) (push (list 'release m) log) 0))
               ((symbol-function 'nl_cons_root_finish) (lambda (_ m s) (push (list 'finish m s) log) s))
-              ((symbol-function 'nl_sf_progn_w) (lambda (body &rest _) (push (list 'progn body) log) progn-w))
+              ((symbol-function 'nl_eic_body_w) (lambda (body &rest _) (push (list 'progn body) log) progn-w))
               ((symbol-function 'nl_env_pop_frame) (lambda (_) (push 'pop log) pop-rc))
               ((symbol-function 'wf_bytecode_root_exhausted) (lambda () (push 'exhausted log) 0))
               ((symbol-function 'nl_abi_fail) (lambda (&rest _) (push 'fail log) 0)))

@@ -1,0 +1,93 @@
+#+TITLE: bufedit: a gap buffer for the buffer text, native readers and edits (NeLisp)
+
+* S1 Cause with evidence
+
+** S1.1 Baseline per-call instruction counts of the slow set recorded on the bufnative binary (fx and byte-code loops)
+#+NOTE: timing/instr.base.all.txt (pmcrun2 two-N, loop control subtracted by hand: fx-base 864, bc-base 280). Marginal instructions per call: char-after 16.9k, line-beginning-position 403k (80-char line, point 40 chars in), insert of two characters 45k, delete-region 416k (100k-char buffer), buffer-substring 32k, forward-line 84k, count-lines 138k, current-column 682k.
+cmd: test -s target/bufedit/timing/instr.base.all.txt && grep -q "^fx-lbp " target/bufedit/timing/instr.base.all.txt && grep -q "^done" target/bufedit/timing/instr.base.all.txt
+
+** S1.2 Cause: the text is two immutable strings plus a queue; every read after an edit and every gap move copies O(buffer), a line walk is an interpreted aref per character
+#+NOTE: audit/sites.txt lists the 25 functions that touch the representation. Seed: settle concat of the INS queue, delete-region copies the cut string, char-after/char-before/buffer-substring slice strings, nelisp--motion-bol walks back with aref (about 600 us), forward-line and count-lines run in the Lisp interpreter (60-140k instructions).
+cmd: test -s target/bufedit/audit/sites.txt && grep -q "nelisp--motion-bol" target/bufedit/audit/sites.txt
+
+** S1.3 End-to-end: the cause evidence (baseline counts and the site list) is on disk and the lane STATUS names the measurements
+cmd: test -s target/bufedit/STATUS.md && test -s target/bufedit/timing/instr.base.all.txt && test -s target/bufedit/audit/sites.txt
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+
+** S2.1 Design recorded in the prelude: u32-per-character gap store, gap geometry, the multibyte choice and its cost
+#+NOTE: store slot = unibyte string of 4*CAP bytes; BLEN is the gap start, LEN the count; point = PEND or BLEN+1; unibyte slot; INS slot is now the "has wide text" flag so slices of a multibyte buffer are multibyte strings (GNU make_buffer_string). Cost: 4 bytes per character (a 1 MB buffer holds 4 MB), a UTF-8 encode pass in buffer-substring/buffer-string (about 6 instructions per character, 2.5 for ASCII) and a decode pass in insert, in exchange for O(1) positions, one-load reads and memmove-speed gap moves with no char<->byte map.
+cmd: grep -q "the buffer text is a gap buffer" scripts/nelisp-stdlib-prelude.el && grep -q "at 4 bytes" scripts/nelisp-stdlib-prelude.el
+
+** S2.2 Host ERT of the production native bodies on a byte-addressed model: random walks against a model, GNU Emacs as the oracle for the line functions and for the edits, negative controls (declines)
+cmd: ulimit -v 8388608 && timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-gap-buffer-leaf-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q " 0 unexpected"
+
+** S2.3 bufnative's host test still passes with the guarded symbol-object fetch, and the directcall/subr tests keep their baseline
+cmd: ulimit -v 8388608 && for t in buffer-leaf-test directcall-test directcall-leafprim-test subr-object-test; do timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-$t.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q " 0 unexpected" || exit 1; done
+
+** S2.4 No reader of the old gap strings is left (scripts, lisp, packages), outside the host model files that keep their own struct
+cmd: ! grep -rn "nelisp-buffer-before-gap\|nelisp-buffer-after-gap" scripts lisp/nelisp-cc-fx-call-primitives.el packages --include=*.el | grep -v "^[^:]*:[0-9]*:[[:space:]]*;" | grep -q .
+
+** S2.5 The Lisp reference store (no native body involved) equals GNU on every corpus: bufnative 113 forms, buflocal1 narrow/local, markgc, textprop1 corpus+fuzz, overlay1 fuzz, replmatch corpus and scaling, and the bufedit edit corpus
+#+NOTE: parity-ovr2.out is the run on the bufnative binary with the new Lisp layer loaded over it (target/bufedit/ovrbin), so it isolates the representation and the Lisp glue from the native bodies. rx2 on the Lisp reference layer matched GNU for the first 6395 of 7269 lines before the 1700 s timeout (rx2-ovr).
+cmd: grep -q "narrow: gnu-lines=103 diverging=0" target/bufedit/parity-ovr2.out && grep -q "local: gnu-lines=83 diverging=0" target/bufedit/parity-ovr2.out && grep -q "corpus mismatches=0" target/bufedit/parity-ovr2.out && grep -q "fuzz seeds differing=0" target/bufedit/parity-ovr2.out && grep -q "fuzz2: 10401 lines identical" target/bufedit/parity-ovr2.out && grep -q "source diff-lines=0" target/bufedit/parity-ovr2.out
+
+* S3 One integrated build passing fixtures
+
+** S3.1 Build 1 rc 0 and build 2 rc 0 (2 builds in total)
+#+NOTE: build 1 1038 s, build 2 1031 s. Build 1 predates: insert tick/argc=0 fix, the wide flag, eight-wide scans, nl_gb_fast, forward-line/count-lines/current-column/insert-char/delete-char natives and the symbol-object guard; its fixtures, survey and bufnative corpus were green and showed the SIGSEGV below.
+cmd: grep -q "BUILD rc=0" target/bufedit-build1/dynamic/build.log && grep -q "BUILD rc=0" target/bufedit-build2/dynamic/build.log
+
+** S3.2 Fixtures on build 2: weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+cmd: grep -q "weak 24/24 PASS" target/bufedit/fixtures2.out && grep -q "GNU 56/56 PASS" target/bufedit/fixtures2.out && grep -q "AFRT 24/25" target/bufedit/fixtures2.out && grep -q "buffer 21/21 PASS" target/bufedit/fixtures2.out
+
+** S3.3 gnu-speed-win-check passes on build 2 and the F1 prelink record count stays at or under 384
+cmd: grep -q "closurevm: PASS (24)" target/bufedit/wincheck2.out && grep -q "switch corpus: PASS" target/bufedit/wincheck2.out && grep -q "features: PASS" target/bufedit/wincheck2.out && sh tools/ai/rx2/f1-check.sh target/bufedit-build2/dynamic
+
+** S3.4 Every corpus equals GNU on build 2 (same list as S2.5, plus the bufnative byte-code corpus and the edit corpus run natively)
+cmd: grep -q "narrow: gnu-lines=103 diverging=0" target/bufedit/parity-b2.out && grep -q "local: gnu-lines=83 diverging=0" target/bufedit/parity-b2.out && grep -q "corpus mismatches=0" target/bufedit/parity-b2.out && grep -q "fuzz seeds differing=0" target/bufedit/parity-b2.out && grep -q "fuzz2: 10401 lines identical" target/bufedit/parity-b2.out && grep -q "source diff-lines=0" target/bufedit/parity-b2.out
+
+** S3.5 The edit corpus (133 forms) on build 2 differs from GNU only in the three known baseline lines
+cmd: test -s target/bufedit/corpus/edit-b2.out && test "$(wc -l < target/bufedit/corpus/edit-b2.out)" -ge 133 && test "$(diff target/bufedit/corpus/edit-gnu.out target/bufedit/corpus/edit-b2.out | grep -c '^<')" -le 2
+
+** S3.6 End-to-end: survey5 shim buffer/editfns/marker tests lose no passes (per-test table identical to the bufnative baseline) and the repo gates are no worse than on the seed
+cmd: test -s target/bufedit/survey/b2.cut && cmp -s target/bufedit/survey/base.cut target/bufedit/survey/b2.cut
+cmd: test -s target/bufedit/gates-compare.txt && awk -F'|' '{n=$2; s=$3; sub(/.*findings=/,"",n); sub(/.*findings=/,"",s); if (n+0 > s+0) bad=1} END{exit bad}' target/bufedit/gates-compare.txt && grep -q "emacs-compat | NEW: GATE-COUNT" target/bufedit/gates-compare.txt
+
+** S3.7 Seed defect found and recorded: SIGSEGV when a function defined before the first native buffer call runs it (bufnative control-page words 268436552/560 hold 16 and 1)
+#+NOTE: minimal repro: (defun g () (point)) (message "%S" (g)) under --load; crashes bufnative-build2 and both bufedit builds, not v20; breaks tools/ai/replmatch/check.sh scaling (rc 139) on the seed too. gdb: nl_buf_leaf_run+992 (inlined nl_buf_current) reads [r9-6], r9 = 16; heap+0x448/0x450 = 16/1, the second equal to nl_mxcache_epoch, so the cached object is trusted. Priming a native call before the defun avoids it. target/bufedit/proposed-crash-guard.patch (not built, not part of bufedit.patch; host test included) rejects a cached word that is no tag-6 address and refetches. Relocating the three words is the real fix; heap+0x4C8.. (268436680) also held other data in this binary, check first.
+cmd: test -s target/bufedit/proposed-crash-guard.patch
+
+* S4 Paired timing and regression rows
+
+** S4.1 char-after below 200 instructions per call (brief target)
+#+NOTE: known red unless proven: the call path alone (nl_buf_current plus the call-site dispatch) costs 198 for bufnative's point; the body adds the store reads.
+cmd: awk '/^fx-base /{b=$2} /^fx-ca /{a=$2} END{exit !(a-b < 200)}' target/bufedit/timing/instr.b2.all.txt
+
+** S4.2 line-beginning-position below 500 instructions per call on an 80-char line
+cmd: awk '/^fx-base /{b=$2} /^fx-lbp /{a=$2} END{exit !(a-b < 500)}' target/bufedit/timing/instr.b2.all.txt
+
+** S4.3 insert of a short string at point in a 1 MB buffer below 2000 instructions, flat from N to 4N
+cmd: awk '/^fx-ins-1M /{a=$2} /^fx-ins-4M /{b=$2} END{exit !(a < 2000 && b < 2000 && b < a*1.1 && a < b*1.1)}' target/bufedit/timing/ins-size.b2.txt
+
+** S4.4 delete-region, delete-char, insert-char and forward-line below 1000 instructions per call over the loop (marginal)
+#+NOTE: build 2, timing/instr-compare.txt: delete-region 716, delete-char 723, insert-char 647, forward-line 917 (seed 416k, 401k, 116k, 84k).
+cmd: awk '/^fx-base /{b=$2} /^fx-(del|dch|ich|fl) /{ if ($2-b > 1000) bad=1; n++ } END{exit !(n==4 && !bad)}' target/bufedit/timing/instr.b2.all.txt
+
+** S4.4b count-lines below 5000 and buffer-substring below 3000 instructions per call (brief: native scan, native string build)
+#+NOTE: known red. count-lines is 85113 (seed 138132): the scan itself is native (nelisp--gb-count-lines) but the public function is still a Lisp function that reads the buffer-local `selective-display` and checks its arguments; buffer-substring is 7392 (seed 32234), dominated by the string allocation and the generic builtin call-out, not the encode loop.
+cmd: awk '/^fx-base /{b=$2} /^fx-cnt /{c=$2} /^fx-bsub /{s=$2} END{exit !((c-b) < 5000 && (s-b) < 3000)}' target/bufedit/timing/instr.b2.all.txt
+
+** S4.4c insert with an integer argument (insert ?x) is not slower than the seed
+#+NOTE: known red, a regression: 176766 against 87145. The leaf declines (an integer is not a string), the builtin route re-interns the name of the Lisp reference on every decline (nl_buf_delegate) and the reference runs the same Lisp as the seed. Fix proposed in REPORT.md: accept fixnum characters in nl_gb_insert_run and cache the reference lookup.
+cmd: awk '/^fx-base /{b=$2} /^fx-inschar /{c=$2} END{exit !((c-b) <= 90000)}' target/bufedit/timing/instr.b2.all.txt
+
+** S4.5 reg-sum-bc and r3-mix do not regress against v20 (421 / 14590 instr per trip; within 1%)
+cmd: awk 'FNR==NR{ if ($1=="reg-sum-bc") {split($2,a,"="); r=a[2]} if ($1=="r3-mix") {split($2,a,"="); m=a[2]} next} $1=="reg-sum-bc"{split($2,a,"="); if (a[2] > r*1.01) bad=1} $1=="r3-mix"{split($2,a,"="); if (a[2] > m*1.01) bad=1} END{exit bad}' ../bufnative-20261102/target/bufnative/timing/reg.v20.txt target/bufedit/timing/reg.b2.txt
+
+** S4.6 Family 3, 5, 13 sample medians NeLisp/GNU before/after recorded (20 resurvey19 rows, CPU 15, 3 reps)
+#+NOTE: timing/rows-summary.txt (engines v20, bufnative, bufedit, GNU): family 3 (4 rows) v20 233.2 -> bufnative 227.3 -> bufedit 4.0 x GNU; family 13 (5 rows) 48.2 -> 44.8 -> 5.8; family 5 (11 rows) 29.0 -> 26.5 -> 26.0 (narrowing, set-buffer and with-current-buffer rows are outside this lane). Biggest movers: buffers-delete-region-i 387 us -> 3.5 us, buffers-insert-middle-bc 147 us -> 0.2 us, buffers-forward-line-i 136 us -> 5.3 us. ed-with-temp-buffer-ins +6% (the first insert of a new buffer allocates its store through the decline path).
+cmd: grep -q "^family 5" target/bufedit/timing/rows-summary.txt && grep -q "^family 3" target/bufedit/timing/rows-summary.txt && grep -q "^family 13" target/bufedit/timing/rows-summary.txt
+
+** S4.7 End-to-end: patch applies to the seed (patch --dry-run) and the ledger is present
+cmd: bash target/bufedit/dryrun.sh

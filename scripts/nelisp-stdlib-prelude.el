@@ -238,7 +238,7 @@ OBJECT can be a string or an external documentation reference."
   (record 'obarray nelisp--obarray-marker 'nelisp--intern-table))
 (defvar obarray nelisp--initial-obarray
   "Symbol table for use by `intern' and `read' (the initial obarray).")
-(defun obarrayp (object)
+(defun nelisp--obarrayp-slow (object)
   (or (eq object nelisp--initial-obarray)
       (and (recordp object)
            (= (nelisp--record-length object) 3)
@@ -285,9 +285,17 @@ OBJECT can be a string or an external documentation reference."
         (let ((fresh (make-symbol name)))
           (puthash name fresh table)
           fresh))))
-(defun intern (name &optional obarray)
+(defun nelisp--intern-slow (name &optional obarray)
   (if (nelisp--global-obarray-p obarray) (nelisp--native-intern name)
     (nelisp--obarray-intern name obarray)))
+;; complete1: the native `obarrayp', `intern', `intern-soft' and `unintern' answer
+;; the initial obarray and a hit in an obarray made by `obarray-make' themselves
+;; (`wf_intern_ob_w' and friends); a miss, a symbol NAME and every wrong type come
+;; here.  Guarded so a host without the native arms still gets the definitions.
+(unless (fboundp 'obarrayp)
+  (defun obarrayp (object) (nelisp--obarrayp-slow object)))
+(unless (fboundp 'intern)
+  (defun intern (name &optional obarray) (nelisp--intern-slow name obarray)))
 ;; Absent, so a caller got `void-function' -- which reads as "the runtime
 ;; cannot do this" rather than "nobody wrote it yet".  There are no buffers
 ;; or byte-compiler here, so these answer nil and signal on a wrong type,
@@ -660,28 +668,29 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
 ;; it calls the low-level, property-oblivious `nelisp-buffer-substring'
 ;; directly instead, the same way `buffer-substring' itself did before
 ;; Doc 210 taught that wrapper to also attach properties to its result.
+(defun nelisp--buffer-substring-no-properties-reference (start end)
+  (unless (integerp start)
+    (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
+  (unless (integerp end)
+    (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
+  (let* ((b nelisp--current-buffer)
+         (lo (nelisp-point-min b))
+         (hi (nelisp-point-max b))
+         (s (min start end))
+         (e (max start end)))
+    (when (or (< s lo) (> e hi))
+      (signal 'args-out-of-range (list b start end)))
+    ;; GNU Fbuffer_substring_no_properties (make_buffer_string (b, e, 0)) makes a
+    ;; fresh string with no intervals.  The slice of a gap string is made by the
+    ;; native `substring', which copies the source's intervals, and a gap string
+    ;; that another package assigned from a propertized string can still carry
+    ;; some, so they are stripped again here, as `substring-no-properties' does.
+    (let ((result (nelisp-buffer-substring s e b)))
+      (when (gethash result nelisp--tp-string-properties)
+        (nelisp--tp-set-intervals result nil))
+      result)))
 (unless (fboundp 'buffer-substring-no-properties)
-  (defun buffer-substring-no-properties (start end)
-    (unless (integerp start)
-      (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
-    (unless (integerp end)
-      (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    (let* ((b nelisp--current-buffer)
-           (lo (nelisp-point-min b))
-           (hi (nelisp-point-max b))
-           (s (min start end))
-           (e (max start end)))
-      (when (or (< s lo) (> e hi))
-        (signal 'args-out-of-range (list b start end)))
-      ;; GNU Fbuffer_substring_no_properties (make_buffer_string (b, e, 0)) makes a
-      ;; fresh string with no intervals.  The slice of a gap string is made by the
-      ;; native `substring', which copies the source's intervals, and a gap string
-      ;; that another package assigned from a propertized string can still carry
-      ;; some, so they are stripped again here, as `substring-no-properties' does.
-      (let ((result (nelisp-buffer-substring s e b)))
-        (when (gethash result nelisp--tp-string-properties)
-          (nelisp--tp-set-intervals result nil))
-        result))))
+  (fset 'buffer-substring-no-properties (symbol-function 'nelisp--buffer-substring-no-properties-reference)))
 ;; `substring' always allocates a fresh string (native arm, like real
 ;; Emacs), never `eq' to its input, but it copies the source's text
 ;; properties onto that result (GNU Fsubstring, Doc 227), so they are
@@ -3254,7 +3263,7 @@ Keywords supported:  :test :test-not :key
 ;; copy.  Since the second `defun' always wins (unconditional, later in
 ;; the file), the first was pure dead code; removed rather than kept as
 ;; a fallback nothing can reach.
-(defun intern-soft (name &optional obarray)
+(defun nelisp--intern-soft-slow (name &optional obarray)
   (if (not (nelisp--global-obarray-p obarray))
       (let* ((table (nelisp--obarray-table obarray))
              (found (gethash (nelisp--obarray-name name) table)))
@@ -3264,15 +3273,13 @@ Keywords supported:  :test :test-not :key
              (and (eq found name) found)))
           ((stringp name) (nelisp--intern-lookup name))
           (t (signal 'wrong-type-argument (list 'stringp name))))))
-(defun unintern (&rest arguments)
+(defun nelisp--unintern-slow (name obarray)
   "Delete NAME from OBARRAY, returning t if a symbol was deleted.
 NAME may be a string or a symbol.  A symbol must belong to OBARRAY;
 another symbol with the same name is not deleted.
 
 (fn NAME OBARRAY)"
-  (unless (= (length arguments) 2)
-    (signal 'wrong-number-of-arguments (list 'unintern (length arguments))))
-  (let ((name (car arguments)) (obarray (cadr arguments)))
+  (progn
     (if (nelisp--global-obarray-p obarray)
         ;; GNU lread.c:4858: a symbol NAME is removed only when it is the
         ;; interned one; the removed symbol keeps its cells, and a later
@@ -3287,6 +3294,10 @@ another symbol with the same name is not deleted.
         (if (and found (or (stringp name) (eq found name)))
             (progn (remhash key table) t)
           nil)))))
+(unless (fboundp 'unintern)
+  (defun unintern (name obarray) (nelisp--unintern-slow name obarray)))
+(unless (fboundp 'intern-soft)
+  (defun intern-soft (name &optional obarray) (nelisp--intern-soft-slow name obarray)))
 (defun mapatoms (function &optional obarray)
   ;; GNU lread.c:5156 calls FUNCTION on every symbol of OBARRAY; the
   ;; initial obarray's symbols are the native intern table's plus nil and t.
@@ -9952,6 +9963,11 @@ Handle the identity and offset charsets available in the standalone prelude."
 ;; Completion is core runtime behavior used by GNU's regexp-opt and
 ;; bytecomp libraries.  It is registered independently of the regexp-opt
 ;; fallback because the primitive remains available when regexp-opt exists.
+  ;; GNU minibuf.c (Ftry_completion, Fall_completions, Ftest_completion), one
+  ;; pass over the collection.  These are the Lisp reference implementations
+  ;; and the slow-path delegates of the native arms of `try-completion',
+  ;; `all-completions' and `test-completion' (scripts/nelisp-standalone-build.el,
+  ;; `wf_cmpl_w'), the way `nelisp--assoc-string-slow' backs `assoc-string'.
   (defun nelisp--try-completion-name (item)
     "Return the candidate name represented by ITEM, or nil if it is invalid."
     (let ((name (if (consp item) (car item) item)))
@@ -9961,10 +9977,8 @@ Handle the identity and offset charsets available in the standalone prelude."
 
   (defun nelisp--try-completion-eligible-p (candidate)
     "Return non-nil when CANDIDATE passes `completion-regexp-list'."
-    (let ((patterns (and (boundp 'completion-regexp-list)
-                         completion-regexp-list))
-          (case-fold-search (and (boundp 'completion-ignore-case)
-                                 completion-ignore-case))
+    (let ((patterns completion-regexp-list)
+          (case-fold-search completion-ignore-case)
           (ok t))
       (while (and patterns ok)
         (unless (string-match-p (car patterns) candidate)
@@ -9973,161 +9987,206 @@ Handle the identity and offset charsets available in the standalone prelude."
       ok))
 
   (defun nelisp--try-completion-record (seed item predicate matches)
-    "Add ITEM to MATCHES when it completes SEED and passes PREDICATE."
-    (let* ((candidate (nelisp--try-completion-name item))
-           (ignore-case (and (boundp 'completion-ignore-case)
-                             completion-ignore-case)))
-      (when (and candidate
-                 (>= (length candidate) (length seed))
-                 (eq (compare-strings seed 0 (length seed)
-                                      candidate 0 (length seed)
-                                      ignore-case)
-                     t)
-                 (nelisp--try-completion-eligible-p candidate)
-                 (or (null predicate) (funcall predicate item)))
-        (unless (member candidate matches)
-          (cons candidate matches)))))
-
-  (defun try-completion (string collection &optional predicate)
-    "Return the longest completion of STRING from COLLECTION.
-
-COLLECTION may be a list/alist of strings or symbols, a NeLisp hash
-table, an obarray, or a function completion table.  PREDICATE receives
-the original list element, an obarray symbol, or (KEY VALUE) for hash
-table entries.  The default global obarray remains unsupported by
-`mapatoms' and signals `unsupported-feature'."
-    (unless (stringp string)
-      (signal 'wrong-type-argument (list 'stringp string)))
-    (if (functionp collection)
-        (funcall collection string predicate nil)
-      (let ((matches nil))
-        (cond
-         ((hash-table-p collection)
-          (maphash (lambda (key value)
-                     (let ((name (nelisp--try-completion-name key)))
-                       (when name
-                         (let ((ignore-case (and (boundp 'completion-ignore-case)
-                                                 completion-ignore-case)))
-                           (when (and (>= (length name) (length string))
-                                      (eq (compare-strings string 0 (length string)
-                                                           name 0 (length string)
-                                                           ignore-case)
-                                          t)
-                                      (nelisp--try-completion-eligible-p name)
-                                      (or (null predicate)
-                                          (funcall predicate key value)))
-                             (unless (member name matches)
-                               (setq matches (cons name matches))))))))
-                   collection))
-         ((obarrayp collection)
-          (mapatoms (lambda (symbol)
-                      (let ((next (nelisp--try-completion-record
-                                   string symbol predicate matches)))
-                        (when next (setq matches next))))
-                    collection))
-         ((or (null collection) (consp collection))
-          (let ((items collection))
-            (while (consp items)
-              (let ((next (nelisp--try-completion-record
-                           string (car items) predicate matches)))
-                (when next (setq matches next)))
-              (setq items (cdr items)))))
-         ((vectorp collection)
-          (signal 'wrong-type-argument (list 'obarrayp collection)))
-         (t
-          (signal 'wrong-type-argument (list 'listp collection))))
-        (setq matches (nreverse matches))
-        (cond
-         ((null matches) nil)
-         ((and (= (length (car matches)) (length string))
-               (= (length matches) 1)
-               (string= (car matches) string))
-          t)
-         ((and (= (length matches) 1)
-               (= (length (car matches)) (length string)))
-          (car matches))
-         (t
-          (let* ((ignore-case (and (boundp 'completion-ignore-case)
-                                   completion-ignore-case))
-                 (best (car matches))
-                 (rest matches)
-                 (common (length best)))
-            ;; Prefer a spelling that exactly matches the input's case.
-            (while rest
-              (when (string= (car rest) string)
-                (setq best (car rest)))
-              (setq rest (cdr rest)))
-            (setq rest (cdr matches))
-            (while rest
-              (let ((i 0)
-                    (limit (min common (length (car rest)))))
-                (while (and (< i limit)
-                            (eq (compare-strings best i (1+ i)
-                                                (car rest) i (1+ i)
-                                                ignore-case)
-                                t))
-                  (setq i (1+ i)))
-                (setq common i))
-              (setq rest (cdr rest)))
-            (substring best 0 common)))))))
+    "Return non-nil when ITEM completes SEED and passes PREDICATE.
+MATCHES is unused; kept for the presence corpus."
+    (let ((candidate (nelisp--try-completion-name item)))
+      (and candidate
+           (>= (length candidate) (length seed))
+           (eq (compare-strings candidate 0 (length seed) seed 0 nil
+                                completion-ignore-case)
+               t)
+           (nelisp--try-completion-eligible-p candidate)
+           (or (null predicate) (funcall predicate item))
+           (cons candidate matches))))
 
   (defun nelisp--all-completions-record (prefix item predicate results)
-    "Add ITEM's completion name to RESULTS without deduplicating it."
-    (let* ((candidate (nelisp--try-completion-name item))
-           (ignore-case (and (boundp 'completion-ignore-case)
-                             completion-ignore-case)))
-      (when (and candidate
-                 (>= (length candidate) (length prefix))
-                 (eq (compare-strings prefix 0 (length prefix)
-                                      candidate 0 (length prefix)
-                                      ignore-case)
-                     t)
-                 (nelisp--try-completion-eligible-p candidate)
-                 (or (null predicate) (funcall predicate item)))
-        (cons candidate results))))
+    "Add ITEM's completion name to RESULTS, or return nil."
+    (nelisp--try-completion-record prefix item predicate results))
 
-  (defun all-completions (string collection &optional predicate)
-    "Return all names in COLLECTION that complete STRING."
+  (defun nelisp--completion-walk (collection fn)
+    "Call FN with (ELT ELTSTRING VALUE) for each element of COLLECTION.
+FN returns non-nil to stop.  COLLECTION is a list, a hash table or an obarray."
+    (cond
+     ((hash-table-p collection)
+      (catch 'nelisp--completion-stop
+        (maphash (lambda (key value)
+                   (when (funcall fn key key value)
+                     (throw 'nelisp--completion-stop t)))
+                 collection)
+        nil))
+     ((obarrayp collection)
+      (catch 'nelisp--completion-stop
+        (mapatoms (lambda (symbol)
+                    (when (funcall fn symbol symbol nil)
+                      (throw 'nelisp--completion-stop t)))
+                  collection)
+        nil))
+     (t
+      (let ((tail collection) (stop nil))
+        (while (and (consp tail) (not stop))
+          (let ((elt (car tail)))
+            (setq stop (funcall fn elt (if (consp elt) (car elt) elt) nil)))
+          (setq tail (cdr tail)))
+        stop))))
+
+  (defun nelisp--completion-kind (collection)
+    "Return 0 for a function table, else 1 (list), 2 (obarray), 3 (hash)."
+    (cond ((hash-table-p collection) 3)
+          ((obarrayp collection) 2)
+          ((vectorp collection)
+           (signal 'wrong-type-argument (list 'obarrayp collection)))
+          ((or (null collection) (and (consp collection)
+                                      (not (functionp collection))))
+           1)
+          (t 0)))
+
+  (defun nelisp--completion-call-pred (predicate kind elt value)
+    (if (eq kind 3) (funcall predicate elt value) (funcall predicate elt)))
+
+  (defun nelisp--try-completion-slow (string collection &optional predicate)
+    "Return the longest common completion of STRING in COLLECTION (GNU)."
     (unless (stringp string)
       (signal 'wrong-type-argument (list 'stringp string)))
-    (if (functionp collection)
-        (funcall collection string predicate t)
-      (let ((results nil))
-        (cond
-         ((hash-table-p collection)
-          (maphash (lambda (key value)
-                     (let ((name (nelisp--try-completion-name key))
-                           (ignore-case (and (boundp 'completion-ignore-case)
-                                             completion-ignore-case)))
-                       (when (and (or (stringp key) (symbolp key))
-                                  (>= (length name) (length string))
-                                  (eq (compare-strings string 0 (length string)
-                                                       name 0 (length string)
-                                                       ignore-case)
-                                      t)
-                                  (nelisp--try-completion-eligible-p name)
-                                  (or (null predicate)
-                                      (funcall predicate key value)))
-                         (setq results (cons name results)))))
-                   collection))
-         ((obarrayp collection)
-          (mapatoms (lambda (symbol)
-                      (let ((next (nelisp--all-completions-record
-                                   string symbol predicate results)))
-                        (when next (setq results next))))
-                    collection))
-         ((or (null collection) (consp collection))
-          (let ((items collection))
-            (while (consp items)
-              (let ((next (nelisp--all-completions-record
-                           string (car items) predicate results)))
-                (when next (setq results next)))
-              (setq items (cdr items)))))
-         ((vectorp collection)
-          (signal 'wrong-type-argument (list 'obarrayp collection)))
-         (t
-          (signal 'wrong-type-argument (list 'listp collection))))
-        (nreverse results))))
+    (let ((kind (nelisp--completion-kind collection)))
+      (if (eq kind 0)
+          (funcall collection string predicate nil)
+        (let ((bestmatch nil) (bestmatchsize 0) (matchcount 0)
+              (ic completion-ignore-case) (slen (length string)))
+          (nelisp--completion-walk
+           collection
+           (lambda (elt eltstring value)
+             (when (symbolp eltstring) (setq eltstring (symbol-name eltstring)))
+             (and (stringp eltstring)
+                        (<= slen (length eltstring))
+                        (eq t (compare-strings eltstring 0 slen string 0 slen ic))
+                        (nelisp--try-completion-eligible-p eltstring)
+                        (or (null predicate)
+                            (nelisp--completion-call-pred predicate kind
+                                                          elt value))
+               (if (null bestmatch)
+                   (progn (setq matchcount 1 bestmatch eltstring
+                                bestmatchsize (length eltstring))
+                          nil)
+                 (let* ((compare (min bestmatchsize (length eltstring)))
+                        (tem (compare-strings bestmatch 0 compare
+                                              eltstring 0 compare ic))
+                        (matchsize (if (eq tem t) compare (1- (abs tem))))
+                        (old-bestmatch bestmatch))
+                   (when (and ic
+                              (or (and (= matchsize (length eltstring))
+                                       (< matchsize (length bestmatch)))
+                                  (and (eq (= matchsize (length eltstring))
+                                           (= matchsize (length bestmatch)))
+                                       (eq t (compare-strings eltstring 0 slen
+                                                              string 0 nil nil))
+                                       (not (eq t (compare-strings
+                                                   bestmatch 0 slen
+                                                   string 0 nil nil))))))
+                     (setq bestmatch eltstring))
+                   (when (or (/= bestmatchsize (length eltstring))
+                             (/= bestmatchsize matchsize)
+                             (and ic
+                                  (not (eq t (compare-strings
+                                              old-bestmatch 0 compare
+                                              eltstring 0 compare nil)))))
+                     (when (<= matchcount 1) (setq matchcount (1+ matchcount))))
+                   (setq bestmatchsize matchsize)
+                   (and (<= matchsize slen) (not ic) (> matchcount 1)))))))
+          (cond ((null bestmatch) nil)
+                ((and (= matchcount 1) (equal bestmatch string)) t)
+                (t (substring bestmatch 0 bestmatchsize)))))))
+
+  (defun nelisp--all-completions-slow (string collection &optional predicate)
+    "Return all names in COLLECTION that complete STRING (GNU)."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let ((kind (nelisp--completion-kind collection)))
+      (if (eq kind 0)
+          (funcall collection string predicate t)
+        (let ((all nil) (ic completion-ignore-case) (slen (length string)))
+          (nelisp--completion-walk
+           collection
+           (lambda (elt eltstring value)
+             (when (symbolp eltstring) (setq eltstring (symbol-name eltstring)))
+             (when (and (stringp eltstring)
+                        (<= slen (length eltstring))
+                        (eq t (compare-strings eltstring 0 slen string 0 slen ic))
+                        (nelisp--try-completion-eligible-p eltstring)
+                        (or (null predicate)
+                            (nelisp--completion-call-pred predicate kind
+                                                          elt value)))
+               (setq all (cons eltstring all)))
+             nil))
+          (nreverse all)))))
+
+  (defun nelisp--test-completion-slow (string collection &optional predicate)
+    "Return non-nil if STRING is a valid completion in COLLECTION (GNU)."
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (let ((ic completion-ignore-case) (tem nil) (arg nil) (found nil)
+          (function-table nil))
+      (cond
+       ((hash-table-p collection)
+        (let* ((unfound (list nil))
+               (v (gethash string collection unfound)))
+          (if (not (eq v unfound))
+              (setq tem string arg v found t)
+            (catch 'nelisp--completion-stop
+              (maphash (lambda (k v)
+                         (let ((strkey (if (symbolp k) (symbol-name k) k)))
+                           (when (and (stringp strkey)
+                                      (eq t (compare-strings string nil nil
+                                                             strkey nil nil ic)))
+                             (setq tem k arg v found t)
+                             (throw 'nelisp--completion-stop t))))
+                       collection)))))
+       ((obarrayp collection)
+        (setq tem (intern-soft string collection))
+        (when (and ic (null tem))
+          (catch 'nelisp--completion-stop
+            (mapatoms (lambda (obj)
+                        (when (eq t (compare-strings string 0 nil
+                                                     (symbol-name obj) 0 nil t))
+                          (setq tem obj)
+                          (throw 'nelisp--completion-stop t)))
+                      collection)))
+        (setq found (or tem (and (equal string "nil")
+                                 (nelisp--global-obarray-p collection)
+                                 (progn (setq tem nil) t)))))
+       ((vectorp collection)
+        (signal 'wrong-type-argument (list 'obarrayp collection)))
+       ((or (null collection) (and (consp collection)
+                                   (not (functionp collection))))
+        ;; Not `assoc-string': a matching `nil' element must end the walk
+        ;; (GNU answers nil for it) and the list may be dotted.
+        (let ((tail collection))
+          (while (and (consp tail) (null tem))
+            (let* ((elt (car tail))
+                   (key (if (consp elt) (car elt) elt))
+                   (ks (cond ((stringp key) key)
+                             ((symbolp key) (symbol-name key)))))
+              (when (and ks (eq t (compare-strings string nil nil ks nil nil ic)))
+                (setq tem elt)))
+            (setq tail (cdr tail))))
+        (setq found tem))
+       (t (setq function-table t)))
+      (cond
+       (function-table (funcall collection string predicate 'lambda))
+       ((not found) nil)
+       ((not (nelisp--try-completion-eligible-p string)) nil)
+       ((null predicate) t)
+       ((hash-table-p collection) (funcall predicate tem arg))
+       (t (funcall predicate tem)))))
+
+  (unless (fboundp 'try-completion)
+    (defun try-completion (string collection &optional predicate)
+      (nelisp--try-completion-slow string collection predicate)))
+  (unless (fboundp 'all-completions)
+    (defun all-completions (string collection &optional predicate)
+      (nelisp--all-completions-slow string collection predicate)))
+  (unless (fboundp 'test-completion)
+    (defun test-completion (string collection &optional predicate)
+      (nelisp--test-completion-slow string collection predicate)))
 
 (unless (fboundp 'regexp-opt)
   (defun nelisp--common-prefix (strings)
@@ -12630,6 +12689,8 @@ the flag as t or nil."
       ;; GNU Fset_buffer_multibyte returns before touching buffer slots
       ;; when the flag is unchanged (buffer.c:2753).
       (puthash (current-buffer) (and flag t) nelisp--buffer-multibyte-table)
+      (when (nelisp-buffer-p (current-buffer))
+        (setf (nelisp-buffer-unibyte (current-buffer)) (not flag)))
       (nelisp--bset-enable-multibyte-characters flag)
       (set (make-local-variable 'buffer-undo-list) nil)))
   flag))
@@ -12742,8 +12803,8 @@ headless runtime cannot answer Emacs's own confirmation prompt."
                (:constructor nelisp-buffer--make)
                (:copier nil))
   name
-  (before-gap "")
-  (after-gap "")
+  (store "")                   ; the gap buffer text, see `nelisp--gb-char-reference'
+  (unibyte nil)                ; t in a unibyte buffer (formerly the after-gap slot)
   (modified nil)
   (markers nil)
   (overlays nil)
@@ -12753,10 +12814,10 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (tp-tail nil)                ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
   (tick 0)                     ; text-change counter (formerly the `nelisp-buffer--tick' table)
   (pend nil)                   ; pending `goto-char' target, or nil (formerly `nelisp-buffer--pending-point')
-  (blen 0)                     ; (length before-gap), exact at all times
+  (blen 0)                     ; characters before the gap (the gap start), exact at all times
   (len 0)                      ; total text length, exact at all times
   (tcache nil)                 ; (TICK . STRING) whole-text memo (formerly `nelisp-buffer--text-cache')
-  (ins nil))               ; (HEAD . LAST): the last cons of that list, see `nelisp-buffer--tp-last'
+  (ins nil))                   ; t once multibyte text beyond ASCII was inserted: its slices are multibyte strings
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make-plain)
@@ -13956,7 +14017,7 @@ explicitly instead, see the section header comment above); kept so
   "nil until the first buffer is made, then `fast' or `keyword'.")
 (defun nelisp-buffer--new-fast (name)
   "Positional equivalent of (nelisp-buffer--make :name NAME)."
-  (nelisp--make-record 'nelisp-buffer name "" "" nil nil nil nil nil nil nil 0 nil 0 0 nil nil))
+  (nelisp--make-record 'nelisp-buffer name "" nil nil nil nil nil nil nil nil 0 nil 0 0 nil nil))
 (defun nelisp-buffer--new (name)
   "Return a fresh empty `nelisp-buffer' named NAME.
 The keyword constructor parses a plist per slot and costs about 60
@@ -14042,41 +14103,232 @@ pending-point') changes nothing about the concatenated text.")
 physically moved BUF's gap to match.  Absent means the gap already
 sits exactly at BUF's current point.  See `nelisp-buffer--settle'.")
 
+;; ---- bufedit: the buffer text is a gap buffer ----------------------------------------
+;; GNU buffer.h/insdel.c: the text is one array BEG_ADDR..GPT_ADDR | gap | GAP_END_ADDR..Z_ADDR; an edit
+;; near point moves the gap there (move_gap_both) and writes into it (insert_1_both), so a local edit
+;; costs O(distance moved) and no read ever copies the text.  Here the array is the STORE slot: a
+;; unibyte string of 4*CAP bytes holding one little-endian 32-bit character code per element (CAP
+;; elements: the characters before the gap in 0..BLEN-1, the gap, the rest at the end).  Choice and
+;; cost: GNU keeps UTF-8 bytes and pays a char<->byte map (buf_charpos_to_bytepos) for non-ASCII text;
+;; a code per character makes every position O(1) arithmetic and every read a single load, at 4 bytes
+;; per character (a 1 MB buffer holds 4 MB) and a UTF-8 encode/decode pass where a string crosses the
+;; boundary (buffer-substring, insert).  BLEN is the gap start (characters before the gap), LEN the
+;; character count, GAP = CAP - LEN; the point is PEND, or BLEN+1 when PEND is nil.  UNIBYTE (formerly
+;; the after-gap slot) is t in a unibyte buffer, where a character is a byte.
+;;
+;; The seven operations below are the whole interface to the store.  Each has a Lisp reference
+;; (`nelisp--gb-NAME-reference') that is the model of record; the standalone build binds the public
+;; name to a native body (`nl_gb_prim_w' in lisp/nelisp-cc-fx-call-primitives.el) and the native body
+;; declines to the reference for anything it does not own.  Positions are 0-based character indexes.
+(defun nelisp--gb-rd (store p)
+  (let ((o (* p 4)))
+    (+ (aref store o) (* 256 (aref store (+ o 1))) (* 65536 (aref store (+ o 2)))
+       (* 16777216 (aref store (+ o 3))))))
+(defun nelisp--gb-wr (store p c)
+  (let ((o (* p 4)))
+    (aset store o (% c 256))
+    (aset store (+ o 1) (% (/ c 256) 256))
+    (aset store (+ o 2) (% (/ c 65536) 256))
+    (aset store (+ o 3) (% (/ c 16777216) 256))))
+(defun nelisp--gb-char-reference (b i)
+  "Character at logical index I of the text of B."
+  (let ((len (nelisp-buffer-len b)))
+    (unless (and (integerp i) (>= i 0) (< i len))
+      (signal 'args-out-of-range (list i len)))
+    (let ((store (nelisp-buffer-store b)))
+      (nelisp--gb-rd store (if (< i (nelisp-buffer-blen b)) i (+ i (- (/ (length store) 4) len)))))))
+(defun nelisp--gb-move-reference (b pos)
+  "Move the gap of B to logical index POS (GNU move_gap_both)."
+  (let* ((store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b)) (len (nelisp-buffer-len b))
+         (gap (- (/ (length store) 4) len)) (i 0))
+    (unless (and (integerp pos) (>= pos 0) (<= pos len))
+      (signal 'args-out-of-range (list pos len)))
+    (cond ((< pos blen)
+           (setq i (1- blen))
+           (while (>= i pos)
+             (nelisp--gb-wr store (+ i gap) (nelisp--gb-rd store i))
+             (setq i (1- i))))
+          ((> pos blen)
+           (setq i blen)
+           (while (< i pos)
+             (nelisp--gb-wr store i (nelisp--gb-rd store (+ i gap)))
+             (setq i (1+ i)))))
+    (setf (nelisp-buffer-blen b) pos)
+    nil))
+(defun nelisp--gb-reserve-reference (b n)
+  "Make the gap of B at least N characters (GNU make_gap)."
+  (let* ((store (nelisp-buffer-store b)) (len (nelisp-buffer-len b)) (blen (nelisp-buffer-blen b))
+         (cap (/ (length store) 4)))
+    (when (< (- cap len) n)
+      (let* ((ncap (+ len n (max 64 (/ (+ len n) 2))))
+             (new (make-string (* ncap 4) 0)) (i 0) (tail (- len blen)))
+        (while (< i blen)
+          (nelisp--gb-wr new i (nelisp--gb-rd store i))
+          (setq i (1+ i)))
+        (setq i 0)
+        (while (< i tail)
+          (nelisp--gb-wr new (+ (- ncap tail) i) (nelisp--gb-rd store (+ (- cap tail) i)))
+          (setq i (1+ i)))
+        (setf (nelisp-buffer-store b) new)))
+    nil))
+(defun nelisp--gb-insert-reference (b str)
+  "Write the characters of STR at the gap start of B; the gap stays at the new end.
+Answers the number of characters.  A unibyte STR byte >= 128 is a raw-byte character in
+a multibyte buffer (GNU BYTE8_TO_CHAR); a multibyte STR in a unibyte buffer keeps the low byte."
+  (unless (stringp str) (signal 'wrong-type-argument (list 'stringp str)))
+  (let* ((n (length str)) (uni (nelisp-buffer-unibyte b)) (mb (multibyte-string-p str)) (i 0))
+    (nelisp--gb-reserve-reference b n)
+    (when (and mb (not uni) (> (string-bytes str) n))
+      (setf (nelisp-buffer-ins b) t))
+    (let ((store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b)))
+      (while (< i n)
+        (let ((c (aref str i)))
+          (cond ((and mb uni) (setq c (% c 256)))
+                ((and (not mb) (not uni) (>= c 128)) (setq c (+ c 4194048))))
+          (nelisp--gb-wr store (+ blen i) c))
+        (setq i (1+ i)))
+      (setf (nelisp-buffer-blen b) (+ blen n))
+      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n)))
+    n))
+(defun nelisp--gb-delete-reference (b s e)
+  "Delete the logical range [S, E) of B: the gap moves to E and grows over the range."
+  (let ((len (nelisp-buffer-len b)))
+    (unless (and (integerp s) (integerp e) (<= 0 s) (<= s e) (<= e len))
+      (signal 'args-out-of-range (list s e)))
+    (nelisp--gb-move-reference b e)
+    (setf (nelisp-buffer-blen b) s)
+    (setf (nelisp-buffer-len b) (- len (- e s)))
+    nil))
+(defun nelisp--gb-substring-reference (b s e)
+  "The text of B in [S, E) as a string: unibyte for a unibyte buffer or ASCII text."
+  (let ((len (nelisp-buffer-len b)))
+    (unless (and (integerp s) (integerp e) (<= 0 s) (<= s e) (<= e len))
+      (signal 'args-out-of-range (list s e)))
+    (let ((chars nil) (i (1- e)) (wide nil))
+      (while (>= i s)
+        (let ((c (nelisp--gb-char-reference b i)))
+          (when (>= c 128) (setq wide t))
+          (setq chars (cons c chars)))
+        (setq i (1- i)))
+      (if (and (or wide (eq (nelisp-buffer-ins b) t)) (not (nelisp-buffer-unibyte b)))
+          (let ((s (apply #'string chars)))
+            (if (multibyte-string-p s) s (string-to-multibyte s)))
+        (let ((out (make-string (- e s) 0)) (k 0))
+          (while chars
+            (aset out k (car chars))
+            (setq chars (cdr chars) k (1+ k)))
+          out)))))
+(defun nelisp--gb-find-char-reference (b c pos lim dir)
+  "First logical index at or after POS and before LIM holding C (DIR > 0), or the last at or
+after LIM and before POS (DIR < 0); -1 when there is none.  GNU find_newline."
+  (let ((j (if (> dir 0) pos (1- pos))) (found -1))
+    (if (> dir 0)
+        (while (and (< j lim) (= found -1))
+          (if (eq (nelisp--gb-char-reference b j) c) (setq found j) (setq j (1+ j))))
+      (while (and (>= j lim) (= found -1))
+        (if (eq (nelisp--gb-char-reference b j) c) (setq found j) (setq j (1- j)))))
+    found))
+(defun nelisp--gb-count-nl-reference (b s e)
+  "Number of newlines at logical indexes [S, E)."
+  (let ((n 0))
+    (while (< s e)
+      (when (eq (nelisp--gb-char-reference b s) 10) (setq n (1+ n)))
+      (setq s (1+ s)))
+    n))
+(defun nelisp--gb-overwrite-reference (b s str)
+  "Store the characters of STR over those of B starting at logical index S (same count)."
+  (let* ((n (length str)) (uni (nelisp-buffer-unibyte b)) (mb (multibyte-string-p str))
+         (len (nelisp-buffer-len b)) (store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b))
+         (gap (- (/ (length store) 4) len)) (i 0))
+    (unless (and (integerp s) (<= 0 s) (<= (+ s n) len))
+      (signal 'args-out-of-range (list s n)))
+    (when (and mb (not uni) (> (string-bytes str) n))
+      (setf (nelisp-buffer-ins b) t))
+    (while (< i n)
+      (let ((c (aref str i)) (j (+ s i)))
+        (cond ((and mb uni) (setq c (% c 256)))
+              ((and (not mb) (not uni) (>= c 128)) (setq c (+ c 4194048))))
+        (nelisp--gb-wr store (if (< j blen) j (+ j gap)) c))
+      (setq i (1+ i)))
+    nil))
+(unless (fboundp 'nelisp--gb-char)
+  (fset 'nelisp--gb-char (symbol-function 'nelisp--gb-char-reference)))
+(unless (fboundp 'nelisp--gb-move)
+  (fset 'nelisp--gb-move (symbol-function 'nelisp--gb-move-reference)))
+(unless (fboundp 'nelisp--gb-reserve)
+  (fset 'nelisp--gb-reserve (symbol-function 'nelisp--gb-reserve-reference)))
+(unless (fboundp 'nelisp--gb-insert)
+  (fset 'nelisp--gb-insert (symbol-function 'nelisp--gb-insert-reference)))
+(unless (fboundp 'nelisp--gb-delete)
+  (fset 'nelisp--gb-delete (symbol-function 'nelisp--gb-delete-reference)))
+(unless (fboundp 'nelisp--gb-substring)
+  (fset 'nelisp--gb-substring (symbol-function 'nelisp--gb-substring-reference)))
+(unless (fboundp 'nelisp--gb-find-char)
+  (fset 'nelisp--gb-find-char (symbol-function 'nelisp--gb-find-char-reference)))
+(unless (fboundp 'nelisp--gb-count-nl)
+  (fset 'nelisp--gb-count-nl (symbol-function 'nelisp--gb-count-nl-reference)))
+(unless (fboundp 'nelisp--gb-overwrite)
+  (fset 'nelisp--gb-overwrite (symbol-function 'nelisp--gb-overwrite-reference)))
+(defun nelisp--gb-count-lines-reference (b lo hi)
+  "Number of lines between the 1-based positions LO and HI of B (HI at least LO): the newlines
+in between, plus one when the region does not end at a line start (`count-lines')."
+  (if (= lo hi) 0
+    (let ((n (nelisp--gb-count-nl b (1- lo) (1- hi))))
+      (if (eq (nelisp--gb-char b (- hi 2)) 10) n (1+ n)))))
+(unless (fboundp 'nelisp--gb-count-lines)
+  (fset 'nelisp--gb-count-lines (symbol-function 'nelisp--gb-count-lines-reference)))
+(defun nelisp--gb-column-reference (b width)
+  "The column of the point of B: characters since the line start, a tab advancing to the next
+multiple of WIDTH."
+  (let* ((pos (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+         (bol (nelisp--motion-bol pos b)) (col 0) (i (1- bol)))
+    (while (< i (1- pos))
+      (setq col (if (eq (nelisp--gb-char b i) 9) (* width (1+ (/ col width))) (1+ col)))
+      (setq i (1+ i)))
+    col))
+(unless (fboundp 'nelisp--gb-column)
+  (fset 'nelisp--gb-column (symbol-function 'nelisp--gb-column-reference)))
+(defun nelisp--gb-splice-char (b index replacement)
+  "Replace the one character at logical INDEX of B by the string REPLACEMENT.
+The point follows the text it was after (GNU replace_range adjusts PT)."
+  (let* ((pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+         (position (1+ index)) (delta (1- (length replacement))))
+    (if (= delta 0)
+        (nelisp--gb-overwrite b index replacement)
+      (nelisp--gb-delete b index (1+ index))
+      (nelisp--gb-insert b replacement)
+      (let ((npt (if (> pt position) (+ pt delta) pt)))
+        (setf (nelisp-buffer-pend b) (if (= npt (1+ (nelisp-buffer-blen b))) nil npt))))))
+
+(defun nelisp-buffer--set-text (buf string gap)
+  "Make STRING the whole text of BUF with the gap at 0-based index GAP.
+The point, narrowing, markers and properties are the caller's; the gap buffer
+holds STRING as it holds any inserted text."
+  (setf (nelisp-buffer-blen buf) 0)
+  (setf (nelisp-buffer-len buf) 0)
+  (setf (nelisp-buffer-ins buf) nil)
+  (nelisp--gb-insert buf string)
+  (nelisp--gb-move buf gap)
+  nil)
+
+(defun nelisp-buffer--copy-text (to from)
+  "Give TO a private copy of the text of FROM (indirect buffers and clones share text
+by value: the store is mutable, so a shared store would see the other buffer's edits)."
+  (setf (nelisp-buffer-store to) (copy-sequence (nelisp-buffer-store from)))
+  (setf (nelisp-buffer-unibyte to) (nelisp-buffer-unibyte from))
+  (setf (nelisp-buffer-ins to) (nelisp-buffer-ins from)
+        (nelisp-buffer-blen to) (nelisp-buffer-blen from)
+        (nelisp-buffer-len to) (nelisp-buffer-len from))
+  nil)
+
 (defun nelisp-buffer--settle (buf &optional flush-only)
-  "Make BUF's gap strings current.  First append the pending inserts in
-the INS slot to `before-gap' (one concat of a grouped list, so a run of
-small inserts costs O(total) instead of O(n^2)); then, unless FLUSH-ONLY,
-physically move the gap to the pending point.  Moving is O(distance from
-the gap's CURRENT physical position to the pending target) -- paid once,
-lazily, right before an operation (`nelisp-insert' et al.) that needs the
-gap actually at point."
-  (let ((parts (nreverse (nelisp-buffer-ins buf))))
-    (when parts
-      (setf (nelisp-buffer-ins buf) nil)
-      (while (cdr parts)
-        (let ((out nil))
-          (while parts
-            (let ((chunk nil) (k 0))
-              (while (and parts (< k 256))
-                (setq chunk (cons (car parts) chunk) parts (cdr parts) k (1+ k)))
-              (setq out (cons (apply #'concat (nreverse chunk)) out))))
-          (setq parts (nreverse out))))
-      (setf (nelisp-buffer-before-gap buf)
-            (concat (nelisp-buffer-before-gap buf) (car parts)))))
+  "Move BUF's gap to the pending point (GNU gap_left/gap_right before an insertion).
+There is no queue of pending inserts any more: an insertion writes into the gap.
+FLUSH-ONLY is kept for the callers that used it to join the queue; it does nothing."
   (let ((pending (and (not flush-only) (nelisp-buffer-pend buf))))
     (when pending
-      (let ((idx (1- pending)) (blen (nelisp-buffer-blen buf)))
-        (if (< idx blen)
-            (let ((before (nelisp-buffer-before-gap buf)))
-              (setf (nelisp-buffer-after-gap buf)
-                    (concat (substring before idx) (nelisp-buffer-after-gap buf)))
-              (setf (nelisp-buffer-before-gap buf) (substring before 0 idx)))
-          (let ((k (- idx blen)) (after (nelisp-buffer-after-gap buf)))
-            (setf (nelisp-buffer-before-gap buf)
-                  (concat (nelisp-buffer-before-gap buf) (substring after 0 k)))
-            (setf (nelisp-buffer-after-gap buf) (substring after k))))
-        (setf (nelisp-buffer-blen buf) idx)
-        (setf (nelisp-buffer-pend buf) nil)))))
+      (nelisp--gb-move buf (1- pending))
+      (setf (nelisp-buffer-pend buf) nil))))
 
 (defun nelisp-kill-buffer (buf)
   "Remove BUF from the registry.  Returns t on success."
@@ -14221,50 +14473,29 @@ returned string may be shared across calls -- treat it as read-only."
          (cached (nelisp-buffer-tcache b)))
     (if (and cached (= (car cached) (nelisp-buffer-tick b)))
         (cdr cached)
-      (let ((s (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                      (concat (nelisp-buffer-before-gap b)
-                       (nelisp-buffer-after-gap b)))))
+      (let ((s (nelisp--gb-substring b 0 (nelisp-buffer-len b))))
         (setf (nelisp-buffer-tcache b) (cons (nelisp-buffer-tick b) s))
         s))))
 
 (defun nelisp-buffer-substring (start end &optional buf)
-  "Return the substring between 1-based START and END in BUF.
-Slices directly from `before-gap'/`after-gap' -- O(END - START)
-regardless of BUF's total size -- rather than building the whole
-buffer text first via `nelisp-buffer-string'."
-  (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
-         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                      (nelisp-buffer-blen b)))
-         (si (1- start))
-         (ei (1- end)))
-    (cond
-     ((<= ei blen) (substring (nelisp-buffer-before-gap b) si ei))
-     ((>= si blen) (substring (nelisp-buffer-after-gap b) (- si blen) (- ei blen)))
-     (t (concat (substring (nelisp-buffer-before-gap b) si)
-                (substring (nelisp-buffer-after-gap b) 0 (- ei blen)))))))
+  "Return the substring between 1-based START and END in BUF (GNU make_buffer_string)."
+  (nelisp--gb-substring (or buf nelisp-buffer--current (error "No NeLisp current buffer"))
+                        (1- start) (1- end)))
 
 (defun nelisp-char-after (&optional pos buf)
   "Return the character at POS (default point) in BUF, or nil."
   (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
-         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                      (nelisp-buffer-blen b)))
-         (idx (1- (or pos (nelisp-buffer-pend b) (1+ blen)))))
+         (idx (1- (or pos (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))))
     (and (>= idx 0) (< idx (nelisp-buffer-len b))
-         (if (< idx blen)
-             (aref (nelisp-buffer-before-gap b) idx)
-           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+         (nelisp--gb-char b idx))))
 
 (defun nelisp-char-before (&optional pos buf)
   "Return the character before POS (default point) in BUF, or nil.
-The character before POS sits at POS - 2 in the 0-based string."
+The character before POS sits at POS - 2 in the 0-based text."
   (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
-         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                      (nelisp-buffer-blen b)))
-         (idx (- (or pos (nelisp-buffer-pend b) (1+ blen)) 2)))
+         (idx (- (or pos (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))) 2)))
     (and (>= idx 0) (< idx (nelisp-buffer-len b))
-         (if (< idx blen)
-             (aref (nelisp-buffer-before-gap b) idx)
-           (aref (nelisp-buffer-after-gap b) (- idx blen))))))
+         (nelisp--gb-char b idx))))
 
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN."
@@ -14333,7 +14564,6 @@ not inherit, `insert-and-inherit' does."
          (src (gethash text nelisp--tp-string-properties))
          (inherit nelisp--tp-inherit)
          (pos (1- at)) (size (nelisp-buffer-len b)))
-    (when src (nelisp--tp-set-intervals (nelisp-buffer-before-gap b) nil))
     (when root (setq root (nelisp--tp-pad root (- size n))))
     (cond (root
            (setq root (if inherit (nelisp--tp-adjust-insert root pos n)
@@ -14358,53 +14588,41 @@ not inherit, `insert-and-inherit' does."
 (defun nelisp-insert (text &optional buf)
   "Insert TEXT at point in BUF.  TEXT must be a string.  Settles any
 pending `goto-char' first (see `nelisp-buffer--settle'): the gap must
-sit at point.  A plain string is then queued in the INS slot and joined
-to `before-gap' lazily (one concat for a whole run of inserts); a string
-that carries text properties is concatenated at once, because the
-intervals `concat' copies onto the gap string are cleared right after."
+sit at point.  The characters are then written into the gap (GNU
+insert_1_both); a string's text properties belong to the buffer's interval
+tree and are grafted by `nelisp-buffer--tp-after-insert'."
   (unless (stringp text)
     (signal 'wrong-type-argument (list 'stringp text)))
   (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
     (when (nelisp-buffer-pend b)
       (nelisp-buffer--settle b))
-    (let* ((blen (nelisp-buffer-blen b))
-           (at (1+ blen))
-           (n (length text))
+    (let* ((at (1+ (nelisp-buffer-blen b)))
            (propertized (gethash text nelisp--tp-string-properties))
            (ovt (nelisp-buffer-overlays b)))
       (when ovt
         (nelisp-ov--before-change b at at))
-      (if propertized
-          (progn
-            (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-            (setf (nelisp-buffer-before-gap b)
-                  (concat (nelisp-buffer-before-gap b) text)))
-        (setf (nelisp-buffer-ins b) (cons text (nelisp-buffer-ins b))))
-      (setf (nelisp-buffer-blen b) (+ blen n))
-      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
-      (when (nelisp-buffer-narrow-end b)
-        (setf (nelisp-buffer-narrow-end b)
-              (+ (nelisp-buffer-narrow-end b) n)))
-      (setf (nelisp-buffer-modified b) t)
-      (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
-      ;; Empty metadata is the common case; skip the interpreted helpers then.
-      (when (nelisp-buffer-markers b)
-        (nelisp-buffer--shift-markers-on-insert b at n))
-      (when ovt
-        (nelisp-buffer--shift-overlays-on-insert b at n))
-      (when (or propertized (nelisp-buffer-text-properties b))
-        (nelisp-buffer--tp-after-insert b at n text))
-      (when ovt
-        (nelisp-ov--after-change b at 0 n))))
+      (let ((n (nelisp--gb-insert b text)))
+        (when (nelisp-buffer-narrow-end b)
+          (setf (nelisp-buffer-narrow-end b)
+                (+ (nelisp-buffer-narrow-end b) n)))
+        (setf (nelisp-buffer-modified b) t)
+        (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
+        ;; Empty metadata is the common case; skip the interpreted helpers then.
+        (when (nelisp-buffer-markers b)
+          (nelisp-buffer--shift-markers-on-insert b at n))
+        (when ovt
+          (nelisp-buffer--shift-overlays-on-insert b at n))
+        (when (or propertized (nelisp-buffer-text-properties b))
+          (nelisp-buffer--tp-after-insert b at n text))
+        (when ovt
+          (nelisp-ov--after-change b at 0 n)))))
   nil)
 
 (defun nelisp-delete-region (start end &optional buf)
   "Delete the text between 1-based START and END (exclusive) in BUF."
   (let* ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer")))
          (len (nelisp-buffer-len b))
-         (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                      (nelisp-buffer-blen b)))
-         (point-before (or (nelisp-buffer-pend b) (1+ blen)))
+         (point-before (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
          (s (min start end))
          (e (max start end))
          (ovt (nelisp-buffer-overlays b)))
@@ -14412,34 +14630,14 @@ intervals `concat' copies onto the gap string are cleared right after."
       (signal 'args-out-of-range (list start end)))
     (when (and ovt (< s e))
       (nelisp-ov--before-change b s e))
-    (let* ((si (1- s))
-           (ei (1- e))
-           (delta (- e s))
+    (let* ((delta (- e s))
            (old-min (nelisp-buffer-narrow-start b))
            (old-max (nelisp-buffer-narrow-end b))
            (new-point (cond ((<= point-before s) point-before)
                             ((>= point-before e) (- point-before delta))
                             (t s))))
-      ;; Cut [si, ei) out of whichever gap string holds it; only the
-      ;; string(s) touching the cut are copied.
-      (cond
-       ((<= ei blen)
-        (let ((before (nelisp-buffer-before-gap b)))
-          (setf (nelisp-buffer-before-gap b)
-                (concat (substring before 0 si) (substring before ei)))
-          (setf (nelisp-buffer-blen b) (- blen delta))))
-       ((>= si blen)
-        (let ((after (nelisp-buffer-after-gap b)))
-          (setf (nelisp-buffer-after-gap b)
-                (concat (substring after 0 (- si blen))
-                        (substring after (- ei blen))))))
-       (t
-        (setf (nelisp-buffer-before-gap b)
-              (substring (nelisp-buffer-before-gap b) 0 si))
-        (setf (nelisp-buffer-after-gap b)
-              (substring (nelisp-buffer-after-gap b) (- ei blen)))
-        (setf (nelisp-buffer-blen b) si)))
-      (setf (nelisp-buffer-len b) (- len delta))
+      ;; GNU del_range_2: the gap moves to the range and grows over it.
+      (nelisp--gb-delete b (1- s) (1- e))
       (when old-min
         (setf (nelisp-buffer-narrow-start b)
               (cond ((<= old-min s) old-min)
@@ -14470,8 +14668,6 @@ intervals `concat' copies onto the gap string are cleared right after."
          (ovt (nelisp-buffer-overlays b)))
     (when (and ovt (> oldlen 0))
       (nelisp-ov--before-change b 1 (1+ oldlen)))
-    (setf (nelisp-buffer-before-gap b) "")
-    (setf (nelisp-buffer-after-gap b) "")
     (setf (nelisp-buffer-ins b) nil)
     (setf (nelisp-buffer-blen b) 0)
     (setf (nelisp-buffer-len b) 0)
@@ -15564,26 +15760,34 @@ this file was committed).")
   ;; every call, and `nelisp-buffer' has no children.
   (defun bufferp (obj)
     (and (recordp obj) (eq (nelisp--record-type obj) 'nelisp-buffer))))
+;; bufnative: `point', `point-min', `point-max', `goto-char', `buffer-size', `bobp'
+;; and `eobp' are native (`nl_buf_leaf_run' in lisp/nelisp-cc-fx-call-primitives.el:
+;; they read the current buffer's record slots directly and decline to these
+;; Lisp references for any argument shape or buffer they do not own).  The
+;; references stay the model of record; a build without the native names binds
+;; the public names to them.
+(defun nelisp--point-min-reference ()
+  (or (nelisp-buffer-narrow-start
+       (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+      1))
 (unless (fboundp 'point-min)
-  (defun point-min ()
-    (or (nelisp-buffer-narrow-start
-         (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-        1)))
+  (fset 'point-min (symbol-function 'nelisp--point-min-reference)))
+(defun nelisp--point-max-reference ()
+  (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+    (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
 (unless (fboundp 'point-max)
-  (defun point-max ()
-    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
-      (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))))
+  (fset 'point-max (symbol-function 'nelisp--point-max-reference)))
+(defun nelisp--point-reference ()
+  (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+    (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
 (unless (fboundp 'point)
-  (defun point ()
-    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
-      (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))))
-(unless (fboundp 'goto-char)
+  (fset 'point (symbol-function 'nelisp--point-reference)))
+(defun nelisp--goto-char-reference (pos)
   ;; GNU Emacs 31.1 editfns.c `Fgoto_char': POSITION is an integer or a
   ;; marker (a marker goes through `set_point_from_marker', which signals
   ;; when it points nowhere), anything else is `integer-or-marker-p', and
   ;; the value is POSITION itself.  The integer case is flat: it clamps and
   ;; records the pending point without further calls.
-  (defun goto-char (pos)
     (if (integerp pos)
         (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
                (clamped (max (or (nelisp-buffer-narrow-start b) 1)
@@ -15598,7 +15802,9 @@ this file was committed).")
                   (error "Marker does not point anywhere")))
              (t (signal 'wrong-type-argument (list 'integer-or-marker-p pos))))
        nelisp--current-buffer))
-    pos))
+    pos)
+(unless (fboundp 'goto-char)
+  (fset 'goto-char (symbol-function 'nelisp--goto-char-reference)))
 (unless (fboundp 'generate-new-buffer)
   (defun generate-new-buffer (name &optional _inhibit-buffer-hooks)
     (nelisp--check-string name)
@@ -15683,20 +15889,22 @@ current one dies, then detach its markers and drop its local variables.
 ;; are bridges, not new buffer code.  They are what
 ;; `nelisp-standalone--project-source' needs: it stopped at
 ;; `(void-function eobp)' on target/nelisp with the syntax layer complete.
-(unless (fboundp 'eobp)
-  (defun eobp ()
-    "Non-nil when point is at the end of the accessible portion.
+(defun nelisp--eobp-reference ()
+  "Non-nil when point is at the end of the accessible portion.
 Narrowing-aware because the end bound is (probed against Emacs 30.1:
 under `narrow-to-region' both answer the narrowed bound)."
-    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
-      (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
-         (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))))
+  (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+    (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+       (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))))
+(unless (fboundp 'eobp)
+  (fset 'eobp (symbol-function 'nelisp--eobp-reference)))
+(defun nelisp--bobp-reference ()
+  "Non-nil when point is at the beginning of the accessible portion."
+  (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
+    (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+       (or (nelisp-buffer-narrow-start b) 1))))
 (unless (fboundp 'bobp)
-  (defun bobp ()
-    "Non-nil when point is at the beginning of the accessible portion."
-    (let ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil))))
-      (= (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
-         (or (nelisp-buffer-narrow-start b) 1)))))
+  (fset 'bobp (symbol-function 'nelisp--bobp-reference)))
 (unless (fboundp 'buffer-name)
   (defun buffer-name (&optional buffer)
   "Return BUFFER's name, or nil if it was killed; default to current buffer."
@@ -15736,32 +15944,34 @@ under `narrow-to-region' both answer the narrowed bound)."
             (setq n (1+ n)))
           candidate)
       name)))
-(unless (fboundp 'narrow-to-region)
-  (defun narrow-to-region (start end)
-    "Restrict the current buffer to the positions between START and END
+(defun nelisp--narrow-to-region-reference (start end)
+  "Restrict the current buffer to the positions between START and END
 \(GNU editfns.c): both must lie in the whole buffer; point is moved into
 the accessible portion."
-    (let* ((b nelisp--current-buffer)
-           (first (if (integerp start) start (nelisp--w201-position start 'integer-or-marker-p)))
-           (last (if (integerp end) end (nelisp--w201-position end 'integer-or-marker-p)))
-           (limit (1+ (nelisp-buffer-len b))))
-      (unless (and (>= first 1) (<= first limit)
-                   (>= last 1) (<= last limit))
-        (signal 'args-out-of-range (list start end)))
-      (when (> first last)
-        (let ((tmp first)) (setq first last last tmp)))
-      (setf (nelisp-buffer-narrow-start b) first)
-      (setf (nelisp-buffer-narrow-end b) last)
-      (let ((pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-        (cond ((< pt first) (nelisp-goto-char first b))
-              ((> pt last) (nelisp-goto-char last b))))
-      nil)))
-(unless (fboundp 'widen)
-  (defun widen ()
-    (let ((b nelisp--current-buffer))
-      (setf (nelisp-buffer-narrow-start b) nil)
-      (setf (nelisp-buffer-narrow-end b) nil))
+  (let* ((b nelisp--current-buffer)
+         (first (if (integerp start) start (nelisp--w201-position start 'integer-or-marker-p)))
+         (last (if (integerp end) end (nelisp--w201-position end 'integer-or-marker-p)))
+         (limit (1+ (nelisp-buffer-len b))))
+    (unless (and (>= first 1) (<= first limit)
+                 (>= last 1) (<= last limit))
+      (signal 'args-out-of-range (list start end)))
+    (when (> first last)
+      (let ((tmp first)) (setq first last last tmp)))
+    (setf (nelisp-buffer-narrow-start b) first)
+    (setf (nelisp-buffer-narrow-end b) last)
+    (let ((pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+      (cond ((< pt first) (nelisp-goto-char first b))
+            ((> pt last) (nelisp-goto-char last b))))
     nil))
+(unless (fboundp 'narrow-to-region)
+  (fset 'narrow-to-region (symbol-function 'nelisp--narrow-to-region-reference)))
+(defun nelisp--widen-reference ()
+  (let ((b nelisp--current-buffer))
+    (setf (nelisp-buffer-narrow-start b) nil)
+    (setf (nelisp-buffer-narrow-end b) nil))
+  nil)
+(unless (fboundp 'widen)
+  (fset 'widen (symbol-function 'nelisp--widen-reference)))
 
 ;; `save-restriction' is real Emacs's own special form (src/editfns.c),
 ;; not staged from any Lisp file; built here on this substrate's own
@@ -15868,16 +16078,12 @@ included in the count.
         ;; not end at a line start.  Counting them in one native scan avoids
         ;; the save-excursion/save-restriction/narrow/search round trip.
         (let* ((b nelisp--current-buffer)
-               (s (nelisp--w201-position start 'integer-or-marker-p))
-               (e (nelisp--w201-position end 'integer-or-marker-p))
+               (s (if (integerp start) start (nelisp--w201-position start 'integer-or-marker-p)))
+               (e (if (integerp end) end (nelisp--w201-position end 'integer-or-marker-p)))
                (lo (min s e)) (hi (max s e)))
           (when (or (< lo 1) (> hi (1+ (nelisp-buffer-len b))))
             (signal 'args-out-of-range (list start end)))
-          (if (= lo hi)
-              0
-            (let* ((text (nelisp-buffer-substring lo hi b))
-                   (n (str-count-nl text (string-bytes text))))
-              (if (eq (aref text (1- (length text))) ?\n) n (1+ n)))))
+          (nelisp--gb-count-lines b lo hi))
     (save-excursion
       (save-restriction
         (narrow-to-region start end)
@@ -16028,9 +16234,8 @@ GNU buffer.c: BUFFER's own binding when it has one, else the default value.
   ;; Keep the public compatibility name on `rdf' so callers get the same
   ;; value-returning read path used by the short builtin.
   (fset 'nelisp--syscall-read-file (symbol-function 'rdf)))
-(unless (fboundp 'insert)
-  (defun insert (&rest args)
-    "Insert ARGS, each a string or a character (integer), at point.
+(defun nelisp--insert-reference (&rest args)
+  "Insert ARGS, each a string or a character (integer), at point.
 
 Doc D1 item 2: Emacs's real `insert' accepts any mix of characters and
 strings -- verified against Emacs 31.1, `(insert \"a\" 98 \"c\")' ->
@@ -16042,22 +16247,23 @@ Emacs exactly (verified: a float, a negative integer, a symbol, and
 nil all signal this in real Emacs, not `wrong-type-argument stringp'
 as this runtime's own `nelisp-insert' primitive would signal
 unconverted)."
-    (let ((rest args))
-      (while rest
-        (let ((a (car rest)))
-          (nelisp-insert
-           (cond
-            ((stringp a) a)
-            ((integerp a)
-             (nelisp--char-arg-to-string
-              a (nelisp--buffer-multibyte-p nelisp--current-buffer)))
-            (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
-           nelisp--current-buffer))
-        (setq rest (cdr rest))))
-    nil))
-(unless (fboundp 'insert-char)
-  (defun insert-char (character &optional count inherit)
-    "Insert COUNT (default 1) copies of CHARACTER at point.
+  (let ((rest args))
+    (while rest
+      (let ((a (car rest)))
+        (nelisp-insert
+         (cond
+          ((stringp a) a)
+          ((integerp a)
+           (nelisp--char-arg-to-string
+            a (nelisp--buffer-multibyte-p nelisp--current-buffer)))
+          (t (signal 'wrong-type-argument (list 'char-or-string-p a))))
+         nelisp--current-buffer))
+      (setq rest (cdr rest))))
+  nil)
+(unless (fboundp 'insert)
+  (fset 'insert (symbol-function 'nelisp--insert-reference)))
+(defun nelisp--insert-char-reference (character &optional count inherit)
+  "Insert COUNT (default 1) copies of CHARACTER at point.
 
 CHARACTER is converted exactly like an integer argument to `insert'
 above (Doc D1 item 2).  A non-integer CHARACTER signals
@@ -16069,16 +16275,18 @@ both leave the buffer empty, no error).  A non-nil INHERIT lets the new
 text inherit sticky text properties, as `insert-and-inherit' does.
 
 (fn CHARACTER &optional COUNT INHERIT)"
-    (unless (integerp character)
-      (signal 'wrong-type-argument (list 'characterp character)))
-    (let ((n (or count 1)))
-      (when (> n 0)
-        (let* ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer))
-               (piece (nelisp--char-arg-to-string character multibyte)))
-          (let ((nelisp--tp-inherit (and inherit t)))
-            (nelisp-insert (apply #'concat (make-list n piece))
-                           nelisp--current-buffer)))))
-    nil))
+  (unless (integerp character)
+    (signal 'wrong-type-argument (list 'characterp character)))
+  (let ((n (or count 1)))
+    (when (> n 0)
+      (let* ((multibyte (nelisp--buffer-multibyte-p nelisp--current-buffer))
+             (piece (nelisp--char-arg-to-string character multibyte)))
+        (let ((nelisp--tp-inherit (and inherit t)))
+          (nelisp-insert (apply #'concat (make-list n piece))
+                         nelisp--current-buffer)))))
+  nil)
+(unless (fboundp 'insert-char)
+  (fset 'insert-char (symbol-function 'nelisp--insert-char-reference)))
 ;; Doc D1 item 2: `insert-before-markers' was `void-function' entirely
 ;; (not merely missing integer-argument support).  Its ONLY documented
 ;; difference from plain `insert' is which markers advance past the
@@ -16111,15 +16319,12 @@ point advances past TEXT instead of consulting its own
     (let ((b (nelisp-buffer--ambient buf)))
       (nelisp-buffer--settle b))
     (let* ((b (nelisp-buffer--ambient buf))
-           (before (nelisp-buffer-before-gap b))
-           (at (1+ (length before)))
-           (n (length text))
-           (ovt (nelisp-buffer-overlays b)))
+           (at (1+ (nelisp-buffer-blen b)))
+           (ovt (nelisp-buffer-overlays b))
+           (n 0))
       (when ovt
         (nelisp-ov--before-change b at at))
-      (setf (nelisp-buffer-before-gap b) (concat before text))
-      (setf (nelisp-buffer-blen b) (+ (nelisp-buffer-blen b) n))
-      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n))
+      (setq n (nelisp--gb-insert b text))
       (setf (nelisp-buffer-modified b) t)
       (nelisp-buffer--bump-tick b)
       (nelisp-buffer--shift-markers-on-insert-before-markers b at n)
@@ -16174,10 +16379,16 @@ inserted text -- see `nelisp-insert-before-markers'."
 ;; region'/`widen'), so `point-min' is always 1 and this is simply
 ;; `(1- (point-max))', generalized to an optional BUFFER the same way
 ;; `point-min'/`point-max' above already take one.
+(defun nelisp--buffer-size-reference (&optional buffer)
+  ;; GNU editfns.c/buffer.c Fbuffer_size: BUFFER nil is the current buffer, anything
+  ;; else must be a buffer (CHECK_BUFFER); the whole buffer counts, narrowing or not.
+  (if buffer
+      (progn (unless (bufferp buffer)
+               (signal 'wrong-type-argument (list 'bufferp buffer)))
+             (nelisp-buffer-len buffer))
+    (nelisp-buffer-len (or nelisp--current-buffer (nelisp-buffer--ambient nil)))))
 (unless (fboundp 'buffer-size)
-  (defun buffer-size (&optional buffer)
-    ;; GNU's `buffer-size' counts the whole buffer, narrowing or not.
-    (nelisp-buffer-len (or buffer nelisp--current-buffer (nelisp-buffer--ambient nil)))))
+  (fset 'buffer-size (symbol-function 'nelisp--buffer-size-reference)))
 
 ;; ---- Doc 188 P2: current-buffer / set-buffer / buffer-substring /
 ;; erase-buffer -- the four names §3's P2 bullet lists as still void
@@ -16224,9 +16435,8 @@ No window system here, so nothing is actually displayed -- see the
 block comment above for why `set-buffer''s effect is what is left."
     (set-buffer buffer-or-name)))
 
-(unless (fboundp 'buffer-substring)
-  (defun buffer-substring (start end)
-    "Return the text between START and END in the current buffer.
+(defun nelisp--buffer-substring-reference (start end)
+  "Return the text between START and END in the current buffer.
 
 Real Emacs accepts START/END in EITHER order and signals
 `args-out-of-range' (data = current buffer, START, END -- in that
@@ -16236,25 +16446,27 @@ buffer-substring' (ported verbatim from src/nelisp-buffer.el, kept
 byte-identical for `ns-gate') assumes START <= END and does no range
 check at all, so both real-Emacs behaviors are handled in this
 wrapper instead of touching that file."
-    (unless (integerp start)
-      (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
-    (unless (integerp end)
-      (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (s (min start end))
-           (e (max start end)))
-      (when (or (< s (or (nelisp-buffer-narrow-start b) 1))
-                (> e (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
-        (signal 'args-out-of-range (list b start end)))
-      ;; Doc 210: the returned string carries B's properties over
-      ;; [S, E), same as real Emacs (`buffer-substring-no-properties'
-      ;; below calls `nelisp-buffer-substring' directly instead, so it
-      ;; never reaches this attachment step).  A buffer without
-      ;; properties has none to copy.
-      (let ((str (nelisp-buffer-substring s e b)))
-        (when (nelisp-buffer-text-properties b)
-          (nelisp--tp-copy-buffer-range-to-string b s e str))
-        str))))
+  (unless (integerp start)
+    (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
+  (unless (integerp end)
+    (signal 'wrong-type-argument (list 'integer-or-marker-p end)))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (s (min start end))
+         (e (max start end)))
+    (when (or (< s (or (nelisp-buffer-narrow-start b) 1))
+              (> e (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+      (signal 'args-out-of-range (list b start end)))
+    ;; Doc 210: the returned string carries B's properties over
+    ;; [S, E), same as real Emacs (`buffer-substring-no-properties'
+    ;; below calls `nelisp-buffer-substring' directly instead, so it
+    ;; never reaches this attachment step).  A buffer without
+    ;; properties has none to copy.
+    (let ((str (nelisp-buffer-substring s e b)))
+      (when (nelisp-buffer-text-properties b)
+        (nelisp--tp-copy-buffer-range-to-string b s e str))
+      str)))
+(unless (fboundp 'buffer-substring)
+  (fset 'buffer-substring (symbol-function 'nelisp--buffer-substring-reference)))
 
 (unless (fboundp 'erase-buffer)
   (defun erase-buffer ()
@@ -16281,59 +16493,52 @@ over."
 ;; `char-after'/`char-before'/`delete-region' take no BUF argument (they
 ;; always act on the current buffer), so only POS/START/END are exposed
 ;; here; `nelisp--current-buffer' is threaded in as BUF explicitly.
-(unless (fboundp 'char-after)
-  (defun char-after (&optional pos)
-    "Return the character at POS (default point), or nil outside the
+(defun nelisp--char-after-reference (&optional pos)
+  "Return the character at POS (default point), or nil outside the
 accessible portion.  POS is an integer or a marker."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (p (cond ((null pos)
-                     (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
-                    ((integerp pos) pos)
-                    ((markerp pos)
-                     (or (marker-position pos)
-                         (error "Marker does not point anywhere")))
-                    (t (signal 'wrong-type-argument
-                               (list 'integer-or-marker-p pos))))))
-      (and (>= p (or (nelisp-buffer-narrow-start b) 1))
-           (< p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-           (progn
-             (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-             (let ((blen (nelisp-buffer-blen b)) (idx (1- p)))
-               (if (< idx blen)
-                   (aref (nelisp-buffer-before-gap b) idx)
-                 (aref (nelisp-buffer-after-gap b) (- idx blen)))))))))
-(unless (fboundp 'char-before)
-  (defun char-before (&optional pos)
-    "Return the character preceding POS (default point), or nil outside the
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (p (cond ((null pos)
+                   (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+                  ((integerp pos) pos)
+                  ((markerp pos)
+                   (or (marker-position pos)
+                       (error "Marker does not point anywhere")))
+                  (t (signal 'wrong-type-argument
+                             (list 'integer-or-marker-p pos))))))
+    (and (>= p (or (nelisp-buffer-narrow-start b) 1))
+         (< p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+         (nelisp--gb-char b (1- p)))))
+(unless (fboundp 'char-after)
+  (fset 'char-after (symbol-function 'nelisp--char-after-reference)))
+(defun nelisp--char-before-reference (&optional pos)
+  "Return the character preceding POS (default point), or nil outside the
 accessible portion (GNU editfns.c: POS <= BEGV or POS > ZV)."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (blen (progn (when (nelisp-buffer-ins b) (nelisp-buffer--settle b t))
-                        (nelisp-buffer-blen b)))
-           (p (cond ((null pos) (or (nelisp-buffer-pend b) (1+ blen)))
-                    ((integerp pos) pos)
-                    ((markerp pos)
-                     (or (marker-position pos)
-                         (error "Marker does not point anywhere")))
-                    (t (signal 'wrong-type-argument
-                               (list 'integer-or-marker-p pos)))))
-           (idx (- p 2)))
-      (and (> p (or (nelisp-buffer-narrow-start b) 1))
-           (<= p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-           (if (< idx blen)
-               (aref (nelisp-buffer-before-gap b) idx)
-             (aref (nelisp-buffer-after-gap b) (- idx blen)))))))
-(unless (fboundp 'delete-region)
-  (defun delete-region (start end)
-    "Delete the text between START and END (GNU editfns.c validate_region):
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (p (cond ((null pos) (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+                  ((integerp pos) pos)
+                  ((markerp pos)
+                   (or (marker-position pos)
+                       (error "Marker does not point anywhere")))
+                  (t (signal 'wrong-type-argument
+                             (list 'integer-or-marker-p pos))))))
+    (and (> p (or (nelisp-buffer-narrow-start b) 1))
+         (<= p (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+         (nelisp--gb-char b (- p 2)))))
+(unless (fboundp 'char-before)
+  (fset 'char-before (symbol-function 'nelisp--char-before-reference)))
+(defun nelisp--delete-region-reference (start end)
+  "Delete the text between START and END (GNU editfns.c validate_region):
 both must lie in the accessible portion, else `args-out-of-range'."
-    (let* ((b nelisp--current-buffer)
-           (s (nelisp--w201-position start 'integer-or-marker-p))
-           (e (nelisp--w201-position end 'integer-or-marker-p))
-           (lo (min s e)) (hi (max s e)))
-      (when (or (< lo (or (nelisp-buffer-narrow-start b) 1))
-                (> hi (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
-        (signal 'args-out-of-range (list b start end)))
-      (nelisp-delete-region lo hi b))))
+  (let* ((b nelisp--current-buffer)
+         (s (nelisp--w201-position start 'integer-or-marker-p))
+         (e (nelisp--w201-position end 'integer-or-marker-p))
+         (lo (min s e)) (hi (max s e)))
+    (when (or (< lo (or (nelisp-buffer-narrow-start b) 1))
+              (> hi (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b)))))
+      (signal 'args-out-of-range (list b start end)))
+    (nelisp-delete-region lo hi b)))
+(unless (fboundp 'delete-region)
+  (fset 'delete-region (symbol-function 'nelisp--delete-region-reference)))
 ;; ---- GNU editfns.c / buffer.c accessors that follow BEGV/ZV ----------------
 (unless (fboundp 'buffer-narrowed-p)
   (defun buffer-narrowed-p ()
@@ -16343,14 +16548,16 @@ both must lie in the accessible portion, else `args-out-of-range'."
   (defun buffer-end (arg)
     "Return the \"far end\" position of the buffer, in direction ARG."
     (if (> arg 0) (point-max) (point-min))))
+(defun nelisp--pos-bol-reference (&optional n)
+  "Return the position of the beginning of the Nth line, ignoring fields."
+  (nelisp--line-beginning-position-reference n))
 (unless (fboundp 'pos-bol)
-  (defun pos-bol (&optional n)
-    "Return the position of the beginning of the Nth line, ignoring fields."
-    (line-beginning-position n)))
+  (fset 'pos-bol (symbol-function 'nelisp--pos-bol-reference)))
+(defun nelisp--pos-eol-reference (&optional n)
+  "Return the position of the end of the Nth line, ignoring fields."
+  (nelisp--line-end-position-reference n))
 (unless (fboundp 'pos-eol)
-  (defun pos-eol (&optional n)
-    "Return the position of the end of the Nth line, ignoring fields."
-    (line-end-position n)))
+  (fset 'pos-eol (symbol-function 'nelisp--pos-eol-reference)))
 (unless (fboundp 'backward-char)
   (defun backward-char (&optional n)
     "Move point N characters backward (forward if N is negative)."
@@ -16912,27 +17119,11 @@ If no property change is found, return `point-min'."
          (byte-delta (- (string-bytes replacement)
                         (if (nelisp--buffer-multibyte-p buffer)
                             (string-bytes (char-to-string (char-after position))) 1)))
-         (before (progn (when (nelisp-buffer-ins buffer) (nelisp-buffer--settle buffer t))
-                        (nelisp-buffer-before-gap buffer)))
-         (blen (nelisp-buffer-blen buffer)) (index (1- position)))
-    (if (< index blen)
-        (setf (nelisp-buffer-before-gap buffer)
-              (concat (substring before 0 index) replacement
-                      (substring before (1+ index))))
-      (let* ((after (nelisp-buffer-after-gap buffer))
-             (offset (- index blen)))
-        (setf (nelisp-buffer-after-gap buffer)
-              (concat (substring after 0 offset) replacement
-                      (substring after (1+ offset))))))
+         (index (1- position)))
+    (nelisp--gb-splice-char buffer index replacement)
     (unless (= delta 0)
       (when (nelisp-buffer-overlays buffer)
         (nelisp-ov--adjust-replace buffer position 1 (length replacement)))
-      (setf (nelisp-buffer-len buffer) (+ (nelisp-buffer-len buffer) delta))
-      (when (< index blen)
-        (setf (nelisp-buffer-blen buffer) (+ blen delta)))
-      (let ((pending (nelisp-buffer-pend buffer)))
-        (when (and pending (> pending position))
-          (setf (nelisp-buffer-pend buffer) (+ pending delta))))
       (when (and (nelisp-buffer-narrow-start buffer)
                  (> (nelisp-buffer-narrow-start buffer) position))
         (setf (nelisp-buffer-narrow-start buffer)
@@ -17013,25 +17204,10 @@ If no property change is found, return `point-min'."
                                   ((eq action 'lower) (downcase text))
                                   ((eq action 'capitalize) (capitalize text))
                                   (t (upcase-initials text))))
-                            (blen (nelisp-buffer-blen b))
-                            (si (1- low)) (ei (1- high)))
+                            (si (1- low)))
                        (setf (nelisp-buffer-modified b) t)
                        (unless (equal new text)
-                         (cond
-                          ((<= ei blen)
-                           (setf (nelisp-buffer-before-gap b)
-                                 (concat (substring (nelisp-buffer-before-gap b) 0 si) new
-                                         (substring (nelisp-buffer-before-gap b) ei))))
-                          ((>= si blen)
-                           (setf (nelisp-buffer-after-gap b)
-                                 (concat (substring (nelisp-buffer-after-gap b) 0 (- si blen)) new
-                                         (substring (nelisp-buffer-after-gap b) (- ei blen)))))
-                          (t (setf (nelisp-buffer-before-gap b)
-                                   (concat (substring (nelisp-buffer-before-gap b) 0 si)
-                                           (substring new 0 (- blen si)))
-                                   (nelisp-buffer-after-gap b)
-                                   (concat (substring new (- blen si))
-                                           (substring (nelisp-buffer-after-gap b) (- ei blen)))))))
+                         (nelisp--gb-overwrite b si new))
                        (dotimes (_ (nelisp--case-modiff-ticks (- high low)))
                          (nelisp-buffer--bump-tick b))
                        t)))
@@ -17126,26 +17302,9 @@ when there is none.  A POS that is itself a line start answers itself."
   (let ((lo (or (nelisp-buffer-narrow-start buf) 1)))
     (if (<= pos lo)
         lo
-      ;; Walk back over the gap strings in place: O(distance to the line
-      ;; start), not O(POS - point-min).
-      (let* ((blen (progn (when (nelisp-buffer-ins buf) (nelisp-buffer--settle buf t))
-                          (nelisp-buffer-blen buf)))
-             (fl (1- lo))               ; lowest accessible 0-based index
-             (i (- pos 2)))             ; 0-based index of the char before POS
-        (when (>= i blen)
-          (let ((after (nelisp-buffer-after-gap buf)) (j (- i blen)))
-            (while (and (>= j 0) (>= (+ blen j) fl)
-                        (not (eq (aref after j) ?\n)))
-              (setq j (1- j)))
-            (setq i (if (and (>= j 0) (>= (+ blen j) fl)) (+ blen j) (1- blen)))))
-        (when (and (< i blen) (>= i fl))
-          (let ((before (nelisp-buffer-before-gap buf)))
-            (while (and (>= i fl) (not (eq (aref before i) ?\n)))
-              (setq i (1- i)))))
-        ;; I is now the 0-based index of the newline, or below the
-        ;; accessible start when there is none: the line starts right after
-        ;; the newline.
-        (if (>= i fl) (+ i 2) lo)))))
+      ;; GNU find_newline backward from POS: O(distance to the line start).
+      (let ((j (nelisp--gb-find-char buf 10 (1- pos) (1- lo) -1)))
+        (if (>= j 0) (+ j 2) lo)))))
 
 (defun nelisp--motion-eol (pos buf)
   "Return the 1-based position of the end of the line containing POS in
@@ -17154,18 +17313,8 @@ the line runs to the end of the (accessible) buffer with none."
   (let ((hi (or (nelisp-buffer-narrow-end buf) (1+ (nelisp-buffer-len buf)))))
     (if (>= pos hi)
         hi
-      ;; Search the gap strings in place: O(distance to the newline).
-      (let* ((blen (progn (when (nelisp-buffer-ins buf) (nelisp-buffer--settle buf t))
-                          (nelisp-buffer-blen buf)))
-             (i (1- pos))
-             (p (and (< i blen)
-                     (string-search "\n" (nelisp-buffer-before-gap buf) i))))
-        (unless p
-          (let ((k (string-search "\n" (nelisp-buffer-after-gap buf)
-                                  (max 0 (- i blen)))))
-            (when k (setq p (+ blen k)))))
-        ;; P is the 0-based index of the newline, i.e. its position - 1.
-        (if (and p (< (1+ p) hi)) (1+ p) hi)))))
+      (let ((j (nelisp--gb-find-char buf 10 (1- pos) (1- hi) 1)))
+        (if (>= j 0) (1+ j) hi)))))
 
 (defun nelisp--motion-prev-bol (pos buf)
   "Return the start of the line immediately before the line that starts
@@ -17189,16 +17338,7 @@ share this so the latter two can compute without moving anything."
       (cons (nelisp--motion-bol pos buf) 0))
      ((> n 0)
       (let ((cur pos) (remaining n) (ran-out nil))
-        (if (> n 1)
-            ;; Many lines: one pass over the memoized text.
-            (let ((text (nelisp-buffer-string buf)) (j nil))
-              (while (and (> remaining 0) (not ran-out))
-                (if (>= cur hi)
-                    (setq ran-out t)
-                  (setq j (string-search "\n" text (1- cur)))
-                  (if (and j (< (1+ j) hi))
-                      (setq cur (+ j 2) remaining (1- remaining))
-                    (setq cur hi ran-out t)))))
+        (progn
           (while (and (> remaining 0) (not ran-out))
             (if (>= cur hi)
                 (setq ran-out t)
@@ -17212,10 +17352,13 @@ share this so the latter two can compute without moving anything."
         ;; one line successfully moved (probed: `forward-line' docstring's
         ;; own "Exception" paragraph, confirmed against a no-trailing-
         ;; newline buffer).
+        ;; GNU Fforward_line: the shortage is one less when the point moved and the
+        ;; nonempty accessible portion ends in something other than a newline.
         (when (and (> remaining 0)
                    (= cur hi)
-                   (or (= cur lo)
-                       (/= (nelisp-char-before cur buf) ?\n)))
+                   (> hi lo)
+                   (/= cur pos)
+                   (/= (nelisp-char-before cur buf) ?\n))
           (setq remaining (1- remaining)))
         (cons cur remaining)))
      (t
@@ -17236,19 +17379,20 @@ share this so the latter two can compute without moving anything."
     (interactive "^p")
     (nelisp--motion-forward-char n)))
 
-(unless (fboundp 'forward-line)
-  (defun forward-line (&optional n)
-    "Move point to the start of the (N-relative-to-current) line; default
+(defun nelisp--forward-line-reference (&optional n)
+  "Move point to the start of the (N-relative-to-current) line; default
 N=1.  Returns the shortfall (probed against Emacs 30.1): 0 when the
 move completed, otherwise how many lines were left uncompleted (N minus
 lines moved forward; N plus lines moved backward).  Never signals."
-    (or (null n) (integerp n) (nelisp--check-integer n))
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (result (nelisp--motion-forward-line
-                    b (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
-                    (or n 1))))
-      (nelisp-goto-char (car result) b)
-      (cdr result))))
+  (or (null n) (integerp n) (nelisp--check-integer n))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (result (nelisp--motion-forward-line
+                  b (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))
+                  (or n 1))))
+    (nelisp-goto-char (car result) b)
+    (cdr result)))
+(unless (fboundp 'forward-line)
+  (fset 'forward-line (symbol-function 'nelisp--forward-line-reference)))
 
 (defun nelisp--motion-forward-char (n)
   "Move point N characters forward (backward if N negative; default 1).
@@ -17289,77 +17433,82 @@ read-only buffer refuses a nonempty range."
       (signal 'buffer-read-only (list nelisp--current-buffer)))
     (nelisp-delete-region s e b)))
 
+(defun nelisp--bolp-reference ()
+  "T when point is at the beginning of a line (or `point-min')."
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (or (<= pt (or (nelisp-buffer-narrow-start b) 1))
+        (eq (nelisp-char-before pt b) ?\n))))
 (unless (fboundp 'bolp)
-  (defun bolp ()
-    "T when point is at the beginning of a line (or `point-min')."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (or (<= pt (or (nelisp-buffer-narrow-start b) 1))
-          (eq (nelisp-char-before pt b) ?\n)))))
+  (fset 'bolp (symbol-function 'nelisp--bolp-reference)))
 
+(defun nelisp--eolp-reference ()
+  "T when point is at the end of a line (or `point-max')."
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (or (>= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+        (eq (nelisp-char-after pt b) ?\n))))
 (unless (fboundp 'eolp)
-  (defun eolp ()
-    "T when point is at the end of a line (or `point-max')."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (or (>= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-          (eq (nelisp-char-after pt b) ?\n)))))
+  (fset 'eolp (symbol-function 'nelisp--eolp-reference)))
 
-(unless (fboundp 'line-beginning-position)
-  (defun line-beginning-position (&optional n)
-    "Return the position of the start of the Nth line from point's line
+(defun nelisp--line-beginning-position-reference (&optional n)
+  "Return the position of the start of the Nth line from point's line
 \(default N=1, meaning point's own line\); does not move point.  Probed
 against Emacs 30.1 -- same line arithmetic as `forward-line' on N-1,
 clamped at the buffer bounds, applied to a copy of point rather than
 point itself."
-    (or (null n) (integerp n) (nelisp--check-integer n))
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (if (or (null n) (eq n 1))
-          (nelisp--motion-bol pt b)
-        (car (nelisp--motion-forward-line b pt (1- n)))))))
+  (or (null n) (integerp n) (nelisp--check-integer n))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (if (or (null n) (eq n 1))
+        (nelisp--motion-bol pt b)
+      (car (nelisp--motion-forward-line b pt (1- n))))))
+(unless (fboundp 'line-beginning-position)
+  (fset 'line-beginning-position (symbol-function 'nelisp--line-beginning-position-reference)))
 
-(unless (fboundp 'line-end-position)
-  (defun line-end-position (&optional n)
-    "Return the position of the end of the Nth line from point's line
+(defun nelisp--line-end-position-reference (&optional n)
+  "Return the position of the end of the Nth line from point's line
 \(default N=1\); does not move point.  Same line as
 `line-beginning-position' N, then that line's end (probed 30.1)."
-    (or (null n) (integerp n) (nelisp--check-integer n))
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (if (or (null n) (eq n 1))
-          (nelisp--motion-eol pt b)
-        (let ((moved (nelisp--motion-forward-line b pt (1- n))))
-          ;; GNU find_before_next_newline: when the Nth line from point does
-          ;; not exist before the start of the accessible portion, the answer
-          ;; is that start, not the end of the first line.
-          (if (and (< n 1) (< (cdr moved) 0))
-              (or (nelisp-buffer-narrow-start b) 1)
-            (nelisp--motion-eol (car moved) b)))))))
+  (or (null n) (integerp n) (nelisp--check-integer n))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (if (or (null n) (eq n 1))
+        (nelisp--motion-eol pt b)
+      (let ((moved (nelisp--motion-forward-line b pt (1- n))))
+        ;; GNU find_before_next_newline: when the Nth line from point does
+        ;; not exist before the start of the accessible portion, the answer
+        ;; is that start, not the end of the first line.
+        (if (and (< n 1) (< (cdr moved) 0))
+            (or (nelisp-buffer-narrow-start b) 1)
+          (nelisp--motion-eol (car moved) b))))))
+(unless (fboundp 'line-end-position)
+  (fset 'line-end-position (symbol-function 'nelisp--line-end-position-reference)))
 
-(unless (fboundp 'delete-char)
-  (defun delete-char (n &optional _killflag)
-    "Delete N characters after point (before it when N is negative).
+(defun nelisp--delete-char-reference (n &optional _killflag)
+  "Delete N characters after point (before it when N is negative).
 Signals `end-of-buffer' or `beginning-of-buffer' when the range leaves the
 accessible portion, as GNU's cmds.c does; point stays put in that case."
-    (unless (integerp n)
-      (signal 'wrong-type-argument (list 'fixnump n)))
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
-           (pos (+ pt n)))
-      (cond
-       ((< pos (or (nelisp-buffer-narrow-start b) 1))
-        (signal 'beginning-of-buffer nil))
-       ((> pos (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-        (signal 'end-of-buffer nil))
-       (t (nelisp-delete-region pt pos b))))
-    nil))
+  (unless (integerp n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+         (pos (+ pt n)))
+    (cond
+     ((< pos (or (nelisp-buffer-narrow-start b) 1))
+      (signal 'beginning-of-buffer nil))
+     ((> pos (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+      (signal 'end-of-buffer nil))
+     (t (nelisp-delete-region pt pos b))))
+  nil)
+(unless (fboundp 'delete-char)
+  (fset 'delete-char (symbol-function 'nelisp--delete-char-reference)))
 
 (unless (fboundp 'subst-char-in-region)
   (defun subst-char-in-region (start end fromchar tochar &optional _noundo)
     "From START to END, replace FROMCHAR with TOCHAR each time it occurs.
 Markers and text properties stay where they are (the replacement is
-spliced into the gap strings); the buffer is marked modified only when
+written over the characters in the gap buffer); the buffer is marked modified only when
 a character changed."
     (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
            (lo (min start end)) (hi (max start end)))
@@ -17376,22 +17525,8 @@ a character changed."
         (unless (equal new text)
           (if (= (string-bytes (char-to-string fromchar))
                  (string-bytes (char-to-string tochar)))
-              (let ((blen (nelisp-buffer-blen b)) (si (1- lo)) (ei (1- hi)))
-                (cond
-                 ((<= ei blen)
-                  (setf (nelisp-buffer-before-gap b)
-                        (concat (substring (nelisp-buffer-before-gap b) 0 si) new
-                                (substring (nelisp-buffer-before-gap b) ei))))
-                 ((>= si blen)
-                  (setf (nelisp-buffer-after-gap b)
-                        (concat (substring (nelisp-buffer-after-gap b) 0 (- si blen)) new
-                                (substring (nelisp-buffer-after-gap b) (- ei blen)))))
-                 (t (setf (nelisp-buffer-before-gap b)
-                          (concat (substring (nelisp-buffer-before-gap b) 0 si)
-                                  (substring new 0 (- blen si)))
-                          (nelisp-buffer-after-gap b)
-                          (concat (substring new (- blen si))
-                                  (substring (nelisp-buffer-after-gap b) (- ei blen))))))
+              (progn
+                (nelisp--gb-overwrite b (1- lo) new)
                 (setf (nelisp-buffer-modified b) t)
                 (nelisp-buffer--bump-tick b))
             ;; Different widths: positions shift, so redo the region.
@@ -17442,37 +17577,30 @@ The global default is 70; assignment creates a buffer-local value."))
     "Return point's 0-based column on its line, expanding tabs by
 `tab-width' (probed against Emacs 30.1, including the tab-expansion
 case)."
-    (let* ((b nelisp--current-buffer)
-           (pos (nelisp-point b))
-           (bol (nelisp--motion-bol pos b))
-           (text (nelisp-buffer-substring bol pos b))
-           (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
-           (col 0))
-      (dotimes (i (length text))
-        (if (eq (elt text i) ?\t)
-            (setq col (* width (1+ (/ col width))))
-          (setq col (1+ col))))
-      col)))
+    (nelisp--gb-column nelisp--current-buffer
+                       (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))))
 
+(defun nelisp--following-char-reference ()
+  "Return the character after point, or 0 at `point-max' (probed 30.1)."
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (or (and (>= pt (or (nelisp-buffer-narrow-start b) 1))
+             (< pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+             (nelisp--gb-char b (1- pt)))
+        0)))
 (unless (fboundp 'following-char)
-  (defun following-char ()
-    "Return the character after point, or 0 at `point-max' (probed 30.1)."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (or (and (>= pt (or (nelisp-buffer-narrow-start b) 1))
-               (< pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-               (nelisp-char-after pt b))
-          0))))
+  (fset 'following-char (symbol-function 'nelisp--following-char-reference)))
 
+(defun nelisp--preceding-char-reference ()
+  "Return the character before point, or 0 at `point-min' (probed 30.1)."
+  (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
+         (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+    (or (and (> pt (or (nelisp-buffer-narrow-start b) 1))
+             (<= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
+             (nelisp--gb-char b (- pt 2)))
+        0)))
 (unless (fboundp 'preceding-char)
-  (defun preceding-char ()
-    "Return the character before point, or 0 at `point-min' (probed 30.1)."
-    (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
-           (pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
-      (or (and (> pt (or (nelisp-buffer-narrow-start b) 1))
-               (<= pt (or (nelisp-buffer-narrow-end b) (1+ (nelisp-buffer-len b))))
-               (nelisp-char-before pt b))
-          0))))
+  (fset 'preceding-char (symbol-function 'nelisp--preceding-char-reference)))
 
 (defun nelisp--motion-parse-skip-spec (spec)
   "Parse SPEC in `skip-chars-forward' syntax into (NEGATE . SET).
@@ -26336,14 +26464,6 @@ processors not available."
       (list (+ (* (nth 0 time) 65536) (nth 1 time))
             (or (nth 2 time) 0)
             (or (nth 3 time) 0)))))
-(unless (fboundp 'time-less-p)
-  (defun time-less-p (a b)
-  "Return t if GNU time value A precedes B."
-  (< (nelisp--time-compare a b) 0)))
-(unless (fboundp 'time-equal-p)
-  (defun time-equal-p (a b)
-  "Return t if GNU time values A and B represent the same instant."
-  (= (nelisp--time-compare a b) 0)))
 ;; feat/agent-json-cluster: `void-function' on 3 of the 4 nelisp-agent
 ;; host-only tests fixed by the `insert-file-contents' point-preservation
 ;; fix just above this segment's `json'/config cluster (see that fix's
@@ -27712,302 +27832,124 @@ on a DOS/Windows machine, it returns FILENAME in expanded form."
             (setq sep ", ")
             (setq tail (cdr tail)))
           out)))))
-;; `decode-time'/`encode-time'/`format-time-string'/`current-time-string':
-;; proleptic-Gregorian civil calendar <-> days-since-epoch, adapted from
-;; Howard Hinnant's `days_from_civil'/`civil_from_days' (public domain,
-;; http://howardhinnant.github.io/date_algorithms.html), which is exact
-;; for every year -- including years before 1970 and negative years --
-;; because the leap rule (divisible by 4, not by 100 unless by 400) falls
-;; out of the era/year-of-era split rather than a table.  Verified byte
-;; for byte against Emacs 31.1 across 11+ fixed epoch values (spanning a
-;; leap day, the 1999/2000 year boundary and pre-2000 dates) and every
-;; directive below, in both directions of `decode-time'/`encode-time'.
-;;
-;; Before this, `format-time-string' was `(defun format-time-string
-;; (&rest _args) "1970-01-01")' -- a stub that always answered the same
-;; string regardless of TIME or FORMAT-STRING -- and `decode-time'/
-;; `encode-time' were void.
-;;
-;; NOT SUPPORTED (signals rather than silently answering something
-;; plausible): the FORM argument to `decode-time' (SEC is always an
-;; integer, never a sub-second Lisp timestamp); sub-microsecond
-;; precision (no picosecond source exists in this runtime); the
-;; two-digit pivot-year shorthand `encode-time' accepts for YEAR < 100;
-;; calendars other than the proleptic Gregorian one Emacs itself now
-;; defaults to; locale-dependent directives (`%a'/`%b' are always the
-;; fixed English abbreviations, which is what this runtime's "C" locale
-;; always presents anyway); DST for local time (`ZONE' nil reads a fixed
-;; UTC offset from a `TZ' environment variable in the POSIX
-;; "NAME[+-]H[:MM]" shape -- e.g. "JST-9" -- with no timezone database
-;; and no daylight-time rule; an unset or unparseable `TZ' falls back to
-;; UTC); any `format-time-string' directive other than `%Y %m %d %H %M
-;; %S %y %e %b %a %T %F %s %z %N %%', which signals an error instead of
-;; passing the text through unexpanded; and any `ZONE' shape other than
-;; nil/t/an integer (also treated as UTC rather than rejected, since
-;; `current-time-zone'-style zone lists are not modelled at all).
-(declare-function nelisp--tm-fdiv "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-days-from-civil "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-civil-from-days "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-pad "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-pad-space "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-tz-env-offset "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-zone-offset "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-unpack "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-dayname "nelisp-stdlib-prelude")
-(declare-function nelisp--tm-monthname "nelisp-stdlib-prelude")
-
-(unless (fboundp 'nelisp--tm-fdiv)
-  (defun nelisp--tm-fdiv (x y)
-    "Floor division X/Y toward negative infinity (Y a positive integer)."
-    (let* ((q (/ x y)) (r (- x (* q y))))
-      (if (< r 0) (1- q) q))))
-
-(unless (fboundp 'nelisp--tm-days-from-civil)
-  (defun nelisp--tm-days-from-civil (y m d)
-    "Days since 1970-01-01 for proleptic-Gregorian Y-M-D (M 1-12).
-Howard Hinnant's `days_from_civil', exact for every year including
-negative ones; see the header comment above this block."
-    (let* ((y (if (<= m 2) (1- y) y))
-           (era (nelisp--tm-fdiv (if (>= y 0) y (- y 399)) 400))
-           (yoe (- y (* era 400)))
-           (mshift (if (> m 2) -3 9))
-           (doy (+ (nelisp--tm-fdiv (+ (* 153 (+ m mshift)) 2) 5)
-                   (1- d)))
-           (doe (+ (* yoe 365)
-                   (nelisp--tm-fdiv yoe 4)
-                   (- (nelisp--tm-fdiv yoe 100))
-                   doy)))
-      (+ (* era 146097) doe -719468))))
-
-(unless (fboundp 'nelisp--tm-civil-from-days)
-  (defun nelisp--tm-civil-from-days (z)
-    "(YEAR MONTH DAY) for Z days since the epoch (inverse of
-`nelisp--tm-days-from-civil')."
-    (let* ((z (+ z 719468))
-           (era (nelisp--tm-fdiv (if (>= z 0) z (- z 146096)) 146097))
-           (doe (- z (* era 146097)))
-           (yoe (nelisp--tm-fdiv
-                 (- (+ doe (- (nelisp--tm-fdiv doe 1460))
-                       (nelisp--tm-fdiv doe 36524))
-                    (nelisp--tm-fdiv doe 146096))
-                 365))
-           (y (+ yoe (* era 400)))
-           (doy (- doe (+ (* 365 yoe)
-                          (nelisp--tm-fdiv yoe 4)
-                          (- (nelisp--tm-fdiv yoe 100)))))
-           (mp (nelisp--tm-fdiv (+ (* 5 doy) 2) 153))
-           (d (+ (- doy (nelisp--tm-fdiv (+ (* 153 mp) 2) 5)) 1))
-           (m (+ mp (if (< mp 10) 3 -9))))
-      (list (+ y (if (<= m 2) 1 0)) m d))))
-
-(unless (fboundp 'nelisp--tm-pad)
-  (defun nelisp--tm-pad (n width)
-    "Zero-pad non-negative integer N to WIDTH digits (wider if needed)."
-    (let* ((s (number-to-string n)) (len (length s)))
-      (if (< len width) (concat (make-string (- width len) ?0) s) s))))
-
-(unless (fboundp 'nelisp--tm-pad-space)
-  (defun nelisp--tm-pad-space (n width)
-    "Space-pad non-negative integer N to WIDTH columns (wider if needed)."
-    (let* ((s (number-to-string n)) (len (length s)))
-      (if (< len width) (concat (make-string (- width len) ?\s) s) s))))
-
-(unless (fboundp 'nelisp--tm-tz-env-offset)
-  (defun nelisp--tm-tz-env-offset ()
-    "Best-effort fixed UTC offset in seconds from `TZ'.
-Reads only the leading NAME[+-]H[:MM] STD field of the POSIX `TZ'
-syntax (POSIX sign convention: the number is how far WEST of UTC the
-zone is, so the UTC offset is its negation).  DST rules are not
-parsed.  Returns nil when `TZ' is unset or does not match."
-    (let ((tz (getenv "TZ")))
-      (when (and tz
-                 (string-match
-                  "\\`[A-Za-z]+\\([+-]?[0-9]+\\)\\(?::\\([0-9]+\\)\\)?"
-                  tz))
-        (let* ((hh (string-to-number (match-string 1 tz)))
-               (mm-str (match-string 2 tz))
-               (mm (if mm-str (string-to-number mm-str) 0))
-               (mag (+ (* (abs hh) 3600) (* mm 60))))
-          (- (if (< hh 0) (- mag) mag)))))))
-
-(unless (fboundp 'nelisp--tm-zone-offset)
-  (defun nelisp--tm-zone-offset (zone)
-    "Resolve ZONE (nil, t, or an integer) to a UTC offset in seconds.
-nil means local time: a fixed offset read from `TZ' (see
-`nelisp--tm-tz-env-offset'), or UTC if that is unavailable.  Any other
-ZONE shape (a string, or the (OFFSET NAME ...) list Emacs also
-accepts) is not supported and is treated as UTC."
-    (cond
-     ((integerp zone) zone)
-     ((eq zone t) 0)
-     ((null zone) (or (nelisp--tm-tz-env-offset) 0))
-     (t 0))))
-
-(unless (fboundp 'nelisp--tm-unpack)
-  (defun nelisp--tm-unpack (time)
-    "Return (SECONDS . NANOSECONDS), both integers, for timestamp TIME.
-Accepts nil (current time), an integer, a float, the legacy `(HIGH LOW
-&optional USEC PSEC)' list `current-time' returns, and the `(TICKS
-. HZ)' cons.  Precision finer than a microsecond does not exist as an
-input in this runtime, so NANOSECONDS is a multiple of 1000 except
-when TIME is already a `(TICKS . HZ)' pair with HZ > 1000000."
-    (cond
-     ((null time) (nelisp--tm-unpack (current-time)))
-     ((integerp time) (cons time 0))
-     ((floatp time)
-      (let ((secs (floor time)))
-        (cons secs (round (* (- time secs) 1000000000)))))
-     ((and (consp time) (integerp (car time)) (integerp (cdr time)))
-      (let* ((ticks (car time)) (hz (cdr time))
-             (secs (nelisp--tm-fdiv ticks hz))
-             (rem (- ticks (* secs hz))))
-        (cons secs (round (* (/ (float rem) hz) 1000000000)))))
-     ((consp time)
-      (let ((high (nth 0 time)) (low (nth 1 time))
-            (usec (or (nth 2 time) 0)) (psec (or (nth 3 time) 0)))
-        (cons (+ (* high 65536) low) (+ (* usec 1000) (/ psec 1000)))))
-     (t (signal 'wrong-type-argument (list 'nelisp--tm-unpack time))))))
-
-(unless (fboundp 'nelisp--tm-dayname)
-  (defun nelisp--tm-dayname (dow)
-    "Fixed English 3-letter abbreviation for DOW (0 = Sunday)."
-    (aref ["Sun" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat"] dow)))
-
-(unless (fboundp 'nelisp--tm-monthname)
-  (defun nelisp--tm-monthname (m)
-    "Fixed English 3-letter abbreviation for month M (1-12)."
-    (aref ["" "Jan" "Feb" "Mar" "Apr" "May" "Jun"
-           "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"]
-          m)))
-
+;; `decode-time' `encode-time' `format-time-string' `current-time-string'
+;; `current-time-zone' `time-add' `time-subtract' `time-convert' `time-less-p'
+;; `time-equal-p' `set-time-zone-rule' and `float-time' for big/exact timestamps:
+;; GNU timefns.c / strftime.c / glibc zone semantics.  The Lisp source is
+;; lisp/nelisp-timefns.el; this block is its GNU-byte-compiled form
+;; (regenerate: tools/ai/timefns-genblock.sh).  It replaces a UTC-only
+;; interpreted implementation that supported 15 format directives.
+;;; BEGIN GENERATED nelisp-timefns
+(fset 'nelisp--tf-bitlen #[(a) "\302\30\11\302V\203\24\0\303\11\304\"\21\10\305\\\20\202\2\0\10)\207" [k a 0 ash -30 30] 3])
+(fset 'nelisp--tf-fdiv #[(n d) "\10\211\31\250\205\20\0\11\306X\205\20\0\11\307Y)\203@\0\n\211\31\250\205$\0\11\306X\205$\0\11\307Y)\203@\0\10\33\n\34\13\f\245\35\13\f\246\310W\203=\0\15S\202>\0\15+\207\10\211\31\250\205P\0\11\306X\205P\0\11\307Y)\203^\0\10\310W\203\\\0\311\207\310\207\n\312X\203i\0\313\10\n\"\207\314\n\211S\"\310U\203|\0\315\10\316\317\n!Z\"\207\10\310W\36\22\320\10!\36\23\310\211\36\24\36\25\321\16\23!\36\26\16\26\310V\203\312\0\16\26S\26\26\16\25\211\\\314\315\16\23\16\26[\"\316\"\\\26\25\16\24\211\\\26\24\16\25\nY\203\222\0\16\25\nZ\26\25\16\24T\26\24\202\222\0\16\22\203\343\0\16\25\310U\203\334\0\16\24[\202\345\0\16\24T[\202\345\0\16\24-\207" [n tf-v d tf-a tf-b tf-q 2305843009213693951 -2305843009213693952 0 -1 2147483648 floor logand ash 1 nelisp--tf-ilen abs nelisp--tf-bitlen neg a q r i] 6 "floor (N / D) for integer N and positive integer D, any size."])
+(fset 'nelisp--tf-fmod #[(n d) "\10\211\31\250\205\20\0\11\304X\205\20\0\11\305Y)\203;\0\n\211\31\250\205$\0\11\304X\205$\0\11\305Y)\203;\0\10\n\246\211\33\306W\2038\0\13\n\\\2029\0\13)\207\10\n\307\10\n\"_Z\207" [n tf-v d tf-r 2305843009213693951 -2305843009213693952 0 nelisp--tf-fdiv] 6])
+(fset 'nelisp--tf-muldiv #[(a m d) "\10\211\31\250\205\20\0\11\305X\205\20\0\11\306Y)\2039\0\n\211\31\250\205$\0\11\305X\205$\0\11\306Y)\2039\0\307\10\n\"\33\310\f\10\13\245_\n\13\245\")\207\310\f\10_\n\"\207" [m tf-v d g a 2305843009213693951 -2305843009213693952 nelisp--tf-gcd nelisp--tf-fdiv] 5 "floor (A * M / D) with M, D positive."])
+(fset 'nelisp--tf-gcd #[(a b) "\10\304W\203\13\0\10[\202\f\0\10\20\11\304W\203\30\0\11[\202\31\0\11\21\11\304U\204_\0\10\211\32\250\2050\0\n\305X\2050\0\n\306Y)\203N\0\11\211\32\250\205D\0\n\305X\205D\0\n\306Y)\203N\0\10\11\246\202V\0\10\11\307\10\11\"_Z\33\11\20\13\21)\202\32\0\10\207" [a b tf-v r 0 2305843009213693951 -2305843009213693952 nelisp--tf-fdiv] 6])
+(fset 'nelisp--tf-bad-spec #[nil "\300\301\302C\"\207" [signal error "Invalid time specification"] 3])
+(fset 'nelisp--tf-overflow #[nil "\300\301\302C\"\207" [signal error "Specified time is not representable"] 3])
+(fset 'nelisp--tf-float-spec #[(f) "\10\211U\204\11\0\305 \207\10\306U\204\32\0\10\211\307_U\203\32\0\310 \207\10\306U\203$\0\311\312B\207\313\10!\211\31\314Y\2034\0\315\11Z\2025\0\316\32\10\33\n\34\n\311W\203H\0\317\10!\312B\202j\0\f\320V\203Y\0\13\321_\23\f\320Z\24\202H\0\13\322\323\312\f\"!_\23\317\13!\323\312\n\"B,\207" [f e scale x k nelisp--tf-bad-spec 0.0 2.0 nelisp--tf-overflow 0 1 logb -1022 52 1074 truncate 60 1.152921504606847e+18 float ash] 6 "Return (TICKS . HZ) exactly equal to the double F (GNU decode_float_time)."])
+(fset 'nelisp--tf-spec #[(time) "\10\250\203\11\0\10\306B\207\10\204\27\0\307 \211\31\310_)\311B\207\10:\203X\1\10@\10A\32\33\n:\203@\1\306\312\211\nA\34\35\36\24\36\25\n@\22\f:\203U\0\f@\26\24\fA\211\24:\203O\0\f@\25\313\26\25\202_\0\314\26\25\202_\0\f\203_\0\f\26\24\314\26\25\16\24\211\36\26\250\205s\0\16\26\315X\205s\0\16\26\316Y)\203\230\0\15\211\36\26\250\205\212\0\16\26\315X\205\212\0\16\26\316Y)\203\230\0\13\250\203\230\0\n\250\204\233\0\317 \210\16\24\15\36\27\314\36\30\16\27\16\30\245\36\31\16\27\16\30\246\312W\203\272\0\16\31S\202\274\0\16\31+\\\211\31\36\27\314\36\30\16\27\16\30\245\36\31\16\27\16\30\246\312W\203\334\0\16\31S\202\336\0\16\31+\36\32\15\314\246\211\36\33\312W\203\363\0\16\33\314\\\202\365\0\16\33)\36\34\11\314\246\211\36\33\312W\203\n\1\16\33\314\\\202\f\1\16\33)\31\13\320_\n\\\16\32\\\36\35\16\25\321\267\202-\1\16\35\2028\1\16\35\314_\11\\\2028\1\16\35\313_\11\314_\\\16\34\\\16\25.\11B\202V\1\13\250\203P\1\n\250\203P\1\n\312V\204S\1\317 \210\13\nB*\207\322\10!\203b\1\323\10!\207\317 \207" [time us low high tail psec 1 nl-unix-time-usec 1000 1000000000 0 1000000000000 1000000 2305843009213693951 -2305843009213693952 nelisp--tf-bad-spec 65536 #s(hash-table test eq data (1 287 1000000 292)) floatp nelisp--tf-float-spec usec hz tf-v tf-a tf-b tf-q carry tf-r ps s] 5 "Decode TIME like GNU `decode_lisp_time' into a fresh (TICKS . HZ)."])
+(fset 'nelisp--tf-timespec #[(time) "\306\10!\211\31@\11A\32\33\n\307=\203\26\0\13\310B\202\257\0\n\311=\203b\0\13\211\34\250\205,\0\f\312X\205,\0\f\313Y)\203P\0\13\35\311\36\16\15\16\16\245\36\17\15\16\16\246\310W\203J\0\16\17S\202L\0\16\17+\202T\0\314\13\311\"\211\36\20\13\16\20\311_Z)B\202\257\0\315\13\311\n#\211\36\20\211\34\250\205y\0\f\312X\205y\0\f\313Y)\203\236\0\16\20\35\311\36\16\15\16\16\245\36\17\15\16\16\246\310W\203\230\0\16\17S\202\232\0\16\17+\202\243\0\314\16\20\311\"\211\36\21\16\20\16\21\311_Z*B+\207" [time s hz ticks tf-v tf-a nelisp--tf-spec 1 0 1000000000 2305843009213693951 -2305843009213693952 floor nelisp--tf-muldiv tf-b tf-q q sec] 5 "Return (SEC . NSEC) for TIME (GNU lisp_time_argument)."])
+(fset 'nelisp--tf-seconds #[(time) "\10\250\203\7\0\10\207\10:\203-\0\10A:\203-\0\10@\10A@\31\211\32\250\203#\0\11\250\204&\0\304 \210\n\305_\11\\*\207\306\10!\33\307\13@\13A\")\207" [time low high s nelisp--tf-bad-spec 65536 nelisp--tf-spec nelisp--tf-fdiv] 4 "Whole seconds of TIME (GNU lisp_seconds_argument); sub-second parts unchecked."])
+(fset 'nelisp--tf-trillion-factor-p #[(hz) "\10\250\205\26\0\10\301V\205\26\0\10\302X\205\26\0\302\10\246\301U\207" [hz 0 1000000000000] 2])
+(fset 'nelisp--tf-list4 #[(ticks hz) "\306\10\307\11#\32\310\n\307\"\33\n\13\307_Z\34\13\211\35\250\205!\0\15\311X\205!\0\15\312Y)\203H\0\13\36\20\313\36\21\16\20\16\21\245\36\22\16\20\16\21\246\314W\203B\0\16\22S\202D\0\16\22+\202L\0\315\13\313\"\13\211\35\250\205\\\0\15\311X\205\\\0\15\312Y)\203x\0\13\313\246\211\36\23\314W\203r\0\16\23\313\\\202t\0\16\23)\202|\0\316\13\313\"\f\317\245\f\317\246+F\207" [ticks hz q rest full tf-v nelisp--tf-muldiv 1000000000000 nelisp--tf-fdiv 2305843009213693951 -2305843009213693952 65536 0 floor mod 1000000 tf-a tf-b tf-q tf-r] 6])
+(fset 'nelisp--tf-arith #[(a b subtract) "\306\10!\31\306\n!\33\11@\34\11A\35\13@\36\16\13A\36\17\307\211\36\20\36\21\310\15\16\17\"\203<\0\15\26\21\16\22\2033\0\f\16\16Z\2027\0\f\16\16\\\26\20\202\305\0\311\15\16\17\"\36\23\312\15\16\23\"\36\24\312\16\17\16\23\"\36\25\16\24\16\17_\36\26\16\22\203k\0\16\25\f_\16\24\16\16_Z\202u\0\16\25\f_\16\24\16\16_\\\36\27\15\16\17^\36\30\311\16\27\16\26\"\211\36\31\313V\203\273\0\312\16\27\16\31\"\26\27\312\16\26\16\31\"\211\26\26\16\30W\203\273\0\312\16\30[\16\26\"[\36\32\16\27\16\32_\26\27\16\26\16\32_\26\26)\16\27\26\20\16\26\26\21.\7\16\21\313=\203\321\0\16\20\202\1\1\16\33\203\363\0\10:\203\341\0\10A:\203\363\0\n:\203\354\0\nA:\203\363\0\314\16\21!\204\373\0\16\20\16\21B\202\1\1\315\16\20\16\21\".\10\207" [a ta b tb na da nelisp--tf-spec nil eql nelisp--tf-gcd nelisp--tf-fdiv 1 nelisp--tf-trillion-factor-p nelisp--tf-list4 nb db ticks hz subtract g fa fb ihz it hzmin ig rescale current-time-list] 4])
+(unless (fboundp 'time-add)
+  (fset 'time-add #[(a b) "\302\10\11\303#\207" [a b nelisp--tf-arith nil] 4 "Return the sum of two time values A and B, as a time value."]))
+(unless (fboundp 'time-subtract)
+  (fset 'time-subtract #[(a b) "\10\11=\203\32\0\303\10!\204\32\0\n\203\26\0\304\211\211\211F\207\304\305B\207\306\10\11\307#\207" [a b current-time-list floatp 0 1000000000 nelisp--tf-arith t] 4 "Return the difference between two time values A and B, as a time value."]))
+(fset 'nelisp--tf-cmp #[(a b) "\10\11=\203\10\0\306\207\10\250\203\26\0\11\250\203\26\0\10\11Z\207\10\11\32\33\10:\2032\0\11:\2032\0\10A\11A=\2032\0\10@\23\11@\22\13\211\34\250\205B\0\f\307X\205B\0\f\310Y)\203`\0\n\211\34\250\205V\0\f\307X\205V\0\f\310Y)\203`\0\13\nZ\202\245\0\311\10!\35\311\11!\36\15\15@\36\16\16\15@\36\17\312\15A\16\15A\"\204\213\0\16\16\16\15A_\26\16\16\17\15A_\26\17\16\16\16\17W\203\227\0\313\202\244\0\16\16\16\17V\203\243\0\314\202\244\0\306,*\207" [a b y x tf-v ta 0 2305843009213693951 -2305843009213693952 nelisp--tf-spec eql -1 1 tb za zb] 4 "Negative, 0, positive as time value A <, =, > B (GNU time_cmp)."])
+(unless (fboundp 'time-less-p)
+  (fset 'time-less-p #[(a b) "\302\10\11\"\303W\207" [a b nelisp--tf-cmp 0] 3 "Return non-nil if time value A is less than time value B."]))
+(unless (fboundp 'time-equal-p)
+  (fset 'time-equal-p #[(a b) "\10?\11?=\205\16\0\302\10\11\"\303U\207" [a b nelisp--tf-cmp 0] 3 "Return non-nil if A and B are equal time values."]))
+(unless (fboundp 'time-convert)
+  (fset 'time-convert #[(time &optional form) "\306\10!\211\31@\32\11A\33\f\206\27\0\15\203\26\0\307\202\27\0\310\211\24\311\267\2025\0\312\n\13\"\202s\0\10\250\203.\0\10\202s\0\313\n\13\"\202s\0\f\310=\203=\0\13\24\10:\203M\0\f\10A=\203M\0\10\202s\0\314\f\13\"\203Z\0\n\fB\202s\0\f\250\203e\0\f\315V\204l\0\316\317\320\fD\"\210\321\n\f\13#\fB+\207" [time s ticks hz form current-time-list nelisp--tf-spec list t #s(hash-table test eq data (list 30 integer 37)) nelisp--tf-list4 nelisp--tf-fdiv eql 0 signal error "Invalid time frequency" nelisp--tf-muldiv] 5 "Convert TIME value to a Lisp timestamp of the given FORM."]))
+(unless (fboundp 'current-time)
+  (fset 'current-time #[nil "\303 \30\11\203\32\0\10\304\245\211\32\305\245\n\305\246\10\304\246)\306F\202\37\0\10\307_\310B)\207" [us current-time-list s nl-unix-time-usec 1000000 65536 0 1000 1000000000] 5 "Return the current time, as the number of seconds since the epoch."]))
+(fset 'nelisp--tf-ilen #[(a) "\302\10!\31\11\303V\203\33\0\304\10\305\11Z\"\303U\203\33\0\11S\21\202\4\0\11)\207" [a k nelisp--tf-bitlen 0 ash 1] 4 "Number of bits of positive integer A."])
+(fset 'nelisp--tf-scale2 #[(x k) "\10\302V\203\21\0\11\303_\21\10\302Z\20\202\0\0\10\304W\203\"\0\11\305_\21\10\302\\\20\202\21\0\10\306V\2031\0\11\307\310\311\10\"!_\207\10\306W\203A\0\11\307\310\311\10[\"!\245\207\11\207" [k x 60 1.152921504606847e+18 -60 8.673617379884035e-19 0 float ash 1] 5 "X * 2^K for float X, exactly."])
+(fset 'nelisp--tf-frac-double #[(n d) "\10\306U\203\10\0\307\207\10\211\31\250\205\30\0\11\310X\205\30\0\11\311Y)\203>\0\n\211\31\250\205,\0\11\310X\205,\0\11\311Y)\203>\0\10\n\246\306U\203>\0\312\10\n\245!\207\10\306W\33\313\10!\34\314\n!\314\f!Z\315\\\35\316\211\36\27\36\30\316\36\31\15\306W\203h\0\317\n\15[\"\22\202q\0\15\320^\25\317\f\15\"\24\321\f\n\"\26\27\f\16\27\n_Z\26\30\314\16\27!\315X\203\260\0\16\30\322_\211\36\32\nV\204\245\0\16\32\nU\203\251\0\323\16\27\324\"\324U\203\251\0\324\202\252\0\306\26\31)\202\325\0\323\16\27\324\"\324U\203\322\0\323\317\16\27\325\"\324\"\324U\204\316\0\16\30\306U\204\322\0\322\202\323\0\306\26\31\16\27\16\31\\\26\27\314\16\27!\315V\203\357\0\16\27\323\16\27\324\"Z\26\27\326\312\16\27!\15[\"\36\33\13\203\3\1\16\33[\202\5\1\16\33.\7\207" [n tf-v d neg a scale 0 0.0 2305843009213693951 -2305843009213693952 float abs nelisp--tf-ilen 53 nil ash 1074 nelisp--tf-fdiv 2 logand 1 -1 nelisp--tf-scale2 q r incr r2 x] 5 "N / D rounded to the nearest double (D > 0)."])
+(defvar nelisp--float-time-native (symbol-function 'float-time))
+(fset 'nelisp--tf-float-time #[(time) "\302\10!\31\303\11@\11A\")\207" [time s nelisp--tf-spec nelisp--tf-frac-double] 3])
+(unless (boundp 'nelisp--float-time-wrapped)
+  (defvar nelisp--float-time-wrapped t)
+  (fset 'float-time #[(&optional specified-time) "\10\203\36\0\303\10!\204\36\0\10\211\31\250\205\32\0\11\304X\205\32\0\11\305Y)\203\"\0\n\10!\207\10:\203;\0\10A:\203;\0\30616\0\n\10!0\207\210\307\10!\207\10:\203~\0\10@\211\31\250\205Q\0\11\304X\205Q\0\11\305Y)\203~\0\10A\211\31\250\205f\0\11\304X\205f\0\11\305Y)\203~\0\310\10@!\311W\203~\0\10A\312V\203~\0\n\10!\207\307\10!\207" [specified-time tf-v nelisp--float-time-native floatp 2305843009213693951 -2305843009213693952 (error) nelisp--tf-float-time abs 9007199254740992 0] 3 "Return the current time, as a float number of seconds since the epoch."]))
+(defvar nelisp--tf-zone-cache (make-hash-table :test 'equal))
+(defvar nelisp--tf-utc-zone (vector 0 (list 0 nil "GMT")))
+(defvar nelisp--tf-override nil "(TZENV . ZONE) set by `set-time-zone-rule'.")
+(defvar nelisp--tf-local-key 'unset)
+(defvar nelisp--tf-local-zone nil)
+(defvar nelisp--tf-mk-offset 0 "gnulib mktime's localtime_offset heuristic.")
+(defconst nelisp--tf-cum-days [0 31 59 90 120 151 181 212 243 273 304 334])
+(fset 'nelisp--tf-leap-p #[(y) "\10\301\246\302U\205\26\0\10\303\246\302U?\206\26\0\10\304\246\302U\207" [y 4 0 100 400] 2])
+(fset 'nelisp--tf-days-from-civil #[(y m d) "\10\306X\203\13\0\11S\202\f\0\11\211\31\32\307\33\n\13\245\34\n\13\246\310W\203\"\0\fS\202#\0\f+\35\11\15\307_Z\36\23\10\211\306V\2037\0\311\2028\0\312\\\313_\306\\\314\245\16\24S\\\36\25\315\16\23\316_\16\23\317\245\16\23\320\245[\16\25$\36\26\15\321_\16\26\\\322\\-\207" [m y tf-a tf-b tf-q era 2 400 0 -3 9 153 5 + 365 4 100 146097 -719468 yoe d doy doe] 6 "Days since 1970-01-01 of proleptic Gregorian Y-M-D (M in 1..12)."])
+(defconst nelisp--tf-ystart [0 365 730 1095 1461 1826 2191 2556 2922 3287 3652 4017 4383 4748 5113 5478 5844 6209 6574 6939 7305 7670 8035 8400 8766 9131 9496 9861 10227 10592 10957 11322 11688 12053 12418 12783 13149 13514 13879 14244 14610 14975 15340 15705 16071 16436 16801 17166 17532 17897 18262 18627 18993 19358 19723 20088 20454 20819 21184 21549 21915 22280 22645 23010 23376 23741 24106 24471 24837 25202 25567 25932 26298 26663 27028 27393 27759 28124 28489 28854 29220 29585 29950 30315 30681 31046 31411 31776 32142 32507 32872 33237 33603 33968 34333 34698 35064 35429 35794 36159 36524 36889 37254 37619 37985 38350 38715 39080 39446 39811 40176 40541 40907 41272 41637 42002 42368 42733 43098 43463 43829 44194 44559 44924 45290 45655 46020 46385 46751 47116 47481 47846 48212 48577 48942 49307 49673 50038 50403 50768 51134 51499 51864 52229 52595 52960 53325 53690 54056 54421 54786 55151 55517 55882 56247 56612 56978 57343 57708 58073 58439 58804 59169 59534 59900 60265 60630 60995 61361 61726 62091 62456 62822 63187 63552 63917 64283 64648 65013 65378 65744 66109 66474 66839 67205 67570 67935 68300 68666 69031 69396 69761 70127 70492 70857 71222 71588 71953 72318 72683 73048 73413 73778 74143 74509 74874 75239 75604 75970 76335 76700 77065 77431 77796 78161 78526 78892 79257 79622 79987 80353 80718 81083 81448 81814 82179 82544 82909 83275 83640 84005 84370 84736 85101 85466 85831 86197 86562 86927 87292 87658 88023 88388 88753 89119 89484 89849 90214 90580 90945 91310 91675 92041 92406 92771 93136 93502 93867 94232 94597 94963 95328 95693 96058 96424 96789 97154 97519 97885 98250 98615 98980 99346 99711 100076 100441 100807 101172 101537 101902 102268 102633 102998 103363 103729 104094 104459 104824 105190 105555 105920 106285 106651 107016 107381 107746 108112 108477 108842 109207 109572 109937 110302 110667 111033 111398 111763 112128 112494 112859 113224 113589 113955 114320 114685 115050 115416 115781 116146 116511 116877 117242 117607 117972 118338 118703 119068 119433 119799 120164 120529 120894 121260 121625 121990 122355 122721 123086 123451 123816 124182 124547 124912 125277 125643 126008 126373 126738 127104 127469 127834 128199 128565 128930 129295 129660 130026 130391 130756 131121 131487 131852 132217 132582 132948 133313 133678 134043 134409 134774 135139 135504 135870 136235 136600 136965 137331 137696 138061 138426 138792 139157 139522 139887 140253 140618 140983 141348 141714 142079 142444 142809 143175 143540 143905 144270 144636 145001 145366 145731])
+(defconst nelisp--tf-mtab [3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 5 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 10 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 12 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2])
+(defconst nelisp--tf-dtab [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29])
+(defconst nelisp--tf-era400 [-4000 -3600 -3200 -2800 -2400 -2000 -1600 -1200 -800 -400 0 400 800 1200 1600 2000 2400 2800 3200 3600 4000 4400 4800 5200 5600 6000 6400 6800 7200 7600 8000 8400 8800 9200 9600 10000 10400 10800 11200 11600 12000])
+(fset 'nelisp--tf-civil #[(days) "\10\306\\\211\31\307\246\211\32\310W\203\24\0\n\307\\\202\25\0\n)\211\33\211\311\245\\\13\312\245Z\13\313\245Z\314\245\34\13\15\fHZ\36\30\16\31\16\30H\36\32\16\33\16\30H\36\34\f\11\13Z\307\245\211\36\35\315Y\203[\0\16\35\316X\203[\0\16\36\16\35\317\\H\202_\0\16\35\320_)\\\16\32\321X\203l\0\322\202m\0\310\\\211\36\37\16\32\16\34\10\323\\\324\246\211\32\310W\203\207\0\n\324\\\202\210\0\n)\325\16 \16\32SH\16\34\326\16\32\321V\203\271\0\16\37\323\246\310U\203\271\0\16\37\327\246\310U\203\265\0\16\37\320\246\310U\203\271\0\322\202\272\0\310$.\7\257\5\207" [days tf-z tf-r tf-doe tf-yoe nelisp--tf-ystart 719468 146097 0 36524 1460 146096 365 -10 30 10 400 2 1 4 7 + -1 100 tf-doy nelisp--tf-mtab m nelisp--tf-dtab d tf-e nelisp--tf-era400 y nelisp--tf-cum-days] 11 "Return (YEAR MONTH DAY WDAY YDAY) for epoch DAYS."])
+(fset 'nelisp--tf-digits #[(s i) "\10\11G\32\33\13\nW\203!\0\11\13H\304Y\203!\0\11\13H\305X\203!\0\13T\23\202\5\0\13\10V\205/\0\306\11\10\13O!\13B*\207" [i s n j 48 57 string-to-number] 4 "Return (VALUE . NEXT) of the decimal digits of S at I, or nil."])
+(fset 'nelisp--tf-parse-offset #[(s i signed) "\10G\306\211\211\307\306\31\32\33\34\35\36\20\16\21\2030\0\16\22\16\20W\2030\0\10\16\22H\310>\2030\0\10\16\22H\311=\25\16\22T\26\22\312\10\16\22\"\211\21\205\261\0\11@\313^\24\11A\26\22\307\23\16\22\16\20W\203\226\0\10\16\22H\314=\203\226\0\312\10\16\22T\"\211\36\23\203\225\0\16\23@\315^\23\16\23A\211\26\22\16\20W\203\225\0\10\16\22H\314=\203\225\0\312\10\16\22T\"\211\36\24\203\224\0\16\24@\315^\22\16\24A\26\22))\f\316_\13\317_\\\n\\\36\25\15\203\253\0\16\25[\202\255\0\16\25\16\22)B.\6\207" [s r sec m h neg nil 0 (43 45) 45 nelisp--tf-digits 24 58 59 3600 60 n signed i r2 r3 v] 7 "Parse [+-]hh[:mm[:ss]] at I.  Return (SECONDS . NEXT), seconds as written."])
+(fset 'nelisp--tf-parse-name #[(s i) "\10G\31\n\11W\203C\0\10\nH\305=\203C\0\nT\33\13\11W\203(\0\10\13H\306=\204(\0\13T\23\202\24\0\13\11W\205?\0\13\nZS\307Y\205?\0\10\nT\13O\13TB)\202}\0\n\33\13\11W\203n\0\10\13H\211\34\310Y\203[\0\f\311X\206d\0\f\312Y\205d\0\f\313X)\203n\0\13T\23\202E\0\13\nZ\307Y\205|\0\10\n\13O\13B))\207" [s n i j c 60 62 3 97 122 65 90] 4 "Parse a zone abbreviation at I.  Return (NAME . NEXT) or nil."])
+(fset 'nelisp--tf-parse-rule #[(s i) "\10G\306\211\211\211\211\307\31\32\33\34\35\36\27\36\23\16\30\16\23Y\204\345\0\10\16\30H\310=\203H\0\311\10\16\30T\"\211\22\203\345\0\n@\312Y\203\345\0\n@\313X\203\345\0\314\26\27\n@\25\nA\26\30\202\345\0\10\16\30H\315=\203\312\0\311\10\16\30T\"\211\22\203\345\0\n@\312Y\203\345\0\n@\316X\203\345\0\nA\16\23W\203\345\0\10\nAH\317=\203\345\0\n@\25\311\10\nAT\"\211\22\203\345\0\n@\312Y\203\345\0\n@\320X\203\345\0\nA\16\23W\203\345\0\10\nAH\317=\203\345\0\n@\24\311\10\nAT\"\211\22\203\345\0\n@\321X\203\345\0\n@\23\nA\26\30\322\26\27\202\345\0\311\10\16\30\"\211\22\203\345\0\n@\313X\203\345\0\323\26\27\n@\25\nA\26\30\16\27\203\30\1\16\30\16\23W\203\30\1\10\16\30H\324=\203\30\1\325\10\16\30T\326#\211\36\31\203\24\1\16\31@\21\16\31A\26\30\202\27\1\306\26\27)\16\27\205(\1\16\27\15\f\13\11\257\5\16\30B.\7\207" [s secs r c b a nil 7200 74 nelisp--tf-digits 1 365 j 77 12 46 5 6 m n 47 nelisp--tf-parse-offset t type i o] 8 "Parse Jn | n | Mm.w.d [/time] at I.  Return ((TYPE A B C SECS) . NEXT) or nil."])
+(fset 'nelisp--tf-rule-utc #[(rule year utoff) "\10@\31\10A@\32\306\108\33\307\108\34\310\108\35\311\16\24\312\211#\36\25\16\24\313V\203'\0\16\25\202(\0\314\36\26\11\315\267\202R\0\16\26\nS\\\316\16\24!\203F\0\n\317Y\203F\0\312\202G\0\314\\\202\310\0\16\26\n\\\202\310\0\311\16\24\n\312#\211\36\27\310\\\320\246\211\36\30\314W\203n\0\16\30\320\\\202p\0\16\30)\36\31\16\27\f\16\31Z\320\246\211\36\30\314W\203\212\0\16\30\320\\\202\214\0\16\30)\\\13S\320_\\\36\32\n\321U\203\237\0\322\202\251\0\311\16\24\nT\312#\16\27Z\36\33\16\32\16\27Z\16\33Y\203\277\0\16\32\320Z\26\32\202\253\0\16\26\16\32\16\25Z\\,\211\36\34\323_\15\\\16\35Z.\10\207" [rule type a b c secs 2 3 4 nelisp--tf-days-from-civil 1 1970 0 #s(hash-table test eq data (j 48 n 75)) nelisp--tf-leap-p 60 7 12 31 86400 year rjan1 jan1 first tf-r wd d ml day utoff] 5 "UTC instant at which RULE falls in YEAR, the wall clock then being UTOFF.\nLike glibc compute_change, years <= 1970 are based on 1970-01-01."])
+(fset 'nelisp--tf-rule-info #[(z secs) "\10G\302V\203\32\0\10\302H\203\32\0\11\303Y\203\32\0\304\10\302H\11\"\207\305\10\11\"\207" [z secs 7 2140668000 nelisp--tf-rule-info nelisp--tf-rule-info-1] 3])
+(fset 'nelisp--tf-rule-info-1 #[(z secs) "\306\10\31\307\32\11\n\245\33\11\n\246\310W\203\26\0\13S\202\27\0\13+!@\34\311\15\312H\f\15\313H#\36\20\311\15\314H\f\15\315H#\36\21\16\20\16\21V\203G\0\10\16\21W\204U\0\10\16\20Y\202R\0\10\16\20Y\203[\0\10\16\21W\203[\0\15\316H\202^\0\15\317H+\207" [secs tf-a tf-b tf-q year z nelisp--tf-civil 86400 0 nelisp--tf-rule-utc 3 5 4 6 2 1 start end] 5])
+(fset 'nelisp--tf-posix #[(s) "\306\10\307\"\211\31\204\23\0\310\307\211\311\312E\"\202\17\1\11A\32\313\10\n\314#\211\33\203&\0\13@[\202'\0\307\34\10G\35\13\2036\0\13A\15Y\203A\0\310\307\f\311\11@E\"\202\16\1\13A\22\306\10\n\"\211\36\32\204Y\0\310\307\f\311\11@E\"\202\15\1\16\32A\22\313\10\n\314#\211\36\33\203o\0\16\33@[\202r\0\f\315\\\36\34\311\211\36\35\36\36\16\33\203\203\0\16\33A\22\n\15W\203\307\0\10\nH\316=\203\307\0\317\10\nT\"\211\36\37\203\306\0\16\37A\15W\203\306\0\10\16\37AH\316=\203\306\0\317\10\16\37AT\"\211\36 \203\305\0\16\37@\26\35\16 @\26\36))\16\35\203\347\0\310\320\f\311\11@E\16\34\314\16\32@E\16\35\16\36\f\16\34\311&\10\202\f\1\310\320\f\311\11@E\16\34\314\16\32@E\321\322\323\307\324\257\5\321\325\320\307\324\257\5\326\fZ\327\330\331!&\10,),)\207" [s std i so stdoff n nelisp--tf-parse-name 0 vector nil "" nelisp--tf-parse-offset t 3600 44 nelisp--tf-parse-rule 1 m 3 2 7200 11 -36000 -14400 nelisp--tf-posix "EST5EDT,M3.2.0,M11.1.0" dst do dstoff r0 r1 p0 p1] 11 "Build a zone from POSIX TZ string S following glibc __tzset_parse_tz."])
+(fset 'nelisp--tf-be #[(s pos n) "\305\211\30\31\10\nW\203\32\0\11\306_\13\f\10\\H\\\21\10T\20\202\4\0\11*\207" [k v n s pos 0 256] 4])
+(fset 'nelisp--tf-bes #[(s pos n) "\304\10\11\n#\33\10\11H\305Y\203\31\0\13\306\307\n\310_\"Z\202\32\0\13)\207" [s pos n v nelisp--tf-be 128 ash 1 8] 5])
+(fset 'nelisp--tf-read-file #[(path) "\3021(\0\303\10!\205&\0\304\10!\205&\0\305\306\307\"\31r\11q\210\310\216\311\312!\210\313\10!\210\314 +0\207\312\207" [path temp-buffer (error) file-regular-p file-readable-p generate-new-buffer " *temp*" t #[nil "\301\10!\205\11\0\302\10!\207" [temp-buffer buffer-name kill-buffer] 2] set-buffer-multibyte nil insert-file-contents-literally buffer-string] 4])
+(fset 'nelisp--tf-tzif #[(s) "\10G\306V\205\15\2\10\307\310O\311\230\205\15\2\10\310H\31\307\32\310\33\312\10\313\310#\34\312\10\314\310#\35\312\10\315\310#\36\35\312\10\316\310#\36\36\312\10\317\310#\36\37\312\10\320\310#\36 \11\321Y\203\223\0\322\306\16\36\310_\16\36\16\37\323_\16 \16\35\324_\15\f&\10\22\324\23\312\10\n\313\\\310#\24\312\10\n\314\\\310#\25\312\10\n\315\\\310#\26\35\312\10\n\316\\\310#\26\36\312\10\n\317\\\310#\26\37\312\10\n\320\\\310#\26 \n\306\\\36!\325\16\36\307\"\36\"\325\16\36\307\"\36#\325\16\37\326\"\36$\307\211\36%\36&\16%\16\36W\203\324\0\16\"\16%\327\10\16!\16%\13_\\\13#I\210\16%T\26%\202\263\0\16!\16\36\13_\\\26!\307\26%\16%\16\36W\203\375\0\16#\16%\10\16!\16%\\HI\210\16%T\26%\202\340\0\16!\16\36\\\211\26!\26&\16!\16\37\323_\\\36'\307\26%\16%\16\37W\203l\1\16&\16%\323_\\\36(\10\16(\330\\H\36)\16'\16)\\\36*\10\16*H\307U\204D\1\16*T\26*\2023\1\16$\16%\327\10\16(\310#\10\16(\310\\H\307U?\10\16'\16)\\\16*OEI+\210\16%T\26%\202\23\1\322\16'\16 \16\35\13\310\\_\15\f%\26!)\326\211\307\36+\36,\36-\11\321Y\203\320\1\16!\10GW\203\320\1\10\16!H\331=\203\320\1\16!T\36*\16*\10GW\203\273\1\10\16*H\331U\204\273\1\16*T\26*\202\242\1\16*\16!TV\203\317\1\332\10\16!T\16*O!\26-)\16+\16\37W\203\352\1\16$\16+HA@\203\352\1\16+T\26+\202\320\1\16$\16+\16\37U\203\370\1\307\202\372\1\16+H\26,\333\334\16\"\16#\16$\16-\16,&\6.\22\207" [s ver base w isut isstd 44 0 4 "TZif" nelisp--tf-be 20 24 28 32 36 40 50 + 6 8 make-vector nil nelisp--tf-bes 5 10 nelisp--tf-posix vector 2 leap timecnt typecnt charcnt p trans idx types k tp cp q ai e i first footer] 10 "Parse TZif data S into a zone, or nil when it is not TZif."])
+(fset 'nelisp--tf-tzif-info #[(z secs) "\10\306H\211\31G\211\32\307U\204\25\0\13\11\307HW\203\33\0\10\310H\202t\0\13\11\nSHY\203@\0\10\311H\2033\0\312\10\311H\13\"\202t\0\10\313H\10\314H\nSHH\202t\0\307\nS\34\35\15\fW\203j\0\15\f\\T\314\245\36\15\11\16\15H\13X\203b\0\16\15\25\202f\0\16\15S\24)\202E\0\10\313H\10\314H\15HH**\207" [z trans n secs hi lo 1 0 5 4 nelisp--tf-info 3 2 mid] 4])
+(fset 'nelisp--tf-info #[(z secs) "\10\303H\211\31\304\267\202\27\0\10\305H\202\33\0\306\10\n\"\202\33\0\307\10\n\")\207" [z k secs 0 #s(hash-table test eq data (0 10 1 16)) 1 nelisp--tf-rule-info nelisp--tf-tzif-info] 4 "Answer (UTOFF ISDST ABBR) of zone Z at UTC instant SECS."])
+(fset 'nelisp--tf-string-zone #[(tz) "\10\204\27\0\306\307!\211\31\205\17\0\310\11!)\206o\0\311\312!\207\10\313\230\203%\0\314\315\211\316\317E\"\207\10\315H\320=\2034\0\10\321\316O\2025\0\10\32\322\323!\206=\0\324\33\nG\315V\203Q\0\n\315H\325=\203Q\0\n\202U\0\13\326\nQ\34\nG\315V\205`\0\306\f!\211\35\203k\0\310\15!\206n\0\311\n!,\207" [tz d name dir path data nelisp--tf-read-file "/etc/localtime" nelisp--tf-tzif nelisp--tf-posix "UTC0" "" vector 0 nil "Universal" 58 1 getenv "TZDIR" "/usr/share/zoneinfo" 47 "/"] 6 "Zone for TZ string TZ; nil TZ is the system wall clock (/etc/localtime)."])
+(fset 'nelisp--tf-offset-string #[(off prec-sign abbr) "\306\10!\211\31\307\245\32\11\307\246\211\33\310\245\34\13\310\246\35\16\22\203!\0\311\16\22\312Q\202M\0\311\10\313W\203,\0\314\202-\0\315\316\n!\13\313U\204<\0\316\f!\202=\0\317\15\313U\204I\0\316\15!\202J\0\317\312\260\6\10\313W\203W\0\317\202X\0\314\320\n!\321\316\f!\321\316\15!\260\7-\207" [off a h r mi se abs 3600 60 "<" ">" 0 "-" "+" nelisp--tf-pad2 "" number-to-string ":" abbr] 9 "TZ string GNU tzlookup builds for numeric zone OFF."])
+(fset 'nelisp--tf-pad2 #[(n) "\10\301W\203\f\0\302\303\10!P\207\303\10!\207" [n 10 "0" number-to-string] 3])
+(fset 'nelisp--tf-zone #[(zone) "\10\204\7\0\306 \207\10\307=\204\23\0\10\310=\203\25\0\11\207\10\311=\203 \0\312\311\313\"\207\10;\203*\0\312\10\211\"\207\10\211\32\250\205:\0\n\314X\205:\0\n\315Y)\203Q\0\316\10\13\"\206\224\0\317\10\320\321\10\313\211#!\13#\207\10:\203\216\0\10@\211\32\250\205g\0\n\314X\205g\0\n\315Y)\203\216\0\10A:\203\216\0\10A@\211\34;\204\201\0\322\323\324\fD\"\210\321\10@\313\f#\35\312\15\211\"*\207\322\325\326\10D\"\207" [zone nelisp--tf-utc-zone tf-v nelisp--tf-zone-cache abbr key nelisp--tf-local-zone t 0 wall nelisp--tf-cached nil 2305843009213693951 -2305843009213693952 gethash puthash nelisp--tf-posix nelisp--tf-offset-string signal wrong-type-argument stringp error "Invalid time zone specification"] 8 "Resolve ZONE (GNU tzlookup) to a zone object."])
+(fset 'nelisp--tf-cached #[(key tz) "\303\10\11\"\206\32\0\304\11!\305V\203\23\0\306\11!\210\307\10\310\n!\11#\207" [key nelisp--tf-zone-cache tz gethash hash-table-count 200 clrhash puthash nelisp--tf-string-zone] 4])
+(fset 'nelisp--tf-local-zone #[nil "\304\305!\30\11\203\24\0\11@\10\232\203\24\0\11A\2020\0\n\306=\204$\0\n\10\232\203$\0\13\2020\0\307\10\206*\0\310\10\"\23\10\22\13)\207" [tz nelisp--tf-override nelisp--tf-local-key nelisp--tf-local-zone getenv "TZ" unset nelisp--tf-cached wall] 3])
+(unless (fboundp 'set-time-zone-rule)
+  (fset 'set-time-zone-rule #[(tz) "\302\303!\304\10\204\f\0\305\202\15\0\10!B\21\306\207" [tz nelisp--tf-override getenv "TZ" nelisp--tf-zone wall nil] 3 "Set the Emacs local time zone using TZ."]))
+(defconst nelisp--tf-d2 (let ((v (make-vector 100 nil)) (i 0)) (while (< i 100) (aset v i (concat (number-to-string (/ i 10)) (number-to-string (% i 10)))) (setq i (1+ i))) v))
+(defconst nelisp--tf-sp2 (let ((v (make-vector 100 nil)) (i 0)) (while (< i 100) (aset v i (if (< i 10) (concat " " (number-to-string i)) (aref nelisp--tf-d2 i))) (setq i (1+ i))) v))
+(defconst nelisp--tf-d3 (let ((v (make-vector 367 nil)) (i 0)) (while (< i 367) (aset v i (concat (if (< i 100) "0" "") (if (< i 10) "0" "") (number-to-string i))) (setq i (1+ i))) v))
+(defconst nelisp--tf-wday-abbr ["Sun" "Mon" "Tue" "Wed" "Thu" "Fri" "Sat"])
+(defconst nelisp--tf-wday-full ["Sunday" "Monday" "Tuesday" "Wednesday" "Thursday" "Friday" "Saturday"])
+(defconst nelisp--tf-mon-abbr ["Jan" "Feb" "Mar" "Apr" "May" "Jun" "Jul" "Aug" "Sep" "Oct" "Nov" "Dec"])
+(defconst nelisp--tf-mon-full ["January" "February" "March" "April" "May" "June" "July" "August" "September" "October" "November" "December"])
+(fset 'nelisp--tf-check-secs #[(secs) "\10\301V\204\f\0\10\302W\205\16\0\303 \207" [secs 100000000000000000 -100000000000000000 nelisp--tf-overflow] 2])
+(fset 'nelisp--tf-localtime #[(secs zone) "\10\306V\204\f\0\10\307W\203\17\0\310 \210\11\311H\311=\203\35\0\11\312H\202!\0\313\11\10\"\32\10\n@\\\211\33\314\246\211\34\311W\2037\0\f\314\\\2028\0\f)\35\13\15Z\314\245\211\36\34\315\\\211\36\35\316\246\211\34\311W\203V\0\f\316\\\202W\0\f)\211\36\36\211\317\245\\\16\36\320\245Z\16\36\321\245Z\322\245\36\37\16\36\16 \16\37HZ\36!\16\"\16!H\36#\16$\16!H\36%\16\37\16\35\16\36Z\316\245\211\36&\323Y\203\247\0\16&\324X\203\247\0\16'\16&\325\\H\202\253\0\16&\326_)\\\16#\327X\203\270\0\312\202\271\0\311\\\211\36(\330V\204\311\0\16(\331W\203\314\0\310 \210\16(\16#\16%\16\34\15\332\245\15\332\246\333\245\15\333\246\n.\13\257\10\207" [secs zone info loc tf-r sod 100000000000000000 -100000000000000000 nelisp--tf-overflow 0 1 nelisp--tf-info 86400 719468 146097 36524 1460 146096 365 -10 30 10 400 2 2147485547 -2147481748 3600 60 days tf-z tf-doe tf-yoe nelisp--tf-ystart tf-doy nelisp--tf-mtab m nelisp--tf-dtab d tf-e nelisp--tf-era400 y] 9 "Return (YEAR MONTH DAY DAYS HOUR MIN SEC INFO) of UTC SECS in ZONE."])
 (unless (fboundp 'decode-time)
-  (defun decode-time (&optional time zone form)
-  "Decode TIME into second, minute, hour, date, weekday, DST and UTC offset.
-FORM t preserves the precision of the seconds field."
-  (let* ((parts (if (eq form t) (nelisp--w301-time-parts time)
-                  (list (nelisp--w101-time-seconds time) 0 nil)))
-         (zoff (nelisp--w301-zone-offset zone))
-         (total (+ (car parts) zoff))
-         (days (floor total 86400))
-         (sod (mod total 86400))
-         (seconds (mod sod 60))
-         (ymd (nelisp--w301-civil-from-days days)))
-    (when (nth 2 parts)
-      (setq seconds (nelisp--w301-timestamp seconds (nth 1 parts) (nth 2 parts))))
-    (list seconds (/ (mod sod 3600) 60) (/ sod 3600)
-          (nth 2 ymd) (nth 1 ymd) (nth 0 ymd) (mod (+ days 4) 7) nil zoff))))
-
+  (fset 'decode-time #[(&optional specified-time zone form) "\306\211\211\30\31\32\13\307=\203\37\0\310\f!\211\35@\20\15A\21\311\10\11\"\22)\202%\0\312\f!\22\313\21\314\n\315\16\26!\"\36\27\316\16\278\36\30\11\313=\203A\0\317\16\278\202N\0\11\317\16\278_\320\10\11\"\\\11B\321\16\278\322\16\278\323\16\278\16\27A@\16\27@\324\16\278\322\\\316\246\211\36\31\325W\203x\0\16\31\316\\\202z\0\16\31)\16\30A@\16\30@-\257\11\207" [ticks hz secs form specified-time s nil t nelisp--tf-spec nelisp--tf-fdiv nelisp--tf-seconds 1 nelisp--tf-localtime nelisp--tf-zone 7 6 nelisp--tf-fmod 5 4 2 3 0 zone lt info tf-r] 10 "Decode a timestamp into (SEC MIN HOUR DAY MON YEAR DOW DST UTCOFF)."]))
+(fset 'nelisp--tf-isdst-differ #[(a b) "\10\302U\11\302U=?\205\24\0\10\302Y\205\24\0\11\302Y\207" [a b 0] 3])
+(fset 'nelisp--tf-mktime #[(sec min hour mday mon1 year zone isdst) "\10S\31\n\11\33\306\34\13\f\245\35\13\f\246\307W\203\31\0\15S\202\32\0\15+\\\36\33\11\306\246\211\36\34\307W\2030\0\16\34\306\\\2022\0\16\34)T\36\35\307\36\36\310\311\16\33\16\35\312#\313_\16\37S\313_\16 \314_\16!\315_\16\"%\26\36\316\16\36!\210\16#\16$=\203g\0\16\36\202\335\1\16\36\16%\\\211\36&\36'\16&\36(\16&\36)\317\36*\306\36+\317\211\36,\36-\307\36.\16,\204!\1\320\16#\16'\"\26-\16\36\16'\16-@\\Z\211\26.\307U\203\254\0\321\26,\202\210\0\322\16'\16(\"\203\367\0\322\16'\16)\"\204\367\0\16/\323=\203\337\0\16*\203\316\0\312\202\317\0\307\16-A@\203\332\0\312\202\333\0\307X\202\356\0\16/\307U?\16-A@\205\354\0\324=?\203\367\0\325\26,\202\210\0\16+S\211\26+\307U\203\5\1\326 \210\16)\26(\16'\26)\16'\16.\\\26'\16-A@\205\34\1\324\26*\202\210\0\16,\321=\203\322\1\327\16/\16-A@\2036\1\312\2027\1\307\"\203\322\1\330\211\331\317\16/\307U\203J\1\312\202K\1\307\16-A@\203V\1\307\202W\1\312Z\0360\0361\0362\0363\0364\0161\204\303\1\0163\0162W\203\303\1\323\0365\0161\204\270\1\0165\312X\203\270\1\16'\0163\0165_\\\0366\320\16#\0166\"\0367\327\16/\0167A@\203\236\1\312\202\237\1\307\"\204\256\1\16\36\0167@Z\26'\324\0261*\0165\332\\\0265\202r\1)\0163\0164\\\0263\202b\1\0161\204\321\1\16'\0160\314_\\\26'-\16'\16\36Z\26%\16'.\11,\207" [mon1 mon year tf-a tf-b tf-q 12 0 + nelisp--tf-days-from-civil 1 86400 3600 60 nelisp--tf-check-secs nil nelisp--tf-info match eql -1 t oscillate nelisp--tf-overflow nelisp--tf-isdst-differ 601200 268828200 2 y tf-r m lsec mday hour min sec zone nelisp--tf-utc-zone nelisp--tf-mk-offset t0 tt t1 t2 dst2 probes found info dt isdst dstdiff done bound delta stride dir ot oinfo] 7 "Port of gnulib __mktime_internal.  MON1 is 1-based.  Return UTC seconds."])
 (unless (fboundp 'encode-time)
-  (defun encode-time (&rest args)
-  "Encode a decoded time list or the obsolescent six component arguments.
-The last obsolescent argument is the zone.  Normalize calendar overflow
-and preserve subsecond precision; use `current-time-list' for integer times."
-  (let ((count (length args)) fields zone)
-    (cond
-     ((= count 1)
-      (let ((tail (car args)) (n 0))
-        (while (< n 6)
-          (unless (consp tail)
-            (signal 'wrong-type-argument (list 'consp tail)))
-          (setq fields (cons (car tail) fields) tail (cdr tail) n (1+ n)))
-        (setq fields (nreverse fields) zone (nth 2 tail))))
-     ((>= count 6)
-      (setq fields args zone (if (> count 6) (car (last args)) nil)))
-     (t (signal 'wrong-number-of-arguments (list 'encode-time count))))
-    (let ((parts (nelisp--w301-time-parts (car fields)))
-          (tail (cdr fields)) (n 0))
-      (while (< n 5)
-        (unless (integerp (car tail))
-          (signal 'wrong-type-argument (list 'fixnump (car tail))))
-        (setq n (1+ n) tail (cdr tail)))
-      (let* ((zoff (nelisp--w301-zone-offset zone))
-             (days (nelisp--w301-days-from-civil
-                    (nth 5 fields) (nth 4 fields) (nth 3 fields)))
-             (seconds (- (+ (* days 86400) (* (nth 2 fields) 3600)
-                            (* (nth 1 fields) 60) (car parts)) zoff))
-             (hz (nth 2 parts)))
-        (cond
-         (hz (nelisp--w301-timestamp seconds (nth 1 parts) hz))
-         (current-time-list (list (floor seconds 65536) (mod seconds 65536)))
-         (t seconds)))))))
-
+  (fset 'encode-time #[(time &rest obsolescent-arguments) "\306\307\306\211\211\211\211\211\10GT\31\32\33\34\35\36\37\36 \36!\36\"\11\310U\203\357\0\16#\311\36$\36%\16$\312W\203G\0\16%:\204:\0\313\314\315\16%D\"\210\16%A\26%\16$T\26$\202%\0*\16#@\26 \16#A\211\26#@\26\37\16#A\211\26#@\25\16#A\211\26#@\24\16#A\211\26#@\23\16#A\211\26#@\22\16#A\211\26#\203#\1\16#:\204\215\0\313\314\315\16#D\"\210\16#A\211\26#:\204\237\0\313\314\315\16#D\"\210\16#@\36&\16#A\211\26#:\204\266\0\313\314\315\16#D\"\210\16#@\26\"\16&9\203\353\0\16\"\211\36'\250\205\325\0\16'\316X\205\325\0\16'\317Y)\204\353\0\16\":\204\353\0\16&\203\350\0\310\202\351\0\311\26!)\202#\1\11\312W\203\377\0\313\320\321\11D\"\210\202#\1\11\312V\203\13\1\322\10!@\26\"\16#\26 \10@\26\37\10A@\25\323\108\24\324\108\23\325\108\22\326\16 !\211\36(A\36)\306\211\36*\36+\16)\310=\203E\1\16(@\26*\311\26+\202Y\1\327\16(@\16)\"\26*\16(@\16*\16)_Z\26+\16*\16\37\15\f\13\n\257\6\36,\16,\203\250\1\16,@\211\36-\211\36'\250\205\202\1\16'\316X\205\202\1\16'\317Y)\204\216\1\313\314\330\16-D\"\210\16-\331V\204\234\1\16-\332W\203\237\1\333 \210\16,A\26,)\202e\1)\334\16\"!\36.\335\16*\16\37\15\f\13\n\16.\16!&\10\36/\16)\310=\203\f\2\0160\203\7\2\16/\0361\336\0362\0161\0162\245\0363\0161\0162\246\311W\203\352\1\0163S\202\354\1\0163+\16/\336\246\211\0364\311W\203\0\2\0164\336\\\202\2\2\0164)D\202\27\2\16/\202\27\2\16/\16)_\16+\\\16)B.\17\207" [obsolescent-arguments nargs yeararg monarg mdayarg hourarg nil -1 1 0 6 signal wrong-type-argument consp 2305843009213693951 -2305843009213693952 wrong-number-of-arguments encode-time last 2 3 4 nelisp--tf-spec nelisp--tf-fdiv fixnump 2147483647 -2147483648 nelisp--tf-overflow nelisp--tf-zone nelisp--tf-mktime 65536 minarg secarg isdst zone time i tail dstflag tf-v th hz sec subticks tail v z value current-time-list tf-a tf-b tf-q tf-r] 10 "Convert TIME to a timestamp."]))
+(fset 'nelisp--tf-num #[(v digits pad width neg always-sign &optional colons) "\10\203\26\0\11\211\32\306W\203\21\0\n[\202\22\0\n)\202\27\0\11\33\307\13!\34\15\203'\0\310\f\15\"\202(\0\f\34\16\22\311=\2034\0\312\2026\0\16\22\36\22\16\23\306W\203D\0\16\24\202F\0\16\23\36\25\10\203P\0\313\202Z\0\16\26\203Y\0\314\202Z\0\315\36\27\fG\36\30\16\25\16\27GZ\16\30Z\36\31\16\22\316=\204y\0\16\31\306X\203}\0\306\202\177\0\16\31\211\36\32\306U\203\216\0\16\27\fP\202\252\0\16\22\317=\203\241\0\320\16\32\321\"\16\27\fQ\202\252\0\16\27\320\16\32\312\"\fQ.\11\207" [neg v tf-x u body colons 0 number-to-string nelisp--tf-colonize 122 48 "-" "+" "" 45 95 make-string 32 pad width digits w always-sign sign nd shortage padding] 5 "Format V (|V| when NEG) like strftime's do_number_body.\nPAD is ?0 (zero), ?_ (space), ?- (none), ?+ (sign) or ?z (default ZERO_PAD)."])
+(fset 'nelisp--tf-colonize #[(body mask) "\305\306\10G\31\32\33\n\11W\204\23\0\f\306U\204@\0\307\f\310\"\306U\204 \0\311\13B\23\312\f\313\"\24\n\11W\2036\0\314\10\11\nZSH!\2027\0\315\13B\23\nT\22\202\7\0\316\317\13\"+\207" [body n i out mask nil 0 logand 1 ":" ash -1 string "0" apply concat] 4 "Insert ':' into digit string BODY per MASK (bit i = before i-th digit from right)."])
+(fset 'nelisp--tf-text #[(s pad width up low) "\10\203\7\0\11\226\21\n\203\16\0\11\227\21\13\306=\204\32\0\f\307W\203\36\0\307\202\37\0\f\11G\35\36\f\15\16\fW\203A\0\310\16\f\15Z\13\311>\203:\0\312\202;\0\313\"\11P\202B\0\11*\207" [up s low pad width n 45 0 make-string (48 43) 48 32 w] 4 "Emit text S with strftime width/pad semantics."])
+(defvar nelisp--tf-plan-cache (make-hash-table :test 'equal))
+(defconst nelisp--tf-ycache (make-vector 9000 nil))
+(fset 'nelisp--tf-simple-code #[(c pad width up chg colons mod) "\10\306=\205Z\0\11\307W\205Z\0\n?\205Z\0\13?\205Z\0\f\307=\205Z\0\15\307=\205Z\0\16\"\310\267\202Y\0\311\207\312\207\313\207\314\207\315\207\316\207\317\207\320\207\321\207\322\207\323\207\324\207\325\207\326\207\327\207\330\207\331\207\332\207\333\207\334\207\335\207\336\207\337\207\340\207\341\207" [pad width up chg mod colons 122 0 #s(hash-table test eq data (89 41 109 43 100 45 72 47 77 49 83 51 97 53 98 55 101 57 106 59 84 61 70 63 121 65 112 67 90 69 122 71 65 73 66 75 115 77 73 79 82 81 99 83 68 85 107 87)) 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 nil c] 2 "Fast-path code of a plain directive (no flags, width or modifier), else nil."])
+(fset 'nelisp--tf-parse-format #[(fmt) "\10G\306\211\307\31\32\33\34\13\fW\203\355\1\10\13H\310=\204\35\0\13T\23\202\11\0\13\nV\203*\0\10\n\13O\11B\21\13\311\307\211\312\306\307\306\307\35\36\27\36\30\36\31\36\32\36\33\36\34\36\35\36\36\13T\23\313\36\37\16\37\203\235\0\13\fW\203\235\0\10\13H\211\36 \314\267\202\226\0\315\26\35\13T\23\202\231\0\316\26\35\13T\23\202\231\0\317\26\35\13T\23\202\231\0\320\26\35\13T\23\202\231\0\313\26\34\13T\23\202\231\0\313\26\33\13T\23\202\231\0\307\26\37)\202J\0)\13\fW\203\337\0\10\13H\320Y\203\337\0\10\13H\321X\203\337\0\306\26\32\13\fW\203\337\0\10\13H\320Y\203\337\0\10\13H\321X\203\337\0\16\32\322_\10\13H\320Z\\\26\32\13T\23\202\267\0\13\fW\203\365\0\10\13H\323>\203\365\0\10\13H\26\31\13T\23\13\fY\203\30\1\324\306\16\35\16\32\16\34\16\33\306\16\31\10\16\36\fO\307&\11\11B\21\f\22\202\350\1\10\13H\211\26\30\325=\203c\1\13\36!\16!\fW\203>\1\10\16!H\325=\203>\1\16!T\26!\202&\1\16!\fW\203]\1\10\16!H\311=\203]\1\16!\13Z\26\27\16!\23\311\26\30\202_\1\313\25)\202\217\1\16\30\310=\203\217\1\13S\16\36U\204\217\1\324\306\16\35\16\32\16\34\16\33\306\16\31\10\16\36\13O\307&\11\11B\21\13\22\307\26\30\15\203\264\1\324\306\16\35\16\32\16\34\16\33\306\16\31\10\16\36\13TO\307&\11\11B\21\13T\211\23\22\202\350\1\16\30\203\350\1\13T\23\324\16\30\16\35\16\32\16\34\16\33\16\27\16\31\10\16\36\13O\326\16\30\16\35\16\32\16\34\16\33\16\27\16\31&\7&\11\11B\21\13\22.\11\202\11\0\f\nV\203\372\1\10\n\fO\11B\21\11\237,\207" [fmt plan start i n bad 0 nil 37 122 -1 t #s(hash-table test eq data (95 96 45 105 43 114 48 123 94 132 35 141)) 95 45 43 48 57 10 (69 79) vector 58 nelisp--tf-simple-code colons c mod width chg up pad percent go ch j] 18 "Parse FMT into a list of literal strings and directive vectors\n[CHAR PAD WIDTH UP CHG COLONS MOD TEXT] (TEXT = the directive source)."])
+(fset 'nelisp--tf-iso #[(year yday wday) "\306\30\11\307Z\211\32\211\310W\203\21\0\311\202\22\0\312\\\33\310\34\313\15\16\17\"\211\36\20\310W\203>\0\314\24\313\15\315\\\10\13S!\2034\0\316\2025\0\310\\\16\17\"\26\20\202`\0\313\15\10\13!\203J\0\316\202K\0\310\315\\Z\16\17\"\211\36\21\310Y\203_\0\316\24\16\21\26\20)\f\16\20-B\207" [leap year tm-year yr adj yday #[(y) "\10\301\246\302U\205\26\0\10\303\246\302U?\206\26\0\10\304\246\302U\207" [y 4 0 100 400] 2] 1900 0 300 -100 nelisp--tf-iso-days -1 365 1 wday days d] 5 "Return (ISOYEAR-ADJUST . DAYS) as GNU's %V/%g/%G computation."])
+(fset 'nelisp--tf-iso-days #[(yday wday) "\10\302\\\10\11Z\302\\\303\\\304\246ZS\207" [yday wday 4 378 7] 3])
+(fset 'nelisp--tf-run #[(plan lt secs nsec zone-info up0 yr-spec width0) "\306\10\306\211\10\307W\205\22\0\11?\205\22\0\n\310=\33\34\35\36+\36,\16-\203\20\3\16-@\36.\16-A\26-\16.;\203;\0\16.\16,B\26,\311\26+\202\f\3\13\203\344\2\16.\312H\211\25\203\344\2\15\313\267\202\22\2\16/\314\01608H\202\326\2\16/\315\01608H\202\326\2\16/\316\01608H\202\326\2\16/\0160A@H\202\326\2\16/\317\01608H\202\326\2\0161\320\01608\314\\\321\246\211\0362\307W\203\231\0\0162\321\\\202\233\0\0162)H\202\326\2\0163\0160A@SH\202\326\2\0164\317\01608H\202\326\2\0165\322\0166\0160A@SH\317\01608\311\0160A@\317V\203\360\0\0160@\314\246\307U\203\360\0\0160@\323\246\307U\203\354\0\0160@\324\246\307U\203\360\0\325\202\361\0\307$TH\202\326\2\16/\314\01608H\326\16/\315\01608H\326\16/\316\01608H\260\5\202\326\2\314\01608\327Y\203 \1\330\202\326\2\331\202\326\2\317\01678\202\326\2\168\320\01608\314\\\321\246\211\0362\307W\203D\1\0162\321\\\202F\1\0162)H\202\326\2\169\0160A@SH\202\326\2\332\16:!\202\326\2\16/\314\01608\211\36;\327V\203r\1\16;\327Z\202\177\1\16;\307U\203}\1\327\202\177\1\16;)H\202\326\2\16/\314\01608H\326\16/\315\01608HQ\202\326\2\0164\314\01608H\202\326\2\0167@\211\36<\307U\203\310\1\317\01678\211\36=G\307V\205\277\1\16=\307H\333=)?\205\16\2\334\202\16\2\16<\335\246\307U\205\16\2\16<\336W\205\16\2\16<\337V\205\16\2\16<\307W\203\354\1\16<[\202\356\1\16<\36>\16<\307W\203\373\1\340\202\374\1\341\16/\16>\342\245H\16/\16>\335\245\335\246HQ))\202\326\2\0160@\343Y\205\326\2\0160@\344X\205\326\2\16?\0160@\343ZH\206:\2\16?\0160@\343Z\332\0160@!I\36@\15\345\267\202\324\2\16@\202\325\2\16@\340\16/\0160A@H\340\16/\317\01608H\260\5\202\325\2\16/\0160@\323\246H\202\325\2\0161\320\01608\314\\\321\246\211\0362\307W\203\202\2\0162\321\\\202\204\2\0162)H\346\0163\0160A@SH\346\0164\317\01608H\346\16/\314\01608H\326\16/\315\01608H\326\16/\316\01608H\346\16@\260\15\202\325\2\16/\0160A@H\347\16/\317\01608H\347\16/\0160@\323\246H\260\5\202\325\2\306)\211\24\203\344\2\f\16,B\26,\202\f\3\350\16.\211\317H\307W\203\364\2\16+\202\370\2\16.\317H\0160\16:\16A\0167\11\n&\10\16,B\26,\311\26+)\202\31\0\351\352\16,\237\"-\207" [width0 up0 yr-spec fast s code nil 0 122 -1 8 #s(hash-table test eq data (4 78 5 88 6 98 2 108 3 118 7 128 8 160 9 171 10 181 11 247 14 275 15 292 17 299 18 331 19 342 20 349 21 388 24 407 16 417)) 4 5 6 2 3 7 + 100 400 1 ":" 12 "PM" "AM" number-to-string 45 "+0000" 60 360000 -360000 "-" "+" 3600 1000 9999 #s(hash-table test eq data (1 578 12 583 13 606 22 617 23 695)) " " "/" nelisp--tf-directive apply concat width out plan e nelisp--tf-d2 lt nelisp--tf-wday-abbr tf-r nelisp--tf-mon-abbr nelisp--tf-sp2 nelisp--tf-d3 nelisp--tf-cum-days zone-info nelisp--tf-wday-full nelisp--tf-mon-full secs h off ab a nelisp--tf-ycache ys nsec] 14 "Execute PLAN against local time LT.  Returns a string."])
+(fset 'nelisp--tf-sub #[(fmt pad width up lt secs nsec info yr-spec) "\306\10!\31\307\11\n\13\f\15\16\10\16\11\16\n&\10)\207" [fmt plan lt secs nsec info nelisp--tf-plan nelisp--tf-run up pad width] 9])
+(fset 'nelisp--tf-plan #[(fmt) "\302\10\11\"\206\32\0\303\11!\304V\203\23\0\305\11!\210\306\10\307\10!\11#\207" [fmt nelisp--tf-plan-cache gethash hash-table-count 256 clrhash puthash nelisp--tf-parse-format] 4])
+(fset 'nelisp--tf-directive #[(e w lt secs nsec info up0 yr-spec) "\10\306H\31\10\307H\32\13\206\17\0\10\310H\34\10\311H\35\10\312H\36@\10\313H\36A\16B@\36C\16BA@\36D\314\16B8\36E\311\16B8\36F\312\16B8\36G\313\16B8\36H\310\16B8\311\\\315\246\211\36I\306W\203X\0\16I\315\\\202Z\0\16I)\36J\316\16K\16DSH\16E\317\16D\314V\203\215\0\16C\311\246\306U\203\215\0\16C\320\246\306U\203\211\0\16C\321\246\306U\203\215\0\307\202\216\0\306$\36L\16F\322V\203\237\0\16F\322Z\202\254\0\16F\306U\203\252\0\322\202\254\0\16F\36M\16C\323Z\36N\324\36O\11\325\267\202)\1\326\327\n\16P\f\16O%\202*\10\326\330\n\16P\f\16O%\202*\10\326\331\n\16P\f\16O%\202*\10\16A\306U\204\362\0\332\10\n\16P\f$\202*\10\326\16Q\16JH\n\16P\f\206\0\1\15\324%\202*\10\16A\306U\204\26\1\332\10\n\16P\f$\202*\10\326\16R\16JH\n\16P\f\206$\1\15\324%\202*\10\11\333=\2045\1\11\334=\203Z\1\16A\335=\203F\1\332\10\n\16P\f$\202*\10\326\16S\16DSH\n\16P\f\206U\1\15\324%\202*\10\11\336=\203\205\1\16A\335=\203q\1\332\10\n\16P\f$\202*\10\326\16T\16DSH\n\16P\f\206\200\1\15\324%\202*\10\11\337=\204\221\1\11\340=\203\276\1\16F\322Y\203\234\1\341\202\235\1\342\36U\326\16U\n\16P\f\205\262\1\15?\205\262\1\11\340=?\11\340=\206\271\1\15%)\202*\10\11\343\267\202P\5\326\314\16V8\n\16P\f\205\322\1\15?\15%\202*\10\16@\310V\203\350\1\332\10\n\16P\f$\202*\10\16V@\211\36W\306W\36X\16W\211\36Y\306W\203\2\2\16Y[\202\4\2\16Y)\211\36Z\344\245\36[\16Z\345\245\345\246\36\\\16Z\345\246\36]\16W\306U\2035\2\314\16V8G\306V\2053\2\314\16V8\306H\346=\26X\16@\306U\203P\2\347\16[\320_\16\\\\\312\n\16P\16X\350&\6\202\326\2\16@\307U\203l\2\347\16[\320_\16\\\\\313\n\16P\16X\350\311&\7\202\326\2\16@\314U\203\215\2\347\16[\351_\16\\\320_\\\16]\\\352\n\16P\16X\350\353&\7\202\326\2\16]\306U\204\256\2\347\16[\351_\16\\\320_\\\16]\\\352\n\16P\16X\350\353&\7\202\326\2\16\\\306U\204\312\2\347\16[\320_\16\\\\\313\n\16P\16X\350\311&\7\202\326\2\347\16[\310\n\16P\16X\350&\6.\6\202*\10\16A\335=\203\361\2\354\16C\311\n\16P\16^\350&\6\202*\10\354\16C\311\n\16P\16^\324&\6\202*\10\16N\355W\211\36_?\205\17\3\16N\306W\36`\16N\16`\203\34\3\356\202\35\3\306Z\320\245\357\\\36a\360\16a\314\16_\n\16P\16^&\6+\202*\10\16N\320\246\211\36b\306W\203T\3\16N\355W\203N\3\16b[\202R\3\16b\320\\\26b\360\16b\314\324\n\16P\16^&\6)\202*\10\16A\335=\203u\3\332\10\n\16P\f$\202*\10\347\16D\314\n\16P\324\211&\6\202*\10\16A\335=\203\224\3\332\10\n\16P\f$\202*\10\347\16E\314\n\16P\324\211&\6\202*\10\16A\335=\203\263\3\332\10\n\16P\f$\202*\10\347\16E\314\n\361=\203\301\3\362\202\302\3\n\16P\324\211&\6\202*\10\16A\335=\203\334\3\332\10\n\16P\f$\202*\10\347\16F\314\n\16P\324\211&\6\202*\10\16A\335=\203\373\3\332\10\n\16P\f$\202*\10\347\16M\314\n\16P\324\211&\6\202*\10\16A\335=\203\32\4\332\10\n\16P\f$\202*\10\347\16F\314\n\361=\203(\4\362\202)\4\n\16P\324\211&\6\202*\10\16A\335=\203C\4\332\10\n\16P\f$\202*\10\347\16M\314\n\361=\203Q\4\362\202R\4\n\16P\324\211&\6\202*\10\16A\335=\203l\4\332\10\n\16P\f$\202*\10\347\16G\314\n\16P\324\211&\6\202*\10\16A\335=\203\213\4\332\10\n\16P\f$\202*\10\347\16H\314\n\16P\324\211&\6\202*\10\16A\335=\203\252\4\332\10\n\16P\f$\202*\10\347\16LT\310\n\16P\324\211&\6\202*\10\347\363\16DS\364_\365\"T\307\n\16P\324\211&\6\202*\10\347\16J\313\\\315\246T\307\n\16P\324\211&\6\202*\10\16A\335=\203\362\4\332\10\n\16P\f$\202*\10\347\16J\307\n\16P\324\211&\6\202*\10\16A\335=\203\21\5\332\10\n\16P\f$\202*\10\347\16L\16JZ\315\\\315\245\314\n\16P\324\211&\6\202*\10\16A\335=\2037\5\332\10\n\16P\f$\202*\10\347\16L\16J\313\\\315\246Z\315\\\315\245\314\n\16P\324\211&\6\202*\10\11\366=\204b\5\11\367=\204b\5\11\370=\203\361\5\16A\335=\203s\5\332\10\n\16P\f$\202*\10\371\16C\16L\16J#\211\36c@\36d\16cA\36e\11\372\267\202\337\5\16N\320\246\16d\\\320\246\36b\360\16b\306Y\203\244\5\16b\202\270\5\16N\355\16dZW\203\264\5\16b[\202\270\5\16b\320\\\314\324\n\16P\16^&\6)\202\355\5\360\16N\323\\\16d\\\311\16N\355\16dZW\n\16P\16^&\6\202\355\5\347\16e\315\245T\314\n\16P\324\211&\6+\202*\10\11\373\267\202#\10\16A\335=\203\10\6\332\10\n\16P\f$\202*\10\16f\36g\16P\306X\203\27\6\352\202\31\6\16P\36h\352\36i\16h\16iW\2046\6\16i\307V\203D\6\16g\374\246\306U\203D\6\16iS\26i\16g\374\245\26g\202\36\6\375\376\16g!\16i\"\36j\n\361=\203X\6\377\202Y\6\n\211\36k\346=\204k\6\16h\16iZ\306X\203o\6\306\202t\6\16h\16iZ\36l\16j\201r\0\16l\16k\201s\0>\203\212\6\377\202\215\6\201t\0\"P.\6\202*\10\16m\36n\347\16n\307\n\16P\16n\306W\324&\6)\202*\10\16A\306U\204\273\6\332\10\n\16P\f$\202*\10\326\201u\0\201v\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\16A\201w\0=\203\354\6\332\10\n\16P\f$\202*\10\326\201u\0\201v\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\16A\201w\0=\203\35\7\332\10\n\16P\f$\202*\10\326\201u\0\201x\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\326\201u\0\201x\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\326\201u\0\201y\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\326\201u\0\201z\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\16A\201w\0=\203\250\7\332\10\n\16P\f$\202*\10\326\201u\0\201{\0\n\317\f\16B\16m\16f\16V\n&\11\n\16P\324\211%\202*\10\16A\306U\204\327\7\332\10\n\16P\f$\202*\10\n\361=\205\341\7\16P\306W\211\36o\203\353\7\311\202\361\7\306\16P\313Z]\36p\16o\203\376\7\201|\0\202\377\7\n\36q\326\201u\0\201}\0\16q\16p\f\16B\16m\16f\16V\16q&\11\n\16P\324\211%+\202*\10\332\10\n\16P\f$.\21\207" [e c pad up0 up chg 0 1 3 4 5 6 2 7 + -1 100 400 12 1900 nil #s(hash-table test eq data (37 189 110 201 116 213 97 225 65 261)) nelisp--tf-text "%" "\n" "\11" nelisp--tf-bad 98 104 69 66 112 80 "PM" "AM" #s(hash-table test eq data (90 452 122 471 89 731 67 768 121 821 109 868 100 899 101 930 72 971 73 1002 107 1033 108 1074 77 1115 83 1146 106 1177 113 1209 117 1230 119 1249 85 1280 87 1318)) 3600 60 45 nelisp--tf-num t 10000 9 20 nelisp--tf-num-year -1900 99 19 nelisp--tf-yearish 122 95 ash 11 -5 86 103 71 nelisp--tf-iso #s(hash-table test eq data (103 1420 71 1477)) #s(hash-table test eq data (78 1527 115 1684 68 1706 120 1753 88 1802 84 1851 82 1881 114 1911 99 1941 70 1990)) 10 nelisp--tf-pad-left number-to-string 48 colons mod lt year mon mday hour min sec tf-r wday nelisp--tf-cum-days yday hour12 tm-year low w nelisp--tf-wday-abbr nelisp--tf-wday-full nelisp--tf-mon-abbr nelisp--tf-mon-full s info diff neg tf-x ad hd md sd yr-spec negy z cent yy r adj days nsec n width nd digits pd extra secs v sign-pad subw ypad make-string (48 43) 32 nelisp--tf-sub "%m/%d/%y" 79 "%H:%M:%S" "%H:%M" "%I:%M:%S %p" "%a %b %e %H:%M:%S %Y" 43 "%Y-%m-%d"] 12])
+(fset 'nelisp--tf-pad-left #[(s n) "\10G\11W\203\21\0\302\11\10GZ\303\"\10P\207\10\207" [s n make-string 48] 3])
+(fset 'nelisp--tf-bad #[(e pad w up) "\304\10\305H\11\n\13\306%\207" [e pad w up nelisp--tf-text 7 nil] 6])
+(fset 'nelisp--tf-yearish #[(v digits neg pad w yr-spec) "\10\306=\203\n\0\11\202\13\0\10\30\307\n\13\10\f\15\10\310=\205<\0\n\211\36\15\311W\203'\0\16\15[\202)\0\16\15)\13\312U\2034\0\313\2025\0\314V\206<\0\13\fW&\6)\207" [pad yr-spec v digits w neg 122 nelisp--tf-num 43 0 2 99 9999 tf-x] 10])
+(fset 'nelisp--tf-num-year #[(year digits pad w yr-spec era) "\305\10\11\10\306W\n\13\f&\6\207" [year digits pad w yr-spec nelisp--tf-yearish 0] 7])
 (unless (fboundp 'format-time-string)
-  (defun format-time-string (format-string &optional time zone)
-    "Format TIME (default now) per FORMAT-STRING, roughly like C
-strftime.  ZONE is as in `decode-time'.  Supported directives: `%Y %m
-%d %H %M %S %y %e %b %a %T %F %s %z %N %%'.  `%a'/`%b' are always the
-fixed English abbreviations (there is no locale database here).  `%z'
-assumes ZONE has no non-integer-minute remainder.  Any other directive
-signals an error rather than passing text through unexpanded."
-    (let* ((parts (if (floatp time)
-                       (let ((seconds (nelisp--w101-time-seconds time)))
-                         (list seconds (floor (* (- time seconds) 1000000000))
-                               1000000000))
-                     (nelisp--w301-time-parts time)))
-           (ts (cons (car parts) (nelisp--w301-subsecond-nanoseconds parts)))
-           (_ (unless (stringp format-string)
-                (signal 'wrong-type-argument (list 'stringp format-string))))
-           (secs (car ts)) (nsec (cdr ts))
-           (zoff (nelisp--w301-zone-offset zone))
-           (total (+ secs zoff))
-           (days (nelisp--tm-fdiv total 86400))
-           (sod (- total (* days 86400)))
-           (hh (/ sod 3600)) (mi (/ (mod sod 3600) 60)) (ss (mod sod 60))
-           (ymd (nelisp--w301-civil-from-days days))
-           (year (nth 0 ymd)) (month (nth 1 ymd)) (day (nth 2 ymd))
-           (dow (mod (+ days 4) 7))
-           (len (length format-string)) (i 0) (out nil))
-      (while (< i len)
-        (let ((c (aref format-string i)))
-          (if (and (= c ?%) (< (1+ i) len))
-              (let ((d (aref format-string (1+ i))))
-                (push
-                 (cond
-                  ((= d ?Y) (number-to-string year))
-                  ((= d ?y) (nelisp--tm-pad (mod year 100) 2))
-                  ((= d ?m) (nelisp--tm-pad month 2))
-                  ((= d ?d) (nelisp--tm-pad day 2))
-                  ((= d ?e) (nelisp--tm-pad-space day 2))
-                  ((= d ?H) (nelisp--tm-pad hh 2))
-                  ((= d ?M) (nelisp--tm-pad mi 2))
-                  ((= d ?S) (nelisp--tm-pad ss 2))
-                  ((= d ?b) (nelisp--tm-monthname month))
-                  ((= d ?a) (nelisp--tm-dayname dow))
-                  ((= d ?T)
-                   (concat (nelisp--tm-pad hh 2) ":"
-                           (nelisp--tm-pad mi 2) ":"
-                           (nelisp--tm-pad ss 2)))
-                  ((= d ?F)
-                   (concat (number-to-string year) "-"
-                           (nelisp--tm-pad month 2) "-"
-                           (nelisp--tm-pad day 2)))
-                  ((= d ?s) (number-to-string secs))
-                  ((= d ?z)
-                   (concat (if (< zoff 0) "-" "+")
-                           (nelisp--tm-pad (/ (abs zoff) 3600) 2)
-                           (nelisp--tm-pad (/ (mod (abs zoff) 3600) 60) 2)))
-                  ((= d ?N) (nelisp--tm-pad nsec 9))
-                  ((= d ?%) "%")
-                  (t (error
-                      "format-time-string: unsupported directive %%%c \
-(supported: Y m d H M S y e b a T F s z N %%%%)"
-                      d)))
-                 out)
-                (setq i (+ i 2)))
-            (progn (push (char-to-string c) out) (setq i (1+ i))))))
-      (apply #'concat (nreverse out)))))
-
+  (fset 'format-time-string #[(format-string &optional time zone) "\10;\204\f\0\306\307\310\10D\"\210\11\250?\205\25\0\311\11!\211\32\203\37\0\n@\202 \0\11\33\n\203*\0\nA\202+\0\312\34\313\15!\36\23\314\13\16\23\"\36\24\315\316\10!\16\24\13\f\317\16\248\320\321\322&\10-\207" [format-string time ts secs nsec zone signal wrong-type-argument stringp nelisp--tf-timespec 0 nelisp--tf-zone nelisp--tf-localtime nelisp--tf-run nelisp--tf-plan 7 nil 122 -1 z lt] 10 "Use FORMAT-STRING to format the time value TIME in ZONE."]))
 (unless (fboundp 'current-time-string)
-  (defun current-time-string (&optional time zone)
-  "Return TIME formatted as an English calendar date in ZONE."
-  (let ((seconds (nelisp--w101-time-seconds time)))
-    (unless (or (null zone) (eq zone t) (eq zone 'wall)
-                (integerp zone) (stringp zone)
-                (and (consp zone) (integerp (car zone)) (consp (cdr zone))))
-      (signal 'error (list "Invalid time zone specification" zone)))
-    (when (and (consp zone) (not (stringp (car (cdr zone)))))
-      (signal 'wrong-type-argument (list 'stringp (car (cdr zone)))))
-    (format-time-string "%a %b %e %H:%M:%S %Y" seconds zone))))
+  (fset 'current-time-string #[(&optional specified-time zone) "\306\10!\31\307\11\310\n!\"\33\f\311\138\312\\\313\246\211\35\314W\203 \0\15\313\\\202!\0\15)H\315\16\25\13A@SH\316\138\317W\2037\0\320\2028\0\315\321\316\138!\315\16\26\312\138H\322\16\26\323\138H\322\16\26\324\138H\315\321\13@!\260\15*\207" [specified-time secs zone lt nelisp--tf-wday-abbr tf-r nelisp--tf-seconds nelisp--tf-localtime nelisp--tf-zone 3 4 7 0 " " 2 10 "  " number-to-string ":" 5 6 nelisp--tf-mon-abbr nelisp--tf-d2] 15 "Return the current local time, as a human-readable string."]))
+(unless (fboundp 'current-time-zone)
+  (fset 'current-time-zone #[(&optional specified-time zone) "\306\10!\31\307\n!\33\310\11\13\"\34\311\f8\211\35@\36\23\312\158\211\36\24G\313U\203k\0\314\16\23!\211\36\25\315\245\36\26\16\25\315\246\36\27\16\23\313W\203=\0\316\202>\0\317\320\16\26!\16\27\313U\204f\0\320\16\27\321\245!\16\27\321\246\313U\204a\0\320\16\27\321\246!\202b\0\322P\202g\0\322Q\26\24+\16\23\16\24.\6D\207" [specified-time secs zone z lt info nelisp--tf-seconds nelisp--tf-zone nelisp--tf-localtime 7 2 0 abs 3600 "-" "+" nelisp--tf-pad2 60 "" off name a h r] 7 "Return the offset and name for the local time zone as (OFFSET NAME)."]))
+;;; END GENERATED nelisp-timefns
 (unless (fboundp 'replace-regexp-in-string)
   ;; This used to recognise ONE regexp -- "[^A-Za-z0-9_]" -- and answer STRING
   ;; unchanged for every other pattern.  A caller got its input back with no
@@ -29649,8 +29591,8 @@ any other -- to find the final function binding and return it."
 ;; native `(builtin NAME)' values use the small fixed-arity table below.  The
 ;; open range is deliberately represented by `many', matching Emacs.
 (defconst nelisp--builtin-fixed-arities
-  '((0 garbage-collect)
-    (1 nelisp--clear-string-bytes car cdr car-safe atom consp listp nlistp null not stringp
+  '((0 garbage-collect point point-min point-max bobp eobp widen following-char preceding-char bolp eolp)
+    (1 goto-char nelisp--clear-string-bytes car cdr car-safe atom consp listp nlistp null not stringp
        symbolp symbol-with-pos-p bare-symbol integerp bignump natnump numberp floatp vectorp functionp
        bool-vector-p char-table-p recordp
        length symbol-name symbol-value symbol-function fboundp boundp makunbound
@@ -29660,9 +29602,13 @@ any other -- to find the final function binding and return it."
        nelisp--declare-local-special)
     (2 nelisp--equal-leaf nelisp--string-mark-intervals cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc memq member assq string=
        nelisp--native-pin-eq-slots
-       string< make-vector fset ash nelisp--pow)
-    (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference)
+       string< make-vector fset ash nelisp--pow narrow-to-region
+       nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert nelisp--gb-column delete-region
+       buffer-substring buffer-substring-no-properties)
+    (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference
+       nelisp--gb-delete nelisp--gb-substring nelisp--gb-count-nl nelisp--gb-overwrite nelisp--gb-count-lines)
     (4 nelisp--native-pin-copy-v2)
+    (5 nelisp--gb-find-char)
     (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")
@@ -29703,9 +29649,13 @@ unlisted OS-specific entry point."
          ((eq name 'eval) '(1 . 2))
          ((assq name nelisp--special-form-arities)
           (cons (cdr (assq name nelisp--special-form-arities)) 'unevalled))
-         ((memq name '(featurep intern-soft)) '(1 . 2))
+         ((memq name '(featurep intern-soft delete-char)) '(1 . 2))
+         ((memq name '(insert-char)) '(1 . 3))
          ((memq name '(floor truncate ceiling)) '(1 . 2))
          ((memq name '(float-time)) '(0 . 1))
+         ((memq name '(buffer-size forward-line char-after char-before line-beginning-position
+                       line-end-position pos-bol pos-eol))
+          '(0 . 1))
          ((memq name '(prin1-to-string)) '(1 . 3))
          ((memq name '(string-match-p string-search)) '(2 . 3))
          ((memq name '(string-match)) '(2 . 4))

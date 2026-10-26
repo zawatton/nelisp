@@ -1,0 +1,50 @@
+#+TITLE: Source interpreter per-form cost, GNU eval_sub structure (interp4)
+#+NOTE: Created 2026-11-02 before implementation. Seed = coordinator HEAD 471535ddb (v19) + overlay (vmcore, corecall). Baselines: v19 integ-1036 (per-form audit, first pass), v20 integ-1037 (= v19 + vmcore + corecall; all before/after numbers are against v20 once its callgrind table is in target/interp4/ir-base.json).
+#+NOTE: S1 cause (PMC, r5-sum-base-toplevel, 300000 trips, CPU 13): NeLisp 4590 Ir / 1847 cycles per trip (IPC 2.48), GNU 2247 Ir / 609 cycles (IPC 3.69); store-to-load forwards 917 vs 64 per trip; mispredicts negligible on both. Each call layer of the evaluator spills its arguments and locals to a 0x100-0x560 byte frame, so removing layers lowers Ir and cycles; per-layer trimming alone cannot reach GNU wall time.
+#+NOTE: Per-form targets (<= 2x GNU Ir, v19 first-pass numbers, extra Ir over the empty loop): (< i n) 1471 -> <= 1206 (GNU 603); (aref a 1) 1014 -> <= 808 (GNU 404); (car (quote ..)) 1262 -> <= 732 (GNU 366; 179 of it is the quote arm); (setq i (+ i 1)) 1431 already inside 2x of 792 (target <= 1584, not claimed); (let ((y 1)) y) 5214 -> <= 2146 (GNU 1073).
+#+NOTE: survey4 row rule: interp rows of survey4 whose key functions are native subrs only (resurvey19 survey4.jsonl, family 1), minus rows whose cost is a slow subr body (cs-fmt-*, cs-str2num-*, cs-num2str-*) and minus the closure-call rows (mp-fib-20, mp-tak: call protocol). Median over exactly the remaining rows before and after.
+#+NOTE: Scope cut, 2026-11-02, before the first build: the planned "fold the evaluator boundary bookkeeping into nl_eval_inner_w" (old S2.5) and "fuse nl_eic_subr_call_w with nl_eic_prim_frame_w" were not built: the first needs the same body spliced into the shared shim entry `nelisp_eval_call_w` (every evaluation in the runtime) and could not be verified on the host harness, with two builds available. The denominator fell from 12 to 11 criteria, then S4.3 (the 2x targets, red) was added: 12. The per-form targets stay the measure; forms that miss them are reported as misses.
+#+NOTE: Not edited (other lanes): m5_fx_eval_forms, m5_fx_primitive_run, nl_fl_*, nl_bind_frame_param, byte-code loop.
+* S1 Cause with evidence
+** S1.1 Per-form Ir table of the current binary (callgrind, two N) against GNU, with the <= 2x targets
+evidence: target/interp4/ir-base.json sha256=8d60413b65b322678846b62b5ad33f50242a67f6da09e80cedf72b91fd93fd5a
+cmd: python3 target/interp4/criteria.py table
+** S1.2 PMC cause: IPC and store-forwarding numbers recorded
+evidence: target/interp4/pmc-base.txt sha256=6a58c0e78265775bdf0d33cfceb59d92f6da05663ab54ce95929f6ee16faf41f
+cmd: python3 target/interp4/criteria.py pmc
+** S1.3 survey4 row set fixed and baseline median recorded
+evidence: target/interp4/s4-baseline.json sha256=1fd87032cb73ba154a99332a883159059e4b9b7600d0ebc067408b74b969d25a
+cmd: python3 target/interp4/criteria.py s4rows
+* S2 Fix
+** S2.1 let (fast arm) and the generic let binder bind a plain lexical variable as GNU Flet does, (VAR . VALUE) pairs through nl_bind_frame_param, with host ERT red on the seed and six killed mutants
+evidence: target/interp4/ert-green.log sha256=36518c3988c06dd651aa5881462073a14d4c568d2b3c22c08062f3e65d5294ad
+evidence: target/interp4/ert-red.log sha256=377280e0f819de3d77bef246d39fa813fb66b4b46487a05b1f826c241d04ea35
+cmd: python3 target/interp4/criteria.py ert
+cmd: grep -q '(nl_bind_frame_param (+ env 32) var w)' scripts/nelisp-standalone-build.el && grep -q '(defun nl_eic_let_hybrid_ok (env var)' scripts/nelisp-standalone-build.el && grep -q 'passed .*i4-let-binds-with-the-function-parameter-binder' target/interp4/ert-green.log
+** S2.2 let* runs in one arm with a frame per binding, bound the same way, every frame popped on success and on error
+cmd: grep -q '(defun nl_eic_let_star_run_w (tail env)' scripts/nelisp-standalone-build.el && grep -q 'passed .*i4-let-star-failures-pop-every-frame-pushed' target/interp4/ert-green.log && grep -q 'passed .*i4-dispatch-routes-let-star' target/interp4/ert-green.log
+** S2.3 GNU-parity corpus (if, quote, let, let*, closures, setq, duplicates, 7-10 variables, special and locally declared variables, dynamic mode): candidate output equals GNU's and v20's; the interp3 and interpreter-primitive corpora unchanged
+evidence: target/interp4/corpus4-cand.out sha256=2410502abe1c119b46e86db443e49cc0bef8d5e36c7281846f2d19c08cfb187f
+evidence: target/interp4/corpus4-gnu.out sha256=2410502abe1c119b46e86db443e49cc0bef8d5e36c7281846f2d19c08cfb187f
+cmd: python3 target/interp4/criteria.py corpus
+** S2.4 if and quote have arms like GNU Fif and Fquote, `<` on fixnums and aref skip the VM id chain and the prim2 layer, setq stores into a hybrid binding pair as Fsetcdr does
+cmd: grep -q '(defun nl_eic_if_w (form_ptr head_ptr tail_ptr env)' scripts/nelisp-standalone-build.el && grep -q '(defun nl_eic_quote_w (form_ptr head_ptr tail_ptr env)' scripts/nelisp-standalone-build.el && grep -q 'passed .*i4-setq-store-writes-a-hybrid-binding-in-its-pair' target/interp4/ert-green.log && grep -q 'passed .*i4-if-evaluates-the-test-then-one-branch' target/interp4/ert-green.log
+* S3 Integrated build
+** S3.1 One dedicated full dynamic build, prelink F1 within 384, no growth
+cmd: grep -q "^BUILD rc=0" target/interp4-build/dynamic/build.log && test -x target/interp4-build/dynamic/nelisp-dynamic
+cmd: for f in scripts/nelisp-standalone-build.el lisp/nelisp-aot-compiler.el; do cmp -s $f target/interp4-build/dynamic/src/$f || exit 1; done
+cmd: python3 target/interp4/criteria.py prelink
+** S3.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; gnu-speed-win-check passes; survey5 shim eval/data/fns/subr tests lose no pass
+evidence: target/interp4/fixtures/report.json sha256=4fbc191096326a90123a775dd0092dc9bc703ed81993e1b7d53165b98419c192
+cmd: python3 target/interp4/criteria.py fixtures
+cmd: grep -q "closurevm: PASS" target/interp4/wincheck.log && grep -q "^rc=0" target/interp4/wincheck.log
+cmd: python3 target/interp4/criteria.py shim
+* S4 End to end
+** S4.1 Per-form Ir after build 2 is lower on every changed form and higher on none (callgrind, two N, same drivers)
+evidence: target/interp4/ir-after.json sha256=f3479218287628fdebac895c253821bf1bf50b4edf97294638d9845a78ea3d66
+cmd: python3 target/interp4/criteria.py ir
+** S4.2 Paired elapsed on r5 rows, reg-sum-bc, r3-mix vs v20 and GNU; survey4 chosen-row median before and after
+cmd: python3 target/interp4/criteria.py elapsed
+cmd: python3 target/interp4/criteria.py s4
+** S4.3 Every claimed form (<, aref, let, let with two variables, let*, if) within 2x GNU Ir; known red: < 2.18x, aref 2.49x, let 2.64x, let2 2.37x, let* 3.45x (if 1.98x met)
+cmd: python3 target/interp4/criteria.py targets

@@ -15,29 +15,11 @@
     (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
         (progn
           ;; Unicode titles can change byte width and character count.
-          (let* ((before (progn (when (nelisp-buffer-ins buffer)
-                                  (nelisp-buffer--settle buffer t))
-                                (nelisp-buffer-before-gap buffer)))
-                 (index (1- position)))
-            (when (and (/= delta 0) (< index (length before)))
-              (setf (nelisp-buffer-blen buffer) (+ (nelisp-buffer-blen buffer) delta)))
-            (unless (= delta 0)
-              (setf (nelisp-buffer-len buffer) (+ (nelisp-buffer-len buffer) delta)))
-            (if (< index (length before))
-                (setf (nelisp-buffer-before-gap buffer)
-                      (concat (substring before 0 index) replacement
-                              (substring before (1+ index))))
-              (let* ((after (nelisp-buffer-after-gap buffer))
-                     (offset (- index (length before))))
-                (setf (nelisp-buffer-after-gap buffer)
-                      (concat (substring after 0 offset) replacement
-                              (substring after (1+ offset)))))))
+          ;; The gap buffer keeps the point (and the gap) with the text it follows.
+          (nelisp--gb-splice-char buffer (1- position) replacement)
           (unless (= delta 0)
             ;; GNU case conversion preserves marker positions even when a
             ;; title expands. Point still follows its converted character.
-            (let ((pending (nelisp-buffer-pend buffer)))
-              (when (and pending (> pending position))
-                (setf (nelisp-buffer-pend buffer) (+ pending delta))))
             (when (and (nelisp-buffer-narrow-start buffer)
                        (> (nelisp-buffer-narrow-start buffer) position))
               (setf (nelisp-buffer-narrow-start buffer)

@@ -1,0 +1,53 @@
+#+TITLE: complete1: completion + obarray + plist at GNU speed
+#+NOTE: Baseline v19 ../resume-4943-20261024/target/integ-1036-build/dynamic/nelisp-dynamic. CPU 9 timing. Criteria added/changed move the denominator.
+
+* S1 Cause with evidence
+
+** S1.1 Cause report names the shadowing prelude defuns and the measured costs
+cmd: test -s target/complete1/REPORT.md && grep -q "S1 cause" target/complete1/REPORT.md
+
+** S1.2 GNU oracle corpus runs under GNU Emacs 31.1 and has at least 150 cases
+cmd: test $(/usr/local/bin/emacs -Q --batch -l tools/ai/complete1/run.el 2>/dev/null | wc -l) -ge 150
+
+** S1.3 v19 baseline is red on the corpus (test-completion void, try/all diverge)
+cmd: ! tools/ai/complete1/check-corpus.sh ../resume-4943-20261024/target/integ-1036-build/dynamic/nelisp-dynamic >/dev/null 2>&1
+
+* S2 Fix with red/green checks
+
+** S2.1 Lisp reference implementations (GNU minibuf.c) pass the corpus on v19
+cmd: sed -n '/;; GNU minibuf.c (Ftry_completion/,/^(unless (fboundp .regexp-opt)/p' scripts/nelisp-stdlib-prelude.el | sed '$d' > target/complete1/slow.el && tools/ai/complete1/check-corpus.sh ../resume-4943-20261024/target/integ-1036-build/dynamic/nelisp-dynamic $PWD/target/complete1/slow.el
+
+** S2.2 Native arms registered (reader-builtins, arities) and registrations validate
+#+REQUIRES: C1_VALIDATE
+cmd: sh -c "$C1_VALIDATE"
+
+** S2.3 Parens clean in the two edited files (criterion scoped: repo-wide parens-check has 33 findings in other files at the seed)
+cmd: timeout 50 make parens-check 2>&1 | grep -E 'nelisp-stdlib-prelude|nelisp-standalone-build' | grep -q . ; test $? -ne 0
+
+** S2.4 Native words exist for try/all/test-completion and custom-obarray intern
+cmd: grep -q 'wf_cmpl_w' scripts/nelisp-standalone-build.el && grep -q 'wf_obarray_table_w' scripts/nelisp-standalone-build.el
+
+* S3 Integrated build passes fixtures
+
+** S3.1 Built binary matches GNU on the full corpus
+#+REQUIRES: C1_BIN
+cmd: tools/ai/complete1/check-corpus.sh $C1_BIN
+
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25, buffer 21/21
+#+REQUIRES: C1_BIN
+cmd: test -s target/complete1/fixtures.ok
+
+** S3.3 gnu-speed-win-check passes
+#+REQUIRES: C1_BIN
+cmd: tools/ai/gnu-speed-win-check/check.sh $C1_BIN >/dev/null 2>&1
+
+* S4 Paired timing
+
+** S4.1 Family 12 and 8 medians recorded vs v19 and GNU
+cmd: test -s target/complete1/timing.json
+
+** S4.2 Regression rows reg-sum-bc and r3-mix within 3 percent
+cmd: test -s target/complete1/regrows.ok
+
+** S4.3 REPORT.md and patch present and the patch applies
+cmd: test -s target/complete1/complete1.patch && test -s target/complete1/REPORT.md

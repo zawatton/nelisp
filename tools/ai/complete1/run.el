@@ -1,0 +1,10 @@
+;;; run.el --- evaluate corpus.el, print one line per case  -*- lexical-binding: t; -*-
+(load (expand-file-name "corpus.el" (file-name-directory (or load-file-name buffer-file-name))) nil t)
+(when (getenv "C1_SLOW")
+  (load (getenv "C1_SLOW") nil t)
+  (fset 'try-completion #'nelisp--try-completion-slow)
+  (fset 'all-completions #'nelisp--all-completions-slow)
+  (fset 'test-completion #'nelisp--test-completion-slow))
+(dolist (c c1-cases)
+  (let ((r (condition-case e (eval (cadr c) t) (error (list 'error (car e) (if (eq (car e) 'wrong-type-argument) (cdr e) nil))))))
+    (princ (format "%s %S\n" (car c) r))))

@@ -1,0 +1,88 @@
+#+TITLE: bufnative: native buffer read path (point, goto-char, point-min/max, buffer-size, bobp, eobp) and edit-path design (NeLisp)
+
+* S1 Cause with evidence
+
+** S1.1 (point) cost breakdown measured on the corecall binary (closure 10412, byte-code fn from fx 3130, from bc 1180, call floor 514 bc / 1648 fx)
+cmd: test -s target/bufnative/audit/s1-measure.txt && grep -q "call protocol alone" target/bufnative/audit/s1-measure.txt
+
+** S1.2 Opcodes 96/98/100/101/109/111 reach the buffer only through wf_bytecode_buffer_u4a (arglist + nl_apply_function_w)
+cmd: grep -q "nelisp--bytecode-point" scripts/nelisp-standalone-build.el || grep -q "wf_bytecode_buffer_u4a" scripts/nelisp-standalone-build.el
+
+** S1.3 Buffer record layout fixed (16 slots; pend 11, blen 12, len 13, narrow-start 6, narrow-end 7, ins 15) and read by the native body
+cmd: grep -q "nl_buf_leaf_run" lisp/nelisp-cc-fx-call-primitives.el
+
+** S1.4 The edit path copies text (before-gap/after-gap are immutable strings): insert, forward-line and line-beginning-position costs measured per buffer size
+#+NOTE: edit/base-corecall.txt (us/op at 1k/10k/100k): front insert 32/38/77, insert+buffer-string 33/69/117, forward-line 80/245/1858 (O(buffer)), line-beginning-position ~590 (interpreted backward aref walk). Gap-buffer design is in the lane's final message (follow-up lane): 105 sites read the gap strings directly.
+cmd: test -s target/bufnative/edit/base-corecall.txt && grep -q "forward-line-100000" target/bufnative/edit/base-corecall.txt
+
+** S1.5 End-to-end: S1 evidence files exist (measurements, edit baseline, per-call instruction baseline)
+cmd: test -s target/bufnative/audit/s1-measure.txt && test -s target/bufnative/timing/instr.base.txt
+
+* S2 Fix with red/green host checks and a GNU-parity corpus
+
+** S2.1 nl_buf_leaf_run host ERT (read ids, clamp, nil pend, decline cases) with negative controls
+cmd: ulimit -v 8388608 && timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-buffer-leaf-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q " 0 unexpected"
+
+** S2.2 Subr specs and dispatch arms for the seven names registered (arity, directcall, reader builtin)
+cmd: grep -q '("point" 40)' scripts/nelisp-standalone-build.el && grep -q '(:lit "goto-char")' scripts/nelisp-standalone-build.el
+
+** S2.3 Byte-code VM arms (ops 96 98 100 101 109 111) in the fast loop decline to the old route
+cmd: grep -q "bufnative: Bpoint (96), Bgoto_char (98)" scripts/nelisp-standalone-build.el && grep -q "(nl_buf_leaf_run a mem sp b" scripts/nelisp-standalone-build.el
+
+** S2.4 GNU-parity corpus for the read path (narrowing, markers, clamping, killed/empty buffers) equals GNU
+cmd: grep -q "bufnative-corpus source diff-lines=0" target/bufnative/parity-summary.txt && grep -q "bufnative-corpus bytecode diff-lines=0" target/bufnative/parity-summary.txt && test "$(wc -l < target/bufnative/corpus/new2.out)" -ge 113
+
+** S2.5 End-to-end: host ERT of leaf + existing directcall/subr tests keep their baseline
+cmd: ulimit -v 8388608 && for t in directcall-test directcall-leafprim-test subr-object-test; do timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-$t.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q " 0 unexpected" || exit 1; done
+
+** S2.6 Design for the not-done parts recorded (line functions, edit path / gap buffer)
+#+NOTE: line functions: nelisp--motion-bol walks back with interpreted aref (about 590 us for a 500-char line, flat over buffer size); needs a native backward newline search over the two gap strings (GNU find_newline/memrchr) plus bodies for bolp, eolp, line-beginning-position, line-end-position, pos-bol, pos-eol, forward-line, count-lines (str-count-nl exists). forward-line is O(buffer) over nelisp-buffer-string for N>1 (80/245/1858 us at 1k/10k/100k).
+#+NOTE: gap buffer (GNU buffer.h, insdel.c): one byte region BEG_ADDR..GPT_ADDR | gap | GAP_END..Z_ADDR with gpt, gap_size, z, begv, zv, pt in chars and bytes; make_gap growth, move_gap_both memmove on a far edit, UTF-8 text with a char/byte position cache (buf_charpos_to_bytepos); markers carry charpos and bytepos. 105 sites read before-gap/after-gap directly (69 prelude, 6 lisp/nelisp-stdlib-misc.el, 30 src/nelisp-buffer.el: rx2 regexp windows, line walkers, textprop/overlay adjusters), so first make the read API (nelisp-buffer-substring, char-at, search window) the only access, then swap the representation inside settle/insert/delete-region. Removes: front/mid insert O(distance), buffer-string after an edit O(buffer), forward-line O(buffer).
+#+NOTE: residuals: nl_buf_view allocates on its first call (permanent page, interned name); the prelude reads point during load so it is initialised before user code. Control-page words 268436544 (view), 268436552 (symbol object), 268436560 (epoch) are new: sibling lanes must not use them. insdel-tests.el does not exist in the GNU 31.1 test tree (src/ has buffer-tests, editfns-tests, marker-tests only).
+cmd: grep -q "gap buffer (GNU buffer.h" tools/ai/bufnative-progress.org
+
+* S3 One integrated build passing fixtures
+
+** S3.1 Build 2 rc 0 (build 1 rc 0 earlier: 2 builds in total)
+cmd: grep -q "BUILD rc=0" target/bufnative-build2/dynamic/build.log && grep -q "BUILD rc=0" target/bufnative-build1/dynamic/build.log
+
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21 on build 2
+cmd: grep -q "weak 24/24 PASS" target/bufnative/fixtures2.out && grep -q "GNU 56/56 PASS" target/bufnative/fixtures2.out && grep -q "AFRT 24/25" target/bufnative/fixtures2.out && grep -q "buffer 21/21 PASS" target/bufnative/fixtures2.out
+
+** S3.3 gnu-speed-win-check passes and the F1 root evidence stays under its bound (98304 nodes)
+cmd: grep -q "closurevm: PASS (24)" target/bufnative/wincheck2.out && grep -q "switch corpus: PASS" target/bufnative/wincheck2.out && grep -q "features: PASS" target/bufnative/wincheck2.out && [ "$(grep -o 'nodes=[0-9]*' target/bufnative-build2/dynamic/build.log | sed 's/nodes=//' | sort -n | tail -1)" -le 98304 ]
+
+** S3.4 buflocal1 narrow/local, markgc, textprop1 corpus+fuzz, overlay1 fuzz and the bufnative source and byte-code corpora equal GNU on build 2
+cmd: grep -q "narrow: gnu-lines=103 diverging=0" target/bufnative/parity-summary.txt && grep -q "local: gnu-lines=83 diverging=0" target/bufnative/parity-summary.txt && grep -q "corpus mismatches=0" target/bufnative/parity-summary.txt && grep -q "fuzz seeds differing=0" target/bufnative/parity-summary.txt && grep -q "fuzz2: 10401 lines identical" target/bufnative/parity-summary.txt && grep -q "source diff-lines=0" target/bufnative/parity-summary.txt && grep -q "bytecode diff-lines=0" target/bufnative/parity-summary.txt
+
+** S3.5 End-to-end: survey5 shim buffer/editfns/marker tests lose no passes (per-test table identical to the corecall baseline) and the repo-wide gates are no worse than on the seed
+cmd: cmp -s target/bufnative/survey/base/nl-results.tsv target/bufnative/survey/b2/nl-results.tsv && grep -q "checked=25595 findings=1614" target/bufnative/gates-compare.txt && grep -q "SEED: GATE-COUNT checked=25586 findings=1614" target/bufnative/gates-compare.txt
+
+* S4 Paired timing and regression rows
+
+** S4.1 Instructions per call over the loop control: fx point and point-max below 200, the rest of the read path below 600 (byte-code arms 256-419)
+#+NOTE: baseline v20 (timing/instr.v20.txt): fx-point 7748-818 = 6930, bc-point 9676-306 = 9370 marginal; build 2: 198 / 256 (timing/instr.b2.txt). Closing the byte-code gap needs the fast-loop arm to inline the bodies.
+cmd: awk '/^fx-point /{p=$2} /^fx-base /{b=$2} END{split(p,a,"=");split(b,c,"="); exit !(a[2]-c[2] < 200)}' target/bufnative/timing/instr.b2.txt
+
+** S4.2 byte-code point, point-min, point-max, bobp, eobp below 200 per call
+#+NOTE: known red: 256 / 261 / 266 / 401 / 401 (build 2)
+cmd: awk '/^bc-base /{split($2,c,"=");b=c[2]} /^bc-(point|pmin|pmax|bobp|eobp) /{split($2,a,"="); if (a[2]-b >= 200) bad=1} END{exit bad}' target/bufnative/timing/instr.b2.txt
+
+** S4.3 reg-sum-bc and r3-mix do not regress against v20 (integ-1037: 421 / 14590 instr per trip; within 1%)
+#+NOTE: build 2 measured 420 / 14603 (timing/reg.b2.txt vs timing/reg.v20.txt); v19 was 500 / 16039 (v20 contains vmcore + corecall, as the seed does).
+cmd: awk 'FNR==NR{ if ($1=="reg-sum-bc") {split($2,a,"="); r=a[2]} if ($1=="r3-mix") {split($2,a,"="); m=a[2]} next} $1=="reg-sum-bc"{split($2,a,"="); if (a[2] > r*1.01) bad=1} $1=="r3-mix"{split($2,a,"="); if (a[2] > m*1.01) bad=1} END{exit bad}' target/bufnative/timing/reg.v20.txt target/bufnative/timing/reg.b2.txt
+
+** S4.3b goto-char below 200 per call, fx and byte-code (brief target)
+#+NOTE: known red: 409 (fx) / 419 (bc) marginal on build 2 (v20: 17907 / 19978). The body reads pend, blen, len, ns, ne, checks five fixnum words, then writes pend; the next step is a goto-char specialisation that reads only blen/narrowing.
+cmd: awk '/^fx-base /{split($2,c,"=");fb=c[2]} /^bc-base /{split($2,c,"=");bb=c[2]} /^fx-goto /{split($2,a,"=");fg=a[2]} /^bc-goto /{split($2,a,"=");bg=a[2]} END{exit !((fg-fb < 200) && (bg-bb < 200))}' target/bufnative/timing/instr.b2.txt
+
+** S4.3c char-after below 200 per call (brief target)
+#+NOTE: not started in this lane: needs a string-word to byte-pointer step and a multibyte char index (one aref cursor per string, rx2 finding). Design: native body only when the INS slot is nil and the gap string is unibyte; everything else declines to the Lisp reference.
+pending
+
+** S4.4 Family 3, 5, 13 sample medians NeLisp/GNU before/after recorded (20 rows; the full resurvey is not re-run)
+#+NOTE: vs v20 (integ-1037), 20 rows, CPU 15, 3 reps (timing/rows-summary.txt): family 3 (4 rows) 238.6 -> 231.4 x GNU, family 5 (11 rows) 29.8 -> 27.4, family 13 (5 rows) 48.2 -> 45.0. Rows moved most: ed-narrow-widen 14.2 -> 6.5, buffers-goto-forward-bc 283 -> 147, buffers-goto-forward-i 20.6 -> 13.4, buffers-narrow-i 39 -> 30. The other rows are dominated by insert/delete-region/line functions/char-after, which are not native yet. Micro (edit/v20.txt vs edit/b2.txt): point 0.92 -> 0.07 us, narrow+widen 5.5 -> 0.13 us. vs v19 (rows-summary-v19.txt) the same build shows family 5 50.1 -> 26.7, but v19 lacks vmcore and corecall.
+cmd: grep -q "^family 5" target/bufnative/timing/rows-summary.txt
+
+** S4.5 End-to-end: patch applies to the seed (patch --dry-run) and the ledger is present
+cmd: sh target/bufnative/dryrun.sh

@@ -618,6 +618,10 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
      64
      ;; `nl_gc_conserv_seen': the stack words the conservative scan has taken (256 direct-mapped words).
      2048
+     ;; bufnative `nl_buf_cache': the cached symbol object of `nelisp--current-buffer' and its
+     ;; compaction epoch (two u64), placed where `nl_cold_chunk0_domain' began; the symbols that
+     ;; are addressed from the end of the BSS move with it.
+     24
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -1028,6 +1032,9 @@ storage — not an arena reservation."
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_gc_conserv_seen"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64)
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_buf_cache"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64 2048)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 32)
@@ -12956,6 +12963,12 @@ argument (reachability + in-arena bounds checks).")
                           (nl_abi_fail (bf_wrong_type_listp (wf_arg_ptr args 1)) 0)))
     ((:lit "alist-get") :word . (wf_alist_get_w args env 0))
     ((:lit "assoc-string") :word . (wf_assoc_string_w args env 0))
+    ;; complete1: GNU minibuf.c completion in one native pass (`wf_cmpl_w').
+    ((:lit "try-completion") :word . (wf_cmpl_w args env 0))
+    ((:lit "all-completions") :word . (wf_cmpl_w args env 1))
+    ((:lit "test-completion") :word . (wf_cmpl_w args env 2))
+    ((:lit "unintern") :word . (wf_unintern_w args env 0))
+    ((:lit "obarrayp") :word . (wf_obarrayp_w args env 0))
     ;; Segment G1: `nth'/`nthcdr'/`last'/`butlast'/`append'/`plist-get'/
     ;; `mapcar' -- see `nelisp-standalone--applyfn-fast-list-helpers'
     ;; just above `nelisp-standalone--applyfn-dispatch-table-baked' for
@@ -12989,6 +13002,45 @@ argument (reachability + in-arena bounds checks).")
                           (nl_abi_fail (bf_wrong_type_listp (wf_arg_ptr args 1)) 0)))
     ((:lit "nelisp--plist-get-eq") :word . (bf_plist_get_eq_w args 0))
     ((:lit "nelisp--plist-member-eq") :word . (bf_plist_member_eq_w args 0))
+    ;; bufnative: the reference route of the buffer read path (see `nl_buf_leaf_run').
+    ((:lit "point") :word . (nl_buf_prim_w 40 args env))
+    ((:lit "point-min") :word . (nl_buf_prim_w 41 args env))
+    ((:lit "point-max") :word . (nl_buf_prim_w 42 args env))
+    ((:lit "goto-char") :word . (nl_buf_prim_w 43 args env))
+    ((:lit "buffer-size") :word . (nl_buf_prim_w 45 args env))
+    ((:lit "bobp") :word . (nl_buf_prim_w 46 args env))
+    ((:lit "eobp") :word . (nl_buf_prim_w 47 args env))
+    ((:lit "narrow-to-region") :word . (nl_buf_prim_w 48 args env))
+    ((:lit "widen") :word . (nl_buf_prim_w 49 args env))
+    ;; bufedit: the gap buffer text (see `nl_gb_leaf_run' and `nl_gb_wprim').
+    ((:lit "char-after") :word . (nl_buf_prim_w 50 args env))
+    ((:lit "char-before") :word . (nl_buf_prim_w 51 args env))
+    ((:lit "following-char") :word . (nl_buf_prim_w 52 args env))
+    ((:lit "preceding-char") :word . (nl_buf_prim_w 53 args env))
+    ((:lit "line-beginning-position") :word . (nl_buf_prim_w 54 args env))
+    ((:lit "line-end-position") :word . (nl_buf_prim_w 55 args env))
+    ((:lit "bolp") :word . (nl_buf_prim_w 56 args env))
+    ((:lit "eolp") :word . (nl_buf_prim_w 57 args env))
+    ((:lit "insert") :word . (nl_buf_prim_w 58 args env))
+    ((:lit "pos-bol") :word . (nl_buf_prim_w 59 args env))
+    ((:lit "pos-eol") :word . (nl_buf_prim_w 60 args env))
+    ((:lit "delete-region") :word . (nl_buf_prim_w 61 args env))
+    ((:lit "forward-line") :word . (nl_buf_prim_w 64 args env))
+    ((:lit "insert-char") :word . (nl_buf_prim_w 65 args env))
+    ((:lit "delete-char") :word . (nl_buf_prim_w 66 args env))
+    ((:lit "nelisp--gb-count-lines") :word . (nl_gb_wprim_w 79 args env))
+    ((:lit "nelisp--gb-column") :word . (nl_gb_wprim_w 80 args env))
+    ((:lit "buffer-substring") :word . (nl_gb_bufsub_w 62 args env))
+    ((:lit "buffer-substring-no-properties") :word . (nl_gb_bufsub_w 63 args env))
+    ((:lit "nelisp--gb-char") :word . (nl_gb_wprim_w 70 args env))
+    ((:lit "nelisp--gb-move") :word . (nl_gb_wprim_w 71 args env))
+    ((:lit "nelisp--gb-reserve") :word . (nl_gb_wprim_w 72 args env))
+    ((:lit "nelisp--gb-insert") :word . (nl_gb_wprim_w 73 args env))
+    ((:lit "nelisp--gb-delete") :word . (nl_gb_wprim_w 74 args env))
+    ((:lit "nelisp--gb-substring") :word . (nl_gb_wprim_w 75 args env))
+    ((:lit "nelisp--gb-find-char") :word . (nl_gb_wprim_w 76 args env))
+    ((:lit "nelisp--gb-count-nl") :word . (nl_gb_wprim_w 77 args env))
+    ((:lit "nelisp--gb-overwrite") :word . (nl_gb_wprim_w 78 args env))
     ;; Private fixture for the opaque byte-code object storage tests. This
     ;; clones a RecordBox-backed value and changes only its public tag.
     ((:lit "nelisp--byte-code-wrap-test") :word .
@@ -20642,6 +20694,577 @@ eval applyfn.")
                                (nl_root_release env mark)
                                (nl_abi_fail 1 0))))))
                     (wf_mapcar_slow_w args env 0)))))))))
+    ;; ===== complete1: completion and custom-obarray natives =====
+    ;; GNU minibuf.c Ftry_completion / Fall_completions / Ftest_completion make one
+    ;; pass over the collection, compare a prefix (case folded by the case table when
+    ;; `completion-ignore-case'), keep the best match as an object plus a byte count
+    ;; and allocate only the answer.  `wf_cmpl_w' does the same for the shapes where
+    ;; bytes decide the answer: a list or alist, a hash table, an obarray made by
+    ;; `obarray-make'; STRING ASCII when folding.  Everything else (a function table,
+    ;; `completion-regexp-list', the initial obarray, a wrong type) is decided BEFORE
+    ;; the first predicate call and delegated to the Lisp reference in the prelude
+    ;; (`nelisp--try-completion-slow' and friends), so no predicate runs twice.
+    ;; Known limit: with folding, a non-ASCII candidate character whose upcase is an
+    ;; ASCII letter (dotless i, long s) is compared as not equal.
+    (defun wf_cmpl_fold (c) (if (>= c 65) (if (<= c 90) (+ c 32) c) c))
+    ;; Index of the first of N bytes where A and B differ (N when equal); IC folds ASCII.
+    (defun wf_cmpl_common (a b n ic)
+      (let* ((i 0) (go 1))
+        (seq
+         (while (= go 1)
+           (if (< i n)
+               (let* ((x (heap-read-u8 a i)) (y (heap-read-u8 b i)))
+                 (if (= x y) (setq i (+ i 1))
+                   (if (= ic 1)
+                       (if (= (wf_cmpl_fold x) (wf_cmpl_fold y)) (setq i (+ i 1)) (setq go 0))
+                     (setq go 0))))
+             (setq go 0)))
+         i)))
+    (defun wf_cmpl_ascii_p (p n)
+      (let* ((i 0) (ok 1))
+        (seq
+         (while (if (< i n) (= ok 1) 0)
+           (if (< (heap-read-u8 p i) 128) (setq i (+ i 1)) (setq ok 0)))
+         ok)))
+    ;; Back up I to the start of the UTF-8 character it falls in.
+    (defun wf_cmpl_back (p i)
+      (seq
+       (while (if (> i 0) (= (logand (heap-read-u8 p i) 192) 128) 0)
+         (setq i (- i 1)))
+       i))
+    ;; Characters in the first N bytes of multibyte text.
+    (defun wf_cmpl_nchars (p n)
+      (let* ((i 0) (c 0))
+        (seq
+         (while (< i n)
+           (seq (if (= (logand (heap-read-u8 p i) 192) 128) 0 (setq c (+ c 1)))
+                (setq i (+ i 1))))
+         c)))
+    ;; Call the Lisp function named by the packed bytes W0..W3 (LEN chars) with the
+    ;; argument list ARGLIST: the delegation of the `assoc-string' family.
+    (defun wf_slow_named_w (arglist env w0 w1 w2 w3 len)
+      (let* ((buf (alloc-bytes 32 1)) (sym_slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 w0) (ptr-write-u64 (+ buf 8) 0 w1)
+             (ptr-write-u64 (+ buf 16) 0 w2) (ptr-write-u64 (+ buf 24) 0 w3)
+             (nl_alloc_symbol buf len sym_slot)
+             (let* ((function-word (nl_lookup_fn_autoload_w (+ env 0) (+ env 64) sym_slot 0)))
+               (if (and (/= function-word 0) (/= function-word 2))
+                   (nl_apply_function_w function-word arglist env 0)
+                 (nl_abi_fail (nl_cons_stash_void_function env sym_slot) 0))))))
+    ;; The value of the special variable named by the packed bytes, nil when unbound.
+    (defun wf_cmpl_var_w (env w0 w1 w2 len)
+      (let* ((buf (alloc-bytes 24 1)) (slot (alloc-bytes 32 8)))
+        (seq (ptr-write-u64 buf 0 w0) (ptr-write-u64 (+ buf 8) 0 w1) (ptr-write-u64 (+ buf 16) 0 w2)
+             (nl_alloc_symbol buf len slot)
+             (let* ((v (nl_sym_find_value_w env slot 0)))
+               (if (or (= v 0) (= v 2)) 3 v)))))
+    (defun wf_cmpl_lit_name_w (u64 len)
+      (let* ((buf (alloc-bytes 8 1)))
+        (seq (ptr-write-u64 buf 0 u64)
+             (let* ((w (nl_string_new buf len 0)))
+               (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w)))))
+    ;; (symbol-name K) for a symbol whose name cell is not a String WORD.
+    (defun wf_cmpl_symname_w (k env)
+      (wf_slow_named_w (nelisp_cons_construct_w k 3 0) env
+                       7939120943772563827 6647137 0 0 11))
+    ;; The candidate name WORD of K: K itself for a string, the name of a symbol,
+    ;; 1 when K is neither (skipped), 0 after a stashed signal.
+    (defun wf_cmpl_name_w (k env)
+      (let* ((tg (nl_val_tag k)))
+        (if (= (m5_string_tag_p tg) 1) k
+          (if (if (= tg 4) 1 (= tg 16))
+              (let* ((fast (nl_symbol_name_fast k)))
+                (if (/= fast 0) fast (wf_cmpl_symname_w k env)))
+            (if (= tg 0) (wf_cmpl_lit_name_w 7104878 3)
+              (if (= tg 1) (wf_cmpl_lit_name_w 116 1) 1))))))
+    ;; The prelude `functionp' on a cons: 1 when its head is `lambda', `closure' or
+    ;; `builtin' (the interpreted closures of this runtime are such lists), 0 for another
+    ;; list, 2 when the head's name cannot be had (the Lisp reference decides).
+    (defun wf_cmpl_fnlist_p (w env)
+      (let* ((a (nl_cons_car_word w)) (tg (nl_val_tag a)))
+        (if (if (= tg 4) 1 (= tg 16))
+            (let* ((nm (wf_cmpl_name_w a env)))
+              (if (<= nm 1) 2
+                (let* ((p (nl_bi_strptr nm)) (n (nl_bi_strlen nm)))
+                  (if (= n 6) (if (= (heap-read-u8 p 0) 108) (if (= (heap-read-u8 p 1) 97) (if (= (heap-read-u8 p 2) 109) (if (= (heap-read-u8 p 3) 98) (if (= (heap-read-u8 p 4) 100) (if (= (heap-read-u8 p 5) 97) 1 0) 0) 0) 0) 0) 0)
+                    (if (= n 7)
+                        (if (if (= (heap-read-u8 p 0) 99) (if (= (heap-read-u8 p 1) 108) (if (= (heap-read-u8 p 2) 111) (if (= (heap-read-u8 p 3) 115) (if (= (heap-read-u8 p 4) 117) (if (= (heap-read-u8 p 5) 114) (if (= (heap-read-u8 p 6) 101) 1 0) 0) 0) 0) 0) 0) 0) 1 (if (= (heap-read-u8 p 0) 98) (if (= (heap-read-u8 p 1) 117) (if (= (heap-read-u8 p 2) 105) (if (= (heap-read-u8 p 3) 108) (if (= (heap-read-u8 p 4) 116) (if (= (heap-read-u8 p 5) 105) (if (= (heap-read-u8 p 6) 110) 1 0) 0) 0) 0) 0) 0) 0))
+                      0)))))
+          0)))
+    ;; ---- obarrays made by `obarray-make': (record 'obarray MARKER TABLE) ----
+    ;; MARKER is the uninterned symbol `nelisp-obarray-marker' (prelude
+    ;; `nelisp--obarray-marker'); TABLE an `equal' hash table of name -> symbol.
+    ;; The initial obarray carries the symbol `nelisp--intern-table' instead of a table.
+    (defun wf_obarray_marker_ok (ob)
+      (if (= (nl_val_tag ob) 12)
+          (if (>= (record-slot-count ob) 2)
+              (let* ((nm (nl_symbol_name_fast (nl_record_slot_word ob 0))))
+                (if (= nm 0) 0
+                  (if (= (nl_bi_strlen nm) 21)
+                      (let* ((p (nl_bi_strptr nm)))
+                        (if (= (heap-read-u64 p 0) 8011182953154241902)
+                            (if (= (heap-read-u64 p 8) 7867077583525011810)
+                                (if (= (heap-read-u64 p 13) 8243112831976549753) 1 0) 0) 0))
+                    0)))
+            0)
+        0))
+    ;; The hash table WORD of a custom obarray, 0 when OB is not one.
+    (defun wf_obarray_table_w (ob)
+      (if (= (wf_obarray_marker_ok ob) 1)
+          (let* ((tb (nl_record_slot_word ob 1)))
+            (if (= (bf_hash_table_p_raw tb) 1)
+                (if (= (nl_ht_test_mode tb) 0)
+                    (if (= (nl_ht_custom_function_w tb 2) 3) tb 0) 0) 0))
+        0))
+    (defun wf_obarray_init_p (ob)
+      (if (= (wf_obarray_marker_ok ob) 1)
+          (let* ((tg (nl_val_tag (nl_record_slot_word ob 1)))) (if (= tg 4) 1 (if (= tg 16) 1 0)))
+        0))
+    ;; Next live pair index >= I of hash table TB, or -1.
+    (defun wf_cmpl_ht_next (tb i)
+      (let* ((meta (nl_ht_meta_slot tb)) (n (nl_ht_int meta 3))
+             (hs (nl_ht_marker_word meta 12)) (go 1) (r -1))
+        (seq
+         (while (= go 1)
+           (if (>= i n) (setq go 0)
+             (if (>= (nl_ht_int hs i) 0) (seq (setq r i) (setq go 0))
+               (setq i (+ i 1)))))
+         r)))
+    ;; Table pair I's key / value.
+    (defun wf_cmpl_ht_key (tb i)
+      (nl_vector_slot_word (nl_ht_marker_word (nl_ht_meta_slot tb) 11) (* i 2)))
+    (defun wf_cmpl_ht_val (tb i)
+      (nl_vector_slot_word (nl_ht_marker_word (nl_ht_meta_slot tb) 11) (+ (* i 2) 1)))
+    ;; Pair index of the string KEY in TB under the table's own test, or -1.
+    (defun wf_cmpl_ht_find (tb key)
+      (seq (nl_ht_identity_sync tb)
+           (let* ((mode (nl_ht_test_mode tb)))
+             (nl_ht_find_index tb key (nl_ht_hash key mode) mode))))
+    ;; Remove the string KEY from TB: 1 when a pair was removed (`nl_ht_rem_synced_w').
+    (defun wf_obarray_rem_w (tb key)
+      (seq
+       (nl_ht_identity_sync tb)
+       (let* ((meta (nl_ht_meta_slot tb)) (mode (nl_ht_test_mode tb))
+              (hash (nl_ht_hash key mode)) (index (nl_ht_data_slot tb))
+              (bucket (nl_ht_hash_index hash (vector-len index)))
+              (i (nl_ht_int index bucket)) (prev -1) (done 0))
+         (seq (while (and (>= i 0) (= done 0))
+                (if (= (nl_ht_key_match key (nl_vector_slot_word (nl_ht_marker_word meta 11) (* i 2)) mode) 1)
+                    (seq (nl_ht_remove_index tb bucket prev i) (setq done 1))
+                  (seq (setq prev i) (setq i (nl_ht_int (nl_ht_marker_word meta 14) i)))))
+              done))))
+    ;; 1 list or alist, 2 obarray made by `obarray-make', 3 hash table, 4 a function table
+    ;; (a symbol, a byte-code function or a lambda list), 0 for the Lisp reference.
+    (defun wf_cmpl_kind (coll env)
+      (let* ((tg (nl_val_tag coll)))
+        (if (= tg 0) 1
+          (if (= tg 7)
+              (if (= (bf_hash_table_p_raw coll) 1) 3
+                (let* ((f (wf_cmpl_fnlist_p coll env))) (if (= f 1) 4 (if (= f 2) 0 1))))
+            (if (= tg 12) (if (= (wf_obarray_table_w coll) 0) 0 2)
+              (if (= tg 17) 4 (if (= tg 4) 4 (if (= tg 16) 4 0))))))))
+    ;; Does the name at EP/EB complete the string at SP/SB?  GNU compares SCHARS(string)
+    ;; characters; with UTF-8 text that is SB bytes when both are multibyte or STRING is
+    ;; ASCII, and two texts of different kinds only share ASCII characters.
+    (defun wf_cmpl_prefix_ok (sp sb ep eb sa su eu ic)
+      (if (< eb sb) 0
+        (if (= sa 1)
+            (if (= (wf_cmpl_common sp ep sb ic) sb) 1 0)
+          (if (= su eu)
+              (if (= (wf_cmpl_common sp ep sb ic) sb) 1 0)
+            0))))
+    ;; The result WORD of calling the predicate on the rooted candidate (roots +32, and
+    ;; the hash value at +64 for a hash table), 0 after a stashed signal.
+    (defun wf_cmpl_call_w (roots env kind)
+      (seq
+       (ptr-write-u64 roots 24
+         (if (= kind 3) (nelisp_cons_construct_w (heap-read-u64 roots 64) 3 0) 3))
+       (ptr-write-u64 roots 24
+         (nelisp_cons_construct_w (heap-read-u64 roots 32) (heap-read-u64 roots 24) 0))
+       (ptr-write-u64 roots 24
+         (nl_apply_function_w (wf_word_view (heap-read-u64 roots 0))
+                              (heap-read-u64 roots 24) env 0))
+       (heap-read-u64 roots 24)))
+    ;; 1 the candidate passes the predicate, 0 it is rejected, 2 a signal is stashed.
+    (defun wf_cmpl_pred (roots env kind)
+      (if (= (nl_val_tag (heap-read-u64 roots 0)) 0) 1
+        (let* ((r (wf_cmpl_call_w roots env kind)))
+          (if (= r 0) 2 (if (= (nl_val_tag r) 0) 0 1)))))
+    ;; In place `nreverse' of a list of conses made by `nelisp_cons_construct_w'.
+    (defun wf_cmpl_nreverse (l)
+      (let* ((prev 3) (cur l) (nxt 0))
+        (seq
+         (while (= (nl_val_tag cur) 7)
+           (seq (setq nxt (nl_cons_cdr_word cur))
+                (extern-call nl_consbox_set_cdr (- cur 2) prev)
+                (setq prev cur)
+                (setq cur nxt)))
+         prev)))
+    ;; try-completion: fold the passing candidate (roots +56) into the best match
+    ;; (roots +48; ST: +0 its common size in bytes, +8 the match count).  1 stops the walk.
+    (defun wf_cmpl_try_update (roots st ic)
+      (let* ((nm (heap-read-u64 roots 56)) (bm (heap-read-u64 roots 48)))
+        (if (= (nl_val_tag bm) 0)
+            (seq (ptr-write-u64 roots 48 nm)
+                 (ptr-write-u64 st 0 (nl_bi_strlen nm))
+                 (ptr-write-u64 st 8 1)
+                 0)
+          (let* ((s (heap-read-u64 roots 40)) (sb (nl_bi_strlen s)) (sp (nl_bi_strptr s))
+                 (ep (nl_bi_strptr nm)) (eb (nl_bi_strlen nm))
+                 (bp (nl_bi_strptr bm)) (bl (nl_bi_strlen bm))
+                 (bsz (heap-read-u64 st 0)) (cnt (heap-read-u64 st 8))
+                 (compare (if (< bsz eb) bsz eb))
+                 (i0 (wf_cmpl_common bp ep compare ic))
+                 (msz (if (= i0 compare) compare
+                        (if (= (m5_unibyte_tag_p (nl_val_tag bm)) 1) i0 (wf_cmpl_back bp i0)))))
+            (seq
+             (if (= ic 1)
+                 (if (if (if (= msz eb) (< msz bl) 0) 1
+                       (if (= (if (= msz eb) 1 0) (if (= msz bl) 1 0))
+                           (if (= (wf_cmpl_common ep sp sb 0) sb)
+                               (if (= (wf_cmpl_common bp sp sb 0) sb) 0 1)
+                             0)
+                         0))
+                     (ptr-write-u64 roots 48 nm)
+                   0)
+               0)
+             (if (if (/= bsz eb) 1
+                   (if (/= bsz msz) 1
+                     (if (= ic 1) (if (= (wf_cmpl_common bp ep compare 0) compare) 0 1) 0)))
+                 (if (<= cnt 1) (ptr-write-u64 st 8 (+ cnt 1)) 0)
+               0)
+             (ptr-write-u64 st 0 msz)
+             (if (<= msz sb)
+                 (if (= ic 0) (if (> (heap-read-u64 st 8) 1) 1 0) 0)
+               0))))))
+    ;; One passing prefix test: 0 continue, 1 stop, 2 a signal is stashed.
+    (defun wf_cmpl_step (roots env mode kind ic sa st)
+      (let* ((s (heap-read-u64 roots 40)) (nm (heap-read-u64 roots 56)))
+        (if (= (if (if (= (logand s 7) 4) (= (logand nm 7) 4) 0)
+                   (let* ((hs (- s 4)) (he (- nm 4)) (s8 (ptr-read-u64 hs 8)) (e8 (ptr-read-u64 he 8)))
+                     (wf_cmpl_prefix_ok (ptr-read-u64 hs 24) (if (< s8 0) (ptr-read-u64 hs 0) s8)
+                                        (ptr-read-u64 he 24) (if (< e8 0) (ptr-read-u64 he 0) e8)
+                                        sa (if (< s8 0) 1 0) (if (< e8 0) 1 0) ic))
+                 (wf_cmpl_prefix_ok (nl_bi_strptr s) (nl_bi_strlen s) (nl_bi_strptr nm) (nl_bi_strlen nm)
+                                    sa (m5_unibyte_tag_p (nl_val_tag s)) (m5_unibyte_tag_p (nl_val_tag nm)) ic))
+               0)
+            0
+          (let* ((ok (wf_cmpl_pred roots env kind)))
+            (if (= ok 2) 2
+              (if (= ok 0) 0
+                (if (= mode 1)
+                    (seq (ptr-write-u64 roots 16
+                           (nelisp_cons_construct_w (heap-read-u64 roots 56) (heap-read-u64 roots 16) 0))
+                         0)
+                  (wf_cmpl_try_update roots st ic))))))))
+    ;; The answer of try-completion from the rooted best match: nil, t or a fresh prefix.
+    (defun wf_cmpl_try_result (roots st env)
+      (let* ((bm (heap-read-u64 roots 48)))
+        (if (= (nl_val_tag bm) 0) 3
+          (let* ((s (heap-read-u64 roots 40)) (sb (nl_bi_strlen s)) (bl (nl_bi_strlen bm))
+                 (cnt (heap-read-u64 st 8)) (bsz (heap-read-u64 st 0)))
+            (if (if (= cnt 1)
+                    (if (= bl sb) (= (wf_cmpl_common (nl_bi_strptr bm) (nl_bi_strptr s) sb 0) sb) 0)
+                  0)
+                7
+              (if (if (= (logand bm 7) 4) (= (ptr-read-u64 (- bm 4) 16) 0) 0)
+                  (let* ((w (nl_string_new (nl_bi_strptr bm) bsz (m5_unibyte_tag_p (nl_val_tag bm)))))
+                    (if (= w 0) (nl_abi_fail (bf_signal_memory_full) 0) w))
+                ;; text properties or a mutable string: GNU's Fsubstring, by name
+                (seq
+                 (ptr-write-u64 roots 24
+                   (nelisp_cons_construct_w
+                    (+ (* (if (= (m5_unibyte_tag_p (nl_val_tag bm)) 1) bsz
+                            (wf_cmpl_nchars (nl_bi_strptr bm) bsz)) 4) 1) 3 0))
+                 (ptr-write-u64 roots 24 (nelisp_cons_construct_w 1 (heap-read-u64 roots 24) 0))
+                 (ptr-write-u64 roots 24
+                   (nelisp_cons_construct_w (heap-read-u64 roots 48) (heap-read-u64 roots 24) 0))
+                 (wf_slow_named_w (heap-read-u64 roots 24) env 7956016061204297075 103 0 0 9))))))))
+    ;; Skip list elements whose name cannot complete the string at SP/SB without leaving
+    ;; this function.  Only inline Strings (and alist elements headed by one) are judged
+    ;; here, only for an ASCII string; anything else stops the skip so that the general path
+    ;; decides.  Leaves roots+8 at the first element needing the general path: 1 when one
+    ;; is left, 0 at the end of the list.  Allocates nothing.
+    (defun wf_cmpl_skip_list (roots sp sb ic)
+      (let* ((cur (heap-read-u64 roots 8)) (go 1) (r 0))
+        (seq
+         (while (= go 1)
+           (if (= (logand cur 7) 2)
+               (let* ((elt (ptr-read-u64 (- cur 2) 0))
+                      (key (if (= (logand elt 7) 2) (ptr-read-u64 (- elt 2) 0) elt)))
+                 (if (= (logand key 7) 4)
+                     (let* ((h (- key 4)) (b8 (ptr-read-u64 h 8))
+                            (eb (if (< b8 0) (ptr-read-u64 h 0) b8)))
+                       (if (< eb sb) (setq cur (ptr-read-u64 (- cur 2) 8))
+                         (if (= (wf_cmpl_common sp (ptr-read-u64 h 24) sb ic) sb)
+                             (seq (setq r 1) (setq go 0))
+                           (setq cur (ptr-read-u64 (- cur 2) 8)))))
+                   (seq (setq r 1) (setq go 0))))
+             (seq (if (= (nl_val_tag cur) 7) (setq r 1) 0) (setq go 0))))
+         (ptr-write-u64 roots 8 cur)
+         r)))
+    ;; The same for the pairs of table TB from the pair index in the scratch cell IDX
+    ;; (updated): dead pairs and inline-String keys that cannot complete are skipped.
+    (defun wf_cmpl_skip_ht (tb idx sp sb ic)
+      (let* ((meta (nl_ht_meta_slot tb)) (n (nl_ht_int meta 3))
+             (hb (+ (nl_word_payload (nl_ht_marker_word meta 12)) 8))
+             (kb (+ (nl_word_payload (nl_ht_marker_word meta 11)) 8))
+             (i (heap-read-u64 idx 0)) (go 1) (r 0))
+        (seq
+         (while (= go 1)
+           (if (>= i n) (setq go 0)
+             (if (< (sar (heap-read-u64 hb (* i 8)) 2) 0) (setq i (+ i 1))
+               (let* ((key (heap-read-u64 kb (* i 16))))
+                 (if (= (logand key 7) 4)
+                     (let* ((h (- key 4)) (b8 (ptr-read-u64 h 8))
+                            (eb (if (< b8 0) (ptr-read-u64 h 0) b8)))
+                       (if (< eb sb) (setq i (+ i 1))
+                         (if (= (wf_cmpl_common sp (ptr-read-u64 h 24) sb ic) sb)
+                             (seq (setq r 1) (setq go 0))
+                           (setq i (+ i 1)))))
+                   (seq (setq r 1) (setq go 0)))))))
+         (ptr-write-u64 idx 0 i)
+         r)))
+    ;; Advance to the next candidate.  Writes the element (+32), the hash value (+64);
+    ;; answers the name WORD (see `wf_cmpl_name_w'), or -1 at the end.  IDX is a one-cell
+    ;; scratch holding the pair index.
+    (defun wf_cmpl_next (roots env kind idx)
+      (if (= kind 1)
+          (let* ((cur (heap-read-u64 roots 8)))
+            (if (= (nl_val_tag cur) 7)
+                (let* ((elt (nl_cons_car_word cur)))
+                  (seq (ptr-write-u64 roots 32 elt)
+                       (ptr-write-u64 roots 8 (nl_cons_cdr_word cur))
+                       (let* ((key (if (= (nl_val_tag elt) 7) (nl_cons_car_word elt) elt)))
+                         (if (= (logand key 7) 4) key (wf_cmpl_name_w key env)))))
+              -1))
+          (let* ((tb (heap-read-u64 roots 72)) (j (wf_cmpl_ht_next tb (heap-read-u64 idx 0))))
+            (if (< j 0) -1
+              (let* ((key (wf_cmpl_ht_key tb j)) (val (wf_cmpl_ht_val tb j)))
+                (seq (ptr-write-u64 idx 0 (+ j 1))
+                     (ptr-write-u64 roots 32 (if (= kind 2) val key))
+                     (ptr-write-u64 roots 64 val)
+                     (if (= (logand key 7) 4) key (wf_cmpl_name_w key env))))))))
+    ;; FLAGS: kind + 4 * fold + 8 * ASCII string.  MODE 0 try-completion, 1 all-completions.
+    (defun wf_cmpl_run_w (env mode flags s coll pred)
+      (let* ((kind (logand flags 3)) (ic (logand (shr flags 2) 1)) (sa (shr flags 3))
+             (mark (nl_root_mark env)) (roots (nl_root_words env 11))
+             (st (alloc-bytes 16 8)) (idx (alloc-bytes 8 8)) (go 1) (rc 0) (nm 0) (more 1)
+             (tb (if (= kind 2) (wf_obarray_table_w coll) coll)))
+        (seq
+         (ptr-write-u64 roots 0 (nl_word_canon pred))
+         (ptr-write-u64 roots 8 (nl_word_canon coll))
+         (ptr-write-u64 roots 40 (nl_word_canon s))
+         (ptr-write-u64 roots 72 (nl_word_canon tb))
+         (ptr-write-u64 st 0 0) (ptr-write-u64 st 8 0) (ptr-write-u64 idx 0 0)
+         (while (= go 1)
+           (seq
+            (setq more 1)
+            (let* ((sw (heap-read-u64 roots 40)))
+              (if (if (= sa 1) (= (logand sw 7) 4) 0)
+                  (let* ((hh (- sw 4)) (s8 (ptr-read-u64 hh 8))
+                         (sbb (if (< s8 0) (ptr-read-u64 hh 0) s8)) (sp (ptr-read-u64 hh 24)))
+                    (setq more (if (= kind 1) (wf_cmpl_skip_list roots sp sbb ic)
+                                 (wf_cmpl_skip_ht (heap-read-u64 roots 72) idx sp sbb ic))))
+                0))
+            (if (= more 0) (setq go 0)
+              (seq
+               (setq nm (wf_cmpl_next roots env kind idx))
+               (if (= nm -1) (setq go 0)
+                 (if (= nm 0) (seq (setq rc 1) (setq go 0))
+                   (if (= nm 1) 0
+                     (seq (ptr-write-u64 roots 56 nm)
+                          (let* ((r (wf_cmpl_step roots env mode kind ic sa st)))
+                            (if (= r 0) 0
+                              (seq (if (= r 2) (setq rc 1) 0) (setq go 0))))))))))))
+         (let* ((res (if (= rc 1) 0
+                       (if (= mode 1) (wf_cmpl_nreverse (heap-read-u64 roots 16))
+                         (wf_cmpl_try_result roots st env)))))
+           (seq (nl_root_release env mark) res)))))
+    ;; test-completion, rooted state: roots +0 predicate, +32 the match, +40 STRING,
+    ;; +64 the hash value, +72 the table.  Exact name test of the candidate name NM.
+    (defun wf_cmpl_same_p (s nm ic)
+      (let* ((sb (nl_bi_strlen s)))
+        (if (= sb (nl_bi_strlen nm))
+            (if (= (m5_unibyte_tag_p (nl_val_tag s)) (m5_unibyte_tag_p (nl_val_tag nm)))
+                (if (= (wf_cmpl_common (nl_bi_strptr s) (nl_bi_strptr nm) sb ic) sb) 1 0)
+              (if (= (wf_cmpl_ascii_p (nl_bi_strptr s) sb) 1)
+                  (if (= (wf_cmpl_common (nl_bi_strptr s) (nl_bi_strptr nm) sb ic) sb) 1 0)
+                0))
+          0)))
+    ;; Scan list (kind 1) or table (kinds 2 and 3) for a candidate named like STRING; 1 found
+    ;; (roots +32 and +64 set), 0 not found, 2 a signal is stashed.
+    (defun wf_cmpl_find_w (roots env kind ic)
+      (let* ((go 1) (found 0) (nm 0) (idx (alloc-bytes 8 8)))
+        (seq
+         (ptr-write-u64 idx 0 0)
+         (while (= go 1)
+           (seq
+            (setq nm (wf_cmpl_next roots env kind idx))
+            (if (= nm -1) (setq go 0)
+              (if (= nm 0) (seq (setq found 2) (setq go 0))
+                (if (= nm 1) 0
+                  (if (= (wf_cmpl_same_p (heap-read-u64 roots 40) nm ic) 1)
+                      ;; a nil element ends the walk and answers nil (GNU assoc_string)
+                      (seq (setq found (if (= (nl_val_tag (heap-read-u64 roots 32)) 0) 3 1))
+                           (setq go 0))
+                    0))))))
+         found)))
+    (defun wf_cmpl_test_run_w (env flags s coll pred)
+      (let* ((kind (logand flags 3)) (ic (logand (shr flags 2) 1))
+             (mark (nl_root_mark env)) (roots (nl_root_words env 11))
+             (tb (if (= kind 2) (wf_obarray_table_w coll) coll)) (found 0))
+        (seq
+         (ptr-write-u64 roots 0 (nl_word_canon pred))
+         (ptr-write-u64 roots 8 (nl_word_canon coll))
+         (ptr-write-u64 roots 40 (nl_word_canon s))
+         (ptr-write-u64 roots 72 (nl_word_canon tb))
+         (if (= kind 1)
+             (setq found (wf_cmpl_find_w roots env 1 ic))
+           (let* ((i (wf_cmpl_ht_find tb s)))
+             (if (>= i 0)
+                 (seq (ptr-write-u64 roots 32 (if (= kind 2) (wf_cmpl_ht_val tb i) (wf_cmpl_ht_key tb i)))
+                      (ptr-write-u64 roots 64 (wf_cmpl_ht_val tb i))
+                      (setq found 1))
+               (setq found (wf_cmpl_find_w roots env kind ic)))))
+         (let* ((res (if (= found 2) 0
+                       (if (/= found 1) 3
+                         (if (= (nl_val_tag (heap-read-u64 roots 0)) 0) 7
+                           (wf_cmpl_call_w roots env kind))))))
+           (seq (nl_root_release env mark) res)))))
+    (defun wf_cmpl_slow_w (args env mode)
+      (if (= mode 0)
+          (wf_slow_named_w args env 3255381746650998126 8101253776464769652 8299411113103353196 7827308 27)
+        (if (= mode 1)
+            (wf_slow_named_w args env 3255381746650998126 8101253776463916129 3275082778818143596 2003790963 28)
+          (wf_slow_named_w args env 3255381746650998126 7885630519427425652 3273676477859982448 2003790963 28))))
+    ;; A function table: (funcall COLLECTION STRING PREDICATE FLAG) with FLAG nil, t or
+    ;; `lambda' for try-completion, all-completions and test-completion.  A symbol with
+    ;; no function cell goes to the Lisp reference, which signals as GNU does.
+    (defun wf_cmpl_fn_call_w (args env mode fw)
+      (let* ((mark (nl_root_mark env)) (roots (nl_root_words env 3)) (buf (alloc-bytes 8 1)))
+        (seq
+         (ptr-write-u64 roots 8 (nl_word_canon fw))
+         (ptr-write-u64 roots 0
+           (nelisp_cons_construct_w
+            (if (= mode 0) 3
+              (if (= mode 1) 7
+                (seq (ptr-write-u64 buf 0 107083775959404) (nl_alloc_symbol_w buf 6 0))))
+            3 0))
+         (ptr-write-u64 roots 0
+           (nelisp_cons_construct_w (if (> (m5_list_len args 0) 2) (wf_arg_word args 2) 3)
+                                    (heap-read-u64 roots 0) 0))
+         (ptr-write-u64 roots 0 (nelisp_cons_construct_w (wf_arg_word args 0) (heap-read-u64 roots 0) 0))
+         (let* ((res (nl_apply_function_w (wf_word_view (heap-read-u64 roots 8)) (heap-read-u64 roots 0) env 0)))
+           (seq (nl_root_release env mark) res)))))
+    (defun wf_cmpl_fn_w (args env mode)
+      (let* ((c (wf_arg_word args 1)) (tg (nl_val_tag c))
+             (fw (if (if (= tg 4) 1 (= tg 16))
+                     (nelisp_env_lookup_function_w (+ env 0) (+ env 64) (wf_word_view c) 0)
+                   c)))
+        (if (if (= fw 0) 1 (if (= fw 2) 1 (= fw 3)))
+            (wf_cmpl_slow_w args env mode)
+          (wf_cmpl_fn_call_w args env mode fw))))
+    (defun wf_cmpl_parg (args) (if (> (m5_list_len args 0) 2) (wf_arg_word args 2) 3))
+    ;; The three arguments are read from ARGS again wherever they are used: the list is the
+    ;; caller's root, a word held in a local across an allocation is not.
+    (defun wf_cmpl_w (args env mode)
+      (let* ((kind (wf_cmpl_kind (wf_arg_word args 1) env)))
+        (if (if (= (m5_string_tag_p (nl_val_tag (wf_arg_word args 0))) 0) 1 (= kind 0))
+            (wf_cmpl_slow_w args env mode)
+          (if (= kind 4) (wf_cmpl_fn_w args env mode)
+            (if (/= (nl_val_tag (wf_cmpl_var_w env 7598809987697962851 8675453942604066415 128039038758256 22)) 0)
+                (wf_cmpl_slow_w args env mode)
+              (let* ((ic (if (= (nl_val_tag (wf_cmpl_var_w env 7598809987697962851 8245930833163939439 111546229534053 22)) 0) 0 1))
+                     (sa (wf_cmpl_ascii_p (nl_bi_strptr (wf_arg_word args 0)) (nl_bi_strlen (wf_arg_word args 0)))))
+                (if (if (= ic 1) (= sa 0) 0)
+                    (wf_cmpl_slow_w args env mode)
+                  (if (= mode 2)
+                      (if (if (= kind 3) (/= (nl_ht_custom_function_w (wf_arg_word args 1) 2) 3) 0)
+                          (wf_cmpl_slow_w args env mode)
+                        (wf_cmpl_test_run_w env (+ kind (+ (* ic 4) (* sa 8)))
+                                            (wf_arg_word args 0) (wf_arg_word args 1) (wf_cmpl_parg args)))
+                    (wf_cmpl_run_w env mode (+ kind (+ (* ic 4) (* sa 8)))
+                                   (wf_arg_word args 0) (wf_arg_word args 1) (wf_cmpl_parg args))))))))))
+    ;; ---- intern / intern-soft / unintern / obarrayp on obarrays ----
+    (defun wf_intern_global_w (args env)
+      (let* ((string (wf_arg_ptr args 0)) (tag (sexp-tag string)))
+        (if (or (= tag 5) (= tag 6) (= tag 14) (= tag 15))
+            (let* ((bytes (bf_str_ptr string)) (length (bf_str_len string)))
+              (if (= (nl_name_is_nil bytes length) 1) 3
+                (if (= (nl_name_is_t bytes length) 1) 7
+                  (let* ((word (nl_intern_lookup_w bytes length 0)))
+                    (if (= word 3)
+                        (if (= (extern-call nl_thread_mirror_mutation_guard (+ env 0) string) 1)
+                            0 (bf_intern_w string 0))
+                      (nl_symobj_of word))))))
+          (nl_abi_fail (bf_wrong_type_stringp string) 0))))
+    (defun wf_intern_soft_global_w (args env)
+      (let* ((a (wf_arg_ptr args 0)) (tg (sexp-tag a)))
+        (if (if (= tg 4) 1 (if (= tg 0) 1 (if (= tg 1) 1 0)))
+            (nl_g4arm_copy_w 0 (wf_arg_word args 0))
+          (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
+              (bf_intern_soft_w a 0)
+            (if (= tg 16) 3
+              (nl_abi_fail (bf_wrong_type_stringp a) 0))))))
+    ;; A miss in an obarray made by `obarray-make': GNU Fintern's new symbol, put in the table
+    ;; under NAME (what `nelisp--obarray-intern' does in Lisp).
+    (defun wf_intern_new_w (args env tb)
+      (let* ((mark (nl_root_mark env)) (roots (nl_root_words env 3)))
+        (seq
+         (ptr-write-u64 roots 0 (nl_word_canon (wf_arg_word args 0)))
+         (ptr-write-u64 roots 8 (nl_word_canon tb))
+         (let* ((sym (bf_make_symbol_w (wf_arg_ptr args 0) 0)))
+           (if (= sym 0) (seq (nl_root_release env mark) 0)
+             (seq (ptr-write-u64 roots 16 sym)
+                  (wf_dirty)
+                  (nl_ht_put_values_w (heap-read-u64 roots 0) (heap-read-u64 roots 16)
+                                      (heap-read-u64 roots 8) 0)
+                  (let* ((res (heap-read-u64 roots 16))) (seq (nl_root_release env mark) res))))))))
+    ;; (intern NAME OBARRAY): a hit in an obarray made by `obarray-make' answers the
+    ;; symbol without allocating; a miss, a wrong type and the other obarrays are
+    ;; the Lisp reference's (`nelisp--intern-slow').
+    (defun wf_intern_ob_w (args env _pad)
+      (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
+          (let* ((ob (wf_arg_word args 1)))
+            (if (= (nl_val_tag ob) 0) (wf_intern_global_w args env)
+              (if (= (wf_obarray_init_p ob) 1) (wf_intern_global_w args env)
+                (let* ((tb (wf_obarray_table_w ob)) (name (wf_arg_word args 0)))
+                  (if (= tb 0)
+                      (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19)
+                    (if (= (m5_string_tag_p (nl_val_tag name)) 0)
+                        (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19)
+                      (let* ((i (wf_cmpl_ht_find tb name)))
+                        (if (>= i 0) (wf_cmpl_ht_val tb i)
+                          (wf_intern_new_w args env tb)))))))))
+        (wf_intern_global_w args env)))
+    (defun wf_intern_soft_ob_w (args env _pad)
+      (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
+          (let* ((ob (wf_arg_word args 1)))
+            (if (= (nl_val_tag ob) 0) (wf_intern_soft_global_w args env)
+              (if (= (wf_obarray_init_p ob) 1) (wf_intern_soft_global_w args env)
+                (let* ((tb (wf_obarray_table_w ob)) (name (wf_arg_word args 0)))
+                  (if (= tb 0)
+                      (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24)
+                    (if (= (m5_string_tag_p (nl_val_tag name)) 0)
+                        (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24)
+                      (let* ((i (wf_cmpl_ht_find tb name)))
+                        (if (>= i 0) (wf_cmpl_ht_val tb i) 3))))))))
+        (wf_intern_soft_global_w args env)))
+    (defun wf_unintern_w (args env _pad)
+      (let* ((ob (wf_arg_word args 1)) (name (wf_arg_word args 0)) (tb (wf_obarray_table_w ob)))
+        (if (= tb 0)
+            (wf_slow_named_w args env 3255381746650998126 7958535042260102773 512970486573 0 21)
+          (if (= (m5_string_tag_p (nl_val_tag name)) 0)
+              (wf_slow_named_w args env 3255381746650998126 7958535042260102773 512970486573 0 21)
+            (seq (wf_dirty) (if (= (wf_obarray_rem_w tb name) 1) 7 3))))))
+    (defun wf_obarrayp_w (args env _pad)
+      (let* ((ob (wf_arg_word args 0)))
+        (if (= (nl_val_tag ob) 12)
+            (if (/= (wf_obarray_table_w ob) 0) 7
+              (if (= (wf_obarray_init_p ob) 1) 7
+                (wf_slow_named_w args env 3255381746650998126 8104616148603069039 512970486573 0 21)))
+          3)))
 )
   "Segment G1 native fast paths for `nth'/`nthcdr'/`last'/`butlast'/
 `append'/`assoc'/`plist-get'/`mapcar'.  See the file-level comment just
@@ -25808,7 +26431,38 @@ bytes are written into a fresh 8-byte buffer instead."
                                                                   (* ref 8)))
                                                   (setq sp (+ sp 1))
                                                   (setq pc (+ pc a 1))))))))
-                                   (setq go 0)))
+                                   ;; bufnative: Bpoint (96), Bgoto_char (98), Bpoint_max (100),
+                                   ;; Bpoint_min (101), Beobp (109), Bbobp (111), Bnarrow_to_region
+                                   ;; (125) and Bwiden (126) read and set the current
+                                   ;; buffer's record (GNU bytecode.c, editfns.c) in this loop;
+                                   ;; a decline leaves everything untouched for the full loop.
+                                   (seq
+                                    (setq a (if (= raw 96) 40
+                                              (if (= raw 98) 43
+                                                (if (= raw 100) 42
+                                                  (if (= raw 101) 41
+                                                    (if (= raw 109) 47
+                                                      (if (= raw 111) 46
+                                                        (if (= raw 125) 48
+                                                          (if (= raw 126) 49
+                                                            ;; bufedit: Binsert (99), Bchar_after (102),
+                                                            ;; Bfollowing_char (103), Bpreceding_char (104),
+                                                            ;; Beolp (108), Bbolp (110)
+                                                            (if (= raw 99) 58
+                                                              (if (= raw 102) 50
+                                                                (if (= raw 103) 52
+                                                                  (if (= raw 104) 53
+                                                                    (if (= raw 108) 57
+                                                                      (if (= raw 110) 56
+                                                                        (if (= raw 124) 61 (if (= raw 121) 64 0)))))))))))))))))
+                                    (if (= a 0) (setq go 0)
+                                      (seq
+                                       (setq b (if (= raw 98) 1 (if (= raw 125) 2 (if (= raw 124) 2 (if (= raw 121) 1 (if (= raw 99) 1 (if (= raw 102) 1 0)))))))
+                                       (if (if (> b 0) (< sp b) (>= sp depth)) (setq go 0)
+                                         (if (= (nl_buf_leaf_run a mem sp b (+ mem (* (- sp b) 8)) env) 0)
+                                             (seq (setq sp (+ sp (- 1 b)))
+                                                  (setq pc (+ pc 1)))
+                                           (setq go 0))))))))
                              (if (>= (+ pc 2) length) (setq go 0)
                                (seq
                                 (setq target
@@ -36567,34 +37221,14 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; rather than by a prelude wrapper: the wrapper was one more interpreted
     ;; call on every `intern' -- 22 us of a 26 us hit on a 4 us native probe,
     ;; measured 2026-09-06 -- and every macro-generated name pays it.
-    ((:lit "intern") :word .
- (if (= (bf_obarray_arg_bad args) 1) 0
-   (let* ((string (wf_arg_ptr args 0)) (tag (sexp-tag string)))
-     (if (or (= tag 5) (= tag 6) (= tag 14) (= tag 15))
-         (let* ((bytes (bf_str_ptr string)) (length (bf_str_len string)))
-           (if (= (nl_name_is_nil bytes length) 1) 3
-             (if (= (nl_name_is_t bytes length) 1) 7
-               (let* ((word (nl_intern_lookup_w bytes length 0)))
-                 (if (= word 3)
-                     (if (= (extern-call nl_thread_mirror_mutation_guard (+ env 0) string) 1)
-                         0 (bf_intern_w string 0))
-                   ;; Doc 226 D9 stage 3.4: a hit answers the object WORD too.
-                   (nl_symobj_of word))))))
-       (nl_abi_fail (bf_wrong_type_stringp string) 0)))))
+    ((:lit "intern") :word . (wf_intern_ob_w args env 0))
     ;; `intern-soft' natively (2026-09-06).  A symbol (nil and t included)
     ;; answers itself -- name identity is symbol identity here, see Doc 163
     ;; sec 8.3 -- a string probes the table without inserting, anything else
     ;; signals `stringp' as Emacs does.  Replaces the prelude defun, which
     ;; was two interpreted calls (its own and `nelisp--intern-lookup') on
     ;; every probe.
-    ((:lit "intern-soft") :word . (if (= (bf_obarray_arg_bad args) 1) 0
-                             (let* ((a (wf_arg_ptr args 0)) (tg (sexp-tag a)))
-                               (if (if (= tg 4) 1 (if (= tg 0) 1 (if (= tg 1) 1 0)))
-                                   (nl_g4arm_copy_w 0 (wf_arg_word args 0))
-                                 (if (if (= tg 5) 1 (if (= tg 6) 1 (if (= tg 14) 1 (if (= tg 15) 1 0))))
-                                     (bf_intern_soft_w a 0)
-                                   (if (= tg 16) 3
-                                     (nl_abi_fail (bf_wrong_type_stringp a) 0)))))))
+    ((:lit "intern-soft") :word . (wf_intern_soft_ob_w args env 0))
     ((:lit "make-symbol") :word . (bf_make_symbol_w (wf_arg_ptr args 0) 0))
     ;; nelisp--intern-lookup: probe-only counterpart of `intern' (Doc 163
     ;; Phase C).  `bf_intern_soft' already returns 0 on both the hit and
@@ -37946,6 +38580,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
 (defconst nelisp-standalone--builtin-arity-ranges
   '(
     ((0 . 0)
+      ;; bufnative: the buffer read path (WORD bodies in `nl_buf_leaf_run').
+      point point-min point-max bobp eobp widen following-char preceding-char bolp eolp
       garbage-collect nelisp--alloc-check-report nelisp--arena-dump-copy-verify
       nelisp--arena-dump-table-verify nelisp--arena-force-grow-smoke
       nelisp--arena-image-root-verify nelisp--arena-load-relocate-verify
@@ -37957,15 +38593,17 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--target-os-code nelisp-process-async-ready-p nl-current-unix-time
       nl-unix-time-usec)
     ((0 . 1)
+      buffer-size forward-line char-after char-before line-beginning-position line-end-position pos-bol pos-eol
       exit float-time nelisp--exit-process)
     ((0 . many)
-      * + - append bool-vector concat fetch-bytecode list logand logior logxor
+      * + - append bool-vector concat fetch-bytecode insert list logand logior logxor
       make-hash-table unibyte-string vector)
     ((1 . 1)
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
-      tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
+      obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
+      goto-char
       1+ 1- atom bare-symbol bool-vector-p boundp byte-code-function-p car cdr
       char-table-p char-table-parent char-table-subtype char-to-string consp cos fboundp
       floatp fork-spawn hash-table-count integerp length listp lognot make-symbol
@@ -37994,11 +38632,13 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       symbol-function symbol-name symbol-value symbol-with-pos-p symbolp thread-spawn
       unibyte-string-p vectorp zerop)
     ((1 . 2)
+      delete-char
       atan butlast ceiling eval featurep floor intern intern-soft last log make-char-table
       nelisp--debug-switch nelisp--gc-diag
       nelisp--syscall-read-file nelisp--syscall-readdir-names nelisp-socket-accept
       provide rdf signal string-to-number truncate)
     ((1 . 3)
+      insert-char
       nelisp--env-globals-op nelisp--native-substring nelisp--read-all-from-string-native require substring)
     ((1 . 5)
       load)
@@ -38008,7 +38648,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
-      nelisp--pow
+      narrow-to-region nelisp--gb-column delete-region buffer-substring buffer-substring-no-properties nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert
+      nelisp--pow unintern
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-connect SOCKET
       ;; SERVER-NAME), (nelisp-tls-send CONTEXT STRING) and
       ;; (nelisp-tls-recv CONTEXT MAX-BYTES).
@@ -38029,7 +38670,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       rassq str-count-nl str-filter-prefix-lines str-kv-line str-line-start string-byte string<
       string= wrf)
     ((2 . 3)
-      assoc assoc-string gethash make-string nelisp--readdir-scan-raw
+      try-completion all-completions test-completion assoc assoc-string gethash make-string nelisp--readdir-scan-raw
       nelisp-socket-connect nelisp-socket-listen plist-get)
     ((2 . 5)
       alist-get)
@@ -38038,6 +38679,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--native-unbox-reference nelisp--raw-aset nelisp--symbol-position-op
       nelisp--string-search nelisp--string-search-chars nelisp--casify-fast nelisp--base64-decode
       nelisp--syscall-path-int nelisp--syscall-path2 nelisp--syscall-utimes
+      nelisp--gb-delete nelisp--gb-substring nelisp--gb-count-nl nelisp--gb-overwrite nelisp--gb-count-lines
       nelisp-socket-poll ptr-write-u32 ptr-write-u64 ptr-write-u8 puthash
       set-char-table-extra-slot set-char-table-range)
     ((3 . 6)
@@ -38047,7 +38689,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((4 . many)
       make-byte-code)
     ((5 . 5)
-      nelisp--syscall-mount nelisp-thread-spawn)
+      nelisp--syscall-mount nelisp-thread-spawn nelisp--gb-find-char)
     ((7 . 7)
       nelisp--rx-exec ptr-call syscall-direct)
     ((8 . 8)
@@ -43395,8 +44037,18 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--hash-table-make-raw" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
+    ;; bufnative: buffer read path
+    "point" "point-min" "point-max" "goto-char" "buffer-size" "bobp" "eobp"
+    "narrow-to-region" "widen"
+    ;; bufedit: the gap buffer text
+    "char-after" "char-before" "following-char" "preceding-char" "line-beginning-position"
+    "line-end-position" "bolp" "eolp" "insert" "pos-bol" "pos-eol" "delete-region"
+    "buffer-substring" "buffer-substring-no-properties" "forward-line" "nelisp--gb-count-lines" "nelisp--gb-column" "insert-char" "delete-char"
+    "nelisp--gb-char" "nelisp--gb-move" "nelisp--gb-reserve" "nelisp--gb-insert" "nelisp--gb-delete"
+    "nelisp--gb-substring" "nelisp--gb-find-char" "nelisp--gb-count-nl" "nelisp--gb-overwrite"
     ;; List search hot paths
     "memq" "member" "assq" "assoc" "rassoc" "rassq" "alist-get" "assoc-string"
+    "try-completion" "all-completions" "test-completion" "unintern" "obarrayp"
     ;; Segment G1: native `nth'/`nthcdr'/`last'/`butlast'/`append'/
     ;; `plist-get'/`mapcar' fast paths (fast-list-helpers).  The rare-
     ;; path delegate targets (`nelisp--assoc-slow' etc.) are ordinary
@@ -45459,14 +46111,18 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             ;; `current-time-list' nil selects GNU's (TICKS . HZ) pair.  The
             ;; clock supplies integer microseconds, so no float rounding is
             ;; involved; nanosecond ticks are used while they fit a fixnum.
-            "(defun current-time ()\n"
-            "  (let* ((ticks (nl-unix-time-usec)) (secs (floor ticks 1000000))\n"
-            "         (usec (mod ticks 1000000)))\n"
-            "    (if (and (boundp 'current-time-list) (not current-time-list))\n"
-            "        (if (<= (abs ticks) (/ most-positive-fixnum 1000))\n"
-            "            (cons (* ticks 1000) 1000000000)\n"
-            "          (cons ticks 1000000))\n"
-            "      (list (floor secs 65536) (mod secs 65536) usec 0))))\n")
+            ;; Guarded: the prelude's GENERATED nelisp-timefns block (bytecode,
+            ;; lisp/nelisp-timefns.el) defines `current-time' first; this
+            ;; interpreted definition remains only as the fallback.
+            "(unless (fboundp 'current-time)\n"
+            "  (defun current-time ()\n"
+            "    (let* ((ticks (nl-unix-time-usec)) (secs (floor ticks 1000000))\n"
+            "           (usec (mod ticks 1000000)))\n"
+            "      (if (and (boundp 'current-time-list) (not current-time-list))\n"
+            "          (if (<= (abs ticks) (/ most-positive-fixnum 1000))\n"
+            "              (cons (* ticks 1000) 1000000000)\n"
+            "            (cons ticks 1000000))\n"
+            "        (list (floor secs 65536) (mod secs 65536) usec 0)))))\n")
     ;; Now both the matcher and the string-match family are defined, so
     ;; `do-after-load-evaluation' can safely process rx/cl-seq notifications.
     ;; It is also safe to load genuine faces.el here (strictly after
@@ -55509,7 +56165,11 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
                        (seq (bf_wrong_type_symbolp (wf_word_view var)) 0)
                      (if (= (nl_let_constant_p env var value) 1)
                          (seq (bf_setting_constant (wf_word_view var)) 0)
-                       (nl_logic_bind_local env var value)))) out)
+                       ;; interp4: a plain lexical variable gets GNU's (VAR . VALUE) pair, as in
+                       ;; `nl_eic_let_bind_w'; anything else the ordinary binder.
+                       (if (= (nl_eic_let_hybrid_ok env var) 1)
+                           (seq (nl_bind_frame_param (+ env 32) var value) 1)
+                         (nl_logic_bind_local env var value))))) out)
           (push '(defun nl_let_bind_walk (pairs_ptr env)
                    (if (= (nl_val_tag pairs_ptr) 7)
                        (let* ((pair (nl_cons_car_word pairs_ptr))
@@ -59557,7 +60217,14 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     ;; corecall (W2a): the primitives the VM and the interpreter run by id in
     ;; `m5_fx_primitive_run', with the exact arity the id's body assumes.
     ("aref" -14) ("null" 3) ("not" 3) ("consp" 4) ("setcdr" 5) ("setcar" 6)
-    ("eq" 7) ("nthcdr" 11))
+    ("eq" 7) ("nthcdr" 11)
+    ;; bufnative: the buffer read path (WORD bodies in `nl_buf_leaf_run').
+    ("point" 40) ("point-min" 41) ("point-max" 42) ("goto-char" 43)
+    ("buffer-size" 45) ("bobp" 46) ("eobp" 47) ("narrow-to-region" 48) ("widen" 49)
+    ;; bufedit: the gap buffer text (WORD bodies in `nl_gb_leaf_run').
+    ("char-after" 50) ("char-before" 51) ("following-char" 52) ("preceding-char" 53)
+    ("line-beginning-position" 54) ("line-end-position" 55) ("bolp" 56) ("eolp" 57)
+    ("insert" 58) ("pos-bol" 59) ("pos-eol" 60) ("delete-region" 61) ("forward-line" 64) ("insert-char" 65) ("delete-char" 66))
   "Primitives with a directcall id: (NAME ID).  Their function cells hold a Subr
 object (header kind 20) wrapping the legacy (builtin NAME) list (w2subr).")
 
@@ -60547,9 +61214,28 @@ two flag bits 20 and 21."
                            (seq
                             (ptr-write-u64 fr 8 3)
                             (ptr-write-u8 fr 16 1)
-                            (let* ((st (if (<= id 13)
-                                           (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
-                                         (nl_eic_prim2_run id base argc (+ base (* argc 8))))))
+                            (let* ((st (if (if (= id 8)
+                                                   ;; interp4: `<' on two fixnum words, as GNU Flss
+                                                   ;; (data.c arithcompare) does for fixnums, with no
+                                                   ;; id chain; any other operands take the VM's body.
+                                                   (if (= argc 2)
+                                                       (if (= (logand (heap-read-u64 base 0) 3) 1)
+                                                           (= (logand (heap-read-u64 (+ base 8) 0) 3) 1)
+                                                         0)
+                                                     0)
+                                                 0)
+                                           (seq (ptr-write-u64 (+ base 16) 0
+                                                               (if (< (heap-read-u64 base 0)
+                                                                      (heap-read-u64 (+ base 8) 0))
+                                                                   7 3))
+                                                0)
+                                         (if (<= id 13)
+                                             (m5_fx_primitive_run id base argc argc (+ base (* argc 8)) env 0)
+                                           ;; interp4: aref (interpreter id 27) is the VM's -14 body
+                                           ;; with nothing for `nl_eic_prim2_run' to add.
+                                           (if (= id 27)
+                                               (m5_fx_primitive_run -14 base argc argc (+ base (* argc 8)) env 0)
+                                             (nl_eic_prim2_run id base argc (+ base (* argc 8))))))))
                               (if (= st 0)
                                   (let* ((v (heap-read-u64 (+ base (* argc 8)) 0)))
                                     (if (= (heap-read-u8 fr 18) 0) v (nl_eic_exit_hook fr v env)))
@@ -61045,7 +61731,7 @@ two flag bits 20 and 21."
                     0)
                 0)
               (nl_eic_setq_store_w tail_ptr env
-                                   (nelisp_eval_call_w (ptr-read-u64 (- rest 2) 0) env 0))
+                                   (nl_eic_eval_w (ptr-read-u64 (- rest 2) 0) env))
             (nl_eic_symbol_dispatch_w
              (nl_apply_special_w head_ptr tail_ptr env 0)
              form_ptr head_ptr tail_ptr env))))
@@ -61057,7 +61743,7 @@ two flag bits 20 and 21."
       ;; bump; every other case, a miss included, is `nl_env_set_value' as before.
       (defun nl_eic_setq_store_w (tail env w)
         (if (= w 0) 0
-          (let* ((sym (ptr-read-u64 (- tail 2) 0)) (cell 0))
+          (let* ((sym (ptr-read-u64 (- tail 2) 0)) (cell 0) (hyb 0))
             (seq
              (if (= (logand (ptr-read-u64 (+ env 112) 0) 1048576) 0)
                  (let* ((rec (ptr-read-u64 env 40))
@@ -61083,8 +61769,12 @@ two flag bits 20 and 21."
                                                        (setq cur 3)
                                                        (if (= (logand v 7) 6)
                                                            (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 11)
-                                                               (setq cell v) 0)
-                                                         0)))
+                                                               (setq cell v)
+                                                             (setq hyb pair))
+                                                         ;; interp4: a hybrid binding (VAR . VALUE) with
+                                                         ;; an immediate or a cons for VALUE.
+                                                         (if (= (logand v 1) 1) (setq hyb pair)
+                                                           (if (= (logand v 7) 2) (setq hyb pair) 0)))))
                                                   (if (= (logand key 7) 6) 0 (setq cur 3))))
                                             0)))))
                                  0))
@@ -61098,7 +61788,103 @@ two flag bits 20 and 21."
                  (seq (ptr-write-u64 268435544 0 (+ (heap-read-u64 268435544 0) 1))
                       (ptr-write-u64 (+ cell 2) 0 w)
                       w)
-               (if (= (nl_env_set_value env sym w) 0) w (nl_abi_fail 1 0)))))))
+               ;; interp4: GNU Fsetq stores into the binding pair, `Fsetcdr (lex_binding, val)'
+               ;; (eval.c:496-501): a hybrid binding takes the word in its cdr, with the same
+               ;; mutation-epoch bump as the Cell store above, and no Cell is made for it.
+               (if (if (= hyb 0) 0 (/= (logand w 7) 0))
+                   (seq (ptr-write-u64 268435544 0 (+ (heap-read-u64 268435544 0) 1))
+                        (ptr-write-u64 (+ hyb 6) 0 w)
+                        w)
+                 (if (= (nl_env_set_value env sym w) 0) w (nl_abi_fail 1 0))))))))
+      ;; interp4: the first lines of GNU eval_sub (eval.c:2585-2599): an immediate is itself and a
+      ;; symbol is its lexical or global value, before any depth is counted or record made; only
+      ;; a form with a car goes through the evaluator.  (`m5_fx_eval_forms' reads an argument so.)
+      (defun nl_eic_eval_w (form env)
+        (if (= (logand form 1) 1) form
+          (if (= (logand form 7) 6)
+              (let* ((kind (logand (ptr-read-u64 (- form 6) 0) 63)))
+                (if (if (= kind 4) 1 (= kind 16))
+                    (let* ((lv (nl_env_lookup_val_w form env 0)))
+                      (if (= lv 2) (nl_ei_var_kw_w lv form env 0) lv))
+                  (nelisp_eval_call_w form env 0)))
+            (nelisp_eval_call_w form env 0))))
+      ;; GNU Fprogn (eval.c:439-455) of a body: one form is eval_sub of it; the `progn' special
+      ;; form's loop takes any other body (and the value of a self-evaluating atom, as it does).
+      (defun nl_eic_body_w (body env)
+        (if (= (logand body 7) 2)
+            (if (= (ptr-read-u64 body 6) 3)
+                (let* ((f (ptr-read-u64 (- body 2) 0)))
+                  (if (< (nl_val_tag f) 4) f (nl_eic_eval_w f env)))
+              (nl_sf_progn_w body env 0 0))
+          (nl_sf_progn_w body env 0 0)))
+      ;; interp4: GNU Flet's `lexenv = Fcons (Fcons (var, val), lexenv)' (eval.c:1181-1194) in the
+      ;; frame `nelisp_frame_push_direct' has just pushed: 1 when the pair is consed on the frame's
+      ;; alist, 0 when the case is one `nl_bind_frame_param' decides (a frame that is no plain
+      ;; record, an alist that is not a proper list of fewer than eight bindings, the name bound
+      ;; in it already, a value that is a Cell or a legacy view), nothing done.
+      (defun nl_eic_bind_pair_w (env var w)
+        (let* ((rec (ptr-read-u64 env 40))
+               (depth (sar (ptr-read-u64 rec 24) 2))
+               (backing (ptr-read-u64 rec 16)))
+          (if (if (> depth 0) (= (logand backing 7) 6) 0)
+              (let* ((frame (ptr-read-u64 (+ backing 2) (* (- depth 1) 8))))
+                (if (= (logand frame 7) 6)
+                    (let* ((head (ptr-read-u64 frame 10)) (cur head) (n 0))
+                      (if (if (= (logand (ptr-read-u64 (- frame 6) 0) 255) 12)
+                              (if (= (logand w 7) 0) 0
+                                (if (= (logand w 7) 6) (/= (logand (ptr-read-u64 (- w 6) 0) 63) 11) 1))
+                            0)
+                          (seq
+                           (while (= (logand cur 7) 2)
+                             (let* ((pair (ptr-read-u64 (- cur 2) 0)))
+                               (seq
+                                (if (= (logand pair 7) 2)
+                                    (seq (setq n (+ n 1))
+                                         (if (= (ptr-read-u64 (- pair 2) 0) var) (setq n 99) 0))
+                                  0)
+                                (setq cur (ptr-read-u64 cur 6)))))
+                           (if (if (= n 99) 0 (if (< n 7) (if (= cur 3) 1 (= head 0)) 0))
+                               (seq (record-slot-set
+                                     frame 0
+                                     (nelisp_cons_construct_w
+                                      (nelisp_cons_construct_w var w 0)
+                                      (if (= head 0) 3 head) 0))
+                                    1)
+                             0))
+                        0))
+                  0))
+            0)))
+      ;; interp4: GNU Fif (eval.c:420-433) on the plain shape: a proper argument list of at
+      ;; least two elements (the count is GNU eval_sub's `Flength' of the unevaluated
+      ;; arguments, which also rejects a dotted list before anything is evaluated).  The
+      ;; test is evaluated; nil takes the progn of the else forms, anything else the
+      ;; then-form.  A redefined `if', a short or improper list take the ordinary dispatch.
+      (defun nl_eic_if_w (form_ptr head_ptr tail_ptr env)
+        (if (if (= (logand (ptr-read-u64 (+ env 112) 0) ,(nelisp-standalone--special-gate-mask "if")) 0)
+                (if (= (logand tail_ptr 7) 2)
+                    (if (= (logand (ptr-read-u64 tail_ptr 6) 7) 2) (>= (nl_sp_nargs tail_ptr) 2) 0)
+                  0)
+              0)
+            (let* ((rest (ptr-read-u64 tail_ptr 6))
+                   (c (nl_eic_eval_w (ptr-read-u64 (- tail_ptr 2) 0) env)))
+              (if (= c 0) 0
+                (if (= (nl_val_tag c) 0)
+                    (nl_sf_progn_w (ptr-read-u64 rest 6) env 0 0)
+                  (nl_eic_eval_w (ptr-read-u64 (- rest 2) 0) env))))
+          (nl_eic_symbol_dispatch_w
+           (nl_apply_special_w head_ptr tail_ptr env 0)
+           form_ptr head_ptr tail_ptr env)))
+      ;; interp4: GNU Fquote (eval.c:421-428): the value is the car of ARGS, which must have no
+      ;; second element.  A redefined `quote', an argument list of another shape and the error
+      ;; case take the ordinary dispatch before anything is returned.
+      (defun nl_eic_quote_w (form_ptr head_ptr tail_ptr env)
+        (if (if (= (logand (ptr-read-u64 (+ env 112) 0) ,(nelisp-standalone--special-gate-mask "quote")) 0)
+                (if (= (logand tail_ptr 7) 2) (= (ptr-read-u64 tail_ptr 6) 3) 0)
+              0)
+            (ptr-read-u64 (- tail_ptr 2) 0)
+          (nl_eic_symbol_dispatch_w
+           (nl_apply_special_w head_ptr tail_ptr env 0)
+           form_ptr head_ptr tail_ptr env)))
       ;; interp3: a `let' of lexical variables, on the structure of `nl_sf_let_w'
       ;; (`nl_let_setup', the body as a progn, the frame popped on success and on error).
       ;; GNU Flet binds lexically (eval.c:1141-1194) unless the symbol is special or locally
@@ -61162,7 +61948,7 @@ two flag bits 20 and 21."
                  (if (= (nl_eic_let_bind_w bindings env base) 0)
                      (seq (nl_root_release env mark)
                           (nl_eic_let_finish_w
-                           (nl_sf_progn_w (ptr-read-u64 tail 6) env 0 0) env))
+                           (nl_eic_body_w (ptr-read-u64 tail 6) env) env))
                    (seq (nl_env_pop_frame env)
                         (nl_root_release env mark)
                         (nl_abi_fail 1 0)))))))))
@@ -61176,8 +61962,7 @@ two flag bits 20 and 21."
              (let* ((elt (ptr-read-u64 (- cur 2) 0))
                     (w (if (= (logand elt 7) 6) 3
                          (let* ((form (ptr-read-u64 (- (ptr-read-u64 elt 6) 2) 0)))
-                           (if (= (logand form 1) 1) form
-                             (nelisp_eval_call_w form env 0))))))
+                           (nl_eic_eval_w form env)))))
                (seq
                 (if (= w 0) (setq rc 1) (ptr-write-u64 (+ base (* i 8)) 0 w))
                 (setq cur (ptr-read-u64 cur 6))
@@ -61199,12 +61984,14 @@ two flag bits 20 and 21."
                     (w (ptr-read-u64 (+ base (* i 8)) 0)))
                (seq
                 (if (if (= fast 1) (= (nl_eic_let_plain_p var) 1) 0)
-                    (let* ((copies (alloc-bytes 64 8)))
-                      (seq (nl_sexp_clone_into var copies)
-                           (nl_bind_frame_fast (+ env 32) copies
-                                               (if (= (logand w 1) 1) w
-                                                 (seq (nl_sexp_clone_into w (+ copies 32))
-                                                      (+ copies 32))))))
+                    ;; interp4: GNU Flet's lexenv = Fcons (Fcons (var, val), lexenv)
+                    ;; (eval.c:1181-1194), the binding a function parameter gets: two
+                    ;; conses, no Cell, no legacy view of the name or the value.  A frame
+                    ;; or value `nl_bind_frame_param' does not take (a shared closure
+                    ;; chain, eight bindings, the name bound already, a Cell value) it
+                    ;; gives the ordinary binder.
+                    (if (= (nl_eic_bind_pair_w env var w) 1) 0
+                      (nl_bind_frame_param (+ env 32) var w))
                   (if (= (nl_let_bind_one env var w) 0) (setq rc 1) 0))
                 (setq cur (ptr-read-u64 cur 6))
                 (setq i (+ i 1)))))
@@ -61214,6 +62001,69 @@ two flag bits 20 and 21."
       (defun nl_eic_let_plain_p (var)
         (if (= (logand (ptr-read-u64 (- var 6) 0) 20224) 0)
             (if (= (bf_keyword_raw var) 1) 0 1)
+          0))
+      ;; interp4: `let*' on the structure of `nl_sf_let_star_w': every binding gets a frame of its
+      ;; own, pushed before its value form is evaluated, and the body runs under all of them, which
+      ;; are popped on success and on error.  What the generic chain adds per binding is a rooted
+      ;; singleton list, `nl_let_setup', its list length and values frame; here the binding list
+      ;; (the form's own, reachable from the activation record) is walked in place.  The shape is
+      ;; checked first, as for `let': a proper list of symbol objects or (SYM FORM) pairs, and at
+      ;; least one binding; every other form takes the ordinary dispatch before anything is done.
+      (defun nl_eic_let_star_w (form_ptr head_ptr tail_ptr env)
+        (let* ((n (if (= (logand (ptr-read-u64 (+ env 112) 0) ,(nelisp-standalone--special-gate-mask "let*")) 0)
+                      (if (= (logand tail_ptr 7) 2)
+                          (if (>= (nl_sp_nargs tail_ptr) 1)
+                              (nl_eic_let_shape (ptr-read-u64 (- tail_ptr 2) 0))
+                            -1)
+                        -1)
+                    -1)))
+          (if (>= n 1)
+              (nl_eic_let_star_run_w tail_ptr env)
+            (nl_eic_symbol_dispatch_w
+             (nl_apply_special_w head_ptr tail_ptr env 0)
+             form_ptr head_ptr tail_ptr env))))
+      (defun nl_eic_let_star_run_w (tail env)
+        (let* ((cur (ptr-read-u64 (- tail 2) 0)) (k 0) (rc 0) (scratch (alloc-bytes 32 8)))
+          (seq
+           (while (if (= rc 0) (= (logand cur 7) 2) 0)
+             (let* ((elt (ptr-read-u64 (- cur 2) 0))
+                    (var (if (= (logand elt 7) 6) elt (ptr-read-u64 (- elt 2) 0))))
+               (seq
+                (nelisp_frame_push_direct (+ env 32) (nl_frame_push_sym0_ptr)
+                                          (nl_frame_push_sym1_ptr) scratch)
+                (setq k (+ k 1))
+                (let* ((w (if (= (logand elt 7) 6) 3
+                            (nl_eic_eval_w (ptr-read-u64 (- (ptr-read-u64 elt 6) 2) 0) env))))
+                  (if (= w 0) (setq rc 1)
+                    (if (= (nl_eic_let_hybrid_ok env var) 1)
+                        (if (= (nl_eic_bind_pair_w env var w) 1) 0
+                          (nl_bind_frame_param (+ env 32) var w))
+                      (if (= (nl_let_bind_one env var w) 0) (setq rc 1) 0))))
+                (setq cur (ptr-read-u64 cur 6)))))
+           (if (= rc 0)
+               (nl_eic_let_star_finish_w (nl_eic_body_w (ptr-read-u64 tail 6) env) env k)
+             (seq (nl_eic_let_star_pop_w env k) (nl_abi_fail 1 0))))))
+      ;; 1 when popping any of the K frames failed, else 0.
+      (defun nl_eic_let_star_pop_w (env k)
+        (let* ((bad 0))
+          (seq (while (> k 0)
+                 (seq (if (= (nl_env_pop_frame env) -1) (setq bad 1) 0)
+                      (setq k (- k 1))))
+               bad)))
+      ;; The value W after the frames are gone; a failed pop fails the form.
+      (defun nl_eic_let_star_finish_w (w env k)
+        (if (= (nl_eic_let_star_pop_w env k) 1) (nl_abi_fail 1 0) w))
+      ;; interp4: whether the generic binder (`nl_let_bind_one': `let' with a shape the fast arm
+      ;; does not take, and every `let*' binding, each in a frame of its own) may bind the symbol
+      ;; word VAR as the fast `let' arm does: lexical mode, no watcher, a plain variable, and no
+      ;; local declaration in the scope.
+      (defun nl_eic_let_hybrid_ok (env var)
+        (if (= (logand (ptr-read-u64 (+ env 112) 0) 3145728) 0)
+            (if (= (logand var 7) 6)
+                (if (let* ((k (logand (ptr-read-u64 (- var 6) 0) 63))) (if (= k 4) 1 (= k 16)))
+                    (if (= (nl_eic_let_plain_p var) 1) (nl_eic_let_scope_clean env) 0)
+                  0)
+              0)
           0))
       ;; 1 when no frame from the newest to the nearest scope boundary holds a local
       ;; declaration (the names list in slot 3 is nil), which is what
@@ -61252,9 +62102,15 @@ two flag bits 20 and 21."
                       (nl_eic_setq_w form_ptr head_ptr tail_ptr env)
                     (if (= sp ,(nelisp-standalone--special-index "let"))
                         (nl_eic_let_w form_ptr head_ptr tail_ptr env)
-                      (nl_eic_symbol_dispatch_w
-                       (nl_apply_special_w head_ptr tail_ptr env 0)
-                       form_ptr head_ptr tail_ptr env))))))
+                      (if (= sp ,(nelisp-standalone--special-index "if"))
+                          (nl_eic_if_w form_ptr head_ptr tail_ptr env)
+                        (if (= sp ,(nelisp-standalone--special-index "let*"))
+                            (nl_eic_let_star_w form_ptr head_ptr tail_ptr env)
+                          (if (= sp ,(nelisp-standalone--special-index "quote"))
+                              (nl_eic_quote_w form_ptr head_ptr tail_ptr env)
+                            (nl_eic_symbol_dispatch_w
+                             (nl_apply_special_w head_ptr tail_ptr env 0)
+                             form_ptr head_ptr tail_ptr env)))))))))
           (if (= (nl_val_tag head_ptr) 16)
               (nl_eic_symbol_w form_ptr head_ptr tail_ptr env)
             (nl_eic_callable_w head_ptr tail_ptr env (nl_root_mark env))))))))
