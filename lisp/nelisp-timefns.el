@@ -304,26 +304,13 @@
       (let ((x (nelisp--tf-scale2 (float q) (- scale))))
         (if neg (- x) x))))))
 
-(defvar nelisp--float-time-native
-  (if (boundp 'nelisp--float-time-native) nelisp--float-time-native (symbol-function 'float-time)))
-
 (defun nelisp--tf-float-time (time)
   (let ((s (nelisp--tf-spec time)))
     (nelisp--tf-frac-double (car s) (cdr s))))
 
-(unless (boundp 'nelisp--float-time-wrapped)
-  (defun float-time (&optional specified-time)
-    "Return the current time, as a float number of seconds since the epoch."
-    (cond
-     ((or (null specified-time) (floatp specified-time) (nelisp--tf-fix specified-time))
-      (funcall nelisp--float-time-native specified-time))
-     ((and (consp specified-time) (consp (cdr specified-time)))
-      (condition-case nil (funcall nelisp--float-time-native specified-time)
-        (error (nelisp--tf-float-time specified-time))))
-     ((and (consp specified-time) (nelisp--tf-fix (car specified-time)) (nelisp--tf-fix (cdr specified-time))
-           (< (abs (car specified-time)) 9007199254740992) (> (cdr specified-time) 0))
-      (funcall nelisp--float-time-native specified-time))
-     (t (nelisp--tf-float-time specified-time)))))
+;; `float-time' itself is the native subr: it answers the clock, floats, integers, integer lists
+;; and small (TICKS . HZ) pairs, and hands every other TIME to `nelisp--tf-float-time' above
+;; (scripts/nelisp-standalone-build.el, the "float-time" dispatch arm).
 
 ;;; tf-zone.el --- time zones: TZif, POSIX TZ rules, glibc semantics  -*- lexical-binding: t; -*-
 ;; Zone objects:  [0 INFO]                         fixed offset

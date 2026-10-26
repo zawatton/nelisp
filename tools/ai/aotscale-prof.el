@@ -1,0 +1,50 @@
+;;; aotscale-prof.el --- opt-in CPU profile summary for the aotscale tools  -*- lexical-binding: t; -*-
+;; AOTSCALE_PROF=1 enables it; AOTSCALE_PROF_CALLERS=FN also prints which named
+;; functions call FN (share of all samples).
+(require 'profiler)
+
+(defun aotscale-prof-start ()
+  "Start the CPU profiler when AOTSCALE_PROF is set."
+  (when (getenv "AOTSCALE_PROF")
+    (setq profiler-max-stack-depth 64)
+    (profiler-start 'cpu)))
+
+(defun aotscale-prof--print (tag table tot limit)
+  (let ((l nil))
+    (maphash (lambda (k v) (push (cons k v) l)) table)
+    (setq l (sort l (lambda (a b) (> (cdr a) (cdr b)))))
+    (dotimes (i (min limit (length l)))
+      (princ (format "%s %5.1f%% %s\n" tag (/ (* 100.0 (cdr (nth i l))) (max 1 tot)) (car (nth i l)))))))
+
+(defun aotscale-prof-report ()
+  "Print SELF/INCL percentages per named function when AOTSCALE_PROF is set."
+  (when (getenv "AOTSCALE_PROF")
+    (profiler-stop)
+    (let* ((log (profiler-profile-log (profiler-cpu-profile)))
+           (target (and (getenv "AOTSCALE_PROF_CALLERS") (intern (getenv "AOTSCALE_PROF_CALLERS"))))
+           (self (make-hash-table :test 'eq)) (incl (make-hash-table :test 'eq))
+           (callers (make-hash-table :test 'eq)) (tot 0))
+      (maphash
+       (lambda (bt n)
+         (setq tot (+ tot n))
+         (let ((seen nil) (first t) (len (length bt)) (caller-done nil))
+           (dotimes (i len)
+             (let ((f (aref bt i)))
+               (when (and f (symbolp f))
+                 (when first (puthash f (+ n (gethash f self 0)) self) (setq first nil))
+                 (unless (memq f seen)
+                   (push f seen) (puthash f (+ n (gethash f incl 0)) incl))
+                 (when (and target (not caller-done) (eq f target))
+                   (setq caller-done t)
+                   (let ((j (1+ i)))
+                     (while (and (< j len)
+                                 (let ((g (aref bt j)))
+                                   (or (null g) (not (symbolp g))
+                                       (string-prefix-p (symbol-name target) (symbol-name g)))))
+                       (setq j (1+ j)))
+                     (when (< j len)
+                       (puthash (aref bt j) (+ n (gethash (aref bt j) callers 0)) callers)))))))))
+       log)
+      (aotscale-prof--print "SELF" self tot 80)
+      (aotscale-prof--print "INCL" incl tot 80)
+      (when target (aotscale-prof--print "CALLER" callers tot 20)))))

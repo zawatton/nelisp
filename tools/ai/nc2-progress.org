@@ -1,0 +1,97 @@
+#+TITLE: nc2 -- general native compiler stage N2 (guarded direct calls, family call trees)
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 0c7099cc3 (v21) + nc1 overlay (N0+N1; copies in target/nc2/seed/). Design: ../resume-4943-20261024/target/nativecomp/DESIGN.md sections 4.3, 4.5, 5, 6 (N2). Baseline binary v21 = ../resume-4943-20261024/target/integ-1038-build/dynamic/nelisp-dynamic (env NC2_V21). Build budget 2 (Linux dynamic + Win64). Timing CPU 12.
+#+NOTE: Row facts on v21 (target/nc2/logs/tree-v21.txt, p2/p3 probes): forward-line, intern-soft, intern, all-completions, try-completion are native subrs (bufnative/complete1); string-match, format-time-string, decode-time are embedded GNU byte code. Only put-text-property and split-string (and the text-property / string families) are fx closures that N2 can compile. format-time-string from source on fx is slower than its byte code (32.3 vs 19.0 us/call, target/nc2/tmp/p3.el), so it stays byte code.
+
+* S1 Cause and census on v21
+** S1.1 v21 Ir per call of DESIGN section 5's rows measured (callgrind two-N 500/2500): fline 1753, ctlbuf 1048, ptp 156687, smatch 40932, split 146496, isoft 7301, ftime 150920, ctl 1856
+evidence: target/nc2/cg/v21-ir.txt sha256=2029378e17eea3f6921a8b581740ee0e633cacb2d9118ede5f0868a32791644e
+** S1.2 Call protocol is the cost: per ptp / split trip v21 runs 17 / 9 fx activations, 53 / 41 `m5_fx_callout', 30 / 35 `m5_fx_covered_rec' and 13 / 26 apply-route calls (`m5_fx_call_list', argument list consed) -- subr callees take the generic apply, Lisp callees the full call-out
+evidence: target/nc2/logs/v21-calls.txt sha256=d4a873c5db79d90fbf35a7339598ee0153c2b66757f4adbe88a27276fbed9795
+** S1.3 Harvest on v21 (compiler hot patch, no build): the hot set (static call trees of the text-property, line/column and string family roots, depth <= 6) is harvested with 0 recompile differences; declines enumerated
+#+NOTE: tools/ai/nc2-tree.el (roots in target/nc2/logs/tree*-v21.txt): 137+ fx closures reached; declines: count-lines, nelisp--w202-property-find, nelisp--copy-char-table, nelisp-casetab--copy-char-table, nelisp--tp-copy-clipped (record none: captured environment / handler bodies), string-prefix-p / string= / compare-strings (NLOCALS -1, the string-compare lowering), byte code: string-match(-p), match-end, nlre-split-string, nelisp--record-ref/-type, car-safe/cdr-safe (assigned to N3). Harvest (tools/ai/nc1-harvest.el on v21): 143 ok, 9 skipped = nc1 names that are subrs on v21 (goto-char point point-min point-max buffer-size bobp eobp widen narrow-to-region).
+#+NOTE: Selection rule (lisp/nelisp-fxir-native-data.el header): keep a row when the measured rows run it (target/nc2/dyn.txt, advice call counts) or its unit compile alone took <= 15 s (target/nc2/logs/unitrows-all.log); 125 of 143 kept. Excluded 18 rows cost 2470 s alone (nelisp-itree--iter-next-in-subtree 1018 s, nelisp--w202-property-change 792 s): the AOT compile time grows faster than linearly with function size.
+evidence: target/nc2/logs/harvest-hot.txt sha256=3f9d62423e1ff1ebb5de272e1bd2875c6e473f3802547767eba35170dcb7d01f
+evidence: target/nc2/logs/unitrows-all.log sha256=a3c6954322ca0146873129dff19a670778fe3f5767741e8b65f622faee91d96f
+cmd: test "$(grep -c ' ok ' target/nc2/logs/harvest-hot.txt)" -eq 143 && test "$(grep -c 'recompile-differs' target/nc2/logs/harvest-hot.txt)" -eq 0 && test "$(grep -c "^    (\\|^  '((" lisp/nelisp-fxir-native-data.el)" -eq 125
+
+* S2 Guarded direct calls and the family hot set (offline)
+** S2.1 Generator emits guarded direct calls: a call whose callee is a harvested row calls nc_ID when the callee's live function cell equals the site cache's closure and that record runs nc_ID (else the generic call); a native-subr callee runs through `nl_directcall_invoke' with the cell read at every call; offline unit compile of the full hot set succeeds, seconds and RSS recorded
+#+NOTE: lisp/nelisp-cc-fxir-native.el: nc_d_ID wrappers (89 generated: the rows some row calls with an arity it takes), `nc_site_rec' (guard: cell == site cache slot 3, record slot 4 not retired, no worker, not dynamic-binding mode; the wrapper then checks the record's NLOCALS is -(16+ID)), `nc_subr_call' (Subr object in the cell -> `nl_directcall_invoke', 2 -> call-out). Eager window: a function that calls reserves its window and view slot once at entry (compile time -25..30%, text -23% on 4 sample rows, target/nc2/logs vs NC2_LAZY=1). Offline unit compile (tools/ai/nc1-unitcheck.el): 205 rows (125 hot + 79 corpus + mutant) in 550 s, 694 KB text, emacs RSS ~310 MB.
+evidence: target/nc2/logs/unitcheck.log sha256=c3b03e7b8a46bbcf99de3974a80332c7c6bbe9bd2e69261ccf5c4828ad1cb39a
+cmd: grep -q "^UNIT ok=t secs=550.0 rows=205" target/nc2/logs/unitcheck.log && test "$(grep -c '^FN nc_d_' target/nc2/logs/unitcheck.log)" -ge 80 && grep -q '^FN nc_site_rec ' target/nc2/logs/unitcheck.log && grep -q '^FN nc_subr_call ' target/nc2/logs/unitcheck.log
+** S2.2 Every generated nc_* defun has a precise stack map (reason nil); Win64 forms carry no rows
+#+NOTE: the two frameless helpers (nc_site_sym, nc_truthy_slow) make no call and hold no frame.
+cmd: sh -c '! grep "^FN nc_" target/nc2/logs/unitcheck.log | grep -v "reason=nil" | grep -v "^FN nc_site_sym \|^FN nc_truthy_slow "'
+cmd: NELISP_STANDALONE_TARGET=windows-x86_64 emacs --batch -Q -L lisp -L src -L scripts --eval '(progn (require (quote nelisp-cc-fxir-native)) (prin1 nelisp-cc-fxir-native--source) (terpri) (princ (nelisp-cc-fxir-native-install-table-source)))' 2>/dev/null | cmp -s - target/nc2/logs/win-source.txt && grep -q "nelisp-nc--table 'nil" target/nc2/logs/win-source.txt
+** S2.3 fxir evaluator transcripts equal VM-off / VM-on over the fx corpora on v21 with the new hot set harvested (N0 check still green)
+#+NOTE: v21 + compiler hot patch: nc1-fxir-check same and mutant pass; tools/ai/nc2-check.sh fxir: 134 hot-set functions run through the fxir reference evaluator give the VM's N2 corpus transcript (names the evaluator itself calls are left on the VM).
+#+REQUIRES: NC2_V21
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-fxir-check.sh "$NC2_V21" same && tools/ai/nc1-fxir-check.sh "$NC2_V21" mutant
+#+TIMEOUT: 300
+cmd: tools/ai/nc2-check.sh "$NC2_V21" fxir
+
+* S3 Build, fixtures, correctness
+** S3.1 One integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304; the install pass converts the hot set (count recorded)
+#+NOTE: build 1/2 (target/nc2/build.sh, 2026-10-27): rc=0 in 1557 s (v21 1192 s); prelink F1 354, root evidence max 82729; all 125 hot-set records converted; binary 39312512 B (v21 37660160, +4.4%), cold image +710 KB.
+cmd: tail -1 target/nc2-build/dynamic/build.log | grep -q "BUILD rc=0" && test -x target/nc2-build/dynamic/nelisp-dynamic
+cmd: sh -c 'cd target/nc2-build/dynamic/src && sha256sum -c --quiet ../frozen-hashes.txt'
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/nc2-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/nc2-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc2-build/dynamic/nelisp-dynamic converted 125
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+#+NOTE: target/nc2/fixtures.py on build 1: weak 24/24 (the GC-map check of the nc_d_ID wrappers), GNU 56/56, AFRT 24/25 (same exit-hook-result-gc red), buffer 21/21; gnu-speed-win-check on the Linux binary: closurevm 24, switch = GNU, features = GNU.
+evidence: target/nc2/fixtures/report.json sha256=863cf8973c32396c8dd3bf3a3f56ec5a032ae7740f23146104b49633d1d1c382
+cmd: grep -q "buffer 21/21 PASS" target/nc2/logs/fixtures.log && grep -q "weak 24/24 PASS" target/nc2/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/nc2/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/nc2/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $PWD/target/nc2-build/dynamic/nelisp-dynamic
+** S3.3 nc1 checks green on the build: native corpus same, mutant-caught, fx-same, inline-car; new N2 corpus (text-property / string calls, redefinition: fset/advice of a directly called native callee and of a subr callee, restored) VM-off == VM-on == native, with and without forced GC
+#+NOTE: test/nelisp-nc2-corpus.el (25 cases: text properties on strings and buffers, columns/lines/chars, split-string, string-trim, mapconcat, string helpers; redefinition: fset and advice of string-trim-left / string-trim-right while string-trim calls them directly, advice and fset of the directcall subr `substring' under split-string, fset toggled inside a loop) VM off == VM on == native, with and without NC_GC=1. Negative control: nc1's first-`<' rule now picks text-properties-at, whose `<' guards a fast path with an equal-answer fallback, so the mutant is visible only as the route taken; both corpora gained a case counting calls of the full validation (`tp-at-route'): native 0, mutant 3 (N2 corpus) / 2 (nc1 corpus) -- caught. nc1 corpus same, fx-same (77 corpus functions native), inline-car green.
+#+TIMEOUT: 600
+cmd: tools/ai/nc2-check.sh target/nc2-build/dynamic/nelisp-dynamic same
+#+TIMEOUT: 300
+cmd: tools/ai/nc2-check.sh target/nc2-build/dynamic/nelisp-dynamic mutant-caught
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-native-check.sh target/nc2-build/dynamic/nelisp-dynamic same
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc2-build/dynamic/nelisp-dynamic mutant-caught
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-native-check.sh target/nc2-build/dynamic/nelisp-dynamic fx-same
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc2-build/dynamic/nelisp-dynamic inline-car
+** S3.4 bufedit / bufnative / textprop1 / timefmt corpora still equal GNU on the build
+#+NOTE: tools/ai/nc2-corpora.sh on v21 and build 1: identical summaries -- bufedit edit 2 GNU lines not reproduced (the lane's own allowance <= 2), bufedit corpus 0, bufnative corpus 0, textprop1 corpus 0 mismatches / fuzz 0 of 3 seeds, timefmt 11763 match 0 mismatch.
+evidence: target/nc2/logs/corpora-v21.txt sha256=cab1b2c5c78b5e8b5a55b9d1ac8da7dc350258564e6effecd5b4c8db358d92c4
+evidence: target/nc2/logs/corpora-nc2.txt sha256=cab1b2c5c78b5e8b5a55b9d1ac8da7dc350258564e6effecd5b4c8db358d92c4
+cmd: cmp -s target/nc2/logs/corpora-v21.txt target/nc2/logs/corpora-nc2.txt && grep -q "bufedit-edit gnu-diff=2 " target/nc2/logs/corpora-nc2.txt && grep -q "bufnative-corpus gnu-diff=0 " target/nc2/logs/corpora-nc2.txt && grep -q "timefmt rc=0" target/nc2/logs/corpora-nc2.txt
+** S3.5 survey5 shim per-test statuses not below v21
+#+NOTE: target/nc2/s5/s5run.py (survey5 shim) over editfns, buffer, casefiddle, marker, data, fns, eval, subr, nadvice, simple, textprop, timefns and subr-x tests: 855 tests, per-test statuses identical on v21 and build 1 (614 PASS each; result files byte-identical).
+evidence: target/nc2/logs/s5-nc2.json sha256=fe6f99063f5b2cfbfa47c20e116bc79e1c2fdf477a48bd2068ec51b82486a23c
+cmd: cmp -s target/nc2/logs/s5-nc2.json target/nc2/logs/s5-v21.json
+** S3.6 Win64 image builds and passes closurevm / switch / features (VM path)
+#+NOTE: build 2/2 = Win64 image (target/nc2/win/run-win.sh build, rc=0, 768 s); the generator emits no rows for windows-* (S2.2), so the image runs the VM path. Under wine with a lane-local prefix (deleted after): closurevm 24 PASS, switch = GNU, features = GNU.
+evidence: target/nc2/win/check.log sha256=03120627b6d2356cf7703ba81095bb83ce759d5b06725570103b137143be1280
+cmd: grep -q "closurevm: PASS (24)" target/nc2/win/check.log && grep -q "switch corpus: PASS" target/nc2/win/check.log && grep -q "features: PASS" target/nc2/win/check.log && grep -q "build win rc=0" target/nc2/win/win.log
+
+* S4 End to end: speed and cost
+** S4.1 Direct calls hit: per ptp / split trip `m5_fx_callout' and `m5_fx_covered_rec' calls fall from 53 / 41 and 30 / 35 to <= 2 each (callgrind)
+#+NOTE: build 1, per trip (target/nc2/logs/nc2-calls.txt): fx activations through the VM entry (`m5_fx_run_body') 17 -> 1 / 9 -> 1 (the driver's own), `m5_fx_covered_rec' 30 -> 0 / 35 -> 0: every Lisp-to-Lisp call of the hot set is a guarded direct call (16 / 8 `nc_site_rec' guards). `m5_fx_callout' only 53 -> 15 / 41 -> 18: the rest are calls of subrs that have neither a directcall id nor an fx primitive kind (stringp, <=, >=, set, %, equal, fboundp, nelisp--string-search-chars, ...), which still cons an argument list (`m5_fx_call_list' 6 / 16). The criterion as written (<= 2 call-outs) assumed a word-ABI route for every subr; it stays red.
+evidence: target/nc2/logs/nc2-calls.txt sha256=81a2cd58c969fd412803c3d4bde94cf9113f1a36dbd454831bd4c8f13cf3213a
+cmd: awk '{for(i=3;i<=NF;i++){split($i,a,"=");v[$2,a[1]]=a[2]}} END{exit !(v["ptp","m5_fx_callout"]<=2 && v["split","m5_fx_callout"]<=2 && v["ptp","m5_fx_covered_rec"]<=2 && v["split","m5_fx_covered_rec"]<=2)}' target/nc2/logs/nc2-calls.txt
+** S4.2 DESIGN section 5 rows at or below est-hi Ir per call (row minus control): ptp <= 35505, split <= 41527, fline <= 14339, isoft <= 16477, ftime <= 198759, smatch <= 14735
+#+NOTE: smatch is GNU byte code on v21 (regexp entry points); moving it to fx/fxir is DESIGN stage N3, so this check is expected red after N2.
+#+NOTE: build 1 (target/nc2/cg/nc2-ir.txt, callgrind two-N), net Ir per call v21 -> nc2: ptp 154831 -> 56598 (est-hi 35505, RED), split 144640 -> 88322 (est-hi 41527, RED), fline (row - ctlbuf) 705 -> 706, isoft 5445 -> 5501, ftime 149064 -> 149114 (native subrs / byte code, unchanged, under est-hi), smatch 39076 -> 39126 (RED, N3). Family rows (row - ctl, v21 -> nc2): prop 206545 -> 90669, gtp 68421 -> 29722, mapc 136411 -> 78848, trim 113305 -> 101742. What remains in ptp/split is the apply route of subrs without a word-ABI entry (S4.1 NOTE) plus allocation, not interpretation.
+evidence: target/nc2/cg/nc2-ir.txt sha256=cf259e0fdbdfb980bcb8786cf7d5df84a7c816453d139faaed90392d00476eda
+cmd: awk '{v[$1]=$2} END{c=v["ctl"]; exit !(v["ptp"]-c<=35505 && v["split"]-c<=41527 && v["fline"]-v["ctlbuf"]<=14339 && v["isoft"]-c<=16477 && v["ftime"]-c<=198759 && v["smatch"]-c<=14735)}' target/nc2/cg/nc2-ir.txt
+** S4.3 Paired wall time faster 7/7 on CPU 12 vs v21 on the compiled rows (ptp, split, propertize, get-text-property, mapconcat, string-trim); regression rows reg-sum-bc and r3-mix within 3%
+#+NOTE: paired_bench (7 reps, alternating order, CPU 12, results checked equal) build 1 vs v21, ns/trip: ptp 20253 -> 7349 (x0.363), split 18754 -> 11108 (x0.592), prop 29293 -> 13131 (x0.448), gtp 9253 -> 4128 (x0.446), mapc 17597 -> 11179 (x0.635), trim 19234 -> 17236 (x0.896), all 7/7 faster; reg-sum-bc x1.006 (1/7), r3-mix x0.995 (4/7), both within 3 percent.
+evidence: target/nc2/timing/paired.log sha256=4f74e3bc2dd489a38c2303c0ef3cf6d11f6fdc9869ec6c95fdc91e12716078d2
+cmd: python3 target/nc2/timing/s4check.py
+** S4.4 Front-end stall cycles (pmcrun2 00A9) per trip not above v21 on the compiled rows
+#+NOTE: pmcrun2 PMC_EVENTS=fe:00A9 (two N 100000/400000, CPU 12), per trip v21 -> nc2: ptp 21820 -> 7871, split 17285 -> 9275, prop 30217 -> 13964, gtp 9100 -> 4191, mapc 17433 -> 12562, trim 26688 -> 21597; the 694 KB of generated text does not raise front-end stalls on any row.
+evidence: target/nc2/logs/pmc-summary.txt sha256=29287a59ce8ded7a9b44c953ec70dc287759a9df2b5615820522f11bade5d680
+cmd: sh -c 'test $(grep -c " OK$" target/nc2/logs/pmc-summary.txt) -eq 6 && ! grep -q ABOVE target/nc2/logs/pmc-summary.txt' 
+** S4.5 Build-time increase vs v21 and unit compile seconds per fx word measured and reported
+#+NOTE: offline unit compile 550 s for 205 rows = 9774 hot-set + 1850 corpus code words (0.047 s/word; nc1 0.036 on small functions). Per-row compile alone is superlinear in function size (tp-add1 1308 IR chars 57 s, iter-next-in-subtree 4992 chars 1018 s, unitrows-all.log), hence the 15 s selection rule. Whole dynamic build 1557 s vs v21 1192 s (+365 s, +31 percent; one run each, sequential unit step, load not controlled); Win64 768 s (no rows).
+cmd: grep -q "^UNIT ok=t secs=550.0" target/nc2/logs/unitcheck.log && tail -1 target/nc2-build/dynamic/build.log | grep -q "secs=1557"

@@ -27870,11 +27870,7 @@ on a DOS/Windows machine, it returns FILENAME in expanded form."
 (fset 'nelisp--tf-ilen #[(a) "\302\10!\31\11\303V\203\33\0\304\10\305\11Z\"\303U\203\33\0\11S\21\202\4\0\11)\207" [a k nelisp--tf-bitlen 0 ash 1] 4 "Number of bits of positive integer A."])
 (fset 'nelisp--tf-scale2 #[(x k) "\10\302V\203\21\0\11\303_\21\10\302Z\20\202\0\0\10\304W\203\"\0\11\305_\21\10\302\\\20\202\21\0\10\306V\2031\0\11\307\310\311\10\"!_\207\10\306W\203A\0\11\307\310\311\10[\"!\245\207\11\207" [k x 60 1.152921504606847e+18 -60 8.673617379884035e-19 0 float ash 1] 5 "X * 2^K for float X, exactly."])
 (fset 'nelisp--tf-frac-double #[(n d) "\10\306U\203\10\0\307\207\10\211\31\250\205\30\0\11\310X\205\30\0\11\311Y)\203>\0\n\211\31\250\205,\0\11\310X\205,\0\11\311Y)\203>\0\10\n\246\306U\203>\0\312\10\n\245!\207\10\306W\33\313\10!\34\314\n!\314\f!Z\315\\\35\316\211\36\27\36\30\316\36\31\15\306W\203h\0\317\n\15[\"\22\202q\0\15\320^\25\317\f\15\"\24\321\f\n\"\26\27\f\16\27\n_Z\26\30\314\16\27!\315X\203\260\0\16\30\322_\211\36\32\nV\204\245\0\16\32\nU\203\251\0\323\16\27\324\"\324U\203\251\0\324\202\252\0\306\26\31)\202\325\0\323\16\27\324\"\324U\203\322\0\323\317\16\27\325\"\324\"\324U\204\316\0\16\30\306U\204\322\0\322\202\323\0\306\26\31\16\27\16\31\\\26\27\314\16\27!\315V\203\357\0\16\27\323\16\27\324\"Z\26\27\326\312\16\27!\15[\"\36\33\13\203\3\1\16\33[\202\5\1\16\33.\7\207" [n tf-v d neg a scale 0 0.0 2305843009213693951 -2305843009213693952 float abs nelisp--tf-ilen 53 nil ash 1074 nelisp--tf-fdiv 2 logand 1 -1 nelisp--tf-scale2 q r incr r2 x] 5 "N / D rounded to the nearest double (D > 0)."])
-(defvar nelisp--float-time-native (symbol-function 'float-time))
 (fset 'nelisp--tf-float-time #[(time) "\302\10!\31\303\11@\11A\")\207" [time s nelisp--tf-spec nelisp--tf-frac-double] 3])
-(unless (boundp 'nelisp--float-time-wrapped)
-  (defvar nelisp--float-time-wrapped t)
-  (fset 'float-time #[(&optional specified-time) "\10\203\36\0\303\10!\204\36\0\10\211\31\250\205\32\0\11\304X\205\32\0\11\305Y)\203\"\0\n\10!\207\10:\203;\0\10A:\203;\0\30616\0\n\10!0\207\210\307\10!\207\10:\203~\0\10@\211\31\250\205Q\0\11\304X\205Q\0\11\305Y)\203~\0\10A\211\31\250\205f\0\11\304X\205f\0\11\305Y)\203~\0\310\10@!\311W\203~\0\10A\312V\203~\0\n\10!\207\307\10!\207" [specified-time tf-v nelisp--float-time-native floatp 2305843009213693951 -2305843009213693952 (error) nelisp--tf-float-time abs 9007199254740992 0] 3 "Return the current time, as a float number of seconds since the epoch."]))
 (defvar nelisp--tf-zone-cache (make-hash-table :test 'equal))
 (defvar nelisp--tf-utc-zone (vector 0 (list 0 nil "GMT")))
 (defvar nelisp--tf-override nil "(TZENV . ZONE) set by `set-time-zone-rule'.")
@@ -32793,6 +32789,26 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defvar nelisp--fx-callees (make-hash-table :test 'eq)
   "Function -> names whose compiled code calls it.")
 
+;; fxir (nativecomp N0): `nelisp--fx-compile' builds, from the same walk that
+;; emits the code vector, a structured tree with every variable resolved.  K
+;; is the code-vector index of the operand the VM reads for that node (the
+;; constant, symbol, call-site cache or alias descriptor), so a consumer reads
+;; the live code vector exactly where the VM does:
+;;   (:fn X)                     the function; ENTRY-CHECK reads code[1]
+;;   (:const K) (:slot N) (:varref K) (:alias K)
+;;   (:setslot N X)              setq of a slot; the value is X's
+;;   (:if C A B) (:seq X...) (:prog1 X Y...) (:and X...) (:or X...)
+;;   (:while C B)                value unused (a :seq follows with nil)
+;;   (:let ITEMS X NSPEC)        ITEMS in order: (:store N X) or
+;;                               (:varbind K X); X is the body; NSPEC
+;;                               dynamic bindings are undone after it
+;;   (:call K ARGC X...)         call through the live function cell
+;;   (:inline OPCODE K X...)     the VM's fixnum op; K names its function
+(defvar nelisp--fx-want-ir nil
+  "Non-nil: `nelisp--fx-compile' stores each code vector's fxir.")
+(defvar nelisp--fx-ir-table (make-hash-table :test 'eq :weakness 'key)
+  "Code vector -> its fxir (see above), filled when `nelisp--fx-want-ir'.")
+
 (defvar nelisp--fx-declared nil
   "Bare declarations in the environment of the closure being compiled.
 A closure whose captured environment holds only `t' and symbols -- local
@@ -32927,7 +32943,9 @@ constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
 
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
-PARAMS, a list of symbols, are the first locals, set by the caller."
+PARAMS, a list of symbols, are the first locals, set by the caller.
+The same walk also builds the code's fxir (see `nelisp--fx-ir'); it is
+kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set."
   (let ((macroexpand-all-environment
          ;; `cl-labels' expands the compiler's local helpers before COMP
          ;; reaches its explicit macroexpand-all call.  Protect the same
@@ -32936,7 +32954,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                  macroexpand-all-environment))
         (out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
         (depth 0) (maxdepth 0) (lexlets nil) (alias-hints nelisp--fx-alias-hints)
-        (mutated nil) (nparams (length params))
+        (mutated nil) (nparams (length params)) (ir nil)
         ;; Innermost first, like the interpreter's environment: its
         ;; parameters are pushed in order, so the last one is first.
         (vars (let ((i -1)) (nreverse (mapcar (lambda (p) (cons p (setq i (1+ i)))) params)))))
@@ -32953,7 +32971,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
            ;; GNU bytecomp.el's byte-compile-out retains one instruction
            ;; per output entry; assembly flattens it only after emission.
            (push items out)
-           (setq pc (+ pc (length items))))
+           (setq pc (+ pc (length items)))
+           ;; The value is the code index of the first operand: what an
+           ;; fxir node names (`nelisp--fx-ir').
+           (- pc (length items) -1))
+         (irk (kind k) (list kind k))
          (label () (setq nlab (1+ nlab)) nlab)
          (place (l) (push (cons l pc) labels))
          ;; One `emit' for the opcode and its placeholder target, so the
@@ -32961,30 +32983,32 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
          (jump (op l) (emit op 0) (push (cons (1- pc) l) patches))
          (unsupported (x) (throw 'nelisp--fx-unsupported x))
          (body (forms)
-           (if (null forms) (emit 1 nil)
-             (while forms
-               (comp (car forms))
-               (when (cdr forms) (emit 11))
-               (setq forms (cdr forms)))))
+           (if (null forms) (irk :const (emit 1 nil))
+             (let ((vals nil))
+               (while forms
+                 (push (comp (car forms)) vals)
+                 (when (cdr forms) (emit 11))
+                 (setq forms (cdr forms)))
+               (if (cdr vals) (cons :seq (nreverse vals)) (car vals)))))
          (comp (x)
            (cond
             ((and (symbolp x) (not (keywordp x)) x (not (eq x t)))
              (let ((c (assq x vars)))
-               (if c (emit 2 (cdr c))
+               (if c (progn (emit 2 (cdr c)) (list :slot (cdr c)))
                  ;; A global variable: VARREF, GNU's Bvarref, reads it
                  ;; directly instead of calling `symbol-value'.
                  (if (not (and alias-hints (memq x alias-hints)
                                (fboundp 'nelisp--env-globals-op)))
-                     (emit 19 x)
+                     (irk :varref (emit 19 x))
                  (let* ((gen-cell nelisp--fx-special-gen)
                         (snapshot (aref gen-cell 0))
                         (base (nelisp--env-globals-op 'indirect-variable x)))
                    ;; Cache a name, never a cell or value. Every read checks
                    ;; the generation, including after arbitrary callouts.
                    (if (or (eq base x) (null base) (eq base t) (keywordp base))
-                       (emit 19 x)
-                     (emit 18 (vector x base gen-cell snapshot))))))))
-            ((not (consp x)) (emit 1 x))
+                       (irk :varref (emit 19 x))
+                     (irk :alias (emit 18 (vector x base gen-cell snapshot)))))))))
+            ((not (consp x)) (irk :const (emit 1 x)))
             (t
              (let ((op (car x)))
                ;; GNU eval_sub takes list_length of the arguments and checks the subr's
@@ -32996,10 +33020,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                (cond
                 ((eq op 'quote)
                  (unless (and (consp (cdr x)) (null (cddr x))) (unsupported x))
-                 (emit 1 (cadr x)))
+                 (irk :const (emit 1 (cadr x))))
                 ;; #'SYMBOL is the symbol itself.
                 ((and (eq op 'function) (symbolp (cadr x)) (null (cddr x)))
-                 (emit 1 (cadr x)))
+                 (irk :const (emit 1 (cadr x))))
                 ((memq op '(let let*))
                  (unless (consp (cdr x)) (unsupported x))
                  ;; A special variable is bound by VARBIND, which pops the
@@ -33008,7 +33032,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                  ;; signals or throws through the frame.  It never enters
                  ;; VARS (reads go to VARREF, assignments to `set'), nor
                  ;; LEXLETS (that guards lexical names turning special).
-                 (let ((saved vars) (pending nil) (dynamic nil) (nspec 0))
+                 (let ((saved vars) (pending nil) (dynamic nil) (nspec 0) (items nil) (val nil))
                    (dolist (b (cadr x))
                      (let* ((name (if (consp b) (car b) b))
                             ;; Dynamic for certain: the closure's own declaration or
@@ -33025,100 +33049,123 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                          (unsupported x))
                        (when (and (not dyn) (nelisp--fx-special-p name)) (unsupported x))
                        (unless dyn (unless (memq name lexlets) (push name lexlets)))
-                       (comp (if (consp b) (cadr b) nil))
+                       (setq val (comp (if (consp b) (cadr b) nil)))
                        (cond
                         ;; A lone binding has no later value to wait for.
                         ((and dyn (or (eq op 'let*) (null (cdr (cadr x)))))
-                         (emit 20 name) (setq nspec (1+ nspec)))
+                         (push (list :varbind (emit 20 name) val) items)
+                         (setq nspec (1+ nspec)))
                         (t
                          ;; `let': every value is computed before the first
                          ;; binding, so each waits in its own slot.
                          (emit 3 nloc)
+                         (push (list :store nloc val) items)
                          (cond (dyn (push (cons name nloc) dynamic))
                                ((eq op 'let*) (push (cons name nloc) vars))
                                (t (push (cons name nloc) pending)))
                          (setq nloc (1+ nloc))))))
                    (dolist (d (nreverse dynamic))
-                     (emit 2 (cdr d)) (emit 20 (car d)) (setq nspec (1+ nspec)))
+                     (emit 2 (cdr d))
+                     (push (list :varbind (emit 20 (car d)) (list :slot (cdr d))) items)
+                     (setq nspec (1+ nspec)))
                    (setq vars (append pending vars))
-                   (body (cddr x))
+                   (setq val (body (cddr x)))
                    (when (> nspec 0) (emit 21 nspec))
-                   (setq vars saved)))
+                   (setq vars saved)
+                   (list :let (nreverse items) val nspec)))
                 ((eq op 'setq)
                  ;; (setq) is nil; PAIRS are assigned left to right and the
                  ;; value is the last one.  An odd count stays with the
                  ;; interpreter, which signals.
                  (let ((args (cdr x)))
                    (when (= (% (length args) 2) 1) (unsupported x))
-                   (if (null args) (emit 1 nil)
-                     (while args
-                       (let ((sym (car args)) (val (cadr args)))
-                         (unless (symbolp sym) (unsupported x))
-                         (let ((c (assq sym vars)))
-                           (if c (progn (comp val) (emit 12) (emit 3 (cdr c)))
-                             (emit 1 sym) (comp val) (emit 16 'set 2)))
-                         (setq args (cddr args))
-                         (when args (emit 11)))))))
+                   (if (null args) (irk :const (emit 1 nil))
+                     (let ((items nil))
+                       (while args
+                         (let ((sym (car args)) (val (cadr args)))
+                           (unless (symbolp sym) (unsupported x))
+                           (let ((c (assq sym vars)))
+                             (if c (let ((v (comp val)))
+                                     (emit 12) (emit 3 (cdr c))
+                                     (push (list :setslot (cdr c) v) items))
+                               (let* ((ks (emit 1 sym)) (v (comp val)))
+                                 (push (list :call (emit 16 'set 2) 2 (list :const ks) v)
+                                       items))))
+                           (setq args (cddr args))
+                           (when args (emit 11))))
+                       (if (cdr items) (cons :seq (nreverse items)) (car items))))))
                 ((eq op 'progn) (body (cdr x)))
                 ((memq op '(when unless))
                  (unless (consp (cdr x)) (unsupported x))
-                 (let ((skip (label)) (end (label)))
-                   (comp (cadr x)) (jump 9 skip)
-                   (if (eq op 'when) (body (cddr x)) (emit 1 nil))
+                 (let ((skip (label)) (end (label)) (c nil) (a nil) (b nil))
+                   (setq c (comp (cadr x))) (jump 9 skip)
+                   (setq a (if (eq op 'when) (body (cddr x)) (irk :const (emit 1 nil))))
                    (jump 8 end) (place skip)
-                   (if (eq op 'unless) (body (cddr x)) (emit 1 nil))
-                   (place end)))
+                   (setq b (if (eq op 'unless) (body (cddr x)) (irk :const (emit 1 nil))))
+                   (place end)
+                   (list :if c a b)))
                 ;; GNU eval.c:458-468 keeps FIRST and discards later values.
                 ((eq op 'prog1)
                  (if (null (cdr x)) (unsupported x)
-                   (comp (cadr x))
-                   (dolist (a (cddr x)) (comp a) (emit 11))))
+                   (let ((first (comp (cadr x))) (rest nil))
+                     (dolist (a (cddr x)) (push (comp a) rest) (emit 11))
+                     (cons :prog1 (cons first (nreverse rest))))))
                 ((eq op 'prog2)
                  (if (null (cddr x)) (unsupported x)
-                   (comp (cadr x)) (emit 11) (comp (nth 2 x))
-                   (dolist (a (nthcdr 3 x)) (comp a) (emit 11))))
+                   (let* ((a1 (comp (cadr x))) (a2 (progn (emit 11) (comp (nth 2 x))))
+                          (rest nil))
+                     (dolist (a (nthcdr 3 x)) (push (comp a) rest) (emit 11))
+                     (cons :prog1 (cons (list :seq a1 a2) (nreverse rest))))))
                 ((eq op 'if)
                  (unless (consp (cddr x)) (unsupported x))
-                 (let ((else (label)) (end (label)))
-                   (comp (nth 1 x)) (jump 9 else)
-                   (comp (nth 2 x)) (jump 8 end)
-                   (place else) (body (nthcdr 3 x))
-                   (place end)))
+                 (let ((else (label)) (end (label)) (c nil) (a nil) (b nil))
+                   (setq c (comp (nth 1 x))) (jump 9 else)
+                   (setq a (comp (nth 2 x))) (jump 8 end)
+                   (place else) (setq b (body (nthcdr 3 x)))
+                   (place end)
+                   (list :if c a b)))
                 ((eq op 'while)
                  (unless (consp (cdr x)) (unsupported x))
-                 (let ((top (label)) (end (label)))
-                   (place top) (comp (nth 1 x)) (jump 9 end)
-                   (body (cddr x)) (emit 11) (jump 8 top)
-                   (place end) (emit 1 nil)))
+                 (let ((top (label)) (end (label)) (c nil) (b nil))
+                   (place top) (setq c (comp (nth 1 x))) (jump 9 end)
+                   (setq b (body (cddr x))) (emit 11) (jump 8 top)
+                   (place end)
+                   (list :seq (list :while c b) (irk :const (emit 1 nil)))))
                 ((eq op 'cond)
-                 (let ((end (label)))
+                 (let ((end (label)) (cls nil) (r nil))
                    (dolist (cl (cdr x))
-                     (let ((next (label)))
+                     (let ((next (label)) (tst nil))
                        (if (cdr cl)
-                           (progn (comp (car cl)) (jump 9 next)
-                                  (body (cdr cl)) (jump 8 end))
+                           (progn (setq tst (comp (car cl))) (jump 9 next)
+                                  (push (list :if tst (body (cdr cl))) cls)
+                                  (jump 8 end))
                          ;; (TEST): the value is TEST's own.
                          (let ((drop (label)))
-                           (comp (car cl)) (emit 12) (jump 9 drop)
-                           (jump 8 end) (place drop) (emit 11) (jump 8 next)))
+                           (setq tst (comp (car cl))) (emit 12) (jump 9 drop)
+                           (jump 8 end) (place drop) (emit 11) (jump 8 next)
+                           (push (list :or tst) cls)))
                        (place next)))
-                   (emit 1 nil) (place end)))
+                   (setq r (irk :const (emit 1 nil))) (place end)
+                   (dolist (c cls) (setq r (append c (list r))))
+                   r))
                 ((eq op 'and)
-                 (if (null (cdr x)) (emit 1 t)
-                   (let ((end (label)) (false (label)) (args (cdr x)))
+                 (if (null (cdr x)) (irk :const (emit 1 t))
+                   (let ((end (label)) (false (label)) (args (cdr x)) (vals nil))
                      (while (cdr args)
-                       (comp (car args)) (jump 9 false) (setq args (cdr args)))
-                     (comp (car args)) (jump 8 end)
-                     (place false) (emit 1 nil) (place end))))
+                       (push (comp (car args)) vals) (jump 9 false) (setq args (cdr args)))
+                     (push (comp (car args)) vals) (jump 8 end)
+                     (place false) (emit 1 nil) (place end)
+                     (cons :and (nreverse vals)))))
                 ((eq op 'or)
-                 (let ((end (label)))
+                 (let ((end (label)) (vals nil))
                    (dolist (a (cdr x))
                      (let ((next (label)))
-                       (comp a) (emit 12) (jump 9 next) (jump 8 end)
+                       (push (comp a) vals) (emit 12) (jump 9 next) (jump 8 end)
                        (place next) (emit 11)))
-                   (emit 1 nil) (place end)))
+                   (emit 1 nil) (place end)
+                   (cons :or (nreverse vals))))
                 ;; GNU `Finteractive' returns nil and evaluates nothing.
-                ((eq op 'interactive) (emit 1 nil))
+                ((eq op 'interactive) (irk :const (emit 1 nil)))
                 ;; A lambda is built at run time by `nelisp--fx-lambda' with
                 ;; the interpreter's own `eval', so the closure is the one
                 ;; the interpreter makes.  The VM keeps variables in slots,
@@ -33153,31 +33200,42 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                      (dolist (v cells)
                        (when (>= (cdr v) nparams) (unsupported x))))
                    (push 'nelisp--fx-lambda nelisp--fx-called)
-                   (emit 1 (list 'function lam))
-                   (emit 1 nelisp--fx-outer-env)
-                   (dolist (v cells)
-                     (emit 1 (car v)) (emit 2 (cdr v))
-                     (push 'cons nelisp--fx-called)
-                     (emit 16 (vector 'cons nil nil nil nil) 2))
-                   (emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
-                         (+ 2 (length cells)))))
+                   (let* ((kf (emit 1 (list 'function lam)))
+                          (ke (emit 1 nelisp--fx-outer-env))
+                          (args (list (list :const ke) (list :const kf))))
+                     (dolist (v cells)
+                       (let ((ks (emit 1 (car v))))
+                         (emit 2 (cdr v))
+                         (push 'cons nelisp--fx-called)
+                         (push (list :call (emit 16 (vector 'cons nil nil nil nil) 2) 2
+                                     (list :const ks) (list :slot (cdr v)))
+                               args)))
+                     (setq args (nreverse args))
+                     (cons :call (cons (emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
+                                             (+ 2 (length cells)))
+                                       (cons (length args) args))))))
                 ((and (symbolp op)
                       (or (memq op nelisp--fx-native-heads)
                           (special-form-p op)))
                  (unsupported x))
                 ((and (symbolp op) (assq op nelisp--fx-inline-ops)
                       (= (length (cdr x)) (cddr (assq op nelisp--fx-inline-ops))))
-                 (dolist (a (cdr x)) (comp a))
-                 (emit (cadr (assq op nelisp--fx-inline-ops)) op))
+                 (let ((args nil))
+                   (dolist (a (cdr x)) (push (comp a) args))
+                   (cons :inline (cons (cadr (assq op nelisp--fx-inline-ops))
+                                       (cons (emit (cadr (assq op nelisp--fx-inline-ops)) op)
+                                             (nreverse args))))))
                 ;; Only a function already defined: a name defined later
                 ;; may turn out to be a macro (the interpreter expands at
                 ;; each evaluation; compiled code would call the macro).
                 ((and (symbolp op) (fboundp op) (not (macrop op)))
-                 (dolist (a (cdr x)) (comp a))
-                 (push op nelisp--fx-called)
-                 ;; Cache the live function cell, never its value. Rebinding
-                 ;; still takes effect; replacing/growing the table expires it.
-                 (emit 16 (vector op nil nil nil nil) (length (cdr x))))
+                 (let ((args nil))
+                   (dolist (a (cdr x)) (push (comp a) args))
+                   (push op nelisp--fx-called)
+                   ;; Cache the live function cell, never its value. Rebinding
+                   ;; still takes effect; replacing/growing the table expires it.
+                   (cons :call (cons (emit 16 (vector op nil nil nil nil) (length (cdr x)))
+                                     (cons (length (cdr x)) (nreverse args))))))
                 ;; A function not defined yet whose arguments cannot fail or
                 ;; have effects (GNU signals void-function before it
                 ;; evaluates any argument).  The call goes out through the
@@ -33188,9 +33246,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                         (dolist (a (cdr x))
                           (unless (nelisp--fx-simple-arg-p a vars) (setq ok nil)))
                         ok))
-                 (dolist (a (cdr x)) (comp a))
-                 (push op nelisp--fx-called)
-                 (emit 16 (vector op nil nil nil nil) (length (cdr x))))
+                 (let ((args nil))
+                   (dolist (a (cdr x)) (push (comp a) args))
+                   (push op nelisp--fx-called)
+                   (cons :call (cons (emit 16 (vector op nil nil nil nil) (length (cdr x)))
+                                     (cons (length (cdr x)) (nreverse args))))))
                 ((and (symbolp op) (not (fboundp op)))
                  (setq nelisp--fx-missing op)
                  (unsupported x))
@@ -33202,7 +33262,7 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                                       (macroexpand-all form nelisp--fx-native-macro-environment)
                                     form)))
                     (setq mutated (nelisp--fx-setq-targets expanded))
-                    (comp expanded))
+                    (setq ir (comp expanded)))
                   (emit 0) 'ok)
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
@@ -33213,6 +33273,8 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
             (aset code (car p) (cdr (assq (cdr p) labels))))
           (when lexlets
             (aset code 1 (vconcat (list nelisp--fx-special-gen -1) lexlets)))
+          (when nelisp--fx-want-ir
+            (puthash code (list :fn ir) nelisp--fx-ir-table))
           (cons code nloc))))))
 
 (defun nelisp--fx-eval (form)

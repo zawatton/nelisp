@@ -1,0 +1,80 @@
+#+TITLE: nc1 -- general native compiler stages N0 (fxir) and N1 (lowering core)
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD a5632237e (v20, no overlay). Design: ../resume-4943-20261024/target/nativecomp/DESIGN.md sections 4.1-4.6, 6 (N0, N1). Baseline binary v20 = ../resume-4943-20261024/target/integ-1037-build/dynamic/nelisp-dynamic. Build budget 2. Timing CPU 12.
+
+* S1 N0: fxir from the fx compiler's own walk
+** S1.1 `nelisp--fx-compile' emits a structured, slot-resolved fxir from the same walk that emits the code vector, only when the code vector exists; every operand index in the fxir names the code-vector word the VM reads (checked over every prelude record of v20 plus the fx corpora)
+#+NOTE: v20 + the edited compiler loaded as a hot patch (test/nelisp-fxir-eval.el): 1668 records, 1668 with fxir, 0 operand-index problems, 1667 code vectors identical to the live record; the one difference (nelisp-cl-generic--invoke-fns) is a lambda constant holding a fresh macro gensym, not an opcode.
+evidence: target/nc1/logs/n0-scan-v20.log sha256=f35f63b2d1608fb0c094120eee6a44a003313c700501d107f97e4c1b5c96f1ca
+cmd: grep -q "SCAN records=1668 same=1667 ir=1668 bad=1 recompile-none=0" target/nc1/logs/n0-scan-v20.log
+** S1.2 An fxir evaluator gives transcripts equal to VM-off and VM-on on the fx corpora (test/nelisp-fx-adopt-corpus.el and the fxspec corpus), and a deliberately wrong evaluator rule is caught
+#+NOTE: tools/ai/nc1-fxir-check.sh on v20 (hot patch): VM-off == VM-on == fxir evaluator over the 103-case fx corpus (81 functions on fxir); NELISP_FXIR_MUTANT=1 (wrong `:or') differs. Re-run: NC1_V20=<v20 binary>.
+#+REQUIRES: NC1_V20
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-fxir-check.sh "$NC1_V20" same
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-fxir-check.sh "$NC1_V20" mutant
+evidence: target/nc1/logs/n0-same-v20.log sha256=efa5d8eaafaf75f7fb5d14cea8c24cb8ce73e12971e33dc85df52b7391ee3f07
+** S1.3 Harvest tool writes the hot-set fxir data file; census of the hot set: 0 non-handler `none' records, handler declines enumerated for N3
+#+NOTE: tools/ai/nc1-harvest.el on v20: 31/31 hot-set names harvested (point/goto-char family 23 + aot1 remainder 8; aot1's rassq is a builtin and two-prod/sxhash-string/f64-split no longer exist in v20), 0 `none' in the hot set; 79 fx-corpus rows (test rows, ids 100+). Outside the hot set: intern, intern-soft, all-completions, try-completion are declined for a special parameter (obarray) -- not admitted here (needs VARBIND of parameters at entry), recorded for the coordinator. Handler declines (nelisp--fx-hopeless-heads) are not in this hot set.
+evidence: lisp/nelisp-fxir-native-data.el sha256=68e3a942921877752a24c89bc8df3de3754ed035d05987deb563fd2973e0e19f
+evidence: lisp/nelisp-fxir-native-corpus-data.el sha256=e84f28d71f43bc8f86532dad84948d2e1b7c0384088ce451feb943efb472e5f9
+* S2 N1: lowering of fxir to the AOT dialect on runtime WORDs
+** S2.1 Generator lowers the hot set (point/goto-char family + aot1's 20 where admitted) to straight-line dialect defuns (no pc dispatcher; inline fixnum/predicate/car/cdr/eq/aref; shared slow paths; status-protocol exits); offline unit compile succeeds and its seconds per fx op is recorded
+#+NOTE: offline unit compile (tools/ai/nc1-unitcheck.el, same pipeline as the build's feature unit): 111 rows (+1 mutant) compile in 90.8 s; hot set alone 53.7 s for ~1500 code words (~0.036 s/word). Text 254 KB for 125 functions (goto-char 7.2 KB, 1-call accessors 864 B) -- above DESIGN's 6-10 B/word budget; the front-end criterion S4.3 decides.
+evidence: target/nc1/logs/unitcheck.log sha256=85ab0fd41751a253562747c60a60d09937d52cda123458c511171bb063172cc1
+cmd: grep -q "^UNIT ok=t" target/nc1/logs/unitcheck.log
+** S2.2 Generated defuns keep precise GC maps (no full-frame-scan reason) and Win64 forms carry no data blob
+#+NOTE: every nc_* defun has a precise stack map (reason nil); only the raw helper nc_truthy_slow is frameless. Win64: the generator emits no rows when NELISP_STANDALONE_TARGET is windows-*, so no generated form at all.
+cmd: sh -c '! grep "^FN nc_[0-9]" target/nc1/logs/unitcheck.log | grep -v "reason=nil"' 
+* S3 Build, fixtures, correctness
+** S3.1 One integrated dynamic build rc=0 with prelink F1 <= 384 and root evidence <= 98304; the install pass converts the listed records
+#+NOTE: build 1 hit ENOSPC on the shared volume (coordinator: environment failure, not counted). Build A (2026-10-27) rc=0 in 1177 s: prelink F1 354 / constructor 106 / rooted 84 (all PASS), root evidence max 82729 nodes, 31 distinct records converted by the install pass; frozen build/compiler sources unchanged.
+cmd: tail -1 target/nc1-build/dynamic/build.log | grep -q "BUILD rc=0" && test -x target/nc1-build/dynamic/nelisp-dynamic
+cmd: sh -c 'cd target/nc1-build/dynamic/src && sha256sum -c --quiet ../frozen-hashes.txt'
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/nc1-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/nc1-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic converted 31
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+#+NOTE: target/nc1/fixtures.py on build A: weak 24/24, GNU 56/56, AFRT 24/25 (same exit-hook-result-gc red as v20), buffer 21/21; tools/ai/gnu-speed-win-check/check.sh on the Linux binary: closurevm 24, switch = GNU, features = GNU.
+evidence: target/nc1/logs/fixtures-report.json sha256=5f2f6eab0b5aa7c1d2d4dfa012b62dd0650f34861de017188a7a73aec2ec2327
+cmd: grep -q "buffer 21/21 PASS" target/nc1/logs/fixtures.log && grep -q "weak 24/24 PASS" target/nc1/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/nc1/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/nc1/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $PWD/target/nc1-build/dynamic/nelisp-dynamic
+** S3.3 Corpus transcripts VM-off == VM-on == native on the built binary; a deliberately wrong lowering of one op (built in, selected at run time) is caught
+#+NOTE: test/nelisp-nc-native-corpus.el (28 cases): VM off == VM on == native, with and without forced collections; fx corpus: off == vm == native with 77 corpus functions running native code; the built-in mutant (narrow-to-region with `<' lowered as `>', NC_MODE=mutant) changes 3 narrow cases.
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic same
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic mutant-caught
+#+TIMEOUT: 600
+cmd: tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic fx-same
+** S3.4 Runtime redefinition checks on the built binary: fset/advice of a compiled function and of a callee honoured; (fset 'car ...) shows the GNU-faithful inline behaviour
+#+NOTE: corpus cases redef-callee-fset, redef-callee-advice (callee nelisp-buffer-len of native nelisp-point-max), redef-self-fset, redef-self-advice (native bignump), each followed by the restored definition: equal across off/vm/native (inside the `same' check). (fset 'car ...): native nelisp--motion-charset-member-p gives t, as GNU 31.1 byte-compiled code does (GNU interpreted: nil; the v20 VM also calls the function cell: nil). v20 finding, not native: with `insert' run under an advised nelisp-buffer-len, the interpreter gives point-max 6 and the VM 5 -- the corpus fills the buffer before redefining.
+#+TIMEOUT: 600
+cmd: sh -c 'tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic same && target/nc1-build/dynamic/nelisp-dynamic --load test/nelisp-nc-native-corpus.el 2>&1 | grep -q "^redef-self-advice => (((adv t) (adv nil)) t)$"'
+#+TIMEOUT: 300
+cmd: tools/ai/nc1-native-check.sh target/nc1-build/dynamic/nelisp-dynamic inline-car
+** S3.5 survey5 shim pass counts not below v20
+#+NOTE: survey5 shim (target/nc1/s5/s5run.py) over editfns, buffer, casefiddle, marker, data, fns, eval, subr, nadvice, simple tests on v20 and build A: per-test statuses identical (557 PASS each; result files byte-identical).
+evidence: target/nc1/logs/s5-nc1.json sha256=ec341ab5f4e45f3067bfa29de95259361578dc3bf9818100d6198863dbf6057b
+cmd: cmp -s target/nc1/logs/s5-nc1.json target/nc1/logs/s5-v20.json
+** S3.6 Win64 image builds and passes closurevm/switch/features (VM path if Win64 lowering is not ready)
+#+NOTE: build B = Win64 image (target/nc1/win/run-win.sh build, rc=0, 823 s; v20 818 s); the generator emits no rows for windows-*, so the image runs the VM path. Under wine with a lane-local prefix (deleted after): closurevm 24 PASS, switch = GNU, features = GNU.
+evidence: target/nc1/win/check.log sha256=aab6657af81149094dd5717848a0d20bad0cf63f6193834ea67eac5e655168f3
+cmd: grep -q "closurevm: PASS (24)" target/nc1/win/check.log && grep -q "switch corpus: PASS" target/nc1/win/check.log && grep -q "features: PASS" target/nc1/win/check.log
+* S4 End to end: speed and cost
+** S4.1 goto-char net Ir per call <= 4K (v20 16.6K), callgrind two-N on target/nativecomp/drv/ctlbuf.el
+#+NOTE: callgrind two-N (500/2500) on CPU 17 (target/nc1/cg/run.sh): ctlbuf 4770 - ctl 1850 = 2920 Ir net per goto-char (v20 18456 - 1850 = 16606). Hot-set rows Ir/trip v20 -> nc1: bobpeobp 35303 -> 19130, narrow 49009 -> 29046, point 28430 -> 15813, put 49200 -> 41712, upcase 53715 -> 46011.
+evidence: target/nc1/logs/cg-nc1-ir.txt sha256=159a8c2e7eefd00cebfe595b1daa3975ff707e9449ad69ce2410be2971701b68
+cmd: awk '$1=="ctl"{c=$2} $1=="ctlbuf"{b=$2} END{exit !(c>0 && b-c<=4000)}' target/nc1/logs/cg-nc1-ir.txt
+** S4.2 Paired wall time faster 7/7 on CPU 12 vs v20 on the hot-set rows; regression rows reg-sum-bc and r3-mix not slower
+#+NOTE: paired_bench (7 reps, alternating order, CPU 12, results checked equal) build A vs v20, ns/trip: ctlbuf 2460 -> 469 (x0.191), gotochar 2515 -> 465 (x0.185), bobpeobp 4453 -> 2078 (x0.467), narrow 6356 -> 3443 (x0.542), point 3559 -> 1742 (x0.490), put 6878 -> 5624 (x0.818), upcase 7609 -> 6315 (x0.830), all 7/7 pairs faster; reg-sum-bc x0.999 (6/7), r3-mix x0.995 (5/7) -- not slower (tolerance 1.03, as interp4).
+cmd: python3 target/nc1/timing/s4check.py
+** S4.3 Front-end stall cycles (pmcrun2 PMC_EVENTS 00A9) per step not above v20 on the hot-set rows
+#+NOTE: pmcrun2 PMC_EVENTS=fe:00A9 (two N 100000/400000, CPU 12), per trip v20 -> nc1: ctlbuf 2215 -> 235, gotochar 2171 -> 201, bobpeobp 3878 -> 1505, narrow 6042 -> 2525, point 3181 -> 1330, put 6913 -> 5450, upcase 7832 -> 6469. The 7.2 KB goto-char body does not raise front-end stalls: fewer instructions (18444 -> 4757) outweigh the larger code.
+evidence: target/nc1/logs/pmc-summary.txt sha256=9de451b474487dc29eb8de752ceaeb9726763cc99789f2a135e70f483043b3ee
+cmd: sh -c 'test $(grep -c " OK$" target/nc1/logs/pmc-summary.txt) -eq 7 && ! grep -q ABOVE target/nc1/logs/pmc-summary.txt' 
+** S4.4 Seconds of build time per compiled fx op and total build-time increase vs v20 measured and reported
+#+NOTE: offline unit compile of the generated rows: 90.8 s for 111 rows (+1 mutant), hot set 53.7 s for ~1500 code words = ~0.036 s per fx code word (14901 fxir chars, 254 KB text). Whole dynamic build 1177 s vs v20 1071 s (+106 s, +9.9%; one run each, other lanes' load not controlled); binary +630616 B (+1.7%), cold image +363448 B; Win64 build 823 s vs 818 s (no rows).
+cmd: grep -q "^UNIT ok=t secs=" target/nc1/logs/unitcheck.log && tail -1 target/nc1-build/dynamic/build.log | grep -q "secs="

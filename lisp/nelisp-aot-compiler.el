@@ -16569,7 +16569,17 @@ no loads move across control flow or another load."
              (not (nelisp-aot-compiler--lisp-values-p))
              (not nelisp-aot-compiler--x86-index-forward-frame-sensitive-p)
              (not (cl-some (lambda (pair) (memq (cdr pair) '(rax r10 r11 rdi rsi)))
-                           nelisp-aot-compiler--promoted-slots)))
+                           nelisp-aot-compiler--promoted-slots))
+             ;; Only a chain that ends in a raw load can be forwarded.  Find
+             ;; its end first (O(chain)) before the whole-body walks below:
+             ;; the emitter asks at every `let-rt', so walking each let's
+             ;; full body first made a function's compile quadratic in its
+             ;; size (aotscale; result unchanged, this function is pure).
+             (let ((end node))
+               (while (eq (nelisp-aot-compiler--ir-kind end) 'let-rt)
+                 (setq end (nelisp-aot-compiler--ir-get end :body)))
+               (memq (nelisp-aot-compiler--ir-kind end)
+                     '(ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64))))
     (let ((body node) (bindings nil) (targets nil) (valid t))
       (while (eq (nelisp-aot-compiler--ir-kind body) 'let-rt)
         (let* ((slot (nelisp-aot-compiler--ir-get body :slot))

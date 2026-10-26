@@ -1,15 +1,57 @@
-#+TITLE: Directcall decline-cost regressions (REGRESS findings)
-#+NOTE: Created 2026-10-25 before implementation; 5 criteria. Seed = resume integrated tree. Evidence: resume target/integ-1025/regress/REPORT.md (vec4 +11%, mkvec8 +8%, mkstr +8%, mapc directcall share).
-* S1 Source
-** S1.1 nl_directcall_id reads the symbol id once and rejects non-table symbols by a range or set gate before any further validation; red/green structural test plus unchanged direct-hit behaviour
-evidence: target/regfix/source-evidence.json sha256=308411a8979ce1d5cdad156eb73e483f16d28cd1805a7d8f605caab6860a5849
-** S1.2 nl_apply_do_funcall / nl_apply_do_apply decline before nl_directcall_list_words when the target is not an eligible primitive (tag check first); red/green
-evidence: target/regfix/source-evidence.json sha256=308411a8979ce1d5cdad156eb73e483f16d28cd1805a7d8f605caab6860a5849
-* S2 Build and regression
-** S2.1 One dedicated build; fixtures weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; ndc 11/11
-evidence: target/regfix/s2-evidence.json sha256=3b9ae84631d9c2c9a6c98a8d0d3d851b3f44148d23ad2e13dc09378c7055b583
-* S3 End to end
-** S3.1 s6-vec4, s6-mkvec8, s6-mkstr and r7-mapc-bc instructions per iteration back to the stack-set level or below (callgrind), results checked
-cmd: python3 target/regfix/check-callgrind.py
-** S3.2 Paired elapsed (gnu-gap-bench, CPU 14) on those four rows plus r4-logand and the plain sum loop, vs integ-1025 and GNU
-evidence: target/regfix/elapsed-summary.json sha256=85bdeb488f4ea9d9ce8ef658fa0eb3fc32500020ed5255b7fb1f55e6a3f0c149
+#+TITLE: regfix: v19 -> v21 buffer/file/time slowdowns
+
+* S1 Causes with evidence
+
+** S1.1 insert fast path declines legacy string boxes (callgrind evidence file exists)
+evidence: target/regfix/cg/cmp-direct-2.cg sha256=8fc6c54afc8d7de6b499d55821f107033a4bb63d4ee72a636c4faaee68d4bdaf
+
+** S1.2 float-time Lisp wrapper cost measured (tm1.el output)
+cmd: test -s target/regfix/cg/tm1.el
+
+** S1.3 widen cost and page faults of the u32 store measured
+cmd: test -s target/regfix/cg/fs1.el
+
+** S1.4 end-to-end: cause table recorded in REPORT.md
+cmd: test -s target/regfix/REPORT.md
+
+* S2 Fix with red/green checks
+
+** S2.1 string-box insert probe green on the fixed binary (fast path taken: <50 us per insert)
+cmd: sh target/regfix/check-insert.sh
+
+** S2.2 float-time probe corpus equals GNU
+cmd: sh target/regfix/check-ftime.sh
+
+** S2.3 buffer/crash1/timefmt corpora equal GNU
+cmd: sh target/regfix/check-corpora.sh
+
+** S2.4 end-to-end: all S2 checks plus patch applies
+cmd: patch --dry-run -p1 -d target/regfix/seed-check < target/regfix/regfix.patch
+
+* S3 One integrated build passing fixtures
+
+** S3.1 build finished rc=0
+cmd: grep -q "BUILD rc=0" target/regfix-build/dynamic/build.log
+
+** S3.2 fixtures weak24 gnu56 afrt24/25 buffer21
+cmd: grep -q "buffer 21/21 PASS" target/regfix/fixtures.log
+
+** S3.3 gnu-speed-win-check passes
+cmd: grep -q "rc=0" target/regfix/winspeed.rc
+
+** S3.4 end-to-end: report.json of fixtures says no regression
+cmd: grep -q '"regression": false' target/regfix/fixtures/report.json
+
+* S4 Paired timing
+
+** S4.1 target rows back to v19 ratio or better (table)
+cmd: false  # rows still above v19 ratio: see REPORT.md
+
+** S4.2 no other buffer/file/time family row slower than v21 by 3%
+cmd: sh target/regfix/check-family.sh
+
+** S4.3 regression rows reg-sum-bc and r3-mix not slower
+cmd: sh target/regfix/check-regrows.sh
+
+** S4.4 end-to-end: REPORT.md has the final table
+cmd: grep -q "FINAL TABLE" target/regfix/REPORT.md

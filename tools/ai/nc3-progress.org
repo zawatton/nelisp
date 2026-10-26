@@ -1,0 +1,90 @@
+#+TITLE: nc3 -- native compiler N2b: inline opcode primitives, builtin call-site route, funcall/apply/set dispatch
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 0c7099cc3 (v21) + nc1 and nc2 overlays (N0-N2; copies in target/nc3/seed/). Design: ../resume-4943-20261024/target/nativecomp/DESIGN.md sections 4.2-4.4. Baselines: v21 = ../resume-4943-20261024/target/integ-1038-build/dynamic/nelisp-dynamic (env NC3_V21), nc2 = ../nc2-20261103/target/nc2-build/dynamic/nelisp-dynamic (env NC3_NC2). Build budget 2 (Linux dynamic + Win64). Timing CPU 12.
+
+* S1 Cause and census on nc2
+** S1.1 What the native rows still call out, by name and route (callgrind two-N on nc2's own .cg files)
+#+NOTE: target/nc3/logs/nc2-callroutes.txt (target/nc3/allcalls.py: calls per trip of caller->callee). m5_fx_callout per trip from native code (nc_call) / from the driver's VM: ptp 13/2, split 16/2, prop 23/3, gtp 7/2, mapc 9/2, trim 3/4. Names (builtin leaf bodies identified by their callees): ptp `set' 7 (bf_set_dynamic_value, kind 22; the site re-classifies every call: m5_fx_callout_kind 7), `<=' 2 (leaf_64 wf_chain_le), `length' on a string 1 (leaf_143), predicates through the frame leaves 3 (243/256); split `nelisp--string-search-chars' 5 (leaf_177, 4 nl_bi_strlen per call), `fboundp' 5 (leaf_232 bf_fboundp_w), `length' 2, `*' 1 (leaf_49), `memq' 1 (leaf_73), predicates 2; mapc `funcall' 3 (m5_fx_funcall_site -> byte code), predicates; trim `string-match' / `string-match-p' (GNU byte code, Lisp callees: a call-out by construction until N3).
+#+NOTE: Subr objects (header kind 20) exist only for the directcall specs and the interpreter's eval-prims (`nelisp-standalone--subr-desc'): `*' `%' `<=' `>=' `=' `>' `funcall' `apply' have one (interp id, no directcall id: `nl_directcall_invoke' answers 2, so nc2 sent them to the call-out); `stringp' `listp' `memq' `equal' `set' `fboundp' `nelisp--string-search-chars' keep the legacy (builtin NAME) cell. Route (2) of the brief therefore covers the legacy cells too: the site-kind cache + `m5_fx_call_list' directly, skipping the call-out's lookup / autoload / closure-record work.
+evidence: target/nc3/logs/nc2-callroutes.txt sha256=8a5c86e75baada78738d5de10f03bc2df502a05a27a8e737c210d84a9e78da3e
+** S1.2 Ir arithmetic: the call-protocol bucket per trip on nc2 (self cost) leaves room for the targets
+#+NOTE: target/nc3/logs/nc2-self.txt (nc2's ana.py, 400 rows): ptp 58455 Ir/trip of which call protocol (call-out, lookup, site kind, list apply, builtin name dispatch, nc_call* / nc_subr_call / m5_fx_call_subr, arg views) 31777, remainder 26678 (net of ctl 24821 <= 35505: reachable when the call-outs and the list applies go). split 90179, protocol 57928, net remainder 30394 (<= 41527 only if ~81% of the protocol bucket goes, i.e. no list apply at all on the hot path): `nelisp--string-search-chars' and `fboundp' get a word entry through the existing by-name primitive ids of the fx call path (`m5_fx_primitive_id' / `m5_fx_primitive_run', keyed on the live (builtin NAME) definition, so fset/advice decline by construction) -- transport for existing builtins, no new native.
+evidence: target/nc3/logs/nc2-self.txt sha256=a56552b2c89fbb64db17386a8c7cf482ea25eaf572c1aa06842d0f8f9fa92fcf
+
+* S2 Lowering and call path (offline)
+** S2.1 Generator inlines GNU's opcode primitives with the generic call as slow path: stringp listp symbolp numberp integerp (Bstringp ...), <= >= (Bleq/Bgeq), * % (Bmult/Brem, fixnum with overflow / zero fallbacks), equal (Bequal: wf_eqd, 2 -> generic), memq assq (Bmemq/Bassq loops), nth nthcdr length (Bnth/Bnthcdr/Blength), set symbol-value (Bset/Bsymbol_value via m5_fx_globals_run); offline unit compile of the hot set succeeds with precise stack maps
+#+NOTE: lisp/nelisp-cc-fxir-native.el `--inline-fast' (predicates by word class, header kind out of line in `nc_pred6'; Beq now total through `wf_bytecode_w_eqw', no generic call emitted), `--call' (Bset / Bsymbol_value -> `nc_globals'); shared out-of-line helpers nc_mul_fast nc_rem_fast nc_equal_fast nc_memq_fast nc_assq_fast nc_nthcdr_fast nc_length_fast (inline boundaries).  22 corpus rows (test/nelisp-nc3-fx.el, ids 2000-2021) harvested on v21 into lisp/nelisp-fxir-native-corpus-data.el.  Offline unit compile (tools/ai/nc1-unitcheck.el) of 227 rows (125 hot + 101 corpus + mutant): 632.7 s (nc2 550 s for 205 rows), 763 KB text (nc2 694 KB); every nc_* defun has a precise map except the four call-free frameless helpers (nc_mul_fast, nc_pred6, nc_site_sym, nc_truthy_slow).
+evidence: target/nc3/logs/unitcheck.log sha256=8921ebeab1afcec1431c2c2fc64d81ac9d196c330648532500d35e063cd98107
+cmd: grep -q "^UNIT ok=t secs=632.7 rows=227" target/nc3/logs/unitcheck.log && sh -c '! grep "^FN nc_" target/nc3/logs/unitcheck.log | grep -v "reason=nil" | grep -v "^FN nc_site_sym \|^FN nc_truthy_slow \|^FN nc_mul_fast \|^FN nc_pred6 "'
+cmd: for f in nc_memq_fast nc_assq_fast nc_equal_fast nc_nthcdr_fast nc_length_fast nc_rem_fast nc_globals; do grep -q "^FN $f .*reason=nil" target/nc3/logs/unitcheck.log || exit 1; done
+** S2.2 nc_call routes builtin cells without the call-out: Subr cells through directcall, then the interp descriptor (prim ids on the staged words), funcall/apply from the site; legacy (builtin NAME) cells through the site-kind cache (funcall 13, globals 21/22, primitive ids incl. the new fboundp / string-search-chars ids) then `m5_fx_call_list'; Win64 forms carry no rows
+#+NOTE: `nc_subr_call' (-5: not a builtin, nothing happened -> call-out), `nc_desc_call', `nc_builtin_call', `nc_funcall', `nc_list_call' in the shared source; lisp/nelisp-cc-fx-call-primitives.el: `m5_fx_primitive_id' -19 fboundp / -20 nelisp--string-search-chars, their arms in `m5_fx_primitive_run' (the builtins' own `:word' arms on argument pointers from `m5_fx_word_ptr', i.e. `nl_cons_car_ptr''s rule); also reached by the VM's call-out and `funcall'.  Win64 generated source: no rows, empty table.
+cmd: for f in nc_desc_call nc_builtin_call nc_funcall nc_list_call; do grep -q "^FN $f .*reason=nil" target/nc3/logs/unitcheck.log || exit 1; done
+cmd: grep -q '"fboundp") 1) -19)' lisp/nelisp-cc-fx-call-primitives.el && grep -q '"nelisp--string-search-chars") 1) 0) -20' lisp/nelisp-cc-fx-call-primitives.el
+cmd: NELISP_STANDALONE_TARGET=windows-x86_64 emacs --batch -Q -L lisp -L src -L scripts --eval '(progn (require (quote nelisp-cc-fxir-native)) (prin1 nelisp-cc-fxir-native--source) (terpri) (princ (nelisp-cc-fxir-native-install-table-source)))' 2>/dev/null | cmp -s - target/nc3/logs/win-source.txt && grep -q "nelisp-nc--table 'nil" target/nc3/logs/win-source.txt
+** S2.3 fxir reference evaluator transcripts and nc1 fxir checks still green on v21 with the compiler hot patch
+#+NOTE: the prelude compiler is unchanged by this lane; nc1-fxir-check same/mutant and nc2-check fxir (134 functions) on v21: target/nc3/logs/s23-v21.log.
+#+REQUIRES: NC3_V21
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc1-fxir-check.sh "$NC3_V21" same && sh tools/ai/nc1-fxir-check.sh "$NC3_V21" mutant
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc2-check.sh "$NC3_V21" fxir
+
+* S3 Build, fixtures, correctness
+** S3.1 One integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304, 125 hot-set records converted
+#+NOTE: build 1/2 (target/nc3/build.sh, 2026-10-27): rc=0 in 1774 s (nc2 1557 s, v21 1192 s); prelink F1 354, root evidence max 82729; 125 hot-set records converted; all 22 nc3 corpus rows convert when defined; binary 39436616 B (nc2 39312512, +0.3%).
+cmd: tail -1 target/nc3-build/dynamic/build.log | grep -q "BUILD rc=0" && test -x target/nc3-build/dynamic/nelisp-dynamic
+cmd: sh -c 'cd target/nc3-build/dynamic/src && sha256sum -c --quiet ../frozen-hashes.txt'
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/nc3-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/nc3-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc1-native-check.sh target/nc3-build/dynamic/nelisp-dynamic converted 125
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc3-check.sh target/nc3-build/dynamic/nelisp-dynamic converted
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+#+NOTE: target/nc3/fixtures.py on build 1: weak 24/24, GNU 56/56, AFRT 24/25 (same exit-hook-result-gc red), buffer 21/21; gnu-speed-win-check on the Linux binary: closurevm 24, switch = GNU, features = GNU.
+evidence: target/nc3/fixtures/report.json sha256=085434a649b28dce2975df10b51cb3410841628d789568db5402b2b46fe68394
+cmd: grep -q "buffer 21/21 PASS" target/nc3/logs/fixtures.log && grep -q "weak 24/24 PASS" target/nc3/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/nc3/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/nc3/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $PWD/target/nc3-build/dynamic/nelisp-dynamic
+** S3.3 nc1 and nc2 corpora VM-off == VM-on == native with and without forced GC, mutants caught, inline-car; new nc3 corpus (new inline ops on their boundaries: legacy/boxed words, bignums, improper lists, % 0, * overflow, equal on records/cycles; builtin route: fboundp, string-search, funcall/apply, set; redefinition of fboundp / a builtin under a native caller; inline-stringp fset = GNU compiled) same + mutant caught
+#+NOTE: test/nelisp-nc3-corpus.el (24 cases; 22 natively compiled corpus functions on the boundary inputs, builtin route, redefinition by advice / fset of fboundp, nelisp--string-search-chars and a funcall target in a loop) VM off == VM on == native with and without NC_GC=1; mutant (text-properties-at's `<') caught by the tp-at-route case; NC_INLINE: a redefined `stringp' / `memq' is not seen by native callers ((t t), GNU 31.1 byte-compiled behaviour; the VM honours the cell). nc2 corpus same + mutant, nc1 corpus same + mutant, fx-same, inline-car all green (target/nc3/logs/*.log). GNU differences of the nc3 corpus (information only, identical on nc2, VM and interpreter): closures are lists in NeLisp (pred / length of a (closure ...) list), (eq 1.5 1.5) and (memq 1.5 ...) answer t.
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc3-check.sh target/nc3-build/dynamic/nelisp-dynamic same
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc3-check.sh target/nc3-build/dynamic/nelisp-dynamic mutant-caught && sh tools/ai/nc3-check.sh target/nc3-build/dynamic/nelisp-dynamic inline
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc2-check.sh target/nc3-build/dynamic/nelisp-dynamic same && sh tools/ai/nc2-check.sh target/nc3-build/dynamic/nelisp-dynamic mutant-caught
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc1-native-check.sh target/nc3-build/dynamic/nelisp-dynamic same && sh tools/ai/nc1-native-check.sh target/nc3-build/dynamic/nelisp-dynamic mutant-caught
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc1-native-check.sh target/nc3-build/dynamic/nelisp-dynamic fx-same && sh tools/ai/nc1-native-check.sh target/nc3-build/dynamic/nelisp-dynamic inline-car
+** S3.4 bufedit / bufnative / textprop1 / timefmt corpora equal to nc2's summaries
+#+NOTE: tools/ai/nc2-corpora.sh on build 1: byte-identical to nc2's (and v21's) summary -- bufedit edit 2 GNU lines not reproduced (allowance), bufedit / bufnative corpus 0, textprop1 0 mismatches / fuzz 0 of 3, timefmt 11763 match 0 mismatch.
+evidence: target/nc3/logs/corpora-nc3.txt sha256=cab1b2c5c78b5e8b5a55b9d1ac8da7dc350258564e6effecd5b4c8db358d92c4
+cmd: cmp -s target/nc3/logs/corpora-nc3.txt ../nc2-20261103/target/nc2/logs/corpora-nc2.txt && grep -q "bufnative-corpus gnu-diff=0 " target/nc3/logs/corpora-nc3.txt && grep -q "timefmt rc=0" target/nc3/logs/corpora-nc3.txt
+** S3.5 survey5 shim per-test statuses not below v21
+#+NOTE: target/nc3/s5/s5run.py (survey5 shim, CPU 12) over the 13 files of nc2's list (855 tests): result file byte-identical to v21's (target/nc2 lane's s5-v21.json).
+evidence: target/nc3/logs/s5-nc3.json sha256=fe6f99063f5b2cfbfa47c20e116bc79e1c2fdf477a48bd2068ec51b82486a23c
+cmd: cmp -s target/nc3/logs/s5-nc3.json ../nc2-20261103/target/nc2/logs/s5-v21.json
+** S3.6 Win64 image builds and passes closurevm / switch / features (VM path)
+#+NOTE: build 2/2 = Win64 image (target/nc3/win/run-win.sh build, rc=0, 790 s); the generator emits no rows for windows-* (S2.2), so the image runs the VM path (it does carry the new fx primitive ids -19/-20).  Under wine with a lane-local prefix (deleted after, build tree deleted for disk): closurevm 24 PASS, switch = GNU, features = GNU.
+evidence: target/nc3/win/check.log sha256=6b24cf6a394501fbb939222a1591578d50a7d4e182f4cb41b4071ba8fcdf2629
+cmd: grep -q "closurevm: PASS (24)" target/nc3/win/check.log && grep -q "switch corpus: PASS" target/nc3/win/check.log && grep -q "features: PASS" target/nc3/win/check.log && grep -q "build win rc=0" target/nc3/win/win.log
+
+* S4 End to end: speed
+** S4.1 Call-outs (`m5_fx_callout') per trip <= 3 on ptp, split, prop, gtp, mapc, trim (callgrind)
+#+NOTE: build 1, per trip (target/nc3/logs/nc3-calls.txt; ctl, the bare driver loop, makes 1): nc2 -> nc3 ptp 15 -> 2, split 18 -> 2, prop 26 -> 3, gtp 9 -> 2, mapc 11 -> 2, trim 7 -> 7.  On the first five rows every remaining call-out is the driver's own (word VM: the call of the measured function and its aref/logand); native code makes none (nc_call -> m5_fx_callout 0).  `m5_fx_call_list' (the list apply) per trip 6/16/13/6/9 -> 1/1/2.5/0/4.  trim stays red by construction: its 3 native call-outs are GNU byte-code callees (string-match, string-match-p and a third byte-code function: wf_bytecode_function_w 3 per trip), Lisp functions that move to fx/fxir in DESIGN stage N3, and 4 come from the driver and one VM-run closure, as on nc2.
+evidence: target/nc3/logs/nc3-calls.txt sha256=72570beb365f0c66cf8b00efdb264bf698b6204777cb71187afb9e27bc9fd6c8
+cmd: awk '{for(i=3;i<=NF;i++){split($i,a,"=");v[$2,a[1]]=a[2]}} END{f=0; n=split("ptp split prop gtp mapc trim",r," "); for(k=1;k<=n;k++) if(v[r[k],"m5_fx_callout"]>3) f=1; exit f}' target/nc3/logs/nc3-calls.txt
+** S4.2 Net Ir per call (row - ctl): put-text-property <= 35505, split-string <= 41527
+#+NOTE: build 1 (target/nc3/cg/nc3-ir.txt, callgrind two-N 500/2500, CPU 12), net Ir per call (row - ctl 1856) nc2 -> nc3: ptp 56598 -> 34421 (target 35505), split 88322 -> 41274 (target 41527).  Family rows (row - ctl): prop 90669 -> 50891, gtp 29722 -> 10951, mapc 78848 -> 60074, trim 101742 -> 101934 (byte-code bound, unchanged).  Unchanged rows (native subrs / byte code): fline 1753, isoft 7356, ftime 150970, smatch 40982 total Ir per trip (nc2 1754 / 7357 / 150970 / 40982).
+evidence: target/nc3/cg/nc3-ir.txt sha256=f08ad58158349c0aa066b49561d7b6dc0cd5eb3b9a14c1ca636ffa55c06ecff7
+cmd: awk '{v[$1]=$2} END{c=v["ctl"]; exit !(v["ptp"]-c<=35505 && v["split"]-c<=41527)}' target/nc3/cg/nc3-ir.txt
+** S4.3 Paired wall time 7/7 faster than nc2 on CPU 12 on the six rows; regression rows reg-sum-bc and r3-mix within 3 percent of nc2
+#+NOTE: paired_bench (7 reps, alternating order, CPU 12 idle-checked, results checked equal) build 1 vs nc2, ns/trip nc2 -> nc3: ptp 7367 -> 4150 (x0.563), split x0.442 (4882 ns), prop x0.541 (7057), gtp x0.349 (1451), mapc x0.730 (8171), all 7/7 faster; trim x0.979 6/7 (RED: its code path is GNU byte code, Ir +0.2%, see S4.1/S4.2 -- recorded as measured, not re-run); reg-sum-bc x0.988 (7/7), r3-mix x0.996 (5/7), both within 3 percent.  ptp was refused once by the idle check (CPU 12 busy) and measured alone afterwards (paired.log).
+evidence: target/nc3/timing/paired.log sha256=71b2c369b1a464bb1f97471d62a08dd3863f96b2886634864391412084f8b367
+cmd: python3 target/nc3/timing/s4check.py
+** S4.4 Front-end stall cycles (pmcrun2 00A9) per trip not above nc2 on the six rows
+#+NOTE: pmcrun2 PMC_EVENTS=fe:00A9 (two N 100000/400000, CPU 12), per trip nc2 -> nc3: ptp 7695 -> 3788, split 9138 -> 3250, prop 13800 -> 6829, gtp 4258 -> 1298, mapc 12236 -> 7724, trim 22623 -> 20182; the generated text grew 694 -> 763 KB without raising front-end stalls on any row.
+evidence: target/nc3/timing/pmc-summary.txt sha256=c6cf0e4c9a08b79781930af23d642a58da0fa15411b69bd0b73aaf9a69e37575
+cmd: sh -c 'test $(grep -c " OK$" target/nc3/timing/pmc-summary.txt) -eq 6 && ! grep -q ABOVE target/nc3/timing/pmc-summary.txt'

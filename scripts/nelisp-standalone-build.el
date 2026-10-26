@@ -58,6 +58,7 @@
 (require 'json)
 (require 'nelisp-cc-fx-call-primitives)
 (require 'nelisp-cc-string-compare)
+(require 'nelisp-cc-fxir-native)
 (require 'nelisp-cc-sort)
 (require 'nelisp-cc-number-order)
 (require 'nelisp-cc-variable-alias-public)
@@ -1853,6 +1854,7 @@ position and under `data-addr'."
     ("fnv1a.o" "arena.o" "string-blocks.o")
     ("str-bytes.o" "arena.o" "string-blocks.o")
     ("rootstack.o" "arena.o" "string-blocks.o")
+    ("fxir-native.o" "arena.o" "string-blocks.o")
     ("applyfn-reader.o" "arena.o" "string-blocks.o")
     ("combiner-apply-fix.o" "arena.o" "string-blocks.o")
     ("combiner-cons-mxcache.o" "arena.o" "string-blocks.o")
@@ -3087,6 +3089,14 @@ twice appears twice; readers keep the last occurrence of each unit."
          ;; `max-lisp-eval-depth' (signals `excessive-lisp-nesting').  Raise it
          ;; for the whole compile so adding FFI symbols stays a one-row change.
          (max-lisp-eval-depth (max max-lisp-eval-depth 40000))
+         ;; Number the inliner's fresh variables from 0 in every unit, as
+         ;; `nelisp-aot-compiler--label-counter' below: their names reach the
+         ;; object (e.g. the context digest of a specialized helper's name), so
+         ;; a counter carried over from the units compiled before made a
+         ;; unit's object depend on build order, and a cache entry from
+         ;; another order (or a parallel prewarm child) differ from a fresh
+         ;; compile under the same key (aotscale).
+         (nelisp-standalone--inline-counter 0)
          ;; CG7: other units' helpers, before the rewrites below run on
          ;; the expanded body exactly as on the unit's own forms.
          (source (nelisp-standalone--xinline-expand source))
@@ -3490,6 +3500,129 @@ Idempotent: a defun whose F_w is already defined in SOURCE is left alone."
                           (list f))))
                     (cdr source)))))))
 
+;; -------------------------------------------------------------------
+;; Parallel unit compile (aotscale, 2026-10-27): prewarm the unit cache.
+;;
+;; The reader build compiles its units one after another inside
+;; `nelisp-standalone--reader-units'.  With NELISP_STANDALONE_JOBS=N (N > 1)
+;; the build first starts up to N-1 child Emacs processes, one per unit of
+;; `nelisp-standalone--prewarm-units' (most expensive first).  A child runs
+;; the very same `nelisp-standalone-build-reader' with
+;; `nelisp-standalone--prewarm-unit' bound to its unit: every other
+;; `nelisp-standalone--cached-unit' call returns a stub without compiling,
+;; its own unit is compiled and written to the shared unit cache, and the
+;; child exits.  The build itself runs unchanged and, on reaching a prewarmed
+;; unit, waits for that child and takes the cache entry.
+;;
+;; Output stays deterministic by construction: the cache is content
+;; addressed (`nelisp-standalone--unit-cache-key' covers the source, the
+;; toolchain and the compile settings), so a child entry is used only when
+;; the child compiled exactly the source the build asks for, which is what
+;; any earlier build sharing the cache directory provides already.  A child
+;; that fails, or computes a different source, only costs the build its own
+;; compile.  Entries are written under a private name and renamed.
+;;
+;; NELISP_STANDALONE_JOB_WRAPPER (space separated) prefixes each child's
+;; command, e.g. the workspace's heavy-job limiter.  A child still queued
+;; there when the build needs its unit is killed and the build compiles the
+;; unit itself, so a full limiter can never deadlock the build.  Each child
+;; inherits the build's resource limits (one address-space cap per process).
+
+(defconst nelisp-standalone--prewarm-units
+  '("applyfn-reader.o" "combiner-cons-mxcache.o" "fxir-native.o" "reader-gc.o"
+    "combiner-apply-fix.o")
+  "Units a parallel build compiles in child processes, most expensive first.")
+
+(defvar nelisp-standalone--prewarm-unit nil
+  "In a prewarm child: the name of the one unit it compiles.")
+
+(defvar nelisp-standalone--prewarm-children nil
+  "In the build: alist (UNIT-NAME . PROCESS) of running prewarm children.")
+
+(defun nelisp-standalone--prewarm-jobs ()
+  "Parallel unit jobs requested by NELISP_STANDALONE_JOBS (1 = serial)."
+  (max 1 (string-to-number (or (getenv "NELISP_STANDALONE_JOBS") "1"))))
+
+(defun nelisp-standalone--prewarm-start ()
+  "Start the prewarm children of a parallel reader build (see above)."
+  (setq nelisp-standalone--prewarm-children nil)
+  (unless nelisp-standalone--prewarm-unit
+    (let* ((n (1- (nelisp-standalone--prewarm-jobs)))
+           (emacs (expand-file-name invocation-name invocation-directory))
+           (system-lisp (file-name-as-directory
+                         (expand-file-name "../lisp" data-directory)))
+           (paths (apply #'append
+                         (mapcar (lambda (d) (list "-L" (expand-file-name d)))
+                                 (cl-remove-if
+                                  (lambda (d) (or (not (stringp d))
+                                                  (string-prefix-p system-lisp
+                                                                   (file-name-as-directory
+                                                                    (expand-file-name d)))))
+                                  load-path))))
+           (wrapper (split-string (or (getenv "NELISP_STANDALONE_JOB_WRAPPER") "") " " t)))
+      (dolist (unit (butlast nelisp-standalone--prewarm-units
+                                     (max 0 (- (length nelisp-standalone--prewarm-units) n))))
+        ;; Output goes to a log file, not a pipe: the build reads no
+        ;; process output while it compiles, and a child blocked on a full
+        ;; pipe would stop compiling.
+        (let ((log (expand-file-name (format "nelisp-prewarm-%s.log" unit)
+                                     temporary-file-directory)))
+          (when (file-exists-p log) (delete-file log))
+          (push (list unit
+                      (make-process
+                       :name (format "nelisp-prewarm-%s" unit)
+                       :buffer nil :connection-type 'pipe :noquery t
+                       :command (append (list "sh" "-c" "log=$1; shift; exec \"$@\" > \"$log\" 2>&1"
+                                              "sh" log)
+                                        wrapper (list emacs "--batch" "-Q") paths
+                                        ;; First thing the child prints: it got
+                                        ;; past the wrapper (see `--prewarm-wait').
+                                        (list "--eval" "(message \"[prewarm] start\")"
+                                              "--eval" "(setq load-prefer-newer t)"
+                                              "-l" "nelisp-standalone-build"
+                                              "--eval" (format "(nelisp-standalone--prewarm-child-main %S)" unit))))
+                      log)
+                nelisp-standalone--prewarm-children)
+          (message "[standalone] prewarm child started: %s (log %s)" unit log))))))
+
+(defun nelisp-standalone--prewarm-log-tail (log &optional bytes)
+  "The last BYTES (default 2000) of the prewarm log LOG, or \"\"."
+  (if (not (file-readable-p log)) ""
+    (with-temp-buffer
+      (insert-file-contents log)
+      (buffer-substring (max (point-min) (- (point-max) (or bytes 2000))) (point-max)))))
+
+(defun nelisp-standalone--prewarm-wait (name)
+  "Before the build looks up unit NAME, wait for its prewarm child, if any."
+  (let ((entry (assoc name nelisp-standalone--prewarm-children)))
+    (when entry
+      (setq nelisp-standalone--prewarm-children
+            (delq entry nelisp-standalone--prewarm-children))
+      (let ((process (nth 1 entry)) (log (nth 2 entry)) (t0 (float-time)))
+        (if (and (process-live-p process)
+                 (not (string-match-p "\\[prewarm\\] start"
+                                      (nelisp-standalone--prewarm-log-tail log 1000000))))
+            ;; Still queued behind a job limiter: compile here instead.
+            (progn (delete-process process)
+                   (message "[standalone] prewarm %s: not started, compiling in the build" name))
+          (while (process-live-p process)
+            (accept-process-output process 1))
+          (message "[standalone] prewarm %s: exit %s, waited %.1f s%s" name
+                   (process-exit-status process) (- (float-time) t0)
+                   (if (eql (process-exit-status process) 0) ""
+                     (concat "\n" (nelisp-standalone--prewarm-log-tail log)))))))))
+
+(defun nelisp-standalone--prewarm-child-main (unit)
+  "Prewarm child entry: replay the reader build up to UNIT, compile it, exit.
+The unit lands in the shared unit cache; see `nelisp-standalone--prewarm-units'."
+  (let ((nelisp-standalone--prewarm-unit unit))
+    (message "[prewarm] compiling %s" unit)
+    (let ((file (catch 'nelisp-standalone--prewarm-done
+                  (nelisp-standalone-build-reader)
+                  nil)))
+      (unless file (error "prewarm: the build never reached %s" unit))
+      (message "[prewarm] done %s -> %s" unit file))))
+
 (defun nelisp-standalone--cached-unit (name source &rest _ignored)
   "Return the link-unit for NAME, compiling SOURCE only on a content miss.
 
@@ -3519,39 +3652,57 @@ directory tracks the tree rather than accumulating every key ever built."
          (_xinline (when (nelisp-standalone--xinline-enabled-p)
                      (nelisp-standalone--xinline-prepare)
                      (nelisp-standalone--xinline-register source)))
+         ;; A prewarm child (`nelisp-standalone--prewarm-child-main') only
+         ;; replays the build up to its own unit: every other unit is a stub.
+         (stub (and nelisp-standalone--prewarm-unit
+                    (not (equal name nelisp-standalone--prewarm-unit))))
+         (target (and nelisp-standalone--prewarm-unit (not stub)))
+         (_wait (unless nelisp-standalone--prewarm-unit
+                  (nelisp-standalone--prewarm-wait name)))
          (name (nelisp-standalone--target-object-name name))
          (nelisp-standalone--build-trace-unit name)
          (cache-dir (nelisp-standalone--target-cache-dir))
-         (key (nelisp-standalone--build-trace-phase "cache-key"
-                (nelisp-standalone--unit-cache-key source)))
+         (key (unless stub
+                (nelisp-standalone--build-trace-phase "cache-key"
+                  (nelisp-standalone--unit-cache-key source))))
          (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir)))
-    (if (file-exists-p cache)
-        (progn
-          ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
-          (nelisp-standalone--box-census-record name source)
-          (when nelisp-standalone--build-trace-path
-            (cl-incf nelisp-standalone--build-trace-hits))
-          (nelisp-standalone--build-trace-phase "cache-decode"
-            (let ((coding-system-for-read 'utf-8-unix))
-              (with-temp-buffer
-                (insert-file-contents cache)
-                (goto-char (point-min))
-                (nelisp-standalone--unit-cache-decode (read (current-buffer)))))))
+    (cond
+     (stub (list :name name :sections nil :nelisp-prewarm-stub t))
+     ((and target (file-exists-p cache))
+      (throw 'nelisp-standalone--prewarm-done cache))
+     ((file-exists-p cache)
+      ;; A miss is counted inside `nelisp-standalone--compile-to-unit'.
+      (nelisp-standalone--box-census-record name source)
+      (when nelisp-standalone--build-trace-path
+        (cl-incf nelisp-standalone--build-trace-hits))
+      (nelisp-standalone--build-trace-phase "cache-decode"
+        (let ((coding-system-for-read 'utf-8-unix))
+          (with-temp-buffer
+            (insert-file-contents cache)
+            (goto-char (point-min))
+            (nelisp-standalone--unit-cache-decode (read (current-buffer)))))))
+     (t
       (when nelisp-standalone--build-trace-path
         (cl-incf nelisp-standalone--build-trace-misses))
       (let ((unit (nelisp-standalone--build-trace-phase "cache-compile"
-                    (nelisp-standalone--compile-to-unit name source))))
+                    (nelisp-standalone--compile-to-unit name source)))
+            ;; Write under a private name and rename: a prewarm child and
+            ;; the build may write the same entry, and a reader must never
+            ;; see a partly written file.
+            (tmp (format "%s.%d.tmp" cache (emacs-pid))))
         (make-directory cache-dir t)
         (let ((coding-system-for-write 'utf-8-unix))
-          (with-temp-file cache
+          (with-temp-file tmp
             (let ((print-escape-nonascii t) (print-length nil) (print-level nil))
               (prin1 (nelisp-standalone--unit-cache-encode unit)
                      (current-buffer)))))
+        (rename-file tmp cache t)
         (dolist (old (directory-files cache-dir t
                                       (concat "\\`" (regexp-quote name) "\\(\\.[0-9a-f]+\\)?\\.unit\\'")))
           (unless (string= old cache) (delete-file old)))
+        (when target (throw 'nelisp-standalone--prewarm-done cache))
         (push name nelisp-standalone--recompiled)
-        unit))))
+        unit)))))
 
 ;; ===================================================================
 ;; BOTTOM LAYER (pure elisp) — bump arena over a target-specific mmap /
@@ -17055,6 +17206,24 @@ list groups retain the original leaves/default exactly."
     ;; Doc 215 builtin word ABI: wf_ft_write_w returns the result WORD (0 = signal stashed).
     (defun wf_ft_write_w (bits _pad scratch)
       (seq (sexp-write-float scratch (bits-to-f64 bits)) scratch))
+    ;; regfix: 1 when `wf_ft_convert_w' answers P without failing -- a float, an integer, a list
+    ;; whose first four elements that exist are integers, or (TICKS . HZ) with fixnum TICKS below
+    ;; 2^53 in magnitude and fixnum HZ > 0 (the shapes the exact front end used to hand over).
+    (defun wf_ft_native_ok (p)
+      (let* ((tg (heap-sexp-tag-word p)))
+        (if (= tg 3) 1
+          (if (= tg 2) 1
+            (if (= tg 7)
+                (let* ((d (nl_cons_cdr_word p)))
+                  (if (= (nl_val_tag d) 7)
+                      (wf_ft_ints_ok p 4)
+                    (let* ((a (nl_cons_car_word p)))
+                      (if (= (logand a 3) 1)
+                          (if (= (logand d 3) 1)
+                              (if (> (sar d 2) 0)
+                                  (if (< (sar a 2) 9007199254740992)
+                                      (if (> (sar a 2) -9007199254740992) 1 0) 0) 0) 0) 0))))
+              0)))))
     ;; 0 = wrote OUT, 1 = P is not a time specification.  The CALLER raises
     ;; the signal: the message string needs `nl_alloc_str'/`bf_error', which
     ;; are reader-only, and this group is linked into the baked applyfn too.
@@ -29488,13 +29657,35 @@ bytes are written into a fresh 8-byte buffer instead."
                                    (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)
                                    stk sp (- argc 1) resw env xw)
                                 (m5_fx_primitive_run kind stk sp argc resw env xw)))))
-                  (rec (if (= direct -3) (m5_fx_covered fn argc env 0) 0))
+                  (rec (if (= direct -3) (m5_fx_site_rec cache fn argc env) 0))
                   (st (if (/= direct -3) direct
                         (if (= rec 0) -3
                           (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env 0 resw 0)))))
              (if (= st -3)
                  (m5_fx_call_list name fn stk sp argc env resw (+ xw 8) oslot)
                st)))))))
+    ;; nativecomp N1: a call site's covered closure and its record, kept in
+    ;; the site cache's slots 3 and 4 as a `funcall' site keeps them
+    ;; (`m5_fx_funcall_site'), so a site that keeps calling one closure skips
+    ;; the record lookup in `nelisp--fx-table'.  The cached pair is used only
+    ;; while FN is the live definition (a redefinition, `fset' or advice
+    ;; changes the cell, hence FN), the record is not retired, the arity fits
+    ;; and the evaluator is not in dynamic-binding mode (`m5_fx_covered_rec').
+    (defun m5_fx_site_rec (cache fn argc env)
+      (if (if (= cache 0) 0
+            (if (= (nl_sb_worker_p env) 1) 0
+              (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
+                (if (< (nl_vector_length cache) 5) 0
+                  (= (nl_vector_slot_word cache 3) fn)))))
+          (let* ((rec (nl_vector_slot_word cache 4)))
+            (if (if (if (>= (nl_vector_length rec) 8) (= (nl_vector_slot_word rec 7) 3) 0)
+                    (if (<= argc 255) (>= (m5_fx_arity_code rec argc) 0) 0) 0)
+                rec
+              (m5_fx_covered fn argc env 0)))
+        (let* ((rec (m5_fx_covered fn argc env 0)))
+          (seq (if (if (= rec 0) 0 (if (= cache 0) 0 (= (nl_sb_worker_p env) 0)))
+                   (m5_fx_funcall_site_fill cache fn rec) 0)
+               rec))))
     ;; The frame's Sexp view slot, reserved on first use.
     (defun m5_fx_view_slot (env slot)
       (if (= slot 0) (nl_root_reserve env) slot))
@@ -30048,13 +30239,16 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; instruction decode. Keep the existing recursion guard around both.
       (if (< nlocals 0)
           (if (= nlocals -2) (m5_fx_run_literal code env out args argw wout)
+          ;; nativecomp N1: -(16+ID) runs the native code nc_ID lowered from
+          ;; this record's fxir (lisp/nelisp-cc-fxir-native.el).
+          (if (<= nlocals -16) (nc_run (- -16 nlocals) code env out args nparams argw wout)
           (if (and (= nlocals -1)
                    (= (wf_bytecode_w_int (nl_vector_slot_word code 0)) 18))
               (let* ((word (m5_fx_string_intrinsic code args (logand nparams 65535) argw env)))
                 (if (= word 2) -3
                   (seq (if (= wout 0) (nl_abi_word_to_rc word out)
                          (ptr-write-u64 wout 0 word)) -1)))
-            -3))
+            -3)))
       (let* ((base (+ (nl_word_payload code) 8))
              (mark (nl_root_mark env))
              ;; The code vector's last element is its operand stack size.
@@ -37386,6 +37580,13 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; `wf_ft_convert' (core helpers); the invalid-spec signal lives in
     ;; `bf_invalid_time_spec' (bf helpers), which is why the arm and not the
     ;; converter raises it.
+    ;; regfix: this arm is the whole of `float-time'.  The Lisp front end that used to wrap it
+    ;; (a bytecode call and a `funcall' through a variable on every call) is gone: the clock, a
+    ;; float, an integer, a list (HIGH LOW [USEC [PSEC]]) of integers and a small (TICKS . HZ)
+    ;; are answered here exactly as before (`wf_ft_native_ok' admits exactly the shapes
+    ;; `wf_ft_convert_w' cannot fail on); every other TIME (a bignum, a list with a non-integer,
+    ;; a large TICKS, a marker) goes to the exact `nelisp--tf-float-time' of the prelude, which
+    ;; also signals the invalid-specification error.
     ((:lit "float-time") :word . (if (= args 0)
                                (wf_float_time_w 0)
                              (if (= (sexp-tag args) 7)
@@ -37393,8 +37594,14 @@ into that constant unconditionally is what broke every aarch64 build."
                                    (if (= (nl_val_tag tmw) 0)
                                        (wf_float_time_w 0)
                                      (let* ((b (alloc-bytes 32 8))
-                                            (w (wf_ft_convert_w (if (= (logand tmw 1) 0) tmw (nl_sci_store_imm tmw b)) 0)))
-                                       (if (/= w 0) w (bf_invalid_time_spec_w 0)))))
+                                            (pw (if (= (logand tmw 1) 0) tmw (nl_sci_store_imm tmw b))))
+                                       (if (= (wf_ft_native_ok pw) 1)
+                                           (wf_ft_convert_w pw 0)
+                                       (let* ((nb (alloc-bytes 32 1)))
+                                         (seq (ptr-write-u64 nb 0 3255381746650998126)
+                                              (ptr-write-u64 (+ nb 8) 0 8386106492501976692)
+                                              (ptr-write-u64 (+ nb 16) 0 435627324461)
+                                              (nl_buf_delegate args env nb 21)))))))
                                (wf_float_time_w 0))))
     ;; nl-unix-time-usec: microseconds since the epoch as a single INTEGER via
     ;; gettimeofday(2) (__NR_gettimeofday=96): sec*1e6 + usec.  Pure integer math
@@ -43297,6 +43504,8 @@ KERNEL32!ExitProcess with the driver return already in x0/w0."
     ("boolvec-alloc.o"    nelisp-cc-nlboolvector-alloc            nelisp-cc-nlboolvector-alloc--source)
     ("boolvec-clone.o"    nelisp-cc-nlboolvector-clone            nelisp-cc-nlboolvector-clone--source)
     ("record-alloc.o"     nelisp-cc-nlrecord-alloc                nelisp-cc-nlrecord-alloc--source)
+    ;; nativecomp N1: native code of harvested prelude closures, its own unit.
+    ("fxir-native.o"      nelisp-cc-fxir-native                   nelisp-cc-fxir-native--source)
     ("record-clone.o"     nelisp-cc-nlrecord-clone                nelisp-cc-nlrecord-clone--source)
     ("record-set.o"       nelisp-cc-nlrecord-set-slot             nelisp-cc-nlrecord-set-slot--source)
     ;; Doc 147 Phase 2 — word->32B-slot materialiser for record-slot-ref-ptr.
@@ -45695,6 +45904,18 @@ resolved fine.  Same feature, different answer per entry point."
       (expand-file-name "scripts/nelisp-string-compare-compiler.el"
                         nelisp-standalone--repo-root))
      (buffer-string))
+   ;; nativecomp N1: records whose fxir matches a harvested row run native
+   ;; code nc_ID (lisp/nelisp-cc-fxir-native.el); checked per record.
+   (concat
+    "\n" (nelisp-cc-fxir-native-install-table-source)
+    (mapconcat
+     (lambda (file)
+       (with-temp-buffer
+         (insert-file-contents (expand-file-name file nelisp-standalone--repo-root))
+         (buffer-string)))
+     '("scripts/nelisp-fxir-native-install.el"
+       "scripts/nelisp-fxir-native-install-tail.el")
+     "\n"))
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el" '(match-string-no-properties))
    ;; eval-after-load and its callback table are GNU-owned forms.  The
@@ -62809,6 +63030,8 @@ The trace parent directory must exist; tracing never skips a build stage."
       (unless nelisp-standalone--verified-bytecode-dialect-id
         (error "standalone: reader build requires the pinned GNU Emacs 31.1 toolchain"))
       (setq nelisp-standalone--recompiled nil)
+      (when (> (nelisp-standalone--prewarm-jobs) 1)
+        (nelisp-standalone--prewarm-start))
   (let* ((units (nelisp-standalone--build-trace-phase "prepare"
                   (nelisp-standalone--with-stackmap-unit
                    (nelisp-standalone--reader-units))))
@@ -66151,6 +66374,8 @@ retains the checkout default. Application outputs still go to OUTPUT."
 
 ;; Instruction 18 is a compiler lowering keyed by the original definition,
 ;; retaining the Lisp definitions. No Lisp-visible native name is installed.
+(setq nelisp-standalone--inline-boundaries
+      (append nelisp-standalone--inline-boundaries nelisp-cc-fxir-native--boundaries))
 (setq nelisp-standalone--applyfn-m5-helpers
       (append
        nelisp-standalone--applyfn-m5-helpers

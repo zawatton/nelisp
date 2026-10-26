@@ -59,6 +59,8 @@
            ((= (sexp-name-eq name "consp") 1) 4)
            ((= (sexp-name-eq name "length") 1) -16)
            ((= (sexp-name-eq name "funcall") 1) 13)
+           ;; nc3: `fboundp' (`bf_fboundp_w') on the operand word.
+           ((= (sexp-name-eq name "fboundp") 1) -19)
            (t 0))
         (if (= argc 2)
             (cond
@@ -78,7 +80,10 @@
           ;; positive descriptor IDs or FX globals21/22. The site's signed
           ;; fixnum cache preserves them; -3 remains a return status only.
           (if (if (= argc 3) (= (sexp-name-eq name "aset") 1) 0) -15
-            (if (if (> argc 0) (= (sexp-name-eq name "funcall") 1) 0) 13 0)))))
+            ;; nc3: the builtin arm of `nelisp--string-search-chars' on the
+            ;; operand words.
+            (if (if (= argc 3) (= (sexp-name-eq name "nelisp--string-search-chars") 1) 0) -20
+              (if (if (> argc 0) (= (sexp-name-eq name "funcall") 1) 0) 13 0))))))
     ;; bufedit: the buffer text is a gap buffer (see `nelisp--gb-char-reference' in the prelude).
     ;; The record's STORE slot (1) holds a unibyte string of 4*CAP bytes, one little-endian 32-bit
     ;; character code per element: characters 0..BLEN-1, the gap, then the rest at the end
@@ -279,6 +284,45 @@
                                                   (logand (ptr-read-u8 sd (+ bi 4)) 63))) 3) 5)
                         -1)
                     -1))))))))
+    ;; regfix: widen the N single-byte characters at SD into the u32 elements at physical P of the
+    ;; store data D (one char per byte: a unibyte string, or multibyte text that is all ASCII).  Eight
+    ;; bytes per step when all are below 128 (four u64 stores of two elements each); a block with a
+    ;; high byte goes element by element (a unibyte byte >= 128 is the raw-byte character in a
+    ;; multibyte buffer, UNI 0).  GNU copy_text copies bytes with memcpy; the store here is wider.
+    (defun nl_gb_widen (d p sd n uni)
+      (let* ((k 0))
+        (seq
+         (while (<= (+ k 8) n)
+           (let* ((x (ptr-read-u64 sd k)) (o (* (+ p k) 4)))
+             (if (= (logand (logior x (shr x 32)) 2155905152) 0)
+                 (seq (ptr-write-u64 d o (logior (logand x 255) (shl (logand x 65280) 24)))
+                      (ptr-write-u64 d (+ o 8) (logior (logand (shr x 16) 255) (shl (logand x 4278190080) 8)))
+                      (ptr-write-u64 d (+ o 16) (logior (logand (shr x 32) 255) (logand (shr x 8) 1095216660480)))
+                      (ptr-write-u64 d (+ o 24) (logior (logand (shr x 48) 255) (logand (shr x 24) 1095216660480)))
+                      (setq k (+ k 8)))
+               (let* ((e (+ k 8)))
+                 (while (< k e)
+                   (let* ((c (ptr-read-u8 sd k)))
+                     (seq (ptr-write-u32 d (* (+ p k) 4) (if (< c 128) c (if (= uni 1) c (+ c 4194048))))
+                          (setq k (+ k 1)))))))))
+         (while (< k n)
+           (let* ((c (ptr-read-u8 sd k)))
+             (seq (ptr-write-u32 d (* (+ p k) 4) (if (< c 128) c (if (= uni 1) c (+ c 4194048))))
+                  (setq k (+ k 1)))))
+         n)))
+    ;; regfix: a legacy string box (tag 5 or 14: the result of a native string builtin such as
+    ;; `number-to-string', `upcase' or `decode-coding-string' that a VM local or an argument list
+    ;; still holds) as the String WORD the store operations take, as `nl_val_clone_into' makes it
+    ;; for a stored value; any other word comes back unchanged.
+    (defun nl_gb_strw (w)
+      (if (/= (logand w 7) 0) w
+        (if (< w 4096) w
+          (let* ((tg (heap-read-u8 w 0)))
+            (if (or (= tg 5) (= tg 14))
+                (let* ((v (nl_string_from_view w)))
+                  (if (/= v 0) v
+                    (let* ((o (nl_sym_name_string w))) (if (= o 0) w o))))
+              w)))))
     ;; Write the elements of the string with header H2 at physical index P of the store data D
     ;; (insert_1_both / copy_text): a unibyte byte >= 128 is the raw-byte character in a multibyte
     ;; buffer (UNI 0), a wide character keeps its low byte in a unibyte one.  The number of
@@ -288,14 +332,9 @@
              (sd (ptr-read-u64 h2 24)) (k 0) (bad 0))
         (seq
          (if (< sb 0)
-             (while (< k n)
-               (let* ((c (ptr-read-u8 sd k)))
-                 (seq (ptr-write-u32 d (* (+ p k) 4) (if (< c 128) c (if (= uni 1) c (+ c 4194048))))
-                      (setq k (+ k 1)))))
+             (setq k (nl_gb_widen d p sd n uni))
            (if (= sb n)
-               (while (< k n)
-                 (seq (ptr-write-u32 d (* (+ p k) 4) (ptr-read-u8 sd k))
-                      (setq k (+ k 1))))
+               (setq k (nl_gb_widen d p sd n uni))
              (let* ((bi 0))
                (while (if (= bad 0) (< k n) 0)
                  (let* ((x (nl_gb_dec sd bi sb)))
@@ -406,8 +445,8 @@
                                  w)))))))))))))
 ;; Insert the elements of the string word SW at the gap start of record B (reserving room):
     ;; the count as a fixnum word, or 0 (declined).
-    (defun nl_gb_insert_w (b sw)
-      (let* ((r (- b 6)))
+    (defun nl_gb_insert_w (b sw0)
+      (let* ((r (- b 6)) (sw (nl_gb_strw sw0)))
         (if (/= (logand sw 7) 4) 0
           (let* ((n (logand (ptr-read-u64 (- sw 4) 0) 9223372036854775807)))
             (if (= (nl_gb_grow r n) 0) 0
@@ -424,8 +463,8 @@
                            (+ (shl n 2) 1)))))))))))
         ;; Overwrite the elements at logical S.. with those of the string SW (same count) when the
     ;; run lies wholly before or wholly after the gap; 3 on success, 0 when declined.
-    (defun nl_gb_overwrite_w (b s sw)
-      (let* ((r (- b 6)) (h (nl_gb_ok r)))
+    (defun nl_gb_overwrite_w (b s sw0)
+      (let* ((r (- b 6)) (h (nl_gb_ok r)) (sw (nl_gb_strw sw0)))
         (if (= h 0) 0
           (if (/= (logand sw 7) 4) 0
             (let* ((n (logand (ptr-read-u64 (- sw 4) 0) 9223372036854775807))
@@ -460,12 +499,15 @@
       (let* ((i 0) (ok 1))
         (seq
          (while (if (= ok 1) (< i argc) 0)
-           (let* ((w (heap-read-u64 (+ stk (* (+ (- sp argc) i) 8)) 0)))
-             (if (/= (logand w 7) 4) (setq ok 0)
-               (let* ((h2 (- w 4)))
-                 (if (/= (ptr-read-u64 h2 16) 0) (setq ok 0)
-                   (seq (setq total (+ total (logand (ptr-read-u64 h2 0) 9223372036854775807)))
-                        (setq i (+ i 1))))))))
+           (let* ((w0 (heap-read-u64 (+ stk (* (+ (- sp argc) i) 8)) 0))
+                  (w (nl_gb_strw w0)))
+             (seq
+              (if (/= w w0) (ptr-write-u64 (+ stk (* (+ (- sp argc) i) 8)) 0 w) 0)
+              (if (/= (logand w 7) 4) (setq ok 0)
+                (let* ((h2 (- w 4)))
+                  (if (/= (ptr-read-u64 h2 16) 0) (setq ok 0)
+                    (seq (setq total (+ total (logand (ptr-read-u64 h2 0) 9223372036854775807)))
+                         (setq i (+ i 1)))))))))
          (if (= ok 0) -3
            (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
                   (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
@@ -1392,6 +1434,31 @@
              ((= id -18)
               (if (and (= argc 2) (= (logand a 3) 1) (= (logand b 3) 1))
                   (logand a b) -1))
+             ;; nc3: the builtin arms of `fboundp' (`bf_fboundp_w') and
+             ;; `nelisp--string-search-chars' on the operand words, with the
+             ;; argument pointers `wf_arg_ptr' would read from a list
+             ;; (`m5_fx_word_ptr'); no Lisp runs and nothing collects.  A
+             ;; non-symbol `fboundp' operand (the error) declines to APPLY.
+             ((= id -19)
+              (if (or (= a 3) (= a 7)) 3
+                (if (if (= (logand a 7) 6)
+                        (if (> a 4096)
+                            (or (= (logand (ptr-read-u64 (- a 6) 0) 63) 4)
+                                (= (logand (ptr-read-u64 (- a 6) 0) 63) 16))
+                          0)
+                      0)
+                    (let* ((tmp (alloc-bytes 32 8)))
+                      (if (= (nelisp_env_lookup_function (+ env 0) (+ env 64) a tmp) 0)
+                          (if (= (bf_fboundp_cell_p tmp) 0) 3 7)
+                        3))
+                  -1)))
+             ((= id -20)
+              (if (= argc 3)
+                  (let* ((r (m5_string_search_chars
+                             (m5_fx_word_ptr a) (m5_fx_word_ptr b)
+                             (m5_fx_word_ptr (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0)))))
+                    (if (= r -2) 7 (if (= r -1) 3 (wf_write_int_w 0 r))))
+                -1))
              (t -1)))
            (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))))
     ;; corecall (W2c): the VM's call of a primitive held by the call site's symbol, with the
@@ -1438,6 +1505,17 @@
                               (m5_fx_primitive_run id stk sp argc resw env 0)
                             -3)))))))))
           -3)))
+    ;; The argument pointer `wf_arg_ptr' gives a builtin arm for the list
+    ;; element WORD (`nl_cons_car_ptr'): a legacy view, a direct cons or a
+    ;; symbol object as it is, anything else materialised into a fresh view.
+    (defun m5_fx_word_ptr (word)
+      (if (= (logand word 5) 0) word
+        (if (if (= (logand word 7) 6)
+                (or (= (logand (ptr-read-u64 (- word 6) 0) 63) 4)
+                    (= (logand (ptr-read-u64 (- word 6) 0) 63) 16))
+              0)
+            word
+          (nl_sexp_clone_into word (alloc-bytes 32 8)))))
     (defun m5_fx_primitive_named (name stk sp argc resw env scratch)
       (let* ((id (m5_fx_primitive_id name argc)))
         (if (= id 0) -3 (m5_fx_primitive_run id stk sp argc resw env scratch))))
