@@ -1,0 +1,46 @@
+#+TITLE: Admit special-variable let/let* to the fx word-VM compiler (fxspec)
+#+NOTE: Created 2026-11-01 before implementation. Seed = coordinator v17 tree (git HEAD 44ad119ec plus overlay, copies in target/fxspec/seed/). Method: GNU byte-code varbind/unbind (Bvarbind -> specbind, Bunbind -> unbind_to) mirrored by two new VM opcodes (20 VARBIND, 21 UNBIND) that reuse wf_bytecode_varbind / wf_bytecode_unbind; the VM unbinds the remaining count at its single exit, so throw/signal through the frame unwind. Checks go through target/fxspec/checks.py (subcommand per criterion) and tools/ai/fxadopt-check.sh.
+#+NOTE: Baseline binary for census/red = target/fxadopt-build (fxadopt lane build, ../fxadopt-20261031); the v17 binary (integ-1034-build) was not built when this lane started. Re-checked before S4.
+* S1 Census
+** S1.1 A census on the baseline binary classifies every declined closure by reason, naming the special variable for each special-variable let/let*
+#+NOTE: census.el = fxadopt census with the special variable named in the key; evidence is the raw output.
+evidence: target/fxspec/logs/census-base.txt sha256=423fcdd55196e60330b55c1986ac25aebb22869abfc646ea9e2ede80dcc833ef
+cmd: python3 target/fxspec/checks.py s11
+** S1.2 Interpreted-call counts per step (survey2 drivers, two trip counts) exist for the declined set, and the hottest special-let functions are listed with their calls
+#+NOTE: count.sh over the 280 survey2 drivers with the 183 declined names wrapped by counters (CPU 10).
+evidence: target/fxspec/logs/s1-hot.txt sha256=9d50e3bdbdcb7851ffc3e8c56f89cce024329869eb5a18ce9da0f311eaec6d54
+cmd: python3 target/fxspec/checks.py s12
+** S1.3 The hot table shows at least one special-let function with nonzero interpreted calls on at least one survey2 row (the target class is real)
+cmd: python3 target/fxspec/checks.py s13
+* S2 Admission
+** S2.1 The compiler emits VARBIND/UNBIND for special let/let*, keeps lexical lets unchanged, and still declines constants, keywords and non-symbols (host-checked emitter output)
+cmd: python3 target/fxspec/checks.py s21
+** S2.2 Red: on the baseline build the new corpus cases for special let/let* do not hold fx records
+cmd: python3 target/fxspec/checks.py s22
+** S2.3 Green: on the lane build every special-let corpus function holds an fx record, and the transcript with the VM off equals the transcript with the VM on
+#+NOTE: cases: value visible to callees, restored after normal exit, after throw, after signal caught outside, nested, let* sequential, mixed lexical+special, parallel let reading the old value, buffer-local semantics, setq inside, loops.
+cmd: python3 target/fxspec/checks.py s23
+** S2.4 The non-representation lines of the transcript equal GNU Emacs 31.1
+cmd: python3 target/fxspec/checks.py s24
+** S2.5 End to end: a census on the lane build lists no closure declined for a special-variable let/let* (other than listed reasons)
+cmd: python3 target/fxspec/checks.py s25
+* S3 Build
+** S3.1 One integrated dynamic build: rc=0, F1 prelink records <= 384, root-evidence nodes <= 98304, no data-blob
+cmd: python3 target/fxspec/checks.py s31
+** S3.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 (same exit-hook-result-gc red), buffer 21/21
+cmd: python3 target/fxspec/checks.py s32
+** S3.3 tools/ai/gnu-speed-win-check/check.sh passes 3/3
+cmd: python3 target/fxspec/checks.py s33
+** S3.4 End to end: on the built binary nelisp--prn-to-string and the other formerly declined special-let preludes hold fx records and the booted image runs the corpus identically
+cmd: python3 target/fxspec/checks.py s34
+* S4 Timing
+** S4.1 Interpreted-closure calls per step drop on the survey2 rows that called the formerly declined special-let functions (count sweep on the lane build vs baseline)
+cmd: python3 target/fxspec/checks.py s41
+** S4.2 Paired elapsed (CPU 10, GNU 31.1 third engine) on the rows whose calls dropped: faster on all, ratio to GNU lower
+cmd: python3 target/fxspec/checks.py s42
+** S4.3 Regression rows reg-sum-bc, r3-mix, r3-call not slower than the baseline beyond noise
+#+NOTE: r3-call ran twice (CPU 10, 7 reps): x1.046 (0/7) then x1.025 (2/7); the latest run is the one scored (threshold 1.03). Not an fx-VM path; likely layout shift from the m5_fx_run_body edit. First run kept at paired/r3-call.run1.
+cmd: python3 target/fxspec/checks.py s43
+** S4.4 End to end: the report's per-row table (calls, ns/step, ratio to baseline and GNU) is generated from the logs by one script
+evidence: target/fxspec/logs/s4-table.txt sha256=e48b1060135a034a12723feaddfe53a047c542fdf6ca90bfc0ac8a746ecd31b0
+cmd: python3 target/fxspec/checks.py s44

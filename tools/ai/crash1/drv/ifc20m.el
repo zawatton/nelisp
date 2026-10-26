@@ -1,0 +1,12 @@
+;;; ifc20m.el --- BENCH-CHECK driver: insert-file-contents of a 20 MB file N times  -*- lexical-binding: t -*-
+(defun crash1-run (n file)
+  (let ((size 0))
+    (dotimes (_ n) (with-temp-buffer (insert-file-contents file) (setq size (buffer-size))))
+    size))
+(let* ((n (string-to-number (getenv "BENCH_N")))
+       (file (expand-file-name "ascii-20000000.txt" (getenv "CRASH1_DATA"))))
+  (crash1-run 1 file)
+  (let* ((start (float-time)) (r (crash1-run n file)) (seconds (- (float-time) start)))
+    (unless (= r 20000000) (error "Wrong size %S" r))
+    (princ (format "BENCH-CHECK n=%d result=%S elapsed=%.9f\n" n r seconds))))
+(kill-emacs 0)

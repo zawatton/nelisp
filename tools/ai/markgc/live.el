@@ -1,0 +1,28 @@
+;;; -*- lexical-binding: t; -*-
+;; Liveness: referenced markers keep moving across edits and GC; a marker held
+;; only as a weak-table key must die; unreferenced ones leave the registry.
+(defun markgc--count (b)
+  (let ((m (nelisp-buffer-markers b)))
+    (if (hash-table-p m) (hash-table-count m) (length m))))
+(defvar markgc--fail 0)
+(defun markgc--check (name ok) (unless ok (setq markgc--fail (1+ markgc--fail))) (princ (format "%s %s\n" (if ok "PASS" "FAIL") name)))
+(defvar markgc--global (make-marker))
+(with-temp-buffer
+  (insert (make-string 100 ?a))
+  (let* ((b nelisp--current-buffer)
+         (var (copy-marker 50)) (lst (list (copy-marker 60) (copy-marker 70 t)))
+         (wt (make-hash-table :test 'eq :weakness 'key)) (i 0))
+    (set-marker markgc--global 80)
+    (puthash (copy-marker 40) t wt)
+    (while (< i 2000) (copy-marker 10) (point-marker) (setq i (1+ i)))
+    (garbage-collect) (garbage-collect)
+    (goto-char 1) (insert "xx") (garbage-collect) (delete-region 1 2) (garbage-collect)
+    (markgc--check "var-held moves" (= (marker-position var) 51))
+    (markgc--check "list-held moves" (equal (mapcar #'marker-position lst) '(61 71)))
+    (markgc--check "global-held moves" (= (marker-position markgc--global) 81))
+    (markgc--check "weak-key marker dies" (= (hash-table-count wt) 0))
+    (markgc--check "registry bounded" (< (markgc--count b) 20))
+    (goto-char 61) (insert "q")
+    (markgc--check "after more edits" (equal (mapcar #'marker-position lst) '(61 72)))
+    (kill-buffer b)))
+(kill-emacs (if (= markgc--fail 0) 0 1))

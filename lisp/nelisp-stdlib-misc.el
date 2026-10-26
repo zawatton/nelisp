@@ -1983,11 +1983,13 @@ INHERIT is accepted for signature compatibility only.
   (defun nelisp-buffer--shift-markers-on-insert-before-markers (buf at inserted-len)
     "Same as the prelude's copy: a marker exactly AT the insertion
 point always advances, regardless of its own `insertion-type'."
-    (dolist (m (nelisp-buffer-markers buf))
-      (when (nelisp-marker-p m)
-        (let ((pos (nelisp-marker-position m)))
-          (when (>= pos at)
-            (setf (nelisp-marker-position m) (+ pos inserted-len))))))))
+    (when (nelisp-buffer-markers buf)
+      (maphash (lambda (m _v)
+                 (when (nelisp-marker-p m)
+                   (let ((pos (nelisp-marker-position m)))
+                     (when (>= pos at)
+                       (setf (nelisp-marker-position m) (+ pos inserted-len))))))
+               (nelisp-buffer-markers buf)))))
 
 (unless (fboundp 'nelisp-insert-before-markers)
   (defun nelisp-insert-before-markers (text &optional buf)

@@ -133,7 +133,7 @@ BODY may refer to the created buffer as `buf'."
       (should (nelisp-markerp m))
       (should (eq buf (nelisp-marker-buffer m)))
       (should (= 3 (nelisp-marker-position m)))
-      (should (memq m (nelisp-buffer-markers buf))))))
+      (should (memq m (nelisp-buffer--marker-list buf))))))
 
 ;;; Marker shift under insert ----------------------------------------
 
@@ -205,12 +205,12 @@ when text is inserted exactly there."
     (nelisp-with-buffer a (nelisp-insert "aaaa"))
     (nelisp-with-buffer b (nelisp-insert "bbbb"))
     (let ((m (nelisp-copy-marker a 2)))
-      (should (memq m (nelisp-buffer-markers a)))
+      (should (memq m (nelisp-buffer--marker-list a)))
       (nelisp-set-marker m 3 b)
       (should (eq b (nelisp-marker-buffer m)))
       (should (= 3 (nelisp-marker-position m)))
-      (should-not (memq m (nelisp-buffer-markers a)))
-      (should (memq m (nelisp-buffer-markers b))))))
+      (should-not (memq m (nelisp-buffer--marker-list a)))
+      (should (memq m (nelisp-buffer--marker-list b))))))
 
 (ert-deftest nelisp-marker-set-marker-nil-detaches ()
   (nelisp-marker-test--fresh "det"
@@ -225,7 +225,7 @@ when text is inserted exactly there."
     (let ((m (nelisp-copy-marker buf 2)))
       (nelisp-marker-delete m)
       (should (null (nelisp-marker-buffer m)))
-      (should-not (memq m (nelisp-buffer-markers buf))))))
+      (should-not (memq m (nelisp-buffer--marker-list buf))))))
 
 ;;; Overlay basics ---------------------------------------------------
 

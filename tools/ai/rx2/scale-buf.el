@@ -1,0 +1,78 @@
+;;; -*- lexical-binding: t; -*-
+;; Scaling probe: buffer searches near the end of a long buffer cost the distance scanned,
+;; not the buffer size.  us/call at N and 4N; the ratio must stay near 1 (limit 1.8).
+(defun sc-time (f reps)
+  (funcall f) (funcall f)
+  (let ((best nil))
+    (dotimes (_ 3)
+      (let ((t0 (float-time))) (dotimes (_ reps) (funcall f))
+        (let ((d (/ (- (float-time) t0) reps))) (when (or (null best) (< d best)) (setq best d)))))
+    (* 1e6 best)))
+(defvar sc-fail 0)
+(defun sc-row (label run limit &optional mutate)
+  "RUN gets (buffer end) and does one operation near END; MUTATE inserts first."
+  (let* ((res nil))
+    (dolist (n '(40000 160000))
+      (with-temp-buffer
+        (insert (make-string (- n 20) ?a) "\nfoo bar baz qux\n")
+        (let ((e (point-max)))
+          (push (sc-time (lambda () (funcall run e)) 10) res))))
+    (let* ((b (car res)) (a (cadr res)) (r (/ b (max a 0.001))))
+      (princ (format "%-34s %9.1f %9.1f ratio %6.2f %s\n" label a b r
+                     (if (<= r limit) "ok" (progn (setq sc-fail (1+ sc-fail)) "SCALES")))))))
+(dolist (cf '(nil t))
+  (let ((case-fold-search cf))
+    (sc-row (format "search-forward cf=%S" cf) (lambda (e) (goto-char (- e 20)) (search-forward "bar" nil t)) 1.8)
+    (sc-row (format "search-forward miss-bound cf=%S" cf) (lambda (e) (goto-char (- e 600)) (search-forward "zzz" (- e 200) t)) 1.8)
+    (sc-row (format "search-forward count2 cf=%S" cf) (lambda (e) (goto-char (- e 20)) (search-forward "a" nil t 2)) 1.8)
+    (sc-row (format "re-search-forward cf=%S" cf) (lambda (e) (goto-char (- e 20)) (re-search-forward "ba[rz]" nil t)) 1.8)
+    (sc-row (format "re-search-forward group cf=%S" cf) (lambda (e) (goto-char (- e 20)) (re-search-forward "\\(ba\\)r" nil t)) 1.8)
+    (sc-row (format "re-search-forward anchored cf=%S" cf) (lambda (e) (goto-char (- e 20)) (re-search-forward "^foo" nil t)) 1.8)
+    (sc-row (format "looking-at cf=%S" cf) (lambda (e) (goto-char (- e 16)) (looking-at "foo")) 1.8)
+    (sc-row (format "looking-at group cf=%S" cf) (lambda (e) (goto-char (- e 16)) (looking-at "\\(f\\)oo")) 1.8)
+    (sc-row (format "re-search-backward cf=%S" cf) (lambda (e) (goto-char (- e 2)) (re-search-backward "foo" nil t)) 1.8)
+    (sc-row (format "search-backward cf=%S" cf) (lambda (e) (goto-char (- e 2)) (search-backward "foo" nil t)) 1.8)))
+;; after an edit the next search must not rebuild the whole buffer text: compare it with a bare read after the same edit
+;; (the edit itself costs what the buffer layer charges; only the search's own extra cost is measured).
+(defun sc-delta-row (label run limit)
+  (let (res)
+    (dolist (n '(40000 160000))
+      (with-temp-buffer
+        (insert (make-string (- n 20) ?a) "\nfoo bar baz qux\n")
+        (let* ((e (point-max)) (reps 30)
+               (edit (lambda () (goto-char (- (point-max) 40)) (insert "x") (char-after)))
+               (both (lambda () (goto-char (- (point-max) 40)) (insert "x") (funcall run (point-max))))
+               (a (sc-time edit reps)) (b (sc-time both reps)))
+          (push (max 1.0 (- b a)) res))))
+    (let* ((b (car res)) (a (cadr res)) (r (/ b a)))
+      (princ (format "%-34s %9.1f %9.1f ratio %6.2f %s\n" label a b r
+                     (if (<= r 2.5) "ok" (progn (setq sc-fail (1+ sc-fail)) "SCALES")))))))
+(dolist (cf '(nil t))
+  (let ((case-fold-search cf))
+    (sc-delta-row (format "after edit: search-forward cf=%S" cf) (lambda (e) (search-forward "bar" nil t)) 2.5)
+    (sc-delta-row (format "after edit: re-search-forward cf=%S" cf) (lambda (e) (goto-char (- e 20)) (re-search-forward "ba[rz]" nil t)) 2.5)
+    (sc-delta-row (format "after edit: looking-at cf=%S" cf) (lambda (e) (goto-char (- e 16)) (looking-at "foo")) 2.5)
+    (sc-delta-row (format "after edit: re-search-backward cf=%S" cf) (lambda (e) (goto-char (point-max)) (re-search-backward "foo" nil t)) 2.5)))
+;; scan cost is proportional to the distance scanned, with many near-miss candidates ("mu" for "mu nu")
+(let ((case-fold-search t))
+  (dolist (spec '(("search-forward" . (lambda (b) (search-forward "mu nu" b t)))
+                  ("re-search-forward" . (lambda (b) (re-search-forward "mu nu" b t)))))
+    (let (res)
+      (dolist (d '(2000 8000))
+        (with-temp-buffer
+          (dotimes (_ 20000) (insert "mu xx "))
+          (push (sc-time (let ((f (cdr spec))) (lambda () (goto-char 1) (funcall (eval f t) (+ 1 d)))) 5) res)))
+      (let ((r (/ (car res) (max (cadr res) 0.001))))
+        (princ (format "%-34s %9.1f %9.1f ratio %6.2f %s\n" (format "%s distance 2000->8000 cf" (car spec)) (cadr res) (car res) r
+                       (if (<= r 6.0) "ok" (progn (setq sc-fail (1+ sc-fail)) "SCALES"))))))))
+;; a search loop over the whole buffer: total time scales linearly (ratio near 4), not quadratically (16)
+(let (res)
+  (dolist (n '(5000 20000))
+    (with-temp-buffer
+      (insert (make-string n ?a)) (goto-char 1)
+      (let ((t0 (float-time)) (c 0)) (while (re-search-forward "a" nil t) (setq c (1+ c)))
+        (push (- (float-time) t0) res))))
+  (let ((r (/ (car res) (max (cadr res) 0.000001))))
+    (princ (format "%-34s %9.3f %9.3f ratio %6.2f %s\n" "re-search-forward loop (s)" (cadr res) (car res) r
+                   (if (<= r 6.0) "ok" (progn (setq sc-fail (1+ sc-fail)) "SCALES"))))))
+(princ (format "SCALING-FAILURES %d\n" sc-fail))

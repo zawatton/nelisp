@@ -6975,9 +6975,58 @@ addressing by a runtime base, never by a fixed reservation."
     (defun nl_os_commit_range (base old new) 1)
     ;; Minimal native surface clauses 3/4: raw OS process exit, required
     ;; before Lisp can run.  Terminate every task, including native workers.
-    ;; Exit code 88 = standalone arena allocation failure.
+    ;; Exit code 88 = standalone arena allocation failure.  GNU reports
+    ;; "Memory exhausted" before it dies; say so on stderr first instead of
+    ;; exiting mute.  The buffer is a fresh page from the OS, never
+    ;; `alloc-bytes': that is the arena allocator, which is what just failed
+    ;; (it recursed back into this function until the stack ran out).  If the
+    ;; page cannot be had either, exit as before.
     (defun nl_os_alloc_fail ()
-      (syscall-direct 231 88 0 0 0 0 0))))
+      (let ((buf (nl_os_alloc_chunk 4096)))
+        (seq
+         (if (= buf 0) 0
+           (seq
+               (ptr-write-u8 buf 0 110)
+               (ptr-write-u8 buf 1 101)
+               (ptr-write-u8 buf 2 108)
+               (ptr-write-u8 buf 3 105)
+               (ptr-write-u8 buf 4 115)
+               (ptr-write-u8 buf 5 112)
+               (ptr-write-u8 buf 6 58)
+               (ptr-write-u8 buf 7 32)
+               (ptr-write-u8 buf 8 109)
+               (ptr-write-u8 buf 9 101)
+               (ptr-write-u8 buf 10 109)
+               (ptr-write-u8 buf 11 111)
+               (ptr-write-u8 buf 12 114)
+               (ptr-write-u8 buf 13 121)
+               (ptr-write-u8 buf 14 32)
+               (ptr-write-u8 buf 15 101)
+               (ptr-write-u8 buf 16 120)
+               (ptr-write-u8 buf 17 104)
+               (ptr-write-u8 buf 18 97)
+               (ptr-write-u8 buf 19 117)
+               (ptr-write-u8 buf 20 115)
+               (ptr-write-u8 buf 21 116)
+               (ptr-write-u8 buf 22 101)
+               (ptr-write-u8 buf 23 100)
+               (ptr-write-u8 buf 24 32)
+               (ptr-write-u8 buf 25 40)
+               (ptr-write-u8 buf 26 109)
+               (ptr-write-u8 buf 27 101)
+               (ptr-write-u8 buf 28 109)
+               (ptr-write-u8 buf 29 111)
+               (ptr-write-u8 buf 30 114)
+               (ptr-write-u8 buf 31 121)
+               (ptr-write-u8 buf 32 45)
+               (ptr-write-u8 buf 33 102)
+               (ptr-write-u8 buf 34 117)
+               (ptr-write-u8 buf 35 108)
+               (ptr-write-u8 buf 36 108)
+               (ptr-write-u8 buf 37 41)
+               (ptr-write-u8 buf 38 10)
+               (syscall-direct 1 2 buf 39 0 0 0)))
+         (syscall-direct 231 88 0 0 0 0 0))))))
 
 (defun nelisp-standalone--cold-domain-forms ()
   "Return cold reservation owners before protocol proof generation."
@@ -11997,11 +12046,21 @@ REPL-facing module it feeds."
          (nl_gc_growth_rearm)
          (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32
                         (+ (ptr-read-u64 (data-addr nl_gc_loop_ctx) 32) 1)))))
+    ;; The debt half of a poll site's gate.  Armed (two collections after boot)
+    ;; it is the trigger itself; before that it is the 64 MiB backstop that
+    ;; `nl_gc_vm_poll' applies.  The `while' back edge and the native poll
+    ;; lacked the backstop, so a program that is one long top-level form never
+    ;; armed the trigger: mapped string and vector data is not part of the
+    ;; reservation test above, and the loop allocated to the address-space cap.
+    (defun nl_gc_debt_gate_due ()
+      (if (< (heap-read-u64 (data-addr nl_gc_stats) 24) 2)
+          (if (< (nl_gc_debt_now) 67108864) 0 1)
+        (nl_gc_debt_due)))
     (defun nl_gc_midform_collect ()
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
           (if (if (< (heap-read-u64 268436184 0)
                      (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-                  (if (= (nl_gc_debt_due) 0) 1 0) 0)
+                  (if (= (nl_gc_debt_gate_due) 0) 1 0) 0)
               0
             (nl_gc_midform_collect_now))
         0))
@@ -21360,7 +21419,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (heap-read-u64 (data-addr nl_gc_loop_ctx) 8) 1)
           (if (< (heap-read-u64 268436184 0)
                  (heap-read-u64 (data-addr nl_gc_loop_ctx) 40))
-              (nl_gc_debt_due) 1) 0))
+              (nl_gc_debt_gate_due) 1) 0))
     (defun nl_native_funcall_v2 (env ticket f a n r)
       (let* ((marker (nl_root_pin_slot_v2 env ticket 0))
              (top (atomic-fetch-add (+ (data-addr nl_root_pin_control) 24) 0))
@@ -28579,6 +28638,13 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; FSET while it runs stays alive.  OSLOT: the frame's Sexp view slot,
     ;; for `set''s value only (`m5_fx_globals_run').
     (defun m5_fx_callout (env sym stk sp argc resw xw oslot _pad)
+      ;; GNU's Bcall safepoint (bytecode.c:797 maybe_gc, `consing_until_gc < 0'):
+      ;; every operand is a rooted word of the activation's frame, so a
+      ;; collection here is as sound as one inside any callee.  Without it a
+      ;; loop that only calls primitives (read-from-string, concat, insert)
+      ;; allocated to the address-space cap: this interpreter had no poll.
+      (seq
+       (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
       (let* ((cache (if (= (nl_word_tag64 sym) 8) sym 0))
              (name (if (= cache 0) sym (nl_vector_slot_word cache 0)))
              (cached (if (or (= cache 0) (= (nl_sb_worker_p env) 1))
@@ -28606,7 +28672,7 @@ bytes are written into a fresh 8-byte buffer instead."
                           (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env 0 resw 0)))))
              (if (= st -3)
                  (m5_fx_call_list name fn stk sp argc env resw (+ xw 8) oslot)
-               st))))))
+               st)))))))
     ;; The frame's Sexp view slot, reserved on first use.
     (defun m5_fx_view_slot (env slot)
       (if (= slot 0) (nl_root_reserve env) slot))
@@ -29185,7 +29251,12 @@ bytes are written into a fresh 8-byte buffer instead."
              (oslot 0)
              (stk (+ mem (* nlocals 8)))
              (resw (+ stk (* stksize 8)))
-             (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0))
+             (sp 0) (pc 0) (status 0) (i 0) (op 0) (a 0) (b 0) (r 0) (n 0)
+             ;; Dynamic bindings this activation holds (VARBIND minus
+             ;; UNBIND): GNU's specpdl depth above the frame's entry.  A
+             ;; plain integer, not a Lisp slot; the values live in the
+             ;; binding frames and on the operand stack.
+             (nb 0))
         ;; GNU signals "Bytecode stack overflow" (bytecode.c:514-515); this
         ;; region's exhaustion is `memory-full', as for every checked frame.
         (if (= mem 0) (wf_bytecode_root_exhausted)
@@ -29240,13 +29311,23 @@ bytes are written into a fresh 8-byte buffer instead."
                      (if (/= r 0) (setq status r)
                        (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                             (setq sp (+ sp 1)) (setq pc (+ pc 2)))))
+            ;; A backward jump is GNU's Bgoto back-edge safepoint
+            ;; (bytecode.c:861-866): one load and compare of the budget.
             (if (= op 9)
                 (seq (setq sp (- sp 1))
                      (if (= (nl_val_tag (heap-read-u64 (+ stk (* sp 8)) 0)) 0)
-                         (setq pc (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                         (seq (setq b (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                              (if (< b pc)
+                                  (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                                0)
+                              (setq pc b))
                        (setq pc (+ pc 2))))
             (if (= op 8)
-                (setq pc (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                (seq (setq b (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                     (if (< b pc)
+                         (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                       0)
+                     (setq pc b))
             (if (if (= op 6) 1 (if (= op 13) 1 (if (= op 14) 1 (if (= op 4) 1 (if (= op 5) 1 0)))))
                 (seq (setq b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
                      (setq a (heap-read-u64 (+ stk (* (- sp 2) 8)) 0))
@@ -29304,7 +29385,27 @@ bytes are written into a fresh 8-byte buffer instead."
                                 (if (/= r 0) (setq status r)
                                   (seq (ptr-write-u64 (+ stk (* sp 8)) 0 (heap-read-u64 resw 0))
                                        (setq sp (+ sp 1)) (setq pc (+ pc 2))))) 0))
-                (setq status -2)))))))))))))))))
+                ;; 20 VARBIND sym: GNU's Bvarbind (bytecode.c) -> specbind.
+                ;; Pops the value, binds SYM dynamically through the byte-code
+                ;; VM's own binder (constants, aliases, buffer-local cells and
+                ;; watchers as there); the value stays on the operand stack,
+                ;; hence rooted, until the bind has succeeded.
+                (if (= op 20)
+                    (seq (setq r (wf_bytecode_varbind env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)
+                                                      (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
+                         (if (/= r 0) (setq status r)
+                           (seq (setq sp (- sp 1)) (setq nb (+ nb 1)) (setq pc (+ pc 2)))))
+                  ;; 21 UNBIND n: GNU's Bunbind -> unbind_to; the operand stack
+                  ;; (the body's value) is untouched.
+                  (if (= op 21)
+                      (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                           (wf_bytecode_unbind (+ env 32) n)
+                           (setq nb (- nb n)) (setq pc (+ pc 2)))
+                    (setq status -2)))))))))))))))))))
+         ;; Bindings still held when the loop ends: a call-out signalled or
+         ;; threw through this frame (the status is its rc).  Undone here, on
+         ;; the one exit, as GNU's unbind_to does for the unwound frames.
+         (if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
          (nl_root_release env mark)
          ;; -1 done; -2 a bad opcode (compiler bug); anything else is the rc
          ;; of a call-out, its signal already stashed. Checked root failure
@@ -30324,13 +30425,43 @@ bytes are written into a fresh 8-byte buffer instead."
          (while (and (< i n) (/= (ptr-read-u8 data i) 37))
            (setq i (+ i 1)))
          (if (= i n) 1 0))))
-    (defun bf_fmt_unibyte_p (argp)
+    ;; 1 when X holds no multibyte string with a non-ASCII byte, looking inside
+    ;; conses and vectors as the native printer does (same node budget in ST slot 0,
+    ;; same depth limit); 0 also when the budget or the depth runs out.
+    (defun bf_fmt_deep_uni_p (x st depth)
+      (let* ((tag (nl_val_tag x)))
+        (if (= (m5_string_tag_p tag) 1)
+            (m5_observably_unibyte_p x)
+          (if (> depth 64) 0
+            (if (= tag 7)
+                (let* ((cur x) (ok 1))
+                  (seq (while (if (= ok 1) (= (nl_val_tag cur) 7) 0)
+                         (if (= (bf_pf_tick st) 0) (setq ok 0)
+                           (if (= (bf_fmt_deep_uni_p (nl_cons_car_word cur) st (+ depth 1)) 0)
+                               (setq ok 0)
+                             (setq cur (nl_cons_cdr_word cur)))))
+                       (if (= ok 0) 0
+                         (if (= (nl_val_tag cur) 0) 1
+                           (bf_fmt_deep_uni_p cur st (+ depth 1))))))
+              (if (= tag 8)
+                  (let* ((n (nl_vector_length x)) (i 0) (ok 1))
+                    (seq (while (if (< i n) (= ok 1) 0)
+                           (if (= (bf_pf_tick st) 0) (setq ok 0)
+                             (if (= (bf_fmt_deep_uni_p (nl_vector_slot_word x i) st (+ depth 1)) 0)
+                                 (setq ok 0)
+                               (setq i (+ i 1)))))
+                         ok))
+                1))))))
+    (defun bf_fmt_unibyte_args_p (argp st)
       (if (= (nl_val_tag argp) 7)
-          (let* ((a (nl_cons_car_word argp)) (tag (nl_val_tag a)))
-            (if (if (= (m5_string_tag_p tag) 1)
-                    (m5_observably_unibyte_p a) 1)
-                (bf_fmt_unibyte_p (nl_cons_cdr_word argp)) 0))
+          (if (= (bf_fmt_deep_uni_p (nl_cons_car_word argp) st 0) 1)
+              (bf_fmt_unibyte_args_p (nl_cons_cdr_word argp) st)
+            0)
         1))
+    (defun bf_fmt_unibyte_p (argp)
+      (let ((st (alloc-bytes 24 8)))
+        (seq (ptr-write-u64 st 0 100000)
+             (bf_fmt_unibyte_args_p argp st))))
     (defun bf_fmt_emit_w (ms d original)
       (let* ((a (if (= d 115) (bf_fmt_arg_w original) original)))
       (if (= d 115)
@@ -30462,13 +30593,29 @@ bytes are written into a fresh 8-byte buffer instead."
                     (mut-str-push-byte ms b)
                     (setq i (+ i 1)))))
            1))
+    ;; 1 when the UTF-8 bytes of W hold no Emacs byte8 (C0/C1 lead) character.
+    (defun bf_pf_no_byte8_p (w i n)
+      (let* ((ok 1))
+        (seq (while (if (< i n) (= ok 1) 0)
+               (let* ((b (m5_byte_at w i)))
+                 (seq (if (>= b 192) (if (< b 194) (setq ok 0) 0) 0)
+                      (setq i (+ i 1)))))
+             ok)))
+    ;; A multibyte string prints its characters as they are (print.c with the
+    ;; default print-escape-multibyte); a unibyte string with bytes over 127 and a
+    ;; string holding a byte8 character need octal escapes and stay with the Lisp
+    ;; printer.
     (defun bf_pf_str (ms s esc)
       (let* ((w (bf_fmt_arg_w s)))
         (if (= w 0) 0
           (if (/= (logand w 7) 4) 0
             (if (/= (ptr-read-u64 (- w 4) 16) 0) 0
               (let* ((n (m5_strlen w)))
-                (if (= (m5_ascii_bytes_p w 0 n) 0) 0
+                (if (= (if (= (m5_ascii_bytes_p w 0 n) 1) 1
+                             (if (= (m5_unibyte_tag_p (nl_val_tag s)) 1) 0
+                               (bf_pf_no_byte8_p w 0 n)))
+                       0)
+                    0
                   (if (= esc 0) (seq (m5_push_str ms w) 1)
                     (seq (mut-str-push-byte ms 34)
                          (bf_pf_str_bytes ms w 0 n)
@@ -38088,29 +38235,10 @@ extern arms in dynamic builds."
            (seq (ptr-write-u8 to i (heap-read-u8 src i))
                 (setq i (+ i 1))))
          0)))
-    ;; §exec-diag follow-on (characterized, NOT fixed here -- see report):
-    ;; this single read (request `8388608 - n0' bytes, accept whatever
-    ;; `nl_os_read_file_handle' returns as the WHOLE rest of the file)
-    ;; silently truncates any file bigger than ~8 MiB -- a single ReadFile is
-    ;; not guaranteed to fill an arbitrarily large request even mid-file, so
-    ;; a real ~21.9 MiB `.neln' artifact comes back as only ~8.3 MiB of
-    ;; content (cut off mid-form).  Before the `nl_str_charlen' fix above,
-    ;; this was masked by that stack-overflow crashing first; with `length'
-    ;; fixed, this truncation is now the visible remaining blocker for
-    ;; artifacts over ~8 MiB specifically (the reported 21.9 MiB corpus).
-    ;; A loop-until-EOF with a doubling buffer was tried here and reverted:
-    ;; the bump arena has no free, so each abandoned buffer stays live for
-    ;; the process's lifetime, and growing 8->16->32 MiB (needed for a
-    ;; 21.9 MiB file) crashed with SIGSEGV instead -- worse than the original
-    ;; truncation, and it depends on this DSL's nested `let*'/`setq' variable
-    ;; mutation across scopes, which was not proven safe here (see
-    ;; FINDINGS.md's `let'-vs-`let*' correctness history for this codebase).
-    ;; The correct fix needs the real file size up front (a `GetFileSizeEx'
-    ;; native helper on Windows, queried from the already-open handle) so
-    ;; exactly one right-sized buffer is allocated with no growth/waste --
-    ;; deliberately not attempted blind in the time available for this
-    ;; session; left as-is (matching pre-existing behavior exactly) rather
-    ;; than ship an unproven change to a foundational file-read primitive.
+    ;; (History: a single read of `8388608 - n0' bytes used to be taken as the
+    ;; whole rest of the file, which cut a 21.9 MiB `.neln' at ~8.3 MiB.  An
+    ;; earlier doubling attempt SIGSEGV'd; the st_size hint below sizes one
+    ;; buffer, and growth is only the fallback for a file longer than reported.)
     ;; Read to EOF, not "one more read".  A short `read' is NOT end of file:
     ;; the kernel is free to return less than asked, and /proc does so
     ;; routinely because it reports st_size 0 and generates its content a
@@ -38120,6 +38248,15 @@ extern arms in dynamic builds."
     ;; /proc/self/smaps -- the same mappings, more lines each -- stopped at 5
     ;; regions and 3,898 bytes, silently.  A caller reading its own smaps to
     ;; account for memory saw half its address space and no error.
+    ;; 2026-11-01 (crash1, B1): the buffer used to be a fixed 8 MiB and a full
+    ;; buffer ended the loop as if it were end of file, so every file or
+    ;; process output past 8388608 bytes came back silently truncated.  GNU's
+    ;; insert-file-contents takes the size from fstat, reads until `read'
+    ;; answers 0, and grows when the file is longer than reported (it
+    ;; reports 0 for /proc and may change while read).  The same here: the
+    ;; caller passes the st_size hint, the buffer is that size plus slack, and
+    ;; a full buffer is probed with a one-byte read -- 0 is end of file, any
+    ;; byte means more data, so the buffer doubles and the read continues.
     ;; Doc 215 word ABI: the string WORD read so far.  The tail call stays a tail call.
     (defun nl_bi_rf_read_loop_w (fd buf pos cap _pad)
       (let* ((room (- cap pos))
@@ -38127,13 +38264,36 @@ extern arms in dynamic builds."
         (if (< n 1)
             ;; n = 0 is EOF; n < 0 is an error, and keeping what was already
             ;; read matches how the single-read form behaved on a late error.
-            (nl_alloc_str_w buf pos 0)
+            ;; A full buffer (room < 1) is not EOF yet: see `nl_bi_rf_grow_w'.
+            (if (< room 1)
+                (nl_bi_rf_grow_w fd buf pos cap 0)
+              (nl_alloc_str_w buf pos 0))
           (nl_bi_rf_read_loop_w fd buf (+ pos n) cap 0))))
-    (defun nl_bi_rf_read_rest_w (fd head n0 _pad)
-      (let* ((buf (alloc-bytes 8388608 1)))
-        (seq
-         (nl_bi_rf_copy4k head buf n0)
-         (nl_bi_rf_read_loop_w fd buf n0 8388608 0))))
+    (defun nl_bi_rf_grow_w (fd buf pos cap _pad)
+      (let* ((probe (alloc-bytes 8 1))
+             (n (nl_os_read_file_handle fd probe 1)))
+        (if (< n 1)
+            (nl_alloc_str_w buf pos 0)
+          (let* ((cap2 (* cap 2))
+                 (nbuf (alloc-bytes cap2 1)))
+            (if (= nbuf 0)
+                (seq (wf_bytecode_root_exhausted) 0)
+              (seq
+               (nl_bi_rf_copy4k buf nbuf pos)
+               (ptr-write-u8 nbuf pos (heap-read-u8 probe 0))
+               (nl_bi_rf_read_loop_w fd nbuf (+ pos 1) cap2 0)))))))
+    ;; HINT is st_size (0 when unknown or reported as 0): the buffer is sized
+    ;; to the file plus 64 KiB of slack, or the legacy 8 MiB when there is no
+    ;; hint, instead of 8 MiB for every file past 4 KiB.
+    (defun nl_bi_rf_read_rest_w (fd head n0 hint)
+      (let* ((want (if (< hint 1) 8388608 (+ hint 65536)))
+             (cap (if (< want (+ n0 1)) (+ n0 1) want))
+             (buf (alloc-bytes cap 1)))
+        (if (= buf 0)
+            (seq (wf_bytecode_root_exhausted) 0)
+          (seq
+           (nl_bi_rf_copy4k head buf n0)
+           (nl_bi_rf_read_loop_w fd buf n0 cap 0)))))
     ;; A file that could not be opened answers nil, NOT the empty string.
     ;; `rdf' handing back "" made a missing file indistinguishable from an
     ;; empty one: `bf_load' reported success for a path that does not exist
@@ -38144,7 +38304,7 @@ extern arms in dynamic builds."
     ;; file-missing (measured 2026-09-04, v1.2.0 parity gap 5).
     ;; Doc 215 word ABI: the file contents WORD; a missing file answers nil (3),
     ;; never 0, exactly as the legacy form answered rc 0 with a nil OUT.
-    (defun nl_bi_rf_withfd_w (fd buf _pad)
+    (defun nl_bi_rf_withfd_w (fd buf hint)
       (if (< fd 0)
           3
         (let* ((n (nl_os_read_file_handle fd buf 4096))
@@ -38153,7 +38313,7 @@ extern arms in dynamic builds."
                       ;; short-but-positive first read continues into the loop, because
                       ;; short does not mean finished -- see `nl_bi_rf_read_loop'.
                       (nl_alloc_str_w buf 0 0)
-                    (nl_bi_rf_read_rest_w fd buf n 0))))
+                    (nl_bi_rf_read_rest_w fd buf n hint))))
           (seq (nl_os_close_handle fd) w))))
     (defun nl_bi_rf_withfd (fd buf out)
       (nl_abi_word_to_rc (nl_bi_rf_withfd_w fd buf 0) out))
@@ -38163,8 +38323,12 @@ extern arms in dynamic builds."
       (let* ((path_sx (wf_arg_ptr args 0)))
         (let* ((cpath (nl_bi_make_cpath path_sx))
                (buf (alloc-bytes 4096 1))
-               (fd (nl_os_open_read cpath)))
-          (nl_bi_rf_withfd_w fd buf 0)))
+               (fd (nl_os_open_read cpath))
+               ;; st_size (x86_64 offset 48) into BUF, which the first read
+               ;; overwrites; unknown or absurd sizes mean no hint.
+               (rc (if (< fd 0) -1 (nl_os_stat_path cpath buf)))
+               (size (if (< rc 0) 0 (heap-read-u64 buf 48))))
+          (nl_bi_rf_withfd_w fd buf (if (> size 17179869184) 0 size))))
         ))
     (defun nl_bi_read_file (args out)
       (nl_abi_word_to_rc (nl_bi_read_file_w args 0) out))

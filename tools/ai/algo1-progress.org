@@ -1,0 +1,89 @@
+#+TITLE: Algorithmic and implementation-shape gaps in sequence, JSON, float and printer functions (algo1)
+#+NOTE: Created after the overlay code was written (the ledger should have come first); the criteria below are what the lane claims. Run with ELN_PROGRESS_BIN=<repo>/target/algo1-build/dynamic/nelisp-dynamic. Red logs are from the v17 baseline.
+
+* S1 Causes (evidence)
+
+** S1.1 Causes measured on v17 and recorded (seq-uniq quadratic, interpreted memql, JSON option paths, 17-digit float bignum path, non-ASCII printer decline, printer/reader already linear)
+evidence: target/algo1/CAUSES.md sha256=155e86b28e459099f0e350392a35d68e61912f4dbcc93d13a17e40d5dcbbfe77
+
+** S1.2 Baseline is red on the seq/cl corpus (seq-uniq TESTFN argument order and nil quirk) and on the scaling check (seq-uniq/cl-union ratio 14 to 16)
+evidence: target/algo1/red/seqcl-corpus.log sha256=7450a27387bf95f4403edaa9ee3590d0fc527166a581751672e2092a819b95cd
+evidence: target/algo1/red/scaling-seqcl.log sha256=e5677c2aa1eaf22fa400bf8ea157f61d0a9d46f8cad4a18d261672a3dae75777
+
+** S1.3 Baseline is red on per-call cost (17-digit float 270 us, non-ASCII prin1 98 us, memql 600 us) and on the JSON corpus (unibyte results, lowercase hex)
+evidence: target/algo1/red/speed.log sha256=e57f79d5070a7c66c7e1170c3086483d5fa5dc4d89a135dcc3e851c7630063da
+evidence: target/algo1/red/json-corpus.log sha256=80d84596b24dc27d560da424aac1b9d9c3a0280fcd595e0522b6df98363f21c2
+
+** S1.4 Printer and reader scaling is already linear on v17 (so no size-dependent defect to fix there)
+evidence: target/algo1/red/scaling-prn-baseline.log sha256=603d28038db143c6e9f39562262cff88695f32dbbd7f5f45a5be513f3513bd0c
+
+** S1.5 Baseline json.el layer is red against GNU json.el (arrays as lists, json-object-type ignored: 47 of 126 cases differ)
+evidence: target/algo1/red/jsonel-corpus.log sha256=bf682cb2e2736788715013739259b650f49ca490b2fea8594b31fb4f3370ee5f
+
+* S2 Fix with red/green and GNU parity
+#+NOTE: S2 checks need the algo1 build (ELN_PROGRESS_BIN) and /usr/local/bin/emacs 31.1 for the GNU side.
+
+** S2.1 seq-uniq / memql / cl-adjoin / cl-union corpus equals GNU (100 cases)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN seqcl
+
+** S2.2 seq-uniq (list) and cl-union scale linearly (ratio below 8 for 4x input; v17 14 to 16)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 280
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN scaling-seqcl
+
+** S2.3 JSON corpus (620 cases: ten option sets x parse, serialize, json-parse-buffer, errors) equals GNU except the 13 known pre-existing error-data cases
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 250
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN json
+
+** S2.4 JSON parse and serialize scale linearly (eight rows, ratio below 8)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 280
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN scaling-json
+
+** S2.5 Float corpus (1836 decimal strings incl. exact halfway cases and long digit strings) reads to the same doubles as GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 250
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN float
+
+** S2.6 Printer corpus (658 cases: strings of every kind through prin1, %S, %s, nested, print variables) equals GNU except the 34 known pre-existing unibyte cases
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 250
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN prn
+
+** S2.7 Per-call cost: 17-digit float parse, non-ASCII prin1 and %S, memql scan under their limits
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN speed
+
+** S2.8 Printer and reader stay linear (sixteen rows)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 280
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN scaling-prn
+
+** S2.9 json.el layer (json-read-from-string with json-array-type / json-object-type / json-key-type, json-encode) equals GNU json.el on 126 cases (vector arrays by default)
+#+NOTE: validated by loading the edited shim source over the build-2 binary (the shim changed after build 2: array default flipped to vector and the key-type test relaxed); the fast parser it calls is in the build.
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/algo1/check.sh $ELN_PROGRESS_BIN jsonel
+
+* S3 Integrated build
+** S3.1 One integrated build (rc 0) and the standard fixtures (weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21)
+#+NOTE: Two build attempts: a duplicate launch collided on file locks (rc 255, aborted), the second finished rc 0 in 1306 s (build 1: it carried a slower JSON encoder and the printer flag defect); build 2 (rc 0, 1089 s) is the shipped binary target/algo1-build/dynamic/nelisp-dynamic.
+cmd: tail -n 1 target/algo1-build/dynamic/build.log | grep -q '^BUILD rc=0'
+evidence: target/algo1/logs/fixtures.log sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+
+** S3.2 gnu-speed-win-check passes and the prelink closure is inside the F1 policy (353 records, at most 384; root evidence at most 98,304)
+cmd: sh tools/ai/algo1/s32-prelink.sh
+evidence: target/algo1/logs/win-check.log sha256=b32265853578f82ac187eb7e4a744cc8c3470b734ba4071e3a00519156cabf8a
+
+* S4 Timing
+** S4.1 Paired timing (v17, algo1, GNU on CPU 14, 3 reps, 7 for the repeated rows) recorded for 20 survey3 rows and the regression rows
+#+NOTE: hl-cl-remove-if cannot be timed on v17 or algo1: the driver fails with invalid-function (cl-remove-if) on both (autoloaded cl-seq function called from a defun; v17 regression, not part of this lane).
+evidence: target/algo1/timing/SUMMARY.md sha256=6421658cbc874c03731196c2cec51693d4c62d88850aeaa34f80fcf674cb283e
+
+** S4.2 Regression rows within 3 percent of v17 and the fixed rows at most 0.65 of v17
+#+NOTE: KNOWN RED: r3-mix 1.041 (reg-sum-bc 1.026 passes). Every algo1 sample of r3-mix and reg-sum-bc sits above the v17 median although only bytecode loops run in those rows (no changed code executes): a 2 to 4 percent layout effect of the algo1 binary, same sign on hl-seq-filter 1.03 and rp-prin1-nest 1.037. Not fixed; no build left.
+cmd: sh tools/ai/algo1/s41.sh

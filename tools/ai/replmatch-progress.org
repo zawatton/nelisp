@@ -1,0 +1,38 @@
+#+TITLE: replace-match linear scaling (replmatch)
+#+NOTE: run with ELN_PROGRESS_BIN=<repo>/target/replmatch-build/dynamic/nelisp-dynamic
+
+* S1 Root cause
+
+** S1.1 replace-match leaves no markers in the buffer marker list (cause: match-data allocates 2 markers per group)
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: $ELN_PROGRESS_BIN --load tools/ai/replmatch/markers.el
+
+* S2 Fix
+
+** S2.1 Scaling check: time ratio n=4k/n=1k is below 8 (linear about 4, quadratic 16)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/replmatch/check.sh $ELN_PROGRESS_BIN scaling
+
+** S2.2 replace-match corpus (buffer and string forms, literal, fixedcase, subexp, back-references, case) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+cmd: sh tools/ai/replmatch/check.sh $ELN_PROGRESS_BIN corpus
+
+* S3 Integration
+
+** S3.1 One integrated build passes fixtures (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21)
+evidence: target/replmatch/fixtures.out sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+
+** S3.2 End-to-end: gnu-speed-win-check passes on the integrated build
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $ELN_PROGRESS_BIN
+
+* S4 Timing
+
+** S4.1 Paired timing vs v16 and GNU recorded (replace-match rows, reg-sum-bc, r3-mix)
+evidence: target/replmatch/timing/rm-bc-small/report.json sha256=ccc512dc2d877f611605f5072f413910c6c8c9da2252f155a0ba5356c353ef54
+evidence: target/replmatch/timing/rm-i-small/report.json sha256=08f3bde8913b4cb7221a74f4e000230eba516732ade1f049b21192d22979324c
+evidence: target/replmatch/timing/rm-bc-big/report.json sha256=0b6b0e0f7e1f31ee766897bff37fc5f0cb7b7598cbfd4147cba5e9485b7ca23d
+evidence: target/replmatch/timing/reg-sum-bc/report.json sha256=985fb58bd348b91588176bc29504224143b8f356bf0591bc326d1417ea416bcb
+evidence: target/replmatch/timing/r3-mix/report.json sha256=ac89264fab39d5407ea99e45d73c9213fa96b64b0e653286ecfebe29cbd9d005

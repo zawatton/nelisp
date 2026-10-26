@@ -1,0 +1,61 @@
+#+TITLE: gcauto: automatic GC reclaims large garbage (survey3 A3)
+
+* S1 Cause with evidence
+
+** S1.1 baseline: 100x read-from-string of a 99 KB string exceeds 2 GB RSS
+#+REQUIRES: BASE_BIN
+cmd: python3 target/gcauto/check.py "$BASE_BIN" target/gcauto/repro/r1.el gt 2000 99
+
+** S1.2 baseline: 5000 mid-buffer inserts in a 1M-char buffer does not complete under the cap
+#+REQUIRES: BASE_BIN
+cmd: ! python3 target/gcauto/check.py "$BASE_BIN" target/gcauto/repro/r2.el lt 1000000
+
+** S1.3 gdb evidence: the fx interpreter loop makes no GC poll (hit counts recorded)
+evidence: target/gcauto/evidence/s1-cause.txt sha256=581ef72b28d80ffccae168fb48da5b68d3744ab2b1b3fffeb470bbd5cfddefe0
+
+** S1.4 REPORT.md names the root cause (fx interpreter has no safepoint)
+cmd: grep -q "m5_fx_run_body" target/gcauto/REPORT.md
+
+* S2 Fix with red/green checks
+
+** S2.1 patch file applies to git HEAD (dry-run)
+cmd: d=$(mktemp -d) && mkdir -p $d/scripts && git show HEAD:scripts/nelisp-standalone-build.el > $d/scripts/nelisp-standalone-build.el && (cd $d && patch -p1 --dry-run < $OLDPWD/target/gcauto/gcauto.patch) ; rc=$?; rm -rf $d; exit $rc
+
+** S2.2 fixed: read-from-string repro stays under 700 MB
+#+REQUIRES: FIXED_BIN
+cmd: python3 target/gcauto/check.py "$FIXED_BIN" target/gcauto/repro/r1.el lt 700 99
+
+** S2.3 fixed: mid-buffer insert repro completes under 1 GB
+#+REQUIRES: FIXED_BIN
+cmd: python3 target/gcauto/check.py "$FIXED_BIN" target/gcauto/repro/r2.el lt 1000
+
+** S2.4 fixed: string concat growth loop completes under 1 GB
+#+REQUIRES: FIXED_BIN
+cmd: python3 target/gcauto/check.py "$FIXED_BIN" target/gcauto/repro/r3.el lt 1000
+
+** S2.5 end-to-end: the GNU-parity corpus (c1, c2) prints byte-identical output to GNU on the fixed binary
+#+REQUIRES: FIXED_BIN
+#+TIMEOUT: 120
+cmd: for c in c1 c2; do (ulimit -v 8388608; timeout 100 "$FIXED_BIN" --load target/gcauto/corpus/$c.el > /tmp/gcauto-$c.out 2>&1); cmp -s /tmp/gcauto-$c.out target/gcauto/corpus/$c.gnu || exit 1; done
+
+* S3 Integrated build and fixtures
+
+** S3.1 one integrated build completes (BUILD rc=0, prelink records 353 <= 384)
+cmd: grep -q "^BUILD rc=0" target/gcauto-build/dynamic/build.log && f=$(grep -rl PRELINK_F1_BOUNDARY_PASS target/gcauto-build/dynamic/src/target | head -1) && python3 -c "import json,sys; sys.exit(0 if json.load(open('$f'))['records'].__len__() <= 384 else 1)"
+
+** S3.2 weak fixture 24/24
+cmd: grep -q "weak 24/24 PASS" target/gcauto/fixtures.log
+
+** S3.3 GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21, gnu-speed-win-check
+cmd: grep -q "GNU 56/56 PASS" target/gcauto/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/gcauto/fixtures.log && grep -q "buffer 21/21 PASS" target/gcauto/fixtures.log && ! grep -q FAIL target/gcauto/gsw.log && grep -q "closurevm: PASS" target/gcauto/gsw.log
+
+** S3.4 end-to-end: fixtures report.json says EXPECTED_BASELINE_RED_REMAINS with no regression
+cmd: python3 -c "import json,sys; d=json.load(open('target/gcauto/fixtures/report.json')); sys.exit(0 if d['status']=='EXPECTED_BASELINE_RED_REMAINS' and d['regression'] is False else 1)"
+
+* S4 Paired timing
+
+** S4.1 reg-sum-bc, r3-mix, s6-cons1, s6-vec4, p-mapc-car paired vs v17 and GNU (table recorded)
+evidence: target/gcauto/timing-table.md sha256=22a8108e6597613dcb785c6515ec95b3e6b13bad854194b4255593e5078552dc
+
+** S4.2 end-to-end: no regression row is more than 3 percent slower than v17 (KNOWN RED: s6-vec4 +8 percent, cause unresolved: poll counts show it is not GC frequency)
+cmd: python3 target/gcauto/timing-agg.py --max-ratio 1.03 > /dev/null

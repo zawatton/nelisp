@@ -1,0 +1,112 @@
+#+TITLE: crash1: 8 MiB read truncation (B1), sort >= 131072 segfault (A1), string-replace 120k segfault (A2)
+#+NOTE: run with ELN_PROGRESS_BIN=<repo>/target/crash1-build/dynamic/nelisp-dynamic and ELN_V17_BIN=<resume tree>/target/integ-1034-build/dynamic/nelisp-dynamic
+#+NOTE: GNU Emacs C source (sort.c, fileio.c) is not vendored: the GNU behaviour is reasoned from documented behaviour and measured on /usr/local/bin/emacs 31.1; string-replace follows vendor/staged-emacs-lisp/subr.el.
+#+NOTE: GNU 31.1 itself segfaults intermittently on a keyed sort whose KEY allocates (3 of 4 runs), so sortgc is checked against a bucket oracle, not GNU.
+
+* S1 Root cause (on the v17 baseline)
+
+** S1.1 A1: sort dies exactly where two 16-byte-per-element frames overflow the 4 MiB root stack (131000 ok, 131072 rc 139, list and vector)
+#+REQUIRES: ELN_V17_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/crash1/cause.sh $ELN_V17_BIN sort
+
+** S1.2 A2: string-replace is an O(n^2) per-character concat loop; 120k chars die under the cap while apply/concat of 1M pieces is fine
+#+REQUIRES: ELN_V17_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/crash1/cause.sh $ELN_V17_BIN replace
+
+** S1.3 B1: reads stop at a fixed 8388608-byte scratch buffer, identical cutoff under a 4 GiB cap (not the cap); call-process goes through insert-file-contents
+#+REQUIRES: ELN_V17_BIN
+#+TIMEOUT: 200
+cmd: sh tools/ai/crash1/cause.sh $ELN_V17_BIN file
+
+** S1.4 End-to-end: all three defects reproduce on v17 in one run
+#+REQUIRES: ELN_V17_BIN
+#+TIMEOUT: 400
+cmd: sh tools/ai/crash1/cause.sh $ELN_V17_BIN all
+
+* S2 Fix (red on v17, green on the crash1 binary, equal to GNU)
+
+** S2.1 string-replace corpus (25 cases incl. 120k, 480k, 100k pieces, eq-ness, errors, multibyte, properties) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN replace
+
+** S2.2 sort corpus (57 cases: semantics, :key/:lessp/:reverse/:in-place, errors, 100k to 560k list and vector, stability with ties) equals GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN sort
+
+** S2.3 sort with allocating and collecting predicate/key at 140k and 560k, list and vector, equals the bucket oracle
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN sortgc
+
+** S2.4 insert-file-contents of 0 B to 50 MB (ASCII and UTF-8, around 8 MiB, 4 KiB) matches the file's md5 and size
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN ifc
+
+** S2.5 insert-file-contents-literally of 9 MB and 20 MB binary files matches md5 and size
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN literal
+
+** S2.6 call-process "cat" output of 0 B to 50 MB matches md5 and size
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN callproc
+
+** S2.7 st_size 0 input (pipe via /dev/stdin) of 8388607, 8388608, 8388609, 20000000, 50000000 bytes is read in full (grow path)
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN stdin
+
+** S2.8 ordinary small-file reads (0, 1, 4095, 4096, 4097 bytes, partial, missing file, directory) still equal GNU
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN small
+
+** S2.9 End-to-end: every large case (sort 2M, string-replace 2M matches, 50 MB reads) completes under the 8 GiB cap; peak RSS rows recorded
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/rss.sh $ELN_PROGRESS_BIN meter
+
+* S3 Integration
+
+** S3.1 One integrated build passes the fixtures (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21)
+evidence: target/crash1/fixtures/report.json sha256=6f9f72c0f3101b5eccce2621e6b92c73eac35940dbda6105ca47172cdb6d0401
+
+** S3.2 F1 prelink records stay <= 384 (353)
+cmd: python3 -I -c "import json,glob,sys;f=glob.glob('target/crash1-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json');n=len(json.load(open(f[0]))['records']);print(n);sys.exit(0 if n<=384 else 1)"
+
+** S3.3 gnu-speed-win-check passes on the integrated build
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $ELN_PROGRESS_BIN
+
+** S3.4 End-to-end: every crash1 check (small, replace, sort, sortgc, ifc, literal, callproc, stdin) passes on the integrated binary in one run
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/crash1/check.sh $ELN_PROGRESS_BIN all
+
+* S4 Timing (CPU 9, paired, 7 reps, engines v17 / crash1 / gnu)
+
+** S4.1 Paired timing: sort 10k and 100k vs v17 and GNU, 20 MB insert-file-contents vs GNU
+#+NOTE: sort10k 1.014x v17 (1/7 faster), sort100k 1.013x v17 (4/7); GNU 0.86x and 0.69x of v17. ifc20m crash1 19.0 ms vs GNU 25.6 ms per 20 MB (v17 cannot run it: it reads 8 MiB).
+evidence: target/crash1/timing/sort10k/report.json sha256=866b71633334d175f734715288649af9d1d36044ad143e73c430f607e1c6ed5e
+evidence: target/crash1/timing/sort100k/report.json sha256=21d9eded4c6f5b8649487498778d66497d2870aab135ed798ef9c13ea819df8f
+evidence: target/crash1/timing/ifc20m/report.json sha256=a0389181698bae4f4ccce02ead78908ba9f03a648cc5eaee48c077d2ff5d6461
+
+** S4.2 Regression rows reg-sum-bc and r3-mix vs v17
+#+NOTE: reg-sum-bc 31.79 vs 31.76 ns/step (1.001x); r3-mix 1433 vs 1437 ns/step (0.997x).
+evidence: target/crash1/timing/reg-sum-bc/report.json sha256=556bc13dc28a39a817c5e3cba705f07cc7d44685a2574b13593f55cf68060372
+evidence: target/crash1/timing/r3-mix/report.json sha256=dd5384c9043f03dba5a537b7e0b8f1eadb495dff8196d8992a626fb651696213
+
+** S4.3 Peak RSS rows for the large cases recorded for GNU, v17 and the crash1 binary
+evidence: target/crash1/rss-nl.txt sha256=726fa61f3e70513cc50825a847ab49f20881f5f603ec30a888a856a2e212704b
+evidence: target/crash1/rss-gnu.txt sha256=25a46adcf4ce83bc56c28a1584d124af9f9b89f0a4c600ce4e7eb9f598a98d79
+evidence: target/crash1/rss-v17.txt sha256=e5fbdc1b8a35616d4d73c29afea1cf7467bd0e2628df6d31f183a27ec9134ef8
+
+** S4.4 End-to-end: all timing rows ran to completion with checked, equal results on every engine (no abort)
+cmd: for r in sort10k sort100k ifc20m reg-sum-bc r3-mix; do grep -q "^$r rc=0" target/crash1/timing.log || exit 1; done

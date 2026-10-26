@@ -56,7 +56,10 @@ Circular REUSE is refused rather than reproducing GNU's nonterminating loop."
     (setq nelisp-stdlib-match-state--context-caps nlre--last-caps
           nelisp-stdlib-match-state--context-buffer buffer)
     (when reseat
-      (dolist (value data) (when (markerp value) (set-marker value nil))))
+      (let ((cell data))
+        (while (consp cell)
+          (when (markerp (car cell)) (set-marker (car cell) nil) (setcar cell nil))
+          (setq cell (cdr cell)))))
     nil))
 (defun nelisp-stdlib-match-state--data (&optional integers reuse reseat)
   "Return a GNU-shaped view of the actual shared capture vector.

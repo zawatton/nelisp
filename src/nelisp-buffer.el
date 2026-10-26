@@ -404,12 +404,57 @@ The character before POS sits at POS - 2 in the 0-based string."
 ;; list.  Every mutation path (insert / delete / erase) walks all
 ;; three registries so position-following invariants hold.
 
+;; markgc: GNU keeps each buffer's markers on a chain that is not a GC root
+;; (`BUF_MARKERS'; `sweep_markers' unchains the unmarked ones).  The `markers'
+;; slot is the same thing here: nil, or an `eq' hash table with weak keys whose
+;; keys are the buffer's markers.  A marker nothing else references is reclaimed
+;; by the collector and leaves the table with it, so dropped markers (the ones
+;; `match-data', `copy-marker' and `point-marker' return) stop costing every edit.
+(defun nelisp-buffer--marker-table (buf)
+  "Return BUF's marker table, or nil.  Weak sweeps unlink dead entries but do
+not shrink the table, so an empty one is dropped and a sparse one rebuilt here;
+otherwise every later edit would walk the capacity left by markers long dead."
+  (let ((tbl (nelisp-buffer-markers buf)))
+    (when tbl
+      (let ((n (hash-table-count tbl)) (cap (hash-table-size tbl)))
+        (cond
+         ((= n 0) (setf (nelisp-buffer-markers buf) nil) nil)
+         ((and (> cap 64) (> cap (* 8 n)))
+          (let ((new (make-hash-table :test 'eq :weakness 'key)))
+            (maphash (lambda (k _v) (puthash k t new)) tbl)
+            (setf (nelisp-buffer-markers buf) new)))
+         (t tbl))))))
+
+(defmacro nelisp-buffer--do-markers (spec &rest body)
+  "Run BODY with (car SPEC) bound to each marker of the buffer (cadr SPEC)."
+  (let ((tbl (make-symbol "tbl")))
+    `(let ((,tbl (nelisp-buffer--marker-table ,(car (cdr spec)))))
+       (when ,tbl
+         (maphash (lambda (,(car spec) _v) ,@body) ,tbl)))))
+
+(defun nelisp-buffer--marker-list (buf)
+  "Return BUF's chained markers as a fresh list (introspection and tests)."
+  (let (out) (nelisp-buffer--do-markers (m buf) (push m out)) out))
+
+(defun nelisp-buffer--chain-marker (buf marker)
+  "Add MARKER to BUF's marker chain."
+  (let ((tbl (nelisp-buffer-markers buf)))
+    (unless tbl
+      (setq tbl (make-hash-table :test 'eq :weakness 'key))
+      (setf (nelisp-buffer-markers buf) tbl))
+    (puthash marker t tbl)))
+
+(defun nelisp-buffer--unchain-marker (buf marker)
+  "Remove MARKER from BUF's marker chain."
+  (let ((tbl (nelisp-buffer-markers buf)))
+    (when tbl (remhash marker tbl))))
+
 (defun nelisp-buffer--shift-markers-on-insert (buf at inserted-len)
   "Advance markers at or past AT by INSERTED-LEN.
 Markers strictly before AT are untouched.  A marker exactly at AT
 advances only when its `insertion-type' is non-nil (Emacs
 semantics)."
-  (dolist (m (nelisp-buffer-markers buf))
+  (nelisp-buffer--do-markers (m buf)
     (when (nelisp-marker-p m)
       (let ((pos (nelisp-marker-position m)))
         (cond
@@ -420,7 +465,7 @@ semantics)."
 (defun nelisp-buffer--shift-markers-on-delete (buf start end)
   "Collapse markers inside [START, END] to START, shift markers past END."
   (let ((delta (- end start)))
-    (dolist (m (nelisp-buffer-markers buf))
+    (nelisp-buffer--do-markers (m buf)
       (when (nelisp-marker-p m)
         (let ((pos (nelisp-marker-position m)))
           (cond
@@ -621,7 +666,7 @@ inserts costs one concat."
     ;; by `nelisp-point' as if still valid -- out of range for the now-
     ;; empty buffer.
     (setf (nelisp-buffer-pend b) nil)
-    (dolist (m (nelisp-buffer-markers b))
+    (nelisp-buffer--do-markers (m b)
       (when (nelisp-marker-p m)
         (setf (nelisp-marker-position m) 1)))
     (dolist (o (nelisp-buffer-overlays b))
@@ -705,7 +750,7 @@ position; nil keeps it put."
   (let ((m (nelisp-marker--make :buffer buf
                                 :position pos
                                 :insertion-type insertion-type)))
-    (push m (nelisp-buffer-markers buf))
+    (nelisp-buffer--chain-marker buf m)
     m))
 
 (defun nelisp-set-marker (marker pos &optional buf)
@@ -715,8 +760,7 @@ into the new one.  POS nil detaches the marker from its buffer."
   (cond
    ((null pos)
     (when-let* ((old (nelisp-marker-buffer marker)))
-      (setf (nelisp-buffer-markers old)
-            (delq marker (nelisp-buffer-markers old))))
+      (nelisp-buffer--unchain-marker old marker))
     (setf (nelisp-marker-buffer marker) nil)
     (setf (nelisp-marker-position marker) 1))
    (t
@@ -724,12 +768,10 @@ into the new one.  POS nil detaches the marker from its buffer."
       (unless target (error "nelisp-set-marker: no target buffer"))
       (when (and (nelisp-marker-buffer marker)
                  (not (eq target (nelisp-marker-buffer marker))))
-        (setf (nelisp-buffer-markers (nelisp-marker-buffer marker))
-              (delq marker (nelisp-buffer-markers
-                            (nelisp-marker-buffer marker))))
-        (push marker (nelisp-buffer-markers target)))
+        (nelisp-buffer--unchain-marker (nelisp-marker-buffer marker) marker)
+        (nelisp-buffer--chain-marker target marker))
       (unless (nelisp-marker-buffer marker)
-        (push marker (nelisp-buffer-markers target)))
+        (nelisp-buffer--chain-marker target marker))
       (setf (nelisp-marker-buffer marker) target)
       (setf (nelisp-marker-position marker) pos))))
   marker)
@@ -737,8 +779,7 @@ into the new one.  POS nil detaches the marker from its buffer."
 (defun nelisp-marker-delete (marker)
   "Unlink MARKER from its buffer's marker list.  Returns nil."
   (when-let* ((b (nelisp-marker-buffer marker)))
-    (setf (nelisp-buffer-markers b)
-          (delq marker (nelisp-buffer-markers b))))
+    (nelisp-buffer--unchain-marker b marker))
   (setf (nelisp-marker-buffer marker) nil)
   nil)
 

@@ -1,0 +1,58 @@
+#+TITLE: rx2 regexp and search size-dependent costs
+# Env: RX2_BASE = v17 baseline binary, RX2_BIN = the rx2 build.  Run from the worktree root.
+
+* S1 Causes with evidence
+
+** S1.1 string-match with a group or multibyte subject: quick-reject scanned from 0, anchored-reject read (aref s 0) and thrashed the char cursor
+#+REQUIRES: RX2_BASE
+#+TIMEOUT: 280
+cmd: tools/ai/rx2/check-scaling.sh $RX2_BASE sm; test $? -ne 0
+
+** S1.2 buffer search after an edit rebuilt the whole buffer string; fold literal search rescanned the rarer case per candidate
+#+REQUIRES: RX2_BASE
+#+TIMEOUT: 560
+cmd: tools/ai/rx2/check-scaling.sh $RX2_BASE buf; test $? -ne 0
+
+* S2 Fix with red/green checks and GNU parity
+
+** S2.1 string-match scaling green (N vs 4N ratio <= 1.8 on 27 rows)
+#+REQUIRES: RX2_BIN
+#+TIMEOUT: 280
+cmd: tools/ai/rx2/check-scaling.sh $RX2_BIN sm
+
+** S2.2 buffer search scaling green (search/looking-at/backward near end, after edit, distance rows, loop)
+#+REQUIRES: RX2_BIN
+#+TIMEOUT: 560
+cmd: tools/ai/rx2/check-scaling.sh $RX2_BIN buf
+
+** S2.3 GNU parity corpus (quick set: 3314 forms, 5613 lines) identical to GNU 31.1 on the rx2 build
+#+NOTE: full set (cut points to 20000) was identical on every line completed (5600+ of ~7270) when this was recorded; it takes over an hour on the interpreter-heavy cases.
+evidence: target/rx2/parity-quick/summary.txt sha256=afa66e4c5ffb95314e36798e74de15bfca490dae0eb6f9a10e17c58652f11e2d
+
+** S2.4 40000-char re-search-forward loop completes under 20 s (PARITY A4: 19.3 s before, 4.7 s now)
+#+REQUIRES: RX2_BIN
+cmd: ( ulimit -v 8388608; timeout 50 $RX2_BIN --load tools/ai/rx2/a4-loop.el | grep -q '^A4-LOOP count=40000' )
+
+* S3 Integrated build and fixtures
+
+** S3.1 rx2 build exists
+#+REQUIRES: RX2_BIN
+cmd: test -x $RX2_BIN
+
+** S3.2 fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red), buffer 21/21
+evidence: target/rx2/fixtures/report.json sha256=9da6ad52b55fafa542f26b1ee0e0320ce2cd313887761edb41cff1632338668a
+
+** S3.3 gnu-speed-win-check passes and F1 prelink records <= 384 (353)
+#+REQUIRES: RX2_BIN
+cmd: ( ulimit -v 8388608; sh tools/ai/gnu-speed-win-check/check.sh $RX2_BIN > /dev/null 2>&1 ) && tools/ai/rx2/f1-check.sh target/rx2-build2/dynamic
+
+* S4 Paired timing and regression rows
+
+** S4.1 paired timing vs v17 and GNU recorded (10 rows, CPU 12, 5 reps)
+evidence: target/rx2/timing-table.md sha256=8f0d7a4233c9b476060b80d9b8a8d88f2d45e16aa41372123a6aca197299355f
+
+** S4.2 regression rows reg-sum-bc (1.015x) and r3-mix (1.059x) recorded; r3-mix over 5 percent, to be rechecked in the integrated build
+#+NOTE: r3-mix +5.9 percent is a known-red; kept as a failing check, not hidden.
+#+REQUIRES: RX2_BIN
+cmd: python3 -c "import json;e=json.load(open('target/rx2/timing/r3-mix/report.json'))['engines'];assert e['cand']['inner_ns_per_step']['median']<=1.05*e['base']['inner_ns_per_step']['median']"
+

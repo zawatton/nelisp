@@ -332,7 +332,10 @@
                              (let* ((digit (- b 48))
                                     (seen2 (if (= seen 1) 1
                                              (if (= digit 0) 0 1))))
-                               (seq (nlf_big_mul10_add p 0 cap digit)
+                               (seq (nlf_big_mul10_add p 0
+                                            ;; COUNT digits fill at most COUNT/9+1 words
+                                            (if (< (+ (/ count 9) 2) cap) (+ (/ count 9) 2) cap)
+                                            digit)
                                     (setq seen seen2)
                                     (if (= seen 1)
                                         (setq sig (+ sig 1)) 0)
@@ -526,6 +529,13 @@
                 ;; tie the wrong way and nlf_exact_fallback segfaulted in the
                 ;; reader (build b2), so those go to the bignum path; outside
                 ;; it Eisel-Lemire is used.
+                ;; 1 when MANT (non-negative) is not divisible by 5^K, else 0.
+                (defun nlf_not_div5 (mant k)
+                  (if (= k 0) 0
+                    (let* ((q (/ mant 5)))
+                      (if (= (- mant (* q 5)) 0)
+                          (nlf_not_div5 q (- k 1))
+                        1))))
                 (defun nlf_fast (mant net neg slot)
                   (let* ((sign (if (= neg 1) (shl 1 63) 0)))
                     (if (= mant 0)
@@ -538,7 +548,13 @@
                                        (f64-bits (f64-div (i64-to-f64 mant) (bits-to-f64 pb))))))
                             (seq (nl_write_float_bits slot (logior sign rb)) 1))
                         (if (and (>= net -27) (<= net 55))
-                            0
+                            ;; A decimal below 1 can be an exact halfway case only
+                            ;; when it is dyadic, i.e. MANT is divisible by 5^-NET.
+                            ;; Otherwise no tie exists and Eisel-Lemire (which still
+                            ;; declines when the 128-bit product is ambiguous) is exact.
+                            (if (and (< net 0) (= (nlf_not_div5 mant (- 0 net)) 1))
+                                (nl_lem_compute mant net neg slot)
+                              0)
                           (nl_lem_compute mant net neg slot))))))
                 (defun nl_str_to_float (bytes_ptr len slot)
                   (if (= len 0) (nl_stf_write_nil slot)
@@ -556,7 +572,7 @@
                        (t
                         (let* ((mem (alloc-bytes 32768 8))
                                (meta (+ mem 24576)))
-                          (seq (nlf_big_zero mem 0 1024)
+                          (seq (nlf_big_zero mem 0 (if (> len 120) 1024 16))
                                (if (= (nlf_t91_parse bytes_ptr len mem 1024 meta start) 1)
                                    (let ((net (+ (heap-read-u64 meta 24)
                                                  (- 0 (heap-read-u64 meta 8)))))
@@ -567,10 +583,14 @@
                                          1
                                      (if (> net 308)
                                          (nlf_t91_write_inf slot neg)
-                                       (nlf_t91_convert
-                                        mem 1024 slot neg net
-                                        (heap-read-u64 meta 8)
-                                        (heap-read-u64 meta 16) mem))))
+                                       ;; Only 16 words were cleared when LEN is at most 120
+                                       ;; (the parse touches COUNT/9+2 words); clear the rest
+                                       ;; before the bignum conversion reads them.
+                                       (seq (nlf_big_zero mem 16 (if (> len 120) 16 1024))
+                                            (nlf_t91_convert
+                                             mem 1024 slot neg net
+                                             (heap-read-u64 meta 8)
+                                             (heap-read-u64 meta 16) mem)))))
                                  (nl_stf_write_nil slot))))))))))))
 
 ;; The approximation path can double-round when the decimal mantissa exceeds

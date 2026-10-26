@@ -1,0 +1,15 @@
+;;; sort10k.el --- BENCH-CHECK driver: sort a 100k integer list N times  -*- lexical-binding: t -*-
+;; Works on GNU Emacs (-Q --batch -l) and NeLisp (--load).  The work is inside a defun.
+(defun crash1-mk (n)
+  (let ((x 12345) (acc nil))
+    (dotimes (_ n) (setq x (% (+ (* x 1103515245) 12345) 2147483648)) (push (% (/ x 16) 1000000) acc))
+    acc))
+(defun crash1-run (n lst)
+  (let ((r nil)) (dotimes (_ n) (setq r (sort (copy-sequence lst) #'<))) r))
+(let* ((n (string-to-number (getenv "BENCH_N"))) (size (string-to-number (or (getenv "BENCH_SIZE") "100000")))
+       (lst (crash1-mk size)))
+  (crash1-run 2 lst)
+  (let* ((start (float-time)) (r (crash1-run n lst)) (seconds (- (float-time) start)))
+    (unless (and (= (length r) size) (<= (car r) (cadr r))) (error "Wrong result"))
+    (princ (format "BENCH-CHECK n=%d result=%S elapsed=%.9f\n" n (list (length r) (car r) (car (last r))) seconds))))
+(kill-emacs 0)

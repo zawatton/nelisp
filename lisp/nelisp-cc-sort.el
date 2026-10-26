@@ -242,15 +242,37 @@
                      (ptr-write-u64 (nl_word_payload cur) 0 (heap-read-u64 data (* i 16)))
                      (setq cur (nl_cons_cdr_word cur)) (setq i (+ i 1))) sequence))
           (let* ((result 3) (root (m5_fx_arg_words env 1)) (i (- n 1)))
-            (seq (while (>= i 0)
-                   (seq (setq result (nelisp_cons_construct_w (heap-read-u64 data (* i 16)) result 0))
-                        (ptr-write-u64 root 0 result) (setq i (- i 1)))) result)))))
+            (if (= root 0) 0
+              (seq (while (>= i 0)
+                     (seq (setq result (nelisp_cons_construct_w (heap-read-u64 data (* i 16)) result 0))
+                          (ptr-write-u64 root 0 result) (setq i (- i 1)))) result))))))
+    ;; GNU's sort_list copies the elements into a Lisp vector (SAFE_ALLOCA_LISP
+    ;; above its stack limit), so the working array is a heap object that the
+    ;; collector traces and whose size is bounded only by memory.  The root
+    ;; stack is a fixed 4 MiB BSS region: two 16-byte-per-element frames
+    ;; overflowed it at n = 131072, m5_fx_arg_words answered 0 with memory-full
+    ;; stashed, and the stores through DATA = 0 raised SIGSEGV.  Above
+    ;; 4096 elements the array is one 4n-slot vector (DATA is
+    ;; slots 0..2n-1 as [value key] pairs, TEMP slots 2n..4n-1) rooted by one
+    ;; frame slot; allocation never collects and the collector does not move
+    ;; objects while a native frame is live, so the payload address is stable.
+    ;; A failed root frame answers 0 with its condition already stashed.
     (defun m5_sort_execute (sequence n key pred reverse inplace env)
-      (let* ((data (m5_fx_arg_words env (* n 2)))
-             (temp (if (>= n 64) (m5_fx_arg_words env (* n 2)) 0))
+      (let* ((big (if (> n 4096) 1 0))
+             (root (if (= big 1) (m5_fx_arg_words env 1) 0))
+             (store (if (= root 0) 0 (nl_w_vector_make (* n 4) 0)))
+             (data (if (= big 1) (+ (nl_word_payload store) 8)
+                     (m5_fx_arg_words env (* n 2))))
+             (temp (if (= big 1) (+ data (* n 16))
+                     (if (>= n 64) (m5_fx_arg_words env (* n 2)) 0)))
              (ca (m5_fx_arg_words env 4)) (cur sequence) (i 0) (ok 1)
              (fn 3) (mode 0))
+        (if (if (= ca 0) 1
+              (if (= big 1) (if (= store 0) 1 0)
+                (if (> n 0) (if (= data 0) 1 (if (>= n 64) (if (= temp 0) 1 0) 0)) 0)))
+            0
         (seq
+         (if (= big 1) (ptr-write-u64 root 0 store) 0)
          (if (> n 1)
              (seq
               (setq fn (if (or (= (nl_val_tag pred) 4) (= (nl_val_tag pred) 16))
@@ -287,7 +309,7 @@
                         (m5_sort_merge data temp 0 n pred mode env ca))) 0)
          (if (= ok 0) 0
            (seq (if (= reverse 1) (m5_sort_reverse data n) 0)
-                (m5_sort_result sequence data n inplace env))))))
+                (m5_sort_result sequence data n inplace env)))))))
     (defun m5_sort_option_count (options)
       (let* ((n 0))
         (seq (while (= (nl_val_tag options) 7)

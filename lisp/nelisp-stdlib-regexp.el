@@ -1884,6 +1884,19 @@ standalone VM does not admit, and the predicates below stay byte-code."
       (setq i (1+ i)))
     ok))
 
+(defun nlre--first-char-before (char string from to)
+  "Index of the first CHAR in STRING in [FROM, TO), or nil.
+A substring of a multibyte string with wide characters costs its start
+index, so such a string is read by index, which follows the string's
+char/byte cursor; any other string is cut and searched natively."
+  (if (and (multibyte-string-p string) (/= (length string) (string-bytes string)))
+      (let ((i from) (hit nil))
+        (while (and (not hit) (< i to))
+          (if (eq (aref string i) char) (setq hit i) (setq i (1+ i))))
+        hit)
+    (let ((r (nlre--literal-search (char-to-string char) (substring string from to) 0)))
+      (and r (+ from r)))))
+
 (defun nlre--literal-plan-match (plan string start n)
   (let ((needle (aref plan 1)) (fold (aref plan 2)))
     (if (not fold) (nlre--literal-search needle string start)
@@ -1893,22 +1906,33 @@ standalone VM does not admit, and the predicates below stay byte-code."
             ;; Standard ASCII folding has exactly the usual upper/lower pair;
             ;; reuse the native literal search instead of scanning each byte.
             (let* ((c (and (> m 0) (aref ascii 0)))
-                   (other (and c (nlre--flip-case c)))
-                   (exact (nlre--literal-search ascii string start)))
+                   (other (and c (nlre--flip-case c))))
               (if (= m 0) start
-                (while (and (not hit) (<= (+ pos m) n))
-                  (let ((p (nlre--literal-search (char-to-string c) string pos))
-                        (q (and (/= c other)
-                                (nlre--literal-search
-                                 (char-to-string other) string pos))) at)
-                    (setq at (cond ((null p) q) ((null q) p)
-                                   ((< p q) p) (t q)))
-                    (if (or (null at) (> (+ at m) n))
-                        (setq pos (1+ n))
-                      (if (or (eq at exact)
-                              (nlre--folded-text-equal-at-p needle string at n))
-                          (setq hit at)
-                        (setq pos (1+ at))))))
+                ;; P and Q are the next occurrences of the needle's first
+                ;; character in each case.  P is kept across candidates and
+                ;; searched again only once POS has passed it (:none: there
+                ;; is none).  While P exists Q is wanted only before it, so
+                ;; that search covers just [POS, P): scanning the rest of
+                ;; the subject for the rarer case on every candidate, as
+                ;; this once did, made each call cost the subject's length.
+                (let ((p nil) (q (if (= c other) :none nil))
+                      (cs (char-to-string c)) (os (char-to-string other)))
+                  (while (and (not hit) (<= (+ pos m) n))
+                    (let (at)
+                      (when (and (not (eq p :none)) (or (null p) (< p pos)))
+                        (setq p (or (nlre--literal-search cs string pos) :none)))
+                      (if (integerp p)
+                          (setq at (or (and (not (eq q :none)) (> p pos)
+                                            (nlre--first-char-before other string pos p))
+                                       p))
+                        (when (and (not (eq q :none)) (or (null q) (< q pos)))
+                          (setq q (or (nlre--literal-search os string pos) :none)))
+                        (setq at (and (integerp q) q)))
+                      (if (or (null at) (> (+ at m) n))
+                          (setq pos (1+ n))
+                        (if (nlre--folded-text-equal-at-p needle string at n)
+                            (setq hit at)
+                          (setq pos (1+ at)))))))
                 hit))
           (while (and (not hit) (<= (+ pos m) n))
             (if (nlre--folded-text-equal-at-p needle string pos n)
@@ -2053,10 +2077,19 @@ standalone VM does not admit, and the predicates below stay byte-code."
 ;; right case-fold state without this function re-binding anything.
 (defun nlre--atom-plan-match (plan string start n)
   (let ((node (aref plan 1)) (i start) hit)
-    (while (and (not hit) (< i n))
-      (if (and (or (null nlre--translate-table)
-                   (nlre--candidate-start-p (list node) string i))
-                  (nlre--match-atom1 node string i n)) (setq hit i) (setq i (1+ i))))
+    (if (and (eq (car node) :set) (null nlre--translate-table))
+        ;; The set test alone: `nlre--match-atom1' would add the consumption
+        ;; bound check (always true here, I < N = the limit) and a call per
+        ;; character to the same `nlre--set-node-match'.
+        (let ((unibyte (not (multibyte-string-p string))))
+          (while (and (not hit) (< i n))
+            (if (nlre--set-node-match node (aref string i) unibyte)
+                (setq hit i)
+              (setq i (1+ i)))))
+      (while (and (not hit) (< i n))
+        (if (and (or (null nlre--translate-table)
+                     (nlre--candidate-start-p (list node) string i))
+                 (nlre--match-atom1 node string i n)) (setq hit i) (setq i (1+ i)))))
     hit))
 
 (defun nlre--plan-set-caps (caps variant start end)
@@ -2068,11 +2101,22 @@ standalone VM does not admit, and the predicates below stay byte-code."
               (and span (cons (+ start (car span)) (+ start (cdr span))))))
       (setq i (1+ i)))))
 
+(defvar nlre--cap-track nil
+  "Non-nil while a windowed buffer search runs with a ceiling below its limit.
+Then `nlre--cap-refused' records any refusal caused by that ceiling alone.")
+(defvar nlre--cap-refused nil
+  "Set when the matcher declined a character that exists past the ceiling.")
+
 (defun nlre--can-consume-p (pos n)
   "Return non-nil when a character at POS is within the matcher bounds."
-  (< pos (if nlre--match-end-limit
-             (min n nlre--match-end-limit)
-           n)))
+  (if (< pos (if nlre--match-end-limit
+                 (min n nlre--match-end-limit)
+               n))
+      t
+    ;; A refusal only the ceiling caused: the real text goes on past it.
+    (when (and nlre--cap-track nlre--match-end-limit (< pos n))
+      (setq nlre--cap-refused t))
+    nil))
 
 (defun nlre--syntax-run-plan-match (plan string start n caps)
   "Match PLAN using live syntax classes and fill CAPS on success.
@@ -2147,7 +2191,10 @@ Does NOT continue to any rest (used for one repetition)."
              (let* ((from (car cap)) (len (- (cdr cap) from)) (end (+ pos len))
                     (lim (if nlre--match-end-limit (min n nlre--match-end-limit) n))
                     (i 0))
-               (and (<= end lim)
+               (and (or (<= end lim)
+                        (progn (when (and nlre--cap-track (<= end n))
+                                 (setq nlre--cap-refused t))
+                               nil))
                     (progn
                       (while (and (< i len)
                                   (let ((a (aref s (+ from i))) (b (aref s (+ pos i))))
@@ -2399,7 +2446,11 @@ of STRING.  Sets `nlre--match-data' as usual."
                      (> (length compiled) 7) (aref compiled 7))))
     (if (and quick
              (if (eq (aref quick 0) :missing)
-                 (not (string-search (aref quick 1) string))
+                 ;; A required character lies inside any match, so none can
+                 ;; start at or after I unless it occurs at or after I.
+                 ;; Searching from I (not 0) keeps the cost proportional to
+                 ;; the distance scanned, as GNU's search from START is.
+                 (not (string-search (aref quick 1) string i))
                (and (<= (aref quick 2) n)
                     (string-search (aref quick 1) string (aref quick 2)))))
         nil
@@ -2421,8 +2472,12 @@ of STRING.  Sets `nlre--match-data' as usual."
          (hit nil))
     (setq nlre--caps caps)
     (cond
-     ((and nlre--fold (> n 0) (>= (aref string 0) 128)
-           (not nlre--inhibit-search-fastmap) (not (multibyte-string-p string))
+     ;; Test the O(1) kind predicate before reading character 0: on a
+     ;; multibyte string the read moves the string's single char/byte
+     ;; cursor to the start, so the next access near START had to walk the
+     ;; whole prefix again on every call.
+     ((and nlre--fold (> n 0) (not nlre--inhibit-search-fastmap)
+           (not (multibyte-string-p string)) (>= (aref string 0) 128)
            (nlre--anchored-search-reject-p (aref compiled 0) (aref string 0)))
       nil)
      ;; A literal and a set run only need LIMIT (N without MAX-END): their
@@ -2612,6 +2667,13 @@ of STRING.  Sets `nlre--match-data' as usual."
 (defun nlre-match-data (&optional integers reuse reseat)
   "Return flattened match data for the last NeLisp regexp match."
   (when nlre--last-caps
+    ;; GNU RESEAT: the markers already in REUSE are detached, so they leave
+    ;; the buffer's marker chain at once instead of at the next collection.
+    (when (and reseat (consp reuse))
+      (let ((cell reuse))
+        (while (consp cell)
+          (when (markerp (car cell)) (set-marker (car cell) nil))
+          (setq cell (cdr cell)))))
     (let ((i 0) (n (length nlre--last-caps)) (out nil) (reuse-values reuse))
       ;; GNU omits unmatched groups beyond the last participating group.
       (while (and (> n 1) (null (aref nlre--last-caps (1- n))))
@@ -2621,11 +2683,7 @@ of STRING.  Sets `nlre--match-data' as usual."
           (dolist (pos (if span (list (car span) (cdr span)) '(nil nil)))
             (let ((value pos))
               (when (and pos nlre--last-buffer (not integers))
-                (let ((old (and reseat (consp reuse-values)
-                                (markerp (car reuse-values))
-                                (car reuse-values))))
-                  (setq value (set-marker (or old (make-marker)) pos
-                                          nlre--last-buffer))))
+                (setq value (set-marker (make-marker) pos nlre--last-buffer)))
               (setq out (cons value out)
                     reuse-values (and (consp reuse-values) (cdr reuse-values))))))
         (setq i (1+ i)))
@@ -2719,25 +2777,61 @@ MAX-END bounds match consumption; anchors still see all of STRING."
       (aset caps 0 (cons pos end))
       caps)))
 
+(defvar nlre--window-first 256
+  "Characters of buffer text a windowed search first copies past its start.")
+(defvar nlre--window-growth 8
+  "Factor by which a windowed search widens its window after a miss.")
+
+;; GNU searches the gap buffer in place (search.c, re_search_2 over the two
+;; text segments), so a search costs the distance it scans.  The buffer here
+;; is a pair of immutable strings, and a whole-buffer copy per call (once any
+;; edit has invalidated the memoized one) made every search O(buffer).  The
+;; windowed searches below hand the matcher only the text from one character
+;; before the start (for `^' and `\b') to one character past a ceiling CAP (for
+;; `$' and `\>'), and widen CAP geometrically while the answer might depend on
+;; text beyond it.  A hit is final only when the matcher never declined text
+;; past the ceiling (`nlre--cap-refused') and did not end on it; a miss below
+;; the real limit is retried.  The last window ends at the real limit, where
+;; this is the exact whole-text search of before.
+(defun nlre--window-search (regexp base limit pmin pmax first at-point)
+  "Search the buffer for REGEXP from BASE; match ends no later than LIMIT.
+PMIN and PMAX bound the accessible text.  With AT-POINT only a match
+starting at BASE counts (`looking-at').  FIRST is the first window's span.
+On success `nlre--last-caps' holds buffer positions and the result is
+non-nil; the caller owns `nlre--last-buffer' and restoring match data."
+  (let* ((wb (max pmin (1- base)))
+         (span first)
+         (cap (min limit (+ base span)))
+         (result nil) (done nil))
+    (while (not done)
+      (let* ((last (>= cap limit))
+             (text (funcall nlre--buffer-substring-function wb (min pmax (1+ cap))))
+             (nlre--cap-track (not last))
+             (nlre--cap-refused nil)
+             (hit (if at-point
+                      (let ((caps (nlre--match-at regexp text (- base wb) (- cap wb))))
+                        (when caps (setq nlre--last-caps caps) t))
+                    (nlre-string-match regexp text (- base wb) (- cap wb)))))
+        (if (and hit
+                 (or last
+                     (and (not nlre--cap-refused)
+                          (< (nlre-match-end 0) (- cap wb)))))
+            (setq result t done t)
+          (if last
+              (setq done t)
+            (setq span (* span nlre--window-growth)
+                  cap (min limit (+ base span)))))))
+    (when result (nlre--caps-offset wb))
+    result))
+
 (defun nlre--looking-at (regexp)
   (let* ((nlre--inhibit-search-fastmap t) (old-caps nlre--last-caps)
          (old-buffer nlre--last-buffer)
          (base (funcall nlre--point-function))
          (pmax (funcall nlre--point-max-function))
-         (pmin (funcall nlre--point-min-function))
-         ;; Index 0 of the text is always the start of the accessible text, so
-         ;; anchors and boundaries see the characters before point as GNU does.
-         ;; The whole-buffer string is the text when nothing is narrowed (its
-         ;; length tells); otherwise take the accessible part.
-         (text (and (= pmin 1) (buffer-string)))
-         (narrowed (or (null text) (/= pmax (1+ (length text)))))
-         (text (if narrowed (funcall nlre--buffer-substring-function pmin pmax) text))
-         (offset (if narrowed pmin 1))
-         (caps (nlre--match-at regexp text (- base offset) (- pmax offset))))
-    (if caps
+         (pmin (funcall nlre--point-min-function)))
+    (if (nlre--window-search regexp base pmax pmin pmax 128 t)
         (progn
-          (setq nlre--last-caps caps)
-          (nlre--caps-offset offset)
           (setq nlre--last-buffer (funcall nlre--current-buffer-function))
           t)
       (setq nlre--last-caps old-caps
@@ -2824,43 +2918,44 @@ The scan of REGEXP is memoized: it depends only on the pattern's text."
     ;; Each buffer primitive is a call into the buffer layer, so fetch point
     ;; and the extent once and track the search start locally between
     ;; repetitions instead of re-reading point after every goto-char.
+    (when (markerp bound) (setq bound (marker-position bound)))
+    (when (and bound (not (integerp bound)))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p bound)))
     (let* ((origin (funcall nlre--point-function))
            (pmax (funcall nlre--point-max-function))
            (pmin (funcall nlre--point-min-function))
-           (text (and (= pmin 1) (buffer-string)))
-           (narrowed (or (null text) (/= pmax (1+ (length text)))))
-           (text (if narrowed (funcall nlre--buffer-substring-function pmin pmax) text))
-           (offset (if narrowed pmin 1))
-           (left (or count 1)) (limit (or bound pmax)) result
+           (left (or count 1)) (limit (if bound (min bound pmax) pmax)) result
+           (found nil) (good nil)
            (base origin)
            (prepared-regexp (nlre--buffer-search-regexp regexp))
            (old-caps nlre--last-caps) (old-buffer nlre--last-buffer))
       (when (and bound (< bound origin))
         (signal 'error (list "Invalid search bound (wrong side of point)")))
       (while (> left 0)
-        (let ((hit (nlre-string-match
-                    prepared-regexp
-                    text
-                    (- base offset) (- limit offset))))
-          (if (null hit) (setq left 0 result nil)
-            (nlre--caps-offset offset)
-            (setq nlre--last-buffer (funcall nlre--current-buffer-function))
-            (setq base (nlre-match-end 0) left (1- left) result base)
-            ;; Another repetition follows: leave point where the search
-            ;; would have, as before.
-            (when (> left 0) (funcall nlre--goto-char-function base)))))
+        (if (null (nlre--window-search prepared-regexp base limit pmin pmax
+                                       nlre--window-first nil))
+            (setq left 0 result nil)
+          (setq nlre--last-buffer (funcall nlre--current-buffer-function))
+          (setq found t good nlre--last-caps)
+          (setq base (nlre-match-end 0) left (1- left) result base)
+          ;; Another repetition follows: leave point where the search
+          ;; would have, as before.
+          (when (> left 0) (funcall nlre--goto-char-function base))))
       (if result
           (progn (funcall nlre--goto-char-function result) result)
-        (setq nlre--last-caps old-caps
-              nlre--last-buffer old-buffer)
+        ;; GNU leaves the match data of the last repetition that succeeded
+        ;; when a later one fails (COUNT above 1); none succeeding leaves it.
+        (setq nlre--last-caps (if found good old-caps)
+              nlre--last-buffer (if found nlre--last-buffer old-buffer))
         (if noerror
             (progn (unless (eq noerror t) (funcall nlre--goto-char-function limit)) nil)
           (signal 'search-failed (list regexp)))))))
 
-(defun nlre--regex-last-match-before (regexp string lower max-end)
+(defun nlre--regex-last-match-before (regexp string lower max-end &optional from)
   "Return the rightmost (START . CAPS) match in STRING.
 LOWER is the minimum candidate start and MAX-END bounds match consumption.
-The full STRING remains visible to anchors and boundary assertions."
+The full STRING remains visible to anchors and boundary assertions.
+FROM, default MAX-END, is the first candidate start tried."
   (let* ((nlre--syntax-table nil)
          (nlre--fold case-fold-search)
          (nlre--translate-table (and case-fold-search
@@ -2872,7 +2967,7 @@ The full STRING remains visible to anchors and boundary assertions."
          (ng (aref compiled 1))
          (nodes (nlre--seq-nodes (aref compiled 0)))
          (caps (make-vector ng nil))
-         (pos max-end)
+         (pos (or from max-end))
          (result nil))
     (setq nlre--caps caps)
     (while (and (null result) (>= pos lower))
@@ -2941,6 +3036,30 @@ match one starting character at a time, as GNU Emacs 31.1 does."
         (setq nlre--last-buffer (funcall nlre--current-buffer-function))
         t))))
 
+(defun nlre--window-search-backward (regexp cursor lower pmin pmax)
+  "Return the start of the rightmost match of REGEXP at or before CURSOR.
+The match must start at or after LOWER and end at or before CURSOR; PMIN and
+PMAX bound the accessible text.  `nlre--last-caps' then holds the buffer
+positions of the match.  Returns nil, leaving the caps unspecified, if none."
+  (let* ((we (min pmax (1+ cursor)))
+         (span nlre--window-first)
+         (hi cursor) (result nil) (done nil))
+    (while (not done)
+      (let* ((lo (max lower (- hi span)))
+             (wb (max pmin (1- lo)))
+             (text (funcall nlre--buffer-substring-function wb we))
+             (found (nlre--regex-last-match-before
+                     regexp text (- lo wb) (- cursor wb) (- hi wb))))
+        (cond
+         (found
+          (setq nlre--last-caps (cdr found))
+          (nlre--caps-offset wb)
+          (setq result (+ wb (car found)) done t))
+         ((<= lo lower) (setq done t))
+         (t (setq hi (1- lo)
+                  span (* span nlre--window-growth))))))
+    result))
+
 (defun nlre--re-search-backward (regexp &optional bound noerror count)
   "Search backward for REGEXP, preserving full-buffer anchor context.
 This uses `nlre-string-match' backtracking with a separate match-end ceiling."
@@ -2965,44 +3084,35 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
                     (if (> direction 0) end base))))
       (if (> direction 0)
           (nlre--re-search-forward regexp limit noerror (- 0 count))
-        ;; See the PERF block comment above `nlre--looking-at': BASE/END
-        ;; here are always `(funcall nlre--point-min-function)'/`(funcall nlre--point-max-function)', so when the buffer
-        ;; is not narrowed they already denote the whole accessible text
-        ;; -- `(buffer-string)' (memoized) is exactly that text, without
-        ;; re-`concat'ing it on every call the way `buffer-substring' did.
-        ;; OFF converts a 0-based index of whichever string was chosen
-        ;; back to an absolute 1-based buffer position, generalizing the
-        ;; original's hardcoded BASE.
+        ;; Candidates run from the starting point down to LIMIT, and a match
+        ;; may not extend past the starting point, so the window ends one
+        ;; character past it and grows leftward as the scan goes (see
+        ;; `nlre--window-search').
         (let* ((prepared-regexp (nlre--buffer-search-regexp regexp))
-               (narrowed (nlre--buffer-narrowed-p))
                (old-caps nlre--last-caps)
                (old-buffer nlre--last-buffer)
-               (text (if narrowed (funcall nlre--buffer-substring-function base end) (buffer-string)))
-               (off (if narrowed base 1))
-               (lower (- limit off))
-               (cursor (- origin off))
+               (cursor origin)
                (remaining count)
-               (last-match nil)
                (failed nil))
           (while (and (> remaining 0) (not failed))
-            (setq last-match
-                  (nlre--regex-last-match-before prepared-regexp text lower cursor))
-            (if last-match
-                (progn
-                  (setq cursor (car last-match)
-                        remaining (1- remaining)))
-              (setq failed t)))
+            (let ((start (nlre--window-search-backward
+                          prepared-regexp cursor limit base end)))
+              (if start
+                  (setq cursor start
+                        remaining (1- remaining))
+                (setq failed t))))
           (if failed
               (progn
-                (setq nlre--last-caps old-caps
-                      nlre--last-buffer old-buffer)
+                (when (= remaining count)
+                  (setq nlre--last-caps old-caps
+                        nlre--last-buffer old-buffer))
+                (when (< remaining count)
+                  (setq nlre--last-buffer (funcall nlre--current-buffer-function)))
                 (if noerror
                     (progn (unless (eq noerror t) (funcall nlre--goto-char-function limit)) nil)
                   (signal 'search-failed (list regexp))))
-            (setq nlre--last-caps (cdr last-match))
-            (nlre--caps-offset off)
             (setq nlre--last-buffer (funcall nlre--current-buffer-function))
-            (funcall nlre--goto-char-function (+ off (car last-match)))))))))
+            (funcall nlre--goto-char-function cursor)))))))
 
 ;; Public entry points defined here as top-level defuns so the build admits
 ;; them as byte-code; the build's prelude used to define them as interpreted
@@ -3047,25 +3157,57 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
           (funcall nlre--buffer-substring-function b e))
       nil)))
 
+;; A case-sensitive search for ASCII text needs no matcher: the first
+;; occurrence wholly inside a window is the first occurrence.  Windows are cut
+;; from the buffer like `nlre--window-search's, and consecutive ones overlap
+;; by the needle length less one so every start is tried once.
+(defun nlre--search-forward-window (string bound noerror)
+  (when (markerp bound) (setq bound (marker-position bound)))
+  (when (and bound (not (integerp bound)))
+    (signal 'wrong-type-argument (list 'integer-or-marker-p bound)))
+  (let* ((pt (funcall nlre--point-function))
+         (pmax (funcall nlre--point-max-function))
+         (lim (if bound (min bound pmax) pmax))
+         (m (length string))
+         (from pt)
+         (span (max nlre--window-first (* 2 m)))
+         (hit nil))
+    (when (< lim pt) (error "Invalid search bound (wrong side of point)"))
+    (while (and (not hit) (<= (+ from m) lim))
+      (let* ((cap (min lim (+ from span)))
+             (idx (nlre--literal-search
+                   string (funcall nlre--buffer-substring-function from cap) 0)))
+        (if idx
+            (setq hit (+ from idx))
+          (setq from (max (1+ from) (- cap (1- m)))
+                span (* span nlre--window-growth)))))
+    (cond (hit
+           (setq nlre--last-caps (vector (cons hit (+ hit m)))
+                 nlre--last-buffer (funcall nlre--current-buffer-function))
+           (funcall nlre--goto-char-function (+ hit m))
+           (+ hit m))
+          ((null noerror) (signal 'search-failed (list string)))
+          ((eq noerror t) nil)
+          (t (funcall nlre--goto-char-function lim) nil))))
+
 ;; `search-forward' is an interpreted closure in the standalone prelude (it sits
-;; under `unless fboundp', which the byte-code pass does not see).  Same logic
-;; as the prelude's, defined here so the build admits it.  Installed only
-;; where the prelude's literal-search helper exists.
+;; under `unless fboundp', which the byte-code pass does not see).  Defined here
+;; so the build admits it.  Installed only where the prelude's literal-search
+;; helper exists.  Case-folded searches take the matcher's folding literal plan.
 (defun nlre--search-forward-entry (string &optional bound noerror count)
   (if (and (stringp string) (or (null count) (eql count 1))
-           (fboundp 'nelisp--string-search-chars)
-           (or (not case-fold-search)
-               (and (not (fboundp 'current-case-table))
-                    (or (nelisp--caseless-ascii-p string)
-                        (and (fboundp 'nelisp--ascii-downcase)
-                             (nelisp--ascii-p string))))))
-      (nelisp--search-forward-literal string bound noerror)
-    (nlre--re-search-forward (regexp-quote string) bound noerror count)))
+           (> (length string) 0)
+           (not case-fold-search)
+           (nlre--ascii-text-p string))
+      (nlre--search-forward-window string bound noerror)
+    (if (and (integerp count) (< count 0))
+        (nlre--re-search-backward (regexp-quote string) bound noerror (- count))
+      (nlre--re-search-forward (regexp-quote string) bound noerror count))))
 
 ;; `set-match-data' was missing from the standalone image (survey2 PARITY:
 ;; `save-match-data' failed with void-function).  LIST is a flat list of
 ;; integers or markers in `match-data' order, optionally ending in a buffer.
-(defun nlre--set-match-data-entry (list &optional _reseat)
+(defun nlre--set-match-data-entry (list &optional reseat)
   (let ((caps nil) (buffer nil) (items list))
     (while (consp items)
       (let ((b (car items)) (e (car (cdr items))))
@@ -3078,6 +3220,16 @@ This uses `nlre-string-match' backtracking with a separate match-end ceiling."
                 items (cdr (cdr items))))))
     (setq nlre--last-caps (and caps (vconcat (nreverse caps)))
           nlre--last-buffer buffer)
+    ;; GNU RESEAT: detach every marker of LIST and overwrite its cell with nil
+    ;; (so an 'evaporate caller's markers are unchained at once, not at the
+    ;; next collection).
+    (when reseat
+      (let ((cell list))
+        (while (consp cell)
+          (when (markerp (car cell))
+            (set-marker (car cell) nil)
+            (setcar cell nil))
+          (setq cell (cdr cell)))))
     nil))
 
 (unless (fboundp 'looking-at)

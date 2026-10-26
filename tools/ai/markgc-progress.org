@@ -1,0 +1,40 @@
+#+TITLE: Unreferenced markers cost nothing (markgc)
+#+NOTE: run with ELN_PROGRESS_BIN=<repo>/target/markgc-build/dynamic/nelisp-dynamic. Baseline red: v17 binary.
+
+* S1 Inventory
+
+** S1.1 Inventory of registry writers/readers and GC weak processing is recorded
+evidence: target/markgc/INVENTORY.md sha256=a28c0ad8c45adc6cb7a9c59ac489839176c348a7cb1a7e3b15d88ac8574af905
+
+* S2 Fix
+
+** S2.1 Edit-cost probe: 10k match-data markers dropped + GC leave a bounded registry and 1k edits stay fast
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/markgc/check.sh $ELN_PROGRESS_BIN probe
+
+** S2.2 Liveness: referenced markers (variable, list, global) keep moving across edits and GC; weak-table key marker dies
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/markgc/check.sh $ELN_PROGRESS_BIN live
+
+** S2.3 Marker semantics corpus (insertion types, set-marker nil, copy-marker, delete-region, save-excursion, set-match-data reseat) equals GNU 31.1
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/markgc/check.sh $ELN_PROGRESS_BIN corpus
+
+* S3 Integration
+
+** S3.1 One integrated build passes fixtures (weak 24/24, GNU 56/56, AFRT 24/25 known red, buffer 21/21; prelink records 353 <= 384)
+evidence: target/markgc/S3-evidence.txt sha256=37b3d2abb31322a14cf04ae3414b99cef8f1a30dd693f6d2d1b6e19b94dc0a2f
+evidence: target/markgc/fixtures/report.json sha256=9372d2240f93ab78c51fd973bfba2b89307abcd7463ef15cea9e888e79059b56
+
+** S3.2 End-to-end: gnu-speed-win-check passes on the integrated build
+#+REQUIRES: ELN_PROGRESS_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $ELN_PROGRESS_BIN
+
+* S4 Timing
+
+** S4.1 Paired timing vs v17 recorded on buffer rows, reg-sum-bc, r3-mix, replace-match, edit-after-match-data
+evidence: target/markgc/timing/SUMMARY.txt sha256=3dd7de1bb50ef57dfa2a8f712d0b44ce96d42c5525c0cfc4924e24c3c8762a2a
