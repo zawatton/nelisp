@@ -37,8 +37,8 @@
     ;; interp2: bits 25-54 hold the interpreter's descriptor.  A primitive of the
     ;; interpreter table with no directcall id has 0 in bits 0-7 (no id), and a
     ;; name in neither table has no descriptor at all.
-    (should (= (logand (nelisp-standalone--subr-desc "eq") 255) 0))
-    (should (> (ash (nelisp-standalone--subr-desc "eq") -25) 0))
+    (should (= (logand (nelisp-standalone--subr-desc "=") 255) 0))
+    (should (> (ash (nelisp-standalone--subr-desc "=") -25) 0))
     (should-not (nelisp-standalone--subr-desc "no-such-builtin"))))
 
 (ert-deftest w2s-interp-descriptor-round-trips-the-subr-table ()

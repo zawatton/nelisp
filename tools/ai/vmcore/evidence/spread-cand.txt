@@ -1,0 +1,2 @@
+s6-cons1 runs=20 cyc/trip min=58.39 med=58.55 max=60.36 spread(max-min)/med=3.36% stdev%=0.76
+reg-sum-bc runs=20 cyc/trip min=103.21 med=103.34 max=104.48 spread(max-min)/med=1.23% stdev%=0.37

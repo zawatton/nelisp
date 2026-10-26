@@ -1,0 +1,15 @@
+total 7107.3 Ir/trip
+    933.0 nelisp_frame_stack_find_kind_descend_m
+    534.0 nelisp_frame_stack_find_in_frame_m
+    488.0 nl_lex_walk
+    477.6 wf_bytecode_w_fast_run
+    399.0 nl_string_read64
+    392.0 nelisp_frame_stack_find_walk_bucket_m
+    305.0 nelisp_env_lkv_mirror_with_frames_w
+    298.0 nl_capture_filter_contains
+    296.0 nl_vector_slot_ptr
+    235.0 nelisp_mirror_lookup_entry_owned
+    230.7 wf_bytecode_execute_frame
+    214.0 nelisp_env_variable_canonicalize
+    172.0 nl_ent_w_slow
+    170.0 nelisp_env_alias_slot_candidate

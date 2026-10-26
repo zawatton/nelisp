@@ -24,7 +24,7 @@
               (ptr-write-u64 ,mem 0 ,name)
               (ptr-write-u64 ,mem 8 29)
               (ptr-write-u64 ,mem 16 ,(if (= mode 1) 3 13))
-              (setq rc (wf_bytecode_call ,env ,mem 3 2 0))) checks)
+              (setq rc (wf_bytecode_call ,env ,mem 3 2 0 0))) checks)
       (check '(= rc 0))
       (check `(= (heap-read-u64 ,mem 0) 13))
       (check `(= (heap-read-u64 ,s 0) ,(if (= mode 0) 0 2)))

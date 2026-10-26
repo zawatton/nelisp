@@ -1,0 +1,7 @@
+reg-sum-bc     v19     32.31  cand     23.64 (x0.732, faster 7/7)  gnu     14.53  cand/gnu 1.63  v19/gnu 2.22
+r3-mix         v19   1481.90  cand   1247.05 (x0.842, faster 7/7)  gnu    243.83  cand/gnu 5.11  v19/gnu 6.08
+r3-dyn         v19    100.27  cand     97.16 (x0.969, faster 7/7)  gnu     36.04  cand/gnu 2.70  v19/gnu 2.78
+r3-call        v19    235.29  cand    246.32 (x1.047, faster 0/7)  gnu     72.80  cand/gnu 3.38  v19/gnu 3.23
+r7-funcall-bc  v19     57.47  cand     56.95 (x0.991, faster 5/7)  gnu     22.19  cand/gnu 2.57  v19/gnu 2.59
+s6-cons1       v19     23.64  cand     16.09 (x0.681, faster 7/7)  gnu     13.72  cand/gnu 1.17  v19/gnu 1.72
+cfs-read       v19    753.91  cand     41.59 (x0.055, faster 7/7)  gnu     21.57  cand/gnu 1.93  v19/gnu 34.95

@@ -102,7 +102,10 @@ the landed one.")
     (should (string-match-p "(/= n 7)" text))
     (should (string-match-p "(logand a 7) 6" text))
     (should (string-match-p "(logand (ptr-read-u64 (- a 6) 0) 63) 8" text))
-    (should (= 1 (cl-count 'wf_dirty (flatten-tree branch))))
+    ;; corecall: the record arm (header kind 12) adds the second epoch bump; the
+    ;; vector arm keeps its own single `wf_dirty' and `vector-slot-set'.
+    (should (string-match-p "(logand (ptr-read-u64 (- a 6) 0) 63) 12" text))
+    (should (= 2 (cl-count 'wf_dirty (flatten-tree branch))))
     (should (= 1 (cl-count 'vector-slot-set (flatten-tree branch))))))
 
 (defun nelisp-fx-vector--extract (file names)

@@ -8501,7 +8501,10 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
                              (list 'nth (+ i offset) rec-sym))
                             ((eq struct-type 'vector)
                              (list 'aref rec-sym (+ i offset)))
-                            (t (list 'nelisp--record-ref rec-sym i))))
+                            ;; corecall: `nelisp--record-ref' is (aref REC (1+ I)); the
+                            ;; accessor reads the slot with `aref' itself, so a call of it
+                            ;; takes the VM's record fast path and no second function call.
+                            (t (list 'aref rec-sym (1+ i)))))
                 forms)
           ;; GNU cl-defstruct exposes slot access through define-inline's
           ;; compiler-macro metadata.  Retain the same GV route and the

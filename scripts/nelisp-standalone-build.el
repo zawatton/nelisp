@@ -21011,29 +21011,91 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; checked primitive's mutation, persistence, and result-copy operations;
     ;; other arrays and every failing check use the original generic path.
     (defun wf_bytecode_vector_primitive (mem sp opcode)
-      ;; Baref/Baset on a plain vector with an in-range fixnum index: read or
-      ;; install the element word directly.  Other arrays and every failing
+      ;; Baref/Baset on a plain vector or a record with an in-range fixnum
+      ;; index: read or install the element word directly (GNU bytecode.c Baref
+      ;; and Baset: VECTORP at the top, then Faref/Faset for the other arrays,
+      ;; data.c Faref: RECORDP uses PVSIZE).  Other arrays and every failing
       ;; check use the generic primitive (2).
       (let* ((arity (if (= opcode 73) 3 2))
-             (arr (heap-read-u64 (+ mem (* (- sp arity) 8)) 0))
-             (index (heap-read-u64 (+ mem (* (+ (- sp arity) 1) 8)) 0)))
-        (if (if (= (logand arr 1) 1) 0
-              (if (/= (heap-sexp-tag-word arr) 8) 0
-                (if (/= (wf_bytecode_w_tag index) 2) 0
-                  (if (= (bf_nemacs_char_table_vector_p arr) 0) 1 0))))
-            (let ((i (wf_bytecode_w_int index)))
-              (if (and (>= i 0) (< i (vector-len arr)))
-                  (let* ((data (+ (nl_word_payload arr) 8)))
-                    (if (= opcode 73)
-                        (let ((value (heap-read-u64 (+ mem (* (- sp 1) 8)) 0)))
-                          (seq (wf_dirty)
-                               (ptr-write-u64 (+ data (* i 8)) 0 value)
-                               (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0 value) 0))
-                      (seq (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0
-                                          (heap-read-u64 (+ data (* i 8)) 0))
-                           0)))
-                2))
-          2)))
+             (arr (ptr-read-u64 mem (* (- sp arity) 8)))
+             (index (ptr-read-u64 mem (* (+ (- sp arity) 1) 8))))
+        (if (= (logand arr 1) 1) 2
+          (if (/= (wf_bytecode_w_tag index) 2) 2
+            (let* ((tg (heap-sexp-tag-word arr)))
+              (if (= tg 8)
+                  ;; The 7-element test comes first: only a 7-slot vector can be
+                  ;; the char-table bridge, so the checking call is paid for
+                  ;; those alone.
+                  (if (if (/= (vector-len arr) 7) 1
+                        (if (= (bf_nemacs_char_table_vector_p arr) 0) 1 0))
+                      (let ((i (wf_bytecode_w_int index)))
+                        (if (and (>= i 0) (< i (vector-len arr)))
+                            (let* ((data (+ (nl_word_payload arr) 8)))
+                              (if (= opcode 73)
+                                  (let ((value (ptr-read-u64 mem (* (- sp 1) 8))))
+                                    (seq (wf_dirty)
+                                         (ptr-write-u64 (+ data (* i 8)) 0 value)
+                                         (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0 value) 0))
+                                (seq (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0
+                                                    (ptr-read-u64 data (* i 8)))
+                                     0)))
+                          2))
+                    2)
+                ;; Record (tag 12), as `bf_aref_checked_w'/`bf_aset_checked_w': index 0
+                ;; is the type word, K > 0 is data slot K-1, K may equal the slot
+                ;; count.  Baset leaves index 0 (the type word) to the generic path.
+                (if (= tg 12)
+                    (let* ((i (wf_bytecode_w_int index)))
+                      (if (if (< i 0) 1 (> i (nl_record_length arr))) 2
+                        (if (= opcode 73)
+                            (if (= i 0) 2
+                              (let* ((value (ptr-read-u64 mem (* (- sp 1) 8))))
+                                (seq (wf_dirty)
+                                     (ptr-write-u64 (+ (nl_word_payload arr) (+ 16 (* (- i 1) 8))) 0
+                                                    (if (= (logand value 3) 1) value (nl_word_canon value)))
+                                     (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0 value) 0)))
+                          (seq (ptr-write-u64 (+ mem (* (- sp arity) 8)) 0
+                                              (if (= i 0) (nl_record_type_word arr)
+                                                (nl_record_slot_word arr (- i 1))))
+                               0))))
+                  2)))))))
+    ;; corecall (W2c): Baref (72), Baset (73) and Blength (71) in the fast loop.  GNU's
+    ;; bytecode.c handles them inside exec_byte_code (Baref/Baset: VECTORP, then Faref/
+    ;; Faset; Blength: Flength), with no hop to a slower interpreter.  The answer is the
+    ;; new SP, or -1 to leave the op, with nothing written, to the general loop (which
+    ;; owns every error, the other array kinds and the char-table bridge).  None of the
+    ;; paths here allocates, calls Lisp or reaches a safepoint; operands and result are
+    ;; slots of the rooted VM frame.
+    (defun wf_bytecode_fast_slot (mem sp opcode)
+      (if (= opcode 71)
+          (if (< sp 1) -1
+            (let* ((slot (+ mem (* (- sp 1) 8)))
+                   (a (ptr-read-u64 slot 0)))
+              (if (= a 3) (seq (ptr-write-u64 slot 0 1) sp)
+                (if (= (logand a 7) 6)
+                    (if (< a 4096) -1
+                      (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
+                          (let* ((n (vector-len a)))
+                            (if (if (>= n 0) (/= n 7) 0)
+                                (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
+                              -1))
+                        -1))
+                  (if (= (logand a 7) 2)
+                      (let* ((n 0) (cur a))
+                        (seq
+                         (while (if (= (logand cur 7) 2) (<= n 4096) 0)
+                           (seq (setq cur (ptr-read-u64 (- cur 2) 8))
+                                (setq n (+ n 1))))
+                         (if (= cur 3)
+                             (if (<= n 4096)
+                                 (seq (ptr-write-u64 slot 0 (+ (shl n 2) 1)) sp)
+                               -1)
+                           -1)))
+                    -1)))))
+        (if (< sp (if (= opcode 73) 3 2)) -1
+          (if (= (wf_bytecode_vector_primitive mem sp opcode) 0)
+              (- sp (if (= opcode 73) 2 1))
+            -1))))
     ;; Existing tagged arithmetic in the general VM (clauses 2/5). Mixed
     ;; array/list loops cannot enter the whole-function fixnum VM. Consume
     ;; their rooted integer operands directly, and retain the checked numeric
@@ -23484,7 +23546,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (< n 255)
             (seq (ptr-write-u64 cell 0 (+ (shl n 2) 1)) 0)
           (wf_bytecode_back_poll cell))))
-    (defun wf_bytecode_call (env mem sp argc cell)
+    (defun wf_bytecode_call (env mem sp argc cell leafdone)
       ;; Bcall (GNU bytecode.c:735-750, docall).  A bytecode callee runs on the
       ;; caller's argument words directly; `throw' is GNU's Fthrow on the
       ;; operand words; anything else is applied to an argument list consed
@@ -23493,9 +23555,13 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (< fi 0)
             2
          ;; leafprim: a primitive held in a variable (symbol or Subr object) with a
-         ;; leaf directcall id runs in `wf_bytecode_call_leaf'; 2 falls through.
-         (if (= (wf_bytecode_call_leaf env mem fi argc (heap-read-u64 (+ mem (* fi 8)) 0)) 0)
-             0
+         ;; leaf directcall id runs in `wf_bytecode_call_leaf': 0 done, 1 signalled,
+         ;; 2 falls through.  corecall: LEAFDONE 1 means the caller has made that
+         ;; attempt already (`wf_bytecode_call_subr') and it answered 2.
+         (let* ((lr (if (= leafdone 1) 2
+                      (wf_bytecode_call_leaf env mem fi argc (heap-read-u64 (+ mem (* fi 8)) 0)))))
+          (if (/= lr 2)
+              lr
           (let* ((fw (heap-read-u64 (+ mem (* fi 8)) 0))
                  (ftag (nl_val_tag fw))
                  ;; GNU Bcall: XSYMBOL (fun)->u.s.function (bytecode.c:803, lisp.h
@@ -23550,7 +23616,16 @@ bytes are written into a fresh 8-byte buffer instead."
                         (if (= fcell 2) 0 (wf_bytecode_flat_path_int_cell fcell))
                       0)
                     (wf_bytecode_w_call_views env fw mem fi argc)
-                  (wf_bytecode_w_call_words env fw mem fi argc 0)))))))))
+                  (wf_bytecode_w_call_words env fw mem fi argc 0))))))))))
+    ;; corecall (W2c): the call arm of `wf_bytecode_w_fast_run' for a callee that is
+    ;; not byte code.  GNU Bcall reaches funcall_subr with the SUBR struct in hand
+    ;; (bytecode.c:803, eval.c:3254); here the leaf probe is made directly, with no
+    ;; intermediate frame, and only a callee it declines takes the full call.
+    (defun wf_bytecode_call_subr (env mem sp argc cell)
+      (let* ((fi (- sp (+ argc 1)))
+             (r (if (< fi 0) 2
+                  (wf_bytecode_call_leaf env mem fi argc (ptr-read-u64 mem (* fi 8))))))
+        (if (= r 2) (wf_bytecode_call env mem sp argc cell 1) r)))
     (defun wf_bytecode_w_call_views (env fw mem fi argc)
       ;; The flat OS-path call keeps the view protocol: the operands as
       ;; 32-byte views in a scratch block, consed into the argument list.
@@ -24224,6 +24299,41 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Bnegate any fixnum but MOST_NEGATIVE_FIXNUM.  A fixnum word is (n<<2)|1 and orders as n does.  Answers the stack pointer
     ;; after the opcode, or -1 when the case is not the fixnum one (another operand, a zero divisor, a result out of range): then
     ;; nothing was touched and the full loop takes the opcode.
+;; vmcore W1e: GNU find_symbol_value for SYMBOL_LOCALIZED (data.c:1619, 1650) on the main thread.  The value
+    ;; WORD of OBJ, a LOCALIZED symbol object whose blv is [REDIRECT DEFAULT], REDIRECT being
+    ;; [CURRENT-BUFFER-SYMBOL ((BUFFER . CELL-SYMBOL) ...) ...]: the value cell of the CELL-SYMBOL paired with the
+    ;; selected buffer, else the default.  This is what `nelisp_env_variable_canonicalize' and
+    ;; `nelisp_env_lkv_mirror_with_frames_w' compute for a main-thread read, without their frame-stack walks:
+    ;; the current-buffer symbol and a cell symbol are plain specials, whose dynamic bindings are shallow
+    ;; (`nl_sb_bind_plain'), so the value cell is the current value.  Pure reads: no allocation, no call
+    ;; but the unbound test.  Answers 0 when any link is not the expected shape (the caller takes the
+    ;; general path); a void default or cell is returned as the unbound marker for the caller to refuse.
+    (defun wf_bytecode_w_local_read (env obj)
+      (if (/= (logand obj 7) 6) 0
+        (let* ((h (heap-read-u64 (- obj 6) 0)))
+          (if (or (/= (logand h 63) 4) (/= (logand (sar h 8) 3) 2)) 0
+            (let* ((blv (heap-read-u64 (- obj 6) 16)))
+              (if (/= (logand blv 7) 6) 0
+                (let* ((rv (nl_vector_slot_word blv 0)) (dflt (nl_vector_slot_word blv 1)))
+                  (if (or (/= (sexp-tag rv) 8) (< (vector-len rv) 2)) dflt
+                    (let* ((cs (nl_vector_slot_word rv 0)))
+                      (if (/= (logand cs 7) 6) 0
+                        (if (/= (logand (heap-read-u64 (- cs 6) 0) 831) 4) 0
+                          (let* ((buffer (heap-read-u64 (- cs 6) 16)))
+                            (if (if (= buffer 0) 1 (wf_bytecode_w_unbound_p env buffer)) 0
+                              (let* ((locals (nl_vector_slot_word rv 1)) (cell 0))
+                                (seq
+                                 (while (and (= (sexp-tag locals) 7) (= cell 0))
+                                   (let* ((pair (nl_cons_car_word locals))
+                                          (key (nl_cons_car_word pair)))
+                                     (if (and (= (nl_val_tag key) (nl_val_tag buffer))
+                                              (= (nl_word_payload key) (nl_word_payload buffer)))
+                                         (setq cell (nl_cons_cdr_ptr pair))
+                                       (setq locals (nl_cons_cdr_ptr locals)))))
+                                 (if (= cell 0) dflt
+                                   (if (/= (logand cell 7) 6) 0
+                                     (if (/= (logand (heap-read-u64 (- cell 6) 0) 831) 4) 0
+                                       (heap-read-u64 (- cell 6) 16)))))))))))))))))))
     (defun wf_bytecode_fast_arith (mem sp raw)
       (let* ((n (if (= raw 91) 1 2)))
         (if (< sp n) -1
@@ -24263,15 +24373,17 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; GNU op_branch compares against the instruction end, including self:
       ;; target < pc+3 for 130..134; target < pc+1 for switch 183.
       (let*
-          ((foot (+ mem (* (+ depth 1) 8))) (last-name -1) (go 128) (raw 0) (a 0) (b 0)
+          ((foot (+ mem (* (+ depth 1) 8))) (last-name -1) (go length) (raw 0) (a 0) (b 0)
            (target 0) (word 0) (fused 0) (ref 0) (cmp 0) (branch 0)
            (failed 0) (back (- 255 (sar (ptr-read-u64 cell 0) 2)))
            ;; callbc: the immediate caller's decoded code state, saved by the in-loop call
            ;; arm and consumed by the in-loop return arm (SD = 0: nothing saved).
            (sd 0) (sl 0) (sk 0) (sn 0))
-        (while (> go 0)
-          (if (>= pc length) (setq go 0)
-            (seq (setq raw (heap-read-u8 data pc))
+        ;; vmcore W1d: GO is the loop limit: the pc bound LENGTH, or 0 once an opcode has declined, so the
+        ;; single test below replaces the separate `go' and `pc >= length' tests.  The compiler emits this
+        ;; loop (FETCH, TABLE) with threaded dispatch (`--threaded-loop-plan'): keep the body exactly these two forms.
+        (while (< pc go)
+          (setq raw (heap-read-u8 data pc))
                  (if (< raw 93)
                      (if (< raw 83)
                          (if (< raw 6)
@@ -24350,11 +24462,13 @@ bytes are written into a fresh 8-byte buffer instead."
           (if (= env 0) 0
             (if (/= (logand kname 7) 6) 0
               (let* ((hm (logand (ptr-read-u64 (- kname 6) 0) 831)))
-                (if (if (= hm 4) 0 (/= hm 772)) 0
+                (if (if (= hm 4) 0 (if (= hm 516) 0 (/= hm 772))) 0
                     (if (/= (ptr-read-u64 env 168) 0) 0
                       (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
                         (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2) 0
-                          (ptr-read-u64 (- kname 6) 16)))))))))
+                          ;; vmcore W1e: hm 516 is a LOCALIZED symbol (redirect 2)
+                          (if (= hm 516) (wf_bytecode_w_local_read env kname)
+                            (ptr-read-u64 (- kname 6) 16))))))))))
     (if (= value 0) (setq go 0)
       (if (if (= (logand value 1) 1) 0
             (if (= (logand value 7) 2) 0
@@ -25114,11 +25228,11 @@ bytes are written into a fresh 8-byte buffer instead."
                                          (if (= isp -2)
                                              (let*
                                                  ((rc
-                                                   (wf_bytecode_call env
-                                                                     mem
-                                                                     sp
-                                                                     argc
-                                                                     cell)))
+                                                   (wf_bytecode_call_subr env
+                                                                          mem
+                                                                          sp
+                                                                          argc
+                                                                          cell)))
                                                (seq (setq last-name -1)
                                                     (if (= rc 0)
                                                         (seq
@@ -25545,7 +25659,13 @@ bytes are written into a fresh 8-byte buffer instead."
                                                  0)
                                                (setq pc (+ pc 1)))
                                             (setq go 0))))
-                                     (if (< raw 79) (setq go 0)
+                                     (if (< raw 79)
+                                         ;; corecall: length (71), aref (72) and aset (73) stay in
+                                         ;; this loop (`wf_bytecode_fast_slot'); -1 punts as before.
+                                         (if (if (< raw 71) 1 (> raw 73)) (setq go 0)
+                                           (let* ((nsp (wf_bytecode_fast_slot mem sp raw)))
+                                             (if (< nsp 0) (setq go 0)
+                                               (seq (setq sp nsp) (setq pc (+ pc 1))))))
                                        ;; w1f: substring (79) and concat2..4 (80-82) on the WORD stack through
                                        ;; the directcall text body; -3 leaves everything untouched (go 0).
                                        (let* ((cnt (if (= raw 79) 3 (- raw 78))))
@@ -26253,7 +26373,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                             (heap-read-u64 constants
                                                            (- (* raw 8)
                                                               1536)))
-                             (setq sp (+ sp 1)) (setq pc (+ pc 1))))))))))))
+                             (setq sp (+ sp 1)) (setq pc (+ pc 1))))))))))
         (seq (ptr-write-u64 cell 8 (+ (shl mem 2) 1))
              (ptr-write-u64 cell 0 (+ (shl (- 255 back) 2) 1))
              (if (= failed 1) -1 (+ (shl pc 17) sp)))))
@@ -26743,7 +26863,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                  (setq sp (logand isp 65535)))
                           (if (= isp -1)
                               (setq done 4)
-                            (let* ((rc (wf_bytecode_call env mem sp operand curfp)))
+                            (let* ((rc (wf_bytecode_call env mem sp operand curfp 0)))
                               (if (= rc 0)
                                   (setq sp (- sp operand))
                                 (if (= rc 2)
@@ -29406,7 +29526,11 @@ bytes are written into a fresh 8-byte buffer instead."
                             (setq pc (+ pc 2)))))
             (if (= op 16)
                 (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 2) 8)) 0)))
-                     (setq r (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw (+ resw 8) oslot 0)))
+                     ;; corecall: a primitive the site's symbol holds as a Subr object runs
+                     ;; directly (`m5_fx_call_subr'); anything else takes the call-out.
+                     (setq r (if (= (m5_fx_call_subr env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw) 0)
+                                 0
+                               (seq (setq oslot (m5_fx_view_slot env oslot)) (m5_fx_callout env (heap-read-u64 (+ base (* (+ pc 1) 8)) 0) stk sp n resw (+ resw 8) oslot 0))))
                      (if (/= r 0) (setq status r)
                        (seq (setq sp (+ (- sp n) 1))
                             (ptr-write-u64 (+ stk (* (- sp 1) 8)) 0 (heap-read-u64 resw 0))
@@ -33913,7 +34037,12 @@ bytes are written into a fresh 8-byte buffer instead."
                        (seq (setq obj (nelisp_mirror_lookup_entry_owned
                                        env (nl_ent_w obj 4)))
                             (setq hops (+ hops 1)))
-                     (setq result (bf_dynamic_lookup_w env sym 0)))))))
+                     ;; vmcore W1e: LOCALIZED reads the selected buffer's cell directly; a void or
+                     ;; unexpected shape takes the general path, which also signals.
+                     (let ((v (if (= r 2) (wf_bytecode_w_local_read env obj) 0)))
+                       (setq result (if (or (= v 0) (= (wf_bytecode_w_unbound_p env v) 1))
+                                        (bf_dynamic_lookup_w env sym 0)
+                                      v))))))))
            result))))
     ;; GNU store_symval_forwarding (data.c:1470) on the object's storage:
     ;; descriptor 1 is an intfwd (integer check), 2 a boolfwd (t or nil).
@@ -59424,7 +59553,11 @@ cell (an alias, save-excursion ...), by the name of the special-form object."
     ("concat" 115) ("substring" 116) ("make-string" 117)
     ;; primx: `make-hash-table' (allocating, 118) and `plist-get' (LEAF id 100:
     ;; no Lisp, no allocation, no safepoint; ids below 112 are leaf).
-    ("make-hash-table" 118) ("plist-get" 100))
+    ("make-hash-table" 118) ("plist-get" 100)
+    ;; corecall (W2a): the primitives the VM and the interpreter run by id in
+    ;; `m5_fx_primitive_run', with the exact arity the id's body assumes.
+    ("aref" -14) ("null" 3) ("not" 3) ("consp" 4) ("setcdr" 5) ("setcar" 6)
+    ("eq" 7) ("nthcdr" 11))
   "Primitives with a directcall id: (NAME ID).  Their function cells hold a Subr
 object (header kind 20) wrapping the legacy (builtin NAME) list (w2subr).")
 
@@ -60131,13 +60264,55 @@ remains the reference. No production hit/fallback counters are emitted."
                                       (if (if (if (>= id 105) (<= id 108) 0) (> argc 0) 0)
                                        (setq st (nl_directcall_fast_run id base argc out))
                                       0)))))))
+                                     ;; corecall: `aref' on a plain vector or a record (the arm
+                                     ;; of `m5_fx_primitive_run' -14, GNU Faref).
+                                     (if (= id -14)
+                                         (if (= (logand a 7) 6)
+                                             (if (> a 4096)
+                                                 (let* ((k (logand (ptr-read-u64 (- a 6) 0) 63))
+                                                        (b (ptr-read-u64 base 8)))
+                                                   (if (= (logand b 3) 1)
+                                                       (let* ((index (sar b 2)))
+                                                         (if (= k 8)
+                                                             (let* ((n (vector-len a)))
+                                                               (if (if (>= index 0) (if (< index n) (/= n 7) 0) 0)
+                                                                   (seq (ptr-write-u64 out 0 (nl_vector_slot_word a index))
+                                                                        (setq st 0))
+                                                                 0))
+                                                           (if (= k 12)
+                                                               (if (if (>= index 0) (<= index (nl_record_length a)) 0)
+                                                                   (seq (ptr-write-u64 out 0
+                                                                                       (if (= index 0) (nl_record_type_word a)
+                                                                                         (nl_record_slot_word a (- index 1))))
+                                                                        (setq st 0))
+                                                                 0)
+                                                             0)))
+                                                     0))
+                                               0)
+                                           0)
+                                       0)
+                                     ;; corecall (W2a): a leaf id the inline arms above do not own
+                                     ;; (plist-get, the hash ids, cons, eq, consp, null, nthcdr,
+                                     ;; setcar, setcdr) runs its WORD body from the id already
+                                     ;; unpacked from the Subr header, as `nl_directcall_invoke''s
+                                     ;; leaf branch does after `nl_directcall_id': the checks above
+                                     ;; are its checks (arity, policy word, depth word), the bodies
+                                     ;; hold no safepoint, OUT and BASE are slots of the caller's
+                                     ;; rooted frame.  -3 declines with nothing written.
+                                     (if (= st -4)
+                                         (if (if (= id 1) 1 (if (= id 109) 1 (if (= id 110) 1 (if (= id 10) 1
+                                               (if (= id -16) 1 (if (= id -15) 1 (if (= id -14) 1 (if (= id 27) 1
+                                                 (if (if (>= id 105) (<= id 108) 0) 1 0)))))))))
+                                             0
+                                           (setq st (nl_directcall_run id base argc out env)))
+                                       0)
                                      (if (= st 0)
                                          (let* ((j 0))
                                            (seq (while (< j argc)
                                                   (seq (ptr-write-u64 mem (* (+ fi (+ j 1)) 8) 3)
                                                        (setq j (+ j 1))))
                                                 0))
-                                       2)))))))))))))))))
+                                       (if (= st -3) 2 (if (= st -4) 2 1)))))))))))))))))))
       (defun nl_directcall_invoke (fn original base argc env out)
         ;; BASE belongs to a live rooted VM/evaluator frame, and so does OUT:
         ;; every caller passes a slot of that frame (the VM slot of the

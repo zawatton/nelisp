@@ -1,0 +1,103 @@
+#+TITLE: vmcore: threaded dispatch, loop limit, LOCALIZED special reads (STRATEGY W1d, W1e, W3a)
+# Run from the repo root.  Env: VMCORE_BIN (candidate nelisp-dynamic), V19_BIN (baseline v19), VMCORE_BUILD (candidate build dir),
+# MATRIX (integ-1036/matrix), PMC (compiled pmcrun2).  Rows are instructions per trip, two-N difference.
+
+* S1 Causes measured on v19
+
+** S1.1 v19 per-row instruction counts and cycles recorded (reg-sum-bc, r3-mix, r3-dyn, r3-call, r7-funcall-bc, p-mapc-car, case-fold-search read loop)
+evidence: tools/ai/vmcore/evidence/base-v19.txt sha256=99000fdc57a48b8788fa89c37a4a11a8ac6f1154c83e53be398c71f528100eca
+
+** S1.2 Cause of the 6,700-instruction buffer-local special read: generic frame-stack and mirror walk, per-function profile
+evidence: tools/ai/vmcore/evidence/cfs-read-v19-profile.txt sha256=664956bacb9791d4b73a8bd78bfd28e3c021ecefff5028c873b6936672eef13d
+
+** S1.3 Cause of the dispatch cost: per-instruction counts of the hot path on reg-sum-bc (13-17 instructions per op, shared indirect jump)
+evidence: tools/ai/vmcore/evidence/reg-sum-bc-v19-hot-instrs.txt sha256=d5cea49403b236e3ad417462e1fe46cff36ca6fe40c16c08b975cbe15081327f
+
+** S1.4 Run-to-run cycle spread of s6-cons1 and reg-sum-bc on v19 (20 runs each)
+evidence: tools/ai/vmcore/evidence/spread-v19.txt sha256=e489ad1715da600c1ffe1ae5403d0f20a28c99fbd224e1f47c60c124c2b6573e
+
+** S1.5 The measuring tool reproduces the v19 reg-sum-bc row (497 +- 5%)
+#+REQUIRES: V19_BIN,MATRIX,PMC
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-row.sh $V19_BIN reg-sum-bc 522 472
+
+* S2 Implementation (host checks)
+
+** S2.1 Threaded dispatch toy VM: result equal to the reference model, code differs from the shared-jump layout, a defun outside the allow list is byte-identical (negative control)
+#+TIMEOUT: 120
+cmd: ( ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L test -l ert -l test/nelisp-bytecode-core-threaded-test.el -f ert-run-tests-batch-and-exit ) > /dev/null 2>&1
+
+** S2.2 Existing ordered-table ERT unchanged (6 of 7; actual-producer-first-dispatch was already red on v19 and checks R8-cache bytes that predate regraw)
+#+TIMEOUT: 120
+cmd: ( ulimit -v 8388608; emacs -Q --batch -L lisp -L src -L scripts -L test -l ert -l test/nelisp-bytecode-core-ordered-test.el --eval '(ert-run-tests-batch-and-exit "^nelisp-bytecode-core-ordered/\\(selector\\|policy\\|shared\\|native\\)")' ) > /dev/null 2>&1
+
+** S2.3 The real wf_bytecode_w_fast_run compiles with a 256-entry byte table and no bound compares (production harness)
+#+TIMEOUT: 240
+cmd: sh tools/ai/vmcore/check-production-table.sh
+
+** S2.4 Buffer-local read corpus (bytecode, 33 forms) prints identically on GNU Emacs and on the candidate
+#+REQUIRES: VMCORE_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-blread.sh $VMCORE_BIN
+
+** S2.5 Negative control: the corpus runner diverges from GNU on a deliberately wrong answer
+#+REQUIRES: VMCORE_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-blread.sh $VMCORE_BIN --mutate
+
+* S3 Integrated build
+
+** S3.1 Candidate build rc=0
+#+REQUIRES: VMCORE_BUILD
+cmd: tail -1 $VMCORE_BUILD/build.log | grep -q "^BUILD rc=0"
+
+** S3.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+#+REQUIRES: VMCORE_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/vmcore/check-fixtures.sh $VMCORE_BIN
+
+** S3.3 gnu-speed-win-check passes and F1 prelink records <= 384
+#+REQUIRES: VMCORE_BIN,VMCORE_BUILD
+#+TIMEOUT: 600
+cmd: ( ulimit -v 8388608; sh tools/ai/gnu-speed-win-check/check.sh $VMCORE_BIN > /dev/null 2>&1 ) && sh tools/ai/rx2/f1-check.sh $VMCORE_BUILD
+
+** S3.4 survey5 shim eval-tests, data-tests, bytecomp-tests: no test that passed on v19 fails on the candidate
+#+REQUIRES: VMCORE_BIN
+cmd: python3 tools/ai/vmcore/s5-compare.py target/vmcore/s5-base target/vmcore/s5-cand
+
+** S3.5 Win64 (wine) cross build and closurevm, switch-corpus and features checks pass (weak on Win64 not run)
+cmd: grep -q 'build win rc=0' target/vmcore/win/win.log && grep -q 'closurevm: CLOSUREVM COMPLETE checked=24 rc=0' target/vmcore/win/win.log && grep -q 'switch corpus rc=0 EQ-GNU' target/vmcore/win/win.log && grep -q 'features rc=0 EQ-GNU' target/vmcore/win/win.log
+
+* S4 Paired timing and targets
+
+** S4.1 r3-dyn <= 1,200 instructions per trip (v19 1,368)
+#+REQUIRES: VMCORE_BIN,MATRIX,PMC
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-row.sh $VMCORE_BIN r3-dyn 1200
+
+** S4.2 Plain special varref (cfs-plain minus cfs-base) <= 50 instructions
+#+REQUIRES: VMCORE_BIN,MATRIX,PMC
+#+TIMEOUT: 180
+cmd: python3 tools/ai/vmcore/delta.py $VMCORE_BIN cfs-plain cfs-base 50
+
+** S4.3 Buffer-local special read (cfs-read minus cfs-base) <= 150 instructions (v19 6,728)
+#+REQUIRES: VMCORE_BIN,MATRIX,PMC
+#+TIMEOUT: 180
+cmd: python3 tools/ai/vmcore/delta.py $VMCORE_BIN cfs-read cfs-base 150
+
+** S4.4 reg-sum-bc <= 400 instructions per trip (v19 497; regression row)
+#+REQUIRES: VMCORE_BIN,MATRIX,PMC
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-row.sh $VMCORE_BIN reg-sum-bc 400
+
+** S4.5 Dispatch <= 5 instructions per op on reg-sum-bc, i.e. reg-sum-bc <= 360 instructions per trip (stretch target; the relative table and the loop bound test need 8)
+#+REQUIRES: VMCORE_BIN,MATRIX,PMC
+#+TIMEOUT: 120
+cmd: sh tools/ai/vmcore/check-row.sh $VMCORE_BIN reg-sum-bc 360
+
+** S4.6 Paired wall time vs v19 and GNU recorded (7 rows, 7 reps, idle CPU 13) and cycle spread no worse than v19
+evidence: tools/ai/vmcore/evidence/paired-summary.txt sha256=9771443359c1f69478c60c056e3ac2738930bb35bb505fc3bfe46bb83e14d789
+evidence: tools/ai/vmcore/evidence/spread-cand.txt sha256=cba30c8085568e3cb8f3193c43e94886e57d5f476c87ee1a320de0a84dd01e89
+
+** S4.7 No paired row slower than v19 (r3-call is 4.7% slower in wall time: +1.1 indirect mispredicts per trip)
+cmd: python3 -c "import re,sys;bad=[l for l in open('tools/ai/vmcore/evidence/paired-summary.txt') if float(re.search(r'x([\d.]+)',l)[1])>1.0];print(''.join(bad));sys.exit(1 if bad else 0)"

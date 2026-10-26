@@ -1,0 +1,243 @@
+fast_run total 102321021 per trip(200000) 511.605105
+hot instrs 241 sum/trip 504.036045
+ 12.26  1ea4220:	cmp    -0x10(%rbp),%r12
+ 12.26  1ea4224:	jge    1eb0c62 <wf_bytecode_w_fast_run+0xcbe2>
+ 12.26  1ea422a:	movzbq (%r15,%r12,1),%r14
+ 12.26  1ea422f:	mov    %r14,%rax
+ 12.26  1ea4232:	cmp    $0x6,%rax
+ 12.26  1ea4239:	jl     1ea4560 <wf_bytecode_w_fast_run+0x4e0>
+  8.20  1ea423f:	cmp    $0xbf,%rax
+  8.20  1ea4246:	jg     1eb05c0 <wf_bytecode_w_fast_run+0xc540>
+  8.17  1ea424c:	sub    $0x6,%rax
+  8.17  1ea4253:	lea    0xe(%rip),%r10        # 1ea4268 <wf_bytecode_w_fast_run+0x1e8>
+  8.17  1ea425a:	lea    (%r10,%rax,4),%r10
+  8.17  1ea425e:	movslq (%r10),%rax
+  8.17  1ea4261:	lea    0x4(%r10,%rax,1),%rax
+  8.17  1ea4266:	jmp    *%rax
+  4.06  1ea4560:	cmp    -0x20(%rbp),%r13
+  4.06  1ea4564:	jge    1eb068c <wf_bytecode_w_fast_run+0xc60c>
+  4.06  1ea456a:	cmp    %r14,%r13
+  4.06  1ea456d:	jle    1eb068c <wf_bytecode_w_fast_run+0xc60c>
+  4.06  1ea4573:	mov    %r13,%rax
+  4.06  1ea4576:	sub    %r14,%rax
+  4.06  1ea4579:	sub    $0x1,%rax
+  4.06  1ea457d:	imul   $0x8,%rax,%rax
+  4.06  1ea4581:	mov    (%rbx,%rax,1),%rax
+  4.06  1ea4585:	mov    %rax,(%rbx,%r13,8)
+  4.06  1ea4589:	add    $0x1,%r13
+  4.06  1ea458d:	add    $0x1,%r12
+  4.06  1ea4591:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+  3.03  1eab7c0:	mov    -0x100(%rbp),%r8
+  3.03  1eab7c7:	cmp    $0x54,%r14
+  3.03  1eab7cb:	jne    1eab819 <wf_bytecode_w_fast_run+0x7799>
+  1.01  1eab7d1:	cmp    $0x0,%r13
+  1.01  1eab7d5:	jle    1eb09ba <wf_bytecode_w_fast_run+0xc93a>
+  1.01  1eab7db:	mov    -0x8(%rbx,%r13,8),%r8
+  1.01  1eab7e0:	lea    -0x1(%r8),%rax
+  1.01  1eab7e4:	test   $0x3,%rax
+  1.01  1eab7eb:	jne    1eb09aa <wf_bytecode_w_fast_run+0xc92a>
+  1.01  1eab7f1:	movabs $0x7ffffffffffffffd,%rax
+  1.01  1eab7fb:	cmp    %rax,%r8
+  1.01  1eab7fe:	je     1eb099a <wf_bytecode_w_fast_run+0xc91a>
+  1.01  1eab804:	mov    %r8,%rax
+  1.01  1eab807:	add    $0x4,%rax
+  1.01  1eab80b:	mov    %rax,-0x8(%rbx,%r13,8)
+  1.01  1eab810:	add    $0x1,%r12
+  1.01  1eab814:	jmp    1eabdda <wf_bytecode_w_fast_run+0x7d5a>
+  2.02  1eab819:	cmp    $0x5b,%r14
+  2.02  1eab81d:	jne    1eaba8b <wf_bytecode_w_fast_run+0x7a0b>
+  2.02  1eaba8b:	cmp    $0x55,%r14
+  2.02  1eaba8f:	jge    1eabaa1 <wf_bytecode_w_fast_run+0x7a21>
+  2.02  1eabaa1:	mov    $0x2,%rax
+  2.02  1eabaa8:	cmp    %rax,%r13
+  2.02  1eabaab:	jl     1eb09fa <wf_bytecode_w_fast_run+0xc97a>
+  2.02  1eabab1:	cmp    $0x55,%r14
+  2.02  1eabab5:	jge    1eabac7 <wf_bytecode_w_fast_run+0x7a47>
+  2.02  1eabac7:	mov    $0x2,%rax
+  2.02  1eabace:	neg    %rax
+  2.02  1eabad1:	add    %r13,%rax
+  2.02  1eabad4:	imul   $0x8,%rax,%rax
+  2.02  1eabad8:	mov    (%rbx,%rax,1),%r8
+  2.02  1eabadc:	mov    -0x8(%rbx,%r13,8),%rax
+  2.02  1eabae1:	mov    %rax,-0x108(%rbp)
+  2.02  1eabae8:	lea    -0x1(%r8),%rax
+  2.02  1eabaec:	test   $0x3,%rax
+  2.02  1eabaf3:	jne    1eb09ea <wf_bytecode_w_fast_run+0xc96a>
+  2.02  1eabaf9:	mov    -0x108(%rbp),%rax
+  2.02  1eabb00:	and    $0x3,%rax
+  2.02  1eabb04:	cmp    $0x1,%rax
+  2.02  1eabb08:	jne    1eb09ea <wf_bytecode_w_fast_run+0xc96a>
+  2.02  1eabb0e:	mov    %r14,%rax
+  2.02  1eabb11:	sub    $0x53,%rax
+  2.02  1eabb18:	cmp    $0x6,%rax
+  2.02  1eabb1f:	ja     1eabd20 <wf_bytecode_w_fast_run+0x7ca0>
+  1.02  1eabb25:	lea    0xe(%rip),%r10        # 1eabb3a <wf_bytecode_w_fast_run+0x7aba>
+  1.02  1eabb2c:	lea    (%r10,%rax,4),%r10
+  1.02  1eabb30:	movslq (%r10),%rax
+  1.02  1eabb33:	lea    0x4(%r10,%rax,1),%rax
+  1.02  1eabb38:	jmp    *%rax
+  1.01  1eabb60:	cmp    -0x108(%rbp),%r8
+  1.01  1eabb67:	jge    1eabb79 <wf_bytecode_w_fast_run+0x7af9>
+  1.01  1eabb6d:	mov    $0x7,%rax
+  1.01  1eabb74:	jmp    1eabb80 <wf_bytecode_w_fast_run+0x7b00>
+  1.01  1eabb80:	jmp    1eabda9 <wf_bytecode_w_fast_run+0x7d29>
+  1.01  1eabd20:	cmp    $0x5c,%r14
+  1.01  1eabd24:	jne    1eabd44 <wf_bytecode_w_fast_run+0x7cc4>
+  1.01  1eabd2a:	mov    %r8,%rax
+  1.01  1eabd2d:	sar    $0x2,%rax
+  1.01  1eabd31:	mov    -0x108(%rbp),%r10
+  1.01  1eabd38:	sar    $0x2,%r10
+  1.01  1eabd3c:	add    %r10,%rax
+  1.01  1eabd3f:	jmp    1eabd59 <wf_bytecode_w_fast_run+0x7cd9>
+  1.01  1eabd59:	mov    %rax,-0x5b8(%rbp)
+  1.01  1eabd60:	movabs $0x1fffffffffffffff,%rax
+  1.01  1eabd6a:	cmp    %rax,-0x5b8(%rbp)
+  1.01  1eabd71:	jg     1eabd8e <wf_bytecode_w_fast_run+0x7d0e>
+  1.01  1eabd77:	movabs $0xe000000000000000,%rax
+  1.01  1eabd81:	cmp    %rax,-0x5b8(%rbp)
+  1.01  1eabd88:	jge    1eabd9a <wf_bytecode_w_fast_run+0x7d1a>
+  1.01  1eabd9a:	mov    -0x5b8(%rbp),%rax
+  1.01  1eabda1:	shl    $0x2,%rax
+  1.01  1eabda5:	add    $0x1,%rax
+  2.02  1eabda9:	mov    %rax,-0x118(%rbp)
+  2.02  1eabdb0:	cmpq   $0xffffffffffffffff,-0x118(%rbp)
+  2.02  1eabdb8:	je     1eb09da <wf_bytecode_w_fast_run+0xc95a>
+  2.02  1eabdbe:	lea    -0x1(%r13),%rax
+  2.02  1eabdc2:	cmp    $0x55,%r14
+  2.02  1eabdc6:	cmovge %rax,%r13
+  2.02  1eabdca:	mov    -0x118(%rbp),%rdx
+  2.02  1eabdd1:	mov    %rdx,-0x8(%rbx,%r13,8)
+  2.02  1eabdd6:	add    $0x1,%r12
+  3.03  1eabdda:	mov    %r8,-0x100(%rbp)
+  3.03  1eabde1:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+  1.01  1eac160:	mov    -0x110(%rbp),%r8
+  1.01  1eac167:	mov    -0x148(%rbp),%r9
+  1.01  1eac16e:	mov    %r12,%rax
+  1.01  1eac171:	add    $0x2,%rax
+  1.01  1eac175:	cmp    -0x10(%rbp),%rax
+  1.01  1eac179:	jge    1eb0a7a <wf_bytecode_w_fast_run+0xc9fa>
+  1.01  1eac17f:	movzbq 0x1(%r15,%r12,1),%rax
+  1.01  1eac185:	movzbq 0x2(%r15,%r12,1),%r10
+  1.01  1eac18b:	shl    $0x8,%r10
+  1.01  1eac18f:	add    %r10,%rax
+  1.01  1eac192:	mov    %rax,%r8
+  1.01  1eac195:	cmp    -0x10(%rbp),%r8
+  1.01  1eac199:	jge    1eb0a6a <wf_bytecode_w_fast_run+0xc9ea>
+  1.01  1eac19f:	mov    %r12,%rax
+  1.01  1eac1a2:	add    $0x3,%rax
+  1.01  1eac1a6:	cmp    %rax,%r8
+  1.01  1eac1a9:	jge    1eac1bd <wf_bytecode_w_fast_run+0x813d>
+  1.01  1eac1af:	sub    $0x1,%r9
+  1.01  1eac1b3:	cmp    $0x0,%r9
+  1.01  1eac1b7:	jle    1eb0a5a <wf_bytecode_w_fast_run+0xc9da>
+  1.01  1eac1bd:	mov    %r8,%r12
+  1.01  1eac1c0:	mov    %r8,-0x110(%rbp)
+  1.01  1eac1c7:	mov    %r9,-0x148(%rbp)
+  1.01  1eac1ce:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+  1.03  1eac1e0:	mov    -0x148(%rbp),%r8
+  1.03  1eac1e7:	mov    -0x110(%rbp),%r9
+  1.03  1eac1ee:	cmp    $0x0,%r13
+  1.03  1eac1f2:	jle    1eb0aea <wf_bytecode_w_fast_run+0xca6a>
+  1.03  1eac1f8:	mov    %r12,%rax
+  1.03  1eac1fb:	add    $0x2,%rax
+  1.03  1eac1ff:	cmp    -0x10(%rbp),%rax
+  1.03  1eac203:	jge    1eb0aea <wf_bytecode_w_fast_run+0xca6a>
+  1.03  1eac209:	mov    -0x8(%rbx,%r13,8),%rax
+  1.03  1eac20e:	mov    %rax,-0x100(%rbp)
+  1.03  1eac215:	cmpq   $0x0,-0x100(%rbp)
+  1.03  1eac21d:	je     1eb0ada <wf_bytecode_w_fast_run+0xca5a>
+  1.03  1eac223:	movzbq 0x1(%r15,%r12,1),%rax
+  1.03  1eac229:	movzbq 0x2(%r15,%r12,1),%r10
+  1.03  1eac22f:	shl    $0x8,%r10
+  1.03  1eac233:	add    %r10,%rax
+  1.03  1eac236:	mov    %rax,%r9
+  1.03  1eac239:	cmp    -0x10(%rbp),%r9
+  1.03  1eac23d:	jge    1eb0aca <wf_bytecode_w_fast_run+0xca4a>
+  1.03  1eac243:	mov    %r12,%rax
+  1.03  1eac246:	add    $0x3,%rax
+  1.03  1eac24a:	cmp    -0x10(%rbp),%rax
+  1.03  1eac24e:	jge    1eb0aca <wf_bytecode_w_fast_run+0xca4a>
+  1.03  1eac254:	cmp    $0x83,%r14
+  1.03  1eac25b:	jne    1eac2b6 <wf_bytecode_w_fast_run+0x8236>
+  1.03  1eac261:	sub    $0x1,%r13
+  1.03  1eac265:	cmpq   $0x3,-0x100(%rbp)
+  1.03  1eac26d:	jne    1eac291 <wf_bytecode_w_fast_run+0x8211>
+  1.03  1eac291:	cmpq   $0x3,-0x100(%rbp)
+  1.03  1eac299:	jne    1eac2a7 <wf_bytecode_w_fast_run+0x8227>
+  1.02  1eac2a7:	mov    %r12,%rax
+  1.02  1eac2aa:	add    $0x3,%rax
+  1.03  1eac2ae:	mov    %rax,%r12
+  1.03  1eac2b1:	jmp    1eac3a2 <wf_bytecode_w_fast_run+0x8322>
+  1.03  1eac3a2:	mov    %r8,-0x148(%rbp)
+  1.03  1eac3a9:	mov    %r9,-0x110(%rbp)
+  1.03  1eac3b0:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+  1.02  1eac7a0:	mov    -0x100(%rbp),%r8
+  1.02  1eac7a7:	mov    -0x118(%rbp),%r9
+  1.02  1eac7ae:	movq   $0x0,-0x120(%rbp)
+  1.02  1eac7b9:	cmp    $0x0,%r13
+  1.02  1eac7bd:	jle    1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.02  1eac7c3:	mov    %r13,%rax
+  1.02  1eac7c6:	add    $0x2,%rax
+  1.02  1eac7ca:	cmp    -0x20(%rbp),%rax
+  1.02  1eac7ce:	jg     1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.02  1eac7d4:	mov    %r12,%rax
+  1.02  1eac7d7:	add    $0x6,%rax
+  1.02  1eac7db:	cmp    -0x10(%rbp),%rax
+  1.02  1eac7df:	jge    1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.02  1eac7e5:	movzbq 0x1(%r15,%r12,1),%rax
+  1.02  1eac7eb:	mov    %rax,-0x128(%rbp)
+  1.02  1eac7f2:	movzbq 0x2(%r15,%r12,1),%rax
+  1.02  1eac7f8:	mov    %rax,-0x130(%rbp)
+  1.02  1eac7ff:	movzbq 0x3(%r15,%r12,1),%rax
+  1.02  1eac805:	mov    %rax,-0x138(%rbp)
+  1.02  1eac80c:	cmpq   $0x6,-0x128(%rbp)
+  1.02  1eac814:	jge    1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.01  1eac81a:	mov    %r13,%rax
+  1.01  1eac81d:	add    $0x1,%rax
+  1.01  1eac821:	cmp    %rax,-0x128(%rbp)
+  1.01  1eac828:	jge    1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.01  1eac82e:	cmpq   $0x55,-0x130(%rbp)
+  1.01  1eac836:	jl     1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.01  1eac83c:	cmpq   $0x59,-0x130(%rbp)
+  1.01  1eac844:	jg     1eacb3f <wf_bytecode_w_fast_run+0x8abf>
+  1.02  1eacb3f:	cmpq   $0x0,-0x120(%rbp)
+  1.02  1eacb47:	jne    1eacb72 <wf_bytecode_w_fast_run+0x8af2>
+  1.02  1eacb4d:	cmp    $0x0,%r13
+  1.02  1eacb51:	jle    1eb0b72 <wf_bytecode_w_fast_run+0xcaf2>
+  1.02  1eacb57:	cmp    -0x20(%rbp),%r13
+  1.02  1eacb5b:	jge    1eb0b72 <wf_bytecode_w_fast_run+0xcaf2>
+  1.02  1eacb61:	mov    -0x8(%rbx,%r13,8),%rax
+  1.02  1eacb66:	mov    %rax,(%rbx,%r13,8)
+  1.02  1eacb6a:	add    $0x1,%r13
+  1.02  1eacb6e:	add    $0x1,%r12
+  1.02  1eacb72:	mov    %r8,-0x100(%rbp)
+  1.02  1eacb79:	mov    %r9,-0x118(%rbp)
+  1.02  1eacb80:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+  2.02  1eafb60:	cmp    $0xb2,%r14
+  2.02  1eafb67:	jne    1eafbe6 <wf_bytecode_w_fast_run+0xbb66>
+  2.02  1eafb6d:	cmp    $0x0,%r13
+  2.02  1eafb71:	jle    1eb0be2 <wf_bytecode_w_fast_run+0xcb62>
+  2.02  1eafb77:	mov    %r12,%rax
+  2.02  1eafb7a:	add    $0x1,%rax
+  2.02  1eafb7e:	cmp    -0x10(%rbp),%rax
+  2.02  1eafb82:	jge    1eb0be2 <wf_bytecode_w_fast_run+0xcb62>
+  2.02  1eafb88:	movzbq 0x1(%r15,%r12,1),%rax
+  2.02  1eafb8e:	mov    %rax,-0x748(%rbp)
+  2.02  1eafb95:	mov    %r13,%rax
+  2.02  1eafb98:	sub    -0x748(%rbp),%rax
+  2.02  1eafb9f:	sub    $0x1,%rax
+  2.02  1eafba3:	mov    %rax,-0x750(%rbp)
+  2.02  1eafbaa:	cmpq   $0x0,-0x750(%rbp)
+  2.02  1eafbb2:	jl     1eb0bd2 <wf_bytecode_w_fast_run+0xcb52>
+  2.02  1eafbb8:	mov    -0x750(%rbp),%rax
+  2.02  1eafbbf:	cmp    -0x20(%rbp),%rax
+  2.02  1eafbc3:	jge    1eb0bd2 <wf_bytecode_w_fast_run+0xcb52>
+  2.02  1eafbc9:	mov    -0x8(%rbx,%r13,8),%rax
+  2.02  1eafbce:	mov    -0x750(%rbp),%rsi
+  2.02  1eafbd5:	mov    %rax,(%rbx,%rsi,8)
+  2.02  1eafbd9:	sub    $0x1,%r13
+  2.02  1eafbdd:	add    $0x2,%r12
+  2.02  1eafbe1:	jmp    1eb05ad <wf_bytecode_w_fast_run+0xc52d>
+  2.02  1eb05ad:	jmp    1eb05fb <wf_bytecode_w_fast_run+0xc57b>
+ 12.28  1eb05fb:	cmpq   $0x0,-0xf0(%rbp)
+ 12.28  1eb0603:	jg     1ea4220 <wf_bytecode_w_fast_run+0x1a0>

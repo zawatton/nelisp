@@ -128,16 +128,16 @@
       (puthash 20040 10002 mem)        ; function slot of the object 20022 (= 20016 + 24)
       ;; An object whose slot is a cons: no lookup.
       (puthash 100 20022 mem) (puthash 108 29 mem)
-      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= (funcall run 200 100 2 1 0 0) 0))
       (should (= lookups 0))
       (should (equal invoked '(10002 20022)))
       ;; A view spelling (low bits 000), and an object whose slot is not a cons:
       ;; the mirror lookup answers.
       (puthash 100 20024 mem) (puthash 108 29 mem)
-      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= (funcall run 200 100 2 1 0 0) 0))
       (should (= lookups 1))
       (puthash 20040 12 mem) (puthash 100 20022 mem) (puthash 108 29 mem)
-      (should (= (funcall run 200 100 2 1 0) 0))
+      (should (= (funcall run 200 100 2 1 0 0) 0))
       (should (= lookups 2)))))
 
 (ert-deftest ndc-a-success-clears-dead-operands-but-error-retains-them ()
@@ -158,7 +158,7 @@
         (puthash 20040 0 mem)
         (puthash 100 20022 mem) (puthash 108 29 mem) (puthash 116 13 mem)
         (puthash 124 999 mem)
-        (should (= (funcall run 200 100 3 2 0) st))
+        (should (= (funcall run 200 100 3 2 0 0) st))
         (should (= (gethash 108 mem) (if (= st 0) 3 29)))
         (should (= (gethash 116 mem) (if (= st 0) 3 13)))
         (should (= (gethash 124 mem) 999))))))

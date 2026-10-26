@@ -89,6 +89,30 @@
           (if (if (= id -16) (= argc 1) (if (= id -14) (= argc 2) (= argc 3)))
               (let* ((a (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)))
                 (if (if (= (logand a 7) 6) (> a 4096) 0)
+                    (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 12)
+                        ;; corecall: a record (GNU data.c Faref/Faset, RECORDP uses
+                        ;; PVSIZE).  Index 0 is the type word, K > 0 is data slot K-1,
+                        ;; K up to the slot count; `length' of a record and an aset of
+                        ;; its type word stay with the full builtin.
+                        (if (= id -16) -3
+                          (let* ((n (nl_record_length a))
+                                 (b (heap-read-u64 (+ stk (* (+ (- sp argc) 1) 8)) 0)))
+                            (if (= (logand b 3) 1)
+                                (let* ((index (sar b 2)))
+                                  (if (if (>= index 0) (<= index n) 0)
+                                      (if (= id -14)
+                                          (seq (ptr-write-u64 resw 0
+                                                              (if (= index 0) (nl_record_type_word a)
+                                                                (nl_record_slot_word a (- index 1))))
+                                               0)
+                                        (if (= index 0) -3
+                                          (let* ((value (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0)))
+                                            (seq (wf_dirty)
+                                                 (ptr-write-u64 (+ (nl_word_payload a) (+ 16 (* (- index 1) 8))) 0
+                                                                (nl_word_canon value))
+                                                 (ptr-write-u64 resw 0 value) 0))))
+                                    -3))
+                              -3)))
                     (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
                         (let* ((n (vector-len a)))
                           (if (if (>= n 0) (/= n 7) 0)
@@ -108,7 +132,7 @@
                                           -3))
                                     -3)))
                             -3))
-                      -3)
+                      -3))
                   -3))
             -3)
       (let* ((a (if (> argc 0) (heap-read-u64 (+ stk (* (- sp argc) 8)) 0) 3))
@@ -148,6 +172,47 @@
                   (logand a b) -1))
              (t -1)))
            (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0)))))))
+    ;; corecall (W2c): the VM's call of a primitive held by the call site's symbol, with the
+    ;; SUBR struct in hand (GNU bytecode.c Bcall -> funcall_subr, eval.c:3254).  CACHE is the
+    ;; site operand (the compiler's [SYMBOL nil nil nil nil] vector, or the symbol).  The
+    ;; symbol's function cell is read directly; when it holds a Subr object (header kind 20,
+    ;; immutable, so it IS the builtin whatever the symbol is called, and a redefinition or
+    ;; advice replaces the cell), the primitive id the descriptor carries runs
+    ;; `m5_fx_primitive_run' on the operand words, exactly as `m5_fx_callout' does after its
+    ;; lookup, cache and autoload tests.  0: done, value in RESW; -3: not handled, nothing
+    ;; written (the call-out then runs unchanged).  The ids are the leaf bodies that call no
+    ;; Lisp, allocate nothing and reach no safepoint; operands and RESW are slots of the
+    ;; activation's rooted frame.
+    (defun m5_fx_call_subr (env cache stk sp argc resw)
+      (let* ((sym (if (= (logand cache 7) 6)
+                      (if (< cache 4096) 0
+                        (if (= (logand (ptr-read-u64 (- cache 6) 0) 63) 8)
+                            (ptr-read-u64 (- cache 6) 8)
+                          cache))
+                    0))
+             (fn (if (= (logand sym 7) 6)
+                     (if (< sym 4096) 0
+                       (if (= (logand (ptr-read-u64 (- sym 6) 0) 63) 4)
+                           (ptr-read-u64 (- sym 6) 24)
+                         0))
+                   0)))
+        (if (= (logand fn 7) 6)
+            (if (< fn 4096) -3
+              (let* ((hdr (ptr-read-u64 (- fn 6) 0)))
+                (if (/= (logand hdr 63) 20) -3
+                  (let* ((desc (sar hdr 8))
+                         (lo (logand desc 255))
+                         (id (- lo 17)))
+                    (if (if (= lo 0) 1 (> lo 128)) -3
+                      (if (< argc (logand (sar desc 8) 255)) -3
+                        (if (if (= (logand (sar desc 16) 255) 127) 0
+                              (> argc (logand (sar desc 16) 255)))
+                            -3
+                          (if (if (= id 1) 1 (if (= id 10) 1 (if (= id -14) 1 (if (= id -15) 1 (if (= id -16) 1
+                                (if (if (>= id 3) (<= id 7) 0) 1 (if (= id 11) 1 0)))))))
+                              (m5_fx_primitive_run id stk sp argc resw env 0)
+                            -3))))))))
+          -3)))
     (defun m5_fx_primitive_named (name stk sp argc resw env scratch)
       (let* ((id (m5_fx_primitive_id name argc)))
         (if (= id 0) -3 (m5_fx_primitive_run id stk sp argc resw env scratch))))

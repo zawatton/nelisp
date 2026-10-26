@@ -25552,6 +25552,86 @@ At most65 skeleton occurrences,32 guards and depth8 are inspected.  The
                         (nth 2 (car intervals)) (nth 2 (car (last intervals)))
                         count))))))))))
 
+;;;; Threaded dispatch (vmcore, W1d) ---------------------------------------
+;;
+;; GNU bytecode.c:577-600 ends every handler with its own indirect jump
+;; (NEXT = fetch the opcode, `goto *targets[op]'), so each opcode has its own
+;; branch-predictor history and the dispatch is a load plus a jump.  The
+;; ordered-table `if' below is reached through the loop head instead: a
+;; handler jumps to the join, the join tests the loop condition, the head
+;; fetches and compares the opcode against the table bounds, and one shared
+;; indirect jump serves every opcode.  For an allow-listed defun whose
+;; `while' body is exactly (FETCH TABLE-IF), with FETCH the byte read of the
+;; table's key, the arms of the table end with a copy of
+;;   <exit test>  <fetch>  <table jump>
+;; instead of a jump to the join.  The key is a byte (the source reads it
+;; with `heap-read-u8' and the table plan is checked to lie inside 0..255),
+;; so the table is widened to 0..255 and the two bound compares go away.
+;; Control flow, register contents and the stack-map call sites are
+;; unchanged: no call occurs in the copied sequence, every path that left an
+;; arm through the join now reaches the same exit test.
+(defvar nelisp-aot-compiler-threaded-dispatch t
+  "Non-nil permits `--threaded-loop-plan' (bind nil for the shared-jump layout).")
+
+(defvar nelisp-aot-compiler-threaded-dispatch-functions '(wf_bytecode_w_fast_run)
+  "Defuns whose dispatch `while' is emitted with replicated (threaded) dispatch.
+Each loop must have the body (FETCH TABLE-IF), FETCH being
+`(setq KEY (ptr-read-u8 P I))' and TABLE-IF an ordered jump-table `if' on KEY;
+the test must compare two variables.")
+
+(defvar nelisp-aot-compiler--threaded-dispatch nil
+  "Plist (:node TABLE-IF :tail FUNCTION) while a threaded loop body is emitted.
+FUNCTION receives the table-jump emitter and emits the copied exit test and fetch.")
+
+(defun nelisp-aot-compiler--limit-guard-slot (node)
+  "Slot of the continuation limit of `while' NODE when its test is (< PC GO), else nil.
+Only the allow-listed dispatch defuns qualify, whatever the target or the threaded switch: their
+decline arms `(setq go 0)' stay out of line (the cold layout of `--cold-guard-slot') as they were
+when the loop tested (> GO 0)."
+  (let ((test (nelisp-aot-compiler--ir-get node :test)))
+    (and (memq nelisp-aot-compiler--emitting-defun-name
+               nelisp-aot-compiler-threaded-dispatch-functions)
+         (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+         (eq (nelisp-aot-compiler--ir-get test :op) '<)
+         (let ((a (nelisp-aot-compiler--ir-get test :a))
+               (b (nelisp-aot-compiler--ir-get test :b)))
+           (and (eq (nelisp-aot-compiler--ir-kind a) 'ref)
+                (eq (nelisp-aot-compiler--ir-kind b) 'ref)
+                (memq (or (nelisp-aot-compiler--ir-get b :class) 'gp) '(gp nil))
+                (integerp (nelisp-aot-compiler--ir-get b :slot))
+                (nelisp-aot-compiler--ir-get b :slot))))))
+
+(defun nelisp-aot-compiler--threaded-loop-plan (node)
+  "Return (FETCH TABLE-IF) when `while' NODE qualifies for threaded dispatch, else nil."
+  (when (and nelisp-aot-compiler-threaded-dispatch
+             (eq nelisp-aot-compiler--arch 'x86_64)
+             (eq nelisp-aot-compiler--abi 'sysv)
+             (memq nelisp-aot-compiler--emitting-defun-name
+                   nelisp-aot-compiler-threaded-dispatch-functions))
+    (let* ((body (nelisp-aot-compiler--ir-get node :body))
+           (test (nelisp-aot-compiler--ir-get node :test))
+           (fetch (car-safe body)) (table (car-safe (cdr-safe body))))
+      (when (and (= (length body) 2)
+                 (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+                 (nelisp-aot-compiler--x86-ref-leaf-p (nelisp-aot-compiler--ir-get test :a))
+                 (nelisp-aot-compiler--x86-ref-leaf-p (nelisp-aot-compiler--ir-get test :b))
+                 (eq (nelisp-aot-compiler--ir-kind fetch) 'setq-local)
+                 (eq (nelisp-aot-compiler--ir-kind (nelisp-aot-compiler--ir-get fetch :value-ir))
+                     'ptr-read-u8)
+                 (eq (nelisp-aot-compiler--ir-kind table) 'if))
+        (let ((plan (nelisp-aot-compiler--x86-ordered-if-plan table)))
+          (when (and plan
+                     (equal (nelisp-aot-compiler--ir-get (nth 0 plan) :slot)
+                            (nelisp-aot-compiler--ir-get fetch :slot))
+                     (<= 0 (nth 1 plan)) (<= (nth 2 plan) 255)
+                     (nelisp-aot-compiler--x86-ref-leaf-p
+                      (nelisp-aot-compiler--ir-get
+                       (nelisp-aot-compiler--ir-get fetch :value-ir) :ptr))
+                     (nelisp-aot-compiler--x86-ref-leaf-p
+                      (nelisp-aot-compiler--ir-get
+                       (nelisp-aot-compiler--ir-get fetch :value-ir) :offset)))
+            (list fetch table)))))))
+
 (defun nelisp-aot-compiler--emit-dense-if-x86 (node buf)
   "Emit a relative jump table for eligible NODE, returning non-nil.
 GNU bytecode.c:577-600 dispatches through label targets, or switch cases.
@@ -25575,6 +25655,9 @@ keeps one fixed-size join jump in both compilation passes."
              (arms (unless ordered (nth 3 plan))) (default (nth 4 plan))
              (leaves (and ordered (nth 4 plan)))
              (effectp (eq emit-arm #'nelisp-aot-compiler--emit-effect))
+             (threaded (and ordered effectp
+                            (eq node (plist-get nelisp-aot-compiler--threaded-dispatch :node))))
+             (tail (and threaded (plist-get nelisp-aot-compiler--threaded-dispatch :tail)))
              (id (nelisp-aot-compiler--ir-get node :id))
              ;; GNU comp.c:500-507 scopes basic blocks to their function.
              ;; All table labels have private identities, even when a source
@@ -25582,13 +25665,41 @@ keeps one fixed-size join jump in both compilation passes."
              (label #'make-symbol)
              (table (funcall label (format "%s-table" id)))
              (fallback (funcall label (format "%s-default" id)))
-             (end (funcall label (format "%s-end" id))) labels)
+             (end (funcall label (format "%s-end" id))) labels
+             (table-jump
+              (lambda ()
+                ;; The key's register when it is promoted, else RAX.
+                (let ((idx (or (cdr (assq (nelisp-aot-compiler--ir-get ref :slot)
+                                          nelisp-aot-compiler--promoted-slots))
+                               (progn (nelisp-aot-compiler--emit-value ref buf) 'rax))))
+                  (nelisp-asm-x86_64-lea-reg-rip-label buf 'r10 table)
+                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
+                                               (list :mem 'r10 idx 4 0))
+                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+                                               '(:mem r10 nil 1 0))
+                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
+                                               '(:mem r10 rax 1 4))
+                  (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax))))))
         (dolist (arm arms)
           (push (cons (car arm) (funcall label (format "%s-case-%d" id (car arm)))) labels))
         (dolist (leaf leaves)
-          (push (cons leaf (if (and effectp (nelisp-aot-compiler--x86-pure-leaf-p leaf))
+          (push (cons leaf (if (and effectp (not threaded)
+                                    (nelisp-aot-compiler--x86-pure-leaf-p leaf))
                                end
                              (funcall label (format "%s-ordered-leaf" id)))) labels))
+        (when threaded
+          ;; Widen the key range to the byte 0..255: the key is a byte, so the two bound
+          ;; compares and the subtraction are not needed; the unbounded tails take the
+          ;; entries outside the planned range.
+          (let ((wide (make-vector 256 nil)))
+            (dotimes (k 256)
+              (aset wide k (cond ((< k lo) (nth 5 plan))
+                                 ((> k hi) (nth 6 plan))
+                                 (t (aref (nth 3 plan) (- k lo))))))
+            (setq plan (list ref 0 255 wide leaves (nth 5 plan) (nth 6 plan) (nth 7 plan))
+                  lo 0 hi 255)))
+        (if threaded
+            (funcall table-jump)
         (nelisp-aot-compiler--emit-value ref buf)
         ;; A modulo-2^64 subtraction plus unsigned bound rejects every
         ;; out-of-range signed value, including the two int64 extrema.
@@ -25614,7 +25725,7 @@ keeps one fixed-size join jump in both compilation passes."
                                        '(:mem r10 nil 1 0))
         (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
                                        '(:mem r10 rax 1 4))
-        (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax))
+        (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax)))
         (nelisp-asm-x86_64-define-label buf table)
         (dotimes (i (1+ (- hi lo)))
           (let ((slot (nelisp-asm-x86_64-buffer-pos buf)))
@@ -25636,13 +25747,17 @@ keeps one fixed-size join jump in both compilation passes."
           (nelisp-asm-x86_64-jmp-rel32 buf end))
         (if ordered
             (dolist (leaf leaves)
-              (unless (and effectp (nelisp-aot-compiler--x86-pure-leaf-p leaf))
+              (unless (and effectp (not threaded) (nelisp-aot-compiler--x86-pure-leaf-p leaf))
                 (nelisp-aot-compiler--hot-align buf :arm nil)
                 (nelisp-asm-x86_64-define-label buf (cdr (assq leaf labels)))
                 ;; Keep the ordinary conservative one-way cache invalidation.
                 ;; No earlier sibling's state is restored at this entry or join.
                 (funcall emit-arm leaf buf)
-                (nelisp-asm-x86_64-jmp-rel32 buf end)))
+                (if threaded
+                    ;; Threaded dispatch: the arm ends with its own copy of the
+                    ;; loop's exit test, the key fetch and the table jump.
+                    (funcall tail table-jump)
+                  (nelisp-asm-x86_64-jmp-rel32 buf end))))
           (nelisp-aot-compiler--hot-align buf :arm nil)
           (nelisp-asm-x86_64-define-label buf fallback)
           (funcall emit-arm default buf))
@@ -27486,8 +27601,9 @@ Layout:
       ;; an iteration costs no unconditional jump.
       (let ((test-lbl (intern (format "%s-test" id)))
             (nelisp-aot-compiler--cold-guards
-             (let ((slot (nelisp-aot-compiler--cold-guard-slot
-                          (nelisp-aot-compiler--ir-get node :test))))
+             (let ((slot (or (nelisp-aot-compiler--cold-guard-slot
+                              (nelisp-aot-compiler--ir-get node :test))
+                             (nelisp-aot-compiler--limit-guard-slot node))))
                (if slot (cons slot nelisp-aot-compiler--cold-guards)
                  nelisp-aot-compiler--cold-guards))))
         (nelisp-aot-compiler--emit-promoted-loop-x86
@@ -27497,8 +27613,22 @@ Layout:
            ;; Adapt GCC -O2 loop-head alignment to our fixed-width jumps.
            (nelisp-aot-compiler--hot-align buf :loop 16)
            (nelisp-asm-x86_64-define-label buf start-lbl)
-           (dolist (form (nelisp-aot-compiler--ir-get node :body))
-             (nelisp-aot-compiler--emit-effect form buf))
+           (let ((threaded (nelisp-aot-compiler--threaded-loop-plan node)))
+             (if (null threaded)
+                 (dolist (form (nelisp-aot-compiler--ir-get node :body))
+                   (nelisp-aot-compiler--emit-effect form buf))
+               ;; Threaded dispatch: see `--threaded-loop-plan'.  Every arm of the
+               ;; table ends with a copy of the exit test, the key fetch and the
+               ;; table jump; the table's join is never reached.
+               (let ((nelisp-aot-compiler--threaded-dispatch
+                      (list :node (cadr threaded)
+                            :tail (lambda (table-jump)
+                                    (nelisp-aot-compiler--emit-cond-jump
+                                     (nelisp-aot-compiler--ir-get node :test) buf end-lbl nil)
+                                    (nelisp-aot-compiler--emit-effect (car threaded) buf)
+                                    (funcall table-jump)))))
+                 (dolist (form (nelisp-aot-compiler--ir-get node :body))
+                   (nelisp-aot-compiler--emit-effect form buf)))))
            (nelisp-asm-x86_64-define-label buf test-lbl)
            (nelisp-aot-compiler--emit-cond-jump
             (nelisp-aot-compiler--ir-get node :test) buf start-lbl t)

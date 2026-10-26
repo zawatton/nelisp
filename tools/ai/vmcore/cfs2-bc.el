@@ -1,0 +1,5 @@
+(defvar cfs-plainv 5)
+(defvar cfs-bl 7)
+(make-variable-buffer-local (quote cfs-bl))
+(fset 'cfs-plain #[257 "\301\211\211\3W\203\24\0\10\203\20\0\1T\262\2T\202\2\0\1\207" [cfs-plainv 0] 5 "\n\n(fn N)"])
+(fset 'cfs-bufloc #[257 "\301\211\211\3W\203\24\0\10\203\20\0\1T\262\2T\202\2\0\1\207" [cfs-bl 0] 5 "\n\n(fn N)"])

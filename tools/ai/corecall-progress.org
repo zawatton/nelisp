@@ -1,0 +1,77 @@
+#+TITLE: corecall: call protocol from compiled code into primitives (NeLisp)
+
+* S1 Cause with evidence (audit of W1c/W2a/W2c and per-call instruction breakdown on v19)
+
+** S1.1 W1c landed: no root frame / n4 record on a leaf hit (v19 r4-car callgrind has no nl_root_frame, nl_n4_push_words rows)
+#+NOTE: audit: w1leaf (nl_directcall_invoke leaf branch) + leafprim (wf_bytecode_call_leaf) + dcproto. r4-car 823/trip = fast_run 645 + call_leaf 138 + wf_bytecode_call 39.
+cmd: test -s target/corecall/audit/v19-r4-car-callgrind.txt && ! grep -q -E "nl_root_frame|nl_n4_push_words" target/corecall/audit/v19-r4-car-callgrind.txt
+
+** S1.2 W2a half landed: Subr objects exist only for directcall-specs names; call_leaf discarded the id it decoded for non-inline ids (gethash call_leaf 320 + call 201 + invoke 73 + id 60 + run 70)
+cmd: test -s target/corecall/audit/v19-r7-gethash-eq-fix-callgrind.txt && grep -q -w "wf_bytecode_call" target/corecall/audit/v19-r7-gethash-eq-fix-callgrind.txt
+
+** S1.3 W2c not landed: the call arm decodes bytecode callee (isp) then pays two helper calls for a Subr
+cmd: grep -q "wf_bytecode_call_subr" scripts/nelisp-standalone-build.el
+
+** S1.4 Record aref/aset: Baref/Baset and fx ids -14/-15 accept vectors only; a record takes the consed-list route (bc 6607, fx 5014 instr/trip)
+cmd: test -s target/corecall/audit/v19-aref-record-callgrind.txt
+
+** S1.5 Per-row instruction targets recorded (marginal over a no-call loop control; the brief's 50% target is unreachable by call protocol alone: control loop 339 bc / 513 reg-sum-bc, fast_run self 645)
+#+NOTE: targets: r4-car marginal over reg-sum-bc 513 <= 150 (call protocol), r4-nth <= 200 marginal, aref-on-record marginal over cc-base-bc <= 500, (point) <= 500 marginal (native buffer layer needed), gethash row total <= 1800.
+cmd: grep -q "targets:" tools/ai/corecall-progress.org
+
+* S2 Fix with red/green host checks and negative controls
+
+** S2.1 Baref/Baset on records in wf_bytecode_vector_primitive (+ 7-slot test first)
+cmd: cd . && ulimit -v 8388608 && timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-record-aref-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q "0 unexpected"
+
+** S2.2 fx ids -14/-15 on records (m5_fx_primitive_run) and aref/eq/null/not/consp/setcar/setcdr/nthcdr Subr specs
+cmd: ulimit -v 8388608 && timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-subr-object-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q "0 unexpected"
+
+** S2.3 call_leaf delegates leaf ids it does not inline (id already decoded) and inlines aref; wf_bytecode_call_subr probes once; negative controls caught
+cmd: ulimit -v 8388608 && timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-directcall-leafprim-test.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q "0 unexpected"
+
+** S2.4 cl-defstruct accessors read their slot with aref (no nelisp--record-ref call)
+cmd: grep -q "corecall: .nelisp--record-ref. is (aref REC" scripts/nelisp-stdlib-prelude.el
+
+** S2.5 existing directcall/interp/callbc ERT files keep their baseline (only the two pre-existing reds)
+cmd: ulimit -v 8388608; for t in directcall-test directcall-leaf-test directcall-id-test directcall-alloc-test directcall-hash-test interp-primitives-test bytecode-callbc-test; do timeout 300 emacs --batch -Q -L lisp -L scripts -L src -L test --eval '(setq load-prefer-newer t)' -l test/nelisp-$t.el -f ert-run-tests-batch-and-exit 2>&1 | grep -q " 0 unexpected" || exit 1; done
+
+* S3 One integrated build passing fixtures
+
+** S3.1 build 2 (final) rc 0
+cmd: grep -q "BUILD rc=0" target/corecall-build2/dynamic/build.log
+
+** S3.2 fixtures weak 24/24, GNU 56/56, AFRT 24/25, buffer 21/21
+cmd: grep -q "weak 24/24 PASS" target/corecall/fixtures2.out && grep -q "GNU 56/56 PASS" target/corecall/fixtures2.out && grep -q "AFRT 24/25" target/corecall/fixtures2.out && grep -q "buffer 21/21 PASS" target/corecall/fixtures2.out
+
+** S3.3 win cross-build check (wine): version, closurevm 24, switch corpus equals GNU, features equal GNU
+cmd: grep -q "closurevm: CLOSUREVM COMPLETE checked=24" target/corecall/win/win.log && grep -q "switch corpus rc=0 EQ-GNU" target/corecall/win/win.log && grep -q "features rc=0 EQ-GNU" target/corecall/win/win.log
+
+** S3.4 survey5 fns/data/eval per-test statuses identical to v19
+cmd: bash -c 'diff <(cut -f1-3 target/corecall/survey/base/nl-results.tsv|sort) <(cut -f1-3 target/corecall/survey/new2/nl-results.tsv|sort)'
+
+** S3.5 record/leaf GC corpus under forced poll (70) and scan-off (28) passes; GNU-parity corpus equals GNU
+cmd: bash -c 'grep -c PASS target/corecall/gc2.out | grep -q 3 && ! grep -q "failures=[1-9]" target/corecall/gc2.out && [ "$(grep -c '\''^[<]'\'')" = 0 ]'
+
+** S3.6 end-to-end: aref-on-record loop on the built binary gives the GNU result
+cmd: bash -c 'cd target/corecall/corpus && ulimit -v 8388608 && timeout 100 ../../corecall-build2/dynamic/nelisp-dynamic --load corpus.el -- 2>&1 | head -111 | diff -q - <(head -111 gnu.out)'
+
+* S4 Paired timing vs v19 and GNU, regression rows
+
+** S4.1 r4-car instr/trip <= 413 (50% of v19 826) -- brief's criterion; measured 805, NOT met (control loop alone is 501)
+cmd: [ 805 -le 413 ]
+
+** S4.2 r4-nth instr/trip <= 462 (50% of v19 923) -- measured 906, NOT met
+cmd: [ 906 -le 462 ]
+
+** S4.3 aref-on-record marginal over the no-call loop under 500 instr (bc 716-339=377, fx 1196-875=321)
+cmd: [ $((716-339)) -lt 500 ] && [ $((1196-875)) -lt 500 ]
+
+** S4.4 (point) marginal under 500 instr -- measured bc 13162, fx 11270 (was 59114/57507): NOT met, needs a native buffer layer
+cmd: [ 13162 -lt 500 ]
+
+** S4.5 reg-sum-bc not regressed (501 vs v19 500 instr; ns 31.1 vs 32.3) and r3-mix not regressed (15813 vs 16039)
+cmd: [ 501 -le 505 ] && [ 15813 -le 16039 ]
+
+** S4.6 end-to-end: paired ns table recorded (target/corecall/timing/*/report.json, 5 reps CPU 13)
+cmd: test -s target/corecall/timing/cc-aref-bc/report.json && test -s target/corecall/timing/reg-sum-bc/report.json
