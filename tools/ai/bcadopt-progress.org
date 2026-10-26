@@ -1,0 +1,33 @@
+#+TITLE: Admit prelude functions to byte-code with parity fixtures (bcadopt)
+#+NOTE: Created 2026-10-31 before implementation; 6 criteria. Seed = coordinator HEAD 086bdce62 plus overlay (56 files). Evidence: ../aot1-20261030/target/aot1/DESIGN.md section 9 (census), ../resume-4943-20261024/target/xroot/REPORT.md, survey2 drivers.
+* S1 Source
+** S1.1 The cl-defstruct setf blocker found when the fixture gate was relaxed (setf of a struct slot compiles under host cl-lib to a (setf ACCESSOR) call or a cl-struct-TYPE-tags reference the standalone runtime lacks) is fixed at its root (compile-time environment matching NeLisp's cl-defstruct representation, or an equivalent), with red/green on write-region-like cases
+#+NOTE: Fix = scripts/nelisp-prelude-bytecode.el: gv-expanders for the source cl-defstruct accessors (nelisp--record-set), unique interned names for uninterned macro temporaries, guards for (setf X)/cl-struct-TYPE-tags constants. Red/green was run on the v16 baseline binary by fset-injecting host-compiled cells (seed selector vs fixed selector) for setf/push/cl-incf on struct slots.
+#+TIMEOUT: 120
+cmd: sh target/bcadopt/checks/s11.sh
+evidence: target/codex/s11-red.log sha256=52262a62e92a6915b865964cde8bf8c185e42ca9762f34ec9685090df0daafc3
+evidence: target/codex/s11-green.log sha256=1281c5157cac2d2c9864db3fbed271b57fb55057394fe3c8f28268282a358287
+** S1.2 Parity fixtures are generated (host result vs runtime result per function, mechanically, with GNU 31.1 as the reference) for at least the buffer-accessor, regexp-helper and list/string utility families and every function they admit, and the buffer opcodes (point, point-min/max, goto-char, current-buffer, set-buffer, save-current-buffer, buffer-substring) are added to both opcode allowlists where the VM implements them; adopted count rises by at least 200 with bin/nelisp-bytecode-adoption-check.sh passing (baseline red/candidate green)
+#+NOTE: Adopted 61 -> 513 (+452) on build 2; the shipped fixture TSV drops 4 rows after that build, so a build from the patch is expected to adopt 509 (floor file = 509). Buffer opcodes 96 98 100 101 114 123 and nconc 164 admitted to both lists; 112 current-buffer and 113 set-buffer deliberately NOT admitted (VM follows a user fset, known-gap cases). bin/nelisp-bytecode-adoption-check.sh reports one FAIL, the subset check, caused by a defect in the tool itself (comm on numerically sorted lists: "comm: file 1 is not in sorted order"); the s12.sh python check proves selector-minus-VM and adopted-minus-VM are both empty, and requires every other adoption-check line to PASS (floor 513, rebinding smoke red on v16/green on candidate with test/bcadopt-opcodes-smoke.el). Fixture rows were re-run on the built binary (448 ok; 4 nondeterministic/side-effecting rows were dropped from the shipped TSV after the build: nelisp--w101-time-seconds propertize nelisp--emit-to-stream nl-write-file).
+#+TIMEOUT: 300
+cmd: sh target/bcadopt/checks/s12.sh
+evidence: target/codex/adoption-check.log sha256=0dd320b4857b696e9795189d05e139022c008e73d33038f69cc6ca1e36409f28
+* S2 Build and regression
+** S2.1 One dedicated full dynamic build (prelink PASS within the F1 policy 384 and root evidence bound 98,304) and the Windows per-target generated forms still contain no data-blob
+#+NOTE: Build 1 produced a binary whose prelude boot failed under the fx machinery (byte-code cell of string-lessp captured through symbol-function); 17 captured-value names were excluded and build 2 (the only one this check refers to) baked the cold image.
+#+TIMEOUT: 600
+cmd: sh target/bcadopt/checks/s21.sh
+evidence: target/bcadopt/logs/check-s21.log sha256=954c857655bdc7d53f4a2c496b90c66b296e046aca92c649e14c950a2e43dec0
+** S2.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 same red, buffer 21/21; tools/ai/gnu-speed-win-check/check.sh passes
+cmd: sh target/bcadopt/checks/s22.sh
+evidence: target/codex/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+evidence: target/codex/win-check.log sha256=00ba73e9da94c69523fffcea9d89065d747e575a4cd1f53d26c0b81c504e7ac3
+* S3 End to end
+** S3.1 Elapsed ratio to GNU reduced on the survey2 rows whose callees became byte-code (paired_bench, CPU 10), per-row before/after table, and the adoption report shows which functions moved
+#+NOTE: KNOWN RED. Paired CPU-10 elapsed shows byte-code adoption makes most affected survey2 rows SLOWER than the fx-compiled interpreted baseline (see REPORT.md table); only lists-reverse (0.76x) and r3-call (0.92x) improve. The cmd stays failing until the regressing functions are filtered out of the fixture set.
+#+TIMEOUT: 60
+cmd: sh target/bcadopt/checks/s31.sh
+evidence: target/codex/adopted-moved.txt sha256=4dc9db68cdf5f7c7ffca6f6f1d083f409c731daa9776050b6f6496faf563070b
+** S3.2 The 43-row matrix rows reg-sum-bc, r3-mix and r3-call not slower than the baseline beyond noise (paired, CPU 10); the prelude ratchets (substrate-presence) stay green
+#+TIMEOUT: 60
+cmd: sh target/bcadopt/checks/s32.sh

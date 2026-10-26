@@ -43370,7 +43370,7 @@ listing it would make the load-path lie about what is reachable."
     position))
 
 (defconst nelisp-standalone--prelude-bytecode-opcodes
-  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 166 167 168 175 178 182 183 192)
+  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 96 98 100 101 114 123 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 164 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes currently supported for build-time prelude defuns.
 
 This deliberately starts with the stack, car/cdr and return operations needed

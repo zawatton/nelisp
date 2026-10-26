@@ -8,7 +8,7 @@
 (require 'bytecomp)
 
 (defconst nelisp-prelude-bytecode--opcodes
-  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 164 166 167 168 175 178 182 183 192)
+  '(0 8 16 24 32 40 48 49 50 56 57 58 59 60 61 62 63 64 65 66 67 68 69 70 71 72 73 74 75 76 78 79 80 81 83 84 85 86 87 88 89 90 92 93 94 95 96 98 100 101 114 123 129 130 131 132 133 134 135 136 137 142 152 154 155 157 158 159 160 161 162 163 164 166 167 168 175 178 182 183 192)
   "GNU byte-code opcodes admitted by the focused standalone prelude VM.
 Opcode 32 is CALL (raw 32-39, arity 0-7 plus the explicit 1-/2-byte operand
 widths): verified for both core-mode and the general prelude -- see the
@@ -20,6 +20,18 @@ SYMBOLP/STRINGP/LISTP/LIST2/CONSTANT2/MEMBER/DISCARDN -- all implemented
 natively by the standalone VM (see wf_bytecode_call_primitive and its
 siblings in scripts/nelisp-standalone-build.el) without going through a
 symbol's (possibly `fset'-rebound) function cell.
+
+Opcodes 96/98/100/101/114/123 (point, goto-char, point-max, point-min,
+save-current-buffer, buffer-substring) and 164 (nconc) were added by the
+bcadopt lane after host-versus-standalone differential cases for each
+(`point-op' ... `buffer-substring-fset-override' and `nconc-*' in
+tools/nelisp-bytecode-opcode-parity.el): narrowing, markers, clamping, error
+data and a user `fset' of the builtin all agree with GNU.  Opcodes 112
+(current-buffer) and 113 (set-buffer) are deliberately NOT admitted: the
+standalone VM routes them through `nelisp-bytecode-buffer-bridge', which
+follows a user redefinition of the builtin where GNU does not (known-gap cases
+`current-buffer-fset-override-known-gap' and
+`set-buffer-fset-override-known-gap').
 
 Opcode 95 (Bmult, \"*\") is fully implemented and parity-verified (see the
 mult-* cases in tools/nelisp-bytecode-opcode-parity.el), unconditionally,
@@ -537,7 +549,146 @@ for throw and defalias syntax rather than losing that distinction."
                      tail (cdr tail)))
              found))))
 
+;;; cl-defstruct place lowering for the host compiler.
+;;
+;; NeLisp's own `cl-defstruct' (scripts/nelisp-stdlib-prelude.el) keeps structs
+;; as plain records and lowers `(setf (ACCESSOR REC) VAL)' to
+;; `(nelisp--record-set REC INDEX VAL)'.  Host `cl-lib' knows nothing about
+;; these accessors, so host `setf' compiled them to a call of a function named
+;; `(setf ACCESSOR)', which the standalone runtime never defines.  The selector
+;; therefore teaches the host the same lowering while it compiles: it reads the
+;; `cl-defstruct' forms of the SOURCE being transformed and installs a
+;; `gv-expander' on every accessor for the duration of the transform.  Getters
+;; stay ordinary calls; `setf', `push', `cl-incf' and every other generalized
+;; place go through `nelisp--record-ref' / `nelisp--record-set'.
+
+(defun nelisp-prelude-bytecode--struct-accessors (source)
+  "Return ((ACCESSOR . INDEX) ...) for each top-level `cl-defstruct' in SOURCE.
+Indices follow the prelude: positional, parent slots first (`:include'),
+accessor prefix NAME- unless `:conc-name' says otherwise."
+  (let ((position 0) (registry nil) (accessors nil))
+    (while (string-match "^(cl-defstruct[ \t\n]" source position)
+      (let* ((start (match-beginning 0))
+             (read-result (condition-case nil (read-from-string source start)
+                            (error nil))))
+        (setq position (if read-result (cdr read-result) (match-end 0)))
+        (when read-result
+          (let* ((form (car read-result))
+                 (head (nth 1 form))
+                 (name (if (consp head) (car head) head))
+                 (options (and (consp head) (cdr head)))
+                 (slots (nthcdr 2 form))
+                 (slots (if (stringp (car slots)) (cdr slots) slots))
+                 (parent (cadr (assq :include options)))
+                 (conc (assq :conc-name options))
+                 (prefix (cond ((null conc) (concat (symbol-name name) "-"))
+                               ((null (cadr conc)) "")
+                               (t (format "%s" (cadr conc)))))
+                 (names (append (cdr (assq parent registry))
+                                (mapcar (lambda (slot)
+                                          (if (consp slot) (car slot) slot))
+                                        slots)))
+                 (index 0))
+            (when (and (symbolp name) (or (null parent)
+                                          (assq parent registry)))
+              (push (cons name names) registry)
+              (dolist (slot-name names)
+                (push (cons (intern (concat prefix (symbol-name slot-name)))
+                            index)
+                      accessors)
+                (setq index (1+ index))))))))
+    (nreverse accessors)))
+
+(defun nelisp-prelude-bytecode--unlowered-struct-constant-p (compiled)
+  "Non-nil when COMPILED (or a nested byte-code constant) names a host-only
+cl-struct artifact: a `(setf ACCESSOR)' function or a `cl-struct-TYPE-tags'
+variable.  The standalone runtime defines neither."
+  (and (byte-code-function-p compiled)
+       (> (length compiled) 2)
+       (vectorp (aref compiled 2))
+       (cl-some (lambda (constant)
+                  (cond ((symbolp constant)
+                         (let ((name (symbol-name constant)))
+                           (or (string-prefix-p "(setf " name)
+                               (string-match-p "\\`cl-struct-.*-tags\\'" name))))
+                        ((byte-code-function-p constant)
+                         (nelisp-prelude-bytecode--unlowered-struct-constant-p
+                          constant))))
+                (aref compiled 2))))
+
+(defun nelisp-prelude-bytecode--intern-temporaries (compiled name)
+  "Replace each uninterned symbol constant of COMPILED by a unique interned one.
+The function, and every byte-code constant nested in it, is modified in place.
+The prelude is dynamically bound, so a macro temporary such as the `v' that
+`macroexp-let2' introduces for `setf' is a dynamic variable; the uninterned
+symbol is only distinct from an argument or special variable named `v' until
+the byte-code is printed and read back.  One constant slot serves every
+reference, so renaming the slot renames the variable consistently.  Names are
+`nelisp--bc-temp-NAME-N' with N counting in constant order, so the result is
+deterministic.  Return the number of symbols renamed."
+  (let ((count 0))
+    (cl-labels
+        ((walk (code)
+           (when (and (byte-code-function-p code) (> (length code) 2)
+                      (vectorp (aref code 2)))
+             (let ((constants (aref code 2)))
+               (dotimes (i (length constants))
+                 (let ((constant (aref constants i)))
+                   (cond
+                    ((and constant (symbolp constant) (not (keywordp constant))
+                          (not (eq constant
+                                   (intern-soft (symbol-name constant)))))
+                     (cl-incf count)
+                     (aset constants i
+                           (intern (format "nelisp--bc-temp-%s-%d"
+                                           name count))))
+                    ((byte-code-function-p constant) (walk constant)))))))))
+      (walk compiled))
+    count))
+
+(defun nelisp-prelude-bytecode--uninterned-constant-p (compiled)
+  "Non-nil when COMPILED (or a nested byte-code constant) holds an uninterned
+symbol.  Printing the byte-code into the prelude interns it again, so a
+dynamically bound macro temporary (`macroexp-let2' names one `v') would collide
+with an argument or special variable of the same name.  Found 2026-10-31
+(bcadopt) on a `push' onto a struct slot, which pushed the record instead of
+the value."
+  (and (byte-code-function-p compiled)
+       (> (length compiled) 2)
+       (vectorp (aref compiled 2))
+       (cl-some (lambda (constant)
+                  (cond ((and constant (symbolp constant)
+                              (not (keywordp constant)))
+                         (not (eq constant
+                                  (intern-soft (symbol-name constant)))))
+                        ((byte-code-function-p constant)
+                         (nelisp-prelude-bytecode--uninterned-constant-p
+                          constant))))
+                (aref compiled 2))))
+
 (defun nelisp-prelude-bytecode-transform
+    (source provenance &optional parity-fixtures core-mode whole-file-functions
+            whole-file-compile-p)
+  "Compile SOURCE defuns whose GNU byte-code uses admitted opcodes.
+Outside core mode, the cl-defstruct accessors defined by SOURCE are given
+host `setf' lowering for the duration of the call (see above).
+See `nelisp-prelude-bytecode--transform-1' for the result shape."
+  (let ((saved nil))
+    (unless core-mode
+      (dolist (entry (nelisp-prelude-bytecode--struct-accessors source))
+        (let ((accessor (car entry)) (index (cdr entry)))
+          (push (cons accessor (get accessor 'gv-expander)) saved)
+          (eval `(gv-define-setter ,accessor (val rec)
+                   (list 'nelisp--record-set rec ,index val))
+                t))))
+    (unwind-protect
+        (nelisp-prelude-bytecode--transform-1
+         source provenance parity-fixtures core-mode whole-file-functions
+         whole-file-compile-p)
+      (dolist (entry saved)
+        (put (car entry) 'gv-expander (cdr entry))))))
+
+(defun nelisp-prelude-bytecode--transform-1
     (source provenance &optional parity-fixtures core-mode whole-file-functions
             whole-file-compile-p)
   "Compile SOURCE defuns whose GNU byte-code uses admitted opcodes.
@@ -631,6 +782,10 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                           byte-compile-initial-macro-environment)))
                              (byte-compile lambda-form)))
                        (error (list :compile-error err)))))
+                    (renamed-temporaries
+                     (and (not core-mode) (byte-code-function-p compiled)
+                          (nelisp-prelude-bytecode--intern-temporaries
+                           compiled name)))
                     (doc
                      (if (and whole-file-mode
                               (consp compiled-entry)
@@ -731,6 +886,17 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                 (nested-unsupported
                  (setq reason (format "unsupported-nested-opcodes:%S"
                                       nested-unsupported)))
+                ;; Found 2026-10-31 (bcadopt): host `cl-lib' lowering of a
+                ;; cl-defstruct place the transform did not know about; the
+                ;; standalone runtime lacks `(setf ACCESSOR)' and
+                ;; `cl-struct-TYPE-tags' (see the REVERT NOTE below).
+                ((and (not core-mode)
+                      (nelisp-prelude-bytecode--unlowered-struct-constant-p
+                       compiled))
+                 (setq reason "host-cl-struct-artifact-in-constants"))
+                ((and (not core-mode)
+                      (nelisp-prelude-bytecode--uninterned-constant-p compiled))
+                 (setq reason "uninterned-symbol-in-constants"))
                 (has-bignum-constant
                  (setq reason "constant-folded-bignum-outside-fixnum-range"))
                 (unexpanded-macros

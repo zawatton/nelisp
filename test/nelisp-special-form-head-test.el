@@ -11,8 +11,10 @@
 
 ;; Load only the VM compiler and its data, without running the prelude on Emacs.
 (let ((names '(nelisp--fx-inline-ops nelisp--fx-declared nelisp--fx-special-p
-               nelisp--fx-special-gen nelisp--fx-expand nelisp--fx-native-heads
-               nelisp--fx-native-macro-environment nelisp--fx-compile)))
+               nelisp--fx-special-gen nelisp--fx-alias-hints nelisp--fx-expand nelisp--fx-native-heads
+               nelisp--fx-native-macro-environment nelisp--fx-outer-env
+               nelisp--fx-mentions-p nelisp--fx-rebinds-p nelisp--fx-setq-targets
+               nelisp--fx-compile)))
   (with-temp-buffer
     (insert-file-contents
      (expand-file-name "../scripts/nelisp-stdlib-prelude.el"

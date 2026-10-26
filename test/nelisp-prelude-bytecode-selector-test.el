@@ -77,6 +77,56 @@
     (should-not (multibyte-string-p (aref value 2)))
     (should (string-prefix-p "Unicode documentation: λ …" (nth 2 entry)))))
 
+;; bcadopt: cl-defstruct place lowering (the REVERT NOTE in
+;; scripts/nelisp-prelude-bytecode.el).
+
+(defconst nelisp-prelude-bytecode-selector-test--struct-source
+  (concat "(cl-defstruct (nbx (:constructor nbx--make) (:copier nil))\n"
+          "  \"doc\" a (b 1))\n"
+          "(cl-defstruct (nby (:include nbx) (:conc-name nbyy-)) c)\n"
+          "(defun nbx-bump (r)\n  (setf (nbx-b r) (1+ (nbx-b r))))\n"
+          "(defun nby-push (r v)\n  (push v (nbyy-c r)))\n"
+          "(defun nbx-plain (r) (nbx-a r))\n"))
+
+(defun nelisp-prelude-bytecode-selector-test--digest (source name)
+  (let* ((start (string-match (format "(defun %s\\_>" name) source))
+         (end (cdr (read-from-string source start))))
+    (secure-hash 'sha256 (substring source start end))))
+
+(ert-deftest nelisp-prelude-bytecode-struct-accessors-follow-the-prelude-layout ()
+  (should (equal (nelisp-prelude-bytecode--struct-accessors
+                  nelisp-prelude-bytecode-selector-test--struct-source)
+                 '((nbx-a . 0) (nbx-b . 1)
+                   (nbyy-a . 0) (nbyy-b . 1) (nbyy-c . 2)))))
+
+(ert-deftest nelisp-prelude-bytecode-struct-setf-lowers-to-record-set ()
+  (let* ((source nelisp-prelude-bytecode-selector-test--struct-source)
+         (fixtures
+          (mapcar (lambda (name)
+                    `(,name "" "" "pass" "fixture" "bytecode"
+                            ,(nelisp-prelude-bytecode-selector-test--digest
+                              source (symbol-name name)) "-"))
+                  '(nbx-bump nby-push nbx-plain)))
+         (result (nelisp-prelude-bytecode-transform source "probe.el" fixtures))
+         (text (nth 0 result)))
+    (should (= (nth 1 result) 3))
+    (should (string-match-p "nelisp--record-set" text))
+    (should-not (string-match-p "(setf" (replace-regexp-in-string
+                                          "(defun[^\n]*\n" "" text)))
+    ;; The host symbols must be left exactly as found.
+    (should-not (get 'nbx-b 'gv-expander))))
+
+(ert-deftest nelisp-prelude-bytecode-selector-rejects-host-cl-struct-artifacts ()
+  (let* ((source "(defun foo (x) (cl--class-p x))\n")
+         (result (nelisp-prelude-bytecode-transform
+                  source "probe.el"
+                  `((foo "" "" "pass" "fixture" "bytecode"
+                         ,(nelisp-prelude-bytecode-selector-test--digest
+                           source "foo") "-"))))
+         (row (car (nth 2 result))))
+    (should (= (nth 1 result) 0))
+    (should (equal (nth 4 row) "host-cl-struct-artifact-in-constants"))))
+
 (ert-run-tests-batch-and-exit)
 
 ;;; nelisp-prelude-bytecode-selector-test.el ends here

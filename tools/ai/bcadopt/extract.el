@@ -1,0 +1,21 @@
+;;; -*- lexical-binding: t -*-
+;; Extract the (prog1 'NAME (fset 'NAME (make-byte-code ...))) replacement forms.
+(let* ((text (with-temp-buffer (insert-file-contents (getenv "BCTEXT")) (buffer-string)))
+       (names nil) (print-escape-newlines t) (print-length nil) (print-level nil) (print-circle nil) (n 0))
+  (with-temp-buffer
+    (insert-file-contents (getenv "BCCANDS"))
+    (while (not (eobp))
+      (push (car (split-string (buffer-substring (line-beginning-position) (line-end-position)) "\t")) names)
+      (forward-line 1)))
+  (make-directory (getenv "BCOUTDIR") t)
+  (dolist (nm (nreverse names))
+    (let ((needle (format "(prog1 '%s (fset '%s (make-byte-code" nm nm)) (pos 0) (hit nil))
+      (while (setq pos (string-search needle text pos))
+        (setq hit (if hit 'multi pos) pos (1+ pos)))
+      (cond ((null hit) (message "no-cell %s" nm))
+            ((eq hit 'multi) (message "multi-cell %s" nm))
+            (t (let ((form (car (read-from-string text hit))))
+                 (with-temp-file (expand-file-name (concat nm ".cell.el") (getenv "BCOUTDIR"))
+                   (prin1 form (current-buffer)) (insert "\n"))
+                 (cl-incf n))))))
+  (message "extracted %d" n))

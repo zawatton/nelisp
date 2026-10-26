@@ -1,0 +1,10 @@
+;;; -*- lexical-binding: t -*-
+(setq load-prefer-newer t)
+(let* ((root (file-name-as-directory (expand-file-name (getenv "BCROOT")))))
+  (load (expand-file-name "scripts/nelisp-prelude-bytecode.el" root) nil t)
+  (let* ((src (with-temp-buffer (insert-file-contents (expand-file-name "scripts/nelisp-stdlib-prelude.el" root)) (buffer-string)))
+         (forms (nelisp-prelude-bytecode-source-defuns src)))
+    (with-temp-file (getenv "BCOUT")
+      (dolist (f forms)
+        (let ((print-escape-newlines t) (print-escape-control-characters t) (print-length nil) (print-level nil))
+          (insert (format "%s\t%S\t%s\t%S\n" (nth 1 f) (nth 2 f) (if (eq (car f) 'defsubst) "subst" "defun") (cdddr f))))))))

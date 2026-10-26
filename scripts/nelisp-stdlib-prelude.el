@@ -29349,11 +29349,13 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;; kind, `quote', lexical variables (resolved to slots), global variables
 ;; (read by VARREF, GNU's Bvarref; set through `set'), let/let* of
 ;; non-special variables,
-;; setq, progn, if, while, and calls of named functions -- < > = + - 1+ 1-
+;; setq (any number of pairs), progn, if, while, interactive, lambda that
+;; copies only variables no `setq' assigns, and calls of named functions
+;; -- < > = + - 1+ 1-
 ;; inline on fixnums, everything else through the VM's call-out.  Anything
-;; else (special-variable bindings, lambda/function, catch, condition-case,
-;; unwind-protect, other special forms) throws `nelisp--fx-unsupported'
-;; and the form stays with `eval'.
+;; else (special-variable bindings, a lambda over an assigned variable,
+;; catch, condition-case, unwind-protect, other special forms) throws
+;; `nelisp--fx-unsupported' and the form stays with `eval'.
 (defconst nelisp--fx-inline-ops
   '((+ 4 . 2) (- 5 . 2) (< 6 . 2) (= 13 . 2) (> 14 . 2) (1+ 7 . 1) (1- 15 . 1))
   "Function -> (OPCODE . ARITY) of the VM's fixnum fast paths.")
@@ -29422,6 +29424,77 @@ defun, defmacro and defvaralias can defer to their current function cells.")
 Dolist uses the reader's canonical expansion, matching its let/while
 template. When, unless and prog2 are lowered directly by the VM compiler.")
 
+(defvar nelisp--fx-outer-env nil
+  "The environment of the closure being compiled, or nil.
+Bound by `nelisp--fx-register-fn'; a lambda inside it is built on top of it.")
+
+(defun nelisp--fx-mentions-p (tree sym)
+  "Non-nil when the symbol SYM occurs anywhere in TREE (quoted data too)."
+  (let ((todo (list tree)) (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (while (and (consp x) (not found))
+          (if (eq (car x) sym) (setq found t)
+            (when (consp (car x)) (push (car x) todo)))
+          (setq x (cdr x)))
+        (when (eq x sym) (setq found t))))
+    found))
+
+(defun nelisp--fx-rebinds-p (tree sym)
+  "Non-nil when a binder inside TREE (let, let*, lambda, condition-case) names SYM."
+  (let ((todo (list tree)) (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (when (consp x)
+          (let ((h (car x)))
+            (cond
+             ((eq h 'quote) nil)
+             (t
+              (cond
+               ((memq h '(let let*))
+                (let ((b (car-safe (cdr x))))
+                  (while (consp b)
+                    (when (or (eq (car b) sym) (eq (car-safe (car b)) sym)) (setq found t))
+                    (setq b (cdr b)))))
+               ((eq h 'lambda)
+                (when (memq sym (car-safe (cdr x))) (setq found t)))
+               ((eq h 'condition-case)
+                (when (eq (car-safe (cdr x)) sym) (setq found t))))
+              (while (consp x)
+                (when (consp (car x)) (push (car x) todo))
+                (setq x (cdr x)))))))))
+    found))
+
+(defun nelisp--fx-simple-arg-p (a vars)
+  "Non-nil when evaluating A can neither fail nor have an effect: a
+constant, a quoted datum, #'SYMBOL, or a variable held in a VM slot (VARS)."
+  (cond ((null a) t)
+        ((symbolp a) (or (eq a t) (keywordp a) (and (assq a vars) t)))
+        ((consp a) (or (and (eq (car a) 'quote) (consp (cdr a)) (null (cddr a)))
+                       (and (eq (car a) 'function) (consp (cdr a)) (symbolp (cadr a))
+                            (null (cddr a)))))
+        (t t)))
+
+(defun nelisp--fx-setq-targets (tree)
+  "Symbols assigned by a `setq' anywhere in TREE, quoted data included."
+  (let ((todo (list tree)) (out nil))
+    (while todo
+      (let ((x (pop todo)))
+        (when (and (consp x) (eq (car x) 'setq))
+          (let ((a (cdr x)))
+            (while (consp a)
+              (when (and (car a) (symbolp (car a)) (not (memq (car a) out)))
+                (push (car a) out))
+              (setq a (cdr-safe (cdr-safe a))))))
+        (while (consp x)
+          (when (consp (car x)) (push (car x) todo))
+          (setq x (cdr x)))))
+    out))
+
+(defun nelisp--fx-lambda (form env &rest cells)
+  "Evaluate the function form FORM in ENV extended with the bindings CELLS."
+  (eval form (if cells (append cells env) env)))
+
 (defun nelisp--fx-compile (form &optional params)
   "Return (CODE . NLOCALS) for FORM, or nil if the VM does not cover it.
 PARAMS, a list of symbols, are the first locals, set by the caller."
@@ -29433,7 +29506,10 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                  macroexpand-all-environment))
         (out nil) (pc 0) (nloc (length params)) (patches nil) (labels nil) (nlab 0)
         (depth 0) (maxdepth 0) (lexlets nil) (alias-hints nelisp--fx-alias-hints)
-        (vars (let ((i -1)) (mapcar (lambda (p) (cons p (setq i (1+ i)))) params))))
+        (mutated nil) (nparams (length params))
+        ;; Innermost first, like the interpreter's environment: its
+        ;; parameters are pushed in order, so the last one is first.
+        (vars (let ((i -1)) (nreverse (mapcar (lambda (p) (cons p (setq i (1+ i)))) params)))))
     (cl-labels
         ((emit (&rest items)
            ;; Track the operand-stack depth along the code as laid out; at a
@@ -29510,10 +29586,20 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                    (body (cddr x))
                    (setq vars saved)))
                 ((eq op 'setq)
-                 (unless (= (length x) 3) (unsupported x))
-                 (let ((c (assq (nth 1 x) vars)))
-                   (if c (progn (comp (nth 2 x)) (emit 12) (emit 3 (cdr c)))
-                     (emit 1 (nth 1 x)) (comp (nth 2 x)) (emit 16 'set 2))))
+                 ;; (setq) is nil; PAIRS are assigned left to right and the
+                 ;; value is the last one.  An odd count stays with the
+                 ;; interpreter, which signals.
+                 (let ((args (cdr x)))
+                   (when (= (% (length args) 2) 1) (unsupported x))
+                   (if (null args) (emit 1 nil)
+                     (while args
+                       (let ((sym (car args)) (val (cadr args)))
+                         (unless (symbolp sym) (unsupported x))
+                         (let ((c (assq sym vars)))
+                           (if c (progn (comp val) (emit 12) (emit 3 (cdr c)))
+                             (emit 1 sym) (comp val) (emit 16 'set 2)))
+                         (setq args (cddr args))
+                         (when args (emit 11)))))))
                 ((eq op 'progn) (body (cdr x)))
                 ((memq op '(when unless))
                  (unless (consp (cdr x)) (unsupported x))
@@ -29572,6 +29658,50 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                        (comp a) (emit 12) (jump 9 next) (jump 8 end)
                        (place next) (emit 11)))
                    (emit 1 nil) (place end)))
+                ;; GNU `Finteractive' returns nil and evaluates nothing.
+                ((eq op 'interactive) (emit 1 nil))
+                ;; A lambda is built at run time by `nelisp--fx-lambda' with
+                ;; the interpreter's own `eval', so the closure is the one
+                ;; the interpreter makes.  The VM keeps variables in slots,
+                ;; so only a variable no `setq' ever assigns can be copied
+                ;; into the closure's environment; one that is assigned
+                ;; (the closure would have to share its cell) stays with
+                ;; the interpreter.
+                ((and (memq op '(function lambda))
+                      (let ((lam (if (eq op 'function) (cadr x) x)))
+                        (and (eq (car-safe lam) 'lambda) (consp (cdr lam))
+                             (or (eq op 'lambda) (null (cddr x))))))
+                 (let* ((lam (if (eq op 'function) (cadr x) x))
+                        (cells nil))
+                   (unless (fboundp 'nelisp--fx-lambda)
+                     (setq nelisp--fx-missing 'nelisp--fx-lambda)
+                     (unsupported x))
+                   (unless nelisp--fx-outer-env (unsupported x))
+                   (dolist (v vars)
+                     (when (nelisp--fx-mentions-p lam (car v))
+                       (when (memq (car v) mutated) (unsupported x))
+                       (push v cells)))
+                   (setq cells (nreverse cells))
+                   ;; `eval' trims the environment to the variables the
+                   ;; body mentions, newest mention first, and keeps one the
+                   ;; body binds again; the interpreter keeps let-bound
+                   ;; variables in scope order and drops a rebound one.  The
+                   ;; two agree for one captured variable, and for several
+                   ;; parameters; anything else stays with the interpreter.
+                   (dolist (v cells)
+                     (when (nelisp--fx-rebinds-p lam (car v)) (unsupported x)))
+                   (when (cdr cells)
+                     (dolist (v cells)
+                       (when (>= (cdr v) nparams) (unsupported x))))
+                   (push 'nelisp--fx-lambda nelisp--fx-called)
+                   (emit 1 (list 'function lam))
+                   (emit 1 nelisp--fx-outer-env)
+                   (dolist (v cells)
+                     (emit 1 (car v)) (emit 2 (cdr v))
+                     (push 'cons nelisp--fx-called)
+                     (emit 16 (vector 'cons nil nil nil nil) 2))
+                   (emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
+                         (+ 2 (length cells)))))
                 ((and (symbolp op)
                       (or (memq op nelisp--fx-native-heads)
                           (special-form-p op)))
@@ -29589,6 +29719,19 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
                  ;; Cache the live function cell, never its value. Rebinding
                  ;; still takes effect; replacing/growing the table expires it.
                  (emit 16 (vector op nil nil nil nil) (length (cdr x))))
+                ;; A function not defined yet whose arguments cannot fail or
+                ;; have effects (GNU signals void-function before it
+                ;; evaluates any argument).  The call goes out through the
+                ;; live function cell; a macro defined later retires this
+                ;; code through `nelisp--fx-callees' like any other callee.
+                ((and (symbolp op) (not (fboundp op))
+                      (let ((ok t))
+                        (dolist (a (cdr x))
+                          (unless (nelisp--fx-simple-arg-p a vars) (setq ok nil)))
+                        ok))
+                 (dolist (a (cdr x)) (comp a))
+                 (push op nelisp--fx-called)
+                 (emit 16 (vector op nil nil nil nil) (length (cdr x))))
                 ((and (symbolp op) (not (fboundp op)))
                  (setq nelisp--fx-missing op)
                  (unsupported x))
@@ -29596,9 +29739,11 @@ PARAMS, a list of symbols, are the first locals, set by the caller."
       (when (eq (catch 'nelisp--fx-unsupported
                   ;; Entry check, filled in below: see `nelisp--fx-special-gen'.
                   (emit 17 nil)
-                  (comp (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
-                            (macroexpand-all form nelisp--fx-native-macro-environment)
-                          form))
+                  (let ((expanded (if (and nelisp--fx-expand (fboundp 'macroexpand-all))
+                                      (macroexpand-all form nelisp--fx-native-macro-environment)
+                                    form)))
+                    (setq mutated (nelisp--fx-setq-targets expanded))
+                    (comp expanded))
                   (emit 0) 'ok)
                 'ok)
         ;; The last element, after HALT, is the operand stack size the VM
@@ -29835,10 +29980,12 @@ Defining it as a function compiles them again.")
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
     (nelisp--fx-register-fn name (symbol-function name))))
 
-(defun nelisp--fx-register-fn (name fn)
+(defun nelisp--fx-register-fn (name fn &optional force)
   "Compile closure FN = (closure ENV ARGS . BODY) into `nelisp--fx-table'.
 NAME is the function it is defined as, or nil for an anonymous lambda; only
-a named function takes part in the retry queues."
+a named function takes part in the retry queues.  FORCE replaces an
+existing `none' record in place (never removing it first: a call made
+meanwhile would otherwise record `none' again behind the compilation)."
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
     (progn
       (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
@@ -29847,7 +29994,8 @@ a named function takes part in the retry queues."
                (shape (nelisp--fx-arglist-shape args)))
           (when (and shape
                      (not (cl-some #'nelisp--fx-special-p (car shape)))
-                     (not (gethash body nelisp--fx-table)))
+                     (let ((cur (gethash body nelisp--fx-table)))
+                       (or (null cur) (and force (eq cur 'none)))))
             (if (nelisp--fx-hopeless-p body)
                 (puthash body 'none nelisp--fx-table)
             (let* ((nelisp--fx-missing nil) (nelisp--fx-called nil) (failed nil)
@@ -29857,6 +30005,7 @@ a named function takes part in the retry queues."
                    (inhibit-message t)
                    (macros (nelisp--fx-macros-used body))
                    (nelisp--fx-expand (and macros t))
+                   (nelisp--fx-outer-env (nth 1 fn))
                    (c (condition-case nil (nelisp--fx-compile (cons 'progn body) (car shape))
                         (error (setq failed t) nil))))
               (if c (setq nelisp--fx-compiled-ok t)
@@ -29891,14 +30040,13 @@ a named function takes part in the retry queues."
                        nelisp--fx-table)))))))))
 
 (defconst nelisp--fx-hopeless-heads
-  '(lambda condition-case unwind-protect catch save-excursion
+  '(condition-case unwind-protect catch save-excursion
     save-restriction save-current-buffer)
   "Forms `nelisp--fx-compile' never covers and no common macro removes.")
 
 (defun nelisp--fx-hopeless-p (body)
   "Non-nil when BODY, before macro expansion, already contains a form the
-VM never covers (`nelisp--fx-hopeless-heads'; #'(lambda ...) is found
-through its `lambda').  A form is any cons in the body, so a variable
+VM never covers (`nelisp--fx-hopeless-heads').  A form is any cons in the body, so a variable
 named like one of the heads, bound as (NAME VALUE), also counts: such a
 body only stays with the interpreter.
 Compiling such a body ends in `none' after `macroexpand-all' of all of it,
@@ -30011,6 +30159,14 @@ boot starts with the prelude already on the VM."
           (nelisp--fx-defer n))))
     (dolist (n names) (nelisp--fx-register n))
     (clrhash nelisp--fx-pending)
+    ;; A function the compiler itself calls (`remq', `functionp', ...) was
+    ;; applied while it was absent from the table, and so recorded `none'
+    ;; behind its own registration.  Replace those records in place.
+    (dolist (n names)
+      (let ((fn (and (fboundp n) (symbol-function n))))
+        (when (and (eq (car-safe fn) 'closure)
+                   (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
+          (condition-case nil (nelisp--fx-register-fn n fn t) (error nil)))))
     (condition-case nil (nelisp--fx-retry-errored) (error nil))
     (nelisp--fx-count)))
 

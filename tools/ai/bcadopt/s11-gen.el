@@ -1,0 +1,20 @@
+;;; -*- lexical-binding: t -*-
+(load (getenv "BCLIB") nil t)
+(require 'bytecomp) (require 'cl-lib)
+(let* ((src (with-temp-buffer (insert-file-contents (getenv "BCSRC")) (buffer-string)))
+       (fx (mapcar (lambda (nm)
+                     (let* ((start (string-match (format "(defun %s\\_>" nm) src))
+                            (end (cdr (read-from-string src start))))
+                       (list (intern nm) "" "" "pass" "s11" "bytecode"
+                             (secure-hash 'sha256 (substring src start end)) "-")))
+                   '("nbx-bump" "nby-push" "nbx-incf")))
+       (res (nelisp-prelude-bytecode-transform src "s11.el" fx))
+       (cells nil) (print-escape-newlines t) (print-length nil))
+  (with-temp-buffer
+    (insert (nth 0 res))
+    (dolist (nm '("nbx-bump" "nby-push" "nbx-incf"))
+      (goto-char (point-min))
+      (when (search-forward (format "(prog1 '%s (fset '%s (make-byte-code" nm nm) nil t)
+        (goto-char (match-beginning 0))
+        (push (prin1-to-string (read (current-buffer))) cells))))
+  (with-temp-file (getenv "BCOUT") (dolist (c (nreverse cells)) (insert c "\n"))))

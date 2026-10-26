@@ -1,0 +1,13 @@
+;; Host driver: run the prelude byte-code selector over the prelude file.
+(setq load-prefer-newer t)
+(let* ((root (file-name-as-directory (expand-file-name (getenv "BCROOT"))))
+       (out (getenv "BCOUT"))
+       (fx (expand-file-name (or (getenv "BCFIX") "test/nelisp-prelude-bytecode-parity-fixtures.tsv") root)))
+  (load (expand-file-name "scripts/nelisp-prelude-bytecode.el" root) nil t)
+  (require 'bytecomp) (require 'cl-lib)
+  (let* ((src (with-temp-buffer (insert-file-contents (expand-file-name "scripts/nelisp-stdlib-prelude.el" root)) (buffer-string)))
+         (fixtures (nelisp-prelude-bytecode-read-parity-fixtures fx))
+         (res (nelisp-prelude-bytecode-transform src "scripts/nelisp-stdlib-prelude.el" fixtures)))
+    (nelisp-prelude-bytecode-write-report out (nth 2 res))
+    (when (getenv "BCTEXT") (with-temp-file (getenv "BCTEXT") (insert (nth 0 res))))
+    (message "bcadopt-host: adopted=%d" (nth 1 res))))

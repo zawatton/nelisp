@@ -632,7 +632,141 @@
        (unwind-protect
            (progn (fset 'cdr-safe (lambda (&rest _) 'shadow))
                   (byte-code (unibyte-string 192 163 135) [(a b)] 2))
-         (fset 'cdr-safe old)))))
+         (fset 'cdr-safe old))))
+    ;; bcadopt: nconc (164) and the buffer opcodes admitted for the general
+    ;; prelude.  Each runs in a fresh process on both sides, inside a temp
+    ;; buffer where the opcode needs one.
+    (nconc-two (192 193 164 135) [(1 2) (3)] 3)
+    (nconc-nil-first (192 193 164 135) [nil (3)] 3)
+    (nconc-atom-last (192 193 164 135) [(1) 5] 3)
+    (nconc-wrong-type nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 193 164 135) '[3 (1)] 3)
+       (error (list (car e) (cadr e)))))
+    (nconc-fset-override nil nil nil
+     (let ((old (symbol-function 'nconc)))
+       (unwind-protect
+           (progn (fset 'nconc (lambda (&rest _) 'shadow))
+                  (byte-code (unibyte-string 192 193 164 135) [(a) (b)] 3))
+         (fset 'nconc old))))
+    (point-op nil nil nil
+     (with-temp-buffer (insert "abcde") (goto-char 3)
+                       (list (byte-code (unibyte-string 96 135) [] 1) (point))))
+    (point-narrowed nil nil nil
+     (with-temp-buffer (insert "abcdef") (narrow-to-region 2 5) (goto-char 4)
+                       (byte-code (unibyte-string 96 135) [] 1)))
+    (point-fset-override nil nil nil
+     (let ((old (symbol-function 'point)))
+       (unwind-protect
+           (progn (fset 'point (lambda () 'shadow))
+                  (with-temp-buffer (insert "ab")
+                                    (byte-code (unibyte-string 96 135) [] 1)))
+         (fset 'point old))))
+    (point-min-op nil nil nil
+     (with-temp-buffer (insert "abcdef") (narrow-to-region 2 5)
+                       (list (byte-code (unibyte-string 101 135) [] 1)
+                             (byte-code (unibyte-string 100 135) [] 1))))
+    (point-min-max-empty nil nil nil
+     (with-temp-buffer (list (byte-code (unibyte-string 101 135) [] 1)
+                             (byte-code (unibyte-string 100 135) [] 1))))
+    (point-max-fset-override nil nil nil
+     (let ((old (symbol-function 'point-max)))
+       (unwind-protect
+           (progn (fset 'point-max (lambda () 'shadow))
+                  (with-temp-buffer (insert "ab")
+                                    (byte-code (unibyte-string 100 135) [] 1)))
+         (fset 'point-max old))))
+    (goto-char-op nil nil nil
+     (with-temp-buffer (insert "abcde")
+                       (list (byte-code (unibyte-string 192 98 135) [2] 1) (point))))
+    (goto-char-clamp nil nil nil
+     (with-temp-buffer (insert "abc")
+                       (list (byte-code (unibyte-string 192 98 135) [99] 1) (point)
+                             (byte-code (unibyte-string 192 98 135) [0] 1) (point))))
+    (goto-char-marker nil nil nil
+     (with-temp-buffer (insert "abcde")
+                       (list (markerp (byte-code (unibyte-string 192 98 135)
+                                                 (vector (copy-marker 2)) 1))
+                             (point))))
+    (goto-char-wrong-type nil nil nil
+     (with-temp-buffer
+       (condition-case e (byte-code (unibyte-string 192 98 135) '[x] 1)
+         (error (car e)))))
+    (goto-char-fset-override nil nil nil
+     (let ((old (symbol-function 'goto-char)))
+       (unwind-protect
+           (progn (fset 'goto-char (lambda (_) 'shadow))
+                  (with-temp-buffer (insert "ab")
+                                    (byte-code (unibyte-string 192 98 135) [1] 1)))
+         (fset 'goto-char old))))
+    (current-buffer-op nil nil nil
+     (with-temp-buffer (eq (byte-code (unibyte-string 112 135) [] 1)
+                           (current-buffer))))
+    (current-buffer-fset-override-known-gap nil nil nil
+     (let ((old (symbol-function 'current-buffer)))
+       (unwind-protect
+           (progn (fset 'current-buffer (lambda () 'shadow))
+                  (byte-code (unibyte-string 112 135) [] 1))
+         (fset 'current-buffer old))))
+    (set-buffer-op nil nil nil
+     (let ((a (generate-new-buffer "nl-parity-a")) (old (current-buffer)))
+       (unwind-protect
+           (list (eq (byte-code (unibyte-string 192 113 135) (vector a) 1) a)
+                 (eq (current-buffer) a))
+         (set-buffer old) (kill-buffer a))))
+    (set-buffer-wrong-type nil nil nil
+     (condition-case e (byte-code (unibyte-string 192 113 135) '[7] 1)
+       (error (car e))))
+    (set-buffer-fset-override-known-gap nil nil nil
+     (let ((old (symbol-function 'set-buffer)))
+       (unwind-protect
+           (progn (fset 'set-buffer (lambda (_) 'shadow))
+                  (byte-code (unibyte-string 192 113 135)
+                             (vector (current-buffer)) 1))
+         (fset 'set-buffer old))))
+    ;; 114 save-current-buffer pairs with unbind 1 (raw 41).
+    (save-current-buffer-op nil nil nil
+     (let ((a (generate-new-buffer "nl-parity-b")) (old (current-buffer)))
+       (unwind-protect
+           (list (byte-code (unibyte-string 114 192 113 136 193 41 135)
+                            (vector a 'inner) 3)
+                 (eq (current-buffer) old))
+         (kill-buffer a))))
+    (save-current-buffer-throw nil nil nil
+     (let ((a (generate-new-buffer "nl-parity-c")) (old (current-buffer)))
+       (unwind-protect
+           (list (catch 'nl-parity-tag
+                   (byte-code (unibyte-string 114 192 113 136 193 194 195 34 41 135)
+                              (vector a 'throw 'nl-parity-tag 'thrown) 4))
+                 (eq (current-buffer) old))
+         (kill-buffer a))))
+    (buffer-substring-op nil nil nil
+     (with-temp-buffer (insert "hello world")
+                       (list (byte-code (unibyte-string 192 193 123 135) [1 6] 2)
+                             (byte-code (unibyte-string 192 193 123 135) [6 1] 2)
+                             (byte-code (unibyte-string 192 193 123 135) [3 3] 2))))
+    (buffer-substring-narrowed nil nil nil
+     (with-temp-buffer (insert "hello world") (narrow-to-region 3 8)
+                       (list (byte-code (unibyte-string 192 193 123 135) [3 8] 2)
+                             (condition-case e
+                                 (byte-code (unibyte-string 192 193 123 135) '[1 4] 2)
+                               (error (car e))))))
+    (buffer-substring-marker nil nil nil
+     (with-temp-buffer (insert "abcdef")
+                       (byte-code (unibyte-string 192 193 123 135)
+                                  (vector (copy-marker 2) (copy-marker 5)) 2)))
+    (buffer-substring-out-of-range nil nil nil
+     (with-temp-buffer (insert "abc")
+                       (condition-case e
+                           (byte-code (unibyte-string 192 193 123 135) '[1 99] 2)
+                         (error (car e)))))
+    (buffer-substring-fset-override nil nil nil
+     (let ((old (symbol-function 'buffer-substring)))
+       (unwind-protect
+           (progn (fset 'buffer-substring (lambda (_a _b) 'shadow))
+                  (with-temp-buffer (insert "ab")
+                                    (byte-code (unibyte-string 192 193 123 135)
+                                               [1 2] 2)))
+         (fset 'buffer-substring old)))))
   "One focused case per requested opcode, in implementation order.")
 
 (defvar nelisp-catch-parity-dynamic nil
