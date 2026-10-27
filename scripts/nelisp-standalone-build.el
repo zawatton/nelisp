@@ -19723,6 +19723,35 @@ eval applyfn.")
             (ptr-read-u64 (- fp 6) (+ 8 (* (+ (* (- entry 1) 2) 1) 8)))
           (nl_vector_slot_word (nl_ht_marker_word (nl_ht_meta_slot table) 11) (+ (* (- entry 1) 2) 1)))))
     (defun nl_ht_hash_put (table key value hash)
+      ;; hashtab (GNU hash_put): take next_free, fill the pair and its hash,
+      ;; link it at the head of its bucket, on the table's own arrays.  A
+      ;; table that is not an ordinary direct shape takes the accessor body.
+      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0)))
+        (if (/= (logand fm 7) 6) (nl_ht_hash_put_slow table key value hash)
+          (let* ((h (- fm 6)))
+            (seq
+             (if (< (ptr-read-u64 h 112) 0) (nl_ht_maybe_resize table) 0)
+             (let* ((pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
+                    (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8))
+                    (cnt (ptr-read-u64 h 16)) (fw (ptr-read-u64 h 112)))
+               (if (/= (logand pairs 7) 6) (nl_ht_hash_put_slow table key value hash)
+                 (if (/= (logand hashes 7) 6) (nl_ht_hash_put_slow table key value hash)
+                   (if (/= (logand next 7) 6) (nl_ht_hash_put_slow table key value hash)
+                     (if (/= (logand index 7) 6) (nl_ht_hash_put_slow table key value hash)
+                       (if (/= (logand cnt 3) 1) (nl_ht_hash_put_slow table key value hash)
+                         (if (< fw 0) (nl_ht_hash_put_slow table key value hash)
+                           (let* ((i (sar fw 2))
+                                  (bucket (nl_ht_hash_index hash (sar (ptr-read-u64 (- index 6) 0) 8)))
+                                  (head (ptr-read-u64 (+ index 2) (* 8 bucket))))
+                             (seq (ptr-write-u64 h 112 (ptr-read-u64 (+ next 2) (* 8 i)))
+                                  (nl_val_clone_into key (+ (+ pairs 2) (* i 16)))
+                                  (nl_val_clone_into value (+ (+ pairs 10) (* i 16)))
+                                  (ptr-write-u64 (+ hashes 2) (* 8 i) (+ (* hash 4) 1))
+                                  (ptr-write-u64 (+ next 2) (* 8 i) head)
+                                  (ptr-write-u64 (+ index 2) (* 8 bucket) (+ (* i 4) 1))
+                                  (ptr-write-u64 h 16 (+ cnt 4))
+                                  i))))))))))))))
+    (defun nl_ht_hash_put_slow (table key value hash)
       (seq
        (nl_ht_maybe_resize table)
        (let* ((meta (nl_ht_meta_slot table)) (i (nl_ht_int meta 13))
@@ -19765,7 +19794,97 @@ eval applyfn.")
             (seq (nl_ht_identity_sync table) (nl_ht_get_synced_w args 0))
           (nl_apply_function_w custom args env 0))))
     (defun nl_ht_get (args out) (nl_abi_word_to_rc (nl_ht_get_w args 0) out))
+    ;; hashtab: GNU hash_lookup/hash_put work on the table's own arrays with no
+    ;; per-call re-derivation.  `nl_ht_fast_hdr' answers the metadata header
+    ;; address of an ordinary table in the exact shape `nl_ht_make_w' builds
+    ;; (direct cons, direct metadata vector, "hash-table" marker view, cached
+    ;; test mode, no custom test, identity stamps current), or 0 -- and every
+    ;; 0 sends the caller to the general path unchanged.
+    (defun nl_ht_fast_hdr (table)
+      (if (/= (logand table 7) 2) 0
+        (let* ((meta (ptr-read-u64 (- table 2) 0)))
+          (if (/= (logand meta 7) 6) 0
+            (let* ((h (- meta 6)) (hd (ptr-read-u64 h 0)))
+              (if (/= (logand hd 63) 8) 0
+                (if (< (sar hd 8) 15) 0
+                  (let* ((sy (ptr-read-u64 h 8)))
+                    (if (/= (logand sy 7) 0) 0
+                      (if (< sy 4096) 0
+                        (if (/= (ptr-read-u8 sy 0) 4) 0
+                          (if (/= (ptr-read-u64 sy 24) 10) 0
+                            (let* ((nb (ptr-read-u64 sy 16)))
+                              (if (< nb 4096) 0
+                                (if (/= (ptr-read-u64 nb 0) 7089075026832613736) 0
+                                  (if (/= (ptr-read-u16 (+ nb 8) 0) 25964) 0
+                                    (let* ((c (sar (ptr-read-u64 h 48) 2)))
+                                      (if (> c -101) 0
+                                        (if (< c -103) 0
+                                          (if (/= (ptr-read-u64 h 72) 3) 0
+                                            (if (/= (sar (ptr-read-u64 h 56) 2) (ptr-read-u64 268436376 0)) 0
+                                              (if (/= (sar (ptr-read-u64 h 64) 2) h) 0 h))))))))))))))))))))))
+    (defun nl_ht_fast_find (h table key mode)
+      ;; Index of KEY, -1 absent, -2 a vector is not a direct one (decline).
+      (let* ((pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
+             (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8)))
+        (if (/= (logand pairs 7) 6) -2
+          (if (/= (logand hashes 7) 6) -2
+            (if (/= (logand next 7) 6) -2
+              (if (/= (logand index 7) 6) -2
+                (let* ((ib (+ index 2)) (pb (+ pairs 2)) (hb (+ hashes 2)) (nb (+ next 2))
+                       (hash (if (= mode 0) (nl_ht_key_hash key 8) (nl_ht_identity_key_hash key mode)))
+                       (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
+                       (found -1))
+                  (seq
+                   (while (and (>= i 0) (< found 0))
+                     (let ((other (ptr-read-u64 pb (* 16 i))))
+                       (if (= key other) (setq found i)
+                         (if (= (bf_eq2 key other) 1) (setq found i)
+                           (if (and (= hash (sar (ptr-read-u64 hb (* 8 i)) 2))
+                                    (= (nl_ht_key_match key other mode) 1))
+                               (setq found i)
+                             (setq i (sar (ptr-read-u64 nb (* 8 i)) 2)))))))
+                   found))))))))
+    (defun nl_ht_fast_rem (h table key mode)
+      ;; 0 key removed or absent, -2 a vector is not a direct one (decline).
+      (let* ((pairs (ptr-read-u64 h 96)) (next (ptr-read-u64 h 120))
+             (index (ptr-read-u64 (- table 2) 8)))
+        (if (/= (logand pairs 7) 6) -2
+          (if (/= (logand next 7) 6) -2
+            (if (/= (logand index 7) 6) -2
+              (let* ((ib (+ index 2))
+                     (hash (if (= mode 0) (nl_ht_key_hash key 8) (nl_ht_identity_key_hash key mode)))
+                     (bucket (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))
+                     (i (sar (ptr-read-u64 ib (* 8 bucket)) 2)) (prev -1) (done 0))
+                (seq (while (and (>= i 0) (= done 0))
+                       (if (= (nl_ht_key_match key (ptr-read-u64 (+ pairs 2) (* 16 i)) mode) 1)
+                           (seq (nl_ht_remove_index table bucket prev i) (setq done 1))
+                         (seq (setq prev i)
+                              (setq i (sar (ptr-read-u64 (+ next 2) (* 8 i)) 2)))))
+                     0)))))))
     (defun nl_ht_remove_index (table bucket prev i)
+      ;; Raw-offset unlink for the ordinary shape; any other shape takes the
+      ;; accessor body (`nl_ht_remove_index_slow') unchanged.
+      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0)))
+        (if (/= (logand fm 7) 6) (nl_ht_remove_index_slow table bucket prev i)
+          (let* ((h (- fm 6)) (pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
+                 (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8))
+                 (cnt (ptr-read-u64 h 16)))
+            (if (/= (logand pairs 7) 6) (nl_ht_remove_index_slow table bucket prev i)
+              (if (/= (logand hashes 7) 6) (nl_ht_remove_index_slow table bucket prev i)
+                (if (/= (logand next 7) 6) (nl_ht_remove_index_slow table bucket prev i)
+                  (if (/= (logand index 7) 6) (nl_ht_remove_index_slow table bucket prev i)
+                    (if (/= (logand cnt 3) 1) (nl_ht_remove_index_slow table bucket prev i)
+                      (let* ((nxt (ptr-read-u64 (+ next 2) (* 8 i))))
+                        (seq (if (< prev 0) (ptr-write-u64 (+ index 2) (* 8 bucket) nxt)
+                               (ptr-write-u64 (+ next 2) (* 8 prev) nxt))
+                             (ptr-write-u64 (+ pairs 2) (* 16 i) 3)
+                             (ptr-write-u64 (+ pairs 2) (+ (* 16 i) 8) 3)
+                             (ptr-write-u64 (+ hashes 2) (* 8 i) -3)
+                             (ptr-write-u64 (+ next 2) (* 8 i) (ptr-read-u64 h 112))
+                             (ptr-write-u64 h 112 (+ (* i 4) 1))
+                             (ptr-write-u64 h 16 (- cnt 4))
+                             0)))))))))))
+    (defun nl_ht_remove_index_slow (table bucket prev i)
       (let* ((meta (nl_ht_meta_slot table)) (pairs (nl_ht_marker_word meta 11))
              (hashes (nl_ht_marker_word meta 12)) (next (nl_ht_marker_word meta 14)))
         (seq (if (< prev 0) (nl_ht_set_int (nl_ht_data_slot table) bucket (nl_ht_int next i))
@@ -61779,6 +61898,37 @@ remains the reference. No production hit/fallback counters are emitted."
            (nelisp_mirror_set_function_or_insert mirror_ptr name_slot scratch_slot 0))))
       (defun nl_directcall_hash_rem (key table) ,@rem-argv)
       (defun nl_directcall_hash_run (id base argc result env)
+        ;; hashtab: gethash (101) and puthash of an existing key (102) on an
+        ;; ordinary table are answered from the table's own arrays by
+        ;; `nl_ht_fast_hdr'/`nl_ht_fast_find' (GNU Fgethash -> hash_lookup); a
+        ;; miss, a put of a new key, and every unusual shape decline to the
+        ;; unchanged body, which owns growth, callbacks and errors.
+        (let* ((table (heap-read-u64 base (if (= id 102) 16 (if (= id 104) 0 8))))
+               (h (if (= id 104) 0 (nl_ht_fast_hdr table))))
+          (if (= h 0) (nl_directcall_hash_slow id base argc result env)
+            (let* ((key (heap-read-u64 base 0))
+                   (mode (- 0 (+ (sar (ptr-read-u64 h 48) 2) 101)))
+                   (i (if (= id 103) -3 (nl_ht_fast_find h table key mode))))
+              (if (= id 103)
+                  (if (= (nl_ht_fast_rem h table key mode) 0)
+                      (seq (wf_dirty) (ptr-write-u64 result 0 3) 0)
+                    (nl_directcall_hash_slow id base argc result env))
+              (if (< i 0)
+                  (if (= i -1)
+                      (if (= id 101)
+                          (seq (ptr-write-u64 result 0 (if (= argc 3) (heap-read-u64 base 16) 3)) 0)
+                        (nl_directcall_hash_slow id base argc result env))
+                    (nl_directcall_hash_slow id base argc result env))
+                (if (= id 101)
+                    (seq (ptr-write-u64 result 0
+                           (ptr-read-u64 (+ (ptr-read-u64 h 96) 2) (+ (* 16 i) 8)))
+                         0)
+                  (seq (wf_dirty)
+                       (nl_val_clone_into (heap-read-u64 base 8)
+                         (+ (+ (ptr-read-u64 h 96) 10) (* i 16)))
+                       (ptr-write-u64 result 0 (heap-read-u64 base 8))
+                       0))))))))
+      (defun nl_directcall_hash_slow (id base argc result env)
         ;; BASE is canonical WORD argv, rooted by the caller through growth
         ;; and activation cleanup. CHECK_HASH_TABLE/custom-test declines are
         ;; effect-free: the unchanged list entry owns error data and callbacks.

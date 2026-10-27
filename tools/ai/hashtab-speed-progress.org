@@ -1,0 +1,64 @@
+#+TITLE: Hash table operations at GNU cost (lane hashtab, base v31 2e7b1611b)
+
+# Lane ledger for the 2026-11 hashtab lane. The older tools/ai/hashtab-progress.org (GNU storage port,
+# 2026-10-21) is a finished lane's ledger and is left untouched; this one measures the call-cost lane.
+# Binary under test: $HASHTAB_BIN (default: this lane's own build).  Baseline v31 numbers are recorded
+# constants taken from callgrind on integ-1048 (target/hashtab/S1-attribution.txt) and from its matrix.
+# Own-call Ir = (total Ir per trip) - (Ir per trip of the same loop without the hash call, driver base-k).
+# v31 own-call Ir/trip: gethash eq-fix 917.8, eq-sym 944.0, equal-str 1164.8, puthash-existing 853.8;
+# remhash+puthash-new loop (rm-rp) 4046.5 total; maphash 16 entries: bc callee 19008.4, primitive callee 8623.4.
+# GNU 31.1 for scale: gethash ~269 own, puthash ~207 own, maphash-bc 4801 per 16 entries.
+
+* S1 Cause with evidence
+** S1.1 callgrind attribution of gethash/puthash/remhash/maphash on v31 and GNU is recorded
+#+NOTE: target/hashtab/S1-attribution.txt: per-trip self Ir by function, v31 vs GNU, 6 matrix drivers plus the base loop.
+evidence: target/hashtab/S1-attribution.txt sha256=8799f0421c57aa953269cf7e08275cf7270fd28022f927259336702d65f99f2f
+** S1.2 the attribution names where the extra Ir over GNU sits (call path vs hash code)
+cmd: grep -q '^CONCLUSIONS (v31)' target/hashtab/S1-attribution.txt && grep -q 'subr call path from bytecode' target/hashtab/S1-attribution.txt
+
+* S2 Fix with red/green and parity corpus
+** S2.1 parity corpus (all :test kinds, custom test, weakness, GC rehash, copy, growth, maphash mutation, errors) equals GNU 31.1
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) sh target/hashtab/check_parity.sh
+** S2.2 negative control: the parity check fails on a perturbed output
+cmd: ! HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) sh target/hashtab/check_parity.sh broken
+** S2.3 gethash eq-fixnum own-call Ir <= 80% of v31 (<= 734)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py gh-eq-fix 50000 150000 734
+** S2.4 gethash eq-symbol own-call Ir <= 80% of v31 (<= 755)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py gh-eq-sym 50000 150000 755
+** S2.5 gethash equal-string own-call Ir <= 80% of v31 (<= 932)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py gh-equal-str 50000 150000 932
+** S2.6 puthash of an existing key own-call Ir <= 80% of v31 (<= 683)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py ph-existing 50000 150000 683
+** S2.7 remhash+puthash loop Ir per trip <= 85% of v31 (<= 3440)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py rm-rp 20000 60000 3440
+** S2.8 maphash per-entry Ir (bytecode callee, 16 entries) does not regress (<= 19009 per trip)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py maph-bc 3000 9000 19009
+** S2.9 maphash per-trip Ir <= 85% of v31 (primitive callee <= 7330, bytecode callee <= 16157)
+#+TIMEOUT: 200
+cmd: HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py maph-plus 3000 9000 7330 && HASHTAB_BIN=$(realpath ${HASHTAB_BIN:-target/hashtab-build/dynamic/nelisp-dynamic}) python3 target/hashtab/ir_trip.py maph-bc 3000 9000 16157
+
+* S3 One integrated build passes fixtures
+** S3.1 fixtures: weak 24/24, GNU 56/56, AFRT 24/25 (known red), buffer 21/21
+cmd: grep -q 'weak 24/24 PASS' target/hashtab/fixtures.log && grep -q 'GNU 56/56 PASS' target/hashtab/fixtures.log && grep -q 'AFRT 24/25' target/hashtab/fixtures.log && grep -q 'buffer 21/21 PASS' target/hashtab/fixtures.log
+** S3.2 gnu-speed-win-check passes on the Linux build
+cmd: grep -q 'switch corpus: PASS' target/hashtab/wincheck-linux.log && grep -q 'features: PASS' target/hashtab/wincheck-linux.log && grep -q '^rc=0' target/hashtab/wincheck-linux.log
+** S3.3 Win64 wine closurevm/switch/features pass
+cmd: grep -q 'closurevm: CLOSUREVM COMPLETE checked=24 rc=0' target/hashtab/win/win.log && grep -q 'switch corpus rc=0 EQ-GNU' target/hashtab/win/win.log && grep -q 'features rc=0 EQ-GNU' target/hashtab/win/win.log
+** S3.4 F1 prelink records <= 384 (Linux 354, Win 356)
+cmd: for j in target/hashtab-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json target/hashtab/win/build/src/target/standalone-compiler-f1-*/prelink-closure.json; do python3 -c "import json,sys;sys.exit(0 if len(json.load(open(sys.argv[1])).get('records',[]))<=384 else 1)" $j || exit 1; done
+
+* S4 Paired timing (CPU 9) and regression rows
+#+NOTE: target/hashtab/matrix/out/*/report.json, 5 paired reps, v31 vs new vs GNU. Measured new/v31: gethash eq-fix 0.855, eq-sym 0.850, equal-str 0.868, puthash-existing 0.860, maphash-bc 0.972, maphash-plus 0.968. The -40% target is not met (the rest is the subr call path and the callee activation, outside this lane's edit set).
+** S4.1 the six matrix hash rows are each >= 40% faster than v31 (ratio <= 0.60)
+cmd: python3 target/hashtab/check_matrix.py hash
+** S4.2 reg-sum-bc and r3-mix are within 3% of v31 (no regression)
+#+NOTE: r3-mix new/v31 1.031 on the first run, 1.026 on the rerun (kept in matrix/out/r3-mix.run1); reg-sum-bc 0.997.
+cmd: python3 target/hashtab/check_matrix.py reg
+** S4.3 the six rows are each faster than v31 (ratio < 1.0)
+cmd: python3 -c "import json,sys;[sys.exit(1) for r in ['r7-gethash-eq-fix','r7-gethash-eq-sym','r7-gethash-equal-str','r7-puthash-existing','r7-maphash-bc','p-maphash-plus'] if (lambda e:e['new']['inner_ns_per_step']['median']>=e['v31']['inner_ns_per_step']['median'])(json.load(open('target/hashtab/matrix/out/%s/report.json'%r))['engines'])]"
