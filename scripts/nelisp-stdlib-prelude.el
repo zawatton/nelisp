@@ -33623,7 +33623,9 @@ kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set."
                                      (emit 12) (emit 3 (cdr c))
                                      (push (list :setslot (cdr c) v) items))
                                (let* ((ks (emit 1 sym)) (v (comp val)))
-                                 (push (list :call (emit 16 'set 2) 2 (list :const ks) v)
+                                 ;; varaccess: setq site cache -- a call-site cache like every other call, so the
+                                 ;; VM's call-out decodes `set' once per site (GNU Bvarset has no lookup at all).
+                                 (push (list :call (emit 16 (vector 'set nil nil nil nil) 2) 2 (list :const ks) v)
                                        items))))
                            (setq args (cddr args))
                            (when args (emit 11))))

@@ -1,0 +1,47 @@
+#+TITLE: fam30 -- extreme rows: json, narrow-bc, upcase, alist-get-bc
+#+NOTE: Created 2026-10-28 before implementation. Seed = coordinator HEAD 01c6b97fc (v34). Baseline v34 = ../resume-4943-20261024/target/integ-1051-build/dynamic/nelisp-dynamic.
+
+* S1 Cause with evidence
+** S1.1 narrow-bc: Bsave_restriction runs the Lisp cleanup factory (markers + closure) per execution; v34 callgrind per iteration recorded
+cmd: test -s target/fam30/logs/s1-narrow.txt && grep -q "^CAUSE-NARROW-OK" target/fam30/logs/s1-narrow.txt
+** S1.2 alist-get: wf_testfn_mode hard-codes the static id of equal (182, now 230) so testfn equal takes the prelude delegate
+cmd: test -s target/fam30/logs/s1-alist.txt && grep -q "^CAUSE-ALIST-OK" target/fam30/logs/s1-alist.txt
+** S1.3 upcase and json: per-trip Ir by function on v34 and GNU reference recorded
+cmd: test -s target/fam30/logs/s1-upcase-json.txt && grep -q "^CAUSE-UJ-OK" target/fam30/logs/s1-upcase-json.txt
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 No literal static symbol id remains compared against nl_sym_sid in the build script
+cmd: ! grep -nE "\(= sid [1-9][0-9]*\)" scripts/nelisp-standalone-build.el
+** S2.2 save-restriction VM event kind present
+cmd: grep -q "fam30: save-restriction event" scripts/nelisp-standalone-build.el
+** S2.3 parity corpus equals GNU 31.1 on the lane binary
+#+TIMEOUT: 300
+cmd: sh tools/ai/fam30/parity.sh ${FAM30_BIN:-target/fam30-build/dynamic/nelisp-dynamic}
+** S2.4 negative control: parity runner reports divergence on a wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/fam30/parity.sh ${FAM30_BIN:-target/fam30-build/dynamic/nelisp-dynamic} mutant-caught
+
+* S3 One integrated build passing fixtures
+** S3.1 Linux build rc=0
+cmd: tail -1 target/fam30-build/dynamic/build.log | grep -q "BUILD rc=0"
+** S3.2 Fixtures and gnu-speed-win-check pass
+cmd: grep -q "^FIXTURES-OK" target/fam30/logs/fixtures.log
+** S3.3 native-row-census stale=0 dup=0
+cmd: grep -q "stale=0 dup=0" target/fam30/logs/census.txt
+
+* S4 End to end: speed
+#+NOTE: Paired timing (paired_bench.py, CPU 10, 5-7 reps) in target/fam30/timing/*.log; v34 = integ-1051 binary. Red criteria stay failing cmds (known-red): narrow-bc is 1.30x its interpreted twin, upcase and json unchanged (no 3x lever below the fx tier, see REPORT.txt).
+** S4.1 buffers-narrow-bc at least 3x faster than v34 (74091 -> 4712 ns/step)
+cmd: python3 tools/ai/fam30/s4check.py target/fam30/timing/buffers-narrow-bc.log --min-speedup 3
+** S4.2 buffers-narrow-bc no slower than its interpreted twin (known red: 1.30x)
+cmd: python3 tools/ai/fam30/s4check.py target/fam30/timing/buffers-narrow-bc.log --vs-log target/fam30/timing/buffers-narrow-i.log --max-ratio 1.0
+** S4.3 lists-alist-get-bc and -i at least 3x faster than v34 (11194 -> 1633, 12025 -> 2379 ns/step)
+cmd: python3 tools/ai/fam30/s4check.py target/fam30/timing/lists-alist-get-bc.log --min-speedup 3 && python3 tools/ai/fam30/s4check.py target/fam30/timing/lists-alist-get-i.log --min-speedup 3
+** S4.4 ct-upcase-greek-str at least 3x faster than v34 (known red: 1.01x)
+cmd: python3 tools/ai/fam30/s4check.py target/fam30/timing/ct-upcase-greek-str.log --min-speedup 3
+** S4.5 misc-json-bc at least 3x faster than v34 (known red: 1.01x)
+cmd: python3 tools/ai/fam30/s4check.py target/fam30/timing/misc-json-bc.log --min-speedup 3
+** S4.6 reg-sum-bc and r3-mix execute the same Ir per trip as v34 (layout, not work; wall ratios 1.01 and 1.01-1.04)
+cmd: grep -q "r3-mix .*delta=+0.00%" target/fam30/timing/ir-result.txt && grep -q "reg-sum-bc .*delta=-\?0.00%" target/fam30/timing/ir-result.txt
+** S4.7 Win64 build under wine: closurevm 24, switch corpus, features and the fam30 corpus equal GNU
+cmd: grep -q "closurevm: CLOSUREVM COMPLETE checked=24 rc=0" target/fam30/win/win.log && grep -q "fam30 corpus rc=0 EQ-GNU" target/fam30/win/win.log && grep -q "switch corpus rc=0 EQ-GNU" target/fam30/win/win.log

@@ -78,7 +78,8 @@
     (should (= (vmreg-test--run-elf vmreg-test--optin) want))))
 
 (ert-deftest vmreg-admits-and-pools-r12-r15 ()
-  (let ((nelisp-aot-compiler-vm-register-functions vmreg-test--optin)
+  (let ((nelisp-aot-compiler-spillcall nil)
+        (nelisp-aot-compiler-vm-register-functions vmreg-test--optin)
         (nelisp-aot-compiler--vm-reg-decisions nil)
         (nelisp-aot-compiler--vm-reg-dropped nil))
     (vmreg-test--emit vmreg-test--src)
@@ -135,8 +136,10 @@
 (defvar nelisp-aot-compiler--vm-reg-refusals)
 
 (defun vmreg-test--decision (src optin &optional abi)
-  "Compile SRC with OPTIN and return (DECISION . DROPPED) for its first opted-in function."
-  (let ((nelisp-aot-compiler-vm-register-functions optin)
+  "Compile SRC with OPTIN and return (DECISION . DROPPED) for its first opted-in function.
+The raw proof decides only without spillcall, which admits refused variables as well."
+  (let ((nelisp-aot-compiler-spillcall nil)
+        (nelisp-aot-compiler-vm-register-functions optin)
         (nelisp-aot-compiler--vm-reg-decisions nil)
         (nelisp-aot-compiler--vm-reg-dropped nil)
         (nelisp-aot-compiler--vm-reg-refusals nil))
@@ -276,11 +279,23 @@ map's slots alone; forbidding the coexistence leaves strictly more frame traffic
               (nelisp-aot-compiler--stackmap-finish (car cell) text relocs fixups)))))
 
 (ert-deftest regraw-stackmap-masks-unchanged-by-promotion ()
-  "The stack maps list the same live words with and without the register plan: promoted slots stay
-described (their words are stale but scanned) and no reference slot is dropped."
-  (should (equal (vmreg-test--smap-masks vmreg-test--five nil)
-                 (vmreg-test--smap-masks vmreg-test--five '((rg_run a b c d e)))))
-  (should (cdr (assoc "rg_run" (vmreg-test--smap-masks vmreg-test--five '((rg_run a b c d e)))))))
+  "Without spillcall the stack maps list the same live words with and without the register plan:
+promoted slots stay described (their words are stale but scanned) and no reference slot is dropped.
+With spillcall the plan's slots (A..E = 0..4) leave every mask and nothing else changes: their
+words are stale copies and the collector reads the registers instead (`nl_gc_scan_regs')."
+  (let ((nelisp-aot-compiler-spillcall nil))
+    (should (equal (vmreg-test--smap-masks vmreg-test--five nil)
+                   (vmreg-test--smap-masks vmreg-test--five '((rg_run a b c d e)))))
+    (should (cdr (assoc "rg_run" (vmreg-test--smap-masks vmreg-test--five '((rg_run a b c d e)))))))
+  (let ((nelisp-aot-compiler-spillcall t))
+    (let ((plain (vmreg-test--smap-masks vmreg-test--five nil))
+          (promoted (vmreg-test--smap-masks vmreg-test--five '((rg_run a b c d e)))))
+      (should (cdr (assoc "rg_run" promoted)))
+      (should (cl-some (lambda (m) (and m (/= 0 (logand m 31)))) (cdr (assoc "rg_run" plain))))
+      (should (equal (mapcar (lambda (f) (cons (car f) (mapcar (lambda (m) (and m (logand m (lognot 31))))
+                                                              (cdr f))))
+                             plain)
+                     promoted)))))
 
 (provide 'nelisp-aot-vmreg-test)
 ;;; nelisp-aot-vmreg-test.el ends here

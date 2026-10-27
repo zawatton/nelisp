@@ -1,0 +1,53 @@
+f30-sr-nested ((1 27) (2 4) (1 27) (5 20))
+f30-sr-throw ((3 6) 1 11)
+f30-sr-error ("boom 1" 1 11)
+f30-sr-edit (5 8 "cde")
+f30-sr-edit2 (1 15 "abQQcdeRRfghij")
+f30-sr-switch ((t (1 11) (4 7)))
+f30-sr-kill (killed nil)
+f30-sr-value (3 nil)
+f30-sr-unnarrowed-widen (1 11)
+f30-al-bc (2 nil 2 dflt 40 41 40 5 5 3 3 9 dd 40 5 2)
+f30-al-err (wrong-type-argument nil 1 void-function nil)
+f30-sr-plain (51800 1 201)
+f30-sr-loop-narrow 3650
+f30-sr-nested-bc ((1 27) (2 4) (1 27) (5 20))
+f30-sr-throw-bc ((3 6) 1 11)
+f30-sr-error-bc ("boom 1" 1 11)
+f30-sr-edit-bc (5 8 "cde")
+f30-sr-edit2-bc (1 15 "abQQcdeRRfghij")
+f30-sr-switch-bc ((t (1 11) (4 7)))
+f30-sr-kill-bc (killed nil)
+f30-sr-value-bc (3 nil)
+f30-sr-unnarrowed-widen-bc (1 11)
+f30-al-bc-bc (2 nil 2 dflt 40 41 40 5 5 3 3 9 dd 40 5 2)
+f30-al-err-bc (wrong-type-argument nil 1 void-function nil)
+f30-sr-plain-bc (51800 1 201)
+f30-sr-loop-narrow-bc 3650
+up "" "" "" "" ""
+up "abc" "ABC" "abc" "Abc" "Abc"
+up "hello world" "HELLO WORLD" "hello world" "Hello World" "Hello World"
+up "αβγδεζηθικλμνξοπρστυφχψω straße ǆ" "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ STRASSE Ǆ" "αβγδεζηθικλμνξοπρστυφχψω straße ǆ" "Αβγδεζηθικλμνξοπρστυφχψω Straße ǅ" "Αβγδεζηθικλμνξοπρστυφχψω Straße ǅ"
+up "ǅ ǆ Ǆ" "Ǆ Ǆ Ǆ" "ǆ ǆ ǆ" "ǅ ǅ ǅ" "ǅ ǅ ǅ"
+up "ﬁnance ﬀ ŉ ǰ ΐ" "FINANCE FF ʼN J̌ Ϊ́" "ﬁnance ﬀ ŉ ǰ ΐ" "Finance Ff ʼN J̌ Ϊ́" "Finance Ff ʼN J̌ Ϊ́"
+up "ΑΣ ΑΣΑ σ ς" "ΑΣ ΑΣΑ Σ Σ" "ας ασα σ ς" "Ας Ασα Σ Σ" "ΑΣ ΑΣΑ Σ Σ"
+up "ß" "SS" "ß" "Ss" "Ss"
+up "İi ıI" "İI ıI" "i̇i ıi" "İi Ii" "İi II"
+up "ᾀ ᾈ" "ἈΙ ἈΙ" "ᾀ ᾀ" "ᾈ ᾈ" "ᾈ ᾈ"
+up "mixed Ünï Cödé 日本語 abc" "MIXED ÜNÏ CÖDÉ 日本語 ABC" "mixed ünï cödé 日本語 abc" "Mixed Ünï Cödé 日本語 Abc" "Mixed Ünï Cödé 日本語 Abc"
+up "x́y" "X́Y" "x́y" "X́y" "X́y"
+upc 97 65 97
+upc 122 90 122
+upc 223 7838 223
+upc 454 452 454
+upc 963 931 963
+upc 962 931 962
+upc 255 376 255
+upc 8064 8072 8064
+upc 66600 66560 66600
+upc 65 65 97
+upc 48 48 48
+upc 304 304 304
+ub "ABC\351" "abc"
+md (1 4)
+up-err wrong-type-argument

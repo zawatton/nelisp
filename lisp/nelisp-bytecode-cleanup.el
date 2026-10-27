@@ -12,7 +12,11 @@
          (minimum (symbol-function 'point-min)) (maximum (symbol-function 'point-max))
          (position (symbol-function 'marker-position))
          (detach (symbol-function 'set-marker)) (go (symbol-function 'goto-char))
-         (wide (symbol-function 'widen)) (narrow (symbol-function 'narrow-to-region)))
+         (wide (symbol-function 'widen)) (narrow (symbol-function 'narrow-to-region))
+         (save-limits (and (fboundp 'nelisp--save-restriction)
+                           (symbol-function 'nelisp--save-restriction)))
+         (restore-limits (and (fboundp 'nelisp--restore-restriction)
+                              (symbol-function 'nelisp--restore-restriction))))
      (lambda (opcode)
        (let ((buffer (funcall current)))
          (cond
@@ -25,6 +29,11 @@
                    (when (funcall live buffer)
                      (funcall select buffer) (funcall go (funcall position marker)))
                  (funcall detach marker nil)))))
+          ((and (= opcode 140) save-limits restore-limits)
+           ;; GNU save_restriction_save / _restore: the buffer itself when it is
+           ;; not narrowed, else a marker pair; no markers for the common case.
+           (let ((state (funcall save-limits)))
+             (lambda () (funcall restore-limits state))))
           ((= opcode 140)
            (let ((begin (funcall copy (funcall minimum) nil))
                  (end (funcall copy (funcall maximum) t)))
@@ -39,6 +48,14 @@
           (t (error "Unknown bytecode restoration opcode")))))))
 (defconst nelisp-bytecode-cleanup-factory (eval (nelisp-bytecode-cleanup-source) t))
 (fset 'nelisp--bytecode-save-state nelisp-bytecode-cleanup-factory)
+;; fam30: the VM's save-restriction event (kind 2) calls the car to save and the
+;; cdr to restore, GNU record_unwind_protect (save_restriction_restore,
+;; save_restriction_save ()) without a closure per execution.  nil when the
+;; prelude has no such pair (host Emacs); the VM then uses the factory.
+(defconst nelisp-bytecode-restriction-provider
+  (and (fboundp 'nelisp--save-restriction) (fboundp 'nelisp--restore-restriction)
+       (cons (symbol-function 'nelisp--save-restriction)
+             (symbol-function 'nelisp--restore-restriction))))
 (let ((function-test (symbol-function 'functionp))
       (evaluate (symbol-function 'eval)))
   (defun nelisp-bytecode-cleanup-run (payload)

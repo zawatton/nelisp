@@ -1,0 +1,69 @@
+#+TITLE: varaccess -- special and buffer-local variable access and binding at GNU cost (attrib34 levers 4 and 6)
+#+NOTE: Created before implementation. Seed = coordinator HEAD 01c6b97fc (v34 + gate tools), no overlay (patch against git HEAD). Baseline v34 = ../resume-4943-20261024/target/integ-1051-build/dynamic/nelisp-dynamic. Build budget 2 (Linux A, Win64 B). Timing on CPU 15 only. Binary under test: ${VARACCESS_BIN:-target/varaccess-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes: spillcall, wordroute, compall (owns native-data and prelude-bytecode), layout, fam30. Not edited here; dependencies are recorded in target/varaccess/REPORT.txt.
+
+* S1 Cause with evidence
+** S1.1 v34 per-op Ir for special read/setq/let (bc, src) and buffer-local read, eq-with-symbol on the baseline, per-function split recorded
+cmd: test -s target/varaccess/logs/v34-perop.txt
+** S1.2 Code-path map: where bc/fx/native read, set and bind specials and buffer-locals (functions, line numbers), versus GNU data.c/eval.c
+cmd: grep -q "^CAUSE-OK" target/varaccess/logs/s1-cause.txt
+** S1.3 Semantic corpus (let of a buffer-local in another buffer, kill-local-variable, default-value, setq-default, makunbound, watchers) runs on GNU 31.1 and the baseline, divergences listed
+cmd: test -s target/varaccess/logs/s1-corpus-gnu.txt
+** S1.4 Cause is located to concrete functions with Ir numbers that explain the gap to GNU
+cmd: grep -q "^S1-END-OK" target/varaccess/logs/s1-cause.txt
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 fx setq of a special reuses a per-site call cache, so the call-out does not re-decode `set' on every call
+#+NOTE: src setspecial 1156 -> 665 Ir (GNU 137). The bc varset arm already stored plain specials in line (105 -> 110, +5 from the second header-mask compare).
+cmd: grep -q "varaccess: setq site cache" scripts/nelisp-stdlib-prelude.el
+** S2.2 Buffer-local read and set reach the selected buffer's cell without mirror lookup or frame walks (GNU blv)
+#+NOTE: bc local 323 -> 200, src local 667 -> 284, bc setlocal 9018 -> 550 (GNU 53 / 149 / 62). No where.buffer cache slot: the cell is found by the short locals walk.
+cmd: grep -q "varaccess: blv cache" scripts/nelisp-standalone-build.el
+cmd: grep -q "defun wf_bytecode_w_local_set" scripts/nelisp-standalone-build.el
+** S2.3 fx buffer-local set (m5_fx_globals_run -> nl_sym_set_w hands a legacy VIEW, which wf_bytecode_w_local_set declines) is under 2000 Ir
+#+NOTE: Build C: m5_fx_globals_run calls wf_bytecode_w_local_set with the operand WORD before the view is made, local_set tests env+112; src setlocal 9613 -> 957 (GNU 150).
+cmd: python3 -c "import re,sys;l=[x for x in open('target/varaccess/logs/s4-ir.txt') if x.startswith('src setlocal')][0].split();sys.exit(not float(l[3])<2000)"
+** S2.4 fx dynamic binding (specbind/unbind) neither clones values nor allocates
+#+NOTE: Known red, not started: fx activations have no AUX block for the bc lean binder (wf_bytecode_w_lean_bind); src letspecial stays 6425 Ir (GNU 669). See REPORT.txt section 5.
+cmd: grep -q "varaccess: specbind" scripts/nelisp-standalone-build.el
+** S2.5 eq of a symbol object against another vectorlike word is a word compare (no bf_eq2)
+#+NOTE: bc symconst 200 -> 142 (GNU 33). fx eq stays 394: the fx primitive is a separate path.
+cmd: grep -q "varaccess: eq symbol word" scripts/nelisp-standalone-build.el
+** S2.5b wf_bytecode_w_eqw leaves symbol-with-pos (kind 19) operands to bf_eq2 (GNU slow_eq under symbols-with-pos-enabled)
+#+NOTE: Fixed in build C: the new branch requires both vectorlike kinds /= 19. Corpus covers eq/memq/assq/delq/sort between a symbol and a symbol-with-pos with symbols-with-pos-enabled nil and t (bc and source/fx flavours). Pre-existing divergence outside the corpus: eq hash lookup of a symbol-with-pos (v34 too).
+cmd: python3 -c "import re,sys;s=open('scripts/nelisp-standalone-build.el').read();i=s.index('(defun wf_bytecode_w_eqw');j=s.index('(defun wf_bytecode_w_symobj_p',i);sys.exit(0 if re.search(r'\b19\b',s[i:j]) else 1)"
+** S2.6 Variable-semantics parity corpus equals GNU 31.1 on the candidate
+#+TIMEOUT: 300
+cmd: sh tools/ai/varaccess/parity.sh ${VARACCESS_BIN:-target/varaccess-build/dynamic/nelisp-dynamic}
+** S2.7 Negative control: the parity runner reports a divergence on a deliberately wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/varaccess/parity.sh ${VARACCESS_BIN:-target/varaccess-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.8 Win64 build under wine: closurevm, switch, features and the varaccess corpus equal GNU
+#+NOTE: Known red: lane builds A, B, C were Linux; Win64 is left to the coordinator integrated build.
+#+TIMEOUT: 600
+cmd: sh -c 'W=${VARACCESS_WIN_BIN:-$PWD/target/varaccess/win/build/nelisp.exe}; test -f "$W" && WINEPREFIX=$PWD/target/varaccess/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated Linux dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/varaccess-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/varaccess-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+cmd: grep -q "^FIXTURES-OK" target/varaccess/logs/fixtures.log
+** S3.3 gnu-speed-win-check passes and native-row census reports stale=0 dup=0
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${VARACCESS_BIN:-target/varaccess-build/dynamic/nelisp-dynamic})
+cmd: grep -q "stale=0 dup=0" target/varaccess/logs/census.log
+
+* S4 End to end: speed
+** S4.1 Per-op Ir before/after for special read/setq/let (bc, fx, native), buffer-local read/set, eq-with-symbol
+cmd: grep -q "^S4IR-OK" target/varaccess/logs/s4-ir.txt
+** S4.2 Rows using specials/buffer-locals in attrib34 (incl. buffers/markers) at least 25 percent less Ir
+#+NOTE: Known red: all 27 rows within 1 percent (target/varaccess/logs/s4-rows.txt); those rows reach variables through natives, varbind and buffer-local-value, not varref/varset.
+cmd: grep -q "^S4ROWS-OK" target/varaccess/logs/s4-rows.txt
+** S4.3 Matrix plus reg-sum-bc and r3-mix: no row slower than 1.03x v34 (equal callgrind Ir counted as layout)
+cmd: grep -q "^MATRIX-OK" target/varaccess/timing/matrix.txt
+** S4.4 Paired timing vs v34 and GNU on CPU 15
+cmd: grep -q "^PAIRED-OK" target/varaccess/timing/paired.txt
+** S4.5 fx let of a special within 2x GNU (specbind without cloning)
+#+NOTE: Known red: 6425 vs GNU 669 Ir.
+cmd: python3 -c "import sys;l=[x for x in open('target/varaccess/logs/s4-ir.txt') if x.startswith('src letspecial')][0].split();sys.exit(not float(l[3])<=2*float(l[4]))"

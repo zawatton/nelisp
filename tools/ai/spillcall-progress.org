@@ -1,0 +1,67 @@
+#+TITLE: spillcall -- keep temporaries in callee-saved registers across call-containing regions (attrib34 lever 1)
+#+NOTE: Created 2026-10-28 before implementation. Seed = coordinator HEAD 01c6b97fc (v34 + gate tools), clean; patch against git HEAD. Baseline v34 = ../resume-4943-20261024/target/integ-1051-build/dynamic/nelisp-dynamic. Build budget 2 (Linux A; Win64 B). Timing and counters on CPU 13 only. Binary under test: ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes on v34: wordroute, compall (owns nelisp-fxir-native-data.el, prelude-bytecode), varaccess, layout, fam30. This lane adds no native rows.
+
+* S1 Cause with evidence
+** S1.1 v34 frame-slot load/store Ir per trip by function on reg-sum-bc, r7-funcall-bc, r7-gethash-eq-fix, r3-mix, lists-memq-bc (callgrind --dump-instr, two trip counts)
+evidence: target/spillcall/logs/s1-fslot.txt sha256=0ee8cb5f014f1524f1af74fff8df04063cf6a0606045419c342055451208f56c
+** S1.2 Per hot function: which variables keep frame slots and the planner rule that leaves them there (raw proof refusal, call-containing region, register pool exhausted), with GNU's gcc -O2 equivalent
+evidence: target/spillcall/logs/s1-cause.txt sha256=ef09484d52612b219f148cdb5e74b95979fa949393dc84c8c173ac48dafa1e8a
+evidence: target/spillcall/logs/s1-regs.txt sha256=de09219a89b8186190571ccca8d75b71922c7ad7782ff0c8919d047a23fdc1c1
+** S1.3 GC visibility of callee-saved registers established from source and a run: nl_gc_scan_regs flushes them, callee save words lie outside the mapped fixed frame region
+#+NOTE: Source argument in s1-cause.txt section 3; the run is the gc-regs self-test (switches 73/74/75) on v34 and, below, on the candidate.
+evidence: target/spillcall/logs/s1-gcregs-v34.txt sha256=f9c8c4f4a2bcee2e225c77a012e93f0d6f0d7744f33225447de2f36fbd2da0a5
+#+TIMEOUT: 60
+cmd: (ulimit -v 8388608; timeout 50 ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic} --load tools/ai/spillcall/gcregs.el < /dev/null) | grep -q "selftest73=5 control74=0"
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 The allocator keeps possible Lisp references in callee-saved registers across calls (stack maps drop their stale frame words); switch nelisp-aot-compiler-spillcall nil restores v34 lowering
+#+NOTE: Scope: the vm-register (whole-body callee-saved) plan admits raw-proof-refused variables; execute_frame now holds pc sp done depth.  Not done: a call-containing region planner for other functions (S1 cause section 2: no removable gain on the five rows); see REPORT.txt.
+cmd: grep -q "defvar nelisp-aot-compiler-spillcall t" lisp/nelisp-aot-compiler.el && grep -q "stackmap-register-mask" lisp/nelisp-aot-compiler.el
+** S2.2 Host ERT for the new planner and map masking: red on HEAD compiler, green with spillcall
+#+TIMEOUT: 300
+cmd: (ulimit -v 8388608; timeout 280 /usr/local/bin/emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-aot-spillcall-test.el -l test/nelisp-aot-vmreg-test.el -f ert-run-tests-batch-and-exit) > /dev/null 2>&1
+evidence: target/spillcall/logs/ert-compare.txt sha256=0b37cdfe4eb5a66848908717c17aaafdf3c28bbbcef709ba15310823abedbcf3
+** S2.3 vmfast and vmfast2 parity corpora print identically on GNU 31.1 and the candidate
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast/parity.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/parity.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+** S2.4 regalloc parity corpus equals GNU; negative control caught
+#+TIMEOUT: 300
+cmd: sh tools/ai/regalloc/parity.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/parity.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.5 GC stress (vmfast2 and regalloc gcstress) equals v34 and GNU, also with the map-only poison collector mode
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/gcstress.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 300
+cmd: sh tools/ai/regalloc/gcstress.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 600
+cmd: sh tools/ai/spillcall/gcpoison.sh ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/spillcall-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/spillcall-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+cmd: python3 -c "import json,sys;j=json.load(open('target/spillcall/fixtures/report.json'));sys.exit(not(j['status']=='EXPECTED_BASELINE_RED_REMAINS' and j['regression'] is False))"
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic})
+** S3.3 native-row census on the build: stale=0 dup=0
+#+TIMEOUT: 300
+cmd: bash ../resume-4943-20261024/tools/ai/native-row-census.sh . $(realpath ${SPILLCALL_BIN:-target/spillcall-build/dynamic/nelisp-dynamic}) 2>&1 | grep -q "stale=0 dup=0"
+** S3.4 Win64 build under wine: closurevm, switch and features equal GNU
+#+TIMEOUT: 600
+cmd: sh -c 'W=${SPILLCALL_WIN_BIN:-$PWD/target/spillcall/win/build/nelisp.exe}; test -f "$W" && WINEPREFIX=$PWD/target/spillcall/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 Frame-slot load/store share per row before/after on the 5 rows (callgrind instruction classes)
+cmd: grep -q "^FSLOT-OK" target/spillcall/logs/s4-fslot.txt
+** S4.2 The 5 rows at least 20 percent faster than v34 (paired wall time, CPU 13)
+#+NOTE: Red: cand/v34 reg-sum-bc 0.961, r7-funcall-bc 1.006, r7-gethash-eq-fix 0.977, r3-mix 1.016 (Ir -0.79%, layout per callgrind), lists-memq-bc 0.987.  The removable frame traffic is ld+st only (5.8% of Ir on reg-sum-bc); see REPORT.txt sections 1 and 4.
+cmd: grep -q "^SPEED20-OK" target/spillcall/timing/paired.txt
+** S4.3 No row of integ-1051/matrix/specs.json WORK-slower than 1.03x v34 (equal-Ir rows read as layout)
+cmd: grep -q "^MATRIX-OK" target/spillcall/timing/matrix.txt
+** S4.4 Paired wall time on CPU 13 vs v34 and GNU recorded for the 5 rows
+cmd: grep -q "^PAIRED-OK" target/spillcall/timing/paired.txt

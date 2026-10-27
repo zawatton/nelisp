@@ -1,0 +1,22 @@
+;;; -*- lexical-binding: t; -*-
+;; attrib34 per-mechanism drivers (one loop per mode).  Loaded as source (fx/interp flavour) or as
+;; GNU-compiled byte code (bc.el).  Per-op Ir = (Ir(hi)-Ir(lo))/(hi-lo) minus mode `empty'.
+(defvar a34-special 42)
+(defvar a34-local 7)
+(make-variable-buffer-local 'a34-local)
+(defvar a34-h (let ((h (make-hash-table :test 'eq))) (puthash 1 2 h) h))
+(defun a34-id (x) x)
+(defun a34-r-empty (n f) (let ((a nil) (i 0)) (while (< i n) (setq a i) (setq i (1+ i))) a))
+(defun a34-r-logand (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (logand i 7)) (setq i (1+ i))) a))
+(defun a34-r-gethash (n f) (let ((a nil) (i 0) (h a34-h)) (while (< i n) (setq a (gethash 1 h)) (setq i (1+ i))) a))
+(defun a34-r-max (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (max i 1)) (setq i (1+ i))) a))
+(defun a34-r-bccall (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (a34-id i)) (setq i (1+ i))) a))
+(defun a34-r-special (n f) (let ((a nil) (i 0)) (while (< i n) (setq a a34-special) (setq i (1+ i))) a))
+(defun a34-r-setspecial (n f) (let ((a nil) (i 0)) (while (< i n) (setq a34-special i) (setq i (1+ i))) a))
+(defun a34-r-local (n f) (let ((a nil) (i 0)) (while (< i n) (setq a a34-local) (setq i (1+ i))) a))
+(defun a34-r-letspecial (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (let ((a34-special i)) a34-special)) (setq i (1+ i))) a))
+(defun a34-r-clo1 (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (funcall f i)) (setq i (1+ i))) a))
+(defun a34-r-car (n f) (let ((a nil) (i 0) (l '(1 2))) (while (< i n) (setq a (car l)) (setq i (1+ i))) a))
+(defun a34-r-symconst (n f) (let ((a nil) (i 0)) (while (< i n) (setq a (eq f 'foo)) (setq i (1+ i))) a))
+(defun a34-mk () (lambda (x) x))
+(defun a34-r-setlocal (n f) (let ((a nil) (i 0)) (while (< i n) (setq a34-local i) (setq i (1+ i))) a))

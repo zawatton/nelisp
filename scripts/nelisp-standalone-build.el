@@ -14128,6 +14128,10 @@ the router nor generation evaluates an arm or the shared default."
          (setq leaves (sort leaves (lambda (a b) (< (car a) (car b)))))
          (unless (equal handlers (nelisp-standalone--key-tree 'nl_dk leaves default))
            (error "Noncanonical builtin handler tree"))
+         ;; wordroute: helpers the list-walk lowering specializes for the frame
+         ;; leaves (`nelisp-argframe-generated'), emitted once after them.
+         (let ((nelisp-argframe-generated
+                (and frame-mode (cons nil (make-hash-table :test #'equal)))))
          (dolist (leaf leaves)
            (when (or (not frame-mode) (memq (car leaf) admitted-keys))
              (let* ((key (car leaf))
@@ -14141,6 +14145,12 @@ the router nor generation evaluates an arm or the shared default."
                (push `(defun ,name (nl_dk func_ptr args env name_ptr ,last-param) ,body)
                      definitions)
                (push (cons key `(,name nl_dk func_ptr args env name_ptr ,last-param)) routes))))
+         (when frame-mode
+           (dolist (d (reverse (car nelisp-argframe-generated)))
+             ;; The leaves' parse proof against missing lexical inputs.
+             (let ((nelisp-aot-compiler--allow-external-user-calls t))
+               (nelisp-aot-compiler--collect-defuns (nelisp-aot-compiler--parse d)))
+             (push d definitions))))
          (cons (nreverse definitions)
                `(let* ,bindings
                   ,(nelisp-standalone--key-tree
@@ -20390,13 +20400,14 @@ eval applyfn.")
     ;; TESTFN class from the symbol's static id (the same read `nl_directcall_id'
     ;; uses; valid for symbol objects and views alike).  sexp-tag/heap-sexp-length
     ;; read garbage through an object WORD, which is why the name-based
-    ;; `wf_symbol_is_eq' never matched here.  Static ids: eq 66, equal 182
-    ;; (nelisp-standalone--sid).  0 = nil or eq, 1 = equal, 2 = anything else.
+    ;; `wf_symbol_is_eq' never matched here.  Static ids come from
+    ;; the generated `nl_sid_eq' / `nl_sid_equal' (nelisp-standalone--sid; fam30: the
+    ;; literal 182 had drifted to 230, so `equal' always took the delegate).  0 = nil or eq, 1 = equal, 2 = anything else.
     (defun wf_testfn_mode (w)
       (if (= (nl_val_tag w) 0) 0
         (if (= (nl_val_tag w) 4)
             (let* ((sid (nl_sym_sid w)))
-              (if (= sid 66) 0 (if (= sid 182) 1 2)))
+              (if (= sid (nl_sid_eq)) 0 (if (= sid (nl_sid_equal)) 1 2)))
           2)))
     (defun wf_alist_get_slow_w (args env _pad)
       (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)))
@@ -23434,14 +23445,53 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; (the value of `nelisp-bytecode-cleanup-factory'), called with the
       ;; opcode; the cleanup it answers becomes an unwind event.  No buffer,
       ;; marker or narrowing semantics are implemented here.  0 when pushed.
-      (let* ((fn (bf_dynamic_lookup_w env 'nelisp-bytecode-cleanup-factory 0)))
-        (if (if (= fn 0) 1 (= fn 2))
-            1
-          (let* ((r (nl_apply_function_w
-                     fn (wf_bytecode_w_cons2 (+ (shl opcode 2) 1) 3) env 0)))
-            (if (= r 0)
-                1
-              (seq (wf_bytecode_unwind_push env aux 1 r) 0))))))
+      (let* ((fn (bf_dynamic_lookup_w env 'nelisp-bytecode-cleanup-factory 0))
+             (rp (if (= opcode 140)
+                     (bf_dynamic_lookup_w env 'nelisp-bytecode-restriction-provider 0)
+                   0)))
+        (if (if (= rp 0) 0 (if (= rp 2) 0 (wf_bytecode_w_consp rp)))
+            ;; fam30: save-restriction event.  GNU Fsave_restriction is
+            ;; record_unwind_protect (save_restriction_restore,
+            ;; save_restriction_save ()): save now (the buffer itself when it is
+            ;; not narrowed, else a marker pair) and keep the state as a kind-2
+            ;; event; the unwind calls the restore function on it directly, with
+            ;; no per-execution closure.
+            (let* ((r (nl_apply_function_w (nl_cons_car_word rp) 3 env 0)))
+              (if (= r 0)
+                  1
+                (seq (wf_bytecode_unwind_push env aux 2 r) 0)))
+          (if (if (= fn 0) 1 (= fn 2))
+              1
+            (let* ((r (nl_apply_function_w
+                       fn (wf_bytecode_w_cons2 (+ (shl opcode 2) 1) 3) env 0)))
+              (if (= r 0)
+                  1
+                (seq (wf_bytecode_unwind_push env aux 1 r) 0)))))))
+    (defun wf_bytecode_unwind_restore (env state)
+      ;; fam30: undo a kind-2 event: apply the restore half of
+      ;; `nelisp-bytecode-restriction-provider' to STATE, preserving the pending
+      ;; exit as `wf_bytecode_unwind_cleanup' does.  STATE is rooted by the event
+      ;; cell of the unwind in progress.
+      (let* ((mark (nl_root_mark env))
+             (saved-flag (heap-read-u64 268435472 0))
+             (saved (nl_exit_save env))
+             (rp (bf_dynamic_lookup_w env 'nelisp-bytecode-restriction-provider 0))
+             (rc 0))
+        (if (= saved 0)
+            (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
+          (seq
+           (ptr-write-u64 268435472 0 0)
+           (if (if (= rp 0) 1 (if (= rp 2) 1 (= (wf_bytecode_w_consp rp) 0)))
+               0
+             (setq rc (if (= (nl_apply_function_w (nl_cons_cdr_word rp)
+                                                  (wf_bytecode_w_cons2 state 3) env 0) 0)
+                          1 0)))
+           (if (= rc 0)
+               (seq (nl_exit_restore saved)
+                    (ptr-write-u64 268435472 0 saved-flag))
+             0)
+           (nl_root_release env mark)
+           rc))))
     (defun wf_bytecode_unwind_step (env aux target remaining)
       ;; Undo the events of AUX's unwinds stack down to the list tail TARGET,
       ;; innermost first, one at a time (GNU unbind_to, eval.c:3624-3651): pop
@@ -23484,7 +23534,12 @@ bytes are written into a fresh 8-byte buffer instead."
                                     env (nl_cons_car_word (nl_cons_cdr_word event))) 0)
                                 0
                               (seq (setq rc 1) (setq go 0)))
-                          (seq (setq rc 1) (setq go 0)))))))))))
+                          (if (= kind 2)
+                              (if (= (wf_bytecode_unwind_restore
+                                      env (nl_cons_car_word (nl_cons_cdr_word event))) 0)
+                                  0
+                                (seq (setq rc 1) (setq go 0)))
+                            (seq (setq rc 1) (setq go 0))))))))))))
          (ptr-write-u64 (+ aux 24) 0 (+ (shl left 2) 1))
          rc)))
     (defun wf_bytecode_unwind_to (env aux target bindings)
@@ -24377,9 +24432,16 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= a b) 1
         (if (= (logand a 1) 1)
             (if (= (logand b 1) 1) 0 (wf_bytecode_w_eqv b a))
+          ;; varaccess: eq symbol word: two distinct vectorlike words one of which is a symbol
+          ;; object are distinct objects (a symbol object is the only vectorlike of kind 4/16),
+          ;; so a compare against a constant symbol is the word compare above, never bf_eq2.
           (if (if (= (logand a 7) 6)
                   (if (= (logand b 7) 6)
-                      (if (= (wf_bytecode_w_symobj_p a) 1) (wf_bytecode_w_symobj_p b) 0)
+                      (let* ((ka (logand (ptr-read-u64 (- a 6) 0) 63))
+                             (kb (logand (ptr-read-u64 (- b 6) 0) 63)))
+                        ;; a symbol-with-pos (kind 19) keeps bf_eq2's slow_eq compare
+                        (if (if (= ka 19) 1 (= kb 19)) 0
+                          (if (if (= ka 4) 1 (if (= ka 16) 1 (if (= kb 4) 1 (= kb 16)))) 1 0)))
                     0)
                 0)
               0
@@ -24581,7 +24643,21 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; so the common case skips the mirror lookup and the worker, direct-env and
       ;; unbound checks; -1 (any other shape) and 2 (the unbound marker) take the path
       ;; below, which also signals void-variable.
-      (let* ((g (extern-call nl_gv_fast env name)))
+      (let* ((g (extern-call nl_gv_fast env name))
+             ;; varaccess: blv cache -- GNU find_symbol_value on a SYMBOL_LOCALIZED symbol is
+             ;; the blv read (data.c:1650) with no mirror lookup: the selected buffer's cell
+             ;; through `wf_bytecode_w_local_read' (the byte-code VM's read), main thread
+             ;; only; 0 sends every other shape, a void cell included, down the general path.
+             (lv (if (= g -1)
+                     (if (/= (logand name 7) 6) 0
+                       (if (/= (logand (ptr-read-u64 (- name 6) 0) 831) 516) 0
+                         (if (/= (ptr-read-u64 env 168) 0) 0
+                           (if (= (nl_sym_direct_env_p env) 0) 0
+                             (let* ((v (wf_bytecode_w_local_read env name)))
+                               (if (= v 0) 0
+                                 (if (= (wf_bytecode_w_unbound_p env v) 1) 0 v)))))))
+                   0)))
+        (if (/= lv 0) (seq (ptr-write-u64 dst 0 lv) 0)
         (if (if (= g -1) 1 (= g 2))
             (let* ((entry (if (= (nl_sym_direct_env_p env) 1)
                               (nelisp_mirror_lookup_entry_owned (+ env 0) name) 0))
@@ -24592,7 +24668,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   (if (= value 0) 1
                     (if (= value 2) (seq (nl_stash_void_variable env name) 1)
                       (seq (ptr-write-u64 dst 0 value) 0))))))
-          (seq (ptr-write-u64 dst 0 g) 0))))
+          (seq (ptr-write-u64 dst 0 g) 0)))))
     (defun wf_bytecode_w_memq (mem sp scratch)
       (let* ((x (heap-read-u64 (+ mem (* (- sp 2) 8)) 0))
              (l (heap-read-u64 (+ mem (* (- sp 1) 8)) 0))
@@ -25479,16 +25555,16 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; general path); a void default or cell is returned as the unbound marker for the caller to refuse.
     (defun wf_bytecode_w_local_read (env obj)
       (if (/= (logand obj 7) 6) 0
-        (let* ((h (heap-read-u64 (- obj 6) 0)))
+        (let* ((h (ptr-read-u64 (- obj 6) 0)))
           (if (or (/= (logand h 63) 4) (/= (logand (sar h 8) 3) 2)) 0
-            (let* ((blv (heap-read-u64 (- obj 6) 16)))
+            (let* ((blv (ptr-read-u64 (- obj 6) 16)))
               (if (/= (logand blv 7) 6) 0
-                (let* ((rv (nl_vector_slot_word blv 0)) (dflt (nl_vector_slot_word blv 1)))
+                (let* ((rv (ptr-read-u64 blv 2)) (dflt (ptr-read-u64 blv 10)))
                   (if (or (/= (sexp-tag rv) 8) (< (vector-len rv) 2)) dflt
                     (let* ((cs (nl_vector_slot_word rv 0)))
                       (if (/= (logand cs 7) 6) 0
-                        (if (/= (logand (heap-read-u64 (- cs 6) 0) 831) 4) 0
-                          (let* ((buffer (heap-read-u64 (- cs 6) 16)))
+                        (if (/= (logand (ptr-read-u64 (- cs 6) 0) 831) 4) 0
+                          (let* ((buffer (ptr-read-u64 (- cs 6) 16)))
                             (if (if (= buffer 0) 1 (wf_bytecode_w_unbound_p env buffer)) 0
                               (let* ((locals (nl_vector_slot_word rv 1)) (cell 0))
                                 (seq
@@ -25501,8 +25577,50 @@ bytes are written into a fresh 8-byte buffer instead."
                                        (setq locals (nl_cons_cdr_ptr locals)))))
                                  (if (= cell 0) dflt
                                    (if (/= (logand cell 7) 6) 0
-                                     (if (/= (logand (heap-read-u64 (- cell 6) 0) 831) 4) 0
-                                       (heap-read-u64 (- cell 6) 16)))))))))))))))))))
+                                     (if (/= (logand (ptr-read-u64 (- cell 6) 0) 831) 4) 0
+                                       (ptr-read-u64 (- cell 6) 16)))))))))))))))))))
+    ;; varaccess: blv cache (set side).  GNU set_internal on a SYMBOL_LOCALIZED symbol whose blv already
+    ;; holds the selected buffer's binding (data.c:1750-1800, `blv->where == buffer', no swap) stores
+    ;; into that binding's value cell.  Here the cell is the CELL-SYMBOL paired with the selected buffer
+    ;; in the redirect, found as `wf_bytecode_w_local_read' finds it; a plain special (redirect and
+    ;; trapped-write bits clear) takes the store, with the write barrier for a non-immediate VAL.
+    ;; Answers 0 after the store, 1 for every other case with nothing changed (no local binding in this
+    ;; buffer, a watched or non-plain cell, a legacy view value, a worker or root-pin capture), and the
+    ;; caller then runs the general setter, which also creates automatic locals and runs watchers.
+    (defun wf_bytecode_w_local_set (env obj val)
+      (if (= (logand obj 7) 6)
+        (if (= (logand val 7) 0) 1
+        (let* ((h (ptr-read-u64 (- obj 6) 0)))
+          (if (/= (logand h 3903) 516) 1
+            (if (/= (ptr-read-u64 env 168) 0) 1
+              (if (/= (logand (ptr-read-u64 env 112) 1048576) 0) 1
+              (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 1
+                (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2) 1
+                  (let* ((blv (ptr-read-u64 (- obj 6) 16)))
+                    (if (/= (logand blv 7) 6) 1
+                      (let* ((rv (ptr-read-u64 blv 2)))
+                        (if (or (/= (sexp-tag rv) 8) (< (vector-len rv) 2)) 1
+                          (let* ((cs (nl_vector_slot_word rv 0)))
+                            (if (/= (logand cs 7) 6) 1
+                              (if (/= (logand (ptr-read-u64 (- cs 6) 0) 831) 4) 1
+                                (let* ((buffer (ptr-read-u64 (- cs 6) 16)))
+                                  (if (if (= buffer 0) 1 (wf_bytecode_w_unbound_p env buffer)) 1
+                                    (let* ((locals (nl_vector_slot_word rv 1)) (cell 0))
+                                      (seq
+                                       (while (and (= (sexp-tag locals) 7) (= cell 0))
+                                         (let* ((pair (nl_cons_car_word locals))
+                                                (key (nl_cons_car_word pair)))
+                                           (if (and (= (nl_val_tag key) (nl_val_tag buffer))
+                                                    (= (nl_word_payload key) (nl_word_payload buffer)))
+                                               (setq cell (nl_cons_cdr_ptr pair))
+                                             (setq locals (nl_cons_cdr_ptr locals)))))
+                                       (if (= cell 0) 1
+                                         (if (/= (logand cell 7) 6) 1
+                                           (if (/= (logand (ptr-read-u64 (- cell 6) 0) 3903) 4) 1
+                                             (seq (if (= (logand val 1) 0) (wf_dirty) 0)
+                                                  (ptr-write-u64 (- cell 6) 16 val)
+                                                  0))))))))))))))))))))))
+        1))
     (defun wf_bytecode_fast_arith (mem sp raw)
       (let* ((n (if (= raw 91) 1 2)))
         (if (< sp n) -1
@@ -25680,7 +25798,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                                (if (if (/= (logand word 7) 6) 0
                                                      (if (= (logand target 7) 0) 0
                                                        (let* ((hdr (ptr-read-u64 (- word 6) 0)))
-                                                         (if (/= (logand hdr 3903) 4) 0
+                                                         (if (if (= (logand hdr 3903) 4) 0 (/= (logand hdr 3903) 516)) 0
                                                            (if (/= (logand (ptr-read-u64 env 112) 1048576) 0) 0
                                                              (if (/= (ptr-read-u64 env 168) 0) 0
                                                                (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
@@ -25691,10 +25809,17 @@ bytes are written into a fresh 8-byte buffer instead."
                                                                                        (n (if (< n0 0) (logand (heap-read-u64 sb 0) 9223372036854775807) n0)))
                                                                                   (if (< n 1) 0 (if (= (heap-read-u8 (heap-read-u64 sb 24) 0) 58) 1 0)))
                                                                               (bf_keyword_raw word))) 1) 0 1)))))))))
+                                                   ;; varaccess: blv cache -- a LOCALIZED symbol (hdr bits 8-9 = 2) stores into the
+                                                   ;; selected buffer's cell; no local binding here declines to the general path.
+                                                   (if (= (logand (ptr-read-u64 (- word 6) 0) 3903) 516)
+                                                       (if (= (wf_bytecode_w_local_set env word target) 0)
+                                                           (seq (setq sp (- sp 1))
+                                                                (setq pc (+ pc a 1)))
+                                                         (setq go 0))
                                                    (seq (if (= (logand target 1) 0) (wf_dirty) 0)
                                                         (ptr-write-u64 (- word 6) 16 target)
                                                         (setq sp (- sp 1))
-                                                        (setq pc (+ pc a 1)))
+                                                        (setq pc (+ pc a 1))))
                                                  (setq go 0))))))))
                                      (if (or (= env 0) (<= sp 0)) (setq go 0)
                                        (seq
@@ -30205,7 +30330,10 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (or (= (nl_val_tag a) 4) (= (nl_val_tag a) 16))
                 (let* ((b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
                   ;; lexpre: PLAINVAL first, as set_internal; else the old path.
-                  (if (= (nl_sym_set_plain_w env a b) 1)
+                  (if (if (= (nl_sym_set_plain_w env a b) 1) 1
+                        ;; varaccess: blv cache -- LOCALIZED symbol with a local binding here, stored from the
+                        ;; operand WORD before a legacy view is built (the view would make local_set decline)
+                        (= (wf_bytecode_w_local_set env a b) 0))
                       (m5_fx_take b resw)
                     (let* ((rc (bf_set_dynamic_value
                                 env a (wf_bytecode_w_view b scratch))))
@@ -30278,6 +30406,13 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; word (a durable 32-byte box, as every VM word is) is shared rather than
     ;; cloned.  One allocation per element: the direct cons payload (Doc 216).  The words in flight live
     ;; in native locals (Doc 215 R1).
+    ;; wordroute: a fresh list of the argument words BASE[INDEX..ARGC), rooted in a
+    ;; root slot the caller releases with its own `nl_root_release' mark -- what
+    ;; an argv-lowered handler hands to code that needs the list itself (a Lisp
+    ;; callback), the list the list route conses for every call.
+    (defun nl_argframe_fresh_list (env base argc index)
+      (let* ((slot (nl_root_word env)) (lst (m5_fx_word_list base argc (- argc index) 0)))
+        (seq (ptr-write-u64 slot 0 lst) lst)))
     (defun m5_fx_word_list (stk sp argc _pad)
       (let* ((lst 0) (k (- argc 1)))
         (seq
@@ -35923,7 +36058,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                (if (= v 0) (setq result 2)
                                  (seq (if (= (logand v 1) 0) (wf_dirty) 0)
                                       (nl_ent_set obj 0 v) (setq result 0)))))
-                         (setq result 1))))))))
+                         ;; varaccess: blv cache -- LOCALIZED with a local binding in this buffer
+                         (setq result (if (= r 2) (wf_bytecode_w_local_set env obj val) 1)))))))))
            result))))
     ;; lexpre: GNU set_internal PLAINVAL (data.c:1678).  SYM is a symbol
     ;; object WORD (an interned or uninterned symbol) whose redirect is
@@ -39782,6 +39918,64 @@ defined twice is left out: the lowering must open the definition that links."
         (setq nelisp-standalone--argframe-inline-table table))))
 
 (setq nelisp-argframe-inline-helpers #'nelisp-standalone--argframe-inline-table)
+
+(defvar nelisp-standalone--argframe-helper-defs nil
+  "wordroute: cache (TARGET . TABLE) of `nelisp-standalone--argframe-helper-defs'.")
+
+(defun nelisp-standalone--argframe-helper-defs ()
+  "wordroute: every reader helper by name, for the list-walk lowering.
+The groups of `nelisp-standalone--argframe-inline-table' plus the fx call
+primitives (`nl_buf_prim_w') and the file-I/O unit, whatever their parameter
+names: `nelisp-argframe-walk-lower' opens or specializes a helper handed an
+argument-list cursor in any parameter (GNU: a SUBR's C function walks its
+args[] however it delegates).  A name defined twice is left out: the lowering
+must open the definition that links."
+  (unless (eq (car nelisp-standalone--argframe-helper-defs)
+              (nelisp-standalone-arena-rewrite-target))
+    (let ((table (make-hash-table :test #'eq)) (dup nil))
+      (cl-labels ((walk (forms)
+                    (dolist (f forms)
+                      (pcase f
+                        (`(defun ,name ,params . ,body)
+                         (if (gethash name table) (push name dup)
+                           (puthash name (cons params body) table)))
+                        (`(seq . ,rest) (walk rest))))))
+        (walk (append nelisp-standalone--applyfn-core-helpers
+                      nelisp-standalone--applyfn-fa-file-helpers
+                      nelisp-standalone--applyfn-census-helpers
+                      nelisp-standalone--applyfn-ht-helpers
+                      nelisp-standalone--applyfn-search-helpers
+                      nelisp-standalone--applyfn-bignum-helpers
+                      nelisp-standalone--applyfn-bf-helpers
+                      nelisp-standalone--applyfn-fast-list-helpers
+                      nelisp-standalone--applyfn-m5-helpers
+                      (cdr (nelisp-standalone--fileio-source)))))
+      (dolist (name dup) (remhash name table))
+      (setq nelisp-standalone--argframe-helper-defs
+            (cons (nelisp-standalone-arena-rewrite-target) table))))
+  (cdr nelisp-standalone--argframe-helper-defs))
+
+(setq nelisp-argframe-helper-defs #'nelisp-standalone--argframe-helper-defs)
+;; wordroute: the handlers the list-walk lowering admits.  Every admitted handler
+;; adds a frame leaf (and specialized helpers) to the applyfn unit, which the
+;; rooted build bounds at 16 MiB (nelisp-native-rooted-build-evidence.el); with
+;; all 164 admitted it was 15.46 MB on Linux and, in the integrated v35 build,
+;; 17.68 MB on Win64.  These are the builtins whose list route the attrib34
+;; rows and the per-call drivers measured hot from compiled code (max/min:
+;; numbers-float-minmax, the pc drivers; get/put/symbol-plist: sym-plist-put,
+;; ctl-error-msg; gethash/puthash: ct-upcase-greek-str; equal: lists-alist-get,
+;; tm-decode-time; append: adv-apply-partially; format: ctl-error-msg; set: the
+;; setq-of-a-special callout; vector: lists-setf-places), within a budget that
+;; keeps the Win64 applyfn unit under 15 MiB (tools/ai/wordroute-gencheck.el
+;; `size').  concat, mapcar, assoc, alist-get and remhash lower too (S2 census)
+;; but cost more unit than their measured call counts return; they and the
+;; rest keep the list route (their behaviour is the same either way).
+(setq nelisp-argframe-walk-names
+      '("max" "min" "get" "put" "equal" "gethash" "puthash" "set"
+        "append" "format" "vector"))
+;; wordroute: every argv lowering here runs inside an applyfn arm or frame leaf,
+;; where `env' is the evaluator env (a fresh list is rooted there).
+(setq nelisp-argframe-materialize-env 'env)
 
 (defconst nelisp-standalone--applyfn-baked-source
   (nelisp-standalone--applyfn-assemble
@@ -62693,6 +62887,8 @@ two flag bits 20 and 21."
     `(,@(nelisp-standalone--directcall-defuns)
       ;; The static symbol id of a symbol WORD or view, 0 for none.
       (defun nl_sym_sid (w) ,(nelisp-standalone--sid-read-form 'w))
+      (defun nl_sid_eq () ,(nelisp-standalone--sid "eq"))
+      (defun nl_sid_equal () ,(nelisp-standalone--sid "equal"))
       ;; list_length of the unevaluated arguments (eval.c:2640): the number of
       ;; conses, -1 when the list ends in anything but nil.
       (defun nl_sp_nargs (args)

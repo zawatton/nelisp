@@ -561,6 +561,21 @@ rbx (already saved by every such prologue), r8 and r9 (caller-saved and
 untouched by every call-free IR kind), then r12-r15 (pushed around the
 loop).  Nil outside a defun, so top-level code is never promoted.")
 
+(defvar nelisp-aot-compiler-spillcall t
+  "Non-nil lets possible Lisp references live in callee-saved registers across calls (spillcall).
+GNU Emacs keeps Lisp_Object locals of exec_byte_code and friends in callee-saved registers
+across calls (gcc -O2) because its collector flushes the registers before the conservative
+stack scan (alloc.c `flush_stack_call_func1').  NeLisp's `nl_gc_scan_regs' does the same
+since Doc 223, and every callee-saved save word lies outside the mapped fixed part of a frame
+\(a callee's `push', its vm-register save words at base+2.., its rbx word, which the map scan
+always reads), so a reference held in r12-r15/rbx is seen by every collection a call can
+reach.  Two consequences are handled here: the vm-register plan admits a variable the raw
+proof refuses (`--vm-reg-plan'), and the stack map clears that variable's frame word at every
+call site of the function (`--stackmap-register-mask'), because the word is a stale copy that
+the body never reads again and must not keep a dead object alive.  Nil restores the v34
+lowering byte for byte; set it before this file is loaded, as for `nelisp-aot-compiler-regraw':
+`nelisp-aot-compiler-vm-register-functions' reads it at load time.")
+
 (defvar nelisp-aot-compiler-regraw t
   "Non-nil enables the regraw extensions: the raw-value proof, rbx as a fifth register, the
 widened opt-in list and call-free regions beside the vm-register map.  Nil reproduces the cgreg
@@ -570,8 +585,14 @@ behaviour byte for byte (the A/B baseline build sets it before loading this file
   (if nelisp-aot-compiler-regraw
       ;; wf_bytecode_call_leaf (desc argc lo id kind ...) was measured and removed: its entry and
       ;; exit cost (+13 instructions per r4-car trip) exceed what five registers save on its short hit path.
-      '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
-        (wf_bytecode_execute_frame arg-index pc sp cb-n done code-len mem depth))
+      (if nelisp-aot-compiler-spillcall
+          ;; spillcall: pc and sp may hold any word (the raw proof refuses them); on r3-mix they are
+          ;; execute_frame's hottest slots (136 Ir/trip) while arg-index's register was never read.
+          ;; Four names keep rbx for the function's call-free regions.
+          '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
+            (wf_bytecode_execute_frame pc sp done depth))
+        '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
+          (wf_bytecode_execute_frame arg-index pc sp cb-n done code-len mem depth)))
     '((wf_bytecode_w_fast_run pc sp raw data length mem)))
   "Functions whose raw VM state lives in callee-saved registers (cgreg, regraw).
 Each element is (NAME VAR...): VAR lists, most profitable first, the parameters or
@@ -16688,7 +16709,8 @@ together with its live-slot set, so call sites can be attributed to it."
             (p0 (aref buf 1)))
         (prog1 (nelisp-aot-compiler--emit-value-1 node buf)
           (when live
-            (push (list p0 (aref buf 1) live) nelisp-aot-compiler--stackmap-ranges))
+            (push (list p0 (aref buf 1) (nelisp-aot-compiler--stackmap-register-mask live))
+                  nelisp-aot-compiler--stackmap-ranges))
           (when nelisp-aot-compiler--x86-frame-read-aliases
             (setq nelisp-aot-compiler--stackmap-reason 'alias)))))))
 
@@ -25882,9 +25904,10 @@ holds across the two-pass orchestration):
             ;; The out-of-line call sits behind the function; the inline arm falls through.
             (let ((cold-lbl (intern (format "%s-cold" id)))
                   (live (and nelisp-aot-compiler--stackmap-live-table
-                             (or (gethash (if (eq cold :then) then else)
-                                          nelisp-aot-compiler--stackmap-live-table)
-                                 (gethash node nelisp-aot-compiler--stackmap-live-table)))))
+                             (nelisp-aot-compiler--stackmap-register-mask
+                              (or (gethash (if (eq cold :then) then else)
+                                           nelisp-aot-compiler--stackmap-live-table)
+                                  (gethash node nelisp-aot-compiler--stackmap-live-table))))))
               (nelisp-aot-compiler--emit-cond-jump
                (nelisp-aot-compiler--ir-get node :test) buf cold-lbl (eq cold :then))
               (nelisp-aot-compiler--emit-value (if (eq cold :then) else then) buf)
@@ -28692,6 +28715,17 @@ mask meaning that call site keeps the whole-frame scan."
 ;; register.  The CG3 loop, call-free region, prefix and zero-branch planners see a non-empty
 ;; `--promoted-slots' and stay out of the body.
 
+(defun nelisp-aot-compiler--stackmap-register-mask (live)
+  "Return LIVE without the frame words of slots held in callee-saved registers (spillcall).
+The vm-register plan keeps those slots in registers for the whole body and never reads their
+frame words, which therefore hold stale copies at every call site."
+  (if (and nelisp-aot-compiler-spillcall (integerp live) nelisp-aot-compiler--vm-reg-pairs)
+      (let ((m live))
+        (dolist (p nelisp-aot-compiler--vm-reg-pairs)
+          (setq m (logand m (lognot (nelisp-aot-compiler--stackmap-slot-bit (car p))))))
+        m)
+    live))
+
 (defun nelisp-aot-compiler--vm-reg-pool (&optional no-rbx)
   "The callee-saved registers the vm-register plan may use on this target, or nil.
 SysV adds rbx as a fifth, last register unless NO-RBX: every non-variadic SysV prologue already
@@ -29011,6 +29045,10 @@ recorded in `--vm-reg-decisions' and logged as an `nelisp-vmreg:' line."
                            (mapcar #'cdr shaped))))
             (dolist (c shaped)
               (unless (memq (cdr c) proven) (push (car c) dropped)))
+            ;; spillcall: a variable the raw proof refuses may still hold a Lisp reference in its
+            ;; callee-saved register across calls; see `nelisp-aot-compiler-spillcall'.
+            (when (and nelisp-aot-compiler-spillcall nelisp-aot-compiler-regraw)
+              (setq proven (mapcar #'cdr shaped)))
             (dolist (c shaped)
               (when (and pool (memq (cdr c) proven)
                          (not (assq (car c) admitted)) (not (rassq (cdr c) admitted))

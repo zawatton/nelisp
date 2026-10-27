@@ -93,6 +93,10 @@ def main():
                        lambda k: base_label if k.group(1) == prev_label else a.label, s)
         if f == 'chain.sh':
             s = add_gates(s)
+            # The Win64 checks leave a wine prefix of ~1 GB; drop it once the chain ends.
+            if 'win/wineprefix' not in s:
+                s += ('W=$RT/target/$N/win; f=wineprefix; '
+                      '[ -d "$W/$f" ] && rm -rf "${W:?}/${f:?}"\n')
         if f == 'matrix/agg.py':
             s = fix_agg_cpu(s, open(f'{dst}/chain.sh').read() if os.path.exists(f'{dst}/chain.sh') else '')
         if f == 'build.sh':

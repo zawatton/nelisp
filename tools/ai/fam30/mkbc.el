@@ -1,0 +1,12 @@
+;;; -*- lexical-binding: t; -*-
+;; usage: emacs -Q --batch -l mkbc.el > bc.el   (GNU byte code for every f30- function of src.el)
+(setq byte-compile-warnings nil)
+(princ ";;; -*- lexical-binding: t; -*-\n")
+(let* ((d (file-name-directory load-file-name)) forms)
+  (with-temp-buffer (insert-file-contents (expand-file-name "src.el" d))
+    (goto-char (point-min))
+    (condition-case nil (while t (push (read (current-buffer)) forms)) (end-of-file nil)))
+  (dolist (f (nreverse forms))
+    (when (eq (car-safe f) 'defun)
+      (let ((fn (byte-compile (eval `(lambda ,(nth 2 f) ,@(nthcdr 3 f)) t))))
+        (princ (format "(fset '%s-bc %S)\n" (nth 1 f) fn))))))
