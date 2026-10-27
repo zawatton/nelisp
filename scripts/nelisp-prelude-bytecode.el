@@ -281,6 +281,21 @@ SPANS contains (START . END) pairs for each element after the list head."
 ;; macros plus those of every module it (transitively) `require's from this
 ;; tree.
 
+;; nativecomp N3 (nc4, target/nativecomp/DESIGN.md stage N3): the regexp
+;; entry points of `string-match' / `string-match-p' / `match-beginning' /
+;; `match-end' and the native matcher glue they run on every call.  As GNU
+;; byte code they ran on the byte-code VM; as lexical source they are fx
+;; records the native compiler lowers (lisp/nelisp-fxir-native-data.el), so
+;; their callers' calls are direct native calls.  The pure-Lisp matcher
+;; behind them stays byte code.
+(defconst nelisp-prelude-bytecode-fx-names
+  '(nlre--string-match-entry nlre--string-match-p-entry nlre-string-match
+    nlre--nat-sm nlre--nat-program nlre--nat-fold-default-p nlre--nat-run
+    nlre--nat-publish nlre-match-beginning nlre-match-end nlre--match-string-entry
+    ;; `nlre--nat-fold-default-p' funcalls it on every case-folding match.
+    current-buffer)
+  "Defuns the byte-code pass keeps as source for the fx compiler.")
+
 (defvar nelisp-prelude-bytecode-repo-root nil
   "Repository root for resolving a core module's `require'd sources.
 nil means `nelisp-standalone--repo-root' when bound, else `default-directory'.")
@@ -865,6 +880,10 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                  ;; Whole-file GNU compilation may already have erased a
                  ;; native head, including one introduced by another macro.
                  (setq reason "native-special-head-macro-requires-source"))
+                ;; nativecomp N3 (nc4): kept as source, so the fx compiler and
+                ;; the native units compile them (`nelisp-prelude-bytecode-fx-names').
+                ((memq name nelisp-prelude-bytecode-fx-names)
+                 (setq reason "fx-native-preferred"))
                 ((or (nelisp-prelude-bytecode--unlowered-native-head-p body)
                      ;; A macro can introduce these after source scanning.
                      ;; Constants also conservatively retain indirect uses

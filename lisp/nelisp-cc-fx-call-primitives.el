@@ -84,173 +84,306 @@
             ;; operand words.
             (if (if (= argc 3) (= (sexp-name-eq name "nelisp--string-search-chars") 1) 0) -20
               (if (if (> argc 0) (= (sexp-name-eq name "funcall") 1) 0) 13 0))))))
-    ;; bufedit: the buffer text is a gap buffer (see `nelisp--gb-char-reference' in the prelude).
-    ;; The record's STORE slot (1) holds a unibyte string of 4*CAP bytes, one little-endian 32-bit
-    ;; character code per element: characters 0..BLEN-1, the gap, then the rest at the end
-    ;; (physical index = logical + CAP - LEN from BLEN on).  Slot K of the record is the word at
-    ;; payload + 16 + 8K: store 24, unibyte 32, modified 40, markers 48, overlays 56, narrow-start
-    ;; 64, narrow-end 72, text-properties 80, tick 96, pend 104, blen 112, len 120.  A string word
-    ;; (tag 4) has its header at word-4: nchars 0, nbytes 8 (negative: unibyte), intervals 16,
-    ;; data pointer 24 (read again after any allocation: string data can move).  GNU: buffer.h
-    ;; BUF_GPT/Z/GAP_SIZE, insdel.c make_gap/move_gap_both/insert_1_both/del_range_2, search.c
-    ;; find_newline, editfns.c Fchar_after/make_buffer_string.
+    ;; bufedit/bufstore: the buffer text is a gap buffer of bytes in Emacs's internal encoding
+    ;; (see `nelisp--gb-char-reference' in the prelude).  GNU buffer.h: BEG_ADDR..GPT_ADDR | gap |
+    ;; GAP_END_ADDR..Z_ADDR, one array of bytes; a character is one byte in a unibyte buffer and its
+    ;; internal (UTF-8 based, character.h) sequence in a multibyte one, a raw byte 0x80..0xFF being
+    ;; the two bytes C0/C1 xx.  The record's STORE slot (1) is a unibyte string of CAP bytes: the
+    ;; GBYTE bytes before the gap, the gap, then ZBYTE - GBYTE bytes at the end (physical byte =
+    ;; logical + CAP - ZBYTE from GBYTE on).  Positions handed in and out stay character indexes:
+    ;; BLEN (GPT) and LEN (Z) count characters, GBYTE (GPT_BYTE) and ZBYTE (Z_BYTE) bytes, and
+    ;; CCHAR/CBYTE is one known character/byte pair (marker.c's cached_charpos/cached_bytepos).
+    ;; When ZBYTE = LEN every character is one byte and a position is its own byte position (the
+    ;; Z == Z_BYTE early return of buf_charpos_to_bytepos); otherwise a position is found by
+    ;; scanning from the nearest known pair (BEG, GPT, Z, the cache: best_below/best_above).  Slot
+    ;; K of the record is the word at payload + 16 + 8K: store 24, unibyte 32, modified 40, markers
+    ;; 48, overlays 56, narrow-start 64, narrow-end 72, text-properties 80, tick 96, pend 104, blen
+    ;; 112, len 120, ins 136, gbyte 144, zbyte 152, cchar 160, cbyte 168.  A string word (tag 4) has
+    ;; its header at word-4: nchars 0, nbytes 8 (negative: unibyte), intervals 16, data pointer 24
+    ;; (read again after any allocation: string data can move).  GNU: insdel.c make_gap/
+    ;; move_gap_both/insert_1_both/copy_text/del_range_2, marker.c buf_charpos_to_bytepos/
+    ;; buf_bytepos_to_charpos, search.c find_newline, editfns.c Fchar_after/make_buffer_string.
     ;; The header of the store when the record's text state is consistent, else 0.
     (defun nl_gb_ok (r)
       (let* ((s (ptr-read-u64 r 24)))
         (if (/= (logand s 7) 4) 0
-          (let* ((h (- s 4)) (bw (ptr-read-u64 r 112)) (lw (ptr-read-u64 r 120)))
+          (let* ((h (- s 4)) (bw (ptr-read-u64 r 112)) (lw (ptr-read-u64 r 120))
+                 (gw (ptr-read-u64 r 144)) (zw (ptr-read-u64 r 152)))
             (if (>= (ptr-read-u64 h 8) 0) 0
-              (if (/= (logand bw 3) 1) 0
-                (if (/= (logand lw 3) 1) 0
-                  (let* ((blen (sar bw 2)) (len (sar lw 2))
-                         (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
+              (if (/= (logand (logand bw lw) (logand gw zw) 3) 1) 0
+                (if (/= (logand (logior bw lw) (logior gw zw) 3) 1) 0
+                  (let* ((blen (sar bw 2)) (len (sar lw 2)) (gb (sar gw 2)) (zb (sar zw 2))
+                         (cap (logand (ptr-read-u64 h 0) 9223372036854775807)))
                     (if (< blen 0) 0
                       (if (> blen len) 0
-                        (if (> len cap) 0 h)))))))))))
-    ;; The character at logical index I (0 <= I < LEN).
-    (defun nl_gb_at (d blen gap i)
-      (ptr-read-u32 d (* (if (< i blen) i (+ i gap)) 4)))
-    ;; Last physical index in [LO, HI] holding C scanning down, or -1: four elements per step
-    ;; (the zero-lane test of two words xor the pattern), then one at a time.
-    (defun nl_gb_rscan (d lo hi c)
-      (let* ((p hi) (res -1) (go 1) (kk (logior c (shl c 32))) (mm 9223372034707292159)
-             (hh (logior (shl 1 63) (shl 1 31))))
+                        (if (> zb cap) 0
+                          (if (> gb zb) 0
+                            (if (< gb blen) 0
+                              (if (< zb len) 0
+                                (if (> (- gb blen) (- zb len)) 0 h)))))))))))))))
+    ;; The byte length of the character whose internal sequence starts with the byte X.
+    (defun nl_gb_blen (x)
+      (if (< x 128) 1 (if (< x 224) 2 (if (< x 240) 3 (if (< x 248) 4 5)))))
+    ;; The physical byte P after N characters from physical byte P inside one side of the gap:
+    ;; eight bytes per step while they are ASCII.
+    (defun nl_gb_fwd (d p n)
+      (seq
+       (while (> n 0)
+         (if (if (>= n 8) (= (logand (ptr-read-u64 d p) -9187201950435737472) 0) 0)
+             (seq (setq p (+ p 8)) (setq n (- n 8)))
+           (seq (setq p (+ p (nl_gb_blen (ptr-read-u8 d p)))) (setq n (- n 1)))))
+       p))
+    ;; The physical byte N characters before the character boundary P (one side of the gap).
+    (defun nl_gb_bwd (d p n)
+      (seq
+       (while (> n 0)
+         (if (if (>= n 8) (= (logand (ptr-read-u64 d (- p 8)) -9187201950435737472) 0) 0)
+             (seq (setq p (- p 8)) (setq n (- n 8)))
+           (seq (setq p (- p 1))
+                (while (= (logand (ptr-read-u8 d p) 192) 128) (setq p (- p 1)))
+                (setq n (- n 1)))))
+       p))
+    ;; The number of characters (bytes that are not 10xxxxxx continuation bytes) at physical
+    ;; [P, E): four bytes per step, the continuation lanes counted with one multiply.
+    (defun nl_gb_leads (d p e)
+      (let* ((n 0))
         (seq
-         ;; eight elements per step: a lane of (element xor C) plus 0x7FFFFFFF has bit 31 set
-         ;; exactly when it is nonzero (elements are below 2^22, so no carry leaves a lane)
+         (while (<= (+ p 4) e)
+           (let* ((w (ptr-read-u32 d p))
+                  (c (sar (logand (logand w (logxor (shl w 1) 4294967295)) 2155905152) 7)))
+             (seq (setq n (+ n (- 4 (logand (sar (* c 16843009) 24) 255))))
+                  (setq p (+ p 4)))))
+         (while (< p e)
+           (seq (if (= (logand (ptr-read-u8 d p) 192) 128) 0 (setq n (+ n 1)))
+                (setq p (+ p 1))))
+         n)))
+    ;; Record the known pair CHARPOS/BYTEPOS of R (the cache) and answer BYTEPOS.
+    (defun nl_gb_cache (r c b)
+      (seq (ptr-write-u64 r 160 (+ (shl c 2) 1)) (ptr-write-u64 r 168 (+ (shl b 2) 1)) b))
+    ;; buf_charpos_to_bytepos: the logical byte position of the character index POS (0 <= POS
+    ;; <= LEN) of record R with store data D.
+    (defun nl_gb_c2b (r d pos)
+      (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2)))
+        (if (= zb len) pos
+          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (gb (sar (ptr-read-u64 r 144) 2))
+                 (cc (sar (ptr-read-u64 r 160) 2)) (cb (sar (ptr-read-u64 r 168) 2))
+                 (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807) zb))
+                 (lc 0) (lb 0) (hc len) (hb zb))
+            (seq
+             ;; best_below / best_above among BEG, GPT, Z and the cache
+             (if (<= blen pos) (seq (setq lc blen) (setq lb gb)) (seq (setq hc blen) (setq hb gb)))
+             (if (if (<= cc pos) (> cc lc) 0) (seq (setq lc cc) (setq lb cb)) 0)
+             (if (if (>= cc pos) (< cc hc) 0) (seq (setq hc cc) (setq hb cb)) 0)
+             (if (= pos lc) lb
+               (if (= pos hc) hb
+                 (nl_gb_cache r pos
+                              (if (<= (- pos lc) (- hc pos))
+                                  (if (< lb gb) (nl_gb_fwd d lb (- pos lc))
+                                    (- (nl_gb_fwd d (+ lb gapb) (- pos lc)) gapb))
+                                (if (<= hb gb) (nl_gb_bwd d hb (- hc pos))
+                                  (- (nl_gb_bwd d (+ hb gapb) (- hc pos)) gapb)))))))))))
+    ;; buf_bytepos_to_charpos: the character index of the logical character boundary BPOS.
+    (defun nl_gb_b2c (r d bpos)
+      (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2)))
+        (if (= zb len) bpos
+          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (gb (sar (ptr-read-u64 r 144) 2))
+                 (cc (sar (ptr-read-u64 r 160) 2)) (cb (sar (ptr-read-u64 r 168) 2))
+                 (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807) zb))
+                 (lc 0) (lb 0) (hc len) (hb zb))
+            (seq
+             (if (<= gb bpos) (seq (setq lc blen) (setq lb gb)) (seq (setq hc blen) (setq hb gb)))
+             (if (if (<= cb bpos) (> cb lb) 0) (seq (setq lc cc) (setq lb cb)) 0)
+             (if (if (>= cb bpos) (< cb hb) 0) (seq (setq hc cc) (setq hb cb)) 0)
+             (let* ((c (if (<= (- bpos lb) (- hb bpos))
+                           (+ lc (if (< lb gb) (nl_gb_leads d lb bpos)
+                                   (nl_gb_leads d (+ lb gapb) (+ bpos gapb))))
+                         (- hc (if (<= hb gb) (nl_gb_leads d bpos hb)
+                                 (nl_gb_leads d (+ bpos gapb) (+ hb gapb)))))))
+               (seq (nl_gb_cache r c bpos) c)))))))
+    ;; The character at the physical byte P of a multibyte store (STRING_CHAR).
+    (defun nl_gb_pchar (d p)
+      (let* ((x (ptr-read-u8 d p)))
+        (if (< x 128) x (sar (nl_gb_dec d p (+ p 8)) 3))))
+    ;; The character at character index I (0 <= I < LEN) of record R with store data D.
+    (defun nl_gb_at (r d i)
+      (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+             (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807) zb)))
+        (if (= zb len)
+            (ptr-read-u8 d (if (< i (sar (ptr-read-u64 r 112) 2)) i (+ i gapb)))
+          (let* ((lb (nl_gb_c2b r d i)))
+            (nl_gb_pchar d (if (< lb (sar (ptr-read-u64 r 144) 2)) lb (+ lb gapb)))))))
+    ;; 1 when the 32-bit word W has a byte equal to C (K = C in every byte), else 0.
+    (defun nl_gb_hasb (w k)
+      (let* ((y (logxor w k)))
+        (if (= (logand (logior (+ (logand y 2139062143) 2139062143) y) 2155905152) 2155905152) 0 1)))
+    ;; Last physical byte in [LO, HI] equal to C scanning down, or -1: eight bytes per step.
+    (defun nl_gb_rscan (d lo hi c)
+      (let* ((p hi) (res -1) (go 1) (k (* c 16843009)))
+        (seq
          (while (if (= go 1) (>= (- p 7) lo) 0)
-           (let* ((a1 (+ (logxor (ptr-read-u64 d (* (- p 1) 4)) kk) mm))
-                  (a2 (+ (logxor (ptr-read-u64 d (* (- p 3) 4)) kk) mm))
-                  (a3 (+ (logxor (ptr-read-u64 d (* (- p 5) 4)) kk) mm))
-                  (a4 (+ (logxor (ptr-read-u64 d (* (- p 7) 4)) kk) mm)))
-             (if (= (logand (logand (logand a1 a2) (logand a3 a4)) hh) hh)
-                 (setq p (- p 8))
-               (setq go 0))))
+           (if (= (logior (nl_gb_hasb (ptr-read-u32 d (- p 3)) k) (nl_gb_hasb (ptr-read-u32 d (- p 7)) k)) 0)
+               (setq p (- p 8))
+             (setq go 0)))
          (while (if (= res -1) (>= p lo) 0)
-           (if (= (ptr-read-u32 d (* p 4)) c) (setq res p) (setq p (- p 1))))
+           (if (= (ptr-read-u8 d p) c) (setq res p) (setq p (- p 1))))
          res)))
-    ;; First physical index in [LO, HI] holding C scanning up, or -1.
+    ;; First physical byte in [LO, HI] equal to C scanning up, or -1.
     (defun nl_gb_fscan (d lo hi c)
-      (let* ((p lo) (res -1) (go 1) (kk (logior c (shl c 32))) (mm 9223372034707292159)
-             (hh (logior (shl 1 63) (shl 1 31))))
+      (let* ((p lo) (res -1) (go 1) (k (* c 16843009)))
         (seq
          (while (if (= go 1) (<= (+ p 7) hi) 0)
-           (let* ((a1 (+ (logxor (ptr-read-u64 d (* p 4)) kk) mm))
-                  (a2 (+ (logxor (ptr-read-u64 d (* (+ p 2) 4)) kk) mm))
-                  (a3 (+ (logxor (ptr-read-u64 d (* (+ p 4) 4)) kk) mm))
-                  (a4 (+ (logxor (ptr-read-u64 d (* (+ p 6) 4)) kk) mm)))
-             (if (= (logand (logand (logand a1 a2) (logand a3 a4)) hh) hh)
-                 (setq p (+ p 8))
-               (setq go 0))))
+           (if (= (logior (nl_gb_hasb (ptr-read-u32 d p) k) (nl_gb_hasb (ptr-read-u32 d (+ p 4)) k)) 0)
+               (setq p (+ p 8))
+             (setq go 0)))
          (while (if (= res -1) (<= p hi) 0)
-           (if (= (ptr-read-u32 d (* p 4)) c) (setq res p) (setq p (+ p 1))))
+           (if (= (ptr-read-u8 d p) c) (setq res p) (setq p (+ p 1))))
          res)))
-    ;; Last logical index in [FL, I] holding C, or -1 (GNU find_newline backward).
-    (defun nl_gb_rfind (d blen gap i fl c)
+    ;; Last logical byte in [FL, I] equal to C, or -1 (GPT byte GB, gap GAPB bytes).
+    (defun nl_gb_rfindb (d gb gapb i fl c)
       (let* ((res -1))
         (seq
-         (if (>= i blen)
-             (let* ((lo2 (if (> fl blen) fl blen))
-                    (p (nl_gb_rscan d (+ lo2 gap) (+ i gap) c)))
-               (seq (if (>= p 0) (setq res (- p gap)) 0)
-                    (setq i (- blen 1))))
+         (if (>= i gb)
+             (let* ((lo2 (if (> fl gb) fl gb))
+                    (p (nl_gb_rscan d (+ lo2 gapb) (+ i gapb) c)))
+               (seq (if (>= p 0) (setq res (- p gapb)) 0)
+                    (setq i (- gb 1))))
            0)
          (if (< res 0)
              (if (>= i fl) (setq res (nl_gb_rscan d fl i c)) 0)
            0)
          res)))
-    ;; First logical index in [I, END] holding C, or -1 (GNU find_newline forward).
-    (defun nl_gb_ffind (d blen gap i end c)
+    ;; First logical byte in [I, END] equal to C, or -1.
+    (defun nl_gb_ffindb (d gb gapb i end c)
       (let* ((res -1))
         (seq
-         (if (< i blen)
-             (let* ((e2 (if (< end blen) end (- blen 1)))
+         (if (< i gb)
+             (let* ((e2 (if (< end gb) end (- gb 1)))
                     (p (nl_gb_fscan d i e2 c)))
                (seq (if (>= p 0) (setq res p) 0)
-                    (setq i blen)))
+                    (setq i gb)))
            0)
          (if (< res 0)
              (if (<= i end)
-                 (let* ((p (nl_gb_fscan d (+ i gap) (+ end gap) c)))
-                   (if (>= p 0) (setq res (- p gap)) 0))
+                 (let* ((p (nl_gb_fscan d (+ i gapb) (+ end gapb) c)))
+                   (if (>= p 0) (setq res (- p gapb)) 0))
                0)
            0)
          res)))
-    ;; Number of newlines at physical indexes [LO, HI).
+    ;; Last character index in [FL, I] holding the byte-sized character C (ASCII, or any byte of a
+    ;; unibyte buffer), or -1 (GNU find_newline backward).
+    (defun nl_gb_rfind (r d i fl c)
+      (if (< i fl) -1
+        (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+               (gb (sar (ptr-read-u64 r 144) 2))
+               (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807) zb)))
+          (if (= zb len) (nl_gb_rfindb d gb gapb i fl c)
+            (let* ((lb (nl_gb_c2b r d fl)) (hb (nl_gb_c2b r d i))
+                   (j (nl_gb_rfindb d gb gapb hb lb c)))
+              (if (< j 0) -1 (nl_gb_b2c r d j)))))))
+    ;; First character index in [I, END] holding C, or -1 (GNU find_newline forward).
+    (defun nl_gb_ffind (r d i end c)
+      (if (> i end) -1
+        (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+               (gb (sar (ptr-read-u64 r 144) 2))
+               (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807) zb)))
+          (if (= zb len) (nl_gb_ffindb d gb gapb i end c)
+            (let* ((hb (nl_gb_c2b r d end)) (lb (nl_gb_c2b r d i))
+                   (j (nl_gb_ffindb d gb gapb lb hb c)))
+              (if (< j 0) -1 (nl_gb_b2c r d j)))))))
+    ;; Number of newline bytes at physical [LO, HI): eight per step, zero lanes counted exactly.
     (defun nl_gb_pcount (d lo hi)
-      (let* ((p lo) (n 0) (kk 42949672970) (mm 9223372034707292159) (hh (logior (shl 1 63) (shl 1 31))))
+      (let* ((p lo) (n 0) (k 168430090))
         (seq
-         (while (<= (+ p 8) hi)
-           (let* ((a1 (+ (logxor (ptr-read-u64 d (* p 4)) kk) mm))
-                  (a2 (+ (logxor (ptr-read-u64 d (* (+ p 2) 4)) kk) mm))
-                  (a3 (+ (logxor (ptr-read-u64 d (* (+ p 4) 4)) kk) mm))
-                  (a4 (+ (logxor (ptr-read-u64 d (* (+ p 6) 4)) kk) mm)))
-             (seq
-              (if (= (logand (logand (logand a1 a2) (logand a3 a4)) hh) hh) 0
-                (let* ((q p) (e (+ p 8)))
-                  (while (< q e)
-                    (seq (if (= (ptr-read-u32 d (* q 4)) 10) (setq n (+ n 1)) 0)
-                         (setq q (+ q 1))))))
-              (setq p (+ p 8)))))
+         (while (<= (+ p 4) hi)
+           (let* ((y (logxor (ptr-read-u32 d p) k))
+                  (z (logand (logxor (logior (+ (logand y 2139062143) 2139062143) y) 4294967295) 2155905152)))
+             (seq (if (= z 0) 0 (setq n (+ n (logand (sar (* (sar z 7) 16843009) 24) 255))))
+                  (setq p (+ p 4)))))
          (while (< p hi)
-           (seq (if (= (ptr-read-u32 d (* p 4)) 10) (setq n (+ n 1)) 0)
+           (seq (if (= (ptr-read-u8 d p) 10) (setq n (+ n 1)) 0)
                 (setq p (+ p 1))))
          n)))
-    ;; Number of newlines at logical indexes [S, E).
-    (defun nl_gb_count (d blen gap s e)
-      (let* ((n 0))
+    ;; Number of newlines at character indexes [S, E) of record R.
+    (defun nl_gb_count (r d s e)
+      (let* ((sb (nl_gb_c2b r d s)) (eb (nl_gb_c2b r d e))
+             (gb (sar (ptr-read-u64 r 144) 2))
+             (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807)
+                      (sar (ptr-read-u64 r 152) 2)))
+             (n 0))
         (seq
-         (if (< s blen)
-             (seq (setq n (nl_gb_pcount d s (if (< e blen) e blen)))
-                  (setq s blen))
+         (if (< sb gb)
+             (seq (setq n (nl_gb_pcount d sb (if (< eb gb) eb gb)))
+                  (setq sb gb))
            0)
-         (if (< s e) (+ n (nl_gb_pcount d (+ s gap) (+ e gap))) n))))
-    ;; Copy N elements within the store from physical SRC to DST (overlap safe), two at a time.
+         (if (< sb eb) (+ n (nl_gb_pcount d (+ sb gapb) (+ eb gapb))) n))))
+    ;; Copy N bytes within the store from physical SRC to DST (memmove: overlap safe), eight at a
+    ;; time.
     (defun nl_gb_copy (d dst src n)
       (let* ((i 0))
         (seq
          (if (< dst src)
-             (seq (while (<= (+ i 2) n)
-                    (seq (ptr-write-u64 d (* (+ dst i) 4) (ptr-read-u64 d (* (+ src i) 4)))
-                         (setq i (+ i 2))))
-                  (if (< i n)
-                      (ptr-write-u32 d (* (+ dst i) 4) (ptr-read-u32 d (* (+ src i) 4))) 0))
+             (seq (while (<= (+ i 8) n)
+                    (seq (ptr-write-u64 d (+ dst i) (ptr-read-u64 d (+ src i)))
+                         (setq i (+ i 8))))
+                  (while (< i n)
+                    (seq (ptr-write-u8 d (+ dst i) (ptr-read-u8 d (+ src i)))
+                         (setq i (+ i 1)))))
            (seq (setq i n)
-                (while (>= i 2)
-                  (seq (setq i (- i 2))
-                       (ptr-write-u64 d (* (+ dst i) 4) (ptr-read-u64 d (* (+ src i) 4)))))
-                (if (= i 1)
-                    (ptr-write-u32 d (* dst 4) (ptr-read-u32 d (* src 4))) 0)))
+                (while (>= i 8)
+                  (seq (setq i (- i 8))
+                       (ptr-write-u64 d (+ dst i) (ptr-read-u64 d (+ src i)))))
+                (while (> i 0)
+                  (seq (setq i (- i 1))
+                       (ptr-write-u8 d (+ dst i) (ptr-read-u8 d (+ src i)))))))
          0)))
-    ;; Move the gap of the (valid) store H of record R to logical index POS (move_gap_both).
-    (defun nl_gb_move (r h pos)
-      (let* ((d (ptr-read-u64 h 24)) (blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-             (gap (- (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2) len)))
+    ;; Copy N bytes from SRC to DST (distinct memory: copy_text's memcpy): 32 bytes per step.
+    (defun nl_gb_mcopy (src dst n)
+      (let* ((i 0))
         (seq
-         (if (< pos blen) (nl_gb_copy d (+ pos gap) pos (- blen pos))
-           (if (> pos blen) (nl_gb_copy d blen (+ blen gap) (- pos blen)) 0))
+         (while (<= (+ i 32) n)
+           (let* ((a (ptr-read-u64 src i)) (b (ptr-read-u64 src (+ i 8)))
+                  (c (ptr-read-u64 src (+ i 16))) (e (ptr-read-u64 src (+ i 24))))
+             (seq (ptr-write-u64 dst i a) (ptr-write-u64 dst (+ i 8) b)
+                  (ptr-write-u64 dst (+ i 16) c) (ptr-write-u64 dst (+ i 24) e)
+                  (setq i (+ i 32)))))
+         (while (<= (+ i 8) n)
+           (seq (ptr-write-u64 dst i (ptr-read-u64 src i)) (setq i (+ i 8))))
+         (while (< i n)
+           (seq (ptr-write-u8 dst i (ptr-read-u8 src i)) (setq i (+ i 1))))
+         1)))
+    ;; Move the gap of the (valid) store H of record R to character index POS (move_gap_both).
+    (defun nl_gb_move (r h pos)
+      (let* ((d (ptr-read-u64 h 24)) (gb (sar (ptr-read-u64 r 144) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+             (gapb (- (logand (ptr-read-u64 h 0) 9223372036854775807) zb))
+             (pb (nl_gb_c2b r d pos)))
+        (seq
+         (if (< pb gb) (nl_gb_copy d (+ pb gapb) pb (- gb pb))
+           (if (> pb gb) (nl_gb_copy d gb (+ gb gapb) (- pb gb)) 0))
          (ptr-write-u64 r 112 (+ (shl pos 2) 1))
+         (ptr-write-u64 r 144 (+ (shl pb 2) 1))
          0)))
-    ;; Make the gap of record R at least N elements (make_gap): a new store with the gap kept
-    ;; where it is.  1 when the gap is large enough afterwards, 0 when memory is short.
+    ;; Make the gap of record R at least N bytes (make_gap_larger): a new store with the gap kept
+    ;; where it is, GNU's GAP_BYTES_DFL (2000) more than asked, or half the text when that is more
+    ;; (no realloc here, so appends grow the store geometrically).  1 when the gap is large enough
+    ;; afterwards, 0 when memory is short.
     (defun nl_gb_grow (r n)
       (let* ((h (nl_gb_ok r)))
         (if (= h 0) 0
-          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                 (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
-            (if (>= (- cap len) n) 1
-              (let* ((need (+ len n)) (ncap (+ need (if (< (/ need 2) 64) 64 (/ need 2))))
-                     (w (nl_string_new 0 (* ncap 4) 1)))
+          (let* ((gb (sar (ptr-read-u64 r 144) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+                 (cap (logand (ptr-read-u64 h 0) 9223372036854775807)))
+            (if (>= (- cap zb) n) 1
+              (let* ((need (+ zb n)) (ncap (+ need (if (< (/ zb 2) 2000) 2000 (/ zb 2))))
+                     (w (nl_string_new 0 ncap 1)))
                 (if (= w 0) 0
                   (let* ((h2 (ptr-read-u64 r 24)) (old (- h2 4))
                          (od (ptr-read-u64 old 24)) (nd (ptr-read-u64 (- w 4) 24))
-                         (tail (- len blen)))
-                    (seq (nl_string_copy_bytes od nd (* blen 4))
-                         (nl_string_copy_bytes (+ od (* (- cap tail) 4)) (+ nd (* (- ncap tail) 4)) (* tail 4))
+                         (tail (- zb gb)))
+                    (seq (nl_gb_mcopy od nd gb)
+                         (nl_gb_mcopy (+ od (- cap tail)) (+ nd (- ncap tail)) tail)
                          (wf_dirty)
                          (ptr-write-u64 r 24 w)
                          1)))))))))
-    ;; The character (shifted left 3) and byte count of the UTF-8 sequence at byte BI of the
+    ;; The character (shifted left 3) and byte count of the internal sequence at byte BI of the
     ;; NB bytes at SD, as character*8 + length, or -1 for a truncated or malformed one.
     (defun nl_gb_dec (sd bi nb)
       (let* ((b0 (ptr-read-u8 sd bi)))
@@ -284,32 +417,6 @@
                                                   (logand (ptr-read-u8 sd (+ bi 4)) 63))) 3) 5)
                         -1)
                     -1))))))))
-    ;; regfix: widen the N single-byte characters at SD into the u32 elements at physical P of the
-    ;; store data D (one char per byte: a unibyte string, or multibyte text that is all ASCII).  Eight
-    ;; bytes per step when all are below 128 (four u64 stores of two elements each); a block with a
-    ;; high byte goes element by element (a unibyte byte >= 128 is the raw-byte character in a
-    ;; multibyte buffer, UNI 0).  GNU copy_text copies bytes with memcpy; the store here is wider.
-    (defun nl_gb_widen (d p sd n uni)
-      (let* ((k 0))
-        (seq
-         (while (<= (+ k 8) n)
-           (let* ((x (ptr-read-u64 sd k)) (o (* (+ p k) 4)))
-             (if (= (logand (logior x (shr x 32)) 2155905152) 0)
-                 (seq (ptr-write-u64 d o (logior (logand x 255) (shl (logand x 65280) 24)))
-                      (ptr-write-u64 d (+ o 8) (logior (logand (shr x 16) 255) (shl (logand x 4278190080) 8)))
-                      (ptr-write-u64 d (+ o 16) (logior (logand (shr x 32) 255) (logand (shr x 8) 1095216660480)))
-                      (ptr-write-u64 d (+ o 24) (logior (logand (shr x 48) 255) (logand (shr x 24) 1095216660480)))
-                      (setq k (+ k 8)))
-               (let* ((e (+ k 8)))
-                 (while (< k e)
-                   (let* ((c (ptr-read-u8 sd k)))
-                     (seq (ptr-write-u32 d (* (+ p k) 4) (if (< c 128) c (if (= uni 1) c (+ c 4194048))))
-                          (setq k (+ k 1)))))))))
-         (while (< k n)
-           (let* ((c (ptr-read-u8 sd k)))
-             (seq (ptr-write-u32 d (* (+ p k) 4) (if (< c 128) c (if (= uni 1) c (+ c 4194048))))
-                  (setq k (+ k 1)))))
-         n)))
     ;; regfix: a legacy string box (tag 5 or 14: the result of a native string builtin such as
     ;; `number-to-string', `upcase' or `decode-coding-string' that a VM local or an argument list
     ;; still holds) as the String WORD the store operations take, as `nl_val_clone_into' makes it
@@ -323,38 +430,70 @@
                   (if (/= v 0) v
                     (let* ((o (nl_sym_name_string w))) (if (= o 0) w o))))
               w)))))
-    ;; Write the elements of the string with header H2 at physical index P of the store data D
-    ;; (insert_1_both / copy_text): a unibyte byte >= 128 is the raw-byte character in a multibyte
-    ;; buffer (UNI 0), a wide character keeps its low byte in a unibyte one.  The number of
-    ;; elements written, or -1 for a malformed string.
+    ;; The number of bytes at SD (N of them) that are 128 or more: eight per step.
+    (defun nl_gb_highs (sd n)
+      (let* ((k 0) (m 0))
+        (seq
+         (while (<= (+ k 8) n)
+           (seq (if (= (logand (ptr-read-u64 sd k) -9187201950435737472) 0) 0
+                  (let* ((j k) (e (+ k 8)))
+                    (while (< j e)
+                      (seq (if (>= (ptr-read-u8 sd j) 128) (setq m (+ m 1)) 0) (setq j (+ j 1))))))
+                (setq k (+ k 8))))
+         (while (< k n)
+           (seq (if (>= (ptr-read-u8 sd k) 128) (setq m (+ m 1)) 0) (setq k (+ k 1))))
+         m)))
+    ;; The bytes the string with header H2 takes in a buffer (UNI 1: unibyte), copy_text's count:
+    ;; its bytes when the representations agree, one per character into a unibyte buffer, two for
+    ;; each byte >= 128 of a unibyte string into a multibyte buffer.
+    (defun nl_gb_need (h2 uni)
+      (let* ((n (logand (ptr-read-u64 h2 0) 9223372036854775807)) (sb (ptr-read-u64 h2 8)))
+        (if (= uni 1) n
+          (if (>= sb 0) sb (+ n (nl_gb_highs (ptr-read-u64 h2 24) n))))))
+    ;; Write the string with header H2 at physical byte P of the store data D (insert_1_both /
+    ;; copy_text): the bytes as they are when the representations agree (memcpy), a unibyte byte
+    ;; >= 128 as the raw-byte character's two bytes in a multibyte buffer (UNI 0), a multibyte
+    ;; character's low byte in a unibyte one.  The number of bytes written, or -1 for a
+    ;; malformed string.
     (defun nl_gb_put (d p h2 uni)
       (let* ((n (logand (ptr-read-u64 h2 0) 9223372036854775807)) (sb (ptr-read-u64 h2 8))
-             (sd (ptr-read-u64 h2 24)) (k 0) (bad 0))
-        (seq
-         (if (< sb 0)
-             (setq k (nl_gb_widen d p sd n uni))
-           (if (= sb n)
-               (setq k (nl_gb_widen d p sd n uni))
-             (let* ((bi 0))
+             (sd (ptr-read-u64 h2 24)))
+        (if (if (= uni 1) (if (< sb 0) 1 (= sb n)) (>= sb 0))
+            (seq (nl_gb_mcopy sd (+ d p) (if (< sb 0) n sb)) (if (< sb 0) n sb))
+          (if (= uni 0)
+              ;; unibyte string into a multibyte buffer
+              (let* ((k 0) (o p))
+                (seq
+                 (while (< k n)
+                   (if (if (<= (+ k 8) n) (= (logand (ptr-read-u64 sd k) -9187201950435737472) 0) 0)
+                       (seq (ptr-write-u64 d o (ptr-read-u64 sd k)) (setq k (+ k 8)) (setq o (+ o 8)))
+                     (let* ((c (ptr-read-u8 sd k)))
+                       (seq (if (< c 128) (seq (ptr-write-u8 d o c) (setq o (+ o 1)))
+                              (seq (ptr-write-u8 d o (logior 192 (logand (sar c 6) 1)))
+                                   (ptr-write-u8 d (+ o 1) (logior 128 (logand c 63)))
+                                   (setq o (+ o 2))))
+                            (setq k (+ k 1))))))
+                 (- o p)))
+            ;; multibyte string into a unibyte buffer: each character's low byte
+            (let* ((k 0) (bi 0) (bad 0))
+              (seq
                (while (if (= bad 0) (< k n) 0)
                  (let* ((x (nl_gb_dec sd bi sb)))
                    (if (< x 0) (setq bad 1)
-                     (seq (ptr-write-u32 d (* (+ p k) 4)
-                                         (if (= uni 1) (logand (sar x 3) 255) (sar x 3)))
+                     (seq (ptr-write-u8 d (+ p k) (logand (sar x 3) 255))
                           (setq bi (+ bi (logand x 7)))
-                          (setq k (+ k 1))))))))
-         )
-         (if (= bad 1) -1 n))))
+                          (setq k (+ k 1))))))
+               (if (= bad 1) -1 n)))))))
     ;; 1 when the string with header H2 is multibyte text beyond ASCII (its byte count differs from
     ;; its character count), which makes the slices of a multibyte buffer multibyte strings too.
     (defun nl_gb_wide_p (h2)
       (let* ((sb (ptr-read-u64 h2 8)))
         (if (< sb 0) 0
           (if (= sb (logand (ptr-read-u64 h2 0) 9223372036854775807)) 0 1))))
-    ;; The UTF-8 length of character C.
+    ;; The internal length of character C.
     (defun nl_gb_enclen (c)
       (if (< c 128) 1 (if (< c 2048) 2 (if (< c 65536) 3 (if (< c 2097152) 4 (if (< c 4194176) 5 2))))))
-    ;; Write the UTF-8 form of C at DST; its length.
+    ;; Write the internal form of C at DST; its length.
     (defun nl_gb_enc (dst c)
       (if (< c 128) (seq (ptr-write-u8 dst 0 c) 1)
         (if (< c 2048)
@@ -377,110 +516,102 @@
                        (ptr-write-u8 dst 4 (logior 128 (logand c 63))) 5)
                 (seq (ptr-write-u8 dst 0 (logior 192 (logand (sar (- c 4194048) 6) 1)))
                      (ptr-write-u8 dst 1 (logior 128 (logand (- c 4194048) 63))) 2)))))))
-        ;; 1 when every element at physical [LO, HI) is below 128 (two elements per load).
+    ;; 1 when every byte at physical [LO, HI) is below 128 (eight per load).
     (defun nl_gb_ascii_p (d lo hi)
-      (let* ((p lo) (acc 0) (mk (logxor (logior 127 (shl 127 32)) -1)))
+      (let* ((p lo) (acc 0))
         (seq
-         (while (<= (+ p 2) hi)
-           (seq (setq acc (logior acc (ptr-read-u64 d (* p 4)))) (setq p (+ p 2))))
-         (if (< p hi) (setq acc (logior acc (ptr-read-u32 d (* p 4)))) 0)
-         (if (= (logand acc mk) 0) 1 0))))
-    ;; Store the low bytes of the elements at physical [LO, HI) at DST; the next DST.
-    (defun nl_gb_pack (dst d lo hi)
-      (let* ((p lo) (o dst))
-        (seq
-         (while (<= (+ p 4) hi)
-           (let* ((w1 (ptr-read-u64 d (* p 4))) (w2 (ptr-read-u64 d (* (+ p 2) 4))))
-             (seq (ptr-write-u32 o 0 (logior (logior (logand w1 255) (shl (logand (sar w1 32) 255) 8))
-                                             (logior (shl (logand w2 255) 16) (shl (logand (sar w2 32) 255) 24))))
-                  (setq o (+ o 4)) (setq p (+ p 4)))))
-         (while (<= (+ p 2) hi)
-           (let* ((w (ptr-read-u64 d (* p 4))))
-             (seq (ptr-write-u16 o 0 (logior (logand w 255) (shl (logand (sar w 32) 255) 8)))
-                  (setq o (+ o 2)) (setq p (+ p 2)))))
-         (if (< p hi) (seq (ptr-write-u8 o 0 (logand (ptr-read-u32 d (* p 4)) 255)) (setq o (+ o 1))) 0)
-         o)))
-    ;; The UTF-8 size of the elements at physical [LO, HI).
-    (defun nl_gb_usize (d lo hi)
-      (let* ((p lo) (n 0))
-        (seq (while (< p hi)
-               (seq (setq n (+ n (nl_gb_enclen (ptr-read-u32 d (* p 4))))) (setq p (+ p 1))))
-             n)))
-    ;; Write the UTF-8 form of the elements at physical [LO, HI) at DST; the next DST.
-    (defun nl_gb_uwrite (dst d lo hi)
-      (let* ((p lo) (o dst))
-        (seq (while (< p hi)
-               (seq (setq o (+ o (nl_gb_enc o (ptr-read-u32 d (* p 4))))) (setq p (+ p 1))))
-             o)))
-    ;; make_buffer_string: the text of the record B at logical [S, E) as a new string word, or 0
-    ;; (declined: bad range or state, or no memory).  Unibyte for a unibyte buffer or ASCII text.
+         (while (<= (+ p 8) hi)
+           (seq (setq acc (logior acc (ptr-read-u64 d p))) (setq p (+ p 8))))
+         (while (< p hi)
+           (seq (setq acc (logior acc (ptr-read-u8 d p))) (setq p (+ p 1))))
+         (if (= (logand acc -9187201950435737472) 0) 1 0))))
+    ;; Adjust the cache of record R for an insertion of N characters, NB bytes at the gap start
+    ;; BLEN: a pair after it moves with the text (one at it stays: the new text starts there).
+    (defun nl_gb_cache_ins (r blen n nb)
+      (let* ((cc (sar (ptr-read-u64 r 160) 2)))
+        (if (> cc blen)
+            (seq (ptr-write-u64 r 160 (+ (ptr-read-u64 r 160) (shl n 2)))
+                 (ptr-write-u64 r 168 (+ (ptr-read-u64 r 168) (shl nb 2))))
+          0)))
+    ;; make_buffer_string: the text of the record B at character indexes [S, E) as a new string
+    ;; word, or 0 (declined: bad range or state, or no memory).  Unibyte for a unibyte buffer or
+    ;; ASCII text; the bytes are copied as they are (the internal encodings agree).
     (defun nl_gb_substring (b s e)
       (let* ((r (- b 6)) (h (nl_gb_ok r)))
         (if (= h 0) 0
-          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2)))
+          (let* ((len (sar (ptr-read-u64 r 120) 2)))
             (if (< s 0) 0
               (if (> s e) 0
                 (if (> e len) 0
-                  (let* ((cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2))
-                         (gap (- cap len)) (d (ptr-read-u64 h 24))
+                  (let* ((d (ptr-read-u64 h 24))
+                         (sb (nl_gb_c2b r d s)) (eb (nl_gb_c2b r d e))
+                         (gb (sar (ptr-read-u64 r 144) 2))
+                         (gapb (- (logand (ptr-read-u64 h 0) 9223372036854775807) (sar (ptr-read-u64 r 152) 2)))
                          (uni (if (= (ptr-read-u64 r 32) 3) 0 1))
-                         ;; the two physical ranges of [S, E)
-                         (a1 s) (z1 (if (< e blen) e blen))
-                         (a2 (+ (if (> s blen) s blen) gap)) (z2 (+ e gap))
+                         ;; the two physical ranges of [SB, EB)
+                         (a1 sb) (z1 (if (< eb gb) eb gb))
+                         (a2 (+ (if (> sb gb) sb gb) gapb)) (z2 (+ eb gapb))
                          (mb (if (= uni 1) 0
                                (if (= (ptr-read-u64 r 136) 7) 1
                                  (if (= (nl_gb_ascii_p d a1 z1) 1)
                                      (if (= (nl_gb_ascii_p d a2 z2) 1) 0 1) 1))))
-                         (nbytes (if (= mb 1) (+ (nl_gb_usize d a1 z1) (nl_gb_usize d a2 z2)) (- e s)))
+                         (nbytes (- eb sb))
                          (w (nl_string_new 0 nbytes (if (= mb 1) 0 1))))
                     (if (= w 0) 0
                       (let* ((h3 (nl_gb_ok r)))
                         (if (= h3 0) 0
-                          (let* ((d2 (ptr-read-u64 h3 24)) (dst (ptr-read-u64 (- w 4) 24)))
-                            (seq (if (= mb 1)
-                                     (seq (nl_gb_uwrite (nl_gb_uwrite dst d2 a1 z1) d2 a2 z2)
-                                          (ptr-write-u64 (- w 4) 0 (- e s))
+                          (let* ((d2 (ptr-read-u64 h3 24)) (dst (ptr-read-u64 (- w 4) 24))
+                                 (n1 (if (< a1 z1) (- z1 a1) 0)))
+                            (seq (if (> n1 0) (nl_gb_mcopy (+ d2 a1) dst n1) 0)
+                                 (if (< a2 z2) (nl_gb_mcopy (+ d2 a2) (+ dst n1) (- z2 a2)) 0)
+                                 (if (= mb 1)
+                                     (seq (ptr-write-u64 (- w 4) 0 (- e s))
                                           (ptr-write-u64 (- w 4) 8 nbytes))
-                                   (nl_gb_pack (nl_gb_pack dst d2 a1 z1) d2 a2 z2))
+                                   0)
                                  w)))))))))))))
-;; Insert the elements of the string word SW at the gap start of record B (reserving room):
-    ;; the count as a fixnum word, or 0 (declined).
+    ;; Insert the string word SW at the gap start of record B (reserving room): the character
+    ;; count as a fixnum word, or 0 (declined).
     (defun nl_gb_insert_w (b sw0)
       (let* ((r (- b 6)) (sw (nl_gb_strw sw0)))
         (if (/= (logand sw 7) 4) 0
-          (let* ((n (logand (ptr-read-u64 (- sw 4) 0) 9223372036854775807)))
-            (if (= (nl_gb_grow r n) 0) 0
-              (let* ((h (nl_gb_ok r)))
-                (if (= h 0) 0
-                  (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                         (uni0 (if (= (ptr-read-u64 r 32) 3) 0 1))
-                         (k (nl_gb_put (ptr-read-u64 h 24) blen (- sw 4) uni0)))
-                    (if (/= k n) 0
-                      (seq (wf_dirty)
-                           (if (= uni0 1) 0 (if (= (nl_gb_wide_p (- sw 4)) 1) (ptr-write-u64 r 136 7) 0))
-                           (ptr-write-u64 r 112 (+ (shl (+ blen n) 2) 1))
-                           (ptr-write-u64 r 120 (+ (shl (+ len n) 2) 1))
-                           (+ (shl n 2) 1)))))))))))
-        ;; Overwrite the elements at logical S.. with those of the string SW (same count) when the
-    ;; run lies wholly before or wholly after the gap; 3 on success, 0 when declined.
+          (if (= (nl_gb_ok r) 0) 0
+            (let* ((uni0 (if (= (ptr-read-u64 r 32) 3) 0 1))
+                   (n (logand (ptr-read-u64 (- sw 4) 0) 9223372036854775807))
+                   (nb (nl_gb_need (- sw 4) uni0)))
+              (if (= (nl_gb_grow r nb) 0) 0
+                (let* ((h (nl_gb_ok r)))
+                  (if (= h 0) 0
+                    (let* ((blen (sar (ptr-read-u64 r 112) 2)) (gb (sar (ptr-read-u64 r 144) 2))
+                           (k (nl_gb_put (ptr-read-u64 h 24) gb (- sw 4) uni0)))
+                      (if (/= k nb) 0
+                        (seq (wf_dirty)
+                             (if (= uni0 1) 0 (if (= (nl_gb_wide_p (- sw 4)) 1) (ptr-write-u64 r 136 7) 0))
+                             (nl_gb_cache_ins r blen n nb)
+                             (ptr-write-u64 r 112 (+ (ptr-read-u64 r 112) (shl n 2)))
+                             (ptr-write-u64 r 120 (+ (ptr-read-u64 r 120) (shl n 2)))
+                             (ptr-write-u64 r 144 (+ (ptr-read-u64 r 144) (shl nb 2)))
+                             (ptr-write-u64 r 152 (+ (ptr-read-u64 r 152) (shl nb 2)))
+                             (+ (shl n 2) 1))))))))))))
+    ;; Overwrite the characters at index S.. with those of the string SW (same count) when they
+    ;; take the same bytes and the run lies wholly before or wholly after the gap; 3 on success,
+    ;; 0 when declined.
     (defun nl_gb_overwrite_w (b s sw0)
       (let* ((r (- b 6)) (h (nl_gb_ok r)) (sw (nl_gb_strw sw0)))
         (if (= h 0) 0
           (if (/= (logand sw 7) 4) 0
             (let* ((n (logand (ptr-read-u64 (- sw 4) 0) 9223372036854775807))
-                   (blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                   (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2))
-                   (gap (- cap len)) (d (ptr-read-u64 h 24))
+                   (len (sar (ptr-read-u64 r 120) 2))
                    (uni (if (= (ptr-read-u64 r 32) 3) 0 1)))
               (if (< s 0) 0
                 (if (> (+ s n) len) 0
-                  (if (<= (+ s n) blen)
-                      (if (< (nl_gb_put d s (- sw 4) uni) 0) 0
-                        (seq (if (= uni 1) 0 (if (= (nl_gb_wide_p (- sw 4)) 1) (ptr-write-u64 r 136 7) 0)) 3))
-                    (if (>= s blen)
-                        (if (< (nl_gb_put d (+ s gap) (- sw 4) uni) 0) 0
-                          (seq (if (= uni 1) 0 (if (= (nl_gb_wide_p (- sw 4)) 1) (ptr-write-u64 r 136 7) 0)) 3))
-                      0)))))))))
+                  (let* ((d (ptr-read-u64 h 24)) (gb (sar (ptr-read-u64 r 144) 2))
+                         (gapb (- (logand (ptr-read-u64 h 0) 9223372036854775807) (sar (ptr-read-u64 r 152) 2)))
+                         (sb (nl_gb_c2b r d s)) (eb (nl_gb_c2b r d (+ s n)))
+                         (nb (nl_gb_need (- sw 4) uni)))
+                    (if (/= nb (- eb sb)) 0
+                      (if (if (<= eb gb) 0 (< sb gb)) 0
+                        (if (< (nl_gb_put d (if (<= eb gb) sb (+ sb gapb)) (- sw 4) uni) 0) 0
+                          (seq (if (= uni 1) 0 (if (= (nl_gb_wide_p (- sw 4)) 1) (ptr-write-u64 r 136 7) 0)) 3))))))))))))
     ;; The insert fast path (id 58, GNU Finsert -> insert_from_string_1 for plain strings): every
     ;; argument a string without intervals, the buffer without markers, overlays or text
     ;; properties to adjust, and the gap large enough (the reference reserves).  Writes the
@@ -496,7 +627,7 @@
                 (if (/= ne 3) (if (/= (logand ne 3) 1) -3 (nl_gb_insert_run stk sp argc resw r h total ne tick pend))
                   (nl_gb_insert_run stk sp argc resw r h total ne tick pend)))))))))
     (defun nl_gb_insert_run (stk sp argc resw r h total ne tick pend)
-      (let* ((i 0) (ok 1))
+      (let* ((i 0) (ok 1) (uni (if (= (ptr-read-u64 r 32) 3) 0 1)))
         (seq
          (while (if (= ok 1) (< i argc) 0)
            (let* ((w0 (heap-read-u64 (+ stk (* (+ (- sp argc) i) 8)) 0))
@@ -506,175 +637,155 @@
               (if (/= (logand w 7) 4) (setq ok 0)
                 (let* ((h2 (- w 4)))
                   (if (/= (ptr-read-u64 h2 16) 0) (setq ok 0)
-                    (seq (setq total (+ total (logand (ptr-read-u64 h2 0) 9223372036854775807)))
+                    (seq (setq total (+ total (nl_gb_need h2 uni)))
                          (setq i (+ i 1)))))))))
          (if (= ok 0) -3
-           (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                  (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
-             (if (< (- cap len) total) -3
+           (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+                  (cap (logand (ptr-read-u64 h 0) 9223372036854775807)))
+             (if (< (- cap zb) total) -3
                (if (if (= pend 3) 0 (if (/= (logand pend 3) 1) 1 (if (< (sar pend 2) 1) 1 (if (> (sar pend 2) (+ len 1)) 1 0)))) -3
                  (seq
                   (if (= pend 3) 0
                     (seq (nl_gb_move r h (- (sar pend 2) 1))
                          (ptr-write-u64 r 104 3)))
-                  (let* ((d (ptr-read-u64 h 24)) (p (sar (ptr-read-u64 r 112) 2))
-                         (uni (if (= (ptr-read-u64 r 32) 3) 0 1)) (k 0) (j 0) (bad 0) (wd 0))
+                  (let* ((d (ptr-read-u64 h 24)) (p (sar (ptr-read-u64 r 144) 2))
+                         (blen (sar (ptr-read-u64 r 112) 2))
+                         (k 0) (kc 0) (j 0) (bad 0) (wd 0))
                     (seq
                      (while (if (= bad 0) (< j argc) 0)
                        (let* ((w (heap-read-u64 (+ stk (* (+ (- sp argc) j) 8)) 0))
                               (n (nl_gb_put d (+ p k) (- w 4) uni)))
                          (if (< n 0) (setq bad 1)
-                           (seq (setq k (+ k n)) (setq j (+ j 1))
+                           (seq (setq k (+ k n))
+                                (setq kc (+ kc (logand (ptr-read-u64 (- w 4) 0) 9223372036854775807)))
+                                (setq j (+ j 1))
                                 (if (= uni 1) 0 (if (= (nl_gb_wide_p (- w 4)) 1) (setq wd 1) 0))))))
                      (if (= bad 1) -3
                        (seq (wf_dirty)
                             (if (= wd 1) (ptr-write-u64 r 136 7) 0)
-                            (ptr-write-u64 r 112 (+ (shl (+ p k) 2) 1))
-                            (ptr-write-u64 r 120 (+ (shl (+ len k) 2) 1))
-                            (if (= ne 3) 0 (ptr-write-u64 r 72 (+ ne (shl k 2))))
+                            (nl_gb_cache_ins r blen kc k)
+                            (ptr-write-u64 r 112 (+ (shl (+ blen kc) 2) 1))
+                            (ptr-write-u64 r 120 (+ (shl (+ len kc) 2) 1))
+                            (ptr-write-u64 r 144 (+ (shl (+ p k) 2) 1))
+                            (ptr-write-u64 r 152 (+ (shl (+ zb k) 2) 1))
+                            (if (= ne 3) 0 (ptr-write-u64 r 72 (+ ne (shl kc 2))))
                             (ptr-write-u64 r 40 7)
                             (ptr-write-u64 r 96 (+ tick (shl argc 2)))
                             (ptr-write-u64 resw 0 3)
                             0))))))))))))
     ;; Line start and line end positions (the bodies of ids 54, 55) for the forward-line loops.
-    (defun nl_gb_bol (d blen gap pos lo)
+    (defun nl_gb_bol (r d pos lo)
       (if (<= pos lo) lo
-        (let* ((j (nl_gb_rfind d blen gap (- pos 2) (- lo 1) 10)))
+        (let* ((j (nl_gb_rfind r d (- pos 2) (- lo 1) 10)))
           (if (>= j 0) (+ j 2) lo))))
-    (defun nl_gb_eol (d blen gap cur hi)
+    (defun nl_gb_eol (r d cur hi)
       (if (>= cur hi) hi
-        (let* ((j (nl_gb_ffind d blen gap (- cur 1) (- hi 2) 10)))
+        (let* ((j (nl_gb_ffind r d (- cur 1) (- hi 2) 10)))
           (if (>= j 0) (+ j 1) hi))))
     ;; forward-line (id 64, GNU Fforward_line / scan_newline_from_point): the point moves N lines
     ;; (nil is 1) clamped to the accessible portion; the value is the shortage, a final line
     ;; without a newline counting as one line moved.  N a fixnum or nil.
     (defun nl_gb_forward_line (stk sp argc resw r)
-      (let* ((s (ptr-read-u64 r 24)) (bw (ptr-read-u64 r 112)) (lw (ptr-read-u64 r 120)))
-        (if (/= (logand s 7) 4) -3
-          (if (/= (logand bw 3) 1) -3
-            (if (/= (logand lw 3) 1) -3
-              (let* ((h (- s 4)) (blen (sar bw 2)) (len (sar lw 2))
-                     (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
-                (if (>= (ptr-read-u64 h 8) 0) -3
-                  (if (> len cap) -3
-                    (if (> blen len) -3
-                      (let* ((pend (ptr-read-u64 r 104)) (ns (ptr-read-u64 r 64)) (ne (ptr-read-u64 r 72))
-                             (pt (if (= pend 3) (+ blen 1) (if (= (logand pend 3) 1) (sar pend 2) -9)))
-                             (lo (if (= ns 3) 1 (if (= (logand ns 3) 1) (sar ns 2) -9)))
-                             (hi (if (= ne 3) (+ len 1) (if (= (logand ne 3) 1) (sar ne 2) -9)))
-                             (a (if (= argc 1) (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) 3)))
-                        (if (< pt 1) -3
-                          (if (< lo 1) -3
-                            (if (> hi (+ len 1)) -3
-                              (if (< hi lo) -3
-                                (if (> pt hi) -3
-                                  (if (< pt lo) -3
-                                    (if (if (> argc 1) 1 (if (= a 3) 0 (if (= (logand a 3) 1) 0 1))) -3
-                                      (let* ((n (if (= a 3) 1 (sar a 2)))
-                                             (gap (- cap len)) (d (ptr-read-u64 h 24))
-                                             (cur pt) (rem n) (ran 0) (stall 0))
-                                        (seq
-                                         (if (= n 0)
-                                             (seq (setq cur (nl_gb_bol d blen gap pt lo)) (setq rem 0))
-                                           (if (> n 0)
-                                               (seq
-                                                (while (if (> rem 0) (= ran 0) 0)
-                                                  (if (>= cur hi) (setq ran 1)
-                                                    (let* ((nl (nl_gb_eol d blen gap cur hi)))
-                                                      (if (< nl hi)
-                                                          (seq (setq cur (+ nl 1)) (setq rem (- rem 1)))
-                                                        (seq (setq cur hi) (setq ran 1))))))
-                                                ;; GNU: a short count is one less when the point moved to the end
-                                                ;; of a nonempty accessible portion that ends in a non-newline
-                                                (if (> rem 0)
-                                                    (if (> hi lo)
-                                                        (if (/= cur pt)
-                                                            (if (/= (nl_gb_at d blen gap (- cur 2)) 10)
-                                                                (setq rem (- rem 1)) 0)
-                                                          0)
-                                                      0)
-                                                  0))
-                                             (seq
-                                              (setq cur (nl_gb_bol d blen gap pt lo))
-                                              (setq rem (- 0 n))
-                                              (while (if (> rem 0) (= stall 0) 0)
-                                                (let* ((prev (if (<= cur lo) lo (nl_gb_bol d blen gap (- cur 1) lo))))
-                                                  (if (= prev cur) (setq stall 1)
-                                                    (seq (setq cur prev) (setq rem (- rem 1))))))
-                                              (setq rem (- 0 rem)))))
-                                         (wf_dirty)
-                                         (ptr-write-u64 r 104 (if (= cur (+ blen 1)) 3 (+ (shl cur 2) 1)))
-                                         (ptr-write-u64 resw 0 (+ (shl rem 2) 1))
-                                         0)))))))))))))))))))
-    ;; The point, accessible-portion bounds and the leaf ids 50 char-after, 51 char-before,
-    ;; 52 following-char, 53 preceding-char, 54 line-beginning-position / pos-bol (59),
-    ;; 55 line-end-position / pos-eol (60), 56 bolp, 57 eolp, 58 insert, on the current buffer
-    ;; record B: 0 with RESW written, -3 declined.  They allocate nothing.
+      (let* ((h (nl_gb_ok r)))
+        (if (= h 0) -3
+          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
+                 (pend (ptr-read-u64 r 104)) (ns (ptr-read-u64 r 64)) (ne (ptr-read-u64 r 72))
+                 (pt (if (= pend 3) (+ blen 1) (if (= (logand pend 3) 1) (sar pend 2) -9)))
+                 (lo (if (= ns 3) 1 (if (= (logand ns 3) 1) (sar ns 2) -9)))
+                 (hi (if (= ne 3) (+ len 1) (if (= (logand ne 3) 1) (sar ne 2) -9)))
+                 (a (if (= argc 1) (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) 3)))
+            (if (< pt 1) -3
+              (if (< lo 1) -3
+                (if (> hi (+ len 1)) -3
+                  (if (< hi lo) -3
+                    (if (> pt hi) -3
+                      (if (< pt lo) -3
+                        (if (if (> argc 1) 1 (if (= a 3) 0 (if (= (logand a 3) 1) 0 1))) -3
+                          (let* ((n (if (= a 3) 1 (sar a 2))) (d (ptr-read-u64 h 24))
+                                 (cur pt) (rem n) (ran 0) (stall 0))
+                            (seq
+                             (if (= n 0)
+                                 (seq (setq cur (nl_gb_bol r d pt lo)) (setq rem 0))
+                               (if (> n 0)
+                                   (seq
+                                    (while (if (> rem 0) (= ran 0) 0)
+                                      (if (>= cur hi) (setq ran 1)
+                                        (let* ((nl (nl_gb_eol r d cur hi)))
+                                          (if (< nl hi)
+                                              (seq (setq cur (+ nl 1)) (setq rem (- rem 1)))
+                                            (seq (setq cur hi) (setq ran 1))))))
+                                    ;; GNU: a short count is one less when the point moved to the end
+                                    ;; of a nonempty accessible portion that ends in a non-newline
+                                    (if (> rem 0)
+                                        (if (> hi lo)
+                                            (if (/= cur pt)
+                                                (if (/= (nl_gb_at r d (- cur 2)) 10)
+                                                    (setq rem (- rem 1)) 0)
+                                              0)
+                                          0)
+                                      0))
+                                 (seq
+                                  (setq cur (nl_gb_bol r d pt lo))
+                                  (setq rem (- 0 n))
+                                  (while (if (> rem 0) (= stall 0) 0)
+                                    (let* ((prev (if (<= cur lo) lo (nl_gb_bol r d (- cur 1) lo))))
+                                      (if (= prev cur) (setq stall 1)
+                                        (seq (setq cur prev) (setq rem (- rem 1))))))
+                                  (setq rem (- 0 rem)))))
+                             (wf_dirty)
+                             (ptr-write-u64 r 104 (if (= cur (+ blen 1)) 3 (+ (shl cur 2) 1)))
+                             (ptr-write-u64 resw 0 (+ (shl rem 2) 1))
+                             0)))))))))))))
     ;; The hot readers of the text with every state word read once: 50 char-after, 51 char-before,
     ;; 52 following-char, 53 preceding-char, 54/59 line-beginning-position/pos-bol, 55/60
-    ;; line-end-position/pos-eol, 56 bolp, 57 eolp.  0 with RESW written, -3 declined.
+    ;; line-end-position/pos-eol, 56 bolp, 57 eolp.  0 with RESW written, -3 declined.  They
+    ;; allocate nothing.
     (defun nl_gb_fast (id stk sp argc resw r)
-      (let* ((s (ptr-read-u64 r 24)) (bw (ptr-read-u64 r 112)) (lw (ptr-read-u64 r 120)))
-        (if (/= (logand s 7) 4) -3
-          (if (/= (logand bw 3) 1) -3
-            (if (/= (logand lw 3) 1) -3
-              (let* ((h (- s 4)) (blen (sar bw 2)) (len (sar lw 2))
-                     (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
-                (if (>= (ptr-read-u64 h 8) 0) -3
-                  (if (> len cap) -3
-                    (if (> blen len) -3
-                      (let* ((pend (ptr-read-u64 r 104)) (ns (ptr-read-u64 r 64)) (ne (ptr-read-u64 r 72))
-                             (pt (if (= pend 3) (+ blen 1) (if (= (logand pend 3) 1) (sar pend 2) -9)))
-                             (lo (if (= ns 3) 1 (if (= (logand ns 3) 1) (sar ns 2) -9)))
-                             (hi (if (= ne 3) (+ len 1) (if (= (logand ne 3) 1) (sar ne 2) -9)))
-                             (a (if (= argc 1) (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) 3)))
-                        (if (< pt 1) -3
-                          (if (< lo 1) -3
-                            (if (> hi (+ len 1)) -3
-                              (if (< hi lo) -3
-                                (if (> pt hi) -3
-                                  (if (< pt lo) -3
-                                    (if (if (> argc 1) 1
-                                          (if (<= id 51) (if (= a 3) 0 (if (= (logand a 3) 1) 0 1))
-                                            (if (if (= id 54) 1 (if (= id 55) 1 (if (= id 59) 1 (if (= id 60) 1 0))))
-                                                (if (= a 3) 0 (if (= a 5) 0 1))
-                                              argc)))
-                                        -3
-                                      (let* ((gap (- cap len)) (d (ptr-read-u64 h 24)))
-                                        (if (<= id 51)
-                                            (let* ((pos (if (= a 3) pt (sar a 2))))
-                                              (seq
-                                               (ptr-write-u64
-                                                resw 0
-                                                (if (= id 50)
-                                                    (if (>= pos lo) (if (< pos hi) (+ (shl (nl_gb_at d blen gap (- pos 1)) 2) 1) 3) 3)
-                                                  (if (> pos lo) (if (<= pos hi) (+ (shl (nl_gb_at d blen gap (- pos 2)) 2) 1) 3) 3)))
-                                               0))
-                                          (if (<= id 53)
-                                              (seq
-                                               (ptr-write-u64
-                                                resw 0
-                                                (if (= id 52)
-                                                    (if (>= pt lo) (if (< pt hi) (+ (shl (nl_gb_at d blen gap (- pt 1)) 2) 1) 1) 1)
-                                                  (if (> pt lo) (if (<= pt hi) (+ (shl (nl_gb_at d blen gap (- pt 2)) 2) 1) 1) 1)))
-                                               0)
-                                            (if (= id 56)
-                                                (seq (ptr-write-u64 resw 0 (if (<= pt lo) 7 (if (= (nl_gb_at d blen gap (- pt 2)) 10) 7 3))) 0)
-                                              (if (= id 57)
-                                                  (seq (ptr-write-u64 resw 0 (if (>= pt hi) 7 (if (= (nl_gb_at d blen gap (- pt 1)) 10) 7 3))) 0)
-                                                (if (if (= id 54) 1 (= id 59))
-                                                    (seq (ptr-write-u64
-                                                          resw 0
-                                                          (+ (shl (if (<= pt lo) lo
-                                                                    (let* ((j (nl_gb_rfind d blen gap (- pt 2) (- lo 1) 10)))
-                                                                      (if (>= j 0) (+ j 2) lo))) 2) 1))
-                                                         0)
-                                                  (seq (ptr-write-u64
-                                                        resw 0
-                                                        (+ (shl (if (>= pt hi) hi
-                                                                  (let* ((j (nl_gb_ffind d blen gap (- pt 1) (- hi 2) 10)))
-                                                                    (if (>= j 0) (+ j 1) hi))) 2) 1))
-                                                       0))))))))))))))))))))))))
+      (let* ((h (nl_gb_ok r)))
+        (if (= h 0) -3
+          (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
+                 (pend (ptr-read-u64 r 104)) (ns (ptr-read-u64 r 64)) (ne (ptr-read-u64 r 72))
+                 (pt (if (= pend 3) (+ blen 1) (if (= (logand pend 3) 1) (sar pend 2) -9)))
+                 (lo (if (= ns 3) 1 (if (= (logand ns 3) 1) (sar ns 2) -9)))
+                 (hi (if (= ne 3) (+ len 1) (if (= (logand ne 3) 1) (sar ne 2) -9)))
+                 (a (if (= argc 1) (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) 3)))
+            (if (< pt 1) -3
+              (if (< lo 1) -3
+                (if (> hi (+ len 1)) -3
+                  (if (< hi lo) -3
+                    (if (> pt hi) -3
+                      (if (< pt lo) -3
+                        (if (if (> argc 1) 1
+                              (if (<= id 51) (if (= a 3) 0 (if (= (logand a 3) 1) 0 1))
+                                (if (if (= id 54) 1 (if (= id 55) 1 (if (= id 59) 1 (if (= id 60) 1 0))))
+                                    (if (= a 3) 0 (if (= a 5) 0 1))
+                                  argc)))
+                            -3
+                          (let* ((d (ptr-read-u64 h 24)))
+                            (if (<= id 51)
+                                (let* ((pos (if (= a 3) pt (sar a 2))))
+                                  (seq
+                                   (ptr-write-u64
+                                    resw 0
+                                    (if (= id 50)
+                                        (if (>= pos lo) (if (< pos hi) (+ (shl (nl_gb_at r d (- pos 1)) 2) 1) 3) 3)
+                                      (if (> pos lo) (if (<= pos hi) (+ (shl (nl_gb_at r d (- pos 2)) 2) 1) 3) 3)))
+                                   0))
+                              (if (<= id 53)
+                                  (seq
+                                   (ptr-write-u64
+                                    resw 0
+                                    (if (= id 52)
+                                        (if (>= pt lo) (if (< pt hi) (+ (shl (nl_gb_at r d (- pt 1)) 2) 1) 1) 1)
+                                      (if (> pt lo) (if (<= pt hi) (+ (shl (nl_gb_at r d (- pt 2)) 2) 1) 1) 1)))
+                                   0)
+                                (if (= id 56)
+                                    (seq (ptr-write-u64 resw 0 (if (<= pt lo) 7 (if (= (nl_gb_at r d (- pt 2)) 10) 7 3))) 0)
+                                  (if (= id 57)
+                                      (seq (ptr-write-u64 resw 0 (if (>= pt hi) 7 (if (= (nl_gb_at r d (- pt 1)) 10) 7 3))) 0)
+                                    (if (if (= id 54) 1 (= id 59))
+                                        (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_bol r d pt lo) 2) 1)) 0)
+                                      (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_eol r d pt hi) 2) 1)) 0))))))))))))))))))
     (defun nl_gb_leaf_run (id stk sp argc resw b)
       (if (= id 64) (nl_gb_forward_line stk sp argc resw (- b 6))
       (if (if (<= id 57) 1 (if (= id 59) 1 (= id 60))) (nl_gb_fast id stk sp argc resw (- b 6))
@@ -695,7 +806,7 @@
                         (if (< pt lo) -3
                           (if (= id 61) (nl_gb_delete_run stk sp argc resw r h blen len pt lo hi)
                             (if (= id 66) (nl_gb_delete_char stk sp argc resw r h blen len pt lo hi)
-                            (nl_gb_leaf_ops id stk sp argc resw h blen len pt lo hi)))))))))))))))))
+                              -3))))))))))))))))
     ;; The deletion itself (GNU del_range_2) of the 1-based range [S, E) inside the accessible
     ;; portion of a buffer without markers, overlays or properties: the gap moves to its end and
     ;; grows over it; the point and the narrowing follow `nelisp-delete-region'.  TICK is the
@@ -705,9 +816,7 @@
              (np (if (<= pt s) pt (if (>= pt e) (- pt delta) s))))
         (seq
          (wf_dirty)
-         (nl_gb_move r h (- e 1))
-         (ptr-write-u64 r 112 (+ (shl (- s 1) 2) 1))
-         (ptr-write-u64 r 120 (+ (shl (- len delta) 2) 1))
+         (nl_gb_delete_text r h (- s 1) (- e 1))
          (if (= ns 3) 0
            (let* ((om (sar ns 2)))
              (ptr-write-u64 r 64 (+ (shl (if (<= om s) om (if (>= om e) (- om delta) s)) 2) 1))))
@@ -719,6 +828,23 @@
          (ptr-write-u64 r 104 (if (= np s) 3 (+ (shl np 2) 1)))
          (ptr-write-u64 resw 0 3)
          0)))
+    ;; Delete the characters at indexes [S, E) of the valid store H of record R: the gap moves to
+    ;; E and grows over the range; the cache follows the text.
+    (defun nl_gb_delete_text (r h s e)
+      (let* ((d (ptr-read-u64 h 24)) (sb (nl_gb_c2b r d s)))
+        (seq
+         (nl_gb_move r h e)
+         (let* ((eb (sar (ptr-read-u64 r 144) 2)) (cc (sar (ptr-read-u64 r 160) 2)))
+           (seq
+            (if (>= cc e)
+                (seq (ptr-write-u64 r 160 (- (ptr-read-u64 r 160) (shl (- e s) 2)))
+                     (ptr-write-u64 r 168 (- (ptr-read-u64 r 168) (shl (- eb sb) 2))))
+              (if (> cc s) (nl_gb_cache r s sb) 0))
+            (ptr-write-u64 r 112 (+ (shl s 2) 1))
+            (ptr-write-u64 r 144 (+ (shl sb 2) 1))
+            (ptr-write-u64 r 120 (- (ptr-read-u64 r 120) (shl (- e s) 2)))
+            (ptr-write-u64 r 152 (- (ptr-read-u64 r 152) (shl (- eb sb) 2)))
+            0)))))
     ;; delete-region (id 61): two fixnum positions inside the accessible portion.
     (defun nl_gb_delete_run (stk sp argc resw r h blen len pt lo hi)
       (if (/= argc 2) -3
@@ -771,107 +897,75 @@
                             (if (/= (ptr-read-u64 r 80) 3) -3
                               (if (/= (logand tick 3) 1) -3
                                 (if (if (= ne 3) 0 (/= (logand ne 3) 1)) -3
-                                  (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                                         (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2)))
-                                    (if (< (- cap len) count) -3
+                                  (let* ((len (sar (ptr-read-u64 r 120) 2)) (zb (sar (ptr-read-u64 r 152) 2))
+                                         (uni (if (= (ptr-read-u64 r 32) 3) 0 1))
+                                         (cl (if (= uni 1) 1 (nl_gb_enclen ch)))
+                                         (cap (logand (ptr-read-u64 h 0) 9223372036854775807)))
+                                    (if (< (- cap zb) (* count cl)) -3
                                       (if (if (= pend 3) 0 (if (/= (logand pend 3) 1) 1 (if (< (sar pend 2) 1) 1 (if (> (sar pend 2) (+ len 1)) 1 0)))) -3
                                         (seq
                                          (if (= pend 3) 0
                                            (seq (nl_gb_move r h (- (sar pend 2) 1))
                                                 (ptr-write-u64 r 104 3)))
-                                         (let* ((d (ptr-read-u64 h 24)) (p (sar (ptr-read-u64 r 112) 2))
-                                                (uni (if (= (ptr-read-u64 r 32) 3) 0 1))
-                                                (v (if (= uni 1) (logand ch 255) ch))
-                                                (k 0) (v2 (logior v (shl v 32))))
+                                         (let* ((d (ptr-read-u64 h 24)) (p (sar (ptr-read-u64 r 144) 2))
+                                                (blen (sar (ptr-read-u64 r 112) 2))
+                                                (k 0) (nb (* count cl)))
                                            (seq
                                             (wf_dirty)
-                                            (while (<= (+ k 2) count)
-                                              (seq (ptr-write-u64 d (* (+ p k) 4) v2) (setq k (+ k 2))))
-                                            (if (< k count) (ptr-write-u32 d (* (+ p k) 4) v) 0)
+                                            (if (= cl 1)
+                                                (let* ((v (logand ch 255)) (v8 (* v 72340172838076673)))
+                                                  (seq
+                                                   (while (<= (+ k 8) count)
+                                                     (seq (ptr-write-u64 d (+ p k) v8) (setq k (+ k 8))))
+                                                   (while (< k count)
+                                                     (seq (ptr-write-u8 d (+ p k) v) (setq k (+ k 1))))))
+                                              (seq
+                                               (nl_gb_enc (+ d p) ch)
+                                               (setq k cl)
+                                               (while (< k nb)
+                                                 (seq (ptr-write-u8 d (+ p k) (ptr-read-u8 d (+ p (- k cl))))
+                                                      (setq k (+ k 1))))))
                                             (if (= uni 1) 0 (if (>= ch 128) (ptr-write-u64 r 136 7) 0))
-                                            (ptr-write-u64 r 112 (+ (shl (+ p count) 2) 1))
+                                            (nl_gb_cache_ins r blen count nb)
+                                            (ptr-write-u64 r 112 (+ (shl (+ blen count) 2) 1))
                                             (ptr-write-u64 r 120 (+ (shl (+ len count) 2) 1))
+                                            (ptr-write-u64 r 144 (+ (shl (+ p nb) 2) 1))
+                                            (ptr-write-u64 r 152 (+ (shl (+ zb nb) 2) 1))
                                             (if (= ne 3) 0 (ptr-write-u64 r 72 (+ ne (shl count 2))))
                                             (ptr-write-u64 r 40 7)
                                             (ptr-write-u64 r 96 (+ tick 4))
                                             (ptr-write-u64 resw 0 3)
                                             0)))))))))))))))))))))
-    (defun nl_gb_leaf_ops (id stk sp argc resw h blen len pt lo hi)
-      (let* ((cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2))
-             (gap (- cap len)) (d (ptr-read-u64 h 24))
-             (a (if (= argc 1) (heap-read-u64 (+ stk (* (- sp 1) 8)) 0) 3)))
-        (if (<= id 51)
-            ;; char-after / char-before: POS nil or a fixnum
-            (if (if (> argc 1) 1 (if (= a 3) 0 (if (= (logand a 3) 1) 0 1))) -3
-              (let* ((pos (if (= a 3) pt (sar a 2))))
-                (if (= id 50)
-                    (if (if (>= pos lo) (< pos hi) 0)
-                        (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_at d blen gap (- pos 1)) 2) 1)) 0)
-                      (seq (ptr-write-u64 resw 0 3) 0))
-                  (if (if (> pos lo) (<= pos hi) 0)
-                      (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_at d blen gap (- pos 2)) 2) 1)) 0)
-                    (seq (ptr-write-u64 resw 0 3) 0)))))
-          (if (<= id 53)
-              (if (/= argc 0) -3
-                (if (= id 52)
-                    (if (if (>= pt lo) (< pt hi) 0)
-                        (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_at d blen gap (- pt 1)) 2) 1)) 0)
-                      (seq (ptr-write-u64 resw 0 1) 0))
-                  (if (if (> pt lo) (<= pt hi) 0)
-                      (seq (ptr-write-u64 resw 0 (+ (shl (nl_gb_at d blen gap (- pt 2)) 2) 1)) 0)
-                    (seq (ptr-write-u64 resw 0 1) 0))))
-            (if (>= id 56)
-                (if (<= id 57)
-                    ;; bolp / eolp
-                    (if (/= argc 0) -3
-                      (if (= id 56)
-                          (seq (ptr-write-u64 resw 0
-                                              (if (<= pt lo) 7
-                                                (if (= (nl_gb_at d blen gap (- pt 2)) 10) 7 3))) 0)
-                        (seq (ptr-write-u64 resw 0
-                                            (if (>= pt hi) 7
-                                              (if (= (nl_gb_at d blen gap (- pt 1)) 10) 7 3))) 0)))
-                  ;; 59 pos-bol, 60 pos-eol: the same bodies as 54, 55
-                  (nl_gb_line_ops (- id 5) argc a resw d blen gap pt lo hi))
-              (nl_gb_line_ops id argc a resw d blen gap pt lo hi))))))
-    ;; line-beginning-position (54) / line-end-position (55) of the current line: N nil or 1.
-    (defun nl_gb_line_ops (id argc a resw d blen gap pt lo hi)
-      (if (if (> argc 1) 1 (if (= a 3) 0 (if (= a 5) 0 1))) -3
-        (if (= id 54)
-            (seq (ptr-write-u64 resw 0
-                                (+ (shl (if (<= pt lo) lo
-                                          (let* ((j (nl_gb_rfind d blen gap (- pt 2) (- lo 1) 10)))
-                                            (if (>= j 0) (+ j 2) lo))) 2) 1))
-                 0)
-          (seq (ptr-write-u64 resw 0
-                              (+ (shl (if (>= pt hi) hi
-                                        (let* ((j (nl_gb_ffind d blen gap (- pt 1) (- hi 2) 10)))
-                                          (if (>= j 0) (+ j 1) hi))) 2) 1))
-               0))))
     ;; The column of the point of record R (its store state already validated): characters from the
     ;; line start, a tab advancing to the next multiple of WIDTH (current_column without wide
     ;; characters or invisible text).  The fixnum word, or 0 when the point is not a fixnum.
-    (defun nl_gb_column (d blen gap r len width)
+    (defun nl_gb_column (r d len width)
       (let* ((pend (ptr-read-u64 r 104)) (ns (ptr-read-u64 r 64))
+             (blen (sar (ptr-read-u64 r 112) 2))
              (pt (if (= pend 3) (+ blen 1) (if (= (logand pend 3) 1) (sar pend 2) -9)))
              (lo (if (= ns 3) 1 (if (= (logand ns 3) 1) (sar ns 2) -9))))
         (if (< pt 1) 0
           (if (< lo 1) 0
             (if (> pt (+ len 1)) 0
-              (let* ((bol (nl_gb_bol d blen gap pt lo)) (i (- bol 1)) (col 0) (e (- pt 1)))
+              (let* ((bol (nl_gb_bol r d pt lo)) (i (nl_gb_c2b r d (- bol 1))) (e (nl_gb_c2b r d (- pt 1)))
+                     (gb (sar (ptr-read-u64 r 144) 2))
+                     (gapb (- (logand (ptr-read-u64 (- (ptr-read-u64 r 24) 4) 0) 9223372036854775807)
+                              (sar (ptr-read-u64 r 152) 2)))
+                     (col 0))
                 (seq
                  (while (< i e)
-                   (seq (if (= (nl_gb_at d blen gap i) 9)
-                            (setq col (* width (+ 1 (/ col width))))
-                          (setq col (+ col 1)))
-                        (setq i (+ i 1))))
+                   (let* ((x (ptr-read-u8 d (if (< i gb) i (+ i gapb)))))
+                     (seq (if (= x 9)
+                              (setq col (* width (+ 1 (/ col width))))
+                            (if (= (logand x 192) 128) 0 (setq col (+ col 1))))
+                          (setq i (+ i 1)))))
                  (+ (shl col 2) 1))))))))
-    ;; The record word V when it is a record of the 16 slots of `nelisp-buffer', else 0.
+    ;; The record word V when it is a record of the 20 slots of `nelisp-buffer', else 0.
     (defun nl_gb_record (v)
       (if (= (logand v 7) 6)
           (if (> v 4096)
               (if (= (logand (ptr-read-u64 (- v 6) 0) 63) 12)
-                  (if (>= (nl_record_length v) 16) v 0)
+                  (if (>= (nl_record_length v) 20) v 0)
                 0)
             0)
         0))
@@ -884,9 +978,7 @@
         (if (= b 0) 0
           (let* ((r (- b 6)) (h (nl_gb_ok r)))
             (if (= h 0) 0
-              (let* ((blen (sar (ptr-read-u64 r 112) 2)) (len (sar (ptr-read-u64 r 120) 2))
-                     (cap (sar (logand (ptr-read-u64 h 0) 9223372036854775807) 2))
-                     (gap (- cap len))
+              (let* ((len (sar (ptr-read-u64 r 120) 2))
                      (x (if (> argc 1) (wf_arg_word args 1) 3))
                      (y (if (> argc 2) (wf_arg_word args 2) 3))
                      (fx (if (= (logand x 3) 1) 1 0)) (fy (if (= (logand y 3) 1) 1 0)))
@@ -895,7 +987,7 @@
                         (if (= fx 1)
                             (if (>= (sar x 2) 0)
                                 (if (< (sar x 2) len)
-                                    (+ (shl (nl_gb_at (ptr-read-u64 h 24) blen gap (sar x 2)) 2) 1)
+                                    (+ (shl (nl_gb_at r (ptr-read-u64 h 24) (sar x 2)) 2) 1)
                                   0)
                               0)
                           0)
@@ -928,9 +1020,7 @@
                                             (if (<= (sar x 2) (sar y 2))
                                                 (if (<= (sar y 2) len)
                                                     (seq (wf_dirty)
-                                                         (nl_gb_move r h (sar y 2))
-                                                         (ptr-write-u64 r 112 x)
-                                                         (ptr-write-u64 r 120 (+ (shl (- len (- (sar y 2) (sar x 2))) 2) 1))
+                                                         (nl_gb_delete_text r h (sar x 2) (sar y 2))
                                                          3)
                                                   0)
                                               0)
@@ -944,27 +1034,31 @@
                                       (if (= fy 1) (nl_gb_substring b (sar x 2) (sar y 2)) 0)
                                     0)
                                 0)
-                            (nl_gb_wprim_more id args r h blen len gap argc x y fx fy)))))))))))))
-    (defun nl_gb_wprim_more (id args r h blen len gap argc x y fx fy)
+                            (nl_gb_wprim_more id args r h len argc x y fx fy)))))))))))))
+    (defun nl_gb_wprim_more (id args r h len argc x y fx fy)
       (let* ((d (ptr-read-u64 h 24)))
         (if (= id 76)
-            ;; (gb-find-char B C POS LIM DIR)
+            ;; (gb-find-char B C POS LIM DIR): a byte-sized C (ASCII, any byte of a unibyte buffer,
+            ;; or nothing to find in an ASCII-only one); a wider character is the reference's
             (if (= argc 5)
                 (let* ((pos (wf_arg_word args 2)) (lim (wf_arg_word args 3)) (dir (wf_arg_word args 4)))
                   (if (= fx 1)
                       (if (= (logand pos 3) 1)
                           (if (= (logand lim 3) 1)
                               (if (= (logand dir 3) 1)
-                                  (let* ((c (sar x 2)) (p (sar pos 2)) (l (sar lim 2)))
+                                  (let* ((c (sar x 2)) (p (sar pos 2)) (l (sar lim 2))
+                                         (uni (if (= (ptr-read-u64 r 32) 3) 0 1))
+                                         (ascii (if (= (sar (ptr-read-u64 r 152) 2) len) 1 0)))
                                     (if (< c 0) 0
                                       (if (> c 2147483647) 0
-                                        (if (> (sar dir 2) 0)
-                                            (if (< p 0) 0
-                                              (if (> l len) 0
-                                                (+ (shl (if (< p l) (nl_gb_ffind d blen gap p (- l 1) c) -1) 2) 1)))
-                                          (if (> p len) 0
-                                            (if (< l 0) 0
-                                              (+ (shl (if (> p l) (nl_gb_rfind d blen gap (- p 1) l c) -1) 2) 1)))))))
+                                        (if (if (< c 128) 0 (if (= uni 1) 0 (= ascii 0))) 0
+                                          (if (> (sar dir 2) 0)
+                                              (if (< p 0) 0
+                                                (if (> l len) 0
+                                                  (+ (shl (if (< p l) (if (< c (if (= uni 1) 256 128)) (nl_gb_ffind r d p (- l 1) c) -1) -1) 2) 1)))
+                                            (if (> p len) 0
+                                              (if (< l 0) 0
+                                                (+ (shl (if (> p l) (if (< c (if (= uni 1) 256 128)) (nl_gb_rfind r d (- p 1) l c) -1) -1) 2) 1))))))))
                                 0)
                             0)
                         0)
@@ -977,7 +1071,7 @@
                           (if (>= (sar x 2) 0)
                               (if (<= (sar x 2) (sar y 2))
                                   (if (<= (sar y 2) len)
-                                      (+ (shl (nl_gb_count d blen gap (sar x 2) (sar y 2)) 2) 1)
+                                      (+ (shl (nl_gb_count r d (sar x 2) (sar y 2)) 2) 1)
                                     0)
                                 0)
                             0)
@@ -999,8 +1093,8 @@
                                   (if (<= (sar x 2) (sar y 2))
                                       (if (<= (sar y 2) (+ len 1))
                                           (if (= x y) 1
-                                            (+ (shl (+ (nl_gb_count d blen gap (- (sar x 2) 1) (- (sar y 2) 1))
-                                                       (if (= (nl_gb_at d blen gap (- (sar y 2) 2)) 10) 0 1)) 2) 1))
+                                            (+ (shl (+ (nl_gb_count r d (- (sar x 2) 1) (- (sar y 2) 1))
+                                                       (if (= (nl_gb_at r d (- (sar y 2) 2)) 10) 0 1)) 2) 1))
                                         0)
                                     0)
                                 0)
@@ -1012,7 +1106,7 @@
                     (if (= argc 2)
                         (if (= fx 1)
                             (if (> (sar x 2) 0)
-                                (nl_gb_column d blen gap r len (sar x 2))
+                                (nl_gb_column r d len (sar x 2))
                               0)
                           0)
                       0)
@@ -1203,7 +1297,7 @@
                     (if (= (logand g 7) 6)
                         (if (> g 4096)
                             (if (= (logand (ptr-read-u64 (- g 6) 0) 63) 12)
-                                (if (>= (nl_record_length g) 16) g 0)
+                                (if (>= (nl_record_length g) 20) g 0)
                               0)
                           0)
                       0)))))))))

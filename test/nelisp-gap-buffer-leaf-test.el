@@ -1,9 +1,9 @@
 ;;; nelisp-gap-buffer-leaf-test.el --- native gap buffer bodies (bufedit) -*- lexical-binding: t; -*-
 
 ;; The `nl_gb_*' bodies of lisp/nelisp-cc-fx-call-primitives.el keep the buffer text in the STORE
-;; slot of the `nelisp-buffer' record: a unibyte string of little-endian 32-bit character codes
-;; with the gap after BLEN characters.  This test runs the production bodies on a byte-addressed
-;; memory model (a record of 16 slots, string headers laid out as the runtime lays them out) and
+;; slot of the `nelisp-buffer' record: a unibyte string of the text's bytes in Emacs's internal
+;; encoding with the gap after GBYTE bytes (BLEN characters).  This test runs the production bodies on a byte-addressed
+;; memory model (a record of 20 slots, string headers laid out as the runtime lays them out) and
 ;; checks them against a plain Lisp model of the text, point and narrowing, on fixed cases and on
 ;; a seeded random walk of edits.
 
@@ -88,10 +88,13 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
     (apply #'string (nreverse out))))
 
 (defconst nbg--host-fns
-  '(nl_gb_ok nl_gb_at nl_gb_rscan nl_gb_fscan nl_gb_rfind nl_gb_ffind nl_gb_pcount nl_gb_count nl_gb_copy
-    nl_gb_move nl_gb_grow nl_gb_dec nl_gb_put nl_gb_wide_p nl_gb_fast nl_gb_bol nl_gb_eol nl_gb_forward_line nl_gb_column nl_gb_enclen nl_gb_enc nl_gb_ascii_p nl_gb_pack nl_gb_usize
-    nl_gb_uwrite nl_gb_substring nl_gb_insert_w nl_gb_overwrite_w nl_gb_insert_leaf nl_gb_insert_run
-    nl_gb_delete_core nl_gb_delete_run nl_gb_delete_char nl_gb_insert_char nl_gb_leaf_run nl_gb_leaf_ops nl_gb_line_ops nl_gb_record nl_gb_wprim nl_gb_wprim_more
+  '(nl_gb_ok nl_gb_blen nl_gb_fwd nl_gb_bwd nl_gb_leads nl_gb_cache nl_gb_c2b nl_gb_b2c nl_gb_pchar
+    nl_gb_at nl_gb_hasb nl_gb_rscan nl_gb_fscan nl_gb_rfindb nl_gb_ffindb nl_gb_rfind nl_gb_ffind
+    nl_gb_pcount nl_gb_count nl_gb_copy nl_gb_mcopy nl_gb_move nl_gb_grow nl_gb_dec nl_gb_strw nl_gb_highs nl_gb_need
+    nl_gb_put nl_gb_wide_p nl_gb_enclen nl_gb_enc nl_gb_ascii_p nl_gb_cache_ins nl_gb_substring
+    nl_gb_insert_w nl_gb_overwrite_w nl_gb_insert_leaf nl_gb_insert_run nl_gb_bol nl_gb_eol
+    nl_gb_forward_line nl_gb_fast nl_gb_leaf_run nl_gb_delete_core nl_gb_delete_text nl_gb_delete_run
+    nl_gb_delete_char nl_gb_insert_char nl_gb_column nl_gb_record nl_gb_wprim nl_gb_wprim_more
     nl_gb_bufsub_w nl_gb_slow_w nl_gb_prim_w nl_gb_wprim_w))
 
 (defun nbg--host-form (f)
@@ -107,6 +110,7 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
        (eval (nbg--host-form (ndc--find f (cdr nelisp-cc-fx-call-primitives--source))) t))
      (unwind-protect
          (cl-letf (((symbol-function 'ptr-read-u8) (lambda (p i) (nbg--rd (+ p i) 1 nil)))
+                   ((symbol-function 'heap-read-u8) (lambda (p i) (nbg--rd (+ p i) 1 nil)))
                    ((symbol-function 'ptr-read-u32) (lambda (p i) (nbg--rd (+ p i) 4 nil)))
                    ((symbol-function 'ptr-read-u64) (lambda (p i) (nbg--rd (+ p i) 8 t)))
                    ((symbol-function 'heap-read-u64) (lambda (p i) (nbg--rd (+ p i) 8 t)))
@@ -131,15 +135,17 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
        (dolist (s saved)
          (if (cdr s) (fset (car s) (cdr s)) (fmakunbound (car s)))))))
 
-;; The record: header word 12 | 16<<8 at r, slots at r+16+8K.
+;; The record: header word 12 | 20<<8 at r, slots at r+16+8K.
 (defconst nbg--slot '((store . 1) (unibyte . 2) (modified . 3) (markers . 4) (overlays . 5)
-                      (ns . 6) (ne . 7) (props . 8) (tick . 10) (pend . 11) (blen . 12) (len . 13) (wide . 15)))
+                      (ns . 6) (ne . 7) (props . 8) (tick . 10) (pend . 11) (blen . 12) (len . 13) (wide . 15)
+                      (gbyte . 16) (zbyte . 17) (cchar . 18) (cbyte . 19)))
 
 (defun nbg--new-buffer (&optional unibyte)
   "A fresh empty buffer record in the model; its word."
-  (let* ((r (nbg--alloc 160)) (b (+ r 6)))
-    (nbg--wr r 8 (+ 12 (ash 16 8)))
-    (dotimes (i 16) (nbg--wr (+ r 16 (* 8 i)) 8 3))
+  (let* ((r (nbg--alloc 192)) (b (+ r 6)))
+    (nbg--wr r 8 (+ 12 (ash 20 8)))
+    (dotimes (i 20) (nbg--wr (+ r 16 (* 8 i)) 8 3))
+    (dolist (s '(gbyte zbyte cchar cbyte)) (nbg--setslot b s (nbg--fix 0)))
     (nbg--setslot b 'store (nbg--make-string-word ""))
     (nbg--setslot b 'unibyte (if unibyte 7 3))
     (nbg--setslot b 'tick (nbg--fix 0))
@@ -154,13 +160,21 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
 (defun nbg--call (name &rest args) (apply (symbol-function name) args))
 
 (defun nbg--text (b)
-  "The buffer text as the list of character codes, read through the model's own layout."
+  "The buffer text as the list of character codes, read through the model's own layout (the
+bytes around the gap, decoded independently of the production decoder); checks that the
+character and byte counts of the record agree with the bytes."
   (let* ((h (- (nbg--getslot b 'store) 4)) (d (nbg--rd (+ h 24) 8 nil))
          (len (ash (nbg--getslot b 'len) -2)) (blen (ash (nbg--getslot b 'blen) -2))
-         (cap (/ (nbg--rd h 8 nil) 4)) (gap (- cap len)) (out nil))
-    (dotimes (i len)
-      (push (nbg--rd (+ d (* 4 (if (< i blen) i (+ i gap)))) 4 nil) out))
-    (nreverse out)))
+         (zb (ash (nbg--getslot b 'zbyte) -2)) (gb (ash (nbg--getslot b 'gbyte) -2))
+         (cap (nbg--rd h 8 nil)) (gap (- cap zb))
+         (bytes (make-string zb 0)) (uni (= (nbg--getslot b 'unibyte) 7)))
+    (dotimes (i zb)
+      (aset bytes i (nbg--rd8 (+ d (if (< i gb) i (+ i gap))))))
+    (let ((chars (if uni (append bytes nil) (append (nbg--decode-internal bytes) nil)))
+          (before (if uni gb (length (nbg--decode-internal (substring bytes 0 gb))))))
+      (should (= (length chars) len))
+      (should (= before blen))
+      chars)))
 
 (defun nbg--insert (b string)
   "gb-insert STRING at the gap start of B through the production body; the count word."
@@ -418,7 +432,7 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
           (should (= (car (nbg--leaf 58 b (list w))) -3)))
         (should (= (car (nbg--leaf 58 b (list (nbg--fix 65)))) -3))
         (nbg--wprim 72 b (nbg--fix 4))
-        (let* ((h (- (nbg--getslot b 'store) 4)) (cap (/ (nbg--rd h 8 nil) 4)))
+        (let* ((h (- (nbg--getslot b 'store) 4)) (cap (nbg--rd h 8 nil)))
           (should (= (car (nbg--leaf 58 b (list (nbg--make-string-word (make-string (- cap 3 -1) ?x))))) -3)))
         ;; an out-of-range delete, a bad argument shape
         (should (= (car (nbg--leaf 61 b (list (nbg--fix 1) (nbg--fix 9)))) -3))
@@ -647,6 +661,65 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
                   (should (= (or (nbg--fixval (nbg--getslot b 'ne)) (1+ (ash (nbg--getslot b 'len) -2))) (point-max)))))
               )
           (kill-buffer gb))))))
+
+;; bufstore: the byte store with multibyte text: every reader against GNU Emacs on the same text,
+;; the gap at random places, the position cache left wherever the previous read put it.
+(ert-deftest nbg-multibyte-reads-against-gnu-emacs ()
+  (nbg--with
+    (random "bufstore-read-seed")
+    (dotimes (_round 30)
+      (let* ((b (nbg--new-buffer)) (n (+ 1 (random 300)))
+             (text (let (l) (dotimes (_ n)
+                              (push (pcase (random 8) (0 ?\n) (1 #xE9) (2 #x20AC) (3 #x1F600) (4 ?\t)
+                                      (_ (+ ?a (random 5)))) l))
+                         (apply #'string l))))
+        (setq nbg--current b)
+        (nbg--insert b text)
+        (with-temp-buffer
+          (insert text)
+          (dotimes (_ 40)
+            (nbg--wprim 71 b (nbg--fix (random (1+ n))))
+            (let* ((a (random (1+ n))) (z (+ a (random (1+ (- n a))))))
+              (should (equal (nbg--read-string-word (nbg--wprim 75 b (nbg--fix a) (nbg--fix z)))
+                             (buffer-substring-no-properties (1+ a) (1+ z))))
+              (should (= (nbg--fixval (nbg--wprim 77 b (nbg--fix a) (nbg--fix z)))
+                         (cl-count ?\n (buffer-substring-no-properties (1+ a) (1+ z))))))
+            (let ((i (random n)))
+              (should (= (nbg--fixval (nbg--wprim 70 b (nbg--fix i))) (char-after (1+ i)))))
+            (let* ((pos (random (1+ n))) (lim (random (1+ n))) (dir (if (= 0 (random 2)) 1 -1))
+                   (want (if (> dir 0)
+                             (let ((j pos) (r -1)) (while (and (< j lim) (= r -1)) (if (eq (char-after (1+ j)) ?\n) (setq r j) (setq j (1+ j)))) r)
+                           (let ((j (1- pos)) (r -1)) (while (and (>= j lim) (= r -1)) (if (eq (char-after (1+ j)) ?\n) (setq r j) (setq j (1- j)))) r))))
+              (should (= (nbg--fixval (nbg--call 'nl_gb_wprim 76 (list b (nbg--fix 10) (nbg--fix pos) (nbg--fix lim) (nbg--fix dir)) 0))
+                         want))
+              ;; a wide character in a buffer beyond ASCII is the reference's
+              (should (= (nbg--call 'nl_gb_wprim 76 (list b (nbg--fix #xE9) (nbg--fix pos) (nbg--fix lim) (nbg--fix dir)) 0)
+                         (if (string-match-p "[^\0-\177]" text) 0 (nbg--fix -1)))))
+            (let ((p (1+ (random (1+ n)))))
+              (goto-char p)
+              (nbg--sync-point b p)
+              ;; the native column counts every character as one column (as before bufstore)
+              (should (= (nbg--fixval (nbg--wprim 80 b (nbg--fix 8)))
+                         (let ((col 0)) (dolist (c (append (buffer-substring (line-beginning-position) (point)) nil) col)
+                                          (setq col (if (= c ?\t) (* 8 (1+ (/ col 8))) (1+ col)))))))
+              (should (= (cdr (nbg--leaf 54 b nil)) (nbg--fix (line-beginning-position))))
+              (should (= (cdr (nbg--leaf 55 b nil)) (nbg--fix (line-end-position))))
+              (should (= (cdr (nbg--leaf 51 b nil)) (if (bobp) 3 (nbg--fix (char-before))))))))
+        (should (equal (nbg--text b) (append text nil)))))))
+
+;; bufstore: overwrite writes in place only for the same bytes on one side of the gap.
+(ert-deftest nbg-overwrite-bytes ()
+  (nbg--with
+    (let ((b (nbg--new-buffer)))
+      (nbg--insert b "abcdé")
+      (nbg--wprim 71 b (nbg--fix 5))
+      (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 1) (nbg--make-string-word "XY")) 0) 3))
+      (should (equal (nbg--text b) (append "aXYdé" nil)))
+      ;; a different byte length is the reference's
+      (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 4) (nbg--make-string-word "e")) 0) 0))
+      (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 3) (nbg--make-string-word "€")) 0) 0))
+      (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 4) (nbg--make-string-word "ü")) 0) 3))
+      (should (equal (nbg--text b) (append "aXYdü" nil))))))
 
 (provide 'nelisp-gap-buffer-leaf-test)
 ;;; nelisp-gap-buffer-leaf-test.el ends here

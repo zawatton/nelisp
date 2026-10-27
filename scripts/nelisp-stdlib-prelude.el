@@ -669,6 +669,8 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
 ;; directly instead, the same way `buffer-substring' itself did before
 ;; Doc 210 taught that wrapper to also attach properties to its result.
 (defun nelisp--buffer-substring-no-properties-reference (start end)
+  (when (and (markerp start) (marker-position start)) (setq start (marker-position start)))
+  (when (and (markerp end) (marker-position end)) (setq end (marker-position end)))
   (unless (integerp start)
     (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
   (unless (integerp end)
@@ -12681,6 +12683,39 @@ the flag as t or nil."
       (nelisp--env-globals-op 'set-constant 'enable-multibyte-characters t))
     (and flag t)))
 
+;; bufstore: GNU Fset_buffer_multibyte keeps the bytes of the text and reinterprets them: to
+;; unibyte, each character becomes its internal bytes (a raw-byte character its one byte); to
+;; multibyte, byte sequences that form characters become them and the other bytes raw-byte
+;; characters (`string-as-unibyte' / `string-as-multibyte').  Positions follow the bytes they
+;; were at.  The store holds internal bytes, so a text beyond ASCII is converted here.
+(defun nelisp-buffer--convert-multibyte (b flag)
+  "Set the multibyteness of buffer record B to FLAG, converting its text as GNU does."
+  (let* ((len (nelisp-buffer-len b))
+         (text (and (> len 0) (nelisp--gb-substring b 0 len)))
+         (high (and text (let ((i 0) (h nil))
+                           (while (and (not h) (< i len))
+                             (when (>= (aref text i) 128) (setq h t))
+                             (setq i (1+ i)))
+                           h))))
+    (if (not high)
+        (setf (nelisp-buffer-unibyte b) (not flag))
+      (when (or (nelisp-buffer-narrow-start b) (nelisp-buffer-narrow-end b))
+        (error "Changing multibyteness in a narrowed buffer"))
+      (let* ((conv (if flag #'string-as-multibyte #'string-as-unibyte))
+             (map (lambda (pos) (1+ (length (funcall conv (substring text 0 (1- pos)))))))
+             (pt (funcall map (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b)))))
+             (new (funcall conv text)))
+        (when (nelisp-buffer-markers b)
+          (maphash (lambda (m _v)
+                     (when (and (nelisp-marker-p m) (integerp (nelisp-marker-position m)))
+                       (setf (nelisp-marker-position m)
+                             (funcall map (min (max (nelisp-marker-position m) 1) (1+ len))))))
+                   (nelisp-buffer-markers b)))
+        (setf (nelisp-buffer-unibyte b) (not flag))
+        (nelisp-buffer--set-text b new (1- pt))
+        (setf (nelisp-buffer-pend b) nil)
+        (nelisp-buffer--bump-tick b)))))
+
 (unless (fboundp 'set-buffer-multibyte)
   (defun set-buffer-multibyte (flag)
   "Set the current buffer's multibyte flag and return FLAG."
@@ -12690,7 +12725,7 @@ the flag as t or nil."
       ;; when the flag is unchanged (buffer.c:2753).
       (puthash (current-buffer) (and flag t) nelisp--buffer-multibyte-table)
       (when (nelisp-buffer-p (current-buffer))
-        (setf (nelisp-buffer-unibyte (current-buffer)) (not flag)))
+        (nelisp-buffer--convert-multibyte (current-buffer) flag))
       (nelisp--bset-enable-multibyte-characters flag)
       (set (make-local-variable 'buffer-undo-list) nil)))
   flag))
@@ -12817,7 +12852,11 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (blen 0)                     ; characters before the gap (the gap start), exact at all times
   (len 0)                      ; total text length, exact at all times
   (tcache nil)                 ; (TICK . STRING) whole-text memo (formerly `nelisp-buffer--text-cache')
-  (ins nil))                   ; t once multibyte text beyond ASCII was inserted: its slices are multibyte strings
+  (ins nil)                    ; t once multibyte text beyond ASCII was inserted: its slices are multibyte strings
+  (gbyte 0)                    ; bytes before the gap (GPT_BYTE), exact at all times
+  (zbyte 0)                    ; total text bytes (Z_BYTE), exact at all times
+  (cchar 0)                    ; a known character index ...
+  (cbyte 0))                   ; ... and its byte position (marker.c cached_charpos/cached_bytepos)
 
 (cl-defstruct (nelisp-marker
                (:constructor nelisp-marker--make-plain)
@@ -14015,9 +14054,22 @@ explicitly instead, see the section header comment above); kept so
 
 (defvar nelisp-buffer--new-mode nil
   "nil until the first buffer is made, then `fast' or `keyword'.")
+(defvar nelisp-buffer--spare-store nil
+  "The text store of the last killed buffer, or nil: the next new buffer starts with it.
+GNU frees a killed buffer's text with xfree (free_buffer_text) and the C allocator hands the
+same memory to the next buffer's text; a store here is a fresh mapping that is faulted in
+again, so the one store is kept for reuse instead.  Stores above 32 MiB (glibc's largest
+mmap threshold, beyond which `free' returns the memory to the system) are not kept.")
+(defun nelisp-buffer--take-spare-store ()
+  "The spare store (see `nelisp-buffer--spare-store'), or an empty one."
+  (let ((s nelisp-buffer--spare-store))
+    (if (null s) ""
+      (setq nelisp-buffer--spare-store nil)
+      s)))
 (defun nelisp-buffer--new-fast (name)
   "Positional equivalent of (nelisp-buffer--make :name NAME)."
-  (nelisp--make-record 'nelisp-buffer name "" nil nil nil nil nil nil nil nil 0 nil 0 0 nil nil))
+  (nelisp--make-record 'nelisp-buffer name (nelisp-buffer--take-spare-store)
+                       nil nil nil nil nil nil nil nil 0 nil 0 0 nil nil 0 0 0 0))
 (defun nelisp-buffer--new (name)
   "Return a fresh empty `nelisp-buffer' named NAME.
 The keyword constructor parses a plist per slot and costs about 60
@@ -14029,7 +14081,8 @@ constructor if they ever disagree."
     (unless mode
       ;; Compare slot by slot: `equal' on two records is not reliable this
       ;; early in the prelude (it answered nil for identical records).
-      (let* ((a (nelisp-buffer--new-fast "x")) (b (nelisp-buffer--make :name "x"))
+      (let* ((a (let ((nelisp-buffer--spare-store nil)) (nelisp-buffer--new-fast "x")))
+             (b (nelisp-buffer--make :name "x"))
              (i 0) (same (= (length a) (length b))))
         (while (and same (< i (length a)))
           (unless (equal (aref a i) (aref b i)) (setq same nil))
@@ -14103,101 +14156,172 @@ pending-point') changes nothing about the concatenated text.")
 physically moved BUF's gap to match.  Absent means the gap already
 sits exactly at BUF's current point.  See `nelisp-buffer--settle'.")
 
-;; ---- bufedit: the buffer text is a gap buffer ----------------------------------------
+;; ---- bufedit/bufstore: the buffer text is a gap buffer of bytes ----------------------------------
 ;; GNU buffer.h/insdel.c: the text is one array BEG_ADDR..GPT_ADDR | gap | GAP_END_ADDR..Z_ADDR; an edit
 ;; near point moves the gap there (move_gap_both) and writes into it (insert_1_both), so a local edit
 ;; costs O(distance moved) and no read ever copies the text.  Here the array is the STORE slot: a
-;; unibyte string of 4*CAP bytes holding one little-endian 32-bit character code per element (CAP
-;; elements: the characters before the gap in 0..BLEN-1, the gap, the rest at the end).  Choice and
-;; cost: GNU keeps UTF-8 bytes and pays a char<->byte map (buf_charpos_to_bytepos) for non-ASCII text;
-;; a code per character makes every position O(1) arithmetic and every read a single load, at 4 bytes
-;; per character (a 1 MB buffer holds 4 MB) and a UTF-8 encode/decode pass where a string crosses the
-;; boundary (buffer-substring, insert).  BLEN is the gap start (characters before the gap), LEN the
-;; character count, GAP = CAP - LEN; the point is PEND, or BLEN+1 when PEND is nil.  UNIBYTE (formerly
-;; the after-gap slot) is t in a unibyte buffer, where a character is a byte.
+;; unibyte string of CAP bytes holding the text in Emacs's internal encoding, as GNU does: one byte per
+;; character in a unibyte buffer, the internal (UTF-8 based, character.h) sequence of each character in
+;; a multibyte one, a raw byte 0x80..0xFF being the two bytes C0/C1 xx.  GBYTE bytes come before the
+;; gap, ZBYTE - GBYTE after it at the end of the store.  BLEN is the gap start and LEN the length in
+;; characters (GPT, Z), GBYTE and ZBYTE the same in bytes (GPT_BYTE, Z_BYTE); CCHAR/CBYTE is one known
+;; character/byte pair (marker.c cached_charpos/cached_bytepos).  When ZBYTE = LEN every character is
+;; one byte and a character index is its byte index; otherwise `nelisp--gb-c2b' scans from the nearest
+;; known pair (buf_charpos_to_bytepos without markers: NeLisp markers keep no byte position).  The
+;; point is PEND, or BLEN+1 when PEND is nil.  UNIBYTE is t in a unibyte buffer.  An insertion copies a
+;; string's bytes as they are when the representations agree (copy_text); a buffer-substring copies
+;; the bytes back.  INS is t once multibyte text beyond ASCII was inserted (its slices are multibyte).
 ;;
-;; The seven operations below are the whole interface to the store.  Each has a Lisp reference
+;; The operations below are the whole interface to the store.  Each has a Lisp reference
 ;; (`nelisp--gb-NAME-reference') that is the model of record; the standalone build binds the public
 ;; name to a native body (`nl_gb_prim_w' in lisp/nelisp-cc-fx-call-primitives.el) and the native body
-;; declines to the reference for anything it does not own.  Positions are 0-based character indexes.
-(defun nelisp--gb-rd (store p)
-  (let ((o (* p 4)))
-    (+ (aref store o) (* 256 (aref store (+ o 1))) (* 65536 (aref store (+ o 2)))
-       (* 16777216 (aref store (+ o 3))))))
-(defun nelisp--gb-wr (store p c)
-  (let ((o (* p 4)))
-    (aset store o (% c 256))
-    (aset store (+ o 1) (% (/ c 256) 256))
-    (aset store (+ o 2) (% (/ c 65536) 256))
-    (aset store (+ o 3) (% (/ c 16777216) 256))))
+;; declines to the reference for anything it does not own.  Positions are 0-based character indexes;
+;; `nelisp--gb-reserve' counts bytes.
+(defun nelisp--gb-gapb (b)
+  "The gap size of B in bytes."
+  (- (length (nelisp-buffer-store b)) (nelisp-buffer-zbyte b)))
+(defun nelisp--gb-rd (b lb)
+  "The byte at logical byte LB of the text of B."
+  (aref (nelisp-buffer-store b) (if (< lb (nelisp-buffer-gbyte b)) lb (+ lb (nelisp--gb-gapb b)))))
+(defun nelisp--gb-blen (x)
+  "The byte length of the character whose internal sequence starts with the byte X."
+  (cond ((< x 128) 1) ((< x 224) 2) ((< x 240) 3) ((< x 248) 4) (t 5)))
+(defun nelisp--gb-c2b (b pos)
+  "The logical byte position of character index POS of B (GNU buf_charpos_to_bytepos)."
+  (let ((len (nelisp-buffer-len b)) (zb (nelisp-buffer-zbyte b)))
+    (if (= zb len) pos
+      (let* ((blen (nelisp-buffer-blen b)) (gb (nelisp-buffer-gbyte b))
+             (cc (nelisp-buffer-cchar b)) (cb (nelisp-buffer-cbyte b))
+             (lc 0) (lb 0) (hc len) (hb zb))
+        (if (<= blen pos) (setq lc blen lb gb) (setq hc blen hb gb))
+        (when (and (<= cc pos) (> cc lc)) (setq lc cc lb cb))
+        (when (and (>= cc pos) (< cc hc)) (setq hc cc hb cb))
+        (cond ((= pos lc) lb)
+              ((= pos hc) hb)
+              (t (let ((p 0))
+                   (if (<= (- pos lc) (- hc pos))
+                       (progn (setq p lb)
+                              (dotimes (_ (- pos lc)) (setq p (+ p (nelisp--gb-blen (nelisp--gb-rd b p))))))
+                     (setq p hb)
+                     (dotimes (_ (- hc pos))
+                       (setq p (1- p))
+                       (while (= (logand (nelisp--gb-rd b p) 192) 128) (setq p (1- p)))))
+                   (setf (nelisp-buffer-cchar b) pos (nelisp-buffer-cbyte b) p)
+                   p)))))))
+(defun nelisp--gb-dec (b lb)
+  "The character whose internal sequence starts at logical byte LB of B (STRING_CHAR; a byte
+in a unibyte buffer)."
+  (let ((b0 (nelisp--gb-rd b lb)))
+    (if (or (< b0 128) (nelisp-buffer-unibyte b)) b0
+      (let ((n (nelisp--gb-blen b0)) (c 0) (i 1))
+        (setq c (cond ((< b0 194) (+ #x3FFF80 (* 64 (logand b0 1))))
+                      ((= n 2) (* 64 (logand b0 31)))
+                      ((= n 3) (* 4096 (logand b0 15)))
+                      ((= n 4) (* 262144 (logand b0 7)))
+                      (t 0)))
+        (if (< b0 194)
+            (+ c (logand (nelisp--gb-rd b (1+ lb)) 63))
+          (while (< i n)
+            (setq c (+ c (* (logand (nelisp--gb-rd b (+ lb i)) 63) (ash 1 (* 6 (- n i 1))))))
+            (setq i (1+ i)))
+          c)))))
+(defun nelisp--gb-enc (c)
+  "The internal byte sequence of character C as a list (CHAR_STRING)."
+  (cond ((< c 128) (list c))
+        ((< c 2048) (list (logior 192 (ash c -6)) (logior 128 (logand c 63))))
+        ((< c 65536) (list (logior 224 (ash c -12)) (logior 128 (logand (ash c -6) 63))
+                           (logior 128 (logand c 63))))
+        ((< c 2097152) (list (logior 240 (ash c -18)) (logior 128 (logand (ash c -12) 63))
+                             (logior 128 (logand (ash c -6) 63)) (logior 128 (logand c 63))))
+        ((< c 4194176) (list 248 (logior 128 (logand (ash c -18) 63)) (logior 128 (logand (ash c -12) 63))
+                             (logior 128 (logand (ash c -6) 63)) (logior 128 (logand c 63))))
+        (t (let ((x (- c 4194048)))
+             (list (logior 192 (logand (ash x -6) 1)) (logior 128 (logand x 63)))))))
+(defun nelisp--gb-bytes (b str)
+  "The bytes STR takes in the text of B, as a list (copy_text): a unibyte STR byte >= 128 is a
+raw-byte character in a multibyte buffer (GNU BYTE8_TO_CHAR); a multibyte STR in a unibyte buffer
+keeps each character's low byte."
+  (let ((uni (nelisp-buffer-unibyte b)) (mb (multibyte-string-p str)) (out nil) (i 0) (n (length str)))
+    (while (< i n)
+      (let ((c (aref str i)))
+        (cond (uni (push (logand c 255) out))
+              ((and (not mb) (>= c 128)) (setq out (nconc (nreverse (nelisp--gb-enc (+ c 4194048))) out)))
+              (t (setq out (nconc (nreverse (nelisp--gb-enc c)) out)))))
+      (setq i (1+ i)))
+    (nreverse out)))
 (defun nelisp--gb-char-reference (b i)
-  "Character at logical index I of the text of B."
+  "Character at index I of the text of B."
   (let ((len (nelisp-buffer-len b)))
     (unless (and (integerp i) (>= i 0) (< i len))
       (signal 'args-out-of-range (list i len)))
-    (let ((store (nelisp-buffer-store b)))
-      (nelisp--gb-rd store (if (< i (nelisp-buffer-blen b)) i (+ i (- (/ (length store) 4) len)))))))
+    (nelisp--gb-dec b (nelisp--gb-c2b b i))))
 (defun nelisp--gb-move-reference (b pos)
-  "Move the gap of B to logical index POS (GNU move_gap_both)."
-  (let* ((store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b)) (len (nelisp-buffer-len b))
-         (gap (- (/ (length store) 4) len)) (i 0))
+  "Move the gap of B to character index POS (GNU move_gap_both)."
+  (let ((len (nelisp-buffer-len b)))
     (unless (and (integerp pos) (>= pos 0) (<= pos len))
       (signal 'args-out-of-range (list pos len)))
-    (cond ((< pos blen)
-           (setq i (1- blen))
-           (while (>= i pos)
-             (nelisp--gb-wr store (+ i gap) (nelisp--gb-rd store i))
-             (setq i (1- i))))
-          ((> pos blen)
-           (setq i blen)
-           (while (< i pos)
-             (nelisp--gb-wr store i (nelisp--gb-rd store (+ i gap)))
-             (setq i (1+ i)))))
-    (setf (nelisp-buffer-blen b) pos)
-    nil))
+    (let* ((store (nelisp-buffer-store b)) (gb (nelisp-buffer-gbyte b))
+           (gap (nelisp--gb-gapb b)) (pb (nelisp--gb-c2b b pos)) (i 0))
+      (cond ((< pb gb)
+             (setq i (1- gb))
+             (while (>= i pb)
+               (aset store (+ i gap) (aref store i))
+               (setq i (1- i))))
+            ((> pb gb)
+             (setq i gb)
+             (while (< i pb)
+               (aset store i (aref store (+ i gap)))
+               (setq i (1+ i)))))
+      (setf (nelisp-buffer-blen b) pos (nelisp-buffer-gbyte b) pb)
+      nil)))
 (defun nelisp--gb-reserve-reference (b n)
-  "Make the gap of B at least N characters (GNU make_gap)."
-  (let* ((store (nelisp-buffer-store b)) (len (nelisp-buffer-len b)) (blen (nelisp-buffer-blen b))
-         (cap (/ (length store) 4)))
-    (when (< (- cap len) n)
-      (let* ((ncap (+ len n (max 64 (/ (+ len n) 2))))
-             (new (make-string (* ncap 4) 0)) (i 0) (tail (- len blen)))
-        (while (< i blen)
-          (nelisp--gb-wr new i (nelisp--gb-rd store i))
+  "Make the gap of B at least N bytes (GNU make_gap_larger: GAP_BYTES_DFL more than asked, or
+half the text when that is more)."
+  (let* ((store (nelisp-buffer-store b)) (zb (nelisp-buffer-zbyte b)) (gb (nelisp-buffer-gbyte b))
+         (cap (length store)))
+    (when (< (- cap zb) n)
+      (let* ((ncap (+ zb n (max 2000 (/ zb 2))))
+             (new (make-string ncap 0)) (i 0) (tail (- zb gb)))
+        (while (< i gb)
+          (aset new i (aref store i))
           (setq i (1+ i)))
         (setq i 0)
         (while (< i tail)
-          (nelisp--gb-wr new (+ (- ncap tail) i) (nelisp--gb-rd store (+ (- cap tail) i)))
+          (aset new (+ (- ncap tail) i) (aref store (+ (- cap tail) i)))
           (setq i (1+ i)))
         (setf (nelisp-buffer-store b) new)))
     nil))
 (defun nelisp--gb-insert-reference (b str)
-  "Write the characters of STR at the gap start of B; the gap stays at the new end.
-Answers the number of characters.  A unibyte STR byte >= 128 is a raw-byte character in
-a multibyte buffer (GNU BYTE8_TO_CHAR); a multibyte STR in a unibyte buffer keeps the low byte."
+  "Write STR at the gap start of B; the gap stays at the new end.  Answers the number of
+characters.  See `nelisp--gb-bytes' for the bytes a string takes."
   (unless (stringp str) (signal 'wrong-type-argument (list 'stringp str)))
-  (let* ((n (length str)) (uni (nelisp-buffer-unibyte b)) (mb (multibyte-string-p str)) (i 0))
-    (nelisp--gb-reserve-reference b n)
-    (when (and mb (not uni) (> (string-bytes str) n))
+  (let* ((n (length str)) (bytes (nelisp--gb-bytes b str)) (nb (length bytes)))
+    (nelisp--gb-reserve-reference b nb)
+    (when (and (multibyte-string-p str) (not (nelisp-buffer-unibyte b)) (> (string-bytes str) n))
       (setf (nelisp-buffer-ins b) t))
-    (let ((store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b)))
-      (while (< i n)
-        (let ((c (aref str i)))
-          (cond ((and mb uni) (setq c (% c 256)))
-                ((and (not mb) (not uni) (>= c 128)) (setq c (+ c 4194048))))
-          (nelisp--gb-wr store (+ blen i) c))
-        (setq i (1+ i)))
-      (setf (nelisp-buffer-blen b) (+ blen n))
-      (setf (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n)))
+    (let ((store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b)) (gb (nelisp-buffer-gbyte b)))
+      (dolist (x bytes) (aset store gb x) (setq gb (1+ gb)))
+      (when (> (nelisp-buffer-cchar b) blen)
+        (setf (nelisp-buffer-cchar b) (+ (nelisp-buffer-cchar b) n)
+              (nelisp-buffer-cbyte b) (+ (nelisp-buffer-cbyte b) nb)))
+      (setf (nelisp-buffer-blen b) (+ blen n) (nelisp-buffer-gbyte b) gb
+            (nelisp-buffer-len b) (+ (nelisp-buffer-len b) n)
+            (nelisp-buffer-zbyte b) (+ (nelisp-buffer-zbyte b) nb)))
     n))
 (defun nelisp--gb-delete-reference (b s e)
-  "Delete the logical range [S, E) of B: the gap moves to E and grows over the range."
+  "Delete the character range [S, E) of B: the gap moves to E and grows over the range."
   (let ((len (nelisp-buffer-len b)))
     (unless (and (integerp s) (integerp e) (<= 0 s) (<= s e) (<= e len))
       (signal 'args-out-of-range (list s e)))
-    (nelisp--gb-move-reference b e)
-    (setf (nelisp-buffer-blen b) s)
-    (setf (nelisp-buffer-len b) (- len (- e s)))
+    (let ((sb (nelisp--gb-c2b b s)))
+      (nelisp--gb-move-reference b e)
+      (let ((eb (nelisp-buffer-gbyte b)) (cc (nelisp-buffer-cchar b)))
+        (cond ((>= cc e) (setf (nelisp-buffer-cchar b) (- cc (- e s))
+                               (nelisp-buffer-cbyte b) (- (nelisp-buffer-cbyte b) (- eb sb))))
+              ((> cc s) (setf (nelisp-buffer-cchar b) s (nelisp-buffer-cbyte b) sb)))
+        (setf (nelisp-buffer-blen b) s (nelisp-buffer-gbyte b) sb
+              (nelisp-buffer-len b) (- len (- e s))
+              (nelisp-buffer-zbyte b) (- (nelisp-buffer-zbyte b) (- eb sb)))))
     nil))
 (defun nelisp--gb-substring-reference (b s e)
   "The text of B in [S, E) as a string: unibyte for a unibyte buffer or ASCII text."
@@ -14219,7 +14343,7 @@ a multibyte buffer (GNU BYTE8_TO_CHAR); a multibyte STR in a unibyte buffer keep
             (setq chars (cdr chars) k (1+ k)))
           out)))))
 (defun nelisp--gb-find-char-reference (b c pos lim dir)
-  "First logical index at or after POS and before LIM holding C (DIR > 0), or the last at or
+  "First character index at or after POS and before LIM holding C (DIR > 0), or the last at or
 after LIM and before POS (DIR < 0); -1 when there is none.  GNU find_newline."
   (let ((j (if (> dir 0) pos (1- pos))) (found -1))
     (if (> dir 0)
@@ -14229,27 +14353,25 @@ after LIM and before POS (DIR < 0); -1 when there is none.  GNU find_newline."
         (if (eq (nelisp--gb-char-reference b j) c) (setq found j) (setq j (1- j)))))
     found))
 (defun nelisp--gb-count-nl-reference (b s e)
-  "Number of newlines at logical indexes [S, E)."
+  "Number of newlines at character indexes [S, E)."
   (let ((n 0))
     (while (< s e)
       (when (eq (nelisp--gb-char-reference b s) 10) (setq n (1+ n)))
       (setq s (1+ s)))
     n))
 (defun nelisp--gb-overwrite-reference (b s str)
-  "Store the characters of STR over those of B starting at logical index S (same count)."
-  (let* ((n (length str)) (uni (nelisp-buffer-unibyte b)) (mb (multibyte-string-p str))
-         (len (nelisp-buffer-len b)) (store (nelisp-buffer-store b)) (blen (nelisp-buffer-blen b))
-         (gap (- (/ (length store) 4) len)) (i 0))
+  "Store the characters of STR over those of B starting at character index S (same count).
+The text is replaced in place (the gap moves there when the byte lengths differ); the point
+stays where it was."
+  (let* ((n (length str)) (len (nelisp-buffer-len b)))
     (unless (and (integerp s) (<= 0 s) (<= (+ s n) len))
       (signal 'args-out-of-range (list s n)))
-    (when (and mb (not uni) (> (string-bytes str) n))
-      (setf (nelisp-buffer-ins b) t))
-    (while (< i n)
-      (let ((c (aref str i)) (j (+ s i)))
-        (cond ((and mb uni) (setq c (% c 256)))
-              ((and (not mb) (not uni) (>= c 128)) (setq c (+ c 4194048))))
-        (nelisp--gb-wr store (if (< j blen) j (+ j gap)) c))
-      (setq i (1+ i)))
+    (let ((pt (or (nelisp-buffer-pend b) (1+ (nelisp-buffer-blen b))))
+          (gap (nelisp-buffer-blen b)))
+      (nelisp--gb-delete-reference b s (+ s n))
+      (nelisp--gb-insert-reference b str)
+      (nelisp--gb-move-reference b gap)
+      (setf (nelisp-buffer-pend b) (if (= pt (1+ gap)) nil pt)))
     nil))
 (unless (fboundp 'nelisp--gb-char)
   (fset 'nelisp--gb-char (symbol-function 'nelisp--gb-char-reference)))
@@ -14306,6 +14428,8 @@ The point, narrowing, markers and properties are the caller's; the gap buffer
 holds STRING as it holds any inserted text."
   (setf (nelisp-buffer-blen buf) 0)
   (setf (nelisp-buffer-len buf) 0)
+  (setf (nelisp-buffer-gbyte buf) 0 (nelisp-buffer-zbyte buf) 0
+        (nelisp-buffer-cchar buf) 0 (nelisp-buffer-cbyte buf) 0)
   (setf (nelisp-buffer-ins buf) nil)
   (nelisp--gb-insert buf string)
   (nelisp--gb-move buf gap)
@@ -14318,7 +14442,11 @@ by value: the store is mutable, so a shared store would see the other buffer's e
   (setf (nelisp-buffer-unibyte to) (nelisp-buffer-unibyte from))
   (setf (nelisp-buffer-ins to) (nelisp-buffer-ins from)
         (nelisp-buffer-blen to) (nelisp-buffer-blen from)
-        (nelisp-buffer-len to) (nelisp-buffer-len from))
+        (nelisp-buffer-len to) (nelisp-buffer-len from)
+        (nelisp-buffer-gbyte to) (nelisp-buffer-gbyte from)
+        (nelisp-buffer-zbyte to) (nelisp-buffer-zbyte from)
+        (nelisp-buffer-cchar to) 0
+        (nelisp-buffer-cbyte to) 0)
   nil)
 
 (defun nelisp-buffer--settle (buf &optional flush-only)
@@ -14350,6 +14478,16 @@ FLUSH-ONLY is kept for the callers that used it to join the queue; it does nothi
         (nelisp-buffer-local--kill-buffer-locals buf))
       (when (eq nelisp-buffer--current buf)
         (setq nelisp-buffer--current nil))
+      ;; GNU free_buffer_text: the killed buffer's text goes; its store is kept for the next
+      ;; buffer (`nelisp-buffer--spare-store').  As in GNU the dead buffer keeps its positions
+      ;; (`buffer-size' still answers its old size); the store-checked readers decline on it.
+      (let ((store (nelisp-buffer-store buf)))
+        (setf (nelisp-buffer-store buf) ""
+              (nelisp-buffer-cchar buf) 0 (nelisp-buffer-cbyte buf) 0)
+        (when (and (stringp store) (> (length store) 0) (<= (length store) 33554432)
+                   (or (null nelisp-buffer--spare-store)
+                       (> (length store) (length nelisp-buffer--spare-store))))
+          (setq nelisp-buffer--spare-store store)))
       t)))
 
 (defun nelisp-buffer-list ()
@@ -14671,6 +14809,8 @@ tree and are grafted by `nelisp-buffer--tp-after-insert'."
     (setf (nelisp-buffer-ins b) nil)
     (setf (nelisp-buffer-blen b) 0)
     (setf (nelisp-buffer-len b) 0)
+    (setf (nelisp-buffer-gbyte b) 0 (nelisp-buffer-zbyte b) 0
+          (nelisp-buffer-cchar b) 0 (nelisp-buffer-cbyte b) 0)
     (setf (nelisp-buffer-narrow-start b) nil)
     (setf (nelisp-buffer-narrow-end b) nil)
     (setf (nelisp-buffer-modified b) t)
@@ -16445,7 +16585,10 @@ probed against Emacs 30.1 (Doc 188 P2).  The underlying `nelisp-
 buffer-substring' (ported verbatim from src/nelisp-buffer.el, kept
 byte-identical for `ns-gate') assumes START <= END and does no range
 check at all, so both real-Emacs behaviors are handled in this
-wrapper instead of touching that file."
+wrapper instead of touching that file.  A marker stands for its position (GNU validate_region
+through fix_position)."
+  (when (and (markerp start) (marker-position start)) (setq start (marker-position start)))
+  (when (and (markerp end) (marker-position end)) (setq end (marker-position end)))
   (unless (integerp start)
     (signal 'wrong-type-argument (list 'integer-or-marker-p start)))
   (unless (integerp end)
@@ -32804,6 +32947,14 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 ;;                               dynamic bindings are undone after it
 ;;   (:call K ARGC X...)         call through the live function cell
 ;;   (:inline OPCODE K X...)     the VM's fixnum op; K names its function
+;; nativecomp N3 handlers (VM ops 22-27, see `nelisp--fx-compile'):
+;;   (:catch TAG X)              X runs under a catch for TAG's value
+;;   (:throw TAG VALUE)          Fthrow
+;;   (:condition-case VS X S (K H)...)  X under the handler clauses; K is
+;;                               the clause's condition spec, H its body; VS
+;;                               the slot of VAR (nil: none); S the
+;;                               :success body or nil
+;;   (:unwind-protect X C)       C runs after X, also on a non-local exit
 (defvar nelisp--fx-want-ir nil
   "Non-nil: `nelisp--fx-compile' stores each code vector's fxir.")
 (defvar nelisp--fx-ir-table (make-hash-table :test 'eq :weakness 'key)
@@ -32964,7 +33115,7 @@ kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set."
            ;; label the real depth is never larger, so MAXDEPTH bounds it.
            (let ((op (car items)))
              (setq depth (+ depth (cond ((memq op '(1 2 12 18 19)) 1)
-                                        ((memq op '(3 9 11 4 5 6 13 14 20 0)) -1)
+                                        ((memq op '(3 9 11 4 5 6 13 14 20 0 22 27)) -1)
                                         ((eq op 16) (- 1 (nth 2 items)))
                                         (t 0))))
              (when (> depth maxdepth) (setq maxdepth depth)))
@@ -33214,6 +33365,116 @@ kept in `nelisp--fx-ir-table' under CODE when `nelisp--fx-want-ir' is set."
                      (cons :call (cons (emit 16 (vector 'nelisp--fx-lambda nil nil nil nil)
                                              (+ 2 (length cells)))
                                        (cons (length args) args))))))
+                ;; nativecomp N3: handlers, as GNU's byte compiler emits them
+                ;; (bytecomp.el byte-compile-catch / -condition-case /
+                ;; -unwind-protect): the VM pushes a handler frame, the body
+                ;; runs, POPHANDLER drops it; a non-local exit out of the
+                ;; region resumes at the frame's landing pc with the stack cut
+                ;; back to the saved depth and the exit's value pushed
+                ;; (bytecode.c Bpushcatch / Bpushconditioncase, eval.c
+                ;; push_handler / unwind_to_catch).  A frame lives in RECORD
+                ;; locals of this activation: previous frame, push pc, saved
+                ;; depth, saved dynamic-binding count, then per kind the catch
+                ;; node (catch) or the pending exit (unwind-protect).
+                ;; (catch TAG BODY...): PUSHCATCH pops TAG; a throw to it
+                ;; lands with the thrown value.
+                ((eq op 'catch)
+                 (unless (consp (cdr x)) (unsupported x))
+                 (let* ((tag (comp (cadr x)))
+                        (h (prog1 nloc (setq nloc (+ nloc 7))))
+                        (land (label))
+                        (k (emit 22 h 0)))
+                   (push (cons (1+ k) land) patches)
+                   (let ((b (body (cddr x))))
+                     (emit 24)
+                     (place land)
+                     (list :catch tag b))))
+                ;; (throw TAG VALUE): Fthrow, dispatched by name like the
+                ;; interpreter's reader head (`nelisp--fx-native-heads').
+                ((eq op 'throw)
+                 (unless (and (consp (cdr x)) (consp (cddr x)) (null (cdddr x)))
+                   (unsupported x))
+                 (let* ((a (comp (nth 1 x))) (b (comp (nth 2 x))))
+                   (emit 27)
+                   (list :throw a b)))
+                ;; (condition-case VAR BODYFORM HANDLERS...): one frame per
+                ;; handler clause, pushed last clause first so the first
+                ;; clause is innermost and is tried first; a landing pops the
+                ;; frames of the later clauses, then binds VAR (a fresh slot)
+                ;; to (SIGNAL . DATA).  A :success clause runs on the value.
+                ((eq op 'condition-case)
+                 (let ((var (nth 1 x)) (handlers nil) (success nil))
+                   (unless (and (consp (cdr x)) (consp (cddr x)) (symbolp var)
+                                (not (eq var t)) (not (keywordp var)))
+                     (unsupported x))
+                   (when (and var (nelisp--fx-special-p var)) (unsupported x))
+                   (dolist (c (nthcdr 3 x))
+                     (unless (and (consp c) (listp (cdr c))) (unsupported x))
+                     (if (eq (car c) :success)
+                         (unless success (setq success c))
+                       (push c handlers)))
+                   (setq handlers (nreverse handlers))
+                   (let* ((n (length handlers)) (recs nil) (lands nil) (ks nil)
+                          (end (label)) (vs nil) (bv nil) (sv nil) (hv nil) (i 0))
+                     (dolist (_c handlers)
+                       (push (prog1 nloc (setq nloc (+ nloc 4))) recs)
+                       (push (label) lands))
+                     (setq recs (nreverse recs) lands (nreverse lands))
+                     (when var
+                       (setq vs nloc nloc (1+ nloc))
+                       (unless (memq var lexlets) (push var lexlets)))
+                     (setq i (1- n))
+                     (while (>= i 0)
+                       (let ((k (emit 23 (nth i recs) 0 (car (nth i handlers)))))
+                         (push (cons (1+ k) (nth i lands)) patches)
+                         (push (+ k 2) ks))
+                       (setq i (1- i)))
+                     (setq bv (comp (nth 2 x)))
+                     (dotimes (_j n) (emit 24))
+                     (let ((saved vars))
+                       (when success
+                         (if var (progn (emit 3 vs) (push (cons var vs) vars)) (emit 11))
+                         (setq sv (body (cdr success)))
+                         (setq vars saved))
+                       (jump 8 end)
+                       (setq i 0)
+                       (while (< i n)
+                         (place (nth i lands))
+                         (dotimes (_j (- n i 1)) (emit 24))
+                         (if var (progn (emit 3 vs) (push (cons var vs) vars)) (emit 11))
+                         (push (list (nth i ks) (body (cdr (nth i handlers)))) hv)
+                         (setq vars saved)
+                         (jump 8 end)
+                         (setq i (1+ i))))
+                     (place end)
+                     (append (list :condition-case vs bv sv) (nreverse hv)))))
+                ;; (unwind-protect BODYFORM UNWINDFORMS...): the cleanup code
+                ;; follows the body; an exit lands there with nil, and
+                ;; ENDUNWIND passes the kept exit on once the cleanup is done
+                ;; (a cleanup's own exit replaces it, eval.c unbind_to).
+                ((eq op 'unwind-protect)
+                 (unless (consp (cdr x)) (unsupported x))
+                 (let* ((h (prog1 nloc (setq nloc (+ nloc 8))))
+                        (land (label))
+                        (k (emit 25 h 0)))
+                   (push (cons (1+ k) land) patches)
+                   (let ((b (comp (cadr x))))
+                     (emit 24)
+                     (place land)
+                     (let ((c (body (cddr x))))
+                       (emit 11)
+                       (emit 26 h)
+                       (list :unwind-protect b c)))))
+                ;; save-current-buffer / save-excursion / save-restriction:
+                ;; their special objects run a Lisp implementation, a macro
+                ;; over `unwind-protect' (`nelisp--set-special-form-
+                ;; implementation'); compile that expansion.
+                ((and (memq op '(save-current-buffer save-excursion save-restriction))
+                      (let ((f (symbol-function op)))
+                        (and (eq (car-safe f) 'builtin) (eq (car-safe (nth 2 f)) 'macro)
+                             (fboundp 'macroexpand-all))))
+                 (comp (macroexpand-all (apply (cdr (nth 2 (symbol-function op))) (cdr x))
+                                        nelisp--fx-native-macro-environment)))
                 ((and (symbolp op)
                       (or (memq op nelisp--fx-native-heads)
                           (special-form-p op)))
@@ -33561,10 +33822,11 @@ meanwhile would otherwise record `none' again behind the compilation)."
                               'none)
                        nelisp--fx-table)))))))))
 
-(defconst nelisp--fx-hopeless-heads
-  '(condition-case unwind-protect catch save-excursion
-    save-restriction save-current-buffer)
-  "Forms `nelisp--fx-compile' never covers and no common macro removes.")
+(defconst nelisp--fx-hopeless-heads nil
+  "Forms `nelisp--fx-compile' never covers and no common macro removes.
+Empty since nativecomp N3: the handler forms (condition-case,
+unwind-protect, catch) and the save-* special forms compile to handler
+frames.")
 
 (defun nelisp--fx-hopeless-p (body)
   "Non-nil when BODY, before macro expansion, already contains a form the

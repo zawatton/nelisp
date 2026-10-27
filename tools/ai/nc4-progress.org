@@ -1,0 +1,74 @@
+#+TITLE: nc4 -- native compiler N3: handlers (condition-case / catch / unwind-protect / save-*) in fx and native units, byte-code-tier regexp callees, cheaper direct-call guard
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 31be32887 (v22), no overlay (target/nc4/seed/ is empty; the patch is against git HEAD). Design: ../resume-4943-20261024/target/nativecomp/DESIGN.md 4.3 (handlers), 4.4 (code shape), 4.5 (build). Baseline v22 = ../resume-4943-20261024/target/integ-1039-build/dynamic/nelisp-dynamic. Build budget 2: build 1 Linux (checks green, binary kept as target/nc4/tmp/nelisp-build1), build 2 Linux = the measured one (adds the current-buffer row and the entry-check fast path). Timing CPU 12. Binary under test: ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic}.
+
+* S1 Cause with evidence
+** S1.1 Census on v22: 83 of 182 declined fx records (`none') are handler declines (`nelisp--fx-hopeless-heads'); in the hot call trees 4 handler declines (count-lines, nelisp--copy-char-table, nelisp--char-table-extra-count, nelisp-casetab--copy-char-table), 3 of them compile with the nc4 compiler (hot patch)
+#+NOTE: tools/ai/nc4-census.el on v22 with NC4_NEW=1 (roots target/nc4/roots.txt = nc2's two root lists): GLOBAL entries=1873 none=182 none-handler=83; NEW ok=3 fail=1 (nelisp-casetab--copy-char-table is declined by another rule after the handlers compile).
+evidence: target/nc4/logs/census-v22.txt sha256=d6ce75c4d53248bb267ff8febc81539eab88d69f58f34fe22645c3b88d6eb94c
+cmd: grep -q "GLOBAL entries=1873 none=182 none-handler=83" target/nc4/logs/census-v22.txt && grep -q "NEW ok=3 fail=1" target/nc4/logs/census-v22.txt
+** S1.2 The trim row's byte-code callees are the string-match family, adopted as GNU byte code from lisp/nelisp-stdlib-regexp.el (`nlre--string-match-entry' fset to `string-match'), plus `current-buffer' funcalled by the case-folding check
+#+NOTE: target/nc4/logs/kinds-v22.txt: string-match / string-match-p / re-search-forward / looking-at bytecode, string-trim(-left/-right) native (-64..-66); string-match's constants are nlre-string-match's entry.  On v22 callgrind trim: wf_bytecode_function_w 3 per trip, execute_frame 5 (target/nc4/logs/calls-v22-nc4.txt); after build 1 the remaining 2 were `current-buffer' (byte code, funcalled by `nlre--nat-fold-default-p').
+evidence: target/nc4/logs/kinds-v22.txt sha256=091ac4c0ab894af8c3b1565863d69c5e96468c4624942c46c908bbc34caf4a3a
+cmd: grep -q "^string-match bytecode" target/nc4/logs/kinds-v22.txt && grep -q "v22 trim wf_bytecode_function_w=3.0" target/nc4/logs/calls-v22-nc4.txt
+** S1.3 The guard cost: on nc3's ptp profile nc_site_rec is 2640 Ir per trip for 16 direct calls (165 per call; GNU's Ffuncall reads the cell and a type tag), the entry check 1068 per trip
+#+NOTE: target/nc4/logs/nc3-ptp-self.txt (nc3's own .cg files, ana.py): nc_site_rec 2640, m5_fx_entry_check 1068, nl_sb_worker_p 540 per trip; nc_site_rec re-tested the site vector's header and length, the symbol's header kind, the record's header and length and called nl_sb_worker_p.  GNU (eval.c funcall_general): the symbol's function cell, SUBRP / native test, call.
+evidence: target/nc4/logs/nc3-ptp-self.txt sha256=b09c1f237f546e14b24d32945aff119074b9f13ea4e055b162308eb185b22ac6
+cmd: grep -q "2640 nc_site_rec" target/nc4/logs/nc3-ptp-self.txt
+
+* S2 Fix: compiler, VM, lowering (offline red/green)
+** S2.1 fx compiler covers catch / throw / condition-case (incl. :success, list specs, nil VAR) / unwind-protect and save-current-buffer / save-excursion / save-restriction (their special objects' macro implementations); handler corpus through the fxir reference evaluator equals the v22 interpreter and GNU Emacs 31.1 (red before: v22 declines all of them)
+#+NOTE: scripts/nelisp-stdlib-prelude.el `nelisp--fx-compile' (VM ops 22 PUSHCATCH, 23 PUSHCONDITIONCASE, 24 POPHANDLER, 25 PUSHUNWIND, 26 ENDUNWIND, 27 THROW; GNU bytecomp's per-clause handler frames), `nelisp--fx-hopeless-heads' now nil; test/nelisp-nc4-fx.el (36 functions), test/nelisp-nc4-corpus.el (38 cases).  Offline on v22 with tools/ai/nc4-hotpatch.el: fxir transcript (NC_FXIR) = interpreter (NELISP_FX_DISABLE) = GNU, 36 installed.
+evidence: target/nc4/logs/v22-fxir.txt sha256=1059c2077f19e1c30dadd17d44d0362274d1633394c095ac474471ca48e7daf5
+cmd: python3 -c "import sys;L=lambda f,x:[l for l in open('target/nc4/logs/'+f) if not l.startswith(x) and l!='nil\n'];o=L('v22-off.txt','nil');f=L('v22-fxir.txt','FXIR');g=L('gnu.txt','nil');sys.exit(not(o==f==g and len(o)>=38 and open('target/nc4/logs/v22-fxir.txt').readline().strip()=='FXIR installed=36'))"
+** S2.2 Native lowering of the handler nodes (no handler stack: the static region nesting, catch nodes in the window) compiles offline with precise stack maps for every nc_ function that calls
+#+NOTE: lisp/nelisp-cc-fxir-native.el `--handler', helpers nc_catch_push/pop/match, nc_cc_match, nc_unbind_to, nc_exit_put.  tools/ai/nc1-unitcheck.el: 277 rows in 79.2 s, unmapped only call-free frameless helpers.
+evidence: target/nc4/logs/unitcheck.log sha256=febbee56aec6966bb38c212eda67ace747fd128cd3950a52ea02a5bdb3ce9724
+cmd: grep -q "^UNIT ok=t secs=79.2 rows=277" target/nc4/logs/unitcheck.log && sh -c '! grep "^FN nc_" target/nc4/logs/unitcheck.log | grep -v "reason=nil" | grep -v "^FN nc_site_sym \|^FN nc_truthy_slow \|^FN nc_mul_fast \|^FN nc_pred6 \|^FN nc_exit_put "'
+** S2.3 The string-match family and current-buffer are kept as source (fx) by the byte-code pass and harvested as native rows; generated Win64 source carries no rows
+#+NOTE: scripts/nelisp-prelude-bytecode.el `nelisp-prelude-bytecode-fx-names' (reason fx-native-preferred); rows 142-156 in lisp/nelisp-fxir-native-data.el (tools/ai/nc4-harvest.el on v22), corpus rows 2100-2135; direct-call aliases string-match -> nlre--string-match-entry etc.
+cmd: grep -q "nlre--string-match-entry 145" lisp/nelisp-fxir-native-data.el && grep -q "(current-buffer 156 " lisp/nelisp-fxir-native-data.el && grep -q "fx-native-preferred" scripts/nelisp-prelude-bytecode.el
+#+TIMEOUT: 120
+cmd: NELISP_STANDALONE_TARGET=windows-x86_64 emacs --batch -Q -L lisp -L src -L scripts --eval '(progn (require (quote nelisp-cc-fxir-native)) (prin1 nelisp-cc-fxir-native--source) (terpri) (princ (nelisp-cc-fxir-native-install-table-source)))' 2>/dev/null | cmp -s - target/nc4/logs/win-source.txt && grep -q "nelisp-nc--table 'nil" target/nc4/logs/win-source.txt
+** S2.4 Guard and entry check cut: nc_site_rec reads word slots directly (GNU funcall_general's cell + type test), m5_fx_entry_check answers nil and an unchanged generation without a call
+cmd: grep -q "nc4: the guard as GNU's Ffuncall" lisp/nelisp-cc-fxir-native.el && grep -q "nc4: nil (the word 3" scripts/nelisp-standalone-build.el
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304, 140 hot rows converted
+cmd: tail -1 target/nc4-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/nc4-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/nc4-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc1-native-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} converted 140
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: target/nc4/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+cmd: grep -q "buffer 21/21 PASS" target/nc4/logs/fixtures.log && grep -q "weak 24/24 PASS" target/nc4/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/nc4/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/nc4/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $PWD/${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic}
+** S3.3 nc4 handler corpus: interpreter = fx VM = native = fxir with and without forced GC (38 cases); native = GNU Emacs 31.1; the live-code handler mutant is caught on native and VM; all 36 corpus functions run native
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc4-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} same
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc4-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} gnu && sh tools/ai/nc4-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} mutant-caught
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc4-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} converted
+** S3.4 nc1/nc2/nc3 corpora still same, mutants caught, inline semantics unchanged
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc3-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc3-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} mutant-caught && sh tools/ai/nc3-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} inline
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc2-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc2-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} mutant-caught
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc1-native-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc1-native-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} mutant-caught && sh tools/ai/nc1-native-check.sh ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} inline-car
+
+* S4 End to end: speed
+** S4.1 More functions compile: global handler declines 83 -> 15 (none 182 -> 97), hot call trees fx 161 -> 178 with no decline caused by a handler form
+#+TIMEOUT: 300
+cmd: sh -c 'NC4_ROOTS="$(cat target/nc4/roots.txt)" timeout 300 ${NC4_BIN:-target/nc4-build/dynamic/nelisp-dynamic} --load tools/ai/nc4-census.el > ${TMPDIR:-/tmp}/nc4cen.txt 2>&1; awk "/^GLOBAL/{split(\$4,a,\"=\"); if (a[2]<=15) ok=1} END{exit !ok}" ${TMPDIR:-/tmp}/nc4cen.txt && test $(grep -c " decl handler" ${TMPDIR:-/tmp}/nc4cen.txt) -le 1'
+** S4.2 trim row: Ir per trip below v22 (103790) and no byte-code function run per trip
+evidence: target/nc4/logs/calls-nc4b.txt sha256=2bdcd57413338a85396aa136e15eebf979bd6553c5d2adae735c468e4b4ba856
+cmd: awk '$1=="trim"{exit !($2<103790)}' target/nc4/cg/nc4b-ir.txt && grep -q "nc4b trim wf_bytecode_function_w=0.0" target/nc4/logs/calls-nc4b.txt
+** S4.3 Guard: nc_site_rec Ir per direct call on ptp below a third of nc3's 165
+cmd: awk '$2=="nc_site_rec"{v=$1} END{exit !(v/16 < 55)}' target/nc4/logs/nc4b-self.txt
+** S4.4 Paired wall time vs v22 on CPU 12 (ptp, split, prop, gtp, mapc, trim) not slower, reg-sum-bc and r3-mix within 3 percent; GNU ratio recorded
+#+NOTE: paired_bench (7 reps, alternating, CPU 12 idle-checked, results checked equal) build 2 vs v22, ns/trip v22 -> nc4 (ratio, pairs faster; GNU): ptp 4243 -> 3996 (0.942, 7/7; GNU 233), split 5054 -> 4833 (0.956, 7/7; GNU 2990), prop 7218 -> 6860 (0.950, 7/7; GNU 1210), gtp 1451 -> 1407 (0.969, 6/7; GNU 190), mapc 8202 -> 8060 (0.983, 7/7; GNU 471), trim 17152 -> 14657 (0.855, 7/7; GNU 660); reg-sum-bc 0.993 (7/7), r3-mix 1.007 (1/7).  CPU 12 was taken by another lane's process twice (refused by the idle check, re-run when idle; logs paired-1/2/3.log).
+evidence: target/nc4/timing/paired-all.log sha256=e373f8f0db33826ecbca5e0752e0f8b58879e1de1efd22a4a49d3f5050534359
+cmd: python3 target/nc4/timing/s4check.py

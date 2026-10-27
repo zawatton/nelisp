@@ -2799,7 +2799,7 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
   (when (eq nlre--nat-layout 'unknown)
     (setq nlre--nat-layout
           (and nlre--nat-have (recordp b) (fboundp 'nelisp-buffer-pend)
-               (= (length b) 17)
+               (= (length b) 21)
                (eq (aref b 7) (nelisp-buffer-narrow-start b))
                (eq (aref b 8) (nelisp-buffer-narrow-end b))
                (= (aref b 11) (nelisp-buffer-tick b))

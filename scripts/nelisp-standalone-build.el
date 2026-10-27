@@ -30153,6 +30153,18 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; -3 to decline the run (no effect has happened yet).  C is nil or
     ;; [GEN-CELL LAST-GEN NAME...], see `nelisp--fx-special-gen' (prelude).
     (defun m5_fx_entry_check (c env)
+      ;; nc4: nil (the word 3, no lexical name to watch) answers first, then
+      ;; an unchanged generation read straight from the two vectors' words
+      ;; (slot K of a vector WORD at WORD + 2 + 8K), as GNU reads a
+      ;; symbol's redirect: no call on the path every activation takes.
+      (if (= c 3) 0
+      (if (if (= (logand c 7) 6)
+              (let* ((cell (ptr-read-u64 (+ c 2) 0)))
+                (if (= (logand cell 7) 6)
+                    (= (ptr-read-u64 (+ cell 2) 0) (ptr-read-u64 (+ c 10) 0))
+                  0))
+            0)
+          0
       (if (= (nl_val_tag c) 0) 0
         (let* ((gen (nl_vector_slot_word (nl_vector_slot_word c 0) 0)))
           (if (= gen (nl_vector_slot_word c 1)) 0
@@ -30162,7 +30174,7 @@ bytes are written into a fresh 8-byte buffer instead."
                  (seq (setq special (bf_declared_special_p env (nl_vector_slot_word c i)))
                       (setq i (+ i 1))))
                (if (= special 1) -3
-                 (seq (ptr-write-u64 (+ (+ (nl_word_payload c) 8) 8) 0 gen) 0))))))))
+                 (seq (ptr-write-u64 (+ (+ (nl_word_payload c) 8) 8) 0 gen) 0))))))))))
     ;; A run counts against the evaluator's recursion budget (env+96, limit
     ;; env+104) like the ~2 `nelisp_eval_call' levels an interpreted call
     ;; takes: VM code recursing through VM code never reaches that check,
@@ -30233,6 +30245,14 @@ bytes are written into a fresh 8-byte buffer instead."
               (if (or (= w 2) (= (wf_bytecode_w_unbound_p env w) 1))
                   (seq (nl_stash_void_variable env source) 1)
                 (seq (ptr-write-u64 dst 0 w) 0)))))))
+    ;; nativecomp N3: the condition object (SIGNAL . DATA) a matched
+    ;; condition-case clause binds; the signal is cleared, as
+    ;; `nl_sf_cc_after_match_w' clears it.
+    (defun m5_fx_exit_condition (_pad _pad1)
+      (let* ((w (wf_bytecode_w_cons2 (nl_exit_tag_w) (nl_exit_val_w))))
+        (seq (ptr-write-u64 268435472 0 0)
+             (ptr-write-u64 (data-addr nl_bt_snapshot) 0 0)
+             w)))
     (defun m5_fx_run_body (code nlocals env out args nparams argw wout)
       ;; Negative NLOCALS is reserved for compiler-lowered whole functions.
       ;; Ordinary VM calls pay one integer branch, with no extra call or
@@ -30272,7 +30292,10 @@ bytes are written into a fresh 8-byte buffer instead."
              ;; UNBIND): GNU's specpdl depth above the frame's entry.  A
              ;; plain integer, not a Lisp slot; the values live in the
              ;; binding frames and on the operand stack.
-             (nb 0))
+             (nb 0)
+             ;; nativecomp N3: the innermost handler frame (its first local
+             ;; + 1, 0 none) and the run flag of the handler loop.
+             (hd 0) (go 1))
         ;; GNU signals "Bytecode stack overflow" (bytecode.c:514-515); this
         ;; region's exhaustion is `memory-full', as for every checked frame.
         (if (= mem 0) (wf_bytecode_root_exhausted)
@@ -30302,6 +30325,8 @@ bytes are written into a fresh 8-byte buffer instead."
                             (if (/= argw 0)
                                 (m5_fx_slot_list (+ argw (* b 8)) (- n b))
                               (m5_fx_list_copy a 0)))))
+         (while (= go 1)
+         (seq
          (while (= status 0)
            (seq
             (setq op (wf_bytecode_w_int (heap-read-u64 (+ base (* pc 8)) 0)))
@@ -30421,7 +30446,117 @@ bytes are written into a fresh 8-byte buffer instead."
                       (seq (setq n (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
                            (wf_bytecode_unbind (+ env 32) n)
                            (setq nb (- nb n)) (setq pc (+ pc 2)))
-                    (setq status -2)))))))))))))))))))
+                    ;; nativecomp N3 handler frames (`nelisp--fx-compile' catch /
+                    ;; condition-case / unwind-protect): GNU's Bpushcatch,
+                    ;; Bpushconditioncase, Bpophandler (bytecode.c) over
+                    ;; push_handler (eval.c).  A frame is locals H..: +0 the
+                    ;; previous frame, +8 the push pc, +16 the depth to land
+                    ;; at, +24 the binding count, all fixnums; a catch's node
+                    ;; for the catch chain at +32 (`nl_ct_active_prepare_w''s
+                    ;; layout: fixnum 0, previous node, tag) so `throw' finds
+                    ;; it; an unwind-protect's kept exit at +32..+56.
+                    ;; 22 PUSHCATCH H L: pops the tag.
+                    (if (= op 22)
+                        (let* ((h (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                               (rb (+ mem (* h 8)))
+                               (head (nl_ct_head_slot env)))
+                          (seq (setq sp (- sp 1))
+                               (ptr-write-u64 rb 0 (+ (shl hd 2) 1))
+                               (ptr-write-u64 (+ rb 8) 0 (+ (shl pc 2) 1))
+                               (ptr-write-u64 (+ rb 16) 0 (+ (shl sp 2) 1))
+                               (ptr-write-u64 (+ rb 24) 0 (+ (shl nb 2) 1))
+                               (ptr-write-u64 (+ rb 32) 0 1)
+                               (ptr-write-u64 (+ rb 40) 0 (heap-read-u64 head 0))
+                               (ptr-write-u64 (+ rb 48) 0 (heap-read-u64 (+ stk (* sp 8)) 0))
+                               (ptr-write-u64 head 0 (+ rb 32))
+                               (setq hd (+ h 1)) (setq pc (+ pc 3))))
+                    ;; 23 PUSHCONDITIONCASE H L SPEC, 25 PUSHUNWIND H L.
+                    (if (if (= op 23) 1 (if (= op 25) 1 0))
+                        (let* ((h (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)))
+                               (rb (+ mem (* h 8))))
+                          (seq (ptr-write-u64 rb 0 (+ (shl hd 2) 1))
+                               (ptr-write-u64 (+ rb 8) 0 (+ (shl pc 2) 1))
+                               (ptr-write-u64 (+ rb 16) 0 (+ (shl sp 2) 1))
+                               (ptr-write-u64 (+ rb 24) 0 (+ (shl nb 2) 1))
+                               (if (= op 25) (ptr-write-u64 (+ rb 32) 0 1) 0)
+                               (setq hd (+ h 1)) (setq pc (+ pc (if (= op 23) 4 3)))))
+                    ;; 24 POPHANDLER: a catch also leaves the catch chain.
+                    (if (= op 24)
+                        (let* ((rb (+ mem (* (- hd 1) 8))))
+                          (seq (if (= (wf_bytecode_w_int (heap-read-u64 (+ base (* (wf_bytecode_w_int (heap-read-u64 (+ rb 8) 0)) 8)) 0)) 22)
+                                   (ptr-write-u64 (nl_ct_head_slot env) 0 (heap-read-u64 (+ rb 40) 0))
+                                 0)
+                               (setq hd (wf_bytecode_w_int (heap-read-u64 rb 0)))
+                               (setq pc (+ pc 1))))
+                    ;; 26 ENDUNWIND H: after the cleanup, an exit the frame kept
+                    ;; goes on (its kind and values put back, as
+                    ;; `nl_sf_uw_cleanup_after_body_exit' does).
+                    (if (= op 26)
+                        (let* ((rb (+ mem (* (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ pc 1) 8)) 0)) 8)))
+                               (prc (wf_bytecode_w_int (heap-read-u64 (+ rb 32) 0))))
+                          (if (= prc 0) (setq pc (+ pc 2))
+                            (seq (ptr-write-u64 (+ rb 32) 0 1)
+                                 (nl_exit_restore (+ rb 48))
+                                 (ptr-write-u64 268435472 0 (wf_bytecode_w_int (heap-read-u64 (+ rb 40) 0)))
+                                 (setq status prc))))
+                    ;; 27 THROW: Fthrow on TAG and VALUE (`nl_ct_throw_words').
+                    (if (= op 27)
+                        (setq status (nl_ct_throw_words env (heap-read-u64 (+ stk (* (- sp 2) 8)) 0)
+                                                        (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
+                    (setq status -2))))))))))))))))))))))))
+         ;; nativecomp N3: an exit (a call-out's rc, its signal or throw
+         ;; stashed) while handler frames are pushed: the innermost frame
+         ;; is popped; a catch whose tag is the throw's, or a
+         ;; condition-case clause whose conditions match the signal, lands
+         ;; (GNU unwind_to_catch / find_handler_clause); an unwind-protect
+         ;; always lands, keeping the exit for its ENDUNWIND.  A landing
+         ;; undoes the bindings made since the push and resumes at the
+         ;; frame's pc with the value on the stack.  Otherwise the next
+         ;; frame is tried; with none left the exit leaves the activation.
+         (while (if (> status 0) (/= hd 0) 0)
+           (let* ((rb (+ mem (* (- hd 1) 8)))
+                  (ppc (wf_bytecode_w_int (heap-read-u64 (+ rb 8) 0)))
+                  (hop (wf_bytecode_w_int (heap-read-u64 (+ base (* ppc 8)) 0)))
+                  (snb (wf_bytecode_w_int (heap-read-u64 (+ rb 24) 0)))
+                  (land 0))
+             (seq
+              (setq hd (wf_bytecode_w_int (heap-read-u64 rb 0)))
+              (if (= hop 22)
+                  (seq (ptr-write-u64 (nl_ct_head_slot env) 0 (heap-read-u64 (+ rb 40) 0))
+                       (if (= (heap-read-u64 268435472 0) 2)
+                           (if (= (nl_ct_tag_eq_w (nl_exit_tag_w) (heap-read-u64 (+ rb 48) 0)) 1)
+                               (setq land 1) 0)
+                         0))
+                (if (= hop 23)
+                    (if (= (heap-read-u64 268435472 0) 1)
+                        (if (= (wf_bytecode_condition_matches
+                                env (nl_exit_tag_w) (heap-read-u64 (+ base (* (+ ppc 3) 8)) 0)) 1)
+                            (setq land 2) 0)
+                      0)
+                  (seq (ptr-write-u64 (+ rb 32) 0 (+ (shl status 2) 1))
+                       (ptr-write-u64 (+ rb 40) 0 (+ (shl (heap-read-u64 268435472 0) 2) 1))
+                       (ptr-write-u64 (+ rb 48) 0 (nl_exit_tag_w))
+                       (ptr-write-u64 (+ rb 56) 0 (nl_exit_val_w))
+                       (setq land 3))))
+              (if (= land 0) 0
+                (seq
+                 (if (> nb snb) (seq (wf_bytecode_unbind (+ env 32) (- nb snb)) (setq nb snb)) 0)
+                 (setq sp (wf_bytecode_w_int (heap-read-u64 (+ rb 16) 0)))
+                 (ptr-write-u64 (+ stk (* sp 8)) 0
+                                (if (= land 1) (nl_ct_caught_word (nl_exit_val_w) 0)
+                                  (if (= land 2) (m5_fx_exit_condition 0 0) 3)))
+                 (setq sp (+ sp 1))
+                 (setq pc (wf_bytecode_w_int (heap-read-u64 (+ base (* (+ ppc 2) 8)) 0)))
+                 (setq status 0))))))
+         (if (= status 0) 0 (setq go 0))))
+         ;; Frames left by an abort (a bad opcode, the root stack): catches
+         ;; leave the catch chain.
+         (while (/= hd 0)
+           (let* ((rb (+ mem (* (- hd 1) 8))))
+             (seq (if (= (wf_bytecode_w_int (heap-read-u64 (+ base (* (wf_bytecode_w_int (heap-read-u64 (+ rb 8) 0)) 8)) 0)) 22)
+                      (ptr-write-u64 (nl_ct_head_slot env) 0 (heap-read-u64 (+ rb 40) 0))
+                    0)
+                  (setq hd (wf_bytecode_w_int (heap-read-u64 rb 0))))))
          ;; Bindings still held when the loop ends: a call-out signalled or
          ;; threw through this frame (the status is its rc).  Undone here, on
          ;; the one exit, as GNU's unbind_to does for the unwound frames.

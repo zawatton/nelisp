@@ -1,0 +1,58 @@
+#+TITLE: bufstore: buffer text representation for large text
+
+* S1 Cause with evidence
+
+** S1.1 page-fault / time profile of v22 vs v19 on the large-text rows recorded
+cmd: test -s target/bufstore/s1/profile.txt
+
+** S1.2 GNU storage model (buffer.h/insdel.c/marker.c) summarized with the decision (a) or (b)
+cmd: grep -q "DECISION" target/bufstore/REPORT.md
+
+** S1.3 end-to-end: cause table with measured numbers in REPORT.md
+cmd: grep -q "CAUSES" target/bufstore/REPORT.md
+
+* S2 Fix with red/green checks and GNU-parity corpus
+
+** S2.1 buffer-op GNU-parity corpus (multibyte, unibyte, raw bytes, markers, narrowing, text props) equals GNU on the new binary
+#+TIMEOUT: 600
+cmd: BUFSTORE_BIN=${BUFSTORE_BIN:-target/bufstore-build/dynamic/nelisp-dynamic} sh target/bufstore/check-parity.sh
+
+** S2.2 red/green: large-insert fast-path probe green on new binary, red (slower) on v22
+#+TIMEOUT: 300
+cmd: BUFSTORE_BIN=${BUFSTORE_BIN:-target/bufstore-build/dynamic/nelisp-dynamic} sh target/bufstore/check-redgreen.sh
+
+** S2.3 existing buffer corpora (bufedit, bufnative, textprop1, overlay1, markgc, buflocal1) pass on new binary
+#+TIMEOUT: 600
+cmd: BUFSTORE_BIN=${BUFSTORE_BIN:-target/bufstore-build/dynamic/nelisp-dynamic} sh target/bufstore/check-corpora.sh
+
+** S2.4 end-to-end: patch applies to HEAD
+#+TIMEOUT: 120
+cmd: sh target/bufstore/check-patch.sh
+
+* S3 One integrated build passing fixtures
+
+** S3.1 build finished rc=0
+cmd: grep -q "BUILD rc=0" target/bufstore-build/dynamic/build.log
+
+** S3.2 fixtures weak24 gnu56 afrt24/25 buffer21
+cmd: grep -q "buffer 21/21 PASS" target/bufstore/fixtures.log
+
+** S3.3 gnu-speed-win-check passes
+cmd: grep -q "rc=0" target/bufstore/winspeed.rc
+
+** S3.4 end-to-end: fixtures report says no regression
+cmd: grep -q '"regression": false' target/bufstore/fixtures/report.json
+
+* S4 Paired timing vs v22, v19 and GNU
+
+** S4.1 target large-text rows at or below their v19 ratio
+cmd: sh target/bufstore/check-target-rows.sh
+
+** S4.2 no regfix timing-table row worse than v22 by more than 3%
+cmd: sh target/bufstore/check-family.sh
+
+** S4.3 regression rows reg-sum-bc and r3-mix not slower than v22 by more than 3%
+cmd: sh target/bufstore/check-regrows.sh
+
+** S4.4 end-to-end: REPORT.md has the final table
+cmd: grep -q "FINAL TABLE" target/bufstore/REPORT.md

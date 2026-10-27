@@ -88,6 +88,10 @@ function of that name with the same fxir is defined.")
 (defvar nelisp-cc-fxir-native--temps nil "Temporaries of the function being generated.")
 (defvar nelisp-cc-fxir-native--callees nil "Remaining callee names, in walk order.")
 (defvar nelisp-cc-fxir-native--maxargc 0 "Largest staged argument count.")
+(defvar nelisp-cc-fxir-native--nbd 0
+  "Dynamic bindings the code being lowered holds at its start (static count).")
+(defvar nelisp-cc-fxir-native--ncatch 0
+  "Catch nodes of the function being generated (three window words each).")
 (defvar nelisp-cc-fxir-native--mutant nil
   "Non-nil generates a deliberately wrong `<' (as `>'): the negative control.")
 
@@ -295,10 +299,20 @@ direct classes (cons 010, object 110, immediates)."
 (defvar nelisp-cc-fxir-native--wrapper-names nil
   "The nc_d_ID wrappers the last generated source defines.")
 
+(defconst nelisp-cc-fxir-native--direct-aliases
+  '((string-match . nlre--string-match-entry) (string-match-p . nlre--string-match-p-entry)
+    (match-beginning . nlre-match-beginning) (match-end . nlre-match-end)
+    (match-string . nlre--match-string-entry))
+  "Public names whose function cell the boot source sets to a row's closure
+\(`fset' in `nelisp-standalone--reader-repl-prelude-source'): a call of the
+public name may enter that row; the guard still compares the live cell and
+the record, so another definition takes the generic call.")
+
 (defun nelisp-cc-fxir-native--direct-row (name argc)
   "The row NAME's direct call with ARGC arguments may enter, or nil."
   (let ((row (and nelisp-cc-fxir-native--row-index
-                  (gethash name nelisp-cc-fxir-native--row-index))))
+                  (gethash (or (cdr (assq name nelisp-cc-fxir-native--direct-aliases)) name)
+                           nelisp-cc-fxir-native--row-index))))
     (when row
       (let* ((arity (nth 5 row)) (amin (nth 0 arity)) (amax (nth 1 arity)))
         (and (>= argc amin) (or (< amax 0) (<= argc amax)) (<= argc 255) row)))))
@@ -443,6 +457,98 @@ Answers (STMTS . RESULT-TEMP)."
                                    ,(funcall arm la) ,(funcall arm lb)))))
           r)))
 
+(defun nelisp-cc-fxir-native--value-block (low r)
+  "One form running LOW's statements, then R set to its value."
+  (nelisp-cc-fxir-native--block (append (car low) (list (cons nil `(setq ,r ,(cdr low)))))))
+
+;; nativecomp N3: handlers.  A failing call leaves ST non-zero and the
+;; statements after it are skipped up to the end of the region's block, so
+;; the region's handler is the code right after that block: no handler
+;; stack, as the regions nest statically (the VM's frames, `m5_fx_run_body'
+;; ops 22-27, are this nesting made dynamic).  What a landing does is the
+;; VM's: a catch matches a throw to its tag (`nc_catch_match'), a
+;; condition-case clause a signal of its conditions, an unwind-protect keeps
+;; the exit across its cleanup; the bindings made inside the region are
+;; undone first (the static count `--nbd' at the region's start).  A catch
+;; also registers a node on the catch chain, in three words of the window,
+;; so `throw' finds it.  Callees are lowered in the order
+;; `nelisp-nc--callees' walks them.
+(defun nelisp-cc-fxir-native--handler (n)
+  "Lower a handler node N (:catch :throw :condition-case :unwind-protect)."
+  (let ((d nelisp-cc-fxir-native--nbd))
+    (pcase (car n)
+      (:throw
+       (let ((args (nelisp-cc-fxir-native--args (cdr n))))
+         (cons (append (car args)
+                       (list (cons t `(setq st (nl_ct_throw_words env ,(nth 0 (cdr args)) ,(nth 1 (cdr args)))))))
+               3)))
+      (:catch
+       (let* ((lt (nelisp-cc-fxir-native--hold (nelisp-cc-fxir-native--lower (nth 1 n))))
+              (lb (nelisp-cc-fxir-native--lower (nth 2 n)))
+              (r (nelisp-cc-fxir-native--temp))
+              (node `(+ mem (* (+ cbase ,(* 3 nelisp-cc-fxir-native--ncatch)) 8))))
+         (setq nelisp-cc-fxir-native--ncatch (1+ nelisp-cc-fxir-native--ncatch))
+         (cons (append (car lt)
+                       (nelisp-cc-fxir-native--win)
+                       (list (cons t `(seq (nc_catch_push env ,node ,(cdr lt))
+                                           ,(nelisp-cc-fxir-native--value-block lb r)
+                                           (nc_catch_pop env ,node)
+                                           (if (> st 0)
+                                               (if (= (nc_catch_match ,node) 1)
+                                                   (seq (setq nb (nc_unbind_to env nb ,d))
+                                                        (setq ,r (nl_ct_caught_word (nl_exit_val_w) 0))
+                                                        (setq st 0))
+                                                 0)
+                                             0)))))
+               r)))
+      (:condition-case
+       (let* ((vs (nth 1 n))
+              (var (and vs (nelisp-cc-fxir-native--local vs)))
+              (lb (nelisp-cc-fxir-native--lower (nth 2 n)))
+              (ls (and (nth 3 n) (nelisp-cc-fxir-native--lower (nth 3 n))))
+              (hs (mapcar (lambda (c) (cons (car c) (nelisp-cc-fxir-native--lower (nth 1 c))))
+                          (nthcdr 4 n)))
+              (r (nelisp-cc-fxir-native--temp))
+              (chain 0))
+         (dolist (h (reverse hs))
+           (setq chain
+                 `(if (= (nc_cc_match env ,(nelisp-cc-fxir-native--cv (car h))) 1)
+                      (seq (setq nb (nc_unbind_to env nb ,d))
+                           (setq st 0)
+                           ,(if var `(setq ,var (m5_fx_exit_condition 0 0)) '(m5_fx_exit_condition 0 0))
+                           ,(nelisp-cc-fxir-native--value-block (cdr h) r))
+                    ,chain)))
+         (cons (list (cons t `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+                                   (if (= st 0)
+                                       ,(if ls
+                                            `(seq ,(if var `(setq ,var ,r) 0)
+                                                  ,(nelisp-cc-fxir-native--value-block ls r))
+                                          0)
+                                     (if (> st 0) ,chain 0)))))
+               r)))
+      (:unwind-protect
+       (let* ((lb (nelisp-cc-fxir-native--lower (nth 1 n)))
+              (lc (nelisp-cc-fxir-native--lower (nth 2 n)))
+              (r (nelisp-cc-fxir-native--temp))
+              (rc (nelisp-cc-fxir-native--temp)) (fl (nelisp-cc-fxir-native--temp))
+              (tg (nelisp-cc-fxir-native--temp)) (vl (nelisp-cc-fxir-native--temp)))
+         (cons (list (cons t `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+                                   (if (> st 0)
+                                       (seq (setq ,rc (+ (shl st 2) 1))
+                                            (setq ,fl (+ (shl (heap-read-u64 268435472 0) 2) 1))
+                                            (setq ,tg (nl_exit_tag_w))
+                                            (setq ,vl (nl_exit_val_w))
+                                            (setq nb (nc_unbind_to env nb ,d))
+                                            (setq st 0))
+                                     (setq ,rc 1))
+                                   ,(nelisp-cc-fxir-native--block (car lc))
+                                   (if (= st 0)
+                                       (if (= ,rc 1) 0
+                                         (seq (nc_exit_put ,tg ,vl (sar ,fl 2))
+                                              (setq st (sar ,rc 2))))
+                                     0))))
+               r))))))
+
 (defun nelisp-cc-fxir-native--lower (n)
   "Lower fxir node N to (STMTS . VALUE)."
   (pcase (car n)
@@ -522,7 +628,8 @@ Answers (STMTS . RESULT-TEMP)."
              (setq stmts (append stmts
                                  (list (cons t `(setq st (wf_bytecode_varbind env ,(nelisp-cc-fxir-native--cv (nth 1 it)) ,(cdr l))))
                                        (cons nil '(setq nb (+ nb 1)))))))))
-       (let ((body (nelisp-cc-fxir-native--lower (nth 2 n))))
+       (let ((body (let ((nelisp-cc-fxir-native--nbd (+ nelisp-cc-fxir-native--nbd (nth 3 n))))
+                     (nelisp-cc-fxir-native--lower (nth 2 n)))))
          (if (= (nth 3 n) 0)
              (cons (append stmts (car body)) (cdr body))
            (let ((held (nelisp-cc-fxir-native--hold body)))
@@ -532,6 +639,8 @@ Answers (STMTS . RESULT-TEMP)."
                    (cdr held)))))))
     (:call (nelisp-cc-fxir-native--call n))
     (:inline (nelisp-cc-fxir-native--inline-op n))
+    ((or :catch :throw :condition-case :unwind-protect)
+     (nelisp-cc-fxir-native--handler n))
     (_ (error "fxir-native: bad node %S" n))))
 
 (defun nelisp-cc-fxir-native--defun (row)
@@ -544,9 +653,13 @@ Answers (STMTS . RESULT-TEMP)."
          (nelisp-cc-fxir-native--callees (copy-sequence (nth 3 row)))
          (nelisp-cc-fxir-native--maxargc 0)
          (nelisp-cc-fxir-native--uses-window nil)
+         (nelisp-cc-fxir-native--nbd 0)
+         (nelisp-cc-fxir-native--ncatch 0)
          (body (nelisp-cc-fxir-native--lower (nth 1 (nth 4 row))))
          (poff (+ 3 nelisp-cc-fxir-native--maxargc))
-         (fsize (+ poff nfixed))
+         ;; nativecomp N3: the catch nodes follow the parameter words.
+         (cbase (+ poff nfixed))
+         (fsize (+ cbase (* 3 nelisp-cc-fxir-native--ncatch)))
          (locals (let ((l nil)) (dotimes (i nlocals) (push (list (nelisp-cc-fxir-native--local i) 3) l)) (nreverse l)))
          (temps (mapcar (lambda (v) (list v 3)) (reverse nelisp-cc-fxir-native--temps)))
          (entry
@@ -594,7 +707,7 @@ Answers (STMTS . RESULT-TEMP)."
                   (nl_root_release env mark)
                   (if (= st 0) -1 (if (= st -4) (wf_bytecode_root_exhausted) st))))))))
     (ignore amax)
-    (cl-subst fsize 'fsize form)))
+    (cl-subst cbase 'cbase (cl-subst fsize 'fsize form))))
 
 (defun nelisp-cc-fxir-native--dispatch (ids lo hi)
   "Balanced dispatch tree over IDS (sorted list) index range LO..HI."
@@ -607,6 +720,37 @@ Answers (STMTS . RESULT-TEMP)."
 
 (defconst nelisp-cc-fxir-native--shared-source
   '((defun nc_truthy_slow (w) (if (= (nl_val_tag w) 0) 0 1))
+    ;; nativecomp N3 handlers (`nelisp-cc-fxir-native--handler').  A catch
+    ;; node is three window words in `nl_ct_active_prepare_w''s layout: the
+    ;; fixnum 0, the previous node, the tag.
+    (defun nc_catch_push (env node tag)
+      (seq (ptr-write-u64 node 0 1)
+           (ptr-write-u64 (+ node 8) 0 (heap-read-u64 (nl_ct_head_slot env) 0))
+           (ptr-write-u64 (+ node 16) 0 tag)
+           (ptr-write-u64 (nl_ct_head_slot env) 0 node)
+           0))
+    (defun nc_catch_pop (env node)
+      (seq (ptr-write-u64 (nl_ct_head_slot env) 0 (heap-read-u64 (+ node 8) 0)) 0))
+    ;; 1 when the pending exit is a throw to NODE's tag.
+    (defun nc_catch_match (node)
+      (if (= (heap-read-u64 268435472 0) 2)
+          (nl_ct_tag_eq_w (nl_exit_tag_w) (heap-read-u64 (+ node 16) 0))
+        0))
+    ;; 1 when the pending exit is a signal SPEC's conditions match.
+    (defun nc_cc_match (env spec)
+      (if (= (heap-read-u64 268435472 0) 1)
+          (wf_bytecode_condition_matches env (nl_exit_tag_w) spec)
+        0))
+    ;; Undo the dynamic bindings above D of the NB held; answers the count left.
+    (defun nc_unbind_to (env nb d)
+      (if (> nb d) (seq (wf_bytecode_unbind (+ env 32) (- nb d)) d) nb))
+    ;; Put a kept exit back (`nl_exit_restore' from words).
+    (defun nc_exit_put (tag val flag)
+      (seq (ptr-write-u64 (data-addr nl_exit_values) 0 tag)
+           (ptr-write-u64 (+ (data-addr nl_exit_values) 8) 0 val)
+           (ptr-write-u64 268435472 0 flag)
+           0))
+
     ;; The generic call of the call-site cache (or symbol) SITE on the ARGC
     ;; words at STK, result word in RESW: the VM's CALL (`m5_fx_run_body'
     ;; op 16) -- a primitive Subr directly, else `m5_fx_callout'.  OSLOT is
@@ -707,20 +851,28 @@ Answers (STMTS . RESULT-TEMP)."
     ;; and neither a worker nor the dynamic-binding mode runs (the conditions
     ;; of `m5_fx_site_rec'); else 0.
     (defun nc_site_rec (env site)
-      (if (if (= (logand site 7) 6)
-              (if (< site 4096) 0
-                (if (= (logand (ptr-read-u64 (- site 6) 0) 63) 8) (>= (nl_vector_length site) 5) 0))
-            0)
-          (let* ((sym (nc_site_sym site))
-                 (cell (if (= sym 0) 3 (ptr-read-u64 (- sym 6) 24))))
-            (if (if (= cell 3) 0 (= cell (nl_vector_slot_word site 3)))
-                (let* ((rec (nl_vector_slot_word site 4)))
-                  (if (if (= (logand rec 7) 6)
-                          (if (< rec 4096) 0
-                            (if (>= (nl_vector_length rec) 8) (= (nl_vector_slot_word rec 7) 3) 0))
-                        0)
-                      (if (= (nl_sb_worker_p env) 1) 0
-                        (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0 rec))
+      ;; nc4: the guard as GNU's Ffuncall / funcall_general reads it
+      ;; (eval.c: the symbol's function cell, a type test, the entry): the
+      ;; site is the code vector's call cache [SYMBOL ...] the fx compiler
+      ;; made (the install pass checked the code), so only word classes are
+      ;; tested; the cache's slots 3 and 4 are written record first
+      ;; (`m5_fx_funcall_site_fill'), so a cached closure equal to the live
+      ;; cell means slot 4 holds its record.  Words: vector slot K at
+      ;; WORD + 2 + 8K, a symbol's function cell at WORD + 18.
+      (if (= (logand site 7) 6)
+          (let* ((sym (ptr-read-u64 (+ site 2) 0)))
+            (if (if (= (logand sym 7) 6) (>= sym 4096) 0)
+                (let* ((cell (ptr-read-u64 (+ sym 18) 0)))
+                  (if (if (= cell 3) 0 (= cell (ptr-read-u64 (+ site 26) 0)))
+                      (let* ((rec (ptr-read-u64 (+ site 34) 0)))
+                        (if (if (= (logand rec 7) 6) (= (ptr-read-u64 (+ rec 58) 0) 3) 0)
+                            (if (= (heap-read-u64 env 168) 0)
+                                (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
+                                    (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) rec
+                                      (if (= (nl_sb_worker_p env) 1) 0 rec))
+                                  0)
+                              0)
+                          0))
                     0))
               0))
         0))
@@ -939,7 +1091,9 @@ Answers (STMTS . RESULT-TEMP)."
     nc_subr_call nc_site_rec
     ;; nc3
     nc_desc_call nc_builtin_call nc_funcall nc_list_call nc_pred6 nc_mul_fast nc_rem_fast
-    nc_equal_fast nc_memq_fast nc_assq_fast nc_nthcdr_fast nc_length_fast nc_globals)
+    nc_equal_fast nc_memq_fast nc_assq_fast nc_nthcdr_fast nc_length_fast nc_globals
+    ;; nc4
+    nc_catch_push nc_catch_pop nc_catch_match nc_cc_match nc_unbind_to nc_exit_put)
   "Shared helpers the unit inliner must leave as calls.")
 
 (defun nelisp-cc-fxir-native--mutant-row (rows)
