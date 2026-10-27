@@ -20728,10 +20728,13 @@ eval applyfn.")
                (now (if (= kind 1) (wf_cb_target env fw) target)))
           (if (/= now target) 2
             (let* ((frame (nl_n4_push_words env fw (+ roots 32) argc))
-                   (st (wf_bytecode_w_function target roots 4 argc env
-                                               (+ roots 24) 0
-                                               (let* ((pc (ptr-read-u64 roots 48)))
-                                                 (if (= (logand pc 3) 1) (sar pc 2) 0)))))
+                   (pre (let* ((pc (ptr-read-u64 roots 48)))
+                          (if (= (logand pc 3) 1) (sar pc 2) 0)))
+                   ;; vmfast2: lean frame first (`wf_cb_lean_call'); 2 means nothing ran.
+                   (lean (if (= pre 0) 2 (wf_cb_lean_call target roots argc env pre)))
+                   (st (if (/= lean 2) lean
+                         (wf_bytecode_w_function target roots 4 argc env
+                                                 (+ roots 24) 0 pre))))
               (if (= st 2)
                   (seq (if (= frame 0) 0
                          (ptr-write-u64 (heap-read-u64 env 176) 0
@@ -20740,6 +20743,106 @@ eval applyfn.")
                 (if (= (nl_n4_finish_w (if (= st 0) (heap-read-u64 roots 24) 0)
                                        env 0 frame) 0)
                     1 0)))))))
+    ;; vmfast2: lean frame.  GNU mapcar1 / mapc / maphash -> call1 -> funcall_lambda ->
+    ;; exec_byte_code (eval.c, bytecode.c setup_frame) for a lexical byte-code TARGET
+    ;; whose two WORD frames the walk reserved once (PRE, `wf_cb_reserve'): the frame is
+    ;; set up in place and the fast loop runs it, without `wf_bytecode_w_function' and the
+    ;; general prologue of `wf_bytecode_execute_frame' (14 parameters, the code and
+    ;; constants decoding for every representation, the root mark, the N4 state).
+    ;; The checks and their order are those of `wf_bytecode_w_function'; any case it treats
+    ;; otherwise -- a template or depth that is not a fixnum word, a JIT candidate, an
+    ;; argument count it rejects or a &rest list to build, a code string that is not a
+    ;; String WORD, a depth below the parameter slots or other than the reserved frame's --
+    ;; answers 2 before anything is written, and the caller takes that path.  The frame is
+    ;; written exactly as the PRE branch of `wf_bytecode_execute_frame' writes it.
+    ;; A Breturn of the activation's own frame (the fast loop stops there: GNU's return from
+    ;; the outermost bc_frame) completes here; anything else -- a first opcode outside the
+    ;; fast loop's starter set, an opcode it declines, a frame it left pushed, a signal, a
+    ;; quit poll due -- continues in `wf_bytecode_execute_frame' from exactly that state
+    ;; (its resume entry: INITIAL-FRAME < 0 carries the fast loop's state, INITIAL-ARGS the
+    ;; root mark taken before the fast loop ran).  0 done (the value in ROOTS+24), 1 a
+    ;; signal is stashed, 2 not handled (nothing was run).
+    (defun wf_cb_lean_call (target roots argc env pre)
+      (if (< (record-slot-count target) 4) 2
+        (let* ((rp (+ (nl_word_payload target) 16))
+               (dw (ptr-read-u64 rp 0))
+               (code (ptr-read-u64 rp 8))
+               (sw (ptr-read-u64 rp 24)))
+          (if (if (/= (logand dw 3) 1) 1
+                (if (/= (logand sw 3) 1) 1
+                  (if (/= (logand code 7) 4) 1
+                    (if (> argc 2) 0
+                      (if (= argc 0) 1 (/= (logand (heap-read-u64 env 112) 4) 0))))))
+              2
+            (let* ((template (sar dw 2))
+                   (rest (if (= (logand template 128) 0) 0 1))
+                   (maxargs (/ template 256))
+                   (depth (sar sw 2))
+                   (slots (+ maxargs rest)))
+              (if (if (< template 0) 1
+                    (if (> maxargs 127) 1
+                      (if (< argc (logand template 127)) 1
+                        (if (> argc maxargs) 1
+                          (if (> slots depth) 1
+                            (if (> depth 131063) 1
+                              (/= (ptr-read-u64 (+ pre 40) 0) (+ depth 7))))))))
+                  2
+                (let* ((cb-n (ptr-read-u64 (- code 4) 8))
+                       (code-len (if (< cb-n 0)
+                                     (logand (ptr-read-u64 (- code 4) 0) 9223372036854775807)
+                                   cb-n)))
+                  (if (if (< code-len 1) 1 (> code-len 2147483647)) 2
+                    (let* ((constants (ptr-read-u64 rp 16))
+                           (code-data (ptr-read-u64 (- code 4) 24))
+                           (mem (+ pre 64))
+                           (foot (+ mem (* (+ depth 1) 8)))
+                           (k 0)
+                           ;; A physical byte load: `heap-read-u8' at a constant offset 0
+                           ;; lowers to an `nl_string_read64' call.
+                           (first-op (ptr-read-u8 code-data 0)))
+                      (seq
+                       (ptr-write-u64 pre 0 3) (ptr-write-u64 pre 8 3)
+                       (ptr-write-u64 pre 16 3) (ptr-write-u64 pre 24 3)
+                       (ptr-write-u64 foot 0 3) (ptr-write-u64 foot 8 3)
+                       (ptr-write-u64 foot 16 3) (ptr-write-u64 foot 24 code)
+                       (ptr-write-u64 foot 32 constants) (ptr-write-u64 foot 40 3)
+                       (while (< k argc)
+                         (seq (ptr-write-u64 mem (* k 8) (heap-read-u64 roots (+ 32 (* k 8))))
+                              (setq k (+ k 1))))
+                       (while (<= k depth)
+                         (seq (ptr-write-u64 mem (* k 8) 3) (setq k (+ k 1))))
+                       (if (= first-op 135)
+                           ;; Breturn first: TOP is the last parameter slot.
+                           (seq (ptr-write-u64 roots 24 (heap-read-u64 mem (* (- slots 1) 8))) 0)
+                         (let* ((mark (nl_root_mark env))
+                                ;; The starter set of `wf_bytecode_execute_frame' (keep in step).
+                                (state (if (= (if (< first-op 64)
+                                                  (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
+                                                (if (< first-op 128)
+                                                    (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
+                                                  (if (< first-op 192)
+                                                      (if (/= (logand 55169526005760894 (shl 1 (- first-op 128))) 0) 1 0)
+                                                    1))) 1)
+                                           (wf_bytecode_w_fast_run code-data code-len mem depth
+                                                                   (+ (nl_word_payload constants) 8)
+                                                                   (vector-len constants) 0 slots env pre)
+                                         slots))
+                                (pc (if (< state 0) code-len (sar state 17)))
+                                (sp (logand state 131071)))
+                           (if (if (< state 0) 0
+                                 (if (/= (sar (ptr-read-u64 pre 8) 2) mem) 0
+                                   (if (>= (sar (ptr-read-u64 pre 0) 2) 255) 0
+                                     (if (>= pc code-len) 0
+                                       (if (/= (heap-read-u8 code-data pc) 135) 0
+                                         (if (< sp 1) 0
+                                           (= (ptr-read-u64 foot 40) 3)))))))
+                               (seq (ptr-write-u64 roots 24 (heap-read-u64 mem (* (- sp 1) 8)))
+                                    (ptr-write-u64 pre 16 3)
+                                    (nl_root_release env mark)
+                                    0)
+                             (wf_bytecode_execute_frame code constants depth env 0 mark argc
+                                                        maxargs rest (- -2 state) (+ roots 32)
+                                                        (+ roots 24) 0 pre))))))))))))))
     (defun wf_maphash_w (args env)
       ;; GNU DOHASH_SAFE (fns.c): per trip read the current size and the
       ;; key_and_value / index vectors, skip an unused index, call.  maphx:
@@ -21863,14 +21966,14 @@ bytes are written into a fresh 8-byte buffer instead."
              (offset-list (alloc-bytes 32 8))
              (number-list (alloc-bytes 32 8)))
         (seq
-         (ptr-write-u64 buf 0 8245933071047814773)
-         (ptr-write-u64 buf 8 7310601557486364020)
-         (ptr-write-u64 buf 16 8101729874511618861)
-         (ptr-write-u64 buf 24 2334031327955021667)
-         (ptr-write-u64 buf 32 2334400046547629153)
-         (ptr-write-u64 buf 40 2675266157734684271)
-         (ptr-write-u64 buf 48 100)
-         (nl_alloc_str buf 49 fmt)
+         ;; vmfast2: GNU's message (bytecode.c: error ("Invalid byte opcode: op=%d,
+         ;; ptr=%"pD"d", op, pc - 1 - bytestr_data)); OFFSET is the opcode's own offset.
+         (ptr-write-u64 buf 0 2334106421097295433)
+         (ptr-write-u64 buf 8 7165349192078227810)
+         (ptr-write-u64 buf 16 4427160617914557551)
+         (ptr-write-u64 buf 24 4427729408583558181)
+         (ptr-write-u64 buf 32 25637)
+         (nl_alloc_str buf 34 fmt)
          (wf_write_nil nil-slot)
          (wf_cons_int offset nil-slot offset-list)
          (wf_cons_int opcode offset-list number-list)
@@ -25453,6 +25556,10 @@ bytes are written into a fresh 8-byte buffer instead."
                  (if (< raw 93)
                      (if (< raw 83)
                          (if (< raw 6)
+                             ;; vmfast2: opcode 0 is no stack-ref in GNU (bytecode.c has no
+                             ;; Bstack_ref case; it is an invalid opcode): its own table leaf
+                             ;; declines it, so stack-ref 1..5 pay no extra test.
+                             (if (< raw 1) (setq go 0)
                              (seq
                               (if (or (>= sp depth) (<= sp raw))
                                   (setq go 0)
@@ -25463,7 +25570,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                                                 (- sp raw
                                                                    1)
                                                                 8)))
-                                 (setq sp (+ sp 1)) (setq pc (+ pc 1)))))
+                                 (setq sp (+ sp 1)) (setq pc (+ pc 1))))))
                            (if (< raw 32)
                                (if (< raw 8)
                                    (if (>= sp depth) (setq go 0)
@@ -27596,7 +27703,7 @@ bytes are written into a fresh 8-byte buffer instead."
                             (nl_bi_strptr code))))
              (cdata (+ (nl_word_payload constants) 8))
              (nconst (vector-len constants))
-             (mark (nl_root_mark env))
+             (mark (if (< initial-frame 0) initial-args (nl_root_mark env)))
              (prez (if (= pre 0) 0 (if (= (ptr-read-u64 (+ pre 40) 0) (+ depth 7)) pre 0)))
              (cellf (if (or (< depth 0) (> depth 131063)) 0
                       (if (= prez 0) (nl_root_frame env 4) prez)))
@@ -27621,7 +27728,7 @@ bytes are written into a fresh 8-byte buffer instead."
          ;; constants alive and lets a frame be re-entered from them.
          (ptr-write-u64 foot 24 code)
          (ptr-write-u64 foot 32 constants)
-         (if (= prez 0) 0
+         (if (if (= prez 0) 1 (< initial-frame 0)) 0
            (seq (ptr-write-u64 cellf 0 3) (ptr-write-u64 cellf 8 3)
                 (ptr-write-u64 cellf 16 3) (ptr-write-u64 cellf 24 3)
                 (ptr-write-u64 foot 0 3) (ptr-write-u64 foot 8 3)
@@ -27639,7 +27746,7 @@ bytes are written into a fresh 8-byte buffer instead."
          ;; GNU Emacs pushes all fixed parameter slots before entering the
          ;; interpreter, filling omitted optionals with nil.  For &rest, the
          ;; final slot receives the arguments after the fixed slots.
-         (while (if (= done 0) (< arg-index initial-slots) 0)
+         (while (if (= done 0) (if (< initial-frame 0) 0 (< arg-index initial-slots)) 0)
            (let* ((dst (+ mem (* arg-index 8))))
              (seq
               (if (and (= initial-rest 1) (= arg-index initial-maxargs))
@@ -27684,6 +27791,24 @@ bytes are written into a fresh 8-byte buffer instead."
                         (setq bindings (sar r 1))
                         (ptr-write-u64 resw 0 3)
                         (if (= (logand r 1) 1) (setq done 4) 0)))))
+           0)
+         ;; vmfast2: lean frame resume entry (`wf_cb_lean_call').  The PRE frame was set up
+         ;; and the arguments stored by the caller, which may have run the fast loop on it:
+         ;; INITIAL-FRAME is -2 - the fast loop's state (-1: a call it made signalled) and
+         ;; INITIAL-ARGS the root mark taken before it ran.  Take the state over exactly as
+         ;; after the fast loop call in the loop below.
+         (if (if (= done 0) (< initial-frame 0) 0)
+             (let* ((rs (- -2 initial-frame)))
+               (seq
+                (if (= (heap-read-u64 curfp 16) 7)
+                    (seq (setq reload (sar (heap-read-u64 curfp 8) 2))
+                         (ptr-write-u64 curfp 16 3))
+                  0)
+                (if (< rs 0) (setq done 4)
+                  (seq (setq pc (sar rs 17)) (setq sp (logand rs 131071))
+                       (if (>= (sar (heap-read-u64 curfp 0) 2) 255)
+                           (wf_bytecode_back_poll curfp)
+                         0)))))
            0)
          ;; An error can stop the instruction loop while cleanup forms are
          ;; still pending.  If one of those forms throws, it replaces that
@@ -27872,10 +27997,11 @@ bytes are written into a fresh 8-byte buffer instead."
               ;; stack-ref, constant, dup, goto-if-nil, return, discard, goto.
               (if (= base 0)
                   (let* ((index (- sp operand 1)))
-                    (if (if (< index 0) 1
+                    ;; vmfast2: raw 0 is an invalid opcode in GNU (no Bstack_ref case).
+                    (if (if (= raw 0) 1 (if (< index 0) 1
                           (if (< index depth)
                               (if (< sp depth) 0 1)
-                            1))
+                            1)))
                         (seq (setq bad-op raw) (setq done 2))
                       (seq (ptr-write-u64 (+ mem (* sp 8)) 0
                                           (heap-read-u64 (+ mem (* index 8)) 0))
@@ -28409,7 +28535,15 @@ bytes are written into a fresh 8-byte buffer instead."
              (if (= done 4)
                  (seq (nl_root_release env mark) 1)
                (if (= unwind-rc 0)
-                   (seq (wf_bytecode_error env bad-op bad-offset (if (= out 0) (alloc-bytes 32 8) out))
+                   (seq (if (= out 0)
+                            ;; vmfast2: no error view from the caller (a funcall or callback
+                            ;; entry): signal here, as the nested-frame exit above does;
+                            ;; otherwise the invalid-opcode error was dropped.
+                            (let* ((eo (alloc-bytes 32 8)))
+                              (seq (wf_bytecode_error env bad-op bad-offset eo)
+                                   (bf_error_w eo 0)
+                                   (ptr-write-u64 268436360 0 0)))
+                          (wf_bytecode_error env bad-op bad-offset out))
                        (nl_root_release env mark) 1)
                  (seq (nl_root_release env mark) 1))))))))))
   )

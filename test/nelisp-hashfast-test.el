@@ -97,6 +97,10 @@
 ;; `wf_cb_call_words' (the Bcall frame entry) with the argument words in the
 ;; rooted frame, not through a consed argument list.
 (defvar hf--pres nil "PRE arguments `wf_bytecode_w_function' received, newest first.")
+;; vmfast2: with a reserved cell `wf_cb_call_words' first offers the callback to the lean
+;; frame (`wf_cb_lean_call'); 2 (nothing ran) falls through to `wf_bytecode_w_function'.
+(defvar hf--lean-pres nil "PRE arguments `wf_cb_lean_call' received, newest first.")
+(defvar hf--lean-status 2 "What the stubbed `wf_cb_lean_call' answers.")
 (defun hf--cb-run (kind-value target-after bytecode-status &optional name-check pre-word)
   "Walk a 3-entry table with `wf_maphash_w'.  Answers (RESULT DIRECT OLD)."
   (hf--install '(wf_maphash_w wf_cb_call_words))
@@ -124,6 +128,13 @@
                (lambda (_env _fw) (if (and target-after (> calls 0)) target-after 100)))
               ((symbol-function 'nl_n4_push_words) (lambda (&rest _) 0))
               ((symbol-function 'nl_n4_finish_w) (lambda (w &rest _) w))
+              ((symbol-function 'wf_cb_lean_call)
+               (lambda (func r argc _env pre)
+                 (push pre hf--lean-pres)
+                 (should (= func 100))
+                 (should (= argc 2))
+                 (when (= hf--lean-status 0) (cl-incf calls) (puthash (+ r 24) 555 roots))
+                 hf--lean-status))
               ((symbol-function 'wf_bytecode_w_function)
                (lambda (func mem first argc _env outw out pre)
                  (cl-incf calls)
@@ -141,7 +152,7 @@
                (lambda (a b _) (cons a (if (equal b 3) nil b))))
               ((symbol-function 'nl_apply_function_w)
                (lambda (_ args _env _pad) (push args old) 3)))
-      (setq hf--pres nil)
+      (setq hf--pres nil hf--lean-pres nil)
       (puthash 1072 (or pre-word 3) roots)
       (list (wf_maphash_w 'args 99) (nreverse direct) (nreverse old)))))
 
@@ -308,12 +319,24 @@
 (ert-deftest hf-maphash-bytecode-passes-prereserved-cell ()
   (let ((r (hf--cb-run 2 nil 0 nil (+ (* 5000 4) 1))))
     (should (= (car r) 3))
+    (should (equal hf--lean-pres '(5000 5000 5000)))
     (should (equal hf--pres '(5000 5000 5000)))))
 
 (ert-deftest hf-maphash-bytecode-without-cell-passes-zero ()
   (let ((r (hf--cb-run 2 nil 0)))
     (should (= (car r) 3))
+    (should (null hf--lean-pres))
     (should (equal hf--pres '(0 0 0)))))
+
+;; vmfast2: a callback the lean frame completes never reaches `wf_bytecode_w_function'.
+(ert-deftest hf-maphash-bytecode-lean-frame-completes ()
+  (let* ((hf--lean-status 0)
+         (r (hf--cb-run 2 nil 0 nil (+ (* 5000 4) 1))))
+    (should (= (car r) 3))
+    (should (equal hf--lean-pres '(5000 5000 5000)))
+    (should (null hf--pres))
+    (should (null (cadr r)))
+    (should (null (nth 2 r)))))
 
 (defun hf--fake-table (kv markers cap)
   "Fake memory for a table WORD 4098: cons at 4096 -> meta vector word 8198.

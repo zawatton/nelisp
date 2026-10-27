@@ -1,0 +1,39 @@
+bcp (t t t t)
+mapc-id ((1 2 3 4 5 6 7 8 9 10) [1 2 3] "ab" nil)
+mapcar-sq ((1 4 9 16 25 36 49 64 81 100) (16 25) (9 16))
+mapcar-loop (0 0 10 4950 499500)
+mapcar-calls (1 4 9 16)
+mapcar-cons ((1 (1 . 1) "aa") (a (a . a) "aa") ("s" ("s" . "s") "aa"))
+mapcar-err (error "boom 3")
+mapcar-err-type (wrong-type-argument number-or-marker-p a)
+throw-walk (thrown 4)
+uwp-walk ((error "uwp 2") (2 1))
+cc-walk (1 (caught (2)) 3 (caught (4)))
+bind-walk ((a b c) outer)
+opt-walk (((1 nil) (2 nil)) ((x nil)))
+rest-walk ((1 nil) (2 nil))
+catch-walk (1 2 -3 -4)
+recur (0 7 63)
+deep (bottom bottom)
+closure ((13 12 11) (2 1 0))
+nested-throw (2 3)
+self-mod 3
+maphash-two 308
+maphash-obj (0 11 22 33 44 55 66 77)
+maphash-sym 308
+maphash-err (wrong-type-argument listp 3)
+dyn-cb (((1 outer) (2 outer)) (0 inner) ((0 p) (0 q)))
+wrong-args-2 (wrong-number-of-arguments (2 . 2) 1)
+wrong-args-0 (wrong-number-of-arguments (0 . 0) 1)
+bad0 (error "Invalid byte opcode: op=0, ptr=0")
+bad52 (error "Invalid byte opcode: op=52, ptr=2")
+bad-mid (error "Invalid byte opcode: op=172, ptr=4")
+bad-direct ((error "Invalid byte opcode: op=0, ptr=0") (error "Invalid byte opcode: op=172, ptr=4"))
+ret-only ((1 2 3) 308)
+ret2-hash (0 11 22 33 44 55 66 77)
+ret2-direct-hash 0
+funcall-loop (9801 1176 6)
+gc-walk (400 (50 [50 50 50] "50") (400 [400 400 400] "400") 80200)
+mapconcat "s1-s2"
+after outer
+VMFAST2-PARITY DONE

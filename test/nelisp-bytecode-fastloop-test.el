@@ -16,10 +16,15 @@
   (dolist (raw '(38 39 135 179 184)) (should-not (fcl--admitted raw))))
 
 (ert-deftest fcl-probe-existing-leaf ()
-  (let ((r (sst--run [0 138] 1 4)))
-    (should (= (plist-get r :state) (+ (ash 1 17) 2))))
-  (let ((r (sst--run [0 138] 4 4)))
+  (let ((r (sst--run [1 138] 2 4)))
+    (should (= (plist-get r :state) (+ (ash 1 17) 3))))
+  (let ((r (sst--run [1 138] 4 4)))
     (should (= (plist-get r :state) 4))
+    (should-not (plist-get r :stack-writes)))
+  ;; vmfast2: opcode 0 is an invalid opcode in GNU (bytecode.c has no Bstack_ref
+  ;; case), so the fast loop declines it untouched for the outer loop to signal.
+  (let ((r (sst--run [0 138] 1 4)))
+    (should (= (plist-get r :state) 1))
     (should-not (plist-get r :stack-writes))))
 
 (defun fcl--run (code stack &optional constants outer cells depth)

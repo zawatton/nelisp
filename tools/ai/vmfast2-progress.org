@@ -1,0 +1,67 @@
+#+TITLE: vmfast2 -- byte-code VM: one-time byte-code verification per frame, VM state in registers, allocation-free bc->bc frames
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD b098c248d (v30, integ-1047), no overlay (patch against git HEAD). Baseline v30 = ../resume-4943-20261024/target/integ-1047-build/dynamic/nelisp-dynamic. Build budget 2 (Linux A, Win64 B). Timing and counters on CPU 13 only; callgrind through heavy-run.sh. Binary under test: ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes: regalloc owns lisp/nelisp-aot-compiler.el and lisp/nelisp-asm-x86_64.el (not edited here; codegen needs are recorded in target/vmfast2/REPORT.txt), hashtab, textprop.
+
+* S1 Cause with evidence
+** S1.1 v30 per-trip Ir by function and per-address annotation of wf_bytecode_w_fast_run / wf_bytecode_execute_frame on reg-sum-bc, r7-funcall-bc, r7-mapc-bc, lists-memq-bc (callgrind two-N)
+cmd: for r in regsum funcall mapc memq; do test -s target/vmfast2/logs/v30-$r.instr || exit 1; done
+** S1.2 Per-opcode and per-bc-call cost split (dispatch, operand bounds checks, tag checks, stack slot traffic, let spill traffic, frame setup/teardown) for the four rows on v30
+cmd: grep -q "^SPLIT-OK" target/vmfast2/logs/s1-split.txt
+** S1.3 GNU 31.1 reference: exec_byte_code / funcall_lambda Ir per trip on the same four rows
+cmd: grep -q "^GNU-OK" target/vmfast2/logs/s1-gnu.txt
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 One-time byte-code verification cached per code object; verified code runs the loop without per-op stack/pc/constant bounds checks; unverified code keeps today's checked path
+#+NOTE: Red: not implemented. No place to cache a verified bit per code object (kind-17 record header holds kind, flag bits 6/7 and the slot count; slots, the code string (GNU Lisp_String layout) and the constants vector are Lisp-visible); a side table keyed by string header/data needs sweep/compaction invalidation and trusts aset-mutated code; the bc->bc call/return arms switch code objects, so the bit is needed per call. Potential: bounds checks are 74/386 Ir per reg-sum-bc trip, 96/691 on lists-memq-bc (logs/s1-split.txt). REPORT.txt section 3.
+cmd: grep -q "vmfast2: verified" scripts/nelisp-standalone-build.el
+** S2.2 Cheaper bc->bc frame setup (in-loop call arm and callback execute_frame entry) without allocation
+#+NOTE: wf_cb_lean_call + the resume entry of wf_bytecode_execute_frame (byte-code callbacks of mapc/mapcar/maphash in the walker-reserved frames). The in-loop Bcall arm is unchanged (already allocation-free; its excess is let-temporary spills, codegen).
+cmd: grep -q "vmfast2: lean frame" scripts/nelisp-standalone-build.el
+** S2.3 VM parity corpus (all opcodes, non-local exits, deep recursion, malformed byte code rejection, callbacks through mapc) prints identically on GNU 31.1 and the candidate
+#+NOTE: Build A prints the old "unsupported byte-code opcode %d at byte offset %d" text on the four malformed cases (every other line equal); the final source carries GNU's "Invalid byte opcode: op=%d, ptr=%d", verified on build B under wine (S2.6). v30 itself fails this corpus (op 0 runs as dup; the invalid-opcode error is dropped on funcall/callback entries).
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/parity.sh ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic}
+** S2.4 Negative control: the parity runner reports a divergence on a deliberately wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/parity.sh ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.5 vmfast's 34-case VM corpus still equals GNU 31.1
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast/parity.sh ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic}
+** S2.6 The final source as built B (Win64, under wine): the vmfast2 corpus, the vmfast corpus and the GC stress equal GNU 31.1
+#+TIMEOUT: 600
+cmd: sh -c 'W=${VMFAST2_WIN_BIN:-$PWD/target/vmfast2/win/build/nelisp.exe}; test -f "$W" || exit 1; export WINEPREFIX=$PWD/target/vmfast2/win/wineprefix WINEDEBUG=-all; cd tools/ai/vmfast2 && (ulimit -v 8388608; timeout 280 wine "$W" --load run.el -- < /dev/null 2>/dev/null) | tr -d "\r" | cmp -s - expected && (ulimit -v 8388608; timeout 280 wine "$W" --load gcstress.el -- < /dev/null 2>/dev/null) | tr -d "\r" | grep -q "^gcstress (25 " && cd ../vmfast && (ulimit -v 8388608; timeout 280 wine "$W" --load run.el -- < /dev/null 2>/dev/null) | tr -d "\r" | cmp -s - expected'
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated Linux dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/vmfast2-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/vmfast2-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; GC stress equal to v30 and GNU; gnu-speed-win-check passes
+cmd: grep -q "^FIXTURES-OK" target/vmfast2/logs/fixtures.log
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast2/gcstress.sh ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${VMFAST2_BIN:-target/vmfast2-build/dynamic/nelisp-dynamic})
+** S3.3 Win64 build of the same units under wine: closurevm, switch and features equal GNU
+#+NOTE: Build B = the final source (A + opcode-0 table leaf + GNU message + physical first-op load), 867 s; closurevm 24 / switch / features PASS under wine (target/vmfast2/win/win.log).
+#+TIMEOUT: 600
+cmd: sh -c 'W=${VMFAST2_WIN_BIN:-$PWD/target/vmfast2/win/build/nelisp.exe}; test -f "$W" && WINEPREFIX=$PWD/target/vmfast2/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 Per-opcode Ir and per-bc-call Ir before/after with the cost split recorded
+#+NOTE: Ir per trip v30 -> A: r7-mapc-bc 60967 -> 33003 (952.6 -> 515.7 per element, -45.9%; GNU 288), reg-sum-bc 386 -> 394, r7-funcall-bc 714 -> 724, lists-memq-bc 691 -> 693 (A only: opcode-0 test in the stack-ref leaf, removed in the final source).
+cmd: grep -q "^S4IR-OK" target/vmfast2/logs/s4-ir.txt
+** S4.2 reg-sum-bc at least 25 percent less time than v30 (paired, CPU 13)
+#+NOTE: A: 1.003 (2/7). Red: per-op bounds checks stay (S2.1); the rest is codegen (spills, memory-resident go/depth/length).
+cmd: python3 tools/ai/vmfast2/s4time.py target/vmfast2/timing/paired.txt reg-sum-bc
+** S4.3 r7-funcall-bc at least 25 percent less time than v30 (paired, CPU 13)
+#+NOTE: A: 1.038 (0/7), +10 Ir/trip from A's opcode-0 test (removed in the final source). Red: call arm 314 + return arm 93 Ir per call are mostly let-temporary spills in a region with calls (codegen).
+cmd: python3 tools/ai/vmfast2/s4time.py target/vmfast2/timing/paired.txt r7-funcall-bc
+** S4.4 r7-mapc-bc at least 25 percent less time than v30 (paired, CPU 13)
+#+NOTE: A: 0.553 (7/7; v30 5236.9 -> 2893.5 ns/trip, GNU 1019.3). Also r7-mapcar-bc 0.778 (7/7), r7-maphash-bc 0.674 (7/7).
+cmd: python3 tools/ai/vmfast2/s4time.py target/vmfast2/timing/paired.txt r7-mapc-bc
+** S4.5 lists-memq-bc at least 25 percent less time than v30 (paired, CPU 13)
+#+NOTE: A: 0.988 (6/7). Red: see S4.2.
+cmd: python3 tools/ai/vmfast2/s4time.py target/vmfast2/timing/paired.txt lists-memq-bc
+** S4.6 Matrix (integ-1047 specs) plus r3-mix: no row slower than 1.03x v30 beyond layout noise (equal callgrind Ir)
+#+NOTE: A: geomean 0.966 over 43 rows, 28 faster; over 1.03x on both runs: r3-dyn 1.066/1.061, s6-mkvec8 1.044/1.063, s6-vec4 1.037/1.033, s6-mkstr 1.036/1.032, r7-puthash-existing 1.056/1.031, r7-funcall-bc 1.031/1.026; their Ir differs from v30 only in fast_run (top-40 functions) by +4..+10 per trip (A's opcode-0 test, 0.3-1.4%), so the time excess is layout; red as defined. r3-mix 1.002 (paired).
+cmd: grep -q "^MATRIX-OK" target/vmfast2/timing/matrix.txt
