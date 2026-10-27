@@ -1,0 +1,9 @@
+# S1.2 v25: Ir of (make-string 90000 e-acute; length) minus Ir of the make-string alone, by function (target/body2/p/len2*.cg)
+total 117401760 - 100627994 = 16773766
+    13,879,690 nl_word_data
+     5,220,087 nl_bi_strptr
+     2,160,328 bf_length_checked_w
+        30,012 wf_bytecode_w_fast_run
+# bf_length_checked_w gets (wf_arg_ptr args 0) = nl_cons_car_ptr, a 32-byte view (low bits 0), so nl_str_charlen_c skips its (logand p 7)=4 O(1) test and nl_str_charlen scans every byte through m5_byte_at (nl_bi_strptr, nl_word_data).
+# the char count is already stored at header+0 by nl_string_new and m5_finish_string_w; the view keeps the header address in its +8 word (nl_string_capacity).
+# GNU: lisp.h:1675 SCHARS reads the string header; alloc.c:2241 make_multibyte_string / :2273 make_specified_string store the char count at creation.

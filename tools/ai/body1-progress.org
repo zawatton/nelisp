@@ -1,0 +1,56 @@
+#+TITLE: body1 -- fixnum-first arithmetic dispatch and constant (not runtime) symbol interning (attrib24 buckets d and g)
+#+NOTE: Created 2026-11-05 before the build. Seed = coordinator HEAD 54f554ede (v25, integ-1042); the patch is against git HEAD. Binaries come from $BODY1_BIN (default target/body1-build/dynamic/nelisp-dynamic); baseline v25 is the resume tree's integ-1042-build.
+
+* S1 Cause with evidence
+** S1.1 Hot-path quoted symbols are interned at run time (nl_closure_shape_p, nl_sf_lambda_fill, wf_bytecode_get_word, wf_bytecode_condition_matches, bf_signal_w, bf_wrong_type_listp call nl_alloc_symbol per call; each call hashes, probes and byte-compares)
+#+NOTE: target/body1/s1-evidence.txt extracted from attrib24 v24 callgrind edges; GNU uses static Qxxx (DEFSYM) symbols interned once.
+evidence: target/body1/s1-evidence.txt sha256=062bea5fe60ff480a389d1eca50482bc2cecbf85aa3a2f63e82cef765c7efd3f
+cmd: grep -q "340.0 nl_closure_shape_p -> nl_alloc_symbol" target/body1/s1-evidence.txt && grep -q "823.0 wf_bytecode_get_word -> nl_alloc_symbol" target/body1/s1-evidence.txt
+** S1.2 + * < etc. walk the argument list three times (marker scan, non-number scan, float scan) before folding, even for fixnums (mapcar-lambda-i: 5100+4740+3720 Ir per trip beside the 3360 fold)
+evidence: target/body1/s1-evidence.txt sha256=062bea5fe60ff480a389d1eca50482bc2cecbf85aa3a2f63e82cef765c7efd3f
+cmd: grep -q "wf_first_non_number_or_bignum" target/body1/s1-evidence.txt && grep -q "wf_numeric_has_marker" target/body1/s1-evidence.txt
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 Source: closure-shape name tests are allocation-free symbol-name-eq; nl_alloc_symbol is the front-cached entry with unintern invalidation; fixnum-first guard on + - * = < > <= >=; product skips the division round trip for small factors
+cmd: ! grep -q "symbol-eq h 'closure" scripts/nelisp-standalone-build.el && grep -q "defun wf_fixnum_args_p" scripts/nelisp-standalone-build.el && grep -q "defun nl_symcache_forget" lisp/nelisp-cc-nlstr-direct-ops.el && grep -q "defun nl_alloc_symbol_full" lisp/nelisp-cc-nlstr-direct-ops.el
+** S2.2 GNU-parity corpus (83 forms, the last two exercising unintern/intern identity: overflow to bignum at both ends, float and marker mixes, wrong-type payloads, chains, apply/funcall/mapcar paths): the new binary prints exactly GNU 31.1's output
+#+REQUIRES: BODY1_BIN
+evidence: target/body1/parity.gnu.txt sha256=c91b1e1cd8ce17312fdd3f3056213c9b04dbd843573c681aa3f2dea96d1ee32e
+cmd: sh target/body1/check-parity.sh "$BODY1_BIN" target/body1/parity.gnu.txt
+** S2.3 Negative control: the comparator fails against a corrupted expected file (it can fail), and v25 and GNU already agree so the corpus is a regression guard rather than a fix check
+#+REQUIRES: BODY1_BIN
+cmd: ! sh target/body1/check-parity.sh "$BODY1_BIN" target/body1/parity.corrupt.txt
+** S2.4 Unintern/intern identity: a re-interned name is a new symbol after the front cache served the old one (corpus form 82 answers GNU's (t nil t t))
+#+REQUIRES: BODY1_BIN
+cmd: sh target/body1/check-parity.sh "$BODY1_BIN" target/body1/parity.gnu.txt && grep -q "^(t nil t t)$" target/body1/parity.gnu.txt
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/body1-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/body1-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc, unchanged), buffer 21/21
+evidence: target/body1/fixtures/report.json sha256=dc7b71db4310efeddd9a461b5e175a923c12b0dde6b9336bdb26b50d88d132bf
+cmd: python3 -c "import json,sys;d=json.load(open('target/body1/fixtures/report.json'));c=d['checks'];sys.exit(not(d['status']=='EXPECTED_BASELINE_RED_REMAINS' and c['weak24']['passed'] and c['gnu56']['passed'] and c['buffer21']['passed'] and c['afrt25']['expected_baseline_red']))"
+** S3.3 gnu-speed-win-check passes on the new Linux binary (closurevm 24, switch corpus, features) and on the Win64 build under wine
+#+REQUIRES: BODY1_BIN
+evidence: target/body1/wincheck-linux.log sha256=6b5564f8ea83bb2c798da7a8bd5b1e7c96bbf905f6ddf4a583ebebc5258ca20f
+evidence: target/body1/win/win.log sha256=529d2b8b5585604e96ba24e0154d0732cfed798c6fa19f804abfc2264a163a7c
+cmd: grep -q "closurevm: PASS (24)" target/body1/wincheck-linux.log && grep -q "switch corpus: PASS" target/body1/wincheck-linux.log && grep -q "features: PASS" target/body1/wincheck-linux.log && grep -q "closurevm: CLOSUREVM COMPLETE checked=24" target/body1/win/win.log && grep -q "switch corpus rc=0 EQ-GNU" target/body1/win/win.log && grep -q "features rc=0 EQ-GNU" target/body1/win/win.log
+** S3.4 End to end: the 15 attrib24 row drivers return the same result on the new binary as on GNU 31.1
+#+REQUIRES: BODY1_BIN
+cmd: sh target/body1/rows15.sh "$BODY1_BIN"
+
+* S4 Paired timing and instruction counts
+** S4.1 memq-i: no nl_alloc_symbol under nl_closure_shape_p and no nl_intern_probe under nl_alloc_symbol on the new binary (250714 and 254041 calls per 250409 trips on v25)
+evidence: target/body1/edges.txt sha256=cb8251d50031a80e2879dc728949dbc3c7d8c4f2dcd08a27ed2fba5c2b7c9871
+cmd: awk '/^== lists-memq-i v25/{f=1;next} /^==/{f=0} f' target/body1/edges.txt | grep -q "nl_closure_shape_p -> nl_alloc_symbol" && ! awk '/^== lists-memq-i new/{f=1;next} /^==/{f=0} f' target/body1/edges.txt | grep -q "nl_closure_shape_p\|nl_alloc_symbol -> nl_intern_probe"
+** S4.2 cc-signal-bc: no nl_intern_probe under nl_alloc_symbol (the hash, probe and byte compare are gone)
+cmd: awk '/^== control-cc-signal-bc v25/{f=1;next} /^==/{f=0} f' target/body1/edges.txt | grep -q "nl_alloc_symbol -> nl_intern_probe" && ! awk '/^== control-cc-signal-bc new/{f=1;next} /^==/{f=0} f' target/body1/edges.txt | grep -q "nl_alloc_symbol -> nl_intern_probe"
+** S4.3 KNOWN RED: cc-signal-bc has no nl_alloc_symbol call from wf_bytecode_get_word / wf_bytecode_condition_matches (they still call the front-cached nl_alloc_symbol once per signal; removing the call needs a constant symbol word, which the DSL cannot hold without an intern-region layout change)
+cmd: ! awk '/^== control-cc-signal-bc new/{f=1;next} /^==/{f=0} f' target/body1/edges.txt | grep -q "wf_bytecode_get_word -> nl_alloc_symbol\|wf_bytecode_condition_matches -> nl_alloc_symbol"
+** S4.4 Callgrind Ir per trip lower than v25 on mapcar-lambda-i, memq-i and cc-signal-bc; fixnum * per call 4914 -> 4025 Ir (+ and < are already inline fx ops: unchanged)
+evidence: target/body1/ir.txt sha256=3d89bd6b092f0f5c06b762ecf3762f6d1a9ca9f9b1d2b97fa0866c6db67be1c2
+cmd: python3 -c "import re,sys;t=open('target/body1/ir.txt').read();r=[float(m) for m in re.findall(r'IR (?:lists-memq-i|lists-mapcar-lambda-i|control-cc-signal-bc) .*ratio=([0-9.]+)',t)];sys.exit(not(len(r)==3 and max(r)<0.95))"
+** S4.5 Paired timing on CPU 9 (5 reps, two-N difference): the new binary is not slower than v25 on reg-sum-bc and r3-mix, faster on the three attrib rows
+evidence: target/body1/timing.txt sha256=965aaef63a782f690e4765c97c988733d2626980d8e56ae66047e1a5873fc76c
+cmd: python3 -c "import re,sys;t=open('target/body1/timing.txt').read();b=t.split('== ')[1:];r={x.split()[0]:float(re.search(r'^new .* ([0-9.]+) +\d/5',x,re.M)[1]) for x in b};sys.exit(not(len(r)==5 and r['reg-sum-bc']<=1.01 and r['r3-mix']<=1.01 and r['lists-memq-i']<0.97 and r['lists-mapcar-lambda-i']<0.97 and r['control-cc-signal-bc']<0.97))"

@@ -1,0 +1,5 @@
+17:03:59 build win rc=0 1091s exe=56856579 cold=38779544
+17:07:13 version: NeLisp v1.5.0-body2-win (x86_64-windows, static) rc=0 
+17:07:14 closurevm: CLOSUREVM COMPLETE checked=24 rc=0 
+17:07:14 switch corpus rc=0 EQ-GNU (60 lines)
+17:07:14 features rc=0 EQ-GNU (10 lines)

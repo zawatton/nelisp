@@ -1,0 +1,62 @@
+#+TITLE: body2 -- printer bulk output, O(1) multibyte string length, expand-file-name through the native compiler (attrib24 bucket d)
+#+NOTE: Created 2026-11-05 at the start of the lane; the printer/length source edits in scripts/nelisp-standalone-build.el were drafted a few minutes before this file was written (the red controls below were recorded against v25 before any build). Seed = coordinator HEAD 54f554ede (v25, integ-1042), no overlay; the patch is against git HEAD. Baseline binary v25 = ../resume-4943-20261024/target/integ-1042-build/dynamic/nelisp-dynamic (baselines in tools/ai/body2-checks/baseline-v25.txt).
+
+* S1 Cause with evidence
+** S1.1 prin1-strs-esc: 36.8M of 54.2M Ir per trip are nl_word_data + nl_bi_strptr (m5_byte_at re-resolves the string pointer for each byte of three passes) and the push is one byte per call; GNU print.c copies runs (printchar/strout memcpy)
+#+NOTE: tools/ai/body2-logs/S1-prin1-v25.txt (attrib24 callgrind on v25-equivalent code; GNU print.c:306,380,2376 cited)
+evidence: tools/ai/body2-logs/S1-prin1-v25.txt sha256=f9baaecb015906c97590a6355cdd47c3f7b51c03d0a398ef6831272b4891738c
+cmd: grep -q "nl_word_data" tools/ai/body2-logs/S1-prin1-v25.txt && grep -q "print.c:380 strout" tools/ai/body2-logs/S1-prin1-v25.txt
+** S1.2 first length of a fresh multibyte string: the argument is a cloned view, so nl_str_charlen skips its header O(1) test and scans (16.8M Ir for 90k chars, our callgrind); the count is already in the header
+#+NOTE: tools/ai/body2-logs/S1-length-v25.txt (callgrind difference with and without the length call)
+evidence: tools/ai/body2-logs/S1-length-v25.txt sha256=ca52ca6286eb8b97005925b0b71b4b5d5742d3937dcbfaa6f7ce0ca950694feb
+cmd: grep -q "13,879,690 nl_word_data" tools/ai/body2-logs/S1-length-v25.txt
+** S1.3 expand-file-name and its helpers are byte code on v25 (adopted by the prelude byte-code pass); all 8 names harvest as fxir (ok), so they can follow nc4's regexp glue into native rows
+evidence: tools/ai/body2-logs/S1-efn-v25.txt sha256=37b730381fe1c31ef00bc0d88698e9513cc1a47dc34202e1000c7656f6b6598b
+cmd: grep -q "^expand-file-name: bytecode=t" tools/ai/body2-logs/S1-efn-v25.txt && grep -q "all 8 names compile to fxir" tools/ai/body2-logs/S1-efn-v25.txt
+
+* S2 Fix with red/green checks and GNU-parity corpora
+#+NOTE: every check is red on v25 (tools/ai/body2-logs/neg-v25.txt) except the three parity corpora that already pass there; their negative control is the selftest row.
+** S2.1 prin1-strs-esc Ir per trip at most 50% of v25 (54154916)
+#+TIMEOUT: 300
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} ir-prin1
+** S2.2 print parity corpus (996 rows: run boundaries, quotes and backslashes, multibyte, unibyte, byte8, print-escape-*, print-length/level/circle/quoted/gensym/integers-as-characters, float-output-format) equals GNU 31.1; the 13 rows v25 already differs on keep their v25 text
+#+TIMEOUT: 300
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} print-parity
+** S2.3 first length of a fresh 90k and 180k multibyte string is O(1) (callgrind difference: D(90k) < 1000000, growth < 100000)
+#+TIMEOUT: 600
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} len-o1
+** S2.4 length corpus over 56 string constructors and mutations (concat, substring, format, buffer-substring, print output, aset of other widths ...) equals GNU
+#+TIMEOUT: 300
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} len-parity
+** S2.5 expand-file-name Ir per trip below v25 (419278)
+#+TIMEOUT: 300
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} ir-efn
+** S2.6 expand-file-name parity corpus (1124 rows: ~, .., ///, trailing /, default-directory variants, relative bases, non-ASCII, nil and non-string argument) equals GNU
+#+TIMEOUT: 300
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} efn-parity
+** S2.7 negative controls: the Ir and O(1) checks and the efn corpus are red on v25, the parity harness rejects a corrupted frozen row
+evidence: tools/ai/body2-logs/neg-v25.txt sha256=1a3692741191ae3af89bebe9e1f248792b824cbc1b74d6cff5e74ab3b8b3c409
+cmd: sh tools/ai/body2-check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)} selftest
+
+* S3 One integrated build passing fixtures
+** S3.1 integrated dynamic build rc=0 with prelink F1 <= 384 and root evidence <= 98304; Win64 cross-build rc=0
+evidence: tools/ai/body2-logs/S3-build.txt sha256=e5713a153d0be7c23b479cb19a0c39f0d17bc197340b75175c84cdaa18c85aa9
+cmd: grep -q "^BUILD rc=0" tools/ai/body2-logs/S3-build.txt && awk '/^F1/{exit !($3=="records" && $4<=384)}' tools/ai/body2-logs/S3-build.txt && sh -c 'grep -o "nodes=[0-9]*" tools/ai/body2-logs/S3-build.txt | awk -F= "\$2>98304{f=1} END{exit f}"'
+evidence: tools/ai/body2-logs/S3-win.log sha256=1064ba1ad9e7cc5394a17f760fb660cd6256dbf0d077853acd0e2c1a06febd33
+cmd: grep -q "build win rc=0" tools/ai/body2-logs/S3-win.log
+** S3.2 fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: tools/ai/body2-logs/S3-fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+cmd: grep -q "weak 24/24 PASS" tools/ai/body2-logs/S3-fixtures.log && grep -q "GNU 56/56 PASS" tools/ai/body2-logs/S3-fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" tools/ai/body2-logs/S3-fixtures.log && grep -q "buffer 21/21 PASS" tools/ai/body2-logs/S3-fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh ${BODY2_BIN:-$(realpath target/body2-build/dynamic/nelisp-dynamic)}
+** S3.3 Win64 build under wine: closurevm PASS (24), switch corpus equals GNU, features equal GNU
+evidence: tools/ai/body2-logs/S3-win.log sha256=1064ba1ad9e7cc5394a17f760fb660cd6256dbf0d077853acd0e2c1a06febd33
+cmd: grep -q "closurevm: CLOSUREVM COMPLETE checked=24 rc=0" tools/ai/body2-logs/S3-win.log && grep -q "switch corpus rc=0 EQ-GNU" tools/ai/body2-logs/S3-win.log && grep -q "features rc=0 EQ-GNU" tools/ai/body2-logs/S3-win.log
+
+* S4 Paired timing vs v25 and GNU on CPU 15
+** S4.1 prin1-strs-esc, length-first (make-string and concat) and expand-file-name rows are faster than v25 on 7 of 7 pairs
+#+NOTE: tools/ai/body2-logs/S4-timing.txt; the raw reports are target/body2/s4/ROW/report.json (not part of the patch).
+evidence: tools/ai/body2-logs/S4-timing.txt sha256=2ddd28a4f703ecc37d3c90b57471b6d8af25ec6189f2fa2fc843cc5dfe75b04b
+cmd: python3 -c "import sys,re;L=[l for l in open('tools/ai/body2-logs/S4-timing.txt') if l.startswith('ROW ')];d={l.split()[1]:dict(kv.split('=') for kv in l.split()[2:]) for l in L};ok=all(float(d[r]['body2/v25'])<0.9 and d[r]['faster']=='7/7' for r in ('prin1-strs-esc','len-first-make','len-first-concat','expand-file-name-tilde'));sys.exit(not ok)"
+** S4.2 regression rows reg-sum-bc and r3-mix are not slower than v25 (ratio <= 1.03)
+cmd: python3 -c "import sys;L=[l for l in open('tools/ai/body2-logs/S4-timing.txt') if l.startswith('ROW ')];d={l.split()[1]:dict(kv.split('=') for kv in l.split()[2:]) for l in L};sys.exit(not all(float(d[r]['body2/v25'])<=1.03 for r in ('reg-sum-bc','r3-mix')))"

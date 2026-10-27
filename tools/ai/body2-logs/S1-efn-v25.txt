@@ -1,0 +1,9 @@
+# S1.3 v25 expand-file-name family are byte code (prelude byte-code adoption), not native:
+expand-file-name: bytecode=t closure=nil type=byte-code-function
+nelisp--expand-file-name-general: bytecode=t closure=nil type=byte-code-function
+nelisp--path-plain-p: bytecode=t closure=nil type=byte-code-function
+nelisp--path-split: bytecode=t closure=nil type=byte-code-function
+file-name-as-directory: bytecode=t closure=nil type=byte-code-function
+nelisp--windows-paths-p: bytecode=nil closure=t type=interpreted-function
+# profile: attrib24 fs-expand-file-name-tilde 6.44x GNU cycles, 3.39x Ir; buckets c +0.96 e +0.91 (summary.md)
+# harvest trial on v25 (tools/ai/body2-harvest.el): all 8 names compile to fxir (ok id=1000..1007)

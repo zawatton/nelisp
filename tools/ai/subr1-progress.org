@@ -22,7 +22,8 @@ cmd: grep -q "subr1: every builtin with arity metadata gets a Subr object" scrip
 cmd: sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK desc ok subr=355 forms=355"
 ** S2.2 Argument-array entries generated from the handler arms: `wf_arg_ptr' lowers to the element WORD's view test, argv reads are raw loads, 141 handlers admitted (rx-exec among them; seed 69), append-only static ids for the new ones
 #+TIMEOUT: 300
-cmd: sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK lower ok admitted=141" && sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK leaves-raw ok"
+#+NOTE: callpath 2026-10-27: helper-opening argv lowering (tools/ai/callpath-progress.org S2.1) admits more handlers (193 with this lane), so the count is checked as at least 141 rather than exactly 141.
+cmd: sh tools/ai/subr1-gencheck.sh | grep -Eq "^CHECK lower ok admitted=(14[1-9]|1[5-9][0-9]|[2-9][0-9][0-9])" && sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK leaves-raw ok"
 #+TIMEOUT: 300
 cmd: emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-argframe-lowering-test.el -l test/nelisp-argframe-generation-test.el -l test/nelisp-subr-object-test.el -f ert-run-tests-batch-and-exit > /dev/null 2>&1
 ** S2.3 Dispatch without a name compare: the call-out finds the argv entry by the static id (shape tree with min/max, `nl_apply_builtin_frame_sid_w'), an id-less Subr skips the directcall probe and its legacy list skips the "builtin" test, the builtin head test is a static-id compare; the whole offline check is green here and red on the seed

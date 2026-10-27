@@ -1,0 +1,4 @@
+NeLisp v1.5.0-body2 (x86_64-linux, dynamic)
+closurevm: PASS (24)
+switch corpus: PASS (equals GNU)
+features: PASS (8 lines equal GNU)

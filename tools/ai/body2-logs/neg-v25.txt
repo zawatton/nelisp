@@ -1,0 +1,8 @@
+# S2 negative controls: tools/ai/body2-check.sh on the v25 binary (integ-1042-build), recorded 2026-11-05 before any build of this lane
+len-o1      rc=1  first-length Ir: D(90k)=21640141 D(180k)=42880308 growth=21240167
+ir-prin1    rc=1  prin1-strs-esc Ir/trip=54154946 baseline=54154916
+ir-efn      rc=1  expand-file-name-tilde Ir/trip=419278 baseline=419278
+efn-parity  rc=1  PARITY DIFF rows=1124 differing=1  (row 1123: (expand-file-name nil) answers the default directory; GNU signals wrong-type-argument)
+print-parity rc=0 PARITY OK rows=996  (13 frozen v25 divergences from GNU)
+len-parity  rc=0  PARITY OK rows=56
+selftest    rc=0  (harness rejects a corrupted frozen row)

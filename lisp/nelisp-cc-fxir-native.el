@@ -853,11 +853,16 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     ;; GNU funcall_subr), not through the call-out's argument list.
     ;; nativecomp N2b (nc3): a builtin in the cell (a Subr object or the legacy
     ;; (builtin NAME) list) never takes the call-out (`nc_subr_call').
+    ;; callpath: any Subr object with an argument-array entry is called on the
+    ;; staged words too (`m5_fx_call_subr_any', GNU funcall_subr), before the
+    ;; descriptor and list arms of `nc_subr_call' (subr1's split regression:
+    ;; fboundp went nc_subr_call -> nc_desc_call -> nc_builtin_call).
     (defun nc_call (env site stk argc resw oslot)
-      (if (= (m5_fx_call_subr env site stk argc argc resw) 0) 0
-        (let* ((d (nc_subr_call env site stk argc resw oslot)))
-          (if (/= d -5) d
-            (m5_fx_callout env site stk argc argc resw (+ resw 8) oslot 0)))))
+      (let* ((st (m5_fx_call_subr_any env site stk argc argc resw)))
+        (if (/= st -3) st
+          (let* ((d (nc_subr_call env site stk argc resw oslot)))
+            (if (/= d -5) d
+              (m5_fx_callout env site stk argc argc resw (+ resw 8) oslot 0))))))
     ;; The call site's symbol, from its cache [SYMBOL ...] or the site itself;
     ;; 0 unless it is an interned symbol object (whose function cell is +24).
     (defun nc_site_sym (site)

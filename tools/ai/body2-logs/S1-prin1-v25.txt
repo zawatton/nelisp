@@ -1,0 +1,16 @@
+# S1.1 v25 prin1-strs-esc self Ir per trip (attrib24 callgrind, two trip counts; total 54167049)
+# nl rp-prin1-strs-esc lo=18 hi=75 total_per_trip=54167049.5
+22487504.0	nl_word_data
+14328951.0	nl_bi_strptr
+6132953.8	nl_mut_str_push_byte
+2852940.0	bf_pf_str_bytes
+2311453.0	m5_ascii_bytes_p
+2191140.0	bf_pf_str
+1374010.0	bf_pf_list
+886801.0	bf_length_checked_w
+662288.0	bf_format_ext_w
+591128.1	nelisp_ptr_write_u8
+288174.0	nl_bi_strlen
+# nl_word_data + nl_bi_strptr = 36.8M of 54.2M per trip: m5_byte_at resolves the string pointer for every byte in bf_pf_str's three passes (m5_ascii_bytes_p, bf_pf_no_byte8_p, bf_pf_str_bytes), nl_mut_str_push_byte one byte per call.
+# GNU: print.c:306 printchar (memcpy into print_buffer, xpalloc growth at :319-322); print.c:380 strout (one memcpy of size_byte at :389); print.c:2376 Lisp_String with escapeflag prints per character between the quote escapes.
+# the v25 sources: scripts/nelisp-standalone-build.el bf_pf_str / bf_pf_str_bytes / m5_push_str_bytes (falls to a per-byte slow path when the run exceeds the remaining capacity); bf_fx_render starts the builder at capacity 32.

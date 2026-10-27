@@ -293,7 +293,12 @@ SPANS contains (START . END) pairs for each element after the list head."
     nlre--nat-sm nlre--nat-program nlre--nat-fold-default-p nlre--nat-run
     nlre--nat-publish nlre-match-beginning nlre-match-end nlre--match-string-entry
     ;; `nlre--nat-fold-default-p' funcalls it on every case-folding match.
-    current-buffer)
+    current-buffer
+    ;; body2: the expand-file-name family, so its calls are direct native calls
+    ;; (rows in lisp/nelisp-fxir-native-data.el, tools/ai/body2-harvest.el).
+    expand-file-name nelisp--expand-file-name-general nelisp--path-plain-p
+    nelisp--windows-paths-p nelisp--path-drive nelisp--path-slashify
+    file-name-as-directory)
   "Defuns the byte-code pass keeps as source for the fx compiler.")
 
 (defvar nelisp-prelude-bytecode-repo-root nil

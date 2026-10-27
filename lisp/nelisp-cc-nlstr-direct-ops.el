@@ -614,7 +614,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
              bytes-ptr n dest-slot)))))
 
     ;; Public entry: nl_alloc_symbol(bytes_ptr, len, result_slot).
-    (defun nl_alloc_symbol (bytes-ptr len result-slot)
+    (defun nl_alloc_symbol_full (bytes-ptr len result-slot)
       ;; Construction has no canonical name Sexp yet. `symbol-name' creates
       ;; it lazily in a checked root slot; this keeps intern hits allocation
       ;; free and avoids retaining an unrooted 32-byte scratch box here.
@@ -654,10 +654,10 @@ lifetime of a Sexp value.  No `let' binding needed.")
                (seq (if (= (heap-read-u8 p i) (heap-read-u8 buf i)) 0 (setq same 0))
                     (setq i (+ i 1))))
              same)))
-    (defun nl_alloc_symbol_cached (bytes-ptr len result-slot)
+    (defun nl_alloc_symbol (bytes-ptr len result-slot)
       (let* ((base (heap-read-u64 268436288 0)))
-        (if (= base 0) (nl_alloc_symbol bytes-ptr len result-slot)
-          (if (< len 1) (nl_alloc_symbol bytes-ptr len result-slot)
+        (if (= base 0) (nl_alloc_symbol_full bytes-ptr len result-slot)
+          (if (< len 1) (nl_alloc_symbol_full bytes-ptr len result-slot)
             (let* ((ent (+ (+ base 67104768) (* (nl_symcache_index bytes-ptr len) 16)))
                    (buf (heap-read-u64 ent 0)))
               (if (and (= (heap-read-u64 ent 8) len)
@@ -666,13 +666,28 @@ lifetime of a Sexp value.  No `let' binding needed.")
                                  (= (nl_symcache_eq bytes-ptr buf len) 1))))
                   (nl_intern_write_sexp result-slot buf len)
                 (seq
-                 (nl_alloc_symbol bytes-ptr len result-slot)
+                 (nl_alloc_symbol_full bytes-ptr len result-slot)
                  (let* ((nb (heap-read-u64 result-slot 16)))
                    (if (and (>= nb (+ base 16777224))
                             (< nb (heap-read-u64 268436296 0)))
                        (seq (ptr-write-u64 ent 0 nb) (ptr-write-u64 ent 8 len))
                      0))
                  result-slot)))))))
+    ;; Kept for the bytecode VM's opcode-name callers; the front cache is now
+    ;; `nl_alloc_symbol' itself (GNU's DEFSYM'd Qxxx are interned once, so a
+    ;; quoted constant never hashes or probes again).
+    (defun nl_alloc_symbol_cached (bytes-ptr len result-slot)
+      (nl_alloc_symbol bytes-ptr len result-slot))
+    ;; `unintern' tombstones a name's table slot and a later intern makes a new
+    ;; canonical buffer, so the front cache must not hand out the old one.
+    (defun nl_symcache_forget (buf n)
+      (let* ((base (heap-read-u64 268436288 0)))
+        (if (= base 0) 0
+          (if (< n 1) 0
+            (let* ((ent (+ (+ base 67104768) (* (nl_symcache_index buf n) 16))))
+              (if (= (heap-read-u64 ent 0) buf)
+                  (seq (ptr-write-u64 ent 0 0) (ptr-write-u64 ent 8 0) 0)
+                0))))))
         ;; The miss-only heap fallback allocates before rereading the rooted input
     ;; string. A GC during `alloc-bytes' may move its byte buffer.
     (defun nl_alloc_symbol_plain_named (name-slot n result-slot)
@@ -1069,6 +1084,7 @@ lifetime of a Sexp value.  No `let' binding needed.")
               (if (/= (heap-read-u64 slot 8) buf) 0
                 (seq (ptr-write-u64 slot 0 (logior (heap-read-u64 slot 0)
                                                    4611686018427387904))
+                     (nl_symcache_forget buf n)
                      1)))))))
     (defun nl_intern_next (cursor dest-slot)
       (if (or (< cursor 0) (>= cursor 1048576)

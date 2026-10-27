@@ -2335,8 +2335,10 @@ the interpreted `string-search', which costs ~5ms per call here."
     (or fast (nelisp--expand-file-name-general path base))))
 
 (defun nelisp--expand-file-name-general (path &optional base)
+  ;; GNU fileio.c Fexpand_file_name: CHECK_STRING (name).
+  (unless (stringp path) (signal 'wrong-type-argument (list 'stringp path)))
   (let* ((win (nelisp--windows-paths-p))
-         (p (if (null path) "" path))
+         (p path)
          (p (if win (nelisp--path-slashify p) p))
          (p (if (and (> (length p) 0) (eq (aref p 0) ?~)
                      (if (= (length p) 1) 1 (eq (aref p 1) ?/)))
@@ -2361,7 +2363,6 @@ the interpreted `string-search', which costs ~5ms per call here."
          ;; inherit, so BASE is left untouched exactly as before.
          (need-base (if drive nil (if rooted win t)))
          (anchor "")
-         (parts nil)
          (up nil)
          (stack nil))
     (when need-base
@@ -2378,17 +2379,26 @@ the interpreted `string-search', which costs ~5ms per call here."
         (unless rooted
           (setq anchor (file-name-as-directory
                         (if bdrive (substring b 2) b))))))
-    (setq parts (nelisp--path-split (if absolute p (concat anchor p))))
-    (while parts
-      (let ((c (car parts)))
-        (cond
-         ((equal c ".") nil)
-         ;; GNU quirk (fileio.c): a `..' that climbs above the root is not
-         ;; dropped -- an odd number of them leaves one `/..' behind
-         ;; ("/../etc" stays, "/../../etc" is "/etc"), so it toggles UP.
-         ((equal c "..") (if stack (setq stack (cdr stack)) (setq up (not up))))
-         (t (setq stack (cons c stack)))))
-      (setq parts (cdr parts)))
+    ;; One scan of the name (body2): the components are cut where they are
+    ;; needed, and `.' and `..' are recognised by their characters, so neither
+    ;; the list of components nor a string for each dot component is built
+    ;; (the walk `nelisp--path-split' + `equal' did before).  Empty components
+    ;; (doubled slashes) are skipped, as before.
+    (let* ((src (if absolute p (concat anchor p))) (n (length src)) (start 0) (i 0))
+      (while (<= i n)
+        (when (or (= i n) (eq (aref src i) ?/))
+          (when (> i start)
+            (let ((len (- i start)))
+              (cond
+               ((and (= len 1) (eq (aref src start) ?.)) nil)
+               ;; GNU quirk (fileio.c): a `..' that climbs above the root is not
+               ;; dropped -- an odd number of them leaves one `/..' behind
+               ;; ("/../etc" stays, "/../../etc" is "/etc"), so it toggles UP.
+               ((and (= len 2) (eq (aref src start) ?.) (eq (aref src (1+ start)) ?.))
+                (if stack (setq stack (cdr stack)) (setq up (not up))))
+               (t (setq stack (cons (substring src start i) stack))))))
+          (setq start (1+ i)))
+        (setq i (1+ i))))
     (setq stack (nreverse stack))
     (when up (setq stack (cons ".." stack)))
     (let ((res (concat (or drive "") "/" (mapconcat 'identity stack "/"))))

@@ -1685,6 +1685,35 @@
                               (m5_fx_primitive_run id stk sp argc resw env 0)
                             -3)))))))))
           -3)))
+    ;; callpath: GNU funcall_subr for every Subr object, not only the primitive ids: the
+    ;; primitive above, else the argument-array entry the object carries
+    ;; (`m5_fx_subr_argv'), with the operand words as its argv -- no list, no name
+    ;; lookup, no autoload test (a Subr object is never an autoload cell; GNU
+    ;; funcall_general tests SUBRP first).  0 done, -3 not handled (nothing happened:
+    ;; the call-out runs), any other value the call's signal status.
+    (defun m5_fx_call_subr_any (env cache stk sp argc resw)
+      (let* ((st (m5_fx_call_subr env cache stk sp argc resw)))
+        (if (/= st -3) st
+          (let* ((sym (if (= (logand cache 7) 6)
+                          (if (< cache 4096) 0
+                            (if (= (logand (ptr-read-u64 (- cache 6) 0) 63) 8)
+                                (ptr-read-u64 (- cache 6) 8)
+                              cache))
+                        0))
+                 (fn (if (= (logand sym 7) 6)
+                         (if (< sym 4096) 0
+                           (if (= (logand (ptr-read-u64 (- sym 6) 0) 63) 4)
+                               (ptr-read-u64 (- sym 6) 24)
+                             0))
+                       0)))
+            (if (= (logand fn 7) 6)
+                (if (< fn 4096) -3
+                  (if (/= (logand (ptr-read-u64 (- fn 6) 0) 63) 20) -3
+                    (m5_fx_subr_argv env sym fn stk sp argc resw)))
+              -3)))))
+    ;; The link sets without argument-array entries have none to call (the reader's
+    ;; definition is generated with them, `nelisp-standalone--argframe-m5-helpers').
+    (defun m5_fx_subr_argv (env sym fn stk sp argc resw) -3)
     ;; The argument pointer `wf_arg_ptr' gives a builtin arm for the list
     ;; element WORD (`nl_cons_car_ptr'): a legacy view, a direct cons or a
     ;; symbol object as it is, anything else materialised into a fresh view.

@@ -54,5 +54,26 @@
                    '((:lit "escape") :word if (= _pad 0)
                      (seq (callback env) (escape args)) 2)))))
 
+
+(ert-deftest nelisp-argframe-opens-indexed-helpers ()
+  ;; callpath: `(HELPER args ...)' is lowered as HELPER's body, its other
+  ;; parameters renamed and bound; a helper that escapes `args' stays ineligible.
+  (let ((nelisp-argframe-inline-helpers (make-hash-table :test #'eq)))
+    (puthash 'h1 '((args _pad) (f (wf_arg_word args 1) _pad)) nelisp-argframe-inline-helpers)
+    (puthash 'h2 '((args) (g args)) nelisp-argframe-inline-helpers)
+    (should (equal (nelisp-argframe-lower '(h1 args 0) 'argv 'argc)
+                   '(let* ((nl_afi_h1_0 0))
+                      (f (if (< 1 argc) (ptr-read-u64 argv 8) 0) nl_afi_h1_0))))
+    (should (equal (nelisp-argframe-lower '(h1 args 0) 'argv 'argc 'mode)
+                   '(if (= mode 0) (h1 args 0)
+                      (let* ((nl_afi_h1_0 0))
+                        (f (if (< 1 argc) (ptr-read-u64 argv 8) 0) nl_afi_h1_0)))))
+    (should-error (nelisp-argframe-lower '(h2 args) 'argv 'argc)
+                  :type 'nelisp-argframe-ineligible)
+    ;; The list-only marker: the argv side declines with 2.
+    (should (equal (nelisp-argframe-lower '(nl_argframe_list_only (h2 args)) 'argv 'argc) 2))
+    (should (equal (nelisp-argframe-lower '(nl_argframe_list_only (h2 args)) 'argv 'argc 'mode)
+                   '(if (= mode 0) (nl_argframe_list_only (h2 args)) 2)))))
+
 (provide 'nelisp-argframe-lowering-test)
 ;;; nelisp-argframe-lowering-test.el ends here

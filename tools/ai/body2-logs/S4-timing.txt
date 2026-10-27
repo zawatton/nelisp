@@ -1,0 +1,8 @@
+# S4 paired timing, CPU 15 only, 7 reps, fresh processes, two trip counts (paired_bench.py); ns/step median; ratio to v25; GNU Emacs 31.1 for reference
+# v25 = integ-1042 build, body2 = this lane build; rows: tools/ai/body2-checks/timing/*.el and integ-1042/matrix/drv/{reg-sum-bc,r3-mix}.el
+ROW prin1-strs-esc cpu=15 low=10 high=40 v25=3805907.6 body2=1244831.1 gnu=1327387.5 body2/v25=0.327 body2/gnu=0.938 v25/gnu=2.867 faster=7/7
+ROW len-first-make cpu=15 low=100 high=400 v25=1678559.8 body2=306646.8 gnu=898479.6 body2/v25=0.183 body2/gnu=0.341 v25/gnu=1.868 faster=7/7
+ROW len-first-concat cpu=15 low=100 high=400 v25=1654413.5 body2=136519.3 gnu=776730.4 body2/v25=0.083 body2/gnu=0.176 v25/gnu=2.130 faster=7/7
+ROW expand-file-name-tilde cpu=15 low=20000 high=80000 v25=67154.3 body2=28773.9 gnu=10088.0 body2/v25=0.428 body2/gnu=2.852 v25/gnu=6.657 faster=7/7
+ROW reg-sum-bc cpu=15 low=9250000 high=37000000 v25=24.3 body2=24.4 gnu=15.4 body2/v25=1.001 body2/gnu=1.581 v25/gnu=1.580 faster=2/7
+ROW r3-mix cpu=15 low=175000 high=700000 v25=1331.5 body2=1282.9 gnu=252.8 body2/v25=0.963 body2/gnu=5.075 v25/gnu=5.267 faster=7/7

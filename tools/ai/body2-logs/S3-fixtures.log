@@ -1,0 +1,4 @@
+weak 24/24 PASS
+GNU 56/56 PASS
+AFRT 24/25; unchanged exit-hook-result-gc RED (exit 1)
+buffer 21/21 PASS; no new fixture failures

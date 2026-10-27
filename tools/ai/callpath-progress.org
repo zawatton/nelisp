@@ -1,0 +1,68 @@
+#+TITLE: callpath -- direct, non-consing builtin calls from compiled and interpreted code (attrib24 bucket c)
+#+NOTE: Created 2026-10-27 before implementation. Worktree seeded at coordinator HEAD 54f554ede (v25, integ-1042), no overlay: the patch is against git HEAD. Baseline v25 = ../resume-4943-20261024/target/integ-1042-build/dynamic/nelisp-dynamic. Binary under test: ${CALLPATH_BIN:-target/callpath-build/dynamic/nelisp-dynamic}. Build budget 2. Callgrind on CPUs 0-7 (heavy-run.sh), timing on CPU 13 only.
+#+NOTE: 2026-10-27 after the builds: all criteria filled from build 1 (Linux) and build 2 (Win64); count unchanged (12).  S4.1 stays red (3 of 6 rows), as S1.2 predicted for two of them.
+#+NOTE: GNU shape (eval.c funcall_subr / funcall_general, bytecode.c Bcall): a function cell holding a SUBR is called through its arity entry with the argument words in an array; no list, no name lookup, no autoload test (SUBRP is tested first).
+
+* S1 Cause with evidence (v25)
+** S1.1 v25 callgrind of the six rows (memq-i, aref-loop, record-make-access, closure-counter, mapcar-lambda-i, intern-dyn-i): every non-primitive Subr call from fx takes m5_fx_callout -> m5_fx_call_list; handlers that pass `args' whole (memq, aref, record, recordp, intern, *, funcall) go further to nl_n4_apply_raw_w -> nl_apply_builtin_w -> nelisp_apply_function_w (name dispatch) with a consed list; each callout pays nl_autoload_cell_p (211 Ir) and m5_fx_closure_rec (97 Ir) even for a Subr
+evidence: target/callpath/logs/s1-v25.txt sha256=e132c105ab3add4595458d6234f16657693e36f4e7c6297b9580f3e2d1e64e53
+cmd: grep -q "^ROW v25 lists-memq-i total=8210.4" target/callpath/logs/s1-v25.txt && grep -q "ENTRY m5_fx_call_list -> nl_n4_apply_raw_w incl=235526856.8 calls=105357.000" target/callpath/logs/s1-v25.txt
+** S1.2 Per-call protocol cost on v25 (callout inclusive minus handler body) and the per-row ceilings recorded
+#+NOTE: v25 protocol per Subr call from fx (target/callpath/cg/percall.py): memq-i 1840, aref-loop 2401, record-make-access 3477, intern-dyn-i 1513 Ir; closure-counter 4111 around a 7224-Ir closure apply.  Ceilings: closure-counter's removable protocol is about 28 percent of the trip (the closure apply is 58 percent: `funcall' of a closure with captures declines m5_fx_funcall_site and takes the generic funcall builtin); mapcar-lambda-i is 20 lambda applies of about 8.1K (each a `*' call whose generic numeric body is 2122 Ir) under one mapcar, so call-path work alone cannot reach -30 percent there (its percall line is negative because the call path nests).  record-make-access's `record' is MANY with a list-walking body (no argv entry).  S4.1 is therefore expected red on closure-counter and mapcar-lambda-i; it is not downgraded.
+evidence: target/callpath/logs/s1-percall-v25.txt sha256=176b9075e6b68647b07ff05d000f98b8f25eeffad863de07b963a029109c93cb
+cmd: grep -q "PERCALL v25 ms-aref-loop-130k .* protocol_per_call=2400.6" target/callpath/logs/s1-percall-v25.txt
+
+* S2 Fix (offline red/green, GNU funcall_subr)
+** S2.1 Generator: helper-opening argv lowering admits memq, aref, recordp, fboundp, string-search-chars (141 -> 193 handlers, 191 frame leaves, all parse); every Subr object carries its argv entry word (static id, min, max); the VM CALL and nc_call reach it through m5_fx_call_subr_any; offline check green here and red on HEAD
+#+NOTE: GNU funcall_subr calls the SUBR's function with the argument array; the generator now opens a handler's `(HELPER args ...)' call (nelisp-argframe-inline-helpers) so admission follows the whole body.  25 newly admitted names got append-only static ids (nelisp-argframe-static-symbol-suffix).  Evaluator entries (ids 1-18) never get an argv shape.  aref's char-table bridge (calls Lisp with the list) is wrapped in `nl_argframe_list_only', so the argv side declines (2) there and the list route runs on the same words.  subr1's S2.2 grep was relaxed from admitted=141 to >= 141 (same patch).
+#+TIMEOUT: 300
+cmd: sh tools/ai/callpath-gencheck.sh | grep -q "^GENCHECK bad=0"
+evidence: target/callpath/logs/gencheck-red-head.txt sha256=614c1e5b6b39bb4e0d57c061131207b5a5300b7af34caeb797d265a8d65d9a46
+cmd: grep -q "^CHECK admit BAD admitted=141" target/callpath/logs/gencheck-red-head.txt && ! grep -q "^GENCHECK bad=0" target/callpath/logs/gencheck-red-head.txt
+** S2.2 Host ERT for the argframe lowering (helper opening and the list-only marker included), argframe generation and Subr objects passes
+#+TIMEOUT: 300
+cmd: emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-argframe-lowering-test.el -l test/nelisp-argframe-generation-test.el -l test/nelisp-subr-object-test.el -f ert-run-tests-batch-and-exit > /dev/null 2>&1
+** S2.3 GNU-parity corpus (108 rows: results and errors of the newly admitted handlers from interpreted, byte-code, funcall and apply sites; wrong argument counts; a defalias'd Subr; advice; fset during a call and in a callback; an autoload cell; func-arity/subr-arity/subrp): every row v25 shared with GNU still agrees, no fewer rows agree, mutant caught
+#+NOTE: target/callpath/corpus/{callpath-parity.el,gnu.out,v25.out}.  v25 differs from GNU on 27 rows (subr-arity is void, featurep 'emacs, `#<subr NAME>' in wrong-number-of-arguments data from interpreted callers, a lost advice row).
+#+TIMEOUT: 200
+cmd: sh tools/ai/callpath-corpus.sh ${CALLPATH_BIN:-target/callpath-build/dynamic/nelisp-dynamic} gnu
+cmd: sh tools/ai/callpath-corpus.sh x mutant
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304
+#+NOTE: Build 1 (1092 s): F1 354 (unchanged from v25), root evidence 82729 nodes, binary 40615192 bytes (v25 40440248).
+cmd: tail -1 target/callpath-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/callpath-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/callpath-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+#+NOTE: target/callpath/fixtures.py (integ-1042's, retargeted as subr1 did); build 1 all as expected.  gnu-speed-win-check on build 1: closurevm 24, switch corpus and features equal GNU (target/callpath/logs/wincheck.log).
+evidence: target/callpath/logs/fixtures.log sha256=a450cf64834c0f15296958615955b643987ad26455574383a6a526575759d799
+cmd: grep -q "buffer 21/21 PASS" target/callpath/logs/fixtures.log && grep -q "weak 24/24 PASS" target/callpath/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/callpath/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/callpath/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh -c 'B=$(realpath ${CALLPATH_BIN:-target/callpath-build/dynamic/nelisp-dynamic}); sh tools/ai/gnu-speed-win-check/check.sh $B'
+** S3.3 Win64 build of the same sources under wine: closurevm 24, switch corpus and features equal GNU
+#+NOTE: target/callpath/win/run-win.sh build|check (subr1's recipe).  Build 2 (886 s): closurevm 24, switch EQ-GNU, features EQ-GNU; the callpath parity corpus under wine equals the Linux build's output on all 107 rows (target/callpath/win/corpus-win.out).
+evidence: target/callpath/win/win.log sha256=33542c8f6addc3657c1d0381eb232b4f15662b7aed401288fd33ec62d4a88ee6
+cmd: grep -q "closurevm: CLOSUREVM COMPLETE checked=24 rc=0" target/callpath/win/win.log && grep -q "switch corpus rc=0 EQ-GNU" target/callpath/win/win.log && grep -q "features rc=0 EQ-GNU" target/callpath/win/win.log && grep -q "corpus under wine: EQ-LINUX" target/callpath/win/win.log
+
+* S4 End to end: speed
+** S4.1 The six rows at least 30 percent fewer Ir per trip than v25, results unchanged
+#+NOTE: Build 1 callgrind (two trip counts, CPUs 0-7), Ir per trip v25 -> callpath: memq-i 8210 -> 4868 (-40.7%), aref-loop 539.6M -> 308.4M (-42.8%), record-make-access 15478 -> 10273 (-33.6%), intern-dyn-i 10506 -> 8499 (-19.1%), closure-counter 12463 -> 12348 (-0.9%), mapcar-lambda-i 213135 -> 210661 (-1.2%); results identical.  Red, as S1.2 predicted for closure-counter and mapcar-lambda-i (closure apply and the generic `*' body, not the Subr call); intern-dyn-i misses because `intern''s handler reads the list shape ((nl_cons_cdr_word args) for the optional obarray) and its slow paths hand the list to Lisp, so it stays on the list route.
+evidence: target/callpath/cg/six-ir.txt sha256=be638f5b14e66421e2d74cd367e33eb7f74becffde6302ab46f8aff9b75281b1
+cmd: python3 -c "import sys;d={};[d.__setitem__((l.split()[1],l.split()[2]),(float(l.split()[3]),l.split()[4])) for l in open('target/callpath/cg/six-ir.txt')];rows=set(k[1] for k in d);sys.exit(not(len(rows)==6 and all(d[('cp1',r)][0]<=0.7*d[('v25',r)][0] and d[('cp1',r)][1]==d[('v25',r)][1] for r in rows)))"
+** S4.2 Per-call protocol from fx before/after and the three mechanisms absent: memq-i 1705 -> 419 Ir per Subr call, aref-loop 2272 -> 632; name dispatch, argument list and clone-on-read/autoload test each below 1 Ir per call on memq-i and aref-loop (v25: 232-564)
+#+NOTE: target/callpath/cg/percall2.py (call-path self Ir per handler call) and cg/absent.py (self Ir of the name dispatch, the list route and the autoload/closure-record tests, plus the apply's element-read edges).  From native code (subr1's split driver, cg/native3.py): call-path self Ir per trip 14554 -> 12973; nc_desc_call/nc_builtin_call/m5_fx_site_kind/m5_fx_call_list/nl_autoload_cell_p are gone from it.
+evidence: target/callpath/logs/absent.txt sha256=b7cb253116a8d36c9b445defdb9beed250ce40905dba6b2f02e71913326dec34
+evidence: target/callpath/logs/percall-fx.txt sha256=3e59a3df15a0de7064b688c57024b1c32ab2526455e25b189d14f557d1b77d39
+evidence: target/callpath/logs/native-split.txt sha256=5e78d05a63e076d065dd64ee5a7a52b2cee9e1cb60def59a27b1e7b4628f914a
+cmd: grep -q "^MECH cp1 lists-memq-i .* ABSENT" target/callpath/logs/absent.txt && grep -q "^MECH cp1 ms-aref-loop-130k .* ABSENT" target/callpath/logs/absent.txt && grep -q "^MECH v25 lists-memq-i .* PRESENT" target/callpath/logs/absent.txt
+cmd: grep -q "^CALLPATH-SELF cp1 split total=12973.4" target/callpath/logs/native-split.txt && ! grep -q "SELF cp1 split nc_desc_call" target/callpath/logs/native-split.txt
+** S4.3 trim, split and prop fewer Ir per trip than v25, results unchanged; split's subr1 regression path (nc_subr_call -> nc_desc_call -> nc_builtin_call) gone
+#+NOTE: subr1's drivers (target/callpath/drv), BENCH_N 500/2500, CPUs 0-7: trim 71997 -> 70348, split 40776 -> 39034 (below nc5's 40052), prop 40994 -> 40636.
+evidence: target/callpath/cg/v25-ir3.txt sha256=50114b6d49b9c231e938a1d3ae1bddae6ca40ad64ca310c60e950c1a0d57c140
+evidence: target/callpath/cg/cp1-ir3.txt sha256=e75c047ce9ce52477131b9ba60d42da91d06d17d1a2180dae233170344d60e31
+cmd: python3 -c "import sys;a={l.split()[0]:l.split() for l in open('target/callpath/cg/v25-ir3.txt') if len(l.split())>2};b={l.split()[0]:l.split() for l in open('target/callpath/cg/cp1-ir3.txt') if len(l.split())>2};sys.exit(not(set(a)==set(b)=={'trim','split','prop'} and all(int(b[k][1])<int(a[k][1]) and b[k][2]==a[k][2] for k in a)))"
+** S4.4 Paired wall time on CPU 13 vs v25 (GNU recorded): the six rows not slower (ratio < 1, >= 5 of 7 pairs), the four Subr-call rows at least 15 percent faster, reg-sum-bc and r3-mix within 3 percent
+#+NOTE: paired_bench 7 reps on CPU 13 (target/callpath/timing/timing.sh), ns/step v25 -> callpath (ratio, pairs; GNU): memq-i 992.7 -> 452.7 (0.456, 7/7; 362.8), aref-loop 68.9M -> 31.2M (0.453, 7/7; 26.4M), record-make-access 2198.9 -> 1407.1 (0.640, 7/7; 725.5), closure-counter 1897.6 -> 1862.9 (0.982, 6/7; 414.7), mapcar-lambda-i 32400.7 -> 32288.5 (0.997, 5/7; 14142.2), intern-dyn-i 1416.7 -> 1171.4 (0.827, 7/7; 474.3); reg-sum-bc 1.003 (3/7), r3-mix 0.973 (7/7).  mapcar-lambda-i was rerun alone after paired_bench found CPU 13 busy (paired-mapcar.log).
+evidence: target/callpath/timing/paired-final.log sha256=bf7132e1f24dcf55313abe82b0a954cc4a72a9a835a713dff98d5eabe18a192d
+cmd: python3 target/callpath/timing/s4check.py
