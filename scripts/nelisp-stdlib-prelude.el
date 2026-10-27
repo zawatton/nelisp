@@ -29980,6 +29980,10 @@ unlisted OS-specific entry point."
          ((memq name '(remhash)) '(2 . 2))
          ((memq name '(mod % /=)) '(2 . 2))
          ((memq name '(ash)) '(2 . 2))
+         ;; callpath2: builtins whose function cell holds no Subr object (the
+         ;; evaluator's own entries and `set'), at GNU 31.1's arity.
+         ((memq name '(funcall apply)) '(1 . many))
+         ((memq name '(set)) '(2 . 2))
          (t '(0 . many))))))
 
   (defun func-arity (function)
@@ -29991,6 +29995,12 @@ unlisted OS-specific entry point."
                               (nelisp--native-subr-arity fn))))
       (cond
        ((consp native-arity) native-arity)
+       ;; callpath2: a builtin's Subr object answers its own min_args and
+       ;; max_args, -1 - (MIN | MAX << 8) with MAX 127 for many (GNU data.c
+       ;; Fsubr_arity / eval.c Ffunc_arity read XSUBR (fn)->min_args and max_args).
+       ((and (integerp native-arity) (< native-arity 0))
+        (let* ((code (- -1 native-arity)) (max (ash code -8)))
+          (cons (logand code 255) (if (= max 127) 'many max))))
        ((integerp native-arity)
         (let ((arity native-arity))
           ;; 3 encodes a native subr with `&optional' arity (1 . 2), 4 one
@@ -30022,6 +30032,19 @@ unlisted OS-specific entry point."
                       'many))
             (nelisp--func-arity-formals desc))))
        (t (signal 'invalid-function (list fn)))))))
+
+;; callpath2: GNU data.c Fsubr_arity: SUBR's (MIN . MAX), MAX `many' or
+;; `unevalled'; a non-subr signals (wrong-type-argument subrp SUBR).  The
+;; arity is the one `func-arity' reads from the Subr object.
+(unless (fboundp 'subr-arity)
+  (defun subr-arity (subr)
+    "Return minimum and maximum number of args allowed for SUBR.
+SUBR must be a built-in function.
+The returned value is a pair (MIN . MAX).  MIN is the minimum number
+of args.  MAX is the maximum number or the symbol `many', for a
+function with `&rest' args, or `unevalled' for a special form."
+    (if (subrp subr) (func-arity subr)
+      (signal 'wrong-type-argument (list 'subrp subr)))))
 
 (unless (fboundp 'commandp)
   (defun commandp (function &optional for-call-interactively)

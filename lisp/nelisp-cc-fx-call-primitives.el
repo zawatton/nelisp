@@ -61,6 +61,8 @@
            ((= (sexp-name-eq name "funcall") 1) 13)
            ;; nc3: `fboundp' (`bf_fboundp_w') on the operand word.
            ((= (sexp-name-eq name "fboundp") 1) -19)
+           ;; callpath2: `symbol-function' (GNU Bsymbol_function) on the operand word.
+           ((= (sexp-name-eq name "symbol-function") 1) -21)
            (t 0))
         (if (= argc 2)
             (cond
@@ -1639,6 +1641,25 @@
                              (m5_fx_word_ptr (heap-read-u64 (+ stk (* (+ (- sp argc) 2) 8)) 0)))))
                     (if (= r -2) 7 (if (= r -1) 3 (wf_write_int_w 0 r))))
                 -1))
+             ;; callpath2: GNU data.c Fsymbol_function, XSYMBOL (sym)->u.s.function
+             ;; (Bsymbol_function in byte code): an interned or uninterned symbol
+             ;; object's cell as `bf_symbol_function_w' answers it (nil when unset,
+             ;; a Subr object's legacy list), with no argument list and no name
+             ;; dispatch.  nil and t have no function.  Any other operand (the
+             ;; error, a symbol view) declines to APPLY.
+             ((= id -21)
+              (if (or (= a 3) (= a 7)) 3
+                (if (if (= (logand a 7) 6)
+                        (if (> a 4096)
+                            (or (= (logand (ptr-read-u64 (- a 6) 0) 63) 4)
+                                (= (logand (ptr-read-u64 (- a 6) 0) 63) 16))
+                          0)
+                      0)
+                    (let* ((v (nelisp_env_lookup_function_w (+ env 0) (+ env 64) a 0)))
+                      (if (= v 2) 3
+                        (if (= v 0) -1
+                          (if (= (bf_fboundp_cell_p v) 0) 3 v))))
+                  -1)))
              (t -1)))
            (if (= r -1) -3 (seq (ptr-write-u64 resw 0 r) 0))))))))
     ;; corecall (W2c): the VM's call of a primitive held by the call site's symbol, with the
@@ -1709,8 +1730,14 @@
             (if (= (logand fn 7) 6)
                 (if (< fn 4096) -3
                   (if (/= (logand (ptr-read-u64 (- fn 6) 0) 63) 20) -3
-                    (m5_fx_subr_argv env sym fn stk sp argc resw)))
+                    (let* ((pst (m5_fx_subr_prim2 env fn stk sp argc resw)))
+                      (if (/= pst -3) pst
+                        (m5_fx_subr_argv env sym fn stk sp argc resw)))))
               -3)))))
+    ;; callpath2: the interpreter's primitive of a Subr object on the operand words;
+    ;; the reader's definition is generated (`nelisp-standalone--argframe-m5-helpers'),
+    ;; the link sets without `nl_eic_prim2_run' have none to run.
+    (defun m5_fx_subr_prim2 (env fn stk sp argc resw) -3)
     ;; The link sets without argument-array entries have none to call (the reader's
     ;; definition is generated with them, `nelisp-standalone--argframe-m5-helpers').
     (defun m5_fx_subr_argv (env sym fn stk sp argc resw) -3)
@@ -1780,14 +1807,43 @@
                             (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0))))
                 (if (= def 2) -3
                   (seq (ptr-write-u64 ws 0 def)
-                       (m5_fx_primitive def stk sp argc resw env ws))))
+                       (let* ((st (m5_fx_primitive def stk sp argc resw env ws)))
+                         (if (/= st -3) st
+                           ;; callpath2: GNU Ffuncall -> funcall_general on the
+                           ;; symbol's definition (eval.c:3185-3215): a Subr, a
+                           ;; byte-code function or a covered closure runs on the
+                           ;; argument words, the backtrace naming the symbol as
+                           ;; record_in_backtrace names args[0].  An alias (a
+                           ;; symbol again) keeps the generic apply, which follows
+                           ;; the chain and detects a cycle.
+                           (if (or (= (nl_word_tag64 def) 4) (= (nl_word_tag64 def) 16)) -3
+                             (m5_fx_funcall_value fn fn def stk sp argc resw env)))))))
             (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
               (if (/= st -3) st
                 (let* ((rec (m5_fx_covered fn argc env 0)))
-                  (if (= rec 0) -3
+                  (if (= rec 0)
+                      ;; callpath2: a byte-code function or a Subr object on the
+                      ;; words (GNU funcall_general's COMPILEDP / SUBRP arms).  A
+                      ;; cons (an uncovered closure or lambda) has neither: it goes
+                      ;; straight to the generic apply.
+                      (if (if (= (logand fn 7) 2) 1 (= (nl_val_tag fn) 7)) -3
+                        (m5_fx_funcall_value fn 0 fn stk sp argc resw env))
                     (seq (if (= cache 0) 0 (m5_fx_funcall_site_fill cache fn rec))
                          (m5_fx_call_words rec fn (+ stk (* (- sp argc) 8)) argc
                                            env 0 resw 0))))))))))
+    ;; callpath2: GNU funcall_general for a definition that is no primitive id and
+    ;; no covered closure (a Subr object, a byte-code function); the reader's
+    ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
+    (defun m5_fx_funcall_value (opr sym def stk sp argc resw env) -3)
+    ;; callpath2: a builtin value's arity from its Subr object, for the
+    ;; `nelisp--native-subr-arity' arm; 0 (none) outside the reader, whose
+    ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
+    (defun bf_builtin_subr_arity_w (fnw env) 0)
+    ;; callpath2: `apply' on the operand words (call-out kind 14); the reader's
+    ;; definition is generated (`nelisp-standalone--argframe-m5-helpers').
+    (defun m5_fx_apply_run (stk sp argc resw env) -3)
+    (defun m5_fx_apply_spread (base argc resw env) -3)
+    (defun m5_fx_apply_no_word_subr (fw) 0)
     ;; The record before the closure, so a reader that sees the closure
     ;; sees its record (the site kind's order, `m5_fx_site_kind').
     (defun m5_fx_funcall_site_fill (cache fn rec)

@@ -21417,30 +21417,39 @@ eval applyfn.")
     ;; (intern NAME OBARRAY): a hit in an obarray made by `obarray-make' answers the
     ;; symbol without allocating; a miss, a wrong type and the other obarrays are
     ;; the Lisp reference's (`nelisp--intern-slow').
+    ;; callpath2: GNU Fintern (lread.c) takes its arguments as values, not a list:
+    ;; the obarray argument is tested by the argument count (a missing OBARRAY is
+    ;; nil, as `wf_arg_word' answers 0 past the end), and only the Lisp reference
+    ;; takes the list (`nl_argframe_list_only'), so the argv route admits the
+    ;; handler (`nelisp-argframe-lower').
     (defun wf_intern_ob_w (args env _pad)
-      (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
+      (if (>= (m5_list_len args 0) 2)
           (let* ((ob (wf_arg_word args 1)))
             (if (= (nl_val_tag ob) 0) (wf_intern_global_w args env)
               (if (= (wf_obarray_init_p ob) 1) (wf_intern_global_w args env)
                 (let* ((tb (wf_obarray_table_w ob)) (name (wf_arg_word args 0)))
                   (if (= tb 0)
-                      (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19)
+                      (nl_argframe_list_only
+                       (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19))
                     (if (= (m5_string_tag_p (nl_val_tag name)) 0)
-                        (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19)
+                        (nl_argframe_list_only
+                         (wf_slow_named_w args env 3255381746650998126 8299411125921148521 7827308 0 19))
                       (let* ((i (wf_cmpl_ht_find tb name)))
                         (if (>= i 0) (wf_cmpl_ht_val tb i)
                           (wf_intern_new_w args env tb)))))))))
         (wf_intern_global_w args env)))
     (defun wf_intern_soft_ob_w (args env _pad)
-      (if (= (nl_val_tag (nl_cons_cdr_word args)) 7)
+      (if (>= (m5_list_len args 0) 2)
           (let* ((ob (wf_arg_word args 1)))
             (if (= (nl_val_tag ob) 0) (wf_intern_soft_global_w args env)
               (if (= (wf_obarray_init_p ob) 1) (wf_intern_soft_global_w args env)
                 (let* ((tb (wf_obarray_table_w ob)) (name (wf_arg_word args 0)))
                   (if (= tb 0)
-                      (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24)
+                      (nl_argframe_list_only
+                       (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24))
                     (if (= (m5_string_tag_p (nl_val_tag name)) 0)
-                        (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24)
+                        (nl_argframe_list_only
+                         (wf_slow_named_w args env 3255381746650998126 8299411125921148521 8606216654867949167 0 24))
                       (let* ((i (wf_cmpl_ht_find tb name)))
                         (if (>= i 0) (wf_cmpl_ht_val tb i) 3))))))))
         (wf_intern_soft_global_w args env)))
@@ -29881,10 +29890,22 @@ bytes are written into a fresh 8-byte buffer instead."
                                    (if (= cache 0) 0 (if (= (nl_sb_worker_p env) 1) 0 cache))
                                    (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)
                                    stk sp (- argc 1) resw env xw)
-                                (m5_fx_primitive_run kind stk sp argc resw env xw)))))
+                                ;; callpath2: `apply' on the words (Lisp re-entry, so
+                                ;; not one of `m5_fx_primitive_run''s leaf bodies).
+                                (if (= kind 14) (m5_fx_apply_run stk sp argc resw env)
+                                  (m5_fx_primitive_run kind stk sp argc resw env xw))))))
                   (rec (if (= direct -3) (m5_fx_site_rec cache fn argc env) 0))
                   (st (if (/= direct -3) direct
-                        (if (= rec 0) -3
+                        (if (= rec 0)
+                            ;; callpath2: GNU Bcall -> funcall_general: a byte-code
+                            ;; function (funcall_lambda -> exec_byte_code) or a Subr
+                            ;; object (funcall_subr) runs on the operand words, the
+                            ;; record naming the call's symbol; -3 keeps the list
+                            ;; apply (closures the VM does not cover, autoloads ...).
+                            ;; Only a call-out kind 0 (no primitive, funcall, apply
+                            ;; or globals arm declined first) and no cons definition.
+                            (if (if (/= kind 0) 1 (if (= (logand fn 7) 2) 1 (= (nl_val_tag fn) 7))) -3
+                              (m5_fx_funcall_value name 0 fn stk sp argc resw env))
                           (m5_fx_call_words rec name (+ stk (* (- sp argc) 8)) argc env 0 resw 0)))))
              (if (= st -3)
                  (m5_fx_call_list name fn stk sp argc env resw (+ xw 8) oslot)
@@ -29945,7 +29966,11 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= name 0) 0
           (if (if (= argc 1) (= (sexp-name-eq name "symbol-value") 1) 0) 21
             (if (if (= argc 2) (= (sexp-name-eq name "set") 1) 0) 22
-              (m5_fx_primitive_id name argc))))))
+              ;; callpath2: `apply' (14, GNU Fapply) spreads its last argument
+              ;; onto the words (`m5_fx_apply_run', run by the call-out and
+              ;; `nc_builtin_call', never by `m5_fx_primitive_run').
+              (if (if (>= argc 2) (= (sexp-name-eq name "apply") 1) 0) 14
+                (m5_fx_primitive_id name argc)))))))
     ;; The call site's inline cache: CACHE is the compiler's
     ;; [SYMBOL nil nil nil nil] (`nelisp--fx-compile'); slot 1 holds the
     ;; last definition seen, slot 2 its kind.  The definition itself is
@@ -38204,11 +38229,17 @@ into that constant unconditionally is what broke every aarch64 build."
      :word . (wf_write_int_w 0
                      (nl_native_subr_module_live_count
                       (wf_argval args 0))))
+    ;; callpath2: a builtin's (builtin NAME) value answers its Subr object's
+    ;; min_args/max_args (GNU data.c Fsubr_arity reads XSUBR (subr)->min_args and
+    ;; max_args), encoded -1 - (MIN | MAX << 8), MAX 127 for many
+    ;; (`bf_builtin_subr_arity_w'); the prelude's `func-arity' decodes it.
     ((:lit "nelisp--native-subr-arity")
      :word . (let* ((value (wf_arg_ptr args 0))
+              (builtin-arity (bf_builtin_subr_arity_w (wf_arg_word args 0) env))
               (slots (if (= (sexp-tag value) 18)
                          (record-slot-count value)
                        0)))
+        (if (/= builtin-arity 0) builtin-arity
         (if (= slots 10)
             (bf_rooted_subr_arity_w value 0)
         (if (= slots 4)
@@ -38225,7 +38256,7 @@ into that constant unconditionally is what broke every aarch64 build."
                     (wf_write_int_w 0 4)
                   (if (= slots 9)
                       (wf_write_int_w 0 5)
-                    3)))))))))
+                    3))))))))))
     ((:lit "make-record") :word . (bf_make_record_w args 0))
     ((:lit "make-byte-code") :word . (bf_make_byte_code_w args 0))
     ((:lit "fetch-bytecode") :word . (wf_write_nil_w 0))
@@ -39931,6 +39962,152 @@ never has one."
     (nelisp-standalone--key-tree
      variable (mapcar (lambda (sid) (cons sid 1)) (sort sids #'<)) 0)))
 
+(defconst nelisp-standalone--callpath2-m5-defs
+  '(
+      ;; callpath2: the interpreter's primitive of the Subr object FN (its
+      ;; descriptor in header bits 33-62, `nl_eic_subr_call_w''s read), ids 15 and
+      ;; up (`nl_eic_prim2_run': + - * 1+ 1- = > <= >= cons list make-vector aref aset
+      ;; length % logand), on the operand words -- what the native call already
+      ;; does (`nc_desc_call') and GNU's Bcall reaches through funcall_subr.  A value
+      ;; the primitive does not take (a float, an overflow) declines (-3) before any
+      ;; effect and the argument-array entry or the call-out runs.  GNU's Bcall
+      ;; safepoint first: list, cons and make-vector allocate.
+      (defun m5_fx_subr_prim2 (env fn stk sp argc resw)
+        (let* ((p (shr (ptr-read-u64 (- fn 6) 0) 33)))
+          (if (= p 0) -3
+            (let* ((desc (logior (logand p 63) (shl (shr p 6) 8))))
+              (if (= (nl_subr_arity_bad desc argc) 1) -3
+                (let* ((id (nl_subr_prim desc argc)))
+                  (if (< id 15) -3
+                    (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+                         (nl_eic_prim2_run id (+ stk (* (- sp argc) 8)) argc resw)))))))))
+      ;; callpath2: GNU funcall_general (eval.c:3105-3140) for a definition DEF
+      ;; that is no primitive id: a Subr object through its argument-array entry
+      ;; (`m5_fx_subr_argv', GNU funcall_subr), a byte-code function through the
+      ;; VM on the argument words (GNU funcall_lambda -> exec_byte_code, no list),
+      ;; and, when SYM is a symbol (DEF its definition), a covered closure.  OPR is
+      ;; the operator the backtrace records (record_in_backtrace's args[0]).  -3:
+      ;; not handled, nothing happened (the generic apply runs); 0 done (value in
+      ;; RESW); any other value the call's signal status.
+      (defun m5_fx_funcall_value (opr sym def stk sp argc resw env)
+        (if (= (nl_val_tag def) 17)
+            (let* ((argp (+ stk (* (- sp argc) 8)))
+                   (frame (nl_n4_push_words env opr argp argc)))
+              (if (= frame 0)
+                  (nelisp_eval_call_stash_excessive_lisp_nesting env (nl_frame_stack_limit env 0))
+                (let* ((st (wf_bytecode_w_function def stk (- sp argc) argc env resw 0 0)))
+                  (if (= st 0)
+                      (m5_fx_take (nl_n4_finish_w (heap-read-u64 resw 0) env 0 frame) resw)
+                    (if (= st 2)
+                        (seq (nl_n4_finish_w 0 env 0 frame) -3)
+                      (nl_seq2 (nl_n4_finish_w 0 env 0 frame) st))))))
+          (let* ((name (if (= (logand def 7) 6) 0 (nl_eic_builtin_name def))))
+            (if (/= name 0)
+                ;; The cell's Subr object (the legacy list's wrapper), when the
+                ;; definition still is the list that object wraps.
+                (let* ((cell (if (if (= (logand name 7) 6) (>= name 4096) 0)
+                                 (if (= (logand (ptr-read-u64 (- name 6) 0) 63) 4)
+                                     (ptr-read-u64 (- name 6) 24) 0)
+                               0)))
+                  (if (if (= (logand cell 7) 6)
+                          (if (< cell 4096) 0
+                            (if (= (logand (ptr-read-u64 (- cell 6) 0) 63) 20)
+                                (= (ptr-read-u64 (- cell 6) 8) (nl_word_canon def)) 0))
+                        0)
+                      (let* ((pst (m5_fx_subr_prim2 env cell stk sp argc resw)))
+                        (if (/= pst -3) pst
+                          (m5_fx_subr_argv env opr cell stk sp argc resw)))
+                    -3))
+              (if (= sym 0) -3
+                (let* ((rec (m5_fx_covered def argc env 0)))
+                  (if (= rec 0) -3
+                    (m5_fx_call_words rec opr (+ stk (* (- sp argc) 8)) argc env 0 resw 0))))))))
+      ;; callpath2: the arity of the builtin value FNW, (builtin NAME), from the
+      ;; Subr object in NAME's function cell (header bits 16-23 min_args, 24-31
+      ;; max_args, 127 many; `nelisp-standalone--subr-desc'), as the fixnum WORD
+      ;; -1 - (MIN | MAX << 8); 0 when FNW is no builtin or NAME's cell holds no
+      ;; Subr object (a special form, a name without arity metadata).
+      (defun bf_builtin_subr_arity_w (fnw env)
+        (let* ((name (if (= (logand fnw 7) 6) 0 (nl_eic_builtin_name fnw))))
+          (if (= name 0) 0
+            (let* ((cell (nelisp_env_lookup_function_raw_w (+ env 0) (+ env 64) name 0)))
+              (if (if (= (logand cell 7) 6)
+                      (if (< cell 4096) 0 (= (logand (ptr-read-u64 (- cell 6) 0) 63) 20))
+                    0)
+                  (let* ((hdr (ptr-read-u64 (- cell 6) 0)))
+                    (wf_write_int_w 0 (- -1 (logior (logand (shr hdr 16) 255)
+                                                    (shl (logand (shr hdr 24) 255) 8)))))
+                0)))))
+      ;; callpath2: GNU eval.c Fapply on the call's operand words (FUNCTION, the
+      ;; leading arguments, the spread list last): the interpreter's word apply
+      ;; (`nl_eic_apply_words': a proper list measured first, a directcall
+      ;; primitive on the spread words, a closure or lambda applied) in a root
+      ;; frame of ARGC + 3 words, released after the call.  -3: the generic
+      ;; apply runs (nothing happened); 0 done; 1 signalled.
+      (defun m5_fx_apply_run (stk sp argc resw env)
+        (if (= (m5_fx_apply_no_word_subr (heap-read-u64 (+ stk (* (- sp argc) 8)) 0)) 1) -3
+        (let* ((mark (nl_root_mark env)) (base (nl_root_frame env (+ argc 3))))
+          (if (= base 0) (seq (nl_root_release env mark) -3)
+            (let* ((k 0))
+              (seq
+               (while (< k argc)
+                 (seq (ptr-write-u64 base (* k 8) (heap-read-u64 (+ stk (* (+ (- sp argc) k) 8)) 0))
+                      (setq k (+ k 1))))
+               (let* ((w (nl_eic_apply_words base argc env))
+                      (st (if (= w 2) (m5_fx_apply_spread base argc resw env)
+                            (if (= w 0) 1 (seq (ptr-write-u64 resw 0 w) 0)))))
+                 (seq (nl_root_release env mark) st))))))))
+      ;; callpath2: 1 when FW (apply's FUNCTION) is a symbol object whose cell holds a
+      ;; Subr object with no word entry at all -- no directcall id (header bits
+      ;; 8-15), no argument-array word (+16), no interpreter descriptor (bits 33+):
+      ;; only the list route can run it, so `m5_fx_apply_run' declines at once.
+      (defun m5_fx_apply_no_word_subr (fw)
+        (if (if (= (logand fw 7) 6) (>= fw 4096) 0)
+            (if (= (logand (ptr-read-u64 (- fw 6) 0) 63) 4)
+                (let* ((cell (ptr-read-u64 (- fw 6) 24)))
+                  (if (if (= (logand cell 7) 6) (>= cell 4096) 0)
+                      (let* ((hdr (ptr-read-u64 (- cell 6) 0)))
+                        (if (= (logand hdr 63) 20)
+                            (if (= (logand (shr hdr 8) 255) 0)
+                                (if (= (ptr-read-u64 (- cell 6) 16) 0)
+                                    (if (= (shr hdr 33) 0) 1 0)
+                                  0)
+                              0)
+                          0))
+                    0))
+              0)
+          0))
+      ;; callpath2: what `nl_eic_apply_words' leaves (a byte-code function, a Subr
+      ;; without a directcall id, a VM-covered closure): GNU Fapply's spread of the
+      ;; proper list onto one argument array and Ffuncall on it (`m5_fx_funcall_site'
+      ;; with no site cache), in a second root frame of the caller's mark.  -3: the
+      ;; generic apply runs on the original words (nothing has happened).
+      (defun m5_fx_apply_spread (base argc resw env)
+        (let* ((last (heap-read-u64 base (* (- argc 1) 8))) (n 0) (l last))
+          (if (= (nl_eic_apply_list_ok last) 0) -3
+            (seq
+             (while (= (nl_val_tag l) 7)
+               (seq (setq n (+ n 1)) (setq l (nl_cons_cdr_word l))))
+             (let* ((total (+ (- argc 2) n)))
+               (if (> total 255) -3
+                 (let* ((mem (nl_root_frame env (+ total 2))))
+                   (if (= mem 0) -3
+                     (let* ((k 0) (l2 last))
+                       (seq
+                        (while (< k (- argc 1))
+                          (seq (ptr-write-u64 mem (* k 8) (heap-read-u64 base (* k 8)))
+                               (setq k (+ k 1))))
+                        (while (= (nl_val_tag l2) 7)
+                          (seq (ptr-write-u64 mem (* k 8) (nl_word_canon (nl_cons_car_word l2)))
+                               (setq k (+ k 1))
+                               (setq l2 (nl_cons_cdr_word l2))))
+                        (m5_fx_funcall_site 0 (heap-read-u64 mem 0) mem (+ total 1) total resw env
+                                            (+ mem (* (+ total 1) 8))))))))))))))
+  "callpath2: reader definitions of the fx call helpers whose link-set stubs
+answer -3 or 0 (`m5_fx_subr_prim2', `m5_fx_funcall_value', `bf_builtin_subr_arity_w',
+`m5_fx_apply_run' in lisp/nelisp-cc-fx-call-primitives.el); they call reader-only entries
+\(`nl_eic_prim2_run', `nl_subr_prim', `wf_bytecode_w_function', `nl_eic_apply_words').")
+
 (defun nelisp-standalone--argframe-m5-helpers ()
   "Replace only the FX list callout with proven rooted argv transport."
   (let ((shape-form (nelisp-standalone--argframe-shape-form 'argframe_sid)))
@@ -39993,7 +40170,9 @@ never has one."
                              (seq
                               (ptr-write-u64 resw 0 word)
                               (m5_fx_take (nl_n4_finish_w word env 0 frame) resw)))))))))))
-       (if (not (eq (cadr definition) 'm5_fx_call_list)) definition
+       (if (not (eq (cadr definition) 'm5_fx_call_list))
+           (or (cl-find (cadr definition) nelisp-standalone--callpath2-m5-defs :key #'cadr)
+               definition)
          `(defun m5_fx_call_list (sym fn stk sp argc env resw lslot vslot)
             (let* ((argv (+ stk (* (- sp argc) 8)))
                    (frame (nl_n4_push_words env sym argv argc)))

@@ -41,7 +41,10 @@
     "set-char-table-parent" "char-table-extra-slot" "set-char-table-extra-slot"
     "char-table-range" "set-char-table-range" "map-char-table"
     "nelisp--clear-string-bytes" "nelisp--equal-leaf" "nelisp--eval-source-string"
-    "ptr-call" "thread-spawn" "nelisp-spin-until" "fork-spawn")
+    "ptr-call" "thread-spawn" "nelisp-spin-until" "fork-spawn"
+    ;; callpath2: intern's handlers, admitted once the obarray argument is
+    ;; tested by the argument count (append-only).
+    "intern" "intern-soft")
   "Frozen append-only IDs needed before the first dispatch is generated.
 The full reader table later ratchets this suffix against structural admission;
 no old symbol ID is moved and no late mutation changes a generated dispatch.")

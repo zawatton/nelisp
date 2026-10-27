@@ -941,7 +941,9 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
           (let* ((st (seq (ptr-write-u64 (+ resw 8) 0 fn)
                           (if (> kind 20) (m5_fx_globals_run kind stk argc argc resw env oslot)
                             (if (= kind 13) (nc_funcall env site stk argc resw)
-                              (m5_fx_primitive_run kind stk argc argc resw env (+ resw 8)))))))
+                              ;; callpath2: `apply' on the staged words.
+                              (if (= kind 14) (m5_fx_apply_run stk argc argc resw env)
+                                (m5_fx_primitive_run kind stk argc argc resw env (+ resw 8))))))))
             (if (= st -3) (nc_list_call env sym fn stk argc resw oslot) st)))))
     ;; `funcall' with the site's callee cache (`m5_fx_callout' kind 13).
     (defun nc_funcall (env site stk argc resw)
