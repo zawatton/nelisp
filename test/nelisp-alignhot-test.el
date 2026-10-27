@@ -36,7 +36,10 @@
     (should table)
     (delete-dups
      (cl-loop for e from table by 4 repeat 10
-              collect (+ e 4 (nelisp-alignhot-test--u32 text e))))))
+              ;; regalloc: entries are offsets from the table start (GCC's PIC switch);
+              ;; before, from the entry's end.
+              collect (+ (if (bound-and-true-p nelisp-aot-compiler-regalloc) table (+ e 4))
+                         (nelisp-alignhot-test--u32 text e))))))
 
 (defun nelisp-alignhot-test--defun-offsets (unit)
   (mapcar (lambda (d) (plist-get d :offset)) (plist-get unit :defuns)))

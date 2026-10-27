@@ -16260,6 +16260,8 @@ prefix state prevents an emitted branch or call from reviving a cache."
   "Call EMIT, keeping profitable call-free raw NODE in registers."
   (let* ((nelisp-aot-compiler--x86-promotable-memo
           (or nelisp-aot-compiler--x86-promotable-memo (make-hash-table :test #'eq)))
+         (nelisp-aot-compiler--x86-path-count-memo
+          (or nelisp-aot-compiler--x86-path-count-memo (make-hash-table :test #'eq)))
          (plan (let ((nelisp-aot-compiler--promoted-slots
                       (if nelisp-aot-compiler--x86-local-prefix-state nil
                         nelisp-aot-compiler--promoted-slots)))
@@ -18160,6 +18162,51 @@ Absolute-base folding removes the base load and its register input."
                          (and index (not (eq (car index) :reg)) '(rsi)))))
     (and (cl-intersection writes (append inputs held)) t)))
 
+(defun nelisp-aot-compiler--x86-scaled-index (offset)
+  "Return (E SCALE DISP) when OFFSET is E*SCALE+DISP with E a call-free computation, else nil.
+SCALE is 2, 4 or 8 from `*' by that immediate or `shl' by 1-3; constant terms added to or
+subtracted from E, or from the product, move into DISP.  E is not a plain variable reference
+\(`--x86-index-form' already folds that).  GCC selects [base+index*scale+disp] the same way
+instead of materializing the scaled byte offset with imul and add (regalloc)."
+  (cl-labels
+      ((peel (n)
+         ;; N as (CORE . K): N = CORE + K for an immediate K.
+         (let ((k (and (eq (nelisp-aot-compiler--ir-kind n) 'arith)
+                       (memq (nelisp-aot-compiler--ir-get n :op) '(+ -))
+                       (nelisp-aot-compiler--imm-disp32 (nelisp-aot-compiler--ir-get n :b)))))
+           (if k
+               (let ((inner (peel (nelisp-aot-compiler--ir-get n :a))))
+                 (cons (car inner)
+                       (if (eq (nelisp-aot-compiler--ir-get n :op) '+) (+ (cdr inner) k)
+                         (- (cdr inner) k))))
+             (cons n 0))))
+       (scaled (n)
+         ;; N as (E SCALE . K) when N = (E + K) * SCALE.
+         (let ((kind (nelisp-aot-compiler--ir-kind n)))
+           (cond
+            ((and (eq kind 'arith) (eq (nelisp-aot-compiler--ir-get n :op) '*))
+             (let* ((a (nelisp-aot-compiler--ir-get n :a)) (b (nelisp-aot-compiler--ir-get n :b))
+                    (c (cond ((nelisp-aot-compiler--imm-int-p b) (nelisp-aot-compiler--ir-get b :value))
+                             ((nelisp-aot-compiler--imm-int-p a) (nelisp-aot-compiler--ir-get a :value))))
+                    (e (if (nelisp-aot-compiler--imm-int-p b) a b)))
+               (when (memq c '(2 4 8))
+                 (let ((p (peel e))) (list (car p) c (* c (cdr p)))))))
+            ((and (eq kind 'shift) (eq (nelisp-aot-compiler--ir-get n :op) 'shl)
+                  (nelisp-aot-compiler--imm-int-p (nelisp-aot-compiler--ir-get n :b))
+                  (memq (nelisp-aot-compiler--ir-get (nelisp-aot-compiler--ir-get n :b) :value) '(1 2 3)))
+             (let ((p (peel (nelisp-aot-compiler--ir-get n :a)))
+                   (c (ash 1 (nelisp-aot-compiler--ir-get (nelisp-aot-compiler--ir-get n :b) :value))))
+               (list (car p) c (* c (cdr p)))))))))
+    (let* ((outer (peel offset))
+           (form (scaled (car outer))))
+      (when form
+        (let ((e (nth 0 form)) (disp (+ (nth 2 form) (cdr outer))))
+          (and (not (nelisp-aot-compiler--x86-ref-leaf-p e))
+               (not (eq (nelisp-aot-compiler--ir-kind e) 'imm))
+               (nelisp-aot-compiler--x86-imm32-p disp)
+               (nelisp-aot-compiler--x86-tco-pure-ir-p e)
+               (list e (nth 1 form) disp)))))))
+
 (defun nelisp-aot-compiler--x86-address (ptr offset buf &optional stable held)
   "Emit what PTR + OFFSET needs and return its (:mem ...) operand, or nil.
 Nil means nothing was emitted and the caller keeps its general path.
@@ -18207,6 +18254,19 @@ or index forms (no code that could clobber rax is emitted)."
                      (nelisp-aot-compiler--x86-leaf-operand (car ix)) buf 'rsi)))
         (list :mem base index (nth 1 ix)
               (+ (nth 2 ix) (if absolute pimm 0)))))
+     ;; regalloc: E*SCALE+DISP as [base+rax*SCALE+DISP] (GCC's addressing-mode selection).
+     ((and (not stable) nelisp-aot-compiler-regalloc
+           (eq nelisp-aot-compiler--arch 'x86_64)
+           (not nelisp-aot-compiler--checked-arith)
+           (not (nelisp-aot-compiler--lisp-values-p))
+           (or (eq (car po) :mem)
+               (and (eq (car po) :reg) (memq (cadr po) '(rbx rbp r12 r13 r14 r15))))
+           (null held)
+           (nelisp-aot-compiler--x86-no-assign-p offset)
+           (nelisp-aot-compiler--x86-scaled-index offset))
+      (let ((sx (nelisp-aot-compiler--x86-scaled-index offset)))
+        (nelisp-aot-compiler--emit-value (nth 0 sx) buf)
+        (list :mem (nelisp-aot-compiler--x86-reg-of po buf 'rdi) 'rax (nth 1 sx) (nth 2 sx))))
      ((and (not stable) (memq (car po) '(:reg :mem))
            (nelisp-aot-compiler--x86-no-assign-p offset))
       (nelisp-aot-compiler--emit-value offset buf)
@@ -25683,12 +25743,18 @@ keeps one fixed-size join jump in both compilation passes."
                                           nelisp-aot-compiler--promoted-slots))
                                (progn (nelisp-aot-compiler--emit-value ref buf) 'rax))))
                   (nelisp-asm-x86_64-lea-reg-rip-label buf 'r10 table)
-                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
-                                               (list :mem 'r10 idx 4 0))
-                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
-                                               '(:mem r10 nil 1 0))
-                  (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
-                                               '(:mem r10 rax 1 4))
+                  (if nelisp-aot-compiler-regalloc
+                      ;; GCC's PIC switch: entries are offsets from the table start.
+                      (progn
+                        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+                                                     (list :mem 'r10 idx 4 0))
+                        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x01) 'r10 '(:reg rax)))
+                    (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
+                                                 (list :mem 'r10 idx 4 0))
+                    (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+                                                 '(:mem r10 nil 1 0))
+                    (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
+                                                 '(:mem r10 rax 1 4)))
                   (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax))))))
         (dolist (arm arms)
           (push (cons (car arm) (funcall label (format "%s-case-%d" id (car arm)))) labels))
@@ -25729,22 +25795,30 @@ keeps one fixed-size join jump in both compilation passes."
             (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x0F #x87 0 0 0 0))
             (nelisp-asm-x86_64-emit-fixup buf slot fallback)))
         (nelisp-asm-x86_64-lea-reg-rip-label buf 'r10 table)
-        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
+        (if nelisp-aot-compiler-regalloc
+            (progn
+              (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+                                           '(:mem r10 rax 4 0))
+              (nelisp-aot-compiler--x86-op buf t (unibyte-string #x01) 'r10 '(:reg rax))
+              (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax)))
+          (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'r10
                                        '(:mem r10 rax 4 0))
-        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
+          (nelisp-aot-compiler--x86-op buf t (unibyte-string #x63) 'rax
                                        '(:mem r10 nil 1 0))
-        (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
+          (nelisp-aot-compiler--x86-op buf t (unibyte-string #x8D) 'rax
                                        '(:mem r10 rax 1 4))
-        (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax)))
+          (nelisp-aot-compiler--x86-op buf nil (unibyte-string #xFF) 4 '(:reg rax))))
         (nelisp-asm-x86_64-define-label buf table)
         (dotimes (i (1+ (- hi lo)))
-          (let ((slot (nelisp-asm-x86_64-buffer-pos buf)))
+          (let* ((slot (nelisp-asm-x86_64-buffer-pos buf))
+                 (target (if ordered
+                             (or (cdr (assq (aref (nth 3 plan) i) labels))
+                                 (error "Ordered table entry lacks a leaf label"))
+                           (or (cdr (assq (+ lo i) labels)) fallback))))
             (nelisp-asm-x86_64-emit-bytes buf (unibyte-string 0 0 0 0))
+            ;; regalloc: TARGET - TABLE = TARGET - (SLOT + 4) + 4I + 4.
             (nelisp-asm-x86_64-emit-fixup
-             buf slot (if ordered
-                          (or (cdr (assq (aref (nth 3 plan) i) labels))
-                              (error "Ordered table entry lacks a leaf label"))
-                        (or (cdr (assq (+ lo i) labels)) fallback)))))
+             buf slot (if nelisp-aot-compiler-regalloc (cons target (+ (* 4 i) 4)) target))))
         (run-hook-with-args 'nelisp-aot-compiler--x86-inline-data-hook
                             buf (cdr (assq table (nelisp-asm-x86_64-buffer-labels buf)))
                             (* 4 (1+ (- hi lo))))
@@ -25961,15 +26035,158 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
             (push (cons (car (pop sorted)) (pop regs)) pairs))
           (cons (nreverse pairs) written))))))
 
+(defvar nelisp-aot-compiler-regalloc t
+  "Non-nil weights call-free region allocation by execution path (regalloc).
+A region's frame accesses are counted along each slot's most used path: the arms of an `if'
+and the clauses of a `cond' are exclusive, so a slot touched once in each of N arms saves one
+access per execution, not N.  A callee-saved register (pushed on every execution) must also
+pay off under static branch probabilities.  The same switch selects GCC's PIC jump-table form (entries are
+offsets from the table start, not from the entry's end): any tool that decodes emitted tables
+must read them that way (test/nelisp-alignhot-test.el does).  Slots are ranked by that count and given the pool's registers
+in order; a proven region-private `let' slot pays no entry load or exit flush.  Nil restores
+the static whole-subtree count (the A/B baseline).")
+
+(defvar nelisp-aot-compiler--x86-path-count-memo nil
+  "Eq hash table IR node -> its path slot counts during one outermost region emission, else nil.
+The region planner runs at every nested `if', `cond' and `let'; the counts of a subtree do not
+change while it is emitted, so each is computed once (regalloc).")
+
+(defun nelisp-aot-compiler--x86-path-slot-counts (node &optional expected)
+  "Return an alist (SLOT . N): frame accesses of SLOT per execution of NODE.
+Accesses are `ref', `setq-local', `let-rt' and `let-rt-n' bindings.  By default N is the
+count on SLOT's most used path: an `if' adds its test to the larger of its arms, a `cond'
+takes the largest of its clauses' prefix sums.  With EXPECTED, N is the expected count under
+GCC's static branch estimate without profile data: each arm of an `if' runs with probability
+1/2, a `cond' reaches its K-th clause with probability 2^-K and runs its body with half of
+that.  The allocator weighs spill cost by block frequency instead of counting static uses
+\(regalloc)."
+  (cl-labels
+      ((merge (a b fn)
+         (let ((out (copy-sequence a)))
+           (dolist (cell b)
+             (let ((have (assq (car cell) out)))
+               (if have
+                   (setq out (cons (cons (car cell) (funcall fn (cdr have) (cdr cell)))
+                                   (delq have out)))
+                 (push (cons (car cell) (cdr cell)) out))))
+           out))
+       (sum (a b) (if (and a b) (merge a b #'+) (or a b)))
+       (most (a b) (if (and a b) (merge a b #'max) (or a b)))
+       (scale (k a) (mapcar (lambda (c) (cons (car c) (* k (cdr c)))) a))
+       (count (v)
+         (cond
+          ((and (nelisp-aot-compiler--ir-node-p v) nelisp-aot-compiler--x86-path-count-memo)
+           (let* ((key (if expected (cons 'expected v) v))
+                  (hit (if expected 'none (gethash key nelisp-aot-compiler--x86-path-count-memo 'none))))
+             (if (not (eq hit 'none)) hit
+               (if expected (count-node v)
+                 (puthash key (count-node v) nelisp-aot-compiler--x86-path-count-memo)))))
+          ((nelisp-aot-compiler--ir-node-p v) (count-node v))
+          ((consp v) (sum (count (car v)) (count (cdr v))))
+          ((vectorp v) (let ((acc nil))
+                         (cl-loop for x across v do (setq acc (sum acc (count x))))
+                         acc))))
+       (count-node (v)
+           (let ((kind (nelisp-aot-compiler--ir-kind v)))
+             (pcase kind
+               ('if (sum (count (nelisp-aot-compiler--ir-get v :test))
+                         (if expected
+                             (sum (scale 0.5 (count (nelisp-aot-compiler--ir-get v :then)))
+                                  (scale 0.5 (count (nelisp-aot-compiler--ir-get v :else))))
+                           (most (count (nelisp-aot-compiler--ir-get v :then))
+                                 (count (nelisp-aot-compiler--ir-get v :else))))))
+               ('cond (if expected
+                          (let ((p 1.0) (acc nil))
+                            (dolist (clause (nelisp-aot-compiler--ir-get v :clauses))
+                              (setq acc (sum acc (scale p (count (car-safe clause)))))
+                              (setq acc (sum acc (scale (* 0.5 p) (count (cdr-safe clause)))))
+                              (setq p (* 0.5 p)))
+                            acc)
+                        (let ((prefix nil) (best nil))
+                          (dolist (clause (nelisp-aot-compiler--ir-get v :clauses))
+                            (setq prefix (sum prefix (count (car-safe clause))))
+                            (setq best (most best (sum prefix (count (cdr-safe clause))))))
+                          (most best prefix))))
+               (_ (let ((acc (pcase kind
+                               ((or 'ref 'setq-local 'let-rt)
+                                (let ((slot (nelisp-aot-compiler--ir-get v :slot)))
+                                  (and (integerp slot) (list (cons slot 1)))))
+                               ('let-rt-n
+                                (mapcar (lambda (b) (cons (nth 1 b) 1))
+                                        (nelisp-aot-compiler--ir-get v :bindings))))))
+                    (cl-loop for i from 1 below (length v)
+                             do (setq acc (sum acc (count (aref v i)))))
+                    acc))))))
+    (count node)))
+
+(defun nelisp-aot-compiler--x86-branch-confined-p (node slots)
+  "Non-nil when NODE is an `if' or `cond' and each of SLOTS is accessed in one arm only.
+An `if' test runs on every path, so a slot it reads is not confined; a `cond' clause's
+test belongs to its clause.  Such a region is better split: each arm plans its own
+registers, so sibling arms do not lose the pool to one arm's variables (regalloc)."
+  (let ((parts (pcase (nelisp-aot-compiler--ir-kind node)
+                 ('if (and (null (cl-intersection
+                                  slots (mapcar #'car (nelisp-aot-compiler--x86-path-slot-counts
+                                                       (nelisp-aot-compiler--ir-get node :test)))))
+                           (list (nelisp-aot-compiler--ir-get node :then)
+                                 (nelisp-aot-compiler--ir-get node :else))))
+                 ('cond (nelisp-aot-compiler--ir-get node :clauses)))))
+    (and parts slots
+         (let ((sets (mapcar (lambda (part)
+                               (mapcar #'car (nelisp-aot-compiler--x86-path-slot-counts part)))
+                             parts)))
+           (cl-every (lambda (slot) (<= (cl-count-if (lambda (set) (memq slot set)) sets) 1))
+                     slots)))))
+
+(defun nelisp-aot-compiler--x86-path-region-plan (node plan)
+  "Re-plan PLAN's registers for call-free NODE by path-weighted access counts (regalloc).
+Return (PAIRS . WRITTEN) or nil when the region saves fewer than three accesses."
+  (let* ((counts (sort (cl-remove-if
+                        (lambda (c) (or (not (integerp (car c))) (< (car c) 0)
+                                        (assq (car c) nelisp-aot-compiler--vm-reg-pairs)))
+                        (nelisp-aot-compiler--x86-path-slot-counts node))
+                       (lambda (x y) (or (> (cdr x) (cdr y))
+                                         (and (= (cdr x) (cdr y)) (< (car x) (car y)))))))
+         (private (nelisp-aot-compiler--x86-region-private-let-slots
+                   node (mapcar (lambda (c) (cons (car c) nil)) counts)))
+         (regs (copy-sequence nelisp-aot-compiler--x86-loop-regs))
+         (expected nil)
+         (pairs nil) (gain 0))
+    (dolist (c counts)
+      (when regs
+        (let* ((slot (car c)) (reg (car regs))
+               (pushed (memq reg '(r12 r13 r14 r15)))
+               (cost (+ (if (memq slot private) 0 (+ 1 (if (memq slot (cdr plan)) 1 0)))
+                        (if pushed 2 0)))
+               (saving (- (cdr c) cost)))
+          ;; A callee-saved register is pushed and popped on every execution of the region,
+          ;; so it must also pay off on the expected path, not only on the slot's best one.
+          (when (and (> saving 0) pushed)
+            (unless expected
+              (setq expected (or (nelisp-aot-compiler--x86-path-slot-counts node t) '((nil . 0)))))
+            (unless (> (- (or (cdr (assq slot expected)) 0) cost) 0)
+              (setq saving 0)))
+          (when (> saving 0)
+            (push (cons slot reg) pairs)
+            (setq regs (cdr regs))
+            (setq gain (+ gain saving))))))
+    (when (and (>= gain 3) (nelisp-aot-compiler--x86-branch-confined-p node (mapcar #'car pairs)))
+      (setq gain 0))
+    (when (>= gain 3)
+      (cons (nreverse pairs) (cdr plan)))))
+
 (defun nelisp-aot-compiler--x86-call-free-region-plan (node)
   "Return a profitable CG3 promotion plan for call-free raw NODE.
 Use the same no-call proof and register set as a CG3 loop, but charge
 each region its register loads, write-backs, and callee-saved pushes.
 At least three frame accesses must be saved; a one-use temporary never
 earns a register.  Every region falls through and flushes assigned slots
-before the surrounding code can call or allocate."
+before the surrounding code can call or allocate.  With
+`nelisp-aot-compiler-regalloc' the accesses are counted per execution path."
   (let ((plan (nelisp-aot-compiler--x86-promotion-plan node)))
-    (when plan
+    (if nelisp-aot-compiler-regalloc
+        (and plan (nelisp-aot-compiler--x86-path-region-plan node plan))
+     (when plan
       (let ((counts nil) (pairs nil) (gain 0))
         (nelisp-aot-compiler--walk-ir
          node (lambda (n)
@@ -25993,7 +26210,7 @@ before the surrounding code can call or allocate."
               (push p pairs)
               (setq gain (+ gain saving)))))
         (when (>= gain 3)
-          (cons (nreverse pairs) (cdr plan)))))))
+          (cons (nreverse pairs) (cdr plan))))))))
 
 (defun nelisp-aot-compiler--x86-tco-pure-ir-p (node)
   "Non-nil if NODE obeys CG3's no-call, no-collection register contract."

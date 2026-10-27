@@ -1,0 +1,63 @@
+#+TITLE: regalloc -- native code keeps hot locals in registers (the IPC half of the GNU gap)
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 04e5c9dfd (v28), no overlay (target/regalloc/seed/ is empty; the patch is against git HEAD). Baseline v28 = ../resume-4943-20261024/target/integ-1045-build/dynamic/nelisp-dynamic. Build budget 2. Timing and counters on CPU 13 only. Binary under test: ${REGALLOC_BIN:-target/regalloc-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes on v28: callpath2 (subr call path), textprop, hashtab; libcomp (native rows 164-188) integrating as v29. This lane adds no native rows.
+
+#+NOTE: Builds: build 1 (path-max counts) target/regalloc-build1 (src pruned), build 2 (final) target/regalloc-build.  Fixtures, parity, gcstress and gnu-speed-win-check pass on both.
+* S1 Cause with evidence
+** S1.1 v28 hardware counters per trip on reg-sum-bc, r3-mix, memq-i, aref-loop (cycles, instructions, IPC, front-end stall cycles, failed store-to-load forwards, i-cache misses) on CPU 13, NeLisp and GNU
+evidence: target/regalloc/logs/s1-pmc.txt sha256=e0f71ab1e645c79f7e79df535ce2e39c33a0a6a7643e97e6493a4245327664c4
+** S1.2 Annotated hottest native code of the 4 rows: frame-slot store->load chains, redundant tag/bounds checks, cold paths inline and call-target layout, with per-instruction counts
+evidence: target/regalloc/logs/s1-annot.txt sha256=193f7e6d1d44de859671a970fbca679f52478cf380c8490971074913279e87c3
+** S1.3 Root cause stated per row with the code generator rule that produces it and GNU's equivalent (gcc -O2 exec_byte_code / Fmemq / Faref)
+evidence: target/regalloc/logs/s1-cause.txt sha256=6b891255d934d6571fe0384b6ee5ca1b15938d10b6a52507471051290f9d2af2
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 Call-free regions get registers by execution-path weight (exclusive arms, split at confined branches, callee-saved pushes need an expected saving); E*SCALE+DISP folds into [base+index*scale+disp]; jump tables use table-relative entries (GCC PIC switch)
+#+NOTE: Not done: spilling a possible Lisp reference around calls (would lift the raw proof in execute_frame) and hot-function ordering; see REPORT.txt section 4.
+cmd: grep -q "regalloc:" lisp/nelisp-aot-compiler.el
+** S2.2 Parity corpus for the changed lowering prints identically on GNU 31.1 and the candidate
+#+TIMEOUT: 300
+cmd: sh tools/ai/regalloc/parity.sh ${REGALLOC_BIN:-target/regalloc-build/dynamic/nelisp-dynamic}
+** S2.3 Negative control: the parity runner reports a divergence on a deliberately wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/regalloc/parity.sh ${REGALLOC_BIN:-target/regalloc-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.4 GC stress (forced GC every N allocations) output of the candidate equals v28 output
+#+TIMEOUT: 300
+cmd: sh tools/ai/regalloc/gcstress.sh ${REGALLOC_BIN:-target/regalloc-build/dynamic/nelisp-dynamic}
+
+** S2.5 Native differential test: a threaded byte-code VM compiled with the new lowering equals a C reference on 4001 programs, with regalloc off and on, and is shorter
+#+TIMEOUT: 300
+cmd: (ulimit -v 8388608; timeout 280 /usr/local/bin/emacs -Q --batch -L lisp -L src -L scripts -L test -l test/nelisp-aot-regalloc-test.el -f ert-run-tests-batch-and-exit)
+
+** S2.6 Host ERT: every compiler test file gives the same result with the HEAD compiler and with regalloc, except the new regalloc test (red on HEAD, green here)
+evidence: target/regalloc/logs/ert-compare.txt sha256=ed3b19394e0c24cbe3958a4291f5bb4daaa0b383c609c6504cbac1048c185468
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/regalloc-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/regalloc-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: target/regalloc/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${REGALLOC_BIN:-target/regalloc-build/dynamic/nelisp-dynamic})
+** S3.3 Win64 build of the same units under wine: closurevm, switch and features equal GNU
+#+NOTE: Red: not built.  Build 1's PMC run showed memq-i +10% (callee-saved pushes in m5_fx_run_body regions), which forced the second Linux build; the budget of two builds left none for Win64 (a Win64 attempt of build 1's code was stopped).
+#+TIMEOUT: 600
+cmd: sh -c 'W=${REGALLOC_WIN_BIN:-$PWD/target/regalloc/win/build/nelisp.exe}; test -x "$W" && WINEPREFIX=$PWD/target/regalloc/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 Counters before/after: failed store-forwards and front-end stalls per kI down on reg-sum-bc and r3-mix, IPC up on r3-mix
+#+NOTE: Defined before measuring S4 (2026-10-27): reg-sum-bc already has a higher IPC than GNU on v28 (4.19 vs 3.60), so IPC is required to rise on r3-mix only; memq-i and aref-loop are recorded, not gated (their excess is the subr call path).
+evidence: target/regalloc/logs/s4-pmc.txt sha256=ab048cb4559b10da5f0824e696555552be9dc3e5cc5af94c53add0e0adde92f4
+cmd: grep -q "^PMC-OK" target/regalloc/logs/s4-pmc.txt
+** S4.2 reg-sum-bc and r3-mix at least 20 percent fewer cycles per trip than v28
+#+NOTE: Red: reg-sum-bc 89.5 -> 72.6 (-18.9%), r3-mix 4802 -> 4260 (-11.3%) cycles/trip; paired wall time 0.863 and 0.881 (5/5 each).
+cmd: grep -q "^CYCLES-OK" target/regalloc/logs/s4-pmc.txt
+** S4.3 No row of integ-1045/matrix/specs.json slower than 1.03x v28
+#+NOTE: Red: r3-dyn 1.032 (rerun 1.026) with 3.3% fewer instructions; geomean 0.961 over 43 rows, 31 rows faster.
+evidence: target/regalloc/timing/matrix.txt sha256=2f3a363b6ad7ac041a470fad07d044d89e28b3a4ce3ffbd6138bfc691b15da8e
+cmd: grep -q "^MATRIX-OK" target/regalloc/timing/matrix.txt
+** S4.4 Paired wall time on CPU 13 vs v28 and GNU recorded for the 4 rows (record only, no speed gate; the brief asks for the measurement)
+#+NOTE: memq-i is 1.081x v28 (0/7) at equal callgrind Ir and with scattered front-end stall sites (none at table jumps): a layout effect, reported as a regression in REPORT.txt.
+evidence: target/regalloc/timing/paired.txt sha256=51f7bd7dac32457cde0ef16c4f8eadf43f2dc3e2d1ffbd2057d0f73564573263
+cmd: grep -q "^PAIRED-OK" target/regalloc/timing/paired.txt

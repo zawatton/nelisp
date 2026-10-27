@@ -909,12 +909,15 @@ than the native `aset'."
               (list :unexpected-multibyte-buffer (length bytes))))
     (dolist (fix fixups)
       (let* ((slot (car fix))
-             (label (cdr fix))
+             ;; A `(LABEL . ADDEND)' target adds ADDEND to the displacement: a
+             ;; jump-table entry measured from the table start (regalloc).
+             (label (if (consp (cdr fix)) (cadr fix) (cdr fix)))
+             (addend (if (consp (cdr fix)) (cddr fix) 0))
              (cell (gethash label label-table)))
         (unless cell
           (signal 'nelisp-asm-x86_64-error
                   (list :unresolved-label label :at-slot slot)))
-        (let* ((rel32 (- (cdr cell) (+ slot 4)))
+        (let* ((rel32 (+ (- (cdr cell) (+ slot 4)) addend))
                (u (logand rel32 #xFFFFFFFF)))
           (aset bytes    slot      (logand u #xFF))
           (aset bytes (+ slot 1)   (logand (ash u  -8) #xFF))

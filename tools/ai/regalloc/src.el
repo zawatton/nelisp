@@ -1,0 +1,13 @@
+;;; src.el --- regalloc corpus sources (compiled by GNU into bc.el)  -*- lexical-binding: t; -*-
+(defun ra-sum (n v k) (let ((s 0) (i 0)) (while (< i n) (setq s (+ s (aref v (% i k)))) (setq i (1+ i))) (list s i)))
+(defun ra-plus (a b) (+ a b))
+(defun ra-lss (a b) (< a b))
+(defun ra-add1 (a) (1+ a))
+(defun ra-sub (a b) (- a b))
+(defun ra-deep (a b c d e f g h) (let ((x (+ a b)) (y (- c d)) (z (* e f))) (list (+ x y z g h) (if (< x y) x y) (max z g h))))
+(defun ra-switch (x) (pcase x (1 'one) (2 'two) (3 'three) (4 'four) (5 'five) (6 'six) (7 'seven) (8 'eight) ('a 'sym) (_ 'other)))
+(defun ra-mix (n) (let ((acc nil) (i 0)) (while (< i n) (push (cond ((= (% i 3) 0) (* i 2)) ((= (% i 3) 1) (list i)) (t (format "%d" i))) acc) (setq i (1+ i))) (nreverse acc)))
+(defun ra-stack (a) (let* ((b (1+ a)) (c (1+ b)) (d (1+ c)) (e (1+ d)) (f (1+ e)) (g (1+ f)) (h (+ a b c d e f g))) (list a b c d e f g h)))
+(defun ra-memq-loop (l n) (let ((c 0)) (dotimes (_ n) (setq c (+ c (length (memq 'e l))))) c))
+(defun ra-aref-loop (s) (let ((c 0)) (dotimes (j (length s)) (when (eq (aref s j) ?a) (setq c (1+ c)))) c))
+(defun ra-gc (n) (let ((l nil)) (dotimes (i n) (push (cons i (make-string 3 ?x)) l) (when (= (% i 500) 0) (garbage-collect))) (list (length l) (car (car l)) (cdr (nth 7 l)))))
