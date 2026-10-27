@@ -9552,6 +9552,23 @@ specializers; SPEC is (EQLS HEADS)), 2 (general: SPEC lists
         (if tag (setq key (cons tag key)) (setq ok nil))))
     (and ok key)))
 
+(defun nelisp-cl-generic--uses-cnm-p (body)
+  "Non-nil unless BODY, macroexpanded, surely never names
+`cl-call-next-method' or `cl-next-method-p' (GNU `cl--generic-lambda'
+expands the body with them as local functions and checks their use).
+Conservative: any occurrence, quoted or not, counts; so does a failed
+expansion."
+  (let ((todo (list (condition-case nil
+                        (if (fboundp 'macroexpand-all) (macroexpand-all (cons 'progn body)) body)
+                      (error (list 'cl-call-next-method)))))
+        (found nil))
+    (while (and todo (not found))
+      (let ((x (pop todo)))
+        (cond ((memq x '(cl-call-next-method cl-next-method-p)) (setq found t))
+              ((consp x) (push (car x) todo) (push (cdr x) todo))
+              ((vectorp x) (dotimes (i (length x)) (push (aref x i) todo))))))
+    found))
+
 (defun nelisp-cl-generic--compute-em (name args)
   "Compute NAME's effective method for ARGS: (0 PRIMARY) when only primary
 methods apply, (1 BEFORE AFTER AROUND PRIMARY) for the full standard
@@ -9559,18 +9576,21 @@ combination, (2) for no applicable method, (3) for no primary method.
 The lists hold method functions -- BEFORE/AROUND/PRIMARY most specific
 first, AFTER least specific first (its run order)."
   (let ((applicable (nelisp-cl-generic--applicable-methods name args))
-        before after around primary)
+        before after around primary (first nil))
     (dolist (e applicable)
       (let ((c (plist-get e :combinator)) (f (plist-get e :fn)))
         (cond
          ((eq c :before) (setq before (cons f before)))
          ((eq c :after) (setq after (cons f after)))
          ((eq c :around) (setq around (cons f around)))
-         (t (setq primary (cons f primary))))))
+         (t (unless primary (setq first e)) (setq primary (cons f primary))))))
     (setq primary (nreverse primary))
     (cond ((null applicable) (list 2))
           ((null primary) (list 3))
-          ((and (null before) (null after) (null around)) (list 0 primary))
+          ;; (0 PRIMARY NO-CNM): NO-CNM when the most specific primary
+          ;; method needs no next-method context.
+          ((and (null before) (null after) (null around))
+           (list 0 primary (plist-get first :no-cnm)))
           (t (list 1 (nreverse before) after (nreverse around) primary)))))
 
 (defun nelisp-cl-generic--invoke-fns (name args before after around primary)
@@ -9632,11 +9652,15 @@ struct, discards the cache.  Signals `cl-no-applicable-method' /
     (let ((status (car em)))
       (cond
        ((eq status 0)
-        (let* ((primary (car (cdr em)))
-               (nelisp-cl-generic--next-methods (cdr primary))
-               (nelisp-cl-generic--call-args args)
-               (nelisp-cl-generic--current-name (aref st 4)))
-          (apply (car primary) args)))
+        (let ((primary (car (cdr em))))
+          (if (nth 2 em)
+              ;; GNU: a method that never calls the next method is called
+              ;; directly, with no next-method context to bind.
+              (apply (car primary) args)
+            (let* ((nelisp-cl-generic--next-methods (cdr primary))
+                   (nelisp-cl-generic--call-args args)
+                   (nelisp-cl-generic--current-name (aref st 4)))
+              (apply (car primary) args)))))
        ((eq status 1)
         (nelisp-cl-generic--invoke-fns (aref st 4) args (nth 1 em) (nth 2 em)
                                        (nth 3 em) (nth 4 em)))
@@ -9917,6 +9941,10 @@ is unspecialized (§2.1/§3.1).  The method body can call
                                      :subclass-name ',(plist-get sp :subclass-name)))))
                     specializers))
                 :extra ,extra :combinator ',combinator
+                ;; libcomp: GNU `cl--generic-lambda' calls a method whose
+                ;; body never uses `cl-call-next-method'/`cl-next-method-p'
+                ;; directly, without the next-method context.
+                :no-cnm ',(not (nelisp-cl-generic--uses-cnm-p body))
                 :fn (lambda ,plain-arglist ,@body)))))))
 
 ;; ---------------------------------------------------------------------------
@@ -20949,11 +20977,13 @@ that copying a nowhere-pointing marker produces another nowhere-
 pointing marker regardless of which buffer happens to be current."
     (unless (or (null position) (integerp position) (nelisp-marker-p position))
       (signal 'wrong-type-argument (list 'integer-or-marker-p position)))
-    (let ((new (nelisp-marker--make-plain)))
+    ;; libcomp: GNU `Fcopy_marker' (marker.c) allocates the marker with its
+    ;; insertion type in one step (`build_marker'), positionally: the record
+    ;; `nelisp-marker'/`nelisp-marker-ins' (buffer nil, position 1) directly,
+    ;; not the keyword constructor and a retype afterwards.
+    (let ((new (record (if type 'nelisp-marker-ins 'nelisp-marker) nil 1)))
       (set-marker new position
                   (and (nelisp-marker-p position) (nelisp-marker-buffer position)))
-      ;; A plain marker already has insertion type nil.
-      (when type (nelisp-marker--set-insertion-type new t))
       new)))
 
 (unless (fboundp 'marker-position)
@@ -29789,8 +29819,16 @@ earlier in the chain answers t for a record, and record types are what
 struct predicates ask about most.
 `cl-type-of' does not exist in this runtime (verified: `fboundp' is
 nil), so there is nothing else to update for that name."
+    ;; libcomp: GNU `Ftype_of' is one switch on the tag; the common
+    ;; immediate types are tested first here, before the tests that call
+    ;; out (char-table, hash table, function kinds).  None of them is a
+    ;; char-table, record or hash table (a hash table is a tagged cons).
     (cond
      ((null x) 'symbol)
+     ((stringp x) 'string)
+     ((integerp x) 'integer)
+     ;; As below: `symbolp' is nil for a symbol with position.
+     ((symbolp x) 'symbol)
      ((char-table-p x) 'char-table)
      ((recordp x)
       (let ((ty (aref x 0)))
@@ -30286,44 +30324,49 @@ With non-nil LOCAL, operate on the buffer-local value.
 
 (unless (fboundp 'nelisp--run-hook-call)
   (defun nelisp--run-hook-call (fn args mode)
-    "Call FN with ARGS; for MODE `until-success'/`until-failure', `throw'
-to the `nelisp--run-hook' tag with the short-circuit result once FN's
-return value decides the outcome.  Always returns nil (the caller reads
-outcomes only through the throw or the final return of the walk)."
-    (let ((r (apply fn args)))
+    "Call FN with ARGS and answer GNU's RET for MODE: what stops the walk of
+`nelisp--run-hook-value' (eval.c `run_hook_with_args' with `funcall_nil',
+`Ffuncall' or `funcall_not').  `all' never stops (nil), `until-success'
+stops on a non-nil value, `until-failure' on nil (answering t)."
+    (let ((r (if args (apply fn args) (funcall fn))))
       (cond
-       ((eq mode 'until-success) (when r (throw 'nelisp--run-hook r)))
-       ((eq mode 'until-failure) (unless r (throw 'nelisp--run-hook nil)))))
-    nil))
+       ((eq mode 'until-success) r)
+       ((eq mode 'until-failure) (null r))
+       (t nil)))))
 
 (unless (fboundp 'nelisp--run-hook-value)
   (defun nelisp--run-hook-value (val args mode &optional hook)
     "Run hook value VAL against ARGS per MODE (`all' / `until-success' /
 `until-failure') and return the MODE-appropriate result.  A `t' element
 runs the DEFAULT value of HOOK (eval.c run_hook_with_args), skipping any
-`t' inside it; without HOOK it runs VAL itself."
-    (catch 'nelisp--run-hook
+`t' inside it; without HOOK it runs VAL itself.
+libcomp: GNU's loop, in its shape: the walk stops as soon as RET is
+non-nil (`for (; CONSP (val) && NILP (ret); ...)'), with no catch frame."
+    (let ((ret nil))
       (cond
-       ((null val) (if (eq mode 'until-failure) t nil))
+       ((null val))
        ((not (nelisp--hook-list-p val))
-        (nelisp--run-hook-call val args mode)
-        nil)
+        (setq ret (nelisp--run-hook-call val args mode)))
        (t
         (let ((cur val))
-          (while cur
+          (while (and (consp cur) (null ret))
             (let ((elt (car cur)))
               (if (eq elt t)
                   (let ((global (if hook (default-value hook) val)))
-                    (if (not (nelisp--hook-list-p global))
-                        (when global (nelisp--run-hook-call global args mode))
-                      (let ((gcur global))
-                        (while gcur
-                          (unless (eq (car gcur) t)
-                            (nelisp--run-hook-call (car gcur) args mode))
-                          (setq gcur (cdr gcur))))))
-                (nelisp--run-hook-call elt args mode)))
-            (setq cur (cdr cur)))
-          (if (eq mode 'until-failure) t nil)))))))
+                    (cond
+                     ((null global))
+                     ((not (nelisp--hook-list-p global))
+                      (setq ret (nelisp--run-hook-call global args mode)))
+                     (t
+                      (while (and (consp global) (null ret))
+                        (unless (eq (car global) t)
+                          (setq ret (nelisp--run-hook-call (car global) args mode)))
+                        (setq global (cdr global))))))
+                (setq ret (nelisp--run-hook-call elt args mode))))
+            (setq cur (cdr cur))))))
+      (cond ((eq mode 'until-success) ret)
+            ((eq mode 'until-failure) (null ret))
+            (t nil)))))
 
 (unless (fboundp 'run-hooks)
   (defun run-hooks (&rest hooks)

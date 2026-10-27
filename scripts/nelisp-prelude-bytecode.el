@@ -281,25 +281,49 @@ SPANS contains (START . END) pairs for each element after the list head."
 ;; macros plus those of every module it (transitively) `require's from this
 ;; tree.
 
-;; nativecomp N3 (nc4, target/nativecomp/DESIGN.md stage N3): the regexp
-;; entry points of `string-match' / `string-match-p' / `match-beginning' /
-;; `match-end' and the native matcher glue they run on every call.  As GNU
-;; byte code they ran on the byte-code VM; as lexical source they are fx
-;; records the native compiler lowers (lisp/nelisp-fxir-native-data.el), so
-;; their callers' calls are direct native calls.  The pure-Lisp matcher
-;; behind them stays byte code.
-(defconst nelisp-prelude-bytecode-fx-names
-  '(nlre--string-match-entry nlre--string-match-p-entry nlre-string-match
-    nlre--nat-sm nlre--nat-program nlre--nat-fold-default-p nlre--nat-run
-    nlre--nat-publish nlre-match-beginning nlre-match-end nlre--match-string-entry
-    ;; `nlre--nat-fold-default-p' funcalls it on every case-folding match.
-    current-buffer
-    ;; body2: the expand-file-name family, so its calls are direct native calls
-    ;; (rows in lisp/nelisp-fxir-native-data.el, tools/ai/body2-harvest.el).
-    expand-file-name nelisp--expand-file-name-general nelisp--path-plain-p
-    nelisp--windows-paths-p nelisp--path-drive nelisp--path-slashify
-    file-name-as-directory)
-  "Defuns the byte-code pass keeps as source for the fx compiler.")
+;; nativecomp N3 (nc4) kept the regexp entry points of `string-match' and
+;; friends as source by name, so the fx compiler and the native units compile
+;; them instead of the byte-code VM running them.
+;; libcomp: a defun the native compiler has a row for is kept as source,
+;; whatever its name -- the rule nc4's list applied to its names, made
+;; general (body2's expand-file-name family is covered by its rows too).
+;; GNU native-comp likewise loads the native code of a function the
+;; .eln holds instead of its byte code.  The rows are the harvested hot set
+;; (lisp/nelisp-fxir-native-data.el); a row whose function changed stays on
+;; the fx VM (the install pass compares the fxir), never on byte code.
+(defconst nelisp-prelude-bytecode--native-data-file
+  (expand-file-name "../lisp/nelisp-fxir-native-data.el"
+                    (file-name-directory (or load-file-name buffer-file-name
+                                             default-directory)))
+  "The harvested native rows (NAME ID ...) of `nelisp-fxir-native-data'.")
+
+(defvar nelisp-prelude-bytecode--fx-names nil
+  "Cache of `nelisp-prelude-bytecode-fx-names': (FILE MTIME . NAMES).")
+
+(defun nelisp-prelude-bytecode-fx-names ()
+  "Defuns the byte-code pass keeps as source for the fx compiler: the names
+of the native rows in `nelisp-prelude-bytecode--native-data-file'."
+  (let* ((file nelisp-prelude-bytecode--native-data-file)
+         (mtime (and (file-readable-p file)
+                     (file-attribute-modification-time (file-attributes file))))
+         (cache nelisp-prelude-bytecode--fx-names))
+    (if (and cache (equal (car cache) file) (equal (cadr cache) mtime))
+        (cddr cache)
+      (let ((names nil))
+        (when mtime
+          (with-temp-buffer
+            (insert-file-contents file)
+            (goto-char (point-min))
+            (let ((form t))
+              (while (setq form (condition-case nil (read (current-buffer))
+                                  (end-of-file nil)))
+                (when (and (eq (car-safe form) 'defconst)
+                           (eq (nth 1 form) 'nelisp-fxir-native-data))
+                  (dolist (row (eval (nth 2 form) t))
+                    (push (car row) names)))))))
+        (setq names (nreverse names))
+        (setq nelisp-prelude-bytecode--fx-names (cons file (cons mtime names)))
+        names))))
 
 (defvar nelisp-prelude-bytecode-repo-root nil
   "Repository root for resolving a core module's `require'd sources.
@@ -1002,9 +1026,9 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                  ;; Whole-file GNU compilation may already have erased a
                  ;; native head, including one introduced by another macro.
                  (setq reason "native-special-head-macro-requires-source"))
-                ;; nativecomp N3 (nc4): kept as source, so the fx compiler and
-                ;; the native units compile them (`nelisp-prelude-bytecode-fx-names').
-                ((memq name nelisp-prelude-bytecode-fx-names)
+                ;; Kept as source, so the fx compiler and the native units
+                ;; compile them (`nelisp-prelude-bytecode-fx-names').
+                ((memq name (nelisp-prelude-bytecode-fx-names))
                  (setq reason "fx-native-preferred"))
                 ((or (nelisp-prelude-bytecode--unlowered-native-head-p body)
                      ;; A macro can introduce these after source scanning.

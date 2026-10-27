@@ -105,11 +105,18 @@ def rewrite_lanes(s, lanes):
     loop = re.search(r'^for l in [^;]*; do\n(.*?)^done\n', s, flags=re.M | re.S)
     if not loop:
         sys.exit('accept/run.sh: lane loop not found')
-    body = ('  n=${l%-*}; L=$R/$l/tools/ai/$n-progress.org\n'
+    # Drop the lines an earlier run inserted, so they do not pile up per version.
+    rest = ''.join(ln for ln in loop.group(1).splitlines(True)
+                   if not re.match(r'  (n=\$\{l%-\*\}|L=\$R/|export "\$\(printf|python3 \S*lane-ledger-bincheck)',
+                                   ln))
+    # A re-ported lane worktree (libcomp3-...) keeps its ledger name (libcomp);
+    # lanes whose own name ends in a digit (body1, nc4) have a ledger under it.
+    body = ('  n=${l%-*}; [ -f $R/$l/tools/ai/$n-progress.org ] || n=${n%[0-9]}\n'
+            '  L=$R/$l/tools/ai/$n-progress.org\n'
             '  export "$(printf %s "$n" | tr a-z- A-Z_)_BIN=$B"\n'
             f'  python3 {CHECK} $L'
             ' > $O/$n-bincheck.log 2>&1 || echo "$n bincheck FAIL (see $n-bincheck.log)"\n'
-            + re.sub(r'^  n=\$\{l%-\*\}; ', '  ', loop.group(1), flags=re.M))
+            + rest)
     new = f'for l in {" ".join(lanes)}; do\n{body}done\n'
     return s[:loop.start()] + new + s[loop.end():]
 

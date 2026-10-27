@@ -1,0 +1,64 @@
+#+TITLE: libcomp (ported to v27) -- library Lisp that runs interpreted must run compiled (attrib10x lever 1): native rows for the hot prelude/library paths, GNU-shaped wrappers
+#+NOTE: Re-ported 2026-10-27 to v27 = 8d25b511d (v26 + vmfast, rxword, reprs) in worktree libcomp3-20261105: rows harvested again on v27 sources (ids 164-188 after body2; 149/150 in place), including rxword's buffer route nlre--nat-program-syn / nlre--nat-syn-ensure; the most-recently-used pattern memo is also on nlre--nat-program-syn; rxword parity and plain-search guard rechecked. Baseline v27 = ../resume-4943-20261024/target/integ-1044-build/dynamic/nelisp-dynamic for S2-S4.
+#+NOTE: Earlier port 2026-10-27 to coordinator HEAD 4bd8c139a (v26 = v25 + callpath + body1 + body2) in worktree libcomp2-20261105: the lane changes re-applied, native rows renumbered after body2 (164-186; 149/150 re-harvested in place) and harvested again on v26, the general keep-as-source rule now also covering body2 rows. Baseline for S2-S4 is v26 = ../resume-4943-20261024/target/integ-1043-build/dynamic/nelisp-dynamic; two more builds: A (Linux) and B (Win64 cross build). S1 evidence is the v25 analysis (copied from libcomp-20261105); census-v26.txt shows the same hot non-native set on v26.
+#+NOTE: Originally created 2026-10-27 before implementation (after the S1 census tool). Seed = coordinator HEAD 54f554ede (v25), clean; target/libcomp/seed/ is empty, the patch is against git HEAD. Baseline v25 = ../resume-4943-20261024/target/integ-1042-build/dynamic/nelisp-dynamic. Build budget 2. Timing on CPU 11 only. Binary under test: ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic}.
+#+NOTE: v25 per-trip baselines (attrib10x/pmc.json, CPU 11, instructions per trip): re-search 1278681 (21 searches per trip, 354 conses per trip = 16.9 per search), markers 225124, run-hooks 59624, generic 101538. Targets: re-search <= 639340 and <= 63 conses per trip (3 per search); markers <= 135074; run-hooks <= 35774; generic <= 60923.
+
+* S1 Cause with evidence
+** S1.1 Census of the 10 attrib10x rows on v25 (tools/ai/libcomp-census.el, functions counted by running each row): no hot closure is declined by the fx compiler (decl=0); the hot non-native functions are byte-code-adopted (re-search chain, record-type, struct-arg, format-time-string chain) or fx records without a native row (markers, run-hooks, cl-generic dispatch, plist-put)
+evidence: target/libcomp/logs/census-v25.txt sha256=ed75f82fedf97985c28c9b6fbc0fbbb41965a5550575883f3d3bbd9518651550
+cmd: grep -q "^SUMMARY buffers-re-search-simple-i native=12 fx=2 decl=0 bytecode=20" target/libcomp/logs/census-v25.txt && grep -q "^SUMMARY adv-run-hooks-3 native=0 fx=6 decl=0 bytecode=0" target/libcomp/logs/census-v25.txt && grep -q "^SUMMARY obj-generic-type-str native=0 fx=5 decl=0" target/libcomp/logs/census-v25.txt && grep -q "^SUMMARY buffers-markers-i native=6 fx=8 decl=0 bytecode=2" target/libcomp/logs/census-v25.txt
+** S1.2 The 17 conses per search are call-protocol conses: on v25, 229 of 334 consboxes per trip come from wf_bytecode_call (byte code calling with an argument list) and 105 from m5_fx_call_list (funcall of nlre--current-buffer-function and friends)
+cmd: grep -q "^CONS v25 buffers-re-search-simple-i wf_bytecode_call=229 m5_fx_call_list=105" target/libcomp/logs/s1-cons.txt
+** S1.3 The census tool reports the decline reason of a declined closure (red-checked on a closure over an assigned variable) and REPORT.txt lists the hot non-native functions with reasons, before and after
+cmd: grep -q "^REASON nelisp-casetab--copy-char-table decl unsupported:(lambda" target/libcomp/logs/decline-reason.txt
+cmd: grep -q "^HOT-BEFORE" target/libcomp/REPORT.txt && grep -q "^HOT-AFTER" target/libcomp/REPORT.txt
+
+* S2 Fix: rows, generic keep-as-source rule, GNU-shaped wrappers (offline red/green)
+** S2.1 Generic rule: the byte-code pass keeps as source every defun that has a harvested native row (no per-name list); the v25-v27 rule adopted nlre--nat-bsearch
+cmd: grep -q "libcomp: a defun the native compiler has a row for" scripts/nelisp-prelude-bytecode.el && ! grep -q "(defconst nelisp-prelude-bytecode-fx-names" scripts/nelisp-prelude-bytecode.el
+#+TIMEOUT: 120
+cmd: emacs --batch -Q -L lisp -L scripts -l nelisp-prelude-bytecode --eval '(kill-emacs (if (and (memq (quote nlre--nat-bsearch) (nelisp-prelude-bytecode-fx-names)) (memq (quote current-buffer) (nelisp-prelude-bytecode-fx-names)) (memq (quote nelisp--path-slashify) (nelisp-prelude-bytecode-fx-names)) (not (memq (quote nlre--match-at) (nelisp-prelude-bytecode-fx-names)))) 0 1))'
+** S2.2 Native rows harvested for the hot non-native set (re-search chain, markers, run-hooks, cl-generic dispatch, plist-put) and each new row compiles offline as its own unit
+cmd: sh -c 'for f in nlre--re-search-forward nlre--nat-bsearch nlre--nat-layout-ok nlre--nat-buffer-text set-marker copy-marker run-hooks nelisp--run-hook-value nelisp-cl-generic--call nelisp-cl-generic--value-tag plist-put; do grep -q "^    ($f [0-9]" lisp/nelisp-fxir-native-data.el || exit 1; done'
+cmd: grep -q "^UNITROWS ok" target/libcomp/logs/unitrows.log && ! grep -q "^ERR " target/libcomp/logs/unitrows.log
+** S2.3 GNU parity corpus (re-search-forward with bound/count/noerror variants and match-data; markers incl. insertion types and deleted buffers; run-hooks with local hooks and t; cl-defmethod eql/head/type specializers and cl-call-next-method): the lane binary equals GNU 31.1, and a mutant transcript is caught
+#+TIMEOUT: 300
+cmd: sh tools/ai/libcomp-parity.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} gnu
+#+TIMEOUT: 300
+cmd: sh tools/ai/libcomp-parity.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.5 rxword's word-boundary behaviour preserved on the lane binary: its parity corpus equals GNU 31.1 and the plain-search guard holds (CPU 11)
+#+TIMEOUT: 600
+cmd: sh ../rxword-20261105/tools/ai/rxword/parity.sh $(realpath ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic})
+#+TIMEOUT: 600
+cmd: RXWORD_CPU=11 sh ../rxword-20261105/tools/ai/rxword/plain-check.sh $(realpath ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic})
+** S2.4 End to end on the built binary: the census shows the targeted functions native (0 row-stale, 0 byte code on the re-search, markers, run-hooks and generic rows except the eval'd per-generic dispatcher trampoline)
+#+TIMEOUT: 600
+cmd: sh tools/ai/libcomp-census-check.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic}
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/libcomp-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/libcomp-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: target/libcomp/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+cmd: grep -q "buffer 21/21 PASS" target/libcomp/logs/fixtures.log && grep -q "weak 24/24 PASS" target/libcomp/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/libcomp/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/libcomp/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic})
+** S3.3 nc1-nc4 native corpora still pass on the lane binary (interp = VM = native, mutants caught)
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc4-check.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc4-check.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} mutant-caught
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc1-native-check.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc1-native-check.sh ${LIBCOMP_BIN:-target/libcomp-build/dynamic/nelisp-dynamic} mutant-caught
+** S3.4 Win64 build of the same tree under wine: closurevm, switch and features equal GNU
+#+NOTE: Build B: target/libcomp/win/run-win.sh build (integ-1043/win recipe), the exe at target/libcomp/win/build/nelisp.exe, its own wine prefix. The native lowering generates no rows on Win64 (`nelisp-cc-fxir-native-windows'), so the Win64 image runs the changed Lisp on the word VM.
+#+TIMEOUT: 600
+cmd: sh -c 'W=${LIBCOMP_WIN_BIN:-$PWD/target/libcomp/win/build/nelisp.exe}; test -f "$W" && WINEPREFIX=$PWD/target/libcomp/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 re-search-simple-i: instructions per trip at least 50 percent below v27 and at most 3 conses per search (callgrind)
+cmd: python3 target/libcomp/cg/s4check.py re-search
+** S4.2 buffers-markers-i, adv-run-hooks-3, obj-generic-type-str: instructions per trip at least 40 percent below v27
+cmd: python3 target/libcomp/cg/s4check.py markers run-hooks generic
+** S4.3 Paired wall time on CPU 11 vs v27 (GNU recorded): the four rows faster (>= 6 of 7 pairs), reg-sum-bc and r3-mix within 3 percent
+cmd: python3 target/libcomp/timing/s4check.py

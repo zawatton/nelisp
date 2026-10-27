@@ -2727,17 +2727,33 @@ then the 128-entry syntax map read by the word and symbol assertions.")
 (defvar nlre--nat-seen nil
   "(BUFFER . TICK) of the last buffer search that found no usable text memo.")
 
+(defvar nlre--nat-last nil
+  "(REGEXP FOLD LITERAL . ENTRY): the last answer of `nlre--nat-program',
+REGEXP a private copy.  GNU's `compile_pattern' (search.c) looks first at
+the most recently used compiled pattern (`searchbuf_head', kept in front)
+and compares its text (`string_equal'); a loop searching for one
+pattern then never hashes it.")
+
 (defun nlre--nat-program (re fold literal)
   "Return (PROGRAM . GROUPS) for RE (a literal string when LITERAL), or nil."
-  (let* ((tbl (if literal (if fold nlre--nat-lits-fold nlre--nat-lits)
-                (if fold nlre--nat-progs-fold nlre--nat-progs)))
-         (p (gethash re tbl)))
-    (if p (if (eq p :no) nil p)
-      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
-      (let* ((src (if literal (regexp-quote re) re))
-             (prog (nlre--nat-compile src fold))
-             (entry (and prog (cons prog (aref (nlre--compiled-pattern src) 1)))))
-        (puthash (copy-sequence re) (or entry :no) tbl)
+  (let ((last nlre--nat-last))
+    (if (and last (eq (car (cdr last)) fold) (eq (car (cdr (cdr last))) literal)
+             ;; `equal' of two strings compares their text, as
+             ;; `string_equal' does; compiled code inlines it (Bequal).
+             (equal re (car last)))
+        (cdr (cdr (cdr last)))
+      (let* ((tbl (if literal (if fold nlre--nat-lits-fold nlre--nat-lits)
+                    (if fold nlre--nat-progs-fold nlre--nat-progs)))
+             (p (gethash re tbl))
+             (entry
+              (if p (if (eq p :no) nil p)
+                (when (> (hash-table-count tbl) 2000) (clrhash tbl))
+                (let* ((src (if literal (regexp-quote re) re))
+                       (prog (nlre--nat-compile src fold))
+                       (e (and prog (cons prog (aref (nlre--compiled-pattern src) 1)))))
+                  (puthash (copy-sequence re) (or e :no) tbl)
+                  e))))
+        (setq nlre--nat-last (cons (copy-sequence re) (cons fold (cons literal entry))))
         entry))))
 
 ;; Programs with word and symbol assertions read the syntax map, which a caller must
@@ -2750,20 +2766,33 @@ then the 128-entry syntax map read by the word and symbol assertions.")
 (defvar nlre--nat-sprogs-fold (make-hash-table :test 'equal)
   "Like `nlre--nat-sprogs' for case-folding searches.")
 
+(defvar nlre--nat-last-syn nil
+  "(REGEXP FOLD . ENTRY): the last answer of `nlre--nat-program-syn', REGEXP a
+private copy -- the buffer routes' most recently used pattern, checked first as
+in `nlre--nat-last'.")
+
 (defun nlre--nat-program-syn (re fold)
   "Like `nlre--nat-program' for a regexp RE, also compiling word and symbol assertions."
-  (let* ((tbl (if fold nlre--nat-sprogs-fold nlre--nat-sprogs))
-         (p (gethash re tbl)))
-    (if p (if (eq p :no) nil p)
-      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
-      (let* ((prog (let ((nlre--nat-allow-syn t)) (nlre--nat-compile re fold)))
-             (entry (and prog (cons prog (aref (nlre--compiled-pattern re) 1)))))
-        (puthash (copy-sequence re) (or entry :no) tbl)
+  (let ((last nlre--nat-last-syn))
+    (if (and last (eq (car (cdr last)) fold) (equal re (car last)))
+        (cdr (cdr last))
+      (let* ((tbl (if fold nlre--nat-sprogs-fold nlre--nat-sprogs))
+             (p (gethash re tbl))
+             (entry
+              (if p (if (eq p :no) nil p)
+                (when (> (hash-table-count tbl) 2000) (clrhash tbl))
+                (let* ((prog (let ((nlre--nat-allow-syn t)) (nlre--nat-compile re fold)))
+                       (e (and prog (cons prog (aref (nlre--compiled-pattern re) 1)))))
+                  (puthash (copy-sequence re) (or e :no) tbl)
+                  e))))
+        (setq nlre--nat-last-syn (cons (copy-sequence re) (cons fold entry)))
         entry))))
 
 (defun nlre--nat-fold-default-p ()
-  "Non-nil when the current buffer folds case with the built-in mapping."
-  (and (eq (funcall nlre--current-buffer-function) nlre--translate-memo-buffer)
+  "Non-nil when the current buffer folds case with the built-in mapping.
+The native matcher's own path (`nlre--nat-have'): the current buffer is
+read where `nlre--nat-bsearch' reads it, as GNU reads `current_buffer'."
+  (and (eq nelisp--current-buffer nlre--translate-memo-buffer)
        (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
        (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner)
        (null nlre--translate-memo)))
@@ -3464,31 +3493,44 @@ The scan of REGEXP is memoized: it depends only on the pattern's text."
                 (apply #'unibyte-string (append quoted nil))))))))))
 
 (defun nlre--re-search-forward (regexp &optional bound noerror count)
-  (let ((r (if (and nlre--nat-have (or (null count) (eql count 1)))
+  "`re-search-forward': GNU's `search_command' (search.c) forward.
+One forward repetition -- the common case -- is the native matcher's when it
+takes the pattern; everything else, including what it declines, is
+`nlre--re-search-forward-lisp'."
+  (let ((r (if (and nlre--nat-have (or (null count) (eq count 1)))
                (nlre--nat-bsearch regexp bound noerror nil)
              t)))
     (if (eq r t) (nlre--re-search-forward-lisp regexp bound noerror count) r)))
 
 (defun nlre--re-search-forward-lisp (regexp &optional bound noerror count)
-  ;; Two pre-existing (not perf-related) parity gaps found while adding
-  ;; the timing/parity matrix for the fix above; both probed against
-  ;; Emacs 31.1 rather than assumed, and both fixed here since they sit
-  ;; in the exact function the perf fix already touches.  Neither was
-  ;; reachable via the search-forward/search-backward literal-string
-  ;; wrappers before now, since `search-backward' itself did not exist
-  ;; (see `search-backward' in scripts/nelisp-stdlib-prelude.el).
-  ;;
-  ;; 1) COUNT 0 used to fall through to `(or count 1)' treating 0 as
-  ;;    itself (0 is non-nil in Lisp), leaving the search loop's `left'
-  ;;    at 0 -- no iterations, `result' stays nil, and NOERROR t then
-  ;;    answered nil instead of real Emacs's unconditional "no-op,
-  ;;    return point" for COUNT 0.  Probed against Emacs 31.1: true
-  ;;    under NOERROR nil/t/other alike, AND even with an otherwise
-  ;;    invalid (wrong-side) BOUND -- 0 repetitions never looks at BOUND
-  ;;    at all -- so this check must come before check 2 below, not
-  ;;    after it.
-  (if (eq count 0)
-      (funcall nlre--point-function)
+  ;; libcomp: GNU `search_command' (search.c), in its order.  COUNT is
+  ;; checked as a fixnum before REGEXP is checked as a string.  The
+  ;; direction is COUNT's sign, so a negative COUNT is the backward search
+  ;; (`re-search-backward' is the same command with the direction negated).
+  ;; COUNT 0 still checks BOUND against the direction it would have (N = 0
+  ;; is not > 0, so a BOUND after point is on the wrong side), then
+  ;; `search_buffer' sets the match data to the empty match at point and
+  ;; nothing moves.  Probed on Emacs 31.1: (re-search-forward "b" 4 t 0)
+  ;; with point 2 signals "Invalid search bound (wrong side of point)",
+  ;; with bound 1 it answers 2 and leaves the match data (2 2).
+  (unless (or (null count) (fixnump count))
+    (signal 'wrong-type-argument (list 'fixnump count)))
+  (unless (stringp regexp)
+    (signal 'wrong-type-argument (list 'stringp regexp)))
+  (cond
+   ((and count (< count 0))
+    (nlre--re-search-backward regexp bound noerror (- count)))
+   ((eq count 0)
+    (when (markerp bound) (setq bound (marker-position bound)))
+    (when (and bound (not (integerp bound)))
+      (signal 'wrong-type-argument (list 'integer-or-marker-p bound)))
+    (let ((pt (funcall nlre--point-function)))
+      (when (and bound (> bound pt))
+        (signal 'error (list "Invalid search bound (wrong side of point)")))
+      (setq nlre--last-caps (vector (cons pt pt))
+            nlre--last-buffer (funcall nlre--current-buffer-function))
+      pt))
+   (t
     ;; 2) BOUND on the wrong side of point signalled nothing at all here
     ;;    (`re-search-backward' already has the mirror-image check for
     ;;    its own direction) -- real Emacs signals plain `error'
@@ -3529,9 +3571,12 @@ The scan of REGEXP is memoized: it depends only on the pattern's text."
         ;; when a later one fails (COUNT above 1); none succeeding leaves it.
         (setq nlre--last-caps (if found good old-caps)
               nlre--last-buffer (if found nlre--last-buffer old-buffer))
+        ;; GNU sets point only once the whole search succeeded, so a
+        ;; NOERROR t failure (a later repetition of COUNT) leaves it at
+        ;; the origin; any other NOERROR moves it to the limit.
         (if noerror
-            (progn (unless (eq noerror t) (funcall nlre--goto-char-function limit)) nil)
-          (signal 'search-failed (list regexp)))))))
+            (progn (funcall nlre--goto-char-function (if (eq noerror t) origin limit)) nil)
+          (signal 'search-failed (list regexp))))))))
 
 (defun nlre--regex-last-match-before (regexp string lower max-end &optional from)
   "Return the rightmost (START . CAPS) match in STRING.
