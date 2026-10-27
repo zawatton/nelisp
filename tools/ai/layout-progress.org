@@ -1,0 +1,49 @@
+#+TITLE: Hot-function ordering and loop alignment at link time (layout, attrib34 lever 5)
+#+NOTE: Created 2026-10-28 before implementation; 17 criteria. Seed = coordinator HEAD 01c6b97fc (v34 + gate tools).
+#+NOTE: 2026-10-28 rebased to v35 = 28c60a8c1 (worktree layout2-20261106): S1 evidence (cause, on v34) is kept; S2-S4 baselines are now v35 = resume target/integ-1052-build; the hot-order list is regenerated from a v35 profile; S2.4 adds s6-cons1 and s6-concat (6 rows); denominator unchanged at 17. Baseline binary v34 = resume target/integ-1051-build/dynamic/nelisp-dynamic. Problem: matrix rows swing +-5-10% between integrations at identical callgrind Ir (v29 s6-nrev, v30 r4-car/mkvec64, v33 maphash); NeLisp front-end stall cycles are 8-23% vs GNU 2-5% (attrib34 section 4, CPU 11). Swing rows: s6-nrev, r4-car, r7-maphash-bc, r4-nth. Perf rows: attrib34's lists-memq-i, ctl-unwind-chain-20, tm-fts-13, buffers-re-search-simple-bc. Timing on CPU 12 only. Lane binary: $LAYOUT_BIN (default target/layout-build/dynamic/nelisp-dynamic).
+* S1 Cause of the equal-Ir swing, with counters
+** S1.1 Control: run-to-run, ASLR and stack-offset noise of the 4 swing rows on v34 is measured (CPU 12), so a layout swing is distinguishable from noise
+evidence: target/layout/s1/noise.txt sha256=b71881bfdbd60b69259f37fc410bf9605b27baeceaf6eea09574d160532bde23
+** S1.2 The swing is reproduced deterministically by padding the text of the same compiled units (+0..4 KiB in steps), with equal instruction counts across pads
+evidence: target/layout/s1/sweep-base.txt sha256=3a8d4245c131147ff79015be440154eb8408330b4f3e86157684af2658cbbc48
+** S1.3 Hardware counters (Zen 3 PMC) of fast and slow pads name the mechanism
+evidence: target/layout/s1/counters.txt sha256=4ef696a597b203972fc2b5cee84481ce47200d146a29a5c352acb5f04cc51724
+** S1.4 End to end: the base-policy sweep shows a >2% spread on at least one swing row with instructions equal within 0.5%
+cmd: python3 tools/ai/layout/check-sweep.py swing target/layout/s1/sweep-base.json
+* S2 Layout fix in the AOT backend / link step
+** S2.1 ERT: link-time ordering, alignment and padding behave as specified (red on the seed linker, green with the change)
+cmd: ulimit -v 8388608; timeout 120 /usr/local/bin/emacs --batch -Q -L lisp -l test/nelisp-link-layout-test.el -f ert-run-tests-batch-and-exit
+** S2.2 The committed hot-order profile list is reproduced byte for byte by its generator script from the committed profile input
+cmd: python3 tools/ai/layout/hot-order.py --check
+** S2.3 Deterministic: two links of the same units with the same policy give byte-identical binaries
+evidence: target/layout/s2/determinism.txt sha256=f0e12574cab87d7c2f1d30c897d7fc7b5659e19544f4035535209b95f5c478b0
+** S2.4 End to end: with the fix, padding the image (+0..4 KiB in steps) moves none of the 6 swing rows (s6-nrev, r4-car, r4-nth, r7-maphash-bc, s6-cons1, s6-concat) by more than 2%
+#+NOTE: 2026-10-28 data file changed from sweep-fix.json (18 pads, 5 reps) to sweep-final.json (fix, base and same-binary groups of 6 engines, 9 reps, one session; on v35 the base group is v35's own units relinked with pads) so the result can be read against the measured noise floor; the 2% bound is unchanged.
+cmd: python3 tools/ai/layout/check-sweep.py stable target/layout/s2/sweep-final.json --only fix-
+* S3 One integrated build
+** S3.1 Linux build A rc=0 with prelink records <= 384
+evidence: target/layout/s3/build-a.txt sha256=24ef5c1eb50625713abe2cd61be330d0852cb8715fdf09eef070433f82a359b8
+** S3.2 Fixtures: weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+#+NOTE: 2026-10-28 changed from an evidence hash to a check of the fixture report (an evidence hash would also pass on a failing report).
+cmd: python3 -c "import json; d=json.load(open('target/layout/fixtures-a/report.json')); c=d['checks']; assert d['status']=='EXPECTED_BASELINE_RED_REMAINS' and c['weak24']['passed'] and c['gnu56']['passed'] and c['buffer21']['passed'] and c['afrt25']['pass_count']==24 and c['afrt25']['expected_baseline_red']"
+evidence: target/layout/s3/fixtures.txt sha256=435dbfe22ad144a5d15545d1bd66a0559fc0ee58e87f51252394200bae71dc6e
+** S3.3 Native-row census on the lane binary: stale=0 dup=0
+#+TIMEOUT: 300
+cmd: bash tools/ai/native-row-census.sh . "$(realpath ${LAYOUT_BIN:-target/layout-build/dynamic/nelisp-dynamic})"
+** S3.4 Win64 build B: wine closurevm / switch / features check passes
+evidence: target/layout/s3/win64.txt sha256=4ebd2cff48caeb938c2630348bfdf41a8477389aa654aea70e2792143b19bd3c
+** S3.5 End to end: the lane binary evaluates a form and passes gnu-speed-win-check natively
+#+TIMEOUT: 300
+cmd: ulimit -v 8388608; sh tools/ai/gnu-speed-win-check/check.sh "$(realpath ${LAYOUT_BIN:-target/layout-build/dynamic/nelisp-dynamic})"
+* S4 Paired timing vs v35 and GNU (CPU 12)
+** S4.1 Paired timing of the swing rows plus reg-sum-bc and r3-mix vs v35 and GNU (gnu-gap-bench, CPU 12, idle gate)
+evidence: target/layout/s4/paired.txt sha256=038698073101cf22b0e3447f7c44fbacb9bd7c02c93ad5ec54abffbb979fbd84
+** S4.2 Matrix geomean (v35 spec rows) of the lane binary is not worse than v35's, and no row is a WORK regression by matrix-layout-check
+#+NOTE: 2026-10-28 changed from an evidence hash to a check of the recorded result (geomean line and the matrix-layout-check exit status).
+#+NOTE: 2026-10-28 v35: the full matrix was not rerun in this lane (the coordinator's integration matrix covers it); stays red until then.
+cmd: python3 -c "import re; t=open('target/layout/s4/matrix.txt').read(); g=float(re.search(r'geomean A/v35 ([0-9.]+)', t).group(1)); assert g <= 1.0 and 'matrix-layout-check rc=0' in t, g"
+** S4.3 Front-end stall share (00A9 / cycles) is lower than v35's on the 4 perf rows
+#+NOTE: 2026-10-28 changed from an evidence hash to a check of the recorded result.
+cmd: grep -q 'rows with lower front-end stall share: 4/4' target/layout/s4/festall.txt
+** S4.4 End to end: the S4 tables were produced from the lane binary whose sha256 is recorded in S3.1
+cmd: python3 tools/ai/layout/check-s4.py
