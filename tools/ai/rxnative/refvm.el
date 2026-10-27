@@ -2,8 +2,11 @@
 ;; Mirrors m5_rx_* in scripts/nelisp-standalone-build.el step for step so the
 ;; program compiler (nlre--nat-compile) can be checked against GNU Emacs in a
 ;; host Emacs without a standalone build.
+(require 'cl-lib)
 (defconst rxn-fcap 65536)
 (defconst rxn-ucap 65536)
+(defvar rxn--frames nil)
+(defvar rxn--undo nil)
 
 (defun rxn-words (prog)
   (let* ((n (/ (length prog) 4)) (w (make-vector n 0)) (i 0))
@@ -25,12 +28,27 @@
 
 (defun rxn-alen (op) (cond ((= op 1) 2) ((= op 2) 3) ((= op 3) 1) (t 34)))
 
-(defun rxn-run (w prog tp n lim pc0 pos0 regs)
+(defun rxn-bnd (tp n pos op sm)
+  "Mirror of m5_rx_bnd: 1 holds, 0 fails, -2 decline.  SM holds the syntax map at 204+C."
+  (let* ((bb (if (= pos 0) -1 (aref tp (1- pos))))
+         (ab (if (>= pos n) -1 (aref tp pos))))
+    (cond
+     ((and (>= op 18) (<= op 19) (or (< bb 0) (< ab 0))) (if (= op 18) 1 0))
+     ((or (>= bb 128) (>= ab 128)) -2)
+     (t (let* ((wb (if (< bb 0) 0 (aref sm (+ 204 bb)))) (wa (if (< ab 0) 0 (aref sm (+ 204 ab))))
+               (b1 (if (< op 20) (if (= wb 1) 1 0) (if (> wb 0) 1 0)))
+               (a1 (if (< op 20) (if (= wa 1) 1 0) (if (> wa 0) 1 0))))
+          (cond ((or (= op 16) (= op 20)) (if (and (= a1 1) (= b1 0)) 1 0))
+                ((or (= op 17) (= op 21)) (if (and (= b1 1) (= a1 0)) 1 0))
+                ((= op 18) (if (= b1 a1) 0 1))
+                (t (if (= b1 a1) 1 0))))))))
+
+(defun rxn-run (w prog tp n lim pc0 pos0 regs &optional sm)
   "Run from PC0 at POS0; return end byte, -1 no match, -2 decline."
   (let ((pc pc0) (pos pos0) (frames nil) (sp 0) (undo nil) (usp 0)
         (res -3) (failing nil) (fold (/= 0 (logand (aref w 2) 4)))
         (steps 0))
-    (setq frames (make-vector rxn-fcap nil) undo (make-vector rxn-ucap nil))
+    (setq frames (or rxn--frames (setq rxn--frames (make-vector rxn-fcap nil))) undo (or rxn--undo (setq rxn--undo (make-vector rxn-ucap nil))))
     (while (= res -3)
       (setq steps (1+ steps))
       (if failing
@@ -109,10 +127,13 @@
                                   (setq sp (1+ sp)))))
                        (if (= st -2) (setq res -2)
                          (setq pos (+ pos k) pc nxt))))))
+           ((and (>= op 16) (<= op 21))
+            (let ((r (rxn-bnd tp n pos op sm)))
+              (cond ((= r 1) (setq pc (1+ pc))) ((= r 0) (setq failing t)) (t (setq res -2)))))
            (t (setq res -2))))))
     res))
 
-(defun rxn-exec (prog text start limit anchored)
+(defun rxn-exec (prog text start limit anchored &optional sm)
   "Return nil (no match), t (decline), or (START . CAPS) with CAPS a list of (s . e)."
   (let* ((w (rxn-words prog)) (nreg (aref w 0)) (ng (aref w 1)) (flags (aref w 2))
          (uni (not (multibyte-string-p text)))
@@ -122,6 +143,8 @@
          (lb (if uni limit (length (encode-coding-string (substring text 0 limit) 'utf-8 t))))
          (regs (make-vector (max nreg 2) -1))
          (i sb) (found nil) (res -3) (done nil))
+    (when (and (/= 0 (logand flags 8)) uni) (setq done t res -2))
+    (when (and (/= 0 (logand flags 16)) (or (null sm) (< (length sm) 332))) (setq done t res -2))
     (when (and (/= 0 (logand flags 1)) (> sb 0)) (setq done t))
     (while (and (not done) (<= i lb))
       (let ((skip nil))
@@ -130,7 +153,7 @@
             (let ((b (aref tp i)))
               (when (and (< b 128) (= 0 (aref prog (+ (* 4 5) b)))) (setq skip t)))))
         (unless skip
-          (setq res (rxn-run w prog tp n lb (aref w 3) i regs))
+          (setq res (rxn-run w prog tp n lb (aref w 3) i regs sm))
           (cond ((>= res 0) (setq found t done t))
                 ((= res -2) (setq done t))))
         (when (/= 0 (logand flags 1)) (setq done t))
@@ -140,9 +163,10 @@
      ((not found) nil)
      (t
       (let* ((cs (if uni i (+ start (let ((c 0) (j sb)) (while (< j i) (unless (= (logand (aref tp j) 192) 128) (setq c (1+ c))) (setq j (1+ j))) c))))
-             (delta (- cs i)) (caps nil) (g (1- ng)))
+             (caps nil) (g (1- ng)))
+        (cl-flet ((cp (p) (if uni p (+ cs (let ((c 0) (j i)) (while (< j p) (unless (= (logand (aref tp j) 192) 128) (setq c (1+ c))) (setq j (1+ j))) c)))))
         (while (>= g 0)
           (let ((s (if (= g 0) i (aref regs (* 2 g)))) (e (if (= g 0) res (aref regs (1+ (* 2 g))))))
-            (setq caps (cons (if (and (>= s 0) (>= e 0)) (cons (+ s delta) (+ e delta)) nil) caps)))
-          (setq g (1- g)))
+            (setq caps (cons (if (and (>= s 0) (>= e 0)) (cons (cp s) (cp e)) nil) caps)))
+          (setq g (1- g))))
         (cons cs caps))))))

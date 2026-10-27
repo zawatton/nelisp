@@ -213,6 +213,12 @@ set-char-table-range	native-demotable	Doc 225 S3: only its default-slot store is
 map-char-table	native-demotable	Doc 225 S3: unused; map_char_table is prelude Lisp (nelisp--chartab-map-char-table)
 nelisp--char-table-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot access (cell 0, GNU's ascii and contents vector); no Lisp form exists
 nelisp--char-table-set-slots	native-must-stay	Doc 225 S3, clause 1: char-table slot store (cell 0); no Lisp form exists
+symbol-plist	native-must-stay	reprs, clause 1 (symbol cell access): GNU data.c Fsymbol_plist reads the plist slot of struct Lisp_Symbol (entry slot 2, Doc 226 D1); Lisp reference nelisp--symbol-plist-slow covers nil, t and the error
+setplist	native-must-stay	reprs, clause 1 (symbol cell access): GNU data.c Fsetplist stores the plist slot (entry slot 2); Lisp reference nelisp--setplist-slow covers nil, t and the error
+get	native-must-stay	reprs, clause 1 (symbol cell access): GNU fns.c Fget walks the symbol's plist slot (plist_get); Lisp reference nelisp--get-slow covers nil, t and the error. Replaces the global nelisp-stdlib--symbol-plists hash table (about 5k Ir per plist element under fx, GNU about 24)
+put	native-must-stay	reprs, clause 1 (symbol cell access): GNU fns.c Fput does plist_put on the symbol's plist slot, appending a new pair at the end; Lisp reference nelisp--put-slow covers nil, t and the error
+nelisp--bv-binop	native-review	reprs, clause 1 (bool-vector data): GNU data.c bool_vector_binop_driver and Fbool_vector_not a machine word at a time over the packed bit buffer; the Lisp reference is the per-bit loop that nelisp--bool-vector-binop used before (git history), the checks stay in the prelude wrapper
+nelisp--bv-count	native-review	reprs, clause 1 (bool-vector data): GNU data.c count_population, count_consecutive and the subsetp case of the binop driver over the packed bit buffer; checks stay in the prelude wrappers
 signal	native-must-stay	evaluator core (eval/apply/funcall/signal/symbol cells)
 error	native-review	No classification row; review against Doc 211 §6.
 equal	native-must-stay	Minimal native surface clause 2: evaluator builtin arity entry delegates behavior to Lisp nelisp--equal-reference; tagged atom leaf remains private

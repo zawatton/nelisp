@@ -1,0 +1,51 @@
+#+TITLE: vmfast -- byte-code VM dispatch, binding and unwind at GNU cost (attrib10x lever 2)
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 54f554ede (v25), no overlay (target/vmfast/seed/ is empty; the patch is against git HEAD). Baseline v25 = ../resume-4943-20261024/target/integ-1042-build/dynamic/nelisp-dynamic. Build budget 2. Callgrind on CPUs 0-7 (heavy-run.sh); wall time on CPU 14 only (resurvey25/run25.done exists). Binary under test: ${VMFAST_BIN:-target/vmfast-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes own: callpath (subr call protocol), body1 (fixnum bodies, run-time interning incl. nl_closure_shape_p), body2 (printer, strings). Dependencies on them are recorded in target/vmfast/REPORT.txt.
+
+* S1 Cause with evidence
+** S1.1 lists-memq-bc v25 per-instruction profile of wf_bytecode_w_fast_run / execute_frame (two-N callgrind, --dump-instr): Ir per trip per opcode arm and which opcodes decline to the outer loop
+evidence: target/vmfast/logs/s1-memq.txt sha256=af635ce3af90167403f786dd5f87293be2d308983cd2ecdedcf5fefb8e018b95
+** S1.2 tm-fts-13 v25 bind/unwind cost: lean binds that spill the 5-record in-place array into conses, and the list-event unbinds (mirror lookup) that follow, with counts per call
+evidence: target/vmfast/logs/s1-fts.txt sha256=9939f6acc344c38f3fb438abf81eb613f687f67836161993dba1b90825a255a7
+** S1.3 GNU reference recorded: exec_byte_code Ir per opcode on the same rows, specbind/unbind_to cost per op
+evidence: target/vmfast/logs/s1-gnu.txt sha256=c9a7581cb631a484897dd070ee9a1cee2e89058608137929a78c8a823b55024e
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 Allocation-free lean binding: the in-place record array holds a frame's nested binds without consing (no spill below the new capacity)
+#+NOTE: tm-fts-13 consbox from lean_bind per call: v25 90, build 2 48 (one 24-record spill remains; S4.1).
+cmd: grep -q "vmfast: specpdl capacity" scripts/nelisp-standalone-build.el
+** S2.2 Opcode fast paths of the GNU-inlined set that v25 declines on the measured rows stay in the fast loop (memq eq on symbol objects, length of a list)
+cmd: grep -q "vmfast: GNU EQ" scripts/nelisp-standalone-build.el
+** S2.3 VM parity corpus (all opcodes incl. condition-case/unwind-protect/catch inside bc, dynamic binding of specials, non-local exits through bindings, deep nesting past the record capacity, max-lisp-eval-depth) prints identically on GNU 31.1 and the candidate
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast/parity.sh ${VMFAST_BIN:-target/vmfast-build/dynamic/nelisp-dynamic}
+** S2.4 Negative control: the parity runner reports a divergence on a deliberately wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/vmfast/parity.sh ${VMFAST_BIN:-target/vmfast-build/dynamic/nelisp-dynamic} mutant-caught
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/vmfast-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/vmfast-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+#+NOTE: Build 2 (target/vmfast-build): fixtures as expected; gnu-speed-win-check closurevm 24 / switch / features PASS; F1 prelink 354.
+evidence: target/vmfast/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${VMFAST_BIN:-target/vmfast-build/dynamic/nelisp-dynamic})
+** S3.3 Win64 build of the same units under wine: closurevm, switch and features equal GNU
+#+NOTE: Red: not built; both builds of the budget went to Linux.
+#+TIMEOUT: 600
+cmd: sh -c 'W=${VMFAST_WIN_BIN:-$PWD/target/vmfast/win/build/nelisp.exe}; test -x "$W" && WINEPREFIX=$PWD/target/vmfast/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 Per-opcode Ir on lists-memq-bc and on a dispatch microbench at most 2x GNU's exec_byte_code; bind and unwind Ir per op before/after recorded with zero allocations
+#+NOTE: Per op (row Ir / ops): memq-bc 46.1 vs GNU 29.8 (1.55x), reg-sum-bc 29.7 vs 16.8 (1.77x). Red: bind is not allocation-free (one spill of 24 records per tm-fts-13 call).
+evidence: target/vmfast/logs/s4-perop.txt sha256=93f64e38a5421b74885dc4a87f46b23f7e2224dbe51d6837697081ae2e3b5022
+cmd: grep -q "^PEROP-OK" target/vmfast/logs/s4-perop.txt
+** S4.2 lists-memq-bc, tm-fts-13 and reg-sum-bc Ir per trip at least 40 percent below v25
+#+NOTE: Ir per trip v25 -> build 2: lists-memq-bc 3781 -> 691 (-81.7%), tm-fts-13 152682 -> 122866 (-19.5%), reg-sum-bc 421 -> 386 (-8.3%), r3-mix 14598 -> 11504. Red on fts (prelude timefns is dynamic-binding bytecode: libcomp dependency) and reg-sum (AOT codegen: memory-resident loop locals, per-op bounds checks); REPORT.txt section 4.
+cmd: python3 tools/ai/vmfast/s4ir.py target/vmfast/logs/ir.txt
+** S4.3 Paired wall time on CPU 14 vs v25 and GNU: the three rows not slower, reg-sum-bc and r3-mix within 3 percent
+#+NOTE: ns/step v25 -> vmfast (ratio, pairs; GNU): memq-bc 416 -> 46.4 (0.112, 7/7; 28.3), tm-fts-13 20577 -> 16668 (0.810, 7/7; 905), reg-sum-bc 24.1 -> 21.1 (0.877, 7/7; 15.1), r3-mix 1264 -> 938 (0.742, 7/7; 238).
+evidence: target/vmfast/timing/paired.txt sha256=151449e746dfa88f492fdf50cbd572bc1ac02bcf89cb1813df80bc9ef9e7c35f
+cmd: grep -q "^PAIRED-OK" target/vmfast/timing/paired.txt

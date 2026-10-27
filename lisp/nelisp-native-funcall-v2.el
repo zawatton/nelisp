@@ -3,7 +3,6 @@
 (require 'cl-lib)
 (require 'nelisp-bytecode-cleanup)
 (declare-function nelisp-native-frame-v2-bank-copy-emit "nelisp-native-frame-v2" (plan inputs roots body))
-(defvar nelisp-stdlib--symbol-plists)
 (defvar nelisp--bytecode-lisp-providers)
 (defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-2")
 (let ((descriptor
@@ -231,12 +230,11 @@
       ;; Freeze its source-owned body and dependencies, never its public cell.
       (get-provider
        (let ((symbolp-value '(builtin symbolp)) (signal-value '(builtin signal))
-             (gethash-value '(builtin gethash)) (plist-get-value '(builtin plist-get)))
+             (symbol-plist-value '(builtin symbol-plist)) (plist-get-value '(builtin plist-get)))
          (lambda (symbol property)
            (unless (funcall symbolp-value symbol)
              (funcall signal-value 'wrong-type-argument (list 'symbolp symbol)))
-           (funcall plist-get-value
-                    (funcall gethash-value symbol nelisp-stdlib--symbol-plists) property)))))
+           (funcall plist-get-value (funcall symbol-plist-value symbol) property)))))
 (defun nelisp-native-funcall-v2-initializer (name)
   "Materialize only a canonical frozen VM primitive, never a public function cell."
   (unless (funcall association name originals) (error "Unknown funcall primitive initializer"))

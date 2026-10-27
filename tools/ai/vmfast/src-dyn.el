@@ -1,0 +1,12 @@
+;;; src-dyn.el --- vmfast VM parity corpus, dynamic-binding part (GNU 31.1 byte-compiles it with dynamic binding) -*- lexical-binding: nil; -*-
+(defun vfd-args (a b &optional c &rest d) (list a b c d))
+(defun vfd-amp (&optional x) (list x))
+(defun vfd-ampname (&x &optional &y) (list &x &y))
+(defun vfd-many (a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 a16 a17 a18)
+  (let ((x (+ a1 a18)) (y (list a16 a17)))
+    (list x y (vfd-args a1 a2) (vfd-args a1 a2 a3 a4 a5))))
+(defun vfd-inner () (list (boundp 'vfd-p) (and (boundp 'vfd-p) (symbol-value 'vfd-p))))
+(defun vfd-outer (vfd-p) (vfd-inner))
+(defun vfd-run () (list (vfd-args 1 2) (vfd-args 1 2 3 4 5) (vfd-amp) (vfd-amp 9)
+                        (vfd-many 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18)
+                        (vfd-outer 'dyn) (vfd-inner)))

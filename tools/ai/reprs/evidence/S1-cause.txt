@@ -1,0 +1,27 @@
+reprs lane, cause evidence (v25 = integ-1042-build).  Source: attrib10x/REPORT.txt, survey4 rows, probes of this lane.
+
+Problem A (sym-plist-put-50, 27x GNU): `put' kept plists in the global hash table
+nelisp-stdlib--symbol-plists (scripts/nelisp-stdlib-prelude.el); `put' and `plist-put' are prelude Lisp running
+under the fx interpreter (66% of the row's instructions are m5_fx_run_body / primitive_run / cached_function,
+about 5k Ir per plist element).  GNU: struct Lisp_Symbol has a plist slot, Fput -> plist_put walks it in C
+(about 24 Ir per element).  Doc 226 D1 already gives every symbol entry a plist slot (entry slot 2, +32 of a
+symbol object); nothing wrote it.  Fix: native get/put/symbol-plist/setplist over that slot (clause 1, symbol
+cell), the table removed.
+
+Problem B (ct-aset-ct, 38x): `aset' on a char-table calls the prelude Lisp nelisp--char-table-aset ->
+nelisp--char-table-set (34 callouts and 11 subr calls per aset under fx).  The 3-level sub-char-table layout
+(chartab.c) is already GNU's and `aref' is native; only the store is Lisp.  Fix: native char_table_set for the
+case that allocates no sub-char-table (clause 1, char-table slot); allocation stays Lisp.
+Case loops (ct-upcase-greek-str 1.2 ms/trip, 35 us per character; 777x GNU): per character the prelude runs
+nelisp--case-word-character-p (char-syntax, 5.9 us) and nelisp--case-character-piece (27 us, of which binary
+searches over the Unicode range vectors in Lisp, nelisp--unicode-full-map / titlecase-property, are most).
+
+Problem C (ct-bool-vector-ops): bool-vector-union and the other binops call a lambda per bit through
+nelisp--bool-vector-binop (about 2.4 us per bit); count-population walks bit by bit.  GNU data.c
+bool_vector_binop_driver works a machine word at a time.  The packed buffer is exactly ceil(N/8) bytes
+(nl_alloc_bool_vector), so words are read only where they fit.
+
+Baseline divergences from GNU found by the parity corpora (baseline-parity-v25.txt): bool-vector-union and
+friends with a mismatched DEST signal 2 sizes where GNU signals 3 (wrong_length_argument (a, b, dest));
+and with DEST given they answer DEST (or a fresh vector) where GNU answers nil when DEST did not change.
+Plists and char-tables are equal to GNU on the corpora today (guards for the move).

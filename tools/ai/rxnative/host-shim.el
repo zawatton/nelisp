@@ -6,7 +6,7 @@
   (defvar nelisp-casetab--epoch 0)
   (defvar nelisp-casetab--epoch-owner nil)
   (defun nelisp--rx-exec (prog string start limit flags capvec _scratch)
-    (let* ((ng (aref prog 4)) (r (rxn-exec prog string start limit (= (mod flags 2) 1))))
+    (let* ((ng (aref prog 4)) (r (rxn-exec prog string start limit (= (mod flags 2) 1) capvec)))
       (cond ((eq r t) t) ((null r) nil)
             (t (let ((g 0) (caps (cdr r)))
                  (while (< g ng)

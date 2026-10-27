@@ -1,0 +1,106 @@
+#+TITLE: rxword: native regexp word boundaries, non-ASCII literals, far string-match
+#+NOTE: Binary under test: ${RXWORD_BIN} (default target/rxword-build/b2, the lane's last build).  b2 was built from the V1 sources; the shipped patch is V2 = V1 with the syntax-map call moved out of `nlre--nat-run' (see REPORT.txt, "V1 -> V2").  The V2 sources were checked functionally on b2 (runtime load of lisp/nelisp-stdlib-regexp.el: parity corpus equal to GNU) but not rebuilt (2-build cap), so S4.6 stays a failing cmd on b2 until the integrated build is metered.
+
+* S1 Cause with evidence
+
+** S1.1 hl-re-search-count-buf: \\<beta\\> costs 55x plain beta on v25 (Lisp matcher)
+evidence: target/rxword/evidence/s1-word-v25.txt sha256=4f3c71ccc40dcf663460944af5856d9d7ab022f1b426824d2574c911335a2fe3
+
+** S1.2 callgrind: bytecode matcher dominates the row, m5_rx_* is absent
+evidence: target/rxword/evidence/s1-word-callgrind.txt sha256=ea4b01cc0b726c0626919b2c6556efd1fbcbce9831f16647f6b340e028554d2c
+
+** S1.3 far string-match: 110 us vs 62 ms depending on heap layout, explained (aref cursor-cache collision on the Lisp path)
+evidence: target/rxword/evidence/s1-far.txt sha256=b5a896d9996d977e671a29854fc129e024a9bd435cae92f68546e43d19fc1999
+evidence: target/rxword/evidence/s1-far-check-v25.txt sha256=860a0267f94d319de78792094dcba704a2e40bf03d83bd18c021d6cdc4191504
+
+** S1.4 GNU mechanisms read (wordbeg/wordend/wordbound opcodes, string_char_to_byte)
+evidence: target/rxword/evidence/s1-gnu.txt sha256=601bdfaaeccefc27a73f89f232b53cbc56b842bdfb59f930174736244879cd6e
+
+** S1.5 end-to-end: the recorded baseline shows both defects (word >= 20x plain, far window of 8 layouts at ~62 ms)
+cmd: awk '/WBRATIO wordbeg-end/ {exit !($3+0 >= 20)}' target/rxword/evidence/s1-word-v25.txt && test "$(grep -c 'per-call-us=6' target/rxword/evidence/s1-far-check-v25.txt)" -ge 8 && grep -q 'far-check exit=1' target/rxword/evidence/s1-far-check-v25.txt
+
+* S2 Fix with red/green checks and GNU parity
+
+** S2.1 Reference VM + program compiler agree with GNU string-match on the word / non-ASCII / legacy corpus (0 bad, >= 40000 native runs)
+#+TIMEOUT: 300
+cmd: ( ulimit -v 8388608; timeout 280 emacs --batch -Q -l tools/ai/rxword/host-parity.el 2>&1 | awk '/^RESULT/ {split($4,a,"="); split($3,b,"="); ok = (b[2]==0 && a[2]>=40000)} END {exit !ok}' )
+
+** S2.2 Red control: the same harness on the baseline compiler runs far fewer native cases (< 20000)
+evidence: target/rxword/evidence/s2-host-control-baseline.txt sha256=35a814618f9b3ba7de7c35b5784b9a1a887708b6e05617716fb07257be6ab4d3
+cmd: awk '/^RESULT/ {split($4,a,"="); ok = (a[2] < 20000)} END {exit !ok}' target/rxword/evidence/s2-host-control-baseline.txt
+
+** S2.3 NeLisp binary: 84100-case corpus (\\< \\> \\b \\B \\_< \\_>, syntax tables, multibyte/unibyte, case-fold, match-data, buffer loops, looking-at) equals GNU 31.1
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/parity.sh "$B"
+
+** S2.4 Negative control: the corpus comparison fails when one NeLisp line is damaged
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); PARITY_MUTATE=1 sh tools/ai/rxword/parity.sh "$B" >/dev/null; test $? -eq 1
+
+** S2.5 Word-boundary search within 3x of plain search on the same buffer (v25: 55-60x)
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/word-check.sh "$B"
+
+** S2.6 Far string-match cost is layout independent: driver path lengths 130..156 all under 2 ms per call (v25: eight layouts at 62 ms)
+#+TIMEOUT: 600
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/far-check.sh "$B"
+
+** S2.7 Far string-match cost is independent of the start offset (900000 vs 1000: ratio <= 1.5, < 500 us)
+#+TIMEOUT: 120
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/startoff-check.sh "$B"
+
+** S2.8 end-to-end: the two survey rows return GNU's results
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/rows-check.sh "$B"
+
+* S3 One integrated build passing fixtures
+
+** S3.1 b2 built (rc 0) from the frozen sources
+evidence: target/rxword/evidence/s3-build-b2.txt sha256=9a54586b9e06a7486be5fd6f9ef56b404790f86153581fc628bfe0b49e88b232
+
+** S3.2 fixtures: weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+evidence: target/rxword/evidence/s3-fixtures.txt sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+cmd: grep -q 'weak 24/24 PASS' target/rxword/evidence/s3-fixtures.txt && grep -q 'GNU 56/56 PASS' target/rxword/evidence/s3-fixtures.txt && grep -q 'AFRT 24/25; unchanged exit-hook-result-gc RED' target/rxword/evidence/s3-fixtures.txt && grep -q 'buffer 21/21 PASS' target/rxword/evidence/s3-fixtures.txt
+
+** S3.3 gnu-speed-win-check (closurevm, switch, features) passes on the Linux binary
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/gnu-speed-win-check/check.sh "$B" "" >/dev/null 2>&1
+
+** S3.4 F1 prelink records <= 384 (b2: 354)
+evidence: target/rxword/evidence/s3-build-b2.txt sha256=9a54586b9e06a7486be5fd6f9ef56b404790f86153581fc628bfe0b49e88b232
+cmd: awk '/compiler-f1-prelink/ {exit !($3+0 <= 384)}' target/rxword/evidence/s3-build-b2.txt || awk '$1=="nelisp-compiler-f1-prelink-v1" {exit !($3+0 <= 384)}' target/rxword/evidence/s3-build-b2.txt
+
+** S3.5 Win64 wine closurevm/switch/features (not run: second-build cap, no Windows target build of this lane)
+pending
+
+** S3.6 end-to-end: the rxnative smoke and the host glue pass
+#+TIMEOUT: 300
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); ( ulimit -v 8388608; timeout 60 "$B" --load tools/ai/rxnative/smoke.el | grep -q 'SMOKE OK' ) && ( ulimit -v 8388608; timeout 200 emacs --batch -Q -l tools/ai/rxnative/run-glue.el 2>&1 | grep -q 'GLUE ok=[0-9]* bad=0' )
+
+* S4 Paired timing vs v25 and GNU, regression rows
+
+** S4.1 hl-re-search-count-buf row (CPU 10, 5 paired reps): 711.5 ms -> 25.6 ms per trip (GNU 0.66 ms)
+evidence: target/rxword/evidence/s4-hl-row.json sha256=d54c75d4537f62252879b63e94a269851b0340d4eacaa054d4b60249eff80376
+
+** S4.2 mb-mbstr-string-match-far in the slow and the fast layout: 62.3 ms / 109 us -> 8.4 us per call (GNU 0.43 us)
+evidence: target/rxword/evidence/s4-far-slow.json sha256=f6c3787fd585941bc139da16ed185b2613272000b73f07b7f96a3080ce370659
+evidence: target/rxword/evidence/s4-far-fast.json sha256=23b62a97c243515e59aba41303c16d3394aa47ac973317002edd520752e7feae
+
+** S4.3 word-boundary vs plain search on one buffer, v25 / b2 / GNU
+evidence: target/rxword/evidence/s4-word-v25.txt sha256=ff32b43ca28eec27564cfb9e2ec458a3f9e43361e1233e412652718f4c78560e
+evidence: target/rxword/evidence/s4-word-b2.txt sha256=733e226b7ea61eedb156a27f628a68d227763a2a2d1178c9988cb94e0c0ae524
+evidence: target/rxword/evidence/s4-word-gnu.txt sha256=a1f83e186d76b0729f5acd259a7323dd35353506374fc93eb2e793d3017341e2
+
+** S4.4 regression rows reg-sum-bc and r3-mix (b2 vs v25: +1.7%, -2.1%)
+evidence: target/rxword/evidence/s4-reg-sum-bc.json sha256=257098fadeee7f64f1a8c99719b0d8e55650e2fc8a40f87505d84b7620b6dead
+evidence: target/rxword/evidence/s4-r3-mix.json sha256=e85a0827fbab38f7acc6572770d58a3876b2b81620927bb8bbdf895aa6964ae8
+
+** S4.5 recorded timings meet the verdict rules (hl and slow-far >= 10x faster, regression rows within 3%)
+cmd: python3 tools/ai/rxword/s4-verdict.py
+
+** S4.6 Plain ASCII searches are not slower than v25 (re-search-forward <= 10.6, string-match <= 5.5 us per match); known red on the V1 build b2
+#+NOTE: v25 measured 9.19 / 4.84; b2 (V1, stale native row of nlre--nat-run) 11.62 / 7.39 -- evidence s4-plain-*.  V2 removes the cause; confirm with the integrated build.
+evidence: target/rxword/evidence/s4-plain-v25.txt sha256=2dcfb5029720efcfe289923a8c96767c7059ee4d5a9ff0dc40ac30385d357257
+evidence: target/rxword/evidence/s4-plain-b2-stale-row-variant.txt sha256=673c236e2ef460ff8d219d5d1df88e115c69e71ca3298aa01d43a431df73dd8e
+#+TIMEOUT: 120
+cmd: B=$(realpath "${RXWORD_BIN:-target/rxword-build/b2/nelisp-dynamic}"); sh tools/ai/rxword/plain-check.sh "$B"

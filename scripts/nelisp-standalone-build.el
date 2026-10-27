@@ -22949,43 +22949,32 @@ bytes are written into a fresh 8-byte buffer instead."
                       2))
                 rc))))))
     ;; GNU Bget is Fget (bytecode.c Bget, fns.c Fget), plist_get on the
-    ;; symbol's property list.  Here that list is SYM's value in
-    ;; `nelisp-stdlib--symbol-plists', looked up and walked on WORDs: no
-    ;; argument list and no Sexp slot.  The bytecode `get' must ignore a
-    ;; rebinding of the Lisp function `get', as GNU's opcode does.  SYM is a
-    ;; symbol WORD or view; the value WORD (nil when absent), or 0 with
-    ;; void-variable stashed when the table is unbound and STASH is 1 (0:
-    ;; nil, for a signal's condition lookup that must not clobber it).
+    ;; symbol's property list: the plist slot of SYM's entry (Doc 226 D1 slot 2),
+    ;; walked on WORDs: no argument list and no Sexp slot.  The bytecode `get' must
+    ;; ignore a rebinding of the Lisp function `get', as GNU's opcode does.  SYM is a
+    ;; symbol WORD or view, or nil or t, whose plists live in the variables
+    ;; `nelisp--nil-plist' and `nelisp--t-plist' (no entry to hold them).  Answers
+    ;; the value WORD (nil when absent).  STASH is unused: there is no table to be unbound.
     (defun wf_bytecode_get_word (env sym prop stash)
-      (let* ((tbl (bf_dynamic_lookup_w env 'nelisp-stdlib--symbol-plists 0)))
-        (if (or (= tbl 0) (= tbl 2))
-            (if (= stash 1)
-                (seq (nl_stash_void_variable env 'nelisp-stdlib--symbol-plists) 0)
-              3)
-          (let* ((cur (wf_bytecode_plist_of tbl sym)) (value 3) (done 0) (cell 0) (next 0))
-            (seq
-             (while (if (= done 0) (wf_bytecode_w_consp cur) 0)
-               (seq
-                (setq cell (nl_word_payload cur))
-                (setq next (heap-read-u64 cell 8))
-                (if (= (wf_bytecode_w_eqw (heap-read-u64 cell 0) prop) 1)
-                    (seq (setq done 1)
-                         (setq value (if (wf_bytecode_w_consp next)
-                                         (heap-read-u64 (nl_word_payload next) 0) 3)))
-                  (setq cur (if (wf_bytecode_w_consp next)
-                                (heap-read-u64 (nl_word_payload next) 8) 3)))))
-             value)))))
-    ;; TBL's value for the symbol SYM (nil when absent or TBL is no table),
-    ;; read as `nl_ht_get_synced_w' reads it, on WORDs: the bucket vector's
-    ;; own WORD, as `nl_fx_lookup_in' reads the VM's table.  An immediate
-    ;; (nil, t) is looked up through a view, as `wf_arg_ptr' gave one.
-    (defun wf_bytecode_plist_of (tbl sym)
-      ;; Hashtab's storage (Doc 228): `nl_ht_find_in' syncs identity hashes and
-      ;; answers an entry number (0 when absent) that `nl_ht_entry_value' reads.
-      (if (/= (nl_word_tag64 tbl) 7) 3
-        (let* ((key (if (= (logand sym 1) 1) (wf_word_view sym) sym))
-               (entry (nl_ht_find_in tbl key)))
-          (if (= entry 0) 3 (nl_ht_entry_value tbl entry)))))
+      (let* ((cur (if (= (logand sym 1) 1)
+                      (let* ((v (if (= sym 3) (bf_dynamic_lookup_w env 'nelisp--nil-plist 0)
+                                  (bf_dynamic_lookup_w env 'nelisp--t-plist 0))))
+                        (if (if (= v 0) 1 (= v 2)) 3 v))
+                    (let* ((entry (nelisp_mirror_lookup_entry_owned env sym)))
+                      (if (= entry 0) 3 (nl_pl_read entry)))))
+             (value 3) (done 0) (cell 0) (next 0))
+        (seq
+         (while (if (= done 0) (= (wf_bytecode_w_consp cur) 1) 0)
+           (seq
+            (setq cell (nl_word_payload cur))
+            (setq next (heap-read-u64 cell 8))
+            (if (= (wf_bytecode_w_eqw (heap-read-u64 cell 0) prop) 1)
+                (seq (setq done 1)
+                     (setq value (if (= (wf_bytecode_w_consp next) 1)
+                                     (heap-read-u64 (nl_word_payload next) 0) 3)))
+              (setq cur (if (= (wf_bytecode_w_consp next) 1)
+                            (heap-read-u64 (nl_word_payload next) 8) 3)))))
+         value)))
     (defun wf_bytecode_switch_find (table key mode)
       ;; Use the live hash index, including after remhash, growth and GC.
       ;; No jump-table cache or assumption about consecutive entries is made.
@@ -23231,6 +23220,9 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; still active before an enclosing cleanup is consumed.  REMAINING
       ;; counts the frame bindings still to undo; the count left is in AUX's
       ;; unwind-bindings cell.
+      ;; vmfast: UNWINDS and EVCELL are cells of the AUX block (runtime record
+      ;; memory), read physically; the String-aware heap-read lowered each to an
+      ;; nl_string_read64 call (346 per tm-fts-13 call on v25).
       (let* ((unwinds (+ aux 8))
              (evcell (+ aux 72))
              (rc 0) (left remaining) (go 1))
@@ -23238,18 +23230,18 @@ bytes are written into a fresh 8-byte buffer instead."
          ;; w3spec: the in-place records are newer than every list event.
          (while (> (sar (ptr-read-u64 aux 96) 2) 0) (wf_bytecode_w_pop_lean aux))
          (while (= go 1)
-           (if (= (heap-read-u64 unwinds 0) target)
+           (if (= (ptr-read-u64 unwinds 0) target)
                (setq go 0)
-             (if (= (wf_bytecode_w_consp (heap-read-u64 unwinds 0)) 0)
+             (if (= (wf_bytecode_w_consp (ptr-read-u64 unwinds 0)) 0)
                  ;; The stack ends before TARGET: leave it at TARGET and fail.
                  (seq (ptr-write-u64 unwinds 0 target)
                       (setq rc 1)
                       (setq go 0))
                (seq
                 (wf_bytecode_handlers_cross_unwind env aux)
-                (ptr-write-u64 evcell 0 (nl_cons_car_word (heap-read-u64 unwinds 0)))
-                (ptr-write-u64 unwinds 0 (nl_cons_cdr_word (heap-read-u64 unwinds 0)))
-                (let* ((event (heap-read-u64 evcell 0)))
+                (ptr-write-u64 evcell 0 (nl_cons_car_word (ptr-read-u64 unwinds 0)))
+                (ptr-write-u64 unwinds 0 (nl_cons_cdr_word (ptr-read-u64 unwinds 0)))
+                (let* ((event (ptr-read-u64 evcell 0)))
                   (if (= (wf_bytecode_w_lean_event_p event) 1)
                       (wf_bytecode_w_lean_unbind env event)
                     (let* ((kind (wf_bytecode_w_int (nl_cons_car_word event))))
@@ -23723,9 +23715,29 @@ bytes are written into a fresh 8-byte buffer instead."
                     0))))))))
     (defun wf_bytecode_optional_marker_p (sym)
       ;; The descriptor walker has already checked this parameter's tag 4.
-      (symbol-name-eq sym "&optional"))
+      (if (= (wf_bytecode_amp_name_p sym) 0) 0
+        (symbol-name-eq sym "&optional")))
     (defun wf_bytecode_rest_marker_p (sym)
-      (symbol-name-eq sym "&rest"))
+      (if (= (wf_bytecode_amp_name_p sym) 0) 0
+        (symbol-name-eq sym "&rest")))
+    (defun wf_bytecode_amp_name_p (sym)
+      ;; vmfast: 0 when SYM is a symbol object whose name does not start with
+      ;; `&' (GNU funcall_lambda compares with EQ against Qand_optional and
+      ;; Qand_rest; a parameter name is rarely either), else 1 (compare names).
+      ;; A legacy symbol view (low bits 0, tag byte 4) keeps its name buffer at
+      ;; +16 and the length at +24, as `nl_symbol_word_eq' reads it.
+      (if (/= (logand sym 7) 6)
+          (if (if (= (logand sym 7) 0) (= (ptr-read-u8 sym 0) 4) 0)
+              (if (< (ptr-read-u64 sym 24) 1) 0
+                (if (= (ptr-read-u8 (ptr-read-u64 sym 16) 0) 38) 1 0))
+            1)
+        (if (= (wf_bytecode_w_symobj_p sym) 0) 1
+          (let* ((nm (ptr-read-u64 (- sym 6) 8)))
+            (if (/= (logand nm 7) 4) 1
+              (let* ((sb (- nm 4)) (n0 (ptr-read-u64 sb 8))
+                     (n (if (< n0 0) (logand (ptr-read-u64 sb 0) 9223372036854775807) n0)))
+                (if (< n 1) 0
+                  (if (= (ptr-read-u8 (ptr-read-u64 sb 24) 0) 38) 1 0))))))))
     (defun wf_bytecode_arglist_shape (formals state required maximum)
       ;; FORMALS is a word.  Return counts packed with a private, wider
       ;; layout: required[0..15], maximum[16..31], rest[32].
@@ -24126,9 +24138,112 @@ bytes are written into a fresh 8-byte buffer instead."
                 0))))))
     (defun wf_bytecode_w_eqw (a b)
       ;; `eq' between words A and B.
-      (if (= (logand a 1) 1)
-          (if (= (logand b 1) 1) (if (= a b) 1 0) (wf_bytecode_w_eqv b a))
-        (wf_bytecode_w_eqv a b)))
+      ;; vmfast: GNU EQ is BASE_EQ, one compare (lisp.h).  Identical words are
+      ;; eq; two distinct immediates, or two distinct symbol objects (vectorlike
+      ;; kind 4 or 16, Doc 226 D9: distinct objects are distinct symbols, as
+      ;; `nl_symbol_word_eq' answers), are not.  Views, positioned symbols and
+      ;; mixed representations keep the general compare.
+      (if (= a b) 1
+        (if (= (logand a 1) 1)
+            (if (= (logand b 1) 1) 0 (wf_bytecode_w_eqv b a))
+          (if (if (= (logand a 7) 6)
+                  (if (= (logand b 7) 6)
+                      (if (= (wf_bytecode_w_symobj_p a) 1) (wf_bytecode_w_symobj_p b) 0)
+                    0)
+                0)
+              0
+            (wf_bytecode_w_eqv a b)))))
+    (defun wf_bytecode_w_symobj_p (w)
+      ;; vmfast: 1 when W (low bits 6, a vectorlike WORD) is a symbol object, `nl_so_p'.
+      (let* ((k (logand (ptr-read-u64 (- w 6) 0) 63)))
+        (if (= k 4) 1 (if (= k 16) 1 0))))
+    (defun wf_bytecode_w_canon_p (w)
+      ;; vmfast: 1 when `eq' on W is word identity against any other canonical
+      ;; word: an immediate, or a symbol object.
+      (if (= (logand w 1) 1) 1
+        (if (= (logand w 7) 6) (wf_bytecode_w_symobj_p w) 0)))
+    (defun wf_bytecode_w_memq_fast (a l)
+      ;; vmfast: GNU Bmemq -> Fmemq (fns.c): walk the conses comparing with EQ.
+      ;; Covers a canonical A (`wf_bytecode_w_canon_p') over a proper chain of
+      ;; cons WORDs (low bits 2) whose cars are canonical, so EQ is one compare.
+      ;; Answers the tail found, 3 (nil) at the end of the list, or 0 when the
+      ;; case is not this one (a view or other element, an improper or longer
+      ;; than 4096 list): nothing was changed and the caller's general walk runs.
+      (if (= (wf_bytecode_w_canon_p a) 0) 0
+        (let* ((p l) (r 0) (n 0) (c 0))
+          (seq
+           (while (= r 0)
+             (if (= (logand p 7) 2)
+                 (seq
+                  (setq c (ptr-read-u64 (- p 2) 0))
+                  (if (= c a) (setq r p)
+                    (if (= (wf_bytecode_w_canon_p c) 0) (setq r 1)
+                      (seq (setq p (ptr-read-u64 (- p 2) 8))
+                           (setq n (+ n 1))
+                           (if (> n 4096) (setq r 1) 0)))))
+               (setq r (if (= p 3) 3 1))))
+           (if (= r 1) 0 r)))))
+    (defun wf_bytecode_w_nth_fast (n l)
+      ;; vmfast: GNU Bnth -> Fnth (fns.c): N cdrs, then car.  Covers a fixnum N in
+      ;; 0..4096 over a chain of cons WORDs (low bits 2) ending in nil.  Answers the
+      ;; element WORD (never 0: a car slot always holds a valid WORD), 3 when the list is shorter, or 0 when the case is
+      ;; not this one (nothing changed; the caller's general walk runs).
+      (if (/= (logand n 3) 1) 0
+        (let* ((k (sar n 2)) (p l) (i 0) (r 0) (st 0))
+          (if (< k 0) 0
+            (if (> k 4096) 0
+              (seq
+               (while (= st 0)
+                 (if (= (logand p 7) 2)
+                     (if (= i k) (seq (setq r (ptr-read-u64 (- p 2) 0)) (setq st 1))
+                       (seq (setq p (ptr-read-u64 (- p 2) 8)) (setq i (+ i 1))))
+                   (if (= p 3) (seq (setq r 3) (setq st 1)) (setq st 2))))
+               (if (= st 1) r 0)))))))
+    (defun wf_bytecode_w_closure_head_p (c)
+      ;; vmfast: 1 unless car C certainly does not start an interpreted
+      ;; closure `(closure ENV ARGS . BODY)' (`nl_closure_shape_p'): a symbol
+      ;; object whose name is not "closure", or any non-symbol.  Symbol views,
+      ;; positioned symbols and unusual names answer 1 (the caller declines).
+      (if (= (logand c 1) 1) 0
+        (if (= (logand c 7) 6)
+            (let* ((k (logand (ptr-read-u64 (- c 6) 0) 63)))
+              (if (= k 19) 1
+                (if (if (= k 4) 0 (/= k 16)) 0
+                  (let* ((nm (ptr-read-u64 (- c 6) 8)))
+                    (if (/= (logand nm 7) 4) 1
+                      (let* ((sb (- nm 4)) (n0 (ptr-read-u64 sb 8))
+                             (n (if (< n0 0) (logand (ptr-read-u64 sb 0) 9223372036854775807) n0)))
+                        (if (/= n 7) 0
+                          (let* ((d (ptr-read-u64 sb 24)))
+                            ;; "clos" "ur" "e"
+                            (if (= (ptr-read-u32 d 0) 1936682083)
+                                (if (= (ptr-read-u16 d 4) 29301)
+                                    (if (= (ptr-read-u8 d 6) 101) 1 0)
+                                  0)
+                              0)))))))))
+          (if (= (logand c 7) 0)
+              (let* ((t0 (ptr-read-u8 c 0)))
+                (if (= t0 4) 1 (if (= t0 16) 1 (if (= t0 19) 1 0))))
+            0))))
+    (defun wf_bytecode_w_length_fast (l)
+      ;; vmfast: GNU Blength -> Flength (fns.c) on a list: list_length over the
+      ;; conses.  Covers nil and a proper chain of cons WORDs (low bits 2) of at
+      ;; most 4096 conses whose first car cannot start an interpreted closure
+      ;; (`wf_bytecode_w_closure_head_p'; such a list has the closure's slot
+      ;; count, `bf_length_checked_w').  Answers the fixnum WORD, or 0 when the
+      ;; case is not this one (nothing changed; the caller's general path runs).
+      ;; Physical loads (ptr-read): the operands are cons and symbol WORDs, never
+      ;; String WORDs, so the String-aware heap-read lowering (an nl_string_read64
+      ;; call per load outside the guarded defuns) does not apply.
+      (if (= l 3) 1
+        (if (/= (logand l 7) 2) 0
+          (if (= (wf_bytecode_w_closure_head_p (ptr-read-u64 (- l 2) 0)) 1) 0
+            (let* ((p l) (n 0))
+              (seq
+               (while (if (= (logand p 7) 2) (< n 4097) 0)
+                 (seq (setq p (ptr-read-u64 (- p 2) 8))
+                      (setq n (+ n 1))))
+               (if (= p 3) (+ (shl n 2) 1) 0)))))))
     ;; Boundary (bytecode-word-clean allowlist): a mut-str builder header for
     ;; the m5 string builder, not a value box.
     (defun wf_bytecode_w_builder ()
@@ -24700,7 +24815,14 @@ bytes are written into a fresh 8-byte buffer instead."
                             (if (= saved 0) 1
                               (let* ((cnt (sar (ptr-read-u64 aux 96) 2)))
                                 (seq
-                                 (if (>= cnt 5)
+                                 ;; vmfast: specpdl capacity (24 records, see wf_bytecode_frame_aux):
+                                 ;; GNU's specbind stores in place and never conses; only a frame
+                                 ;; nesting more than 24 lean bindings spills to the list (the
+                                 ;; prelude's dynamic-binding byte code nests 8 formals + 9 more in
+                                 ;; nelisp--tf-run).  Each record costs 2 root-stack words per
+                                 ;; binding frame: 24 keeps bc recursion through binding frames
+                                 ;; well above GNU's max-lisp-eval-depth (1600).
+                                 (if (>= cnt 24)
                                      (seq (wf_bytecode_w_aux_spill aux) (setq cnt 0))
                                    0)
                                  (let* ((slot (+ aux (+ 104 (* cnt 16)))))
@@ -25061,7 +25183,7 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun wf_bytecode_frame_aux (env foot state)
       ;; The frame's aux block: the state the handler, unwind and binding
       ;; helpers keep per frame, allocated when the frame first needs it (a
-      ;; frame that only calls and returns has none).  Twelve WORD slots on the
+      ;; frame that only calls and returns has none).  61 WORD slots on the
       ;; root stack, every one a valid WORD: +0 handlers (GNU's handlerlist),
       ;; +8 unwinds (its specpdl), +16 the binding-link record, +24
       ;; unwind-bindings, +32 resume-dest, +40 resume-sp, +48 resume-bindings
@@ -25070,7 +25192,7 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; the one running, +72 the event being undone, +80 and +88 the unwind
       ;; target and the handler tail of a non-local exit while its cleanups
       ;; run.  w3spec: +96 the lean record count (fixnum-coded) and +104 + 16*i
-      ;; (i < 5) the in-place lean binding records {NAME, SAVED}, the newest
+      ;; (i < 24; vmfast: was 5, whose spill consed 2 cells per record on 6-deep let*) the in-place lean binding records {NAME, SAVED}, the newest
       ;; segment of the event stack (see wf_bytecode_w_aux_spill).  The binding-link record is a 32-byte integer-tagged arena block
       ;; that the slot at +16 keeps alive: +8 the previous link, +16 the address
       ;; of the unwinds cell, +24 the binding depth, raw words the collector
@@ -25078,7 +25200,7 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; the aux address, or 0 when the root stack cannot hold it.
       (let* ((a (ptr-read-u64 foot 40)))
         (if (/= a 3) (sar a 2)
-          (let* ((aux (nl_root_frame env 23)))
+          (let* ((aux (nl_root_frame env 61)))
             (if (= aux 0) 0
               (let* ((link (alloc-bytes 32 8)))
                 (seq
@@ -26062,6 +26184,17 @@ bytes are written into a fresh 8-byte buffer instead."
                                (if (< raw 64)
                                    (cond
                                     ((or (= raw 56) (= raw 62))
+                                     ;; vmfast: GNU Bmemq with EQ as one compare (wf_bytecode_w_memq_fast);
+                                     ;; anything it does not cover takes the original walk below.
+                                     (let* ((fm (if (< sp 2) 0
+                                                  (if (= raw 62)
+                                                      (wf_bytecode_w_memq_fast (heap-read-u64 mem (* (- sp 2) 8))
+                                                                               (heap-read-u64 mem (* (- sp 1) 8)))
+                                                    ;; vmfast: GNU Bnth -> Fnth (wf_bytecode_w_nth_fast).
+                                                    (wf_bytecode_w_nth_fast (heap-read-u64 mem (* (- sp 2) 8))
+                                                                            (heap-read-u64 mem (* (- sp 1) 8)))))))
+                                      (if (/= fm 0)
+                                          (seq (ptr-write-u64 mem (* (- sp 2) 8) fm) (setq sp (- sp 1)) (setq pc (+ pc 1)))
                                      (if (< sp (if (= raw 71) 1 2))
                                          (setq go 0)
                                        (seq
@@ -26210,7 +26343,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                                  (setq sp (- sp 1))
                                                0)
                                              (setq pc (+ pc 1)))
-                                          (setq go 0)))))
+                                          (setq go 0)))))))
                                     ((or (= raw 61) (= raw 63))
                                      (if (< sp (if (= raw 61) 2 1))
                                          (setq go 0)
@@ -26316,6 +26449,11 @@ bytes are written into a fresh 8-byte buffer instead."
                                                 (setq pc (+ pc 1)))
                                              (setq go 0)))))
                                    (if (= raw 71)
+                                       ;; vmfast: GNU Blength on a list in line (wf_bytecode_w_length_fast);
+                                       ;; anything it does not cover takes the original arm below.
+                                       (let* ((fl (if (> sp 0) (wf_bytecode_w_length_fast (heap-read-u64 mem (* (- sp 1) 8))) 0)))
+                                        (if (/= fl 0)
+                                            (seq (ptr-write-u64 mem (* (- sp 1) 8) fl) (setq pc (+ pc 1)))
                                        (if (< sp (if (= raw 71) 1 2))
                                            (setq go 0)
                                          (seq
@@ -26474,7 +26612,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                                    (setq sp (- sp 1))
                                                  0)
                                                (setq pc (+ pc 1)))
-                                            (setq go 0))))
+                                            (setq go 0))))))
                                      (if (< raw 79)
                                          ;; corecall: length (71), aref (72) and aset (73) stay in
                                          ;; this loop (`wf_bytecode_fast_slot'); -1 punts as before.
@@ -26491,6 +26629,33 @@ bytes are written into a fresh 8-byte buffer instead."
                                                     (setq pc (+ pc 1))
                                                     (setq last-name -1))
                                              (setq go 0)))))))))))
+                       ;; vmfast: GNU Bplus / Blss on two fixnums (bytecode.c, op_plus / op_lss):
+                       ;; one test of the opcode, the two tag tests and the store, ahead of the
+                       ;; shared arithmetic chain below (which still covers every other case).
+                       (if (= raw 92)
+                           (if (< sp 2) (setq go 0)
+                             (let* ((pa (heap-read-u64 mem (* (- sp 2) 8)))
+                                    (pb (heap-read-u64 mem (* (- sp 1) 8)))
+                                    (pn (+ (sar pa 2) (sar pb 2))))
+                               (if (if (= (logand pa 3) 1)
+                                       (if (= (logand pb 3) 1)
+                                           (if (> pn 2305843009213693951) 0
+                                             (if (< pn -2305843009213693952) 0 1))
+                                         0)
+                                     0)
+                                   (seq (setq sp (- sp 1))
+                                        (ptr-write-u64 mem (* (- sp 1) 8) (+ (shl pn 2) 1))
+                                        (setq pc (+ pc 1)))
+                                 (setq go 0))))
+                       (if (= raw 87)
+                           (if (< sp 2) (setq go 0)
+                             (let* ((pa (heap-read-u64 mem (* (- sp 2) 8)))
+                                    (pb (heap-read-u64 mem (* (- sp 1) 8))))
+                               (if (if (= (logand pa 3) 1) (= (logand pb 3) 1) 0)
+                                   (seq (setq sp (- sp 1))
+                                        (ptr-write-u64 mem (* (- sp 1) 8) (if (< pa pb) 7 3))
+                                        (setq pc (+ pc 1)))
+                                 (setq go 0))))
                        (if (= raw 84)
                            (if (<= sp 0) (setq go 0)
                              (seq
@@ -26573,7 +26738,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (>= raw 85) (setq sp (- sp 1)) 0)
                                      (ptr-write-u64 mem (- (* sp 8) 8)
                                                     word)
-                                     (setq pc (+ pc 1))))))))))))
+                                     (setq pc (+ pc 1))))))))))))))
                    (if (< raw 137)
                        (if (< raw 131)
                            (if (< raw 130)
@@ -26836,9 +27001,13 @@ bytes are written into a fresh 8-byte buffer instead."
                      (if (< raw 138)
                          (seq
                           (seq (setq fused 0)
+                               ;; vmfast: the operand byte of the following stack-ref decides
+                               ;; first, so a plain Bdup (GNU: PUSH (TOP)) skips the fused
+                               ;; compare-and-branch tests at once.
                                (if
-                                   (and (> sp 0) (<= (+ sp 2) depth)
-                                        (< (+ pc 6) length))
+                                   (and (< (+ pc 6) length)
+                                        (< (heap-read-u8 data (+ pc 1)) 6)
+                                        (> sp 0) (<= (+ sp 2) depth))
                                    (seq
                                     (setq ref (heap-read-u8 data (+ pc 1)))
                                     (setq cmp (heap-read-u8 data (+ pc 2)))
@@ -27965,6 +28134,14 @@ bytes are written into a fresh 8-byte buffer instead."
                              (setq sp (- sp (- operand 1)))
                            (setq done 4)))))
                      ((= base 40)
+                      ;; vmfast: GNU Bunbind -> unbind_to over SPECPDL_LET entries: when the
+                      ;; in-place records cover OPERAND, pop them (they are the newest events
+                      ;; and enclose no handler: a handler push spills them first) without
+                      ;; folding them into the list (wf_bytecode_w_aux_unwinds would cons).
+                      (if (if (> operand 0) (>= (sar (ptr-read-u64 aux 96) 2) operand) 0)
+                          (let* ((k operand))
+                            (while (> k 0)
+                              (seq (wf_bytecode_w_pop_lean aux) (setq k (- k 1)))))
                       (let* ((target (wf_bytecode_w_aux_unwinds aux))
                              (k 0))
                         (seq
@@ -27978,7 +28155,7 @@ bytes are written into a fresh 8-byte buffer instead."
                             (if (= (wf_bytecode_unwind_to env aux target bindings) 0)
                                 (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
                               (seq (setq bindings (sar (heap-read-u64 (+ aux 24) 0) 2))
-                                   (setq done 4))))))))
+                                   (setq done 4)))))))))
                      ((= base 165)
                       (if (< sp 2)
                           (seq (setq bad-op raw) (setq done 2))
@@ -33101,6 +33278,227 @@ bytes are written into a fresh 8-byte buffer instead."
                  (nl_ct_store_word (heap-read-u64 (nl_word_payload table) 56) val)
                  val)
           (nl_abi_fail (bf_wrong_type_char_table_p table) 0))))
+    ;; ---- reprs: data representation (attrib10x lever 3) ----
+    ;; Problem B.  GNU lisp.h CHAR_TABLE_SET / chartab.c char_table_set: store C into a
+    ;; char-table through the 3-level sub-char-table index.  This is the case where no
+    ;; sub-char-table has to be allocated; it answers 1 after the store and 0 (nothing
+    ;; written) when the prelude's `nelisp--char-table-set' must allocate one.  TABLE is
+    ;; a char-table WORD, C a character already checked to be 0..#x3fffff.  Clause 1
+    ;; (char-table slot).  The Lisp reference stays in the prelude.
+    (defun nl_ct2_set_walk (sub c val)
+      (if (= (nl_ct2_sub_p sub) 0) 0
+        (let* ((depth (nl_word_payload (nl_vector_slot_word sub 1)))
+               (min (nl_word_payload (nl_vector_slot_word sub 2)))
+               (i (/ (- c min) (if (= depth 1) 4096 (if (= depth 2) 128 1)))))
+          (if (= depth 3) (seq (vector-slot-set sub (+ 3 i) val) 1)
+            (nl_ct2_set_walk (nl_vector_slot_word sub (+ 3 i)) c val)))))
+    (defun nl_ct2_set_try (table c val)
+      (if (= (nl_ct_char_ok c) 0) 0
+        (let* ((slots (heap-read-u64 (heap-read-u64 (nl_word_payload table) 56) 0)))
+          (if (= (nl_val_tag slots) 8)
+              (if (= (vector-len slots) 65)
+                  (if (< c 128)
+                      (let* ((ascii (nl_vector_slot_word slots 0)))
+                        (if (= (nl_ct2_sub_p ascii) 1)
+                            (seq (wf_dirty) (vector-slot-set ascii (+ 3 c) val) 1)
+                          0))
+                    (let* ((top (nl_vector_slot_word slots (+ 1 (/ c 65536)))))
+                      (if (= (nl_ct2_sub_p top) 1)
+                          (let* ((done (nl_ct2_set_walk top c val)))
+                            (seq (if (= done 1) (wf_dirty) 0) done))
+                        0)))
+                0)
+            0))))
+    ;; Problem A.  GNU data.c Fsymbol_plist / Fsetplist and fns.c Fget / Fput act on the
+    ;; plist slot of struct Lisp_Symbol.  Here that slot is entry slot 2 (Doc 226 D1; +32
+    ;; of a symbol object), read and written with `nl_ent_w' / `nl_ent_set'.  Clause 1
+    ;; (symbol cell access).  The prelude keeps Lisp slow paths for nil, t (immediates
+    ;; with no entry) and a non-symbol argument (`nelisp--get-slow' and friends).
+    ;; The entry of SYM, a symbol WORD or view: -1 when SYM is not an entry-bearing symbol
+    ;; (nil, t, a non-symbol), else the entry, 0 when a symbol has none yet and CREATE is 0.
+    (defun nl_pl_entry (env sym create)
+      (if (= (nl_so_p sym) 1) sym
+        (let* ((tg (nl_val_tag sym)))
+          (if (if (= tg 4) 1 (= tg 16))
+              (if (= create 1) (nl_pa_entry env sym)
+                (nelisp_mirror_lookup_entry_owned env sym))
+            -1))))
+    (defun nl_pl_read (entry)
+      (let* ((pl (nl_ent_w entry 2))) (if (= pl 0) 3 pl)))
+    ;; fns.c plist_get: the value after the first `eq' KEY, nil otherwise; a cycle or a
+    ;; malformed tail ends the walk silently, as FOR_EACH_TAIL_SAFE does.
+    (defun nl_pl_get_w (plist key)
+      (let* ((cur plist) (slow plist) (tick 0) (stop 0) (found 0) (res 3))
+        (seq
+         (while (= stop 0)
+           (if (= (nl_val_tag cur) 7)
+               (let* ((rest (nl_cons_cdr_word cur)))
+                 (if (= (nl_val_tag rest) 7)
+                     (if (= (bf_eq2 (nl_cons_car_ptr cur) key) 1)
+                         (seq (setq res (nl_cons_car_word rest)) (setq found 1) (setq stop 1))
+                       (seq (setq cur (nl_cons_cdr_word rest))
+                            (setq tick (- 1 tick))
+                            (if (= tick 0) (setq slow (bf_plist_next_pair slow)) 0)
+                            (if (and (= tick 0) (= (bf_plist_cons_identity_w cur slow) 1))
+                                (setq stop 1) 0)))
+                   (setq stop 1)))
+             (setq stop 1)))
+         (if (= found 0) 3 res))))
+    ;; fns.c plist_put: store VAL after the first `eq' KEY (in place), else append
+    ;; (KEY VAL) at the end.  Answers the resulting plist WORD, or 0 after a stashed
+    ;; `plistp' (malformed tail) or `circular-list' signal.
+    (defun nl_pl_put_w (plist key keyw val)
+      (let* ((cur plist) (slow plist) (prev 3) (tick 0) (stop 0) (res 0))
+        (seq
+         (while (= stop 0)
+           (if (= (nl_val_tag cur) 7)
+               (let* ((rest (nl_cons_cdr_word cur)))
+                 (if (= (nl_val_tag rest) 7)
+                     (if (= (bf_eq2 (nl_cons_car_ptr cur) key) 1)
+                         (seq (wf_dirty) (cons-set-car rest val) (setq res plist) (setq stop 1))
+                       (seq (setq prev cur)
+                            (setq cur (nl_cons_cdr_word rest))
+                            (setq tick (- 1 tick))
+                            (if (= tick 0) (setq slow (bf_plist_next_pair slow)) 0)
+                            (if (and (= tick 0) (= (bf_plist_cons_identity_w cur slow) 1))
+                                (setq stop 3) 0)))
+                   (setq stop 2)))
+             (setq stop 2)))
+         (if (= stop 3) (nl_abi_fail (bf_signal_circular_list plist) 0)
+           (if (= stop 1) res
+             (if (= (nl_val_tag cur) 0)
+                 (let* ((cell (nelisp_cons_construct_w keyw (nelisp_cons_construct_w val 3 0) 0)))
+                   (if (= (nl_val_tag prev) 0) cell
+                     (seq (wf_dirty) (cons-set-cdr (nl_cons_cdr_word prev) cell) plist)))
+               (nl_abi_fail (bf_wrong_type_plistp plist) 0)))))))
+    (defun bf_symbol_plist_w (args env _pad)
+      (let* ((entry (nl_pl_entry env (wf_arg_word args 0) 0)))
+        (if (= entry -1) (bf_n2_call_lisp_symbol_plist_slow_w args env 0)
+          (if (= entry 0) 3 (nl_pl_read entry)))))
+    (defun bf_setplist_w (args env _pad)
+      (let* ((entry (nl_pl_entry env (wf_arg_word args 0) 1)))
+        (if (if (= entry -1) 1 (= entry 0)) (bf_n2_call_lisp_setplist_slow_w args env 0)
+          (seq (wf_dirty) (nl_ent_set entry 2 (wf_arg_word args 1))
+               (nl_g4arm_copy_w 0 (wf_arg_word args 1))))))
+    (defun bf_get_w (args env _pad)
+      (let* ((entry (nl_pl_entry env (wf_arg_word args 0) 0)))
+        (if (= entry -1) (bf_n2_call_lisp_get_slow_w args env 0)
+          (if (= entry 0) 3 (nl_pl_get_w (nl_pl_read entry) (wf_arg_ptr args 1))))))
+    (defun bf_put_w (args env _pad)
+      (let* ((entry (nl_pl_entry env (wf_arg_word args 0) 1)))
+        (if (if (= entry -1) 1 (= entry 0)) (bf_n2_call_lisp_put_slow_w args env 0)
+          (let* ((plist (nl_pl_read entry))
+                 (new (nl_pl_put_w plist (wf_arg_ptr args 1) (wf_arg_word args 1)
+                                   (wf_arg_word args 2))))
+            (if (= new 0) 0
+              (seq (if (= new plist) 0 (seq (wf_dirty) (nl_ent_set entry 2 new)))
+                   (nl_g4arm_copy_w 0 (wf_arg_word args 2))))))))
+    ;; Problem C.  GNU data.c bool_vector_binop_driver, Fbool_vector_not,
+    ;; Fbool_vector_count_population, Fbool_vector_count_consecutive and the subsetp
+    ;; case of the driver, a machine word at a time over the packed bit buffer (box
+    ;; +0 bit count, +8 data, +16 byte length; the buffer is exactly that long, so
+    ;; whole words are read only while they fit and the tail goes a byte at a time).
+    ;; Clause 1 (bool-vector data).  The prelude wrappers keep GNU's argument checks
+    ;; and errors; these two private natives see only checked bool-vectors of one
+    ;; length and answer nil on any other shape.
+    (defun nl_bvx_op (op x y)
+      (if (= op 0) (logior x y)
+        (if (= op 1) (logand x y)
+          (if (= op 2) (logand x (logxor y -1))
+            (if (= op 3) (logxor x y)
+              (logxor x -1))))))
+    ;; OP 0 union, 1 intersection, 2 set-difference, 3 exclusive-or, 4 complement of A.
+    ;; DEST is 0 or a Sexp view of the destination.  New vector when DEST is 0; else
+    ;; DEST when it changed and nil when it did not (bool_vector_binop_driver).
+    (defun nl_bvx_binop_w (op a b dest)
+      (if (if (= (heap-sexp-tag-word a) 10) (= (heap-sexp-tag-word b) 10) 0)
+          (let* ((abox (heap-read-u64 a 8)) (bbox (heap-read-u64 b 8))
+                 (n (heap-read-u64 abox 0)) (bl (heap-read-u64 abox 16)))
+            (if (if (= n (heap-read-u64 bbox 0))
+                    (if (= dest 0) 1
+                      (if (= (heap-sexp-tag-word dest) 10)
+                          (= n (heap-read-u64 (heap-read-u64 dest 8) 0)) 0))
+                  0)
+                (let* ((out (if (= dest 0) (nl_alloc_bool_vector_w n 0 0) dest))
+                       (ad (heap-read-u64 abox 8)) (bd (heap-read-u64 bbox 8))
+                       (od (heap-read-u64 (heap-read-u64 out 8) 8))
+                       (rem (- n (* (/ n 8) 8)))
+                       (lastmask (if (= rem 0) 255 (- (shl 1 rem) 1)))
+                       (full (* (/ (- bl (if (= rem 0) 0 1)) 8) 8))
+                       (i 0) (changed (if (= dest 0) 1 0)))
+                  (seq
+                   (while (< i full)
+                     (let* ((v (nl_bvx_op op (ptr-read-u64 ad i) (ptr-read-u64 bd i))))
+                       (seq (if (= v (ptr-read-u64 od i)) 0
+                              (seq (setq changed 1) (ptr-write-u64 od i v)))
+                            (setq i (+ i 8)))))
+                   (while (< i bl)
+                     (let* ((v (logand (nl_bvx_op op (heap-read-u8 ad i) (heap-read-u8 bd i))
+                                       (if (= (+ i 1) bl) lastmask 255))))
+                       (seq (if (= v (heap-read-u8 od i)) 0
+                              (seq (setq changed 1) (ptr-write-u8 od i v)))
+                            (setq i (+ i 1)))))
+                   (if (= dest 0) out (if (= changed 1) out 3))))
+              3))
+        3))
+    ;; SWAR population count of a 64-bit word (a byte is a word below 256).
+    (defun nl_bvx_popcnt (x)
+      (let* ((x1 (- x (logand (shr x 1) 6148914691236517205)))
+             (x2 (+ (logand x1 3689348814741910323) (logand (shr x1 2) 3689348814741910323)))
+             (x3 (logand (+ x2 (shr x2 4)) 1085102592571150095)))
+        (+ (+ (+ (logand x3 255) (logand (shr x3 8) 255))
+              (+ (logand (shr x3 16) 255) (logand (shr x3 24) 255)))
+           (+ (+ (logand (shr x3 32) 255) (logand (shr x3 40) 255))
+              (+ (logand (shr x3 48) 255) (logand (shr x3 56) 255))))))
+    (defun nl_bvx_count_pop (data bl)
+      (let* ((i 0) (c 0) (full (* (/ bl 8) 8)))
+        (seq
+         (while (< i full)
+           (seq (setq c (+ c (nl_bvx_popcnt (ptr-read-u64 data i)))) (setq i (+ i 8))))
+         (while (< i bl)
+           (seq (setq c (+ c (nl_bvx_popcnt (heap-read-u8 data i)))) (setq i (+ i 1))))
+         c)))
+    ;; Bits equal to WANT (0 or 1) in a row from bit START (Fbool_vector_count_consecutive).
+    (defun nl_bvx_count_run (data n want start)
+      (let* ((k start) (stop 0))
+        (seq
+         (while (if (= stop 0) (< k n) 0)
+           (if (if (= (logand k 7) 0) (<= (+ k 8) n) 0)
+               (if (= (heap-read-u8 data (/ k 8)) (if (= want 0) 0 255))
+                   (setq k (+ k 8))
+                 (if (= (nl_bv_bit_get data k) want) (setq k (+ k 1)) (setq stop 1)))
+             (if (= (nl_bv_bit_get data k) want) (setq k (+ k 1)) (setq stop 1))))
+         (- k start))))
+    ;; True when no bit of A is set where B is clear (A and B of one length).
+    (defun nl_bvx_subsetp (ad bd bl)
+      (let* ((i 0) (ok 1) (full (* (/ bl 8) 8)))
+        (seq
+         (while (if (= ok 1) (< i full) 0)
+           (seq (if (= (logand (ptr-read-u64 ad i) (logxor (ptr-read-u64 bd i) -1)) 0) 0
+                  (setq ok 0))
+                (setq i (+ i 8))))
+         (while (if (= ok 1) (< i bl) 0)
+           (seq (if (= (logand (heap-read-u8 ad i) (logxor (heap-read-u8 bd i) 255)) 0) 0
+                  (setq ok 0))
+                (setq i (+ i 1))))
+         ok)))
+    ;; OP 0 population of A, 1 run of bits equal to B (t or nil) from index START,
+    ;; 2 subsetp of A in B.
+    (defun nl_bvx_count_w (op a b bword start)
+      (if (= (heap-sexp-tag-word a) 10)
+          (let* ((abox (heap-read-u64 a 8)) (n (heap-read-u64 abox 0))
+                 (ad (heap-read-u64 abox 8)) (bl (heap-read-u64 abox 16)))
+            (if (= op 0) (wf_write_int_w 0 (nl_bvx_count_pop ad bl))
+              (if (= op 1)
+                  (if (if (< start 0) 1 (> start n)) 3
+                    (wf_write_int_w 0 (nl_bvx_count_run ad n (if (= bword 3) 0 1) start)))
+                (if (= (heap-sexp-tag-word b) 10)
+                    (let* ((bbox (heap-read-u64 b 8)))
+                      (if (= n (heap-read-u64 bbox 0))
+                          (if (= (nl_bvx_subsetp ad (heap-read-u64 bbox 8) bl) 1) 7 3)
+                        3))
+                  3))))
+        3))
     ;; Generated Emacs char-table literals are read as vectors shaped like:
     ;;   #^[EXTRA0 EXTRA1 EXTRA2 #^^[1 MIN ...]]
     ;; and sub-char-tables are vectors shaped like:
@@ -33455,6 +33853,69 @@ bytes are written into a fresh 8-byte buffer instead."
                   0))
             0)
         0))
+    ;; reprs, the library's sparse char-table.  nelisp-emacs-lib (emacs-char-table.el) answers
+    ;; `make-char-table' with an exact seven-slot vector [--nemacs-char-table SUBTYPE DEFAULT
+    ;; PARENT ASCII-VEC RANGES EXTRA] once `subr-x' is loaded, and `aref'/`aset' on it called
+    ;; the library's Lisp (emacs-char-table-ref / emacs-char-table-set, about 10 us each under
+    ;; fx).  These are those two functions on the vector's slots (clause 1, char-table slot
+    ;; access); the Lisp stays as the fallback for every case they decline.
+    ;; The value of the newest range of RANGES holding C ((FROM . TO) . VALUE entries), or 0.
+    (defun nl_lct_range_value (ranges c)
+      (let* ((cur ranges) (res 0))
+        (seq
+         (while (if (= res 0) (= (nl_val_tag cur) 7) 0)
+           (let* ((entry (nl_cons_car_word cur)))
+             (seq
+              (if (= (nl_val_tag entry) 7)
+                  (let* ((key (nl_cons_car_word entry)))
+                    (if (= (nl_val_tag key) 7)
+                        (let* ((from (nl_cons_car_word key)) (to (nl_cons_cdr_word key)))
+                          (if (= (nl_val_tag from) 2)
+                              (if (= (nl_val_tag to) 2)
+                                  (if (<= (nl_word_payload from) c)
+                                      (if (<= c (nl_word_payload to))
+                                          (setq res (nl_cons_cdr_word entry)) 0) 0) 0) 0)) 0)) 0)
+              (setq cur (nl_cons_cdr_word cur)))))
+         res)))
+    ;; emacs-char-table-ref: C's value with the default and parent fallback.  The value
+    ;; WORD, or 0 to decline (an odd table, a parent that is not a library table).
+    (defun nl_lct_ref (ct c depth)
+      (if (> depth 64) 0
+        (let* ((ascii (nl_vector_slot_word ct 4))
+               (v (if (< c 256)
+                      (if (= (nl_val_tag ascii) 8)
+                          (if (> (vector-len ascii) c) (nl_vector_slot_word ascii c) 0)
+                        0)
+                    (nl_lct_range_value (nl_vector_slot_word ct 5) c))))
+          (if (if (= v 0) (< c 256) 0) 0
+            (if (if (= v 0) 0 (= (nl_val_tag v) 0)) (nl_lct_fallback ct c depth)
+              (if (= v 0) (nl_lct_fallback ct c depth) v))))))
+    (defun nl_lct_fallback (ct c depth)
+      (let* ((dflt (nl_vector_slot_word ct 2)))
+        (if (/= (nl_val_tag dflt) 0) dflt
+          (let* ((parent (nl_vector_slot_word ct 3)))
+            (if (= (nl_val_tag parent) 0) 3
+              (if (= (bf_nemacs_char_table_vector_p parent) 1)
+                  (nl_lct_ref parent c (+ depth 1))
+                0))))))
+    ;; emacs-char-table-set: below 256 into the ASCII vector, else a new (C . C) range in front.
+    ;; 1 after the store, 0 (nothing written) to leave the call to the library.
+    (defun nl_lct_set_try (ct c val)
+      (if (= (nl_ct_char_ok c) 0) 0
+        (if (< c 256)
+            (let* ((ascii (nl_vector_slot_word ct 4)))
+              (if (= (nl_val_tag ascii) 8)
+                  (if (> (vector-len ascii) c)
+                      (seq (wf_dirty) (vector-slot-set ascii c val) 1)
+                    0)
+                0))
+          (let* ((ranges (nl_vector_slot_word ct 5)) (cw (nl_imm_int c)))
+            (seq (wf_dirty)
+                 (vector-slot-set ct 5 (nelisp_cons_construct_w
+                                        (nelisp_cons_construct_w
+                                         (nelisp_cons_construct_w cw cw 0) val 0)
+                                        ranges 0))
+                 1)))))
     (defun bf_nemacs_char_table_call_w (args env _pad final-word)
       (let* ((name-buf (alloc-bytes 24 1)) (symbol-slot (alloc-bytes 32 8)))
         (seq (ptr-write-u64 name-buf 0 7521905776250678629) (ptr-write-u64 (+ name-buf 8) 0 7308324466015957601) (ptr-write-u64 (+ name-buf 16) 0 final-word) (nl_alloc_symbol name-buf 21 symbol-slot)
@@ -33467,9 +33928,16 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun bf_aref_nemacs_bridge_w (args env _pad)
       (if (= (nl_word_tag64 (wf_arg_word args 1)) 2)
           (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
-              ;; callpath: the bridge calls Lisp with the list; on the argv
-              ;; route it declines (nothing has happened yet) to the list route.
-              (nl_argframe_list_only (bf_nemacs_char_table_call_w args env 0 439788658989))
+              ;; reprs: a present entry of the library layout is read natively.
+              ;; callpath: the Lisp bridge takes the list; on the argv route it
+              ;; declines (only the pure read above has run) to the list route.
+              (let* ((r (if (= (nl_ct_char_ok (nl_word_payload (wf_arg_word args 1))) 1)
+                            (nl_lct_ref (wf_arg_ptr args 0)
+                                        (nl_word_payload (wf_arg_word args 1)) 0)
+                          0)))
+                (if (= r 0)
+                    (nl_argframe_list_only (bf_nemacs_char_table_call_w args env 0 439788658989))
+                  r))
             ;; bf_aref_checked is the adapter of bf_aref_checked_w: call the word
             ;; form (no box filled and turned back into a WORD).
             (bf_aref_checked_w args 0))
@@ -33479,10 +33947,19 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun bf_aset_nemacs_bridge_w (args env _pad)
       (if (= (nl_word_tag64 (wf_arg_word args 1)) 2)
           (if (= (nl_val_tag (wf_arg_word args 0)) 9)
-              ;; Doc 225 S3: GNU CHAR_TABLE_SET (lisp.h) is prelude Lisp.
-              (bf_n2_call_lisp_char_table_aset_w args env 0)
+              ;; Doc 225 S3: GNU CHAR_TABLE_SET (lisp.h).  reprs: the store that
+              ;; needs no new sub-char-table is native; allocating one stays prelude Lisp.
+              (if (= (nl_ct2_set_try (wf_arg_word args 0)
+                                     (nl_word_payload (wf_arg_word args 1))
+                                     (wf_arg_word args 2)) 1)
+                  (nl_g4arm_copy_w 0 (wf_arg_word args 2))
+                (bf_n2_call_lisp_char_table_aset_w args env 0))
           (if (= (bf_nemacs_char_table_vector_p (wf_arg_ptr args 0)) 1)
-              (bf_nemacs_char_table_call_w args env 0 499918266669)
+              (if (= (nl_lct_set_try (wf_arg_ptr args 0)
+                                     (nl_word_payload (wf_arg_word args 1))
+                                     (wf_arg_word args 2)) 1)
+                  (nl_g4arm_copy_w 0 (wf_arg_word args 2))
+                (bf_nemacs_char_table_call_w args env 0 499918266669))
             ;; bf_aset_checked is the adapter of bf_aset_checked_w: call the word
             ;; form (no box filled and turned back into a WORD).
             (bf_aset_checked_w args 0)))
@@ -37765,6 +38242,18 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; Doc 225 S3: GNU chartab.c slot vector access (clause 1).
     ((:lit "nelisp--char-table-slots")     :word . (bf_ct2_slots_w args 0))
     ((:lit "nelisp--char-table-set-slots") :word . (bf_ct2_set_slots_w args 0))
+    ;; reprs: symbol plists in the symbol's plist slot (Problem A) and bool-vector
+    ;; data a word at a time (Problem C); see the `nl_pl_*' / `nl_bvx_*' helpers.
+    ((:lit "symbol-plist") :word . (bf_symbol_plist_w args env 0))
+    ((:lit "setplist") :word . (bf_setplist_w args env 0))
+    ((:lit "get") :word . (bf_get_w args env 0))
+    ((:lit "put") :word . (bf_put_w args env 0))
+    ((:lit "nelisp--bv-binop") :word .
+     (nl_bvx_binop_w (nl_word_payload (wf_arg_word args 0)) (wf_arg_ptr args 1) (wf_arg_ptr args 2)
+                     (if (= (nl_val_tag (wf_arg_word args 3)) 0) 0 (wf_arg_ptr args 3))))
+    ((:lit "nelisp--bv-count") :word .
+     (nl_bvx_count_w (nl_word_payload (wf_arg_word args 0)) (wf_arg_ptr args 1) (wf_arg_ptr args 2)
+                     (wf_arg_word args 2) (nl_word_payload (wf_arg_word args 3))))
     ((:lit "make-char-table")        :word . (bf_make_char_table_w args env 0))
     ((:lit "char-table-subtype")     :word . (bf_char_table_subtype_w args 0))
     ((:lit "char-table-parent")      :word . (bf_char_table_parent_w args 0))
@@ -38179,6 +38668,8 @@ the name path costs time, never an answer)."
     "char-table-range" "set-char-table-range" "map-char-table"
     ;; Doc 225 S3: GNU chartab.c slot vector access.
     "nelisp--char-table-slots" "nelisp--char-table-set-slots"
+    ;; reprs (Doc 226 plist slot; bool-vector words)
+    "symbol-plist" "setplist" "get" "put" "nelisp--bv-binop" "nelisp--bv-count"
     "signal" "error" "equal" "nelisp--equal-leaf" "nelisp--clear-string-bytes" "nelisp--string-mark-intervals" "nelisp--native-substring" "nelisp--native-format" "setcar" "setcdr" "load"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
@@ -39129,6 +39620,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
       obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
+      symbol-plist
       goto-char
       1+ 1- atom bare-symbol bool-vector-p boundp byte-code-function-p car cdr
       char-table-p char-table-parent char-table-subtype char-to-string consp cos fboundp
@@ -39181,7 +39673,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; (nelisp-tls-recv CONTEXT MAX-BYTES).
       nelisp-tls-connect nelisp-tls-send nelisp-tls-recv
       nelisp--string-mark-intervals
-      % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot
+      % /= alloc-bytes aref ash assq atomic-fetch-add char-table-extra-slot get setplist
       char-table-range cons elt eq equal make-bool-vector make-vector map-char-table
       mapcar mapc maphash member memq mod nelisp--arena-value-survival nelisp--assoc-raw
       nelisp--bind-local nelisp--char-table-set-slots nelisp--equal-leaf nelisp--float-word-half nelisp--format-simple
@@ -39201,7 +39693,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((2 . 5)
       alist-get)
     ((3 . 3)
-      aset byte-code make-record nelisp--fmt-float nelisp--native-pin-copy
+      put aset byte-code make-record nelisp--fmt-float nelisp--native-pin-copy
       nelisp--native-unbox-reference nelisp--raw-aset nelisp--symbol-position-op
       nelisp--string-search nelisp--string-search-chars nelisp--casify-fast nelisp--base64-decode
       nelisp--syscall-path-int nelisp--syscall-path2 nelisp--syscall-utimes
@@ -39211,7 +39703,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((3 . 6)
       nelisp--native-subr-create)
     ((4 . 4)
-      nelisp--native-pin-copy-v2 nelisp--base64-encode)
+      nelisp--native-pin-copy-v2 nelisp--base64-encode nelisp--bv-binop nelisp--bv-count)
     ((4 . many)
       make-byte-code)
     ((5 . 5)
@@ -39344,7 +39836,12 @@ avoiding a second name lookup on healthy calls."
    '((bf_n2_call_lisp_gc . "nelisp--gc-statistics")
      (bf_n2_call_lisp_equal . "nelisp--equal-reference")
      ;; Doc 225 S3: `aset' on a char-table runs GNU's char_table_set in Lisp.
-     (bf_n2_call_lisp_char_table_aset . "nelisp--char-table-aset"))))
+     (bf_n2_call_lisp_char_table_aset . "nelisp--char-table-aset")
+     ;; reprs: the Lisp slow paths of the symbol-plist natives (nil, t, non-symbols).
+     (bf_n2_call_lisp_get_slow . "nelisp--get-slow")
+     (bf_n2_call_lisp_put_slow . "nelisp--put-slow")
+     (bf_n2_call_lisp_symbol_plist_slow . "nelisp--symbol-plist-slow")
+     (bf_n2_call_lisp_setplist_slow . "nelisp--setplist-slow"))))
 
 (defun nelisp-standalone--n2-direct-arity-helper ()
   "Guard direct calls with the shared min/max arity contract.
@@ -44723,6 +45220,8 @@ value (matches the binary's M8 read+eval-loop driver)."
     "char-table-range" "set-char-table-range" "map-char-table"
     ;; Doc 225 S3: GNU chartab.c slot vector access.
     "nelisp--char-table-slots" "nelisp--char-table-set-slots"
+    ;; reprs (Doc 226 plist slot; bool-vector words)
+    "symbol-plist" "setplist" "get" "put" "nelisp--bv-binop" "nelisp--bv-count"
     "signal" "error" "equal" "setcar" "setcdr"
     ;; Wave-2 (C): bitwise / shift / string<
     "ash" "logand" "logior" "logxor" "lognot" "string<"
@@ -67096,9 +67595,36 @@ retains the checkout default. Application outputs still go to OUTPUT."
                               (if (= a b) (setq i (+ i 1)) (setq st 2))))
                      (if (= a b) (setq i (+ i 1)) (setq st 2))))))
              st)))
+    ;; Syntax class of ASCII byte B from the map at SM (tagged ints in the
+    ;; capture vector): 1 word constituent, 2 symbol constituent, 0 other.
+    (defun m5_rx_sy (sm b)
+      (/ (- (ptr-read-u64 (+ sm (* b 8)) 0) 1) 4))
+    ;; Zero-width assertion OP (16 \\<, 17 \\>, 18 \\b, 19 \\B, 20 \\_<, 21 \\_>) at
+    ;; byte POS of N, as GNU wordbeg/wordend/wordbound/notwordbound/symbeg/
+    ;; symend (regex-emacs.c): 1 holds, 0 fails, -2 decline (a neighbour >= 128).
+    ;; \\b holds and \\B fails at either end of the text whatever the neighbour.
+    (defun m5_rx_bnd (tp n pos op sm)
+      (let* ((bb (if (= pos 0) -1 (heap-read-u8 tp (- pos 1))))
+             (ab (if (>= pos n) -1 (heap-read-u8 tp pos))))
+        (if (if (>= op 18) (if (<= op 19) (if (< bb 0) 1 (< ab 0)) 0) 0)
+            (if (= op 18) 1 0)
+          (if (if (>= bb 128) 1 (>= ab 128)) -2
+            (let* ((wb (if (< bb 0) 0 (m5_rx_sy sm bb)))
+                   (wa (if (< ab 0) 0 (m5_rx_sy sm ab)))
+                   (b1 (if (< op 20) (if (= wb 1) 1 0) (if (> wb 0) 1 0)))
+                   (a1 (if (< op 20) (if (= wa 1) 1 0) (if (> wa 0) 1 0))))
+              (if (if (= op 16) 1 (= op 20))
+                  (if (if (= a1 1) (= b1 0) 0) 1 0)
+                (if (if (= op 17) 1 (= op 21))
+                    (if (if (= b1 1) (= a1 0) 0) 1 0)
+                  (if (= op 18) (if (= b1 a1) 0 1) (if (= b1 a1) 1 0)))))))))
+    ;; Character position of byte P (>= FOUND) of the match that starts at
+    ;; byte FOUND = character CS; HUNI 1 means one byte per character.
+    (defun m5_rx_cp (hay huni found cs p)
+      (if (= huni 1) p (+ cs (m5_count_chars hay found p))))
     ;; Run the program from word PC0 at byte POS0.  Answers the end byte, -1
     ;; (no match here; the registers are restored) or -2 (decline).
-    (defun m5_rx_run (pp tp n lim pc0 pos0 sc)
+    (defun m5_rx_run (pp tp n lim pc0 pos0 sc sm)
       (let* ((pc pc0) (pos pos0) (sp 0) (usp 0) (res -3) (failing 0)
              (rb sc) (ub (+ sc 8192)) (fb (+ sc 1056768))
              (fold (if (= (logand (m5_rx_w pp 2) 4) 0) 0 1)))
@@ -67205,7 +67731,11 @@ retains the checkout default. Application outputs still go to OUTPUT."
                                                    0)
                                                  (if (= st -2) (setq res -2)
                                                    (seq (setq pos (+ pos k)) (setq pc nxt))))))))
-                                       (setq res -2))))))))))))))))
+                                       (if (if (>= op 16) (<= op 21) 0)
+                                           (let* ((r (m5_rx_bnd tp n pos op sm)))
+                                             (if (= r 1) (setq pc (+ pc 1))
+                                               (if (= r 0) (setq failing 1) (setq res -2))))
+                                         (setq res -2)))))))))))))))))
          res)))
     ;; PROG hay START LIMIT FLAGS(1 = only at START) CAPVEC SCRATCH; see above.
     (defun m5_rx_search (prog hay start lim flags capw scr)
@@ -67224,13 +67754,19 @@ retains the checkout default. Application outputs still go to OUTPUT."
                              (fold (if (= (logand pflags 4) 0) 0 1)))
                         (if (> nreg 1000) -2
                           (if (< (nl_vector_length capw) (* 2 ng)) -2
+                           (if (if (= (logand pflags 8) 0) 0 (m5_unibyte_tag_p ht)) -2
+                            (if (if (= (logand pflags 16) 0) 0 (< (nl_vector_length capw) 332)) -2
                             (if (if (= huni 1) (> lim hnb) 0) -2
                               (let* ((sb (if (= huni 1) start (nl_str_sub_byte_off hay hnb start)))
-                                     (lb (if (= huni 1) lim (nl_str_sub_byte_off hay hnb lim))))
+                                     (lb (if (= huni 1) lim
+                                           ;; LIM at the end of the text is the byte length: a
+                                           ;; char->byte walk to the end would cost O(length).
+                                           (if (= lim (/ flags 2)) hnb
+                                             (nl_str_sub_byte_off hay hnb lim)))))
                                 (if (< sb 0) -2
                                   (if (< lb 0) -2
                                     (if (> lb hnb) -2
-                                      (m5_rx_scan pp tp hay start sb lb flags capw sc))))))))))))))))))
+                                      (m5_rx_scan pp tp hay start sb lb flags capw sc))))))))))))))))))))
     (defun m5_rx_scan (pp tp hay start sb lb flags capw sc)
       (let* ((rb sc)
              (hnb (m5_strlen hay))
@@ -67238,6 +67774,7 @@ retains the checkout default. Application outputs still go to OUTPUT."
              (nreg (m5_rx_w pp 0)) (ng (m5_rx_w pp 1)) (pflags (m5_rx_w pp 2))
              (i sb) (done 0) (found -1) (endb 0) (rr 0) (j 0)
              (entry (m5_rx_w pp 3))
+             (sm (+ (nl_word_payload capw) 1640))
              (usef (if (= (logand pflags 2) 0) 0 1))
              (anch (if (= (- flags (* (/ flags 2) 2)) 1) 1 (logand pflags 1))))
         (seq
@@ -67256,15 +67793,15 @@ retains the checkout default. Application outputs still go to OUTPUT."
                (if (= skip 2) (setq done 1)
                  (if (= skip 1)
                      (if (= anch 1) (setq done 1) (setq i (+ i 1)))
-                   (seq (setq rr (m5_rx_run pp tp hnb lb entry i sc))
+                   (seq (setq rr (m5_rx_run pp tp hnb lb entry i sc sm))
                         (if (>= rr 0)
                             (seq (setq found i) (setq endb rr) (setq done 1))
                           (if (= rr -2) (seq (setq found -2) (setq done 1))
                             (if (= anch 1) (setq done 1) (setq i (+ i 1)))))))))))
          (if (< found 0) found
            (let* ((cs (if (= huni 1) found (+ start (m5_count_chars hay sb found))))
-                  (delta (- cs found)))
-             (if (> (+ endb delta) 1073741823) -2
+                  (ce (m5_rx_cp hay huni found cs endb)))
+             (if (> ce 1073741823) -2
                (seq
                 (wf_dirty)
                 (let* ((g 0) (base (+ (nl_word_payload capw) 8)))
@@ -67272,11 +67809,11 @@ retains the checkout default. Application outputs still go to OUTPUT."
                     (let* ((s (if (= g 0) found (ptr-read-u64 (+ rb (* (* 2 g) 8)) 0)))
                            (e (if (= g 0) endb (ptr-read-u64 (+ rb (* (+ (* 2 g) 1) 8)) 0))))
                       (seq (ptr-write-u64 (+ base (* (* 2 g) 8)) 0
-                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (+ s delta)))))
+                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (m5_rx_cp hay huni found cs s)))))
                            (ptr-write-u64 (+ base (* (+ (* 2 g) 1) 8)) 0
-                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (+ e delta)))))
+                                          (nl_imm_int (if (< s 0) -1 (if (< e 0) -1 (m5_rx_cp hay huni found cs e)))))
                            (setq g (+ g 1))))))
-                (+ (* cs 2147483648) (+ endb delta)))))))))
+                (+ (* cs 2147483648) ce))))))))
     )))
 
 (provide 'nelisp-standalone-build)

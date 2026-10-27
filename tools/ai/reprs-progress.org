@@ -1,0 +1,119 @@
+#+TITLE: reprs: data representation for symbol plists, char-tables and bool-vectors (attrib10x lever 3)
+
+# Lane reprs, base coordinator HEAD 54f554ede (v25).  Baseline binary v25 = integ-1042-build.
+# Binary under test: $REPRS_BIN (default: this lane's own build 2).  Timing criteria use the survey4 row
+# drivers (SURVEY4, default ../resume-4943-20261024/target/survey4); S2 holds wall-clock bounds, S4 the
+# callgrind Ir and the paired CPU 12 numbers, recorded in evidence/s4-results.json.
+# Thresholds are the brief's: sym-plist-put-50 <= 100 Ir per element, ct-aset-ct and a case-loop row
+# -70% Ir, bool-vector-union <= 20 ns per bit.  S4.1 is a known-red cmd: put measures 342 Ir per element.
+# The lane's two builds were spent before the last prelude-only change (the full-mapping branch of
+# nelisp--case-string-fast); the case checks load tools/ai/reprs/case-overlay.el, which
+# case-overlay-check.py keeps equal to the prelude, and need nothing once the coordinator's build has it.
+
+* S1 Cause with evidence
+
+** S1.1 The cause of each problem is written down with the v25 measurements it rests on
+evidence: tools/ai/reprs/evidence/S1-cause.txt sha256=5862dacc1a9ecc2af3bff431e3968f8130a2c2ebe2b5e72dfec0f52dceebb3fa
+
+** S1.2 v25 rows against GNU 31.1 are recorded: plist put, char-table aset, two case loops, bool-vector ops
+evidence: tools/ai/reprs/evidence/baseline-rows-v25.txt sha256=7c7498100db22bb4e4eba65ce9b8cb321ec2959a066f3c75ff3ce62ff9f949a1
+
+** S1.3 v25 parity corpora are recorded: plists and char-tables equal to GNU, bool-vectors divergent
+evidence: tools/ai/reprs/evidence/baseline-parity-v25.txt sha256=1392d46232bd7bd233bcda8cfb2ece63ab023c7ea746208c43626199df89ed50
+
+** S1.4 The recorded baseline shows the cause: v25 put >= 10 us per trip, bool-vector ops >= 1 ms per trip, three boolvec corpus rows divergent
+cmd: python3 tools/ai/reprs/baseline-check.py
+
+* S2 Fix with red/green checks and a GNU parity corpus
+
+** S2.1 Plist corpus (43 forms: setplist with odd lists, uninterned and circular plists, nil and t, errors, error-conditions, put then set/fset/defvar/makunbound) equals GNU 31.1
+cmd: sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" plists
+
+** S2.2 The plist lives in the symbol: no global table, uninterned symbols keep their own, cold-image plists and collections keep them, signal conditions and nil/t work
+cmd: sh tools/ai/reprs/check.sh prog "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" slot.el
+
+** S2.3 sym-plist-put-50 costs at most 3 us per trip of 1 put into a 50-key plist (v25: 12 us)
+#+NOTE: 2026-10-27 clause 1 (symbol cell access): get, put, symbol-plist and setplist are natives over entry slot 2 (Doc 226 D1; +32 of a symbol object).  Measured on build 2, survey4 row sym-plist-put-50, CPU 12 paired: 11,691 ns per trip (v25) -> 1,677 ns (GNU 340); callgrind 129,283 -> 17,129 Ir per trip.  Lisp references kept: nelisp--get-slow and friends (nil, t, non-symbols).
+cmd: sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" sym-plist-put-50 2000 3
+
+** S2.4 Char-table corpus (28 forms: ranges, parent, default, extra slots, map-char-table order, case functions) equals GNU 31.1
+cmd: sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" chartab
+
+** S2.5 ct-aset-ct (aset on a char-table after the library loads, as the survey runs it) costs at most 2 us per trip (v25: 13 us)
+#+NOTE: 2026-10-27 clause 1 (char-table slot): two natives.  (a) char_table_set without a new sub-char-table on the runtime family (nl_ct2_set_try, GNU chartab.c:399-421; allocation stays prelude Lisp).  (b) aref/aset on the library sparse seven-slot char-table (nl_lct_ref / nl_lct_set_try = emacs-char-table-ref / -set), because `(require (quote subr-x))` installs the library char-table over the runtime family, so the survey rows measure that structure.  Paired CPU 12: 11,756 ns per trip (v25) -> 875 ns (GNU 260); callgrind 87,615 -> 7,291 Ir.  The library-layout natives are pinned to the library Lisp by evidence/chartab-lib-nl-vs-nl.txt (34 forms, v25 output equals build 2 output).
+cmd: sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" ct-aset-ct 2000 2
+evidence: tools/ai/reprs/evidence/chartab-lib-nl-vs-nl.txt sha256=d52fcb16fbbf5606d4b0f8230e5fd3edb4c4c782b149cf6d97d91902c03f559e
+
+** S2.6 Case conversion of every character up to #x2ffff, as 1-, 2- and 3-character strings, hashes equal to GNU 31.1
+#+TIMEOUT: 300
+cmd: sh tools/ai/reprs/check.sh sweep "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+** S2.7 Case loop ct-upcase-greek-str costs at most 360 us per trip (v25: 1190 us, -70%)
+#+NOTE: 2026-10-27 pure-Lisp: Unicode range lookups memoised, the full-mapping tables indexed by hash, and a one-pass casify loop for the stateless actions (nelisp--case-string-fast).  Paired CPU 12 with the overlay: 1,039,899 ns per trip (v25) -> 188,812 ns (GNU 1,452); callgrind 7,701,202 -> 1,224,965 Ir.  S2.6 pins the result to GNU over 194,560 characters.
+#+TIMEOUT: 120
+cmd: sh tools/ai/reprs/check.sh rowo "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" ct-upcase-greek-str 2000 360
+
+** S2.8 The case overlay used by S2.6 and S2.7 equals the prelude's nelisp--case-string-fast
+cmd: python3 tools/ai/reprs/case-overlay-check.py
+
+** S2.9 Bool-vector corpus (12 forms: lengths 0..200, unequal lengths, DEST and wrong-length-argument, edge words) equals GNU 31.1
+cmd: sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" boolvec
+
+** S2.10 ct-bool-vector-ops (union and count-population of two 1000-bit vectors) costs at most 40 us per trip, 20 ns per bit (v25: 2400 us)
+#+NOTE: 2026-10-27 clause 1 (bool-vector data): nelisp--bv-binop and nelisp--bv-count, GNU bool_vector_binop_driver and friends over the packed buffer a machine word at a time (bytes for the tail, because the buffer is exactly ceil(N/8) bytes).  bool-vector-union of 1000 bits, paired CPU 12: 1,720,202 ns (v25) -> 3,025 ns = 3.0 ns per bit (GNU 258); callgrind 13,395,564 -> 24,687 Ir.  GNU quirks pinned by the corpus: three sizes in wrong-length-argument when DEST is given, nil when DEST did not change.
+cmd: sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" ct-bool-vector-ops 2000 40
+
+** S2.11 End to end: the three corpora and the put, aset and bool-vector rows pass together on one binary
+#+TIMEOUT: 300
+cmd: sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" plists && sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" chartab && sh tools/ai/reprs/check.sh parity "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" boolvec && sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" sym-plist-put-50 1000 3 && sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" ct-aset-ct 1000 2 && sh tools/ai/reprs/check.sh row "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" ct-bool-vector-ops 500 40
+
+* S3 One integrated build passes the fixtures
+
+** S3.1 Weak fixture 24/24 (critical for the plist move)
+cmd: sh tools/ai/reprs/check.sh weak "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+** S3.2 GNU eqhash fixture 56/56
+#+TIMEOUT: 200
+cmd: sh tools/ai/reprs/check.sh gnu56 "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+** S3.3 Buffer unification smoke 21/21
+cmd: sh tools/ai/reprs/check.sh buffer "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+** S3.4 AFRT 24/25 with only the known-red exit-hook-result-gc failing, recorded from the build 2 run (fixtures.py)
+evidence: tools/ai/reprs/evidence/fixtures-build2.json sha256=f7e7019d14ce82b0cc02729382dc1cf5de8b0c1bc3934aac40a8ce69d080c4c6
+
+** S3.5 The F1 prelink closure is inside the policy: PRELINK_F1_BOUNDARY_PASS, 354 records, at most 384
+evidence: tools/ai/reprs/evidence/f1-prelink-build2.json sha256=d7976cd63e1fa4a90ae3a3020a62e50e76bd7123959826d8651f0693606fd1a6
+
+** S3.6 gnu-speed-win-check passes: closurevm 24, switch corpus and features equal to GNU
+#+TIMEOUT: 300
+cmd: sh tools/ai/reprs/check.sh speedwin "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+** S3.7 Win64 wine closurevm, switch and features rows (needs a windows-x86_64 build, a third build)
+pending
+
+** S3.8 End to end: weak, buffer and gnu-speed-win-check pass on the same binary
+#+TIMEOUT: 400
+cmd: sh tools/ai/reprs/check.sh weak "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" && sh tools/ai/reprs/check.sh buffer "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}" && sh tools/ai/reprs/check.sh speedwin "${REPRS_BIN:-$(realpath target/reprs-build/dynamic/nelisp-dynamic)}"
+
+* S4 Paired timing against v25 and GNU, with regression rows
+
+# Evidence: callgrind Ir per trip (two trip counts, difference) and paired CPU 12 timings, from
+# tools/ai/reprs/s4-summarize.py.  The cmd checks read the recorded file.
+
+** S4.1 sym-plist-put-50 costs at most 100 Ir per plist element (callgrind; v25 2586, GNU 101, this build 342: the walk still goes through bf_eq2)
+#+NOTE: 2026-10-27 known red: 17,129 Ir per trip = 342 per element.  Callgrind by function (per trip): nl_pl_put_w 4,904, bf_eq2 2,014, nl_cons_car_ptr 1,851, nl_symbol_word_eq 1,192, bf_plist_cons_identity 888, the fx call path about 3,000.  Next step (needs a build; the lane had two): compare plist keys as words (identical word, two distinct symbol objects, two immediates are decided without bf_eq2) and walk cons cells by their payload offsets, with a step bound instead of the Brent check on every pair.
+cmd: python3 tools/ai/reprs/s4-check.py put-ir
+
+** S4.2 ct-aset-ct and the case-loop row ct-upcase-greek-str cost at least 70 percent fewer Ir than v25
+cmd: python3 tools/ai/reprs/s4-check.py ir-drop
+
+** S4.3 bool-vector-union costs at most 20 ns per bit on CPU 12, paired against v25 and GNU
+cmd: python3 tools/ai/reprs/s4-check.py bvu
+
+** S4.4 reg-sum-bc and r3-mix are within 5 percent of v25 (no regression)
+cmd: python3 tools/ai/reprs/s4-check.py regress
+
+** S4.5 End to end: the recorded paired timing matrix holds every bound above
+evidence: tools/ai/reprs/evidence/s4-results.json sha256=3b003d180e8074cdebed09460cacb5d73353511a7c25789647d12797cef2d55d
+cmd: python3 tools/ai/reprs/s4-check.py all

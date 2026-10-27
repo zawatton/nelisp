@@ -1,0 +1,10 @@
+;; Case conversion of every character up to #x2ffff, as 1-, 3- and 2-character strings; prints (COUNT SHA256).
+(defun sweep ()
+  (let ((acc nil) (n 0))
+    (dotimes (c #x30000)
+      (when (or (< c #xd800) (> c #xdfff))
+        (let* ((s (string c)) (s3 (string ?a c ?Z)) (s5 (string c c)))
+          (push (concat (upcase s) (downcase s) (upcase s3) (downcase s3) (upcase s5) (downcase s5) "|") acc)
+          (setq n (1+ n)))))
+    (list n (secure-hash 'sha256 (apply #'concat (nreverse acc))))))
+(sweep)

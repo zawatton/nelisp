@@ -1,0 +1,16 @@
+baseline v25 (integ-1042-build) vs GNU Emacs 31.1, interp rows, survey4 drivers, N=2000 trips, measured 2026-10-27 on this host (not the pinned CPU; ratios only)
+== sym-plist-put-50
+v25: BENCH-CHECK n=2000 result=2000 elapsed=0.024281025
+gnu: BENCH-CHECK n=2000 result=2000 elapsed=0.000761032
+== ct-aset-ct
+v25: BENCH-CHECK n=2000 result=1999000 elapsed=0.026010036
+gnu: BENCH-CHECK n=2000 result=1999000 elapsed=0.000624657
+== ct-upcase-greek-str
+v25: BENCH-CHECK n=2000 result=68000 elapsed=2.352652788
+gnu: BENCH-CHECK n=2000 result=68000 elapsed=0.003032207
+== ct-capitalize-str
+v25: BENCH-CHECK n=2000 result=86000 elapsed=1.648433924
+gnu: BENCH-CHECK n=2000 result=86000 elapsed=0.001703262
+== ct-bool-vector-ops
+v25: BENCH-CHECK n=2000 result=2000000 elapsed=4.817372084
+gnu: BENCH-CHECK n=2000 result=2000000 elapsed=0.000878811

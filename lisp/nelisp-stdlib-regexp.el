@@ -2372,18 +2372,33 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 ;; (value nil), and the caller then runs the Lisp matcher below instead.
 ;; Program words are u32, little endian:
 ;;   [0] total registers  [1] groups  [2] flags (1 anchored at \=`, 2 first-byte
-;;   map usable, 4 fold)  [3] entry word  [4] 0  [5..36] 128-byte first map
+;;   map usable, 4 fold, 8 non-ASCII literal (text must be multibyte), 16 uses
+;;   the syntax map)  [3] entry word  [4] 0  [5..36] 128-byte first map
 ;;   [37..] code.
 ;; Code: 0 MATCH, 1 CHAR c, 2 CHAR2 lc uc, 3 ANY, 4 SET hf m0..m31 (128 bytes),
 ;; 5 BOL, 6 EOL, 7 BOS, 8 EOS, 9 SAVE r, 10 SPLIT a b (try a, fail to b),
 ;; 11 JMP a, 12 LOOPSET k, 13 LOOPCHK k a (jump when no progress since
-;; LOOPSET), 14 BACKREF g, 15 REP min max ATOM... (greedy single-char loop).
+;; LOOPSET), 14 BACKREF g, 15 REP min max ATOM... (greedy single-char loop),
+;; 16 WORDBEG \<, 17 WORDEND \>, 18 WORDBOUND \b, 19 NOTWORDBOUND \B, 20 SYMBEG
+;; \_<, 21 SYMEND \_> (zero width; GNU wordbeg/wordend/wordbound/notwordbound/
+;; symbeg/symend, regex-emacs.c).  They read the syntax class of the two bytes
+;; around the position from a 128-entry map held in the capture vector after
+;; the 204 capture slots (`nlre--nat-syn-ensure', called by the buffer routes
+;; right before the run; `nlre--nat-program' never compiles these ops); a
+;; non-ASCII neighbour makes the VM decline.  A literal non-ASCII character compiles to the CHAR
+;; ops of its UTF-8 bytes (outside repetition), as GNU matches the bytes of a
+;; multibyte pattern.
 (defvar nlre--nat-code nil)
 (defvar nlre--nat-pc 0)
 (defvar nlre--nat-ng 1)
 (defvar nlre--nat-nloops 0)
 (defvar nlre--nat-fold nil)
 (defvar nlre--nat-closed nil)
+(defvar nlre--nat-nonascii nil)
+(defvar nlre--nat-needs-syn nil)
+(defvar nlre--nat-pattern nil)
+(defvar nlre--nat-allow-syn nil
+  "Non-nil while compiling for a caller that fills the syntax map first.")
 (defconst nlre--nat-inf 4294967295)
 (defconst nlre--nat-header 37)
 (defconst nlre--nat-max-words 6000)
@@ -2435,6 +2450,30 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
                    (= 1 (aref map ?s)) (= 1 (aref map ?S))))
       (setq hf 1))
     hf))
+
+;; Characters without case partners under any Emacs case table: kana, CJK
+;; ideographs and Hangul.  Under case folding only these may be matched as raw
+;; UTF-8 bytes; every other non-ASCII literal declines (the Lisp matcher folds).
+(defun nlre--nat-caseless-p (c)
+  (or (and (>= c #x3041) (<= c #x30ff) (/= c #x30fb) (not (and (>= c #x3099) (<= c #x309c))))
+      (and (>= c #x3400) (<= c #x4dbf))
+      (and (>= c #x4e00) (<= c #x9fff))
+      (and (>= c #xac00) (<= c #xd7a3))
+      (and (>= c #x20000) (<= c #x2fa1f))))
+
+(defun nlre--nat-emit-char (c)
+  "Emit the CHAR ops of the UTF-8 bytes of the non-ASCII literal C."
+  (when (or (> c #x10ffff) (and (>= c #xd800) (<= c #xdfff))
+            (not (multibyte-string-p nlre--nat-pattern))
+            (and nlre--nat-fold (not (nlre--nat-caseless-p c))))
+    (nlre--nat-decline))
+  (setq nlre--nat-nonascii t)
+  (cond
+   ((< c #x800) (nlre--nat-emit 1 (logior #xc0 (/ c 64)) 1 (logior #x80 (logand c 63))))
+   ((< c #x10000) (nlre--nat-emit 1 (logior #xe0 (/ c 4096)) 1 (logior #x80 (logand (/ c 64) 63))
+                                   1 (logior #x80 (logand c 63))))
+   (t (nlre--nat-emit 1 (logior #xf0 (/ c 262144)) 1 (logior #x80 (logand (/ c 4096) 63))
+                      1 (logior #x80 (logand (/ c 64) 63)) 1 (logior #x80 (logand c 63))))))
 
 (defun nlre--nat-atom-words (node)
   "Return the program words of single-character NODE, or nil."
@@ -2503,8 +2542,13 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
 (defun nlre--nat-node (node)
   (let ((tag (car node)))
     (cond
+     ((and (eq tag :lit) (integerp (nth 1 node)) (>= (nth 1 node) 128))
+      (nlre--nat-emit-char (nth 1 node)))
      ((memq tag '(:lit :any :set))
       (apply #'nlre--nat-emit (nlre--nat-atom-words node)))
+     ((eq tag :wordedge) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 17 16)))
+     ((eq tag :wordb) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 19 18)))
+     ((eq tag :symedge) (unless nlre--nat-allow-syn (nlre--nat-decline)) (setq nlre--nat-needs-syn t) (nlre--nat-emit (if (nth 1 node) 21 20)))
      ((eq tag :bol) (nlre--nat-emit 5))
      ((eq tag :eol) (nlre--nat-emit 6))
      ((eq tag :bos) (nlre--nat-emit 7))
@@ -2580,8 +2624,11 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
   "Add the possible first characters of NODE to FM; non-nil when NODE can be empty."
   (let ((tag (car node)))
     (cond
+     ;; A non-ASCII first character adds nothing to the ASCII map: the scan
+     ;; never skips a start byte >= 128.
+     ((and (eq tag :lit) (integerp (nth 1 node)) (>= (nth 1 node) 128)) nil)
      ((memq tag '(:lit :any :set)) (nlre--nat-first-atom node fm) nil)
-     ((memq tag '(:bol :eol :bos :eos)) t)
+     ((memq tag '(:bol :eol :bos :eos :wordb :wordedge :symedge)) t)
      ((eq tag :seq) (nlre--nat-first-seq (nth 1 node) fm))
      ((eq tag :alt)
       (let ((n nil))
@@ -2622,7 +2669,7 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
     (while (and ascii (< i n))
       (when (>= (aref pat i) 128) (setq ascii nil))
       (setq i (1+ i)))
-    (and ascii (> n 0)
+    (and (or ascii (multibyte-string-p pat)) (> n 0)
      (catch 'nlre--nat-decline
       (let* ((nlre--fold fold) (nlre--translate-table nil)
              (compiled (nlre--compiled-pattern pat))
@@ -2633,6 +2680,9 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
              (nlre--nat-nloops 0)
              (nlre--nat-fold fold)
              (nlre--nat-closed nil)
+             (nlre--nat-nonascii nil)
+             (nlre--nat-needs-syn nil)
+             (nlre--nat-pattern pat)
              (fm (make-vector 128 0))
              (top (nlre--seq-nodes ast))
              (flags (if fold 4 0)))
@@ -2641,6 +2691,8 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
         (nlre--nat-emit 0)
         (unless (nlre--nat-first-node ast fm)
           (setq flags (logior flags 2)))
+        (when nlre--nat-nonascii (setq flags (logior flags 8)))
+        (when nlre--nat-needs-syn (setq flags (logior flags 16)))
         (when (eq (car-safe (car top)) :bos) (setq flags (logior flags 1)))
         (let ((words (append (list (+ (* 2 nlre--nat-ng) nlre--nat-nloops)
                                    nlre--nat-ng flags nlre--nat-header 0)
@@ -2665,8 +2717,13 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
   "Like `nlre--nat-lits' for case-folding searches.")
 (defvar nlre--nat-scratch nil
   "Preallocated registers, undo log and backtrack frames of `nelisp--rx-exec'.")
-(defvar nlre--nat-caps (make-vector 204 -1)
-  "Capture positions written by `nelisp--rx-exec' (two per group).")
+(defvar nlre--nat-caps (make-vector 332 -1)
+  "Capture positions written by `nelisp--rx-exec' (two per group, 204 slots),
+then the 128-entry syntax map read by the word and symbol assertions.")
+(defvar nlre--nat-syn-key nil
+  "The syntax table `nlre--nat-caps' slots 204..331 were filled from.")
+(defvar nlre--nat-syn-gen -1
+  "`nlre--syntax-cache-generation' when the syntax map was filled.")
 (defvar nlre--nat-seen nil
   "(BUFFER . TICK) of the last buffer search that found no usable text memo.")
 
@@ -2683,12 +2740,53 @@ an ASCII literal are tested with the same canonical ASCII set bitmap."
         (puthash (copy-sequence re) (or entry :no) tbl)
         entry))))
 
+;; Programs with word and symbol assertions read the syntax map, which a caller must
+;; fill (`nlre--nat-syn-ensure') right before running them.  `nlre--nat-program'
+;; (the `string-match' route, whose harvested native rows must stay valid) never
+;; compiles them, so a syntax-dependent pattern there still runs the Lisp matcher;
+;; the buffer routes below compile through `nlre--nat-program-syn'.
+(defvar nlre--nat-sprogs (make-hash-table :test 'equal)
+  "Regexp -> (PROGRAM . GROUPS) or :no for the buffer routes, case-sensitive.")
+(defvar nlre--nat-sprogs-fold (make-hash-table :test 'equal)
+  "Like `nlre--nat-sprogs' for case-folding searches.")
+
+(defun nlre--nat-program-syn (re fold)
+  "Like `nlre--nat-program' for a regexp RE, also compiling word and symbol assertions."
+  (let* ((tbl (if fold nlre--nat-sprogs-fold nlre--nat-sprogs))
+         (p (gethash re tbl)))
+    (if p (if (eq p :no) nil p)
+      (when (> (hash-table-count tbl) 2000) (clrhash tbl))
+      (let* ((prog (let ((nlre--nat-allow-syn t)) (nlre--nat-compile re fold)))
+             (entry (and prog (cons prog (aref (nlre--compiled-pattern re) 1)))))
+        (puthash (copy-sequence re) (or entry :no) tbl)
+        entry))))
+
 (defun nlre--nat-fold-default-p ()
   "Non-nil when the current buffer folds case with the built-in mapping."
   (and (eq (funcall nlre--current-buffer-function) nlre--translate-memo-buffer)
        (eq nelisp-casetab--epoch nlre--translate-memo-epoch)
        (eq (symbol-function 'set-case-table) nelisp-casetab--epoch-owner)
        (null nlre--translate-memo)))
+
+(defun nlre--nat-syn-ensure ()
+  "Fill the syntax map of `nlre--nat-caps' for the current syntax table.
+Slot 204+C holds 1 for a word constituent C, 2 for a symbol constituent, else
+0, read through the predicates of the Lisp matcher.  The map is reused while
+the table object and `nlre--syntax-cache-generation' are unchanged, the same
+contract as the compiled-pattern cache (`nlre-clear-syntax-cache')."
+  (nlre--install-syntax-cache-hook)
+  (let ((key (and nlre--syntax-table-reader (funcall nlre--syntax-table-reader))))
+    (unless (and (eq key nlre--nat-syn-key)
+                 (= nlre--syntax-cache-generation nlre--nat-syn-gen))
+      (setq nlre--syntax-table nil)
+      (let ((c 0))
+        (while (< c 128)
+          (aset nlre--nat-caps (+ 204 c)
+                (if (nlre--word-p c) 1 (if (nlre--symbol-p c) 2 0)))
+          (setq c (1+ c))))
+      (setq nlre--syntax-table nil
+            nlre--nat-syn-key key
+            nlre--nat-syn-gen nlre--syntax-cache-generation))))
 
 (defun nlre--nat-run (entry string start limit anchored n)
   "Run ENTRY on STRING.  Return t (declined), nil (no match) or the packed span."
@@ -2752,7 +2850,9 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
             (and case-fold-search (not (nlre--nat-fold-default-p))))
         t
       (let ((entry (and (> (length regexp) 0)
-                        (nlre--nat-program regexp (and case-fold-search t) literal))))
+                        (if literal
+                            (nlre--nat-program regexp (and case-fold-search t) t)
+                          (nlre--nat-program-syn regexp (and case-fold-search t))))))
         (if (null entry) t
           (let* ((blen (aref b 13))
                  (pt (or (aref b 12) (1+ blen)))
@@ -2760,7 +2860,9 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
                  (lim (if bound (min bound pmax) pmax))
                  (text (and (>= lim pt) (nlre--nat-buffer-text b))))
             (if (null text) t
-              (let ((r (nlre--nat-run entry text (1- pt) (1- lim) nil (aref b 14))))
+              (let ((r (progn
+                         (unless (= 0 (logand (aref (car entry) 8) 16)) (nlre--nat-syn-ensure))
+                         (nlre--nat-run entry text (1- pt) (1- lim) nil (aref b 14)))))
                 (cond
                  ((eq r t) t)
                  ((null r)
@@ -2781,12 +2883,14 @@ Slots follow `nelisp-buffer': 11 tick, 15 text memo."
             search-spaces-regexp
             (and case-fold-search (not (nlre--nat-fold-default-p))))
         t
-      (let ((entry (nlre--nat-program regexp (and case-fold-search t) nil)))
+      (let ((entry (nlre--nat-program-syn regexp (and case-fold-search t))))
         (if (null entry) t
           (let* ((pt (or (aref b 12) (1+ (aref b 13))))
                  (text (nlre--nat-buffer-text b)))
             (if (null text) t
-              (let ((r (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14))))
+              (let ((r (progn
+                         (unless (= 0 (logand (aref (car entry) 8) 16)) (nlre--nat-syn-ensure))
+                         (nlre--nat-run entry text (1- pt) (aref b 14) t (aref b 14)))))
                 (cond ((eq r t) t)
                       ((null r) nil)
                       (t (nlre--nat-publish (cdr entry) 1)

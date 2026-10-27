@@ -1,0 +1,37 @@
+{
+ "afrt25": {
+  "checks": 25,
+  "expected_baseline_red": true,
+  "failures": [
+   "exit-hook-result-gc"
+  ],
+  "pass_count": 24,
+  "passed": null,
+  "rc": 1
+ },
+ "buffer21": {
+  "checks": 21,
+  "expected_baseline_red": null,
+  "failures": null,
+  "pass_count": null,
+  "passed": true,
+  "rc": 0
+ },
+ "gnu56": {
+  "checks": 56,
+  "expected_baseline_red": null,
+  "failures": null,
+  "pass_count": null,
+  "passed": true,
+  "rc": 0
+ },
+ "status": "EXPECTED_BASELINE_RED_REMAINS",
+ "weak24": {
+  "checks": 24,
+  "expected_baseline_red": null,
+  "failures": null,
+  "pass_count": 0,
+  "passed": true,
+  "rc": 0
+ }
+}

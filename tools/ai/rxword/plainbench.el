@@ -1,0 +1,16 @@
+;;; plainbench.el --- plain (no assertion, ASCII) regexp search cost per match  -*- lexical-binding: t; -*-
+;; Prints "PB label us_per_match".  Guards against a slower plain path (v25: ~4.9 / ~9.6).
+(defvar pb-txt (apply #'concat (make-list 20000 "alpha beta gamma ")))
+(defun pb-buf () (with-temp-buffer (insert pb-txt) (goto-char 1) (let ((c 0)) (while (re-search-forward "beta" nil t) (setq c (1+ c))) c)))
+(defun pb-sm () (let ((i 0) (c 0)) (while (setq i (string-match "beta" pb-txt (1+ (or i -1)))) (setq c (1+ c))) c))
+(defun pb-tm (label f reps)
+  (funcall f)
+  (let ((best nil))
+    (dotimes (_ 3)
+      (let ((s (float-time)) (c 0))
+        (dotimes (_ reps) (setq c (funcall f)))
+        (let ((us (/ (* 1e6 (- (float-time) s)) reps c))) (when (or (null best) (< us best)) (setq best us)))))
+    (princ (format "PB %s %.2f\n" label best))))
+(pb-tm "re-search-forward" #'pb-buf 4)
+(pb-tm "string-match" #'pb-sm 4)
+(kill-emacs 0)

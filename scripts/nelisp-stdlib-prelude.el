@@ -402,11 +402,8 @@ a negative, and signalling there turned a limit into a failure."
   (defun bool-vector-count-population (a)
     "Return the number of set elements in bool-vector A."
     (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
-    (let ((n (length a)) (i 0) (c 0))
-      (while (< i n)
-        (when (aref a i) (setq c (1+ c)))
-        (setq i (1+ i)))
-      c)))
+    ;; reprs: Fbool_vector_count_population counts a machine word at a time.
+    (nelisp--bv-count 0 a a 0)))
 
 (unless (fboundp 'bool-vector-count-consecutive)
   (defun bool-vector-count-consecutive (a b i)
@@ -416,11 +413,7 @@ a negative, and signalling there turned a limit into a failure."
       (signal 'wrong-type-argument (list 'wholenump i)))
     (let ((n (length a)))
       (when (> i n) (signal 'args-out-of-range (list a i)))
-      (let ((want (and b t)) (k i) (c 0))
-        (while (and (< k n) (eq (and (aref a k) t) want))
-          (setq c (1+ c))
-          (setq k (1+ k)))
-        c))))
+      (nelisp--bv-count 1 a b i))))
 
 (defvar current-time-list t
   "Non-nil means `current-time' returns a four-element timestamp list.")
@@ -477,41 +470,43 @@ a negative, and signalling there turned a limit into a failure."
     (signal 'wrong-type-argument (list 'bool-vector-p a)))
   (unless (bool-vector-p b)
     (signal 'wrong-type-argument (list 'bool-vector-p b)))
-  (let ((n (length a)) (m (length b)) (i 0) (subset t))
+  ;; data.c: bool_vector_binop_driver (a, b, b, bool_vector_subsetp).
+  (let ((n (length a)) (m (length b)))
     (unless (= n m)
       (signal 'wrong-length-argument (list n m m)))
-    (while (and subset (< i n))
-      (when (and (aref a i) (not (aref b i))) (setq subset nil))
-      (setq i (1+ i)))
-    subset)))
+    (nelisp--bv-count 2 a b 0))))
 
-(defun nelisp--bool-vector-binop (a b c op)
+(defun nelisp--bool-vector-binop (a b dest opcode)
+  "GNU data.c bool_vector_binop_driver: its checks, then the word-wise native.
+OPCODE 0 union, 1 intersection, 2 set difference, 3 exclusive or.  Answers the
+new vector, or with DEST the vector when it changed and nil when it did not."
   (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
   (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
-  (unless (= (length a) (length b))
-    (signal 'wrong-length-argument (list (length a) (length b))))
-  (when c
-    (unless (bool-vector-p c) (signal 'wrong-type-argument (list 'bool-vector-p c)))
-    (unless (= (length c) (length a))
-      (signal 'wrong-length-argument (list (length a) (length b) (length c)))))
-  (let* ((n (length a)) (out (or c (make-bool-vector n nil))) (i 0))
-    (while (< i n)
-      (aset out i (funcall op (aref a i) (aref b i)))
-      (setq i (1+ i)))
-    out))
+  (let ((n (length a)))
+    (unless (= (length b) n)
+      ;; wrong_length_argument (a, b, dest): three sizes when DEST is given.
+      (signal 'wrong-length-argument
+              (if dest
+                  (list n (length b) (if (bool-vector-p dest) (length dest) 0))
+                (list n (length b)))))
+    (when dest
+      (unless (bool-vector-p dest) (signal 'wrong-type-argument (list 'bool-vector-p dest)))
+      (unless (= (length dest) n)
+        (signal 'wrong-length-argument (list n n (length dest)))))
+    (nelisp--bv-binop opcode a b dest)))
 
 (unless (fboundp 'bool-vector-union)
   (defun bool-vector-union (a b &optional c)
-    (nelisp--bool-vector-binop a b c (lambda (x y) (or x y)))))
+    (nelisp--bool-vector-binop a b c 0)))
 (unless (fboundp 'bool-vector-intersection)
   (defun bool-vector-intersection (a b &optional c)
-    (nelisp--bool-vector-binop a b c (lambda (x y) (and x y)))))
+    (nelisp--bool-vector-binop a b c 1)))
 (unless (fboundp 'bool-vector-set-difference)
   (defun bool-vector-set-difference (a b &optional c)
-    (nelisp--bool-vector-binop a b c (lambda (x y) (and x (not y))))))
+    (nelisp--bool-vector-binop a b c 2)))
 (unless (fboundp 'bool-vector-exclusive-or)
   (defun bool-vector-exclusive-or (a b &optional c)
-    (nelisp--bool-vector-binop a b c (lambda (x y) (and (or x y) (not (and x y)))))))
+    (nelisp--bool-vector-binop a b c 3)))
 (unless (fboundp 'bool-vector-not)
   (defun bool-vector-not (a &optional b)
     (unless (bool-vector-p a) (signal 'wrong-type-argument (list 'bool-vector-p a)))
@@ -519,11 +514,8 @@ a negative, and signalling there turned a limit into a failure."
       (unless (bool-vector-p b) (signal 'wrong-type-argument (list 'bool-vector-p b)))
       (unless (= (length b) (length a))
         (signal 'wrong-length-argument (list (length a) (length b)))))
-    (let* ((n (length a)) (out (or b (make-bool-vector n nil))) (i 0))
-      (while (< i n)
-        (aset out i (not (aref a i)))
-        (setq i (1+ i)))
-      out)))
+    ;; Fbool_vector_not always answers the destination, changed or not.
+    (or (nelisp--bv-binop 4 a a b) b)))
 ;; `point-min'/`point-max' used to be hardcoded here (`(defun point-min ()
 ;; 1)', unconditionally, regardless of buffer state -- Doc 188 §1.3).  The
 ;; real, buffer-backed definitions now live in the Doc 188 P1 buffer
@@ -2057,6 +2049,41 @@ FULL permits the one-to-many Unicode mappings used by multibyte strings."
     (or (not (boundp 'enable-multibyte-characters))
         enable-multibyte-characters)))
 
+(defun nelisp--case-string-fast (object action table)
+  "Case the multibyte string OBJECT for ACTION `upper' or `lower' in one pass.
+GNU casefiddle.c casify_object loops over the characters and reads the case table
+for each.  This is that loop for the stateless actions: the table's mapping is read
+once, each character costs one `aref', a one-to-many (full) mapping is taken from
+the generated table as its string, and the result is built with one `concat'.
+Answers nil, leaving the whole string to `nelisp--case-object', for anything that
+needs the general per-character logic: no case table, final sigma, or a raw byte."
+  (let* ((upper (eq action 'upper))
+         (n (length object))
+         (mapping (and table (if upper (nelisp-casetab--get-extra-slot table 0) table)))
+         (special (and (if upper (boundp 'nelisp--unicode-full-upcase)
+                         (boundp 'nelisp--unicode-full-downcase))
+                       (fboundp 'nelisp--unicode-full-index)
+                       (if upper nelisp--unicode-full-upcase nelisp--unicode-full-downcase)))
+         (index (and special (nelisp--unicode-full-index special)))
+         (i 0) (chars nil) (mixed nil) (ok (and mapping t)))
+    (while (and ok (< i n))
+      (let* ((c (aref object i))
+             (hit (and index (gethash c index))))
+        (if (or (> c #x10ffff) (= c #x3a3))
+            (setq ok nil)
+          (let ((value (aref mapping c)))
+            (setq chars (cons (cond (hit (setq mixed t) hit)
+                                    ((and (integerp value) (>= value 0)) value)
+                                    (t c))
+                              chars)
+                  i (1+ i))))))
+    (and ok
+         (string-make-multibyte
+          (if mixed
+              (apply #'concat (mapcar (lambda (piece) (if (integerp piece) (char-to-string piece) piece))
+                                      (nreverse chars)))
+            (concat (nreverse chars)))))))
+
 (defun nelisp--case-object (object action)
   "Case character or string OBJECT with the current buffer's case table.
 ACTION is `upper', `lower', `capitalize', or `initials'."
@@ -2076,6 +2103,8 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
      ((not (stringp object))
       (signal 'wrong-type-argument (list 'char-or-string-p object)))
      ((= (length object) 0) object)
+     ((and (memq action '(upper lower)) (not (unibyte-string-p object))
+           (nelisp--case-string-fast object action table)))
      (t
       (let ((unibyte (unibyte-string-p object))
             (i 0) (n (length object)) (inword nil) parts)
@@ -6464,28 +6493,34 @@ Doc 22 A6: arrays are iterated by index."
           plist)))))
 
 ;; --- Wave-2 (C): symbol plists (put/get) -------------------------------
-(unless (boundp 'nelisp-stdlib--symbol-plists)
-  (setq nelisp-stdlib--symbol-plists (make-hash-table)))
-(unless (fboundp 'symbol-plist)
-  (defun symbol-plist (sym)
-    (nelisp--check-symbol sym)
-    (gethash sym nelisp-stdlib--symbol-plists)))
-(unless (fboundp 'setplist)
-  (defun setplist (sym plist)
-    (nelisp--check-symbol sym)
-    (puthash sym plist nelisp-stdlib--symbol-plists)
-    plist))
-(unless (fboundp 'get)
-  (defun get (sym prop)
-    (nelisp--check-symbol sym)
-    (plist-get (gethash sym nelisp-stdlib--symbol-plists) prop)))
-(unless (fboundp 'put)
-  (defun put (sym prop val)
-    (nelisp--check-symbol sym)
-    (puthash sym
-             (plist-put (gethash sym nelisp-stdlib--symbol-plists) prop val)
-             nelisp-stdlib--symbol-plists)
-    val))
+;; reprs: `symbol-plist', `setplist', `get' and `put' are natives over the plist
+;; slot of the symbol's own entry (GNU data.c Fsymbol_plist/Fsetplist, fns.c
+;; Fget/Fput on struct Lisp_Symbol's plist; Doc 226 D1 slot 2), so there is no
+;; global plist table.  nil and t are immediates with no entry; their plists
+;; live in the two variables below and are reached through the Lisp slow paths,
+;; which the natives call for them and for a non-symbol argument (the error).
+(defvar nelisp--nil-plist nil "The property list of the symbol nil.")
+(defvar nelisp--t-plist nil "The property list of the symbol t.")
+(defun nelisp--symbol-plist-slow (sym)
+  "Lisp reference of `symbol-plist' for nil, t and a non-symbol SYM."
+  (nelisp--check-symbol sym)
+  (cond ((null sym) nelisp--nil-plist)
+        ((eq sym t) nelisp--t-plist)
+        (t (error "Symbol has no plist cell"))))
+(defun nelisp--setplist-slow (sym plist)
+  "Lisp reference of `setplist' for nil, t and a non-symbol SYM."
+  (nelisp--check-symbol sym)
+  (cond ((null sym) (setq nelisp--nil-plist plist))
+        ((eq sym t) (setq nelisp--t-plist plist))
+        (t (error "Symbol has no plist cell")))
+  plist)
+(defun nelisp--get-slow (sym prop)
+  "Lisp reference of `get' for nil, t and a non-symbol SYM."
+  (plist-get (nelisp--symbol-plist-slow sym) prop))
+(defun nelisp--put-slow (sym prop val)
+  "Lisp reference of `put' for nil, t and a non-symbol SYM."
+  (nelisp--setplist-slow sym (plist-put (nelisp--symbol-plist-slow sym) prop val))
+  val)
 
 ;; Replay the `declare' forms queued before `put' existed (see
 ;; `nelisp--declaration-forms'), oldest first.

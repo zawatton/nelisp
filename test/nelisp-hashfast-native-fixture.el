@@ -75,7 +75,7 @@
 (when (fboundp 'nelisp--build-digest)
   ;; These entries were inserted while producing the executable's cold image,
   ;; before this fixture was loaded. Check every surviving baked key at boot.
-  (let ((h nelisp-stdlib--symbol-plists) (n 0))
+  (let ((h face--new-frame-defaults) (n 0))
     (hf-check 'cold-table-populated (> (hash-table-count h) 0))
     (maphash (lambda (k v)
                (unless (equal (gethash k h 'hf-absent) v) (error "Stale cold bucket"))

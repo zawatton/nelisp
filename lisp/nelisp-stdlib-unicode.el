@@ -112,32 +112,56 @@ default because the generated table deliberately covers Unicode scalars."
         (+ character (aref table (+ record 3)))
       character)))
 
+(defvar nelisp--unicode-case-memo (make-hash-table :test 'eq)
+  "Memo of the pure range-table lookups below, keyed by (KIND . CHARACTER) packed in one integer.
+The generated tables are constants, so an answer never changes.  GNU keeps the
+same facts in char-tables (the uniprop tables), which `aref' reads in O(1).")
+
+(defun nelisp--unicode-memo (kind character compute)
+  "Return the memoised KIND answer for CHARACTER, calling COMPUTE once to fill it."
+  (let* ((key (+ (* kind 4194304) character))
+         (hit (gethash key nelisp--unicode-case-memo 'nelisp--none)))
+    (if (not (eq hit 'nelisp--none))
+        hit
+      (when (> (hash-table-count nelisp--unicode-case-memo) 40000)
+        (clrhash nelisp--unicode-case-memo))
+      (puthash key (funcall compute) nelisp--unicode-case-memo))))
+
 (defun nelisp-unicode-simple-upcase (character)
   "Return GNU 31.1's simple uppercase mapping for CHARACTER."
   (if (and (>= character ?a) (<= character ?z))
       (- character 32)
-    (nelisp--unicode-simple-map nelisp--unicode-simple-upcase-ranges character)))
+    (nelisp--unicode-memo
+     1 character
+     (lambda () (nelisp--unicode-simple-map nelisp--unicode-simple-upcase-ranges character)))))
 
 (defun nelisp-unicode-simple-downcase (character)
   "Return GNU 31.1's simple lowercase mapping for CHARACTER."
   (if (and (>= character ?A) (<= character ?Z))
       (+ character 32)
-    (nelisp--unicode-simple-map nelisp--unicode-simple-downcase-ranges character)))
+    (nelisp--unicode-memo
+     2 character
+     (lambda () (nelisp--unicode-simple-map nelisp--unicode-simple-downcase-ranges character)))))
+
+(defun nelisp--unicode-titlecase-property-1 (character)
+  "The uncached body of `nelisp-unicode-titlecase-property'."
+  (let ((table nelisp--unicode-titlecase-property-ranges)
+        (lo 0) (hi (1- (/ (length nelisp--unicode-titlecase-property-ranges) 4))) record)
+    (while (<= lo hi)
+      (let* ((mid (/ (+ lo hi) 2)) (base (* mid 4)))
+        (cond ((< character (aref table base)) (setq hi (1- mid)))
+              ((> character (aref table (1+ base))) (setq lo (1+ mid)))
+              (t (setq record base lo (1+ hi))))))
+    (and record
+         (= 0 (% (- character (aref table record)) (aref table (+ record 2))))
+         (+ character (aref table (+ record 3))))))
 
 (defun nelisp-unicode-titlecase-property (character)
   "Return CHARACTER's GNU titlecase property, or nil when absent."
   (if (and (>= character ?a) (<= character ?z))
       (- character 32)
-    (let ((table nelisp--unicode-titlecase-property-ranges)
-          (lo 0) (hi (1- (/ (length nelisp--unicode-titlecase-property-ranges) 4))) record)
-      (while (<= lo hi)
-        (let* ((mid (/ (+ lo hi) 2)) (base (* mid 4)))
-          (cond ((< character (aref table base)) (setq hi (1- mid)))
-                ((> character (aref table (1+ base))) (setq lo (1+ mid)))
-                (t (setq record base lo (1+ hi))))))
-      (and record
-           (= 0 (% (- character (aref table record)) (aref table (+ record 2))))
-           (+ character (aref table (+ record 3)))))))
+    (nelisp--unicode-memo 3 character
+                          (lambda () (nelisp--unicode-titlecase-property-1 character)))))
 
 (defun nelisp-unicode-canonical-character (character)
   "Return CHARACTER's GNU 31.1 standard case canonical representative."
@@ -147,16 +171,23 @@ default because the generated table deliberately covers Unicode scalars."
   "Return CHARACTER's next GNU 31.1 standard case equivalent."
   (nelisp--unicode-simple-map nelisp--unicode-equivalence-ranges character))
 
+(defvar nelisp--unicode-full-hash (make-hash-table :test 'eq)
+  "For each full-mapping vector (START-OF-PAIRS KEY VALUE ...), a hash of KEY to VALUE.")
+
+(defun nelisp--unicode-full-index (table)
+  "Return the hash table of TABLE's CHARACTER to string pairs, built on first use."
+  (or (gethash table nelisp--unicode-full-hash)
+      (let ((h (make-hash-table :test 'eq)) (i 0) (n (length table)))
+        (while (< i n)
+          (puthash (aref table i) (aref table (1+ i)) h)
+          (setq i (+ i 2)))
+        (puthash table h nelisp--unicode-full-hash)
+        h)))
+
 (defun nelisp--unicode-full-map (table character fallback)
   "Return CHARACTER's string mapping from TABLE, or FALLBACK."
-  (let ((lo 0) (hi (1- (/ (length table) 2))) value)
-    (while (<= lo hi)
-      (let* ((mid (/ (+ lo hi) 2)) (base (* mid 2))
-             (key (aref table base)))
-        (cond ((< character key) (setq hi (1- mid)))
-              ((> character key) (setq lo (1+ mid)))
-              (t (setq value (aref table (1+ base)) lo (1+ hi))))))
-    (or value (char-to-string fallback))))
+  (or (gethash character (nelisp--unicode-full-index table))
+      (char-to-string fallback)))
 
 (defun nelisp--unicode-word-character-p (character)
   "Return non-nil when CHARACTER continues a case-conversion word."
