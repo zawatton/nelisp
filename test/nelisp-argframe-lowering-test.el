@@ -8,13 +8,18 @@
    (equal (nelisp-argframe-lower
            '(seq (wf_arg_word args 0) (wf_argval args 2)
                  (m5_list_len args 0)) 'argv 'argc)
-          '(seq (if (< 0 argc) (heap-read-u64 argv 0) 0)
-                (nl_word_payload (if (< 2 argc) (heap-read-u64 argv 16) 0))
-                argc))))
+          '(seq (if (< 0 argc) (ptr-read-u64 argv 0) 0)
+                (nl_word_payload (if (< 2 argc) (ptr-read-u64 argv 16) 0))
+                argc)))
+  ;; subr1: `wf_arg_ptr' is `nl_cons_car_ptr' of the cell: the element WORD's
+  ;; view-or-materialise test, 0 past the end.
+  (should
+   (equal (nelisp-argframe-lower '(wf_arg_ptr args 1) 'argv 'argc)
+          '(m5_fx_word_ptr (if (< 1 argc) (ptr-read-u64 argv 8) 0)))))
 
 (ert-deftest nelisp-argframe-rejects-escape-mutation-and-unknown-uses ()
   (dolist (form '((identity args) (nl_cons_cdr_word args)
-                  (ptr-write-u64 args 0 3) (wf_arg_ptr args 0)
+                  (ptr-write-u64 args 0 3) (wf_arg_ptr args i)
                   (wf_arg_word args index) (wf_arg_word args -1)
                   (let ((args 3)) (wf_arg_word args 0))
                   (quote args) (m5_list_len args 1)))
@@ -23,7 +28,7 @@
 
 (ert-deftest nelisp-argframe-does-not-confuse-omitted-and-explicit-nil ()
   (should (equal (nelisp-argframe-lower '(wf_arg_word args 8) 'argv 'argc)
-                 '(if (< 8 argc) (heap-read-u64 argv 64) 0))))
+                 '(if (< 8 argc) (ptr-read-u64 argv 64) 0))))
 
 (ert-deftest nelisp-argframe-preserves-arbitrary-code-without-args ()
   (let ((body '(let* ((v (callback env))) (seq (alloc-bytes 32 8) v))))
@@ -36,7 +41,7 @@
                    '(seq (callback env)
                          (if (= _pad 0) (wf_argval args 1)
                            (nl_word_payload
-                            (if (< 1 (- _pad 1)) (heap-read-u64 args 8) 0))))))
+                            (if (< 1 (- _pad 1)) (ptr-read-u64 args 8) 0))))))
     (should-error (nelisp-argframe-lower
                    '(let ((_pad 9)) (wf_arg_word args 0)) 'args '(- _pad 1) '_pad)
                   :type 'nelisp-argframe-ineligible)))

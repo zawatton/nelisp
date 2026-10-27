@@ -39,7 +39,12 @@
     ;; name in neither table has no descriptor at all.
     (should (= (logand (nelisp-standalone--subr-desc "=") 255) 0))
     (should (> (ash (nelisp-standalone--subr-desc "=") -25) 0))
-    (should-not (nelisp-standalone--subr-desc "no-such-builtin"))))
+    (should-not (nelisp-standalone--subr-desc "no-such-builtin"))
+    ;; subr1: a builtin with neither part still carries min/max (bits 8-23).
+    (let ((d (nelisp-standalone--subr-desc "integerp")))
+      (should (= (logand d 255) 0))
+      (should (= (logand (ash d -8) 255) 1))
+      (should (= (logand (ash d -16) 255) 1)))))
 
 (ert-deftest w2s-interp-descriptor-round-trips-the-subr-table ()
   ;; The header's packed copy of `nl_subr_desc' undoes to the table's own value:
@@ -88,13 +93,15 @@
          (one (cl-remove-if-not (lambda (f) (ndc--contains 'nl_install_one f)) forms)))
     (should (= (+ (length subr) (length one)) (length forms)))
     (should (>= (length subr) 21))
+    ;; subr1: every builtin with arity metadata (all reader builtins) gets one.
+    (should (null one))
     (dolist (f subr)
-      (let ((spec (cl-find-if (lambda (sp) (w2s--has
-                                            (car (nelisp-standalone--name-words (car sp))) f))
-                              (append nelisp-standalone--directcall-specs
-                                      nelisp-standalone--eval-prims))))
-        (should spec)
-        (should (w2s--has (nelisp-standalone--subr-desc (car spec)) f)))
+      ;; The form's name (every name word) carries that name's descriptor.
+      (should (cl-some (lambda (sp)
+                         (and (cl-every (lambda (w) (w2s--has w f))
+                                        (nelisp-standalone--name-words (car sp)))
+                              (w2s--has (nelisp-standalone--subr-desc (car sp)) f)))
+                       (nelisp-standalone--builtin-arities)))
       (should-not (ndc--contains 'nl_install_one f)))
     (should (ndc--find 'nl_install_subr (nelisp-standalone--directcall-defuns)))
     (should (ndc--find 'nelisp_env_lookup_function_raw_w (nelisp-standalone--directcall-defuns)))))

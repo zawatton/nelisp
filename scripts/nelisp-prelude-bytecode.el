@@ -681,6 +681,73 @@ the value."
                           constant))))
                 (aref compiled 2))))
 
+;; lexpre: GNU's lisp/*.el files are lexical-binding byte code, and the names
+;; below are C subrs or small lisp/*.el helpers there: calling one binds
+;; nothing.  The general prelude is `lexical-binding: nil' as a whole (its
+;; sections come from different sources and the file is one dynamic unit), so
+;; the transform compiled these as dynamic byte code, which binds each
+;; argument on every call (`identity' under `mapc': 16.9K of 61.2K
+;; instructions per trip).  These alone are compiled lexical, with every
+;; special variable the prelude declares passed to the compiler exactly as
+;; core mode does, so the compiler (not a heuristic) decides which names are
+;; bound dynamically.  The census is the fixture-gated generic adoptions
+;; (test/nelisp-prelude-bytecode-parity-fixtures.tsv) whose body is a
+;; single small expression.
+(defconst nelisp-prelude-bytecode-lexical-defuns
+  '(identity purecopy car-safe cdr-safe markerp obarrayp int-to-string
+    decoded-time-minute decoded-time-second
+    file-attribute-modification-time file-attribute-size
+    nelisp--record-type nelisp--record-ref nelisp--prn-float
+    string-to-vector proper-list-p max-char file-remote-p
+    make-sparse-keymap standard-syntax-table)
+  "Prelude defuns compiled as lexical byte code (see above).")
+
+(defvar nelisp-prelude-bytecode--prelude-specials-cache nil
+  "(PATH STAMP . SPECIALS) of the prelude's top-level special declarations.")
+
+(defun nelisp-prelude-bytecode--prelude-specials ()
+  "Return every special variable the whole prelude file declares."
+  (let* ((path (expand-file-name "scripts/nelisp-stdlib-prelude.el"
+                                 (nelisp-prelude-bytecode--repo-root))))
+    (when (file-readable-p path)
+      (let ((cached nelisp-prelude-bytecode--prelude-specials-cache)
+            (stamp (file-attribute-modification-time (file-attributes path))))
+        (if (and cached (equal (car cached) path) (equal (cadr cached) stamp))
+            (cddr cached)
+          (let ((specials (car (nelisp-prelude-bytecode--file-declarations path))))
+            (setq nelisp-prelude-bytecode--prelude-specials-cache
+                  (cons path (cons stamp specials)))
+            specials))))))
+
+(defun nelisp-prelude-bytecode--tree-has-p (tree heads)
+  "Non-nil when TREE contains a form whose head is in HEADS."
+  (and (consp tree)
+       (or (memq (car tree) heads)
+           (let ((found nil))
+             (while (and (consp tree) (not found))
+               (when (nelisp-prelude-bytecode--tree-has-p (car tree) heads)
+                 (setq found t))
+               (setq tree (cdr tree)))
+             found))))
+
+(defun nelisp-prelude-bytecode--lexical-eligible-p (name args body)
+  "Non-nil when defun NAME compiles lexical: listed, no special argument, no closure."
+  (and (memq name nelisp-prelude-bytecode-lexical-defuns)
+       (cl-notany (lambda (a)
+                    (or (special-variable-p a)
+                        (memq a (nelisp-prelude-bytecode--prelude-specials))))
+                  args)
+       (not (nelisp-prelude-bytecode--tree-has-p body '(lambda function)))))
+
+(defun nelisp-prelude-bytecode--lexical-usable-p (compiled)
+  "Non-nil when COMPILED is lexical byte code using only admitted opcodes."
+  (and (byte-code-function-p compiled)
+       (integerp (aref compiled 0))
+       (stringp (aref compiled 1))
+       (cl-every (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
+                 (nelisp-prelude-bytecode--decode-opcodes (aref compiled 1)))
+       (not (nelisp-prelude-bytecode--nested-unsupported compiled))))
+
 (defun nelisp-prelude-bytecode-transform
     (source provenance &optional parity-fixtures core-mode whole-file-functions
             whole-file-compile-p)
@@ -743,8 +810,14 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                     (body (cdddr form))
                     (source-doc (and (stringp (nth 3 form))
                                      (cddddr form) (nth 3 form)))
+                    (lex-here (and (not compile-lexical) (not whole-file-mode)
+                                   (nelisp-prelude-bytecode--lexical-eligible-p
+                                    name args body)))
                     (lambda-form
                      (append (list 'lambda args)
+                             (if lex-here
+                                 (nelisp-prelude-bytecode--declare-specials
+                                  body (nelisp-prelude-bytecode--prelude-specials))
                              (if compile-lexical
                                  ;; Every visible special, not just the
                                  ;; ones BODY names: a macro expansion can
@@ -752,7 +825,7 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                  ;; `cl--parsing-keywords' binds `cl-test').
                                  (nelisp-prelude-bytecode--declare-specials
                                   body (car compile-context))
-                               body)))
+                               body))))
                     (compiled-entry
                      (if whole-file-mode
                          (let ((entry (assq name whole-file-functions)))
@@ -789,7 +862,7 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                            ;; always forcing the prelude's.
                            ;; A core module that declares `nil' (the
                            ;; regexp matcher) is compiled dynamically too.
-                           (setq-local lexical-binding compile-lexical)
+                           (setq-local lexical-binding (or compile-lexical lex-here))
                            (let ((byte-compile-warnings nil)
                                  (byte-compile-verbose nil)
                                  (byte-compile-initial-macro-environment
@@ -797,6 +870,22 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                           byte-compile-initial-macro-environment)))
                              (byte-compile lambda-form)))
                        (error (list :compile-error err)))))
+                    ;; lexical-fallback: a lexical compile the VM cannot run
+                    ;; keeps the dynamic byte code it always had; it never
+                    ;; falls back to source.
+                    (compiled
+                     (if (and lex-here
+                              (not (nelisp-prelude-bytecode--lexical-usable-p
+                                    compiled)))
+                         (condition-case err
+                             (with-temp-buffer
+                               (setq-local lexical-binding nil)
+                               (let ((byte-compile-warnings nil)
+                                     (byte-compile-verbose nil))
+                                 (byte-compile
+                                  (append (list 'lambda args) body))))
+                           (error (list :compile-error err)))
+                       compiled))
                     (renamed-temporaries
                      (and (not core-mode) (byte-code-function-p compiled)
                           (nelisp-prelude-bytecode--intern-temporaries

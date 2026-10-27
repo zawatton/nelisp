@@ -23,7 +23,17 @@
     "ptr-read-u64" "ptr-write-u64" "alloc-bytes" "nelisp-process-async-ready-p"
     "nelisp--target-os-code" "nelisp--target-arch-code" "sin" "cos"
     "nelisp--native-symbol-addr" "nelisp--native-env"
-    "nelisp--native-runtime-contract-word" "nl-ffi-call" "nelisp--native-pin-eq-slots")
+    "nelisp--native-runtime-contract-word" "nl-ffi-call" "nelisp--native-pin-eq-slots"
+    ;; subr1: the handlers `wf_arg_ptr' lowering admits (append-only).
+    "subrp" "symbolp" "symbol-with-pos-p" "nelisp--symbol-position-op" "bare-symbol"
+    "natnump" "sxhash-eq" "nl--read-int" "nl--int-token-p" "nl--read-float-token" "zerop"
+    "symbol-name" "make-symbol" "nelisp--intern-lookup" "nelisp--native-subr-arity"
+    "sxhash-equal" "sxhash-eql" "ash" "lognot" "nelisp--float-word-half"
+    "nelisp-process-object-p" "nelisp-process-pid" "nelisp-process-status"
+    "nelisp-process-exit-status" "nelisp-process-wait" "nelisp-process-delete"
+    "tan" "asin" "acos" "exp" "sqrt" "ffloor" "fceiling" "ftruncate" "fround" "log" "atan"
+    "nelisp--pow" "float" "logb" "nelisp--symbol-global-cell-p" "ptr-call-typed"
+    "special-form-p" "nelisp--native-pin-copy" "nelisp--native-pin-copy-v2")
   "Frozen append-only IDs needed before the first dispatch is generated.
 The full reader table later ratchets this suffix against structural admission;
 no old symbol ID is moved and no late mutation changes a generated dispatch.")
@@ -37,12 +47,21 @@ Reject every other occurrence of `args', including bindings and escapes."
    ((or (eq form 'args) (and mode (eq form mode)))
     (signal 'nelisp-argframe-ineligible (list form)))
    ((atom form) form)
-   ((and (memq (car form) '(wf_arg_word wf_argval))
+   ((and (memq (car form) '(wf_arg_word wf_argval wf_arg_ptr))
          (eq (cadr form) 'args) (integerp (caddr form))
          (>= (caddr form) 0) (null (cdddr form)))
+    ;; subr1: BASE is a raw argv pointer (never a String), so its words are
+    ;; raw loads; `heap-read-u64' at offsets 0-24 of a variable is the
+    ;; String-aware `nl_string_read64' call.  `wf_arg_ptr' is
+    ;; `nl_cons_car_ptr' of the list cell: the same view-or-materialise test
+    ;; on the element WORD (`m5_fx_word_ptr'), and 0 past the end, as the
+    ;; list walk reaches nil.
     (let* ((index (caddr form))
-           (word `(if (< ,index ,argc) (heap-read-u64 ,base ,(* index 8)) 0))
-           (read (if (eq (car form) 'wf_argval) `(nl_word_payload ,word) word)))
+           (word `(if (< ,index ,argc) (ptr-read-u64 ,base ,(* index 8)) 0))
+           (read (pcase (car form)
+                   ('wf_argval `(nl_word_payload ,word))
+                   ('wf_arg_ptr `(m5_fx_word_ptr ,word))
+                   (_ word))))
       (if mode `(if (= ,mode 0) ,form ,read) read)))
    ((equal form '(m5_list_len args 0))
     (if mode `(if (= ,mode 0) ,form ,argc) argc))

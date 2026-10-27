@@ -1754,6 +1754,7 @@ standalone units can call each other."
     nl_apply_builtin_name_key
     nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
     nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w nl_apply_builtin_frame_w
+    nl_apply_builtin_frame_sid_w
     nl_eic_argframe_call_w
     ;; Doc 226 D9: the symbol entry API's slow paths.
     nl_ent_w_slow nl_ent_set_slow nl_sym_signal_wta_integerp
@@ -3307,7 +3308,8 @@ entries carry explicit hex-encoded byte sections."
 (defconst nelisp-standalone--direct-only-reader-defuns
   '(bf_identity_hash m5_length nl_ht_reindex nl_ht_identity_key_hash nl_apply_builtin_name_key
     nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
-    nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w nl_apply_builtin_frame_w)
+    nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w nl_apply_builtin_frame_w
+    nl_apply_builtin_frame_sid_w)
   "Reader defuns that keep direct branches although their unit uses jump tables.
 The authenticated F1 prelink closure admits direct control flow only.  The
 word-heap call path reaches them through `nl_native_frame_v2' ->
@@ -3323,7 +3325,7 @@ that still has indirect control flow.")
   '(("arena.o" nl_ent_w_slow)
     ("applyfn.o" nl_apply_builtin_name_key nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w
      nl_apply_builtin_frame_group_0_w nl_apply_builtin_frame_group_1_w
-     nl_apply_builtin_frame_w))
+     nl_apply_builtin_frame_w nl_apply_builtin_frame_sid_w))
   "Defuns of other units that keep direct branches although the unit uses jump tables.
 `nl_ent_w_slow' (Doc 226 D9's symbol entry API) answers a symbol object's slot K
 from a chain of eight comparisons, which the dense-if lowering turns into a jump
@@ -29705,10 +29707,13 @@ bytes are written into a fresh 8-byte buffer instead."
                       (wf_bytecode_w_varref env a resw scratch)) -3)))
           (if (= (logand a 1) 1) -3
             (if (or (= (nl_val_tag a) 4) (= (nl_val_tag a) 16))
-                (let* ((b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0))
-                       (rc (bf_set_dynamic_value
-                            env a (wf_bytecode_w_view b scratch))))
-                  (if (= rc 0) (m5_fx_take b resw) rc)) -3)))))
+                (let* ((b (heap-read-u64 (+ stk (* (- sp 1) 8)) 0)))
+                  ;; lexpre: PLAINVAL first, as set_internal; else the old path.
+                  (if (= (nl_sym_set_plain_w env a b) 1)
+                      (m5_fx_take b resw)
+                    (let* ((rc (bf_set_dynamic_value
+                                env a (wf_bytecode_w_view b scratch))))
+                      (if (= rc 0) (m5_fx_take b resw) rc)))) -3)))))
     ;; What a call-out of FN with ARGC arguments runs: 21/22 the globals
     ;; above, 1..13 a primitive (`m5_fx_primitive_id'), 0 the ordinary
     ;; covered-closure or apply path.  Names are compared here only, once
@@ -35077,6 +35082,44 @@ bytes are written into a fresh 8-byte buffer instead."
                                       (nl_ent_set obj 0 v) (setq result 0)))))
                          (setq result 1))))))))
            result))))
+    ;; lexpre: GNU set_internal PLAINVAL (data.c:1678).  SYM is a symbol
+    ;; object WORD (an interned or uninterned symbol) whose redirect is
+    ;; PLAINVAL (header bits 8-9 clear) and whose trapped-write field (bits
+    ;; 10-11: constant or watched) is clear, in a direct env with no global
+    ;; watcher mode: the store is `SET_SYMBOL_VAL', one slot write.  VAL is
+    ;; the rooted operand WORD itself -- `nl_ent_set' (the clone keystone)
+    ;; takes a WORD or a slot pointer, so no legacy view is built and
+    ;; cloned back.  Keywords keep the by-name decision of
+    ;; `bf_set_dynamic_value'.  Answers 1 after the store; 0 declines and
+    ;; the caller takes `bf_set_dynamic_value' unchanged (alias, forwarded,
+    ;; buffer-local, constant, watched, worker, no object).
+    ;; 1 when the name of symbol object SYM may be a keyword (first byte ':'),
+    ;; or when its layout is not one of the two this reads: the caller then
+    ;; declines to the by-name check of `bf_set_dynamic_value'.  Reads the
+    ;; name as `nl_word_data'/`nl_word_length' do (a String WORD at +8, or a
+    ;; legacy view), without their dispatch.
+    (defun nl_sym_object_keyword_p (sym)
+      (let* ((nm (heap-read-u64 (- sym 6) 8)))
+        (if (= (logand nm 7) 4)
+            (if (< (nl_string_nbytes (- nm 4)) 1) 0
+              (if (= (heap-read-u8 (heap-read-u64 (- nm 4) 24) 0) 58) 1 0))
+          (if (= (logand nm 7) 0)
+              (if (< (heap-read-u64 nm 24) 1) 0
+                (if (= (heap-read-u8 (heap-read-u64 nm 16) 0) 58) 1 0))
+            1))))
+    (defun nl_sym_set_plain_w (env sym val)
+      (if (= (logand sym 7) 6)
+          (let* ((h (heap-read-u64 (- sym 6) 0)) (kind (logand h 63)))
+            (if (and (or (= kind 4) (= kind 16))
+                     (= (logand (sar h 8) 15) 0)
+                     (= (logand (heap-read-u64 (+ env 112) 0) 1048576) 0)
+                     (= (nl_sym_direct_env_p env) 1)
+                     (= (nl_sym_object_keyword_p sym) 0))
+                (seq (if (= (logand val 1) 0) (wf_dirty) 0)
+                     (nl_ent_set sym 0 val)
+                     1)
+              0))
+        0))
     ;; Doc 226 D5: GNU's forwarded built-ins (DEFVAR_INT max-lisp-eval-depth,
     ;; eval.c; DEFVAR_BOOL print-escape-newlines, print.c).  The descriptor
     ;; in slot 7 (1 intfwd, 2 boolfwd) makes every store check and convert
@@ -38807,7 +38850,18 @@ set, which lacks the reader-only `nl_os_write_stderr')."
        (list `(defun nl_apply_builtin_frame_w (func_ptr args env argc)
                 (let* ((name_ptr (nl_cons_car_word (nl_cons_cdr_word func_ptr)))
                        (_pad (+ argc 1)))
-                  ,(if frame-parts (cdr frame-parts) dispatch)))))
+                  ,(if frame-parts (cdr frame-parts) dispatch)))
+             ;; subr1: the same argv entries keyed by the static id the caller
+             ;; already holds (GNU funcall_subr calls the SUBR's function with no
+             ;; name lookup, eval.c:3254): only the leaf key tree, no name
+             ;; resolution.  2: no argv entry for SID, nothing happened.
+             `(defun nl_apply_builtin_frame_sid_w (nl_dk func_ptr args env argc)
+                (let* ((name_ptr (nl_cons_car_word (nl_cons_cdr_word func_ptr))))
+                  ,(if frame-parts
+                       (pcase (cdr frame-parts)
+                         (`(let* ,_ ,tree) tree)
+                         (_ (error "Unexpected argv entry router shape")))
+                     2)))))
      (list `(defun nelisp_apply_function_w (func_ptr args env _pad)
               (let* ((name_ptr (nl_cons_car_word (nl_cons_cdr_word func_ptr))))
                 ,(cl-subst 0 '_pad dispatch)))
@@ -39216,6 +39270,26 @@ GNU eval reports the original call symbol; funcall/apply report the callable."
                     (wf_argval args 0) (wf_argval args 1) (wf_argval args 2)
                     args 0)))))))
 
+(defun nelisp-standalone--argframe-shape-form (variable)
+  "subr1: the admitted argv entry of static id VARIABLE as a packed shape, else 0.
+1 | MIN << 8 | MAX << 16 (MAX 255: many), from the same arity metadata the
+list route's guards and `nl_subr_desc' use (GNU struct Lisp_Subr min_args and
+max_args).  An evaluator entry (static ids 1-18, `nl_apply_name_classify')
+never has one."
+  (let ((arities (nelisp-standalone--builtin-arities)) (pairs nil) (seen nil))
+    (dolist (name (nelisp-argframe-admitted-names
+                   (nelisp-standalone--applyfn-guarded-reader-table)))
+      (let ((sid (nelisp-standalone--sid name)) (ar (assoc name arities)))
+        (when (and sid (not (memq sid seen)))
+          (push sid seen)
+          (when (<= sid 18) (error "Argv entry for an evaluator entry: %s" name))
+          (unless ar (error "Argv entry without arity metadata: %s" name))
+          (push (cons sid (logior 1 (ash (nth 1 ar) 8)
+                                  (ash (if (eq (nth 2 ar) 'many) 255 (nth 2 ar)) 16)))
+                pairs))))
+    (nelisp-standalone--key-tree
+     variable (sort pairs (lambda (a b) (< (car a) (car b)))) 0)))
+
 (defun nelisp-standalone--argframe-admission-form (variable)
   "Return a balanced membership test for the actual target's admitted SIDs."
   (let ((sids
@@ -39229,24 +39303,45 @@ GNU eval reports the original call symbol; funcall/apply report the callable."
 
 (defun nelisp-standalone--argframe-m5-helpers ()
   "Replace only the FX list callout with proven rooted argv transport."
-  (let ((admission (nelisp-standalone--argframe-admission-form 'argframe_sid)))
+  (let ((shape-form (nelisp-standalone--argframe-shape-form 'argframe_sid)))
     (mapcar
      (lambda (definition)
+       (if (eq (cadr definition) 'm5_fx_builtin_name)
+           ;; subr1: the head of an interned symbol OBJECT is `builtin' iff its
+           ;; static id is `builtin''s (ids are per name); only an id-less head
+           ;; (uninterned, a view) pays the name comparison.
+           `(defun m5_fx_builtin_name (fn _pad)
+              (if (= (m5_fx_word_cons_p fn 0) 0) 0
+                (let* ((head (nl_cons_car_word fn)) (tail (nl_cons_cdr_word fn)))
+                  (if (= (logand head 1) 1) 0
+                    (if (= (let* ((sid (if (= (logand head 7) 6) (nl_sym_sid head) 0)))
+                             (if (= sid 0) (sexp-name-eq head "builtin")
+                               (if (= sid ,(nelisp-standalone--sid "builtin")) 1 0)))
+                           0)
+                        0
+                      (if (= (m5_fx_word_cons_p tail 0) 0) 0
+                        (nl_cons_car_word tail)))))))
        (if (not (eq (cadr definition) 'm5_fx_call_list)) definition
          `(defun m5_fx_call_list (sym fn stk sp argc env resw lslot vslot)
             (let* ((argv (+ stk (* (- sp argc) 8)))
                    (frame (nl_n4_push_words env sym argv argc)))
               (if (= frame 0)
                   (nelisp_eval_call_stash_excessive_lisp_nesting env (nl_frame_stack_limit env 0))
+                ;; subr1: the argv entry is found by the name's static id alone
+                ;; (GNU funcall_subr reads the SUBR's arity and function, no name):
+                ;; SHAPE packs the admitted entry's min/max (0: none), replacing
+                ;; the `nl_subr_desc' name dispatch, the evaluator-entry classify
+                ;; and the separate admission test; the entry is reached by the id
+                ;; (`nl_apply_builtin_frame_sid_w'), not the name again.
                 (let* ((name (nl_eic_builtin_name fn))
-                       (desc (if (= name 0) 0 (nl_subr_desc name)))
+                       (argframe_sid (if (= name 0) 0 (nl_sym_sid name)))
+                       (shape (if (<= argframe_sid 18) 0 ,shape-form))
                        (word
                         (if (if (< argc 0) 0
-                              (if (> argc 255) 0
-                                (if (= desc 0) 0
-                                  (if (/= (nl_apply_name_classify name) 0) 0
-                                    (let* ((argframe_sid (nl_sym_sid name))) ,admission)))))
-                            (if (= (nl_subr_arity_bad desc argc) 1)
+                              (if (> argc 255) 0 (/= shape 0)))
+                            (if (if (< argc (logand (sar shape 8) 255)) 1
+                                  (if (= (logand (sar shape 16) 255) 255) 0
+                                    (> argc (logand (sar shape 16) 255))))
                                 (nl_abi_fail (bf_wrong_number_of_args (nl_n4_op_view frame) argc) 0)
                               (seq
                                ;; Normalize only this consumed argument slice, as the
@@ -39254,9 +39349,9 @@ GNU eval reports the original call symbol; funcall/apply report the callable."
                                (let* ((k 0))
                                  (while (< k argc)
                                    (seq (ptr-write-u64 argv (* k 8)
-                                                       (nl_word_canon (heap-read-u64 argv (* k 8))))
+                                                       (nl_word_canon (ptr-read-u64 argv (* k 8))))
                                         (setq k (+ k 1)))))
-                               (nl_apply_builtin_frame_w fn argv env argc)))
+                               (nl_apply_builtin_frame_sid_w argframe_sid fn argv env argc)))
                           2)))
                   (if (= word 2)
                       ;; Original fallback: these same evaluated words, once.
@@ -39270,7 +39365,7 @@ GNU eval reports the original call symbol; funcall/apply report the callable."
                     (seq
                      ;; The VM vector owns this result through debug/reentrant GC.
                      (ptr-write-u64 resw 0 word)
-                     (m5_fx_take (nl_n4_finish_w word env 0 frame) resw)))))))))
+                     (m5_fx_take (nl_n4_finish_w word env 0 frame) resw))))))))))
      nelisp-standalone--applyfn-m5-helpers)))
 
 (defun nelisp-standalone--applyfn-source ()
@@ -60622,20 +60717,30 @@ the minimum argument count in 8-15, the maximum (127 = many) in 16-23 and, in bi
 24, the leaf flag (ids below 112 run no Lisp and hold no safepoint).  Bits 25-54
 hold the interpreter's descriptor (`nelisp-standalone--interp-desc'), 0 for none;
 a name with only that part (a `nl_subr_desc' primitive without a directcall id) has
-0 in bits 0-7, which `nl_directcall_id' answers as no primitive.  Nil when neither
-part exists."
+0 in bits 0-7, which `nl_directcall_id' answers as no primitive.  A builtin with
+neither part still has min/max in bits 8-23 (subr1).  Nil only for a name with no
+arity metadata."
   (let* ((spec (assoc name nelisp-standalone--directcall-specs))
-         (arity (and spec (assoc name (nelisp-standalone--builtin-arities))))
-         (direct (and spec arity
-                      (logior (+ (cadr spec) 17)
-                              (ash (nth 1 arity) 8)
-                              (ash (if (eq (nth 2 arity) 'many) 127 (nth 2 arity)) 16)
+         (arity (assoc name (nelisp-standalone--builtin-arities)))
+         ;; subr1: every builtin with arity metadata gets a Subr object (GNU: every
+         ;; function cell of a primitive holds its Lisp_Subr, lisp.h struct
+         ;; Lisp_Subr with min_args/max_args).  Without a directcall id its bits
+         ;; 0-7 are 0 (no primitive id) and bits 8-23 still hold min/max.
+         (shape (and arity
+                     (progn
+                       (unless (and (< (nth 1 arity) 127)
+                                    (or (eq (nth 2 arity) 'many) (< (nth 2 arity) 127)))
+                         (error "Arity of %s does not fit the Subr header" name))
+                       (logior (ash (nth 1 arity) 8)
+                               (ash (if (eq (nth 2 arity) 'many) 127 (nth 2 arity)) 16)))))
+         (direct (and spec shape
+                      (logior (+ (cadr spec) 17) shape
                               (if (< (cadr spec) 112) (ash 1 24) 0))))
          (interp (if (or direct (assoc name nelisp-standalone--eval-prims))
                      (nelisp-standalone--interp-desc name)
                    0)))
-    (cond ((and (not direct) (= interp 0)) nil)
-          (t (logior (or direct 0) (ash interp 25))))))
+    (cond ((and (not direct) (not shape) (= interp 0)) nil)
+          (t (logior (or direct shape 0) (ash interp 25))))))
 
 (defun nelisp-standalone--directcall-defuns ()
   "Private validated argv entries for existing primitives, with no public objects.

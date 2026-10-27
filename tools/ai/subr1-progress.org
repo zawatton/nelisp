@@ -1,0 +1,66 @@
+#+TITLE: subr1 -- Subr objects with argument-array entries for builtin cells (strategy W2a / D-callproto C2+E)
+#+NOTE: Created 2026-10-27 before the build. Seed = coordinator HEAD a107089c6 (v23) + overlay bufread + nc5 (target/subr1/seed/; the patch is against the seed for those files, git HEAD otherwise). Baseline v23 = ../resume-4943-20261024/target/integ-1040-build/dynamic/nelisp-dynamic; closest build = ../nc5-20261104/target/nc5-build/dynamic/nelisp-dynamic (its Ir figures are recorded in target/subr1/logs/s1-ceiling.txt). Build budget 2. Timing and callgrind on CPU 13 only. Binary under test: ${SUBR1_BIN:-target/subr1-build/dynamic/nelisp-dynamic}.
+#+NOTE: 2026-10-27 after the builds: evidence pins added to S3.2, S3.4, S4.1, S4.3 and 15 arity rows added to the corpus (criterion count unchanged, 13).
+#+NOTE: Ceiling (S1.3): the list route's protocol on trim is about 16.5K of 83.2K Ir per trip (-20 percent at zero cost); the rest of that route is the rx matcher and a funcall'd closure body.  On split and prop the list route is 8 percent of the trip.  The brief's -25 percent (S4.1) is therefore kept as a failing check if not reached; it is not downgraded.
+
+* S1 Cause with evidence
+** S1.1 The list route per trip on the nc5 build: trim makes 8 m5_fx_call_list calls (rx-exec 2, symbol-function 2, funcall 2, <= 1, integerp 1), 7 of them through nl_apply_builtin_w (24.8K incl.); split 1 (aref of a string); prop 2.5 (string-mark-intervals already argv)
+#+NOTE: gdb two-N (BENCH_N 100/300) breakpoints on m5_fx_call_list / nc_builtin_call / nc_desc_call / m5_fx_primitive_run printing the symbol's name (target/subr1/logs/g2.gdb, g3.gdb); callgrind edges from the nc5 lane's two-N files (target/subr1/cg/callees.py).
+evidence: target/subr1/logs/s1-names.txt sha256=c7550649306984dbba3061b57bb1c7b9846b10c714ddf4878c6bf028c4985902
+cmd: grep -q 'NAMES trim 2.00 L 7 "nelisp--rx-exec"' target/subr1/logs/s1-names.txt && grep -q "^m5_fx_call_list            -> nl_n4_apply_raw_w                    calls   7.00 incl    28715" target/subr1/logs/s1-callees-nc5.txt
+** S1.2 Why they take the list route: rx-exec's handler reads `wf_arg_ptr', which argv lowering rejected (69 of 356 handlers admitted); only 63 of 355 builtin cells hold a Subr object, the rest are (builtin NAME) lists whose call pays m5_fx_builtin_name's "builtin" string compare (7 per trim trip) and nl_directcall_invoke's descriptor re-parse
+evidence: target/subr1/logs/gencheck-red-seed.txt sha256=d429e9a8dc6a915089f7a5c9e4a217ee3f772e1861703e38bee3536436675514
+cmd: grep -q "CHECK desc BAD subr=63 forms=355" target/subr1/logs/gencheck-red-seed.txt && grep -q "CHECK lower BAD admitted=69" target/subr1/logs/gencheck-red-seed.txt
+** S1.3 The ceiling of a call-protocol change per row is recorded (trim list-route protocol ~16.5K of 83.2K; split/prop list route 8 percent)
+evidence: target/subr1/logs/s1-ceiling.txt sha256=caffa8fb0d4e60c4acbbe6b50591a12989f272c94326988bdffaee7836a38042
+cmd: grep -q "^CEILING trim" target/subr1/logs/s1-ceiling.txt && grep -q "^TRIP nc5 trim 83241 split 40053 prop 45919" target/subr1/logs/s1-ceiling.txt
+
+* S2 Fix (offline red/green, GNU funcall_subr / struct Lisp_Subr)
+** S2.1 Every installed builtin cell holds an immutable Subr object carrying min/max (355 of 355; red on the seed: 63)
+cmd: grep -q "subr1: every builtin with arity metadata gets a Subr object" scripts/nelisp-standalone-build.el
+#+TIMEOUT: 300
+cmd: sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK desc ok subr=355 forms=355"
+** S2.2 Argument-array entries generated from the handler arms: `wf_arg_ptr' lowers to the element WORD's view test, argv reads are raw loads, 141 handlers admitted (rx-exec among them; seed 69), append-only static ids for the new ones
+#+TIMEOUT: 300
+cmd: sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK lower ok admitted=141" && sh tools/ai/subr1-gencheck.sh | grep -q "^CHECK leaves-raw ok"
+#+TIMEOUT: 300
+cmd: emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-argframe-lowering-test.el -l test/nelisp-argframe-generation-test.el -l test/nelisp-subr-object-test.el -f ert-run-tests-batch-and-exit > /dev/null 2>&1
+** S2.3 Dispatch without a name compare: the call-out finds the argv entry by the static id (shape tree with min/max, `nl_apply_builtin_frame_sid_w'), an id-less Subr skips the directcall probe and its legacy list skips the "builtin" test, the builtin head test is a static-id compare; the whole offline check is green here and red on the seed
+#+TIMEOUT: 300
+cmd: sh tools/ai/subr1-gencheck.sh > /dev/null 2>&1
+cmd: grep -q "^GENCHECK bad=0" target/subr1/logs/gencheck-green.txt && ! grep -q "^GENCHECK bad=0" target/subr1/logs/gencheck-red-seed.txt
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304
+cmd: tail -1 target/subr1-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/subr1-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/subr1-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: target/subr1/logs/fixtures.log sha256=a8f5894a523e210c1a0c870e6b577d4819f052a7ef53cce7293edf706b111367
+cmd: grep -q "buffer 21/21 PASS" target/subr1/logs/fixtures.log && grep -q "weak 24/24 PASS" target/subr1/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/subr1/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/subr1/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh -c 'B=${SUBR1_BIN:-target/subr1-build/dynamic/nelisp-dynamic}; case $B in /*) ;; *) B=$PWD/$B ;; esac; sh tools/ai/gnu-speed-win-check/check.sh $B'
+** S3.3 GNU-parity corpus for subr introspection and calling: every row equal to the nc5 build's or, where nc5 differed from GNU, to GNU's (fboundp, subrp, func-arity, printing, fset/redefinition, wrappers, wrong arity of newly admitted handlers), every row nc5 shared with GNU still equal to GNU (wrong-number-of-arguments payloads included), mutant caught
+#+NOTE: One behaviour change, toward GNU: a compiled caller's wrong argument count to a handler the wf_arg_ptr lowering newly admits (symbolp, ash, symbol-name, ...) now signals with the symbol (GNU eval_sub, eval.c:2645) where nc5 gave #<subr NAME>; nc5 already did so for handlers it admitted (integerp).  3 corpus rows (arity2 w1/w5/w6).  The corpus under wine equals the Linux build's output on all 247 rows (target/subr1/win/corpus-win.out).  `same' is pinned to nc5.out: on an integrated binary another lane's change to one of these rows turns it red; `gnu' is the robust mode.
+#+TIMEOUT: 200
+cmd: sh tools/ai/subr1-corpus.sh ${SUBR1_BIN:-target/subr1-build/dynamic/nelisp-dynamic} same
+#+TIMEOUT: 200
+cmd: sh tools/ai/subr1-corpus.sh ${SUBR1_BIN:-target/subr1-build/dynamic/nelisp-dynamic} gnu && sh tools/ai/subr1-corpus.sh ${SUBR1_BIN:-target/subr1-build/dynamic/nelisp-dynamic} mutant
+** S3.4 Win64 build of the same sources under wine: closurevm 24, switch corpus and features equal GNU
+#+NOTE: target/subr1/win/run-win.sh build|check (recipe of ../resume-4943-20261024/target/integ-1040/win/run-win.sh).  Build 2 (825 s): closurevm 24, switch EQ-GNU, features EQ-GNU (the first check run lacked the harness input features-bc.el; rerun after copying it).  The subr parity corpus under wine equals nc5.out line for line (target/subr1/win/corpus-win.out).
+evidence: target/subr1/win/win.log sha256=357894ba044e6bf6e017575f5ea8a96b6cad6287d6d0db1a9b6854e952e7d63a
+cmd: grep -q "closurevm: CLOSUREVM COMPLETE checked=24 rc=0" target/subr1/win/win.log && grep -q "switch corpus rc=0 EQ-GNU" target/subr1/win/win.log && grep -q "features rc=0 EQ-GNU" target/subr1/win/win.log
+
+* S4 End to end: speed
+** S4.1 The brief's target: trim, split and prop Ir per trip at least 25 percent below the nc5 build (trim 83241 -> 62431, split 40052 -> 30039, prop 45918 -> 34438)
+#+NOTE: Build 1 Ir per trip (nc5 -> subr1): trim 83241 -> 74305 (-10.7%), split 40052 -> 40776 (+1.8%), prop 45918 -> 45038 (-1.9%).  Red, as the S1.3 ceiling predicted.  trim's remaining list route is funcall x2 and symbol-function x2 (evaluator entries, static ids 1-18, no generated argv entry) and <= (target/subr1/cg/trim-callees-subr1.txt).
+evidence: target/subr1/cg/subr1-ir.txt sha256=a61e3478e5876bd3adc6164d5a59d663c6901d82c150dfe812df8a0bfec1c457
+cmd: awk 'BEGIN{t["split"]=30039;t["prop"]=34438;t["trim"]=62431} ($1 in t){n++; if ($2>t[$1]) f=1} END{exit !(n==3 && !f)}' target/subr1/cg/subr1-ir.txt
+** S4.2 Ir per trip lower than the nc5 build on all three rows, results unchanged
+#+NOTE: Red on split (+724 Ir/trip): fboundp and nelisp--string-search-chars are now id-less Subr objects, and their call runs nc_call -> m5_fx_call_subr (declines) -> nc_subr_call -> nc_desc_call -> nc_builtin_call, about 65 Ir more per call than the legacy list did.  Fix (not built: build 2 went to Win64): nc_call sends kind 20 with id byte 0 straight to the kind arms.
+cmd: awk 'BEGIN{t["split"]=40052;t["prop"]=45918;t["trim"]=83241} ($1 in t){n++; if ($2>=t[$1]) f=1} END{exit !(n==3 && !f)}' target/subr1/cg/subr1-ir.txt
+cmd: grep -q '^trim [0-9]* result="abc"' target/subr1/cg/subr1-ir.txt && grep -q '^split [0-9]* result=("a"' target/subr1/cg/subr1-ir.txt && grep -q '^prop [0-9]* result=#("hello"' target/subr1/cg/subr1-ir.txt
+** S4.3 Paired wall time on CPU 13 vs v23 (GNU recorded): trim, split and prop not slower (ratio < 1, >= 6 of 7 pairs); reg-sum-bc and r3-mix within 3 percent
+#+NOTE: paired_bench 7 reps on CPU 13, ns/step v23 -> subr1 (ratio, pairs faster; GNU): trim 15186 -> 12907 (0.850, 7/7; 703), split 5031 -> 4877 (0.969, 7/7; 2459), prop 7063 -> 6727 (0.952, 7/7; 1211); reg-sum-bc 0.990 (5/7), r3-mix 1.001 (4/7).
+evidence: target/subr1/timing/paired-all.log sha256=8d059071eab2d150c46d4c66441e8042c0d257db38794836b3a74748014ec19b
+cmd: python3 target/subr1/timing/s4check.py

@@ -891,22 +891,30 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
              (cls (logand fn 7)))
         (if (if (= cls 6) (if (< fn 4096) 0 (= (logand (ptr-read-u64 (- fn 6) 0) 63) 20)) 0)
             (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-                 (let* ((d (nl_directcall_invoke fn sym stk argc env resw)))
+                 ;; subr1: header bits 8-15 are id+17, 0 for a builtin with no
+                 ;; directcall id, for which `nl_directcall_invoke' answers 2
+                 ;; at once with nothing done.
+                 (let* ((d (if (= (logand (ptr-read-u64 (- fn 6) 0) 65280) 0) 2
+                             (nl_directcall_invoke fn sym stk argc env resw))))
                    (if (/= d 2) d
                      (if (= (nl_sb_worker_p env) 1) -5
                        (nc_desc_call env site sym fn stk argc resw oslot)))))
           (if (if (= cls 2) (= (nl_sb_worker_p env) 0) 0)
               (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
-                   (nc_builtin_call env site sym fn stk argc resw oslot))
+                   (nc_builtin_call env site sym fn stk argc resw oslot 0))
             -5))))
     ;; A Subr object with no directcall entry for this call: its interpreter
     ;; descriptor's primitive (`nl_eic_prim_frame_w''s dispatch), funcall (13)
     ;; through the site, else the list apply of the legacy list it wraps.  A
     ;; wrong argument count goes to the call-out, which signals it.
+    ;; subr1: with no interpreter descriptor (every builtin without a
+    ;; primitive id now has a Subr object) the legacy list takes the arms it
+    ;; took when it was the cell itself (`nc_builtin_call'), with no
+    ;; "builtin" name test: the object proves it.
     (defun nc_desc_call (env site sym fn stk argc resw oslot)
       (let* ((p (shr (ptr-read-u64 (- fn 6) 0) 33))
              (legacy (ptr-read-u64 (- fn 6) 8)))
-        (if (= p 0) (nc_list_call env sym legacy stk argc resw oslot)
+        (if (= p 0) (nc_builtin_call env site sym legacy stk argc resw oslot 1)
           (let* ((desc (logior (logand p 63) (shl (shr p 6) 8))))
             (if (= (nl_subr_arity_bad desc argc) 1) -5
               (let* ((id (nl_subr_prim desc argc))
@@ -917,12 +925,13 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                                  (nl_eic_prim2_run id stk argc resw)))))))
                 (if (= st -3) (nc_list_call env sym legacy stk argc resw oslot) st)))))))
     ;; The legacy (builtin NAME) cell FN: the call-out's kind arms on the site's
-    ;; cached kind, then the list apply; -5 when FN is no builtin list.
-    (defun nc_builtin_call (env site sym fn stk argc resw oslot)
+    ;; cached kind, then the list apply; -5 when FN is no builtin list.  KNOWN 1:
+    ;; FN is the list a Subr object wraps, a builtin by construction.
+    (defun nc_builtin_call (env site sym fn stk argc resw oslot known)
       (let* ((cache (if (= (nl_word_tag64 site) 8) site 0))
              (kind (m5_fx_site_kind cache fn argc env)))
         (if (= kind 0)
-            (if (= (m5_fx_builtin_name fn 0) 0) -5
+            (if (if (= known 1) 0 (= (m5_fx_builtin_name fn 0) 0)) -5
               (nc_list_call env sym fn stk argc resw oslot))
           (let* ((st (seq (ptr-write-u64 (+ resw 8) 0 fn)
                           (if (> kind 20) (m5_fx_globals_run kind stk argc argc resw env oslot)

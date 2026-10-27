@@ -28,7 +28,9 @@ def offenders(path):
             s = line.strip()
             if not s.startswith('cmd:'):
                 continue
-            if BIN.search(PARAM.sub('', s[4:])):
+            body = s[4:]
+            # `$PWD/${X_BIN:-rel}` breaks when X_BIN is absolute.
+            if BIN.search(PARAM.sub('', body)) or re.search(r'\$\{?PWD\}?/\$\{[A-Z0-9_]*_BIN\b', body):
                 out.append((n, s))
     return out
 

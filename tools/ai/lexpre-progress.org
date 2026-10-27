@@ -1,0 +1,50 @@
+#+TITLE: lexpre -- prelude one-liners as lexical byte code, and the `set' PLAINVAL fast path
+#+NOTE: Created 2026-11-04 before implementation. Seed = coordinator HEAD a107089c6 (v23) + overlay bufread + nc5 (copies in target/lexpre/seed/). Baselines: v23 = ../resume-4943-20261024/target/integ-1040-build/dynamic/nelisp-dynamic, nc5 = ../nc5-20261104/target/nc5-build/dynamic/nelisp-dynamic. Targets: mapc -25 percent Ir vs nc5 (60357 -> 45268 per trip); ptp and prop `set' cost halved (5435 -> 2717 and 6.2K -> 3.1K per trip). Timing CPU 15 only.
+#+NOTE: All binary-running checks take the binary from LEXPRE_BIN (default: this lane's own build).
+
+* S1 Cause with evidence
+** S1.1 identity (and the other fixture-gated generic prelude defuns) are DYNAMIC byte code because nelisp-prelude-bytecode-transform compiles the prelude tail with core-mode nil, so compile-lexical is nil for scripts/nelisp-stdlib-prelude.el (header says lexical-binding: nil); the nc5 binary shows identity as #[(x) ...] with a varbind per call
+#+NOTE: target/lexpre/logs/s1-cause.txt records the (x) arglist on nc5, the compile-lexical derivation and the 16.9K varbind share of mapc.
+cmd: grep -q "^NC5 identity arglist=(x)" target/lexpre/logs/s1-cause.txt && grep -q "^SOURCE compile-lexical=nil for general prelude" target/lexpre/logs/s1-cause.txt && grep -q "^MAPC varbind=16872" target/lexpre/logs/s1-cause.txt
+** S1.2 `set' per-trip cost split on nc5 (ptp 7 sets/trip): bf_set_dynamic_value 4204 incl, of which nl_sym_set_w 2657 (view clone, direct-env check, mirror lookup, redirect, clone, dirty) and the keyword/view/word_data overhead; GNU set_internal is flag tests plus one store
+cmd: grep -q "^SET ptp sets=7 globals_run_incl=4204 sym_set_w_incl=2657" target/lexpre/logs/s1-cause.txt
+
+* S2 Fix with red/green and GNU-parity corpora
+** S2.1 Lexical override: a census-selected set of prelude one-liners compiles lexical when (a) the name is in nelisp-prelude-bytecode-lexical-defuns, (b) the body has no binding construct, (c) the lexical opcodes are all admitted; otherwise the dynamic compile is kept (never falls back to source)
+cmd: grep -q "nelisp-prelude-bytecode-lexical-defuns" scripts/nelisp-prelude-bytecode.el && grep -q "lexical-fallback" scripts/nelisp-prelude-bytecode.el
+** S2.2 Offline red/green on the host: the selector run on the seed copy produces a dynamic cell (arglist (x)) for identity and the changed selector produces arglist 257 with admitted opcodes; the guard rejects a body that binds a variable
+#+TIMEOUT: 300
+cmd: sh tools/ai/lexpre-check.sh offline
+** S2.3 `set' PLAINVAL fast path (GNU set_internal): nl_sym_set_plain_w stores a symbol object's value directly when redirect is PLAINVAL, trapped-write is clear, no global watcher mode, direct env; every other case takes the old path unchanged
+cmd: grep -q "(defun nl_sym_set_plain_w " scripts/nelisp-standalone-build.el && grep -q "lexpre: GNU set_internal PLAINVAL" scripts/nelisp-standalone-build.el
+** S2.4 GNU-parity corpus for dynamic vs lexical behaviour of the changed defuns (special variables as arguments, closures capturing arguments, &optional, funcall/apply/mapcar/sort uses): runtime = GNU 31.1, and the runner fails on a seeded wrong expectation
+#+TIMEOUT: 300
+cmd: sh tools/ai/lexpre-check.sh lexcorpus ${LEXPRE_BIN:-target/lexpre-build/dynamic/nelisp-dynamic}
+** S2.5 GNU-parity corpus for `set' on plain, buffer-local, let-bound, constant, keyword, watched and alias variables: runtime = GNU 31.1, and the runner fails on a seeded wrong expectation
+#+TIMEOUT: 300
+cmd: sh tools/ai/lexpre-check.sh setcorpus ${LEXPRE_BIN:-target/lexpre-build/dynamic/nelisp-dynamic}
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304
+cmd: tail -1 target/lexpre-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/lexpre-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 In the built binary identity is lexical byte code (arglist 257) and the corpus functions that were adopted stay byte code
+#+TIMEOUT: 120
+cmd: sh tools/ai/lexpre-check.sh cells ${LEXPRE_BIN:-target/lexpre-build/dynamic/nelisp-dynamic}
+** S3.3 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+
+evidence: target/lexpre/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+#+TIMEOUT: 600
+cmd: grep -q 'weak 24/24 PASS' target/lexpre/logs/fixtures.log && grep -q 'GNU 56/56 PASS' target/lexpre/logs/fixtures.log && grep -q 'buffer 21/21 PASS' target/lexpre/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh "$(readlink -f ${LEXPRE_BIN:-target/lexpre-build/dynamic/nelisp-dynamic})"
+
+* S4 End to end
+** S4.1 mapc Ir per trip at most 0.75 of nc5 (60357)
+evidence: target/lexpre/cg/lexpre-ir.txt sha256=40f537381d10edc25f6cba901262bfafc2eb51f824d97e183e7b8740e9a74083
+cmd: sh tools/ai/lexpre-check.sh ir mapc 45268
+** S4.2 ptp and prop `set' inclusive cost per trip at most half of nc5 (ptp 4204, prop 4.4K via bf_set_dynamic_value)
+cmd: sh tools/ai/lexpre-check.sh setcost
+** S4.3 Paired timing vs v23 and GNU plus regression rows reg-sum-bc and r3-mix not slower beyond noise (CPU 15)
+evidence: target/lexpre/timing/paired-all.log sha256=568662ae12566f9a8ff02e033cbc43692b9f2c02355f261d2a623c1382c71397
+cmd: sh tools/ai/lexpre-check.sh timing
