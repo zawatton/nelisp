@@ -1,0 +1,54 @@
+#+TITLE: lexbc -- prelude byte code honours each source file's lexical-binding
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD 4bd8c139a (v26, integ-1043), clean; the patch is against git HEAD. Baseline v26 = ../resume-4943-20261024/target/integ-1043-build/dynamic/nelisp-dynamic. Build budget 2. Timing on CPU 13 only. Binary under test: ${LEXBC_BIN:-target/lexbc-build/dynamic/nelisp-dynamic}.
+#+NOTE: Concurrent lanes: libcomp2 (native-row "kept as source" rule in scripts/nelisp-prelude-bytecode.el, lisp/nelisp-fxir-native-data.el), reprs (symbol plists, char-tables, bool-vectors).
+
+* S1 Cause with evidence
+** S1.1 Census on v26: every adopted byte-code function classified lexical/dynamic against its source file's cookie; dynamic-but-lexical-source count and names recorded
+#+NOTE: v26: 1441 names; 74 dynamic although the source is lexical (73 lisp/nelisp-timefns.el GENERATED block, 1 vendor/staged-emacs-lisp/files.el file-attribute-file-identifier); 34 dynamic with a lexical-binding: nil source (scripts/nelisp-stdlib-prelude.el, correct by its cookie). 34 of 392 attrib10x >10x rows (time family) call a converted function.
+evidence: target/lexbc/census/census-v26.txt sha256=35aad739b340a9f7041e671a4376bf3e7d2c66808dac8ba853ab0bf0e69627d5
+** S1.2 Loss points named with evidence (timefns-genblock compiles inside a temp buffer whose lexical-binding is the default nil; the prelude transform's non-core calls ignore the provenance file's cookie)
+evidence: target/lexbc/logs/s1-cause.txt sha256=6b570b83ad8be8313a62757b05ab87e4e967f7e7f54d1229d43138bca38b4d60
+** S1.3 GNU reference: specbind count and Ir per trip of tm-fts-13 on GNU 31.1 recorded beside v26
+#+NOTE: two-N callgrind 500/2000: v26 Ir 151795, lean_bind 70 + varbind 3; GNU Ir 5335, specbind 1.
+evidence: target/lexbc/logs/gnu-500.calls sha256=ddf1765139afad75e0f1e97f97b7a126109095ae902de0c0a8525bb2345ebc12
+evidence: target/lexbc/logs/gnu-2000.calls sha256=783d0c7d5813ed64089bd15c8510e1853c727a9e8ddf28876acbf47f0ba5f192
+evidence: target/lexbc/logs/v26-2000.calls sha256=094fd35a45b919d1f8a020fcbf8e075c2806f1cf13d1db6c35f36363276d6b26
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+** S2.1 The GENERATED nelisp-timefns block is lexical byte code (no dynamic-arglist #[( literal inside it)
+cmd: awk '/BEGIN GENERATED nelisp-timefns/{f=1;next}/END GENERATED nelisp-timefns/{f=0}f' scripts/nelisp-stdlib-prelude.el | grep -c "#\[[0-9]" | grep -qv '^0$' && ! awk '/BEGIN GENERATED nelisp-timefns/{f=1;next}/END GENERATED nelisp-timefns/{f=0}f' scripts/nelisp-stdlib-prelude.el | grep -q "#\[("
+** S2.2 The prelude transform takes lexical-binding from the provenance file's own cookie in every mode
+cmd: grep -q "lexbc: provenance lexical-binding" scripts/nelisp-prelude-bytecode.el
+** S2.3 Parity corpus (format-time-string/decode-time/encode-time family, other converted functions, closures, special variables) prints identically on GNU 31.1 and the candidate
+#+TIMEOUT: 300
+cmd: sh tools/ai/lexbc/parity.sh ${LEXBC_BIN:-target/lexbc-build/dynamic/nelisp-dynamic}
+** S2.4 Negative control: the parity runner reports a divergence against a deliberately wrong expected file
+#+TIMEOUT: 300
+cmd: sh tools/ai/lexbc/parity.sh ${LEXBC_BIN:-target/lexbc-build/dynamic/nelisp-dynamic} mutant-caught
+** S2.5 Census on the candidate: no adopted byte-code function is dynamic while its source file is lexical
+#+TIMEOUT: 120
+cmd: sh tools/ai/lexbc/census.sh ${LEXBC_BIN:-target/lexbc-build/dynamic/nelisp-dynamic}
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384
+cmd: tail -1 target/lexbc-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/lexbc-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+#+NOTE: Build 1 (target/lexbc-build, 940 s): fixtures as expected; gnu-speed-win-check closurevm 24 / switch / features PASS; F1 prelink 354.
+evidence: target/lexbc/logs/fixtures.log sha256=55600d8687a06954e930e3b8d05dcd5e1e63cbcab7fd149ee7917ddd3fa20d58
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $(realpath ${LEXBC_BIN:-target/lexbc-build/dynamic/nelisp-dynamic})
+** S3.3 Win64 build under wine: closurevm, switch and features equal GNU
+#+NOTE: Build 2 (target/lexbc/win/build/nelisp.exe, 975 s): closurevm 24, switch EQ-GNU, features EQ-GNU.
+#+TIMEOUT: 600
+cmd: sh -c 'W=${LEXBC_WIN_BIN:-$PWD/target/lexbc/win/build/nelisp.exe}; test -f "$W" && WINEPREFIX=$PWD/target/lexbc/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 tm-fts-13 varbind per call (lean_bind + varbind) at most GNU's specbind count, and Ir per trip at least 30 percent below v26 (two-N callgrind)
+#+NOTE: per trip v26 -> build 1: Ir 151795 -> 43872 (-71.1%), binds 73 -> 0 (GNU specbind 1, Ir 5335).
+cmd: python3 tools/ai/lexbc/s4check.py ir target/lexbc/logs/ir.txt
+** S4.2 Ir and bind counts are measured on the built binary, not on an overlay (ir.txt names the candidate binary's sha256)
+cmd: grep -q "^cand-bin sha256=" target/lexbc/logs/ir.txt
+** S4.3 Paired wall time on CPU 13 vs v26 and GNU: tm-fts-13 faster, reg-sum-bc and r3-mix within 3 percent
+#+NOTE: ns/step v26 -> build 1 (ratio, pairs faster; GNU) on CPU 13: tm-fts-13 21656 -> 5711 (0.264, 7/7; 440), reg-sum-bc 24.7 -> 24.6 (0.997, 4/7; 15.2), r3-mix 1330 -> 1297 (0.975, 7/7; 246).
+cmd: python3 tools/ai/lexbc/s4check.py paired target/lexbc/timing

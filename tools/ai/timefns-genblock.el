@@ -5,12 +5,24 @@
 ;;   already defines the names).
 ;; defmacro forms are evaluated for the compiler but not emitted; every defun becomes
 ;; (fset 'NAME #[...]) bytecode compiled by GNU Emacs; defvar/defconst forms are printed verbatim.
-(setq byte-compile-warnings nil)
+;; lexbc: each defun is compiled with SRC's own `lexical-binding' (its first-line cookie, as
+;; `byte-compile-file' reads it), and every defvar/defconst seen so far is declared special
+;; (no value), as `byte-compile-file-form-defvar' does, so a `let' of one still binds
+;; dynamically.  Compiling in a fresh temp buffer used to give the default `lexical-binding'
+;; nil, i.e. dynamic byte code that specbinds every argument and local.  The compiler's
+;; free-variable warnings are printed to stderr (a lexical function must not rely on a
+;; caller's dynamic binding of an undeclared name).
+(defvar tf-gen--lexical nil "SRC's `lexical-binding' cookie value.")
+(setq byte-compile-warnings '(free-vars))
 (defun tf-gen--compile (f)
   "Return the printed (fset 'NAME BYTECODE) form text for defun form F."
   (let* ((sym (nth 1 f))
-         (fn (byte-compile `(lambda ,(nth 2 f) ,@(nthcdr 3 f)))))
+         (fn (with-temp-buffer
+               (setq-local lexical-binding tf-gen--lexical)
+               (byte-compile `(lambda ,(nth 2 f) ,@(nthcdr 3 f))))))
     (unless (byte-code-function-p fn) (error "%s not compiled" sym))
+    (unless (eq (integerp (aref fn 0)) (and tf-gen--lexical t))
+      (error "%s: compiled with the wrong binding discipline" sym))
     (with-temp-buffer
       (let ((print-escape-newlines t) (print-escape-control-characters t)
             (print-length nil) (print-level nil) (print-circle nil))
@@ -28,6 +40,9 @@
   (with-temp-buffer
     (insert-file-contents src)
     (goto-char (point-min))
+    (setq tf-gen--lexical
+          (let ((cookie (assq 'lexical-binding (hack-local-variables-prop-line))))
+            (and cookie (cdr cookie) t)))
     (condition-case nil
         (while t (push (read (current-buffer)) forms))
       (end-of-file nil)))
@@ -50,6 +65,9 @@
               (insert (format "(unless %S\n  (defvar nelisp--float-time-wrapped t)\n  %s)\n" test txt)))
              (t (insert (format "(unless %S\n  %s)\n" test txt))))))
          ((and (consp f) (eq (car f) 'defvar) (eq (nth 1 f) 'nelisp--float-time-native))
+          (internal--define-uninitialized-variable (nth 1 f))
           (insert "(defvar nelisp--float-time-native (symbol-function 'float-time))\n"))
-         (t (prin1 f (current-buffer)) (insert "\n")))))
+         (t (when (and (memq (car-safe f) '(defvar defconst)) (symbolp (nth 1 f)))
+              (internal--define-uninitialized-variable (nth 1 f)))
+            (prin1 f (current-buffer)) (insert "\n")))))
     (write-region (point-min) (point-max) out nil 'silent)))

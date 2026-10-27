@@ -324,6 +324,26 @@ nil means `nelisp-standalone--repo-root' when bound, else `default-directory'.")
   "Return non-nil unless SOURCE's first line declares `lexical-binding: nil'."
   (not (string-match-p "\\`[^\n]*-\\*-[^\n]*lexical-binding: *nil" source)))
 
+;; lexbc: provenance lexical-binding.  Outside core mode the transform is given
+;; a fragment (the prelude tail, the files.el accessor forms) that carries no
+;; cookie line of its own, so its binding discipline is the one PROVENANCE's
+;; file declares on its first line, exactly as `byte-compile-file' would have
+;; compiled that file.  The general prelude declares nil and stays dynamic; a
+;; vendored GNU file declares t and compiles lexical.
+(defun nelisp-prelude-bytecode--provenance-lexical-p (provenance)
+  "Return non-nil when PROVENANCE's file declares `lexical-binding: t'.
+PROVENANCE is repository-relative.  An unreadable file, or one without a
+cookie, gives nil (the dynamic default `byte-compile-file' uses)."
+  (let ((path (and (stringp provenance)
+                   (expand-file-name provenance
+                                     (nelisp-prelude-bytecode--repo-root)))))
+    (and path (file-readable-p path)
+         (with-temp-buffer
+           (insert-file-contents path nil 0 512)
+           (goto-char (point-min))
+           (let ((cookie (assq 'lexical-binding (hack-local-variables-prop-line))))
+             (and cookie (cdr cookie) t))))))
+
 (defun nelisp-prelude-bytecode--top-level-declarations (source)
   "Return (SPECIALS MACRO-FORMS REQUIRES) declared at top level in SOURCE.
 Top level includes the bodies of `progn', `eval-and-compile',
@@ -795,9 +815,12 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                        (nth 1 (nelisp-prelude-bytecode--top-level-declarations source)))))
         (whole-file-functions (nelisp-prelude-bytecode--copy-function-map
                                whole-file-functions))
-        (compile-lexical (and core-mode
-                              (nelisp-prelude-bytecode--source-lexical-p
-                               source)))
+        ;; lexbc: provenance lexical-binding outside core mode (see
+        ;; `nelisp-prelude-bytecode--provenance-lexical-p').
+        (compile-lexical (if core-mode
+                             (nelisp-prelude-bytecode--source-lexical-p source)
+                           (nelisp-prelude-bytecode--provenance-lexical-p
+                            provenance)))
         (compile-context (and core-mode
                               (nelisp-prelude-bytecode--compile-context
                                source))))
@@ -828,8 +851,13 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                                  ;; ones BODY names: a macro expansion can
                                  ;; bind one BODY never mentions (cl-seq's
                                  ;; `cl--parsing-keywords' binds `cl-test').
+                                 ;; Outside core mode there is no module
+                                 ;; context: the prelude's own specials
+                                 ;; are the visible ones (as for lex-here).
                                  (nelisp-prelude-bytecode--declare-specials
-                                  body (car compile-context))
+                                  body (if core-mode
+                                           (car compile-context)
+                                         (nelisp-prelude-bytecode--prelude-specials)))
                                body))))
                     (compiled-entry
                      (if whole-file-mode
