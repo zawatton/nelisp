@@ -1,0 +1,26 @@
+;;; treap-check.el --- the interval tree keeps its totals, its heap order and a logarithmic depth  -*- lexical-binding: t; -*-
+;; usage: BINARY [--load tools/ai/textprop-hotpatch.el] --load tools/ai/textprop/treap-check.el   prints TREAP-OK or TREAP-BAD
+(defvar tc-bad nil)
+(defun tc-walk (n)
+  "Return (TOTAL . DEPTH) of the subtree N, noting any broken invariant in `tc-bad'."
+  (if (null n) (cons 0 0)
+    (let* ((l (tc-walk (aref n 0))) (r (tc-walk (aref n 1))))
+      (unless (= (aref n 4) (+ (aref n 2) (car l) (car r))) (push 'total tc-bad))
+      (unless (> (aref n 2) 0) (push 'empty tc-bad))
+      (when (and (aref n 0) (> (aref (aref n 0) 5) (aref n 5))) (push 'heap tc-bad))
+      (when (and (aref n 1) (> (aref (aref n 1) 5) (aref n 5))) (push 'heap tc-bad))
+      (cons (+ (aref n 2) (car l) (car r)) (1+ (max (cdr l) (cdr r)))))))
+(let ((seed 12345) (worst 0))
+  (dolist (mode '(random ascending descending))
+    (with-temp-buffer
+      (insert (make-string 20000 ?a))
+      (dotimes (i 3000)
+        (let* ((a (cond ((eq mode 'random) (1+ (% (setq seed (% (* seed 48271) 2147483647)) 19000)))
+                        ((eq mode 'ascending) (+ 1 (* i 6)))
+                        (t (- 19000 (* i 6))))))
+          (put-text-property a (+ a 3) 'face (if (= 0 (% i 2)) 'bold 'italic))))
+      (let ((r (tc-walk (aref (current-buffer) 9))))
+        (unless (= (car r) 20000) (push 'sum tc-bad))
+        (setq worst (max worst (cdr r))))))
+  (princ (format "%s depth=%d\n" (if (and (null tc-bad) (< worst 60)) "TREAP-OK" (format "TREAP-BAD %S" tc-bad)) worst)))
+(kill-emacs 0)

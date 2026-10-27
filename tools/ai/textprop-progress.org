@@ -1,0 +1,79 @@
+#+TITLE: textprop -- text properties without per-interval Lisp callbacks (30 resurvey24 rows >10x)
+#+NOTE: Lane textprop re-ported to coordinator HEAD 7476fb81b (v29, libcomp integrated), worktree textprop2-20261105. Baseline binary v29 = ../resume-4943-20261024/target/integ-1046-build/dynamic/nelisp-dynamic. Timing CPU 15 only. First done on v28 (worktree textprop-20261105; 3 builds there).
+#+NOTE: Originally created 2026-10-27 after the hot-patched work on v28 and before its first build (the order the brief asked for was missed). This v29 copy was re-measured against v29; criteria are unchanged except the baseline, and the row-185 policy below.
+#+NOTE: Native rows: 21 new ids 202-223 (205 unused: libcomp row 185 for nelisp--w202-property-change is replaced in place, so the function has exactly one row). Existing rows re-harvested in place (bodies changed): 22,23,26,33,34,35,70,74,76,77,113,118,185. Rows 222/223 (overlay/char-property functions) are row-only.
+#+NOTE: Criteria that need a NeLisp binary read it from TEXTPROP_BIN (default target/textprop-build/dynamic/nelisp-dynamic); the timing criteria check recorded result files, not a live run.
+
+* S1 Cause with evidence
+** S1.1 v29 per-call cost (callgrind Ir per call, two trip counts) of the six operations is recorded: get-text-property 36k, next-single-property-change 60k, put-text-property 66k, add-text-properties 168k, remove-text-properties 172k (absent property), text-properties-at 35k
+evidence: target/textprop/logs/v29-ir-per-call.txt sha256=7e705a08179ce4b4245171e3aa3080061b31d54b33cc397ff3664c2e76507e89
+cmd: grep -q "^nspc TOTAL Ir/trip 60258" target/textprop/logs/v29-ir-per-call.txt && grep -q "^atp TOTAL Ir/trip 168360" target/textprop/logs/v29-ir-per-call.txt
+** S1.2 Census on v29: nelisp--w202-property-change is native (libcomp row 185) but still the old walker; the interval walkers call fx closure bodies (nelisp--w202-property-find is a declined closure) and 38 nelisp--tp-walk calls per text-property-any trip
+evidence: target/textprop/logs/census-v29.txt sha256=cac1c611a4296e98225ad160541445b475a8081fafd1ab5fa0f371e72d5a1575
+cmd: grep -q "^HOT tp-any nelisp--tp-walk 38.0 native" target/textprop/logs/census-v29.txt && grep -q "^HOT tp-any nelisp--w202-property-find 1.0 decl" target/textprop/logs/census-v29.txt
+** S1.3 v29 and GNU ns/trip of the 30 text-property rows (resurvey24 survey2/3/4, family text properties, listed in tools/ai/textprop/rows30.json) are recorded on CPU 15
+evidence: target/textprop/timing/v29-rows.json sha256=25fa5ecb1fce494cfb219f40a568305e8051791ad8934733d60a09a07d509aba
+evidence: target/textprop/timing/gnu-rows.json sha256=717a15e274e03a05259a1d012170bea4ea91366636e6e5091298557b20121a68
+cmd: python3 -c "import json;a=json.load(open('target/textprop/timing/v29-rows.json'));b=json.load(open('target/textprop/timing/gnu-rows.json'));assert len(a)==30 and len(b)==30"
+
+* S2 Fix: callback-free engine, direct slots, native rows (offline and on the lane binary)
+** S2.1 No callback walker remains in the text-property engine (only the cold printer helpers use nelisp--tp-walk) and the lane's rows are well formed (21 new ids in 200-229, ids unique)
+cmd: python3 tools/ai/textprop/static-check.py
+** S2.2 Every harvested row compiles as its own unit (tools/ai/nc2-unitrows.el), none declined
+cmd: grep -c "^ROWTIME" target/textprop/logs/unitrows.raw | grep -q "^34$" && ! grep -q "^ERR" target/textprop/logs/unitrows.raw
+** S2.3 The record slots the nelisp--tp-b* macros hard-code (7, 8, 9, 14) equal the nelisp-buffer accessors on the lane binary
+cmd: ulimit -v 8388608; timeout 100 ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic} --load tools/ai/textprop/slots.el 2>&1 | grep -q "^SLOTS-OK"
+** S2.4 GNU parity corpus (194 cases: property merging, LIMIT arguments, strings and buffers, sticky and inheritance, eq/equal values, deletion) equals GNU 31.1 on the lane binary
+#+TIMEOUT: 300
+cmd: sh tools/ai/textprop-check.sh corpus ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic}
+** S2.5 Random-operation fuzz equals GNU: textprop1 fuzz (3 seeds) and the lane's larger-tree fuzz2 (4 seeds: narrowing, LIMIT, insert/delete edits)
+#+TIMEOUT: 600
+cmd: sh tools/ai/textprop-check.sh fuzz ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic}
+#+TIMEOUT: 600
+cmd: sh tools/ai/textprop-check.sh fuzz2 ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic}
+** S2.6 Negative control: with a deliberate defect loaded (tools/ai/textprop-mutant.el) both the corpus and fuzz2 differ from GNU
+#+TIMEOUT: 600
+cmd: sh tools/ai/textprop-check.sh mutant ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic}
+** S2.7 End to end on the lane binary: the census shows no stale row and every text-property function called is native
+#+TIMEOUT: 600
+cmd: sh tools/ai/textprop-check.sh census ${TEXTPROP_BIN:-target/textprop-build/dynamic/nelisp-dynamic}
+
+* S3 One integrated build passing fixtures
+#+NOTE: Two builds on v29: A (Linux) and B (Win64 cross). Evidence files below are A/B.
+** S3.1 Build A (Linux, v29 tree) rc=0
+evidence: target/textprop/buildA/build.log sha256=ebed2333102dd7e6e67f749adba7ca2d40dc65e4d057c9f11d61280d3c636a7f
+cmd: grep -q "^BUILD rc=0" target/textprop/buildA/build.log
+** S3.2 F1 prelink records <= 384
+evidence: target/textprop/buildA/prelink-closure.json sha256=60c67859a5db17131d5642949c3f41de254c686ca8eceae4844fe73e7b9bc503
+cmd: python3 -c "import json,sys;j=json.load(open('target/textprop/buildA/prelink-closure.json'));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+** S3.3 Fixtures on the lane binary: weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21
+evidence: target/textprop/fixtures/report.json sha256=0cf17632e3702db6b7ef8ce5501bda3c72ad522b7771e3bb69c62c3a6f3bf16f
+cmd: python3 -c "import json,sys;j=json.load(open('target/textprop/fixtures/report.json'));c=j['checks'];sys.exit(not(j['status']=='EXPECTED_BASELINE_RED_REMAINS' and c['weak24']['passed'] and c['gnu56']['passed'] and c['afrt25']['expected_baseline_red'] and c['buffer21']['passed']))"
+** S3.4 tools/ai/gnu-speed-win-check/check.sh passes on the lane binary (closurevm 24, switch, features)
+evidence: target/textprop/logs/gnuspeed.log sha256=790c8ba3233bc2b4134eac095b3a88cdfc6315d4aa88cd6dc4ec624741e0aab6
+cmd: grep -q "closurevm: PASS (24)" target/textprop/logs/gnuspeed.log && grep -q "switch corpus: PASS" target/textprop/logs/gnuspeed.log && grep -q "features: PASS" target/textprop/logs/gnuspeed.log && grep -q "^rc=0" target/textprop/logs/gnuspeed.log
+** S3.5 Win64 cross build B rc=0; under wine closurevm 24, switch and features equal GNU, and the corpus, fuzz and fuzz2 equal GNU
+evidence: target/textprop/win/check.log sha256=f749bb11e8ce1309d69f222bffcbfffbb17f4227917789ad333cfb8d4e86d3fc
+evidence: target/textprop/logs/win-parity.txt sha256=69196fe5d4353fcb562d64d45dd8782fe9208432a548ec8f66df033e5f7addeb
+cmd: grep -q "closurevm: PASS (24)" target/textprop/win/check.log && grep -q "switch corpus: PASS" target/textprop/win/check.log && grep -q "features: PASS" target/textprop/win/check.log && grep -q "^rc=0" target/textprop/win/check.log && grep -q "corpus mismatches=0" target/textprop/logs/win-parity.txt && grep -q "fuzz seeds differing=0 of 3" target/textprop/logs/win-parity.txt && grep -q "fuzz2 seeds differing=0 of 4" target/textprop/logs/win-parity.txt
+** S3.6 End to end: the lane census (28 rows of operations) shows no stale row and no non-native text-property function
+evidence: target/textprop/logs/census-A.txt sha256=7374cda5d0a70fb91fc2082af33a2f5bbb644a6987722e3c93585cfe34d4f0c5
+cmd: test "$(grep -c '^SUMMARY' target/textprop/logs/census-A.txt)" = 28 && ! grep -q "row-stale" target/textprop/logs/census-A.txt && test -z "$(grep '^HOT' target/textprop/logs/census-A.txt | awk '$5!="native" && $3!="nelisp--record-type"')"
+
+* S4 Paired timing vs v28 and GNU, per-call Ir, regression rows
+** S4.1 Per-call Ir (callgrind, two trip counts) of the six operations, lane against v29: all lower; add-text-properties and remove-text-properties at most half, next-single-property-change at most 0.55 (it was 0.35 of v28; libcomp row 185 and native record-type made the v29 baseline 1.5x faster)
+evidence: target/textprop/logs/lane-ir-per-call.txt sha256=a1cf9cdd9edfe3e42b7e6c65a5a481bac9d487a9e2d2c5abb2a0f3585e210640
+cmd: python3 tools/ai/textprop/ir-gate.py target/textprop/logs/v29-ir-per-call.txt target/textprop/logs/lane-ir-per-call.txt
+** S4.2 The 30 text-property rows (survey2/3/4, rows30.json): geometric-mean speedup over v29 is at least 3. KNOWN RED: 2.83 (v29 already includes libcomp native record-type, which sped the baseline next-*-change rows 1.7x; 3.08 on v28)
+evidence: target/textprop/timing/lane-rows.json sha256=97b384d28f3c85718595cfb94d96afd31a82146fd075718d0ba4d03f72f5fd00
+cmd: python3 tools/ai/textprop/rows-gate.py target/textprop/timing/v29-rows.json target/textprop/timing/lane-rows.json target/textprop/timing/gnu-rows.json geomean
+** S4.3 put-text-property: at most half the v29 time on the put rows (tp-put-100, tp-put-whole-100k, buffers-textprops-*), and at most half the v29 Ir per call. Ir per call is 0.446 of v29 (met); the single-run row time is 0.54 of v29 (KNOWN RED); paired runs give 0.64-0.69 for the put rows
+cmd: python3 tools/ai/textprop/rows-gate.py target/textprop/timing/v29-rows.json target/textprop/timing/lane-rows.json target/textprop/timing/gnu-rows.json ptp
+cmd: python3 tools/ai/textprop/ir-gate.py target/textprop/logs/v29-ir-per-call.txt target/textprop/logs/lane-ir-per-call.txt put
+** S4.4 Paired timing (7 reps, CPU 15) of nine key rows: lane faster than v29 in 7 of 7 pairs on each
+evidence: target/textprop/timing/paired-summary.txt sha256=d9ee0b66c7d89b167498ac860b643b50851bc427cc98d5e6eaac06610f4f64a7
+cmd: python3 tools/ai/textprop/paired-gate.py target/textprop/timing/paired key
+** S4.5 Regression rows reg-sum-bc and r3-mix within 3 percent of v29 (paired, 7 reps)
+cmd: python3 tools/ai/textprop/paired-gate.py target/textprop/timing/paired reg
+** S4.6 End to end: the paired rows, the 30-row table and the per-call Ir are recorded in REPORT.txt with the shortfalls named
+cmd: grep -q "^PTP-SHORTFALL" target/textprop/REPORT.txt && grep -q "^ROWS 30 geomean speedup" target/textprop/REPORT.txt && grep -q "^IR put-text-property" target/textprop/REPORT.txt

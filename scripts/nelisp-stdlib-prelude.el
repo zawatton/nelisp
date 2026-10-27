@@ -15177,6 +15177,81 @@ key, distinguishable from `put-text-property' PROP nil via
   (defvar text-property-default-nonsticky
     '((composition . t) (syntax-table . t) (display . t))))
 
+;; Buffer slots read straight from the record, as textprop.c reads BUF_BEGV,
+;; BUF_ZV and BUF_INTERVALS: slot 0 is the type tag, then the `nelisp-buffer'
+;; slots in `cl-defstruct' order (narrow-start 7, narrow-end 8,
+;; text-properties 9, len 14).  The struct has no :include child, so the tag
+;; test is the whole of `nelisp-buffer-p'.  The arguments must be variables.
+(defmacro nelisp--tp-bufp (o) `(and (recordp ,o) (eq (aref ,o 0) 'nelisp-buffer)))
+(defmacro nelisp--tp-bmin (b) `(or (aref ,b 7) 1))
+(defmacro nelisp--tp-bmax (b) `(or (aref ,b 8) (1+ (aref ,b 14))))
+(defmacro nelisp--tp-broot (b) `(aref ,b 9))
+(defmacro nelisp--tp-blen (b) `(aref ,b 14))
+
+(defmacro nelisp--tp-locate (root k node start)
+  "Set the variables NODE and START to the node of the tree ROOT containing offset K
+(the last node when K is the total length) and that node's start offset: GNU
+find_interval, inline.  ROOT and K must be variables."
+  (let ((n (make-symbol "n")) (b (make-symbol "b")) (l (make-symbol "l"))
+        (lt (make-symbol "lt")) (len (make-symbol "len")))
+    `(let ((,n ,root) (,b 0))
+       (setq ,node nil)
+       (while (null ,node)
+         (let* ((,l (aref ,n 0)) (,lt (if ,l (aref ,l 4) 0)) (,len (aref ,n 2)))
+           (cond ((< ,k (+ ,b ,lt)) (setq ,n ,l))
+                 ((or (< ,k (+ ,b ,lt ,len)) (null (aref ,n 1)))
+                  (setq ,start (+ ,b ,lt) ,node ,n))
+                 (t (setq ,b (+ ,b ,lt ,len) ,n (aref ,n 1)))))))))
+
+(defmacro nelisp--tp-fast (object start end root s e)
+  "The common mutator call, without `nelisp--tp-validate' and its special variables:
+integer START < END inside OBJECT, whose tree already covers it.  Set the
+variables ROOT to the tree and S, E to the range as tree offsets; leave them
+alone for any other call, which takes the full validation.  OBJECT, START and END
+must be variables."
+  (let ((r (make-symbol "r")))
+    `(when (and (integerp ,start) (integerp ,end) (< ,start ,end))
+       (if (stringp ,object)
+           (when (and (>= ,start 0) (<= ,end (length ,object)))
+             (let ((,r (gethash ,object nelisp--tp-string-properties)))
+               (when (and ,r (= (aref ,r 4) (length ,object)))
+                 (setq ,root ,r ,s ,start ,e ,end))))
+         (when (nelisp--tp-bufp ,object)
+           (let ((,r (nelisp--tp-broot ,object)))
+             (when (and ,r (>= ,start (nelisp--tp-bmin ,object))
+                        (<= ,end (nelisp--tp-bmax ,object))
+                        (= (aref ,r 4) (nelisp--tp-blen ,object)))
+               (setq ,root ,r ,s (1- ,start) ,e (1- ,end)))))))))
+
+;; GNU's find_interval followed by next_interval, as an in-order loop over the nodes
+;; of a tree that overlap [LO, HI): no callback and no list of nodes.  The body must
+;; not change the tree's shape or any node's length.  It may set STOP to end early.
+(defmacro nelisp--tp-do-span (spec &rest body)
+  "(nelisp--tp-do-span (NODE START ROOT LO HI STOP) BODY...): run BODY with the variables
+NODE and START bound to each node of the tree ROOT overlapping [LO, HI) and its start
+offset, in order, until STOP (a variable bound to nil) is set.  ROOT, LO and HI must be
+variables."
+  (let ((node (nth 0 spec)) (start (nth 1 spec)) (root (nth 2 spec)) (lo (nth 3 spec))
+        (hi (nth 4 spec)) (stop (nth 5 spec))
+        (n (make-symbol "n")) (b (make-symbol "b")) (stk (make-symbol "stk"))
+        (l (make-symbol "l")) (lt (make-symbol "lt")) (len (make-symbol "len"))
+        (r (make-symbol "r")))
+    `(let ((,n ,root) (,b 0) (,stk nil) (,node nil) (,start 0) (,stop nil))
+       (while (and ,n (null ,node))
+         (let* ((,l (aref ,n 0)) (,lt (if ,l (aref ,l 4) 0)) (,len (aref ,n 2)))
+           (cond ((< ,lo (+ ,b ,lt)) (setq ,stk (cons ,n ,stk) ,n ,l))
+                 ((or (< ,lo (+ ,b ,lt ,len)) (null (aref ,n 1)))
+                  (setq ,node ,n ,start (+ ,b ,lt)))
+                 (t (setq ,b (+ ,b ,lt ,len) ,n (aref ,n 1))))))
+       (while (and ,node (< ,start ,hi) (not ,stop))
+         ,@body
+         (setq ,start (+ ,start (aref ,node 2)))
+         (let ((,r (aref ,node 1)))
+           (if ,r
+               (progn (while (aref ,r 0) (setq ,stk (cons ,r ,stk) ,r (aref ,r 0)))
+                      (setq ,node ,r))
+             (setq ,node (car ,stk) ,stk (cdr ,stk))))))))
+
 (defun nelisp--tp-node (len plist)
   "Return a fresh interval node of LEN characters carrying PLIST."
   (setq nelisp--tp-seed (% (* nelisp--tp-seed 48271) 2147483647))
@@ -15228,9 +15303,47 @@ copy_properties: the right part gets its own copy of the plist."
                  (cons n (nelisp--tp-join rn old-right))))))))
 
 (defun nelisp--tp-cut (root k)
-  "Return ROOT with an interval boundary at offset K."
-  (let ((p (nelisp--tp-split root k)))
-    (nelisp--tp-join (car p) (cdr p))))
+  "Return ROOT with an interval boundary at offset K, as GNU split_interval_right
+does: the node containing K keeps its left part and a new node, carrying a copy of
+its plist, becomes its in-order successor.  That is a treap insertion: the new node
+is attached as a leaf (the left child of the leftmost node of the right subtree, or
+the right child when there is none), the totals on that path grow, and it rotates up
+while its priority beats its parent's.  Only the path to the node is touched."
+  (let ((n root) (b 0) (path nil) (found nil) (fs 0))
+    (while (and n (null found))
+      (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)))
+        (cond ((< k (+ b lt)) (setq path (cons n path) n l))
+              ((or (< k (+ b lt len)) (null (aref n 1))) (setq found n fs (+ b lt)))
+              (t (setq path (cons n path) b (+ b lt len) n (aref n 1))))))
+    (if (or (null found) (<= k fs) (>= k (+ fs (aref found 2))))
+        root
+      (let* ((cutlen (- k fs)) (mlen (- (aref found 2) cutlen))
+             (m (nelisp--tp-node mlen (copy-sequence (aref found 3))))
+             (r (aref found 1)) (chain nil) (p nil) (g nil))
+        (aset found 2 cutlen)
+        (if (null r)
+            (progn (aset found 1 m) (setq chain (cons found path)))
+          (setq path (cons found path))
+          (while (aref r 0)
+            (aset r 4 (+ (aref r 4) mlen))
+            (setq path (cons r path) r (aref r 0)))
+          (aset r 4 (+ (aref r 4) mlen))
+          (aset r 0 m)
+          (setq chain (cons r path)))
+        (setq p (car chain))
+        (while (and p (> (aref m 5) (aref p 5)))
+          (setq g (car (cdr chain)))
+          (if (eq (aref p 0) m)
+              (progn (aset p 0 (aref m 1)) (aset m 1 p))
+            (aset p 1 (aref m 0))
+            (aset m 0 p))
+          (nelisp--tp-fix p)
+          (nelisp--tp-fix m)
+          (cond ((null g) (setq root m))
+                ((eq (aref g 0) p) (aset g 0 m))
+                (t (aset g 1 m)))
+          (setq chain (cdr chain) p g))
+        root))))
 
 (defun nelisp--tp-find (n k)
   "Return the node containing offset K of the tree N (the last node when K is
@@ -15291,7 +15404,8 @@ BASE is the offset of N.  Stop at the first non-nil answer of FN and return it."
 
 (defun nelisp--tp-build (nodes)
   "A balanced tree from the list NODES of fresh childless nodes, in order, in O(n)."
-  (let* ((v (vconcat nodes)) (n (length v)) (maxd 1) (k n))
+  (let* ((n (length nodes)) (v (make-vector n nil)) (i 0) (l nodes) (maxd 1) (k n))
+    (while l (aset v i (car l)) (setq i (1+ i) l (cdr l)))
     (while (> k 0) (setq maxd (1+ maxd) k (/ k 2)))
     (nelisp--tp-build-range v 0 n 0 maxd (/ 2147483647 (1+ maxd)))))
 
@@ -15401,20 +15515,28 @@ existing property gets its value replaced in place.  Return non-nil on change."
       (setq p (cdr (cdr p))))
     changed))
 
+(defun nelisp--tp-key-listed (key keys plistp)
+  "Non-nil when KEY is one of KEYS (a plist when PLISTP, else a list), by `eq'."
+  (let ((found nil))
+    (while (and (not found) (consp keys))
+      (if (eq key (car keys))
+          (setq found t)
+        (setq keys (if plistp (cdr (cdr keys)) (cdr keys)))))
+    found))
+
 (defun nelisp--tp-remove-props (keys plistp node)
-  "GNU remove_properties on NODE.  Return non-nil when something was removed."
-  (let ((out nil) (changed nil) (l (aref node 3)) (ks nil) (p keys))
-    (while (consp p)
-      (push (car p) ks)
-      (setq p (if plistp (cdr (cdr p)) (cdr p))))
-    (while (consp l)
-      (if (memq (car l) ks)
-          (setq changed t)
-        (push (car l) out)
-        (push (car (cdr l)) out))
-      (setq l (cdr (cdr l))))
-    (when changed (aset node 3 (nreverse out)))
-    changed))
+  "GNU remove_properties on NODE.  Return non-nil when something was removed.
+A node holding none of KEYS is left alone and nothing is allocated."
+  (let ((l (aref node 3)))
+    (when (and (consp l) (nelisp--tp-has-some keys l plistp))
+      (let ((out nil))
+        (while (consp l)
+          (unless (nelisp--tp-key-listed (car l) keys plistp)
+            (push (car l) out)
+            (push (car (cdr l)) out))
+          (setq l (cdr (cdr l))))
+        (aset node 3 (nreverse out))
+        t))))
 
 (defun nelisp--tp-add1 (n base s e key val)
   "`nelisp--tp-add-props' of the single property KEY=VAL over the nodes of N that
@@ -15437,45 +15559,64 @@ overlap [S, E), one recursion and no callback per node (the put-text-property ca
 (defun nelisp--tp-add (root s e props)
   "GNU add_text_properties_1 on the tree ROOT over [S, E), 0 <= S < E <= total.
 An interval is split at S or E only when it lacks some of PROPS (GNU splits
-no interval it does not change).  Return the new root and set `nelisp--tp-changed'."
-  (setq nelisp--tp-changed nil)
-  (let* ((first (nelisp--tp-find root s)) (fs nelisp--tp-fs)
-         (last (nelisp--tp-find root (1- e)))
-         (le (+ nelisp--tp-fs (aref last 2)))
-         (first-lacks (not (nelisp--tp-has-all props (aref first 3))))
-         (last-lacks (not (nelisp--tp-has-all props (aref last 3)))))
-    (when (and first-lacks (< fs s)) (setq root (nelisp--tp-cut root s)))
-    (when (and last-lacks (> le e)) (setq root (nelisp--tp-cut root e)))
+no interval it does not change).  Return (NEW-ROOT . CHANGED)."
+  (let ((changed nil) (first nil) (fs 0) (last nil) (ls 0) (e1 (1- e)) (le 0))
+    (nelisp--tp-locate root s first fs)
+    ;; The range usually ends inside the first interval: no second descent.
+    (if (< e1 (+ fs (aref first 2)))
+        (setq last first ls fs)
+      (nelisp--tp-locate root e1 last ls))
+    (setq le (+ ls (aref last 2)))
+    (let* ((first-lacks (not (nelisp--tp-has-all props (aref first 3))))
+           (last-lacks (if (eq first last) first-lacks
+                         (not (nelisp--tp-has-all props (aref last 3))))))
+      (when (and first-lacks (< fs s)) (setq root (nelisp--tp-cut root s)))
+      (when (and last-lacks (> le e)) (setq root (nelisp--tp-cut root e))))
     (if (null (cdr (cdr props)))
-        (nelisp--tp-add1 root 0 s e (car props) (car (cdr props)))
-      (nelisp--tp-walk root 0 s
-                       (lambda (st n)
-                         (if (>= st e)
-                             t
-                           (when (nelisp--tp-add-props props n)
-                             (setq nelisp--tp-changed t))
-                           nil))))
-    root))
+        ;; One property (put-text-property): no loop over PROPS.
+        (let ((sym (car props)) (val (car (cdr props))))
+          (nelisp--tp-do-span (nd st root s e stop)
+            (let ((tail (aref nd 3)))
+              (while (and (consp tail) (not (eq (car tail) sym)))
+                (setq tail (cdr (cdr tail))))
+              (if (consp tail)
+                  (unless (eq val (car (cdr tail)))
+                    (setcar (cdr tail) val)
+                    (setq changed t))
+                (aset nd 3 (cons sym (cons val (aref nd 3))))
+                (setq changed t)))))
+      (nelisp--tp-do-span (nd st root s e stop)
+        (let ((p props))
+          (while (consp p)
+            (let ((sym (car p)) (val (car (cdr p))) (tail (aref nd 3)))
+              (while (and (consp tail) (not (eq (car tail) sym)))
+                (setq tail (cdr (cdr tail))))
+              (if (consp tail)
+                  (unless (eq val (car (cdr tail)))
+                    (setcar (cdr tail) val)
+                    (setq changed t))
+                (aset nd 3 (cons sym (cons val (aref nd 3))))
+                (setq changed t)))
+            (setq p (cdr (cdr p)))))))
+    (cons root changed)))
 
 (defun nelisp--tp-remove (root s e keys plistp)
   "GNU Fremove_text_properties on the tree ROOT over [S, E).  KEYS is a plist
-when PLISTP, else a list of properties.  Set `nelisp--tp-changed'."
-  (setq nelisp--tp-changed nil)
-  (let* ((first (nelisp--tp-find root s)) (fs nelisp--tp-fs)
-         (last (nelisp--tp-find root (1- e)))
-         (le (+ nelisp--tp-fs (aref last 2)))
-         (first-has (nelisp--tp-has-some keys (aref first 3) plistp))
-         (last-has (nelisp--tp-has-some keys (aref last 3) plistp)))
-    (when (and first-has (< fs s)) (setq root (nelisp--tp-cut root s)))
-    (when (and last-has (> le e)) (setq root (nelisp--tp-cut root e)))
-    (nelisp--tp-walk root 0 s
-                     (lambda (st n)
-                       (if (>= st e)
-                           t
-                         (when (nelisp--tp-remove-props keys plistp n)
-                           (setq nelisp--tp-changed t))
-                         nil)))
-    root))
+when PLISTP, else a list of properties.  Return (NEW-ROOT . CHANGED)."
+  (let ((changed nil) (first nil) (fs 0) (last nil) (ls 0) (e1 (1- e)) (le 0))
+    (nelisp--tp-locate root s first fs)
+    (nelisp--tp-locate root e1 last ls)
+    (setq le (+ ls (aref last 2)))
+    (let* ((first-has (nelisp--tp-has-some keys (aref first 3) plistp))
+           (last-has (if (eq first last) first-has
+                       (nelisp--tp-has-some keys (aref last 3) plistp))))
+      (when (and first-has (< fs s)) (setq root (nelisp--tp-cut root s)))
+      (when (and last-has (> le e)) (setq root (nelisp--tp-cut root e))))
+    (nelisp--tp-do-span (nd st root s e stop)
+      (when (and (consp (aref nd 3)) (nelisp--tp-has-some keys (aref nd 3) plistp))
+        (nelisp--tp-remove-props keys plistp nd)
+        (setq changed t)))
+    (cons root changed)))
 
 (defun nelisp--tp-set (root s e props)
   "GNU set_text_properties_1: [S, E) of ROOT becomes one interval with a copy of PROPS."
@@ -15623,20 +15764,17 @@ and SRC's are added where missing; otherwise SRC's plists replace them."
   (let* ((p (nelisp--tp-split root pos))
          (q (nelisp--tp-split (cdr p) len))
          (under (and inherit (car q) (aref (nelisp--tp-leftmost (car q)) 3)))
-         (mid nil))
-    (nelisp--tp-walk
-     src 0 0
-     (lambda (_st n)
-       (let ((plist (copy-sequence (if inherit under nil)))
-             (o (aref n 3)))
-         (if inherit
-             (while (consp o)
-               (unless (nelisp--tp-pl-find plist (car o))
-                 (setq plist (cons (car o) (cons (car (cdr o)) plist))))
-               (setq o (cdr (cdr o))))
-           (setq plist (copy-sequence o)))
-         (push (nelisp--tp-node (aref n 2) plist) mid))
-       nil))
+         (mid nil) (zero 0) (stot (if src (aref src 4) 0)))
+    (nelisp--tp-do-span (nd st src zero stot stop)
+      (let ((plist (copy-sequence (if inherit under nil)))
+            (o (aref nd 3)))
+        (if inherit
+            (while (consp o)
+              (unless (nelisp--tp-pl-find plist (car o))
+                (setq plist (cons (car o) (cons (car (cdr o)) plist))))
+              (setq o (cdr (cdr o))))
+          (setq plist (copy-sequence o)))
+        (push (nelisp--tp-node (aref nd 2) plist) mid)))
     (nelisp--tp-join (nelisp--tp-join (car p) (nelisp--tp-build (nreverse mid))) (cdr q))))
 
 (defun nelisp--tp-copy-clipped (root a b)
@@ -15646,32 +15784,25 @@ or nil where GNU answers no intervals."
     (let* ((i (nelisp--tp-find root a)) (is nelisp--tp-fs))
       (unless (and (null (aref i 3)) (< (+ (- a is) 1 (- b a)) (aref i 2)))
         (let ((nodes nil))
-          (nelisp--tp-walk
-           root 0 a
-           (lambda (st n)
-             (if (>= st b)
-                 t
-               (push (nelisp--tp-node (- (min (+ st (aref n 2)) b) (max st a))
-                                      (copy-sequence (aref n 3)))
-                     nodes)
-               nil)))
+          (nelisp--tp-do-span (n st root a b stop)
+            (push (nelisp--tp-node (- (min (+ st (aref n 2)) b) (max st a))
+                                   (copy-sequence (aref n 3)))
+                  nodes))
           (nelisp--tp-build (nreverse nodes)))))))
 
 (defun nelisp--tp-list (root base &optional all)
   "The intervals of ROOT as a list of (START END PLIST), offset by BASE.  Only
 intervals with properties unless ALL."
-  (let (out)
-    (nelisp--tp-walk root 0 0
-                     (lambda (st n)
-                       (when (or all (aref n 3))
-                         (push (list (+ st base) (+ st base (aref n 2)) (aref n 3)) out))
-                       nil))
+  (let ((out nil) (zero 0) (tot (if root (aref root 4) 0)))
+    (nelisp--tp-do-span (n st root zero tot stop)
+      (when (or all (aref n 3))
+        (push (list (+ st base) (+ st base (aref n 2)) (aref n 3)) out)))
     (nreverse out)))
 
 (defun nelisp--tp-check-object (object)
   "Signal `wrong-type-argument' unless OBJECT is nil, a string, or a
 `nelisp-buffer'."
-  (when (and object (not (stringp object)) (not (nelisp-buffer-p object)))
+  (when (and object (not (stringp object)) (not (nelisp--tp-bufp object)))
     (signal 'wrong-type-argument (list 'buffer-or-string-p object))))
 
 (defun nelisp--tp-get-intervals (object)
@@ -15679,7 +15810,7 @@ intervals with properties unless ALL."
   (nelisp--tp-check-object object)
   (if (stringp object)
       (gethash object nelisp--tp-string-properties)
-    (nelisp-buffer-text-properties (or object nelisp--current-buffer))))
+    (aref (or object nelisp--current-buffer) 9)))
 
 (defun nelisp--tp-set-intervals (object new)
   "Store the tree NEW as OBJECT's intervals (nil = current buffer)."
@@ -15689,7 +15820,7 @@ intervals with properties unless ALL."
                  (nelisp--string-mark-intervals object t))
         (remhash object nelisp--tp-string-properties)
         (nelisp--string-mark-intervals object nil))
-    (setf (nelisp-buffer-text-properties (or object nelisp--current-buffer)) new)))
+    (aset (or object nelisp--current-buffer) 9 new)))
 
 (defun nelisp--tp-lo (object)
   "Return OBJECT's lowest valid position (0 for a string, `point-min' for a buffer)."
@@ -15707,7 +15838,7 @@ unless POINT, an empty object, no properties and not FORCE).  FORCE creates the
 root.  The range, normalized, is left in `nelisp--tp-vs'/`nelisp--tp-ve' as tree
 offsets and in `nelisp--tp-vabs' as the absolute start."
   (let ((b0 begin) (e0 end) (str (stringp object)))
-    (unless (or str (nelisp-buffer-p object))
+    (unless (or str (nelisp--tp-bufp object))
       (signal 'wrong-type-argument (list 'buffer-or-string-p object)))
     (setq begin (nelisp--w202-position begin)
           end (nelisp--w202-position end))
@@ -15716,8 +15847,8 @@ offsets and in `nelisp--tp-vabs' as the absolute start."
       (when (> begin end)
         (let ((x begin)) (setq begin end end x)))
       (let* ((base (if str 0 1))
-             (lo (if str 0 (nelisp-point-min object)))
-             (hi (if str (length object) (nelisp-point-max object))))
+             (lo (if str 0 (nelisp--tp-bmin object)))
+             (hi (if str (length object) (nelisp--tp-bmax object))))
         (unless (and (<= lo begin) (<= end hi))
           (signal 'args-out-of-range (list b0 e0)))
         (setq nelisp--tp-vs (- begin base) nelisp--tp-ve (- end base)
@@ -15725,8 +15856,8 @@ offsets and in `nelisp--tp-vabs' as the absolute start."
         (if (= lo hi)
             nil
           (let ((root (if str (gethash object nelisp--tp-string-properties)
-                        (nelisp-buffer-text-properties object)))
-                (size (if str hi (nelisp-buffer-len object))))
+                        (nelisp--tp-broot object)))
+                (size (if str hi (nelisp--tp-blen object))))
             (cond ((null root)
                    (when force
                      (setq root (nelisp--tp-node size nil))
@@ -15757,16 +15888,14 @@ add_properties, i.e. reversed) with property-less gaps; they are built in one pa
       (when (stringp source)
         (let ((sroot (gethash source nelisp--tp-string-properties)) (d delta))
           (when sroot
-            (nelisp--tp-walk
-             sroot 0 0
-             (lambda (st n)
-               (when (aref n 3)
-                 (let ((s (+ d st)) (nn (nelisp--tp-node (aref n 2) nil)))
-                   (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
-                   (nelisp--tp-add-props (aref n 3) nn)
-                   (push nn nodes)
-                   (setq pos (+ s (aref n 2)))))
-               nil)))))
+            (let ((zero 0) (stot (aref sroot 4)))
+              (nelisp--tp-do-span (n st sroot zero stot stop)
+                (when (aref n 3)
+                  (let ((s (+ d st)) (nn (nelisp--tp-node (aref n 2) nil)))
+                    (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
+                    (nelisp--tp-add-props (aref n 3) nn)
+                    (push nn nodes)
+                    (setq pos (+ s (aref n 2))))))))))
       (when (or (stringp source) (consp source) (vectorp source))
         (setq delta (+ delta (length source)))))
     (when nodes
@@ -15784,19 +15913,14 @@ add_properties, i.e. reversed) with property-less gaps; they are built in one pa
       (when (< start 0) (setq start (+ n start)))
       (when (< end 0) (setq end (+ n end)))
       (when (and sroot (< start end))
-        (nelisp--tp-walk
-         sroot 0 start
-         (lambda (st nd)
-           (if (>= st end)
-               t
-             (when (aref nd 3)
-               (let ((s (- (max st start) start)) (e (- (min (+ st (aref nd 2)) end) start)))
-                 (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
-                 (let ((nn (nelisp--tp-node (- e s) nil)))
-                   (nelisp--tp-add-props (aref nd 3) nn)
-                   (push nn nodes))
-                 (setq pos e)))
-             nil)))
+        (nelisp--tp-do-span (nd st sroot start end stop)
+          (when (aref nd 3)
+            (let ((s (- (max st start) start)) (e (- (min (+ st (aref nd 2)) end) start)))
+              (when (> s pos) (push (nelisp--tp-node (- s pos) nil) nodes))
+              (let ((nn (nelisp--tp-node (- e s) nil)))
+                (nelisp--tp-add-props (aref nd 3) nn)
+                (push nn nodes))
+              (setq pos e))))
         (when nodes
           (when (< pos (- end start)) (push (nelisp--tp-node (- (- end start) pos) nil) nodes))
           (nelisp--tp-set-intervals result (nelisp--tp-build (nreverse nodes)))))))
@@ -15830,31 +15954,24 @@ add_properties, i.e. reversed) with property-less gaps; they are built in one pa
 
 (defun nelisp--tp-boundaries-between (root lo hi)
   "Sorted interval start/end points of the tree ROOT strictly between LO and HI."
-  (let (pts)
-    (nelisp--tp-walk
-     root 0 lo
-     (lambda (st n)
-       (if (>= st hi)
-           t
-         (when (and (> st lo) (< st hi)) (push st pts))
-         (let ((e (+ st (aref n 2)))) (when (and (> e lo) (< e hi)) (push e pts)))
-         nil)))
+  (let ((pts nil))
+    (when (and root (< lo hi))
+      (nelisp--tp-do-span (n st root lo hi stop)
+        (let ((e (+ st (aref n 2))))
+          (when (and (> st lo) (< st hi)) (push st pts))
+          (when (and (> e lo) (< e hi)) (push e pts)))))
     (sort (delete-dups pts) #'<)))
 
 (defun nelisp--tp-copy-range (source from to shift)
   "SOURCE's intervals (a string) clipped to [FROM, TO) as (START END PLIST) triples
 moved by SHIFT - FROM."
-  (let (result)
-    (nelisp--tp-walk
-     (gethash source nelisp--tp-string-properties) 0 from
-     (lambda (st n)
-       (if (>= st to)
-           t
-         (let ((s (max from st)) (e (min to (+ st (aref n 2)))))
-           (when (and (< s e) (aref n 3))
-             (push (list (+ shift (- s from)) (+ shift (- e from)) (copy-sequence (aref n 3)))
-                   result)))
-         nil)))
+  (let ((result nil) (root (gethash source nelisp--tp-string-properties)))
+    (when (and root (< from to))
+      (nelisp--tp-do-span (n st root from to stop)
+        (let ((s (max from st)) (e (min to (+ st (aref n 2)))))
+          (when (and (< s e) (aref n 3))
+            (push (list (+ shift (- s from)) (+ shift (- e from)) (copy-sequence (aref n 3)))
+                  result)))))
     (nreverse result)))
 
 (defun nelisp--tp-rebuild (root start end updater)
@@ -15867,12 +15984,8 @@ new root.  A no-op when START >= END."
       (when (< (aref root 4) end)
         (setq root (nelisp--tp-pad root end)))
       (setq root (nelisp--tp-cut (nelisp--tp-cut root start) end))
-      (nelisp--tp-walk root 0 start
-                       (lambda (st n)
-                         (if (>= st end)
-                             t
-                           (aset n 3 (funcall updater (aref n 3)))
-                           nil)))
+      (nelisp--tp-do-span (n st root start end stop)
+        (aset n 3 (funcall updater (aref n 3))))
       root)))
 
 (defun nelisp--tp-merge (intervals)
@@ -24051,28 +24164,30 @@ without the `charset' property, `plain' to print the string without intervals."
 
 (unless (fboundp 'text-properties-at)
   (defun text-properties-at (position &optional object)
-    (let* ((object (or object nelisp--current-buffer))
-           (root (and (integerp position)
-                      ;; The common call: an integer inside the object, whose tree
-                      ;; already covers it; everything else takes the full validation.
-                      (if (stringp object)
-                          (and (>= position 0) (<= position (length object))
-                               (let ((r (gethash object nelisp--tp-string-properties)))
-                                 (and r (= (aref r 4) (length object)) r)))
-                        (and (nelisp-buffer-p object)
-                             (let ((r (nelisp-buffer-text-properties object)))
-                               (and r (>= position (nelisp-point-min object))
-                                    (<= position (nelisp-point-max object))
-                                    (< (nelisp-point-min object) (nelisp-point-max object))
-                                    (= (aref r 4) (nelisp-buffer-len object)) r)))))))
+    (let* ((object (or object nelisp--current-buffer)) (root nil) (p 0))
+      ;; The common call: an integer inside the object, whose tree already
+      ;; covers it; everything else takes the full validation.
+      (when (integerp position)
+        (if (stringp object)
+            (when (and (>= position 0) (<= position (length object)))
+              (let ((r (gethash object nelisp--tp-string-properties)))
+                (when (and r (= (aref r 4) (length object)))
+                  (setq root r p position))))
+          (when (nelisp--tp-bufp object)
+            (let ((r (nelisp--tp-broot object)) (lo (nelisp--tp-bmin object))
+                  (hi (nelisp--tp-bmax object)))
+              (when (and r (>= position lo) (<= position hi) (< lo hi)
+                         (= (aref r 4) (nelisp--tp-blen object)))
+                (setq root r p (1- position)))))))
       (if root
-          (let* ((p (if (stringp object) position (1- position)))
-                 (n (nelisp--tp-find root p)))
-            (if (= p (+ nelisp--tp-fs (aref n 2))) nil (aref n 3)))
+          (let ((n nil) (fs 0))
+            (nelisp--tp-locate root p n fs)
+            (if (= p (+ fs (aref n 2))) nil (aref n 3)))
         (setq root (nelisp--tp-validate object position position t nil))
         (when root
-          (let ((n (nelisp--tp-find root nelisp--tp-vs)))
-            (if (= nelisp--tp-vs (+ nelisp--tp-fs (aref n 2))) nil (aref n 3))))))))
+          (let ((n nil) (fs 0) (vs nelisp--tp-vs))
+            (nelisp--tp-locate root vs n fs)
+            (if (= vs (+ fs (aref n 2))) nil (aref n 3))))))))
 
 (unless (fboundp 'propertize)
   (defun propertize (string &rest properties)
@@ -24083,13 +24198,24 @@ without the `charset' property, `plain' to print the string without intervals."
     (let ((new (copy-sequence string)) (rev nil) (l properties))
       (while l
         (setq rev (cons (car l) (cons (car (cdr l)) rev)) l (cdr (cdr l))))
-      (add-text-properties 0 (length new) rev new)
+      (if (and rev (> (length new) 0) (null (gethash new nelisp--tp-string-properties)))
+          ;; A string without intervals gets one interval over all of it, as
+          ;; `add-text-properties' would make it.
+          (let ((node (nelisp--tp-node (length new) nil)))
+            (nelisp--tp-add-props rev node)
+            (nelisp--tp-set-intervals new node))
+        (add-text-properties 0 (length new) rev new))
       new)))
 
 (unless (fboundp 'put-text-property)
   (defun put-text-property (start end property value &optional object)
-    (add-text-properties start end (list property value) object)
-    nil))
+    (let ((object (or object nelisp--current-buffer)) (root nil) (s 0) (e 0) (r nil))
+      (nelisp--tp-fast object start end root s e)
+      (if root
+          (progn (setq r (nelisp--tp-add root s e (cons property (cons value nil))))
+                 (unless (eq (car r) root) (nelisp--tp-set-intervals object (car r))))
+        (add-text-properties start end (cons property (cons value nil)) object))
+      nil)))
 
 (unless (fboundp 'add-text-properties)
   (defun add-text-properties (start end properties &optional object)
@@ -24098,12 +24224,17 @@ without the `charset' property, `plain' to print the string without intervals."
     (setq properties (nelisp--tp-validate-plist properties))
     (if (null properties)
         nil
-      (let* ((object (or object nelisp--current-buffer))
-             (root (nelisp--tp-validate object start end nil t)))
-        (when root
-          (let ((new (nelisp--tp-add root nelisp--tp-vs nelisp--tp-ve properties)))
-            (nelisp--tp-set-intervals object new)
-            nelisp--tp-changed))))))
+      (let ((object (or object nelisp--current-buffer)) (root nil) (s 0) (e 0) (r nil))
+        (nelisp--tp-fast object start end root s e)
+        (if root
+            (progn (setq r (nelisp--tp-add root s e properties))
+                   (unless (eq (car r) root) (nelisp--tp-set-intervals object (car r)))
+                   (cdr r))
+          (setq root (nelisp--tp-validate object start end nil t))
+          (when root
+            (setq r (nelisp--tp-add root nelisp--tp-vs nelisp--tp-ve properties))
+            (nelisp--tp-set-intervals object (car r))
+            (cdr r)))))))
 
 (unless (fboundp 'set-text-properties)
   (defun set-text-properties (start end properties &optional object)
@@ -24127,22 +24258,32 @@ without the `charset' property, `plain' to print the string without intervals."
   (defun remove-text-properties (start end properties &optional object)
     "Drop each key in the plist PROPERTIES from [START, END) of OBJECT.  Return t
   if any property was actually removed, nil otherwise."
-    (let* ((object (or object nelisp--current-buffer))
-           (root (nelisp--tp-validate object start end nil nil)))
-      (when root
-        (let ((new (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve properties t)))
-          (nelisp--tp-set-intervals object new)
-          nelisp--tp-changed)))))
+    (let ((object (or object nelisp--current-buffer)) (root nil) (s 0) (e 0) (r nil))
+      (nelisp--tp-fast object start end root s e)
+      (if root
+          (progn (setq r (nelisp--tp-remove root s e properties t))
+                 (unless (eq (car r) root) (nelisp--tp-set-intervals object (car r)))
+                 (cdr r))
+        (setq root (nelisp--tp-validate object start end nil nil))
+        (when root
+          (setq r (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve properties t))
+          (nelisp--tp-set-intervals object (car r))
+          (cdr r))))))
 
 (unless (fboundp 'remove-list-of-text-properties)
   (defun remove-list-of-text-properties (start end list-of-properties &optional object)
     "Remove the properties named in LIST-OF-PROPERTIES from [START, END) of OBJECT."
-    (let* ((object (or object nelisp--current-buffer))
-           (root (nelisp--tp-validate object start end nil nil)))
-      (when root
-        (let ((new (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve list-of-properties nil)))
-          (nelisp--tp-set-intervals object new)
-          nelisp--tp-changed)))))
+    (let ((object (or object nelisp--current-buffer)) (root nil) (s 0) (e 0) (r nil))
+      (nelisp--tp-fast object start end root s e)
+      (if root
+          (progn (setq r (nelisp--tp-remove root s e list-of-properties nil))
+                 (unless (eq (car r) root) (nelisp--tp-set-intervals object (car r)))
+                 (cdr r))
+        (setq root (nelisp--tp-validate object start end nil nil))
+        (when root
+          (setq r (nelisp--tp-remove root nelisp--tp-vs nelisp--tp-ve list-of-properties nil))
+          (nelisp--tp-set-intervals object (car r))
+          (cdr r))))))
 (defun nelisp--w202-position (position)
   "Return POSITION as an integer, checking integer and marker arguments."
   (cond
@@ -24153,80 +24294,130 @@ without the `charset' property, `plain' to print the string without intervals."
    (t (signal 'wrong-type-argument
               (list 'integer-or-marker-p position)))))
 
+;; GNU textprop.c Fnext_property_change / Fnext_single_property_change and their
+;; previous- siblings: find_interval once, then next_interval / previous_interval
+;; until the property differs.  Each scan below is one native loop over the tree
+;; with no callback.
+(defun nelisp--tp-scan-fwd (root p0 base limit end-abs single prop)
+  "The change after tree offset P0 of ROOT, as an absolute position, else LIMIT.
+BASE is the position of offset 0 and END-ABS the position of the object's end.
+One descent finds the interval at P0 and, with it, the next interval
+\(GNU next_interval): the leftmost node of its right subtree, else the last
+ancestor the descent went left at.  Only a run of equal intervals descends again."
+  (let ((tot (aref root 4)) (n root) (b 0) (cur nil) (cs 0) (anc nil) (as 0)
+        (here nil) (nxt nil) (nstart 0) (ns 0) (sn nil) (done nil))
+    (while (null cur)
+      (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)))
+        (cond ((< p0 (+ b lt)) (setq anc n as (+ b lt) n l))
+              ((or (< p0 (+ b lt len)) (null (aref n 1))) (setq cs (+ b lt) cur n))
+              (t (setq b (+ b lt len) n (aref n 1))))))
+    (setq ns (+ cs (aref cur 2)))
+    (if (>= ns tot)
+        limit
+      (setq sn (aref cur 1))
+      (if sn
+          (while (aref sn 0) (setq sn (aref sn 0)))
+        (setq sn anc))
+      (setq here (and single (nelisp--tp-textget (aref cur 3) prop)))
+      (let ((first cur))
+        (setq cur sn cs ns)
+        (while (not done)
+          (if (and (if single (eq here (nelisp--tp-textget (aref cur 3) prop))
+                     (nelisp--tp-plists-equal (aref first 3) (aref cur 3) nil))
+                   (or (null limit) (< (+ cs base) limit)))
+              (progn
+                (setq ns (+ cs (aref cur 2)))
+                (if (>= ns tot)
+                    (setq done t)
+                  (nelisp--tp-locate root ns cur cs)))
+            (setq nxt cur nstart cs done t))))
+      (if (or (null nxt) (>= (+ nstart base) (if (integerp limit) limit end-abs)))
+          limit
+        (+ nstart base)))))
+
+(defun nelisp--tp-scan-back (root p0 base limit start-abs single prop)
+  "The change before tree offset P0 of ROOT, as an absolute position, else LIMIT.
+START-ABS is the position of the object's beginning.  The interval before P0 is
+the one containing offset P0 - 1; one descent finds it and its predecessor
+\(GNU previous_interval): the rightmost node of its left subtree, else the last
+ancestor the descent went right at."
+  (if (<= p0 0)
+      limit
+    (let ((k (1- p0)) (n root) (b 0) (cur nil) (cs 0) (panc nil) (pv nil) (pstart 0)
+          (k3 0) (here nil))
+      (while (null cur)
+        (let* ((l (aref n 0)) (lt (if l (aref l 4) 0)) (len (aref n 2)))
+          (cond ((< k (+ b lt)) (setq n l))
+                ((or (< k (+ b lt len)) (null (aref n 1))) (setq cs (+ b lt) cur n))
+                (t (setq panc n b (+ b lt len) n (aref n 1))))))
+      (setq pv (aref cur 0))
+      (if pv
+          (while (aref pv 1) (setq pv (aref pv 1)))
+        (setq pv panc))
+      (when pv (setq pstart (- cs (aref pv 2))))
+      (setq here (and single (nelisp--tp-textget (aref cur 3) prop)))
+      (while (and pv
+                  (if single (eq here (nelisp--tp-textget (aref pv 3) prop))
+                    (nelisp--tp-plists-equal (aref pv 3) (aref cur 3) nil))
+                  (or (null limit) (> (+ pstart (aref pv 2) base) limit)))
+        (if (> pstart 0)
+            (progn (setq k3 (1- pstart))
+                   (nelisp--tp-locate root k3 pv pstart))
+          (setq pv nil)))
+      (if (or (null pv)
+              (<= (+ pstart (aref pv 2) base) (if (integerp limit) limit start-abs)))
+          limit
+        (+ pstart (aref pv 2) base)))))
+
 (defun nelisp--w202-property-change (position object limit backward single prop)
   "GNU Fnext_property_change and its three siblings: a boundary after validating
 POSITION, OBJECT and LIMIT.  The intervals are walked, never the positions."
-  (let ((str nil) root base end-abs)
+  (let ((str nil) (root nil) (base 1) (end-abs 0) (p0 0) (start-abs 0))
     (unless (or (eq limit t) (null limit)) (setq limit (nelisp--w202-position limit)))
     (when (and (eq limit t) (or backward single))
       (signal 'wrong-type-argument (list 'integer-or-marker-p limit)))
     (setq object (or object nelisp--current-buffer))
     (nelisp--tp-check-object object)
     (setq position (nelisp--w202-position position))
-    (setq str (stringp object) base (if str 0 1)
-          root (nelisp--tp-validate object position position t nil)
-          end-abs (if str (length object) (nelisp-point-max object)))
-    (if (eq limit t)
-        ;; Only `next-property-change' accepts t: the next interval edge, equal or not.
-        (if (null root)
-            end-abs
-          (let* ((i (nelisp--tp-find root nelisp--tp-vs))
-                 (ns (+ nelisp--tp-fs (aref i 2))))
-            (if (>= ns (aref root 4)) end-abs (+ ns base))))
-      (if (null root)
-          limit
-        (let* ((tot (aref root 4)) (p0 nelisp--tp-vs)
-               (i (nelisp--tp-find root p0)) (is nelisp--tp-fs)
-               (res nil) (done nil))
-          (if (not backward)
-              (let* ((here (and single (nelisp--tp-textget (aref i 3) prop)))
-                     (cur i) (cs is) (nxt nil) (nstart nil))
-                (while (not done)
-                  (let ((ns (+ cs (aref cur 2))))
-                    (if (>= ns tot)
-                        (setq nxt nil done t)
-                      (setq cur (nelisp--tp-find root ns) cs ns)
-                      (if (and (if single (eq here (nelisp--tp-textget (aref cur 3) prop))
-                                 (nelisp--tp-plists-equal (aref i 3) (aref cur 3) nil))
-                               (or (null limit) (< (+ cs base) limit)))
-                          nil
-                        (setq nxt cur nstart cs done t)))))
-                (setq res (if (or (null nxt) (>= (+ nstart base) (if (integerp limit) limit end-abs)))
-                              limit
-                            (+ nstart base))))
-            ;; backward
-            (let ((cur i) (cs is))
-              (when (= is p0)
-                (if (> is 0)
-                    (setq cur (nelisp--tp-find root (1- is)) cs nelisp--tp-fs)
-                  (setq cur nil)))
-              (if (null cur)
-                  (setq res limit)
-                (let ((here (and single (nelisp--tp-textget (aref cur 3) prop)))
-                      (pv nil) (pstart 0))
-                  (when (> cs 0)
-                    (setq pv (nelisp--tp-find root (1- cs)) pstart nelisp--tp-fs))
-                  (while (and pv
-                              (if single (eq here (nelisp--tp-textget (aref pv 3) prop))
-                                (nelisp--tp-plists-equal (aref pv 3) (aref cur 3) nil))
-                              (or (null limit) (> (+ pstart (aref pv 2) base) limit)))
-                    (if (> pstart 0)
-                        (setq pv (nelisp--tp-find root (1- pstart)) pstart nelisp--tp-fs)
-                      (setq pv nil)))
-                  (setq res (if (or (null pv)
-                                    (<= (+ pstart (aref pv 2) base)
-                                        (if (integerp limit) limit
-                                          (if str 0 (nelisp-point-min object)))))
-                                limit
-                              (+ pstart (aref pv 2) base)))))))
-          res)))))
+    (setq str (stringp object))
+    ;; The common call: an integer position inside an object whose tree covers it.
+    (if str
+        (let ((r (gethash object nelisp--tp-string-properties)))
+          (setq base 0 end-abs (length object) start-abs 0)
+          (if (and r (>= position 0) (<= position end-abs)
+                   (> end-abs 0) (= (aref r 4) end-abs))
+              (setq root r p0 position)
+            (setq root (nelisp--tp-validate object position position t nil)
+                  p0 nelisp--tp-vs)))
+      (let ((r (nelisp--tp-broot object)) (lo (nelisp--tp-bmin object))
+            (hi (nelisp--tp-bmax object)))
+        (setq end-abs hi start-abs lo)
+        (if (and r (>= position lo) (<= position hi) (< lo hi)
+                 (= (aref r 4) (nelisp--tp-blen object)))
+            (setq root r p0 (1- position))
+          (setq root (nelisp--tp-validate object position position t nil)
+                p0 nelisp--tp-vs))))
+    (cond
+     ((null root) (if (eq limit t) end-abs limit))
+     ((eq limit t)
+      ;; Only `next-property-change' accepts t: the next interval edge, equal or not.
+      (let ((i nil) (is 0))
+        (nelisp--tp-locate root p0 i is)
+        (let ((ns (+ is (aref i 2))))
+          (if (>= ns (aref root 4)) end-abs (+ ns base)))))
+     (backward (nelisp--tp-scan-back root p0 base limit start-abs single prop))
+     (t (nelisp--tp-scan-fwd root p0 base limit end-abs single prop)))))
 
 (defun nelisp--w202-property-find (start end prop value object different)
   "GNU Ftext_property_any / Ftext_property_not_all: the first character in START
 to END whose PROP is `eq' to VALUE, or (DIFFERENT) is not.  Walks the intervals."
   (setq object (or object nelisp--current-buffer))
   (nelisp--tp-check-object object)
-  (let ((root (nelisp--tp-validate object start end nil nil)))
+  (let ((root nil) (s 0) (e 0))
+    (nelisp--tp-fast object start end root s e)
+    (unless root
+      (setq root (nelisp--tp-validate object start end nil nil))
+      (when root (setq s nelisp--tp-vs e nelisp--tp-ve)))
     (if (null root)
         (if (= (nelisp--w202-position start) (nelisp--w202-position end))
             nil
@@ -24234,17 +24425,18 @@ to END whose PROP is `eq' to VALUE, or (DIFFERENT) is not.  Walks the intervals.
             (if different
                 (if (null value) nil s)
               (if value nil s))))
-      (let* ((s nelisp--tp-vs) (e nelisp--tp-ve) (base (if (stringp object) 0 1))
-             (r (nelisp--tp-walk
-                 root 0 s
-                 (lambda (st n)
-                   (cond ((>= st e) 'stop)
-                         ((if different
-                              (not (eq (nelisp--tp-textget (aref n 3) prop) value))
-                            (eq (nelisp--tp-textget (aref n 3) prop) value))
-                          (+ base (max st s)))
-                         (t nil))))))
-        (and (integerp r) r)))))
+      (let ((base (if (stringp object) 0 1)) (r nil))
+        (when (< s e)
+          (nelisp--tp-do-span (nd st root s e stop)
+            (let* ((pl (aref nd 3)) (tail pl))
+              ;; the value as `nelisp--tp-textget' finds it: a property in the plist wins
+              (while (and (consp tail) (not (eq (car tail) prop)))
+                (setq tail (cdr (cdr tail))))
+              (when (if different
+                        (not (eq (if (consp tail) (car (cdr tail)) (nelisp--tp-textget pl prop)) value))
+                      (eq (if (consp tail) (car (cdr tail)) (nelisp--tp-textget pl prop)) value))
+                (setq r (+ base (max st s)) stop t)))))
+        r))))
 (defun nelisp--w202-regexp-error (message)
   "Signal an invalid regexp with MESSAGE as its error data."
   (signal 'invalid-regexp (list message)))
