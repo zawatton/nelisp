@@ -1,0 +1,58 @@
+#+TITLE: nc5 -- native call protocol toward GNU's cost (N4 groundwork): activation entry/exit, backtrace record and guard of the native direct call
+#+NOTE: Created 2026-10-27 before implementation. Seed = coordinator HEAD a107089c6 (v23), no overlay (target/nc5/seed/ is empty; the patch is against git HEAD). Baseline v23 = ../resume-4943-20261024/target/integ-1040-build/dynamic/nelisp-dynamic. Build budget 2. Timing and callgrind on CPU 12 only. Binary under test: ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic}.
+#+NOTE: Budget of the brief's 25 percent target per row (v23 Ir/trip -> target): ptp 33742 -> 25307, split 41721 -> 31291, prop 49743 -> 37307, gtp 12287 -> 9216, mapc 61242 -> 45932, trim 87208 -> 65406. The per-activation / per-direct-call protocol this lane changes (root mark/frame/reserve/release, entry check, guard, n4 push/finish, depth limit; target/nc5/logs/s1-v23-protocol.txt) is about 7.8K on ptp, 3.6K on gtp, 4.4K on trim: it cannot reach 25 percent alone on any row.  The rest is outside the call protocol: on mapc 41.7K of 61.2K is one list call per element into the byte-code `identity' (the dynamic prelude's `(defun identity (x) x)', a specbind per call; GNU's is a C subr), on trim / split / prop the list apply of legacy (builtin NAME) cells (nc_list_call 32.0K / 3.2K / 3.9K, m5_fx_builtin_name's string compare 290 per call), on ptp / prop the `set' path (nc_globals 5.4K / 6.2K: bf_set_dynamic_value -> nl_sym_set_w -> mirror lookup -> clone, a varstore cost).  S4.2 therefore stays red unless those are fixed; it is kept as a failing check, not downgraded.
+
+* S1 Cause with evidence
+** S1.1 v23 per-trip Ir and the protocol's share: 17/9/20/4/16/23 native activations and 16/8/19/3/4/17 guarded direct calls per trip (ptp/split/prop/gtp/mapc/trim); each activation calls nl_root_mark, nl_root_frame, nl_root_reserve (the view slot) and nl_root_release (~170 Ir on ptp) and m5_fx_entry_check; each direct call nc_site_rec, nl_n4_push_words, nl_eval_depth_limit, m5_fx_call_words_done -> nl_n4_finish_w (~200 Ir)
+#+NOTE: target/nc5/cg/run.sh (two-N 500/2500), inc.py (inclusive), callers.py (edges) on v23.  GNU: a bytecode frame push is a few stores (bytecode.c:510-525), record_in_backtrace is 5 stores (lisp.h:3760), funcall_general reads the cell and a type tag (eval.c:3040-3070).
+evidence: target/nc5/logs/s1-v23-protocol.txt sha256=bcfb8e0b0468b0cdac14f24cd05e75b4f03e19ab5eee322d70487724532a0ab8
+cmd: grep -q "^CALLS ptp activations=17 direct=16" target/nc5/logs/s1-v23-protocol.txt && grep -q "^INC v23 trim 87208 " target/nc5/logs/s1-v23-protocol.txt
+** S1.2 The non-protocol residuals named: mapc's list call runs the dynamic byte-code `identity' (varbind 16.9K/trip), trim's 6 list calls per trip go through the name-string apply (nc_list_call 32.0K), ptp's `set' path 5.4K
+cmd: grep -q " nc_list_call=41729 .*wf_bytecode_varbind=16872" target/nc5/logs/s1-v23-protocol.txt && grep -q "^INC v23 trim .*nc_list_call=32027" target/nc5/logs/s1-v23-protocol.txt && grep -q "^INC v23 ptp .*nc_globals=5435" target/nc5/logs/s1-v23-protocol.txt
+
+* S2 Fix: native lowering (offline red/green)
+** S2.1 Activation entry/exit as GNU's frame push: the nil entry check, the root mark and the release answer inline; the window and its view slot are one helper (nc_enter: header, nil slots, zeroed view slot, one top store); no nl_root_mark / nl_root_reserve / nl_root_release call in an nc_ID body (red on v23's generated source)
+cmd: grep -q "nc5: GNU's frame push" lisp/nelisp-cc-fxir-native.el && grep -q "(defun nc_enter (env n)" lisp/nelisp-cc-fxir-native.el
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc5-gencheck.sh
+** S2.2 Direct call as funcall_general + record_in_backtrace: the guard (nc_site_rec's tests), the n4 record push, the depth limit below 100 and the finish of a plain success are inline in nc_d_ID; every cold case keeps its helper
+cmd: grep -q "nc5: the guard inline" lisp/nelisp-cc-fxir-native.el && grep -q "nc5: record_in_backtrace in place" lisp/nelisp-cc-fxir-native.el
+** S2.3 Offline unit compile: every nc_ function that calls has a precise stack map (nc1-unitcheck)
+#+TIMEOUT: 600
+cmd: grep -q "^UNIT ok=t" target/nc5/logs/unitcheck.log && sh -c '! grep "^FN nc_" target/nc5/logs/unitcheck.log | grep -v "reason=nil" | grep -v "^FN nc_site_sym \|^FN nc_truthy_slow \|^FN nc_mul_fast \|^FN nc_pred6 \|^FN nc_exit_put "'
+
+* S3 One integrated build passing fixtures
+** S3.1 Integrated dynamic build rc=0, prelink F1 <= 384, root evidence <= 98304, 140 hot rows converted
+cmd: tail -1 target/nc5-build/dynamic/build.log | grep -q "BUILD rc=0"
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/nc5-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+cmd: sh -c 'grep -o "root-evidence. nodes=[0-9]*" target/nc5-build/dynamic/build.log | awk -F= "\$2>98304{f=1} END{exit f}"'
+#+TIMEOUT: 300
+cmd: sh tools/ai/nc1-native-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} converted 140
+** S3.2 Fixtures weak 24/24, GNU 56/56, AFRT 24/25 (known red exit-hook-result-gc), buffer 21/21; gnu-speed-win-check passes
+evidence: target/nc5/logs/fixtures.log sha256=533d0582a11ad1ae4a95a1dfd9099358ac722576a9139b2d054bdd976cba2d6e
+cmd: grep -q "buffer 21/21 PASS" target/nc5/logs/fixtures.log && grep -q "weak 24/24 PASS" target/nc5/logs/fixtures.log && grep -q "GNU 56/56 PASS" target/nc5/logs/fixtures.log && grep -q "AFRT 24/25; unchanged exit-hook-result-gc RED" target/nc5/logs/fixtures.log
+#+TIMEOUT: 600
+cmd: sh tools/ai/gnu-speed-win-check/check.sh $PWD/${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic}
+** S3.3 Handler and nc1-nc4 corpora: interpreter = VM = native = fxir (with and without forced GC), native = GNU 31.1, mutants caught
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc4-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc4-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} gnu && sh tools/ai/nc4-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} mutant-caught && sh tools/ai/nc4-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} converted
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc3-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc3-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} mutant-caught && sh tools/ai/nc3-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} inline
+#+TIMEOUT: 600
+cmd: sh tools/ai/nc2-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc2-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} mutant-caught && sh tools/ai/nc1-native-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} same && sh tools/ai/nc1-native-check.sh ${NC5_BIN:-target/nc5-build/dynamic/nelisp-dynamic} mutant-caught
+** S3.4 Win64 build of the same units under wine: closurevm 24, switch and features equal GNU
+#+NOTE: Needs a Windows cross build (target/nc5/win/build/nelisp.exe, recipe of ../resume-4943-20261024/target/integ-1040/win/run-win.sh).  Red until that build exists.  Not built: both of the lane's two builds went to Linux (build 2 removed the nl_string_read64 calls build 1's inline forms introduced).  The changed code is the native lowering, which generates no rows on Win64 (`nelisp-cc-fxir-native-windows'), so a Win64 build would not run it.
+#+TIMEOUT: 600
+cmd: sh -c 'W=${NC5_WIN_BIN:-$PWD/target/nc5/win/build/nelisp.exe}; test -x "$W" && WINEPREFIX=$PWD/target/nc5/win/wineprefix WINEDEBUG=-all sh tools/ai/gnu-speed-win-check/check.sh "$W" wine'
+
+* S4 End to end: speed
+** S4.1 Protocol cost per call (callgrind, recorded per row): activation rooting + entry check + direct-call guard/record/finish Ir per trip at most half of v23's on ptp
+#+NOTE: Build 2: ptp 283 -> 185 Ir per native call (activation or direct call), 0.65 of v23's protocol on every row but mapc (0.80); Ir per trip v23 -> build 1 -> build 2: ptp 33742 -> 31925 -> 30506, split 41721 -> 40832 -> 40052, prop 49743 -> 47603 -> 45918, gtp 12287 -> 11883 -> 11598, mapc 61242 -> 60737 -> 60357, trim 87208 -> 84756 -> 83241.  Red: the half target needs the n4 record and the root frame folded into one specpdl-like stack (not done).
+evidence: target/nc5/logs/percall.txt sha256=3a058e76814691ede5d805bfecb212fb4b8f4aa3791c0b1af3d954cef1d370b9
+cmd: python3 target/nc5/cg/s4proto.py
+** S4.2 The brief's target: every row's Ir per trip at least 25 percent below v23 (ptp, split, prop, gtp, mapc, trim)
+cmd: awk 'BEGIN{t["ptp"]=25307;t["split"]=31291;t["prop"]=37307;t["gtp"]=9216;t["mapc"]=45932;t["trim"]=65406} ($1 in t){n++; if ($2>t[$1]) f=1} END{exit !(n==6 && !f)}' target/nc5/cg/nc5-ir.txt
+** S4.3 Paired wall time on CPU 12 vs v23 (and GNU recorded): six rows not slower (ratio < 1, >= 6 of 7 pairs), reg-sum-bc and r3-mix within 3 percent
+#+NOTE: paired_bench 7 reps alternating on CPU 12, ns/trip v23 -> nc5 (ratio, pairs faster; GNU): ptp 3944 -> 3764 (0.954, 7/7; 231), split 4884 -> 4730 (0.968, 7/7; 2413), prop 6884 -> 6630 (0.963, 7/7; 1150), gtp 1406 -> 1354 (0.963, 7/7; 197), mapc 8407 -> 8318 (0.989, 7/7; 518), trim 15018 -> 14397 (0.959, 7/7; 731); reg-sum-bc 0.996 (7/7), r3-mix 0.996 (4/7).
+evidence: target/nc5/timing/paired-all.log sha256=a438ef4058c09b8bb7580c4c28b438e98a55ef515359acbaf5c98938037f62ef
+cmd: python3 target/nc5/timing/s4check.py

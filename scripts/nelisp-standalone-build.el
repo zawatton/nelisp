@@ -13192,6 +13192,7 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "nelisp--gb-find-char") :word . (nl_gb_wprim_w 76 args env))
     ((:lit "nelisp--gb-count-nl") :word . (nl_gb_wprim_w 77 args env))
     ((:lit "nelisp--gb-overwrite") :word . (nl_gb_wprim_w 78 args env))
+    ((:lit "nelisp--gb-insert-file") :word . (nl_gb_wprim_w 81 args env))
     ;; Private fixture for the opaque byte-code object storage tests. This
     ;; clones a RecordBox-backed value and changes only its public tag.
     ((:lit "nelisp--byte-code-wrap-test") :word .
@@ -39031,7 +39032,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
     ((4 . many)
       make-byte-code)
     ((5 . 5)
-      nelisp--syscall-mount nelisp-thread-spawn nelisp--gb-find-char)
+      nelisp--syscall-mount nelisp-thread-spawn nelisp--gb-find-char nelisp--gb-insert-file)
     ((7 . 7)
       nelisp--rx-exec ptr-call syscall-direct)
     ((8 . 8)
@@ -44389,7 +44390,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "line-end-position" "bolp" "eolp" "insert" "pos-bol" "pos-eol" "delete-region"
     "buffer-substring" "buffer-substring-no-properties" "forward-line" "nelisp--gb-count-lines" "nelisp--gb-column" "insert-char" "delete-char"
     "nelisp--gb-char" "nelisp--gb-move" "nelisp--gb-reserve" "nelisp--gb-insert" "nelisp--gb-delete"
-    "nelisp--gb-substring" "nelisp--gb-find-char" "nelisp--gb-count-nl" "nelisp--gb-overwrite"
+    "nelisp--gb-substring" "nelisp--gb-find-char" "nelisp--gb-count-nl" "nelisp--gb-overwrite" "nelisp--gb-insert-file"
     ;; List search hot paths
     "memq" "member" "assq" "assoc" "rassoc" "rassq" "alist-get" "assoc-string"
     "try-completion" "all-completions" "test-completion" "unintern" "obarrayp"

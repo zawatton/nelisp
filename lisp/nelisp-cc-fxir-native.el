@@ -334,6 +334,66 @@ Answers (STMTS . RESULT-TEMP)."
                  (cons nil `(setq ,r (heap-read-u64 mem 0)))))
           r)))
 
+(defconst nelisp-cc-fxir-native--site-rec-form
+  ;; nc4: the guard as GNU's Ffuncall / funcall_general reads it
+  ;; (eval.c: the symbol's function cell, a type test, the entry): the
+  ;; site is the code vector's call cache [SYMBOL ...] the fx compiler
+  ;; made (the install pass checked the code), so only word classes are
+  ;; tested; the cache's slots 3 and 4 are written record first
+  ;; (`m5_fx_funcall_site_fill'), so a cached closure equal to the live
+  ;; cell means slot 4 holds its record.  Words: vector slot K at
+  ;; WORD + 2 + 8K, a symbol's function cell at WORD + 18.
+  ;; nc5: the guard inline in each nc_d_ID, as GNU's funcall_general is
+  ;; inline in Ffuncall: no call on the path every direct call takes.
+  '(if (= (logand site 7) 6)
+       (let* ((gsym (ptr-read-u64 (+ site 2) 0)))
+         (if (if (= (logand gsym 7) 6) (>= gsym 4096) 0)
+             (let* ((cell (ptr-read-u64 (+ gsym 18) 0)))
+               (if (if (= cell 3) 0 (= cell (ptr-read-u64 (+ site 26) 0)))
+                   (let* ((grec (ptr-read-u64 (+ site 34) 0)))
+                     (if (if (= (logand grec 7) 6) (= (ptr-read-u64 (+ grec 58) 0) 3) 0)
+                         (if (= (heap-read-u64 env 168) 0)
+                             (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
+                                 (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) grec
+                                   (if (= (nl_sb_worker_p env) 1) 0 grec))
+                               0)
+                           0)
+                       0))
+                 0))
+           0))
+     0)
+  "The record the call site's cache holds (slots 3 and 4, filled by
+`m5_fx_site_rec'), when the symbol's live function cell is still that cached
+closure, the record is not retired and neither a worker nor the
+dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
+
+(defconst nelisp-cc-fxir-native--push-form
+  ;; nc5: record_in_backtrace in place (lisp.h:3760): `nl_n4_push_words''s
+  ;; hot body inline for the call's operator (the site's symbol) and its
+  ;; staged words, with the same cold call for a missing state, the depth
+  ;; limit and a view operator.  The 64-byte record and every reader are
+  ;; unchanged.
+  ;; Raw loads (`ptr-read-u64'): the state, the record and the frames
+  ;; vector's data are runtime memory, never a String WORD, so the String-aware
+  ;; `heap-read-u64' (an `nl_string_read64' call at offsets 0-24) is not used.
+  '(let* ((bfn (nl_vector_slot_word site 0))
+          (bstate (heap-read-u64 env 176))
+          (bdepth (if (= bstate 0) 32768 (ptr-read-u64 bstate 0))))
+     (if (if (>= bdepth 32768) 1 (= (logand bfn 7) 0))
+         (nl_n4_push_words_cold env bfn stk argc)
+       (let* ((bfr (+ bstate (+ 64 (shl bdepth 6))))
+              (bfd (heap-read-u64 env 40)))
+         (seq
+          (ptr-write-u64 bfr 0 bfn)
+          (ptr-write-u64 bfr 8 3)
+          (ptr-write-u64 bfr 16 (logior 257 (shl (logand (heap-read-u64 env 112) 2097152) 3)))
+          (ptr-write-u64 bfr 24 (+ (* stk 65536) argc))
+          (ptr-write-u64 bfr 32 (sar (ptr-read-u64 bfd 24) 2))
+          (ptr-write-u64 bfr 40 (+ bfd 6))
+          (ptr-write-u64 bstate 0 (+ bdepth 1))
+          bfr))))
+  "`nl_n4_push_words' of the direct call's record, inline.")
+
 (defun nelisp-cc-fxir-native--wrapper (row)
   "The `defun' of nc_d_ID, the guarded direct entry of ROW's nc_ID."
   (let* ((id (nth 1 row)) (rest (nth 2 (nth 5 row)))
@@ -341,15 +401,17 @@ Answers (STMTS . RESULT-TEMP)."
          (nlw (1+ (* 4 (- -16 id))))
          (restbits (if (>= rest 0) (* 65536 (1+ rest)) 0)))
     `(defun ,(intern (format "nc_d_%d" id)) (env site stk argc resw oslot)
-       (let* ((rec (nc_site_rec env site)))
+       (let* ((rec ,nelisp-cc-fxir-native--site-rec-form))
          (if (if (= rec 0) 0 (= (nl_vector_slot_word rec 1) ,nlw))
              ;; `m5_fx_callout' then `m5_fx_call_words' minus the lookups the
              ;; guard replaced: the definition kept in the caller's XW word, the
              ;; backtrace record, the recursion budget (`m5_fx_run').
+             ;; nc5: the record pushed in place, and the limit below 100 is 100
+             ;; without reading `max-lisp-eval-depth' (`nl_eval_depth_limit').
              (let* ((frame (seq (ptr-write-u64 (+ resw 8) 0 (nl_vector_slot_word site 3))
-                                (nl_n4_push_words env (nl_vector_slot_word site 0) stk argc)))
+                                ,nelisp-cc-fxir-native--push-form))
                     (depth (heap-read-u64 (+ env 96) 0))
-                    (limit (nl_eval_depth_limit env (+ depth 2)))
+                    (limit (if (< (+ depth 2) 100) 100 (nl_eval_depth_limit env (+ depth 2))))
                     (st (if (>= (+ depth 2) limit)
                             (nelisp_eval_call_stash_excessive_lisp_nesting env limit)
                           (seq (ptr-write-u64 (+ env 96) 0 (+ depth 2))
@@ -361,7 +423,18 @@ Answers (STMTS . RESULT-TEMP)."
                ;; call runs it (and its interpreter fallback) as the VM would.
                (if (= st -3)
                    (seq (nl_n4_finish_w 0 env 0 frame) (nc_call env site stk argc resw oslot))
-                 (m5_fx_call_words_done st env oslot resw frame 0)))
+                 ;; nc5: a plain success (`m5_fx_call_words_done' -> `nl_n4_finish_w'
+                 ;; -> `m5_fx_take' with the result already in RESW) pops the
+                 ;; record inline; a signal, a flagged record (debug-on-exit) or
+                 ;; no record keeps the helper.
+                 (if (if (= st -1)
+                         (if (/= frame 0)
+                             (if (/= (ptr-read-u64 resw 0) 0) (= (ptr-read-u8 frame 18) 0) 0)
+                           0)
+                       0)
+                     (let* ((fstate (heap-read-u64 env 176)))
+                       (seq (ptr-write-u64 fstate 0 (- (ptr-read-u64 fstate 0) 1)) 0))
+                   (m5_fx_call_words_done st env oslot resw frame 0))))
            (nc_call env site stk argc resw oslot))))))
 
 (defun nelisp-cc-fxir-native--call (n)
@@ -666,8 +739,8 @@ Answers (STMTS . RESULT-TEMP)."
           (append
            ;; Eager window (`--eager'): reserved before anything else runs.
            (when (and nelisp-cc-fxir-native--eager nelisp-cc-fxir-native--uses-window)
-             (list (cons t '(seq (setq mem (nl_root_frame env fsize))
-                                 (if (= mem 0) (setq st -4) (setq oslot (nl_root_reserve env)))))))
+             (list (cons t '(seq (setq mem (nc_enter env fsize))
+                                 (if (= mem 0) (setq st -4) (setq oslot (+ mem fbytes)))))))
            ;; &rest: the remaining arguments as a fresh list (`m5_fx_run_body').
            (when (>= rest 0)
              (list (cons nil `(if (> n ,rest)
@@ -691,9 +764,26 @@ Answers (STMTS . RESULT-TEMP)."
          (form
           `(defun ,(intern (format "nc_%d" id)) (code env out args nparams argw wout)
              ;; ENTRY-CHECK first: a decline (-3) happens before any effect.
-             (if (/= (m5_fx_entry_check (heap-read-u64 (+ (+ (nl_word_payload code) 8) 8) 0) env) 0) -3
+             ;; nc5: GNU's frame push -- nil (no lexical name to watch) answers
+             ;; without the call, and the main thread's root mark and release
+             ;; are the stack top itself (`nl_root_mark' / `nl_root_release').
+             (let* ((ec (heap-read-u64 (+ (+ (nl_word_payload code) 8) 8) 0)))
+             (if (if (= ec 3) 0
+                   ;; nc5: an unchanged generation (`m5_fx_entry_check''s second
+                   ;; test: slot K of a vector WORD at WORD + 2 + 8K) inline too.
+                   (if (if (= (logand ec 7) 6)
+                           (let* ((ecell (ptr-read-u64 (+ ec 2) 0)))
+                             (if (= (logand ecell 7) 6)
+                                 (= (ptr-read-u64 (+ ecell 2) 0) (ptr-read-u64 (+ ec 10) 0))
+                               0))
+                         0)
+                       0
+                     (/= (m5_fx_entry_check ec env) 0)))
+                 -3
                (let* ((base (+ (nl_word_payload code) 8))
-                      (mark (nl_root_mark env))
+                      (mark (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                                (heap-read-u64 (data-addr nl_rootstack_top) 0)
+                              (nl_root_mark env)))
                       (n (logand nparams 65535))
                       (mem 0) (oslot 0) (st 0) (nb 0)
                       ,@locals ,@temps)
@@ -704,10 +794,13 @@ Answers (STMTS . RESULT-TEMP)."
                                                (ptr-write-u64 wout 0 ,(cdr body)))))))
                   ;; One exit: bindings still held (a call failed) are undone.
                   (if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
-                  (nl_root_release env mark)
-                  (if (= st 0) -1 (if (= st -4) (wf_bytecode_root_exhausted) st))))))))
+                  (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                      (ptr-write-u64 (data-addr nl_rootstack_top) 0 mark)
+                    (nl_root_release env mark))
+                  (if (= st 0) -1 (if (= st -4) (wf_bytecode_root_exhausted) st)))))))))
     (ignore amax)
-    (cl-subst cbase 'cbase (cl-subst fsize 'fsize form))))
+    (cl-subst (logand (+ (* fsize 8) 31) -32) 'fbytes
+              (cl-subst cbase 'cbase (cl-subst fsize 'fsize form)))))
 
 (defun nelisp-cc-fxir-native--dispatch (ids lo hi)
   "Balanced dispatch tree over IDS (sorted list) index range LO..HI."
@@ -845,37 +938,45 @@ Answers (STMTS . RESULT-TEMP)."
     (defun nc_list_call (env sym fn stk argc resw oslot)
       (seq (ptr-write-u64 (+ resw 8) 0 fn)
            (m5_fx_call_list sym fn stk argc argc env resw (+ resw 16) oslot)))
-    ;; The guard of a direct call: the record the call site's cache holds
-    ;; (slots 3 and 4, filled by `m5_fx_site_rec'), when the symbol's live
-    ;; function cell is still that cached closure, the record is not retired
-    ;; and neither a worker nor the dynamic-binding mode runs (the conditions
-    ;; of `m5_fx_site_rec'); else 0.
-    (defun nc_site_rec (env site)
-      ;; nc4: the guard as GNU's Ffuncall / funcall_general reads it
-      ;; (eval.c: the symbol's function cell, a type test, the entry): the
-      ;; site is the code vector's call cache [SYMBOL ...] the fx compiler
-      ;; made (the install pass checked the code), so only word classes are
-      ;; tested; the cache's slots 3 and 4 are written record first
-      ;; (`m5_fx_funcall_site_fill'), so a cached closure equal to the live
-      ;; cell means slot 4 holds its record.  Words: vector slot K at
-      ;; WORD + 2 + 8K, a symbol's function cell at WORD + 18.
-      (if (= (logand site 7) 6)
-          (let* ((sym (ptr-read-u64 (+ site 2) 0)))
-            (if (if (= (logand sym 7) 6) (>= sym 4096) 0)
-                (let* ((cell (ptr-read-u64 (+ sym 18) 0)))
-                  (if (if (= cell 3) 0 (= cell (ptr-read-u64 (+ site 26) 0)))
-                      (let* ((rec (ptr-read-u64 (+ site 34) 0)))
-                        (if (if (= (logand rec 7) 6) (= (ptr-read-u64 (+ rec 58) 0) 3) 0)
-                            (if (= (heap-read-u64 env 168) 0)
-                                (if (= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0)
-                                    (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) rec
-                                      (if (= (nl_sb_worker_p env) 1) 0 rec))
-                                  0)
-                              0)
-                          0))
-                    0))
-              0))
-        0))
+    ;; nc5: GNU's frame push (bytecode.c:510-525) for an activation's window:
+    ;; the WORD frame of N slots (`nl_root_frame''s layout: the header, every
+    ;; slot nil) and right after it the view slot (`nl_root_reserve''s zeroed
+    ;; 32-byte entry), so the view slot is MEM + the frame's padded size and
+    ;; one store moves the top.  The main thread with no worker registered and
+    ;; its stack set up takes it inline; anything else is
+    ;; `nl_root_frame' then `nl_root_reserve' (`nc_enter_slow').  0: the
+    ;; region cannot hold both (the activation answers -4, root exhausted).
+    (defun nc_enter (env n)
+      (let* ((top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+             (fb (logand (+ (* n 8) 31) -32))
+             (next (+ top (+ 64 fb))))
+        (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                (if (= top 0) 0 (<= next (+ (data-addr nl_rootstack_region) 4194304)))
+              0)
+            (let* ((slot (+ top 32)) (end (+ slot (* n 8))) (view (+ slot fb)))
+              (seq
+               (ptr-write-u64 top 0 1464226381)
+               (ptr-write-u64 top 8 n)
+               (ptr-write-u64 top 16 0)
+               (ptr-write-u64 top 24 0)
+               (while (< slot end)
+                 (seq (ptr-write-u64 slot 0 3)
+                      (setq slot (+ slot 8))))
+               (ptr-write-u64 view 0 0)
+               (ptr-write-u64 view 8 0)
+               (ptr-write-u64 view 16 0)
+               (ptr-write-u64 view 24 0)
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+               (+ top 32)))
+          (nc_enter_slow env n fb))))
+    ;; A worker, an uninitialised stack or a full region: the general frame
+    ;; and slot; a view slot not adjacent to the frame (the region's scratch
+    ;; fallback) is refused, so the caller's MEM + FB is always the slot.
+    (defun nc_enter_slow (env n fb)
+      (let* ((mark (nl_root_mark env)) (mem (nl_root_frame env n)))
+        (if (= mem 0) 0
+          (if (= (nl_root_reserve env) (+ mem fb)) mem
+            (seq (nl_root_release env mark) 0)))))
     ;; The same with 0-3 arguments staged here (window MEM, 0: not reserved).
     (defun nc_call0 (env site mem oslot)
       (if (= mem 0) -4 (nc_call env site (+ mem 24) 0 mem oslot)))
@@ -1088,7 +1189,9 @@ Answers (STMTS . RESULT-TEMP)."
 (defconst nelisp-cc-fxir-native--fixed-boundaries
   '(nc_truthy_slow nc_call nc_call0 nc_call1 nc_call2 nc_call3 nc_arith nc_list_words nc_nthcdr
     nc_aref_fast nc_aset_fast nc_arith_slow nc_incdec_slow nc_run
-    nc_subr_call nc_site_rec
+    nc_subr_call
+    ;; nc5
+    nc_enter nc_enter_slow
     ;; nc3
     nc_desc_call nc_builtin_call nc_funcall nc_list_call nc_pred6 nc_mul_fast nc_rem_fast
     nc_equal_fast nc_memq_fast nc_assq_fast nc_nthcdr_fast nc_length_fast nc_globals

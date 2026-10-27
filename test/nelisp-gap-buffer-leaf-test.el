@@ -95,7 +95,8 @@ independent of the production decoder (GNU character.h STRING_CHAR)."
     nl_gb_insert_w nl_gb_overwrite_w nl_gb_insert_leaf nl_gb_insert_run nl_gb_bol nl_gb_eol
     nl_gb_forward_line nl_gb_fast nl_gb_leaf_run nl_gb_delete_core nl_gb_delete_text nl_gb_delete_run
     nl_gb_delete_char nl_gb_insert_char nl_gb_column nl_gb_record nl_gb_wprim nl_gb_wprim_more
-    nl_gb_bufsub_w nl_gb_slow_w nl_gb_prim_w nl_gb_wprim_w))
+    nl_gb_bufsub_w nl_gb_slow_w nl_gb_prim_w nl_gb_wprim_w
+    nl_gb_cont nl_gb_utf8_chars nl_gb_insert_file_done nl_gb_insert_file_read nl_gb_insert_file))
 
 (defun nbg--host-form (f)
   "The host Lisp form of the DSL defun F: raw memory operations are the model's."
@@ -720,6 +721,102 @@ character and byte counts of the record agree with the bytes."
       (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 3) (nbg--make-string-word "€")) 0) 0))
       (should (= (nbg--call 'nl_gb_wprim 78 (list b (nbg--fix 4) (nbg--make-string-word "ü")) 0) 3))
       (should (equal (nbg--text b) (append "aXYdü" nil))))))
+
+;; bufread: the file read straight into the gap.  The OS calls are the model's: a file is a Lisp string
+;; read in order through fake descriptors into the model memory.
+(defvar nbg--files nil "Alist FD -> (BYTES . POS).")
+(defmacro nbg--with-files (&rest body)
+  `(let ((nbg--files nil) (nbg--fd 100))
+     (cl-letf (((symbol-function 'wf_arg_ptr) (lambda (args n) (nbg--read-string-word (nth n args))))
+               ((symbol-function 'nl_bi_make_cpath) #'identity)
+               ((symbol-function 'nl_os_open_read)
+                (lambda (path) (if (file-readable-p path)
+                                   (let ((fd (cl-incf nbg--fd)))
+                                     (push (list fd (with-temp-buffer
+                                                      (set-buffer-multibyte nil)
+                                                      (insert-file-contents-literally path)
+                                                      (buffer-string))
+                                                 0)
+                                           nbg--files)
+                                     fd)
+                                 -2)))
+               ((symbol-function 'nl_os_close_handle) (lambda (_fd) 0))
+               ((symbol-function 'nl_os_read_file_handle)
+                (lambda (fd ptr len)
+                  (let* ((f (assq fd nbg--files)) (bytes (nth 1 f)) (pos (nth 2 f))
+                         (n (min len (- (length bytes) pos) 7)))  ; short reads: at most 7 bytes a call
+                    (dotimes (i n) (nbg--wr8 (+ ptr i) (aref bytes (+ pos i))))
+                    (setf (nth 2 f) (+ pos n))
+                    n))))
+       ,@body)))
+
+(defun nbg--oracle-utf8-chars (bytes)
+  "The character count of BYTES when it is well-formed UTF-8 (GNU's decoder leaves no raw-byte
+character and the text re-encodes to the same bytes), else -1.  The gap read is stricter than the
+decoder in two ways, declining to the general path: no surrogate and nothing above U+10FFFF."
+  (let ((s (decode-coding-string bytes 'utf-8-unix)))
+    (if (and (not (cl-some (lambda (c) (or (> c #x10FFFF) (<= #xD800 c #xDFFF))) s))
+             (equal (encode-coding-string s 'utf-8-unix) bytes))
+        (length s)
+      -1)))
+
+(ert-deftest nbg-utf8-validator-against-gnu-decoder ()
+  (nbg--with
+    (let ((cases (list "" "abc" "abcdefghijklmnopqrstuvwxyz0123456789" "é" "日本語" "\U0001F600x" "ÿ"
+                       "\xc3" "\xc3(" "\xe2\x82" "\xe2\x82\xac" "\xe0\x80\x80" "\xe0\x9f\xbf" "\xe0\xa0\x80"
+                       "\xed\xa0\x80" "\xed\x9f\xbf" "\xf0\x80\x80\x80" "\xf0\x8f\xbf\xbf" "\xf0\x90\x80\x80"
+                       "\xf4\x8f\xbf\xbf" "\xf4\x90\x80\x80" "\xf5\x80\x80\x80" "\xc0\x80" "\xc1\xbf" "\xc2\x80"
+                       "\x80" "\xbf" "\xff\xfe" "abcdefgh\xc3\xa9" "abcdefgh\xc3" "ab\xe2\x82\xac\xe2\x82")))
+      (dolist (c cases)
+        (let* ((bytes (if (multibyte-string-p c) (encode-coding-string c 'utf-8-unix) (string-to-unibyte c)))
+               (d (nbg--alloc (+ (length bytes) 16))))
+          (dotimes (i (length bytes)) (nbg--wr8 (+ d i) (aref bytes i)))
+          (should (equal (list c (nbg--call 'nl_gb_utf8_chars d 0 (length bytes)))
+                         (list c (nbg--oracle-utf8-chars bytes)))))))))
+
+(ert-deftest nbg-insert-file-into-the-gap ()
+  (let* ((dir (make-temp-file "nbgfile" t))
+         (files (list (cons "ascii" "hello\nworld\n") (cons "utf8" (encode-coding-string "aé€\U0001F600\n日本語" 'utf-8-unix))
+                      (cons "bad" (unibyte-string ?a ?b 255 254 ?c ?d)) (cons "bin" (string-to-unibyte (apply #'unibyte-string (number-sequence 0 255))))
+                      (cons "empty" "") (cons "long" (encode-coding-string (apply #'concat (make-list 40 "line é日 abcdefghij\n")) 'utf-8-unix)))))
+    (unwind-protect
+        (progn
+          (dolist (f files)
+            (with-temp-file (expand-file-name (car f) dir)
+              (set-buffer-multibyte nil) (insert (cdr f))))
+          (nbg--with
+            (nbg--with-files
+              (dolist (name '("ascii" "utf8" "bad" "bin" "empty" "long"))
+                (dolist (uni '(nil t))
+                  (dolist (lit '(nil t))
+                    (dolist (range '((0 . nil) (3 . nil) (2 . 9)))
+                      (let* ((bytes (cdr (assoc name files)))
+                             (path (expand-file-name name dir))
+                             (off (min (car range) (length bytes)))
+                             (stop (if (cdr range) (min (cdr range) (length bytes)) (length bytes)))
+                             (slice (substring bytes off stop))
+                             (b (nbg--new-buffer uni))
+                             (pre (if uni "XY" "Xé")))
+                        (nbg--insert b pre)
+                        (let* ((w (nbg--make-string-word path))
+                               (r (nbg--call 'nl_gb_wprim 81 (list b w (nbg--fix off) (nbg--fix (- stop off)) (if lit 7 3)) 0))
+                               (ascii (not (cl-some (lambda (c) (>= c 128)) slice)))
+                               (expect (cond (ascii (append slice nil))
+                                             (lit (if uni (append slice nil) :decline))
+                                             (uni :decline)
+                                             ((>= (nbg--oracle-utf8-chars slice) 0)
+                                              (append (decode-coding-string slice 'utf-8-unix) nil))
+                                             (t :decline))))
+                          (if (not (eq expect :decline))
+                              (progn (should (= r (nbg--fix (length expect))))
+                                     (should (equal (nbg--text b) (append (append pre nil) expect nil)))
+                                     (should (= (nbg--getslot b 'blen) (nbg--fix (+ (length pre) (length expect)))))
+                                     ;; the bytes are in place: a following insert and a read agree
+                                     (nbg--insert b "Z")
+                                     (should (equal (nbg--text b) (append (append pre nil) expect (list ?Z) nil))))
+                            (should (= r (nbg--fix -1)))
+                            (should (equal (nbg--text b) (append pre nil)))))))))))))
+        (delete-directory dir t))))
 
 (provide 'nelisp-gap-buffer-leaf-test)
 ;;; nelisp-gap-buffer-leaf-test.el ends here

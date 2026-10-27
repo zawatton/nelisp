@@ -14373,6 +14373,30 @@ stays where it was."
       (nelisp--gb-move-reference b gap)
       (setf (nelisp-buffer-pend b) (if (= pt (1+ gap)) nil pt)))
     nil))
+(defun nelisp--gb-insert-file-reference (b path off nbytes literal)
+  "Insert NBYTES bytes of the file PATH from byte OFF at the gap start of B (GNU fileio.c
+Finsert_file_contents reading into the gap); answer the number of characters, or -1 when nothing
+was inserted because the bytes need the general decoder.  LITERAL: the bytes undecoded (a
+multibyte buffer takes ASCII only here); else UTF-8 text, well-formed or ASCII only."
+  (let* ((bytes (nelisp--syscall-read-file path t)))
+    (if (not (stringp bytes)) -1
+      (let* ((total (length bytes)) (s (min off total)) (e (min (+ off nbytes) total))
+             (slice (substring bytes s e)) (ascii t) (i 0) (n (length slice)))
+        (while (< i n)
+          (when (>= (aref slice i) 128) (setq ascii nil))
+          (setq i (1+ i)))
+        (cond
+         (ascii (nelisp--gb-insert-reference b slice))
+         (literal (if (nelisp-buffer-unibyte b) (nelisp--gb-insert-reference b slice) -1))
+         ((nelisp-buffer-unibyte b) -1)
+         (t (let* ((text (decode-coding-string slice 'utf-8-unix)) (k 0) (ok t))
+              ;; a byte that is not well-formed UTF-8 decodes to a raw-byte character
+              (while (< k (length text))
+                (when (>= (aref text k) #x3FFF80) (setq ok nil))
+                (setq k (1+ k)))
+              (if (and ok (equal (encode-coding-string text 'utf-8-unix) slice))
+                  (nelisp--gb-insert-reference b text)
+                -1))))))))
 (unless (fboundp 'nelisp--gb-char)
   (fset 'nelisp--gb-char (symbol-function 'nelisp--gb-char-reference)))
 (unless (fboundp 'nelisp--gb-move)
@@ -14391,6 +14415,8 @@ stays where it was."
   (fset 'nelisp--gb-count-nl (symbol-function 'nelisp--gb-count-nl-reference)))
 (unless (fboundp 'nelisp--gb-overwrite)
   (fset 'nelisp--gb-overwrite (symbol-function 'nelisp--gb-overwrite-reference)))
+(unless (fboundp 'nelisp--gb-insert-file)
+  (fset 'nelisp--gb-insert-file (symbol-function 'nelisp--gb-insert-file-reference)))
 (defun nelisp--gb-count-lines-reference (b lo hi)
   "Number of lines between the 1-based positions LO and HI of B (HI at least LO): the newlines
 in between, plus one when the region does not end at a line start (`count-lines')."
@@ -14755,6 +14781,28 @@ tree and are grafted by `nelisp-buffer--tp-after-insert'."
         (when ovt
           (nelisp-ov--after-change b at 0 n)))))
   nil)
+
+(defun nelisp-insert-file (path off nbytes literal &optional buf)
+  "Insert NBYTES bytes of the file PATH from byte OFF at point in BUF, read straight into the gap
+(`nelisp--gb-insert-file'; no intermediate string).  Answers the number of characters inserted,
+or nil when nothing was inserted: the bytes need the general decoder, or BUF has overlays or text
+properties to maintain (`nelisp-insert' with a string does those).  The bookkeeping is that of
+`nelisp-insert'."
+  (let ((b (or buf nelisp-buffer--current (error "No NeLisp current buffer"))))
+    (when (nelisp-buffer-pend b)
+      (nelisp-buffer--settle b))
+    (if (or (nelisp-buffer-overlays b) (nelisp-buffer-text-properties b)) nil
+      (let ((at (1+ (nelisp-buffer-blen b)))
+            (n (nelisp--gb-insert-file b path off nbytes literal)))
+        (if (or (null n) (< n 0)) nil
+          (when (nelisp-buffer-narrow-end b)
+            (setf (nelisp-buffer-narrow-end b)
+                  (+ (nelisp-buffer-narrow-end b) n)))
+          (setf (nelisp-buffer-modified b) t)
+          (setf (nelisp-buffer-tick b) (1+ (nelisp-buffer-tick b)))
+          (when (nelisp-buffer-markers b)
+            (nelisp-buffer--shift-markers-on-insert b at n))
+          n)))))
 
 (defun nelisp-delete-region (start end &optional buf)
   "Delete the text between 1-based START and END (exclusive) in BUF."
@@ -20953,6 +21001,28 @@ write instead of ever touching a real buffer."
              (progn ,@body
                     (write-region (nelisp-buffer-string ,b) nil ,file))
            (nelisp-kill-buffer ,b))))))
+(defun nelisp--insert-file-contents-fast (filename beg end literal)
+  "The text of FILENAME between byte offsets BEG and END inserted at point, read straight into
+the buffer's gap (`nelisp-insert-file'); the (NAME CHARS) list `insert-file-contents' answers, or
+nil when the general path must run (not a regular file of known size, or text the gap read cannot
+account for).  The point stays where it was."
+  (let* ((full-name (expand-file-name filename))
+         (mode (and (fboundp 'nelisp--syscall-stat-field)
+                    (nelisp--syscall-stat-field full-name 24)))
+         (size (and (integerp mode) (>= mode 0)
+                    (= (logand mode #o170000) #o100000)
+                    (nelisp--syscall-stat-field full-name 48))))
+    ;; GNU reads a non-regular file, or a regular one whose st_size is 0 (/proc, /sys), until EOF
+    ;; (`read_non_regular'); the general path does that, so only a regular file of known size is
+    ;; read into the gap.
+    (when (and (integerp size) (> size 0))
+      (let* ((off (if beg (max 0 (min beg size)) 0))
+             (stop (if end (max off (min end size)) size))
+             (pos (nelisp-point nelisp--current-buffer))
+             (n (nelisp-insert-file full-name off (- stop off) literal nelisp--current-buffer)))
+        (when n
+          (nelisp-goto-char pos nelisp--current-buffer)
+          (list full-name n))))))
 (unless (fboundp 'insert-file-contents)
   (defun insert-file-contents (filename &optional visit beg end replace)
     ;; Real Emacs's `insert-file-contents' does NOT move point past the
@@ -20987,6 +21057,14 @@ write instead of ever touching a real buffer."
       (signal 'file-missing
               (list "Opening input file" "No such file or directory"
                     (expand-file-name filename))))
+    (or
+     ;; GNU fileio.c: read straight into the gap (`nelisp-insert-file'); the general decoder below
+     ;; runs when the bytes are not plain ASCII / well-formed UTF-8 text or REPLACE is set.
+     (and (not replace)
+          (nelisp--insert-file-contents-fast
+           filename beg end
+           (and (boundp 'coding-system-for-read)
+                (memq coding-system-for-read '(no-conversion binary)) t)))
     (let* ((literal (and (boundp 'coding-system-for-read)
                          (memq coding-system-for-read '(no-conversion binary))))
            (contents (or (if literal (nelisp--syscall-read-file filename t)
@@ -21007,7 +21085,7 @@ write instead of ever touching a real buffer."
       (when replace (erase-buffer))
       (nelisp-insert selected nelisp--current-buffer)
       (nelisp-goto-char pos nelisp--current-buffer)
-      (list full-name (if replace pos (length selected))))))
+      (list full-name (if replace pos (length selected)))))))
 ;; Literal reads must request raw bytes at the syscall boundary.  The
 ;; default syscall result is tagged as multibyte text; string-as-unibyte
 ;; interprets C0/C1 as internal byte8 escapes and cannot recover arbitrary
@@ -21029,15 +21107,17 @@ bootstrap implementation.
       ;; reader guessing which directory the call was made from.
       (signal 'file-missing (list "Opening input file" "No such file or directory"
                                   (expand-file-name filename))))
-    (let* ((bytes (or (nelisp--syscall-read-file filename t) ""))
-           (total (length bytes))
-           (b (if beg (max 0 (min beg total)) 0))
-           (e (if end (max b (min end total)) total))
-           (slice (substring bytes b e))
-           (pos (nelisp-point nelisp--current-buffer)))
-      (nelisp-insert slice nelisp--current-buffer)
-      (nelisp-goto-char pos nelisp--current-buffer)
-      (list (expand-file-name filename) (length slice)))))
+    (or
+     (nelisp--insert-file-contents-fast filename beg end t)
+     (let* ((bytes (or (nelisp--syscall-read-file filename t) ""))
+            (total (length bytes))
+            (b (if beg (max 0 (min beg total)) 0))
+            (e (if end (max b (min end total)) total))
+            (slice (substring bytes b e))
+            (pos (nelisp-point nelisp--current-buffer)))
+       (nelisp-insert slice nelisp--current-buffer)
+       (nelisp-goto-char pos nelisp--current-buffer)
+       (list (expand-file-name filename) (length slice))))))
 (unless (fboundp 'processp)
   (defun processp (process)
     (or (and (vectorp process) (> (length process) 0) (eq (aref process 0) 'process))
@@ -29747,7 +29827,7 @@ any other -- to find the final function binding and return it."
     (3 nelisp--symbol-position-op aset nelisp--native-pin-copy nelisp--native-unbox-reference
        nelisp--gb-delete nelisp--gb-substring nelisp--gb-count-nl nelisp--gb-overwrite nelisp--gb-count-lines)
     (4 nelisp--native-pin-copy-v2)
-    (5 nelisp--gb-find-char)
+    (5 nelisp--gb-find-char nelisp--gb-insert-file)
     (7 ptr-call))
   "Fixed argument counts shared by introspection and native reader dispatch.
 The build driver reads this literal as data without evaluating the prelude.")

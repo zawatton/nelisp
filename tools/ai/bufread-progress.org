@@ -1,0 +1,74 @@
+#+TITLE: bufread: insert-file-contents / call-process output read straight into the buffer gap
+
+* S1 Cause with evidence
+
+** S1.1 the string-then-copy path of insert-file-contents is identified and documented with the GNU model (fileio.c)
+cmd: grep -q "CAUSE" target/bufread/REPORT.md && grep -q "Finsert_file_contents" target/bufread/REPORT.md
+
+** S1.2 the four rows above v19 are measured on the bufstore build and recorded
+cmd: test -s target/bufread/s1/baseline.txt
+
+** S1.3 end-to-end: the report names the fix design (new native, clause, Lisp reference)
+cmd: grep -q "DESIGN" target/bufread/REPORT.md
+
+* S2 Fix with red/green checks and a GNU-parity corpus
+
+** S2.1 insert-file-contents / call-process GNU-parity corpus equals GNU on the new binary except cases that already differed on the bufstore build
+#+TIMEOUT: 600
+cmd: BUFREAD_BIN=${BUFREAD_BIN:-target/bufread-build/dynamic/nelisp-dynamic} sh target/bufread/check-parity.sh
+
+** S2.2 red/green: 1 MB insert-file-contents faster than the bufstore build on the new binary, and the new native is exercised
+#+NOTE: needs the bufstore build (default ../../../bufstore-20261104/target/bufstore-build/dynamic/nelisp-dynamic, override with BUFREAD_BASE) as the red control; if lane build outputs are pruned set BUFREAD_BASE or this goes red while the integrated build is fine
+#+TIMEOUT: 300
+cmd: BUFREAD_BIN=${BUFREAD_BIN:-target/bufread-build/dynamic/nelisp-dynamic} sh target/bufread/check-redgreen.sh
+
+** S2.3 buffer corpora (bufstore/bufedit/bufnative) pass on the new binary
+#+TIMEOUT: 600
+cmd: BUFREAD_BIN=${BUFREAD_BIN:-target/bufread-build/dynamic/nelisp-dynamic} sh target/bufread/check-corpora.sh
+
+** S2.4 differential test: native equals its Lisp reference (356 cases), red on the bufstore build
+#+NOTE: needs the bufstore build (default ../../../bufstore-20261104/target/bufstore-build/dynamic/nelisp-dynamic, override with BUFREAD_BASE) as the red control; if lane build outputs are pruned set BUFREAD_BASE or this goes red while the integrated build is fine
+#+TIMEOUT: 300
+cmd: BUFREAD_BIN=${BUFREAD_BIN:-target/bufread-build/dynamic/nelisp-dynamic} sh target/bufread/check-nv.sh
+
+** S2.5 host ERT of the production bodies (validator against GNU's decoder, whole-file read) passes, red on a mutated validator
+#+TIMEOUT: 300
+cmd: sh target/bufread/check-host.sh
+
+** S2.6 native inventory entry and Lisp reference exist; lane ledger binary check passes
+cmd: grep -q "^nelisp--gb-insert-file	" tools/nelisp-native-inventory.txt && grep -q "nelisp--gb-insert-file-reference" scripts/nelisp-stdlib-prelude.el && python3 tools/ai/lane-ledger-bincheck.py tools/ai/bufread-progress.org
+
+** S2.7 end-to-end: patch applies to seed + HEAD
+#+TIMEOUT: 120
+cmd: sh target/bufread/check-patch.sh
+
+* S3 One integrated build passing fixtures
+
+** S3.1 build finished rc=0
+cmd: grep -q "BUILD rc=0" target/bufread-build/dynamic/build.log
+
+** S3.2 fixtures weak24 gnu56 afrt24/25 buffer21
+cmd: grep -q "buffer 21/21 PASS" target/bufread/fixtures.log && grep -q "weak 24/24" target/bufread/fixtures.log && grep -q "GNU 56/56" target/bufread/fixtures.log
+
+** S3.3 gnu-speed-win-check passes
+cmd: grep -q "rc=0" target/bufread/winspeed.rc
+
+** S3.4 prelink closure inside the F1 policy (at most 384 records)
+cmd: python3 -c "import json,glob,sys;j=json.load(open(glob.glob('target/bufread-build/dynamic/src/target/standalone-compiler-f1-*/prelink-closure.json')[0]));sys.exit(not(j['status']=='PRELINK_F1_BOUNDARY_PASS' and len(j['records'])<=384))"
+
+** S3.5 end-to-end: fixtures report says no regression
+cmd: grep -q '"regression": false' target/bufread/fixtures/report.json
+
+* S4 Paired timing vs bufstore build, v19 and GNU
+
+** S4.1 the four target rows at or below their v19 ratio
+cmd: sh target/bufread/check-target-rows.sh
+
+** S4.2 no regfix or bufstore table row worse than the bufstore build by more than 3 percent
+cmd: sh target/bufread/check-family.sh
+
+** S4.3 regression rows reg-sum-bc and r3-mix not slower than the bufstore build by more than 3 percent
+cmd: sh target/bufread/check-regrows.sh
+
+** S4.4 end-to-end: REPORT.md has the final table
+cmd: grep -q "FINAL TABLE" target/bufread/REPORT.md

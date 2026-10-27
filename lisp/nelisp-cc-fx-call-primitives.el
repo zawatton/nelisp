@@ -1035,6 +1035,89 @@
                                     0)
                                 0)
                             (nl_gb_wprim_more id args r h len argc x y fx fy)))))))))))))
+    ;; bufread: insert-file-contents reads straight into the gap (GNU fileio.c Finsert_file_contents:
+    ;; emacs_read into BYTE_POS_ADDR (PT_BYTE) after make_gap, then the decoder runs on the gap in
+    ;; place, decode_coding_gap).  1 when the byte at physical Q of D is a continuation byte.
+    (defun nl_gb_cont (d q) (if (= (logand (ptr-read-u8 d q) 192) 128) 1 0))
+    ;; The number of characters of the bytes at physical [LO, HI) of D when they are well-formed
+    ;; UTF-8 (shortest form, no surrogates, at most U+10FFFF; ASCII eight bytes per load), else -1.
+    ;; Well-formed UTF-8 is its own internal encoding, so no byte moves.
+    (defun nl_gb_utf8_chars (d lo hi)
+      (let* ((p lo) (n 0) (bad 0))
+        (seq
+         (while (if (= bad 0) (< p hi) 0)
+           (if (if (<= (+ p 8) hi) (= (logand (ptr-read-u64 d p) -9187201950435737472) 0) 0)
+               (seq (setq p (+ p 8)) (setq n (+ n 8)))
+             (let* ((c (ptr-read-u8 d p)))
+               (if (< c 128) (seq (setq p (+ p 1)) (setq n (+ n 1)))
+                 (let* ((k (if (< c 194) 0 (if (< c 224) 1 (if (< c 240) 2 (if (< c 245) 3 0))))))
+                   (if (= k 0) (setq bad 1)
+                     (if (> (+ p k) (- hi 1)) (setq bad 1)
+                       (let* ((b1 (ptr-read-u8 d (+ p 1))))
+                         (if (= (nl_gb_cont d (+ p 1)) 0) (setq bad 1)
+                           (if (if (= c 224) (< b1 160)
+                                 (if (= c 237) (>= b1 160)
+                                   (if (= c 240) (< b1 144) (if (= c 244) (>= b1 144) 0))))
+                               (setq bad 1)
+                             (if (if (>= k 2) (= (nl_gb_cont d (+ p 2)) 0) 0) (setq bad 1)
+                               (if (if (>= k 3) (= (nl_gb_cont d (+ p 3)) 0) 0) (setq bad 1)
+                                 (seq (setq p (+ (+ p k) 1)) (setq n (+ n 1)))))))))))))))
+         (if (= bad 0) n -1))))
+    ;; The tail of `nl_gb_insert_file': GOT bytes (-1: the read failed) were read at the gap start
+    ;; GB of the store data D, OFF of them to be skipped (the BEG offset), M = GOT - OFF being the
+    ;; text.  Count its characters under the representation rules (LIT non-nil: the bytes
+    ;; undecoded; else UTF-8 text), then account for them exactly as `nl_gb_insert_w' does for a
+    ;; string.  The fixnum word of the character count, or the fixnum word -1 (nothing inserted:
+    ;; the Lisp route decodes it).
+    (defun nl_gb_insert_file_done (r d gb off got lit)
+      (if (< got 0) -3
+        (let* ((m (if (> got off) (- got off) 0)))
+          (seq
+           (if (> off 0) (if (> m 0) (nl_gb_copy d gb (+ gb off) m) 0) 0)
+           (let* ((uni (if (= (ptr-read-u64 r 32) 3) 0 1))
+                  (n (if (= (nl_gb_ascii_p d gb (+ gb m)) 1) m
+                       (if (/= lit 3) (if (= uni 1) m -1)
+                         (if (= uni 1) -1 (nl_gb_utf8_chars d gb (+ gb m)))))))
+             (if (< n 0) -3
+               (let* ((blen (sar (ptr-read-u64 r 112) 2)))
+                 (seq (wf_dirty)
+                      (if (= uni 1) 0 (if (< n m) (ptr-write-u64 r 136 7) 0))
+                      (nl_gb_cache_ins r blen n m)
+                      (ptr-write-u64 r 112 (+ (ptr-read-u64 r 112) (shl n 2)))
+                      (ptr-write-u64 r 120 (+ (ptr-read-u64 r 120) (shl n 2)))
+                      (ptr-write-u64 r 144 (+ (ptr-read-u64 r 144) (shl m 2)))
+                      (ptr-write-u64 r 152 (+ (ptr-read-u64 r 152) (shl m 2)))
+                      (+ (shl n 2) 1)))))))))
+    ;; Open the file, read OFF + NB bytes into the gap of the store H of record R (made large
+    ;; enough by the caller), close it, and account for the text.
+    (defun nl_gb_insert_file_read (args r h off nb lit)
+      (let* ((d (ptr-read-u64 h 24)) (gb (sar (ptr-read-u64 r 144) 2))
+             (fd (nl_os_open_read (nl_bi_make_cpath (wf_arg_ptr args 1))))
+             (want (+ off nb)) (got 0) (stop 0))
+        (if (< fd 0) -3
+          (seq
+           (while (if (= stop 0) (< got want) 0)
+             (let* ((k (nl_os_read_file_handle fd (+ (+ d gb) got) (- want got))))
+               (if (> k 0) (setq got (+ got k))
+                 (seq (setq stop 1) (if (< k 0) (setq got -1) 0)))))
+           (nl_os_close_handle fd)
+           (nl_gb_insert_file_done r d gb off got lit)))))
+    ;; (nelisp--gb-insert-file B PATH OFF NBYTES LITERAL): the NBYTES bytes of the file PATH from
+    ;; byte OFF, read into the gap of B and counted as characters; see `nl_gb_insert_file_done'.  0
+    ;; for an argument shape or state the Lisp reference owns.
+    (defun nl_gb_insert_file (args r)
+      (let* ((pw (nl_gb_strw (wf_arg_word args 1))) (beg (wf_arg_word args 2))
+             (nbw (wf_arg_word args 3)) (lit (wf_arg_word args 4)))
+        (if (/= (logand pw 7) 4) 0
+          (if (/= (logand beg 3) 1) 0
+            (if (/= (logand nbw 3) 1) 0
+              (let* ((off (sar beg 2)) (nb (sar nbw 2)))
+                (if (< off 0) 0
+                  (if (< nb 0) 0
+                    (if (= (nl_gb_grow r (+ off nb)) 0) 0
+                      (let* ((h2 (nl_gb_ok r)))
+                        (if (= h2 0) 0
+                          (nl_gb_insert_file_read args r h2 off nb lit))))))))))))
     (defun nl_gb_wprim_more (id args r h len argc x y fx fy)
       (let* ((d (ptr-read-u64 h 24)))
         (if (= id 76)
@@ -1110,7 +1193,7 @@
                               0)
                           0)
                       0)
-                  0)))))))
+                  (if (= id 81) (if (= argc 5) (nl_gb_insert_file args r) 0) 0))))))))
     ;; The reference route of the ids 50-60 and 70-78: the Lisp reference defun of the prelude on ARGS.
     (defun nl_gb_slow_w (id args env)
       (let* ((buf (alloc-bytes 72 8)))
@@ -1195,8 +1278,11 @@
               (if (= id 79)
                 (seq (ptr-write-u64 (+ buf 0) 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8389772277103551079) (ptr-write-u64 (+ buf 16) 0 8227358973757058093) (ptr-write-u64 (+ buf 24) 0 7305804402515076709)
                  (nl_buf_delegate args env buf 32))
+              (if (= id 81)
+                (seq (ptr-write-u64 (+ buf 0) 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 8243121611019739751) (ptr-write-u64 (+ buf 16) 0 8227343610574941556) (ptr-write-u64 (+ buf 24) 0 7305804402515076709)
+                 (nl_buf_delegate args env buf 32))
               (seq (ptr-write-u64 (+ buf 0) 0 3255381746650998126) (ptr-write-u64 (+ buf 8) 0 7887329548070380135) (ptr-write-u64 (+ buf 16) 0 7310016635638787438) (ptr-write-u64 (+ buf 24) 0 6644590)
-                 (nl_buf_delegate args env buf 27)))))))))))))))))))))))))))))))
+                 (nl_buf_delegate args env buf 27))))))))))))))))))))))))))))))))
     ;; The leaf bodies as builtins (ids 50-61), ARGS a list of any length.
     (defun nl_gb_prim_w (id args env)
       (let* ((argc (m5_list_len args 0)) (stk (alloc-bytes (+ 8 (* argc 8)) 8)) (res (alloc-bytes 8 8)) (i 0))
