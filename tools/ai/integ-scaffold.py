@@ -10,6 +10,13 @@ rows.txt,drv}} to target/integ-NEW/ and rewrites every version reference:
   (integ-PREV, label PREVLABEL) becomes integ-BASE (BASELABEL), and BASELABEL
   becomes the new label;
 - the build.sh header line is replaced by --note;
+- chain.sh gets the two post-build checks (add_gates): tools/ai/native-row-census.sh
+  on the integrated source tree right after the build, a hard gate before the
+  fixtures/accept step (a stale harvested native row stops the chain), and
+  tools/ai/matrix-layout-check.py after agg.py (report only: LAYOUT vs WORK for
+  every matrix row at or above the 1.03 new/old ratio);
+- matrix/agg.py prints the CPU the matrix ran on (MCPU, as chain.sh sets it)
+  instead of a hard-coded number;
 - with --lanes, accept/run.sh meters exactly those lane worktrees, after
   lane-ledger-bincheck.py has checked that their ledgers take the binary from
   the environment; each lane's ledger gets <LANE>_BIN (e.g. NC4_BIN) set to
@@ -84,6 +91,10 @@ def main():
             # match on digits, not word boundaries.
             s = re.sub(rf'(?<![0-9A-Za-z])({prev_label}|{base_label})(?!\d)',
                        lambda k: base_label if k.group(1) == prev_label else a.label, s)
+        if f == 'chain.sh':
+            s = add_gates(s)
+        if f == 'matrix/agg.py':
+            s = fix_agg_cpu(s, open(f'{dst}/chain.sh').read() if os.path.exists(f'{dst}/chain.sh') else '')
         if f == 'build.sh':
             s = re.sub(r'^# v\d+:.*$', f'# {a.label}: {a.note}', s, count=1, flags=re.M)
         if f == 'accept/run.sh':
@@ -98,6 +109,43 @@ def main():
         if f.endswith(TEXT):
             refs = sorted(set(re.findall(r'integ-\d+', open(f'{dst}/{f}').read())))
             print(f'  {f}: {" ".join(refs) or "-"}')
+
+
+GATE_MARK = 'native-row-census'
+CENSUS = (
+    'RT=$PWD\n'
+    '( ulimit -v 8388608; bash tools/ai/native-row-census.sh . $B ) > target/$N/native-row-census.log 2>&1\n'
+    'rc=$?; echo "== native-row-census rc=$rc: $(tail -1 target/$N/native-row-census.log)"\n'
+    '[ $rc = 0 ] || { grep -E "^(STALE|DUP-)" target/$N/native-row-census.log | head -20; exit 1; }\n')
+LAYOUT = (
+    '\ncd $RT && ( ulimit -v 8388608; timeout 2400 python3 tools/ai/matrix-layout-check.py target/$N '
+    '> target/$N/matrix/layout-check.log 2>&1; echo "== layout-check (report only) rc=$?"; '
+    'tail -14 target/$N/matrix/layout-check.log | cut -c1-160 )\n')
+
+
+def add_gates(s):
+    """chain.sh: native-row-census as a hard gate after the build, matrix-layout-check after agg.py."""
+    if GATE_MARK in s:
+        return s
+    m = re.search(r'^B=\S+; \[ -x \$B \] \|\| exit 1\n', s, flags=re.M)
+    if not m or 'python3 agg.py' not in s:
+        sys.exit('chain.sh: build check line or agg.py step not found; cannot add the gates')
+    s = s[:m.end()] + CENSUS + s[m.end():]
+    # agg.py reads MCPU for its header: give it the value runall.py ran with.
+    mc = re.search(r'MCPU=(\d+) python3 runall\.py', s)
+    if mc:
+        s = re.sub(r'(?<![=\w])python3 agg\.py', f'MCPU={mc.group(1)} python3 agg.py', s, count=1)
+    return s.rstrip('\n') + '\n' + LAYOUT.lstrip('\n')
+
+
+def fix_agg_cpu(s, chain):
+    """agg.py header: the CPU of the matrix run is MCPU (from chain.sh), not a fixed 11."""
+    m = re.search(r'MCPU=(\d+) python3 runall\.py', chain)
+    default = m.group(1) if m else '12'
+    s = re.sub(r'CPU \d+\.', "CPU {os.environ.get('MCPU', '%s')}." % default, s, count=1)
+    if "{os.environ.get('MCPU'" in s:
+        s = re.sub(r'print\((f?)"# MATRIX', 'print(f"# MATRIX', s, count=1)
+    return s
 
 
 def rewrite_lanes(s, lanes):
