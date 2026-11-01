@@ -58,84 +58,10 @@ Slots:
   (cursor-char  0   :type integer)
   (cursor-byte  0   :type integer))
 
-(when (fboundp 'nelisp--write-stdout-bytes)
-  (defun nelisp-text-buffer--slot (obj key)
-    "Standalone alist slot lookup for OBJ and KEY."
-    (cdr (assoc key (cdr obj))))
-
-  (defun nelisp-text-buffer--set-slot (obj key value)
-    "Standalone alist slot update for OBJ, KEY, and VALUE."
-    (let ((cell (assoc key (cdr obj))))
-      (if cell
-          (setcdr cell value)
-        (setcdr obj (cons (cons key value) (cdr obj))))
-      value))
-
-  (defun nelisp-text-buffer-p (obj)
-    "Standalone predicate for `nelisp-text-buffer'."
-    (and (consp obj) (eq (car obj) 'nelisp-text-buffer)))
-
-  (defun nelisp-text-buffer--make-raw (&rest args)
-    "Standalone fallback constructor for `nelisp-text-buffer'.
-The minimal `cl-defstruct' macro supplies accessors, but the generated
-keyword constructor is not reliable on the current standalone-reader REPL
-path."
-    (let ((alist nil)
-          (cur args))
-      (while cur
-        (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
-        (setq cur (cdr (cdr cur))))
-      (cons 'nelisp-text-buffer alist)))
-
-  (defun nelisp-text-buffer-bytes (obj)
-    (nelisp-text-buffer--slot obj :bytes))
-  (defun nelisp-text-buffer-bytes--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :bytes value))
-  (defun nelisp-text-buffer-gap-start (obj)
-    (nelisp-text-buffer--slot obj :gap-start))
-  (defun nelisp-text-buffer-gap-start--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :gap-start value))
-  (defun nelisp-text-buffer-gap-end (obj)
-    (nelisp-text-buffer--slot obj :gap-end))
-  (defun nelisp-text-buffer-gap-end--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :gap-end value))
-  (defun nelisp-text-buffer-char-count (obj)
-    (nelisp-text-buffer--slot obj :char-count))
-  (defun nelisp-text-buffer-char-count--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :char-count value))
-  (defun nelisp-text-buffer-byte-count (obj)
-    (nelisp-text-buffer--slot obj :byte-count))
-  (defun nelisp-text-buffer-byte-count--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :byte-count value))
-  (defun nelisp-text-buffer-multibyte-p (obj)
-    (nelisp-text-buffer--slot obj :multibyte-p))
-  (defun nelisp-text-buffer-multibyte-p--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :multibyte-p value))
-  (defun nelisp-text-buffer-cursor-char (obj)
-    (nelisp-text-buffer--slot obj :cursor-char))
-  (defun nelisp-text-buffer-cursor-char--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :cursor-char value))
-  (defun nelisp-text-buffer-cursor-byte (obj)
-    (nelisp-text-buffer--slot obj :cursor-byte))
-  (defun nelisp-text-buffer-cursor-byte--setter (obj value)
-    (nelisp-text-buffer--set-slot obj :cursor-byte value))
-
-  (put 'nelisp-text-buffer-bytes 'cl-struct-setter
-       'nelisp-text-buffer-bytes--setter)
-  (put 'nelisp-text-buffer-gap-start 'cl-struct-setter
-       'nelisp-text-buffer-gap-start--setter)
-  (put 'nelisp-text-buffer-gap-end 'cl-struct-setter
-       'nelisp-text-buffer-gap-end--setter)
-  (put 'nelisp-text-buffer-char-count 'cl-struct-setter
-       'nelisp-text-buffer-char-count--setter)
-  (put 'nelisp-text-buffer-byte-count 'cl-struct-setter
-       'nelisp-text-buffer-byte-count--setter)
-  (put 'nelisp-text-buffer-multibyte-p 'cl-struct-setter
-       'nelisp-text-buffer-multibyte-p--setter)
-  (put 'nelisp-text-buffer-cursor-char 'cl-struct-setter
-       'nelisp-text-buffer-cursor-char--setter)
-  (put 'nelisp-text-buffer-cursor-byte 'cl-struct-setter
-       'nelisp-text-buffer-cursor-byte--setter))
+;; Standalone NeLisp uses the same `cl-defstruct' records as host Emacs.
+;; Other files are byte-compiled on host Emacs and their .elc inlines the
+;; record accessors (`aref'), so an alist stand-in object would fail there
+;; with `wrong-type-argument arrayp'.
 
 (unless (fboundp 'nelisp-text-buffer-bytes--setter)
   (defun nelisp-text-buffer-bytes--setter (obj value)
@@ -443,17 +369,7 @@ no initial content the buffer defaults to multibyte (UTF-8)."
          (gap-len nelisp-text-buffer--initial-gap)
          (total (+ init-byte-count gap-len))
          (bytes (make-string total 0))
-         (tb (if (nelisp-text-buffer--standalone-p)
-                 (list 'nelisp-text-buffer
-                       (cons :bytes bytes)
-                       (cons :gap-start init-byte-count)
-                       (cons :gap-end (+ init-byte-count gap-len))
-                       (cons :char-count init-char-count)
-                       (cons :byte-count init-byte-count)
-                       (cons :multibyte-p multibyte)
-                       (cons :cursor-char init-char-count)
-                       (cons :cursor-byte init-byte-count))
-               (nelisp-text-buffer--make-raw
+         (tb (nelisp-text-buffer--make-raw
                 :bytes bytes
                 :gap-start init-byte-count
                 :gap-end (+ init-byte-count gap-len)
@@ -461,7 +377,7 @@ no initial content the buffer defaults to multibyte (UTF-8)."
                 :byte-count init-byte-count
                 :multibyte-p multibyte
                 :cursor-char init-char-count
-                :cursor-byte init-byte-count))))
+                :cursor-byte init-byte-count)))
     ;; copy encoded into bytes [0..init-byte-count)
     (when (> init-byte-count 0)
       (let ((i 0))

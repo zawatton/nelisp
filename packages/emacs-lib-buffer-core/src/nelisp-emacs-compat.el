@@ -114,87 +114,10 @@ Slots:
   ;; everything built on markers tracking edits.
   (markers      nil))
 
-(when (fboundp 'nelisp--write-stdout-bytes)
-  (defun nelisp-ec-buffer--slot (obj key)
-    "Standalone alist slot lookup for OBJ and KEY."
-    (cdr (assoc key (cdr obj))))
-
-  (defun nelisp-ec-buffer--set-slot (obj key value)
-    "Standalone alist slot update for OBJ, KEY, and VALUE."
-    (let ((cell (assoc key (cdr obj))))
-      (if cell
-          (setcdr cell value)
-        (setcdr obj (cons (cons key value) (cdr obj))))
-      value))
-
-  (defun nelisp-ec-buffer-p (obj)
-    "Standalone predicate for `nelisp-ec-buffer'."
-    (and (consp obj) (eq (car obj) 'nelisp-ec-buffer)))
-
-  (defun nelisp-ec-buffer--make-raw (&rest args)
-    "Standalone fallback constructor for `nelisp-ec-buffer'."
-    (let ((alist nil)
-          (cur args))
-      (while cur
-        (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
-        (setq cur (cdr (cdr cur))))
-      (cons 'nelisp-ec-buffer alist)))
-
-  (defun nelisp-ec-buffer-name (obj)
-    (nelisp-ec-buffer--slot obj :name))
-  (defun nelisp-ec-buffer-name--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :name value))
-  (defun nelisp-ec-buffer-text (obj)
-    (nelisp-ec-buffer--slot obj :text))
-  (defun nelisp-ec-buffer-text--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :text value))
-  (defun nelisp-ec-buffer-point (obj)
-    (nelisp-ec-buffer--slot obj :point))
-  (defun nelisp-ec-buffer-point--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :point value))
-  (defun nelisp-ec-buffer-narrow-start (obj)
-    (nelisp-ec-buffer--slot obj :narrow-start))
-  (defun nelisp-ec-buffer-narrow-start--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :narrow-start value))
-  (defun nelisp-ec-buffer-narrow-end (obj)
-    (nelisp-ec-buffer--slot obj :narrow-end))
-  (defun nelisp-ec-buffer-narrow-end--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :narrow-end value))
-  (defun nelisp-ec-buffer-modified-p (obj)
-    (nelisp-ec-buffer--slot obj :modified-p))
-  (defun nelisp-ec-buffer-modified-p--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :modified-p value))
-  (defun nelisp-ec-buffer-text-tick (obj)
-    (nelisp-ec-buffer--slot obj :text-tick))
-  (defun nelisp-ec-buffer-text-tick--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :text-tick value))
-  (defun nelisp-ec-buffer-killed-p (obj)
-    (nelisp-ec-buffer--slot obj :killed-p))
-  (defun nelisp-ec-buffer-killed-p--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :killed-p value))
-  (defun nelisp-ec-buffer-markers (obj)
-    (nelisp-ec-buffer--slot obj :markers))
-  (defun nelisp-ec-buffer-markers--setter (obj value)
-    (nelisp-ec-buffer--set-slot obj :markers value))
-
-  (put 'nelisp-ec-buffer-name 'cl-struct-setter
-       'nelisp-ec-buffer-name--setter)
-  (put 'nelisp-ec-buffer-text 'cl-struct-setter
-       'nelisp-ec-buffer-text--setter)
-  (put 'nelisp-ec-buffer-point 'cl-struct-setter
-       'nelisp-ec-buffer-point--setter)
-  (put 'nelisp-ec-buffer-narrow-start 'cl-struct-setter
-       'nelisp-ec-buffer-narrow-start--setter)
-  (put 'nelisp-ec-buffer-narrow-end 'cl-struct-setter
-       'nelisp-ec-buffer-narrow-end--setter)
-  (put 'nelisp-ec-buffer-modified-p 'cl-struct-setter
-       'nelisp-ec-buffer-modified-p--setter)
-  (put 'nelisp-ec-buffer-text-tick 'cl-struct-setter
-       'nelisp-ec-buffer-text-tick--setter)
-  (put 'nelisp-ec-buffer-killed-p 'cl-struct-setter
-       'nelisp-ec-buffer-killed-p--setter)
-  (put 'nelisp-ec-buffer-markers 'cl-struct-setter
-       'nelisp-ec-buffer-markers--setter))
+;; Standalone NeLisp uses the same `cl-defstruct' records as host Emacs.
+;; Other files are byte-compiled on host Emacs and their .elc inlines the
+;; record accessors (`aref'), so an alist stand-in object would fail there
+;; with `wrong-type-argument arrayp'.
 
 (unless (fboundp 'nelisp-ec-buffer-name--setter)
   (defun nelisp-ec-buffer-name--setter (obj value)
@@ -240,51 +163,6 @@ free for the API surface; access slots only via the `--' accessors."
   (buffer   nil)
   (insertion-type nil))
 
-(when (fboundp 'nelisp--write-stdout-bytes)
-  (defun nelisp-ec-marker-p (obj)
-    "Standalone predicate for `nelisp-ec-marker'."
-    (and (consp obj) (eq (car obj) 'nelisp-ec-marker)))
-
-  (defun nelisp-ec-marker--make-raw (&rest args)
-    "Standalone fallback constructor for `nelisp-ec-marker'."
-    (let ((alist nil)
-          (cur args))
-      (while cur
-        (setq alist (cons (cons (car cur) (car (cdr cur))) alist))
-        (setq cur (cdr (cdr cur))))
-      (cons 'nelisp-ec-marker alist)))
-
-  (defun nelisp-ec-marker--position (obj)
-    (cdr (assoc :position (cdr obj))))
-  (defun nelisp-ec-marker--position--setter (obj value)
-    (let ((cell (assoc :position (cdr obj))))
-      (if cell
-          (setcdr cell value)
-        (setcdr obj (cons (cons :position value) (cdr obj))))
-      value))
-  (defun nelisp-ec-marker--buffer (obj)
-    (cdr (assoc :buffer (cdr obj))))
-  (defun nelisp-ec-marker--buffer--setter (obj value)
-    (let ((cell (assoc :buffer (cdr obj))))
-      (if cell
-          (setcdr cell value)
-        (setcdr obj (cons (cons :buffer value) (cdr obj))))
-      value))
-  (defun nelisp-ec-marker--insertion-type (obj)
-    (cdr (assoc :insertion-type (cdr obj))))
-  (defun nelisp-ec-marker--insertion-type--setter (obj value)
-    (let ((cell (assoc :insertion-type (cdr obj))))
-      (if cell
-          (setcdr cell value)
-        (setcdr obj (cons (cons :insertion-type value) (cdr obj))))
-      value))
-
-  (put 'nelisp-ec-marker--position 'cl-struct-setter
-       'nelisp-ec-marker--position--setter)
-  (put 'nelisp-ec-marker--buffer 'cl-struct-setter
-       'nelisp-ec-marker--buffer--setter)
-  (put 'nelisp-ec-marker--insertion-type 'cl-struct-setter
-       'nelisp-ec-marker--insertion-type--setter))
 
 (unless (fboundp 'nelisp-ec-marker--position--setter)
   (defun nelisp-ec-marker--position--setter (obj value)
@@ -457,17 +335,7 @@ The new buffer is empty, has POINT = 1, and is registered in
     (signal 'wrong-type-argument (list 'stringp name)))
   (let* ((unique (nelisp-ec--unique-name name))
          (tb (make-text-buffer))
-         (buf (if (fboundp 'nelisp--write-stdout-bytes)
-                  (list 'nelisp-ec-buffer
-                        (cons :name unique)
-                        (cons :text tb)
-                        (cons :point 1)
-                        (cons :narrow-start nil)
-                        (cons :narrow-end nil)
-                        (cons :modified-p nil)
-                        (cons :text-tick 0)
-                        (cons :killed-p nil))
-                (nelisp-ec-buffer--make-raw
+         (buf (nelisp-ec-buffer--make-raw
                  :name unique
                  :text tb
                  :point 1
@@ -475,7 +343,7 @@ The new buffer is empty, has POINT = 1, and is registered in
                  :narrow-end nil
                  :modified-p nil
                  :text-tick 0
-                 :killed-p nil))))
+                 :killed-p nil)))
     (setq nelisp-ec--buffers (cons (cons unique buf) nelisp-ec--buffers))
     (when (fboundp 'emacs-buffer--inherit-new-buffer)
       (condition-case nil
@@ -972,13 +840,8 @@ clamped to the new range.  Returns nil."
 ;;;###autoload
 (defun nelisp-ec-make-marker ()
   "Return a fresh marker that does not point anywhere."
-  (if (fboundp 'nelisp--write-stdout-bytes)
-      (list 'nelisp-ec-marker
-            (cons :position nil)
-            (cons :buffer nil)
-            (cons :insertion-type nil))
-    (nelisp-ec-marker--make-raw :position nil :buffer nil
-                                :insertion-type nil)))
+  (nelisp-ec-marker--make-raw :position nil :buffer nil
+                              :insertion-type nil))
 
 ;;;###autoload
 (defun nelisp-ec--marker-register (marker buf)
