@@ -45,7 +45,7 @@
 (defvar nl-typecheck--occ nil "Hash: callee -> occurrences already reported.")
 (defvar nl-typecheck--summary nil "Summary entries, reversed.")
 (defvar nl-typecheck--extra nil
-  "Plist of extra diagnostic keys (:param :expected :actual-type) for `nl-typecheck--report'.")
+  "Extra diagnostic keys (:param :expected :actual-type) for the report.")
 
 (defconst nl-typecheck--predicates
   '((consp . cons) (stringp . string) (integerp . integer)
@@ -457,9 +457,12 @@
   "Check function NAME with ARGLIST and BODY; SIG is its declared type."
   (when sig (nl-typecheck--register name sig))
   (let ((exp (nl-typecheck--expand (cons 'lambda (cons arglist body)))))
-    (if (not (and (consp exp) (eq (car exp) 'function)))
+    ;; GNU expands a lambda to (function (lambda ...)); the standalone
+    ;; runtime leaves it as (lambda ...).
+    (if (not (and (consp exp) (memq (car exp) '(function lambda))))
         :skip
-      (let* ((lam (car (cdr exp))) (env nil) (i 0) (mode 'req))
+      (let* ((lam (if (eq (car exp) 'function) (car (cdr exp)) exp))
+             (env nil) (i 0) (mode 'req))
         (nl-typecheck--collect-assigned lam nl-typecheck--assigned)
         (dolist (p arglist)
           (cond

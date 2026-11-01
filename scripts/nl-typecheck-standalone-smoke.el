@@ -10,7 +10,8 @@
 
 ;;; Code:
 
-(let* ((args command-line-args-left)
+(let* ((args (if (equal (car command-line-args-left) "--")
+                  (cdr command-line-args-left) command-line-args-left))
        (src (car args))
        (file (car (cdr args)))
        (pkgs (expand-file-name ".." src)))

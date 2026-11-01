@@ -6,7 +6,7 @@ BIN="$1"
 test -n "$BIN" && test -x "$BIN" || { echo "standalone-smoke: NELISP_BIN not executable: $BIN"; exit 2; }
 cd "$(dirname "$0")/../../.." || exit 1
 SRC=packages/nl-typecheck/src
-OUT=$("$BIN" --load scripts/nl-typecheck-standalone-smoke.el -- \
+OUT=$("$BIN" -l scripts/nl-typecheck-standalone-smoke.el -- \
   "$SRC" packages/nl-typecheck/test/fixtures/clash.el 2>&1) || { echo "$OUT"; exit 1; }
 echo "$OUT"
 echo "$OUT" | grep -q 'clash.el:[0-9]*:[0-9]*: error: ' || exit 1

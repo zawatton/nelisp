@@ -1,8 +1,8 @@
 #+TITLE: Gradual static type checking for NeLisp
 #+DATE: 2026-11-01
-#+STATUS: IN PROGRESS — Stages 1-2 and the build gate are being implemented
-#+STATUS: (2026-11-01), then REPL layers 1-4 and Stage 3a; Stages 3b, 4, 5 remain
-#+STATUS: design only
+#+STATUS: PARTIAL — Stages 1-2, build gate, REPL layers 1-4 and Stage 3a
+#+STATUS: implemented (2026-11-01; ledger tools/ai/gradual-typecheck-progress.org,
+#+STATUS: 27/27); Stages 3b, 4, 5 remain design only
 #+SCOPE: Optional type annotations, a static checker, type-directed native lowering, and typed module boundaries
 
 * Decision boundary

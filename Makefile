@@ -278,7 +278,7 @@ wasm-dtw-site-smoke: wasm-dtw-site
 
 # Doc 236 Stage 1: primitive signature table.  Not wired into `compile'.
 TYPECHECK_TEST_SELECTOR ?= t
-TYPECHECK_LOAD = -L packages/nl-prelude/src -L packages/nl-safe/src \
+TYPECHECK_LOAD = -L lisp -L packages/nl-prelude/src -L packages/nl-safe/src \
   -L packages/nl-static/src -L packages/nl-typecheck/src
 
 typecheck-test-prims:
