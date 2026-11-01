@@ -59,9 +59,9 @@ cmd: make typecheck-test
 
 ** S4.1 The Doc 236 Stage 1-3a ledger still measures 100%
 #+REQUIRES: GNU_LISP_DIR,NELISP_BIN,PROGRESS_METER
-#+TIMEOUT: 1800
-cmd: bash "$PROGRESS_METER" --ledger tools/ai/gradual-typecheck-progress.org --json >/dev/null 2>&1; python3 -c 'import json,sys; sys.exit(0 if json.load(open("target/progress/gradual-typecheck-progress.json"))["percent"]==100 else 1)'
+#+TIMEOUT: 600
+cmd: bash "$PROGRESS_METER" --ledger tools/ai/gradual-typecheck-progress.org --json >/dev/null 2>&1; python3 -c 'import json,sys; sys.exit(0 if json.load(open("target/progress/gradual-typecheck-progress.json"))["overall"]["percent"]==100 else 1)'
 
 ** S4.2 make test-fast passes on the changed tree
-#+TIMEOUT: 1200
+#+TIMEOUT: 600
 cmd: mkdir -p target && make test-fast >target/test-fast-typecheck-followups.log 2>&1
