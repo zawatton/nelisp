@@ -1,0 +1,67 @@
+#+TITLE: Doc 236 follow-ups: REPL failure recording, setq precision, namespace hygiene
+
+# Run from the repository root:
+#   GNU_LISP_DIR=/usr/local/share/emacs/31.1/lisp NELISP_BIN=target/nelisp \
+#   PROGRESS_METER=<Notes>/bin/progress-meter.sh \
+#     bin/progress-meter.sh --ledger tools/ai/typecheck-followups-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)
+# NELISP_BIN must be a standalone binary built from this tree.
+# Stages 3b and 4 of Doc 236 are out of scope here: they touch native
+# lowering, which the Doc 238 work is changing.
+
+* S1 The REPL records refused and failing inputs without an explicit require
+
+** S1.1 The prelude offers an eval hook next to the input-check hook
+cmd: grep -q '^(defvar nelisp-repl-input-eval-function nil' scripts/nelisp-stdlib-prelude.el
+
+** S1.2 Mode ERT: enabling nelisp-typecheck-repl-mode routes input through the recording evaluator
+cmd: grep -q 'ert-deftest nl-typecheck-recover-mode-records' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-recover-'
+
+** S1.3 Negative control: with the mode off nothing is recorded and both hooks are nil
+cmd: grep -q 'ert-deftest nl-typecheck-recover-mode-off-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-recover-mode-off-negative-control
+
+** S1.4 With both hooks nil the REPL loop output stays byte-identical to the unhooked baseline
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh hook-off
+
+** S1.5 End to end: a standalone --repl session records a refused input with no require of nelisp-repl-session
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: grep -q 'standalone-record)' packages/nl-typecheck/test/e2e-repl.sh && sh packages/nl-typecheck/test/e2e-repl.sh standalone-record "$NELISP_BIN"
+
+* S2 A setq no longer widens its variable to t for the whole form
+
+** S2.1 setq precision ERT tests pass (assignments of a compatible type keep the type)
+cmd: grep -q 'ert-deftest nl-typecheck-setq-' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-setq-'
+
+** S2.2 Negative control: an assignment of a different type is not reported as an error
+cmd: grep -q 'ert-deftest nl-typecheck-setq-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-setq-negative-control
+
+** S2.3 The lisp/ gate passes against the checked-in baseline, which is not loosened
+cmd: make typecheck-gate && git diff --quiet origin/main -- tools/typecheck-baseline.eld
+
+** S2.4 End to end: zero error diagnostics on the GNU Emacs lisp/ subset
+#+REQUIRES: GNU_LISP_DIR
+#+TIMEOUT: 600
+cmd: make typecheck-vendor GNU_LISP_DIR="$GNU_LISP_DIR"
+
+* S3 nl-typecheck stops reaching into private names
+
+** S3.1 ns-inventory passes with private-escape back to 770 and prefix-violation at or below 332
+cmd: make ns-inventory && awk '$1=="ns-private-escape"{e=$2} $1=="ns-prefix-violation"{p=$2} END{exit !(e<=770 && p<=332)}' tools/ns-inventory-baseline.txt
+
+** S3.2 No nl-typecheck source references another file's private name
+cmd: sh tools/ai/typecheck-ns-escapes.sh
+
+** S3.3 Every nl-typecheck test passes after the renames
+cmd: make typecheck-test
+
+* S4 End to end
+
+** S4.1 The Doc 236 Stage 1-3a ledger still measures 100%
+#+REQUIRES: GNU_LISP_DIR,NELISP_BIN,PROGRESS_METER
+#+TIMEOUT: 1800
+cmd: bash "$PROGRESS_METER" --ledger tools/ai/gradual-typecheck-progress.org --json >/dev/null 2>&1; python3 -c 'import json,sys; sys.exit(0 if json.load(open("target/progress/gradual-typecheck-progress.json"))["percent"]==100 else 1)'
+
+** S4.2 make test-fast passes on the changed tree
+#+TIMEOUT: 1200
+cmd: mkdir -p target && make test-fast >target/test-fast-typecheck-followups.log 2>&1
