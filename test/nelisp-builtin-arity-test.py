@@ -35,6 +35,7 @@ FIXED_VALUES = {
     'rassoc': ("(rassoc 7 '((a . 7)))", '(a . 7)'),
     'string=': ('(string= "a" "a")', 't'), 'string<': ('(string< "a" "b")', 't'),
     'make-vector': ('(make-vector 2 nil)', '[nil nil]'), 'aset': ('(aset (vector 1) 0 7)', '7'),
+    'nth': ("(nth 1 '(7 9))", '9'), 'nthcdr': ("(nthcdr 1 '(7 9))", '(9)'),
 }
 
 
