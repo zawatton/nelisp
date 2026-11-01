@@ -54,7 +54,7 @@ jobs:
 
   build-macos-arm64:
     name: non-blocker (v1.0 時限) — macos-arm64
-    runs-on: macos-14
+    runs-on: macos-15
     # Doc 32 v2 §11 LOCKED: arm64 = v1.0 限定 non-blocker (時限措置)、
     # v1.1+ で blocker promote 想定 (6 ヶ月以内 target、anvil leverage 込み).
     continue-on-error: true

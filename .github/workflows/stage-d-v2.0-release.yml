@@ -144,7 +144,7 @@ jobs:
     # Darwin artifact qualification is deferred for this release by project
     # decision.  A skipped job must not be represented as a release PASS.
     if: ${{ false }}
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       NELISP_STANDALONE_TARGET: macos-aarch64
     steps:
