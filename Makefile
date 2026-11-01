@@ -2201,9 +2201,9 @@ emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reade
 	@mkdir -p target; \
 	host_version="$${NELISP_EMACS_PARITY_HOST_VERSION:-$$($(EMACS) --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)}"; \
 	case "$$host_version" in \
-	  30.*) : ;; \
-	  *) echo "GATE-SKIP emacs-parity requires stock Emacs 30.x (host has $$host_version); the reference answers are version-pinned"; \
-	     echo "[emacs-parity] SKIP: host Emacs $$host_version is outside the pinned 30.x range"; \
+	  31.*) : ;; \
+	  *) echo "GATE-SKIP emacs-parity requires stock Emacs 31.x (host has $$host_version); the reference answers are version-pinned"; \
+	     echo "[emacs-parity] SKIP: host Emacs $$host_version is outside the pinned 31.x range"; \
 	     exit 0;; \
 	esac; \
 	$(EMACS) --batch -Q --eval '(with-temp-buffer (insert "(princ (format \"%S\" (progn\n") (goto-char (point-max)) (insert-file-contents "test/nelisp-shadow-differential-cases.el") (goto-char (point-max)) (insert ")))\n") (write-region (point-min) (point-max) "target/emacs-parity.el" nil (quote silent)))'; \

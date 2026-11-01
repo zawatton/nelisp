@@ -21358,6 +21358,7 @@ and the `string-match' family aliases over it."
             ;; Emacs checks SEPARATORS before STRING, so a call with both
             ;; wrong names the separator.
             "(defun split-string (s &optional sep omit trim)\n"
+            "  (length s)\n"
             "  (when sep (unless (stringp sep) (signal 'wrong-type-argument (list 'stringp sep))))\n"
             "  (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))\n"
             "  (let ((parts (nlre-split-string s sep omit)))\n"

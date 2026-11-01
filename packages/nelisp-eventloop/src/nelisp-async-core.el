@@ -91,6 +91,9 @@ e.g. `(run-at-time \"ABC\" nil (function ignore))' returned a timer
 object where real Emacs signals `(error \"Invalid time specification\")'):
 a bad TIME is a time error, not `invalid-function' about FN, since
 real Emacs never reaches FN either."
+  ;; Emacs 31 validates REPEAT before TIME.
+  (unless (or (null repeat) (and (numberp repeat) (>= repeat 0)))
+    (error "Invalid repetition interval: %s" repeat))
   (unless (or (null time) (numberp time)
               (and (stringp time) (string-match-p "[0-9]" time))
               ;; A time VALUE is (HIGH LOW ...) -- at least two integers.

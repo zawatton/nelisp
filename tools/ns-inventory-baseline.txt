@@ -212,6 +212,13 @@
 # differed (the prelude checks its arguments first), so this is the same
 # divergence with a new shape, not a new one.
 #
+# make-hash-table, run-at-time, split-string and string-trim re-digested on
+# 2026-11-01: the standalone copies follow GNU Emacs 31.1 error behaviour
+# (odd-argument and keyword checks, repetition-interval check, length-first
+# split-string, left-first string-trim); the host copies in lisp/ and
+# packages/ are untouched.  Same divergences as before with new shapes, not
+# new ones.
+#
 # make-hash-table's divergent pin re-digested on 2026-09-04: the prelude
 # copy answers the no-keys and (:test TEST) shapes before its validation
 # loop, so its shape moved; the host copy in lisp/nelisp-stdlib-hash.el
@@ -1213,7 +1220,10 @@ pinned-collision ns-collision-divergent	clrhash	lisp/nelisp-stdlib-hash.el scrip
 pinned-collision ns-collision-divergent	cond	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	8f47ca1817eb
 pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	071cd24a6c04
 pinned-collision ns-collision-divergent	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	d3ea48d63d91
-pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el scripts/nelisp-stdlib-prelude.el	23dfe8f3d73f
+# define-error re-digested 2026-11-01: the prelude copy now builds its
+# "Unknown signal" error through format-message, so the quotes follow
+# text-quoting-style like GNU; the divergence is the same one as before.
+pinned-collision ns-collision-divergent	define-error	lisp/nelisp-stdlib-error.el scripts/nelisp-stdlib-prelude.el	15b29741c6fe
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	91d01aa6ff27
 pinned-collision ns-collision-divergent	delete-dups	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	03fd6070a2df
 pinned-collision ns-collision-divergent	delete-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	fac5e463df78
@@ -1255,7 +1265,7 @@ pinned-collision ns-collision-divergent	lsh	lisp/nelisp-stdlib-misc.el scripts/n
 pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	92dc977d56a1
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	35290347dca5
 pinned-collision ns-collision-divergent	make-directory	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	0a017756f0b7
-pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	d5c3bea86c37
+pinned-collision ns-collision-divergent	make-hash-table	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	5c14a79d7fa3
 # Hash moved 263817b13682 -> 9a3c259569c7, segment C1 item 4: the
 # prelude's `make-process' now also `process-put's the PLIST's `:buffer'
 # (backing the new `process-buffer'/`set-process-buffer'), which
@@ -1311,20 +1321,20 @@ pinned-collision ns-collision-divergent	read-from-string	lisp/nelisp-stdlib-read
 pinned-collision ns-collision-divergent	recordp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	20096afadd80
 pinned-collision ns-collision-divergent	regexp-quote	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	e92681fb0b02
 pinned-collision ns-collision-divergent	round	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	b6b8448a8348
-pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	2e272350c8bb
+pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	1d05e37e9d26
 pinned-collision ns-collision-divergent	set-file-modes	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	eb7d7aadd4db
 pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	a6f57b8a53c0
 pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d66f82c26c57
 pinned-collision ns-collision-divergent	sit-for	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	0402960ed31e
 pinned-collision ns-collision-divergent	sort	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	2713c36432ab
-pinned-collision ns-collision-divergent	split-string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	b1a88b89cad5
+pinned-collision ns-collision-divergent	split-string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	3cec7b8d1def
 pinned-collision ns-collision-divergent	string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	574089ddf026
 pinned-collision ns-collision-divergent	string-lessp	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	38d8adeac89a
 pinned-collision ns-collision-divergent	string-prefix-p	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	bd8e616b0e2b
 pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	9be7e72a2dc8
 pinned-collision ns-collision-divergent	string-suffix-p	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	b576cc288f57
 pinned-collision ns-collision-divergent	string-to-number	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	afebf7d8bcb8
-pinned-collision ns-collision-divergent	string-trim	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	2bc7bd50ac8b
+pinned-collision ns-collision-divergent	string-trim	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	7fd2920c3c26
 pinned-collision ns-collision-divergent	string-trim-left	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	798069bba410
 pinned-collision ns-collision-divergent	string-trim-right	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	ad1c68d45490
 pinned-collision ns-collision-divergent	string=	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	9ee0e410ab3a

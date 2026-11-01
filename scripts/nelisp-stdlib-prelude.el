@@ -1505,8 +1505,9 @@ nothing."
   ;; Delegating keeps the three functions consistent by construction: a fix
   ;; to `string-trim-left' cannot now leave `string-trim' behind.
   (defun string-trim (s &optional trim-left trim-right)
-    ;; RIGHT runs first, so its regexp is the one `concat' complains about.
-    (string-trim-left (string-trim-right s trim-right) trim-left)))
+    ;; Emacs 31 computes the left trim first, so its regexp is the one
+    ;; `concat' complains about.
+    (string-trim-right (string-trim-left s trim-left) trim-right)))
 (unless (fboundp 'alist-get)
   (defun alist-get (key alist &optional default _remove testfn)
     (unless (proper-list-p alist)
@@ -1921,8 +1922,6 @@ nothing."
   (defun string-split (s &optional sep omit trim)
     ;; Emacs checks SEPARATORS before STRING, so a call with both wrong
     ;; names the separator.
-    (when sep (nelisp--check-string sep))
-    (nelisp--check-string s)
     (split-string s sep omit trim)))
 ;; REGEXP was accepted and ignored -- the parameter was even named `_re' to
 ;; say so -- so (string-trim-left "xxab" "x+") answered "xxab".  A caller
@@ -2659,13 +2658,19 @@ wider than the one it replaces once the mapping leaves ASCII."
       (let ((h (nelisp--hash-table-make-raw)))
         (aset (car h) 2 (if keys (cadr keys) 'eql))
         h)
+  ;; Emacs 31 rejects an odd argument count before looking at any key.
+  (when (= (logand (length keys) 1) 1)
+    (signal 'error (list "Odd number of arguments")))
+  ;; Every key is checked before any value.
+  (let ((ks keys))
+    (while ks
+      (unless (memq (car ks) '(:test :size :rehash-size :rehash-threshold
+                               :weakness :purecopy))
+        (nelisp--signal-invalid "Invalid keyword argument" (car ks)))
+      (setq ks (cddr ks))))
   (let ((ks keys))
     (while ks
       (let ((k (car ks)) (rest (cdr ks)))
-        (unless (and (consp rest)
-                     (memq k '(:test :size :rehash-size :rehash-threshold
-                               :weakness :purecopy)))
-          (nelisp--signal-invalid "Invalid argument list" k))
         (let ((v (car rest)))
           (cond
            ((eq k :test)
@@ -2841,7 +2846,10 @@ reseeds from its characters; nil -> a full LCG value."
 ;; from the callback, which is later processed when the actor loop is run.
 ;; `sit-for' has nothing to redisplay or block on, so it is a no-op returning t.
 (unless (fboundp 'run-at-time)
-  (defun run-at-time (time _repeat function &rest args)
+  (defun run-at-time (time repeat function &rest args)
+    ;; Emacs 31 validates REPEAT before TIME.
+    (unless (or (null repeat) (and (numberp repeat) (>= repeat 0)))
+      (error "Invalid repetition interval: %s" repeat))
          ;; TIME is validated before FUNCTION is touched, so a bad time is a
          ;; time error -- not `invalid-function' about an argument Emacs never
          ;; reached.
@@ -3091,19 +3099,49 @@ path, which asks for a NUMBER first and only then for an integer."
 ;; came out with the ASCII quotes vendor Emacs replaces.  Only the format
 ;; string is curved, never the arguments -- that is Emacs's rule, and it is
 ;; what keeps a file name or a user string from being rewritten.
+;;
+;; GNU picks the quotes from `text-quoting-style', and so must this.
+;; Measured on GNU Emacs 31.1 in batch: `curve' always curves, `straight'
+;; turns the grave accent into an apostrophe, `grave' leaves both alone, and
+;; nil curves only when the locale's coding can show curved quotes -- under
+;; C or ISO-8859-1 the text stays as written, under *.UTF-8 it curves.
+;; This used to curve unconditionally, so the standalone disagreed with GNU
+;; whenever it ran under LC_ALL=C.  GNU's own error text follows the same
+;; rule, which is why the error sites below go through `format-message'.
+(unless (boundp 'text-quoting-style)
+  (defvar text-quoting-style nil))
+(defun nelisp--locale-env (name)
+  (let ((v (getenv name)))
+    (if (and v (> (length v) 0)) v nil)))
+(defun nelisp--quoting-style ()
+  (if (memq text-quoting-style '(curve straight grave))
+      text-quoting-style
+    (let ((loc (or (nelisp--locale-env "LC_ALL")
+                   (nelisp--locale-env "LC_CTYPE")
+                   (nelisp--locale-env "LANG"))))
+      (if (and loc (string-match-p "utf-?8" (downcase loc)))
+          'curve
+        'grave))))
 (defun nelisp--curve-quotes (s)
-  (let ((i 0) (n (length s)) (out ""))
-    (while (< i n)
-      (let ((c (aref s i)))
-        ;; Written as code points, not as `?\`' / "\u2018" literals: the
-        ;; escapes this file can rely on are the ones the standalone reader
-        ;; parses, and a character that reads wrong here would corrupt every
-        ;; message rather than fail loudly.
-        (setq out (concat out (cond ((eq c 96) (char-to-string 8216))
-                                    ((eq c 39) (char-to-string 8217))
+  (let ((style (nelisp--quoting-style)))
+    (if (eq style 'grave)
+        s
+      (let ((i 0) (n (length s)) (out ""))
+        (while (< i n)
+          (let ((c (aref s i)))
+            ;; Written as code points, not as `?\`' / "\u2018" literals: the
+            ;; escapes this file can rely on are the ones the standalone
+            ;; reader parses, and a character that reads wrong here would
+            ;; corrupt every message rather than fail loudly.
+            (setq out (concat out
+                              (cond ((and (eq c 96) (eq style 'curve))
+                                     (char-to-string 8216))
+                                    ((eq c 96) (char-to-string 39))
+                                    ((and (eq c 39) (eq style 'curve))
+                                     (char-to-string 8217))
                                     (t (char-to-string c))))))
-      (setq i (1+ i)))
-    out))
+          (setq i (1+ i)))
+        out))))
 (defun format-message (fmt &rest args)
   (nelisp--check-string fmt)
   (apply #'format (cons (nelisp--curve-quotes fmt) args)))
@@ -6157,14 +6195,13 @@ which is what a caller asking for a range check wants."
     ;; not a list or vector, so it names `list-or-vector-p'; anything that
     ;; is not a sequence at all names `sequencep'.  Measured -- one name for
     ;; both would be wrong half the time.
-    (unless (or (listp strings) (vectorp strings))
-      (signal 'wrong-type-argument
-              (list (if (sequencep strings) 'list-or-vector-p 'sequencep)
-                    strings)))
     (let* ((open (cond ((stringp paren) paren) (paren "\\(")))
            (re (if strings
                    (regexp-opt-group
-                    (delete-dups (sort (copy-sequence strings) (function string-lessp)))
+                    (let ((sorted (sort (if (or (listp strings) (vectorp strings)) (copy-sequence strings) strings))))
+                      ;; `delete-dups' of a vector is `listp' in Emacs 31.
+                      (unless (listp sorted) (signal 'wrong-type-argument (list 'listp sorted)))
+                      (delete-dups sorted))
                     (or open t) (not open))
                  (concat (or open "\\(?:") regexp-unmatchable "\\)"))))
       (cond ((eq paren (quote words)) (concat "\\<" re "\\>"))
@@ -11438,7 +11475,7 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (dolist (p parent)
         (unless (symbolp p) (signal 'wrong-type-argument (list 'symbolp p)))
         (unless (get p 'error-conditions)
-          (signal 'error (list (format "Unknown signal ‘%s’" p))))))
+          (signal 'error (list (format-message "Unknown signal `%s'" p))))))
     (let* ((parent (or parent 'error))
            (conditions
             (if (consp parent)
@@ -12030,11 +12067,11 @@ claimed to match, only the shape."
   (cond
    ((null overrides) nil)
    ((eq overrides t) nil)
-   ((not (consp overrides)) (signal 'wrong-type-argument 'consp))
+   ((not (consp overrides)) (signal 'wrong-type-argument (list 'consp overrides)))
    (t (let ((l overrides))
         (while (consp l)
           (let ((e (car l)))
-            (unless (consp e) (signal 'wrong-type-argument 'consp))
+            (unless (consp e) (signal 'wrong-type-argument (list 'consp e)))
             (unless (memq (car e) nelisp--print-override-keys)
               (signal 'wrong-type-argument (list 'symbolp nil))))
           (setq l (cdr l)))))))
@@ -13759,6 +13796,7 @@ and only running both says which."
     (nreverse parts)))
 (unless (fboundp 'split-string)
   (defun split-string (string &optional separators omit-nulls _trim)
+    (length string)
     (when separators (nelisp--check-string separators))
     (nelisp--check-string string)
     (nelisp--split-on-char
@@ -15013,6 +15051,21 @@ tells a finite rendering from one it must leave alone."
         (if (or (= c 101) (= c 69)) (setq r i) (setq i (1+ i)))))
     r))
 
+(defun nelisp--fmt-binary (arg prec)
+  "Digits of integer ARG (a float truncates) in base 2, as `format' %b writes them."
+  (let* ((n (if (floatp arg) (truncate arg) arg))
+         (neg (< n 0))
+         (m (abs n))
+         (digits nil))
+    (while (> m 0)
+      (setq digits (cons (if (= (logand m 1) 1) ?1 ?0) digits)
+            m (ash m -1)))
+    (let ((body (apply (function string) digits)))
+      (when (and (= (length body) 0) (not (eql prec 0)))
+        (setq body "0"))
+      (when (and prec (< (length body) prec))
+        (setq body (concat (make-string (- prec (length body)) ?0) body)))
+      (if neg (concat "-" body) body))))
 (defun nelisp--format-check-arg (conv arg)
   "Return ARG, or signal the way Emacs does when it cannot match CONV.
 The native delegate formats whatever bits it is handed rather than
@@ -15024,16 +15077,17 @@ NUL.  Emacs signals for every one of those."
    ;; d i o x X e E f F g G a A -- any number, integer or float.  A marker is
    ;; NOT accepted: Emacs signals for one too (measured).
    ((or (= conv 100) (= conv 105) (= conv 111) (= conv 120) (= conv 88)
+        (= conv 98)
         (= conv 101) (= conv 69) (= conv 102) (= conv 70)
         (= conv 103) (= conv 71) (= conv 97) (= conv 65))
     (unless (numberp arg)
-      (signal 'error (list "Format specifier doesn’t match argument type"))))
+      (signal 'error (list (format-message "Format specifier doesn't match argument type")))))
    ;; c -- an integer, and then a valid character code.  Emacs draws the line
    ;; in two places: a float is a specifier mismatch, a negative integer is
    ;; `(wrong-type-argument characterp -1)'.
    ((= conv 99)
     (unless (integerp arg)
-      (signal 'error (list "Format specifier doesn’t match argument type")))
+      (signal 'error (list (format-message "Format specifier doesn't match argument type"))))
     (unless (and (>= arg 0) (<= arg 4194303))
       (signal 'wrong-type-argument (list 'characterp arg)))))
   arg)
@@ -15095,7 +15149,7 @@ field-width layer."
                   ;; "%-" and "%." all signal.
                   (signal 'error
                           (list "Format string ends in middle of format specifier"))
-                (let ((conv (aref template j)))
+                (let ((conv (if (= (aref template j) 66) 98 (aref template j))))   ; %B is %b
                   (setq i (1+ j))
                   ;; Emacs accepts s S d i o x X e f g c and %% -- everything
                   ;; else is "Invalid format operation".  This accepted the C
@@ -15112,7 +15166,9 @@ field-width layer."
                   ;; formatter itself is still in the AOT dialect
                   ;; (`m5_fmt_hexfloat'), it just has no route through
                   ;; `format' any more.
+                  ;; `b' is GNU Emacs 31's binary conversion.
                   (unless (or (= conv 115) (= conv 83) (= conv 100) (= conv 105)
+                              (= conv 98)
                               (= conv 111) (= conv 120) (= conv 88) (= conv 101)
                               (= conv 102) (= conv 103) (= conv 99) (= conv 37))
                     (signal 'error
@@ -15149,8 +15205,10 @@ field-width layer."
                                    ;; %d/%i/%o/%x/%X of a float: truncate toward
                                    ;; zero like Emacs (native reads the raw bits
                                    ;; otherwise).  Doc 159 §13.
-                                    (if (= conv 83) ; ?S
-                                        (prin1-to-string arg)
+                                    (if (or (= conv 83) (= conv 98)) ; ?S ?b
+                                        (if (= conv 98)
+                                            (nelisp--fmt-binary arg prec)
+                                          (prin1-to-string arg))
                                       (nelisp--native-format
                                        (concat "%" (char-to-string conv))
                                        (if (and (floatp arg)
@@ -15189,12 +15247,14 @@ field-width layer."
                       ;; ("-0xa").  The native delegate does not implement `#'
                       ;; at all -- it hands back the spec string unchanged --
                       ;; so the prefix has to be built here.
-                      (when (and fhash (or (= conv 111) (= conv 120) (= conv 88))
+                      (when (and fhash (or (= conv 111) (= conv 120) (= conv 88)
+                                           (= conv 98))
                                  (> (length body) 0))
                         (let* ((neg (= (aref body 0) 45))
                                (mag (if neg (substring body 1) body)))
                           (unless (or (string= mag "0") (= (length mag) 0))
-                            (setq mag (cond ((= conv 120) (concat "0x" mag))
+                            (setq mag (cond ((= conv 98) (concat "0b" mag))
+                                            ((= conv 120) (concat "0x" mag))
                                             ((= conv 88) (concat "0X" mag))
                                             ((= (aref mag 0) 48) mag)
                                             (t (concat "0" mag))))
@@ -15203,7 +15263,7 @@ field-width layer."
                       ;; conversions as well -- "%+05x" of 10 is "+000a" in
                       ;; Emacs, and o/x/X/i were all missing from this list.
                       (when (and (or (= conv 100) (= conv 105) (= conv 111)
-                                     (= conv 120) (= conv 88)
+                                     (= conv 120) (= conv 88) (= conv 98)
                                      (= conv 102) (= conv 101) (= conv 103))
                                  (> (length body) 0) (not (= (aref body 0) 45)))
                         (cond (fplus (setq body (concat "+" body)))
@@ -15212,7 +15272,7 @@ field-width layer."
                         (let ((pad (- width (length body))))
                           (cond
                            (f- (setq body (concat body (make-string pad 32))))
-                           ((and f0
+                           ((and f0 (not (and prec (= conv 98)))
                                  ;; d/i/o/x/X always produce digits, so `0'
                                  ;; always applies.  The old guard asked whether
                                  ;; the first character was a DECIMAL digit,
@@ -15222,7 +15282,7 @@ field-width layer."
                                  ;; still needed -- inf/nan space-pad (Doc 159
                                  ;; §13).
                                  (if (or (= conv 100) (= conv 105) (= conv 111)
-                                         (= conv 120) (= conv 88))
+                                         (= conv 120) (= conv 88) (= conv 98))
                                      t
                                    (and (or (= conv 102) (= conv 101) (= conv 103))
                                         (let ((k (if (and (> (length body) 0)
@@ -15241,11 +15301,12 @@ field-width layer."
                                          (or (= (aref body 0) 45) (= (aref body 0) 43)
                                              (= (aref body 0) 32)))
                                 (setq k 1))
-                              (when (and (or (= conv 120) (= conv 88))
+                              (when (and (or (= conv 120) (= conv 88) (= conv 98))
                                          (> (length body) (+ k 1))
                                          (= (aref body k) 48)
                                          (or (= (aref body (+ k 1)) 120)
-                                             (= (aref body (+ k 1)) 88)))
+                                             (= (aref body (+ k 1)) 88)
+                                             (= (aref body (+ k 1)) 98)))
                                 (setq k (+ k 2)))
                               (setq body (concat (substring body 0 k)
                                                  (make-string pad 48)
