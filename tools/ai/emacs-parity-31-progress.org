@@ -27,4 +27,4 @@ cmd: make test-fast >target/test-fast-parity31.log 2>&1
 * S2 CI runs the gate
 
 ** S2.1 CI's emacs-parity step reports pass, not skip, on main (CI gate report recorded)
-pending
+evidence: tools/ai/evidence/emacs-parity-31-ci-3231d877b.txt sha256=70c85469519b887e0dbdc9da77c7ac7e663705a99acbd512ea95960329b12d5e
