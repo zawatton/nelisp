@@ -3039,24 +3039,32 @@ C-core-compatible substrate that should be fixed in `src/' or the runtime."
       ;; `(require 'org-element-ast)' then becomes a no-op, which would leave
       ;; its deferred-value constructors (notably
       ;; `org-element-deferred-create') undefined.  Load the vendor AST
-      ;; explicitly on standalone before asking for `org-element'.
-      (when (and (fboundp 'nelisp--write-stdout-bytes)
-                 (not (fboundp 'org-element-deferred-create)))
-        (let* ((root (emacs-org-outline--repo-root))
-               (ast-file (expand-file-name
-                          "vendor/emacs-lisp/org/org-element-ast.el"
-                          root)))
-          (when (file-readable-p ast-file)
-            (load ast-file nil 'no-message t t))))
-      (condition-case err
-          (require 'org-element)
-        (error
-         (setq emacs-org-outline--vendor-org-element-load-error err)
-         nil))
-      (dolist (cell saved)
-        (if (cdr cell)
-            (fset (car cell) (cdr cell))
-          (fmakunbound (car cell)))))))
+      ;; explicitly on standalone before asking for `org-element'.  The AST
+      ;; load runs under the same error handling as the require: the vendor
+      ;; parser is optional, so a failure (e.g. a missing substrate function
+      ;; hit while loading vendor `org-macs.el') is only recorded in
+      ;; `emacs-org-outline--vendor-org-element-load-error' and the require
+      ;; is skipped, since it cannot succeed without the AST.  The shadow
+      ;; symbols are restored either way.
+      (unwind-protect
+          (condition-case err
+              (progn
+                (when (and (fboundp 'nelisp--write-stdout-bytes)
+                           (not (fboundp 'org-element-deferred-create)))
+                  (let* ((root (emacs-org-outline--repo-root))
+                         (ast-file (expand-file-name
+                                    "vendor/emacs-lisp/org/org-element-ast.el"
+                                    root)))
+                    (when (file-readable-p ast-file)
+                      (load ast-file nil 'no-message t t))))
+                (require 'org-element))
+            (error
+             (setq emacs-org-outline--vendor-org-element-load-error err)
+             nil))
+        (dolist (cell saved)
+          (if (cdr cell)
+              (fset (car cell) (cdr cell))
+            (fmakunbound (car cell))))))))
 
 (emacs-org-outline--try-vendor-org-element)
 
