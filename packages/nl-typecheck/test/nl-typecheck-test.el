@@ -98,8 +98,37 @@
                  '(warning))))
 
 (ert-deftest nl-typecheck-setq-widens ()
+  ;; integer|string is partly a sequence, so `length' stays quiet.
   (should-not (nl-typecheck-test--check
                "(defun f () (let ((x 1)) (setq x \"a\") (length x)))\n")))
+
+(ert-deftest nl-typecheck-setq-keeps-compatible-type ()
+  (should (nl-typecheck-test--check
+           "(defun f () (let ((x 1)) (setq x 2) (car x)))\n")))
+
+(ert-deftest nl-typecheck-setq-union-of-assignments ()
+  (should (nl-typecheck-test--check
+           "(defun f () (let ((x 1)) (setq x \"a\") (car x)))\n"))
+  (should-not (nl-typecheck-test--check
+               "(defun f () (let ((x 1)) (setq x \"a\") (upcase x)))\n")))
+
+(ert-deftest nl-typecheck-setq-unknown-rhs-widens ()
+  (should-not (nl-typecheck-test--check
+               "(defun f () (let ((x 1)) (setq x (some-unknown-fn)) (car x)))\n")))
+
+(ert-deftest nl-typecheck-setq-in-lambda ()
+  (should (nl-typecheck-test--check
+           "(defun f () (let ((x 1)) (funcall (lambda () (setq x 2))) (car x)))\n"))
+  (should-not (nl-typecheck-test--check
+               "(defun f () (let ((x 1)) (funcall (lambda () (setq x (list 1)))) (car x)))\n")))
+
+(ert-deftest nl-typecheck-setq-negative-control ()
+  (should-not (nl-typecheck-test--check
+               "(defun f () (let ((x 1)) (setq x (list 1)) (car x)))\n")))
+
+(ert-deftest nl-typecheck-setq-trial-diagnostics-not-leaked ()
+  (should (= 1 (length (nl-typecheck-test--check
+                        "(defun f () (let ((x 1)) (setq x 2) (car x)))\n")))))
 
 (ert-deftest nl-typecheck-cl-the ()
   (should (equal (nl-typecheck-test--levels

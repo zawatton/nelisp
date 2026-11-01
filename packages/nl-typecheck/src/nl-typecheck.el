@@ -37,6 +37,11 @@
 (defvar nl-typecheck--sigs nil "Hash: annotated function symbol -> signature.")
 (defvar nl-typecheck--defs nil "Hash: symbols defined in the current file.")
 (defvar nl-typecheck--assigned nil "Hash: symbols that are `setq' targets.")
+(defvar nl-typecheck--assume nil
+  "Alist (SYMBOL . TYPE): assumed union of the values `setq' stores in SYMBOL.
+A symbol missing from it is widened to `t' when bound.")
+(defvar nl-typecheck--record nil
+  "Hash (or nil): SYMBOL -> infos of the values assigned to it in this pass.")
 (defvar nl-typecheck--diags nil "Diagnostics of the current file, reversed.")
 (defvar nl-typecheck--file "" "File name as given by the caller.")
 (defvar nl-typecheck--src nil "Buffer holding the source text.")
@@ -216,10 +221,18 @@
       (setq forms (cdr forms)))
     (nreverse out)))
 
+(defun nl-typecheck--assigned-type (var ty)
+  "Return the type of assigned VAR with initial type TY under the assumptions."
+  (let ((a (assq var nl-typecheck--assume)))
+    (if a
+        (car (nl-typecheck--join (list (cons ty nil) (cons (cdr a) nil))))
+      t)))
+
 (defun nl-typecheck--bind (var info env)
-  "Return ENV extended with VAR bound to INFO (t when VAR is assigned)."
+  "Return ENV extended with VAR bound to INFO.
+An assigned VAR gets the join of INFO and the assumed assigned types."
   (cons (cons var (if (gethash var nl-typecheck--assigned)
-                      (cons t nil)
+                      (cons (nl-typecheck--assigned-type var (car info)) nil)
                     (cons (car info) nil)))
         env))
 
@@ -382,7 +395,10 @@
       (let ((info '(null . t)) (r args))
         (while (consp r)
           (when (consp (cdr r))
-            (setq info (nl-typecheck--infer (car (cdr r)) env)))
+            (setq info (nl-typecheck--infer (car (cdr r)) env))
+            (when (and nl-typecheck--record (symbolp (car r)))
+              (puthash (car r) (cons info (gethash (car r) nl-typecheck--record))
+                       nl-typecheck--record)))
           (setq r (if (consp (cdr r)) (cdr (cdr r)) nil)))
         (cons (car info) nil)))
      ((eq head 'condition-case)
@@ -422,6 +438,61 @@
                 (puthash (car r) t table)
                 (setq r (if (consp (cdr r)) (cdr (cdr r)) nil)))))
           (setq stack (cons (car x) (cons (cdr x) stack))))))))
+
+(defun nl-typecheck--collect-local (form)
+  "Collect the `setq' targets of FORM globally; return non-nil if any."
+  (let ((local (make-hash-table :test 'eq)) (any nil))
+    (nl-typecheck--collect-assigned form local)
+    (maphash (lambda (k _v) (setq any t) (puthash k t nl-typecheck--assigned))
+             local)
+    any))
+
+(defun nl-typecheck--records-to-assume (rec)
+  "Turn the recorded assignments REC into an assumption alist.
+Symbols with an unknown (`t') assigned type are left out, so they widen."
+  (let ((out nil))
+    (maphash (lambda (k infos)
+               (let ((ty (car (nl-typecheck--join infos))))
+                 (unless (eq ty t) (setq out (cons (cons k ty) out)))))
+             rec)
+    out))
+
+(defun nl-typecheck--assume-equal (a b)
+  "Return non-nil when assumption alists A and B hold the same types."
+  (and (= (length a) (length b))
+       (let ((ok t))
+         (dolist (x a)
+           (let ((y (assq (car x) b)))
+             (unless (and y (equal (cdr x) (cdr y))) (setq ok nil))))
+         ok)))
+
+(defun nl-typecheck--run-with-assumptions (any run)
+  "Call RUN with flow-insensitive assignment types; return its last value.
+When ANY, up to three silent trial passes record the types assigned to
+each `setq' target and iterate to a fixed point; the last call of RUN is
+the only one whose diagnostics survive.  Without convergence every
+assigned variable is widened to `t'."
+  (if (not any)
+      (funcall run)
+    (let ((assume nil) (iter 0) (stable nil) (occ0 nl-typecheck--occ))
+      (while (and (not stable) (< iter 3))
+        (let* ((rec (make-hash-table :test 'eq))
+               (nl-typecheck--record rec)
+               (nl-typecheck--diags nil)
+               (nl-typecheck--summary nil)
+               (nl-typecheck--occ (make-hash-table :test 'eq))
+               (nl-typecheck--assume assume)
+               (next nil))
+          (maphash (lambda (k v) (puthash k v nl-typecheck--occ)) occ0)
+          (funcall run)
+          (setq next (nl-typecheck--records-to-assume rec))
+          (if (nl-typecheck--assume-equal next assume)
+              (setq stable t)
+            (setq assume next))
+          (setq iter (1+ iter))))
+      (let ((nl-typecheck--assume (if stable assume nil))
+            (nl-typecheck--record nil))
+        (funcall run)))))
 
 (defun nl-typecheck--expand (form)
   "Macroexpand FORM in a scratch buffer; return the result or :skip."
@@ -463,7 +534,10 @@
         :skip
       (let* ((lam (if (eq (car exp) 'function) (car (cdr exp)) exp))
              (env nil) (i 0) (mode 'req))
-        (nl-typecheck--collect-assigned lam nl-typecheck--assigned)
+        (nl-typecheck--run-with-assumptions
+         (nl-typecheck--collect-local lam)
+         (lambda ()
+        (setq env nil i 0 mode 'req)
         (dolist (p arglist)
           (cond
            ((eq p '&optional) (setq mode 'opt))
@@ -473,10 +547,13 @@
             (let ((ty (if sig (nl-typecheck--param-type (car (cdr sig)) i) :none)))
               (setq i (1+ i))
               (setq env
-                    (cons (cons p (if (or (eq ty :none) (eq ty t)
-                                          (gethash p nl-typecheck--assigned))
-                                      (cons t nil)
-                                    (cons (if (eq mode 'opt) (list 'or 'null ty) ty) t)))
+                    (cons (cons p (cond
+                                   ((or (eq ty :none) (eq ty t)) (cons t nil))
+                                   ((gethash p nl-typecheck--assigned)
+                                    (cons (nl-typecheck--assigned-type
+                                           p (if (eq mode 'opt) (list 'or 'null ty) ty))
+                                          nil))
+                                   (t (cons (if (eq mode 'opt) (list 'or 'null ty) ty) t))))
                           env))))))
         (let ((info (nl-typecheck--infer-seq (cdr (cdr lam)) env)))
           (when (and sig (consp (cdr (cdr sig))))
@@ -490,7 +567,7 @@
           (when sig
             (setq nl-typecheck--summary
                   (cons (list name (car (cdr sig)) (car (cdr (cdr sig))))
-                        nl-typecheck--summary))))
+                        nl-typecheck--summary))))))
         nil))))
 
 (defun nl-typecheck--process-form (form)
@@ -527,8 +604,9 @@
       (let ((exp (nl-typecheck--expand form)))
         (if (eq exp :skip)
             :skip
-          (nl-typecheck--collect-assigned exp nl-typecheck--assigned)
-          (nl-typecheck--infer exp nil)
+          (nl-typecheck--run-with-assumptions
+           (nl-typecheck--collect-local exp)
+           (lambda () (nl-typecheck--infer exp nil)))
           nil))))))
 
 (defun nl-typecheck--note-defs (form)
