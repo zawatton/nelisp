@@ -1,0 +1,226 @@
+#+TITLE: Gradual static type checking for NeLisp
+#+DATE: 2026-11-01
+#+STATUS: IN PROGRESS — Stages 1-2 and the build gate are being implemented
+#+STATUS: (2026-11-01), then REPL layers 1-4 and Stage 3a; Stages 3b, 4, 5 remain
+#+STATUS: design only
+#+SCOPE: Optional type annotations, a static checker, type-directed native lowering, and typed module boundaries
+
+* Decision boundary
+
+NeLisp must stay an Emacs-compatible runtime. Unannotated Emacs Lisp keeps
+its current meaning, error behavior, and performance class. Types are
+therefore *gradual and optional*, in the TypeScript sense: annotated code is
+checked, unannotated code is the dynamic type =t=, and a program that runs
+under GNU Emacs runs unchanged under NeLisp whether or not the checker
+accepts it. The checker is a development tool and an optimizer input; it
+never makes NeLisp reject a form that GNU Emacs evaluates.
+
+Rust-style guarantees are out of scope for ordinary Lisp data: the
+collector, =fset=, advice, dynamic binding, and =eval= make whole-program
+soundness impossible without breaking compatibility. Ownership is handled by
+a narrower runtime mechanism (Doc 237); this design only reserves room to
+check its linear-handle discipline statically later.
+
+* Type language
+
+Reuse the type vocabulary GNU Emacs already has, so annotations are portable
+in both directions:
+
+- atomic types from =cl-typep= and the native-compiler type hierarchy:
+  =fixnum=, =integer=, =number=, =float=, =string=, =symbol=, =cons=,
+  =list=, =vector=, =hash-table=, =boolean=, =null=, =t=, =nil= (empty);
+- combinators: =(or ...)=, =(and ...)=, =(not ...)=, =(member ...)=,
+  =(integer LOW HIGH)=, =(list-of T)= and =(vector-of T)= (NeLisp
+  extensions, erased to =list= / =vector= for GNU);
+- function types: =(function (ARG... &optional ... &rest T) RESULT)=;
+- aliases through =cl-deftype=.
+
+Annotation sources, in priority order:
+
+1. =(declare (ftype (function ...)))= in =defun= (GNU Emacs 30 and later);
+2. =cl-defun= / =cl-defmethod= argument specializers and =cl-the=;
+3. =cl-defstruct= slot =:type=;
+4. a side file =NAME-types.el= of =(nelisp-declare-type SYMBOL TYPE)=
+   forms for libraries that must not be edited (vendored GNU sources);
+5. the runtime's own primitive signature table, generated from the native
+   builtins and checked against GNU's =comp-known-type-specifiers=.
+
+All annotation forms are no-ops at run time under GNU Emacs. Under NeLisp
+they are no-ops unless a typed boundary (below) is requested.
+
+* Static checker
+
+=nelisp-typecheck= is a host-Emacs and standalone library that reads source
+with the real reader, macroexpands with the target's macro environment, and
+runs bidirectional local inference per top-level form:
+
+- Inputs: annotations, the primitive table, the FXIR effect table
+  (=lisp/nelisp-cc-fxir-effects.el=), and earlier forms in the same file.
+- Flow typing: =if=/=cond=/=when= narrow on =consp=, =stringp=,
+  =integerp=, =null=, =eq= to constants and =cl-typep=; =setq= widens.
+- Unknown callees, =funcall= of a non-constant, =eval=, and special
+  variables have type =t=; the dynamic type is compatible with every type
+  in both directions (gradual consistency), so they never produce errors.
+- Diagnostics are warnings in the byte-compiler warning format, with three
+  levels: =error= (a definite type clash between two declared types),
+  =warning= (a declared type meets an inferred incompatible one), and
+  =note= (an implicit cast from =t=, reported only under
+  =nelisp-typecheck-strict=).
+- Output: a per-function summary (argument and result types, effect class)
+  written to a cache keyed by the source hash, consumed by native lowering.
+
+The checker has no soundness claim for code that redefines functions at run
+time; that is handled by guards, not by the checker.
+
+* Build-time strictness (decided 2026-11-01)
+
+The checker never changes what NeLisp evaluates at run time. Strictness lives
+in the build: a build gate fails on diagnostics, in the TypeScript =tsc=
+sense, scoped by who owns the code.
+
+| scope                                   | =error=     | =warning=                  | =note=                         |
+|-----------------------------------------+-------------+----------------------------+--------------------------------|
+| module with =nelisp-typed: t=           | build fails | build fails                | fails only under =nelisp-typecheck-strict= |
+| NeLisp's own =lisp/= (untyped)          | build fails | ratchet: count must not grow | reported only                |
+| vendored GNU sources                    | reported    | reported                   | not emitted                    |
+
+The =lisp/= warning ratchet uses a checked-in baseline in the same style as
+the existing baseline gates, so current findings do not turn the build red
+but new ones do. Unknown callees, non-constant =funcall=, =eval=, and
+special variables are type =t= and never fail the build.
+
+* Relation to Doc 197 (=nl-typed=)
+
+Doc 197 already ships =nl-typed= in =packages/nl-static=: per-definition
+argument declarations checked at macroexpansion time, with literal-argument
+and disjoint-category checks. The checker reuses that work rather than
+replacing it:
+
+- =nl-static='s type-category and disjointness functions are the seed of the
+  checker's subtype/consistency relation; signatures declared through
+  =nl-typed= are read as an annotation source alongside =declare ftype=.
+- The checker lives in its own package, =packages/nl-typecheck= (feature
+  =nl-typecheck=, the =nelisp-typecheck= of this document), and follows
+  Doc 168's dependency direction: it may depend on =nl-static=; nothing in
+  the runtime depends on it.
+- Like =nl-check-gate=, it is a separate reading pass run from the build,
+  never inside the byte-compiler, so it cannot change emitted code.
+
+* REPL and dynamic development (decided 2026-11-01)
+
+The checker works per top-level form with an accumulated environment, so the
+same machinery serves interactive development. Four layers, from earliest to
+latest; none of them changes what an unannotated program does.
+
+1. *Input check.* =nelisp-typecheck-repl-mode= runs each REPL input through
+   the checker before evaluation, with the environment accumulated from
+   earlier inputs and loaded files. Diagnostics are printed in the gate
+   format. Under =nelisp-typecheck-strict= an input with an =error=
+   diagnostic is not evaluated; it signals =nl-typecheck-rejected= instead.
+   The REPL loop gains one opt-in hook (=nelisp-repl-input-check-function=,
+   nil by default); with the hook nil the loop is unchanged.
+2. *Caller re-check on redefinition.* The checker keeps a callee-to-callers
+   map from the per-function summaries. When a definition is evaluated whose
+   signature differs from its summary, every recorded caller is re-checked
+   against the new signature and the broken call sites are reported. Callers
+   whose calls stay consistent are not reported.
+3. *Typed-boundary entry checks.* This is Stage 3a below: in a module with the
+   =nelisp-typed= cookie, when enforcement is on (NeLisp default for typed
+   modules; =nelisp-typecheck-enforce=), each annotated function checks its
+   typed arguments on entry and signals =(wrong-type-argument PREDICATE
+   VALUE)=. This is the defence for values the static checker cannot see:
+   =eval=, computed =funcall=, special variables, and external data. The
+   check is ordinary code at the head of the body, so redefinition, =fset=,
+   and advice replace or wrap it like any other code.
+4. *Recovery.* Rejected inputs and boundary failures are recorded through
+   =nelisp-repl-session= with blame (callee, parameter, expected type,
+   actual value's type), and an explicit retry after a fix re-runs the
+   recorded call.
+
+Stage split: Stage 3 is now 3a (entry checks, implemented with the REPL
+work) and 3b (check-free internal entries and guard-based trust in native
+lowering, deferred together with Stage 4 until the native-optimization work
+in progress elsewhere settles).
+
+* Type-directed optimization
+
+Native lowering already specializes on facts proved by FXIR analysis and
+protects user-redefinable callees with Subr-header guards (Docs 231–233).
+Types add facts; they never remove guards that protect redefinition:
+
+- An argument declared =fixnum= lets =+=, =<=, =aref= index checks, and
+  =logand= use the existing inline fast paths without the type-test branch,
+  but only after an entry check (below) has established the type.
+- A declared =(vector-of T)= or =string= removes the per-access kind test in
+  loops whose index is proved in range by the existing bound facts.
+- A declared non-=t= result type of a callee lets the caller skip a
+  re-check of the returned value.
+- A callee that the summary marks =may-signal= only (no allocation, no GC,
+  no Lisp call) lets the caller keep values in registers across the call.
+
+Every specialization keeps the generic path as its fallback, so a wrong
+annotation costs at most a slow path or a signal, never memory unsafety.
+
+* Typed boundaries
+
+A module opts in with =;;; -*- nelisp-typed: t -*-=. For each annotated
+function in such a module, native lowering emits one entry check per typed
+argument. A failed check signals =(wrong-type-argument TYPE-PREDICATE
+VALUE)= exactly as GNU's own checked primitives do. Internal calls between
+functions of the same typed module that the checker proved consistent call a
+check-free entry. Calls from untyped code always go through the checked
+entry. This is the TypeScript/Typed Racket boundary model: blame lands on
+the untyped side, and the typed side may trust its declared types.
+
+Under GNU Emacs the same module runs without checks, with identical results
+whenever no check would have failed.
+
+* Redefinition, advice, and guards
+
+=fset=, =defalias=, =advice-add=, and reloading can replace a typed callee
+with an untyped or differently typed function. The design keeps the existing
+answer:
+
+- check-free internal entries and result-type trust are guarded by the same
+  Subr/closure identity guard used for direct subr calls; on a guard miss
+  the caller takes the generic call path and re-checks the result;
+- =advice-add= on a typed function marks it untyped for its callers until
+  the advice is removed;
+- a redefinition with a different =ftype= invalidates the cached summary;
+  native code compiled against the old summary falls back through its
+  guard.
+
+* Ownership checking (future)
+
+Region handles from Doc 237 are fixnums with generation checks at run time.
+A later stage may add a =region= type with linear-use rules (a handle is
+consumed by =nelisp--region-move= or =nelisp--region-close=), checked only
+inside =nelisp-with-region= bodies. The runtime generation check remains the
+source of truth.
+
+* Stages
+
+1. Primitive signature table generated from the builtins, cross-checked
+   against GNU's known type specifiers; disagreements are reported, not
+   fixed silently.
+2. Checker over annotations with local flow typing; run on NeLisp's own
+   =lisp/= and on vendored GNU sources with zero false =error= diagnostics
+   as the gate.
+3. Typed-module entry checks and check-free internal entries, with
+   =fset=/advice guard tests and GNU differential tests showing identical
+   results for passing programs.
+4. Type-directed lowering of fixnum arithmetic, vector/string access, and
+   register retention, measured with the frozen paired protocol used in S8.
+5. Optional linear checking of region handles.
+
+* Acceptance
+
+Each stage needs:
+
+- a machine-checkable ledger criterion;
+- a negative control (an injected type clash must be reported; a removed
+  guard must fail the redefinition test);
+- no change in GNU differential results for unannotated code.
+
+Performance claims require the frozen measurement protocol. The checker is
+never in the evaluation path of an unannotated program.
