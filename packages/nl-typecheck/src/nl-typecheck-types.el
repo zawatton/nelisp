@@ -20,9 +20,9 @@
 
 (require 'nl-static)
 
-(defconst nl-typecheck--min-fixnum -2305843009213693952
+(defconst nl-typecheck-types-min-fixnum -2305843009213693952
   "Lower bound of the fixnum interval.")
-(defconst nl-typecheck--max-fixnum 2305843009213693951
+(defconst nl-typecheck-types-max-fixnum 2305843009213693951
   "Upper bound of the fixnum interval.")
 
 (defconst nl-typecheck--leaves
@@ -33,7 +33,7 @@
 
 (defun nl-typecheck--full-ints ()
   "Return the interval list covering all fixnums."
-  (list (cons nl-typecheck--min-fixnum nl-typecheck--max-fixnum)))
+  (list (cons nl-typecheck-types-min-fixnum nl-typecheck-types-max-fixnum)))
 
 (defun nl-typecheck--norm-ints (ints)
   "Sort INTS, drop empty ranges and merge touching ones."
@@ -59,12 +59,12 @@
 
 (defun nl-typecheck--ints-comp (a)
   "Complement interval list A inside the fixnum range."
-  (let ((out nil) (next nl-typecheck--min-fixnum))
+  (let ((out nil) (next nl-typecheck-types-min-fixnum))
     (dolist (r (nl-typecheck--norm-ints a))
       (when (< next (car r)) (setq out (cons (cons next (1- (car r))) out)))
       (setq next (1+ (cdr r))))
-    (when (<= next nl-typecheck--max-fixnum)
-      (setq out (cons (cons next nl-typecheck--max-fixnum) out)))
+    (when (<= next nl-typecheck-types-max-fixnum)
+      (setq out (cons (cons next nl-typecheck-types-max-fixnum) out)))
     (nreverse out)))
 
 (defun nl-typecheck--ints-subset (a b)
@@ -165,7 +165,7 @@
      ((eq type 'integer) (nl-typecheck--den '(bignum) ints))
      ((eq type 'bignum) (nl-typecheck--den '(bignum) nil))
      ((eq type 'natnum)
-      (nl-typecheck--den '(bignum) (list (cons 0 nl-typecheck--max-fixnum))))
+      (nl-typecheck--den '(bignum) (list (cons 0 nl-typecheck-types-max-fixnum))))
      ((eq type 'character) (nl-typecheck--den nil (list (cons 0 4194303))))
      ((eq type 'float) (nl-typecheck--den '(float) nil))
      ((memq type '(number real)) (nl-typecheck--den '(bignum float) ints))
@@ -203,8 +203,8 @@
   (let ((leaves nil) (ints nil) (bad nil))
     (dolist (v values)
       (cond ((integerp v)
-             (if (and (>= v nl-typecheck--min-fixnum)
-                      (<= v nl-typecheck--max-fixnum))
+             (if (and (>= v nl-typecheck-types-min-fixnum)
+                      (<= v nl-typecheck-types-max-fixnum))
                  (setq ints (cons (cons v v) ints))
                (setq bad t)))
             ((memq v '(nil t)) (setq leaves (cons (nl-typecheck--value-kind v) leaves)))
@@ -247,10 +247,10 @@
       (if (and (or (null lo) (integerp lo)) (or (null hi) (integerp hi)))
           (nl-typecheck--den
            (if (null hi) '(bignum) nil)
-           (list (cons (max (or lo nl-typecheck--min-fixnum)
-                            nl-typecheck--min-fixnum)
-                       (min (or hi nl-typecheck--max-fixnum)
-                            nl-typecheck--max-fixnum))))
+           (list (cons (max (or lo nl-typecheck-types-min-fixnum)
+                            nl-typecheck-types-min-fixnum)
+                       (min (or hi nl-typecheck-types-max-fixnum)
+                            nl-typecheck-types-max-fixnum))))
         :unsupported)))
    ((and (eq (car type) 'float) (listp (cdr type)))
     (nl-typecheck--den '(float) nil))
@@ -301,7 +301,7 @@
    ((null left) t)
    ((null right) t)
    ((and (symbolp left) (symbolp right)
-         (nl-static--types-disjoint-p left right))
+         (nl-static-types-disjoint-p left right))
     t)
    (t (let ((a (nl-typecheck--den-of left))
             (b (nl-typecheck--den-of right)))

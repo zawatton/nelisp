@@ -19,9 +19,9 @@
         (nelisp-typecheck-strict t)
         (nelisp-repl-input-check-function #'nl-typecheck-repl-check-input))
     (with-output-to-string
-      (nl-typecheck-repl-eval-input
+      (nl-typecheck-recover-eval-input
        '(defun rc-fn (n) (declare (ftype (function (integer) integer))) (* n 2)))
-      (should-error (nl-typecheck-repl-eval-input '(rc-fn "s")) :type 'nl-typecheck-rejected))
+      (should-error (nl-typecheck-recover-eval-input '(rc-fn "s")) :type 'nl-typecheck-rejected))
     (let ((id (plist-get (car (last (nelisp-repl-session-failures))) :id)))
       (should (equal (nl-typecheck-recover-blame id)
                      '(:callee rc-fn :param 1 :expected integer :actual-type string)))
@@ -38,7 +38,7 @@
                        nl-typecheck-recover-test--dir))
     (defvar nl-typecheck-recover-test--arg)
     (setq nl-typecheck-recover-test--arg v)
-    (should-error (nl-typecheck-repl-eval-input
+    (should-error (nl-typecheck-recover-eval-input
                    '(funcall 'entry-add nl-typecheck-recover-test--arg 1))
                   :type 'wrong-type-argument)
     (let* ((id (plist-get (car (last (nelisp-repl-session-failures))) :id))
@@ -59,7 +59,7 @@
         (progn
           (nelisp-typecheck-repl-mode 1)
           (should (eq nelisp-repl-input-eval-function
-                      #'nl-typecheck-repl-eval-input))
+                      #'nl-typecheck-recover-eval-input))
           (let ((before (length (nelisp-repl-session-failures)))
                 (run (if (fboundp 'nelisp--repl-input-run)
                          #'nelisp--repl-input-run

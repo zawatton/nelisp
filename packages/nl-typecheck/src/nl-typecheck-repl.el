@@ -26,7 +26,7 @@
         t))
 
 (defvar nelisp-repl-input-eval-function)
-(declare-function nl-typecheck-repl-eval-input "nl-typecheck-recover")
+(declare-function nl-typecheck-recover-eval-input "nl-typecheck-recover")
 (unless (boundp 'nelisp-repl-input-eval-function)
   (eval '(defvar nelisp-repl-input-eval-function nil
            "REPL input eval hook; see scripts/nelisp-stdlib-prelude.el.")
@@ -34,8 +34,6 @@
 
 (defvar nelisp-typecheck-repl-mode nil
   "Non-nil while `nelisp-typecheck-repl-mode' is enabled.")
-
-(define-error 'nl-typecheck-rejected "Input rejected by the type checker")
 
 (defvar nl-typecheck-repl--sigs nil "Accumulated signatures (symbol -> type).")
 (defvar nl-typecheck-repl--defs nil "Accumulated defined-function symbols.")
@@ -99,27 +97,9 @@
 (defun nl-typecheck-repl--run (form label line)
   "Check FORM in the accumulated environment; return its diagnostics.
 Diagnostics are reported against LABEL and LINE."
-  (let* ((nl-typecheck--sigs nl-typecheck-repl--sigs)
-         (nl-typecheck--defs nl-typecheck-repl--defs)
-         (nl-typecheck--assigned (make-hash-table :test 'eq))
-         (nl-typecheck--occ (make-hash-table :test 'eq))
-         (nl-typecheck--diags nil)
-         (nl-typecheck--summary nil)
-         (nl-typecheck--extra nil)
-         (nl-typecheck--file label)
-         (nl-typecheck--src (generate-new-buffer " *nl-typecheck-repl*")))
-    (unwind-protect
-        (progn
-          (with-current-buffer nl-typecheck--src
-            (let ((print-length nil) (print-level nil))
-              (prin1 form nl-typecheck--src)))
-          (nl-typecheck--note-defs form)
-          (nl-typecheck--process-forms
-           (list (list form 1 (with-current-buffer nl-typecheck--src
-                                (point-max)))))
-          (mapcar (lambda (d) (plist-put d :line line))
-                  (nreverse nl-typecheck--diags)))
-      (kill-buffer nl-typecheck--src))))
+  (mapcar (lambda (d) (plist-put d :line line))
+          (nl-typecheck-check-repl-form
+           form label nl-typecheck-repl--sigs nl-typecheck-repl--defs)))
 
 (defun nl-typecheck-repl--errors (diags)
   "Return the error-level members of DIAGS."
@@ -235,7 +215,7 @@ refused by signalling `nl-typecheck-rejected'."
 (defun nl-typecheck-repl-load-file (path)
   "Check the forms of PATH into the accumulated environment; return error count."
   (nl-typecheck-repl--ensure)
-  (let* ((read (nl-typecheck--read-forms path)) (errors 0))
+  (let* ((read (nl-typecheck-read-forms path)) (errors 0))
     (unwind-protect
         (dolist (f (car read))
           (let ((line (with-current-buffer (car (cdr read))
@@ -258,7 +238,7 @@ refused by signalling `nl-typecheck-rejected'."
   (when nelisp-typecheck-repl-mode
     (require 'nl-typecheck-recover))
   (setq nelisp-repl-input-eval-function
-        (and nelisp-typecheck-repl-mode #'nl-typecheck-repl-eval-input))
+        (and nelisp-typecheck-repl-mode #'nl-typecheck-recover-eval-input))
   nelisp-typecheck-repl-mode)
 
 (provide 'nl-typecheck-repl)

@@ -16,7 +16,7 @@
 (defun e2e-repl--feed (form)
   "Feed FORM to the driver, printing its result or error."
   (condition-case err
-      (prin1 (nl-typecheck-repl-eval-input form))
+      (prin1 (nl-typecheck-recover-eval-input form))
     (error (princ (format "ERROR %S" err))))
   (princ "\n"))
 
@@ -32,7 +32,7 @@
           (insert (prin1-to-string (eval f t)) "\n")))
       (with-temp-file (concat out ".driver")
         (dolist (f e2e-repl--corpus)
-          (insert (prin1-to-string (nl-typecheck-repl-eval-input f)) "\n")))))
+          (insert (prin1-to-string (nl-typecheck-recover-eval-input f)) "\n")))))
    ((equal mode "input-check")
     (nelisp-typecheck-repl-mode 1)
     (setq nelisp-typecheck-strict t)

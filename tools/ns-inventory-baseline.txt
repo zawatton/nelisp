@@ -822,8 +822,8 @@ ns-collision-divergent 133
 # used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
 # `ns-collision' pin for these two names) rather than diverging the name
 # to fit each file's local convention.
-# 2026-11-01: 328 -> 336 (+8).  The new packages/nl-typecheck files (Doc 236) define helper names that cross file-local prefixes inside one package.
-ns-prefix-violation 336
+# 2026-11-01: 336 -> 332 (-4).  The nl-typecheck prefix violations were removed (public renames, namespace pin for the generated prims table).
+ns-prefix-violation 332
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
 # `rx--tr-*' family added to scripts/nelisp-stdlib-prelude.el and
 # lisp/nelisp-stdlib-misc.el -- an `rx-'-prefixed name in a file whose
@@ -999,8 +999,8 @@ ns-prefix-violation 336
 # the four new lines individually and in combination; this kind stays
 # count-only in the gate's own design (see nl-ns-inventory.el's header),
 # so it is not itemized further here.
-# 2026-11-01: 770 -> 789 (+19).  packages/nl-typecheck files call each other's `--' internals; they ship as one package.
-ns-private-escape 789
+# 2026-11-01: 789 -> 770 (-19).  The nl-typecheck private escapes were removed (public cross-file entry points).
+ns-private-escape 770
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'

@@ -21,7 +21,7 @@
 
 (defvar nl-typecheck-recover--blames nil "Alist: failure ID -> blame plist.")
 
-(defun nl-typecheck-repl--run-input (form)
+(defun nl-typecheck-recover--run-input (form)
   "Check FORM through the installed hook (if any), then evaluate it."
   (if (or (null nelisp-repl-input-check-function)
           (funcall nelisp-repl-input-check-function form))
@@ -35,11 +35,11 @@
    ((eq (car err) 'wrong-type-argument)
     (copy-sequence nl-typecheck-entry-last-blame))))
 
-(defun nl-typecheck-repl-eval-input (form)
+(defun nl-typecheck-recover-eval-input (form)
   "Evaluate REPL input FORM; record any failure with its blame."
   (require 'nelisp-repl-session)
   (condition-case err
-      (nelisp-repl-session-call #'nl-typecheck-repl--run-input form)
+      (nelisp-repl-session-call #'nl-typecheck-recover--run-input form)
     (error
      (let ((last (car (last (nelisp-repl-session-failures)))))
        (when last

@@ -9,7 +9,7 @@ The checker itself (Stage 2) and the build gate (Stage 3) are not here yet.
 
 - =src/nl-typecheck-types.el= -- type language relation: =normalize=,
   =subtype-p=, =disjoint-p=, =consistent-p=.  Builds on
-  =nl-static--types-disjoint-p= (Doc 197) as a fast path.
+  =nl-static-types-disjoint-p= (Doc 197) as a fast path.
 - =src/nl-typecheck-prims-data.el= -- GENERATED table of primitive
   signatures (=symbol -> (function (ARGS...) RESULT)=).  Do not edit.
 - =src/nl-typecheck-prims.el= -- lookup and the cross-check.

@@ -27,7 +27,7 @@
   (cond
    ((memq type '(t any)) :none)
    ((symbolp type)
-    (let ((p (rassq type nl-typecheck--predicates)))
+    (let ((p (rassq type nl-typecheck-predicates)))
       (if p (list (car p) v) :none)))
    ((and (consp type) (eq (car type) 'or))
     (let ((tests nil) (ok t))
@@ -48,7 +48,7 @@
 
 (defun nl-typecheck-entry--predicate (type test v)
   "Return the predicate datum for TYPE: a natural symbol or a lambda."
-  (let ((p (and (symbolp type) (rassq type nl-typecheck--predicates))))
+  (let ((p (and (symbolp type) (rassq type nl-typecheck-predicates))))
     (if p (car p)
       (list 'lambda (list 'x)
             (nl-typecheck-entry--subst test v 'x)))))
@@ -76,7 +76,7 @@
        ((eq p '&rest) (setq mode 'rest))
        ((eq mode 'rest))
        (t
-        (let ((type (nl-typecheck--param-type (car (cdr sig)) i)))
+        (let ((type (nl-typecheck-param-type (car (cdr sig)) i)))
           (setq i (1+ i))
           (unless (eq type :none)
             (let ((test (nl-typecheck-entry--test type p)))
@@ -110,7 +110,7 @@
               (let ((keep nil))
                 (dolist (spec (cdr f))
                   (if (and (consp spec) (eq (car spec) 'ftype))
-                      (setq sig (car (nl-typecheck--ftype (list (list 'declare spec)))))
+                      (setq sig (car (nl-typecheck-ftype (list (list 'declare spec)))))
                     (setq keep (cons spec keep))))
                 (when keep (setq head (append head (list (cons 'declare (nreverse keep)))))))
             (setq head (append head (list f)))))
@@ -138,7 +138,7 @@
   "Load FILE; in a nelisp-typed file add entry checks to typed defuns."
   (if (not (nl-typecheck-entry-typed-file-p file))
       (load file nil t)
-    (let ((read (nl-typecheck--read-forms file)))
+    (let ((read (nl-typecheck-read-forms file)))
       (unwind-protect
           (dolist (f (car read))
             (eval (nl-typecheck-entry-transform (car f)) t))

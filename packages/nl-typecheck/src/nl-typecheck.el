@@ -52,7 +52,7 @@ A symbol missing from it is widened to `t' when bound.")
 (defvar nl-typecheck--extra nil
   "Extra diagnostic keys (:param :expected :actual-type) for the report.")
 
-(defconst nl-typecheck--predicates
+(defconst nl-typecheck-predicates
   '((consp . cons) (stringp . string) (integerp . integer)
     (fixnump . fixnum) (bignump . bignum) (numberp . number)
     (symbolp . symbol) (vectorp . vector) (listp . list) (floatp . float)
@@ -126,8 +126,8 @@ A symbol missing from it is widened to `t' when bound.")
         ((eq value t) '((member t) . t))
         ((keywordp value) (cons (list 'member value) t))
         ((symbolp value) (cons (list 'member value) t))
-        ((and (integerp value) (>= value nl-typecheck--min-fixnum)
-              (<= value nl-typecheck--max-fixnum))
+        ((and (integerp value) (>= value nl-typecheck-types-min-fixnum)
+              (<= value nl-typecheck-types-max-fixnum))
          (cons (list 'integer value value) t))
         ((integerp value) '(integer . t))
         ((floatp value) '(float . t))
@@ -168,9 +168,9 @@ A symbol missing from it is widened to `t' when bound.")
      ((and (memq head '(not null)) (consp args) (consp (car args)))
       (let ((r (nl-typecheck--narrow (car args) env)))
         (cons (cdr r) (car r))))
-     ((and (assq head nl-typecheck--predicates) (consp args)
+     ((and (assq head nl-typecheck-predicates) (consp args)
            (symbolp (car args)) (null (cdr args)))
-      (let ((ty (cdr (assq head nl-typecheck--predicates))) (v (car args)))
+      (let ((ty (cdr (assq head nl-typecheck-predicates))) (v (car args)))
         (cons (nl-typecheck--refine v ty t env)
               (nl-typecheck--refine v ty nil env))))
      ((and (memq head '(eq eql)) (consp args) (consp (cdr args)))
@@ -287,7 +287,7 @@ An assigned VAR gets the join of INFO and the assumed assigned types."
       (let ((r (car (cdr (cdr sig)))))
         (if (eq r t) (cons t nil) (cons r (and annotated t)))))))
 
-(defun nl-typecheck--param-type (arglist i)
+(defun nl-typecheck-param-type (arglist i)
   "Return the declared type of position I in ARGLIST, or :none."
   (let ((mode 'req) (k 0) (found :none) (rest-ty :none))
     (dolist (a arglist)
@@ -309,7 +309,7 @@ An assigned VAR gets the join of INFO and the assumed assigned types."
                     (if (= (car ar) (cdr ar)) (format "%d" (car ar))
                       (format "%d to %d" (car ar) (cdr ar))))))))
     (dolist (info infos)
-      (let ((pt (nl-typecheck--param-type arglist i)) (at (car info)))
+      (let ((pt (nl-typecheck-param-type arglist i)) (at (car info)))
         (setq i (1+ i))
         (cond
          ((or (eq pt :none) (eq pt t)))
@@ -505,7 +505,7 @@ assigned variable is widened to `t'."
                        (list 'nl-typecheck--the (list 'quote type) f))))))
     (error :skip)))
 
-(defun nl-typecheck--ftype (body)
+(defun nl-typecheck-ftype (body)
   "Return (SIG . BODY-WITHOUT-DECLARE) from the leading declares of BODY."
   (let ((sig nil) (rest nil))
     (dolist (f body)
@@ -544,7 +544,7 @@ assigned variable is widened to `t'."
            ((eq p '&rest) (setq mode 'rest))
            ((eq mode 'rest) (setq env (cons (cons p '(list)) env)))
            (t
-            (let ((ty (if sig (nl-typecheck--param-type (car (cdr sig)) i) :none)))
+            (let ((ty (if sig (nl-typecheck-param-type (car (cdr sig)) i) :none)))
               (setq i (1+ i))
               (setq env
                     (cons (cons p (cond
@@ -575,7 +575,7 @@ assigned variable is widened to `t'."
   (let ((head (and (consp form) (car form))))
     (cond
      ((and (eq head 'defun) (consp (cdr form)) (consp (cdr (cdr form))))
-      (let ((d (nl-typecheck--ftype (cdr (cdr (cdr form))))))
+      (let ((d (nl-typecheck-ftype (cdr (cdr (cdr form))))))
         (nl-typecheck--process-function
          (car (cdr form)) (car (cdr (cdr form))) (cdr d) (car d))))
      ((and (eq head 'nl-typed) (memq (car (cdr form)) '(defun nl-defun))
@@ -626,7 +626,7 @@ assigned variable is widened to `t'."
        ((memq head '(progn eval-and-compile eval-when-compile))
         (dolist (f (cdr form)) (nl-typecheck--note-defs f)))))))
 
-(defun nl-typecheck--read-forms (path)
+(defun nl-typecheck-read-forms (path)
   "Return (FORMS . BUFFER) for PATH; each form is (FORM START END)."
   (let ((buf (generate-new-buffer " *nl-typecheck-src*")) (forms nil)
         (bad nil))
@@ -718,7 +718,7 @@ statistics of the run are left in `nl-typecheck-last-stats'."
          (nl-typecheck--diags nil)
          (nl-typecheck--summary nil)
          (nl-typecheck--file path)
-         (read (nl-typecheck--read-forms path))
+         (read (nl-typecheck-read-forms path))
          (forms (car read))
          (nl-typecheck--src (car (cdr read)))
          (skipped (if (car (cdr (cdr read))) 1 0))
@@ -737,6 +737,32 @@ statistics of the run are left in `nl-typecheck-last-stats'."
       (kill-buffer nl-typecheck--src))
     (setq nl-typecheck-last-stats (list :forms total :skipped skipped))
     (nreverse nl-typecheck--diags)))
+
+(define-error 'nl-typecheck-rejected "Input rejected by the type checker")
+
+(defun nl-typecheck-check-repl-form (form label sigs defs)
+  "Check FORM against signatures SIGS and defined symbols DEFS.
+Diagnostics are reported against LABEL; return them in source order."
+  (let* ((nl-typecheck--sigs sigs)
+         (nl-typecheck--defs defs)
+         (nl-typecheck--assigned (make-hash-table :test 'eq))
+         (nl-typecheck--occ (make-hash-table :test 'eq))
+         (nl-typecheck--diags nil)
+         (nl-typecheck--summary nil)
+         (nl-typecheck--extra nil)
+         (nl-typecheck--file label)
+         (nl-typecheck--src (generate-new-buffer " *nl-typecheck-repl*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer nl-typecheck--src
+            (let ((print-length nil) (print-level nil))
+              (prin1 form nl-typecheck--src)))
+          (nl-typecheck--note-defs form)
+          (nl-typecheck--process-forms
+           (list (list form 1 (with-current-buffer nl-typecheck--src
+                                (point-max)))))
+          (nreverse nl-typecheck--diags))
+      (kill-buffer nl-typecheck--src))))
 
 (provide 'nl-typecheck)
 ;;; nl-typecheck.el ends here
