@@ -1,6 +1,6 @@
 #!/bin/sh
 # Doc 236 S4/S5/S7 end-to-end sessions.
-# Usage: e2e-repl.sh hook-off|input-check|redefine|recover|standalone [BIN]
+# Usage: e2e-repl.sh hook-off|input-check|redefine|recover|standalone|standalone-record [BIN]
 MODE="$1"; BIN="$2"
 cd "$(dirname "$0")/../../.." || exit 1
 ROOT=$(pwd)
@@ -44,6 +44,21 @@ case "$MODE" in
     grep -q 'refused' "$T/hooked" || exit 1
     grep -q '^(probe nil)$' "$T/hooked" || exit 1
     tail -1 "$T/hooked" | grep -q '^8$' || exit 1 ;;
+  standalone-record)
+    test -x "$BIN" || { echo "e2e-repl: NELISP_BIN not executable: $BIN"; exit 2; }
+    SETUP="(progn (setq nl-e2e-root \"$ROOT\") (load \"$ROOT/packages/nl-typecheck/test/e2e-repl-standalone-setup.el\"))"
+    # The session never requires nelisp-repl-session itself; the mode must.
+    printf '%s\n' "$SETUP" \
+      "(list 'before-session (featurep 'nelisp-repl-session))" \
+      '(setq nelisp-typecheck-strict t)' \
+      "${E2E_MODE_LINE-(nelisp-typecheck-repl-mode 1)}" \
+      '(defun clash-fn (n) (declare (ftype (function (integer) integer))) (* n 2))' \
+      '(clash-fn "s")' \
+      "(list 'failure-count (if (fboundp 'nelisp-repl-session-failures) (length (nelisp-repl-session-failures)) 0))" \
+      | (ulimit -v 8388608; "$BIN" --repl --no-prompt) > "$T/rec" 2>&1
+    cat "$T/rec"
+    grep -q '^(before-session nil)$' "$T/rec" || exit 1
+    grep -q '^(failure-count 1)$' "$T/rec" || exit 1 ;;
   *) echo "usage: e2e-repl.sh MODE [BIN]"; exit 2 ;;
 esac
 exit 0

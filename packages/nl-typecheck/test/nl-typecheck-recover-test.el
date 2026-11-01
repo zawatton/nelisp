@@ -50,5 +50,40 @@
       (setq nl-typecheck-recover-test--arg 41)
       (should (= (nl-typecheck-recover-retry id) 42)))))
 
+(ert-deftest nl-typecheck-recover-mode-records ()
+  (nl-typecheck-recover-clear)
+  (let ((nl-typecheck-repl--sigs nil) (nl-typecheck-repl--defs nil)
+        (nl-typecheck-repl--callers nil) (nl-typecheck-repl--count 0)
+        (nelisp-typecheck-strict t))
+    (unwind-protect
+        (progn
+          (nelisp-typecheck-repl-mode 1)
+          (should (eq nelisp-repl-input-eval-function
+                      #'nl-typecheck-repl-eval-input))
+          (let ((before (length (nelisp-repl-session-failures)))
+                (run (if (fboundp 'nelisp--repl-input-run)
+                         #'nelisp--repl-input-run
+                       nelisp-repl-input-eval-function)))
+            (with-output-to-string
+              (funcall run '(defun rm-fn (n)
+                              (declare (ftype (function (integer) integer)))
+                              (* n 2)))
+              (should-error (funcall run '(rm-fn "s"))
+                            :type 'nl-typecheck-rejected))
+            (should (= (length (nelisp-repl-session-failures)) (1+ before)))
+            (let ((id (plist-get (car (last (nelisp-repl-session-failures))) :id)))
+              (should (nl-typecheck-recover-blame id)))))
+      (nelisp-typecheck-repl-mode 0)
+      (nl-typecheck-recover-clear))))
+
+(ert-deftest nl-typecheck-recover-mode-off-negative-control ()
+  (nl-typecheck-recover-clear)
+  (nelisp-typecheck-repl-mode 0)
+  (should-not nelisp-repl-input-check-function)
+  (should-not nelisp-repl-input-eval-function)
+  (let ((before (length (nelisp-repl-session-failures))))
+    (should-error (eval '(car 1) t))
+    (should (= (length (nelisp-repl-session-failures)) before))))
+
 (provide 'nl-typecheck-recover-test)
 ;;; nl-typecheck-recover-test.el ends here

@@ -25,6 +25,13 @@
            "REPL input check hook; see scripts/nelisp-stdlib-prelude.el.")
         t))
 
+(defvar nelisp-repl-input-eval-function)
+(declare-function nl-typecheck-repl-eval-input "nl-typecheck-recover")
+(unless (boundp 'nelisp-repl-input-eval-function)
+  (eval '(defvar nelisp-repl-input-eval-function nil
+           "REPL input eval hook; see scripts/nelisp-stdlib-prelude.el.")
+        t))
+
 (defvar nelisp-typecheck-repl-mode nil
   "Non-nil while `nelisp-typecheck-repl-mode' is enabled.")
 
@@ -246,6 +253,12 @@ refused by signalling `nl-typecheck-rejected'."
               (t t)))
   (setq nelisp-repl-input-check-function
         (and nelisp-typecheck-repl-mode #'nl-typecheck-repl-check-input))
+  ;; Route every input through the recording evaluator so refused inputs
+  ;; land in the REPL session without the user requiring it by hand.
+  (when nelisp-typecheck-repl-mode
+    (require 'nl-typecheck-recover))
+  (setq nelisp-repl-input-eval-function
+        (and nelisp-typecheck-repl-mode #'nl-typecheck-repl-eval-input))
   nelisp-typecheck-repl-mode)
 
 (provide 'nl-typecheck-repl)

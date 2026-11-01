@@ -11342,15 +11342,24 @@ filter it already wrote."
 ;; form inline, exactly as before.  The function receives the one wrapped
 ;; form and returns non-nil to evaluate it (or signals to refuse it).
 (defvar nelisp-repl-input-check-function nil)
+;; A function receiving the wrapped form that evaluates it and does its own
+;; checking; nil means the default check-then-eval below.
+(defvar nelisp-repl-input-eval-function nil)
 (defmacro nelisp--repl-input (form)
-  (list 'if 'nelisp-repl-input-check-function
+  (list 'if (list 'or 'nelisp-repl-input-check-function
+                  'nelisp-repl-input-eval-function)
         (list 'nelisp--repl-input-run (list 'quote form))
         form))
 (defun nelisp--repl-input-run (form)
-  (if (or (equal form '(progn (nelisp--repl-idle-pump)))
-          (funcall nelisp-repl-input-check-function form))
-      (eval form t)
-    nil))
+  (cond
+   ((equal form '(progn (nelisp--repl-idle-pump)))
+    (eval form t))
+   (nelisp-repl-input-eval-function
+    (funcall nelisp-repl-input-eval-function form))
+   ((or (null nelisp-repl-input-check-function)
+        (funcall nelisp-repl-input-check-function form))
+    (eval form t))
+   (t nil)))
 ;; feat/agent-json-cluster: `void-function' on the last of the 4
 ;; nelisp-agent host-only tests in this cluster (after the
 ;; `insert-file-contents' and `file-in-directory-p'/`file-equal-p' fixes
