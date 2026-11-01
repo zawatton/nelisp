@@ -1,4 +1,4 @@
-.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
+.PHONY: typecheck-test typecheck-gate typecheck-vendor typecheck-baseline-update typecheck-test-prims typecheck-prims-crosscheck typecheck-prims-gen lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -276,6 +276,42 @@ wasm-dtw-site-smoke: wasm-dtw-site
 	  echo "GATE-COUNT checked=1 findings=1"; exit 1; \
 	fi
 
+# Doc 236 Stage 1: primitive signature table.  Not wired into `compile'.
+TYPECHECK_TEST_SELECTOR ?= t
+TYPECHECK_LOAD = -L lisp -L packages/nl-prelude/src -L packages/nl-safe/src \
+  -L packages/nl-static/src -L packages/nl-typecheck/src
+
+typecheck-test-prims:
+	TYPECHECK_TEST_FILES='prims-test\.el$$' TYPECHECK_TEST_SELECTOR='$(TYPECHECK_TEST_SELECTOR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l packages/nl-typecheck/test/run-tests.el
+
+# Doc 236 Stages 2-3: every nl-typecheck test, the build gate, the baseline
+# writer (the only target that writes tools/typecheck-baseline.eld) and the
+# vendored-GNU check.  TYPECHECK_FILES (space separated) overrides the
+# default file set; NELISP_TYPECHECK_STRICT=1 makes notes fail typed modules.
+typecheck-test:
+	TYPECHECK_TEST_SELECTOR='$(TYPECHECK_TEST_SELECTOR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l packages/nl-typecheck/test/run-tests.el
+
+typecheck-gate:
+	TYPECHECK_MODE=gate TYPECHECK_FILES='$(TYPECHECK_FILES)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-baseline-update:
+	TYPECHECK_MODE=baseline TYPECHECK_FILES='$(TYPECHECK_FILES)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-vendor:
+	TYPECHECK_MODE=vendor GNU_LISP_DIR='$(GNU_LISP_DIR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-prims-crosscheck:
+	$(EMACS) --batch -Q $(TYPECHECK_LOAD) -l packages/nl-typecheck/tools/crosscheck.el
+
+typecheck-prims-gen:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  -l packages/nl-typecheck/tools/gen-prims.el
+
 # nl-check owns the expansion-time checks (`nl-must-use', resource
 # tracking).  Until now nothing ran them as a gate: `unsafe-inventory'
 # counted one of the five kinds and the other four were reported by no
@@ -357,7 +393,7 @@ test-nojit:
 	$(MAKE) test-fast \
 	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
 
-compile: nl-check-gate
+compile: nl-check-gate typecheck-gate
 	$(EMACS) --batch -Q -L src \
 	  $(PACKAGE_SRC_LOADS) \
 	  --eval '(setq byte-compile-error-on-warn t)' \

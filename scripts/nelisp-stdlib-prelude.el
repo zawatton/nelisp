@@ -11300,6 +11300,20 @@ filter it already wrote."
 ;; wait.
 (unless (fboundp 'nelisp--repl-idle-pump)
   (defun nelisp--repl-idle-pump () nil))
+;; Doc 236 layer 1: opt-in REPL input check.  The REPL wraps every typed
+;; line in `nelisp--repl-input'; with the variable nil the macro runs the
+;; form inline, exactly as before.  The function receives the one wrapped
+;; form and returns non-nil to evaluate it (or signals to refuse it).
+(defvar nelisp-repl-input-check-function nil)
+(defmacro nelisp--repl-input (form)
+  (list 'if 'nelisp-repl-input-check-function
+        (list 'nelisp--repl-input-run (list 'quote form))
+        form))
+(defun nelisp--repl-input-run (form)
+  (if (or (equal form '(progn (nelisp--repl-idle-pump)))
+          (funcall nelisp-repl-input-check-function form))
+      (eval form t)
+    nil))
 ;; feat/agent-json-cluster: `void-function' on the last of the 4
 ;; nelisp-agent host-only tests in this cluster (after the
 ;; `insert-file-contents' and `file-in-directory-p'/`file-equal-p' fixes

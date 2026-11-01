@@ -21447,7 +21447,7 @@ pre-Stage-8 fixed immediate (`nelisp-standalone--windows-arena-base' #x70000000
 + 8 = #x70000008), which after the rebase points at unmapped VA -> SIGSEGV in
 the REPL print path's quit-flag check (the `--eval' command never runs this
 suffix, which is why only `--repl' crashed)."
-  "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
+  ")))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
 
 (defconst nelisp-standalone--reader-boundary-source
   '(seq
@@ -27793,13 +27793,13 @@ correctly."
 	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
-      "(let ((v (progn\n")
+      "(let ((v (nelisp--repl-input (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_suffix
       (nelisp-standalone--reader-repl-eval-suffix))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
-      "))) v)\n")
+      ")))) v)\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_prompt
       "nelisp> ")

@@ -1,0 +1,132 @@
+#+TITLE: Doc 236 gradual type checking — Stages 1-2 and build gate
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/gradual-typecheck-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)
+# GNU_LISP_DIR points at a GNU Emacs lisp/ tree (e.g. /usr/share/emacs/31.1/lisp).
+# NELISP_BIN points at a built standalone target/nelisp binary.
+
+* S1 Primitive signature table
+
+** S1.1 Primitive table unit tests pass
+#+TIMEOUT: 300
+cmd: make typecheck-test-prims
+
+** S1.2 Cross-check against GNU comp-known-type-specifiers runs and writes a disagreement report
+#+TIMEOUT: 300
+cmd: make typecheck-prims-crosscheck && test -s target/typecheck/prims-crosscheck.txt
+
+** S1.3 Negative control: a corrupted table entry is reported as a disagreement
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-prims-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test-prims TYPECHECK_TEST_SELECTOR=nl-typecheck-prims-negative-control
+
+* S2 Checker with local flow typing
+
+** S2.1 Checker ERT suite passes (inference, narrowing, gradual consistency)
+#+TIMEOUT: 300
+cmd: make typecheck-test
+
+** S2.2 Negative control: an injected declared-type clash is an error and fails the gate
+#+TIMEOUT: 300
+cmd: F=packages/nl-typecheck/test/fixtures/clash.el; mkdir -p target/typecheck; test -f $F && ! make typecheck-gate TYPECHECK_FILES=$F >target/typecheck/neg-clash.log 2>&1 && grep -q 'clash.el:[0-9]*:[0-9]*: error: ' target/typecheck/neg-clash.log
+
+** S2.3 Positive control: the clash fixture's fixed twin passes the gate
+#+TIMEOUT: 300
+cmd: make typecheck-gate TYPECHECK_FILES=packages/nl-typecheck/test/fixtures/clash-fixed.el
+
+** S2.4 End to end: zero error diagnostics on GNU Emacs lisp/ subset (vendored-scope rules)
+#+REQUIRES: GNU_LISP_DIR
+#+TIMEOUT: 600
+cmd: make typecheck-vendor GNU_LISP_DIR="$GNU_LISP_DIR"
+
+* S3 Build gate
+
+** S3.1 make compile runs the type-check gate
+cmd: make -n compile 2>/dev/null | grep -q 'nl-typecheck-gate'
+
+** S3.2 Typed module strictness: a warning in a nelisp-typed module fails the gate
+#+TIMEOUT: 300
+cmd: F=packages/nl-typecheck/test/fixtures/typed-warning.el; mkdir -p target/typecheck; test -f $F && ! make typecheck-gate TYPECHECK_FILES=$F >target/typecheck/neg-typed.log 2>&1 && grep -q 'typed-warning.el:[0-9]*:[0-9]*: warning: ' target/typecheck/neg-typed.log
+
+** S3.3 lisp/ warning ratchet: injecting one new warning fails, baseline passes
+#+TIMEOUT: 600
+cmd: sh tools/typecheck-ratchet-negative.sh
+
+** S3.4 End to end: full gate over lisp/ passes against the checked-in baseline
+#+TIMEOUT: 600
+cmd: make typecheck-gate
+
+** S3.5 End to end: checker loads and checks the clash fixture on standalone target/nelisp
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/standalone-smoke.sh "$NELISP_BIN"
+
+* S4 REPL input check (layer 1)
+
+** S4.1 REPL input-check ERT tests pass (accumulated environment, print-and-eval, strict refusal)
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-repl-input-' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-repl-input-'
+
+** S4.2 Negative control: a clashing input under strict mode is not evaluated (its side effect is absent)
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-repl-input-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-repl-input-negative-control
+
+** S4.3 With the hook nil the REPL loop output is byte-identical to the unhooked baseline
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh hook-off
+
+** S4.4 End to end: host REPL driver session refuses a clashing input and evaluates the next valid one
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh input-check
+
+** S4.5 End to end: standalone target/nelisp --repl session with the hook enabled refuses a clashing input
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh standalone "$NELISP_BIN"
+
+* S5 Caller re-check on redefinition (layer 2)
+
+** S5.1 Redefinition re-check ERT tests pass
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-redef-' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-redef-'
+
+** S5.2 Negative control: only callers broken by the new signature are reported, consistent callers are not
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-redef-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-redef-negative-control
+
+** S5.3 End to end: REPL session redefines a callee with a new ftype and the broken caller is reported
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh redefine
+
+* S6 Typed-boundary entry checks (layer 3, Stage 3a)
+
+** S6.1 Entry-check ERT tests pass (wrong-type-argument with predicate, fset/advice replace or wrap the check)
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-entry-' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-entry-'
+
+** S6.2 Negative control: a wrong-typed argument via computed funcall signals; enforcement off does not
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-entry-negative-control' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-entry-negative-control
+
+** S6.3 End to end: GNU differential, typed fixture module gives identical results with and without enforcement for passing calls
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-entry.sh differential
+
+** S6.4 End to end: standalone target/nelisp loads the typed fixture module and signals on a bad call
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-entry.sh standalone "$NELISP_BIN"
+
+* S7 Recovery (layer 4)
+
+** S7.1 Recovery ERT tests pass (rejected inputs and boundary failures recorded with blame)
+#+TIMEOUT: 300
+cmd: grep -q 'ert-deftest nl-typecheck-recover-' packages/nl-typecheck/test/*.el && make typecheck-test TYPECHECK_TEST_SELECTOR='^nl-typecheck-recover-'
+
+** S7.2 Negative control: a selector that matches no test makes the runner fail
+#+TIMEOUT: 300
+cmd: ! make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-no-such-test-xyz >/dev/null 2>&1 && make typecheck-test TYPECHECK_TEST_SELECTOR=nl-typecheck-prims-negative-control >/dev/null 2>&1
+
+** S7.3 End to end: REPL session hits a boundary failure, the user fixes the caller, explicit retry succeeds
+#+TIMEOUT: 300
+cmd: sh packages/nl-typecheck/test/e2e-repl.sh recover

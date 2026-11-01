@@ -1,0 +1,27 @@
+#+TITLE: nl-typecheck -- gradual type checking (Doc 236)
+
+* Status
+
+Stage 1 only: the primitive signature table and the type relation.
+The checker itself (Stage 2) and the build gate (Stage 3) are not here yet.
+
+* Files
+
+- =src/nl-typecheck-types.el= -- type language relation: =normalize=,
+  =subtype-p=, =disjoint-p=, =consistent-p=.  Builds on
+  =nl-static--types-disjoint-p= (Doc 197) as a fast path.
+- =src/nl-typecheck-prims-data.el= -- GENERATED table of primitive
+  signatures (=symbol -> (function (ARGS...) RESULT)=).  Do not edit.
+- =src/nl-typecheck-prims.el= -- lookup and the cross-check.
+- =tools/gen-prims.el= -- the generator (host Emacs only; needs
+  =comp-common= and =scripts/nelisp-standalone-build.el=).
+- =tools/crosscheck.el= -- writes =target/typecheck/prims-crosscheck.txt=.
+
+* Targets
+
+- =make typecheck-test-prims [TYPECHECK_TEST_SELECTOR=...]=
+- =make typecheck-prims-crosscheck=
+- =make typecheck-prims-gen= (regenerates the data file)
+
+Disagreements between the table and the runtime are reported, never
+fixed silently.
