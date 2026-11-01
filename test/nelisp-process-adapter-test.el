@@ -119,6 +119,44 @@ on a host."
             (should (equal (with-current-buffer buf (buffer-string)) "")))
         (kill-buffer buf)))))
 
+;; make-process must start the child in `default-directory' (real Emacs
+;; semantics); the native spawn primitive inherits the parent's cwd.
+(ert-deftest nelisp-make-process-runs-in-default-directory ()
+  (skip-unless (fboundp 'nelisp-process-start))
+  (nelisp-process-adapter-test--fresh
+    (let* ((dir (file-name-as-directory (make-temp-file "nelisp-mp-cwd-" t)))
+           (buf (generate-new-buffer "nelisp-process-adapter-test--cwd"))
+           (default-directory dir)
+           (p (make-process :name "pwd" :command '("pwd") :buffer buf
+                            :connection-type 'pipe :sentinel #'ignore))
+           (n 0))
+      (unwind-protect
+          (progn
+            (while (and (process-live-p p) (< n 50))
+              (setq n (1+ n))
+              (accept-process-output p 0.1))
+            (accept-process-output p 0.2)
+            (should (equal (file-name-as-directory
+                            (string-trim (with-current-buffer buf (buffer-string))))
+                           (file-name-as-directory (file-truename dir)))))
+        (kill-buffer buf)
+        (delete-directory dir t)))))
+
+(ert-deftest nelisp-make-process-cwd-wrapper-shape ()
+  "The wrapper is applied only for a local absolute `default-directory'."
+  (skip-unless (fboundp 'nelisp-process-adapter--cwd-command))
+  (let ((default-directory "/tmp/some dir/"))
+    (let ((cmd (nelisp-process-adapter--cwd-command '("git" "status"))))
+      (should (equal (last cmd 2) '("git" "status")))
+      (should (member "/tmp/some dir/" cmd))))
+  (let ((default-directory "relative/"))
+    (should (equal (nelisp-process-adapter--cwd-command '("git"))
+                   '("git")))))
+
+(ert-deftest nelisp-process-coding-system-alist-is-bound ()
+  (skip-unless (fboundp 'nelisp-process-adapter--cwd-command))
+  (should (boundp 'process-coding-system-alist)))
+
 (ert-deftest nelisp-accept-process-output-does-not-drain-unrelated-processes ()
   "proc2's sentinel must not fire as a side effect of waiting on proc1
 (Doc 184 S5.1's own illustrative case, and S1.3's measured defect: the

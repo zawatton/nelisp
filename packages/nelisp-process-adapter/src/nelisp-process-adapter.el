@@ -225,6 +225,33 @@ host -- the default sentinel silently does nothing there too."
                 (insert (format "\nProcess %s %s" (process-get proc :name) status)))))))
     (nelisp-process-buffer-close-stderr proc)))
 
+;;; make-process: cwd + coding alist ------------------------------------
+
+(defvar process-coding-system-alist nil
+  "Alist of (PROCESS-REGEXP . CODING) used when starting a process.
+Standard Emacs variable.  The standalone runtime does not load the file
+that normally defines it, so callers that let-bind it (e.g. anvil's git
+tools) would otherwise bind an unbound variable.  The adapter does not
+consult it: process I/O stays raw bytes decoded by the caller.")
+
+(defun nelisp-process-adapter--cwd-command (command)
+  "Return COMMAND wrapped so the child runs in `default-directory'.
+Real Emacs `make-process' starts the child in `default-directory', but
+the native spawn primitive inherits the parent's cwd.  When
+`default-directory' is a local absolute directory, COMMAND is prefixed
+with a fixed POSIX shell wrapper that chdirs first (exit 127 if the
+directory is unusable); the directory and argv are passed as positional
+parameters, never interpolated into shell code.  Otherwise COMMAND is
+returned unchanged.  Mirrors `emacs-process--call-process-cwd', kept
+local so this package does not depend on emacs-io."
+  (let ((dir (and (boundp 'default-directory) default-directory))
+        (sh (and (fboundp 'executable-find) (executable-find "sh"))))
+    (if (and sh (stringp dir) (> (length dir) 0) (= (aref dir 0) ?/))
+        (append (list sh "-c" "cd \"$1\" || exit 127; shift; exec \"$@\""
+                      "nelisp-process-adapter-cwd" dir)
+                command)
+      command)))
+
 ;;; make-process: real :filter -------------------------------------------
 
 (defun make-process (&rest plist)
@@ -251,8 +278,9 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
          (sentinel (plist-get plist :sentinel))
          (filter (plist-get plist :filter))
          (resolved (and command
-                        (cons (or (executable-find (car command)) (car command))
-                              (cdr command)))))
+                        (nelisp-process-adapter--cwd-command
+                         (cons (or (executable-find (car command)) (car command))
+                               (cdr command))))))
     (unless command (signal 'wrong-type-argument (list 'listp command)))
     (unless (fboundp 'nelisp-process-start)
       (signal 'error (list "make-process: no native process primitive (nelisp-process-start) in this runtime")))
