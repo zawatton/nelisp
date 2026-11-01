@@ -10350,6 +10350,17 @@ eval applyfn.")
         (if (= (ptr-read-u64 rest_slot 0) 0)
             0
           (bf_wrong_type_listp rest_slot))))
+    ;; GNU `Fmapcar' computes the sequence length (`Flength') before the
+    ;; first call to FN, so an improper list signals
+    ;; `(wrong-type-argument listp TAIL)' with no call made.  Walk the
+    ;; spine once up front (pointer reads only, no allocation) so the
+    ;; native loop keeps that ordering.
+    (defun wf_mapcar_check (p)
+      (if (= (ptr-read-u64 p 0) 7)
+          (wf_mapcar_check (nl_cons_cdr_ptr p))
+        (if (= (ptr-read-u64 p 0) 0)
+            0
+          (bf_wrong_type_listp p))))
     (defun wf_mapcar_slow (args env out)
       (let* ((buf (alloc-bytes 24 1)) (sym_slot (alloc-bytes 32 8)) (fn_slot (alloc-bytes 32 8)))
         (seq
@@ -10388,6 +10399,8 @@ eval applyfn.")
     (defun wf_mapcar (args env out)
       (let* ((fn (wf_arg_ptr args 0)) (sq (wf_arg_ptr args 1)) (sqtag (ptr-read-u64 sq 0)))
         (if (if (= sqtag 0) 1 (if (= sqtag 7) 1 0))
+            (let* ((crc (wf_mapcar_check sq)))
+             (if (= crc 0)
             (let* ((mark (nl_root_mark env))
                    (fn_slot (nl_root_reserve env))
                    (rest_slot (nl_root_reserve env))
@@ -10406,6 +10419,7 @@ eval applyfn.")
                                 0))
                        (seq (nl_root_release env mark) rc))))
                 (seq (nl_cons_stash_void_function env fn) (nl_root_release env mark) 1)))
+              crc))
           (wf_mapcar_slow args env out)))))
   "Segment G1 native fast paths for `nth'/`nthcdr'/`last'/`butlast'/
 `append'/`assoc'/`plist-get'/`mapcar'.  See the file-level comment just
