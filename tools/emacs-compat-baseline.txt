@@ -97,7 +97,13 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
-shared-shadowing 270
+shared-shadowing 269
+
+# 270 -> 269 on 2026-11-01: the measured count had drifted to 269 (one below
+# the baseline), so the gate-mutation row for emacs-compat, which injects
+# exactly one new unconditional shadow, landed on 270 == baseline and stayed
+# green.  Tightened to the measured value so +1 is red again (same count on
+# emacs-gtk 30.1 and 31.1).
 
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # entries in `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
