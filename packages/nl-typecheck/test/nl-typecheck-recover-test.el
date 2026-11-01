@@ -7,6 +7,11 @@
 (require 'ert)
 (require 'nl-typecheck-recover)
 
+(defconst nl-typecheck-recover-test--dir
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory of this file, captured at load time.
+`load-file-name' is nil when the test body runs after loading.")
+
 (ert-deftest nl-typecheck-recover-rejected-input-blame-and-retry ()
   (nl-typecheck-recover-clear)
   (let ((nl-typecheck-repl--sigs nil) (nl-typecheck-repl--defs nil)
@@ -30,7 +35,7 @@
         (v "bad"))
     (nl-typecheck-entry-load
      (expand-file-name "fixtures/entry-typed.el"
-                       (file-name-directory (or load-file-name buffer-file-name))))
+                       nl-typecheck-recover-test--dir))
     (defvar nl-typecheck-recover-test--arg)
     (setq nl-typecheck-recover-test--arg v)
     (should-error (nl-typecheck-repl-eval-input

@@ -8,6 +8,11 @@
 (require 'cl-lib)
 (require 'nl-typecheck)
 
+(defconst nl-typecheck-test--dir
+  (file-name-directory (or load-file-name buffer-file-name))
+  "Directory of this file, captured at load time.
+`load-file-name' is nil when the test body runs after loading.")
+
 (defun nl-typecheck-test--check (source &optional suffix)
   "Check SOURCE written to a temp file with SUFFIX; return diagnostics."
   (let ((file (make-temp-file "nl-tc-" nil (or suffix ".el"))))
@@ -156,7 +161,7 @@
 ")))
 
 (ert-deftest nl-typecheck-fixtures ()
-  (let ((dir (expand-file-name "fixtures" (file-name-directory (or load-file-name buffer-file-name)))))
+  (let ((dir (expand-file-name "fixtures" nl-typecheck-test--dir)))
     (should (cl-some (lambda (d) (eq (plist-get d :level) 'error))
                      (nl-typecheck-file (expand-file-name "clash.el" dir))))
     (should-not (nl-typecheck-file (expand-file-name "clash-fixed.el" dir)))
