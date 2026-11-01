@@ -92,14 +92,16 @@ rejection, or nil when nothing answers."
                  :pending (make-hash-table :test 'eql)
                  :next-id 0 :welcome nil :rejected nil :closed nil)))
     (condition-case nil
-        (let ((proc (make-network-process
+        (let ((proc (apply
+                     #'make-network-process
                      :name (format "nelisp-service-client-%s" name)
                      :host "127.0.0.1" :service (plist-get state :port)
                      :family 'ipv4 :noquery t
                      :filter (lambda (_p chunk)
                                (nelisp-service-client--on-input client chunk))
                      :sentinel (lambda (p _event)
-                                 (nelisp-service-client--on-close client p)))))
+                                 (nelisp-service-client--on-close client p))
+                     (nelisp-service-network-coding-args))))
           (nelisp-service-put client :process proc)
           (process-send-string
            proc (nelisp-service-encode

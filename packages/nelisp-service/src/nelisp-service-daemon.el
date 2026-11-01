@@ -147,7 +147,8 @@ Call `nelisp-service-daemon-run' to serve."
         (unless (nelisp-service-daemon--port-in-use-p port)
           (setq server
                 (condition-case nil
-                    (make-network-process
+                    (apply
+                     #'make-network-process
                      :name (format "nelisp-service-%s"
                                    (nelisp-service-get daemon :name))
                      :server t :host "127.0.0.1" :service port :family 'ipv4
@@ -155,7 +156,8 @@ Call `nelisp-service-daemon-run' to serve."
                      :filter (lambda (conn chunk)
                                (nelisp-service-daemon--on-input daemon conn chunk))
                      :sentinel (lambda (conn _event)
-                                 (nelisp-service-daemon--on-change daemon conn)))
+                                 (nelisp-service-daemon--on-change daemon conn))
+                     (nelisp-service-network-coding-args))
                   (error nil)))
           (when server (nelisp-service-put daemon :port port))))
       (setq attempt (1+ attempt)))

@@ -307,6 +307,19 @@ unreadable line."
                             (nelisp-service--blob-sizes object))))
         (if blobs (nelisp-service--fill-blobs object blobs) object)))))
 
+;; Host Emacs picks a network stream's coding system from
+;; `network-coding-system-alist' and `default-process-coding-system',
+;; which follow the locale: on a Windows host that is a code page, so a
+;; non-ASCII request reached the daemon with its characters replaced by
+;; spaces (CI ert windows-latest, 2026-10-17 onward).  The worker pool
+;; already passes :coding utf-8 to `make-process'; the daemon and the
+;; client sockets must do the same.  The standalone reader's sockets
+;; carry bytes and take no :coding.
+(defun nelisp-service-network-coding-args ()
+  "Return the trailing `make-network-process' args fixing UTF-8 on host Emacs."
+  (unless (nelisp-service-standalone-p)
+    (list :coding 'utf-8)))
+
 (defun nelisp-service-setup-stdio ()
   "Make stdin and stdout carry UTF-8 on host Emacs in batch mode.
 Host Emacs decodes batch stdin and encodes stdout with
