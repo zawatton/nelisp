@@ -14,7 +14,10 @@
 
 (require 'nl-typecheck-repl)
 (require 'nl-typecheck-entry)
-(require 'nelisp-repl-session)
+(declare-function nelisp-repl-session-call "nelisp-repl-session")
+(declare-function nelisp-repl-session-failures "nelisp-repl-session")
+(declare-function nelisp-repl-session-retry "nelisp-repl-session")
+(declare-function nelisp-repl-session-clear "nelisp-repl-session")
 
 (defvar nl-typecheck-recover--blames nil "Alist: failure ID -> blame plist.")
 
@@ -34,6 +37,7 @@
 
 (defun nl-typecheck-repl-eval-input (form)
   "Evaluate REPL input FORM; record any failure with its blame."
+  (require 'nelisp-repl-session)
   (condition-case err
       (nelisp-repl-session-call #'nl-typecheck-repl--run-input form)
     (error
@@ -50,11 +54,13 @@
 
 (defun nl-typecheck-recover-retry (id)
   "Retry failure ID explicitly, re-running the input in the current environment."
+  (require 'nelisp-repl-session)
   (nelisp-repl-session-retry id))
 
 (defun nl-typecheck-recover-clear ()
   "Forget recorded failures and blames."
   (setq nl-typecheck-recover--blames nil)
+  (require 'nelisp-repl-session)
   (nelisp-repl-session-clear))
 
 (provide 'nl-typecheck-recover)

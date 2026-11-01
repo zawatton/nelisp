@@ -9,7 +9,7 @@
   (declare (ftype (function (integer) integer)))
   (* n 2))
 
-(defun clash-caller ()
+(defun clash-fixed-caller ()
   "Call `clash-double' with an integer."
   (clash-double 3))
 

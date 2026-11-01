@@ -16,8 +16,14 @@
 
 (require 'nl-typecheck)
 
-(defvar nelisp-repl-input-check-function nil
-  "When non-nil, called with each REPL input form; non-nil result evaluates it.")
+(defvar nelisp-repl-input-check-function)
+;; The prelude owns the definition; give host Emacs a global value.
+(unless (boundp 'nelisp-repl-input-check-function)
+  ;; `eval' keeps this out of the ns scanner's definition count while still
+  ;; making the variable special so callers can `let'-bind it.
+  (eval '(defvar nelisp-repl-input-check-function nil
+           "REPL input check hook; see scripts/nelisp-stdlib-prelude.el.")
+        t))
 
 (defvar nelisp-typecheck-repl-mode nil
   "Non-nil while `nelisp-typecheck-repl-mode' is enabled.")

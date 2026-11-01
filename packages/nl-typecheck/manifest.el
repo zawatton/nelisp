@@ -1,2 +1,2 @@
 (:name "nl-typecheck"
- :requires ("nl-prelude" "nl-safe" "nl-static"))
+ :requires ("nl-static"))

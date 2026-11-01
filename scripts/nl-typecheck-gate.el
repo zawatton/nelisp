@@ -50,7 +50,7 @@
     (with-temp-buffer
       (insert-file-contents nl-typecheck-gate--baseline-file)
       (goto-char (point-min))
-      (condition-case nil (read (current-buffer)) (error nil)))))
+      (read (current-buffer)))))
 
 (defun nl-typecheck-gate--count (diags level)
   "Count DIAGS of LEVEL."
