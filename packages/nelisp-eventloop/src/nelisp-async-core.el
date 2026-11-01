@@ -228,6 +228,29 @@ override this to return nil when a key arrives)."
           (setq remain (- end (nelisp-async-core--now)))))))
   t)
 
+;;; run-with-timer / run-with-idle-timer -------------------------------
+
+(defun nelisp-async-core-run-with-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds, then every REPEAT seconds.
+GNU semantics: `(apply #\='run-at-time SECS REPEAT FUNCTION ARGS)'.
+Goes through `nelisp-async-core-run-at-time' directly so the result is
+always one of this module's cancellable timer objects and SECS gets
+the same validation (a bad SECS signals \"Invalid time specification\")."
+  (apply #'nelisp-async-core-run-at-time secs repeat function args))
+
+(defun nelisp-async-core-run-with-idle-timer (secs repeat function &rest args)
+  "Schedule FUNCTION after SECS seconds of idle time.
+Approximation: the standalone runtime has no user input, so it is
+always idle and an idle timer is an ordinary deferred timer of SECS.
+When REPEAT is non-nil the timer repeats every SECS seconds (GNU
+re-arms only after fresh input ends an idle period, which cannot
+happen here).  SECS is a number or nil (0); invalid input signals as in
+`nelisp-async-core-run-at-time'.  Returns a timer object accepted by
+`timerp' and `cancel-timer'."
+  (apply #'nelisp-async-core-run-at-time secs
+         (and repeat (if (numberp secs) secs 0.0))
+         function args))
+
 ;;; Upgrade the prelude stubs to the real deferred implementations -----
 ;; Same upgrade-on-load pattern `nelisp-async.el' already used: loading
 ;; this file redefines the four standard names unconditionally (no
@@ -247,6 +270,8 @@ override this to return nil when a key arrives)."
 (defalias 'cancel-timer #'nelisp-async-core-cancel-timer)
 (defalias 'sit-for #'nelisp-async-core-sit-for)
 (defalias 'timerp #'nelisp-async-core-timerp)
+(defalias 'run-with-timer #'nelisp-async-core-run-with-timer)
+(defalias 'run-with-idle-timer #'nelisp-async-core-run-with-idle-timer)
 
 (provide 'nelisp-async-core)
 ;;; nelisp-async-core.el ends here

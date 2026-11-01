@@ -48,6 +48,52 @@
       (nelisp-async-run)
       (should (= n 3)))))
 
+(ert-deftest nelisp-async-run-with-timer-deferred ()
+  (skip-unless (fboundp 'alloc-bytes))
+  (nelisp-async-test--fresh
+    (let ((got nil))
+      (let ((tm (nelisp-async-core-run-with-timer
+                 0.01 nil (lambda (a b) (setq got (list a b))) 1 2)))
+        (should (timerp tm))
+        (should-not got))
+      (nelisp-async-run)
+      (should (equal got '(1 2))))))
+
+(ert-deftest nelisp-async-run-with-timer-repeat-cancel ()
+  (skip-unless (fboundp 'alloc-bytes))
+  (nelisp-async-test--fresh
+    (let ((n 0) (tm nil))
+      (setq tm (nelisp-async-core-run-with-timer
+                0.01 0.01
+                (lambda () (setq n (1+ n)) (when (>= n 3) (cancel-timer tm)))))
+      (nelisp-async-run)
+      (should (= n 3)))))
+
+(ert-deftest nelisp-async-run-with-idle-timer-fires-and-cancels ()
+  (skip-unless (fboundp 'alloc-bytes))
+  (nelisp-async-test--fresh
+    (let ((fired nil) (cancelled nil))
+      (should (timerp (nelisp-async-core-run-with-idle-timer
+                       0.01 nil (lambda () (setq fired t)))))
+      (cancel-timer (nelisp-async-core-run-with-idle-timer
+                     0.01 nil (lambda () (setq cancelled t))))
+      (nelisp-async-run)
+      (should fired)
+      (should-not cancelled))))
+
+(ert-deftest nelisp-async-run-with-idle-timer-repeat ()
+  (skip-unless (fboundp 'alloc-bytes))
+  (nelisp-async-test--fresh
+    (let ((n 0) (tm nil))
+      (setq tm (nelisp-async-core-run-with-idle-timer
+                0.01 t (lambda () (setq n (1+ n)) (when (>= n 2) (cancel-timer tm)))))
+      (nelisp-async-run)
+      (should (= n 2)))))
+
+(ert-deftest nelisp-async-run-with-timer-invalid-secs ()
+  (should-error (nelisp-async-core-run-with-timer "ABC" nil #'ignore))
+  (should-error (nelisp-async-core-run-with-idle-timer '(1) nil #'ignore)))
+
 (ert-deftest nelisp-async-deadline-order ()
   (skip-unless (fboundp 'alloc-bytes))
   ;; Three timers armed out of order fire in deadline order.
