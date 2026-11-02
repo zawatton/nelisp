@@ -692,5 +692,16 @@
 # same direction both times so a pin at the local number leaves CI's own
 # measurement inside the ceiling with room to spare.  The next pin should
 # go back to CI's number.
-size 9288160
+#
+# 2026-11-02: re-pinned at 9,490,208 -- CI's own build of main caf7477e7
+# (run 41366698093, smoke ubuntu 31.1 lane, `./target/nelisp is 9490208
+# bytes', 16,285 over the ceiling the segment-F pin left).  CI measured
+# the previous commit a21d3e08e at 9,366,984 (run 41356036496), so this
+# commit is +123,224 bytes.  It is the GNU Emacs 31.1 parity change: the
+# prelude now registers the 96 error symbols GNU has at startup (each with
+# its conditions list and message string) so the stricter `signal' can
+# refuse undefined ones, plus the 31.1 keyword `sort', element-wise
+# `value<' and the "0B" prefix.  The error-symbol table is most of it:
+# it is literal data the image carries whole.
+size 9490208
 slack-pct 2
