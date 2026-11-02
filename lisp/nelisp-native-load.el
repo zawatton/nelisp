@@ -717,8 +717,20 @@ short write here reaches the code page as a truncated function."
           (ptr-write-u8 addr (+ offset i) (nelisp-native-load--byte string i))
           (setq i (1+ i)))))))
 
+(defvar nelisp-native-load--slot-pins (make-hash-table :test 'eql)
+  "Map a Sexp slot address to the payload address its string points at.
+
+The GC does not scan raw buffers, so a runtime string whose only
+reference is the payload word of a slot is garbage: a mid-form
+collection at any `while' back-edge frees it while the slot still
+points at it.  The GC does pin an arena block whose address a Lisp
+integer holds, so this table keeps that integer for as long as the
+slot holds the string.  Rewriting the slot (`nelisp-native-load--zero-slot',
+which every `nelisp-native-load-box' arm goes through) drops the pin.")
+
 (defun nelisp-native-load--zero-slot (addr)
   "Write nil (four zero words) into the Sexp slot at ADDR."
+  (remhash addr nelisp-native-load--slot-pins)
   (ptr-write-u64 addr 0 0)
   (ptr-write-u64 addr 8 0)
   (ptr-write-u64 addr 16 0)
@@ -774,7 +786,9 @@ takes a slot as a pointer and would dereference it."
       (nelisp-native-load--poke-bytes buf 0 bytes)
       (nelisp-native-load--zero-slot addr)
       (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_str")
-                buf len addr 0 0 0)))
+                buf len addr 0 0 0)
+      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)
+               nelisp-native-load--slot-pins)))
    (t (error "nelisp-native-load: cannot box %S" value)))
   addr)
 
@@ -856,7 +870,9 @@ expects -- it derefs payload+8 to reach the box."
     (while (< i nelisp-native-load-scratch-slots)
       (let ((cell (alloc-bytes 32 8)))
         (nelisp-native-load-box cell "s")
-        (ptr-call set-slot box i cell 0 0 0))
+        (ptr-call set-slot box i cell 0 0 0)
+        ;; The vector holds its own copy now; drop the cell's pin.
+        (remhash cell nelisp-native-load--slot-pins))
       (setq i (1+ i)))
     (ptr-write-u64 addr 0 nelisp-native-load-tag-vector)
     (ptr-write-u64 addr 8 box)

@@ -694,6 +694,14 @@ standalone-reader-defvar-alloc-smoke|scripts/nelisp-standalone-build.el|s/(bf_de
 # restored: "alloc-bytes-int-root: PASS (200 buffers)".  Structural, not
 # timing-dependent: `garbage-collect' always sweeps an unpinned block.
 standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|s/^      (if (< v 65536) 0$/      (if (> v -1) 0/|integers stop pinning the arena blocks they name
+# 2026-11-03: `standalone-reader-native-load-slot-pin-smoke' polices
+# `nelisp-native-load--slot-pins'.  The injection turns the pin into a
+# no-op, so a string boxed into a raw slot is held only by raw memory --
+# the loader as it was on origin/main before this row.  RED: "FAIL
+# 184/200 wrong under mid-form GC, 200/200 after garbage-collect";
+# restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
+# loaded from source, so no rebuild is needed.
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
 # Doc 201 §4 item 2.  `standalone-reader-fileattrs-smoke' polices the
 # windows-native `stat'/`readdir' shims and the `nelisp--syscall-stat'
 # classification that moved onto st_mode with them.  The injection changes

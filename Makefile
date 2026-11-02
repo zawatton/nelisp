@@ -1375,6 +1375,7 @@ reader-surface-audit:
 # is the claim, and a target that stops existing shows up as a smaller number.
 STANDALONE_READER_SMOKES = \
   standalone-reader-alloc-bytes-int-root-smoke \
+  standalone-reader-native-load-slot-pin-smoke \
   standalone-reader-async-core-smoke \
   standalone-reader-bignum-smoke \
   standalone-reader-catch-throw-tag-smoke \
@@ -2017,6 +2018,22 @@ standalone-reader-alloc-bytes-int-root-smoke: $(if $(wildcard target/nelisp targ
 	case "$$out" in \
 	  *"alloc-bytes-int-root: PASS"*) echo "[alloc-bytes-int-root-smoke] PASS: $$(printf '%s\n' "$$out" | head -n 1)";; \
 	  *) echo "[alloc-bytes-int-root-smoke] FAIL: $$(printf '%s\n' "$$out" | head -n 3) (integer-held alloc-bytes buffers were freed while in use)"; exit 1;; \
+	esac
+
+.PHONY: standalone-reader-native-load-slot-pin-smoke
+## Strings `nelisp-native-load-box' writes into raw Sexp slots must
+## survive mid-form GC and `garbage-collect' (the GC does not scan raw
+## buffers; `nelisp-native-load--slot-pins' holds them).
+standalone-reader-native-load-slot-pin-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); mkdir -p target/native-load-slot-pin; \
+	prelude=target/native-load-slot-pin/prelude.el; \
+	{ echo '(load "$(CURDIR)/lisp/nelisp-native-load.el")'; \
+	  echo '(load "$(CURDIR)/test/standalone-native-load-slot-pin-smoke.el")'; \
+	} > "$$prelude"; \
+	out="$$($$bin --load "$$prelude" 2>&1)"; \
+	case "$$out" in \
+	  *"native-load-slot-pin: PASS"*) echo "[native-load-slot-pin-smoke] PASS: $$(printf '%s\n' "$$out" | head -n 1)";; \
+	  *) echo "[native-load-slot-pin-smoke] FAIL: $$(printf '%s\n' "$$out" | head -n 3) (strings boxed into raw slots were freed while in use)"; exit 1;; \
 	esac
 
 .PHONY: standalone-reader-defvar-alloc-smoke

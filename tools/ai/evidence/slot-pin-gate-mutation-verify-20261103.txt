@@ -1,0 +1,8 @@
+# make gate-mutation-verify GATE=standalone-reader-native-load-slot-pin-smoke
+# 2026-11-03, worktree on origin/main ee06ee849 plus the slot-pin fix; target/nelisp built from ee06ee849.
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-reader-native-load-slot-pin-smoke'
+  standalone-reader-native-load-slot-pin-smoke: went red as it should (boxed strings stop being pinned while a raw slot holds them)
+GATE-COUNT checked=1 findings=0 passed=1 failed=0 skipped=0
+gate-mutation: PASS (1 passed, 0 skipped)
+exit=0

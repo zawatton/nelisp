@@ -1,0 +1,55 @@
+#+TITLE: Audit and fix: arena addresses stored only inside raw buffers, where the GC cannot see them
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/rawptr-audit-progress.org
+# Follows tools/ai/gc-int-pin-progress.org (fix 0a304e554): the GC now pins
+# an arena block whose address is held as a Lisp integer, but it does not
+# scan the bytes of a raw (alloc-bytes) buffer, so an address stored only
+# inside another buffer is still not a root.
+# Scope: Lisp-level callers of the alloc-bytes primitive that run inside
+# target/nelisp (prelude, packages/, lisp/).
+
+* S1 Inventory
+
+** S1.1 The report exists and has a findings table
+cmd: test -f tools/ai/rawptr-audit-report.org && grep -q '^| *site *| *function *| *verdict *| *reason *|' tools/ai/rawptr-audit-report.org
+
+** S1.2 Every in-scope file appears in the report
+cmd: for f in $(grep -rl 'alloc-bytes' scripts/nelisp-stdlib-prelude.el packages lisp --include='*.el' | grep -v '/test/'); do grep -qF "$f" tools/ai/rawptr-audit-report.org || { echo "missing $f"; exit 1; }; done
+
+** S1.3 Every row has a final verdict (safe, at-risk or out-of-scope); none is unknown
+cmd: rows=$(grep -E '^\| *[a-z].*:[0-9]+ *\|' tools/ai/rawptr-audit-report.org) && test -n "$rows" && ! echo "$rows" | grep -vqE '\| *(safe|at-risk|out-of-scope) *\|'
+
+* S2 Decision
+
+** S2.1 Each at-risk site has a recorded decision from a probe
+cmd: grep -q '^\* Decision' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:773 .*REPRODUCED, FIXED' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:857 .*NOT REPRODUCED' tools/ai/rawptr-audit-report.org
+
+** S2.2 Negative control: on origin/main the probe goes red, and with mid-form GC off the no-GC row reads 0
+evidence: tools/ai/evidence/rawptr-probe-negative-control-20261103.txt sha256=e222599077cfe6487247299a749e93cf7a6e9581dabb4da2d91082f7f9f7fc34
+
+* S3 Fix and gate
+
+** S3.1 The probe passes with the fixed loader
+#+TIMEOUT: 600
+cmd: tools/ai/rawptr-gc-probe.sh >target/rawptr-probe.log 2>&1
+
+** S3.2 The gate exists, is in STANDALONE_READER_SMOKES and has a gate-mutation row
+cmd: grep -q '^standalone-reader-native-load-slot-pin-smoke:' Makefile && sed -n '/^STANDALONE_READER_SMOKES = /,/^$/p' Makefile | grep -q 'standalone-reader-native-load-slot-pin-smoke' && grep -q '^standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|' tools/gate-mutations.txt
+
+** S3.3 The row turns the gate red (gate-mutation-verify)
+evidence: tools/ai/evidence/slot-pin-gate-mutation-verify-20261103.txt sha256=bb359fe8bba661e7504be383ccdc83e411d27e2113e50623ceb4dca09824f6bb
+
+** S3.4 The existing loader checks still pass (ERT and the in-reader loader driver)
+#+TIMEOUT: 600
+cmd: emacs --batch -Q -L lisp -L src -L scripts -L test -l test/nelisp-native-load-test.el -f ert-run-tests-batch-and-exit >target/native-load-ert.log 2>&1 && make neln-loader-test >target/neln-loader-test.log 2>&1
+
+** S3.5 The ratchets that scan lisp/ pass (unsafe-inventory pin raised 48 -> 49 with a reason)
+#+TIMEOUT: 600
+cmd: make unsafe-inventory >target/slot-pin-unsafe.log 2>&1 && make ns-gate >target/slot-pin-nsgate.log 2>&1 && make ns-inventory >target/slot-pin-nsinv.log 2>&1 && make emacs-compat >target/slot-pin-compat.log 2>&1
+
+* S4 End to end
+
+** S4.1 The standalone-reader-smokes aggregate passes with the new smoke in it
+#+TIMEOUT: 600
+cmd: make standalone-reader-smokes >target/slot-pin-reader-smokes.log 2>&1
