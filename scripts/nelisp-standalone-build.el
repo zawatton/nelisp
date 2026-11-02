@@ -3298,7 +3298,7 @@ REPL-facing module it feeds."
           (while (< k n)
             (nl_seq2
              (let ((vw (ptr-read-u64 (+ data_ptr (* k 8)) 0)))
-               (if (= (logand vw 1) 1) 0
+               (if (= (logand vw 1) 1) (nl_gc_pin_imm_word vw)
                  (if (= (nl_gc_mark_block vw) 0) 0
                    (nl_gc_mark_slot vw))))
              (setq k (+ k 1))))
@@ -3352,12 +3352,14 @@ REPL-facing module it feeds."
                 (nl_seq2
                  ;; car WORD @ box+0
                  (let ((cw (ptr-read-u64 box 0)))
-                   (if (= (logand cw 1) 1) 0       ; immediate -> no child
+                   (if (= (logand cw 1) 1)         ; immediate -> no child,
+                       (nl_gc_pin_imm_word cw)     ; but an Int may name a buffer
                      (if (= (nl_gc_mark_block cw) 0) 0
                        (nl_gc_mark_slot cw))))     ; mark the 32B child box
                  ;; cdr WORD @ box+8
                  (let ((dw (ptr-read-u64 box 8)))
-                   (if (= (logand dw 1) 1) 0       ; immediate -> end of list
+                   (if (= (logand dw 1) 1)         ; immediate -> end of list
+                       (nl_gc_pin_imm_word dw)
                      (if (= (nl_gc_mark_block dw) 0) 0
                        (if (= (ptr-read-u8 dw 0) 7)
                            ;; cdr child is a cons -> continue the spine
@@ -3440,7 +3442,10 @@ REPL-facing module it feeds."
                   (let ((box (ptr-read-u64 sp 8)))
                     (if (= (nl_gc_mark_block box) 0) 0
                       (let ((vw (ptr-read-u64 box 0)))
-                        (if (= (logand vw 1) 1) 0
+                        (if (= (logand vw 1) 1)
+                            ;; Immediate Int ((n<<2)|1): same rule as a
+                            ;; tag-2 slot, see `nl_gc_pin_int_addr'.
+                            (nl_gc_pin_imm_word vw)
                           (if (= (nl_gc_mark_block vw) 0) 0
                             (nl_gc_mark_slot vw))))))
                 (if (or (= tag 6) (= tag 15))
@@ -3461,7 +3466,13 @@ REPL-facing module it feeds."
                       (if (= tag 13) (nl_gc_mark_buf (ptr-read-u64 sp 16))
                       (if (= tag 9) (nl_gc_mark_char_table_box (ptr-read-u64 sp 8))
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (ptr-read-u64 sp 8))
-                          0))))))))))))
+                          ;; Int: an `alloc-bytes' buffer reaches Lisp only
+                          ;; as its address, so an integer that lands inside
+                          ;; a live arena block keeps that block -- see
+                          ;; `nl_gc_pin_int_addr'.
+                          (if (= tag 2)
+                              (nl_gc_pin_int_addr (ptr-read-u64 sp 8))
+                            0)))))))))))))
     ;; Free one dead block (header at HDR): set FREE sentinel, link the
     ;; object (hdr+16) onto the free-list head.  Returns 0.  Isolated into
     ;; a helper so the sweep loop body has no nested let + outer setq.
@@ -4173,6 +4184,41 @@ REPL-facing module it feeds."
     ;; Kept as a private compatibility name for the recorded-root helper;
     ;; callers in the precise path no longer use it.
     (defun nl_gc_conserv_owner (w) (nl_gc_conserv_pin w))
+    ;; An integer whose value lies inside a live arena block pins that block
+    ;; (mark 0 -> 4: alive, payload not declared typed, so a later precise
+    ;; edge can still upgrade it to 1 and recurse).  `alloc-bytes' returns
+    ;; its buffer to Lisp as a plain integer address, and nothing else roots
+    ;; it: without this a collection that ran while the address was still in
+    ;; use -- mid-form at a `while' back-edge, or `garbage-collect' -- swept
+    ;; the block and wrote the free-list link over its first word.
+    ;; `nl-ffi-loader--cstring's path buffer lost "/home/ma" that way before
+    ;; openat and a real file read as ENOENT (2026-11-02,
+    ;; test/standalone-alloc-bytes-int-root-smoke.el).  Only runs while the
+    ;; exact-start index is live (both collectors build it before marking),
+    ;; so the owner lookup never interprets payload as a header.  Sets the
+    ;; same pinned flag as the conservative scan, so the debug compaction
+    ;; path cannot move a block an integer still names.
+    ;; Immediate value word W: an Int ((n<<2)|1) goes through
+    ;; `nl_gc_pin_int_addr'; Nil/T and the rest are not references.
+    (defun nl_gc_pin_imm_word (w)
+      (if (= (logand w 3) 1)
+          (nl_gc_pin_int_addr (sar w 2))
+        0))
+    (defun nl_gc_pin_int_addr (v)
+      (if (< v 65536) 0
+        (if (= (ptr-read-u64 (data-addr nl_gc_start_index) 16) 1)
+            (if (= (nl_gc_in_arena v) 0) 0
+              (let ((owner (nl_gc_conserv_owner_indexed v)))
+                (if (= owner 0) 0
+                  (if (= (nl_gc_conserv_valid_p owner) 0) 0
+                    (if (= (nl_hdr_mark (- owner 8)) 0)
+                        (seq
+                         (nl_hdr_set_mark (- owner 8) 4)
+                         (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                                        (logior (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 4))
+                         1)
+                      0)))))
+          0)))
     (defun nl_gc_conserv_word (w)
       (let ((owner (nl_gc_conserv_resolve w)))
         (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
