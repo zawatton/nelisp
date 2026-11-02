@@ -1708,6 +1708,19 @@ nothing."
      ((and (consp a) (consp b))
       (if (equal (car a) (car b)) (value< (cdr a) (cdr b)) (value< (car a) (car b))))
      ((and (null a) (null b)) nil)
+     ;; nil is also the empty list, so it orders below any non-empty one
+     ;; (Emacs 31.1: (value< nil '(0)) => t, (value< '(0) nil) => nil).
+     ((and (null a) (consp b)) t)
+     ((and (consp a) (null b)) nil)
+     ;; Vectors compare element-wise; a proper prefix orders first.
+     ((and (vectorp a) (vectorp b))
+      (let ((i 0) (na (length a)) (nb (length b)) (r 'undecided))
+        (while (eq r 'undecided)
+          (cond ((>= i na) (setq r (< na nb)))
+                ((>= i nb) (setq r nil))
+                ((equal (aref a i) (aref b i)) (setq i (1+ i)))
+                (t (setq r (value< (aref a i) (aref b i))))))
+        r))
      (t (signal 'wrong-type-argument (list 'value< a b))))))
 (unless (fboundp 'seq-sort)
   (defun seq-sort (pred seq)
@@ -11435,17 +11448,52 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
              (nelisp-stdlib--msort left pred)
              (nelisp-stdlib--msort right pred)
              pred)))))
-    (defun sort (seq &optional pred)
+    (defun sort (seq &rest args)
+      "Sort SEQ stably.  (sort SEQ &key KEY LESSP REVERSE IN-PLACE) returns a
+sorted copy unless IN-PLACE is non-nil; the legacy (sort SEQ PRED) form
+always sorts in place.  LESSP defaults to `value<'."
       ;; A STRING is a sequence but not sortable: Emacs names
       ;; `list-or-vector-p', which says which two shapes it does take.
       (unless (or (listp seq) (vectorp seq))
         (signal 'wrong-type-argument (list 'list-or-vector-p seq)))
-      (setq pred (or pred (function value<)))
-      (if (vectorp seq)
-          (let ((l (nelisp-stdlib--msort (append seq nil) pred)) (i 0))
-            (while l (aset seq i (car l)) (setq l (cdr l)) (setq i (1+ i)))
-            seq)
-        (nelisp-stdlib--msort seq pred)))))
+      (let ((key nil) (pred nil) (rev nil) (inplace nil))
+        (cond
+         ((null args))
+         ((null (cdr args)) (setq pred (car args) inplace t))   ; legacy form
+         ((= (logand (length args) 1) 1)
+          (signal 'error (list "Invalid argument list")))
+         (t
+          (let ((kw args))
+            (while kw
+              (cond ((eq (car kw) :key) (setq key (car (cdr kw))))
+                    ((eq (car kw) :lessp) (setq pred (car (cdr kw))))
+                    ((eq (car kw) :reverse) (setq rev (car (cdr kw))))
+                    ((eq (car kw) :in-place) (setq inplace (car (cdr kw))))
+                    (t (signal 'error (list "Invalid keyword argument" (car kw)))))
+              (setq kw (cdr (cdr kw)))))))
+        (setq pred (or pred (function value<)))
+        (let* ((items (if (vectorp seq) (append seq nil) seq))
+               (sorted
+                (let* ((in (if rev (reverse items) items))
+                       (r (if key
+                              (let ((p pred) (k key) (dec nil))
+                                (dolist (e in) (setq dec (cons (cons (funcall k e) e) dec)))
+                                (mapcar (function cdr)
+                                        (nelisp-stdlib--msort
+                                         (nreverse dec)
+                                         (lambda (a b) (funcall p (car a) (car b))))))
+                            (nelisp-stdlib--msort (copy-sequence in) pred))))
+                  (if rev (nreverse r) r))))
+          (cond
+           ((vectorp seq)
+            (let ((target (if inplace seq (make-vector (length seq) nil))) (i 0) (l sorted))
+              (while l (aset target i (car l)) (setq l (cdr l) i (1+ i)))
+              target))
+           (inplace
+            (let ((c seq) (l sorted))
+              (while l (setcar c (car l)) (setq c (cdr c) l (cdr l)))
+              seq))
+           (t sorted)))))))
 
 ;; --- Wave-2 (C): symbol plists (put/get) + define-error -----------------
 ;; The standalone reader has no per-symbol plist slot, so model the global
@@ -15132,7 +15180,7 @@ field-width layer."
       (let ((ch (aref template i)))
         (if (= ch 37)                   ; ?%
             (let ((j (1+ i))
-                  (f- nil) (f0 nil) (fplus nil) (fspace nil) (fhash nil)
+                  (f- nil) (f0 nil) (fplus nil) (fspace nil) (fhash nil) (upb nil)
                   (width nil) (prec nil) (scan t))
               (while (and scan (< j n))
                 (let ((c (aref template j)))
@@ -15159,6 +15207,8 @@ field-width layer."
                   (signal 'error
                           (list "Format string ends in middle of format specifier"))
                 (let ((conv (if (= (aref template j) 66) 98 (aref template j))))   ; %B is %b
+                  ;; ... except that `#' spells its prefix "0B" (Emacs 31.1).
+                  (setq upb (= (aref template j) 66))
                   (setq i (1+ j))
                   ;; Emacs accepts s S d i o x X e f g c and %% -- everything
                   ;; else is "Invalid format operation".  This accepted the C
@@ -15262,7 +15312,7 @@ field-width layer."
                         (let* ((neg (= (aref body 0) 45))
                                (mag (if neg (substring body 1) body)))
                           (unless (or (string= mag "0") (= (length mag) 0))
-                            (setq mag (cond ((= conv 98) (concat "0b" mag))
+                            (setq mag (cond ((= conv 98) (concat (if upb "0B" "0b") mag))
                                             ((= conv 120) (concat "0x" mag))
                                             ((= conv 88) (concat "0X" mag))
                                             ((= (aref mag 0) 48) mag)
@@ -15315,7 +15365,8 @@ field-width layer."
                                          (= (aref body k) 48)
                                          (or (= (aref body (+ k 1)) 120)
                                              (= (aref body (+ k 1)) 88)
-                                             (= (aref body (+ k 1)) 98)))
+                                             (= (aref body (+ k 1)) 98)
+                                             (= (aref body (+ k 1)) 66)))
                                 (setq k (+ k 2)))
                               (setq body (concat (substring body 0 k)
                                                  (make-string pad 48)
@@ -16181,3 +16232,138 @@ the hex form, which is what every caller here consumes."
                     (setq digest (substring field 0 width))))))
           (when (file-exists-p tmp) (delete-file tmp)))
         digest))))
+
+;; Error symbols GNU Emacs 31.1 registers at startup (`emacs -Q', read off
+;; with `mapatoms' on 2026-11-02), as (SYMBOL CONDITIONS MESSAGE).  The
+;; strict `signal' below rejects any symbol without `error-conditions', so
+;; every standard one has to carry them -- several (`invalid-read-syntax',
+;; `end-of-buffer', `json-parse-error', ...) are raised natively or by
+;; ported code without ever going through `define-error'.  Only symbols
+;; that have no conditions yet are touched, so a definition made earlier in
+;; the prelude wins.
+(dolist (e '(
+       (args-out-of-range (args-out-of-range error) "Args out of range")
+       (arith-error (arith-error error) "Arithmetic error")
+       (beginning-of-buffer (beginning-of-buffer error) "Beginning of buffer")
+       (buffer-read-only (buffer-read-only error) "Buffer is read-only")
+       (circular-list (circular-list error) "List contains a loop")
+       (cl-assertion-failed (cl-assertion-failed error) "Assertion failed")
+       (cl-no-applicable-method (cl-no-applicable-method cl-no-method error) "No applicable method")
+       (cl-no-method (cl-no-method error) "No method")
+       (cl-no-next-method (cl-no-next-method cl-no-method error) "No next method")
+       (cl-no-primary-method (cl-no-primary-method cl-no-method error) "No primary method")
+       (coding-system-error (coding-system-error error) "Invalid coding system")
+       (comp-sanitizer-error (comp-sanitizer-error error) "Native code sanitizer runtime error")
+       (cyclic-function-indirection (cyclic-function-indirection error) "Symbol's chain of function indirections contains a loop")
+       (cyclic-variable-indirection (cyclic-variable-indirection error) "Symbol's chain of variable indirections contains a loop")
+       (dbus-error (dbus-error error) "D-Bus error")
+       (domain-error (domain-error arith-error error) "Arithmetic domain error")
+       (end-of-buffer (end-of-buffer error) "End of buffer")
+       (end-of-file (end-of-file error) "End of file during parsing")
+       (error (error) "error")
+       (excessive-lisp-nesting (excessive-lisp-nesting recursion-error error) "Lisp nesting exceeds `max-lisp-eval-depth'")
+       (excessive-variable-binding (excessive-variable-binding recursion-error error) "Variable binding depth exceeds max-specpdl-size")
+       (file-already-exists (file-already-exists file-error error) "File already exists")
+       (file-date-error (file-date-error file-error error) "Cannot set file date")
+       (file-error (file-error error) "File error")
+       (file-missing (file-missing file-error error) "File is missing")
+       (file-notify-error (file-notify-error file-error error) "File notification error")
+       (inhibited-interaction (inhibited-interaction error) "User interaction while inhibited")
+       (invalid-arity (invalid-arity error) "Invalid function arity")
+       (invalid-function (invalid-function error) "Invalid function")
+       (invalid-read-syntax (invalid-read-syntax error) "Invalid read syntax")
+       (invalid-regexp (invalid-regexp error) "Invalid regexp")
+       (json-end-of-file (json-end-of-file json-parse-error json-error error) "end of JSON stream")
+       (json-error (json-error error) "generic JSON error")
+       (json-escape-sequence-error (json-escape-sequence-error json-parse-error json-error error) "invalid escape sequence")
+       (json-invalid-surrogate-error (json-invalid-surrogate-error json-error error) "invalid surrogate pair")
+       (json-number-out-of-range-error (json-number-out-of-range-error json-error error) "number out of range")
+       (json-object-too-deep (json-object-too-deep json-error error) "object cyclic or Lisp evaluation too deep")
+       (json-out-of-memory (json-out-of-memory json-error error) "not enough memory for creating JSON object")
+       (json-parse-error (json-parse-error json-error error) "could not parse JSON stream")
+       (json-trailing-content (json-trailing-content json-parse-error json-error error) "trailing content after JSON stream")
+       (json-utf8-decode-error (json-utf8-decode-error json-error error) "invalid utf-8 encoding")
+       (malformed-keyword-arg-list (malformed-keyword-arg-list error) "Keyword lacks a corresponding value")
+       (mark-inactive (mark-inactive error) "The mark is not active now")
+       (memory-buffer-too-small (memory-buffer-too-small error) "Memory buffer too small")
+       (minibuffer-quit (minibuffer-quit quit) "Quit")
+       (missing-module-init-function (missing-module-init-function module-load-failed error) "Module does not export an initialization function")
+       (module-init-failed (module-init-failed module-load-failed error) "Module initialization failed")
+       (module-load-failed (module-load-failed error) "Module load failed")
+       (module-not-gpl-compatible (module-not-gpl-compatible module-load-failed error) "Module is not GPL compatible")
+       (module-open-failed (module-open-failed module-load-failed error) "Module could not be opened")
+       (module-out-of-memory (module-out-of-memory error) "Module out of memory")
+       (native-compiler-error (native-compiler-error error) "Native compiler error")
+       (native-ice (native-ice native-compiler-error error) "Internal native compiler error")
+       (native-lisp-file-inconsistent (native-lisp-file-inconsistent native-lisp-load-failed error) "eln file inconsistent with current runtime configuration, please recompile")
+       (native-lisp-load-failed (native-lisp-load-failed error) "Native elisp load failed")
+       (native-lisp-wrong-reloc (native-lisp-wrong-reloc native-lisp-load-failed error) "Primitive redefined or wrong relocation")
+       (no-catch (no-catch error) "No catch for tag")
+       (overflow-error (overflow-error range-error arith-error error) "Arithmetic overflow error")
+       (permission-denied (permission-denied file-error error) "Cannot access file or directory")
+       (protected-field (protected-field error) "Attempt to modify a protected field")
+       (quit (quit) "Quit")
+       (range-error (range-error arith-error error) "Arithmetic range error")
+       (recursion-error (recursion-error error) "Excessive recursive calling error")
+       (remote-file-error (remote-file-error file-error error) "Remote file error")
+       (scan-error (scan-error error) "Scan error")
+       (search-failed (search-failed error) "Search failed")
+       (setting-constant (setting-constant error) "Attempt to set a constant symbol")
+       (singularity-error (singularity-error domain-error arith-error error) "Arithmetic singularity error")
+       (sqlite-error (sqlite-error error) "Database error")
+       (sqlite-locked-error (sqlite-locked-error sqlite-error error) "Database locked")
+       (text-read-only (text-read-only buffer-read-only error) "Text is read-only")
+       (thread-buffer-killed (thread-buffer-killed error) "Thread's current buffer killed")
+       (trapping-constant (trapping-constant error) "Attempt to trap writes to a constant symbol")
+       (treesit-buffer-too-large (treesit-buffer-too-large treesit-error error) "Buffer too large (> 4GiB)")
+       (treesit-buffer_changed (treesit-buffer_changed treesit-error error) "Buffer content changed, please don't edit buffer in predicate function, etc")
+       (treesit-error (treesit-error error) "Generic tree-sitter error")
+       (treesit-invalid-predicate (treesit-invalid-predicate treesit-error error) "Invalid predicate, see `treesit-thing-settings' for valid forms for a predicate")
+       (treesit-load-language-error (treesit-load-language-error treesit-error error) "Cannot load language definition")
+       (treesit-node-buffer-killed (treesit-node-buffer-killed treesit-error error) "The buffer associated with this node is killed")
+       (treesit-node-outdated (treesit-node-outdated treesit-error error) "This node is outdated, please retrieve a new one")
+       (treesit-parse-error (treesit-parse-error treesit-error error) "Parse failed")
+       (treesit-parser-deleted (treesit-parser-deleted treesit-error error) "This parser is deleted and cannot be used")
+       (treesit-query-error (treesit-query-error treesit-error error) "Query pattern is malformed")
+       (treesit-range-invalid (treesit-range-invalid treesit-error error) "RANGES are invalid: they have to be ordered and should not overlap")
+       (type-mismatch (type-mismatch error) "Types do not match")
+       (underflow-error (underflow-error range-error arith-error error) "Arithmetic underflow error")
+       (unknown-image-type (unknown-image-type error) "Unknown image type")
+       (user-error (user-error error) "")
+       (user-search-failed (user-search-failed user-error search-failed error) "Search failed")
+       (vc-not-supported (vc-not-supported error) "VC method not implemented for backend")
+       (void-function (void-function error) "Symbol's function definition is void")
+       (void-variable (void-variable error) "Symbol's value as variable is void")
+       (wrong-length-argument (wrong-length-argument error) "Wrong length argument")
+       (wrong-number-of-arguments (wrong-number-of-arguments error) "Wrong number of arguments")
+       (wrong-register-subr-call (wrong-register-subr-call native-lisp-load-failed error) "comp--register-subr can only be called during native lisp load phase.")
+       (wrong-type-argument (wrong-type-argument error) "Wrong type argument")
+       ;; NeLisp-specific symbols raised natively or by the runtime.
+       (char-table-range-too-large (char-table-range-too-large error)
+                                   "Char-table range too large")
+       (nelisp-diag-runaway-append-collect (nelisp-diag-runaway-append-collect error)
+                                           "Runaway append collection")))
+  (unless (get (car e) 'error-conditions)
+    (put (car e) 'error-conditions (nth 1 e))
+    (when (nth 2 e) (put (car e) 'error-message (nth 2 e)))))
+
+;; Emacs 31.1 `signal' refuses a symbol that carries no `error-conditions':
+;; it raises (error "Invalid error symbol" SYM) instead, so a handler for SYM
+;; itself does not catch it and a non-symbol is a type error.  The native
+;; `signal' trusts its caller, hence this wrapper.  It sits at the very end
+;; of the prelude, after every built-in error symbol has its conditions, and
+;; the native subr stays reachable as `nelisp--native-signal'.
+(unless (fboundp 'nelisp--native-signal)
+  (defalias 'nelisp--native-signal (symbol-function 'signal)))
+(defun signal (error-symbol data)
+  "Signal an error of type ERROR-SYMBOL with DATA.
+ERROR-SYMBOL must have an `error-conditions' property; otherwise
+\(error \"Invalid error symbol\" ERROR-SYMBOL) is signaled.  A nil
+ERROR-SYMBOL re-signals DATA, whose car is the real symbol."
+  (when (and (null error-symbol) (consp data))
+    (setq error-symbol (car data) data (cdr data)))
+  (unless (symbolp error-symbol)
+    (nelisp--native-signal 'wrong-type-argument (list 'symbolp error-symbol)))
+  (if (and error-symbol (get error-symbol 'error-conditions))
+      (nelisp--native-signal error-symbol data)
+    (nelisp--native-signal 'error (list "Invalid error symbol" error-symbol))))

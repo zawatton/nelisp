@@ -1326,7 +1326,7 @@ pinned-collision ns-collision-divergent	set-file-modes	lisp/nelisp-stdlib-misc.e
 pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	a6f57b8a53c0
 pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d66f82c26c57
 pinned-collision ns-collision-divergent	sit-for	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	0402960ed31e
-pinned-collision ns-collision-divergent	sort	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	2713c36432ab
+pinned-collision ns-collision-divergent	sort	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	43534d4aa09d
 pinned-collision ns-collision-divergent	split-string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	3cec7b8d1def
 pinned-collision ns-collision-divergent	string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	574089ddf026
 pinned-collision ns-collision-divergent	string-lessp	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	38d8adeac89a
