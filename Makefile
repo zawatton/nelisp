@@ -1374,6 +1374,7 @@ reader-surface-audit:
 # keep current is a ledger nobody reads.  The count is the signal -- 29 checked
 # is the claim, and a target that stops existing shows up as a smaller number.
 STANDALONE_READER_SMOKES = \
+  standalone-reader-alloc-bytes-int-root-smoke \
   standalone-reader-async-core-smoke \
   standalone-reader-bignum-smoke \
   standalone-reader-catch-throw-tag-smoke \
@@ -2002,6 +2003,22 @@ standalone-reader-read-string-escapes-smoke: standalone-reader
 # that skipping the synthetic `(if (boundp ...) nil (set ...))' form would
 # also skip its boundp gate.  `defvar' must leave an already-bound value
 # alone; `defconst' must overwrite it.
+# 2026-11-02: an `alloc-bytes' buffer reaches Lisp only as an integer
+# address.  The collector used to ignore integers, so a collection that ran
+# while the address was in use freed the buffer and the free-list link
+# overwrote its first word (200 of 200 corrupted; in the wild,
+# `nl-ffi-loader--cstring' lost "/home/ma" and openat said ENOENT).  The
+# fixture holds 200 buffers only by their addresses across
+# `garbage-collect' and checks every marker.  See `nl_gc_pin_int_addr'.
+.PHONY: standalone-reader-alloc-bytes-int-root-smoke
+standalone-reader-alloc-bytes-int-root-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); \
+	out="$$($$bin --load test/standalone-alloc-bytes-int-root-smoke.el 2>&1)"; \
+	case "$$out" in \
+	  *"alloc-bytes-int-root: PASS"*) echo "[alloc-bytes-int-root-smoke] PASS: $$(printf '%s\n' "$$out" | head -n 1)";; \
+	  *) echo "[alloc-bytes-int-root-smoke] FAIL: $$(printf '%s\n' "$$out" | head -n 3) (integer-held alloc-bytes buffers were freed while in use)"; exit 1;; \
+	esac
+
 .PHONY: standalone-reader-defvar-alloc-smoke
 standalone-reader-defvar-alloc-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@bin=$(STANDALONE_BIN); \

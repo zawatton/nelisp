@@ -1,0 +1,34 @@
+#+TITLE: The integer-root GC fix is policed by a CI gate; stale namespace pins are gone
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/int-root-gate-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)
+# Follows tools/ai/gc-int-pin-progress.org (fix 0a304e554), whose fixture
+# ran only from that ledger.
+
+* S1 standalone-reader-alloc-bytes-int-root-smoke is a real gate
+
+** S1.1 The target exists and is part of STANDALONE_READER_SMOKES
+cmd: grep -q '^standalone-reader-alloc-bytes-int-root-smoke:' Makefile && sed -n '/^STANDALONE_READER_SMOKES = /,/^$/p' Makefile | grep -q 'standalone-reader-alloc-bytes-int-root-smoke'
+
+** S1.2 Its gate-mutation row exists and the gate rebuilds the binary for it
+cmd: grep -q '^standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|' tools/gate-mutations.txt && grep -q 'standalone-reader-alloc-bytes-int-root-smoke) return 0' tools/nelisp-gate-mutation.sh
+
+** S1.3 Negative control: the row turns the gate red (gate-mutation-verify)
+evidence: tools/ai/evidence/int-root-gate-mutation-verify-20261102.txt sha256=7b0d200378ef6a96b34fd912385575d1593f913632b3e5c50a877540ab4d8293
+
+** S1.4 The gate passes on this tree
+#+TIMEOUT: 600
+cmd: make standalone-reader-alloc-bytes-int-root-smoke >target/int-root-gate.log 2>&1
+
+* S2 Cleanup
+
+** S2.1 ns-inventory passes with no stale pinned-collision line
+#+TIMEOUT: 600
+cmd: out=$(make ns-inventory 2>&1) && echo "$out" | grep -q 'ns-inventory: PASS' && ! echo "$out" | grep -q 'no longer match'
+
+* S3 End to end
+
+** S3.1 The standalone-reader-smokes aggregate passes with the new smoke in it
+#+TIMEOUT: 600
+cmd: make standalone-reader-smokes >target/int-root-reader-smokes.log 2>&1

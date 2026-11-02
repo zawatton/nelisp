@@ -1219,7 +1219,6 @@ pinned-collision ns-collision-divergent	cl-remove-if-not	lisp/nelisp-cl-macros.e
 pinned-collision ns-collision-divergent	clrhash	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	28724fb94126
 pinned-collision ns-collision-divergent	cond	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	8f47ca1817eb
 pinned-collision ns-collision-divergent	copy-sequence	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	071cd24a6c04
-pinned-collision ns-collision-divergent	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	d3ea48d63d91
 # define-error re-digested 2026-11-01: the prelude copy now builds its
 # "Unknown signal" error through format-message, so the quotes follow
 # text-quoting-style like GNU; the divergence is the same one as before.
@@ -1324,7 +1323,6 @@ pinned-collision ns-collision-divergent	round	lisp/nelisp-stdlib.el scripts/neli
 pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	1d05e37e9d26
 pinned-collision ns-collision-divergent	set-file-modes	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	eb7d7aadd4db
 pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	a6f57b8a53c0
-pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	d66f82c26c57
 pinned-collision ns-collision-divergent	sit-for	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	0402960ed31e
 pinned-collision ns-collision-divergent	sort	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	43534d4aa09d
 pinned-collision ns-collision-divergent	split-string	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	3cec7b8d1def
@@ -1541,7 +1539,6 @@ pinned-collision ns-collision	nelisp--char-arg-to-string	lisp/nelisp-stdlib-misc
 # addition of setf to lisp/nelisp-stdlib-misc.el newly exposes as a
 # 3-file collision).
 pinned-collision ns-collision	buffer-local-value	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	byte-compile	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	cl-letf	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	copy-tree	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	current-time-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el

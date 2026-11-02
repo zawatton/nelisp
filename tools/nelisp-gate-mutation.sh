@@ -111,6 +111,7 @@ gate_needs_rebuild() {
     standalone-reader-host-parity-smoke) return 0 ;;
     standalone-reader-winpath-smoke) return 0 ;;
     standalone-reader-defvar-alloc-smoke) return 0 ;;
+    standalone-reader-alloc-bytes-int-root-smoke) return 0 ;;
     standalone-reader-fileattrs-smoke) return 0 ;;
     standalone-reader-splitstring-perf-smoke) return 0 ;;
     standalone-reader-regexp-lead-filter-smoke) return 0 ;;
