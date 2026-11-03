@@ -37,6 +37,7 @@ Caveat, not verified: the 16 MiB case costs almost nothing for 2M scanned
 words, which suggests that block may not be an arena block that
 nl_gc_pin_int_addr resolves at all.  Whether large alloc-bytes blocks are
 covered by the int pin is an open question.
+Answered: they are, up to 64 MiB (tools/ai/large-block-pin-report.org).
 
 * Decision: DO NOT ADOPT
 
