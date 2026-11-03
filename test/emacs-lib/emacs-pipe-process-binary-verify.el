@@ -9,7 +9,7 @@
 ;;
 ;; Run (from the nelisp-emacs repo root, after `make nelisp'):
 ;;
-;;   vendor/nelisp/target/nelisp --load test/emacs-pipe-process-binary-verify.el
+;;   target/nelisp --load test/emacs-pipe-process-binary-verify.el
 ;;
 ;; Expected last line: "PIPE-VERIFY: PASS got=pipe-data".
 ;; It opens a pipe, registers the read end as a `pipe-process' with a filter,

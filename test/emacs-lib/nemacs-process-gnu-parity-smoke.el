@@ -5,18 +5,27 @@
 ;; be identical.  Cases avoid signals and binary coding, which the standalone
 ;; exit-code-only path cannot express.
 
-(let ((src (getenv "NEMACS_PROCESS_SRC")))
+(defun nemacs-process-smoke--find (dirs name)
+  "Return NAME inside the first of DIRS that holds it."
+  (let ((found nil))
+    (while (and dirs (not found))
+      (let ((path (concat (car dirs) "/" name)))
+        (if (file-exists-p path) (setq found path)))
+      (setq dirs (cdr dirs)))
+    (or found (error "Missing process smoke source %s" name))))
+
+(let ((src (let ((v (getenv "NEMACS_PROCESS_SRC"))) (and v (split-string v ":")))))
   (when src
-    (setq load-path (cons src load-path))
-    (load (concat src "/emacs-vars.el") nil t)
-    (load (concat src "/emacs-symbol.el") nil t)
-    (load (concat src "/emacs-standalone.el") nil t)
-    (load (concat src "/nelisp-text-buffer.el") nil t)
-    (load (concat src "/nelisp-emacs-compat.el") nil t)
-    (load (concat src "/emacs-stub.el") nil t)
-    (load (concat src "/emacs-buffer-builtins.el") nil t)
-    (load (concat src "/emacs-process.el") nil t)
-    (load (concat src "/emacs-process-builtins.el") nil t)))
+    (setq load-path (append src load-path))
+    (load (nemacs-process-smoke--find src "emacs-vars.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-symbol.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-standalone.el") nil t)
+    (load (nemacs-process-smoke--find src "nelisp-text-buffer.el") nil t)
+    (load (nemacs-process-smoke--find src "nelisp-emacs-compat.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-stub.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-buffer-builtins.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-process.el") nil t)
+    (load (nemacs-process-smoke--find src "emacs-process-builtins.el") nil t)))
 
 (defun gp--line (name form-result)
   (let ((text (prin1-to-string form-result)))

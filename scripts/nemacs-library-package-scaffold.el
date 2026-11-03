@@ -146,7 +146,9 @@
       (error "missing scaffold facade source: %s"
              nemacs-library-package-scaffold--facade-source))
     (make-directory (file-name-directory target) t)
-    (copy-file source target t)
+    ;; In the package layout the facade source is its own target.
+    (unless (and (file-exists-p target) (file-equal-p source target))
+      (copy-file source target t))
     (list "facade" "nelisp-emacs-facade" "umbrella"
           nemacs-library-package-scaffold--facade-source
           nemacs-library-package-scaffold--facade-target)))

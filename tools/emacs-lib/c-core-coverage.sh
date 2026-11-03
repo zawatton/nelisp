@@ -31,7 +31,7 @@
 set -u
 here=$(cd "$(dirname "$0")/.." && pwd) || exit 1
 cd "$here" || exit 1
-BIN=${NELISP_BIN:-$here/vendor/nelisp/target/nelisp}
+BIN=${NELISP_BIN:-$here/target/nelisp}
 HOST=${EMACS:-emacs}
 CENSUS=build/c-core-census.tsv
 MISSING=build/c-core-missing.tsv

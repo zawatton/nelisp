@@ -38,8 +38,7 @@ auto-probed here: the nelisp-driver bootstrap is a slow cold-load
 gate and should be entered explicitly via NELISP_HOME.  Returns nil
 when no candidate has a built `target/nelisp' or compatibility
 `target/nelisp-standalone-reader' binary."
-  (let* ((vendor (expand-file-name "vendor/nelisp"
-                                   nemacs-bootstrap-nelisp-test--repo-root))
+  (let* ((vendor nemacs-bootstrap-nelisp-test--repo-root)
          (env (getenv "NELISP_HOME")))
     (let ((candidates (list env vendor))
           (found nil))

@@ -475,8 +475,7 @@ def build_context():
     consumer = consumer_root()
     original = consumer / "build/nemacs-bootstrap.el"
     recipe = consumer / "tools/c-core-image.sh"
-    source_tree = consumer / "build/doc211-bootstrap-root/src"
-    need(source_tree.is_dir(), "missing canonical consumer require source tree")
+    need((consumer / "packages").is_dir(), "missing canonical consumer packages tree")
     loader = source_root() / "packages/emacs-lib-io/src/emacs-load.el"
     raw, replacement = original.read_bytes(), loader.read_bytes()
     start = list(re.finditer(rb"^;;; >>> src/emacs-load\.el\r?$", raw, re.M))
@@ -504,12 +503,10 @@ def build_context():
     mirror_names = [name for name in ("vendor", "lisp", "packages", "scripts", "src")
                     if (consumer / name).is_dir()]
     providers = {}
-    provider_roots = [str(consumer / name) for name in mirror_names] + [str(source_tree)]
+    provider_roots = [str(consumer / name) for name in mirror_names]
     for name in mirror_names:
         for path in provider_files(consumer / name):
             providers[str(Path(name) / path.relative_to(consumer / name))] = path
-    for path in provider_files(source_tree):
-        providers[str(Path("build/doc211-bootstrap-root/src") / path.relative_to(source_tree))] = path
     inputs += list(providers.values())
     inputs += [p for p in corpus_runtime_inputs() if p.is_file()]
     for _, binary in binaries():
@@ -544,7 +541,7 @@ def build_context():
                 shutil.copy2(path, target)
                 target.chmod(provider_identity[name]["mode"])
             snapshot[str(target)] = provider_identity[name]
-        for relative in (*mirror_names, "build/doc211-bootstrap-root/src"):
+        for relative in mirror_names:
             source_copy = directory / relative
             snapshot_roots.append(str(source_copy))
             for parent, subdirs, _ in os.walk(source_copy):

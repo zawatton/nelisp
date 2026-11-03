@@ -29,7 +29,6 @@ S5-U4	S5	tools/ai/doc211-vendor-check.sh	0	bash tools/ai/doc211-vendor-check.sh 
 S5-U5	S5	tools/ai/doc211-vendor-trace.sh	0	bash tools/ai/doc211-vendor-check.sh exist	open
 S6-U1	S6	Makefile	0	make build-nelisp-bootstrap	done
 S6-U2	S6	nelisp-emacs-lib/Makefile	0	make build-nelisp-bootstrap build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el	open
-S6-U3	S6	scripts/doc211-bootstrap-source-root.sh	0	bash scripts/doc211-bootstrap-source-root.sh	done
 S6-U4	S6	scripts/build-nelisp-bootstrap.el	0	make build-nelisp-bootstrap	done
 S6-U5	S6	scripts/build-nelisp-emacs-magit-bridge-bundle.el	0	make build/nelisp-emacs-magit-bridge-bundle.el	done
 S6-U6	S6	scripts/build-nelisp-emacs-org-bridge-bundle.el	0	make build/nelisp-emacs-org-bridge-bundle.el	done

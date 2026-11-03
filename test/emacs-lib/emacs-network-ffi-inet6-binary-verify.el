@@ -8,7 +8,7 @@
 ;;
 ;; Run (from the nelisp-emacs repo root, after `make nelisp'):
 ;;
-;;   vendor/nelisp/target/nelisp --load test/emacs-network-ffi-inet6-binary-verify.el
+;;   target/nelisp --load test/emacs-network-ffi-inet6-binary-verify.el
 ;;
 ;; Expected last line: "INET6-VERIFY: PASS v4=udp4 v6=udp6".
 ;; Each leg does a UDP loopback round-trip (bind a server, sendto it from a

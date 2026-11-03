@@ -91,10 +91,11 @@ def run(argv, seconds, label, marker):
     # Native nested loads need the startup path as well as the bundle's Lisp
     # load-path.  Otherwise they can select the runtime checkout's older
     # library providers instead of this private checkout's source tree.
-    library_root = root / 'build/doc211-bootstrap-root/src'
+    library_dirs = sorted((root / 'packages').glob('emacs-lib-*/src'))
+    library_dirs += [root / 'packages/nl-ffi/src']
     # The runtime recognizes --cold-load-from only as its first argument.
-    startup = (['-L', str(library_root)]
-               if library_root.is_dir() and '--cold-load-from' not in argv else [])
+    startup = ([a for d in library_dirs if d.is_dir() for a in ('-L', str(d))]
+               if '--cold-load-from' not in argv else [])
     resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
     started = time.monotonic()
     with (cache / (label + '.out')).open('wb') as out, (cache / (label + '.err')).open('wb') as err:

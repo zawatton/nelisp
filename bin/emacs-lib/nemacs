@@ -34,7 +34,7 @@
 #
 # Environment overrides:
 #   NEMACS_HOME      directory containing src/ (default: this script's parent)
-#   NELISP_HOME      nelisp checkout (default: vendor/nelisp, then ../nelisp)
+#   NELISP_HOME      nelisp checkout (default: this repository root)
 #   NEMACS_DRIVER    `host' (default) or `nelisp'
 #   NEMACS_EMACS     emacs binary path (default: emacs)
 #   NEMACS_NELISP    nelisp binary path (default: standalone-reader)
@@ -63,13 +63,9 @@ set -euo pipefail
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
 NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
 
-# NeLisp provides a pure-Elisp standalone reader at target/nelisp.
-# Prefer this repo's vendored checkout,
-# then the common sibling checkout used during joint development, then
-# the legacy ~/Notes/dev path.
-DEFAULT_VENDOR_NELISP="$NEMACS_HOME/vendor/nelisp"
-DEFAULT_SIBLING_NELISP="$(cd "$NEMACS_HOME/.." && pwd)/nelisp"
-DEFAULT_LEGACY_NELISP="$HOME/Notes/dev/nelisp"
+# NeLisp provides a pure-Elisp standalone reader at target/nelisp, built from
+# this same repository tree.
+DEFAULT_NELISP_ROOT="$(cd "$SCRIPT_PATH/../.." && pwd)"
 nelisp_default_bin() {
   local root="$1"
   if [[ -x "$root/target/nelisp" ]]; then
@@ -80,17 +76,7 @@ nelisp_default_bin() {
     printf '%s\n' "$root/target/nelisp-standalone-reader"
   fi
 }
-if [[ -z "${NELISP_HOME:-}" ]]; then
-  if [[ -n "$(nelisp_default_bin "$DEFAULT_VENDOR_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
-  elif [[ -n "$(nelisp_default_bin "$DEFAULT_SIBLING_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_SIBLING_NELISP"
-  elif [[ -n "$(nelisp_default_bin "$DEFAULT_LEGACY_NELISP")" ]]; then
-    NELISP_HOME="$DEFAULT_LEGACY_NELISP"
-  else
-    NELISP_HOME="$DEFAULT_VENDOR_NELISP"
-  fi
-fi
+NELISP_HOME="${NELISP_HOME:-$DEFAULT_NELISP_ROOT}"
 NEMACS_DRIVER="${NEMACS_DRIVER:-host}"
 NEMACS_EMACS="${NEMACS_EMACS:-emacs}"
 NEMACS_NELISP="${NEMACS_NELISP:-$(nelisp_default_bin "$NELISP_HOME")}"
@@ -1010,7 +996,7 @@ case "$NEMACS_DRIVER" in
   nelisp)
     if [[ ! -x "$NEMACS_NELISP" ]]; then
       echo "nemacs: nelisp driver requested but $NEMACS_NELISP is not executable" >&2
-      echo "  Set NEMACS_NELISP, export NELISP_HOME, or build it via: bin/build-nelisp" >&2
+      echo "  Set NEMACS_NELISP, export NELISP_HOME, or build it via: make standalone-reader" >&2
       echo "  Direct build: cd $NELISP_HOME && make standalone-reader" >&2
       exit 1
     fi

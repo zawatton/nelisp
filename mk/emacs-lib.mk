@@ -2,7 +2,6 @@
 
 EMACS = emacs --batch
 # NeLisp is driven through the pure-Elisp standalone reader.
-VENDOR_NELISP =
 DEFAULT_NELISP_ROOT := .
 NELISP_ROOT  ?= $(DEFAULT_NELISP_ROOT)
 DEFAULT_NELISP_BIN := $(firstword $(wildcard $(NELISP_ROOT)/target/nelisp $(NELISP_ROOT)/target/nelisp-standalone-reader build/nelisp-experiment))
@@ -666,11 +665,10 @@ NEMACS_SRC_DIRS := $(filter packages/%/src,$(NEMACS_RESOLVED_DIRS))
 NEMACS_TEST_DIR := $(lastword $(NEMACS_RESOLVED_DIRS))
 NEMACS_PACKAGE_SRC_LOAD_PATH = $(foreach d,$(NEMACS_SRC_DIRS),-L $(NELISP_ROOT)/$(d))
 NELISP_LOAD_PATH = $(NEMACS_PACKAGE_SRC_LOAD_PATH) -L $(NELISP_ROOT)/src
-NEMACS_MERGED_SRC ?= $(BUILD_DIR)/doc211-bootstrap-root/src
-
-.PHONY: doc211-package-source-root
-doc211-package-source-root:
-	bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(BUILD_DIR)/doc211-bootstrap-root)" >/dev/null
+# Colon-separated absolute package source dirs (no staged flat source root).
+empty :=
+colon := :
+NEMACS_PACKAGE_SRC_PATH = $(subst $(empty) ,$(colon),$(foreach d,$(NEMACS_SRC_DIRS),$(abspath $(NELISP_ROOT)/$(d))))
 NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src,$(NEMACS_SRC_DIRS))
 SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
 # `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
@@ -755,7 +753,7 @@ TEST_FILES = $(wildcard test/*-test.el)
 #
 # The five `*-binary-verify.el' scripts are not ERT suites at all: each is a
 # `--load'-only probe (see their own header comments) meant to run under the
-# *built standalone* `vendor/nelisp/target/nelisp' binary, never under host
+# *built standalone* `target/nelisp' binary, never under host
 # Emacs (host has no `nl-ffi-call').  Each unconditionally `load's
 # `src/emacs-network-syscall-shim.el' etc. via a relative "src/" prefix at
 # top level (no `ert-deftest' guard), so under host Emacs this is not a test
@@ -826,7 +824,7 @@ TEST_FAST_FILES = \
 	test/emacs-compile-test.el \
 	test/nemacs-wrap-init-test.el
 
-.PHONY: proc-parity-smoke compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke magit-status-diagnose magit-status-live-diagnose org-mode-smoke org-workflow-smoke org-bundle-diagnose test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert test-nelisp-project-smoke test-nelisp-xref-imenu-smoke test-nelisp-help-smoke test-nelisp-dired-workflow-smoke test-nelisp-minibuffer-smoke test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke test-nelisp-compile-smoke profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-class-a diagnose-vendor-class-b diagnose-vendor-class-c diagnose-vendor-class-d diagnose-vendor-class-e verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-class-a-load verify-vendor-core bench demo demo-phase2 clean nelisp nelisp-rebuild nelisp-clean help
+.PHONY: proc-parity-smoke compile test test-fast soak gate-nemacs-complete gate5 gate6 elprop vendor-nelc-cache vendor-nelc-cache-set test-redisplay-core-smoke proc-smoke test-nemacs-gui-bridge test-nemacs-gui-bridge-gate test-nemacs-gui-bridge-slow test-nemacs-gui-bridge-slow-profile nemacs-gui-bridge-profile-summary nemacs-gui-bridge-run-shape test-nemacs-gui-bridge-select test-nemacs-server-client nemacs-library-gate nemacs-library-contract nemacs-library-consumer-smoke nemacs-library-package-smoke nemacs-library-package-path-smoke nemacs-library-package-consumer-smoke nemacs-library-package-lazy-smoke nemacs-library-package-load-path nemacs-library-package-frontend-smoke nemacs-library-package-gui-bridge-smoke nemacs-library-package-gui-bridge-standalone-smoke nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-scaffold nemacs-library-app-scaffold nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-smoke nemacs-library-package-archive-checksum nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify nemacs-library-package-signature-release nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-release-publication-policy-run nemacs-library-package-release-bundle nemacs-library-package-release-rehearsal-key nemacs-library-package-release-rehearsal nemacs-library-package-release-config-check nemacs-library-package-release-ready nemacs-library-package-release-from-config nemacs-library-package-dependency-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-library-package-vendor-release-verify nemacs-library-package-verify nemacs-runtime-image-input-inventory nemacs-gui-keymap-coverage gui-bridge-runtime-inventory nemacs-stub-fallback-skip-inventory nemacs-dirty-review-units nemacs-library-boundary-report nemacs-public-api-inventory nemacs-ownership-coverage verify-production-runtime-path doctor build-nelisp-bootstrap bake-image bake-runtime-image bake-interactive-runtime-image bake-vendor-core-runtime-image bake-magit-runtime-image magit-load-smoke magit-bundle-diagnose magit-status-smoke magit-stage-workflow-smoke magit-transient-workflow-smoke magit-status-diagnose magit-status-live-diagnose org-mode-smoke org-workflow-smoke org-bundle-diagnose test-nelisp test-nelisp-runtime-image test-nelisp-interactive-runtime-image test-nelisp-vendor-core-runtime-image test-nelisp-ert test-nelisp-project-smoke test-nelisp-xref-imenu-smoke test-nelisp-help-smoke test-nelisp-dired-workflow-smoke test-nelisp-minibuffer-smoke test-nelisp-vc-workflow-smoke test-nelisp-shell-smoke test-nelisp-eshell-smoke test-nelisp-compile-smoke profile-nelisp-bootstrap diagnose-vendor-form-walk diagnose-vendor-load-replay diagnose-vendor-repl-replay diagnose-vendor-form-walk-fast diagnose-vendor-load-replay-fast diagnose-vendor-class-a diagnose-vendor-class-b diagnose-vendor-class-c diagnose-vendor-class-d diagnose-vendor-class-e verify-nemacs-daily-driver verify-nelisp-standalone verify-vendor verify-vendor-inventory verify-vendor-class-a verify-vendor-class-a-load verify-vendor-core bench demo demo-phase2 clean nelisp help
 
 help:
 	@echo "Targets:"
@@ -988,7 +986,6 @@ help:
 	@echo "  make demo            run Phase 1 close demo"
 	@echo "  make demo-phase2     run Phase 2 close demo"
 	@echo "  make nelisp          build the in-tree NeLisp standalone reader"
-	@echo "  make nelisp-rebuild  clean + rebuild the vendored NeLisp standalone reader"
 	@echo "  make clean           remove .elc files"
 	@echo "Variables:"
 	@echo "  NELISP_STACK_LIMIT=$(NELISP_STACK_LIMIT)  stack limit for large pure-Elisp loads"
@@ -1206,12 +1203,11 @@ nemacs-library-package-layout:
 		-l scripts/nemacs-library-package-layout.el \
 		-f nemacs-library-package-layout-batch
 
-nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide doc211-package-source-root
+nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
 	mkdir -p "$(BUILD_DIR)"
 	@set -eu; scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
 	mkdir -p "$$scaffold_root/scripts"; \
 	if [ ! -e "$$scaffold_root/packages" ]; then ln -s "$(abspath $(NELISP_ROOT)/packages)" "$$scaffold_root/packages"; fi; \
-	if [ ! -e "$$scaffold_root/src" ]; then ln -s "$(abspath $(NEMACS_MERGED_SRC))" "$$scaffold_root/src"; fi; \
 	cp scripts/nemacs-library-package-scaffold.el "$$scaffold_root/scripts/nemacs-library-package-scaffold.el"; \
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-scaffold-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
@@ -1882,10 +1878,10 @@ test-redisplay-core-smoke:
 # Standalone sync process gateway smoke for Magit/Tramp prerequisites:
 # `call-process' inserts output, preserves non-zero exit status, supports
 # explicit buffer destinations, and can run `git --version'.
-proc-smoke: standalone-reader-passthrough doc211-package-source-root
+proc-smoke: standalone-reader-passthrough
 	test -x "$(NELISP_BIN)"
 	@out="$$(timeout $(NELISP_BOOT_TIMEOUT) env \
-		NEMACS_PROCESS_SRC="$(abspath $(NEMACS_MERGED_SRC))" \
+		NEMACS_PROCESS_SRC="$(NEMACS_PACKAGE_SRC_PATH)" \
 		"$(NELISP_BIN)" --load "$(abspath test/emacs-lib/nemacs-process-sync-smoke.el)" 2>&1)"; \
 	printf '%s\n' "$$out"; \
 	if printf '%s\n' "$$out" | grep -q '^PROC-SMOKE-RESULT: PASS$$'; then \
@@ -1911,7 +1907,7 @@ proc-parity-smoke: standalone-reader-passthrough
 		$(EMACS) -Q --batch -l test/nemacs-process-gnu-parity-smoke.el \
 		> "$(BUILD_DIR)/proc-parity-host.out" 2> "$(BUILD_DIR)/proc-parity-host.err"
 	./tools/run-with-deadline.sh $(NELISP_BOOT_TIMEOUT) --label proc-parity-standalone -- \
-		env NEMACS_PROCESS_SRC="$(abspath src)" \
+		env NEMACS_PROCESS_SRC="$(NEMACS_PACKAGE_SRC_PATH)" \
 		"$(NELISP_BIN)" --load "$(abspath test/nemacs-process-gnu-parity-smoke.el)" \
 		2> "$(BUILD_DIR)/proc-parity-standalone.err" \
 		| grep -v '^nil$$' > "$(BUILD_DIR)/proc-parity-standalone.out"
