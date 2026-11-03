@@ -2857,6 +2857,13 @@ reseeds from its characters; nil -> a full LCG value."
 ;; ignored).  This suits code that drives its own scheduler from the timer
 ;; callback -- e.g. nelisp-eventloop's `schedule-timer' only *enqueues* an event
 ;; from the callback, which is later processed when the actor loop is run.
+;; NOTE: the standalone binary loads packages/nelisp-eventloop's
+;; nelisp-async-core.el by default, whose deferred `run-at-time',
+;; `cancel-timer' and `timerp' replace these; the definitions here are the
+;; fallback for builds without it.
+;; The returned object has GNU Emacs's timer shape (a 10-slot vector, see
+;; timer.el's `timer' struct) so `timerp', `cancel-timer' and the accessors
+;; work on it; it is already triggered because the function has run.
 ;; `sit-for' has nothing to redisplay or block on, so it is a no-op returning t.
 (unless (fboundp 'run-at-time)
   (defun run-at-time (time repeat function &rest args)
@@ -2875,15 +2882,28 @@ reseeds from its characters; nil -> a full LCG value."
                      (consp (cdr time)) (integerp (car (cdr time)))))
       (signal 'error (list "Invalid time specification")))
     (apply function args)
-    (list 'nelisp--sync-timer function)))
-;; There are no timers in this runtime, so nothing can BE one -- which makes
-;; the type check the only honest thing this can do: accepting a string and
-;; answering nil reads as "cancelled", and it cancelled nothing.
-(unless (fboundp 'timerp) (defun timerp (_x) nil))
+    (let ((now (if (fboundp 'current-time) (current-time) '(0 0 0 0))))
+      ;; [triggered-p high low usecs repeat-delay function args idle-delay
+      ;;  psecs integral-multiple]
+      (vector t (nth 0 now) (nth 1 now) (nth 2 now) repeat function args
+              nil (nth 3 now) nil))))
+(unless (fboundp 'run-with-timer)
+  (defun run-with-timer (secs repeat function &rest args)
+    (apply #'run-at-time secs repeat function args)))
+;; GNU Emacs 31.1's `timerp' accepts any vector of length 9 or 10, so this is
+;; a shape test and not an identity test.
+(unless (fboundp 'timerp)
+  (defun timerp (object) (and (vectorp object) (memq (length object) '(9 10)) t)))
+;; Nothing is ever pending (timers fire at creation), so cancelling a real
+;; timer has nothing to undo; the type check still rejects non-timers.
 (unless (fboundp 'cancel-timer)
   (defun cancel-timer (timer)
     (unless (timerp timer) (signal 'wrong-type-argument (list 'timerp timer)))
     nil))
+(unless (fboundp 'timer--triggered) (defun timer--triggered (timer) (aref timer 0)))
+(unless (fboundp 'timer--repeat-delay) (defun timer--repeat-delay (timer) (aref timer 4)))
+(unless (fboundp 'timer--function) (defun timer--function (timer) (aref timer 5)))
+(unless (fboundp 'timer--args) (defun timer--args (timer) (aref timer 6)))
 (unless (fboundp 'sit-for) (defun sit-for (&rest _) t))
 (unless (fboundp 'cl-dolist) (defmacro cl-dolist (spec &rest body) `(cl-block nil (dolist ,spec ,@body))))
 (unless (fboundp 'cl-dotimes) (defmacro cl-dotimes (spec &rest body) `(cl-block nil (dotimes ,spec ,@body))))

@@ -1875,6 +1875,18 @@
        (condition-case e (signal 'wrong-type-argument (list 'stringp 1))
          (wrong-type-argument e))
        (condition-case e (signal 42 nil) (error (car e))))
+ ;; Headless timers return GNU's 10-slot timer vector (timer-shape).  Time
+ ;; slots differ per run, so only shape, accessors and errors are compared.
+ (let ((timer-shape-tm (run-at-time 100 nil (function ignore) 1 2)))
+   (list (type-of timer-shape-tm) (length timer-shape-tm) (timerp timer-shape-tm)
+         (timer--function timer-shape-tm) (timer--args timer-shape-tm)
+         (timer--repeat-delay timer-shape-tm) (cancel-timer timer-shape-tm)))
+ ;; timer-shape: FUNCTION is deferred and runs from a later `sit-for'.
+ (let ((hit nil)) (run-at-time 0 nil (lambda (a b) (setq hit (list a b))) 1 2)
+   (list hit (progn (sit-for 0.05) hit)))
+ (list (timerp (make-vector 10 nil)) (timerp (make-vector 9 nil)) (timerp [1 2]) (timerp nil) (timerp "x")
+       (condition-case e (cancel-timer [1 2]) (error e))
+       (timerp (run-with-timer 100 nil (function ignore))))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

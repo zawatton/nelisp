@@ -1320,7 +1320,7 @@ pinned-collision ns-collision-divergent	read-from-string	lisp/nelisp-stdlib-read
 pinned-collision ns-collision-divergent	recordp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	20096afadd80
 pinned-collision ns-collision-divergent	regexp-quote	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	e92681fb0b02
 pinned-collision ns-collision-divergent	round	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	b6b8448a8348
-pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	1d05e37e9d26
+pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	123de067be74
 pinned-collision ns-collision-divergent	set-file-modes	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	eb7d7aadd4db
 pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el scripts/nelisp-stdlib-prelude.el	a6f57b8a53c0
 pinned-collision ns-collision-divergent	sit-for	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	0402960ed31e
@@ -1351,7 +1351,7 @@ pinned-collision ns-collision-divergent	terpri	lisp/nelisp-stdlib-prn.el scripts
 # `run-at-time' now returns is recognized as one, and so `cancel-timer' can
 # validate its argument via `timerp' the same way real Emacs's own
 # `cancel-timer' does.
-pinned-collision ns-collision-divergent	timerp	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	58c4e5383474
+pinned-collision ns-collision-divergent	timerp	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	42423041584e
 pinned-collision ns-collision-divergent	unless	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	d1b23dd61639
 pinned-collision ns-collision-divergent	upcase	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	0abfe685b83e
 pinned-collision ns-collision-divergent	vconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	1103b789adc3
