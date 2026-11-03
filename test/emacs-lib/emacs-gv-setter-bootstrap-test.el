@@ -18,7 +18,7 @@
          (gv (nelisp-bootstrap--vendor-source-file
               "emacs-lisp/emacs-lisp/gv.el"))
          (lazy (nelisp-bootstrap--vendor-source-file
-                "emacs-lisp-api/emacs-lisp/cl-macs.el"))
+                "emacs-lisp/emacs-lisp/cl-macs.el"))
          (files (list shim gv macroexp macroexp gv lazy))
          (eager (nelisp-bootstrap--eager-runtime-files files)))
     (should (equal (cl-subseq eager 0 3) (list macroexp gv shim)))

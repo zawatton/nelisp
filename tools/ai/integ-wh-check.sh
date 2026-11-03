@@ -134,7 +134,7 @@ case ${1:-} in
     # runtime, the staged and vendored GNU libraries, the packages and the tests with the real reader; a
     # write site must be in tools/ai/integ-wh-const-writes.allow, and no file may be unreadable.
     capped timeout 590 "$GNU" -Q --batch -l tools/ai/integ-wh-const-writes.el -- scripts lisp src vendor/staged-emacs-lisp \
-      vendor/emacs-lisp vendor/emacs-lisp-api packages standalone-compat nelisp-emacs-lib test > "$OUT/constants.log" 2>&1
+      vendor/emacs-lisp packages standalone-compat nelisp-emacs-lib test > "$OUT/constants.log" 2>&1
     rc=$?
     last=$(tail -n 1 "$OUT/constants.log")
     [ $rc = 0 ] || fail "constants: rc=$rc: $(grep -v '^SITE allowed' "$OUT/constants.log" | tail -n 3 | cut -c1-200 | tr '\n' '|')"
