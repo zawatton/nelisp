@@ -1,0 +1,6 @@
+# make standalone-reader-smokes on origin/main 015f39515 + tools/ai/evidence/int-pin-scan-experiment-20261103.patch, 2026-11-03
+# binary sha256 434b816f82bb080d  (target/nelisp-intscan 434b816f82bb080d)
+[reader-smokes] target=linux-x86_64 make=make
+GATE-COUNT checked=53 findings=0
+[reader-smokes] PASS: 53 smokes (-P 4)
+rc=0
