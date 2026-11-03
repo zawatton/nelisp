@@ -35,14 +35,14 @@ def main():
             sys.exit("%s is a prelude lane" % lane.name)
     first = sources[0]
     shutil.copytree(first, new, symlinks=True)
-    probes = new / "test/nelisp-emacs-lib/c-core-probes"
+    probes = new / "test/emacs-lib/c-core-probes"
     for old in probes.glob("*.el"):
         old.unlink()
     names, entries, rows, files = [], [], [], []
     for lane in sources:
         names += (lane / "names.txt").read_text().split()
         unit = (lane / "unit.txt").read_text().strip()
-        text = (lane / "test/nelisp-emacs-lib/c-core-probes" / (unit + ".el")).read_text()
+        text = (lane / "test/emacs-lib/c-core-probes" / (unit + ".el")).read_text()
         entries.append(text.split("\n", 1)[1])
         rows.append((lane / "DIVERGENCES.txt").read_text())
         for file_name in (lane / "KIND.txt").read_text().split()[1:]:

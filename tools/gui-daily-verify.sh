@@ -45,7 +45,7 @@ case " ${gates[*]} " in *" S"*) step gui-image python3 scripts/gui-daily-build.p
 failed=0
 for gate in "${gates[@]}"; do
   case $gate in
-    ccore)    step ccore bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run ;;
+    ccore)    step ccore bash test/emacs-lib/c-core-parity-smoke.sh run ;;
     pty)      step pty python3 tools/nemacs-pty-smoke.py --output build/nemacs-pty-smoke/verify ;;
     wait)     step wait python3 tools/nemacs-pty-smoke.py --group wait --output build/nemacs-pty-smoke/verify-wait ;;
     scenario) step scenario python3 tools/nemacs-pty-smoke.py --group scenario --output build/nemacs-pty-smoke/verify-scenario ;;

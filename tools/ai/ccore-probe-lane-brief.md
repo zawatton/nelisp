@@ -8,7 +8,7 @@ everything in English.
 
 `names.txt` lists GNU Emacs 31.1 C primitives that have no canonical parity
 probe yet. `unit.txt` holds this lane's unit name, UNIT. Create
-`test/nelisp-emacs-lib/c-core-probes/UNIT.el` with exactly one entry per
+`test/emacs-lib/c-core-probes/UNIT.el` with exactly one entry per
 assigned name, and `DIVERGENCES.md` describing every row where the NeLisp
 standalone differs from GNU.
 
@@ -81,12 +81,12 @@ the differing rows (`<` GNU, `>` standalone) followed by
 when the probes are well formed and both runs completed, whatever K is. One
 check takes about 50 seconds because the standalone loads its whole bundle:
 develop the forms against GNU first, then use at most 6 checks in total.
-Existing probes in `$LIB/test/nelisp-emacs-lib/c-core-probes/` show the house
+Existing probes in `$LIB/test/emacs-lib/c-core-probes/` show the house
 style; read a few, do not copy entries for other names.
 
 ## Invariants
 
-- Write only `test/nelisp-emacs-lib/c-core-probes/UNIT.el` and
+- Write only `test/emacs-lib/c-core-probes/UNIT.el` and
   `DIVERGENCES.md` (scratch files are fine if you delete them; `.lane-check/`
   is the tool's output directory).
 - No git commands, no network, no edits outside this directory, no changes to

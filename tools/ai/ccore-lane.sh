@@ -6,7 +6,7 @@
 #       Mirror the parity driver and area table into LANE_DIR and link BUNDLE
 #       (a pinned bootstrap bundle) as LANE_DIR/build/nemacs-bootstrap.el.
 #   ccore-lane.sh check [--strict] UNIT [UNIT_FILE...]
-#       Run inside a lane.  Validates test/nelisp-emacs-lib/c-core-probes/UNIT.el
+#       Run inside a lane.  Validates test/emacs-lib/c-core-probes/UNIT.el
 #       (and names.txt when present), runs it on GNU and on the standalone
 #       after the bundle plus each UNIT_FILE (hot-loaded in order while
 #       `fboundp' answers nil for the names in rebind.txt), and prints
@@ -24,9 +24,9 @@ new_lane() {
   local lane=$1 bundle
   bundle=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
   [ -f "$bundle" ] || fail "bundle missing: $bundle"
-  mkdir -p "$lane/test/nelisp-emacs-lib/c-core-probes" "$lane/tools" "$lane/build" "$lane/units" \
+  mkdir -p "$lane/test/emacs-lib/c-core-probes" "$lane/tools" "$lane/build" "$lane/units" \
     || fail "cannot create $lane"
-  cp "$self/test/nelisp-emacs-lib/c-core-parity-driver.el" "$lane/test/nelisp-emacs-lib/" || fail "driver copy"
+  cp "$self/test/emacs-lib/c-core-parity-driver.el" "$lane/test/emacs-lib/" || fail "driver copy"
   cp "$self/tools/c-core-areas.tsv" "$lane/tools/" || fail "area table copy"
   ln -sfn "$bundle" "$lane/build/nemacs-bootstrap.el" || fail "bundle link"
   # The bundle resolves vendor sources relative to the working directory.
@@ -39,7 +39,7 @@ check_lane() {
   [ "${1:-}" != --strict ] || { strict=1; shift; }
   [ $# -ge 1 ] || fail "usage: check [--strict] UNIT [UNIT_FILE...]"
   local unit=$1; shift
-  local bin=${NELISP_BIN:-} probe="test/nelisp-emacs-lib/c-core-probes/$unit.el" out=.lane-check rc f
+  local bin=${NELISP_BIN:-} probe="test/emacs-lib/c-core-probes/$unit.el" out=.lane-check rc f
   [[ "$unit" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || fail "unsafe unit name"
   [ -n "$bin" ] && [ -x "$bin" ] || fail "NELISP_BIN missing or not executable"
   [ -f "$probe" ] || fail "probe file missing: $probe"
@@ -96,7 +96,7 @@ check_lane() {
     head -40 "$out/structure.out"; tail -c 300 "$out/structure.err"
     fail "probe file violates the structural contract"
   fi
-  C_CORE_UNIT=$unit timeout 120 "$host" -Q --batch -l test/nelisp-emacs-lib/c-core-parity-driver.el \
+  C_CORE_UNIT=$unit timeout 120 "$host" -Q --batch -l test/emacs-lib/c-core-parity-driver.el \
     > "$out/host.out" 2> "$out/host.err" < /dev/null
   rc=$?
   [ "$rc" -eq 0 ] && [ "$(tail -1 "$out/host.out")" = P-DONE ] \
@@ -120,7 +120,7 @@ check_lane() {
     if [ -f rebind.txt ] && [ $# -gt 0 ]; then
       printf '(fset (quote fboundp) ccore-lane--fboundp)\n'
     fi
-    printf '(load (expand-file-name "test/nelisp-emacs-lib/c-core-parity-driver.el") nil t)\n'
+    printf '(load (expand-file-name "test/emacs-lib/c-core-parity-driver.el") nil t)\n'
   } > "$out/run.el"
   C_CORE_UNIT=$unit timeout 200 "$bin" --load "$out/run.el" --eval nil \
     > "$out/nelisp.out" 2> "$out/nelisp.err" < /dev/null

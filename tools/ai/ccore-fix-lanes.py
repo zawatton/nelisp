@@ -6,7 +6,7 @@ Usage: ccore-fix-lanes.py --wave ID --bundle FILE --out ROOT
                           PROBE_LANE...
 
 Each PROBE_LANE is a lane directory holding one probe unit
-(test/nelisp-emacs-lib/c-core-probes/*.el) and its last check result
+(test/emacs-lib/c-core-probes/*.el) and its last check result
 (.lane-check/diff.txt).  Names with differing rows are assigned by the
 MEASURED live definer (ccore-definers.py traces a real load of BUNDLE), so
 every lane has exactly one writable file and edits the definition that is
@@ -97,7 +97,7 @@ def main():
     entries, rows = {}, collections.defaultdict(list)
     for lane in args.lanes:
         lane = Path(lane)
-        probes = sorted((lane / "test/nelisp-emacs-lib/c-core-probes").glob("*.el"))
+        probes = sorted((lane / "test/emacs-lib/c-core-probes").glob("*.el"))
         diff = lane / ".lane-check/diff.txt"
         if not probes or not diff.exists():
             print("skip %s: no probe file or check result" % lane.name, file=sys.stderr)
@@ -190,7 +190,7 @@ def main():
             % (lane_name, " ".join("units/" + f for f in file_names)))
         (lane / "rebind.txt").write_text(
             "" if kind == "prelude" else "\n".join(group) + "\n")
-        probe = lane / "test/nelisp-emacs-lib/c-core-probes" / (lane_name + ".el")
+        probe = lane / "test/emacs-lib/c-core-probes" / (lane_name + ".el")
         probe.write_text(";;; %s.el --- probes for one fix lane  -*- lexical-binding: t; -*-\n%s\n"
                          % (lane_name, "\n".join(entries[n] for n in group)))
         (lane / "DIVERGENCES.txt").write_text(

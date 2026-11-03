@@ -587,7 +587,7 @@ def run(args):
     lib = args.lib.resolve()
     binary = Path(args.nelisp).resolve()
     image = image_path(lib, binary)
-    engine = (args.engine or lib/'packages/nelisp-emacs-core/src/emacs-redisplay.el').resolve()
+    engine = (args.engine or lib/'packages/emacs-lib-core/src/emacs-redisplay.el').resolve()
     source_hash = hashlib.sha256(engine.read_bytes()).hexdigest()
     out = args.output.resolve(); out.mkdir(parents=True, exist_ok=True)
     base_image = image

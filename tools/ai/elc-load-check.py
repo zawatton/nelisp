@@ -141,19 +141,19 @@ def source_root():
 
 
 def runtime_files():
-    return [source_root() / "packages/nelisp-emacs-foundation/src" / name
+    return [source_root() / "packages/emacs-lib-foundation/src" / name
             for name in ("emacs-fns.el", "emacs-eval.el", "emacs-load.el")]
 
 
 def corpus_runtime_files():
     return [source_root() / name for name in (
-        "packages/nelisp-emacs-foundation/src/emacs-vars.el",
-        "packages/nelisp-emacs-foundation/src/emacs-char-table.el",
-        "packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el",
-        "packages/nelisp-emacs-buffer-core/src/emacs-buffer.el",
-        "packages/nelisp-emacs-core/src/emacs-faces.el",
-        "packages/nelisp-emacs-core/src/emacs-syntax-table.el",
-        "packages/nelisp-emacs-tools/src/lisp.el")]
+        "packages/emacs-lib-foundation/src/emacs-vars.el",
+        "packages/emacs-lib-foundation/src/emacs-char-table.el",
+        "packages/emacs-lib-buffer-core/src/nelisp-emacs-compat.el",
+        "packages/emacs-lib-buffer-core/src/emacs-buffer.el",
+        "packages/emacs-lib-core/src/emacs-faces.el",
+        "packages/emacs-lib-core/src/emacs-syntax-table.el",
+        "packages/emacs-lib-core/src/lisp.el")]
 
 
 def corpus_load_directories():
@@ -477,7 +477,7 @@ def build_context():
     recipe = consumer / "tools/c-core-image.sh"
     source_tree = consumer / "build/doc211-bootstrap-root/src"
     need(source_tree.is_dir(), "missing canonical consumer require source tree")
-    loader = source_root() / "packages/nelisp-emacs-foundation/src/emacs-load.el"
+    loader = source_root() / "packages/emacs-lib-io/src/emacs-load.el"
     raw, replacement = original.read_bytes(), loader.read_bytes()
     start = list(re.finditer(rb"^;;; >>> src/emacs-load\.el\r?$", raw, re.M))
     end = list(re.finditer(rb"^;;; <<< src/emacs-load\.el\r?$", raw, re.M))

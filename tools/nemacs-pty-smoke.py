@@ -139,7 +139,7 @@ def run_stale_launcher_checks(args, image):
             stream.write(b'\n; stale bundle identity control\n')
         reject('stale_c_core_image_rejected', 'heap image is stale or unavailable')
         shutil.copy2(args.lib / 'build/nemacs-bootstrap.el', bundle)
-        source = root / 'packages/nelisp-emacs-core/src/emacs-command-loop.el'
+        source = root / 'packages/emacs-lib-core/src/emacs-command-loop.el'
         source.parent.mkdir(parents=True)
         source.write_text('; source newer than bundle control\n')
         stamp = bundle.stat().st_mtime_ns + 1_000_000_000
