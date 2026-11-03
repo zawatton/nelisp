@@ -1388,6 +1388,9 @@
                    emacs-fileio-builtins
                    emacs-standalone
                    emacs-process
+                   emacs-process-posix-signals
+                   emacs-process-posix-spawn
+                   emacs-process-coding
                    emacs-process-builtins)))
   (should (equal emacs-editing-features
                  '(emacs-undo

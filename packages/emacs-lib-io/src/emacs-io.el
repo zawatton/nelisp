@@ -25,6 +25,9 @@
     emacs-fileio-builtins
     emacs-standalone
     emacs-process
+    emacs-process-posix-signals
+    emacs-process-posix-spawn
+    emacs-process-coding
     emacs-process-builtins)
   "Reusable IO package features loaded by `emacs-io'.")
 
