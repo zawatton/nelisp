@@ -22,12 +22,6 @@
   (should (featurep 'cl-generic))
   (should (fboundp 'cl-deftype)))
 
-(ert-deftest emacs-cl-macros-test/cl-lib-version-is-shim-version ()
-  "The local `cl-lib' shim should publish its compatibility version."
-  (load (locate-library "cl-lib") nil t)
-  (should (boundp 'cl-lib-version))
-  (should (equal "1.0-nemacs-shim" cl-lib-version)))
-
 (ert-deftest emacs-cl-macros-test/untagged-list-structure ()
   (eval (emacs-cl-macros--expand-defstruct
          '(emacs-cl-macros-test--list (:type list)) '((a 11) (b 22))) t)

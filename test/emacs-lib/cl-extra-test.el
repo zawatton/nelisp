@@ -4,10 +4,8 @@
 
 (require 'ert)
 
-(load (expand-file-name
-       "../src/cl-lib.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
-      nil t)
+(require 'cl-lib)
+(require 'cl-extra)
 
 ;; S2 coverage batch (2026-09-28): a handful of pure `cl-extra' names --
 ;; predicate, mapping, property-list, integer-parsing, and random-number

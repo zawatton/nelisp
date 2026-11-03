@@ -1,22 +1,6 @@
 ;;; generator.el --- generators  -*- lexical-binding: t -*-
 
-;; nelisp-emacs: VENDORED VERBATIM from GNU Emacs 30.1
-;; (lisp/emacs-lisp/generator.el) for the NeLisp standalone runtime, where
-;; `iter-defun' / `iter-lambda' / `iter-yield' / `iter-next' were void
-;; (Doc 16 breadth round 23).  Bundling it makes the package require-able and
-;; defines the full API; it is correct on host Emacs (see test/generator-test.el).
-;;
-;; RUNTIME STATUS: iterator EXECUTION is currently BLOCKED on the runtime by
-;; reader-core gap Doc 22 A12 -- `macroexpand-all' / `macroexpand-1' ignore
-;; their ENVIRONMENT argument.  generator's CPS transform passes a special
-;; macro-environment to `macroexpand-all' to intercept `iter-yield'; with the
-;; env ignored the yields are not transformed, so the iterator's
-;; `(catch 'cps--yield ...)' is never established and the first `iter-next'
-;; lets the yield `throw' escape.  No nelisp-emacs polyfill can close this
-;; (macroexpand-all is core); the file is kept ready so that fixing A12 in
-;; vendor/nelisp activates generators with no further change.  Kept GPLv3.
-
-;; Copyright (C) 2015-2025 Free Software Foundation, Inc.
+;; Copyright (C) 2015-2026 Free Software Foundation, Inc.
 
 ;; Author: Daniel Colascione <dancol@dancol.org>
 ;; Keywords: extensions, elisp
@@ -691,7 +675,8 @@ encapsulates the state of a computation that produces a sequence
 of values.  Callers can retrieve each value using `iter-next'."
   (declare (indent defun)
            (debug (&define name lambda-list lambda-doc &rest sexp))
-           (doc-string 3))
+           (doc-string 3)
+           (autoload-macro expand)) ; expand to the defun on autoload gen
   (cl-assert lexical-binding)
   (let* ((parsed-body (macroexp-parse-body body))
          (declarations (car parsed-body))
