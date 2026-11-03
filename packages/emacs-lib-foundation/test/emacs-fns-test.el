@@ -19,7 +19,7 @@
 
 (defconst emacs-fns-test--source-file
   (expand-file-name
-   "../../packages/nelisp-emacs-foundation/src/emacs-fns.el"
+   "../src/emacs-fns.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 
 ;;;; --- mapcar -------------------------------------------------------------

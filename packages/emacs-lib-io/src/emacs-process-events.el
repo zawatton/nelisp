@@ -400,7 +400,7 @@ async filters never fire (Doc 06 C1)."
       (let ((fd (process-id-fd proc)))
         (when (and (integerp fd) (>= fd 0)
                    (not (memq (emacs-process-events--get proc 4) '(closed stop exit signal)))
-                   (not (eq (process-filter proc) t)))
+                   (not (eq (emacs-process-events--get proc 5) t)))
           (push fd fds))))
     fds))
 

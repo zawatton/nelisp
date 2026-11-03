@@ -11,8 +11,7 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
 (defconst emacs-load-test--source-file
-  (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-load.el"
-                    (expand-file-name ".." emacs-load-test--root)))
+  (expand-file-name "src/emacs-load.el" emacs-load-test--root))
 
 (defvar emacs-load-test--stream-order nil)
 

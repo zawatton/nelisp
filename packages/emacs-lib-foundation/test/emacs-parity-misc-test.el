@@ -22,7 +22,7 @@
 
 (defconst emacs-parity-misc-test--source
   (expand-file-name
-   "../../packages/nelisp-emacs-foundation/src/emacs-parity-misc.el"
+   "../src/emacs-parity-misc.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 
 (defvar emacs-parity-misc-test--var-1 1)
