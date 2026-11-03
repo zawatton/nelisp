@@ -77,8 +77,7 @@
      (append
       (cl-mapcan
        (lambda (dir)
-         (when (or (string-match-p "/packages/emacs-lib-[^/]+/src\\'" dir)
-                   (string-match-p "/packages/STAYS/src\\'" dir))
+         (when (string-match-p "/packages/emacs-lib-[^/]+/src\\'" dir)
            (directory-files-recursively dir "\\.el\\'")))
        (doc211-source-root-dirs nemacs-ownership-coverage-repo-root))
       (let ((gui (expand-file-name "gui" nemacs-ownership-coverage-repo-root)))

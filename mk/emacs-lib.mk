@@ -671,7 +671,7 @@ NEMACS_MERGED_SRC ?= $(BUILD_DIR)/doc211-bootstrap-root/src
 .PHONY: doc211-package-source-root
 doc211-package-source-root:
 	bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(BUILD_DIR)/doc211-bootstrap-root)" >/dev/null
-NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src packages/STAYS/src,$(NEMACS_SRC_DIRS))
+NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src,$(NEMACS_SRC_DIRS))
 SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
 # `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
 # host byte-compilation trips over upstream macro shapes, so `make compile'
