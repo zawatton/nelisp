@@ -202,3 +202,29 @@ pinned lambda (parity pattern)."
     (let ((a (list (funcall rng) (funcall rng))))
       (setq state 7)
       (should (equal a (list (funcall rng) (funcall rng)))))))
+
+;;;; Pure-Elisp log / sin / cos fallbacks and the expt placeholder
+
+(defun emacs-numeric-test--rel (a b)
+  "Return the relative error of A against B."
+  (if (= b 0.0) (abs a) (/ (abs (- a b)) (abs b))))
+
+(ert-deftest emacs-numeric-test-trig-fallback-matches-native ()
+  (dolist (x '(0.0 0.5 1.0 -1.0 2.0 3.0 10.0 100.0 12345.678 -777.7 1e7 1e9 1e-10))
+    (should (<= (emacs-numeric-test--rel (emacs-numeric--trig x nil) (sin x)) 1e-15))
+    (should (<= (emacs-numeric-test--rel (emacs-numeric--trig x t) (cos x)) 1e-15))))
+
+(ert-deftest emacs-numeric-test-log-fallback-matches-native ()
+  (dolist (x '(1e-300 1e-10 0.5 1.0000001 2.0 3.0 10.0 12345.678 1e300))
+    (should (<= (emacs-numeric-test--rel (emacs-numeric--log x) (log x)) 1e-15)))
+  (should (= (emacs-numeric--log 8 2) 3.0))
+  (should (= (emacs-numeric--log 0) -1.0e+INF))
+  (should (isnan (emacs-numeric--log -1.0))))
+
+(ert-deftest emacs-numeric-test-expt-placeholder-semantics ()
+  (should (= (expt 2 10) 1024))
+  (should (= (expt 2 -2) 0.25))
+  (should (<= (emacs-numeric-test--rel (expt 2 0.5) 1.4142135623730951) 1e-15))
+  (should (isnan (expt -2 0.5)))
+  (should (= (expt 0 0.5) 0.0))
+  (should (= (expt 0 -0.5) 1.0e+INF)))

@@ -43,7 +43,9 @@
     (unless (integerp exponent) (signal 'wrong-type-argument (list 'fixnump exponent)))
     (* (float sgnfcand) (expt 2.0 exponent))))
 
-(unless (fboundp 'tan)
+;; The standalone reader's `tan' is an `fboundp' stub that signals
+;; `nelisp-unsupported-primitive'; probe with a call instead of `fboundp'.
+(unless (condition-case nil (numberp (tan 1.0)) (error nil))
   (defun tan (arg)
     "Return the tangent of ARG.\n\n(fn ARG)"
     (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
