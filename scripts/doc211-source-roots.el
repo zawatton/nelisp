@@ -73,7 +73,7 @@ first resolution without repeating its filesystem fingerprint."
               (when (file-directory-p src) (push src dirs))))
           (setq dirs
                 (append (nreverse dirs)
-                        (list (expand-file-name "test/nelisp-emacs-lib" root))))
+                        (list (expand-file-name "test/emacs-lib" root))))
           (setq doc211-source-root-dirs-cache
                 (cons (list root fingerprint dirs)
                       (assoc-delete-all root doc211-source-root-dirs-cache)))

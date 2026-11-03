@@ -10,7 +10,7 @@ unit_for_path() {
     scripts/nemacs-dirty-review-units.sh|tools/lint-diagnosability.sh)
       printf '%s' "banking-tooling"
       ;;
-    packages/nelisp-emacs-*|scripts/nemacs-library-app-scaffold.el|scripts/nemacs-public-api-inventory.el|scripts/nemacs-library-boundary-report.el|scripts/nemacs-library-package-archive.el|scripts/nemacs-library-package-compile-cache.el|scripts/nemacs-library-package-archive-smoke.el|scripts/nemacs-library-package-index-smoke.el|scripts/nemacs-library-package-release-bundle-smoke.el|src/nelisp-emacs.el|src/emacs-cc-*.el|test/nelisp-emacs-test.el|docs/design/18-library-package-ownership-inventory.org)
+    packages/emacs-lib-*|scripts/nemacs-library-app-scaffold.el|scripts/nemacs-public-api-inventory.el|scripts/nemacs-library-boundary-report.el|scripts/nemacs-library-package-archive.el|scripts/nemacs-library-package-compile-cache.el|scripts/nemacs-library-package-archive-smoke.el|scripts/nemacs-library-package-index-smoke.el|scripts/nemacs-library-package-release-bundle-smoke.el|src/nelisp-emacs.el|src/emacs-cc-*.el|test/nelisp-emacs-test.el|docs/design/18-library-package-ownership-inventory.org)
       printf '%s' "package-scaffold"
       ;;
     vendor/*)

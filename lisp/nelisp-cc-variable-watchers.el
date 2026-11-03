@@ -13,7 +13,7 @@
         forms)
     (with-temp-buffer
       (insert-file-contents
-       (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-parity-misc.el" root))
+       (expand-file-name "packages/emacs-lib-foundation/src/emacs-parity-misc.el" root))
       (emacs-lisp-mode)
       (check-parens)
       (goto-char (point-min))

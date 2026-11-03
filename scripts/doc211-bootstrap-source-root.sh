@@ -5,7 +5,7 @@ out=${1:-$root/build/doc211-bootstrap-root}
 mkdir -p "$out/src"
 find "$out/src" -mindepth 1 -maxdepth 1 -type l -delete
 while IFS= read -r source_dir; do
-  [[ "$source_dir" == packages/nelisp-emacs-*/src ]] || continue
+  [[ "$source_dir" == packages/emacs-lib-*/src ]] || continue
   while IFS= read -r source; do
     name=${source##*/}
     test ! -e "$out/src/$name" || { echo "duplicate imported API source: $name" >&2; exit 1; }

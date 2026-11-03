@@ -49,7 +49,7 @@
 #                     slower prelude/bootstrap-repl input (E2E_PRELUDE).
 #
 # Requires a host `emacs` (batch mode, GNU Emacs) able to load
-# nelisp-emacs-lib/scripts/*.el, and this worktree's ./target/nelisp already
+# scripts/emacs-lib/*.el, and this worktree's ./target/nelisp already
 # built (`make standalone-reader`).
 #
 # NOTE on pkill: this script's own invocation text necessarily contains the

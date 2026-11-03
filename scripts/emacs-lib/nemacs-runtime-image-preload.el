@@ -17,20 +17,20 @@
            "")))
 
 (setq nemacs-runtime-image-package-load-paths
-      '("packages/nelisp-emacs-buffer-core/lazy"
-        "packages/nelisp-emacs-buffer-core/lisp"
-        "packages/nelisp-emacs-core/lazy"
-        "packages/nelisp-emacs-core/lisp"
-        "packages/nelisp-emacs-editing/lisp"
-        "packages/nelisp-emacs-facade/lisp"
-        "packages/nelisp-emacs-foundation/lisp"
-        "packages/nelisp-emacs-io/lazy"
-        "packages/nelisp-emacs-io/lisp"
-        "packages/nelisp-emacs-special-buffers/lisp"
-        "packages/nelisp-emacs-text-core/lazy"
-        "packages/nelisp-emacs-text-core/lisp"
-        "packages/nelisp-emacs-textmodes-stub/lisp"
-        "packages/nelisp-emacs-app-gui/lisp"))
+      '("packages/emacs-lib-buffer-core/src"
+        "packages/emacs-lib-buffer-core/src"
+        "packages/emacs-lib-core/src"
+        "packages/emacs-lib-core/src"
+        "packages/emacs-lib-editing/src"
+        "packages/emacs-lib-facade/src"
+        "packages/emacs-lib-foundation/src"
+        "packages/emacs-lib-io/src"
+        "packages/emacs-lib-io/src"
+        "packages/emacs-lib-special-buffers/src"
+        "packages/emacs-lib-text-core/src"
+        "packages/emacs-lib-text-core/src"
+        "packages/emacs-lib-textmodes-stub/src"
+        "packages/emacs-lib-app-gui/src"))
 
 (defun nemacs-runtime-image-setup-paths (repo-root)
   "Install REPO-ROOT's package/app scaffold and vendor paths for a bake."
