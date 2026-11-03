@@ -446,6 +446,24 @@ VARIABLEP selects `boundp' instead of `fboundp'."
 
 (defun nl-ns--definition-records-in-form (form guard leading-comments source)
   "Return definition plists nested in executable FORM.
+GUARD, LEADING-COMMENTS and SOURCE are as for
+`nl-ns--definition-records-step', which classifies one form; this
+wrapper follows its tail continuations in a loop so the result equals
+the former recursion on (cdr FORM) without growing the Lisp stack."
+  (let ((parts nil) (done nil))
+    (while (not done)
+      (let ((result (nl-ns--definition-records-step
+                     form guard leading-comments source)))
+        (if (eq (car-safe result) 'nl-ns--continue)
+            (setq parts (cons (car (cdr result)) parts)
+                  form (cdr (cdr result))
+                  leading-comments nil)
+          (setq parts (cons result parts)
+                done t))))
+    (apply #'append (nreverse parts))))
+
+(defun nl-ns--definition-records-step (form guard leading-comments source)
+  "Return definition plists nested in executable FORM.
 GUARD is nil or a plist describing the enclosing conditional guard.
 LEADING-COMMENTS comes from the enclosing top-level form metadata.
 SOURCE is the unread top-level source text, used to recover comment
@@ -510,8 +528,12 @@ lines immediately above nested definitions inside conditionals."
                       subform (nl-ns--make-guard 'custom (car (cdr form))) nil
                       source))
                    (cdr (cdr form)))))
-   (t (append (nl-ns--definition-records-in-form (car form) guard nil source)
-              (nl-ns--definition-records-in-form (cdr form) guard nil source)))))
+   ;; Walk the spine iteratively (see the wrapper below): recursing on
+   ;; the cdr nested one Lisp frame group per list element and hit
+   ;; `excessive-lisp-nesting' on long forms.
+   (t (cons 'nl-ns--continue
+            (cons (nl-ns--definition-records-in-form (car form) guard nil source)
+                  (cdr form))))))
 
 (defun nl-ns--ns-in-definition-records (form members prefix)
   "Return qualified definition plists from `nl-ns-in' FORM."
