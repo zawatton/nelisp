@@ -1771,9 +1771,13 @@ Bound to C-b / <left>.
 Symmetric to `forward-char' for `beginning-of-buffer' / `end-of-buffer'
 clamp + signal semantics."
     (interactive "p")
-    (unless (integerp (or n 1))
+    (setq n (or n 1))
+    (unless (integerp n)
       (signal 'wrong-type-argument (list 'fixnump n)))
-    (forward-char (- (or n 1)))))
+    (let ((target (- (point) n)) (lo (point-min)) (hi (point-max)))
+      (cond ((< target lo) (goto-char lo) (signal 'beginning-of-buffer nil))
+            ((> target hi) (goto-char hi) (signal 'end-of-buffer nil))
+            (t (goto-char target) nil)))))
 
 ;; buffer-size batched into the dolist near the top.
 

@@ -159,6 +159,10 @@ source table independent."
       (should (eq (emacs-char-table-char-category-set ?a)
                   (emacs-char-table-char-category-set ?b)))
       (should-not (aref (emacs-char-table-char-category-set ?!) ?>))
+      ;; GNU signals "Undefined category" for an undefined CATEGORY.
+      (require 'emacs-cc-category-1)
+      (aset (emacs-cc-category-1--docs-for table) ?> "test category")
+      (aset (emacs-cc-category-1--docs-for table) ?< "test category")
       (emacs-char-table-modify-category-entry ?! ?> table)
       (should (aref (emacs-char-table-char-category-set ?!) ?>))
       (should-not (aref (emacs-char-table-char-category-set ?a) ?>))
@@ -205,7 +209,8 @@ source table independent."
 
 (ert-deftest emacs-char-table-test/max-char ()
   (should (= #x3FFFFF (emacs-char-table-max-char)))
-  (should (= #x3FFFFF (emacs-char-table-max-char t))))
+  ;; GNU: (max-char t) is the maximum Unicode code point.
+  (should (= #x10FFFF (emacs-char-table-max-char t))))
 
 ;;;; --- public aref / aset bridge -------------------------------------
 

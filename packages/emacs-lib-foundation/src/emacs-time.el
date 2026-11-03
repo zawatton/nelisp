@@ -536,15 +536,14 @@ day 719163."
 
 (unless (fboundp 'set-time-zone-rule)
   (defun set-time-zone-rule (rule)
-    "Set the local time zone to RULE and return RULE.
+    "Set the local time zone to RULE and return nil, like GNU Emacs.
 RULE accepts a POSIX string, t for UTC, nil or wall for system time,
 or a fixed offset in seconds or an (OFFSET NAME) list."
     (emacs-time--zone-specification rule)
     (setq emacs-time--time-zone-rule rule
           emacs-time--time-zone-rule-set-p t
           emacs-time--current-time-zone-cache nil)
-    ;; The emacs-time test suite expects RULE back (GNU Emacs returns nil).
-    rule))
+    nil))
 
 (unless (emacs-time--function-cell-live-p 'display-time-mode)
   (defalias 'display-time-mode #'ignore))

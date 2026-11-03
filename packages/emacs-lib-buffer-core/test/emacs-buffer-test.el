@@ -148,7 +148,9 @@ registration into a later test in the same batch Emacs process."
       (emacs-buffer-make-local-variable 'a)
       (emacs-buffer-make-local-variable 'b)
       (emacs-buffer-kill-all-local-variables)
-      (should (null (emacs-buffer-buffer-local-variables b))))))
+      ;; Like GNU, only the intrinsic `buffer-file-name' binding remains.
+      (should (equal '((buffer-file-name))
+                     (emacs-buffer-buffer-local-variables b))))))
 
 ;;;; B. text-property/property query (26 tests)
 

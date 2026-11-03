@@ -265,7 +265,8 @@ explicitly unbound clock cell remains unbound after the same reload."
            (emacs-time--time-zone-rule nil)
            (emacs-time--current-time-zone-cache '(1 "X")))
        (should-not (display-time-mode 1))
-       (should (equal "UTC0" (set-time-zone-rule "UTC0")))
+       ;; GNU returns nil.
+       (should-not (set-time-zone-rule "UTC0"))
        (should (equal "UTC0" emacs-time--time-zone-rule))
        (should-not emacs-time--current-time-zone-cache)))))
 
@@ -303,7 +304,8 @@ explicitly unbound clock cell remains unbound after the same reload."
      (load emacs-time-test--module-file t t)
      (should (= 12 (time-convert 12.9 'integer)))
      (should (= 12.5 (time-convert 12.5 'float)))
-     (should (equal '(12 0 0 0) (time-convert 12.5 'list)))
+     ;; GNU: (HIGH LOW USEC PSEC) for 12.5 seconds.
+     (should (equal '(0 12 500000 0) (time-convert 12.5 'list)))
      (should (equal '(5 . 2) (time-convert 2.5 2)))
      (should (equal '(12000 . 1000) (time-convert 12 1000))))))
 

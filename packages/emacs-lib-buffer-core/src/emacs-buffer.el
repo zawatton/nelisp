@@ -395,10 +395,9 @@ every subsequently-created buffer.  Returns SYM."
                    nil)))
     (let ((cell (assq 'buffer-file-name locals))
           (value (emacs-buffer-buffer-local-value 'buffer-file-name b)))
-      (cond (cell (setcdr cell value))
-            ;; Report the intrinsic binding only once it carries a value; a
-            ;; never-visited buffer otherwise lists a bare nil entry.
-            (value (push (cons 'buffer-file-name value) locals))))
+      ;; Like GNU, the intrinsic binding is always listed, even when nil.
+      (if cell (setcdr cell value)
+        (push (cons 'buffer-file-name value) locals)))
     locals))
 
 ;;;###autoload

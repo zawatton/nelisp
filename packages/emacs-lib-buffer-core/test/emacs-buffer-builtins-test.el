@@ -798,8 +798,10 @@ shadows our defun."
     (should (string-match-p "(signal 'beginning-of-buffer" s))
     (should (string-match-p "(nelisp-ec-goto-char hi)" s))
     (should (string-match-p "(nelisp-ec-goto-char lo)" s))
-    ;; backward-char delegates to forward-char with negated arg.
-    (should (string-match-p "(forward-char (- (or n 1)))" bs))
+    ;; backward-char clamps + signals through the generic point API, so
+    ;; it also works on native buffers.
+    (should (string-match-p "(signal 'beginning-of-buffer nil)" bs))
+    (should (string-match-p "(goto-char lo)" bs))
     ;; command-loop-1 catches both signals.
     (should (string-match-p "(end-of-buffer" cl))
     (should (string-match-p "(beginning-of-buffer" cl))
