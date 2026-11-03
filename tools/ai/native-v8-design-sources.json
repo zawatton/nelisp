@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-29",
+  "scope": "Design evidence only; no implementation or performance qualification",
+  "native": {
+    "root_locator": "$HOME/.cache/tmp/nelisp-next-batch-20261029/wt",
+    "head": "0e250a8774e0190eab9dfe59de0566df906d824d",
+    "dirty_tree_required": true,
+    "files": [
+      {"path": "lisp/nelisp-cc-fxir-native.el", "bytes": 77955, "sha256": "524793e6b9c4d04ea826e497fddf0011701e9432555390b36f15c37871679287"},
+      {"path": "lisp/nelisp-fxir-native-data.el", "bytes": 329441, "sha256": "56072315be69e259fde38b4a81961e226eec87c57960822319a2b3ea66453bd9"},
+      {"path": "lisp/nelisp-fxir-native-corpus-data.el", "bytes": 27628, "sha256": "12a9b99d7c974808cdda3197a419e7698b675bfe3cbad98824543a5ca43439ae"},
+      {"path": "lisp/nelisp-cc-fx-call-primitives.el", "bytes": 116270, "sha256": "7d920e653800d47eaf8233767b7c6b9e0e56c1d37acfc5be4e8d98ca33b486b5"}
+    ],
+    "qualification_binary_sha256": "034ee22310a139928ff08fa576a7207d6944ea860cd96b87ab2734ebfd198821",
+    "qualification_cold_image_sha256": "e8747e9e90982b25d8799567d54a5def15267934a8f48bc7c5fe34596cbdd285",
+    "qualification_receipt_locator": "$HOME/.cache/tmp/nelisp-next-batch-20261029/out/native/acceptance.json",
+    "qualification_receipt_sha256": "b5da37cf1277435ddcafb3b829a9b366e4d564f480353235066c758574f54eb0",
+    "qualification_is_not_this_design_implementation": true
+  },
+  "v8": {
+    "source_tag": "nodejs/node v20.19.2",
+    "observed_benchmark_version": "11.3.244.8-node.38",
+    "base_url": "https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/v8/src/compiler/",
+    "files": [
+      {"path": "js-inlining.cc", "bytes": 37031, "sha256": "ed2124d2cf0fca1c7b50286fe4fe0e569757b9472d36eef043deedba64fc7ac4"},
+      {"path": "js-inlining-heuristic.cc", "bytes": 34663, "sha256": "a8b1709c62b4edad5ab40f8219b681a4ade56dce9d3b781c281836eec77fb5b7"},
+      {"path": "representation-change.cc", "bytes": 71484, "sha256": "5fc0423270edcb7c923a72986915fee6697dac4a77520859ba809627ea822f07"}
+    ]
+  },
+  "notes_evidence": [
+    {"path": "handoff/nelisp-python-javascript-benchmark-results_2026-10-29.md", "sha256": "bd9c3ad0638f8d931e971f1f777d375f3244966c44722424b5f09a7be94a59fd", "role": "Older-bool cohort motivation; no native route proof"},
+    {"path": "handoff/nelisp-gnu-speed_codex-coordinator_2026-10-29.md", "sha256": "732abcb20b16534c5e86d87a05daabe34cc3f4759caeb3a1ae2a91bb24b715f9", "role": "Native continuation identity and resource constraints; may advance independently"}
+  ]
+}

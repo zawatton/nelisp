@@ -1,0 +1,318 @@
+#+TITLE: Doc 214 — Importing application libraries from other languages
+#+DATE: 2026-10-24
+#+STATUS: DRAFT — candidate selection and acceptance design; no foreign library imported or runtime compatibility established
+
+* 1. Objective and selection rule
+
+Expand the libraries available to applications and services written in
+Emacs Lisp on NeLisp by converting selected upstream implementations into
+NeLisp packages. Preserve upstream behavior within an explicit supported
+subset, and expose an idiomatic Emacs Lisp interface.
+
+Only additional capabilities belong in the import backlog. Exclude
+functionality already implemented in NeLisp, nelisp-emacs-lib, or reusable
+GNU Emacs Lisp sources available in those projects. Do not select a
+duplicate library simply to exercise another language frontend. Existing
+provider integration and runtime compatibility repairs are separate tasks.
+
+The selected six candidates are Mustache rendering, general structured
+schema validation, reusable property-based testing, YAML documents,
+WebSocket framing, and application workflow state machines. They are
+proposals, not claims that their source already converts successfully.
+
+* 2. Existing implementation audit
+
+The bounded source audit covered =packages/= in NeLisp and =src/=,
+=packages/=, relevant tests, and selected =vendor/emacs-lisp/= providers
+in =../nelisp-emacs-lib/=. A separate =../nelisp-emacs/= directory was not
+present in this checkout; the reusable implementation inspected here is
+=../nelisp-emacs-lib/=.
+
+The findings below establish source locations and scope. Tests were read
+where relevant; application runtime tests and upstream suites were not
+executed for this design. Vendored code, facade installation, host execution,
+standalone execution, and browser execution are distinct availability states.
+An existing source provider with an integration gap gets reuse priority;
+that gap alone does not justify translating a second implementation.
+
+** 2.1 Excluded imports and reuse owners
+
+These entries are excluded from the active import backlog. Their presence
+in this table records the exclusion, not a request to implement them again.
+
+| Former candidate | Existing source evidence | Disposition |
+|------------------+--------------------------+-------------|
+| decimal.js | =packages/nl-num/= already supplies bignums/rationals; =../nelisp-emacs-lib/vendor/emacs-lisp/calc/calc-arith.el= contains floating arithmetic and =math-round= | Reuse existing arithmetic sources. Audit any exact decimal precision/rounding requirement before proposing a narrowly justified addition; no decimal.js port is scheduled. |
+| Papa Parse | =../nelisp-emacs-lib/vendor/emacs-lisp/org/org-table.el=: =org-table-import=, =org-table-convert-region=, =orgtbl-to-csv= | CSV import/export is already available as source. A future streaming API requires a specific gap report, not a second generic CSV implementation. |
+| h11 | =../nelisp-emacs-lib/packages/nelisp-emacs-io/lisp/emacs-http.el=: =emacs-http-parse-request=, =emacs-http-build-response=, =emacs-http-serve=; =test/emacs-http-test.el= and =test/emacs-http-hardened-path-test.el= in that repository | Reuse the existing HTTP server and parser. Its Content-Length/connection-close scope is not a claim of complete h11 protocol parity; additional framing requirements need their own delta design. |
+| python-dateutil/rrule | =../nelisp-emacs-lib/vendor/emacs-lisp/calendar/icalendar.el=: RRULE/RDATE/EXDATE processing and =icalendar--convert-recurring-to-diary= | Reuse recurrence/calendar sources. Generic recurrence import is excluded; full RFC coverage is not asserted. |
+| UnitsNet | =../nelisp-emacs-lib/vendor/emacs-lisp/calc/calc-units.el=: =calc-convert-units=, =calc-convert-temperature=, unit tables | Reuse unit conversion sources. Typed quantity APIs, if required, should first wrap these providers. |
+| miniz | =../nelisp-emacs-lib/src/emacs-cc-decompress-1.el=: =zlib-decompress-region=; =vendor/emacs-lisp/arc-mode.el=: =archive-zip-summarize=, =archive-zip-extract=, =archive-zip-write-file-member= | Existing decompression/archive sources take precedence. Some operations use external commands; this is not proof of a standalone in-memory ZIP codec. Such a requirement must be demonstrated before reopening an import. |
+| utf8proc | =../nelisp-emacs-lib/vendor/emacs-lisp/international/ucs-normalize.el=: normalization functions including =ucs-normalize-NFC-string=; existing character case operations | Reuse Unicode providers. No replacement normalization/case-folding port is scheduled; exact Unicode-version coverage remains an integration concern. |
+| RapidFuzz | =../nelisp-emacs-lib/src/emacs-string.el=: =string-distance= implements code-point Levenshtein distance | Exclude the generic fuzzy-distance proposal. Token scorers or ranking APIs would require a distinct consumer requirement and comparison with existing completion facilities. |
+| fast_float | Existing NeLisp/Emacs numeric reader and =string-to-number= surface | Exclude another generic numeric parser. No parsing bottleneck or incompatible required format was measured in this task. |
+
+The Calc facade in =../nelisp-emacs-lib/src/calc.el= installs a minimal RPN
+calculator in standalone mode. Finding the full vendored Calc providers
+does not prove that every one is already loadable in that mode. The
+decision here is reuse-first source ownership, not a claim of complete
+standalone Calc availability.
+
+** 2.2 Other existing providers and boundaries
+
+- =packages/nelisp-json/= already owns JSON processing. Additions below
+  consume its values and do not introduce another JSON parser.
+- =packages/nelisp-sqlite/= supplies open/close, execution, selection, and
+  transaction functions, with tests in its =test/= directory.
+  =packages/nelisp-state/= is a persistent SQLite KV store, not an
+  application workflow state machine.
+- =packages/nelisp-http/= supplies HTTP client/cache helpers. Its API
+  and the HTTP server above remain the transport reuse points.
+- =packages/nl-contract/= supplies predicate, function, and result
+  contracts. =packages/nelisp-apps-sdk/src/nelisp-apps-sdk-schema.el=
+  validates app manifests and ABI declarations. Neither inspected surface
+  establishes a general nested application-data schema library.
+- =packages/nl-check/= performs expansion-time form checks.
+  =../nelisp-emacs-lib/src/generator.el= provides iterators. These are
+  different from reusable random input generators with shrinking;
+  neither is used as evidence that fast-check's proposed scope exists.
+- =packages/nelisp-toml/= owns TOML, not YAML document parsing.
+- =packages/nl-ffi/= supplies external-library access. SQLite, libcurl,
+  OpenSSL, and libsodium are not additional source-conversion work items
+  in this document. Reuse applicable existing bindings; any genuinely
+  missing cryptographic operation needs a separate, specific requirement.
+  This does not assert that all four libraries have complete bindings.
+
+* 3. Active source-conversion candidates
+
+Priority means application value and prerequisite ordering, not estimated
+implementation progress. P1 is the first application-data milestone; P2
+requires additional runtime or language support. No C or C++ import is
+retained merely to fill a language quota after the duplicate audit.
+
+| ID | Priority | Upstream implementation | Language | Additional capability and first accepted subset |
+|----+----------+-------------------------+----------+------------------------------------------------|
+| L01 | P1 | mustache.js | JavaScript | Mustache-compatible rendering: escaped variables, dotted lookup, sections/inverted sections, lists, and partials. Reuse existing formatting/HTML escaping where contracts match; initial support excludes lambda sections. |
+| L02 | P1 | Valibot | TypeScript | Declarative nested application-data schemas with object/array composition, optional fields, unions, and structured error paths. Reuse basic predicates and boundary contracts; app-manifest validation is not duplicated. Initial subset is synchronous. |
+| L03 | P1 | fast-check | TypeScript | Seeded input generators, reproducible property runs, and shrinking for integers, strings, lists, and structured records. This adds a reusable testing API alongside existing ERT/parity tools. Initial subset excludes asynchronous and scheduler-based testing. |
+| L04 | P2 | yaml (eemeli/yaml) | TypeScript | YAML parsing and serialization over reusable NeLisp values. Begin with one documented schema and scalar/sequence/mapping forms; anchors/aliases require explicit bounds and tests. Custom tags and comment-preserving edits are later scopes. |
+| L05 | P2 | wsproto | Python | WebSocket frame/connection logic: text/binary messages, masking, fragmentation, ping/pong, and close. Start with uncompressed framing after a completed handshake. Adapt the existing HTTP layer for upgrade handling rather than importing a second full HTTP stack. |
+| L06 | P2 | Stateless | C# | Application workflow states, explicit triggers, guards, entry/exit actions, and hierarchical states. Reuse existing persistent storage when saving state. Initial subset excludes async callbacks, reflection, and graph exporters. |
+
+** 3.1 Upstream references
+
+These are project references, not immutable source pins. The implementation
+manifest must select and hash an exact release/commit before importing code.
+
+- L01: [[https://github.com/janl/mustache.js][mustache.js]] and its upstream/spec fixtures.
+- L02: [[https://github.com/open-circle/valibot][Valibot]]; [[https://valibot.dev/guides/introduction/][modular, dependency-free design]].
+- L03: [[https://github.com/dubzzz/fast-check][fast-check]].
+- L04: [[https://github.com/eemeli/yaml][yaml]].
+- L05: [[https://github.com/python-hyper/wsproto][wsproto]].
+- L06: [[https://github.com/dotnet-state-machine/stateless][Stateless]].
+
+* 4. Import architecture and ownership
+
+#+begin_example
+Pinned upstream source + license + selected upstream tests
+    -> language frontend and explicit dependency closure
+    -> semantic lowering / required compatibility helpers
+    -> generated Emacs Lisp or nelisp-cc input, identified explicitly
+    -> existing NeLisp compilation and package loading
+    -> public Emacs Lisp adapter + standalone application tests
+#+end_example
+
+=../nelisp-cfront/= is a reference for frontend/backend separation and
+generated compiler input. Its =.el= output is =nelisp-cc= grammar; the
+extension alone does not establish that it can be loaded as ordinary
+interpreted Emacs Lisp. Each import records its actual execution path.
+Existing C frontend support does not imply JavaScript, TypeScript,
+Python, or C# frontend support.
+
+Language-specific work must preserve the semantics exercised by the
+selected upstream source and tests:
+
+- JavaScript/TypeScript: distinct null/undefined/false representations,
+  truthiness, object lookup, closures, string operations, and exceptions.
+  TypeScript types can be processed by an existing build-time compiler;
+  runtime behavior and dependencies still require explicit conversion.
+- Python: bytes versus text, iteration, exceptions, classes, and module
+  dependencies. The wsproto framing subset avoids assuming that all of
+  Python's HTTP/compression standard library has been ported.
+- C#: required generic specializations, delegate calls, class/interface
+  dispatch, and exceptions. Converting Stateless does not imply a general
+  CLR, arbitrary NuGet support, or complete .NET library compatibility.
+
+Keep generated implementation, semantic compatibility helpers, and the
+public adapter separate. Do not add native primitives solely to make one
+foreign library faster. Target opt-in packages; preserve existing runtime
+and Emacs-compatible APIs. Package names and physical locations remain
+unassigned until ownership and dependency checks are completed.
+
+* 5. Reproducible import contract
+
+Each accepted import must record:
+
+1. Upstream project, immutable revision, license/SPDX data, original file
+   hashes, and required notices. Preserve upstream source bytes.
+2. The exact imported modules/functions and supported upstream API subset.
+   Record dependency closure, generated sources, build-time tools, and any
+   runtime host requirements separately.
+3. Translator revision, options, patches, generation command, and output
+   hashes. Use repository-relative paths or explicit environment settings.
+4. Upstream test selection and expected behavior, including invalid inputs.
+   Record unsupported cases as explicit scope limits; do not drop failing
+   tests or silently skip unconvertible functions to obtain a pass.
+5. Value/exception adapters and source-location mappings sufficient to
+   trace failures to the pinned upstream implementation.
+6. A reusable existing provider for each overlapping capability. Import
+   only the proven delta; rerun the duplicate audit before widening scope.
+
+A native binding or an invocation of Node, Python, or .NET can provide a
+reference oracle. It does not satisfy the source-conversion acceptance
+criterion. Host-assisted tests must not be reported as standalone execution.
+
+* 6. Acceptance criteria
+
+These are required future checks, not results obtained for this document.
+Create a machine-checkable progress ledger before implementation, using
+=../../../../.claude/reference/progress-ledger.md= and
+=../../../../bin/progress-meter.sh=. Every implementation stage must end
+with an actual end-to-end check; pending and unknown checks remain undone.
+
+** 6.1 Common package gates
+
+- The pinned upstream tests pass in their original runtime.
+- The selected source converts without unreported skipped functions.
+- Run the same deterministic inputs on upstream and imported implementations;
+  compare values, errors, ordering, and relevant state transitions.
+- Load the package and exercise its public adapter in standalone NeLisp,
+  with foreign runtimes absent from the execution path.
+- Include a negative control that fails with a deliberately broken result
+  or implementation; a checker must distinguish failure from success.
+- Record runtime identity, supported target, test counts, duration, and
+  memory behavior. Apply the workspace memory/load limits to actual runs.
+- If publishing for the browser, separately prove the package on Doc 213's
+  browser target. A host or native pass does not establish browser support.
+
+** 6.2 Package-specific minimums
+
+| ID | Required behavior and integration example |
+|----+-------------------------------------------|
+| L01 | Compare upstream/spec fixtures for escaping, missing keys, nested context, sections, and partials. Render an application record into an HTML page and a notification body. |
+| L02 | Accept valid nested records; reject wrong types and missing fields with exact paths. Exercise unknown-field policy, unions, transformations in the selected subset, and invalid schema use. Validate the same request through the existing application transport. |
+| L03 | Prove seed reproducibility, a passing property, and a deliberately failing property that shrinks to a smaller witness. Test imported generators against the upstream pinned version; then use them on a separate NeLisp package. |
+| L04 | Compare semantic values and serialization round trips for the declared YAML schema. Cover duplicate-key policy, malformed input, Unicode, multiline strings, and the chosen alias behavior. Load application configuration through its public adapter. |
+| L05 | Compare frame sequences and connection events for masking, fragmented UTF-8, control frames, close handshakes, and invalid lengths. Exercise a real client/server echo and close through the existing network/HTTP adapters. Compression stays unsupported until its own tests pass. |
+| L06 | Compare transition/guard/action order, hierarchy, invalid triggers, and reentry rules. Persist and restore an inspection/job workflow using the existing state/SQLite layer, with application-owned transaction boundaries. |
+
+* 7. Delivery order
+
+1. Confirm the six feature deltas and existing provider boundaries; pin
+   sources/tests and identify the required language frontend coverage.
+2. Deliver L01 and L02 with standalone examples and their original-runtime
+   differential checks. Use existing CSV, numeric, and storage providers.
+3. Deliver L03 and apply it to an independent package's public API; do not
+   credit tests generated only on the host as an imported library pass.
+4. Deliver L04, L05, and L06 as separate packages when their language and
+   runtime prerequisites are proven. Each delivery includes a real consumer.
+
+The first integrated application reads data through existing providers,
+validates it with L02, stores it through existing SQLite/state APIs, renders
+it with L01, and serves it through the existing HTTP layer. L03 exercises
+its input handling. No excluded library becomes a prerequisite for this
+milestone merely because it appeared in the earlier candidate survey.
+
+* 8. Related designs and open decisions
+
+- [[file:193-extension-libraries-publication.org][Doc 193]]: package/substrate evidence and reusable-library adoption.
+- [[file:213-web-application-platform.org][Doc 213]]: browser execution architecture; explicit imported packages
+  complement its bindings/ports boundary without assuming npm compatibility.
+- [[file:../../../nelisp-cfront/README.org][nelisp-cfront]]: frontend/backend separation and compiler-input emission.
+- [[file:../../../c-libs-in-elisp/README.org][c-libs-in-elisp]]: bounded upstream/native comparison methodology.
+
+Before each package starts, resolve its exact upstream revision, public
+API, supported target, dependency subset, value representation, ownership,
+and concrete consumer. Reopen an excluded candidate only with a documented
+consumer requirement and a source/test comparison demonstrating the missing
+capability. Never infer completion from the generated file count or from
+successful syntax conversion alone.
+
+* 9. First implementation slice: L01 Mustache
+
+This section specifies the first import unit for the implementation
+conversation. It does not report an implementation or a passing runtime
+test. The public upstream Git tree and the source hashes below were
+retrieved without creating a checkout or downloading files into this tree.
+
+** 9.1 Immutable source selection
+
+- Repository: [[https://github.com/janl/mustache.js][janl/mustache.js]].
+- Selected release: =v4.2.0=, whose remote tag resolves to commit
+  =bd29972ab8a0f4c592f35483615ab9a274396300=.
+- This is an explicit baseline selection, not a claim that it is the
+  newest release. The upstream package declares the MIT license.
+- Fetch using the commit, verify bytes before conversion, and preserve
+  the upstream license. No upstream files have been vendored by this task.
+
+| Path at the selected commit | SHA-256 of the retrieved bytes |
+|-----------------------------+--------------------------------|
+| mustache.js | 0f6041f042ef7d23dc6b229dfd7b6f7af75aa192a72a458d82471cd2c0ac61f2 |
+| package.json | 6cd082a032f4c79c9f57d1bbd0ebbf9626d05e25f3347b20d3745708b57ecfae |
+| LICENSE | e60b280838180a70cbb4b934f825c8119cdcf8912259ff4c6da20b284231c832 |
+| test/render-test.js | 3dd2182ae97130590b0277385bf85fa0ce118d4ff4c95ec090fa1c352a0ca056 |
+
+The tree also contains scanner, parser, context, partial, and Mustache-spec
+test entry points, plus rendering fixtures under =test/_files/=. Those
+paths are test inputs to select and pin, not a count of passing tests.
+Original-runtime test dependencies are build/test tools; do not make them
+dependencies of a running NeLisp application.
+
+** 9.2 Package and API proposal
+
+Propose the opt-in package =packages/nelisp-mustache/=, subject to the
+ownership checks in section 4. Keep a pinned upstream-source area,
+generated implementation, compatibility helpers, public adapter, tests,
+and generation recipe separately identifiable. Do not modify existing
+HTTP, JSON, numeric, or CSV packages to install this package implicitly.
+
+The first public API is a render operation taking a template, explicit
+data values, and a partial-name map, returning text. Decide and document
+the exact function name and value representation before implementation.
+Function-valued views and lambda sections are outside this first subset.
+Reject unsupported callable inputs explicitly rather than changing their
+meaning or accidentally invoking a foreign runtime.
+
+** 9.3 Work units and acceptance
+
+| Unit | Implementation scope | Required evidence |
+|------+----------------------+-------------------|
+| M0 | Pin source, license, fixtures, generation inputs, and the selected test list; define the adapter's supported values | Hash validation, an original-runtime baseline, and a missing-converter invocation that fails before implementation |
+| M1 | Convert scanning/parsing and escaped/unescaped variable rendering for the selected subset | Compare selected upstream fixtures, malformed-template errors, missing keys, and escape output; render one record in standalone NeLisp |
+| M2 | Convert context lookup, dotted names, lists, sections, and inverted sections | Nested-context and empty/false-value comparisons, plus a standalone repeated-record page |
+| M3 | Convert partials and required whitespace/indentation handling | Selected partial/whitespace fixtures and a standalone page with reusable partials |
+| M4 | Package loading and a consumer using the existing HTTP implementation | Serve a rendered record page and render a notification body; both run without Node in the application execution path |
+
+Create the progress ledger before M0 implementation, with at least three
+machine-checkable criteria per stage and its final real consumer check.
+The work-unit table is a dependency plan, not measured progress.
+
+** 9.4 Frontend prerequisites and parity boundaries
+
+The inspected source exercises JavaScript objects/prototypes, closures,
+arrays, regular expressions, string operations, and exceptions. Confirm
+coverage for the selected call graph before asking a worker to convert it.
+A frontend that handles only arithmetic and control flow is insufficient.
+
+Keep null, false, missing properties, and empty arrays distinguishable at
+the adapter boundary. Include non-ASCII and supplementary-plane text in
+comparison fixtures. Preserve upstream template/lookup behavior within the
+declared subset; use existing escaping only if its exact output matches.
+Record source-index/error differences if internal token positions cross
+JavaScript and Emacs Lisp string representations.
+
+Choose an explicitly pinned original-runtime test environment when M0
+starts. Its dependency closure and test counts remain unverified here.
+Do not mark L01 delivered at M1 or from generated text alone: the package
+must pass its declared upstream comparisons, standalone checks, negative
+control, and M4 consumer scenario.

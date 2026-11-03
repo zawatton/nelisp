@@ -155,6 +155,7 @@
                  (record-slot-set entry i (nl_record_slot_word old i))
                  (setq i (+ i 1)))
                (nl_env_build_scratch (+ env 64) (+ env 64) scratch)
+               (nl_function_epoch_bump)
                (nelisp_mirror_bucket_prepend env name entry scratch)
                ;; A shadow entry replaces the exact cached record identity.
                ;; Do not allocate N4 state for unrelated local creation.

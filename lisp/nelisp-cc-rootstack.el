@@ -106,6 +106,46 @@
        (nl_thread_mirror_condition_init)
        (nl_thread_registry_add_at
         env (heap-read-u64 (data-addr nl_thread_registry) 0))))
+    (defun nl_thread_registry_add_startup_at (env startup i)
+      ;; Parent-only ADD transaction, as above. The three canonical WORDs
+      ;; live in the existing private reserve, not a borrowed arena view.
+      (if (or (< i 0) (>= i 64) (< env 4096) (>= env 2305843009213693952)
+              (/= (logand env 31) 0) (/= (logand startup 7) 2)
+              (/= (heap-read-u64 env 120) (+ env 4096))
+              (/= (heap-read-u64 env 168) 0))
+          (- 0 1)
+        (let* ((entry (nl_thread_registry_entry i)))
+          (seq
+           ;; This entry is outside COUNT until all slots/top are complete.
+           (ptr-write-u64 entry 0 env)
+           (ptr-write-u64 entry 8 (heap-read-u64 env 120))
+           (let* ((slots (nl_root_frame_at env entry 3)))
+             (if (= slots 0)
+                 (seq (ptr-write-u64 entry 0 0) (ptr-write-u64 entry 8 0) (- 0 1))
+               (seq
+                (ptr-write-u64 slots 0 startup)
+                (ptr-write-u64 slots 8 (+ (shl env 2) 1))
+                (ptr-write-u64 slots 16 1)
+                (ptr-write-u64 env 168 slots)
+                ;; No callout between slot initialization and publication.
+                (ptr-write-u64 (data-addr nl_thread_registry) 0 (+ i 1))
+                i)))))))
+    (defun nl_thread_registry_add_startup (env startup)
+      (seq (nl_thread_mirror_condition_init)
+           (nl_thread_registry_add_startup_at
+            env startup (heap-read-u64 (data-addr nl_thread_registry) 0))))
+    (defun nl_thread_registry_rollback_startup (env)
+      ;; Only the parent, BEFORE a child exists, may remove its exact last ADD.
+      (let* ((count (heap-read-u64 (data-addr nl_thread_registry) 0)))
+        (if (or (<= count 0) (> count 64)) 1
+          (let* ((entry (nl_thread_registry_entry (- count 1)))
+                 (slots (heap-read-u64 env 168)))
+            (if (or (/= (heap-read-u64 entry 0) env) (/= slots (+ env 4128))) 1
+              (seq
+               (ptr-write-u64 (data-addr nl_thread_registry) 0 (- count 1))
+               (ptr-write-u64 slots 0 3) (ptr-write-u64 slots 8 3) (ptr-write-u64 slots 16 3)
+               (ptr-write-u64 env 120 (+ env 4096)) (ptr-write-u64 env 168 0)
+               (ptr-write-u64 entry 0 0) (ptr-write-u64 entry 8 0) 0))))))
     (defun nl_thread_registry_clear ()
       (ptr-write-u64 (data-addr nl_thread_registry) 0 0))
     (defun nl_thread_registry_find_from (env i count)

@@ -1,0 +1,67 @@
+{
+  "status": "NATIVE_BODY_OBSERVED",
+  "rc": 0,
+  "timed_out": false,
+  "witness": {
+    "status": "PASS",
+    "readonly": true,
+    "counts": {
+      "primary_entry": 3,
+      "primary_loop_BODY": 9
+    },
+    "exits": [
+      0
+    ]
+  },
+  "pins": {
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on/nelisp-dynamic": "09cbbb4f3274ed6f246605a0de35265a4719bf0393e35530a6379290d5cd1a79",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on/nelisp-dynamic.cold": "07726c9063e6b2f0ffffc34e83c0352c6bf2d098524c8567323d3a8b58ea4dba",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/nested-primary-on.el": "1f4b9ec403f8fcae094f3377764c42ff7c20616acc541a0088a359bee5f04597",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/runtime-bootstrap-on.el": "501e941de769b15c5d161d3ace38c423f95b2dde335522e7a0b39be5afde9d10",
+    "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/qualification/fixtures/route-witness.py": "f780b22863401b24b2a27e7d2d321670b7839fd75800912cddccafc38d3837ae"
+  },
+  "pins_unchanged": true,
+  "argv": [
+    "bwrap",
+    "--ro-bind",
+    "/",
+    "/",
+    "--bind",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/scratch/nelisp-exp-m_cyw0l6",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/scratch/nelisp-exp-m_cyw0l6",
+    "--proc",
+    "/proc",
+    "--dev",
+    "/dev",
+    "--unshare-user",
+    "--unshare-pid",
+    "--unshare-net",
+    "--die-with-parent",
+    "--new-session",
+    "--setenv",
+    "HOME",
+    "/home/madblack-21",
+    "--setenv",
+    "TMPDIR",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/scratch/nelisp-exp-m_cyw0l6",
+    "--setenv",
+    "XDG_CACHE_HOME",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/scratch/nelisp-exp-m_cyw0l6/cache",
+    "--",
+    "/bin/bash",
+    "-c",
+    "ulimit -v 8388608; ulimit -c 0; exec \"$@\"",
+    "lane",
+    "gdb",
+    "--nx",
+    "--batch",
+    "-ex",
+    "source /home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/qualification/fixtures/route-witness.py",
+    "--args",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on/nelisp-dynamic",
+    "--load",
+    "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/nested-primary-on.el"
+  ],
+  "stdout": "BENCH-ROUTE engine=nelisp route=named-fx-default timer=float-time resolution=0.000002861\nBENCH-CHECK n=3 result=3:120 elapsed=0.000693083\n\nProgram stopped.\n0x00007f94735e92c0 in _start () from /lib64/ld-linux-x86-64.so.2\n[Inferior 1 (process 12) exited normally]\n",
+  "stderr_bytes": 0
+}

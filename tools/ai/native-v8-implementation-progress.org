@@ -1,0 +1,62 @@
+#+TITLE: Doc215 native optimization implementation
+#+NOTE: Created before implementation. Fifteen criteria cover M0/M1a/M1b/M2/Q separately from design delivery and earlier speed ledgers. Receipt checks never launch builds or timing. Each acceptance requires its scope evidence; a failed or deferred slice remains incomplete. Original1104s/4MB/F1/15-16-30MiB/AUX61/24pair caps remain. Transform stays off by default until finite qualification passes.
+
+#+NOTE: Candidate 5 retains the same 15 criteria and original thresholds. All receipts are candidate-scoped under out/protocol-batch5. Candidates 2 through 4 remain frozen with their timing nonacceptance records. No earlier source, native, resource, or semantic acceptance qualifies this edited candidate. The batch specializes proved redundant representation dispatch and checked-add activation work while retaining the logical frame, cut, seven-root window and common exit. All considered production, test and verifier changes must finish before builds or timing; no speed claim is made before final qualification.
+
+* S1 M0: native route and contract
+
+** S1.1 Complete qualified baseline and artifact lineage are pinned
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/baseline/seeded-source-manifest.json"); assert p.is_file(), "S1_1_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="COMPLETE_QUALIFIED_BASELINE_SEEDED"'
+
+** S1.2 Observer, root, cache and stable-site contracts are checked
+#+NOTE: The initial contracts-acceptance.json is an immutable source-inventory-only audit with explicit blockers. The final criterion uses a distinct reviewed receipt; its requirement is unchanged.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m0/contracts-reviewed-acceptance.json"); assert p.is_file(), "S1_2_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M0_CONTRACTS_ACCEPTED"'
+
+** S1.3 Ordinary completed native caller/helper route is witnessed
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m0/native-route-acceptance.json"); assert p.is_file(), "S1_3_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M0_NATIVE_ROUTE_ACCEPTED"'
+
+* S2 M1a: bounded total leaf expansion
+
+** S2.1 Deterministic eligibility, budgets and negative controls pass
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1a/eligibility-acceptance.json"); assert p.is_file(), "S2_1_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1A_ELIGIBILITY_ACCEPTED"'
+
+** S2.2 Hygienic ownership and existing wrapper protocol are preserved
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1a/protocol-acceptance.json"); assert p.is_file(), "S2_2_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1A_PROTOCOL_ACCEPTED"'
+
+** S2.3 Native on/off and GNU semantic cases prove actual body expansion
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1a/native-acceptance.json"); assert p.is_file(), "S2_3_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1A_NATIVE_ACCEPTED"'
+
+* S3 M1b: exact checked arithmetic leaf
+
+** S3.1 Arithmetic admission rejects unsupported shapes
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1b/eligibility-acceptance.json"); assert p.is_file(), "S3_1_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1B_ELIGIBILITY_ACCEPTED"'
+
+** S3.2 Operation-level overflow/type fallback controls pass
+#+NOTE: Coverage expanded without adding criteria: preflight exposed the existing canonical-provider defect in all seven intrinsic opcodes4/5/6/13/14/7/15. Keep out/qualification/fixtures/opcode-{vm,gnu}.stdout and the calibrated opcode-acceptance.el red-old-VM/green-GNU receipts. Final fallback acceptance must include current-candidate canonical behavior across rebinding, floats, overflow and wrong types while preserving the separate generic-call live-cell contract. Criterion count remains15; no known failure is waived or converted to pending.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1b/fallback-acceptance.json"); assert p.is_file(), "S3_2_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1B_FALLBACK_ACCEPTED"'
+
+** S3.3 Native arithmetic, logical frames and target mutation match GNU
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m1b/native-acceptance.json"); assert p.is_file(), "S3_3_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M1B_NATIVE_ACCEPTED"'
+
+* S4 M2: type and representation propagation
+
+** S4.1 Finite facts, slot versions and joins pass verifier controls
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m2/facts-acceptance.json"); assert p.is_file(), "S4_1_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M2_FACTS_ACCEPTED"'
+
+** S4.2 Conversions and boundary materialization preserve roots and errors
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m2/boundaries-acceptance.json"); assert p.is_file(), "S4_2_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M2_BOUNDARIES_ACCEPTED"'
+
+** S4.3 Native mixed-type execution proves intended check elimination
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/m2/native-acceptance.json"); assert p.is_file(), "S4_3_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="M2_NATIVE_ACCEPTED"'
+
+* S5 Q: identical-candidate finite qualification
+
+** S5.1 Frozen candidate passes unchanged build and size caps
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/qualification/resource-acceptance.json"); assert p.is_file(), "S5_1_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="ORIGINAL_CAPS_ACCEPTED"'
+
+** S5.2 Focused and inherited native semantic fixtures pass independent audit
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/qualification/semantic-acceptance.json"); assert p.is_file(), "S5_2_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="FINITE_SEMANTICS_ACCEPTED"'
+
+** S5.3 Preregistered nested primary and eight unchanged guards pass with all regressions retained
+#+NOTE: The original flat function-call2 helper is intentionally ineligible. A separately declared nested two-add native application is the ninth row and primary; the original eight rows remain guards. Criterion count remains15 and all original thresholds remain unchanged.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/protocol-batch5/qualification/timing-acceptance.json"); assert p.is_file(), "S5_3_EVIDENCE_MISSING"; q=json.loads(p.read_text()); assert q["status"]=="PREDECLARED_SPEED_ACCEPTED"'

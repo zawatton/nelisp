@@ -1,0 +1,17 @@
+#+TITLE: Wasm alloc-bytes routed through the genuine arena allocator (opt-in compiler mode)
+
+* S1 Genuine code's alloc-bytes allocates inside the arena in Wasm; default lowering unchanged
+
+** S1.1 With the inline bump, a genuine allocation lies outside the arena
+cmd: test "$(cat target/wasm-genuine-alloc/red.rc)" -ne 0 && rg -q '^alloc-arena-red=' target/wasm-genuine-alloc/red.log
+
+** S1.2 Compiler change, mode contract, regressions and controls reviewed
+evidence: target/wasm-genuine-alloc/coordinator-review.json sha256=b23566a1ded12af6474320c96433bb2721438dc38496cb6fcab653337180a0b4
+
+** S1.3 Executed genuine consumers allocate in the arena and match the allocator contract
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" bash -c "timeout 600 emacs -Q --batch -L lisp -L src -L test -L tools/ai --eval '(setq load-prefer-newer t)' -l lisp/nelisp-asm-wasm.el -l lisp/nelisp-aot-compiler.el -l tools/ai/wasm-genuine-alloc-probe.el > target/wasm-genuine-alloc/current.log 2>&1 && timeout 600 node --disable-wasm-trap-handler tools/ai/wasm-genuine-alloc-check.mjs > target/wasm-genuine-alloc/check.log 2>&1"; rc=$?; test "$rc" -eq 0 && rg -q '^GATE-COUNT checked=[1-9][0-9]* findings=0$' target/wasm-genuine-alloc/check.log
+
+#+NOTE: 2026-10-25: ledger created before implementation; survey target/wasm-boot-survey/FINDINGS.org motivates it (mirror key validity and clone semantics depend on nl_gc_in_arena).
+#+NOTE: The new lowering is opt-in; every existing Wasm fixture must stay byte-identical in the default mode.
+#+NOTE: Not GC, reclamation, builtin dispatch, image loading or W0 execution.

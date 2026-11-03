@@ -1,0 +1,20 @@
+Doc 242 S0: callgrind of `nelisp-dynamic --load nop.el` on build31 (cold image v4, 16,064,907 B); self Ir per function (nm attribution)
+total Ir 106779559
+by object: [('nelisp-dynamic', 99553079), ('ld-linux-x86-64.so.2', 6524547), ('libc.so.6', 441535), ('libtasn1.so.6.6.4', 256255)]
+  35589639 33.3% nl_string_read64
+  32368775 30.3% nl_cold_load_arena
+  18960736 17.8% nl_cold_reloc_intern
+   5162436  4.8% nl_cold_zero
+    885512  0.8% nl_ht_reindex
+    459258  0.4% m5_fx_run_body
+    431871  0.4% nl_cold_read_intern
+    331698  0.3% bf_identity_hash
+    315317  0.3% nl_intern_probe
+    282900  0.3% nl_alloc_vector_fill
+    264227  0.2% nl_alloc_bytes
+    253729  0.2% nl_chunk_try_alloc
+    217903  0.2% nl_alloc_bytes_uncheck
+    185273  0.2% nl_sym_init_one
+strace -T of the same start (one run): the image content is read by one read() of 15,064,216 bytes in 2.55 ms; all traced syscalls 4.89 ms.
+Bare start wall time (quiet paired runs, a241-s4): about 18 ms.
+nl_cold_reloc_intern walks all 1,048,576 intern slots (8,635 occupied). Loader loops use heap-read-u64, which lowers to a String-aware nl_string_read64 call per load (comment near scripts/nelisp-standalone-build.el:25848).

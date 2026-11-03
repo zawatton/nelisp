@@ -35,6 +35,15 @@
 ;;    kept in ST, the rest of the body is skipped by `(if (= st 0) ...)'
 ;;    guards, and the single exit unbinds the activation's dynamic bindings.
 ;;
+;; compall2: loads from a raw address -- the activation's window MEM, a cons
+;; or vector address (WORD minus its tag), a catch node, the staged words --
+;; are `ptr-read-u64'.  The heap-accessor lowering turns `heap-read-u64' at
+;; offsets 0-24 of a base it cannot classify into an out-of-line
+;; `nl_string_read64' call (lisp/nelisp-heap-accessors.el), whose String test
+;; can never hold for an 8-aligned address: it cost a call on every inlined
+;; car/cdr and after every call-out, and one relocation each in the unit's
+;; metadata (3,629 of the 9,450 relocations of fxir-native.o on v35).
+;;
 ;; The opcode primitives are inlined without a function-cell guard, as GNU's
 ;; byte compiler compiles `car' to Bcar: a later (fset 'car ...) is not seen
 ;; by compiled code (GNU-faithful; the VM honoured it).  Every other call goes
@@ -45,44 +54,34 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'nelisp-cc-fxir-rows)
+(require 'nelisp-cc-fxir-effects)
 
-(defconst nelisp-cc-fxir-native--data-files
-  (mapcar (lambda (f)
-            (cons (expand-file-name (concat f ".el")
-                                    (file-name-directory (or load-file-name buffer-file-name
-                                                             default-directory)))
-                  (intern f)))
-          '("nelisp-fxir-native-data" "nelisp-fxir-native-corpus-data"))
-  "Harvested rows: the prelude hot set, then the fx corpus functions
-\(test/nelisp-fx-adopt-corpus.el) whose native transcripts
-tools/ai/nc1-native-check.sh compares; a corpus row is dormant unless a
-function of that name with the same fxir is defined.")
+(declare-function nelisp-cc-fxir-analysis-row "nelisp-cc-fxir-analysis" (row &optional code))
+(declare-function nelisp-cc-fxir-admission-rows "nelisp-cc-fxir-admission" (snapshot))
+(declare-function nelisp-cc-fxir-inline-projection "nelisp-cc-fxir-inline" (row))
+(declare-function nelisp-cc-fxir-inline-addition "nelisp-cc-fxir-inline" (row))
+(declare-function nelisp-cc-fxir-inline-form "nelisp-cc-fxir-inline" (row site argc token &optional kind rewrite))
+(declare-function nelisp-cc-fxir-facts-verify-add-region "nelisp-cc-fxir-facts" (row site baseline candidate))
 
-(defvar nelisp-cc-fxir-native-windows
-  (string-prefix-p "windows" (or (getenv "NELISP_STANDALONE_TARGET") ""))
-  "Non-nil generates no rows, so the word VM keeps every record: Win64 builds
-\(the Win64 lowering is not validated yet).")
+(defvar nelisp-cc-fxir-native-inline-projections nil
+  "Experimental guarded M1a parameter splicing; nil by default.
+Native qualification is required before enabling this compiler option.")
+(defvar nelisp-cc-fxir-native-inline-additions nil
+  "Experimental guarded two-addition leaf splicing; nil by default.")
+(defvar nelisp-cc-fxir-native-inline-checked-additions nil
+  "Experimental verified reuse of preflight addition results; nil by default.")
+(defvar nelisp-cc-fxir-native-condition-facts nil
+  "Consume recomputed row-local Boolean condition facts; default nil.")
+(defvar nelisp-cc-fxir-native--inline-sites nil)
+(defvar nelisp-cc-fxir-native--inline-budget 0)
+(defvar nelisp-cc-fxir-native--inline-count 0)
 
-(defun nelisp-cc-fxir-native--read-data (file const)
-  (when (file-readable-p file)
-    (with-temp-buffer
-      (insert-file-contents file)
-      (goto-char (point-min))
-      (let ((found nil) (form nil))
-        (condition-case nil
-            (while (not found)
-              (setq form (read (current-buffer)))
-              (when (and (eq (car-safe form) 'defconst) (eq (nth 1 form) const))
-                (setq found (eval (nth 2 form) t))))
-          (end-of-file nil))
-        found))))
+(defvar nelisp-cc-fxir-native-diagnostics nil
+  "Non-nil enables compiler-only M0 row analysis; default emits identical DSL.")
 
-(defun nelisp-cc-fxir-native--rows ()
-  "All harvested rows (NAME ID NLOCALS CALLEES IR ARITY); nil for Win64."
-  (unless nelisp-cc-fxir-native-windows
-    (apply #'append
-           (mapcar (lambda (fc) (nelisp-cc-fxir-native--read-data (car fc) (cdr fc)))
-                   nelisp-cc-fxir-native--data-files))))
+(defvar nelisp-cc-fxir-native-diagnostic-function #'ignore
+  "Function receiving one structured M0 row report when diagnostics is enabled.")
 
 ;; ---- per-function generator state ----
 (defvar nelisp-cc-fxir-native--temps nil "Temporaries of the function being generated.")
@@ -145,9 +144,190 @@ function of that name with the same fxir is defined.")
 (defun nelisp-cc-fxir-native--fallible-p (stmts)
   (cl-some #'car stmts))
 
-(defun nelisp-cc-fxir-native--truthy (v)
+(defun nelisp-cc-fxir-native--op-fallible-p (op)
+  "Non-nil when the effect table says op keyword OP itself may leave ST non-zero.
+That is: it may signal, call Lisp or exit nonlocally.  An unknown OP is
+fallible (the table's conservative class)."
+  (let ((e (nelisp-cc-fxir-effects-of op)))
+    (and (or (plist-get e :may-signal) (plist-get e :may-call-lisp)
+             (plist-get e :nonlocal-exit))
+         t)))
+
+(defun nelisp-cc-fxir-native--call-fallible-p (callee)
+  "Non-nil when a :call to CALLEE may leave ST non-zero (callee-refined class)."
+  (let ((e (nelisp-cc-fxir-effects-call-of callee)))
+    (and (or (plist-get e :may-signal) (plist-get e :may-call-lisp)
+             (plist-get e :nonlocal-exit))
+         t)))
+
+(defun nelisp-cc-fxir-native--effects-consistent-p (node lowered &optional callee)
+  "Test-time check that LOWERED (from NODE) agrees with the effect table.
+For a :call NODE the optional CALLEE selects the callee-refined class.
+Return nil when NODE's op is unknown, or is classified non-fallible yet
+LOWERED carries a fallible statement that no descendant of NODE justifies
+\(a descendant op, or a `:varbind' let item, that the table calls fallible).
+Not used on the lowering path."
+  (let ((op (car-safe node)))
+    (and (assq op nelisp-cc-fxir-effects-table)
+         (or (if (and (eq op :call) callee)
+                 (nelisp-cc-fxir-native--call-fallible-p callee)
+               (nelisp-cc-fxir-native--op-fallible-p op))
+             (not (nelisp-cc-fxir-native--fallible-p (car lowered)))
+             (nelisp-cc-fxir-native--descendant-fallible-p node)))))
+
+(defun nelisp-cc-fxir-native--descendant-fallible-p (node)
+  "Non-nil when some strict descendant keyword form of NODE is fallible."
+  (let ((found nil))
+    (cl-labels ((walk (x)
+                  (when (consp x)
+                    (when (and (keywordp (car x))
+                               (nelisp-cc-fxir-native--op-fallible-p (car x)))
+                      (setq found t))
+                    (dolist (y (if (proper-list-p x) x (list (car x) (cdr x))))
+                      (walk y)))))
+      (dolist (y (cdr-safe node)) (walk y)))
+    found))
+
+(defvar nelisp-cc-fxir-native--condition-sites nil)
+(defvar nelisp-cc-fxir-native--condition-row nil)
+(defvar nelisp-cc-fxir-native--condition-syntax nil)
+(defvar nelisp-cc-fxir-native--condition-hash nil)
+
+(defun nelisp-cc-fxir-native--condition-map (body proofs syntax-hash)
+  "Return unique original condition nodes authenticated by PROOFS."
+  (let ((counts (make-hash-table :test 'eq))
+        (conditions (make-hash-table :test 'equal))
+        (active (make-hash-table :test 'eq)) (steps 0) (ok t))
+    (cl-labels
+        ((walk (node path depth)
+           (setq steps (1+ steps))
+           (when (or (> steps 10000) (> depth 48) (not (proper-list-p node))
+                     (gethash node active))
+             (setq ok nil))
+           (when ok
+             (puthash node (1+ (gethash node counts 0)) counts)
+             (puthash node t active)
+             (pcase (car node)
+               ((or :const :nil :slot :varref :alias) nil)
+               (:setslot (walk (nth 2 node) (append path '(2)) (1+ depth)))
+               ((or :seq :prog1)
+                (let ((i 1))
+                  (dolist (child (nthcdr 1 node))
+                    (walk child (append path (list i)) (1+ depth))
+                    (setq i (1+ i)))))
+               (:if
+                (puthash (append path '(1)) (nth 1 node) conditions)
+                (walk (nth 1 node) (append path '(1)) (1+ depth))
+                (walk (nth 2 node) (append path '(2)) (1+ depth))
+                (walk (nth 3 node) (append path '(3)) (1+ depth)))
+               (:while
+                (puthash (append path '(1)) (nth 1 node) conditions)
+                (walk (nth 1 node) (append path '(1)) (1+ depth))
+                (walk (nth 2 node) (append path '(2)) (1+ depth)))
+               (:let
+                (let ((i 0))
+                  (dolist (binding (nth 1 node))
+                    (walk (nth 2 binding) (append path (list 1 i 2)) (1+ depth))
+                    (setq i (1+ i))))
+                (walk (nth 2 node) (append path '(2)) (1+ depth)))
+               ((or :call :inline)
+                (let ((i 3))
+                  (dolist (child (nthcdr 3 node))
+                    (walk child (append path (list i)) (1+ depth))
+                    (setq i (1+ i)))))
+               (_ (setq ok nil)))
+             (remhash node active))))
+      (walk body '(1) 0)
+      (when ok
+        (let (sites)
+          (dolist (entry proofs)
+            (let* ((path (car entry)) (proof (cadr entry))
+                   (node (gethash path conditions)))
+              (when (and node (= (gethash node counts 0) 1)
+                         (equal path (plist-get proof :path))
+                         (equal syntax-hash (plist-get proof :syntax-sha256)))
+                (push node sites))))
+          (nreverse sites))))))
+
+(defun nelisp-cc-fxir-native--facts-candidate-bounded-p (candidate)
+  "Return non-nil only for a bounded acyclic plist-shaped CANDIDATE graph.
+Inspect conses iteratively so malformed analyzer output cannot recurse or
+loop before the producer verifier sees its private copy."
+  (let ((stack (list (vector candidate 0 nil)))
+        (active (make-hash-table :test 'eq))
+        (nodes 0) (string-bytes 0) (ok (consp candidate)))
+    (while (and stack ok)
+      (let* ((frame (pop stack))
+             (node (aref frame 0))
+             (depth (aref frame 1))
+             (exit (aref frame 2)))
+        (cond
+         (exit (remhash node active))
+         ((consp node)
+          (setq nodes (1+ nodes))
+          (if (or (> nodes 100000) (> depth 512) (gethash node active))
+              (setq ok nil)
+            (puthash node t active)
+            (push (vector node depth t) stack)
+            (push (vector (cdr node) (1+ depth) nil) stack)
+            (push (vector (car node) (1+ depth) nil) stack)))
+         ((stringp node)
+          (setq string-bytes (+ string-bytes (string-bytes node)))
+          (when (> string-bytes 1048576) (setq ok nil)))
+         ((or (symbolp node) (numberp node)) nil)
+         (t (setq ok nil)))))
+    ok))
+
+(defun nelisp-cc-fxir-native--facts-owned-copy (value)
+  "Copy previously bounded VALUE with private cons cells and strings.
+The raw metadata guard must run first. Text properties have no facts
+semantics, so discard them rather than retaining property-value aliases."
+  (let* ((root (list nil)) (stack (list (vector value root nil))))
+    (while stack
+      (let* ((frame (pop stack)) (source (aref frame 0))
+             (target (aref frame 1)) (tail (aref frame 2))
+             (copy (cond ((consp source) (cons nil nil))
+                         ((stringp source) (substring-no-properties source))
+                         (t source))))
+        (if tail (setcdr target copy) (setcar target copy))
+        (when (consp source)
+          (push (vector (cdr source) copy t) stack)
+          (push (vector (car source) copy nil) stack))))
+    (car root)))
+
+(defun nelisp-cc-fxir-native--condition-snapshot (row)
+  "Recompute and verify private Boolean condition evidence for ROW."
+  (condition-case nil
+      (progn
+        (require 'nelisp-cc-fxir-facts)
+        (let ((candidate (nelisp-cc-fxir-facts-analyze row nil)))
+          (when (nelisp-cc-fxir-native--facts-candidate-bounded-p candidate)
+            (let* ((facts (nelisp-cc-fxir-native--facts-owned-copy candidate))
+                   (analysis (nelisp-cc-fxir-analysis-row row))
+                   (hash (plist-get facts :analysis-hash)))
+              (when (and (plist-get facts :valid)
+                         (eql (plist-get facts :schema) 2)
+                         (eql (plist-get facts :origin-schema)
+                              nelisp-cc-fxir-facts--origin-schema)
+                         (stringp hash)
+                         (equal hash (plist-get analysis :syntax-sha256))
+                         (nelisp-cc-fxir-facts-verify row nil facts))
+                (list :syntax (nelisp-cc-fxir-native--facts-owned-copy (nth 4 row))
+                      :hash (substring-no-properties (plist-get analysis :syntax-sha256))
+                      :sites (nelisp-cc-fxir-native--condition-map
+                              (nth 1 (nth 4 row))
+                              (plist-get facts :boolean-truth-tests) hash)))))))
+    (error nil)))
+
+(defun nelisp-cc-fxir-native--truthy (v &optional original-node)
   "Dialect test (1/0) that word V is not nil (a legacy view goes out of line)."
-  `(if (= ,v 3) 0 (if (/= (logand ,v 7) 0) 1 (nc_truthy_slow ,v))))
+  (if (and original-node (memq original-node nelisp-cc-fxir-native--condition-sites)
+           nelisp-cc-fxir-native--condition-row
+           (equal (nth 4 nelisp-cc-fxir-native--condition-row)
+                  nelisp-cc-fxir-native--condition-syntax)
+           (stringp nelisp-cc-fxir-native--condition-hash))
+      `(/= ,v 3)
+    `(if (= ,v 3) 0 (if (/= (logand ,v 7) 0) 1 (nc_truthy_slow ,v)))))
 
 (defun nelisp-cc-fxir-native--frame-forms (argc)
   (setq nelisp-cc-fxir-native--maxargc (max nelisp-cc-fxir-native--maxargc argc))
@@ -189,14 +369,14 @@ Answers (STMTS . RESULT-TEMP): the VM's CALL, through `nc_callN'."
     (cons (append
            (nelisp-cc-fxir-native--win)
            (list
-                (cons t (if (<= argc 3)
+                (cons (nelisp-cc-fxir-native--op-fallible-p :call) (if (<= argc 3)
                             `(setq st (,(intern (format "nc_call%d" argc)) env ,site mem oslot ,@vals))
                           `(seq ,@(let ((i 0) (f nil))
                                     (dolist (v vals) (push `(ptr-write-u64 (+ mem (* ,(+ 3 i) 8)) 0 ,v) f)
                                             (setq i (1+ i)))
                                     (nreverse f))
                                 (setq st (nc_call env ,site (+ mem 24) ,argc mem oslot)))))
-                (cons nil `(setq ,r (heap-read-u64 mem 0)))))
+                (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
           r)))
 
 (defun nelisp-cc-fxir-native--args (nodes)
@@ -214,18 +394,84 @@ A value is copied to a temporary only when a later argument runs statements
       (setq rest (cdr rest)))
     (cons stmts (nreverse vals))))
 
-(defun nelisp-cc-fxir-native--inline-fast (name vals)
+(defconst nelisp-cc-fxir-native--logand-subr-hdr-id 44
+  "Header id byte (bits 8-15) of the immutable Subr object for `logand':
+its directcall id 27 (`nelisp-standalone--directcall-specs') plus 17, the bias
+`nelisp-standalone--subr-desc' stores.  Only that primitive's Subr object
+carries it.  `logior' has no directcall id, hence no identity token: it is
+deliberately not inlined.")
+
+(defun nelisp-cc-fxir-native--subr-guard (site id)
+  "Dialect test: the live function cell of SITE's symbol is the Subr object
+whose header id byte is ID (answers non-zero), else 0.
+GNU has no opcode for `logand', so an `fset' or advice of the symbol must be
+honoured.  What is compared: the symbol's live function cell word (symbol
+object + 18, read afresh on every execution as `nc_site_sym' / the site-rec
+guard do), which must be a Subr object (header kind 20) whose header bits 8-15
+equal ID.  `fset' to a closure, a symbol, another subr or an advice object
+changes the cell, so the test fails and the generic call runs.  SITE is the
+call cache vector (kind 8, symbol in slot 0) or the symbol itself."
+  `(let* ((lgs ,site)
+          (lgsym (if (= (logand lgs 7) 6)
+                     (if (< lgs 4096) 0
+                       (let* ((lgh (ptr-read-u64 (- lgs 6) 0)))
+                         (if (= (logand lgh 63) 8) (ptr-read-u64 (- lgs 6) 8)
+                           (if (= (logand lgh 63) 4) lgs 0))))
+                   0))
+          (lgsy (if (= (logand lgsym 7) 6)
+                    (if (< lgsym 4096) 0
+                      (if (= (logand (ptr-read-u64 (- lgsym 6) 0) 63) 4) lgsym 0))
+                  0))
+          (lgfn (if (= lgsy 0) 0 (ptr-read-u64 (+ lgsy 18) 0))))
+     (if (= (logand lgfn 7) 6)
+         (if (< lgfn 4096) 0
+           (if (= (logand (ptr-read-u64 (- lgfn 6) 0) 63) 20)
+               (= (logand (shr (ptr-read-u64 (- lgfn 6) 0) 8) 255) ,id)
+             0))
+       0)))
+
+(defun nelisp-cc-fxir-native--nary-fast (op r vals)
+  "Dialect statement setting R to the tagged fixnum chain OP over VALS
+\(OP is `+' or `-', at least three VALS), or to -1 for the generic call.
+Same checks as the binary `:inline' arm: every word a fixnum (tag 01) and no
+partial result leaving the 62-bit range.  -1 never is a fixnum word."
+  (let* ((fix (let ((e `(= (logand ,(car (last vals)) 3) 1)))
+                (dolist (v (cdr (reverse vals)))
+                  (setq e `(if (= (logand ,v 3) 1) ,e 0)))
+                e))
+         (ok `(= (sar (shl ,r 2) 2) ,r))
+         ;; Innermost: tag the final result.
+         (acc `(setq ,r (+ (shl ,r 2) 1))))
+    (dolist (v (reverse (nthcdr 2 vals)))
+      (setq acc `(seq (setq ,r (,op ,r (sar ,v 2)))
+                      (if ,ok ,acc (setq ,r -1)))))
+    ;; ACC now applies the third..last steps; each step checks its result.
+    ;; The final tagging is wrapped by the last check; the first step follows.
+    `(if ,fix
+         (seq (setq ,r (,op (sar ,(nth 0 vals) 2) (sar ,(nth 1 vals) 2)))
+              (if ,ok ,acc (setq ,r -1)))
+       (setq ,r -1))))
+
+(defun nelisp-cc-fxir-native--inline-fast (name vals &optional site)
   "Dialect expression for the fast path of primitive NAME on VALS, answering
 the result word, or 0 to take the generic call; nil when NAME is not inlined.
 Every fast path is the one the runtime's own word helpers take for the
-direct classes (cons 010, object 110, immediates)."
+direct classes (cons 010, object 110, immediates).  SITE is the call-site word
+form, needed by the guarded (redefinable) primitives."
   (let ((a (nth 0 vals)) (b (nth 1 vals)) (c (nth 2 vals)) (n (length vals)))
     (pcase (cons name n)
+      ;; `logand' has no GNU opcode: a function-cell guard, then the tagged
+      ;; words' logand (tags 01 & 01 = 01 stays a fixnum word).
+      (`(logand . 2) `(if (if (= (logand ,a 3) 1) (= (logand ,b 3) 1) 0)
+                          (if ,(nelisp-cc-fxir-native--subr-guard
+                                (or site 'site) nelisp-cc-fxir-native--logand-subr-hdr-id)
+                              (logand ,a ,b) 0)
+                        0))
       ;; Bcar / Bcdr on a direct cons; nil gives nil.
-      (`(car . 1) `(if (= (logand ,a 7) 2) (heap-read-u64 (- ,a 2) 0) (if (= ,a 3) 3 0)))
-      (`(cdr . 1) `(if (= (logand ,a 7) 2) (heap-read-u64 (- ,a 2) 8) (if (= ,a 3) 3 0)))
-      (`(car-safe . 1) `(if (= (logand ,a 7) 2) (heap-read-u64 (- ,a 2) 0) (if (= (logand ,a 1) 1) 3 0)))
-      (`(cdr-safe . 1) `(if (= (logand ,a 7) 2) (heap-read-u64 (- ,a 2) 8) (if (= (logand ,a 1) 1) 3 0)))
+      (`(car . 1) `(if (= (logand ,a 7) 2) (ptr-read-u64 (- ,a 2) 0) (if (= ,a 3) 3 0)))
+      (`(cdr . 1) `(if (= (logand ,a 7) 2) (ptr-read-u64 (- ,a 2) 8) (if (= ,a 3) 3 0)))
+      (`(car-safe . 1) `(if (= (logand ,a 7) 2) (ptr-read-u64 (- ,a 2) 0) (if (= (logand ,a 1) 1) 3 0)))
+      (`(cdr-safe . 1) `(if (= (logand ,a 7) 2) (ptr-read-u64 (- ,a 2) 8) (if (= (logand ,a 1) 1) 3 0)))
       ;; Bconsp ... Bintegerp (`wf_bytecode_predicate'): an immediate, a direct
       ;; cons (010) and a string (100) are decided by their class; an object
       ;; (110) by its header kind out of line (`nc_pred6'); a legacy view goes
@@ -235,11 +481,12 @@ direct classes (cons 010, object 110, immediates)."
                                                   (if (= (logand ,a 7) 6) (nc_pred6 58 ,a) 0)))))
       ;; Bnot: nil is the word 3 (or a legacy view); every other direct word is not nil.
       ((or `(null . 1) `(not . 1)) `(if (= ,a 3) 7 (if (/= (logand ,a 7) 0) 3 0)))
-      ;; Beq: identical words are eq; two different immediates are not; any
-      ;; other pair is the VM's word `eq' (`wf_bytecode_w_eqw', what Beq and the
-      ;; eq primitive run), out of line.  nc3: no generic call for eq.
+      ;; Beq: identical words are eq; distinct immediates or two distinct
+      ;; direct conses are not. Other representations retain the VM's word
+      ;; `eq' (`wf_bytecode_w_eqw'). Direct cons WORDs own pointer identity.
       (`(eq . 2) `(if (= ,a ,b) 7 (if (= (logand (logand ,a ,b) 1) 1) 3
-                                     (if (= (wf_bytecode_w_eqw ,a ,b) 1) 7 3))))
+                                     (if (if (= (logand ,a 7) 2) (= (logand ,b 7) 2) 0) 3
+                                       (if (= (wf_bytecode_w_eqw ,a ,b) 1) 7 3)))))
       (`(integerp . 1) `(if (= (logand ,a 3) 1) 7 (if (= (logand ,a 1) 1) 3
                                                     (if (= (logand ,a 7) 6) (nc_pred6 168 ,a)
                                                       (if (= (logand ,a 7) 0) 0 3)))))
@@ -317,7 +564,7 @@ the record, so another definition takes the generic call.")
       (let* ((arity (nth 5 row)) (amin (nth 0 arity)) (amax (nth 1 arity)))
         (and (>= argc amin) (or (< amax 0) (<= argc amax)) (<= argc 255) row)))))
 
-(defun nelisp-cc-fxir-native--direct-stmts (site vals argc id)
+(defun nelisp-cc-fxir-native--direct-stmts (site vals argc id &optional expanded)
   "Statements calling row ID's wrapper on VALS staged in the window.
 Answers (STMTS . RESULT-TEMP)."
   (nelisp-cc-fxir-native--frame-forms argc)
@@ -325,13 +572,14 @@ Answers (STMTS . RESULT-TEMP)."
   (let ((r (nelisp-cc-fxir-native--temp)))
     (cons (append
            (nelisp-cc-fxir-native--win)
-           (list (cons t `(setq st ,(nelisp-cc-fxir-native--memchk
+           (list (cons (nelisp-cc-fxir-native--op-fallible-p :call) `(setq st ,(nelisp-cc-fxir-native--memchk
                                      `(seq ,@(let ((i 0) (f nil))
                                                (dolist (v vals) (push `(ptr-write-u64 (+ mem (* ,(+ 3 i) 8)) 0 ,v) f)
                                                        (setq i (1+ i)))
                                                (nreverse f))
-                                           (,(intern (format "nc_d_%d" id)) env ,site (+ mem 24) ,argc mem oslot)))))
-                 (cons nil `(setq ,r (heap-read-u64 mem 0)))))
+                                           ,(or expanded
+                                                `(,(intern (format "nc_d_%d" id)) env ,site (+ mem 24) ,argc mem oslot))))))
+                 (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
           r)))
 
 (defconst nelisp-cc-fxir-native--site-rec-form
@@ -390,6 +638,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
           (ptr-write-u64 bfr 24 (+ (* stk 65536) argc))
           (ptr-write-u64 bfr 32 (sar (ptr-read-u64 bfd 24) 2))
           (ptr-write-u64 bfr 40 (+ bfd 6))
+          (ptr-write-u64 bfr 56 (nl_n4_cut_capture env))
           (ptr-write-u64 bstate 0 (+ bdepth 1))
           bfr))))
   "`nl_n4_push_words' of the direct call's record, inline.")
@@ -441,14 +690,60 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
   "Lower (:call K ARGC ARGS...)."
   (let* ((k (nth 1 n)) (argc (nth 2 n))
          (name (pop nelisp-cc-fxir-native--callees))
+         (origin (and (or nelisp-cc-fxir-native-inline-projections
+                          nelisp-cc-fxir-native-inline-additions)
+                      (pop nelisp-cc-fxir-native--inline-sites)))
          (args (nelisp-cc-fxir-native--args (nthcdr 3 n)))
          (vals (cdr args))
-         (fast (nelisp-cc-fxir-native--inline-fast name vals))
+         (fast (nelisp-cc-fxir-native--inline-fast name vals (nelisp-cc-fxir-native--cv k)))
+         (nary (and (null fast) (memq name '(+ -)) (>= argc 3)))
          (gkind (and (null fast)
                      (cond ((and (eq name 'set) (= argc 2)) 22)
                            ((and (eq name 'symbol-value) (= argc 1)) 21))))
-         (drow (and (null fast) (null gkind) (nelisp-cc-fxir-native--direct-row name argc))))
+         (drow (and (null fast) (null gkind) (nelisp-cc-fxir-native--direct-row name argc)))
+         (dsub (and (null fast) (null gkind) (null drow) (not nary)
+                    (nelisp-cc-fxir-effects-direct-subr name argc)))
+         (kind (and drow origin
+                    (< nelisp-cc-fxir-native--inline-count 2)
+                    (cond ((and nelisp-cc-fxir-native-inline-projections
+                                (> nelisp-cc-fxir-native--inline-budget 0)
+                                (nelisp-cc-fxir-inline-projection drow)) :projection)
+                          ((and nelisp-cc-fxir-native-inline-additions
+                                nelisp-cc-fxir-native--eager
+                                (>= nelisp-cc-fxir-native--inline-budget 4)
+                                (nelisp-cc-fxir-inline-addition drow)) :addition))))
+         (expanded
+          (when kind
+            (cl-incf nelisp-cc-fxir-native--inline-count)
+            (cl-decf nelisp-cc-fxir-native--inline-budget (if (eq kind :addition) 4 1))
+            (let* ((site (nelisp-cc-fxir-native--cv k))
+                   (token (cons (car (plist-get origin :id)) (cadr (plist-get origin :id))))
+                   (baseline (nelisp-cc-fxir-inline-form drow site argc token kind)))
+              (if (and (eq kind :addition) nelisp-cc-fxir-native-inline-checked-additions
+                       (require 'nelisp-cc-fxir-facts nil t)
+                       (fboundp 'nelisp-cc-fxir-facts-verify-add-region))
+                  (let ((candidate (nelisp-cc-fxir-inline-form drow site argc token kind t)))
+                    (if (condition-case nil
+                            (nelisp-cc-fxir-facts-verify-add-region drow site baseline candidate)
+                          (error nil))
+                        candidate baseline))
+                baseline)))))
     (cond
+     ;; N-ary + / -: GNU compiles them to chained Bplus / Bdiff
+     ;; (byte-compile-variadic-numeric), which `fset' cannot redefine, so no
+     ;; function guard is needed.  Arguments are already evaluated once, left to
+     ;; right, into VALS; a non-fixnum or an overflowing partial result takes
+     ;; the generic call on the SAME words.
+     (nary
+      (let* ((r (nelisp-cc-fxir-native--temp))
+             (call (nelisp-cc-fxir-native--call-stmts (nelisp-cc-fxir-native--cv k) vals argc)))
+        (cons (append (car args)
+                      (list (cons nil (nelisp-cc-fxir-native--nary-fast name r vals))
+                            (cons (nelisp-cc-fxir-native--op-fallible-p :call) `(if (= ,r -1)
+                                         ,(nelisp-cc-fxir-native--block
+                                           (append (car call) (list (cons nil `(setq ,r ,(cdr call))))))
+                                       0))))
+              r)))
      ;; nc3: Bset / Bsymbol_value (GNU opcodes, not redefinable) run the VM's
      ;; globals arm (`m5_fx_globals_run' 22 / 21) on the staged words; a case it
      ;; declines (a non-symbol: the error) takes the generic call.
@@ -457,34 +752,62 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
       (let ((r (nelisp-cc-fxir-native--temp)))
         (cons (append (car args)
                       (nelisp-cc-fxir-native--win)
-                      (list (cons t `(setq st ,(nelisp-cc-fxir-native--memchk
+                      (list (cons (nelisp-cc-fxir-native--op-fallible-p :call) `(setq st ,(nelisp-cc-fxir-native--memchk
                                                 `(nc_globals env ,(nelisp-cc-fxir-native--cv k) mem oslot ,gkind
                                                              ,(nth 0 vals) ,(or (nth 1 vals) 3)))))
-                            (cons nil `(setq ,r (heap-read-u64 mem 0)))))
+                            (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
+              r)))
+     ;; Guarded direct subr call: arguments are already evaluated once, left to
+     ;; right, into VALS and staged in the window; a function-cell guard (the
+     ;; primitive's Subr header id) selects the primitive's directcall entry,
+     ;; otherwise the generic call runs on the same staged words.
+     (dsub
+      (nelisp-cc-fxir-native--frame-forms argc)
+      (let ((r (nelisp-cc-fxir-native--temp))
+            (site (nelisp-cc-fxir-native--cv k)))
+        (cons (append (car args)
+                      (nelisp-cc-fxir-native--win)
+                      (list (cons (nelisp-cc-fxir-native--op-fallible-p :call)
+                                  `(setq st ,(nelisp-cc-fxir-native--memchk
+                                              `(seq ,@(let ((i 0) (f nil))
+                                                        (dolist (v vals) (push `(ptr-write-u64 (+ mem (* ,(+ 3 i) 8)) 0 ,v) f)
+                                                                (setq i (1+ i)))
+                                                        (nreverse f))
+                                                    (if ,(nelisp-cc-fxir-native--subr-guard
+                                                          site (+ 17 (plist-get dsub :id)))
+                                                        (nc_dsubr_call env ,site (+ mem 24) ,argc mem oslot)
+                                                      (nc_call env ,site (+ mem 24) ,argc mem oslot))))))
+                            (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
               r)))
      ((null fast)
         (let ((call (if drow
-                        (nelisp-cc-fxir-native--direct-stmts (nelisp-cc-fxir-native--cv k) vals argc (nth 1 drow))
+                        (nelisp-cc-fxir-native--direct-stmts (nelisp-cc-fxir-native--cv k) vals argc (nth 1 drow) expanded)
                       (nelisp-cc-fxir-native--call-stmts (nelisp-cc-fxir-native--cv k) vals argc))))
           (cons (append (car args) (car call)) (cdr call))))
      ;; nc3: a fast path that decides every case (Beq) needs no generic call.
+     ;; The callee-refined effect class (`nelisp-cc-fxir-effects-call-of')
+     ;; says this call is non-fallible; the statement flag reads it.
      ((eq name 'eq)
       (let ((r (nelisp-cc-fxir-native--temp)))
-        (cons (append (car args) (list (cons nil `(setq ,r ,fast)))) r)))
+        (cons (append (car args)
+                      (list (cons (nelisp-cc-fxir-native--call-fallible-p name)
+                                  `(setq ,r ,fast))))
+              r)))
      (t
       ;; Fast path inline; the generic call (the VM's own route) out of it.
       (let* ((r (nelisp-cc-fxir-native--temp))
              (call (nelisp-cc-fxir-native--call-stmts (nelisp-cc-fxir-native--cv k) vals argc)))
         (cons (append (car args)
                       (list (cons nil `(setq ,r ,fast))
-                            (cons t `(if (= ,r 0)
+                            (cons (nelisp-cc-fxir-native--op-fallible-p :call) `(if (= ,r 0)
                                          ,(nelisp-cc-fxir-native--block
                                            (append (car call) (list (cons nil `(setq ,r ,(cdr call))))))
                                        0))))
               r))))))
 
 (defun nelisp-cc-fxir-native--inline-op (n)
-  "Lower (:inline OPCODE K ARGS...): the VM's fixnum ops 4 + 5 - 6 < 13 = 14 > 7 1+ 15 1-."
+  "Lower (:inline OPCODE K ARGS...), the VM's fixnum operations.
+Opcodes: 4 +, 5 -, 6 <, 13 =, 14 >, 7 1+, 15 1-."
   (let* ((op (nth 1 n)) (k (nth 2 n))
          (args (nelisp-cc-fxir-native--args (nthcdr 3 n)))
          (vals (cdr args)) (a (nth 0 vals)) (b (or (nth 1 vals) 3))
@@ -507,11 +830,11 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     (nelisp-cc-fxir-native--frame-forms (length vals))
     (cons (append (car args)
                   (list (cons nil fast)
-                        (cons t `(if (= ,r -1)
+                        (cons (nelisp-cc-fxir-native--op-fallible-p :inline) `(if (= ,r -1)
                                      (seq ,@(mapcar #'cdr (nelisp-cc-fxir-native--win))
                                           (setq st (nc_arith env ,(nelisp-cc-fxir-native--cv k) mem oslot
                                                              ,(+ op (* 256 (length vals))) ,a ,b))
-                                          (if (= st 0) (setq ,r (heap-read-u64 mem 0)) 0))
+                                          (if (= st 0) (setq ,r (ptr-read-u64 mem 0)) 0))
                                    0))))
           r)))
 
@@ -526,7 +849,9 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     (cons (append (car lc)
                   (list (cons (or (nelisp-cc-fxir-native--fallible-p (car la))
                                   (nelisp-cc-fxir-native--fallible-p (car lb)))
-                              `(if ,(nelisp-cc-fxir-native--truthy (cdr lc))
+                              `(if ,(nelisp-cc-fxir-native--truthy
+                                     (cdr lc)
+                                     (and (not (eq (car-safe c) :lowered)) c))
                                    ,(funcall arm la) ,(funcall arm lb)))))
           r)))
 
@@ -553,7 +878,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
       (:throw
        (let ((args (nelisp-cc-fxir-native--args (cdr n))))
          (cons (append (car args)
-                       (list (cons t `(setq st (nl_ct_throw_words env ,(nth 0 (cdr args)) ,(nth 1 (cdr args)))))))
+                       (list (cons (nelisp-cc-fxir-native--op-fallible-p :throw) `(setq st (nl_ct_throw_words env ,(nth 0 (cdr args)) ,(nth 1 (cdr args)))))))
                3)))
       (:catch
        (let* ((lt (nelisp-cc-fxir-native--hold (nelisp-cc-fxir-native--lower (nth 1 n))))
@@ -563,7 +888,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
          (setq nelisp-cc-fxir-native--ncatch (1+ nelisp-cc-fxir-native--ncatch))
          (cons (append (car lt)
                        (nelisp-cc-fxir-native--win)
-                       (list (cons t `(seq (nc_catch_push env ,node ,(cdr lt))
+                       (list (cons (nelisp-cc-fxir-native--op-fallible-p :catch) `(seq (nc_catch_push env ,node ,(cdr lt))
                                            ,(nelisp-cc-fxir-native--value-block lb r)
                                            (nc_catch_pop env ,node)
                                            (if (> st 0)
@@ -591,7 +916,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                            ,(if var `(setq ,var (m5_fx_exit_condition 0 0)) '(m5_fx_exit_condition 0 0))
                            ,(nelisp-cc-fxir-native--value-block (cdr h) r))
                     ,chain)))
-         (cons (list (cons t `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :condition-case) `(seq ,(nelisp-cc-fxir-native--value-block lb r)
                                    (if (= st 0)
                                        ,(if ls
                                             `(seq ,(if var `(setq ,var ,r) 0)
@@ -605,7 +930,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
               (r (nelisp-cc-fxir-native--temp))
               (rc (nelisp-cc-fxir-native--temp)) (fl (nelisp-cc-fxir-native--temp))
               (tg (nelisp-cc-fxir-native--temp)) (vl (nelisp-cc-fxir-native--temp)))
-         (cons (list (cons t `(seq ,(nelisp-cc-fxir-native--value-block lb r)
+         (cons (list (cons (nelisp-cc-fxir-native--op-fallible-p :unwind-protect) `(seq ,(nelisp-cc-fxir-native--value-block lb r)
                                    (if (> st 0)
                                        (seq (setq ,rc (+ (shl st 2) 1))
                                             (setq ,fl (+ (shl (heap-read-u64 268435472 0) 2) 1))
@@ -631,17 +956,17 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
      (let ((r (nelisp-cc-fxir-native--temp)))
        (nelisp-cc-fxir-native--frame-forms 0)
        (cons (append (butlast (nelisp-cc-fxir-native--win))
-                     (list (cons t `(setq st ,(nelisp-cc-fxir-native--memchk
+                     (list (cons (nelisp-cc-fxir-native--op-fallible-p :varref) `(setq st ,(nelisp-cc-fxir-native--memchk
                                                `(wf_bytecode_w_varref env ,(nelisp-cc-fxir-native--cv (nth 1 n)) mem 0))))
-                           (cons nil `(setq ,r (heap-read-u64 mem 0)))))
+                           (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
              r)))
     (:alias
      (let ((r (nelisp-cc-fxir-native--temp)))
        (nelisp-cc-fxir-native--frame-forms 0)
        (cons (append (butlast (nelisp-cc-fxir-native--win))
-                     (list (cons t `(setq st ,(nelisp-cc-fxir-native--memchk
+                     (list (cons (nelisp-cc-fxir-native--op-fallible-p :alias) `(setq st ,(nelisp-cc-fxir-native--memchk
                                                `(m5_fx_alias_ref ,(nelisp-cc-fxir-native--cv (nth 1 n)) env mem 0))))
-                           (cons nil `(setq ,r (heap-read-u64 mem 0)))))
+                           (cons nil `(setq ,r (ptr-read-u64 mem 0)))))
              r)))
     (:setslot
      (let ((l (nelisp-cc-fxir-native--lower (nth 2 n))) (v (nelisp-cc-fxir-native--local (nth 1 n))))
@@ -679,7 +1004,10 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
             (cond-form `(if (= st 0)
                             ,(nelisp-cc-fxir-native--block
                               (append (car lc)
-                                      (list (cons nil `(if (= st 0) ,(nelisp-cc-fxir-native--truthy (cdr lc)) 0)))))
+                                      (list (cons nil `(if (= st 0)
+                                                           ,(nelisp-cc-fxir-native--truthy
+                                                             (cdr lc) (nth 1 n))
+                                                         0)))))
                           0))
             ;; GNU's Bgoto back-edge safepoint, as the VM's backward jump.
             (body (nelisp-cc-fxir-native--block
@@ -696,10 +1024,10 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
          (let ((l (nelisp-cc-fxir-native--lower (nth 2 it))))
            (setq stmts (append stmts (car l)))
            (if (eq (car it) :store)
-               (setq stmts (append stmts (list (cons nil `(setq ,(nelisp-cc-fxir-native--local (nth 1 it)) ,(cdr l))))))
+               (setq stmts (append stmts (list (cons (nelisp-cc-fxir-native--op-fallible-p :store) `(setq ,(nelisp-cc-fxir-native--local (nth 1 it)) ,(cdr l))))))
              ;; VARBIND: GNU's Bvarbind through the byte-code VM's binder.
              (setq stmts (append stmts
-                                 (list (cons t `(setq st (wf_bytecode_varbind env ,(nelisp-cc-fxir-native--cv (nth 1 it)) ,(cdr l))))
+                                 (list (cons (nelisp-cc-fxir-native--op-fallible-p :varbind) `(setq st (wf_bytecode_varbind env ,(nelisp-cc-fxir-native--cv (nth 1 it)) ,(cdr l))))
                                        (cons nil '(setq nb (+ nb 1)))))))))
        (let ((body (let ((nelisp-cc-fxir-native--nbd (+ nelisp-cc-fxir-native--nbd (nth 3 n))))
                      (nelisp-cc-fxir-native--lower (nth 2 n)))))
@@ -716,9 +1044,61 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
      (nelisp-cc-fxir-native--handler n))
     (_ (error "fxir-native: bad node %S" n))))
 
-(defun nelisp-cc-fxir-native--defun (row)
-  "The `defun' form of nc_ID for ROW (NAME ID NLOCALS CALLEES IR (MIN MAX REST))."
+(defun nelisp-cc-fxir-native--m1-candidate-p (analysis)
+  "Whether ANALYSIS has a site that may select an enabled M1 transform.
+Use the existing callee certificates and initial growth budget before M2
+captures provenance.  This is conservative selection, not verification;
+the normal lowerer retains every live guard and checked-region verifier."
+  (condition-case nil
+      (let ((budget (/ (or (plist-get analysis :nodes) 0) 5)))
+        (cl-some
+         (lambda (site)
+           (let* ((name (plist-get site :callee)) (argc (plist-get site :argc))
+                  ;; Fast primitive lowering is pure and depends on name/arity,
+                  ;; not on the staged argument values used in its expression.
+                  (fast (nelisp-cc-fxir-native--inline-fast name (make-list argc nil)))
+                  (global (or (and (eq name 'set) (= argc 2))
+                              (and (eq name 'symbol-value) (= argc 1))))
+                  (callee (and (null fast) (not global)
+                               (nelisp-cc-fxir-native--direct-row name argc))))
+             (and callee
+                  (or (and nelisp-cc-fxir-native-inline-projections (> budget 0)
+                           (nelisp-cc-fxir-inline-projection callee))
+                      (and nelisp-cc-fxir-native-inline-additions
+                           nelisp-cc-fxir-native--eager (>= budget 4)
+                           (nelisp-cc-fxir-inline-addition callee))))))
+         (plist-get analysis :sites)))
+    ;; A malformed preflight cannot establish untransformed provenance.
+    (error t)))
+
+(defun nelisp-cc-fxir-native--defun (row &optional body-factory)
+  "Generate nc_ID for ROW, optionally replacing only its lowered body.
+BODY-FACTORY receives the original lowering after frame sizing facts are set."
+  (when nelisp-cc-fxir-native-diagnostics
+    (require 'nelisp-cc-fxir-analysis)
+    (funcall nelisp-cc-fxir-native-diagnostic-function
+             (nelisp-cc-fxir-analysis-row row)))
+  (when (or nelisp-cc-fxir-native-inline-projections nelisp-cc-fxir-native-inline-additions)
+    (require 'nelisp-cc-fxir-inline))
   (let* ((id (nth 1 row)) (nlocals (max 0 (nth 2 row)))
+         (analysis (and (or nelisp-cc-fxir-native-inline-projections
+                            nelisp-cc-fxir-native-inline-additions)
+                        (nelisp-cc-fxir-analysis-row row)))
+         (condition-snapshot
+          (and nelisp-cc-fxir-native-condition-facts
+               (not body-factory)
+               (not (nelisp-cc-fxir-native--m1-candidate-p analysis))
+               (nelisp-cc-fxir-native--condition-snapshot row)))
+         (nelisp-cc-fxir-native--condition-row row)
+         (nelisp-cc-fxir-native--condition-syntax
+          (plist-get condition-snapshot :syntax))
+         (nelisp-cc-fxir-native--condition-hash
+          (plist-get condition-snapshot :hash))
+         (nelisp-cc-fxir-native--condition-sites
+          (plist-get condition-snapshot :sites))
+         (nelisp-cc-fxir-native--inline-sites (plist-get analysis :sites))
+         (nelisp-cc-fxir-native--inline-budget (/ (or (plist-get analysis :nodes) 0) 5))
+         (nelisp-cc-fxir-native--inline-count 0)
          (arity (nth 5 row)) (amin (nth 0 arity)) (amax (nth 1 arity)) (rest (nth 2 arity))
          ;; Fixed parameters: the locals before &rest, else MAX of them.
          (nfixed (if (>= rest 0) rest amax))
@@ -729,6 +1109,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
          (nelisp-cc-fxir-native--nbd 0)
          (nelisp-cc-fxir-native--ncatch 0)
          (body (nelisp-cc-fxir-native--lower (nth 1 (nth 4 row))))
+         (emitted-body (if body-factory (funcall body-factory body) body))
          (poff (+ 3 nelisp-cc-fxir-native--maxargc))
          ;; nativecomp N3: the catch nodes follow the parameter words.
          (cbase (+ poff nfixed))
@@ -789,9 +1170,9 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                       ,@locals ,@temps)
                  (seq
                   ,(nelisp-cc-fxir-native--block
-                    (append entry (car body)
-                            (list (cons nil `(if (= wout 0) (nl_abi_word_to_rc ,(cdr body) out)
-                                               (ptr-write-u64 wout 0 ,(cdr body)))))))
+                    (append entry (car emitted-body)
+                            (list (cons nil `(if (= wout 0) (nl_abi_word_to_rc ,(cdr emitted-body) out)
+                                               (ptr-write-u64 wout 0 ,(cdr emitted-body)))))))
                   ;; One exit: bindings still held (a call failed) are undone.
                   (if (> nb 0) (wf_bytecode_unbind (+ env 32) nb) 0)
                   (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
@@ -799,8 +1180,19 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                     (nl_root_release env mark))
                   (if (= st 0) -1 (if (= st -4) (wf_bytecode_root_exhausted) st)))))))))
     (ignore amax)
-    (cl-subst (logand (+ (* fsize 8) 31) -32) 'fbytes
-              (cl-subst cbase 'cbase (cl-subst fsize 'fsize form)))))
+    ;; Selection must remain stable between preflight and lowering.  If a
+    ;; hook changes it, refuse the mixed-provenance result without replaying
+    ;; checked M1 verification or publishing an M2-optimized transformed row.
+    (when (and condition-snapshot (> nelisp-cc-fxir-native--inline-count 0))
+      (error "fxir-native: M1 selection changed after condition preflight"))
+    (if (and condition-snapshot
+             (not (equal (nth 4 row) nelisp-cc-fxir-native--condition-syntax)))
+        ;; M1 candidates already declined M2 before lowering.  A changed row
+        ;; still has no provenance contract; retain its conservative fallback.
+        (let ((nelisp-cc-fxir-native-condition-facts nil))
+          (nelisp-cc-fxir-native--defun row body-factory))
+      (cl-subst (logand (+ (* fsize 8) 31) -32) 'fbytes
+                (cl-subst cbase 'cbase (cl-subst fsize 'fsize form))))))
 
 (defun nelisp-cc-fxir-native--dispatch (ids lo hi)
   "Balanced dispatch tree over IDS (sorted list) index range LO..HI."
@@ -818,16 +1210,16 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     ;; fixnum 0, the previous node, the tag.
     (defun nc_catch_push (env node tag)
       (seq (ptr-write-u64 node 0 1)
-           (ptr-write-u64 (+ node 8) 0 (heap-read-u64 (nl_ct_head_slot env) 0))
+           (ptr-write-u64 (+ node 8) 0 (ptr-read-u64 (nl_ct_head_slot env) 0))
            (ptr-write-u64 (+ node 16) 0 tag)
            (ptr-write-u64 (nl_ct_head_slot env) 0 node)
            0))
     (defun nc_catch_pop (env node)
-      (seq (ptr-write-u64 (nl_ct_head_slot env) 0 (heap-read-u64 (+ node 8) 0)) 0))
+      (seq (ptr-write-u64 (nl_ct_head_slot env) 0 (ptr-read-u64 (+ node 8) 0)) 0))
     ;; 1 when the pending exit is a throw to NODE's tag.
     (defun nc_catch_match (node)
       (if (= (heap-read-u64 268435472 0) 2)
-          (nl_ct_tag_eq_w (nl_exit_tag_w) (heap-read-u64 (+ node 16) 0))
+          (nl_ct_tag_eq_w (nl_exit_tag_w) (ptr-read-u64 (+ node 16) 0))
         0))
     ;; 1 when the pending exit is a signal SPEC's conditions match.
     (defun nc_cc_match (env spec)
@@ -908,6 +1300,44 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
               (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
                    (nc_builtin_call env site sym fn stk argc resw oslot 0))
             -5))))
+    ;; Guarded direct subr call: the inline guard at the call site proved the live
+    ;; function cell is the expected primitive's Subr object.  Run its directcall
+    ;; entry (`nl_directcall_invoke': 0 done, 1 signalled, 2 not handled with
+    ;; nothing done) on the staged words, as `nc_subr_call' does, with the same
+    ;; GNU Bcall safepoint first.  The entry re-reads the live cell's header, so
+    ;; a cell changed meanwhile only costs the generic call.  2 (a declined
+    ;; shape, a debug policy, a bad arity) takes the full generic call on the
+    ;; SAME staged words, which owns the error and its backtrace.
+    (defun nc_dsubr_call (env site stk argc resw oslot)
+      (let* ((sym (nc_site_sym site))
+             (fn (if (= sym 0) 0 (ptr-read-u64 (- sym 6) 24))))
+        (seq (if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0)
+             ;; hash4: gethash (static id 101, Subr header byte 118) skips the
+             ;; `nl_directcall_invoke'/`nl_directcall_id' layers with the same
+             ;; checks they make for a leaf id: a Subr header re-read now, its
+             ;; arity, the debug-policy bits and the backtrace depth limit.
+             ;; Anything else (or any failed check) takes the unchanged entry.
+             (let* ((hdr (if (= (logand fn 7) 6)
+                             (if (< fn 4096) 0 (ptr-read-u64 (- fn 6) 0))
+                           0))
+                    (desc (sar hdr 8))
+                    (st (heap-read-u64 env 176))
+                    (d (if (if (= (logand hdr 63) 20)
+                               (if (= (logand desc 255) 118)
+                                   (if (>= argc (logand (sar desc 8) 255))
+                                       (if (if (= (logand (sar desc 16) 255) 127) 1
+                                             (<= argc (logand (sar desc 16) 255)))
+                                           (if (= (logand (heap-read-u64 env 112) 3145728) 0)
+                                               (if (= st 0) 0 (< (heap-read-u64 st 0) 32768))
+                                             0)
+                                         0)
+                                     0)
+                                 0)
+                             0)
+                           (let* ((r (nl_directcall_hash_get stk argc resw env)))
+                             (if (= r 0) 0 (if (= r -3) 2 1)))
+                         (nl_directcall_invoke fn sym stk argc env resw))))
+               (if (/= d 2) d (nc_call env site stk argc resw oslot))))))
     ;; A Subr object with no directcall entry for this call: its interpreter
     ;; descriptor's primitive (`nl_eic_prim_frame_w''s dispatch), funcall (13)
     ;; through the site, else the list apply of the legacy list it wraps.  A
@@ -948,7 +1378,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     ;; `funcall' with the site's callee cache (`m5_fx_callout' kind 13).
     (defun nc_funcall (env site stk argc resw)
       (m5_fx_funcall_site (if (= (nl_word_tag64 site) 8) (if (= (nl_sb_worker_p env) 1) 0 site) 0)
-                          (heap-read-u64 stk 0) stk argc (- argc 1) resw env (+ resw 8)))
+                          (ptr-read-u64 stk 0) stk argc (- argc 1) resw env (+ resw 8)))
     ;; The ordinary apply of the builtin FN (`m5_fx_call_list'), FN kept in the
     ;; window's definition word as the call-out keeps it.
     (defun nc_list_call (env sym fn stk argc resw oslot)
@@ -1011,14 +1441,16 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
              (nc_call env site (+ mem 24) 3 mem oslot))))
     ;; A fixnum op whose fast path failed: OPN = opcode + 256 * argument
     ;; count.  The generic arm of `m5_fx_run_body' (bignum-range words),
-    ;; else its call-out of the op's function SITE.
+    ;; else the canonical intrinsic provider, independent of SITE's cell.
     (defun nc_arith (env site mem oslot opn a b)
       (if (= mem 0) -4
         (let* ((op (logand opn 255))
                (r (if (> opn 511) (nc_arith_slow op a b) (nc_incdec_slow op a))))
           (if (/= r -1) (seq (ptr-write-u64 mem 0 r) 0)
-            (if (> opn 511) (nc_call2 env site mem oslot a b)
-              (nc_call1 env site mem oslot a))))))
+            (let* ((argc (if (> opn 511) 2 1)))
+              (seq (ptr-write-u64 (+ mem 24) 0 a)
+                   (if (= argc 2) (ptr-write-u64 (+ mem 32) 0 b) 0)
+                   (m5_fx_intrinsic_slow op env site (+ mem 24) argc argc mem (+ mem 8) oslot)))))))
     ;; The words of the first N elements of the argument list ARGS into DST
     ;; (`m5_fx_run_body''s list copy; the window's other words stay nil).
     (defun nc_list_words (args dst n)
@@ -1036,10 +1468,22 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     ;; Baref fast path: a record or plain vector object and an in-range fixnum
     ;; index; 0 (never a WORD) leaves the case to the generic call.
     (defun nc_aref_fast (arr index)
+      (if (= (logand arr 7) 4)
+          (if (< arr 4096) 0
+            (if (= (logand index 3) 1)
+                (let* ((hdr (- arr 4)) (i (sar index 2)))
+                  (if (< i 0) 0
+                    (if (< (ptr-read-u64 hdr 8) 0)
+                        (if (>= i (logand (ptr-read-u64 hdr 0) 9223372036854775807)) 0
+                          (let* ((data (ptr-read-u64 hdr 24)))
+                            (if (< data 4096) 0
+                              (+ (* (ptr-read-u8 data i) 4) 1))))
+                      0)))
+              0))
       (if (= (logand arr 7) 6)
           (if (< arr 4096) 0
             (if (= (logand index 3) 1)
-                (let* ((hdr (heap-read-u64 (- arr 6) 0)) (k (logand hdr 63)) (i (sar index 2)))
+                (let* ((hdr (ptr-read-u64 (- arr 6) 0)) (k (logand hdr 63)) (i (sar index 2)))
                   (if (= k 12)
                       (if (if (< i 1) 1 (> i (sar hdr 8))) 0
                         (heap-read-u64 (- arr 6) (+ 16 (* (- i 1) 8))))
@@ -1049,14 +1493,30 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
                             (heap-read-u64 (- arr 6) (+ 8 (* i 8)))))
                       0)))
               0))
-        0))
+        ;; Genuine BoolVector is a legacy tag-10 slot, not a vectorlike
+        ;; header: its payload box owns N bits and low-bit-first bytes.
+        (if (= (logand arr 7) 0)
+            (if (< arr 4096) 0
+              (if (= (logand index 3) 1)
+                  (if (= (ptr-read-u8 arr 0) 10)
+                      (let* ((box (ptr-read-u64 arr 8)) (i (sar index 2)))
+                        (if (if (< box 4096) 1 (/= (logand box 7) 0)) 0
+                          (if (if (< i 0) 1 (>= i (ptr-read-u64 box 0))) 0
+                            (let* ((data (ptr-read-u64 box 8)))
+                              (if (< data 4096) 0
+                                (if (= (logand (sar (ptr-read-u8 data (sar i 3))
+                                                   (logand i 7)) 1) 0)
+                                    3 7))))))
+                    0)
+                0))
+          0))))
     ;; Baset fast path on a record slot K > 0 or a plain vector element, as
     ;; `wf_bytecode_vector_primitive' installs it; 0 for the generic call.
     (defun nc_aset_fast (arr index value)
       (if (= (logand arr 7) 6)
           (if (< arr 4096) 0
             (if (= (logand index 3) 1)
-                (let* ((hdr (heap-read-u64 (- arr 6) 0)) (k (logand hdr 63)) (i (sar index 2)))
+                (let* ((hdr (ptr-read-u64 (- arr 6) 0)) (k (logand hdr 63)) (i (sar index 2)))
                   (if (= k 12)
                       (if (if (< i 1) 1 (> i (sar hdr 8))) 0
                         (seq (wf_dirty)
@@ -1114,10 +1574,10 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
       (let* ((cur l) (res 0) (n 0))
         (seq
          (while (if (= res 0) (= (logand cur 7) 2) 0)
-           (let* ((e (heap-read-u64 (- cur 2) 0)))
+           (let* ((e (ptr-read-u64 (- cur 2) 0)))
              (if (if (= e x) 1 (if (= (logand (logand e x) 1) 1) 0 (wf_bytecode_w_eqw e x)))
                  (setq res cur)
-               (seq (setq cur (heap-read-u64 (- cur 2) 8))
+               (seq (setq cur (ptr-read-u64 (- cur 2) 8))
                     (setq n (+ n 1))
                     (if (> n 65536) (setq res 1) 0)))))
          (if (= res 1) 0 (if (/= res 0) res (if (= cur 3) 3 0))))))
@@ -1127,16 +1587,16 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
       (let* ((cur l) (res 0) (n 0))
         (seq
          (while (if (= res 0) (= (logand cur 7) 2) 0)
-           (let* ((e (heap-read-u64 (- cur 2) 0)))
+           (let* ((e (ptr-read-u64 (- cur 2) 0)))
              (if (= (logand e 7) 0) (setq res 1)
                (seq
                 (if (= (logand e 7) 2)
-                    (let* ((k (heap-read-u64 (- e 2) 0)))
+                    (let* ((k (ptr-read-u64 (- e 2) 0)))
                       (if (if (= k key) 1 (if (= (logand (logand k key) 1) 1) 0 (wf_bytecode_w_eqw k key)))
                           (setq res e) 0))
                   0)
                 (if (= res 0)
-                    (seq (setq cur (heap-read-u64 (- cur 2) 8))
+                    (seq (setq cur (ptr-read-u64 (- cur 2) 8))
                          (setq n (+ n 1))
                          (if (> n 65536) (setq res 1) 0))
                   0)))))
@@ -1150,33 +1610,43 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
             (if (if (< i 0) 1 (> i 65536)) 0
               (seq
                (while (if (> i 0) (= (logand cur 7) 2) 0)
-                 (seq (setq cur (heap-read-u64 (- cur 2) 8)) (setq i (- i 1))))
+                 (seq (setq cur (ptr-read-u64 (- cur 2) 8)) (setq i (- i 1))))
                (if (= cur 3) 3
                  (if (> i 0) 0
                    (if (= mode 1) cur
-                     (if (= (logand cur 7) 2) (heap-read-u64 (- cur 2) 0) 0)))))))
+                     (if (= (logand cur 7) 2) (ptr-read-u64 (- cur 2) 0) 0)))))))
         0))
     ;; Blength (`bf_length_checked_w'): nil, a string word's character count, a
     ;; proper list of direct conses (up to 65536; one that may be a closure --
     ;; a symbol first -- asks `nl_closure_shape_p', whose slot count is the
-    ;; generic call's), a plain vector (7 slots: the char-table bridge goes out).
+    ;; generic call's), a plain vector (7 slots: the char-table bridge goes out),
+    ;; or a genuine legacy bool-vector's bit count. Inputs are live WORDs.
     (defun nc_length_fast (a)
       (if (= a 3) 1
         (if (= (logand a 7) 4)
-            (let* ((n (ptr-read-u64 (- a 4) 0)))
+            (let* ((n (logand (ptr-read-u64 (- a 4) 0) 9223372036854775807)))
               (if (if (>= n 0) (< n 2305843009213693952) 0) (+ (shl n 2) 1) 0))
           (if (= (logand a 7) 2)
-              (if (if (= (logand (heap-read-u64 (- a 2) 0) 7) 6) (= (nl_closure_shape_p a) 1) 0) 0
+              (if (if (= (logand (ptr-read-u64 (- a 2) 0) 7) 6) (= (nl_closure_shape_p a) 1) 0) 0
                 (let* ((n 0) (cur a))
                   (seq (while (if (= (logand cur 7) 2) (<= n 65536) 0)
-                         (seq (setq cur (heap-read-u64 (- cur 2) 8)) (setq n (+ n 1))))
+                         (seq (setq cur (ptr-read-u64 (- cur 2) 8)) (setq n (+ n 1))))
                        (if (= cur 3) (+ (shl n 2) 1) 0))))
             (if (= (logand a 7) 6)
                 (if (< a 4096) 0
                   (if (= (logand (ptr-read-u64 (- a 6) 0) 63) 8)
                       (let* ((n (vector-len a))) (if (if (>= n 0) (/= n 7) 0) (+ (shl n 2) 1) 0))
                     0))
-              0)))))
+              (if (= (logand a 7) 0)
+                  (if (< a 4096) 0
+                    (if (= (ptr-read-u8 a 0) 10)
+                        (let* ((box (ptr-read-u64 a 8)))
+                          (if (if (< box 4096) 1 (/= (logand box 7) 0)) 0
+                            (let* ((n (ptr-read-u64 box 0)))
+                              (if (if (>= n 0) (< n 2305843009213693952) 0)
+                                  (+ (shl n 2) 1) 0))))
+                      0))
+                0))))))
     ;; Bset (KIND 22) / Bsymbol_value (21): the VM's globals arm on A (and B)
     ;; staged in the window; a case it declines takes the generic call.
     (defun nc_globals (env site mem oslot kind a b)
@@ -1205,7 +1675,7 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
 (defconst nelisp-cc-fxir-native--fixed-boundaries
   '(nc_truthy_slow nc_call nc_call0 nc_call1 nc_call2 nc_call3 nc_arith nc_list_words nc_nthcdr
     nc_aref_fast nc_aset_fast nc_arith_slow nc_incdec_slow nc_run
-    nc_subr_call
+    nc_subr_call nc_dsubr_call
     ;; nc5
     nc_enter nc_enter_slow
     ;; nc3
@@ -1214,19 +1684,6 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
     ;; nc4
     nc_catch_push nc_catch_pop nc_catch_match nc_cc_match nc_unbind_to nc_exit_put)
   "Shared helpers the unit inliner must leave as calls.")
-
-(defun nelisp-cc-fxir-native--mutant-row (rows)
-  "The negative-control row: a copy of the first row using `<' with a new id."
-  (let ((src (cl-find-if (lambda (r) (string-match-p "(:inline 6 " (prin1-to-string (nth 4 r)))) rows)))
-    (when src
-      (list (car src) (1+ (apply #'max (mapcar #'cadr rows))) (nth 2 src) (nth 3 src) (nth 4 src)
-            (nth 5 src) :mutant))))
-
-(defun nelisp-cc-fxir-native-all-rows ()
-  "Harvested rows plus the negative-control row (marked :mutant)."
-  (let* ((rows (nelisp-cc-fxir-native--rows))
-         (m (and rows (nelisp-cc-fxir-native--mutant-row rows))))
-    (if m (append rows (list m)) rows)))
 
 (defun nelisp-cc-fxir-native-source ()
   "AOT source `(seq (defun ...) ...)' for every row."
@@ -1259,18 +1716,132 @@ dynamic-binding mode runs (the conditions of `m5_fx_site_rec'); else 0.")
 (defconst nelisp-cc-fxir-native--source (nelisp-cc-fxir-native-source)
   "WORD-ABI AOT lowering of the harvested prelude closures (its own unit).")
 
+(defun nelisp-cc-fxir-native--closed-scalar-helpers (&optional forms target)
+  "Return unique closed scalar providers in FORMS for supported TARGET.
+This deliberately small effect summary proves only absence of calls, memory,
+global references and traps.  Ordinary inlining still applies all its checks.
+The source DSL is inspected before normalization: every accepted operation
+already has a nontrapping scalar compiler lowering.  Unknown syntax declines."
+  (when (equal (or target (getenv "NELISP_STANDALONE_TARGET") "linux-x86_64")
+               "linux-x86_64")
+    (let ((providers (make-hash-table :test 'eq)) result
+          (catalog (or forms nelisp-cc-fxir-native--shared-source)))
+      (cl-labels
+          ((binder-p (name)
+             (and (symbolp name) name (not (memq name '(t nil)))
+                  (not (keywordp name))
+                  (not (string-prefix-p "&" (symbol-name name)))
+                  (not (special-variable-p name))))
+           (walk (expr scope)
+             (cond
+              ((integerp expr) (<= (- (expt 2 63)) expr (1- (expt 2 63))))
+              ((symbolp expr) (and (memq expr scope) t))
+              ((not (proper-list-p expr)) nil)
+              ((eq (car expr) 'let*)
+               (and (= (length expr) 3) (proper-list-p (cadr expr))
+                    (let ((locals scope) (ok t))
+                      (dolist (binding (cadr expr))
+                        (if (and (proper-list-p binding) (= (length binding) 2)
+                                 (binder-p (car binding))
+                                 (not (memq (car binding) locals))
+                                 (walk (cadr binding) locals))
+                            (push (car binding) locals)
+                          (setq ok nil)))
+                      (and ok (walk (caddr expr) locals)))))
+              ((eq (car expr) 'if)
+               (and (= (length expr) 4)
+                    (cl-every (lambda (x) (walk x scope)) (cdr expr))))
+              ((and (memq (car expr) '(+ - * logand logior logxor shl sar = /= < <= > >=))
+                    (= (length expr) 3) (not (memq (car expr) scope)))
+               (and (walk (cadr expr) scope) (walk (caddr expr) scope)))
+              (t nil))))
+        (when (and (proper-list-p catalog)
+                   (cl-every
+                    (lambda (form)
+                      (and (proper-list-p form) (= (length form) 4)
+                           (eq (car form) 'defun) (binder-p (cadr form))
+                           (not (gethash (cadr form) providers))
+                           (proper-list-p (nth 2 form))
+                           (cl-every #'binder-p (nth 2 form))
+                           (= (length (nth 2 form))
+                              (length (delete-dups (copy-sequence (nth 2 form)))))
+                           (progn (puthash (cadr form) (list form) providers) t)))
+                    catalog))
+        (maphash
+         (lambda (name definitions)
+           (when (= (length definitions) 1)
+             (let* ((form (car definitions)) (args (nth 2 form)))
+               (when (and (= (length form) 4) (proper-list-p args)
+                          (cl-every #'binder-p args)
+                          (= (length args) (length (delete-dups (copy-sequence args))))
+                          (walk (nth 3 form) args))
+                 (push name result)))))
+         providers)))
+      (nreverse result))))
+
 (defconst nelisp-cc-fxir-native--boundaries
-  (append nelisp-cc-fxir-native--fixed-boundaries nelisp-cc-fxir-native--wrapper-names)
+  (append nelisp-cc-fxir-native--fixed-boundaries
+          nelisp-cc-fxir-native--wrapper-names)
   "Names the unit inliner must leave as calls: the shared helpers and the
 direct-call wrappers (inlined, each would copy its callee's entry into every
 caller).")
 
 (defun nelisp-cc-fxir-native-install-table-source ()
-  "Source text of `nelisp-nc--table' for the boot image: (NAME ID CALLEES IR ARITY [:mutant])."
+  "Source text of `nelisp-nc--table' for the boot image: (NAME ID TEXT [:mutant]).
+TEXT is the printed (CALLEES IR ARITY) the install pass compares a record
+with; `nelisp-nc--row' reads it when a registration of NAME is checked.
+compall2: as one string per row the table is a few hundred leaf objects
+for the collector, not the cons trees of every row's fxir (live for the
+whole session, they made every full collection slower)."
   (format "(defconst nelisp-nc--table '%S)\n"
-          (mapcar (lambda (r) (append (list (nth 0 r) (nth 1 r) (nth 3 r) (nth 4 r) (nth 5 r))
-                                      (and (nth 6 r) (list (nth 6 r)))))
+          (mapcar (lambda (r)
+                    (append (list (nth 0 r) (nth 1 r)
+                                  (let ((print-length nil) (print-level nil))
+                                    (prin1-to-string (list (nth 3 r) (nth 4 r) (nth 5 r)))))
+                            (and (nth 6 r) (list (nth 6 r)))))
                   (nelisp-cc-fxir-native-all-rows))))
+
+;; Stage 1 (doc 231): static call-cost census.  Diagnostic only; nothing on
+;; the lowering path calls it.
+(defun nelisp-cc-fxir-native-call-census (lowered)
+  "Return a plist of static cost components of LOWERED, a (STMTS . VALUE) pair.
+STMTS is the top-level statement list of the lowering; keys:
+ :stmts      number of top-level statements.
+ :fallible   top-level statements whose FALLIBLE flag is non-nil.
+ :call-outs  forms, at any depth, whose head is a generic dispatch entry:
+             `nc_call', `nc_call0'..`nc_call3' (generic call), `nc_globals'
+             (Bset / Bsymbol_value arm) or `nc_d_<ID>' (guarded direct call).
+ :guards     `if' forms, at any depth, whose test is not the status check
+             `(= st 0)' (fast-path tag tests, the fast-path-declined test
+             `(= tN 0)', truthiness tests).
+ :temps      distinct temporaries `t<digits>' appearing in STMTS or VALUE.
+ :forms-size cons cells of the statement forms (the FORM half of each
+             statement, not the flag wrapper) plus the VALUE."
+  (let ((stmts (car lowered)) (value (cdr lowered))
+        (outs 0) (guards 0) (temps nil) (size 0))
+    (cl-labels ((walk (x)
+                  (cond
+                   ((consp x)
+                    (cl-incf size)
+                    (when (symbolp (car x))
+                      (let ((h (symbol-name (car x))))
+                        (when (or (string-match-p "\\`nc_call[0-9]*\\'" h)
+                                  (string-match-p "\\`nc_d_[0-9]+\\'" h)
+                                  (equal h "nc_dsubr_call")
+                                  (equal h "nc_globals"))
+                          (cl-incf outs)))
+                      (when (and (eq (car x) 'if) (not (equal (cadr x) '(= st 0))))
+                        (cl-incf guards)))
+                    (walk (car x))
+                    (walk (cdr x)))
+                   ((and x (symbolp x) (string-match-p "\\`t[0-9]+\\'" (symbol-name x)))
+                    (cl-pushnew x temps)))))
+      (dolist (s stmts) (walk (cdr s)))
+      (walk value))
+    (list :stmts (length stmts)
+          :fallible (cl-count-if #'car stmts)
+          :call-outs outs :guards guards
+          :temps (length temps) :forms-size size)))
 
 (provide 'nelisp-cc-fxir-native)
 ;;; nelisp-cc-fxir-native.el ends here

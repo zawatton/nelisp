@@ -1,0 +1,93 @@
+{
+ "scope": "S8 final integrated measurement; experimental elapsed comparison, no source/native/resource/semantic qualification credit",
+ "frozen_at": "2026-10-31, before any S8 campaign sample (exploratory single samples from builds 1-3 exist and are excluded from this campaign)",
+ "rows": {
+  "nested-function-call2": {
+   "low": 1048576,
+   "high": 4194304,
+   "warmups": 2
+  },
+  "integer-sum": {
+   "low": 4000000,
+   "high": 16000000,
+   "warmups": 2
+  },
+  "vector-read": {
+   "low": 1048576,
+   "high": 4194304,
+   "warmups": 2
+  },
+  "vector-write": {
+   "low": 1048576,
+   "high": 4194304,
+   "warmups": 2
+  },
+  "vector-allocate64": {
+   "low": 262144,
+   "high": 1048576,
+   "warmups": 2
+  },
+  "string-concat16": {
+   "low": 262144,
+   "high": 1048576,
+   "warmups": 2
+  },
+  "string-slice16": {
+   "low": 262144,
+   "high": 1048576,
+   "warmups": 2
+  },
+  "hash-get1024": {
+   "low": 16384,
+   "high": 65536,
+   "warmups": 2
+  },
+  "function-call2": {
+   "low": 1048576,
+   "high": 4194304,
+   "warmups": 2
+  }
+ },
+ "counts_source": {
+  "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/counts.json",
+  "sha256": "e79cf7ac98261270d3c1b6665e11843333afec3dce31839d4da7b19bfb9ec062"
+ },
+ "method": {
+  "tool": "nelisp-gnu-gap-bench paired_bench.py (two-trip-count difference cancels setup)",
+  "tool_sha256": "b375e405b3980e833274368170060ed00c53e68ebbef8c2380cab645a1361047",
+  "reps": 7,
+  "order": "alternating as implemented by paired_bench",
+  "cpu": 1,
+  "idle_policy": "paired_bench default (no --allow-busy)",
+  "execution": "fresh processes; 8 GiB address-space cap; zero core size; heavy-run outer"
+ },
+ "cohorts": {
+  "gnu": "GNU Emacs 31.1 bytecode via the recorded emacs-gnu wrapper (BENCH_ENGINE=gnu) and the recorded GNU-capable drivers",
+  "old": "recorded r3 ON image fe7f6b1e308725b765b9e32e63f702311182fb5b2e6aafc9df9facd908dc951e via the recorded lane_runner.py and drivers (not rebuilt)",
+  "new": "final method-A ON image built from the merged worktree; drivers repinned only in frozen12 paths and image hash (repin.sh); same bwrap lane runner semantics"
+ },
+ "method_difference": "new is built by method A (entry run directly, not the recorded authenticated adapter route); report as such",
+ "thresholds": {
+  "target_rows": {
+   "function-call2": "Doc 231",
+   "nested-function-call2": "Doc 231",
+   "vector-read": "Doc 232",
+   "vector-write": "Doc 232",
+   "string-slice16": "Doc 233",
+   "string-concat16": "Doc 233",
+   "hash-get1024": "Doc 230",
+   "vector-allocate64": "Doc 234"
+  },
+  "improvement": "target row passes when new median kernel time is at least 10% lower than old at the same N",
+  "regression": "any row with new median kernel time more than 5% above old at the same N fails",
+  "whole_process": "every whole-process regression is reported; more than 5% blocks acceptance pending explicit review",
+  "code_growth": "report nc_ function size old vs new for changed kernels; more than 10% growth per changed unit is flagged",
+  "semantics": "every sample must have rc 0, route=named-fx-default for NeLisp cohorts, validated BENCH-CHECK, empty stderr; any failure invalidates the row"
+ },
+ "controls": [
+  "BENCH_BROKEN=1 must fail validation for old and new",
+  "guard fset/restore runtime checks re-run on the final image",
+  "phase-event cohort (S2) re-run on the final image as a separate table"
+ ],
+ "reporting": "kernel and whole-process seconds in separate columns, signed percent changes, all rows including regressions, raw samples retained, independent non-Fable review of pins/data/claims"
+}

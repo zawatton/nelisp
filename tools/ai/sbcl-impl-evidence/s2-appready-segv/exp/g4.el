@@ -1,0 +1,1 @@
+(load "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on/src/scripts/nelisp-stdlib-prelude.el" nil t t)(garbage-collect)(nelisp--arena-dump-image-stream "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/s2-appready/exp/e4.cold")(kill-emacs 0)

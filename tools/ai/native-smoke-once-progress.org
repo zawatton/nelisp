@@ -1,0 +1,10 @@
+#+TITLE: Per-measurement native smoke invocation reuse
+#+NOTE: Separate coordinator-helper objective; these criteria do not increase native compiler acceptance.
+
+* S1 Content-bound invocation reuse
+** S1.1 Wrapper and focused regression parse
+cmd: bash -n tools/ai/nelisp-native-smoke-once.sh && bash -n test/nelisp-native-smoke-once-test.sh
+** S1.2 Changed dependencies, runtime and nonce invalidate; failed exits remain failures
+cmd: bash test/nelisp-native-smoke-once-test.sh invalidation
+** S1.3 Real CLI preserves streams and executes once; broken source hashing is detected
+cmd: bash test/nelisp-native-smoke-once-test.sh e2e

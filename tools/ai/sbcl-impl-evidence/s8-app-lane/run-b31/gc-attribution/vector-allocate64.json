@@ -1,0 +1,16 @@
+{
+ "binary": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on31/nelisp-dynamic",
+ "lo": 1048576,
+ "hi": 2097152,
+ "full": {
+  "total": 2907.688734372457,
+  "gc": 520.7103172938029,
+  "non_gc": 2386.978417078654
+ },
+ "app": {
+  "total": 2848.200675010681,
+  "gc": 458.6626265843709,
+  "non_gc": 2389.53804842631
+ },
+ "non_gc_ratio_app_over_full": 1.001072331165352
+}

@@ -1,4 +1,4 @@
-.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile compile-parallel gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
+.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile compile-keep compile-parallel gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -360,7 +360,24 @@ test-nojit:
 	$(MAKE) test-fast \
 	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
 
+# `compile' is the byte-compile-error-on-warn lint: it removes the .elc
+# files of its targets before and after the run (also when the run fails,
+# keeping its exit status), so a later `make test-one' or host ERT run never
+# loads them (they made nelisp-cl-defstruct-docstring-test fail).
+# `compile-keep' leaves them for the targets that run compiled code (bench).
+COMPILE_ELCS = $(addsuffix c,$(SRCS) $(PACKAGE_SRCS))
+
 compile: nl-check-gate
+	@rm -f $(COMPILE_ELCS)
+	@status=0; \
+	$(EMACS) --batch -Q -L src -L lisp \
+	  $(PACKAGE_SRC_LOADS) \
+	  --eval '(setq byte-compile-error-on-warn t)' \
+	  -f batch-byte-compile $(SRCS) $(PACKAGE_SRCS) || status=$$?; \
+	rm -f $(COMPILE_ELCS); \
+	exit $$status
+
+compile-keep: nl-check-gate
 	$(EMACS) --batch -Q -L src -L lisp \
 	  $(PACKAGE_SRC_LOADS) \
 	  --eval '(setq byte-compile-error-on-warn t)' \
@@ -4552,7 +4569,7 @@ audit:
 # Phase 3b.7 perf bench.  Always runs against compiled .elc — the
 # uncompiled VM is ~17x slower than the byte-compiled one, so
 # anything else would lie about the steady-state numbers.
-bench: compile
+bench: compile-keep
 	$(EMACS) --batch -Q -L src -L bench \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-bench \
@@ -4578,14 +4595,14 @@ bench-aot-checked-arith:
 	  -f nelisp-aot-checked-arith-bench-batch
 
 # Phase 3c.6 GC mark-pass bench.  Advisory only — not gated.
-gc-bench: compile
+gc-bench: compile-keep
 	$(EMACS) --batch -Q -L src -L bench \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-gc-bench \
 	  -f nelisp-gc-bench-batch
 
 # Phase 4.7 actor runtime bench.  Advisory only — not gated.
-actor-bench: compile
+actor-bench: compile-keep
 	$(EMACS) --batch -Q -L src -L bench \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-actor-bench \

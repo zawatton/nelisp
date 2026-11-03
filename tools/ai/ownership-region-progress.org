@@ -1,0 +1,65 @@
+#+TITLE: No-GC ownership regions (Doc 237) and type-checking design (Doc 236)
+#+NOTE: Created 2026-11-01 before any implementation edit, in worktree feat/sbcl-native-impl-f12-20261031 on top of the completed S8 work. Implementation workers: Sonnet. Measurement runs once, after all implementation (user instruction 2026-10-31). Pending criteria are not done; convert each to a cmd/evidence check in the same change that completes it.
+
+* R0 Designs
+
+** R0.1 Doc 237 specifies the region model, primitives, errors, budgets, exit path, and acceptance
+cmd: f=docs/design/237-no-gc-ownership-region.org; for k in 'nelisp--region-open' 'nelisp--region-move' 'nelisp-with-region' 'wrong-type-argument nelisp-region-live-p' 'args-out-of-range' '256 MiB' 'unwind-protect'; do grep -qF -- "$k" $f || exit 1; done
+
+** R0.2 Doc 236 type-checking design exists with gradual typing, checker, optimization, boundary, and redefinition sections
+cmd: f=docs/design/236-gradual-type-checking.org; test -f $f && for k in '* Type language' '* Static checker' '* Type-directed optimization' '* Typed boundaries' '* Redefinition, advice, and guards' '* Stages'; do grep -qF -- "$k" $f || exit 1; done
+
+* R1 Native region primitives
+
+** R1.1 Build script defines all ten primitives with handle validation, bounds checks, and budget checks; structural tests pass
+#+NOTE: Sonnet lane. Coordinator fixed a helper-name collision (the lane's 1-arg defun-text was shadowed by a pre-existing 2-arg duplicate, so 7 of 8 tests were red) by renaming it region-defun-text. Negative control: a source copy without the generation comparison turns region-handle-validation red. The full standalone-target-test file exceeds 15 minutes here, so this check runs the region- selector only.
+#+TIMEOUT: 300
+cmd: (ulimit -v 8388608; ulimit -c 0; emacs --batch -Q -L lisp -L src -L scripts -L test -l test/nelisp-standalone-target-test.el --eval '(ert-run-tests-batch-and-exit "nelisp-standalone-target-region-")' < /dev/null 2>&1 | grep -q '^Ran 8 tests, 8 results as expected, 0 unexpected')
+
+** R1.2 Region primitives are classified may-signal only in the FXIR effect table
+#+NOTE: nfe-region-ops-are-may-signal-only covers the nine operations and region-stats as may-allocate.
+cmd: (ulimit -v 8388608; ulimit -c 0; tools/ai/nelisp-ai.sh test-one test/nelisp-cc-fxir-effects-test.el < /dev/null 2>&1 | grep -q ', 0 unexpected') && grep -q 'nfe-region-ops-are-may-signal-only' test/nelisp-cc-fxir-effects-test.el
+
+* R2 Enforced exit path
+
+** R2.1 nelisp-with-region closes on normal exit, throw, and signal, and skips a moved or closed region (host ERT)
+#+NOTE: 7 host tests with generation-checked stubs. Coordinator negative control 2026-11-01: a macro copy whose cleanup omits the close turned 4 of 7 red; the real file is 7/7.
+cmd: (ulimit -v 8388608; emacs --batch -Q -L lisp -L test -l test/nelisp-region-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q '^Ran 7 tests, 7 results as expected, 0 unexpected')
+
+* R3 End-to-end on a built image
+
+** R3.1 Built image passes the region probe: every error case, stale handles after close/move, double close, non-local exits, zero leaks, contents unchanged across forced GC; a negative control fails
+#+NOTE: 2026-11-01 build10 (method A, all lanes + prelude/producer repin). build8 exposed a real defect the host tests could not: DSL literals >= 0x10000000 are linked as arena addresses, so `(> n 268435456)` compared against nl_arena_base and the 256 MiB budget never fired (confirmed by objdump of nl_region_open_w). Fixed as (> (- n 1) 268435455) and pinned by the structural test. On build10 all 25 probe lines match; the corrupted-expectation control is rejected.
+#+TIMEOUT: 300
+cmd: I=$HOME/.cache/tmp/nelisp-sbcl-impl-builds/build-on10/nelisp-dynamic; test "$(sha256sum $I | cut -d' ' -f1)" = b3114257fcdbc8e9dcc3cbae67e0fcf2371372e56bf63a6d3918677f2bca157e && REGION_IMAGE=$I sh tools/bench/region/check.sh >/dev/null && REGION_IMAGE=$I sh tools/bench/region/check.sh --negative >/dev/null
+
+** R3.2 S8 correctness is unchanged on the new image (kernel-diff 121/121, alloc and bignum semantic diffs, regression guard)
+#+NOTE: build10 (sha b3114257...): 9 rows on route named-fx-default; 11/11 guard checks incl. HASH-CUSTOM and LOGAND-FSET; alloc 15/15; bignum 65/65 (round-pp now fixed); general semantic diff has the same 12 pre-existing DIFF lines as build7; kernel-diff 121/121 with 6 native identity probes; standalone-checks 142 cases / 17 failures, the identical failing set to build7. Pin repair needed for the run: repin.sh now also rewrites the prelude and producer hashes. check.sh rejects a flipped LOGAND-FSET line (negative control).
+cmd: sh tools/ai/sbcl-impl-evidence/r3-b10-correctness/check.sh >/dev/null
+
+* R4 Final measurement
+
+** R4.1 Frozen-protocol campaign: full-GC pause with a large live dataset in a vector versus a region, and region word access versus aref/aset
+#+NOTE: 2026-11-01, build10, protocol frozen before any timing (sha 4d87dbb4...), 7 reps, fresh processes, CPU 1, alternating order. Full-GC pause median: none 7.52 ms, vector (4M live fixnums) 13.36 ms, region (same data, 32 MiB) 7.26 ms: region -45.7% vs vector and within 3.5% of no dataset, so the frozen GC claim holds. Word access (interpreted loop, region ops are generic subr calls): vector 1427 ns/step, region 2752 ns/step, region 1.93x slower; reported as measured, no threshold. No speed claim is made for region access.
+cmd: (cd tools/ai/sbcl-impl-evidence/r4-region-campaign && sha256sum -c --quiet manifest.sha256) && python3 -I tools/bench/region-measure/evaluate.py tools/ai/sbcl-impl-evidence/r4-region-campaign --claim >/dev/null
+
+* B1 Exact bignum rounding (added 2026-11-01 at the user's request; parallel lane)
+
+** B1.1 Two-argument round on integers is exact and half-to-even, matching host GNU 31.1 on fixed and random cases, with a negative control
+#+NOTE: 2026-11-01 Sonnet lane: prelude round gains an exact integer branch (nelisp--int-floor-div, 2|r| vs |div|, ties to even); lisp/nelisp-stdlib.el gets the same with an inlined floor. Negative control (integer branch disabled) turned 2 of 4 tests red. Coordinator separately checked the lisp/ copy against GNU 31.1 on 3000 seeded pairs incl. constructed ties: 0 mismatches.
+cmd: (ulimit -v 8388608; ulimit -c 0; tools/ai/nelisp-ai.sh test-one test/nelisp-round-exact-test.el < /dev/null 2>&1 | grep -q ', 0 unexpected')
+
+** B1.2 E2E: the new image matches GNU on all 65 bignum semantic-diff cases (build7 mismatched only round-pp)
+#+TIMEOUT: 300
+cmd: I=$HOME/.cache/tmp/nelisp-sbcl-impl-builds/build-on10/nelisp-dynamic; test "$(sha256sum $I | cut -d' ' -f1)" = b3114257fcdbc8e9dcc3cbae67e0fcf2371372e56bf63a6d3918677f2bca157e && sh tools/bench/semantic-diff/run-nelisp.sh $I b10-bignum-cases.out bignum-cases.el >/dev/null && python3 -I tools/bench/semantic-diff/compare.py tools/ai/sbcl-impl-evidence/s8-final-b7-correctness/sd/bignum-gnu.out tools/bench/semantic-diff/b10-bignum-cases.out | grep -qx 'compared A=65 B=65 mismatches=0'
+
+* L1 DSL arena-rewrite literal audit (added 2026-11-01 after the R3.1 defect; follow-up to the region budget fix)
+
+** L1.1 No comparison in the build script has a direct literal in any target's arena-rewrite range [BASE, BASE+#x1000); the scanner flags the pre-fix sites
+#+NOTE: Audit found two more relocated bounds besides the region budget: nl_cold_header_invalid_p (tlen > 2^28, Linux) and the bool-vector length cap (> 2^35, macOS arena base). build10 objdump confirmed `tlen` was compared against nl_arena_base. Negative control: the pre-fix copy of the build script yields exactly those two hits; an appended violation at end of file is detected, so the reader scans to EOF.
+cmd: (ulimit -v 8388608; ulimit -c 0; emacs --batch -Q -l test/nelisp-dsl-literal-range-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q '^Ran 2 tests, 2 results as expected, 0 unexpected')
+
+** L1.2 E2E: on the rebuilt image, nl_cold_header_invalid_p compares tlen against an immediate, not nl_arena_base
+#+NOTE: build11 (sha deb68b68..., method A, boots; smoke equal-hash lookup ok): the function no longer references nl_arena_base and has `cmp $0xfffffff`. Negative reference: the same check on build10 fails (it loads nl_arena_base for the tlen compare).
+#+TIMEOUT: 120
+cmd: chk() { A=$(nm $1 | awk '$3=="nl_cold_header_invalid_p"{print $1}'); D=$(objdump -d --no-show-raw-insn $1 --start-address=0x$A --stop-address=$(printf '0x%x' $((0x$A+400)))); ! echo "$D" | grep -q nl_arena_base && echo "$D" | grep -q 'cmp *\$0xfffffff,'; }; B=$HOME/.cache/tmp/nelisp-sbcl-impl-builds; test "$(sha256sum $B/build-on11/nelisp-dynamic | cut -d' ' -f1)" = deb68b6823e90c144e0e6e188d84bd3811a38eb252b22d6735056b92afc7b9a2 && chk $B/build-on11/nelisp-dynamic && ! chk $B/build-on10/nelisp-dynamic

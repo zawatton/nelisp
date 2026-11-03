@@ -1,0 +1,100 @@
+#+TITLE: String representation and copying design for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — research only; no implementation or qualification
+#+SCOPE: General string storage, indexing, copying, and concatenation contracts
+
+* Decision boundary
+
+Improve general string storage and copying through typed representation
+facts. Do not transfer SBCL's Common Lisp string semantics into Emacs Lisp.
+Character indexing versus byte indexing, unibyte/multibyte behavior,
+properties, mutability, and aliasing must remain defined by NeLisp's public
+contract.
+
+* Measured baseline and limits
+
+For =string-slice16= at =N=1,048,576=, same-count old/new kernel time was
+0.567672014/0.283679008 s; GNU/ON was 0.274148464/0.283679008 s. For
+=string-concat16=, old/new at matched =N=262,144= was 0.162605047/0.110729933
+s; GNU/ON at =N=1,048,576= was 0.287072897/0.341924191 s. Counts differ
+between cohorts for concat; do not compare their seconds as a regression
+series. Whole-process elapsed includes warmups, setup, validation, and kernel
+execution; it is not pure startup time. No attribution to character width or copying is
+established.
+
+* Pinned source facts and NeLisp baseline
+
+In the inspected Unicode SBCL build, base-character strings use 8-bit
+elements, character strings use 32-bit elements, and =base-char-code-limit=
+is 128. Thus Unicode SBCL base-char is ASCII, not Latin-1. SBCL has public
+checked character access, representation-specific substring copying, and
+overlap-aware copy behavior. Safety-zero inner routines do not authorize
+removing public errors. Exact source anchors and file hashes are recorded in
+the source manifest. Direct anchors include
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/generic/vm-array.lisp#L65][string widths]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/generic/early-vm.lisp#L121][base-char limit]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/seq.lisp#L836][copy behavior]].
+
+Frozen12 NeLisp has separate string storage and builder paths, Unicode scalar
+checks in a measured helper, and general heap-access guards (anchors:
+=lisp/nelisp-cc-string-blocks.el:161-202,224-258=,
+=lisp/nelisp-cc-jit-concat-ints.el:88-126=, and
+=lisp/nelisp-heap-accessors.el:61-86,267-295=). That code is not
+the shared V8 proposal Doc 215. The design must first document the exact
+NeLisp distinction between byte and character indices, unibyte and multibyte
+strings, text properties, and mutable results for each operation.
+
+* Proposed representation and operations
+
+Proposed operations (not existing APIs) are =string-view(owner,encoding,
+byte-length,char-length,epoch,properties)=, =string-normalize-range(start,
+end,char-length)=, =string-char-to-byte(view,char-index)=,
+=string-copy-range(view,start,end)=, and =string-revalidate(owner,epoch,
+backing)=. Normalize negative indices and clamp or signal exactly as the
+current NeLisp operation does, in character units where its API is
+character-based; convert to byte offset only after validation. Evaluate
+source forms once in order. Copy returns a fresh mutable result with required
+property semantics; a view is not a replacement. Revalidate after allocation
+or callback, and route failure to generic code with already evaluated values.
+
+Represent string encoding/width, byte length, character length, property
+storage, mutability, and backing-owner identity explicitly in memory IR.
+Conversion between character and byte offsets is an explicit checked
+operation. Specialized loops may use direct typed access only with a proven
+encoding, index unit, bounds, and storage lifetime. Unknown input or property
+effects go through the existing generic path.
+
+Substring and concatenation results must remain independent mutable results
+where current APIs promise copies. Do not replace copies with views or slices
+without proof that later mutation, aliasing, text properties, and backing
+storage lifetime are observationally equivalent. Overlap must be handled in
+the correct direction or via a safe temporary. Preserve error behavior for
+invalid indices and invalid character data. Allocation and GC effects remain
+explicit in the IR.
+
+* Stages and acceptance
+
+Dependency order: Doc 234 allocation/root effects and Doc 232 guarded memory
+views precede string views; Doc 231 supplies fallback status/frame behavior.
+Stage 1: specify current public semantics with parity fixtures. Stage 2: add
+encoding/offset/ownership facts to generic memory IR. Stage 3: lower
+representation-specific copy/concat loops with checked fallback. Stage 4:
+consider storage-width or sharing changes only as separately reviewed
+proposals. Alternatives include keeping eager copies, calling generic
+sequence routines, or using a temporary for overlap; select by semantic proof
+and data, not SBCL layout alone.
+
+Before trials, freeze counts, matrix, and thresholds. Pass requires all
+semantic fixtures, at least 10% median kernel-time improvement on the selected
+target row, no same-count row over 5% slower in median kernel time, and at
+most 10% code growth per changed unit. Report every whole-process regression;
+above 5% blocks acceptance pending explicit review.
+
+Compare identical slice and concat inputs and same counts across GNU
+bytecode, old NeLisp, and new NeLisp with seven paired repetitions. Report
+kernel and process seconds, bytes copied, allocations, result representation,
+and generated code size. Tests include ASCII, non-Latin-1, multibyte,
+unibyte, properties, empty and boundary ranges, invalid ranges, overlapping
+source/destination, mutation of returned values, forced GC, and corrupted
+encoding/index negative controls. Roll back on any byte/character-index,
+property, error, or aliasing mismatch. No speed promise is made.

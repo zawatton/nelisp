@@ -1068,8 +1068,7 @@ naming NAME and the position."
   (memq type-name '(integer number float string symbol cons list vector null t)))
 
 (defun nelisp-cl-generic--type-match (val type)
-  "Doc 185 §3.2, verbatim: `cl-typep' for the ten builtins, struct
-ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
+  "Match builtin types, CL struct ancestry, or genuine class precedence."
   (cond
    ;; `funcall' with a QUOTED symbol, not a direct `(cl-typep val type)'
    ;; call: this file loads under host Emacs for host-ERT testing, and
@@ -1089,6 +1088,12 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
    ((and (recordp val)
          (nelisp-cl-macros--struct-isa (nelisp--record-type val) type))
     t)
+   ;; GNU EIEIO's type generalizer uses the genuine class precedence list.
+   ((and (recordp val)
+         (recordp (nelisp--record-type val))
+         (fboundp 'cl--class-p)
+         (cl--class-p (nelisp--record-type val)))
+    (memq type (cl--class-allparents (nelisp--record-type val))))
    (t nil)))
 
 (defun nelisp-cl-generic--struct-parent (tag)
@@ -1097,7 +1102,9 @@ ancestry via `nelisp-cl-macros--struct-isa' for anything `recordp'."
     (and info (car (cdr (memq :parent info))))))
 
 (defun nelisp-cl-generic--struct-depth (tag target)
-  "Number of `:include' hops from TAG up to TARGET.  Callers only call
+  "Return TARGET's class precedence position or CL struct include depth.
+For a genuine class descriptor, use its authoritative precedence list.
+For a symbolic CL struct TAG, callers only call
 this once `nelisp-cl-macros--struct-isa' has already confirmed TAG isa
 TARGET, so the walk is expected to terminate at TARGET -- but the walk
 is bounded defensively at the registry's own size rather than trusting
@@ -1107,7 +1114,14 @@ lies (this session's own `s/(nelisp-cl-macros--struct-isa ...)/t)/'
 through nil forever otherwise, hanging the whole dispatch instead of
 signalling -- exactly the silent-vs-loud failure shape §3.5 exists to
 avoid, just one level lower than a dispatch decision."
-  (let ((n 0) (cur tag)
+  (if (and (recordp tag) (fboundp 'cl--class-p) (cl--class-p tag))
+      (let ((parents (cl--class-allparents tag)) (depth 0))
+        (while (and parents (not (eq (car parents) target)))
+          (setq parents (cdr parents) depth (1+ depth)))
+        (unless parents
+          (error "Class precedence does not contain specializer %S" target))
+        depth)
+    (let ((n 0) (cur tag)
         (bound (1+ (length nelisp-cl-macros--struct-info))))
     (while (and (not (eq cur target)) (> bound 0))
       (setq cur (nelisp-cl-generic--struct-parent cur))
@@ -1116,7 +1130,7 @@ avoid, just one level lower than a dispatch decision."
     (unless (eq cur target)
       (error "nelisp-cl-generic--struct-depth: %S never reaches %S via :include ancestry (nelisp-cl-macros--struct-isa said it would)"
              tag target))
-    n))
+    n)))
 
 (defun nelisp-cl-generic--same-specializer-p (a b)
   "Non-nil iff method entries A and B are the SAME method identity --
@@ -1865,6 +1879,10 @@ function's docstring for the full per-option grammar (`(declare ...)',
 cases (a doc string or `declare' given twice).  A non-docstring,
 non-option BODY form used to be an unconditional loud `error' before
 this addendum; it is now the start of the default method body instead."
+  ;; GNU cl-generic.el uses the actual GV setter symbol for a setf name.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let ((precedence
          (nelisp-cl-generic--parse-argument-precedence-order arglist body)))
     `(prog1 ',name
@@ -1902,6 +1920,10 @@ addendum), or a `(subclass CLASS)' form.  Specializers at more than one
 argument position are supported and are jointly applicable; a bare symbol
 is unspecialized (§2.1/§3.1).  The method body can call
 `cl-call-next-method'/`cl-next-method-p' (§2.2)."
+  ;; Lower generalized function names before symbol metadata registration.
+  (when (eq 'setf (car-safe name))
+    (require 'gv)
+    (setq name (gv-setter (cadr name))))
   (let (extra combinator)
     (when (and args (eq (car args) :extra))
       (unless (and (cdr args) (stringp (cadr args)))

@@ -1,0 +1,17 @@
+Doc 243 S0: build-on33 bare start (nelisp-dynamic --load a242-s2/nop.el), callgrind Ir, nm attribution, 2026-11-03
+total Ir (user env, 56 vars, 4,089 B)        14,707,700
+total Ir (env -i PATH=/usr/bin:/bin)          12,215,742   -> environment costs 2,491,958 Ir (~44k per variable)
+total Ir (--version, exits before cold-load)   7,228,408   (ld.so 4,289,147 of it: 19 shared libraries, 5,063 symbol relocations)
+=> cold-load + reinit + eval side             7,479,292
+by object (bare start): nelisp-dynamic 7,376,041; ld-linux 4,289,147; libc 424,707; libtasn1 256,229
+inclusive: nl_eval_source_all 5,303,638 (called twice by driver: <cold-boot> reinit source, then nop.el);
+           reader (nelisp_reader_p_dispatch_w) 4,590,178;
+           nl_ht_identity_sync 1,173,648 (8 calls) -> nl_ht_reindex self 885,512
+env delta is inside the <cold-boot> reinit source's condition-case (2,263,245 incl.): process-environment
+rebuild from nelisp--environment and emacs-os-detect-and-set-dirs!, executed as m5 code (m5_fx_run_body +319,529 self).
+self top: nl_ht_reindex 885,512; m5_fx_run_body 365,814; bf_identity_hash 331,698; nl_intern_probe 315,317;
+          nl_cold_read_intern 302,366; nl_alloc_vector_fill 282,900; nl_alloc_bytes 264,139
+wall (40 alternating rounds, median, load 0.2): /bin/true 0.60 ms; --version 2.61 ms; bare start 7.09 ms
+sys time dominates (rusage user ~0); minflt 699; AnonHugePages 28,672 kB (intern region 20 MiB of it);
+faulting those huge pages costs ~0.8 ms (python probe), so page zeroing is not the main cost.
+THP disabled (PR_SET_THP_DISABLE) is slower: 5,482 faults vs 1,519 (incl. python exec), so keep THP.

@@ -1,0 +1,380 @@
+[
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9310313379,
+  "inner_ns": 250375986,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1743151123,
+  "inner_ns": 58832884,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 722614590,
+  "inner_ns": 73240757,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10109370545,
+  "inner_ns": 1078620195,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1948330933,
+  "inner_ns": 240158796,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 947105278,
+  "inner_ns": 295394897,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 709382065,
+  "inner_ns": 72473526,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1744143043,
+  "inner_ns": 58562994,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9259333521,
+  "inner_ns": 250757933,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 942828526,
+  "inner_ns": 294846535,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1945609382,
+  "inner_ns": 233211994,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10010953651,
+  "inner_ns": 997200012,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9257637491,
+  "inner_ns": 249969006,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1744204523,
+  "inner_ns": 58537006,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 719998019,
+  "inner_ns": 73701143,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10010896491,
+  "inner_ns": 1000349998,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1945520333,
+  "inner_ns": 232824802,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 931892442,
+  "inner_ns": 292779922,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 740460176,
+  "inner_ns": 75527430,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1745715114,
+  "inner_ns": 57991982,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9308067118,
+  "inner_ns": 249768972,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 956747001,
+  "inner_ns": 299478054,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1947161253,
+  "inner_ns": 233378172,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10162629643,
+  "inner_ns": 1075696945,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 3
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9258380151,
+  "inner_ns": 249798059,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1745472444,
+  "inner_ns": 58444023,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 700311752,
+  "inner_ns": 71016312,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10012226741,
+  "inner_ns": 1002778053,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1895532625,
+  "inner_ns": 233140945,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 950105098,
+  "inner_ns": 298317909,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 4
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 721113479,
+  "inner_ns": 74152708,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1745236413,
+  "inner_ns": 58250189,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9256803921,
+  "inner_ns": 250056028,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 937707144,
+  "inner_ns": 293038130,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1895422305,
+  "inner_ns": 233691216,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10108518265,
+  "inner_ns": 1072273016,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 5
+ },
+ {
+  "engine": "old",
+  "n": 1048576,
+  "process_ns": 9258722601,
+  "inner_ns": 249583006,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 6
+ },
+ {
+  "engine": "new",
+  "n": 1048576,
+  "process_ns": 1746221844,
+  "inner_ns": 58751106,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 6
+ },
+ {
+  "engine": "gnu",
+  "n": 1048576,
+  "process_ns": 720780339,
+  "inner_ns": 73678970,
+  "result": "1048576:0",
+  "pmc": null,
+  "rep": 6
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 10008662780,
+  "inner_ns": 1000838995,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 6
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 1944182412,
+  "inner_ns": 233711004,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 6
+ },
+ {
+  "engine": "gnu",
+  "n": 4194304,
+  "process_ns": 960644572,
+  "inner_ns": 297805786,
+  "result": "4194304:0",
+  "pmc": null,
+  "rep": 6
+ }
+]

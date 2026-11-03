@@ -603,6 +603,10 @@
                (unwound) (error frame 23)))
             1 0))
 
+    ;; Shared AOT parser identities must match GNU across target backends.
+    (73 shared (if (and (= (logand) -1) (= (logior) 0) (= (logxor) 0)
+                        (= (logand -1 15 6) 6) (= (logior 1 2 4) 7)
+                        (= (logxor 7 3 1) 5)) 1 0))
     ))
 
 (provide 'nelisp-substrate-parity-corpus)

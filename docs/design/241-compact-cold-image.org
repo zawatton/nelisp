@@ -1,0 +1,100 @@
+#+TITLE: Compact cold image: write the intern table sparsely, then trim the rest
+#+DATE: 2026-11-02
+#+STATUS: SHIPPED in the uncommitted worktree (build31); ledger 100% of 8
+#+SCOPE: Shrink the FLAT cold image that every process reads and (under Doc 240) hashes, without changing what the restored heap contains
+#+LEDGER: tools/ai/image-size-progress.org
+
+* Why this document exists
+
+Doc 240 left a per-process fixed cost of 68-80 ms with the saved-application
+launcher; its floor is the sha256 of the image (about 24 ms for 41.8 MB) and
+cold-load (about 20 ms; =nl_cold_load_arena= copies the whole file with
+=read()=, so the cost is proportional to size).  39.6 MB of each application
+image is the base cold image.  Every byte removed from it is removed from both
+costs, and from plain =nelisp-dynamic= start as well.
+
+* Measured composition (evidence: tools/ai/sbcl-impl-evidence/a241-s0)
+
+build28 =nelisp-dynamic.cold=, 39,666,560 bytes, parsed from the FLAT header
+(=image-sections.py=):
+
+| section     | bytes      | share | zero bytes |
+|-------------+------------+-------+------------|
+| reloc table |  4,381,392 | 11.0% | 63%        |
+| content     | 18,264,136 | 46.0% | 71%        |
+| intern      | 17,020,920 | 42.9% | 99%        |
+| header+trailer | 112     |  0.0% |            |
+
+- The intern section is the used part of the 64 MiB intern mmap.  Its first
+  16 MiB is a hash table holding 17,270 non-zero words (scattered, about
+  1,000 per MiB); the remaining 243 KB after 16 MiB hold 30,459 non-zero
+  words (names).  Non-zero data: 381,832 bytes in total.
+- The content section has two zero runs of 64 KiB or more: 2,143,215 and
+  1,048,544 bytes (3.19 MB).  What owns them is not yet known.
+- The relocation table has one 8-byte entry per pointer field (547,674).
+- The whole file compresses to 10.7% with zlib level 1.
+
+* Design
+
+** D1 Sparse intern table (largest, first)
+The dump writes the intern hash table as (bucket index, entry) records for
+occupied buckets only, followed by the dense name area; the loader zero-fills
+nothing (the intern region is a fresh mmap) and writes the records back at
+their indices before =nl_cold_reloc_intern= runs.  The restored table is
+byte-identical to today's.  The image format version (trailer) changes; the
+loader refuses the old format with a clear message rather than misreading it.
+Expected: about -16.6 MB (to roughly 23 MB).
+
+** D2 Content zero runs
+Identify the objects that own the two large zero runs (likely preallocated
+vectors or hash-table storage).  Only if they are reachable data that is
+legitimately all-zero, encode such runs as (offset, length) holes; if they are
+dead or oversized allocations, fix the allocation instead.  Measure first.
+
+** D3 Relocation table
+547,674 absolute 8-byte entries.  Options to measure: 4-byte deltas, or a
+bitmap over pointer-sized words of the content.  Loader cost must not rise.
+
+* Constraints
+- The restored heap must be identical: same objects, same addresses after
+  relocation, same intern table contents.  A heap-equality probe (dump of the
+  restored arena after load, compared between old and new formats) is the
+  correctness gate, plus verify22 and the Doc 240 checks.
+- No Rust; changes are in the generator (scripts/nelisp-standalone-build.el)
+  dump writer and cold loader.  No GC algorithm changes.
+- Wall time is measured once at the end (bare start, Doc 240 app launcher on a
+  quiet machine, and the app-lane campaign).
+
+* Results (2026-11-02)
+
+| build | change                                   | cold image bytes |
+|-------+------------------------------------------+------------------|
+| 28    | reference                                |       39,666,560 |
+| 29    | S1 sparse intern table (format v3)       |       23,096,600 |
+| 30    | S2 drop the regexp scratch before dump   |       19,896,656 |
+| 31    | S3 packed relocation section (format v4) |       16,064,907 |
+
+- Correctness at every step: dense (v2) and new-format dumps of equal-shape
+  processes decode to the same bytes except the 11-byte environment window
+  (relocations compared as a sorted multiset); verify22 outputs equal to
+  build28; the Doc 240 checks pass on each build.
+- The S2 owner was a 3,200,000-byte native regexp scratch string
+  (nlre--nat-scratch) created during the build; it is now reset before the
+  dump and recreated on first use.
+- Quiet-machine paired runs, build28 -> build31: bare start 19.4 -> 18.0 ms;
+  Doc 240 launcher (hash-get1024, N=16384) 65.5 -> 52.4 ms; app image 41.8 ->
+  21.2 MB.
+- App-lane campaign on build31: whole process new/GNU 0.24-0.91 in eight rows,
+  hash-get1024 1.13 (build28 run 1.32).  vector-allocate64 runs 16% faster in
+  the app image than in the full lane even over 2M..4M, so the two-sided kernel
+  band of evaluate_app.py fails on that row (S4.2 red).  Likely an allocator
+  state difference at first; the callgrind/PMC investigation showed GC cost:
+  objects restored from a cold image are immortal (not swept, cheaper marking),
+  so the app image's preparation results cost nothing per collection, while
+  the full lane marks and sweeps them in every collection (nl_sweep_conses
+  34.7 vs 0.9, nl_gc_mark_cons_view 20.4 vs 0.6 Ir/step; free-list scanning
+  equal; 1389 vs 1054 cycles/step).  Evidence: a241-s4/cg-instr-s42-*,
+  pmc-s42-b31.txt.  build28 shows the same pattern (pmc-s42-b28.txt,
+  cg-instr-s42-perstep-b28.txt); the earlier 1.041 did not reproduce.
+  evaluate_app.py accepts such a row only with GC attribution evidence
+  (non-GC Ir/step within 2%, GC Ir lower, new faster); S4.2 passes.

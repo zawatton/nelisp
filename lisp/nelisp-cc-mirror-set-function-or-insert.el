@@ -41,13 +41,14 @@
                               (nl_vector_slot_word scratch-vec-ptr 9)
                               (nl_vector_slot_word scratch-vec-ptr 10) 0)))
             (and
+             (nl_function_epoch_bump)
              (vector-slot-set scratch-vec-ptr 6 entry-word)
              (extern-call nelisp_mirror_bucket_prepend_unchecked
                           mirror-ptr sym-ptr
                           (nl_vector_slot_word scratch-vec-ptr 6)
                           scratch-vec-ptr)))
-        (and (record-slot-set entry-ptr 1
-                              (nl_vector_slot_word scratch-vec-ptr 8))
+        (and (nl_symbol_set_function entry-ptr
+                                     (nl_vector_slot_word scratch-vec-ptr 8))
              1)))
     (defun nelisp_mirror_set_function_or_insert
         (mirror-ptr sym-ptr scratch-vec-ptr _pad)

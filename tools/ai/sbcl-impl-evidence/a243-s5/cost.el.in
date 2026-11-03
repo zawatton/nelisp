@@ -1,0 +1,7 @@
+;;; -*- lexical-binding: t -*-
+;; Doc 243 S5: register @N@ distinct anonymous closures (x) -> (+ x I).
+(let ((i 0))
+  (while (< i @N@)
+    (nelisp--fx-register-fn nil (list 'closure (list t) (list 'x) (list '+ 'x i)))
+    (setq i (1+ i)))
+  (princ (format "REG %d\n" i)))

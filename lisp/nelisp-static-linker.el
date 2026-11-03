@@ -18,11 +18,11 @@
 ;; minimum set):
 ;;
 ;;   `pc32'             = R_X86_64_PC32                 (2)
-;;                      -- S + A - P, 4-byte LE.
+;;                      -- S + A - P, P = section VA + offset + 4.
 ;;   `abs64'            = R_X86_64_64                   (1)
 ;;                      -- S + A, 8-byte LE.
 ;;   `plt32'            = R_X86_64_PLT32                (4)
-;;                      -- S + A - P, 4-byte LE.
+;;                      -- S + A - P, P = section VA + offset + 4.
 ;;   `adr-prel-pg-hi21' = R_AARCH64_ADR_PREL_PG_HI21  (275)
 ;;                      -- page(S + A) - page(P), ADRP immhi:immlo.
 ;;   `add-abs-lo12-nc'  = R_AARCH64_ADD_ABS_LO12_NC   (277)
@@ -55,8 +55,9 @@
 ;;             |add-abs-lo12-nc :symbol NAME :addend A)
 ;; Matches the per-entry plist produced by `nelisp-asm-x86_64-emit-
 ;; reloc' (= `:type' / `:sym' / `:offset' / `:addend'); the `:sym'
-;; spelling from the assembler is accepted as an alias of `:symbol'
-;; so test fixtures and live assembler output can share the helper.
+;; spelling is accepted as an alias of `:symbol'.  Writer-format AOT
+;; PC32/PLT32 addends use the patch-field origin instead; convert those
+;; units once with `nelisp-link-unit-from-aot' before static linking.
 
 ;;; Code:
 
@@ -335,6 +336,77 @@ extra `:section' key naming the section in which the patch lives
   (list :name name :sections sections
         :symbols (or symbols nil) :relocs (or relocs nil)))
 
+(defun nelisp-link--copy-aot-value (value)
+  "Copy VALUE recursively, including mutable strings and vectors."
+  (cond ((consp value) (cons (nelisp-link--copy-aot-value (car value))
+                             (nelisp-link--copy-aot-value (cdr value))))
+        ((stringp value) (copy-sequence value))
+        ((vectorp value) (vconcat (mapcar #'nelisp-link--copy-aot-value value)))
+        (t value)))
+
+;;;###autoload
+(defun nelisp-link-unit-from-aot (name compiled)
+  "Convert writer-format AOT COMPILED to a static link unit named NAME.
+PC32 and PLT32 writer addends use the field origin; the linker uses
+the end of that field, so add four exactly once at this boundary.
+Locals are qualified by NAME for internal resolution.  This function
+does not modify COMPILED; a converted unit must not be converted again."
+  (unless (and (stringp name) (> (length name) 0)
+               (listp compiled) (not (plist-member compiled :sections))
+               (memq (plist-get compiled :machine) '(x86_64 aarch64))
+               (plist-member compiled :text)
+               (plist-member compiled :symbols)
+               (plist-member compiled :relocs))
+    (signal 'nelisp-link-error (list :invalid-aot-unit name)))
+  (let* ((raw (nelisp-link--copy-aot-value compiled))
+         (symbols (plist-get raw :symbols))
+         (relocs (plist-get raw :relocs))
+         (names (mapcar (lambda (s) (plist-get s :name)) symbols))
+         (local-map nil))
+    (dolist (sym symbols)
+      (when (and (eq (plist-get sym :bind) 'local)
+                 (not (eq (plist-get sym :section) 'undef)))
+        (let* ((original (plist-get sym :name))
+               (qualified (and (stringp original)
+                               (format "__nelisp_local_%d_%s_%d_%s"
+                                       (length name) name (length original) original))))
+          (unless (and qualified (not (assoc original local-map))
+                       (= 1 (cl-count original names :test #'equal))
+                       (not (member qualified names))
+                       (not (cl-find qualified relocs :test #'equal
+                                     :key #'nelisp-link--reloc-symbol-name)))
+            (signal 'nelisp-link-error (list :invalid-local-symbol original)))
+          (push (cons original qualified) local-map))))
+    (setq symbols (cl-remove-if (lambda (s) (eq (plist-get s :section) 'undef)) symbols))
+    (dolist (sym symbols)
+      (let ((qualified (cdr (assoc (plist-get sym :name) local-map))))
+        (when (and qualified (eq (plist-get sym :bind) 'local))
+          (plist-put sym :name qualified)
+          (plist-put sym :bind 'global)
+          (plist-put sym :aot-local t))))
+    (setq relocs
+          (mapcar
+           (lambda (rel)
+             (let* ((symbol (nelisp-link--reloc-symbol-name rel))
+                    (qualified (cdr (assoc symbol local-map)))
+                    (type (plist-get rel :type)))
+               (when qualified
+                 (when (plist-member rel :symbol) (plist-put rel :symbol qualified))
+                 (when (plist-member rel :sym) (plist-put rel :sym qualified)))
+               (when (memq type '(pc32 plt32))
+                 (let ((addend (or (plist-get rel :addend) 0)))
+                   (unless (integerp addend)
+                     (signal 'nelisp-link-error (list :invalid-aot-addend addend)))
+                   (setq rel (plist-put rel :addend (+ addend 4)))))
+               rel))
+           relocs))
+    (nelisp-link-unit-make name
+                           (list (cons 'text (plist-get raw :text))
+                                 (cons 'rodata (plist-get raw :rodata))
+                                 (cons 'data (plist-get raw :data))
+                                 (cons 'bss (or (plist-get raw :bss-size) 0)))
+                           symbols relocs)))
+
 (defun nelisp-link--unit-section (unit section-name)
   "Return UNIT's SECTION-NAME bytes/size from its `:sections' alist,
 or nil if the unit has no entry for that section."
@@ -460,6 +532,22 @@ Combines the section base VA from SECTION-LAYOUT (= alist
          (soff (plist-get sym :value)))
     (+ sec-va uoff soff)))
 
+(defun nelisp-link--check-aot-local-collisions (units)
+  "Reject references or definitions in other UNITS to AOT private names."
+  (cl-loop for unit in units for index from 0 do
+    (dolist (sym (plist-get unit :symbols))
+      (when (plist-get sym :aot-local)
+        (let ((name (plist-get sym :name)))
+          (cl-loop for other in units for other-index from 0 do
+            (unless (= index other-index)
+              (when (or (equal (plist-get unit :name) (plist-get other :name))
+                        (cl-find name (plist-get other :symbols) :test #'equal
+                                 :key (lambda (s) (plist-get s :name)))
+                        (cl-find name (plist-get other :relocs) :test #'equal
+                                 :key #'nelisp-link--reloc-symbol-name))
+                (signal 'nelisp-link-error
+                        (list :aot-local-collision name (plist-get other :name)))))))))))
+
 (defun nelisp-link--collect-defined-symbols (units combined section-layout)
   "Pass 1: build a global symtab for DEFINED symbols of UNITS.
 For each unit's symbol, compute its absolute VA and insert into a
@@ -472,6 +560,7 @@ fresh hash table.  Duplicate handling:
   where \"first\" is determined by sorting UNITS by `:name' so the
   result is deterministic regardless of caller order.
 Returns the populated symtab (= a hash table)."
+  (nelisp-link--check-aot-local-collisions units)
   (let ((symtab (nelisp-link-symtab-make))
         (sorted (nelisp-link--sort-units-by-name units)))
     (dolist (unit sorted)

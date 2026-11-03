@@ -23,6 +23,8 @@
             (when (and (memq (car-safe form) '(defun defvar defconst))
                        (symbolp (cadr form))
                        (or (string-prefix-p "nelisp--fx-" (symbol-name (cadr form)))
+                           ;; The compiler's helpers and state (Doc 243 S5).
+                           (string-prefix-p "nelisp--fxc-" (symbol-name (cadr form)))
                            (eq (cadr form) 'nelisp-fx-enabled)))
               (eval form t))))
       (end-of-file nil))))
@@ -46,7 +48,7 @@
   (closurevm-isolated
    (let ((body '((+ cv-x 1))))
      (nelisp--fx-first-call body '(t) '(a))
-     (should-not (gethash body nelisp--fx-table))
+     (should (integerp (gethash body nelisp--fx-table))) ; Doc 243: countdown kept in the table
      (nelisp--fx-first-call body '(t) '(a))
      (should (vectorp (gethash body nelisp--fx-table)))
      (should-not (gethash (copy-tree body) nelisp--fx-table))
@@ -74,7 +76,7 @@
      (dotimes (_ 2) (nelisp--fx-first-call loopy '(t) nil))
      (should (vectorp (gethash loopy nelisp--fx-table)))
      (dotimes (_ 4) (nelisp--fx-first-call plain '(t) nil))
-     (should-not (gethash plain nelisp--fx-table))
+     (should (integerp (gethash plain nelisp--fx-table))) ; still counting down
      (nelisp--fx-first-call plain '(t) nil)
      (should (vectorp (gethash plain nelisp--fx-table))))))
 
@@ -98,6 +100,44 @@
      (nelisp--fx-first-call body (list (cons 'cv-x 1) t) nil)
      (nelisp--fx-first-call body (list (cons 'cv-x 1) t) nil)
      (should (eq 'none (gethash body nelisp--fx-table))))))
+
+;; S4d: read-only captured variables compile with the captured names as the
+;; first locals; record slot 7 is [NFORMALS NAME...] and the arity is impossible.
+(defun closurevm-two-calls (body env formals)
+  (nelisp--fx-first-call body env formals)
+  (nelisp--fx-first-call body env formals)
+  (gethash body nelisp--fx-table))
+
+(ert-deftest closurevm-captured-readonly-compiled ()
+  (closurevm-isolated
+   (let* ((body '((+ cv-a cv-b x)))
+          (rec (closurevm-two-calls body (list (cons 'cv-a 1) (cons 'cv-b 2) t) '(x))))
+     (should (vectorp rec))
+     (should (equal (aref rec 7) [1 cv-a cv-b]))
+     (should (> (aref rec 2) 65535))
+     ;; code: params are cv-a cv-b x -> 3 locals at least
+     (should (>= (aref rec 1) 3)))))
+
+(ert-deftest closurevm-captured-setq-stays-interpreted ()
+  (closurevm-isolated
+   (let ((body '((setq cv-a (1+ cv-a)) x)))
+     (should (eq 'none (closurevm-two-calls body (list (cons 'cv-a 1)) '(x)))))))
+
+(ert-deftest closurevm-captured-nested-lambda-stays-interpreted ()
+  (closurevm-isolated
+   (let ((body '((lambda (y) (+ y cv-a x)))))
+     (should (eq 'none (closurevm-two-calls body (list (cons 'cv-a 1)) '(x)))))))
+
+(ert-deftest closurevm-captured-over-four-stays-interpreted ()
+  (closurevm-isolated
+   (let ((body '((+ c1 c2 c3 c4 c5 x)))
+         (env (list (cons 'c1 1) (cons 'c2 2) (cons 'c3 3) (cons 'c4 4) (cons 'c5 5))))
+     (should (eq 'none (closurevm-two-calls body env '(x)))))))
+
+(ert-deftest closurevm-captured-optional-formals-stay-interpreted ()
+  (closurevm-isolated
+   (let ((body '((+ cv-a (or x 0)))))
+     (should (eq 'none (closurevm-two-calls body (list (cons 'cv-a 1)) '(&optional x)))))))
 
 (ert-deftest closurevm-unsupported-before-effects ()
   (closurevm-isolated

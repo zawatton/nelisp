@@ -1,0 +1,19 @@
+{
+  "status": "RECOVERED_INPUT_AVAILABILITY_INTERRUPTION",
+  "cause": "Unknown; original cache directory observed missing after final sample; independently confirmed",
+  "target": "/home/madblack-21/.cache/tmp/nelisp-cross-language-20261029-t8wGC4/driver.el",
+  "expected_sha256": "eadbaf40dd8111ade2179464c2a49dbbfe7de712f0ac9de12daa6ab854c984b2",
+  "actual_sha256": "eadbaf40dd8111ade2179464c2a49dbbfe7de712f0ac9de12daa6ab854c984b2",
+  "archive": "/home/madblack-21/Cowork/Notes/handoff/nelisp-python-javascript-benchmark_2026-10-29-evidence/raw-and-tooling.tar.gz",
+  "archive_sha256": "be7fc8a9836be61604311345ee2402131942520619d2b770deb72d079e2fab88",
+  "archive_member": "session/driver.el",
+  "durable_copy": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/count-matched/artifacts/original-cross-language-driver.el",
+  "durable_copy_sha256": "eadbaf40dd8111ade2179464c2a49dbbfe7de712f0ac9de12daa6ab854c984b2",
+  "recovered_at_utc": "2026-10-31T09:13:47.109657+00:00",
+  "exclusive_create": true,
+  "overwritten_files": false,
+  "continuous_unchanged_input_claim": false,
+  "measurement_samples_rerun": false,
+  "final_data_reports_changed": false,
+  "authorization": "Explicit coordinator approval for one reversible exact-byte recovery"
+}

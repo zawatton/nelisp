@@ -1,0 +1,82 @@
+{
+  "status": "PROPOSED design provenance; no runtime or strict qualification",
+  "sbcl": {
+    "repository": "https://github.com/sbcl/sbcl",
+    "commit": "80dad386fc3536d0185dc4a2b9627a331c5f256f",
+    "working_tree": "clean",
+    "permalink_base": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/",
+    "source_files": [
+      {"path":"src/code/target-hash-table.lisp","sha256":"02106ce7c2a9cb41dc3ef3e8f9c12029f55b258763e8e46ef6a8e8106e1d087e","anchors":"1050-1122; 1235-1273; 1836-1888; 2079-2118; 2245-2246; 2494-2533; 2674-2718; 2971-3018","topics":"hash layout, chained probing, small flat regime, tests, growth, weak operations, deletion"},
+      {"path":"src/runtime/gc-common.c","sha256":"f3de7263fbc37b7ce7f9a37c60b30e4efae4539c0e79d2ba3445ae74253dffb4","anchors":"1573-1590","topics":"moving-GC hash rehash state"},
+      {"path":"src/compiler/x86-64/alloc.lisp","sha256":"a0477c7e6645c6a24d040653e236ff2f1598c3c50953eb82578063e41e5690cd","anchors":"222-229; 229-320; 323-349; 327-330; 379-383","topics":"TLAB fast/slow path, headers, padding, initialization, pseudo-atomic allocation"},
+      {"path":"src/runtime/gencgc.c","sha256":"7e9ba23bc9adceb53fca81d0acfca6b8a41e6a5ba9adc9a308b0f5ba078929ea","anchors":"2571-2608; 4166-4240","topics":"page-based generational barrier and allocation slow path"},
+      {"path":"src/compiler/locall.lisp","sha256":"393fbb15ee363a3c987ebc54a6bc26777fd62354537bd75ff15b5b8570aeae08","anchors":"145-193","topics":"local-call conversion and external entry"},
+      {"path":"src/compiler/ir2tran.lisp","sha256":"635b35595aae2d59a795527bcc8fa3b446db9cdc225f8f8b320cc4e6ae580415","anchors":"1017-1107","topics":"local call frames and result conventions"},
+      {"path":"src/compiler/ir1util.lisp","sha256":"d3be128c58cf1b85227945cecec0d6ed0032a97eb43458ead55bfd15e003bcc8","anchors":"3309-3336","topics":"bounded recursive expansion ancestry"},
+      {"path":"src/compiler/ir1opt.lisp","sha256":"82cd627bf50993150b51214d0bc139015a50bafaf26c78344b8f6ab19fa4c567","anchors":"1680-1738","topics":"inlining policy and NOTINLINE checks"},
+      {"path":"src/compiler/represent.lisp","sha256":"14b262f4cacda7a418f2d07deb12cf602480a091729b7c355f1120950feea574","anchors":"285-310","topics":"representation candidate costs"},
+      {"path":"src/compiler/x86-64/call.lisp","sha256":"44d4917f3cf1e5b92dc50575604dfa815a4c4099ca1af3fb0c9330e082a9a90b","anchors":"919-1050","topics":"generated full-call variants and closure call setup"},
+      {"path":"src/code/fdefinition.lisp","sha256":"0311054853fa8c6d56ae5767062d8f2e8953dbdfaec9d743cdfdf2e68a26bded","anchors":"20-28","topics":"function-cell mutation primitive"},
+      {"path":"src/compiler/x86-64/cell.lisp","sha256":"5ebc72c7bc69d7018a41817aea692ce4a7cdd82582454b10a958ae3172472e44","anchors":"325-349","topics":"safe function definition lookup and undefined-function error"},
+      {"path":"src/compiler/x86-64/array.lisp","sha256":"d77b001a695ee56aac03b52c09bc48ded85d71521bee07e0a7467f6c26b64503","anchors":"196-234; 315-368","topics":"checked/fast bounds paths, specialized registers, reference-store generational barrier"},
+      {"path":"src/code/array.lisp","sha256":"f84a6f9bcafd5c06249b88f3d11a0d4b13b544217de96c8ddab9825529314e93","anchors":"48-63; 1125-1146","topics":"array backing-data/index resolution and pinned numeric CAS"},
+      {"path":"src/compiler/generic/vm-array.lisp","sha256":"f0cd13ab91ad267e5eea5cf64aa41916df0d617dc1e92d4f7dab38998d665409","anchors":"65-82","topics":"Unicode string element widths"},
+      {"path":"src/compiler/generic/early-vm.lisp","sha256":"ea69ba6cecb8faa5c58930c1c2f7b9a0b362b3cb9bedf3fcad06437d89b89cc7","anchors":"121","topics":"Unicode base-char limit is 128"},
+      {"path":"src/code/string.lisp","sha256":"e157378e8083cdbe3a25adf3eaabb33e5f05505c98d70fa7c11ca8264544a3a7","anchors":"77-96","topics":"public character access safety and simple-string contract"},
+      {"path":"src/code/seq.lisp","sha256":"13e574453859fcf5216345ed750f89f3fdf9bbd3be817592bf3f641870dc027c","anchors":"578-605; 836-878; 1380-1450","topics":"subsequence, overlapping copy, concatenation"},
+      {"path":"src/compiler/x86-64/macros.lisp","sha256":"7a084b88c1a15c7495ee3711de0140f3e363c65a013b9564794e349445b5fe46","anchors":"203-211","topics":"feature-conditional safepoint behavior"}
+    ],
+    "semantic_limit": "Common Lisp contracts and SBCL collector details are not NeLisp/Emacs semantics. Any proposed transfer is a hypothesis requiring separate proof."
+  },
+  "nelisp_measured_source": {
+    "snapshot": "frozen12/wt6 under the October 2026 V8 native batch artifact; not the shared checkout",
+    "qualification": "HOLD; experimental comparisons only",
+    "target_checkout": {"path":"dev/nelisp/ in the shared checkout","head":"9d6a4a4f2c01952cb03f9333aa7afeb6bdf6d835","dirty_state":"Existing uncommitted changes were preserved. The frozen12 measured modules are a separate source snapshot and are not presumed integrated here. Proposed IR operation names in Docs 230-234 are not presently available APIs."},
+    "source_files": [
+      {"path":"scripts/nelisp-stdlib-prelude.el","sha256":"27669b8c7cdae6580d9836958c47e36c6adce258a26cb226bc6393b5ea5311e5","anchors":"4283-4320; 4400-4430; 4474-4489","topics":"vector-backed hash storage, callback/mutation guards, deletion"},
+      {"path":"scripts/nelisp-standalone-build.el","sha256":"00999038bede63d1003a9a52834c3d42aed4def13cd227f969261cadc798d5e9","anchors":"6205-6263; 5672-5676; 6158-6169; 4080-4100; 4500-4520; 19629-19633; 19689-19692; 19770-19804","topics":"CAS allocation chunks, arena header, zero fill, typed cons, collector, identity repair, native hash helper"},
+      {"path":"lisp/nelisp-cc-fxir-native.el","sha256":"84d6c1b76575e0413d8ce27f521249f8fa029910c9c1af5b2f5d4e3b94c947c4","anchors":"287-305; 887-945; 998-1005; 1479-1593","topics":"call guards, frame/status protocol, memory access"},
+      {"path":"lisp/nelisp-cc-fxir-inline.el","sha256":"cb1badd068df66a179f6eec29d3d197436e5c672aabdae65ff84dbb89d2614ac","anchors":"28-36; 150-190","topics":"bounded inline certificate and activation"},
+      {"path":"lisp/nelisp-cc-nlvector-set-slot.el","sha256":"49362bce09e42b77dbbf623b32be7b9b93a8b98f383e23422bd0eedc7f3c96c9","anchors":"33-35; 60-85","topics":"typed word slots and clone-into behavior; not proof of SBCL barrier equivalence"},
+      {"path":"lisp/nelisp-cc-string-blocks.el","sha256":"675003433d322be7ddb29b5c635bf1e8262fa24ce24dbc47125e1183b8cf231a","anchors":"161-202; 224-258","topics":"string sizing, kind, capacity, field/header access, byte copy and character count"},
+      {"path":"lisp/nelisp-cc-jit-concat-ints.el","sha256":"b32b92dd2a964fc3ff6772eb7b4e32795fb57320d153625c59020873bf112277","anchors":"88-126","topics":"measured Unicode scalar builder; not full Emacs string semantics"},
+      {"path":"lisp/nelisp-heap-accessors.el","sha256":"18c8fd2c723e4df3483d346f8912db0428aca56efa46f671a9002cbd673bc971","anchors":"61-86; 127-141; 267-295","topics":"raw string base predicates, guarded access rules, lowering"}
+    ],
+    "unknowns": ["Complete wf_dirty snapshot and GC contract", "transitive may-GC behavior of all hash callbacks", "full weak-generation behavior under native code"]
+  },
+  "design_orientation": {
+    "file":"docs/design/215-v8-inspired-native-optimization.org",
+    "sha256":"663b828c2d4e7747cc0592c517a436ce6e9a2c932f94e66eea198cbb2363700f",
+    "meaning":"Copied unchanged from the shared checkout for orientation; it is the user V8 proposal and is not the frozen12 runtime baseline."
+  },
+  "research_records": [
+    {"file":"evidence/sbcl-native-20261031/sbcl-hash-allocation-research.json","sha256":"77f3d281faee1cfb4705bd88ceecf1eac2694d27c232a50c02dc3d4619df9c3b"},
+    {"file":"evidence/sbcl-native-20261031/sbcl-calls-vectors-strings-research.json","sha256":"3b36282db7e9d27275339ee7f60da3a0fda926236559336b0269a5fb9192e0c0"}
+  ],
+  "benchmark_evidence": {
+    "status":"Experimental measurements with passing data audits; source/native/resource/semantic qualification remains HOLD.",
+    "shared_measurement_root":"$HOME/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031",
+    "gnu_comparison":"GNU Emacs 31.1 bytecode vs NeLisp native ON; nine workloads, seven pairs per row; high-count kernel and process seconds are in evidence/gnu-all-time-comparisons.json. It is not strict qualification.",
+    "same_count":"Old vs new NeLisp, fixed counts, CPU 12, two warmups; some original rows reused authenticated identical-count evidence and three changed rows were freshly measured. Historical driver availability was interrupted after sampling; exact bytes were recovered and authenticated. No old execution was repeated.",
+    "evidence_files": [
+      {"file":"evidence/sbcl-native-20261031/gnu-all-time-comparisons.json","sha256":"1487b4ca002bbaa4a7c1d9fcde42be53f828b986c9b5a7e91f569c91f021b21b"},
+      {"file":"evidence/sbcl-native-20261031/gnu-all-time-comparisons.csv","sha256":"7de4849be5047ad075904e464c0e894b18191e6f96b4b408b5e278aa086a1ee0"},
+      {"file":"evidence/sbcl-native-20261031/gnu-data-audit.json","sha256":"9a8c277c693a3decffdb71c86e53925e5aeb99f6ed5a68a20666631c596015c9"},
+      {"file":"evidence/sbcl-native-20261031/same-count-time-comparisons.json","sha256":"912aa4b5cc0d28bfa0cb5e955215fe4eac1c832e03303fc11c3ecf7f7b628e22"},
+      {"file":"evidence/sbcl-native-20261031/same-count-time-comparisons.csv","sha256":"2e52e6c6fa79be9326736f958542fc902cca3fd9c9003221b09103aaaeb474b2"},
+      {"file":"evidence/sbcl-native-20261031/same-count-data-audit.json","sha256":"80db6dbf056f274c8d146e6a47dc523a81cd3fe25bdd238ab9b3e75ba31d8ae9"},
+      {"file":"evidence/sbcl-native-20261031/input-recovery-receipt.json","sha256":"56d1f87a67b319c725a46bd4821514e9dd24cfbca1147d700a8f987633b3bcd8"},
+      {"file":"evidence/sbcl-native-20261031/gnu-completion-receipt.json","sha256":"cdcbbaef176b63e6f8bbb6fec5a044428aa3b4705b206cf253db506b80296817"},
+      {"file":"evidence/sbcl-native-20261031/gnu-remaining7-completion-receipt.json","sha256":"e4ad684fc66e2e5808db9d2c1964fd3d118719e9f83007d8e523ff903ad70cf4"},
+      {"file":"evidence/sbcl-native-20261031/same-count-completion-receipt.json","sha256":"8700df73f69877500e0ce5505c01896d077a503763bc33ad8e1dda5950584a37"}
+    ],
+    "interpretation":"Observed timings motivate questions only. Do not infer causality, strict acceptance, or performance promises."
+  },
+  "documents": [
+    {"file":"230-sbcl-inspired-hash-tables.org","sha256":"42a3f6d638686a095af9cac0fe6a61c8a473e536dbf91b82471ce14c8741a361"},
+    {"file":"231-sbcl-inspired-native-calls.org","sha256":"15f3b32f7c756666fe463c8a35f1484321f4c695bcbd94ff2aab8a7db7c3b523"},
+    {"file":"232-sbcl-inspired-vector-access.org","sha256":"ba764ca8af322dc5284dfa84d8c9808f255e20631c923e63600f9e04376f1cab"},
+    {"file":"233-sbcl-inspired-string-storage.org","sha256":"0f5a1cce419fd60b83ead513aeeb415ddc82de52e8a46fb756af75f9da29ed20"},
+    {"file":"234-sbcl-inspired-allocation-gc.org","sha256":"7efac2c693ffb5308edb52fcf9f72513ba7eb171d2bbea040b69b2122dd6772e"}
+  ]
+}

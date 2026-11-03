@@ -47,7 +47,27 @@
     "intern" "intern-soft"
     ;; wordroute: the handlers the list-walk lowering admits without an older id
     ;; (append-only; nelisp--bv-binop/bv-count were admitted without one before).
-    "put" "nelisp--bv-binop" "nelisp--bv-count")
+    "put" "nelisp--bv-binop" "nelisp--bv-count"
+    ;; applyfn2: the other walk-admitted handlers, now that the argv entries
+    ;; have link units of their own (append-only).
+    "nl--nthcdr" "byte-code" "require" "unibyte-string" "make-bool-vector" "bool-vector"
+    "bool-vector-p" "record" "nelisp--native-subr-create" "make-byte-code" "elt"
+    "symbol-plist" "setplist" "make-char-table" "error" "load" "nl-write-file"
+    "nelisp--syscall-path" "nelisp--syscall-path2" "nelisp--syscall-path-int"
+    "nelisp--syscall-stat-field" "nelisp--syscall-stat-buf" "nelisp--syscall-lstat-buf"
+    "nelisp--syscall-readlink" "nelisp--syscall-readdir-names" "nelisp--readdir-scan-raw"
+    "nelisp--syscall-utimes" "nelisp--syscall-statx-buf" "nelisp--syscall-unshare"
+    "nelisp--syscall-mount" "nelisp--syscall-pivot-root" "nelisp--write-stdout-bytes"
+    "nelisp--write-stderr-line" "nelisp--read-all-from-string-native" "read-stdin-bytes"
+    "float-time" "logand" "logior" "logxor" "sort" "ptr-read-bytes" "ptr-write-bytes"
+    "nelisp-process-call-process" "nelisp-process-start" "nelisp-process-start-process"
+    "nelisp-process-read-output" "nelisp-process-write" "nelisp-process-close-stdin"
+    "nelisp-process-poll" "nelisp-portable-syscall" "nelisp-socket-listen"
+    "nelisp-socket-accept" "nelisp-socket-connect" "nelisp-socket-send"
+    "nelisp-socket-recv" "nelisp-socket-close" "nelisp-socket-poll"
+    "nelisp-socket-connect-error" "nelisp-thread-shared-alloc" "nelisp-thread-atomic-add"
+    "nelisp-thread-atomic-read" "nelisp-thread-spawn" "nelisp-thread-join"
+    "nelisp-thread-gc-inhibit" "nelisp--native-unbox-reference")
   "Frozen append-only IDs needed before the first dispatch is generated.
 The full reader table later ratchets this suffix against structural admission;
 no old symbol ID is moved and no late mutation changes a generated dispatch.")

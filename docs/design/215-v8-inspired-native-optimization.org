@@ -1,0 +1,358 @@
+#+TITLE: V8-inspired optimization of the native NeLisp compiler
+#+DATE: 2026-10-29
+#+STATUS: PROPOSED — design only; implementation and speedup unqualified
+#+SCOPE: Existing native FX/JIT/AOT path, preserving Emacs-compatible behavior
+
+* 1. Decision
+
+Improve the existing NeLisp compiler by adapting V8's treatment of inlining,
+type information, machine representations, guards and bounded compilation.
+=nelisp-v8= is a working name for this optimization effort. The deliverable is
+a faster native NeLisp runtime using the existing Lisp language and runtime.
+
+The first implementation is a bounded leaf-body inliner on the FXIR native
+path, retaining the existing logical call protocol. Then propagate proven
+types and representations through the expanded body. Measure whether the
+removed native call boundaries and repeated checks justify the code growth.
+Frame elimination, loop speculation and allocation elimination require
+separate proofs and are later stages.
+
+This design introduces no JavaScript backend, Node dependency, V8 embedding,
+Wasm replacement, new object layout, or new native primitive for speed.
+It does not promise V8's speed: the previous comparison establishes workload
+differences, not their causal breakdown or an attainable speedup ceiling.
+
+* 2. Evidence boundary and current implementation
+
+The source manifest is [[file:../../tools/ai/native-v8-design-sources.json][native-v8-design-sources.json]]. Its native root is
+=$HOME/.cache/tmp/nelisp-next-batch-20261029/wt=, detached HEAD
+=0e250a8774e0190eab9dfe59de0566df906d824d= plus uncommitted changes.
+The file hashes, rather than HEAD alone, identify the inspected compiler.
+The shared checkout does not currently contain =lisp/nelisp-cc-fxir-native.el=.
+An implementer must acquire the matching source snapshot and qualify its
+baseline before editing; copying one compiler file into the shared checkout
+does not reconstruct that baseline.
+
+The following anchors are relative to the manifest's native root. They describe
+observed source, not an exhaustive audit of all compiler paths.
+
+| Existing component | Inspected anchor | Implication |
+|--------------------+------------------+-------------|
+| Tagged primitive fast paths with generic fallback | =lisp/nelisp-cc-fxir-native.el:226=, =:496= | Adding another type test alone is not a new optimizing tier. |
+| Guarded known-row direct calls | same file =:296=, =:321=, =:407= | A direct =nc_J= call is already present; it is not body inlining. |
+| Left-to-right argument staging | same file =:211=, =:330= | Preserve evaluation order and the values held across later effects. |
+| Entry check, root lifetime and common exit | same file =:729= | Inlining must retain these obligations. |
+| Loop back-edge poll | same file =:635=, =:688= vicinity | Hoisting cannot silently remove quit/GC polling. |
+| Structured FXIR to native DSL lowering | same file =:635=, =:1277= | Start with a bounded pre-lowering transform; do not assume an existing SSA graph. |
+| Mutation barrier in vector stores | same file =:1093= vicinity | Preserve =wf_dirty=; its complete contract must be inspected before any optimization of it. |
+
+The direct wrapper checks the live function cell/cache and native record,
+pushes a backtrace record, checks recursion depth, invokes the entry check,
+handles an effect-free =-3= decline, and finishes the call/status protocol.
+The new path must preserve this behavior. Primitive bytecode operations have
+a different contract: GNU-style opcode primitives may deliberately ignore
+later =fset= of the corresponding symbol. Keep that distinction explicit.
+
+Source discovery used bounded Anvil context and exact local ranges. A
+same-file callee query for =--defun= exceeded its 6,400-character budget and
+returned no excerpts; exact ranges supplied the relevant facts. Syntactic
+Elisp dependency analysis does not resolve the quoted native DSL or all
+generated/runtime callers. No complete caller or absence proof is claimed.
+
+The four-engine comparison used a different, older bool-vector build with
+binary SHA-256 =3c8b7f72c647afb5f8325e69f63b9d19598f332236a18bc10b3575724477224e=.
+Its NeLisp route was =named-fx-default=; native machine-code execution of the
+measured kernels was not proved. In that cohort =function-call2= measured
+445.724 ns/iteration and =integer-sum= 62.566 ns/iteration. These motivate
+call and arithmetic investigation; they do not measure this source snapshot.
+See [[file:../../../../handoff/nelisp-python-javascript-benchmark-results_2026-10-29.md][the complete results and limitations]].
+
+* 3. Concrete V8 references and adaptation
+
+Reference the V8 sources shipped with Node =v20.19.2=, rather than describing
+an unspecified current V8. Exact downloaded content hashes are in the source
+manifest. These references support mechanisms, not an attribution of the
+benchmark gap to individual mechanisms.
+
+| Primary source | Relevant mechanism | NeLisp adaptation |
+|----------------+--------------------+-------------------|
+| [[https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/v8/src/compiler/js-inlining.cc][js-inlining.cc]], =JSInliner::InlineCall= | Reconnects parameters, control, effects, frame state and exception continuations. | Clone a bounded leaf body with explicit logical-frame and status ownership; substitution alone is insufficient. |
+| [[https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/v8/src/compiler/js-inlining-heuristic.cc][js-inlining-heuristic.cc]] | Eligibility, observed call frequency and total inlining budgets. | Deterministic eligibility and hard growth limits first; optional profile ranking later. |
+| [[https://raw.githubusercontent.com/nodejs/node/v20.19.2/deps/v8/src/compiler/representation-change.cc][representation-change.cc]], =GetRepresentationFor= | Separates inferred type from machine representation and use requirements. | Keep a NeLisp type domain separate from tagged WORD/payload representations; preserve exact Lisp arithmetic. |
+| [[https://v8.dev/docs/turbofan][TurboFan documentation index]] | References for inlining, check elimination and deoptimization. | Follow the proof obligations; a full Sea of Nodes rewrite is unnecessary for the first slice. |
+
+Study and adapt the algorithms. If later implementation copies V8 code,
+retain its applicable license and attribution; this document copies no code.
+JavaScript Number coercions, Word32 truncation, hidden classes and JS array
+semantics are not NeLisp language rules. Float specialization, shape caches,
+new feedback tiers and a replacement register allocator are outside M1/M2.
+
+* 4. Proposed compilation pipeline and contracts
+
+#+begin_example
+Existing harvested FXIR + immutable row/source manifest
+  -> normalize call sites and validate metadata
+  -> summarize effects and select bounded leaf candidates
+  -> guarded body expansion with logical call protocol retained
+  -> propagate types / choose representations / verify obligations
+  -> existing native DSL lowering and backend
+  -> existing native runtime, generic fallback and GC
+#+end_example
+
+Keep the current input FXIR format readable. The compiler's internal analysis
+may use side tables keyed by row ID and structural node path. Assign stable
+call-site IDs before transformation; clone with fresh IDs and explicit origin
+mapping. Do not continue consuming the old positional =CALLEES= list after
+inserting a foreign body without rebuilding and validating that mapping.
+
+Proposed per-node facts are =type=, =representation=, =effects=, =origin=,
+=logical-frame=, =guard-set= and =failure-continuation=. Unknown information
+means conservative lowering. Effects include read/write of mutable cells or
+heap, allocation, GC/re-entry, signal/throw, dynamic binding, call observation,
+and unknown behavior. Existing =--pure-p= or a function name is not sufficient
+proof. Read effects must identify their invalidation domain.
+
+Each expanded site records caller/callee identity, arity, row/source digest,
+constant ownership, slot renaming, guards, code-growth charge and refusal
+reason. Never serialize process pointers as portable compilation metadata.
+Version any changed artifact recipe/cache key so older compiled artifacts
+cannot be admitted under the new proof accidentally.
+
+** 4.1 M1: bounded leaf-body expansion
+
+Initial limits are policy choices: fixed required arity 0..4, at most 24
+input IR nodes per leaf, one expansion level, at most two expanded sites per
+caller, and no more than 20% estimated caller-node growth. Refuse a candidate
+if any limit is exceeded. These limits are not empirical speed claims.
+
+Accept parameters, local temporaries, immediate constants and a small explicit
+whitelist of existing bytecode-primitive operations. M1a admits total pure
+predicates/identity operations; M1b may admit exact fixnum arithmetic only
+after operation-level overflow/type fallback and error tests pass. The
+=f(x,y)=x+y+1= helper is a target for M1b, not assumed eligible in advance.
+
+Refuse recursion, loops, captured lexical environments, optional/rest
+arguments, dynamic binding, handlers, nonlocal exits in the body, allocation,
+heap writes, mutable global reads, arbitrary calls, autoload/alias traversal,
+and unproved operations. Primitive arithmetic can signal through its existing
+fallback; that continuation is allowed only when its frame/root/status
+requirements are preserved. Otherwise refuse the arithmetic candidate.
+
+Clone local slots and temporaries hygienically. Constants belong to the
+callee's code object: a callee constant index must never be interpreted using
+the caller's =base=. M1 accepts only verified immediate constants (=nil=,
+=t=, fixnums); reject other constants until a rooted callee-code context or
+validated constant remapping exists. Preserve argument evaluation exactly once
+in left-to-right order, including unused or duplicated formal parameters.
+
+** 4.2 Dispatch, failure and logical calls
+
+1. Evaluate/stage arguments using the current rooted-window discipline.
+2. At the existing dispatch point, use the live-cell/cache/record checks.
+   Check exact eligible closure/code identity, arity and current entry-check
+   contract. A cold, changed, unrecognized or disallowed site uses the existing
+   direct/generic path with the already evaluated arguments.
+3. For an accepted site, retain logical frame push, recursion accounting,
+   entry check and debug/exit handling in their existing order. Expand the
+   native body within that protocol, including its root mark/window lifetime
+   and common exit. Preserve callable identity/code reachability across GC.
+4. A successful operation returns its ordinary tagged WORD. A primitive guard
+   failure invokes that primitive's original fallback at that point. It does
+   not restart the entire callee. Signal/throw status stops following effects
+   and uses the existing logical frame cleanup and status continuation.
+5. Only the already supported effect-free entry decline may abandon the
+   entered fast path using its existing cleanup/generic-call protocol.
+   Never replay a callee after any user-visible effect or hook has executed.
+
+The implementation must factor/reuse the wrapper protocol, rather than
+independently approximating it. Preserve depth-limit errors, debug-on-entry/
+exit, tracing, advice, function replacement, backtrace visibility and quit
+behavior. If a mode cannot be proved compatible, reject inlining for that
+mode and retain ordinary dispatch. Main-thread-only admission is the initial
+policy; worker/thread execution retains the original path. Exact supported
+mode predicates and observer hooks are an M0 deliverable, not assumed APIs.
+
+Retaining logical frame/root bookkeeping deliberately limits the first
+speedup. It can still remove a physical native function boundary and expose
+optimizations across it. Eliding logical frames is a separate feature requiring
+reconstruction for every observable debugger, error and asynchronous exit.
+
+** 4.3 M2: type and representation propagation
+
+Start with a finite type domain: unreachable, =Fixnum=, =Nil=, =True=,
+=Other= and their finite unions (=Any= at top). Refine branches only from
+validated primitive semantics. Mutable slot assignments create new versions;
+joins union facts. Loop backedges use a bounded fixed point, widening any
+unstable fact to =Any=. M1 does not need a global SSA conversion; M2 may use
+local slot versions and explicit join records.
+
+Keep =TaggedWord=, =FixnumPayload= and internal =Condition= distinct from
+types. Existing fixnums are immediate tagged values, so avoiding their tags
+does not itself remove heap allocation. Derive the payload range and tagging
+rules from the target runtime contract, not JavaScript or a hard-coded int32.
+Use payload form only in a region with proved consumers and conversions.
+At joins, generic calls, observable exits and ABI boundaries, reconstruct the
+ordinary WORD. Never expose an internal condition as Lisp =nil=/=t= implicitly.
+
+For =+=, =-= and =*=, prove each intermediate result fits or retain a checked
+operation whose failure runs the existing exact arithmetic operation with
+the original operands. Never silently wrap, truncate to 32 bits, or convert
+integers through floating point. Unsupported bignum/float values use existing
+behavior. Do not assume that the primary benchmark's bounded inputs establish
+an invariant for arbitrary user code.
+
+At every allocation, call, poll and signal boundary, live heap-capable values
+must remain in valid rooted WORD slots under the current GC protocol. Payload
+fixnums are not heap roots, but stale tagged temporaries and moved raw addresses
+still require a lifetime analysis. M2 initially materializes ordinary values
+at such boundaries; retaining unboxed/raw heap addresses across them is refused.
+
+** 4.4 Later stages: guard motion, feedback and allocation
+
+M3 may remove repeated checks only when a dominating check and a proof of
+non-invalidation cover every path. Unknown calls, re-entry, heap mutation,
+function-cell changes and safepoints are conservative barriers. In particular,
+do not hoist a callee-cell check out of a loop containing a poll without a
+proved invalidation mechanism. Do not repurpose a global epoch or remove
+=wf_dirty= without inspecting its complete ownership/reclaim contract.
+
+Bounds-check removal needs object kind, exact length/lifetime, index range
+and mutation proofs, including record/vector distinctions and error ordering.
+Strings require byte/character and multibyte semantics. A generic =aref=
+fast path already exists; bypassing it is not safe merely because an earlier
+iteration used a vector.
+
+M4 may add bounded monomorphic/polymorphic feedback if existing evidence shows
+a need; counters and their overhead require a separate budget. Stable static
+call sites do not need a new tier manager. General speculative deoptimization
+requires a versioned resume map containing live values, program position,
+logical frames, bindings, handlers and root ownership, with exactly-once
+effect tests. Until then, all failures use local operation fallback before
+an irreversible change, or ordinary dispatch; no mid-frame replay is admitted.
+
+Escape analysis and scalar replacement follow only after identity, mutation,
+GC, weak-reference and nonlocal-exit proofs exist. The =vector-allocate64=
+benchmark publishes objects to a retention ring; eliminating those observable
+allocations is not an eligible benchmark optimization.
+
+* 5. Implementation slices and acceptance
+
+These are planned deliverables. None is marked implemented by completing this
+document. Create a separate implementation progress ledger before coding;
+each stage needs at least three machine-checkable criteria and a real native
+end-to-end criterion. Preserve known-red checks and their original evidence.
+
+| Slice | Bounded changes | End-to-end evidence required |
+|-------+-----------------+------------------------------|
+| M0 — route and contract | Freeze complete native baseline; identify call observers and ownership; normalize stable sites; add off-by-default compiler diagnostics. | An ordinary native invocation of caller/helper has an authenticated executable entry/dispatch witness, exact result and immutable source/build manifest. If the measured helper is not harvested/compiled, address that real route first. |
+| M1a — total leaf | Eligibility, hygienic cloning and retained wrapper/root protocol; tiny total whitelist. | Native on/off runs match GNU behavior, mutations take fallback, and emitted/native evidence proves body expansion rather than a renamed direct call. |
+| M1b — arithmetic leaf | Admit checked exact arithmetic and its existing operation-level fallback. | =x+y+1= or a separately declared eligible helper passes overflow, type, frame and redefinition cases in the native candidate. |
+| M2 — propagation | Type/representation side tables, joins, conversions and verifier. | Native mixed-type/overflow execution matches the oracle; diagnostics plus emitted code show removal of the intended redundant checks/conversions. |
+| Q — finite qualification | Freeze all implementation changes, build once within unchanged caps, then one matched performance/regression campaign. | Semantic, resource and predeclared performance gates pass on the identical candidate; publish unfavorable rows and audit receipt. |
+
+Suggested compiler modules are =nelisp-cc-fxir-inline.el= and
+=nelisp-cc-fxir-facts.el=, with integration near =--defun= / =--lower= /
+=--call= in =nelisp-cc-fxir-native.el=. Names are proposals, not available APIs.
+Before editing functions, obtain bounded caller context. Inventory the actual
+FXIR producer, generated call metadata and artifact admission/cache consumers;
+the inspected file alone does not establish their completeness. Avoid changes
+to shared VM/native ABI or native inventory in M1/M2.
+
+** 5.1 Semantic and negative controls
+
+| Fixture family | Required observation |
+|----------------+----------------------|
+| Argument order, ignored/duplicated parameters, side-effecting arguments | Same single evaluation and result as unoptimized/GNU execution. |
+| Cold cache, =fset=, =defalias=, advice, restored VM record, autoload | Ordinary calls reach the current definition; unsupported shapes refuse expansion. |
+| Same row ID with changed code/entry generation | Stale inline body is never used. |
+| Bytecode primitive versus symbol call | Preserve their distinct redefinition contracts. |
+| Boundary fixnums, intermediate overflow, bignums, floats, wrong types/arity | Same value or exact error kind/data, with no wrapped/truncated result. |
+| Low depth limit, debug hooks, tracing and debug-on-exit | Same logical call visibility/error, or an explicit ordinary-path refusal. |
+| Error after an earlier argument effect; forced allocation/GC on fallback | No replay, lost root, stale address, double cleanup or following effect. |
+| Bindings, handlers, closures, recursion, workers | Initially refused; original behavior remains available. |
+| Loops, quit polling, vector/record/string stores and weak references | Existing regression fixtures stay intact even when outside eligibility. |
+
+Use the same source forms on GNU Emacs and native baseline/candidate in
+throwaway directories. Check values and errors, not merely exit zero. Retain
+the current standard fixture set and focused compiler tests; broaden only
+when the changed paths justify it. Required negative controls include forced
+stale target, disabled transform and a deliberately broken guard/constant-slot
+mapping in an isolated mutant. The structural acceptance check must fail when
+inlining is disabled; semantic checks must fail on their applicable mutant.
+Never execute the mutant as the release candidate.
+
+** 5.2 Resource contract
+
+Retain the current baseline's original acceptance caps: metadata <=4,000,000
+bytes, F1 <=384, applyfn <=15 MiB, each unit <=16 MiB, aggregate <=30 MiB,
+and build time <=1104 seconds, with its AUX61/24pair constraints unchanged.
+These are this lineage's caps, not a promise about another baseline. Reconcile
+their exact measurement commands and units at M0; do not raise them for this
+optimization. The manifest's pinned =out/native/acceptance.json= records
+the latest qualified candidate's metadata as 3,993,877 bytes,
+leaving only 6,123 bytes under that cap. Inlining must fit this budget through
+selection/representation or be refused. Node growth is not a substitute for
+measured output size.
+
+All REPLs/tests use an 8 GiB address-space cap and owned cleanup; heavy jobs
+use the workspace heavy-job runner. Run focused source/IR probes before a
+costly native rebuild. Freeze related edits and verifier inputs before the
+finite build/qualification campaign. Do not rerun the full cohort after each
+small edit or loosen a timeout merely to turn a failure green.
+
+** 5.3 Performance decision, predeclared before timing
+
+First qualify the actual native route. The old =named-fx-default= comparison
+cannot prove an inlining gain. Freeze a native baseline/candidate pair from
+the same source lineage, compiler options, drivers, image/prelude and inputs;
+record every difference and digest. The only intended implementation delta
+is this slice. Collect route diagnostics outside timed children.
+
+For M1b, propose =function-call2= as the primary row. Acceptance requires its
+median two-trip-count inner-time ratio <=0.95 and improvement in at least 6/7
+paired repetitions. Treat these as engineering thresholds, not statistical
+significance. Retain seven repetitions, alternating order, fresh processes,
+two trip counts, matched warmups, exact checksums and an idle physical core.
+Do not bypass a busy-core refusal. Preserve all individual negative timing
+differences and publish raw/absolute/net observations.
+
+Guard rows use the frozen eight-workload cohort. Require =integer-sum= median
+inner ratio <=1.02, every other non-primary row <=1.05, and all rows' absolute
+high-count and process-net median ratios <=1.02 where positive/defined.
+An undefined/nonpositive aggregate is unresolved and cannot pass; publish it
+and resolve measurement adequacy under a newly declared campaign. Retain every
+individual regression. Freeze trip counts and adequate duration before
+comparison; never tune them using favorable candidate results. A different
+primary row or threshold requires an explicit new preregistered campaign.
+
+GNU/Python/Node comparisons are optional context after native qualification,
+not acceptance requirements. Do not transfer old cross-language ratios to
+the new binary or attribute all of V8's lead to inlining. Use the checked
+paired-benchmark skill/protocol for actual runs. A failed gain or cap keeps
+the transform off by default and the failure visible; it does not authorize
+another backend, a larger cap, or removal of semantic checks.
+
+* 6. Readiness, risks and next action
+
+The main risks are wrong constant/call-site ownership, stale target use,
+logical frame/exit differences, root lifetime errors, and code-size growth.
+The design addresses them with narrow eligibility, existing call protocol,
+local fallback and unchanged resource limits. Their implementation remains
+unproved. Other bottlenecks, including hash lookup and runtime library
+algorithms, may dominate different workloads and need their own evidence.
+
+Next action is M0 in a dedicated snapshot/worktree matching the manifest,
+with an implementation ledger and one writer per overlapping file. Resolve
+the native route and observer contracts before admitting M1. If an ordinary
+kernel/helper does not reach the inspected compiler path, record that result
+and design the missing admission step rather than claiming this inliner
+optimizes that kernel. The design task runs no native build or timing campaign.
+
+Related documents: [[file:42-phase7.7-inliner.org][Doc 42]] is historical inlining/escape-analysis planning;
+its old speed claims are not adopted here. [[file:212-generic-native-call.org][Doc 212]] addresses a separate
+rooted-CFG CALL permission/provider path; it does not grant this FX transform
+admission or remove its guards. This proposal does not mark either plan shipped.
+
+Document delivery is tracked separately in
+[[file:../../tools/ai/native-v8-design-progress.org][native-v8-design-progress.org]]. Independent review is recorded in
+[[file:../../tools/ai/native-v8-design-audit.json][native-v8-design-audit.json]] and binds its decision to the final document hash.

@@ -1,0 +1,1 @@
+(load "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/lisp/nelisp-init-ready.el" nil t t)(setq zz (nelisp-init-ready-make))(garbage-collect)(nelisp--arena-dump-image-stream "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/s2-appready/exp/e3.cold")(kill-emacs 0)

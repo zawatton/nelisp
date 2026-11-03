@@ -1,0 +1,14 @@
+#+TITLE: Legacy localized migration repair
+#+NOTE: Three lane criteria only; parent ten-criterion objective unchanged. P7 on fc6 is a verified known-red baseline; producer/adoption remain OFF.
+#+NOTE: The separate pure store-normalizer unit stopped at its reader prerequisite: builder parses, new focused test has unmatched syntax at line 64. No normalizer ERT executed; source/model/native acceptance remains unproved. Raw evidence is retained in the lane out/store-normalizer directory; no criterion or denominator changed.
+#+NOTE: Root subsequently authorized one syntax-only repair: close the local function declaration list and its enclosing setup scope. Reader then passed with all three expected ERT IDs; first model run produced two PASS and one FAIL (void-variable nl_exit_values in the original setter refusal signal path). No semantic repair or rerun; complete old/new pending-status acceptance remains RED. See out/store-normalizer/syntax-repair/receipt.json.
+
+* S1 Coherent rooted legacy migration
+** S1.1 Authentic production definitions and scoped consumers preserve NAME/WHERE, active Cell and exact ownership through conversion
+pending
+** S1.2 Parsed-production-body models reject the original P7 behavior and harmful mutations, including partial failure, without weakening existing history semantics
+#+NOTE: First five genuine-body models passed (models1); expanded setter-routing gate currently RED. models2 stopped at a missing close in the added routing block; corrected syntax passes in models3, whose four failures are a modeled alias-canonicalizer arity mismatch. Two failed expanded-harness attempts retained; no further retry.
+cmd: test -f target/legacy-localized-migration/models3.rc && test "$(cat target/legacy-localized-migration/models3.rc)" -eq 0
+** S1.3 Separately reviewed native candidate passes the unchanged genuine GNU P7 oracle and required adverse schedules
+#+NOTE: This remains RED until root builds, executes and explicitly approves actual native evidence; host models cannot approve it.
+cmd: test -f target/legacy-localized-migration/native-approval.json && python3 -c 'import json; assert json.load(open("target/legacy-localized-migration/native-approval.json"))["status"] == "ROOT_NATIVE_APPROVED"'

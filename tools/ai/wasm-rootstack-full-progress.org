@@ -1,0 +1,16 @@
+#+TITLE: Genuine full-rootstack static ownership (pin control/region BSS)
+
+* S1 All 61 genuine rootstack definitions compile past data ownership
+
+** S1.1 Full composition is red on the missing pin-control owner
+cmd: test "$(cat target/wasm-rootstack/full-red.rc)" -eq 1 && rg -q ':wasm-p3-external-data-addr \\"nl_root_pin_control\\"' target/wasm-rootstack/full-red.log
+
+** S1.2 Generator-derived pin layout, pinned escapes, native oracle and controls
+evidence: target/wasm-rootstack/pin-coordinator-review.json sha256=661af7dabf4c3438e3e5dcb6ad1459ad5e15befe8f0b8c05c040ce8ac7051d9e
+
+** S1.3 Full composition has no data-ownership diagnostic left
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" timeout 180 emacs -Q --batch -L lisp -L src -L test -L tools/ai --eval '(setq load-prefer-newer t)' -l lisp/nelisp-asm-wasm.el -l lisp/nelisp-aot-compiler.el -l tools/ai/wasm-rootstack-full-probe.el > target/wasm-rootstack/full-current.log 2>&1; rc=$?; test "$rc" -eq 0 && rg -q '^full-rootstack=compiled ' target/wasm-rootstack/full-current.log
+
+#+NOTE: 2026-10-25: S1.3 tightened to require probe rc 0 and the compiled line (the earlier form passed on any diagnostic).
+#+NOTE: Compiling past data ownership is not root lifecycle execution, GC or W0 image execution.

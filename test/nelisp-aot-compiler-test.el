@@ -1435,6 +1435,19 @@ the quotient in rax — the companion of the `mod' remainder path)."
       (should (eq (nelisp-aot-compiler--ir-kind body) 'arith))
       (should (eq (nelisp-aot-compiler--ir-get body :op) op)))))
 
+(ert-deftest nelisp-aot-compiler/bitwise-identities-match-gnu ()
+  "Native compilation preserves GNU zero, unary, and n-ary identities."
+  (unless (nelisp-aot-compiler-test--linux-p)
+    (ert-skip "Requires x86_64 Linux"))
+  (dolist (form '((logand) (logior) (logxor)
+                  (logand -17) (logior -17) (logxor -17)
+                  (logand -1 15 6) (logior 1 2 4) (logxor 7 3 1)))
+    (let ((expected (eval form t)))
+      (nelisp-aot-compiler-test--with-tmp-binary path "bitwise-identity"
+        (nelisp-aot-compile-sexp
+         (list 'exit (list 'if (list '= form expected) 1 0)) path)
+        (should (= (plist-get (nelisp-aot-compiler-test--run-binary path) :exit) 1))))))
+
 (ert-deftest nelisp-aot-compiler/parse-shift-ops ()
   "`(shl N C)' / `(sar N C)' / `(shr N C)' parse to a `:kind shift' node."
   (dolist (op '(shl sar shr))

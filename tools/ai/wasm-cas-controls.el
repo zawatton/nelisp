@@ -1,0 +1,58 @@
+;;; wasm-cas-controls.el --- Deliberately broken CAS lowerings -*- lexical-binding: t; -*-
+(require 'wasm-cas-fixture)
+
+(defun wasm-cas--reverse-emitter (node buf ctx)
+  "Keep value roles correct while deliberately reversing operand effects."
+  (let ((pointer (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+        (desired (nelisp-aot-compiler--wasm-arith-scratch-local ctx))
+        (expected (nelisp-aot-compiler--wasm-context-get ctx :cas-expected-local)))
+    (dolist (field '(:new-val :expected :ptr))
+      (nelisp-aot-compiler--wasm-emit-value (nelisp-aot-compiler--ir-get node field) buf ctx))
+    (nelisp-asm-wasm-op-local-set buf pointer)
+    (nelisp-asm-wasm-op-local-set buf expected)
+    (nelisp-asm-wasm-op-local-set buf desired)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf) (nelisp-asm-wasm-op-unreachable buf) (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf #xffffffff)
+    (nelisp-asm-wasm-op-i64-gt-s buf)
+    (nelisp-asm-wasm-op-if buf) (nelisp-asm-wasm-op-unreachable buf) (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-local-get buf expected)
+    (nelisp-asm-wasm-op-local-get buf desired)
+    (nelisp-asm-wasm-op-i64-atomic-rmw-cmpxchg buf)
+    (nelisp-asm-wasm-op-local-get buf expected)
+    (nelisp-aot-compiler--wasm-emit-bool-to-i64 buf #'nelisp-asm-wasm-op-i64-eq)))
+
+(defun wasm-cas-build-controls ()
+  "Produce four runtime mutations without changing any source definition."
+  (let ((original (symbol-function 'nelisp-aot-compiler--wasm-emit-atomic-compare-exchange))
+        (process-environment (copy-sequence process-environment)))
+    (dolist (kind '(old-word mismatch-store reversed-order missing-high-guard))
+      (setenv "WASM_CAS_OUTPUT" (concat wasm-cas-output (symbol-name kind) ".wasm"))
+      (pcase kind
+        ('old-word
+         (cl-letf (((symbol-function 'nelisp-aot-compiler--wasm-emit-bool-to-i64)
+                    (lambda (buf _op) (nelisp-asm-wasm-op-drop buf))))
+           (wasm-cas-build-wasm)))
+        ('mismatch-store
+         (cl-letf (((symbol-function 'nelisp-aot-compiler--wasm-emit-atomic-compare-exchange)
+                    (lambda (node buf ctx)
+                      (funcall original node buf ctx)
+                      (nelisp-asm-wasm-op-local-get buf (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+                      (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+                      (nelisp-asm-wasm-op-local-get buf (nelisp-aot-compiler--wasm-arith-scratch-local ctx))
+                      (nelisp-asm-wasm-op-i64-store buf))))
+           (wasm-cas-build-wasm)))
+        ('reversed-order
+         (cl-letf (((symbol-function 'nelisp-aot-compiler--wasm-emit-atomic-compare-exchange)
+                    #'wasm-cas--reverse-emitter)) (wasm-cas-build-wasm)))
+        ('missing-high-guard
+         (cl-letf (((symbol-function 'nelisp-asm-wasm-op-i64-gt-s)
+                    (lambda (buf)
+                      (nelisp-asm-wasm-op-drop buf) (nelisp-asm-wasm-op-drop buf)
+                      (nelisp-asm-wasm-op-i32-const buf 0)))) (wasm-cas-build-wasm)))))))
+(provide 'wasm-cas-controls)

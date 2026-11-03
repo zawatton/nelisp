@@ -291,6 +291,11 @@ SPANS contains (START . END) pairs for each element after the list head."
 ;; .eln holds instead of its byte code.  The rows are the harvested hot set
 ;; (lisp/nelisp-fxir-native-data.el); a row whose function changed stays on
 ;; the fx VM (the install pass compares the fxir), never on byte code.
+;; compall: the rows are generated for every eligible prelude function
+;; (tools/ai/compall-gen.el), and a target the native lowering generates no
+;; rows for (Win64, `nelisp-cc-fxir-native-windows') keeps nothing as source
+;; for them: GNU loads the native code where the .eln exists and the byte
+;; code otherwise.
 (defconst nelisp-prelude-bytecode--native-data-file
   (expand-file-name "../lisp/nelisp-fxir-native-data.el"
                     (file-name-directory (or load-file-name buffer-file-name
@@ -300,11 +305,18 @@ SPANS contains (START . END) pairs for each element after the list head."
 (defvar nelisp-prelude-bytecode--fx-names nil
   "Cache of `nelisp-prelude-bytecode-fx-names': (FILE MTIME . NAMES).")
 
+(defun nelisp-prelude-bytecode--native-rows-target-p ()
+  "Non-nil when the build target gets native rows (not Win64; see
+`nelisp-cc-fxir-native-windows')."
+  (not (string-prefix-p "windows" (or (getenv "NELISP_STANDALONE_TARGET") ""))))
+
 (defun nelisp-prelude-bytecode-fx-names ()
   "Defuns the byte-code pass keeps as source for the fx compiler: the names
-of the native rows in `nelisp-prelude-bytecode--native-data-file'."
-  (let* ((file nelisp-prelude-bytecode--native-data-file)
-         (mtime (and (file-readable-p file)
+of the native rows in `nelisp-prelude-bytecode--native-data-file', or none
+when the target gets no native rows."
+  (let* ((file (and (nelisp-prelude-bytecode--native-rows-target-p)
+                    nelisp-prelude-bytecode--native-data-file))
+         (mtime (and file (file-readable-p file)
                      (file-attribute-modification-time (file-attributes file))))
          (cache nelisp-prelude-bytecode--fx-names))
     (if (and cache (equal (car cache) file) (equal (cadr cache) mtime))

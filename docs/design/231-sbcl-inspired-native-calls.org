@@ -1,0 +1,112 @@
+#+TITLE: Call lowering and representation-cost design for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — research only; no implementation or qualification
+#+SCOPE: General call ABI, effect, representation, and cost-model architecture
+
+* Decision boundary
+
+Improve general call lowering and representation selection only after
+protocol checks and guard costs are represented explicitly. Do not add
+function-specific native patches or assume that a smaller call sequence is
+always faster. Preserve the observable function-cell, advice, error, signal,
+quit, GC, and backtrace behavior of Emacs-compatible calls.
+
+* Measured baseline and limits
+
+For the same-count old/new =function-call2= row at =N=4,194,304=, kernel
+time was 1.866899014 s old and 1.034378052 s new; process time was
+5.697716210 s and 10.206275719 s. The paired GNU/ON high-count row measured
+GNU kernel/process 0.302276134/0.962867213 s and ON 1.034378052/10.206275719
+s. The separate nested call row was GNU 0.340655327 s and ON 0.700156927 s
+kernel. Static audit of the native nested caller found 642 versus 2,514
+instructions, 20 versus 67 static calls, and stack frames 0x150 versus 0x430;
+the helper remained 382 instructions. Expansion is observed; its exact causal
+contribution to elapsed time is not established. All times are experimental,
+not qualification.
+
+* SBCL mechanisms and NeLisp anchors
+
+Pinned SBCL source shows local-call conversion and external entry handling as
+separate stages, distinct internal/external calling conventions, and
+representation selection based on reference costs. Its expansion policy
+checks NOTINLINE and policy and bounds recursive expansion; that is not a
+post-lowering machine-cost model. Function-cell access has a safe path that
+preserves undefined-function behavior. Exact source lines and hashes are in
+the source manifest. Direct anchors include
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/locall.lisp#L145][local conversion]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/represent.lisp#L285][representation cost]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/cell.lisp#L325][safe function lookup]].
+
+The measured frozen12 compiler has guarded direct wrappers, FXIR call
+lowering, entry/status protocol, frame/backtrace handling, and bounded
+inlining facilities; measured anchors include =lisp/nelisp-cc-fxir-native.el:287-305,1479-1593=
+and =lisp/nelisp-cc-fxir-inline.el:28-36,150-190=. The shared V8-oriented Doc 215 is an independent design
+proposal and is not the frozen12 implementation. The benchmarked caller's
+instruction growth must be considered alongside dynamic calls, spills, frame
+size, guard exits, and whole-process cost.
+
+* Proposed architecture and contracts
+
+The proposed operations (not existing APIs) are =call-eval-args=,
+=call-check-entry=, =call-dispatch=, and =call-fallback=. The first evaluates
+each argument form exactly once, left-to-right, into rooted temporaries. Do
+not move generic callee arity/type checks ahead of argument evaluation, since
+that could suppress later argument side effects. Entry checking then follows
+the same arity/type/error order as the generic path. Dispatch returns the
+existing NeLisp value/status convention; Common Lisp multiple values are not
+assumed. Guard failure passes already evaluated temporaries to fallback and
+never re-evaluates source forms. Each operation carries may-signal, may-GC,
+may-call-user-code, frame, and root effects.
+
+Represent call target identity, argument/result representation, effects,
+logical frame ownership, and protocol obligations in a target-neutral call
+IR. Candidate lowering choices may include local ABI calls, guarded direct
+calls, and ordinary function-cell dispatch. Cost comparison occurs after
+function-cell/advice checks, arity and type checks, status protocol,
+backtrace/stack requirements, spills, root metadata, and fallback edges have
+been included. Never select an optimization by source-node count alone.
+
+An internal direct call is eligible only when the compiler proves the same
+target and all relevant definitions/advice conditions remain valid, or emits
+a guard with a correct fallback. Preserve function-cell replacement semantics
+where required. Evaluate argument forms left-to-right, then preserve generic
+callee arity/type check timing so early errors cannot suppress later argument
+side effects. Retain values across later effects. Preserve the existing
+NeLisp result/status convention, errors, signals, quit
+polling, GC roots, backtraces, and recursion limits. Unknown effects default
+to may-signal, may-allocate, may-GC, and may-call-user-code.
+
+Do not use Common Lisp undefined behavior, safety-zero declarations, or
+unchecked internal conventions to remove an Emacs-visible error. Public and
+internal entries may have different contracts only when the boundary is
+explicit and all callers are proven.
+
+* Stages, alternatives, and validation
+
+Dependency order: common effect/root and allocation IR (Doc 234), then the
+call/status/frame protocol here; vector, string, and hash lowerings consume
+those shared facts. Stage 1: instrument the existing lowering with static and dynamic cost
+components. Stage 2: model ABI and effects explicitly; prove metadata survives
+lowering. Stage 3: compare local ABI and guarded direct-call choices under a
+bounded code-growth budget. Stage 4: consider profile-guided selection only
+after deterministic correctness and invalidation tests pass. Alternatives
+include retaining current generic calls or reducing caller expansion; neither
+is presumed superior.
+
+Freeze thresholds and code-growth limits before trials. Pass requires all
+call-semantic controls, at least 10% median kernel-time improvement on the
+target row, no same-count row over 5% slower in median kernel time, and at
+most 10% code growth per changed unit. Report every whole-process regression;
+above 5% blocks acceptance pending explicit review.
+
+Acceptance uses the same =function-call2= and nested workload sources, counts,
+warmups, process isolation, and seven paired repetitions for GNU bytecode,
+old NeLisp, and new NeLisp. Report kernel and whole-process elapsed seconds,
+dynamic
+calls, instructions, code size, stack bytes, spills, root slots, guard misses,
+and allocation counts. Test function-cell replacement, advice, undefined
+functions, arity errors, result/status propagation, reentrancy, signaling, quit, and GC
+at calls; include stale-target and deliberately invalid-guard controls. Roll
+back any lowering whose protocol tests differ, whose code growth exceeds the
+budget, or whose repeated end-to-end result regresses without a declared
+tradeoff. No speed promise is made.

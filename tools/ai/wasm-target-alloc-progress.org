@@ -1,0 +1,17 @@
+#+TITLE: Genuine arena allocator executed in Wasm over the initialized arena
+
+* S1 Genuine nl_alloc_bytes executes in Wasm and its block/arena effects match the contract
+
+** S1.1 Genuine allocator closure does not compile for wasm32 without target adapters
+cmd: test "$(cat target/wasm-target-alloc/red.rc)" -ne 0 && rg -q '^alloc-red=' target/wasm-target-alloc/red.log
+
+** S1.2 Closure provenance, W0 adapters and negative controls reviewed
+evidence: target/wasm-target-alloc/coordinator-review.json sha256=b34fc21029358b76e16373d39412a949ffc5a4d036668784f00288b9d868b7d4
+
+** S1.3 Executed allocations in node match every contract word
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" timeout 300 emacs -Q --batch -L lisp -L src -L test -L tools/ai --eval '(setq load-prefer-newer t)' -l lisp/nelisp-asm-wasm.el -l lisp/nelisp-aot-compiler.el -l tools/ai/wasm-target-alloc-probe.el > target/wasm-target-alloc/current.log 2>&1 && node --disable-wasm-trap-handler tools/ai/wasm-target-alloc-check.mjs > target/wasm-target-alloc/check.log 2>&1; rc=$?; test "$rc" -eq 0 && rg -q '^GATE-COUNT checked=[1-9][0-9]* findings=0$' target/wasm-target-alloc/check.log
+
+#+NOTE: 2026-10-25: ledger created before implementation; S1.1 red is produced by the lane and replayed by the coordinator.
+#+NOTE: W0 limit: one arena chunk, no chunk growth, no reclamation; compiler alloc-bytes lowering is unchanged.
+#+NOTE: Executing the allocator is not GC, builtin dispatch, image loading or W0 execution.

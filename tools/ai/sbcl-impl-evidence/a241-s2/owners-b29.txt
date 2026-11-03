@@ -1,0 +1,19 @@
+Doc 241 S2.1 owners of content zero runs >= 64 KiB, build29 (reproduce: python3 -I walk-content.py build29/nelisp-dynamic.cold)
+ctotal 18264136; zero runs >= 64 KiB: [(15057352, 1048544), (16105921, 2143215)]; total 3191759
+walked 283077 blocks to offset 18264136 (ctotal 18264136)
+string footer marker 21754191157611598 hoff 12347904 n 15033
+run@15057352 len 1048544: overlapping strings (index: size, size_byte, mb, data@):
+  #14654: 3200000, 18446744073709551615, 0, @15049128; zero bytes 3199930/3200000; head ffffffffffffffffffffffffffffffffffffffffffffffff ... tail 00000000000000000000000000000000
+run@16105921 len 2143215: overlapping strings (index: size, size_byte, mb, data@):
+  #14654: 3200000, 18446744073709551615, 0, @15049128; zero bytes 3199930/3200000; head ffffffffffffffffffffffffffffffffffffffffffffffff ... tail 00000000000000000000000000000000
+
+Conclusion: BOTH runs belong to ONE object: unibyte string #14654 of the string area (3,200,000 bytes, 3,199,930 zero).
+Layout: content = [heap blocks][cons][symbols][floats][strings: filler, header area 32 B/string, data area, 32 B footer];
+string header record = (size, size_byte=-1 for unibyte, multibyte flag, data offset). The string's data is at content offset
+15,049,128; its non-zero words are at word 0-5 (0xff.. fill), 1024-1027 (0x2,-1,0x3,-1) and 132096.. (0x1000000004d,2,0,2):
+the stale used part of a regexp matcher scratch (registers, undo log, backtrack frames); the two runs are the gaps between them.
+Lisp object: variable nlre--nat-scratch (lisp/nelisp-stdlib-regexp.el:2718, created lazily at 2825 by
+(make-string 3200000 0) in nlre--nat-run); the native matcher m5_rx_search (scripts/nelisp-standalone-build.el ~70989) requires
+length >= 3200000, so the size cannot shrink. Confirmed on the running build29: (length nlre--nat-scratch) = 3200000, (aref s 0) = 255.
+Reachability: only via that defvar (live, but a pure cache: recreated by nlre--nat-run when nil).
+Total zero runs 3,191,759 B of 3,200,000 (rest are short gaps < 64 KiB or non-zero words).

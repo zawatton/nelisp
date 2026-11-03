@@ -1,0 +1,90 @@
+#+TITLE: Exact 8-byte size classes for the 480-2048 byte free lists
+#+DATE: 2026-11-01
+#+STATUS: PROPOSED — design only; no implementation
+#+SCOPE: Stop the large-block allocator from re-walking free blocks that can never satisfy a request, without weakening the free-list integrity guard
+#+LEDGER: tools/ai/allocator-progress.org
+
+* Why this document exists
+
+On build27 (the Doc 238 worktree, 2026-11-01) callgrind gives 3748 Ir per
+step for the vector-allocate64 row (one 64-slot vector per step, block total
+528 bytes).  1861 Ir/step of that is self cost in =nl_freelist_scan_head=
+(scripts/nelisp-standalone-build.el), and 1339 Ir/step of those is the inlined
+=nl_gc_in_arena= integrity check run once per visited node.  No other row
+spends comparable time in the allocator, but every program that allocates
+blocks above 472 bytes takes this path.
+
+* Measured cause (evidence: tools/ai/sbcl-impl-evidence/a239-s0)
+
+Method: gdb breakpoints on =nl_freelist_scan_head= with an offline replay of
+the visited nodes, and callgrind =--dump-instr=yes=, both on build27 at
+N=20000 and N=80000 (the cgrows.sh configuration), differenced to remove
+startup (tables3.txt; the shorter N=2000/8000 runs in tables.txt and
+tables2.txt do not reach the plateau and under-state the cost).
+
+- No collection runs during the kernel (one sweep at the end of startup), and
+  no allocation falls back to bump allocation; every step is reuse by split.
+- Every step makes two scans.  Call A walks the request's own bin (bin 1 =
+  block totals 512..543) to the end and finds nothing; call B takes the first
+  node of the next occupied larger bin and splits it.
+- Call A's list grows with the run and plateaus at about 27 nodes: blocks of
+  512 and 520 bytes (smaller than 528) and 536 bytes (larger, but a split
+  needs want+16).  They are the tails left when large free blocks are carved
+  528 bytes at a time; nothing ever consumes them for this request size.
+- Over the 20000-80000 interval a step visits about 24.8 nodes (24 in call A,
+  1 in call B) at about 54 Ir per node for the =nl_gc_in_arena= block (the
+  chunk list has one chunk, so it always takes its cheapest branch).  The cost
+  is the number of nodes visited, not the cost of one visit.
+
+* Design
+
+The large free lists are indexed by =nl_freelist_large_bin=: 32-byte quanta
+for block totals 481..2048 (bins 0..49), then 32, 64 and 1024-byte quanta and
+two catch-all bins (204 heads in total, all in use).  A 32-byte bin mixes four
+block totals (block totals are multiples of 8), so a request walks blocks of
+the three other sizes.
+
+Change: give block totals 481..2048 one class per 8 bytes (196 classes instead
+of 50), keep the classes above 2048 as they are, and choose the first class to
+visit for a request WANT as:
+1. the class of exactly WANT (every node is an exact fit), then
+2. the first non-empty class whose block total is at least WANT+16 (every node
+   is splittable), found with the existing occupancy mask.
+Classes strictly between WANT and WANT+16 (one class, WANT+8) are never
+visited for WANT: their blocks can be neither handed out exactly nor split.
+Above 2048 the coarse bins remain mixed and keep the current walk.
+
+Unchanged: the 128-node cap, the per-node integrity guard (=nl_gc_in_arena=,
+mark check, drop of a corrupt tail), split and remainder handling, the small
+buckets (block totals up to 472), and bump fallback.  The sweeper, split and
+every other producer must place a free block with the same class function; a
+single definition (=nl_freelist_large_bin=) and a structural test enforce it.
+
+Cost: 146 extra list heads (1168 BSS bytes) and the occupancy mask grows from
+204 to 350 bits; the BSS layout rule (sizes summed in
+=nelisp-standalone--driver-bss-size=, each link symbol a =(+ ...)= of the
+preceding sizes) applies.  Placement of the extra heads must not collide with
+the reserved arena gap that holds the current heads.
+
+* Stages (each ends with an E2E criterion; see the ledger)
+
+- S0 Measurement (done): the tables above, frozen as evidence.
+- S1 Exact classes.  Structural tests: the class function maps 481..2048 to
+  one class per 8 bytes and 2049.. as before; every producer uses it; the
+  request path never visits the WANT+8 class.  Negative control: the tests
+  fail on the pre-change script.  E2E on a built image: correctness equal to
+  build27 (rows, kernel-diff, semantic-diff, guard checks, epoch and reader
+  probes); vector-allocate64 Ir/step at least 1200 below build27's 3748; no
+  other row above build27; the row's peak arena bytes not above build27's by
+  more than 5%.
+- S2 Wall time: the frozen S8 campaign once at the end, shared with Doc 238.
+
+* Risks
+
+- More heads means more empty lists for the sweeper to rebuild; the mask
+  keeps skipping cheap, but the sweep's own push path must stay O(1).
+- A block total that was previously walked and split may now sit unused in an
+  exact class; that is over-retention, bounded by the next sweep, and is why
+  S1 includes the peak-arena bound.
+- The reserved arena gap is fixed-size; if the extra heads do not fit there,
+  they go to BSS, and every reader of a head address must use the new mapping.

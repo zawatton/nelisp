@@ -1,0 +1,18 @@
+#+TITLE: Genuine nl_alloc_symbol interning executed in Wasm over an initialized intern region
+
+* S1 Genuine symbol allocation interns in Wasm and its table/region/result effects match the contract
+
+** S1.1 Without an intern-region adapter, genuine symbols are not interned in Wasm
+cmd: test "$(cat target/wasm-intern-symbol/red.rc)" -ne 0 && rg -q '^intern-red=' target/wasm-intern-symbol/red.log
+
+** S1.2 Region adapter, closure provenance, controls and regressions reviewed
+evidence: target/wasm-intern-symbol/coordinator-review.json sha256=4ead0b58d4f55f6d43b39fd9db4f8bd9afd917564edb5f396a5579c77321db1c
+
+** S1.3 Executed symbol allocations in node match every contract word
+#+REQUIRES: NOTES_ROOT
+#+TIMEOUT: 600
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" bash -c "timeout 600 emacs -Q --batch -L lisp -L src -L test -L tools/ai --eval '(setq load-prefer-newer t)' -l lisp/nelisp-asm-wasm.el -l lisp/nelisp-aot-compiler.el -l tools/ai/wasm-intern-symbol-probe.el > target/wasm-intern-symbol/current.log 2>&1 && timeout 600 node --disable-wasm-trap-handler tools/ai/wasm-intern-symbol-check.mjs > target/wasm-intern-symbol/check.log 2>&1"; rc=$?; test "$rc" -eq 0 && rg -q '^GATE-COUNT checked=[1-9][0-9]* findings=0$' target/wasm-intern-symbol/check.log
+
+#+NOTE: 2026-10-25: ledger created before implementation; S1.2 sha set after the coordinator review. S1.3 has #+TIMEOUT: 600 (it takes ~100 s).
+#+NOTE: Genuine nl_intern_region_init mmaps (syscall 9), which has no WASI lowering; W0 uses a raw 64 MiB region adapter, so genuine mode now has two raw reservers (arena chunk, intern region).
+#+NOTE: Not GC, reclamation, builtin dispatch, image loading or W0 execution.

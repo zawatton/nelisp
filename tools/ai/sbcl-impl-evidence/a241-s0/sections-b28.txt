@@ -1,0 +1,8 @@
+file 39666560 bytes; tlen 547674
+header               64 B   0.0%  zero bytes  61%
+reloc-table     4381392 B  11.0%  zero bytes  63%
+content        18264136 B  46.0%  zero bytes  71%
+intern         17020920 B  42.9%  zero bytes  99%
+trailer              48 B   0.0%  zero bytes  23%
+intern nonzero words 47729 (381832 B); words below 16 MiB 17270, at/after 16 MiB 30459
+content zero runs >= 64 KiB: 2, total 3191759 B, at content offsets [15057352, 16105921]

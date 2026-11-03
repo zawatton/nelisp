@@ -298,10 +298,25 @@
           (nl_capture_root_set_word roots 0 word)
           word)))
 
+    (defun nl_sb_migrated_default_vector (item)
+      ;; A committed LEGACY default is deep metadata, never a shallow save.
+      ;; Preserve the original vector3 and its bind-time buffer in the carrier.
+      (if (= (nl_val_tag item) 7)
+          (let* ((saved (nl_cons_car_word item)) (history (nl_cons_cdr_word item)))
+            (if (and (= (nl_val_tag saved) 8) (= (vector-len saved) 3)
+                     (or (= (nl_val_tag (nl_vector_slot_word saved 0)) 4)
+                         (= (nl_val_tag (nl_vector_slot_word saved 0)) 16))
+                     (or (= (nl_val_tag history) 0) (= (nl_val_tag history) 11)))
+                saved 0)) 0))
     (defun nl_capture_filter_contains (filter-ptr name-ptr)
       ;; Doc 215: FILTER-PTR may be a view or a WORD; walk by WORD.
       (if (= (nl_val_tag filter-ptr) 7)
-          (let* ((sym-ptr (nl_cons_car_word filter-ptr)))
+          (let* ((item (nl_cons_car_word filter-ptr))
+                 ;; Stored carrier conses are canonical WORDs (tag010).
+                 ;; Ordinary symbol names retain their existing call path.
+                 (saved (if (= (logand item 7) 2)
+                            (nl_sb_migrated_default_vector item) 0))
+                 (sym-ptr (if (= saved 0) item (nl_vector_slot_word saved 0))))
             (if (if (= (logand sym-ptr 1) 0)
                     (= (extern-call nelisp_symbol_key_equal sym-ptr name-ptr) 1)
                   0)
@@ -419,8 +434,10 @@
             0
           (let* ((frame (vector-ref-ptr
                          (nl_record_slot_word frames 0)
-                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1))))
-            (seq (record-slot-set frame 0 alist)
+                         (- (sar (nelisp_frame_slot_raw_word frames 1) 2) 1)))
+                 (scratch (alloc-bytes 32 8)))
+            (seq (nelisp_frame_chain_wrap_cells alist scratch 0 0)
+                 (record-slot-set frame 0 alist)
                  (nl_frame_set_flags frame 13110)
                  1)))))
 
@@ -432,15 +449,42 @@
               (nelisp_frame_chain_shareable (nl_cons_cdr_word al) n)
             (if (>= n 8)
                 0
-              (if (= (nelisp_frame_stack_find_word_tag_p (nl_cons_cdr_word p) 11) 0)
+              ;; A plain (non-Cell) cdr is accepted here; the share path
+              ;; converts it to a Cell afterwards (`nelisp_frame_chain_wrap_cells').
+              (if (= (nelisp_frame_stack_find_word_name_p (nl_cons_car_word p)) 0)
                   0
-                (if (= (nelisp_frame_stack_find_word_name_p (nl_cons_car_word p)) 0)
+                (if (= (nelisp_frame_chain_has_name
+                        (nl_cons_cdr_word al) (nl_cons_car_word p))
+                       1)
                     0
-                  (if (= (nelisp_frame_chain_has_name
-                          (nl_cons_cdr_word al) (nl_cons_car_word p))
-                         1)
-                      0
-                    (nelisp_frame_chain_shareable (nl_cons_cdr_word al) (+ n 1))))))))))
+                  (nelisp_frame_chain_shareable (nl_cons_cdr_word al) (+ n 1)))))))))
+
+    ;; Convert every plain (non-Cell) pair cdr of an already validated chain
+    ;; into a persistent Cell, in place.  Same method as `nl_pc_bind_one':
+    ;; `cell-make' into a scratch Sexp slot (clones the value into a new
+    ;; heap NlCell), then `cons-set-cdr' on the pair view stores the Cell
+    ;; word with the usual refcount-safe write (as `nelisp_frame_bind_walk_
+    ;; update' does).  SLOT is only scratch; the Cell is owned by the pair
+    ;; and reachable from the closure's captured alist.  The arity is kept
+    ;; even for the `cons-set-cdr' emit alignment; the nested calls are
+    ;; bound by `let*' first so `cell-make' / `cons-set-cdr' args are
+    ;; call-free.  Safe: a captured binding is a shared mutable cell in GNU
+    ;; too, and every reader already copes with Cells (mutated captures).
+    (defun nelisp_frame_chain_wrap_cells (al slot _pad1 _pad2)
+      (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
+          0
+        (let* ((pair (nl_cons_car_ptr al))
+               (cdrw (if (= (nelisp_frame_stack_find_word_tag_p pair 7) 1)
+                         (nl_cons_cdr_word pair)
+                       0))
+               (needs (if (= (nelisp_frame_stack_find_word_tag_p pair 7) 1)
+                          (if (= (nelisp_frame_stack_find_word_tag_p cdrw 11) 1) 0 1)
+                        0))
+               (val (if (= needs 1) (nl_cons_cdr_ptr pair) 0)))
+          (seq (if (= needs 1)
+                   (seq (cell-make val slot) (cons-set-cdr pair slot) 0)
+                 0)
+               (nelisp_frame_chain_wrap_cells (nl_cons_cdr_word al) slot 0 0)))))
 
     (defun nelisp_frame_chain_has_name (al name)
       (if (= (nelisp_frame_stack_find_word_tag_p al 7) 0)
@@ -744,8 +788,14 @@
                   (nl_capture_walk_bucket_w (nl_cons_cdr_word chain)
                     (if (if (= (nelisp_frame_binding_dynamic_p frame name) 1) 0
                           (if (= filtered 2)
-                              (if (= (nl_val_tag cell) 11)
-                                  (= (nl_cell_pair_p cell) 1) 0)
+                              ;; Doc 243: the filter pass just before this one
+                              ;; may have turned NAME's hybrid binding of this
+                              ;; same frame into a Cell pair and captured it;
+                              ;; capturing it again duplicated the name, which
+                              ;; defeated chain sharing and fx compilation.
+                              (if (= (nelisp_frame_chain_has_name acc name) 1) 0
+                                (if (= (nl_val_tag cell) 11)
+                                    (= (nl_cell_pair_p cell) 1) 0))
                             (nl_capture_name_allowed filtered filter name)))
                         ;; The closure shares the binding's Cell; a hybrid
                         ;; binding gets one now (`nl_frame_pair_cell').

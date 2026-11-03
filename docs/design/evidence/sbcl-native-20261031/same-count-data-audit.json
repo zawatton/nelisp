@@ -1,0 +1,40 @@
+{
+  "data_status": "PASS",
+  "checks": 1008,
+  "issues": [],
+  "old_receipts": 112,
+  "fresh_rows": 3,
+  "reused_rows": 5,
+  "table_sha256": "912aa4b5cc0d28bfa0cb5e955215fe4eac1c832e03303fc11c3ecf7f7b628e22",
+  "post_pin_availability": {
+    "cross_language_driver_sha256": [
+      {
+        "path": "/home/madblack-21/.cache/tmp/nelisp-cross-language-20261029-t8wGC4/driver.el",
+        "exists": false,
+        "matches": false
+      }
+    ],
+    "paired_bench_sha256": [
+      {
+        "path": "/home/madblack-21/.codex/skills/nelisp-gnu-gap-bench/scripts/paired_bench.py",
+        "exists": true,
+        "matches": true
+      }
+    ],
+    "native_lane_on_sha256": [
+      {
+        "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/lane-on",
+        "exists": true,
+        "matches": true
+      }
+    ],
+    "candidate_elf_sha256": [
+      {
+        "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/final-build-startup-r3/build-on/nelisp-dynamic",
+        "exists": true,
+        "matches": true
+      }
+    ]
+  },
+  "completion_status": "PENDING_LIFECYCLE_AND_MISSING_INPUT_RESOLUTION"
+}

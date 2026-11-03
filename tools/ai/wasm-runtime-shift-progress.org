@@ -1,0 +1,15 @@
+#+TITLE: Raw Wasm shift compiler slice
+
+* S1 Raw shift lowering and operand traversal
+
+** S1.1 The integrated pre-slice compiler rejects genuine raw shift IR
+cmd: test "$(cat target/wasm-runtime-shift/red.rc)" -eq 255 && rg -q ':wasm-unsupported-ir shift' target/wasm-runtime-shift/red.log
+
+** S1.2 Native differential, focused regression, and effective mutation evidence
+evidence: target/wasm-runtime-shift/focused-evidence.json sha256=75bb41239b0df4bd3b64ae8556c614693730f14ac5eeaf612579d4f1ce02d87b
+
+** S1.3 Actual Wasm and native shifts agree with exact constants, including imported and caught operands
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" env PYTHONDONTWRITEBYTECODE=1 node --disable-wasm-trap-handler tools/ai/wasm-shift-check.mjs
+
+#+NOTE: This bounded compiler slice is separate from the W0 application-image execution gate, which remains red.

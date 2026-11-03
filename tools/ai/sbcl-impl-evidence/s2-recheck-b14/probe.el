@@ -1,0 +1,17 @@
+(add-to-list 'load-path "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/lisp")
+(load "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/lisp/nelisp-native-application-protocol.el" nil t)
+(require 'nelisp-cc-fxir-rows nil t)
+(load "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/tools/nelisp-native-application-producer.el" nil t)
+(defun sha (f) (secure-hash 'sha256 (nelisp-native-application-protocol-bytes f 1048576)))
+(defvar base (nelisp-native-application-protocol-digest (nelisp-cc-fxir-native-all-rows)))
+(defun plan (modsha basesha) (list :manifest-file "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/m.sexp" :names-file "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/n.txt"
+   :manifest (list :modules (list (list :file "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/mod.el" :sha256 modsha)) :baseline-sha256 basesha)))
+(defun try (label p ms ns)
+  (princ (format "%s => %s\n" label
+     (condition-case e (progn (nelisp-native-application-producer--recheck-inputs p ms ns) "ok") (error (format "error: %s" (cadr e)))))))
+(try "good" (plan (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/mod.el") base) (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/m.sexp") (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/n.txt"))
+(try "module-changed" (plan (make-string 64 ?0) base) (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/m.sexp") (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/n.txt"))
+(try "manifest-changed" (plan (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/mod.el") base) (make-string 64 ?0) (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/n.txt"))
+(try "names-changed" (plan (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/mod.el") base) (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/m.sexp") (make-string 64 ?0))
+(try "baseline-changed" (plan (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/mod.el") (make-string 64 ?0)) (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/m.sexp") (sha "/home/madblack-21/.cache/tmp/claude-1000/-home-madblack-21-Cowork-Notes/8c589a28-e2e5-42f6-a4ff-f2bb78acb6eb/scratchpad/rk/n.txt"))
+(kill-emacs 0)

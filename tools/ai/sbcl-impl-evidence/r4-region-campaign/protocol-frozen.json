@@ -1,0 +1,22 @@
+{
+ "frozen": "2026-11-01, before any R4 timing run",
+ "image": "build-on10/nelisp-dynamic sha256 b3114257fcdbc8e9dcc3cbae67e0fcf2371372e56bf63a6d3918677f2bca157e",
+ "cpu": "taskset -c 1, one fresh process per sample, alternating variant order per rep",
+ "reps": 7,
+ "rows": {
+  "gc-pause": {
+   "variants": ["none", "vector", "region"],
+   "dataset_words": 4194304,
+   "collections_per_process": 5,
+   "metric": "median over reps of the per-process median full (garbage-collect) wall time, nelisp--monotonic-ns",
+   "setup": "none: no dataset; vector: (make-vector 4194304 7) filled with fixnums and kept live; region: 32 MiB region filled with the same values and kept open"
+  },
+  "word-access": {
+   "variants": ["vector", "region"],
+   "low": 262144, "high": 1048576,
+   "metric": "per-step ns from (t_high - t_low)/(high - low) of a loop doing one write and one read of a word, index (logand i 4095), same interpreter path for both",
+   "setup": "4096-word vector vs 32 KiB region"
+  }
+ },
+ "claims": "Report medians and per-rep values. The region GC claim is supported only if region median gc-pause is at least 10% below vector median and within 10% of none. Word access is reported as measured, with no threshold; region ops are generic subr calls (no FXIR inlining, Doc 237 non-goal)."
+}

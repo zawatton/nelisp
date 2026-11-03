@@ -1,0 +1,69 @@
+{
+  "researcher_model": "gpt-6.1-sol",
+  "status": "SOURCE_RESEARCH_ONLY; NO_NEW_TIMINGS; SOURCE_QUALIFICATION_HOLD",
+  "identity": {
+    "sbcl_commit": "80dad386fc3536d0185dc4a2b9627a331c5f256f",
+    "sbcl_root": "$HOME/Cowork/Notes/dev/sbcl",
+    "nelisp_root": "$HOME/.cache/tmp/nelisp-v8-native-20261029/frozen12/wt6",
+    "benchmark_root": "$HOME/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031",
+    "qualification": "Experimental measurements remain distinct from formal native/source qualification HOLD"
+  },
+  "method": {
+    "anvil": "First focused request rejected unknown max_chars. Correct schema path/query/budget-chars request on frozen standalone-build returned known wrong-type-argument arrayp buffer error. Bounded rg/sed and short Python text extraction used; no restart or index scan.",
+    "execution": "No NeLisp/SBCL runtime, build, timing or sampling invoked. Source/data inspection only.",
+    "authorship": "This research describes existing source and proposes future boundaries; it does not implement startup changes."
+  },
+  "observed_data": {
+    "integer_sum_N": 16000000,
+    "on_kernel_seconds": 0.064497948,
+    "on_process_seconds": 7.253645427,
+    "gnu_kernel_seconds": 0.242635250,
+    "gnu_process_seconds": 0.762427404,
+    "process_ratio_on_over_gnu": 9.5138834057439,
+    "raw_fields": "Existing raw rows carry engine, n, rep, process_ns, inner_ns, result, pmc. They have no loader/bootstrap/admission/warmup duration fields.",
+    "interpretation": "The whole-process elapsed is concerning but is not pure startup. It includes two HIGH-count warmups as well as the measured call. Do not subtract approximate warmup/kernel medians to claim a measured startup duration. Independently aggregated medians are not a phase trace."
+  },
+  "sources": [
+    {"root":"benchmark_root","path":"lane_runner.py","sha256":"8d8caafe312d170287b1097917e2d1d8a77c65e0d7800fedd5629583126658ab","anchors":"27-35;38-70;79-130","fact":"Routes ordinary versus nested drivers; creates owned scratch/cache and bubblewrap; runs image --load; waits and removes scratch before wrapper exits."},
+    {"root":"benchmark_root","path":"benchmark-driver-native-on.el","sha256":"ff3306221c430d73f4cc85a21fabd2bb066bf28a4703015d9d0546b2258626f6","anchors":"4-7;23;25-52;54-57","fact":"Line23 is one large generated form: pins are checked, helper/prelude/producer explicitly loaded, source preflight and producer-install called. Native registration cell is restored; nine fixed application mappings are registered and checked. Input construction/checking, timer calibration and warmups precede measured call; validation follows it."},
+    {"root":"benchmark_root","path":"nested-primary-on.el","sha256":"41a093f400dfd412b494548f3df88210cac27cedb6bedcb2b5b2f553a0ccb9ec","anchors":"3-34;50-80","fact":"Nested row loads its separate runtime-bootstrap, restores/registers two mappings, requires exactly two warmups, then separately times one n-count call and validates result."},
+    {"root":"benchmark_root/..","path":"sol-runtime-closure-review/generated-on/runtime-bootstrap.el","sha256":"abadfb8f313b8e25004b00fc9ec2b15dc495aad726f68b3256965827e3b49834","anchors":"1-4 (generated long form)","fact":"Nested bootstrap contains three explicit loads (FXIR helper, full prelude, producer), expected source preflight, and producer-install, matching ordinary route preparation structure."},
+    {"root":"nelisp_root","path":"tools/nelisp-native-application-producer.el","sha256":"1587b5037de9cdd4d8d546d6991b984bdc6416965bdf9b11913f5fe57b5645d7","anchors":"66-74;130-151;352-381;409-436;491-551","fact":"Preflight reads/hashes/parses module forms and checks definitions. Install preflights before helper initialization and again afterward, publishes candidates, recompiles each selected candidate for FX compiler admission and checks identities/providers. Helper initialization hashes helper+prelude and unconditionally calls load helper nil t (not require)."},
+    {"root":"nelisp_root","path":"test/nelisp-fxir-eval.el","sha256":"55e2524b8a4ca339a54508c8e5c6f80bfd50b14c5229e937d04ac62effa2b791","anchors":"24-44","fact":"Only old-image hotpatch read/walk is guarded by absence of nelisp--fx-ir-table. That conditional walk is not proven to run on measured image. Subsequent helper defuns are outside that guard. Two explicit load requests therefore repeat helper definition processing on a successful standard source-loader route; do not call the conditional hotpatch walk unconditional work."},
+    {"root":"nelisp_root","path":"scripts/nelisp-stdlib-prelude.el","sha256":"27669b8c7cdae6580d9836958c47e36c6adce258a26cb226bc6393b5ea5311e5","anchors":"33996-34020;34345-34374;34635-34648","fact":"Registration is first-call deferred. register-prelude walks pending/early names, but is an explicit dump-time option; warm-for-dump selects all only when NELISP_FX_DUMP=all, otherwise a profile. Do not claim every prelude function compiles on every startup or that harness unconditionally calls register-prelude."},
+    {"root":"nelisp_root","path":"scripts/nelisp-standalone-build.el","sha256":"00999038bede63d1003a9a52834c3d42aed4def13cd227f969261cadc798d5e9","anchors":"36669-36700;36829-36833;37032-37085;37108-37132;47310-47330;48610-48629;56774-56783;56890-56904;57147-57159;57292-57310","fact":"Normal --load conditionally evaluates embedded prelude only without valid cold image. Cold image restores globals and runs process-dependent reinit. Generic load reads/evaluates source; optional core/vendor wrapper may substitute compiled pieces but still processes load, with base-load fallback. No generic feature-based load-once guard is present on these inspected paths. Exact active loader interception on measured image was not dynamically traced."},
+    {"root":"$HOME/.codex/skills/nelisp-gnu-gap-bench/scripts","path":"paired_bench.py","sha256":"b375e405b3980e833274368170060ed00c53e68ebbef8c2380cab645a1361047","anchors":"45-62","fact":"process_ns brackets subprocess.run(timeout/taskset/engine-wrapper), including wrapper cleanup before return; inner_ns is parsed from driver-reported elapsed."},
+    {"root":"sbcl_root","path":"src/runtime/runtime.c","sha256":"6206387b5b53e05c0f96dbf01e0284cd206b352a88d05d084a2add8577e925e5","anchors":"766-820","permalink":"https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/runtime.c#L766-L820","fact":"Loads core, resolves runtime linkage/handlers, passes argv and invokes initial Lisp function via main Lisp thread."},
+    {"root":"sbcl_root","path":"src/runtime/coreparse.c","sha256":"2acb98e0c39d344745bdc28e714ebfdaa48e88e8e055d9c66a319dec1bceddf7","anchors":"745-770;1573-1577","permalink":"https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/coreparse.c#L1573-L1577","fact":"Core directory describes saved spaces; initial function and linkage addresses are read/adjusted from core entry."},
+    {"root":"sbcl_root","path":"src/code/save.lisp","sha256":"3e5190d68e35fe860cd662e78244e31be2b3eebe575ed8101fbdd50bac738a3d","anchors":"85-95;107-123","permalink":"https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/save.lisp#L85-L123","fact":"Core saves global state; resumed start-lisp runs reinit then saved toplevel. This avoids reconstructing all initialized Lisp state from source, but does not eliminate per-process reinitialization or OS mapping cost."}
+  ],
+  "source_observed_phase_map": [
+    {"phase":"outer launch","boundary":"paired_bench.py monotonic t0 -> subprocess spawn","scope":"measurement harness; no phase duration recorded"},
+    {"phase":"wrapper sandbox","boundary":"lane_runner command_for -> image --load","scope":"scratch/cache/bwrap setup; harness-specific"},
+    {"phase":"runtime boot","boundary":"arena/image load -> globals attach/process reinit -> command dispatch","scope":"normal executable mechanism; cold-image versus source boot conditional, actual selected route not dynamically measured here"},
+    {"phase":"authenticated application preparation","boundary":"driver generated preparation -> producer preflight/install -> mapping checks","scope":"this benchmark's producer/admission harness, including explicit full-prelude load and two explicit helper load requests; not mandatory work for every ordinary executable"},
+    {"phase":"input and timer preparation","boundary":"bench-input/check -> 1024 timer-resolution probes","scope":"benchmark-only"},
+    {"phase":"warmups","boundary":"two calls at HIGH count","scope":"benchmark-only; unmeasured as separate durations"},
+    {"phase":"kernel","boundary":"float-time immediately around one selected n-count call","scope":"existing inner_ns/elapsed metric"},
+    {"phase":"validation and exit","boundary":"result check/printing -> kill-emacs -> wrapper wait/cleanup -> outer clock","scope":"whole-process elapsed includes it"}
+  ],
+  "design_inferences": [
+    "Use general authenticated ready-state images or reusable admission artifacts to avoid repeating source reconstruction and admission work where exact module/compiler/ABI/closure/effect identities can be validated. Never skip required native evidence merely to lower time.",
+    "Keep process-dependent environment, signals, paths, FDs, clocks, thread and GC reinitialization explicit; saved state cannot safely freeze these wholesale.",
+    "Separate source boot, existing cold-image boot, authenticated application-ready image, and repeated work in one process. Require identical public loaded state and matching modules/ABI/compiler identities. Do not special-case benchmark functions.",
+    "Carry effect/root/snapshot contracts from Docs230-234; stale image/admission identity must reject or fall back without duplicate user initialization side effects."
+  ],
+  "proposed_timing_boundary_contract": {
+    "epistemic_status":"PROPOSED instrumentation; none of these new phase durations exist in current samples",
+    "boundaries":["outer process start", "runtime entry", "arena/core mapped", "globals restored or embedded prelude complete", "process reinit complete", "driver preparation complete", "input validation complete", "warmup begin/end for each call", "kernel begin/end", "result validation complete", "process exit and wrapper cleanup complete"],
+    "rules":"Monotonic timestamps in one clock domain where possible; tag run/image/module/compiler/ABI identity, count and nesting. Keep inclusive/exclusive intervals explicit. Record trace overhead separately. Never infer missing intervals by subtracting independent medians. Keep uninstrumented end-to-end process time as primary user-visible metric.",
+    "future_benchmark":"Fresh alternating same-N processes with fixed CPU, same inputs, loaded public state and validation, predeclared warmups; compare source boot, validated cold image and validated application-ready image. Report image construction/admission cost, cache size and invalidation separately and in amortized totals; report cold/warm filesystem state as controlled or UNKNOWN, not assumed. Also report repeated calls within a process as a distinct cohort. Require stale-module/compiler/image negative controls and unchanged admission evidence."
+  },
+  "unknowns": [
+    "No phase durations; no numerical share of 7-10 seconds attributed to bootstrap/prelude/producer/GC/warmup/wrapper.",
+    "Actual companion cold-image acceptance for each historical process is not reconstructed from source alone.",
+    "Repeated helper load calls are source-observed; exact runtime loader specialization and CPU cost are not traced. Conditional old-image hotpatch walk may not execute.",
+    "Number of first-call compilations, retries, GC cycles and file-cache misses during preparation is not recorded by existing process_ns/inner_ns fields.",
+    "Source observations do not establish native/semantic qualification or performance improvement."
+  ]
+}

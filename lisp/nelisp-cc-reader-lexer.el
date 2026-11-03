@@ -181,24 +181,63 @@
     ;; ===========================================================
 
     (defun nelisp_reader_skip_comment (str-ptr cursor n)
+      (nelisp_reader_skip_comment_p (str-data-ptr str-ptr) cursor n))
+
+    (defun nelisp_reader_skip_comment_p (dp cursor n)
       ;; Comment runs to LF (10) or EOF.
       (if (>= cursor n)
           cursor
-        (if (= (str-byte-at str-ptr cursor) 10)
+        (if (= (ptr-byte-at dp cursor) 10)
             cursor
-          (nelisp_reader_skip_comment str-ptr (+ cursor 1) n))))
+          (nelisp_reader_skip_comment_p dp (+ cursor 1) n))))
 
     (defun nelisp_reader_skip_ws (str-ptr cursor n)
+      (nelisp_reader_skip_ws_p (str-data-ptr str-ptr) cursor n))
+
+    (defun nelisp_reader_skip_ws_p (dp cursor n)
       (if (>= cursor n)
           cursor
-        (if (= (nelisp_reader_is_ws (str-byte-at str-ptr cursor)) 1)
-            (nelisp_reader_skip_ws str-ptr (+ cursor 1) n)
-          (if (= (str-byte-at str-ptr cursor) 59)
-              (nelisp_reader_skip_ws
-               str-ptr
-               (nelisp_reader_skip_comment str-ptr cursor n)
+        (if (= (nelisp_reader_is_ws (ptr-byte-at dp cursor)) 1)
+            (nelisp_reader_skip_ws_p dp (+ cursor 1) n)
+          (if (= (ptr-byte-at dp cursor) 59)
+              (nelisp_reader_skip_ws_p
+               dp
+               (nelisp_reader_skip_comment_p dp cursor n)
                n)
-            cursor))))
+            ;; `#@N': the byte compiler's lazy docstring marker in .elc
+            ;; files, skipped like whitespace (GNU lread.c read0, case '@').
+            (if (if (= (ptr-byte-at dp cursor) 35)
+                    (if (< (+ cursor 1) n) (= (ptr-byte-at dp (+ cursor 1)) 64) 0)
+                  0)
+                (nelisp_reader_skip_ws_p
+                 dp (nelisp_reader_skip_lazy_p dp (+ cursor 2) n) n)
+              cursor)))))
+
+    ;; CURSOR is just after `#@'.  GNU reads the decimal count, consumes the
+    ;; first non-digit as part of a positive count and skips the rest of the
+    ;; count's bytes from a file stream; a count of 0 leaves that byte
+    ;; unread; `#@00' skips to the end of the stream.  (A string stream --
+    ;; `read-from-string' -- is left to the prelude reader, which scans to
+    ;; the unit separator as GNU does there: `bf_read_one_native_compatible_p'
+    ;; declines any text holding `#@'.)
+    (defun nelisp_reader_skip_lazy_p (dp cursor n)
+      (let* ((at cursor) (count 0) (digits 0) (go 1) (eof 0))
+        (seq
+         (while (= go 1)
+           (if (>= at n) (setq go 0)
+             (let* ((b (ptr-byte-at dp at)))
+               (if (if (>= b 48) (<= b 57) 0)
+                   (seq (setq count (if (> count n) count (+ (* count 10) (- b 48))))
+                        (setq digits (+ digits 1))
+                        (setq at (+ at 1))
+                        (if (if (= digits 2) (= count 0) 0)
+                            (seq (setq eof 1) (setq go 0))
+                          0))
+                 (setq go 0)))))
+         (if (= eof 1) n
+           (if (> count 0)
+               (if (> (+ at count) n) n (+ at count))
+             at)))))
 
     ;; ===========================================================
     ;; Atom scanner: push bytes from STR-PTR[CURSOR..] into SCRATCH
@@ -207,28 +246,34 @@
     ;; ===========================================================
 
     (defun nelisp_reader_scan_atom (str-ptr cursor n scratch)
+      (nelisp_reader_scan_atom_p (str-data-ptr str-ptr) cursor n scratch))
+
+    (defun nelisp_reader_scan_atom_p (dp cursor n scratch)
       (if (>= cursor n)
           cursor
-        (if (= (str-byte-at str-ptr cursor) 92)
-            (nelisp_reader_scan_atom_escape
-             str-ptr cursor n scratch)
-          (if (= (nelisp_reader_is_atom_term (str-byte-at str-ptr cursor)) 1)
+        (if (= (ptr-byte-at dp cursor) 92)
+            (nelisp_reader_scan_atom_escape_p
+             dp cursor n scratch)
+          (if (= (nelisp_reader_is_atom_term (ptr-byte-at dp cursor)) 1)
               cursor
             (nelisp_reader_prog2
-             (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-             (nelisp_reader_scan_atom str-ptr (+ cursor 1) n scratch))))))
+             (mut-str-push-byte scratch (ptr-byte-at dp cursor))
+             (nelisp_reader_scan_atom_p dp (+ cursor 1) n scratch))))))
 
     (defun nelisp_reader_scan_atom_escape (str-ptr cursor n scratch)
+      (nelisp_reader_scan_atom_escape_p (str-data-ptr str-ptr) cursor n scratch))
+
+    (defun nelisp_reader_scan_atom_escape_p (dp cursor n scratch)
       ;; Emacs Lisp symbol escape: `\X' contributes X to the symbol name,
       ;; even when X would normally terminate an atom (space, quote, paren).
       ;; A trailing bare backslash is kept as a literal backslash.
       (if (>= (+ cursor 1) n)
           (nelisp_reader_prog2
-           (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
+           (mut-str-push-byte scratch (ptr-byte-at dp cursor))
            (+ cursor 1))
         (nelisp_reader_prog2
-         (mut-str-push-byte scratch (str-byte-at str-ptr (+ cursor 1)))
-         (nelisp_reader_scan_atom str-ptr (+ cursor 2) n scratch))))
+         (mut-str-push-byte scratch (ptr-byte-at dp (+ cursor 1)))
+         (nelisp_reader_scan_atom_p dp (+ cursor 2) n scratch))))
 
     ;; ===========================================================
     ;; Atom classification (= re-scan the source byte range).
@@ -268,7 +313,22 @@
              (t 0)))
         0))
 
+    ;; The same test over a hoisted data pointer, for the classify loop.
+    (defun nelisp_reader_exp_special_suffix_dp (dp start end)
+      (if (= (- end start) 3)
+          (let* ((b0 (ptr-byte-at dp start))
+                 (b1 (ptr-byte-at dp (+ start 1)))
+                 (b2 (ptr-byte-at dp (+ start 2))))
+            (cond
+             ((and (= b0 73) (= b1 78) (= b2 70)) 1)   ; "INF"
+             ((and (= b0 78) (= b1 97) (= b2 78)) 1)   ; "NaN"
+             (t 0)))
+        0))
+
     (defun nelisp_reader_classify_step (str-ptr i end class)
+      (nelisp_reader_classify_step_p (str-data-ptr str-ptr) i end class))
+
+    (defun nelisp_reader_classify_step_p (dp i end class)
       (if (>= i end)
           (cond
            ;; Non-numeric byte seen -> force Sym.
@@ -283,7 +343,7 @@
            ;; GNU's integer spelling: the digits are the value and the dot is
            ;; dropped by the integer conversion.
            ((and (= (logand class 3) 1)
-                 (= (str-byte-at str-ptr (- i 1)) 46))
+                 (= (ptr-byte-at dp (- i 1)) 46))
             20)
            ;; Has dot OR exponent -> Float.
            ((> (logand class 3) 0) 21)
@@ -293,8 +353,8 @@
          ;; Bit 4 tracks "last byte was e/E" for valid exponent-sign detection.
          ;; All transitions other than e/E clear it; e/E sets bits 1 AND 4.
          ;; Digit: set saw-digit (bit 3), clear last-was-e (bit 4).
-         ((= (nelisp_reader_is_digit (str-byte-at str-ptr i)) 1)
-          (nelisp_reader_classify_step str-ptr (+ i 1) end
+         ((= (nelisp_reader_is_digit (ptr-byte-at dp i)) 1)
+          (nelisp_reader_classify_step_p dp (+ i 1) end
                                        (logior (logand class 15) 8)))
          ;; `.': set dot (bit 0), clear last-was-e.  A SECOND dot, or a dot
          ;; after an exponent, matches neither integer nor float syntax, so
@@ -303,26 +363,26 @@
          ;; token lexed as a float, the parser errored on it, and the caller
          ;; read that as end of input: `src/nelisp-cc-arm64.el' stopped
          ;; loading at its `:phase '7.1.4' and `load' still returned t.
-         ((= (str-byte-at str-ptr i) 46)
+         ((= (ptr-byte-at dp i) 46)
           (if (> (logand class 3) 0)
-              (nelisp_reader_classify_step str-ptr (+ i 1) end
+              (nelisp_reader_classify_step_p dp (+ i 1) end
                                            (logior (logand class 15) 5))
-            (nelisp_reader_classify_step str-ptr (+ i 1) end
+            (nelisp_reader_classify_step_p dp (+ i 1) end
                                          (logior (logand class 15) 1))))
          ;; `e' / `E': set has-e (bit 1) AND last-was-e (bit 4).  A SECOND
          ;; exponent marker is not number syntax -- `1e2e3' is a symbol on a
          ;; host -- so it forces sym (bit 2) the way a second dot does.
-         ((= (str-byte-at str-ptr i) 101)
+         ((= (ptr-byte-at dp i) 101)
           (if (= (logand class 2) 2)
-              (nelisp_reader_classify_step str-ptr (+ i 1) end
+              (nelisp_reader_classify_step_p dp (+ i 1) end
                                            (logior class 22))
-            (nelisp_reader_classify_step str-ptr (+ i 1) end
+            (nelisp_reader_classify_step_p dp (+ i 1) end
                                          (logior class 18))))
-         ((= (str-byte-at str-ptr i) 69)
+         ((= (ptr-byte-at dp i) 69)
           (if (= (logand class 2) 2)
-              (nelisp_reader_classify_step str-ptr (+ i 1) end
+              (nelisp_reader_classify_step_p dp (+ i 1) end
                                            (logior class 22))
-            (nelisp_reader_classify_step str-ptr (+ i 1) end
+            (nelisp_reader_classify_step_p dp (+ i 1) end
                                          (logior class 18))))
          ;; `+'/`-': sign after digit (bit 3 set) AND not just-after-e
          ;; (bit 4 clear) forces sym (`1+' / `1-' lex as symbols, not
@@ -338,31 +398,31 @@
          ;; token (`1e2e+INF') already set it, and that token stays Sym,
          ;; matching a host, exactly like the pre-existing dot/e checks
          ;; above this one.
-         ((= (str-byte-at str-ptr i) 43)
+         ((= (ptr-byte-at dp i) 43)
           (if (= (logand class 8) 8)
               (if (= (logand class 16) 0)
-                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                  (nelisp_reader_classify_step_p dp (+ i 1) end
                                                (logior (logand class 15) 4))
                 (if (and (= (logand class 4) 0)
-                         (= (nelisp_reader_exp_special_suffix_p
-                             str-ptr (+ i 1) end) 1))
+                         (= (nelisp_reader_exp_special_suffix_dp
+                             dp (+ i 1) end) 1))
                     21
-                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                  (nelisp_reader_classify_step_p dp (+ i 1) end
                                                (logand class 15))))
-            (nelisp_reader_classify_step str-ptr (+ i 1) end
+            (nelisp_reader_classify_step_p dp (+ i 1) end
                                          (logand class 15))))
-         ((= (str-byte-at str-ptr i) 45)
+         ((= (ptr-byte-at dp i) 45)
           (if (= (logand class 8) 8)
               (if (= (logand class 16) 0)
-                  (nelisp_reader_classify_step str-ptr (+ i 1) end
+                  (nelisp_reader_classify_step_p dp (+ i 1) end
                                                (logior (logand class 15) 4))
-                (nelisp_reader_classify_step str-ptr (+ i 1) end
+                (nelisp_reader_classify_step_p dp (+ i 1) end
                                              (logand class 15)))
-            (nelisp_reader_classify_step str-ptr (+ i 1) end
+            (nelisp_reader_classify_step_p dp (+ i 1) end
                                          (logand class 15))))
          ;; Anything else: force sym, clear last-was-e.
          (t
-          (nelisp_reader_classify_step str-ptr (+ i 1) end
+          (nelisp_reader_classify_step_p dp (+ i 1) end
                                        (logior (logand class 15) 4))))))
 
     (defun nelisp_reader_classify_first_p (b)
@@ -758,7 +818,10 @@
        (str-bytes-ptr scratch) 0 (mut-str-len scratch)))
 
     (defun nelisp_reader_string_plain (str-ptr cursor n scratch)
-      (let* ((b (str-byte-at str-ptr cursor)))
+      (nelisp_reader_string_plain_p str-ptr (str-data-ptr str-ptr) cursor n scratch))
+
+    (defun nelisp_reader_string_plain_p (str-ptr dp cursor n scratch)
+      (let* ((b (ptr-byte-at dp cursor)))
         ;; A plain high source byte belongs to a UTF-8 character.  Once a
         ;; raw-byte escape has made SCRATCH tag 15 the two representations
         ;; cannot coexist.
@@ -766,7 +829,7 @@
             -2
           (nelisp_reader_prog2
            (mut-str-push-byte scratch b)
-           (nelisp_reader_string_body str-ptr (+ cursor 1) n scratch)))))
+           (nelisp_reader_string_body_p str-ptr dp (+ cursor 1) n scratch)))))
 
     (defun nelisp_reader_oct_count (str-ptr cursor n count)
       (if (>= count 3)
@@ -849,17 +912,20 @@
              str-ptr (+ cursor 3) n scratch (+ (* hi 16) lo))))))
 
     (defun nelisp_reader_string_body (str-ptr cursor n scratch)
+      (nelisp_reader_string_body_p str-ptr (str-data-ptr str-ptr) cursor n scratch))
+
+    (defun nelisp_reader_string_body_p (str-ptr dp cursor n scratch)
       (if (>= cursor n)
           -1
         (cond
-         ((= (str-byte-at str-ptr cursor) 34)
+         ((= (ptr-byte-at dp cursor) 34)
           ;; Closing quote.
           (+ cursor 1))
-         ((= (str-byte-at str-ptr cursor) 92)
+         ((= (ptr-byte-at dp cursor) 92)
           (if (>= (+ cursor 1) n)
               -1
             (nelisp_reader_string_escape str-ptr (+ cursor 1) n scratch)))
-         (t (nelisp_reader_string_plain str-ptr cursor n scratch)))))
+         (t (nelisp_reader_string_plain_p str-ptr dp cursor n scratch)))))
 
     ;; Modifier-chain state for string escapes: bit 0 Meta, bit 1 Shift,
     ;; bit 2 a modifier that cannot be represented in a string
@@ -1032,18 +1098,25 @@
 
     (defun nelisp_reader_lex_atom_finalize
         (str-ptr start end payload-slot cursor-out-slot scratch)
-      (if (= (nelisp_reader_atom_is_lone_dot str-ptr start end) 1)
-          ;; Dot token: no payload.
-          (nelisp_reader_prog2
-           (sexp-int-make cursor-out-slot end)
-           10)
-        (if (>= start end)
+      ;; Doc 238 A1r4: the first byte is read once (a `str-byte-at' on a string
+      ;; view re-resolves its data pointer) and shared by the lone-dot test
+      ;; and the numeric-starter test; the empty atom (START >= END) reads
+      ;; nothing, as before.
+      (let* ((b0 (if (< start end) (str-byte-at str-ptr start) 0)))
+        (if (= (if (= (- end start) 1) (if (= b0 46) 1 0) 0) 1)
+            ;; Dot token: no payload.
             (nelisp_reader_prog2
              (sexp-int-make cursor-out-slot end)
-             -1)
-          (nelisp_reader_finalize_classified
-           scratch payload-slot cursor-out-slot end
-           (nelisp_reader_classify_atom str-ptr start end)))))
+             10)
+          (if (>= start end)
+              (nelisp_reader_prog2
+               (sexp-int-make cursor-out-slot end)
+               -1)
+            (nelisp_reader_finalize_classified
+             scratch payload-slot cursor-out-slot end
+             (if (= (nelisp_reader_classify_first_p b0) 1)
+                 (nelisp_reader_classify_step str-ptr start end 0)
+               23))))))
 
     ;; `#:' starts an uninterned symbol.  Unlike an ordinary atom, the
     ;; payload is never classified as a number or a special symbol.
@@ -1064,26 +1137,35 @@
 
     (defun nelisp_reader_lex_atom
         (str-ptr cursor n payload-slot cursor-out-slot scratch)
-      (if (= (nelisp_reader_leading_dot_float_p str-ptr cursor n) 1)
-          (nelisp_reader_prog2
-           (mut-str-push-byte scratch 48)
-           (nelisp_reader_lex_atom_finalize
-            str-ptr cursor
-            (nelisp_reader_scan_atom str-ptr cursor n scratch)
-            payload-slot cursor-out-slot scratch))
-        (if (= (nelisp_reader_signed_leading_dot_float_p str-ptr cursor n) 1)
+      ;; Doc 238 A1r4: resolve the data pointer once and read the first byte
+      ;; from it; the dot-float helpers can only answer 1 for a leading `.'
+      ;; (46), `+' (43) or `-' (45), so they are consulted only then.
+      (let* ((dp (str-data-ptr str-ptr))
+             (b0 (if (< cursor n) (ptr-byte-at dp cursor) 0)))
+        (if (= (if (= b0 46)
+                   (nelisp_reader_leading_dot_float_p str-ptr cursor n)
+                 0) 1)
             (nelisp_reader_prog2
-             (mut-str-push-byte scratch (str-byte-at str-ptr cursor))
-             (nelisp_reader_prog2
-              (mut-str-push-byte scratch 48)
-              (nelisp_reader_lex_atom_finalize
-               str-ptr cursor
-               (nelisp_reader_scan_atom str-ptr (+ cursor 1) n scratch)
-               payload-slot cursor-out-slot scratch)))
-          (nelisp_reader_lex_atom_finalize
-           str-ptr cursor
-           (nelisp_reader_scan_atom str-ptr cursor n scratch)
-           payload-slot cursor-out-slot scratch))))
+             (mut-str-push-byte scratch 48)
+             (nelisp_reader_lex_atom_finalize
+              str-ptr cursor
+              (nelisp_reader_scan_atom_p dp cursor n scratch)
+              payload-slot cursor-out-slot scratch))
+          (if (= (if (if (= b0 43) 1 (= b0 45))
+                     (nelisp_reader_signed_leading_dot_float_p str-ptr cursor n)
+                   0) 1)
+              (nelisp_reader_prog2
+               (mut-str-push-byte scratch b0)
+               (nelisp_reader_prog2
+                (mut-str-push-byte scratch 48)
+                (nelisp_reader_lex_atom_finalize
+                 str-ptr cursor
+                 (nelisp_reader_scan_atom_p dp (+ cursor 1) n scratch)
+                 payload-slot cursor-out-slot scratch)))
+            (nelisp_reader_lex_atom_finalize
+             str-ptr cursor
+             (nelisp_reader_scan_atom_p dp cursor n scratch)
+             payload-slot cursor-out-slot scratch)))))
 
     (defun nelisp_reader_leading_dot_float_p (str-ptr cursor n)
       (if (>= (+ cursor 1) n)
@@ -1326,33 +1408,36 @@
         ;; First byte at CURSOR drives the dispatch.  Re-read at
         ;; each arm via `str-byte-at' rather than passing as a
         ;; 7th arg (= would exceed AOT's 6-reg ABI).
+        ;; Doc 238 A1: read the byte once (each `str-byte-at' on a string view
+        ;; re-resolves the data pointer), then dispatch on it.
+        (let* ((b0 (str-byte-at str-ptr cursor)))
         (cond
-         ((= (str-byte-at str-ptr cursor) 40)
+         ((= b0 40)
           (nelisp_reader_emit_single cursor-out-slot cursor 1))
-         ((= (str-byte-at str-ptr cursor) 41)
+         ((= b0 41)
           (nelisp_reader_emit_single cursor-out-slot cursor 2))
-         ((= (str-byte-at str-ptr cursor) 91)
+         ((= b0 91)
           (nelisp_reader_emit_single cursor-out-slot cursor 3))
-         ((= (str-byte-at str-ptr cursor) 93)
+         ((= b0 93)
           (nelisp_reader_emit_single cursor-out-slot cursor 4))
-         ((= (str-byte-at str-ptr cursor) 39)
+         ((= b0 39)
           (nelisp_reader_emit_single cursor-out-slot cursor 5))
-         ((= (str-byte-at str-ptr cursor) 96)
+         ((= b0 96)
           (nelisp_reader_emit_single cursor-out-slot cursor 6))
-         ((= (str-byte-at str-ptr cursor) 44)
+         ((= b0 44)
           (nelisp_reader_lex_comma str-ptr cursor n cursor-out-slot))
-         ((= (str-byte-at str-ptr cursor) 35)
+         ((= b0 35)
           (nelisp_reader_lex_sharpsign
            str-ptr cursor n payload-slot cursor-out-slot scratch))
-         ((= (str-byte-at str-ptr cursor) 34)
+         ((= b0 34)
           (nelisp_reader_lex_string
            str-ptr (+ cursor 1) n payload-slot cursor-out-slot scratch))
-         ((= (str-byte-at str-ptr cursor) 63)
+         ((= b0 63)
           (nelisp_reader_lex_question
            str-ptr cursor n payload-slot cursor-out-slot scratch))
          (t
           (nelisp_reader_lex_atom
-           str-ptr cursor n payload-slot cursor-out-slot scratch)))))
+           str-ptr cursor n payload-slot cursor-out-slot scratch))))))
 
     ;; ===========================================================
     ;; Top-level entry.  Skips leading whitespace + comments,
@@ -1361,11 +1446,14 @@
 
     (defun nelisp_reader_lex_one
         (str-ptr cursor payload-slot cursor-out-slot scratch)
-      (nelisp_reader_dispatch
-       str-ptr
-       (nelisp_reader_skip_ws str-ptr cursor (str-len str-ptr))
-       (str-len str-ptr)
-       payload-slot cursor-out-slot scratch)))
+      ;; Doc 238 A1r4: length and data pointer resolved once each.
+      (let* ((n (str-len str-ptr))
+             (dp (str-data-ptr str-ptr)))
+        (nelisp_reader_dispatch
+         str-ptr
+         (nelisp_reader_skip_ws_p dp cursor n)
+         n
+         payload-slot cursor-out-slot scratch))))
 
   "AOT source for Doc 116 §116.A pure-elisp Reader lexer.
 

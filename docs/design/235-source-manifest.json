@@ -1,0 +1,41 @@
+{
+  "status": "Source-grounded startup design provenance; no new timing or qualification",
+  "sbcl": {
+    "repository": "https://github.com/sbcl/sbcl",
+    "commit": "80dad386fc3536d0185dc4a2b9627a331c5f256f",
+    "working_tree": "clean",
+    "permalink_base": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/",
+    "files": [
+      {"path":"src/runtime/runtime.c","sha256":"6206387b5b53e05c0f96dbf01e0284cd206b352a88d05d084a2add8577e925e5","anchors":"766-820","fact":"Core load, runtime linkage and handlers, argv, initial Lisp function"},
+      {"path":"src/runtime/coreparse.c","sha256":"2acb98e0c39d344745bdc28e714ebfdaa48e88e8e055d9c66a319dec1bceddf7","anchors":"745-770; 1573-1577","fact":"Saved core directory, initial function, and linkage addresses"},
+      {"path":"src/code/save.lisp","sha256":"3e5190d68e35fe860cd662e78244e31be2b3eebe575ed8101fbdd50bac738a3d","anchors":"85-95; 107-123","fact":"Saved global state and resumed reinit/toplevel path"}
+    ],
+    "links": [
+      "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/runtime.c#L766-L820",
+      "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/coreparse.c#L1573-L1577",
+      "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/save.lisp#L85-L123"
+    ],
+    "transfer_limit":"SBCL saved state reduces source reconstruction but retains runtime reinitialization and OS mapping. It does not establish NeLisp startup semantics or savings."
+  },
+  "nelisp_and_harness": {
+    "target_checkout":{"path":"dev/nelisp/ in shared checkout","head":"9d6a4a4f2c01952cb03f9333aa7afeb6bdf6d835","dirty_state":"Existing uncommitted changes preserved. Startup research uses separate frozen12 measured source; source facts are not shared-tree implementation claims."},
+    "nelisp_snapshot":"$HOME/.cache/tmp/nelisp-v8-native-20261029/frozen12/wt6",
+    "benchmark_snapshot":"$HOME/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031",
+    "files":[
+      {"root":"benchmark_snapshot","path":"lane_runner.py","sha256":"8d8caafe312d170287b1097917e2d1d8a77c65e0d7800fedd5629583126658ab","anchors":"27-35; 38-70; 79-130","fact":"Driver routing, owned scratch/cache, bwrap, image --load, cleanup within wrapper lifetime."},
+      {"root":"benchmark_snapshot","path":"benchmark-driver-native-on.el","sha256":"ff3306221c430d73f4cc85a21fabd2bb066bf28a4703015d9d0546b2258626f6","anchors":"4-7; 23; 25-57","fact":"Explicit FXIR helper/prelude/producer preparation and mapping checks; input/timer preparation, warmups, one timed call, validation."},
+      {"root":"benchmark_snapshot","path":"nested-primary-on.el","sha256":"41a093f400dfd412b494548f3df88210cac27cedb6bedcb2b5b2f553a0ccb9ec","anchors":"3-34; 50-80","fact":"Separate runtime bootstrap, two mapping checks, two warmups, one timed call, result validation."},
+      {"root":"benchmark_snapshot/..","path":"sol-runtime-closure-review/generated-on/runtime-bootstrap.el","sha256":"abadfb8f313b8e25004b00fc9ec2b15dc495aad726f68b3256965827e3b49834","anchors":"1-4 (generated form)","fact":"Three explicit helper/prelude/producer loads, source preflight, producer install."},
+      {"root":"nelisp_snapshot","path":"tools/nelisp-native-application-producer.el","sha256":"1587b5037de9cdd4d8d546d6991b984bdc6416965bdf9b11913f5fe57b5645d7","anchors":"66-74; 130-151; 352-381; 409-436; 491-551","fact":"Source preflight before and after helper initialization; helper+prelude hashing; explicit helper load; selected-candidate FX admission recompilation; candidate identity/provider checks."},
+      {"root":"nelisp_snapshot","path":"test/nelisp-fxir-eval.el","sha256":"55e2524b8a4ca339a54508c8e5c6f80bfd50b14c5229e937d04ac62effa2b791","anchors":"24-44","fact":"Conditional old-image hotpatch walk only; its execution on the measured image is unknown. Helper forms after the condition are not inside its guard."},
+      {"root":"nelisp_snapshot","path":"scripts/nelisp-stdlib-prelude.el","sha256":"27669b8c7cdae6580d9836958c47e36c6adce258a26cb226bc6393b5ea5311e5","anchors":"33996-34020; 34345-34374; 34635-34648","fact":"Deferred registrations and dump-profile selection; do not assume every prelude function compiles on every startup."},
+      {"root":"nelisp_snapshot","path":"scripts/nelisp-standalone-build.el","sha256":"00999038bede63d1003a9a52834c3d42aed4def13cd227f969261cadc798d5e9","anchors":"36669-36700; 36829-36833; 37032-37085; 37108-37132; 47310-47330; 48610-48629; 56774-56783; 56890-56904; 57147-57159; 57292-57310","fact":"Conditional embedded-prelude source boot, cold-image global restore and process reinitialization, generic load/source evaluation and optional compiled wrappers."},
+      {"root":"$HOME/.codex/skills/nelisp-gnu-gap-bench/scripts","path":"paired_bench.py","sha256":"b375e405b3980e833274368170060ed00c53e68ebbef8c2380cab645a1361047","anchors":"45-62","fact":"Outer process_ns brackets subprocess execution and wrapper cleanup; inner_ns is read from the driver."}
+    ],
+    "measurement_record":{"file":"evidence/sbcl-native-20261031/gnu-all-time-comparisons.json","sha256":"1487b4ca002bbaa4a7c1d9fcde42be53f828b986c9b5a7e91f569c91f021b21b","row":"integer-sum N=16000000","gnu_kernel_s":0.24263525,"on_kernel_s":0.064497948,"gnu_process_s":0.762427404,"on_process_s":7.253645427,"qualification":"Experimental only; current source/native/semantic qualification remains HOLD."},
+    "raw_timing_fields":"process_ns and inner_ns; existing rows have no separate loader, bootstrap, admission, warmup, or cleanup duration."
+  },
+  "research_json":{"file":"evidence/sbcl-native-20261031/startup-initialization-research.json","sha256":"824ac94fadd6fc13702661ef19a75ab813c8141cea7c16be78c98cba774d0a04"},
+  "document":{"file":"235-sbcl-inspired-startup-initialization.org","sha256":"568673dd4fcd8a149b7c63e738ce4dcbf7c9076a5cb438c940f10632d9ebdef9"},
+  "design_limit":"Observed source structure is not measured phase cost. No startup attribution or speed promise is made."
+}

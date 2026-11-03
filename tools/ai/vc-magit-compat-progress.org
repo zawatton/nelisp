@@ -1,0 +1,92 @@
+#+TITLE: Independent pinned VC and Magit compatibility
+#+NOTE: Eleven initial criteria plus two fringe provider criteria established before provider implementation. Compiler progress is separate. Frozen r2 plus source overlays is diagnostic execution only.
+
+* S1 Genuine dependency and runtime compatibility
+
+** S1.1 Frozen isolation and source identities remain intact
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-magit-20261002/check-evidence.py isolation
+
+** S1.2 Unique genuine log-view through diff-mode extraction and old-extractor negative control
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-magit-20261002/check-evidence.py extraction
+
+** S1.3 Genuine GNU initializer and subsequent dependency oracle
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-magit-20261002/check-evidence.py oracle
+
+** S1.4 Original-budget standalone precursor plus new initializer and dependency
+#+NOTE: Current exact chain includes reviewed non-GUI fringe provider. Original sealed native void-function RED evidence is retained unchanged.
+#+NOTE: Current MAIN public ownership repair and dedicated original-budget source-overlay evidence are pinned by the namespace repair checker.
+cmd: python3 target/progress/vc-magit-fringe-namespace-20261002/check-review.py --step chain
+
+** S1.6 Exact GNU non-GUI fringe fallback and guarded admission controls
+#+NOTE: Added before provider implementation; source-only overlay qualification, not cold-image acceptance.
+cmd: python3 target/progress/vc-magit-fringe-namespace-20261002/check-review.py --step host
+
+** S1.7 Same-process standalone fringe repair preserves state under original guard
+cmd: python3 target/progress/vc-magit-fringe-namespace-20261002/check-review.py --step focused
+
+** S1.8 MAIN fringe provider respects the unchanged namespace boundary
+#+NOTE: After further shared compiler source changes (standalone build script cf2c4959990b21a111adef68c3f24c3deb92357c3ac9a71681f46a5c10de6504), root reran this failing gate. Global ns-private-escape is now 859 against unchanged baseline 852; historical fringe-specific zero findings and earlier global 853 evidence remain preserved. No baseline or other-lane source edits.
+#+NOTE: Added after reviewed integration exposed two source references representing one deduplicated private finding. Repair removed all fringe-related findings; global count remains 853 against baseline 852 outside this scoped change. Keep the real failing gate and unchanged baseline.
+cmd: make ns-inventory
+
+** S1.9 Native loader observer sees genuine top-level source forms
+#+NOTE: Added before observer implementation. The previous eval-function observer missed the genuine source marker; historical RED retained. Replacement qualifies complete tiny/nested forms and state, exact source reversibility, controls, and 457 authenticated evidence files. Packet sha256 08b374c128c72cb345b82c280bb2ec4399f5c8bdf8860a48db12184d34c29d62.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-loader-observer-20261002/check.py
+
+** S1.10 Library admission selects canonical GNU dired rather than a basename collision
+#+NOTE: Added before resolver implementation. Qualified source observation identified recursive loading of cedet/ede/dired.el from the historical flattened cache. Preserve that cache and admit a separate canonical mapping.
+#+NOTE: New explicit source mapping preserves all 337 canonical dired forms and rejects wrong/missing/changed sources before launch. GNU source oracle passes; native advanced to genuine require dnd. Packet sha256 0cc2206593f46b9088126926c5100b06941d845fd7139bb89b143a0cc7d796ba; sealed checker authenticates 509 files and five tamper controls.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-canonical-cache-20261002/check.py
+
+** S1.11 Canonical dnd source admission preserves genuine dependency initialization
+#+NOTE: Added before dnd implementation. Corrected canonical dired reached genuine form 5 requiring dnd; source-overlay full diagnostic terminated file-missing dnd at 28.285s / 448312 KiB. Keep the missing dependency RED until a separate authenticated resolution unit qualifies.
+#+NOTE: Explicit canonical dnd mapping qualifies all 29 genuine native forms plus complete GNU source oracle, calibrated admission negatives, and 568 authenticated evidence files. Original missing-source RED retained. Packet sha256 ed6a2618242d8f907220b52a49d368067d86a3892e5c69031131980af91a666d; next actual blocker is measured separately in S1.12.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-dnd-source-20261002/check.py
+
+** S1.12 Canonical desktop dependency closure preserves genuine dired initialization
+#+NOTE: Added one independently guarded same-variable unrelated-symbol control (review SHA256 01408aa285f19eeacbc36e8b4731f02c1aa7c9690a70f0efb6f80f49721c718a; 19 unit pins plus the authenticated 966-file prior closure). Holding fresh seven-character `xqvcaaa` and then directly memq-testing Desktop yields correct Desktop and frameset names in 7.079s / 618148 KiB. This matches the target-held outcome and differs from no-hold direct memq, which reports Desktop length6 with in-range aref errors. One control associates correctness with a global store/retention or other changed runtime state; it does not establish that Desktop-specific retention or GC is the cause. Root diagnostic and `--accept-names` checks passed for the control; original direct case remains preserved RED. No shared code changed.
+#+NOTE: Direct versus globally held native symbol membership comparison is diagnostic only (superseding review SHA256 887f7b1dc1ea524df7b9be87634637ca41f5bf147cd6647192839ae94d215af6; 966 authenticated files). Same full 5314-byte prefix / 58 forms / r6 cold image. Direct `(memq 'desktop features)` gives a reported string length of 6, equality false, and in-range indexes4/5 raise `args-out-of-range`; frameset is correct. Holding the symbol in `vc-cold-held` before equivalent `memq` yields correct Desktop length7/content and correct frameset. Each independently guarded call exits0 in 6.823 s / 618144 KiB and 6.799 s / 618144 KiB. This associates the bad Desktop name with the unheld-symbol path but proves no internal cause; genuine Desktop acceptance remains RED. Checker diagnostics PASS; `--accept-names` fails. Reseal supersedes the previous review after a temporary calibration-file hash change; original review/results and source inputs are preserved, previous finalizer bytes were lost and explicitly disclosed.
+#+NOTE: Cold full/half/zero prefix comparison is diagnostic-only (review 2986e0bb53a3a825a0cddc2fb12566f84063187ebe0e4250f55952a1582f0848; 758 pins). Exact 5314-byte prefix reproduces bad first Desktop/frameset codes at 7.008s / 616100 KiB; completed-form prefix through byte2629 and zero prefix have correct content/identity/intern roundtrip at 5.072s / 485104 KiB and 0.243s / 236840 KiB respectively. Runtime/name acceptance remains RED. This establishes an execution-or-source-layout boundary, not a first failing form or cause. Next controls preserve half's evaluated forms while padding source length/witness offset to full, and separately test the three-quarter prefix.
+#+NOTE: Explicit admitted r6 cold restore remains RED (review 509cfafde3b50e27066a819d7840db00064ce4841fbe8ff333bb03017ffda240; 841 pins). Same driver and environment completed in 6.979s / 614388 KiB after one preserved capacity refusal, versus the separate warm invocation's 31.870s / 379348 KiB. This is a measured different boot route, not a runtime repair. First Desktop name still contains seven zero codes; genuine initializer stops file-error before all 105/52 forms. Strict acceptance fails; prior GNU oracle reused and no shared source changed. Next unit reviews reader-name lifetime and prepares a current-hash core-boundary proposal without another native execution.
+#+NOTE: Narrow prefix-only witness (review ef3d3eb97d885d7caf8342dc89bf41aa080db7b7e4096406c5b4673e8f7a72a8; 714 pins) reproduces incorrect first Desktop/frameset name content immediately after the authentic 5314-byte prefix, before six current-loader imports or fixture checks. Native 31.587s / 386568 KiB. First Desktop codes 4,0,0,0,0,0,0; frameset 40,0,0,0,0,0,0,0. Name identity repeats but intern roundtrip fails. GNU public-property oracle passes; --accept-names remains RED. No cause attribution or startup-speedup claim.
+#+NOTE: Separate read-only r6 artifact admission and same-context comparison are diagnostic-only (review 97978315eccce7106c6fc8301bb5ed921de7273b1a34be59787368e1ab010581; 820 pins). One actual native execution after a preserved prelaunch capacity refusal: 31.870s / 379348 KiB. Symbol-name desktop remains a length-7 string unequal to desktop, now with seven zero character codes. Literal source resolution/readability still pass; genuine initializer fails file-error before 105/52 source markers. No new GNU run; exact prior authenticated oracle reused. Newer executable does not remove the observed boundary; no cause or full coherence claim.
+#+NOTE: Exact r2 cold witness reproduces the prior resolver observation prefix byte-for-byte (20.887s / 369492 KiB; review 6ee605a058e4d729e70c4e9bf0d23f6b7e8865f559612829baa47d8deb286085; 795 pins). Retained symbol-name is a seven-character string with codes 76,73,84,89,32,111,114, unlike desktop's 100,101,115,107,116,111,112. equal and string= fail; intern roundtrip identity succeeds; repeated symbol-name returns the same wrong object. Public incorrect string content is established; cause is not. Next comparison admits a separate read-only/hash-pinned compiler r6 artifact, without rebuilding or changing the shared source.
+#+NOTE: Warmed before/after public symbol/string test has 14 conforming rows (20.837s / 376592 KiB; review a80b57d4dd9825fccbbf879e3b2658af01cb828f4fd67060a42985d75c127446). BEFORE calls symbol-name for every name, so AFTER does not test first-call behavior in the failing exact source-overlay context. No bootstrap exclusion or acceptance claim. A cold-witness appended observation preserves that context next.
+#+NOTE: Resolver context packet c034512cd5ce1920b84370dfe07eeceb3bec0b82504b7d6e48bb9bc7618b2afa authenticates 766 files. Literal desktop resolves the correct readable canonical source directly and through eval; observer path and context match. Native symbol-name desktop is length 7 but unequal to literal desktop, unlike GNU; computed-name resolution differs. Genuine initializer still fails file-error before all Desktop/frameset markers (21.127s / 371444 KiB). Root cause remains unproven; public symbol/string before/after-bootstrap regression is next. No path repair or production change is justified by this packet.
+#+NOTE: Short-name regression does not reproduce the failure: all 12 require/direct-load cases at lengths 2,7,8,15,16,17 match GNU; eight calibrated negatives reject broken observations. Native 21.852s / 371948 KiB. Review sha256 a9d7595bf497b398c7af9487d0476cca59185bd61923d3e714b0d05d799d6506; 720 authenticated files. This diagnostic excludes only the tested name-length cases; Desktop acceptance remains RED.
+#+NOTE: Added before desktop implementation. Complete dnd source executed all 29 forms; full native reached dired form 312 requiring desktop and stopped file-missing desktop at 37.926s / 561572 KiB. Desktop's genuine top-level requirements are cl-lib and frameset; establish their explicit source identities rather than skipping compile-time forms.
+#+NOTE: Explicit desktop/frameset mapping and complete GNU source oracle qualify, but native focused initialization is RED: source execution emits zero markers and require reports feature not provided at 20.933s / 368796 KiB. First stdout collision retained; unit-local harness repair was calibrated before justified rerun. Diagnostic checker pins 619 files; runtime acceptance remains a real failing command. Packet sha256 b3f47914421863c70da4d191883442ea2de9aa7eb8416e82b0efc643a3a94d8e. Shared loader files remain untouched pending exact-route diagnosis.
+#+NOTE: Active r2 route diagnosis (packet sha256 bb17db352173872f4bb606cbc61d88b8cc04d41f660004ad653cabea669a2331) authenticates path resolution and raw read. Direct source load enters desktop, while require does not; nested frameset require exposes corrupt filename data and condition rendering fails. Actual interpreted function bodies remain unavailable and root cause is unproven. Tiny literal/computed/mediated-call differential probes are next; this diagnostic result does not qualify runtime acceptance.
+#+NOTE: Seven ordinary tiny loading cases match GNU (packet b11c6fb801eac49400e1d5fbf2d28e306659da2308abfda2bd98053ef330a601). Exact current-stdlib loader/helper source overlay passes ordinary nested/error/restore controls, but genuine Desktop eval remains file-error before source entry (21.873s / 369444 KiB; 0/105 Desktop and 0/52 frameset forms). Packet f47af032cfa9bb96efd5e1cbf51eb9107d32f073fcff6dd223537a98719f70a2 authenticates 739 files. Source-only and missing-file-condition limits recorded; no production integration. Acceptance remains RED.
+#+NOTE: Passive GDB call-site observation on the pinned r6 executable confirms that the target direct/held `memq 'desktop features` calls both see the same tag-4 symbol identity and `desktop` name bytes; both return nil with disjoint input/output cells. The subsequent `nl_symbol_name_value` returns a tag-5 string of length7: direct bytes are `10 0d 72 90 33 7f 00`, held bytes are `64 65 73 6b 74 6f 70 00`. Both GDB runs pass the original 45-second / 2-GiB guard (7.600s / 653068 KiB and 7.586s / 653772 KiB). This localizes the visible corruption after memq, within the symbol-name path or result construction, but does not identify the internal cache/create branch or establish r6 producer-source identity. Packet remains diagnostic; acceptance is RED.
+#+NOTE: Superseding source-boundary observer (review JSON target/progress/vc-memq-gdb-observer-20261002/symbol-name-boundary-reclaim-review.json; unapplied patch target/progress/vc-memq-gdb-observer-20261002/symbol-name-register-stable-key-proposal.patch) identifies a kind-1 cache hit and the first invalidation. Direct symbol-name registration receives a correct tag-5 `desktop` string, then `nl_boundary_reclaim` zeroes that buffer after the nil-returning, nonmutating direct form; `nl_sci_copy` later reuses the same address. Held `setq` advances mutation epoch and prevents that boundary rewind; unrelated-setq control also passes. Guarded watch runs pass at 8.084s/657248 KiB and 8.152s/657220 KiB. This proves the observed lifetime path on pinned r6, not source coherence or an integrated fix. Candidate proposal points permanent kind-1 cache string data at its stable intern key. Core source remains unedited; S1.12 and full VC/Magit acceptance stay RED.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-desktop-closure-20261002/check.py --accept-focused
+
+** S1.5 Complete pinned VC require and exercised VC behavior under original 45-second budget
+#+NOTE: Qualified replacement observer localized the subsequent full-run RED at 45.125s / 744280 KiB to a canonical-library collision: r13 dired.el is GNU cedet/ede/dired.el and recursively requires itself. Correct GNU lisp/dired.el admission is measured separately in S1.10; full VC remains RED until genuinely exercised.
+#+NOTE: Original full VC wall timeout retained; historical diagnostic evidence does not qualify current image or exercised behavior. Do not blindly rerun.
+#+NOTE: New source-overlay full require vc run is also RED at 45.243s / 1520540 KiB; vc-git and operations were not reached. Local eval-function observation missed the genuine top-level marker, so no exact failing initializer is identified. Packet: target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-magit-full-vc-20261002/review.json, sha256 ff8a2a059613f2c0a5715a6a9da0cadc92fa96d7d78bb636f7ca643ced15dc7f.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/vc-magit-20261002/check-evidence.py full-vc
+
+* S2 Magit dependencies and cold startup
+
+** S2.1 Explicit pinned Magit transitive dependency manifest
+#+NOTE: Genuine GNU cold startup establishes 150 canonical source identities and 545 reader-derived dependency edges: 295 eager, 12 conditional, 72 compile-only, and 166 deferred. All 15 dynamic edges are deferred; no unresolved startup/source identities. Source-package overlays preserve original bytes. GNU compiled/dumped loading is recorded as identity evidence, not native or source-execution acceptance. Eleven negative controls reject broken inputs. Externally anchored seal sha256 357dced8dfddd2b55ede03894fbc4de7f40a902555ddf93861b4178955c6a275. Native startup and genuine Magit status remain pending.
+cmd: python3 target/agent-worktrees/vc-magit-compat-20261002-sol/target/progress/magit-dependency-manifest-20261002/check.py --seal-sha256 357dced8dfddd2b55ede03894fbc4de7f40a902555ddf93861b4178955c6a275
+
+** S2.2 Genuine dependency initialization and runtime parity
+pending
+
+** S2.3 Cold pinned Magit require without skipped initializers
+pending
+
+* S3 Actual operations and integration
+
+** S3.1 Disposable Git repository and process behavior verification
+pending
+
+** S3.2 Reviewed provider integration and applicable lower-stage gates
+pending
+
+** S3.3 Real Magit status with buffer content, errors, cleanup, and process assertions
+pending

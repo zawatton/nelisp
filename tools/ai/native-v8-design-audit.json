@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "model": "gpt-6-astra",
+  "reasoning_effort": "ultra",
+  "decision": "ACCEPT",
+  "document_path": "docs/design/215-v8-inspired-native-optimization.org",
+  "document_sha256": "663b828c2d4e7747cc0592c517a436ce6e9a2c932f94e66eea198cbb2363700f",
+  "sources_sha256": "9e3e0621a16bafc5b8c6b8cbe9b125aed5fdced864eef1cfdebba091d8649880",
+  "findings": [],
+  "checks": [
+    "Verified all four native source hashes and byte counts, both Notes evidence hashes, and the native qualification receipt hash against the final manifest.",
+    "Independently fetched the three pinned Node v20.19.2 V8 sources; hashes and byte counts match. Inspected the cited inlining, frequency/budget, and representation interfaces.",
+    "Compared the proposal with exact native argument-staging, live-cell/cache guard, logical-frame wrapper, row-entry check, root-release, code-vector access, and operation-fallback ranges; a bounded standalone Anvil code-context request succeeded.",
+    "Confirmed the design retains logical call visibility, recursion accounting, entry decline ordering, rooted callable/code ownership, status cleanup, and exactly-once argument/effect behavior as mandatory implementation contracts.",
+    "Checked primitive versus symbol redefinition, hygienic slots and call-site metadata, immediate-constant restrictions, exact arithmetic fallback, and separate type/representation facts. Unsupported or unproved cases explicitly refuse expansion.",
+    "Confirmed that native source observations, proposed APIs, deferred M0 contracts, and the older unproved named-fx benchmark route are distinguished without claiming implemented optimization or attributable speedup.",
+    "Checked finite eligibility/growth limits, unchanged resource caps, semantic mutants, native route witnesses, and predeclared paired performance/regression gates. The pinned newer native receipt supports metadata 3993877 bytes and headroom 6123 bytes.",
+    "Reviewed the final traceability-only edit to section 5.2 and the source manifest before pinning their hashes. No blocking documentation finding remains."
+  ],
+  "limitations": [
+    "Documentation design/completion audit only. No implementation, native build, REPL, test, benchmark, or independent runtime qualification was performed.",
+    "Exact supported observer modes, complete producer/cache consumers, eligible native routes, and transform profitability remain explicit M0/implementation acceptance work; acceptance of this proposal does not discharge those gates.",
+    "Arithmetic primitive fallback reads callee-owned code-vector slots. Its admission still requires the documented rooted callee context or validated remapping; the audit does not assert that mechanism exists.",
+    "Source review was bounded and nonexhaustive. Syntactic Elisp context does not establish complete generated DSL or runtime caller coverage.",
+    "The native manifest pins selected files within a dirty snapshot, not a complete reproducible build. The required complete baseline freeze and fresh qualification remain pending implementation work."
+  ]
+}

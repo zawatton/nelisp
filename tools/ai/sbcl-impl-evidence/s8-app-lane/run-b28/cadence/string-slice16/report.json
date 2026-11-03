@@ -1,0 +1,62 @@
+{
+ "cpu": 1,
+ "sibling_util_before": {
+  "1": 0.0,
+  "17": 0.0
+ },
+ "low": 2097152,
+ "high": 4194304,
+ "reps": 3,
+ "engines": {
+  "old": {
+   "path": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/b28/lane-new",
+   "inner_ns_per_step": {
+    "median": 162.12698030471802,
+    "min": 159.75194835662842,
+    "max": 168.54903602600098,
+    "raw": [
+     168.54903602600098,
+     159.75194835662842,
+     162.12698030471802
+    ],
+    "ratio_to_old": 1.0,
+    "pairs_faster_than_old": 0
+   },
+   "process_ns_per_step": {
+    "median": 167.01113748550415,
+    "min": 165.4193115234375,
+    "max": 170.30552577972412,
+    "raw": [
+     170.30552577972412,
+     165.4193115234375,
+     167.01113748550415
+    ]
+   }
+  },
+  "new": {
+   "path": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/tools/ai/sbcl-impl-evidence/s8-app-lane/run-b28/lane-app",
+   "inner_ns_per_step": {
+    "median": 155.08840084075928,
+    "min": 154.26883268356323,
+    "max": 157.26709508895874,
+    "raw": [
+     155.08840084075928,
+     157.26709508895874,
+     154.26883268356323
+    ],
+    "ratio_to_old": 0.9565860077654582,
+    "pairs_faster_than_old": 3
+   },
+   "process_ns_per_step": {
+    "median": 159.77831172943115,
+    "min": 154.31437587738037,
+    "max": 161.4671549797058,
+    "raw": [
+     159.77831172943115,
+     154.31437587738037,
+     161.4671549797058
+    ]
+   }
+  }
+ }
+}

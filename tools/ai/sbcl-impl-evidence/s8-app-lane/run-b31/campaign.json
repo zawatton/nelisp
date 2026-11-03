@@ -1,0 +1,25 @@
+{
+ "binary": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on31/nelisp-dynamic",
+ "binary_sha256": "4da57ad176f6e3bd7c66fee2468060f3df57b3c1dca4c355f213f7e447999af4",
+ "launcher": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/tools/nelisp-application-image-launch.sh",
+ "launcher_sha256": "ebc8575f8bed307ef7f5d21082f8e1ff6f23b9315f86a25a18843713db41e26f",
+ "producer": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/tools/nelisp-application-image-produce.sh",
+ "producer_sha256": "b4b5c50d22a86255f7df40ee38ff16367069f16d0b105fa9bdc179ae869a8fdb",
+ "full_lane": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/run/b31/lane-new",
+ "reps": 7,
+ "rows": [
+  "integer-sum",
+  "function-call2",
+  "nested-function-call2",
+  "vector-read",
+  "vector-write",
+  "vector-allocate64",
+  "string-slice16",
+  "string-concat16",
+  "hash-get1024"
+ ],
+ "start": "2026-11-02T03:13:39Z",
+ "end": "2026-11-02T03:19:02Z",
+ "loadavg_start": "0.30 0.71 0.98",
+ "loadavg_end": "1.58 1.13 1.06"
+}

@@ -1,0 +1,141 @@
+{
+  "status": "EXPERIMENTAL_PHASE_COMPLETE",
+  "phase": "gnu2",
+  "preflight": {
+    "status": "PASS",
+    "checks": 4,
+    "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/preflight-summary.json",
+    "sha256": "95c408728ae5aa4393a54e58c7efc58687974b8f17853d79ae5622d4a47830c3"
+  },
+  "frozen_counts": {
+    "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/comparison-counts.json",
+    "sha256": "468414d72db80dbac048582064f0bd88a372e8dbf06c57bdb574e1a931b4018e",
+    "original_off_counts_sha256": "e79cf7ac98261270d3c1b6665e11843333afec3dce31839d4da7b19bfb9ec062"
+  },
+  "end_to_end": {
+    "status": "PASS",
+    "rows": {
+      "nested-function-call2": {
+        "status": "EXPERIMENTAL_MEASURED",
+        "cpu": 1,
+        "low": 1048576,
+        "high": 4194304,
+        "pairs": 7,
+        "samples": 28,
+        "result_agreement": true,
+        "all_stderr_empty": true,
+        "invalid_nets": [],
+        "raw_sha256": "66774ae21e56cac09985b86e1daa694c5479cccb764cfe1c986d3dbb85deacf1",
+        "report_sha256": "9baffe19d4f9152c53fc3716a4957f55bdd650ef0fbfbfb490323a74962f8ba7",
+        "engines": {
+          "gnu": {
+            "high_kernel_seconds": 0.340655327,
+            "high_process_seconds": 1.402491734,
+            "high_kernel_range_seconds": [
+              0.280118704,
+              0.520679951
+            ],
+            "net_ns_per_step_median": 84.56671206156413,
+            "net_ns_per_step_raw": [
+              84.56671206156413,
+              140.242945988973,
+              71.31673876444499,
+              133.5150349934896,
+              48.520178159077965,
+              142.31379000345865,
+              52.4695831934611
+            ]
+          },
+          "on": {
+            "high_kernel_seconds": 0.700156927,
+            "high_process_seconds": 10.567830313,
+            "high_kernel_range_seconds": [
+              0.664434195,
+              1.130666971
+            ],
+            "net_ns_per_step_median": 170.15865230560303,
+            "net_ns_per_step_raw": [
+              126.52427959442139,
+              184.58232879638672,
+              156.9806048075358,
+              184.86472670237222,
+              128.8496300379435,
+              170.15865230560303,
+              306.82531356811523
+            ]
+          }
+        }
+      },
+      "integer-sum": {
+        "status": "EXPERIMENTAL_MEASURED",
+        "cpu": 12,
+        "low": 4000000,
+        "high": 16000000,
+        "pairs": 7,
+        "samples": 28,
+        "result_agreement": true,
+        "all_stderr_empty": true,
+        "invalid_nets": [],
+        "raw_sha256": "b40d70ca9b57ab21a420497080626937f5014c8c6d451efc5f4237210210999b",
+        "report_sha256": "b7e8bb1a6c7c88633e2c5ce65ab73ce06a391eea7e4f4bc3d5b9cbbdfac71b69",
+        "engines": {
+          "gnu": {
+            "high_kernel_seconds": 0.24263525,
+            "high_process_seconds": 0.762427404,
+            "high_kernel_range_seconds": [
+              0.221067429,
+              0.27384758
+            ],
+            "net_ns_per_step_median": 15.178640666666666,
+            "net_ns_per_step_raw": [
+              13.206481916666666,
+              14.23720525,
+              15.183349416666667,
+              15.178640666666666,
+              15.113453083333333,
+              18.4126695,
+              15.750010833333333
+            ]
+          },
+          "on": {
+            "high_kernel_seconds": 0.064497948,
+            "high_process_seconds": 7.253645427,
+            "high_kernel_range_seconds": [
+              0.064404011,
+              0.066924095
+            ],
+            "net_ns_per_step_median": 4.0277441666666665,
+            "net_ns_per_step_raw": [
+              4.0002465,
+              4.026174583333333,
+              4.015088083333334,
+              4.0277441666666665,
+              4.194418583333333,
+              4.028002416666666,
+              4.034062166666667
+            ]
+          }
+        }
+      }
+    },
+    "all_samples": 56
+  },
+  "input_pins_postcheck": {
+    "count": 15,
+    "changed": [],
+    "status": "PASS",
+    "manifest": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/comparison-input-pins.json",
+    "manifest_sha256": "f92a8dc771c97307968db25c06435d23dc54c3856749cd3de102e3d323f60fde"
+  },
+  "lifecycle": {
+    "owned_processes_reaped": true,
+    "active_owned_benchmark_processes": [],
+    "postcheck": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/post-measurement-checks.json",
+    "postcheck_sha256": "ec825d527f83429ff0a57314136767c55d00497d087be2f244d913a973bf10bd"
+  },
+  "source_gate": "HOLD_UNCHANGED",
+  "qualification_credit": false,
+  "metric": "ActualHIGHkernel/processmedians plus preserved pairedlow/highNET; processincludesstartup/setup/twowarmups/validation",
+  "affinity_amendment": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/affinity-amendment-v1.json",
+  "original_off_on_nine_row_campaign": "Intentionally incomplete; three completed rows preserved; controller reaped"
+}

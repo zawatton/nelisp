@@ -1478,7 +1478,7 @@ pinned-collision ns-collision-divergent	upcase	lisp/nelisp-stdlib-plist-str.el s
 pinned-collision ns-collision-divergent	vconcat	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	1103b789adc3
 pinned-collision ns-collision-divergent	when	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	216caa34671c
 pinned-collision ns-collision-divergent	with-current-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	5f978776c054
-pinned-collision ns-collision-divergent	with-temp-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	409826384362
+pinned-collision ns-collision-divergent	with-temp-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	3e29d9958063
 pinned-collision ns-collision-divergent	write-region	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	497026434a87
 #
 # Doc 188 P1 (buffer unification, 2026-08-23): src/nelisp-buffer.el's
@@ -1732,7 +1732,7 @@ pinned-collision ns-collision	unsupported-feature	lisp/nelisp-eln-metadata-bytec
 pinned-collision ns-collision-divergent	autoload	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	5276fb97268b
 pinned-collision ns-collision-divergent	buffer-substring-no-properties	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	b9e6d0867f18
 pinned-collision ns-collision-divergent	byte-compile-file	scripts/nelisp-stdlib-prelude.el src/nelisp-bytecode.el	2e1b1ef2db39
-pinned-collision ns-collision-divergent	cl-defstruct	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	a032df136a72
+pinned-collision ns-collision-divergent	cl-defstruct	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	c984b84d3ccd
 pinned-collision ns-collision-divergent	defun	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	1b3dc6047583
 pinned-collision ns-collision-divergent	equal-including-properties	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	7671b1bfe222
 pinned-collision ns-collision-divergent	functionp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	24c291066c96
@@ -1757,16 +1757,16 @@ pinned-collision ns-collision-divergent	nelisp-put-text-property	scripts/nelisp-
 pinned-collision ns-collision-divergent	nelisp-remove-text-properties	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el	3e7f81388edb
 pinned-collision ns-collision-divergent	propertize	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	170e301311e9
 pinned-collision ns-collision-divergent	put-text-property	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	4db128a352be
-pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	6d115d6cc341
+pinned-collision ns-collision-divergent	save-excursion	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	c4281096b3ac
 pinned-collision ns-collision-divergent	sort	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	4411ed2fc1ff
 pinned-collision ns-collision-divergent	text-properties-at	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	32d531530e2d
-pinned-collision ns-collision-divergent	with-current-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	bbef77876a9c
+pinned-collision ns-collision-divergent	with-current-buffer	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	e421fab80f95
 # 2026-09-28: cl-generic subclass fix, prelude/cl-macros lockstep copies.
 pinned-collision ns-collision	merge-ordered-lists	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-generic--class-designator-name	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 # 2026-09-29: libgaps2 staged a real save-restriction in the prelude; lisp/nelisp-stdlib-eval-special.el keeps its Tier-2 stub (same pattern as save-excursion/with-current-buffer).
 pinned-collision ns-collision-divergent	save-restriction	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el	24d3036ccc28
-pinned-collision ns-collision-divergent	equal	lisp/nelisp-stdlib-equal.el scripts/nelisp-stdlib-prelude.el	fa7618591da1
+pinned-collision ns-collision-divergent	equal	lisp/nelisp-stdlib-equal.el scripts/nelisp-stdlib-prelude.el	3edec352e6a9
 pinned-collision ns-collision-divergent	expand-file-name	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	6489e2f6ef54
 pinned-collision ns-collision-divergent	file-name-directory	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	0765898f8ab1
 pinned-collision ns-collision-divergent	file-name-nondirectory	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	92a036dbb432

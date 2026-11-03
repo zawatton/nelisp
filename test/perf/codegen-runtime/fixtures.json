@@ -68,6 +68,8 @@
     }
   },
   "nelisp_mirror_lookup_entry": {
+    "unit_frontend": true,
+    "dependency_closure": true,
     "functions": [
       "nelisp_mirror_lookup_entry",
       "nelisp_mirror_lookup_entry_valid_key",

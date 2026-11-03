@@ -1,0 +1,15 @@
+#+TITLE: Genuine Wasm rootstack data composition
+
+* S1 Four genuine rootstack functions with owned static storage
+
+** S1.1 Uncomposed genuine source fails on absent data ownership
+cmd: test "$(cat target/wasm-rootstack/red.rc)" -eq 255 && rg -q ':wasm-context-missing :data-symbol-addrs' target/wasm-rootstack/red.log
+
+** S1.2 Focused composition, provenance and effective negative controls
+evidence: target/wasm-rootstack/focused-evidence.json sha256=eda62ac26b1eb8eccf517267194ba135d92f69209b1475f2dd6300b8f90b0ec6
+
+** S1.3 Actual Wasm rootstack lifecycle, capacity and instance isolation
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" env PYTHONDONTWRITEBYTECODE=1 node --disable-wasm-trap-handler tools/ai/wasm-rootstack-check.mjs
+
+#+NOTE: This data-provider slice does not establish W0 image execution, allocator compatibility or GC boot.

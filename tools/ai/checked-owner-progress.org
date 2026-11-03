@@ -1,0 +1,15 @@
+#+TITLE: Unused checked frame-owner traversal
+#+NOTE: Four unit criteria; parent objective and existing known-red criteria unchanged. No observer wiring or native claim.
+* S1 Source and finite genuine-root-flow validation
+** S1.1 Reader and closed source/provider boundary preflight
+#+NOTE: Attempts1/2 failures remain immutable. Changed verifier design now passes current strict shape plus authentic/moved nested-advance controls, reader0/preflight0; no historical gate relabeled PASS.
+cmd: python3 -c 'import json; q=json.load(open("../out/checked-owner/verifier-redesign1/qualification.json")); assert q["source_structure_approved"] and q["source_unchanged_after"]'
+** S1.2 Genuine traversal/root-flow E2E and specific harmful mutation witnesses
+#+NOTE: Attempt1 timeout and attempt2 overall FAIL retained. New ten-ID gate PASS composes with exact unchanged prior three PASS bodies/provider pins. Old harmful-mutant ID maps to two independent IDs; old precision maps to eight. No positive-owner/Env2/cp2 logging reruns; denominator4 unchanged.
+cmd: python3 -c 'import json; q=json.load(open("../out/checked-owner/verifier-redesign1/qualification.json")); assert q["status"]=="FINITE_OWNER_MODEL_AND_VERIFIER_PASS_NOT_NATIVE" and len(q["prior_pass_ids"])==3 and len(q["new_pass_ids"])==10 and q["equivalence_status"]=="EXACT_AST_EQUIVALENCE" and q["providers_byte_unchanged"]'
+* S2 Frozen review handoff
+** S2.1 Hash-authenticated source/test/evidence snapshot
+evidence: ../out/checked-owner/verifier-redesign1/receipt.json sha256=b661df423232623a66963cbd287007831b321bc0d2cc035ce04f94240222c5ac
+** S2.2 Independent completion review of the actual finite E2E evidence
+#+NOTE: Independent Astra completion accepts only this UNUSED finite source/model unit. Native, moving/reentrant safety, whole-pass migration and production wiring remain HOLD. No tests were rerun during review; attempts1/2 remain historical failures.
+evidence: ../out/checked-owner/verifier-redesign1/astra-completion/REPORT.txt sha256=3df82693127be950d755d47d14b9b9ccb144bc447ba077f28f5ba4c5705d3256

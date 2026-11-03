@@ -1,0 +1,170 @@
+#+TITLE: Startup, initialized-state reuse, and ready boundaries for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — design only; no new phase timings or qualification
+#+SCOPE: Runtime boot, initialized-state identity, and measurement boundaries
+
+* Decision and evidence boundary
+
+Measure and optimize repeated work only after phase timing establishes it.
+The existing GNU/NeLisp comparison reports whole-process elapsed as well as
+kernel elapsed, but it does not attribute the difference to runtime startup.
+For =integer-sum N=16,000,000=, NeLisp ON kernel time was 0.064497948 s and
+whole-process elapsed was 7.253645427 s; GNU bytecode was 0.242635250 s and
+0.762427404 s respectively. The process figure includes harness setup, two
+HIGH-count warmups, one measured call, validation, and wrapper cleanup. It is
+not pure startup. Existing records contain =process_ns= and =inner_ns= only.
+No loader, bootstrap, admission, warmup, or cleanup phase durations exist.
+
+The [[file:235-source-manifest.json][source manifest]] pins SBCL, the
+frozen12 NeLisp snapshot, benchmark harness, research record, and current
+comparison data. The shared NeLisp checkout has existing
+uncommitted changes preserved at its recorded HEAD; frozen12 is a separate
+measured source tree, not shared implementation. All new operations in this
+document are proposals, not existing NeLisp APIs. Formal qualification stays
+HOLD.
+
+* What current source shows
+
+The ON driver is a development qualification/admission harness: it loads
+compiler/test support, source-checks and admits selected candidates, validates
+measurement inputs, and contains conditional negative-control support used
+by separate control runs. Those explicit steps
+must not be called normal application startup. A deployed application may use
+an already initialized image and need not perform this harness workflow, but
+that normal path has not been measured here.
+
+In the benchmark harness, =paired_bench.py= times the subprocess and wrapper
+cleanup as =process_ns=; the paired runner parses the elapsed value reported
+by the driver. The lane
+wrapper creates scratch/cache, enters bubblewrap, starts =nelisp-dynamic
+--load=, waits, and removes scratch before returning. That work is benchmark
+harness overhead, not necessarily ordinary interactive startup; see the
+manifest's =lane_runner.py:27-130= and =paired_bench.py:45-62= anchors.
+
+The ON benchmark driver explicitly loads the FXIR helper, full prelude, and
+application producer, restores the FX registration cell, registers and
+checks nine fixed application mappings, and preflights/installs candidates.
+It then builds and validates input, calibrates the timer, performs two HIGH
+warmups, times one call, and validates the result. The nested primary route
+has its own bootstrap and two mapping registrations. Producer initialization
+hashes helper/prelude and explicitly requests helper loading; producer install
+preflights source before and after helper initialization and recompiles each
+selected candidate for admission. These are observed benchmark preparation
+steps; exact anchors include =benchmark-driver-native-on.el:23-57= and
+=tools/nelisp-native-application-producer.el:352-551=. Repeated helper
+definition processing is a source-level observation on
+the inspected source-loader route, not a measured CPU attribution. The old
+image hotpatch walk is conditional; do not state that it ran on the measured
+image. The exact active loader interception was not dynamically traced.
+
+Normal NeLisp =--load= source boot evaluates the embedded prelude only when no
+valid cold image is available. Cold-image boot restores globals and runs
+process-dependent reinitialization. The inspected paths show no generic
+feature-based load-once guard, but they do not prove which loader path every
+measured process selected. SBCL source shows a different model: the runtime
+loads a core and invokes its saved initial Lisp function; resumed saved state
+performs reinitialization before its saved toplevel. See the pinned
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/runtime.c#L766-L820][runtime entry]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/coreparse.c#L1573-L1577][core directory]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/save.lisp#L85-L123][saved-state resume]] sources. This can avoid rebuilding
+all initialized Lisp state from source, while per-process initialization and
+OS mapping still remain. Those facts are not a NeLisp savings estimate.
+
+* Proposed ready-state contract
+
+Define the following proposed phases explicitly; they are instrumentation and
+state labels, not existing APIs:
+
+- =RUNTIME_ENTRY=: process has entered the runtime after wrapper/spawn work.
+- =IMAGE_STATE_RESTORED=: valid image globals or source-prelude boot complete.
+- =PROCESS_REINIT_COMPLETE=: process-specific paths, clocks, signals, threads,
+  GC roots, and environment state are usable.
+- =APPLICATION_STATE_READY=: required features, registrations, module bodies,
+  and admitted native identities are usable under the current image/compiler/
+  ABI/module fingerprint.
+- =FIRST_FORM_COMPLETE=: first user form has returned with normal status.
+- =BENCH_WARMUP_i=, =KERNEL_BEGIN/END=, =RESULT_VALIDATED=, and
+  =WRAPPER_CLEANUP_COMPLETE= delimit benchmark-only work.
+
+The ready boundary follows all required semantic initialization. It cannot
+mean merely that the runtime accepted a command. Establish an immutable
+identity fingerprint over runtime/image version, prelude and module hashes,
+compiler and native ABI versions, feature set, producer/admission version,
+and required registration identities. Reuse an application-ready image or
+admission artifact only when every component matches and initialized public
+state, providers, and GC roots are authenticated. Stale, partial, or unknown
+identity must reject reuse and follow the safe existing boot/admission route.
+This artifact fingerprint does not freeze live Lisp behavior: after READY,
+normal =fset=, advice, and module redefinition must continue to work and
+invalidate or revalidate dependent native identities under Doc 231.
+
+Proposed initialization operations are =init-begin(identity)=,
+=init-register(identity,definition-id,provider)=,
+=init-publish-ready(identity,root-set)=, and =init-fail(identity,status)=.
+Their state transition is =UNSEEN -> INITIALIZING -> READY(identity)= or
+=FAILED(identity,status)=. A same-identity registration is accepted only
+when provider and definition identity match; a conflicting definition is an
+error or a safe fallback within the initialization transaction. Reject a
+stale identity before application initialization begins; after
+=INITIALIZING= starts, failure or reentrancy must propagate or resume recorded
+initialization state, never restart generic initialization and repeat user
+side effects. Do not skip native-admission checks to reach READY. Preserve
+exactly-once initialization side effects, global bindings, features, and
+registration visibility before a user form can run.
+
+* Phase measurement protocol
+
+Future measurements use fresh processes and one monotonic clock domain. Emit
+phase records to a separate diagnostic artifact so normal benchmark stdout,
+stderr, result check, and failure semantics remain unchanged. Record identity,
+N, CPU, process cohort, and inclusive/exclusive boundary for every event. Keep
+an uninstrumented process run as the user-visible elapsed result and measure
+tracing overhead separately.
+
+Report separately: wrapper/subprocess launch; runtime entry; image mapping or
+source boot; process reinitialization; application preparation/admission;
+ready-to-evaluate; first user form; each of two warmups; measured body;
+validation; exit and wrapper cleanup. Do not subtract independently computed
+medians to invent phase durations. Do not assume warmups equal the measured
+body. Preserve the unmodified full-process metric alongside phase intervals.
+
+Process-cold means a fresh process; it does not mean an OS/page-cache-cold
+filesystem. Do not drop global caches or claim cold I/O without a controlled
+cache protocol. Compare source boot, validated cold image, and validated
+application-ready image under matched input, loaded public state, CPU, and N.
+An image-reuse cohort that removes per-process source preflight or candidate
+admission is a changed measurement method, not a same-method speedup. Report
+it separately, retain the current admission route as its own cohort, and
+include image creation/admission amortization before claiming total savings.
+Treat repeated calls within one process as a distinct cohort. Count image
+construction and admission cost, size, invalidation frequency, and amortized
+cost separately. Retain exact native admission evidence and test that stale
+image/module/compiler identities reject reuse.
+
+* Alternatives, dependencies, and acceptance
+
+First instrument boundaries without changing initialization. Next build an
+identity manifest and compare safe ready-state reuse with the current route.
+Then consider a generic authenticated application-ready image, reusable
+admission artifact, or ordinary source path; do not add a benchmark-specific
+readiness shortcut, new speed-only primitive, or early READY marker. Keep
+process-dependent state outside saved images unless its reinitialization
+contract explicitly proves safe reuse. No startup attribution or speedup is
+promised by this design.
+
+This work depends on Docs 234's root/effect and allocation contract, Doc 231's
+call/status boundary, and Docs 230, 232, and 233's storage, mutation, and
+representation identities. The startup path may reuse their compiled state
+only if their module and ABI identities are included in invalidation.
+
+Before sampling, freeze the workload matrix, same-N counts, CPU, input/state
+preconditions, cold/warm filesystem controls, and target pass threshold. Use
+identical workloads/counts on GNU bytecode, old NeLisp, and new NeLisp. Require
+at least 10% median improvement in measured ready-to-evaluate time on a target
+cohort, no same-N first-form or whole-process median regression above 5%, and
+no semantic, registration, or native-admission mismatch. Report cache size,
+preparation cost, and amortized cost. Negative controls include stale image,
+changed module/compiler/ABI fingerprint, partial initialization, duplicate
+registration, conflicting provider, interrupted initialization, and a corrupt
+ready marker. Any observable initialization omission, wrong loaded state, or
+skipped native evidence fails regardless of timing.

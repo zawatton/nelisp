@@ -1,0 +1,513 @@
+{
+  "status": "COMPLETE_EXPERIMENTAL_NINE_ROWS",
+  "scope": "GNU_EMACS31_1_BYTECODE_VS_FINAL_ON_NATIVE",
+  "source_gate": "HOLD_UNCHANGED",
+  "qualification_credit": false,
+  "process_time_scope": "Includes startup, setup, two high-count warmups, measured body, validation and teardown",
+  "rows": {
+    "integer-sum": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 4000000,
+      "high": 16000000,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.24263525,
+          "high_process_seconds": 0.762427404,
+          "high_kernel_range_seconds": [
+            0.221067429,
+            0.27384758
+          ],
+          "net_ns_per_step_median": 15.178640666666666,
+          "net_ns_per_step_raw": [
+            13.206481916666666,
+            14.23720525,
+            15.183349416666667,
+            15.178640666666666,
+            15.113453083333333,
+            18.4126695,
+            15.750010833333333
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.064497948,
+          "high_process_seconds": 7.253645427,
+          "high_kernel_range_seconds": [
+            0.064404011,
+            0.066924095
+          ],
+          "net_ns_per_step_median": 4.0277441666666665,
+          "net_ns_per_step_raw": [
+            4.0002465,
+            4.026174583333333,
+            4.015088083333334,
+            4.0277441666666665,
+            4.194418583333333,
+            4.028002416666666,
+            4.034062166666667
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 0.26582266179378305,
+        "high_process_seconds": 9.5138834057439,
+        "net_ns_per_step_median": 0.2653560523052547
+      },
+      "kernel_time_reduction_percent": 73.41773382062169,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/campaign/integer-sum/raw.json"
+    },
+    "nested-function-call2": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 1,
+      "sibling": 17,
+      "low": 1048576,
+      "high": 4194304,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.340655327,
+          "high_process_seconds": 1.402491734,
+          "high_kernel_range_seconds": [
+            0.280118704,
+            0.520679951
+          ],
+          "net_ns_per_step_median": 84.56671206156413,
+          "net_ns_per_step_raw": [
+            84.56671206156413,
+            140.242945988973,
+            71.31673876444499,
+            133.5150349934896,
+            48.520178159077965,
+            142.31379000345865,
+            52.4695831934611
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.700156927,
+          "high_process_seconds": 10.567830313,
+          "high_kernel_range_seconds": [
+            0.664434195,
+            1.130666971
+          ],
+          "net_ns_per_step_median": 170.15865230560303,
+          "net_ns_per_step_raw": [
+            126.52427959442139,
+            184.58232879638672,
+            156.9806048075358,
+            184.86472670237222,
+            128.8496300379435,
+            170.15865230560303,
+            306.82531356811523
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 2.0553235822435854,
+        "high_process_seconds": 7.535039285301057,
+        "net_ns_per_step_median": 2.012123306647282
+      },
+      "kernel_time_reduction_percent": -105.53235822435853,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/campaign/nested-function-call2/raw.json"
+    },
+    "hash-get1024": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 16384,
+      "high": 65536,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.004760742,
+          "high_process_seconds": 0.070853325,
+          "high_kernel_range_seconds": [
+            0.004568815,
+            0.004895687
+          ],
+          "net_ns_per_step_median": 73.08941650390625,
+          "net_ns_per_step_raw": [
+            73.45320638020833,
+            75.68935139973958,
+            72.58980305989583,
+            73.16703287760417,
+            69.87343343098958,
+            69.529052734375,
+            73.08941650390625
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.110665798,
+          "high_process_seconds": 7.304602915,
+          "high_kernel_range_seconds": [
+            0.109001875,
+            0.117880106
+          ],
+          "net_ns_per_step_median": 1835.3845621744792,
+          "net_ns_per_step_raw": [
+            1962.1608479817708,
+            1799.8827311197917,
+            1802.4050903320312,
+            1827.5750325520833,
+            1855.631123860677,
+            1835.3845621744792,
+            1836.1218668619792
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 23.245493664643032,
+        "high_process_seconds": 103.09470889333706,
+        "net_ns_per_step_median": 25.11149561682966
+      },
+      "kernel_time_reduction_percent": -2224.549366464303,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/hash-get1024/raw.json"
+    },
+    "vector-write": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 1048576,
+      "high": 4194304,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.165211439,
+          "high_process_seconds": 0.551475821,
+          "high_kernel_range_seconds": [
+            0.159892321,
+            0.168148279
+          ],
+          "net_ns_per_step_median": 39.435614585876465,
+          "net_ns_per_step_raw": [
+            38.68376541137695,
+            40.033531506856285,
+            39.299038569132485,
+            40.27136421203613,
+            40.42226473490397,
+            39.435614585876465,
+            37.38447666168213
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.325818062,
+          "high_process_seconds": 8.004769108,
+          "high_kernel_range_seconds": [
+            0.325527906,
+            0.330549002
+          ],
+          "net_ns_per_step_median": 77.54965750376384,
+          "net_ns_per_step_raw": [
+            77.39701398213704,
+            79.1476395924886,
+            77.54958152770996,
+            77.37639840443929,
+            78.93284702301025,
+            77.54965750376384,
+            78.17682997385661
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 1.9721277411063531,
+        "high_process_seconds": 14.515176918336731,
+        "net_ns_per_step_median": 1.966487864285437
+      },
+      "kernel_time_reduction_percent": -97.21277411063531,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/vector-write/raw.json"
+    },
+    "string-slice16": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 262144,
+      "high": 1048576,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.274148464,
+          "high_process_seconds": 0.872683192,
+          "high_kernel_range_seconds": [
+            0.266432762,
+            0.280598879
+          ],
+          "net_ns_per_step_median": 260.56750361124676,
+          "net_ns_per_step_raw": [
+            268.03233337402344,
+            261.1935386657715,
+            251.3603858947754,
+            260.56750361124676,
+            250.35781860351562,
+            252.33111953735352,
+            262.66631444295246
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.283679008,
+          "high_process_seconds": 7.804366858,
+          "high_kernel_range_seconds": [
+            0.282703161,
+            0.294668913
+          ],
+          "net_ns_per_step_median": 284.2443784077962,
+          "net_ns_per_step_raw": [
+            282.7570521036784,
+            296.37279383341473,
+            284.2443784077962,
+            286.90343856811523,
+            285.64833577473956,
+            283.40885670979816,
+            282.3744583129883
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 1.0347641707013175,
+        "high_process_seconds": 8.942955392682755,
+        "net_ns_per_step_median": 1.0908665680424758
+      },
+      "kernel_time_reduction_percent": -3.4764170701317543,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/string-slice16/raw.json"
+    },
+    "vector-allocate64": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 262144,
+      "high": 1048576,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 1.483497143,
+          "high_process_seconds": 4.539792979,
+          "high_kernel_range_seconds": [
+            1.453608751,
+            1.550346613
+          ],
+          "net_ns_per_step_median": 1415.9795684814453,
+          "net_ns_per_step_raw": [
+            1390.8823649088542,
+            1383.5257657368977,
+            1507.617525736491,
+            1504.029872894287,
+            1356.7311414082844,
+            1501.0767428080242,
+            1415.9795684814453
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 1.047301054,
+          "high_process_seconds": 10.111602116,
+          "high_kernel_range_seconds": [
+            0.998668909,
+            1.082290888
+          ],
+          "net_ns_per_step_median": 1015.6415252685547,
+          "net_ns_per_step_raw": [
+            1015.6415252685547,
+            955.370221455892,
+            1056.4229647318523,
+            1023.2327740987142,
+            952.7978668212891,
+            1025.568660736084,
+            944.7109425862631
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 0.7059676919108162,
+        "high_process_seconds": 2.2273267003085517,
+        "net_ns_per_step_median": 0.7172713137081281
+      },
+      "kernel_time_reduction_percent": 29.40323080891838,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/vector-allocate64/raw.json"
+    },
+    "function-call2": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 1048576,
+      "high": 4194304,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.302276134,
+          "high_process_seconds": 0.962867213,
+          "high_kernel_range_seconds": [
+            0.288293123,
+            0.304327965
+          ],
+          "net_ns_per_step_median": 72.11110655466716,
+          "net_ns_per_step_raw": [
+            68.25090758005778,
+            72.39168548583984,
+            69.22853883107503,
+            73.05705674489339,
+            71.72055435180664,
+            72.11110655466716,
+            72.4655818939209
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 1.034378052,
+          "high_process_seconds": 10.206275719,
+          "high_kernel_range_seconds": [
+            1.026350975,
+            1.132738829
+          ],
+          "net_ns_per_step_median": 245.7398598988851,
+          "net_ns_per_step_raw": [
+            245.7398598988851,
+            278.0516297022502,
+            240.5328509012858,
+            247.00580088297525,
+            242.31212584177652,
+            270.29773267110187,
+            244.828470547994
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 3.4219640112242544,
+        "high_process_seconds": 10.59987875919086,
+        "net_ns_per_step_median": 3.4077948826453057
+      },
+      "kernel_time_reduction_percent": -242.19640112242544,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/function-call2/raw.json"
+    },
+    "string-concat16": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 262144,
+      "high": 1048576,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.287072897,
+          "high_process_seconds": 0.921417938,
+          "high_kernel_range_seconds": [
+            0.273365974,
+            0.301873446
+          ],
+          "net_ns_per_step_median": 274.074712117513,
+          "net_ns_per_step_raw": [
+            274.074712117513,
+            261.5048891703288,
+            290.45895767211914,
+            257.44823964436847,
+            274.7225761413574,
+            271.70669174194336,
+            275.56992212931317
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.341924191,
+          "high_process_seconds": 8.055842894,
+          "high_kernel_range_seconds": [
+            0.340809822,
+            0.35561204
+          ],
+          "net_ns_per_step_median": 338.53636169433594,
+          "net_ns_per_step_raw": [
+            332.8796081542969,
+            340.4778302510579,
+            354.7708435058594,
+            338.53636169433594,
+            339.886962890625,
+            335.6738789876302,
+            335.2433853149414
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 1.1910709599311287,
+        "high_process_seconds": 8.74287612794445,
+        "net_ns_per_step_median": 1.2351973630795394
+      },
+      "kernel_time_reduction_percent": -19.107095993112864,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/string-concat16/raw.json"
+    },
+    "vector-read": {
+      "status": "EXPERIMENTAL_MEASURED",
+      "cpu": 12,
+      "sibling": 28,
+      "low": 1048576,
+      "high": 4194304,
+      "pairs": 7,
+      "engines": {
+        "gnu": {
+          "high_kernel_seconds": 0.182685614,
+          "high_process_seconds": 0.608882401,
+          "high_kernel_range_seconds": [
+            0.177799702,
+            0.185052395
+          ],
+          "net_ns_per_step_median": 43.66590150197347,
+          "net_ns_per_step_raw": [
+            44.916381200154625,
+            44.13072903951009,
+            44.046980222066246,
+            42.258989334106445,
+            43.66590150197347,
+            41.86358610788981,
+            41.97969881693522
+          ]
+        },
+        "on": {
+          "high_kernel_seconds": 0.317495823,
+          "high_process_seconds": 8.056687495,
+          "high_kernel_range_seconds": [
+            0.314555168,
+            0.32524395
+          ],
+          "net_ns_per_step_median": 75.4060541788737,
+          "net_ns_per_step_raw": [
+            76.97743352254231,
+            75.00208695729573,
+            75.02929592132568,
+            74.78145853678386,
+            76.27909342447917,
+            77.60968399047852,
+            75.4060541788737
+          ]
+        }
+      },
+      "ratio_on_over_gnu": {
+        "high_kernel_seconds": 1.7379355497581765,
+        "high_process_seconds": 13.231927021980063,
+        "net_ns_per_step_median": 1.7268864625516946
+      },
+      "kernel_time_reduction_percent": -73.79355497581766,
+      "invalid_nets": [],
+      "result_agreement": true,
+      "all_stderr_empty": true,
+      "raw": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-remaining7/campaign/vector-read/raw.json"
+    }
+  }
+}

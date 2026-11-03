@@ -77,10 +77,18 @@
     ;; Every handler the build lets the walk admit (`nelisp-argframe-walk-names')
     ;; is admitted, plus the 197 the indexed pass admitted on HEAD.
     (defvar nelisp-argframe-walk-names nil)
-    (wr-check "admit" (and (= (length wr-noword-v34) 115) nelisp-argframe-walk-names
-                           (cl-every (lambda (n) (member n adm)) nelisp-argframe-walk-names)
-                           (= (length adm) (+ 197 (length (cl-remove-if (lambda (n) (member n (nelisp-argframe-admitted-names-indexed table)))
-                                                                        nelisp-argframe-walk-names)))))
+    (wr-check "admit" (and (= (length wr-noword-v34) 115)
+                          (if (null nelisp-argframe-walk-names)
+                              ;; applyfn2 admits all 361 structurally eligible
+                              ;; handlers, including the complete frozen 115.
+                              (and (= (length adm) 361) (null left))
+                            (and
+                             (cl-every (lambda (n) (member n adm)) nelisp-argframe-walk-names)
+                             (= (length adm)
+                                (+ 197 (length
+                                        (cl-remove-if
+                                         (lambda (n) (member n (nelisp-argframe-admitted-names-indexed table)))
+                                         nelisp-argframe-walk-names)))))))
               (format "admitted=%d walk-names=%d noword-left=%d" (length adm) (length nelisp-argframe-walk-names) (length left))))
   (wr-check "sid" (cl-every (lambda (n) (let ((sid (nelisp-standalone--sid n))) (and sid (< sid 4095)))) adm)
             (format "nosid=%S" (cl-remove-if #'nelisp-standalone--sid adm)))
@@ -116,10 +124,18 @@
   ;; Integrated v35 (all 164 admitted): Linux unit 15.50 MB, Win64 17.68 MB.  Each
   ;; target's applyfn source may grow at most 25000 chars over HEAD's (about 0.2 MB
   ;; of unit: the Win64 unit stays under 15 MiB with the other lanes' share).
-  (let ((chars (apply #'+ (mapcar (lambda (f) (length (prin1-to-string f))) (cdr src))))
-        (win (let ((nelisp-standalone--target 'windows-x86_64))
-               (apply #'+ (mapcar (lambda (f) (length (prin1-to-string f)))
-                                  (cdr (nelisp-standalone--applyfn-source)))))))
+  ;; applyfn2: the bound is per link unit; the argv entries (frame leaves, their
+  ;; specializations and routers) are compiled as units of their own
+  ;; (`nelisp-standalone--applyfn-split-units'), so the gate measures the main unit,
+  ;; and tools/ai/applyfn2-gencheck.el gates the argv-entry units.
+  (let* ((main-chars (lambda (source)
+                       (apply #'+ (mapcar (lambda (f) (length (prin1-to-string f)))
+                                          (cdr (if (fboundp 'nelisp-standalone--applyfn-split-units)
+                                                   (car (nelisp-standalone--applyfn-split-units source))
+                                                 source))))))
+         (chars (funcall main-chars src))
+         (win (let ((nelisp-standalone--target 'windows-x86_64))
+                (funcall main-chars (nelisp-standalone--applyfn-source)))))
     (wr-check "size" (and (<= chars (+ 1333657 25000)) (<= win (+ 1406419 25000)))
               (format "linux-chars=%d (+%d) win64-chars=%d (+%d)" chars (- chars 1333657) win (- win 1406419))))
   (let ((h (secure-hash 'sha256 (mapconcat #'identity

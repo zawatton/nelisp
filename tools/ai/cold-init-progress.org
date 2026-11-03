@@ -1,0 +1,58 @@
+#+TITLE: Doc 243 — cheaper start after cold-load
+#+NOTE: Created 2026-11-03 before any implementation (user chose "cold-load and init" over lazy dynamic linking after the S0 profile). Baseline build: build-on33. Workers: Sonnet. Primary metric: callgrind Ir of a bare start (nelisp-dynamic --load a242-s2/nop.el) under a fixed environment; ld.so cost (~4.3 M Ir) is out of scope.
+#+NOTE: Fixed environments for every check: MIN = env -i PATH=/usr/bin:/bin HOME=$HOME; SYN = MIN plus 60 synthetic NL243_VAR_<i>=<64 chars> variables (about 4.5 KB, close to the user's 56 vars / 4.1 KB); ALT = SYN plus TMPDIR=<scratch dir> and XDG_CONFIG_HOME=<scratch dir>.
+
+* S0 Measurement
+
+** S0.1 A bare start of build33 is broken down by object, by function (self and inclusive) and by environment size
+evidence: tools/ai/sbcl-impl-evidence/a243-s0/bare-start-b33.txt sha256=2a97fa737c3115a7944097e925a3f9ce254fc51f11e943937743ca79ee2b845b
+
+* S1 Environment reinit
+
+** S1.1 E2E: on a rebuilt image Ir(SYN) - Ir(MIN) of a bare start is at most 25% of build33's; process-environment, getenv of PATH/HOME/TMPDIR/XDG_CONFIG_HOME/NL243_VAR_7, exec-path, user-emacs-directory, temporary-file-directory and internal--text-quoting-flag print equal to build33 under MIN, SYN and ALT
+#+TIMEOUT: 600
+#+NOTE: 2026-11-03 build34 (reinit env code as compiled prelude defun, still mapcar+lambda): base -0.55 M Ir, delta unchanged (ratio 0.9999), equality PASS. build35 (loop without inner lambda): delta 2,776,699 -> 835,125 (ratio 0.301, FAIL by 0.051); SYN total 15.04 M -> 11.60 M; equality PASS. Remainder is spread (assoc walk in getenv ~0.24 M, string allocation, driver env walk ~0.23 M).
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s1/check-s11.sh
+
+* S2 Identity tables after a fixed-base load
+
+** S2.1 E2E: on a rebuilt image a bare start under SYN makes no nl_ht_reindex call on the fast path (callgrind call count 0); with NELISP_COLD_FORCE_RELOCATE=1 the hash-table probe and the Doc 240 launcher (hash-get1024) results equal build33's
+#+TIMEOUT: 600
+#+NOTE: 2026-11-03 deferred by the user (kept red): the 6 reindex calls are required because the dump packs the heap and identity hashes are address-based; avoiding them needs a ~120-line post-pass that rehashes identity tables in the written image (~1.17 M Ir, ~0.3 ms gain, high risk).
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s2/check-s21.sh
+
+* S3 End to end
+
+** S3.1 E2E: on the final build a bare start under SYN executes at most 85% of build33's Ir; quiet paired wall (15 alternating rounds) of the bare start at least 5% faster than build33; Doc 242 checks S2.1 and S3.1 pass with COLD_LOAD_BIN set to the final build
+#+TIMEOUT: 600
+#+NOTE: 2026-11-03 build42: (a) Ir(SYN) 15,039,084 -> 11,405,909 (0.758) PASS; (b) bare wall 8.0 -> 7.2 ms (0.904) PASS; (c) Doc 242 S2.1 PASS; Doc 242 S3.1 PASS when run alone on a quiet machine (bare 17.8 -> 7.9 ms, launcher 52.5 -> 41.8 ms, results equal; a243-s3/d242-s31-b42.txt), but INVALID (quiet guard after timing, load1 0.58-0.66) inside the meter run, which also hits the 600 s budget. Kept FAIL.
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s3/check-s31.sh
+
+* S4 Inner-lambda calls (runtime fix)
+#+NOTE: Added 2026-11-03 at the user's request ("fix the lambda call at the root"); denominator 4 -> 6. Found while doing S1: calling an inner lambda from compiled code costs ~36 k Ir per call in the cold-boot reinit (m5_fx_first_call_in / m5_fx_inner_lookup); the S4.1 probe measures 13,930 Ir per call on build33. Negative control on build33: S4.1 (a) FAIL ratio 1.000, (b) PASS; S4.2 PASS vs verify33, FAIL vs verify22.
+
+** S4.1 E2E: on a rebuilt image the net per-call Ir of a closed inner lambda (no free variable) called through mapcar from a compiled function, net of an identical baseline mapping the builtin 1+, is at most 25% of build33's; results equal GNU Emacs
+#+NOTE: 2026-11-03 criterion corrected (user: "fix the S4 criterion"): the first probe mixed closed and free lambdas and included number-sequence/apply work (~3.2 k Ir per element) that no lambda fix can remove, so 25% was unreachable by construction. Now net of a baseline and split into S4.1 (closed) and S4.3 (free). build33 net: closed 7,938, free 13,867 Ir per call. build36 (anon countdown in the fx table): closed 4,665 (0.588), free 13,867 (1.000). Negative control build33: both (a) FAIL ratio 1.000, (b) PASS.
+#+NOTE: 2026-11-03 build45 (mapcar runs a closure's cached VM record on the argument word: wf_mapcar_fx_call): averaged 3,292 Ir (0.413) FAIL; steady state (calls 2001..6000) 2,929 -> 1,060 Ir. The average still carries 256 interpreted warm-up calls and the compile. Semantic probe 22/22 equal to GNU, verify22 and gate list equal, per-file ERT no new failure.
+#+NOTE: 2026-11-03 build47 (build46 compiler on the VM + `nelisp--fx-anon-calls' 256 -> 64, user decision after the build46 sweep): 1,717 Ir (0.215) PASS; results equal GNU. S4.3 4,586 (0.331) still FAIL. Bare start SYN 11,406,563 Ir (build46 11,406,675); 100 lambdas x10/x50 unchanged vs build46 (264.9 M / 302.8 M), x300 611.4 M -> 475.3 M.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s4/check-s41.sh
+
+** S4.2 E2E: verify22 outputs (rows results, sd/kd, reader probe, epoch probe) of the rebuilt image equal build33's
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s4/check-s42.sh
+
+** S4.3 E2E: on a rebuilt image the net per-call Ir of an inner lambda with a free (captured) variable called through mapcar from a compiled function, net of the same 1+ baseline, is at most 25% of build33's; results equal GNU Emacs
+#+NOTE: Added 2026-11-03 at the user's request ("also speed up free-variable lambdas"); denominator 6 -> 7. build33/build36: 13,867 Ir per call; nl_env_push_captured (walk of the captured environment) is ~6.3 k of it; such closures are never compiled (the fx path requires an environment without lexical bindings).
+#+TIMEOUT: 600
+#+NOTE: 2026-11-03 build42 (S4c capture dedupe + S4d compiled read-only captures): averaged over 2000 calls 6,179 Ir (0.446) FAIL; steady state (calls 2001..6000) 13,867 -> 3,838 Ir (0.277). Closed lambdas: 4,826 averaged (0.608), steady 2,925 -> 2,929 (unchanged). The averaged criterion includes 256 interpreted warm-up calls and the compile itself. Semantic probe (18 cases incl. shadowing, shared setq, 9 captures) equal to GNU; verify22 and standalone gate list equal to the reference.
+#+NOTE: 2026-11-03 build48 (`mapcar' runs a cap closure's record directly: `wf_mapcar_cap_setup' resolves the captured binding pairs once per walk into the walk's cache vector, found without counting a call by `m5_fx_peek_body'; each element reads the values and runs the VM on an argument buffer): 4,586 -> 1,893 Ir (0.137) PASS; results equal GNU. S4.1 1,738 (0.219) PASS; S1.1, S4.2, S5.1 PASS; semantic probe 22/22 = GNU; 100 lambdas x10/x50/x300 265.0 M / 303.0 M / 475.9 M Ir (unchanged).
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s4/check-s43.sh
+
+* S5 Compile cost
+#+NOTE: Added 2026-11-03 at the user's request ("speed up the compile itself"); denominator 7 -> 8. The threshold sweep showed S4.1/S4.3 cannot pass by lowering `nelisp--fx-anon-calls': one compile costs ~2.5-5 M Ir. Cause: `nelisp--fx-compile' is a `cl-labels' closure over mutated locals, which the VM declines, so the compiler always ran on the tree-walking interpreter. Negative control build45 vs itself: net 4,023,103 Ir per registration, ratio 1.000 FAIL; output equality PASS (1873 functions).
+
+** S5.1 E2E: on a rebuilt image the net Ir of registering (compiling) an anonymous closure is at most 25% of build45's, and the compiler's output for every named function the image compiled equals build45's
+#+TIMEOUT: 600
+#+NOTE: 2026-11-03 build46 (cl-labels helpers -> top-level `nelisp--fxc-' functions over special variables; the VM now compiles the compiler): 4,023,245 -> 874,180 Ir per registration (0.217) PASS; output equal on 1873 functions (build46 also compiles `nelisp--fx-compile' itself). Effects at the unchanged threshold 256: S4.1 3,292 -> 2,396, S4.3 6,193 -> 5,263; many10 586.8 M -> 265.2 M, many300 1,112.7 M -> 611.4 M; bare start SYN +583 Ir; semantic probe 22/22 = GNU; verify22 equal.
+cmd: bash tools/ai/sbcl-impl-evidence/a243-s5/check-s51.sh

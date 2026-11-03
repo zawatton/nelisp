@@ -1450,6 +1450,28 @@ string host))', byte-identical to every build before this phase."
            (when sentinel (funcall sentinel proc (format "failed with code %d\n" errno))))
          proc)))))
 
+(defconst nelisp--network-listen-any-port-tries 64
+  "Ports `nelisp--network-listen-any-port' tries before giving up.")
+
+(defun nelisp--network-listen-any-port (host)
+  "Listen on HOST at a free port; answer (FD . PORT).
+GNU's `:service t' asks the kernel for an ephemeral port (bind to 0) and
+reads it back with getsockname(2), which the standalone runtime does not
+expose.  Instead try random ports of the IANA ephemeral range 49152-65535
+\(the range the kernel itself uses for such binds on most systems): bind
+fails with EADDRINUSE (-98) on a port in use, so the port answered is free
+and is the one actually bound.  Any other error is signaled at once."
+  (let ((tries nelisp--network-listen-any-port-tries) (result nil))
+    (while (and (null result) (> tries 0))
+      (let ((port (+ 49152 (random 16384))))
+        (condition-case err
+            (setq result (cons (nelisp-socket-listen host port t) port))
+          (error
+           (unless (and (eq (car err) 'nelisp-socket-error) (equal (cdr err) '(-98)))
+             (signal (car err) (cdr err))))))
+      (setq tries (1- tries)))
+    (or result (signal 'nelisp-socket-error (list -98)))))
+
 (defun nelisp--network-process-listen (plist)
   "Doc 194 P5: `make-network-process' with `:server t' -- a LISTENING
 `network-process' (status `listen' for its whole lifetime, S3.1/S3.3).
@@ -1483,7 +1505,14 @@ build.el')."
          (service (plist-get plist :service))
          (family (nelisp--net-effective-family plist))
          (fd (condition-case err
-                 (nelisp-socket-listen (nelisp--net-host-string host family) service t)
+                 (if (integerp service)
+                     (nelisp-socket-listen (nelisp--net-host-string host family) service t)
+                   ;; `:service t' (or 0): GNU lets the kernel pick a free port.
+                   (let ((pick (nelisp--network-listen-any-port
+                                (nelisp--net-host-string host family))))
+                     (setq service (cdr pick)
+                           plist (plist-put (copy-sequence plist) :service service))
+                     (car pick)))
                (error (nelisp--network-process-signal-refused plist err))))
          (proc (nelisp--make-network-process-object name 'listen fd)))
     (nelisp--network-process-populate proc plist)
@@ -1512,8 +1541,11 @@ UNCHANGED from before this phase."
          (nowait (plist-get plist :nowait)))
     (cond
      (server
-      (unless (integerp service) (signal 'wrong-type-argument (list 'integerp service)))
-      (nelisp--network-process-listen plist))
+      ;; An integer port, or t / 0 for any free port (GNU semantics).
+      (unless (or (integerp service) (eq service t))
+        (signal 'wrong-type-argument (list 'integerp service)))
+      (nelisp--network-process-listen
+       (if (eql service 0) (plist-put (copy-sequence plist) :service t) plist)))
      (nowait
       (unless (integerp service) (signal 'wrong-type-argument (list 'integerp service)))
       (nelisp--network-process-connect-nowait plist))

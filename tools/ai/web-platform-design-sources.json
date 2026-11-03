@@ -1,0 +1,119 @@
+{
+  "scope": "Source-grounded design only; no runtime readiness assertion",
+  "recorded_date": "2026-10-24",
+  "repository_head": "9d6a4a4f2c01952cb03f9333aa7afeb6bdf6d835",
+  "working_tree": "Pre-existing tracked and untracked changes are present; hashes include local content. No existing runtime/compiler files were edited by this task.",
+  "local_sources": [
+    {
+      "path": "README.org",
+      "sha256": "9399eb491881d49b0c927419444f0b8663c28fe4ac65c903ab2a172f7263a85d"
+    },
+    {
+      "path": "AI.md",
+      "sha256": "65e81ddbf5d557e06d098ef68261a62ffb7e9b4ddfec2488854f585472bce775"
+    },
+    {
+      "path": "Makefile",
+      "sha256": "64caf55275cc76bedde6a954401bfa3efdf5268d2912926bff53ac0cb95a8759"
+    },
+    {
+      "path": "recipes/README.org",
+      "sha256": "edb941581c488516ede2234b22d2f40cc1a9a27949ed2dad93ff00c3aab5eac4"
+    },
+    {
+      "path": "lisp/nelisp-asm-wasm.el",
+      "sha256": "203b96793d68487eca85bca375f49261a1495c31aadbcaaee3ac38a3a4a582b8"
+    },
+    {
+      "path": "lisp/nelisp-wasm-write.el",
+      "sha256": "d29c1f11221c7192bf5b1c6e79f7cc6d0786affc2834436c72de016e10f887b3"
+    },
+    {
+      "path": "lisp/nelisp-heap-image.el",
+      "sha256": "9c5ca301dda822ea99672b570bfbdfdd676967a508bb93d5afdaca101e4a964d"
+    },
+    {
+      "path": "src/nelisp-eval.el",
+      "sha256": "e77256ff3afeb232d8431fa881b2cd77401f34a42a687dc9fde51c59033ea05a"
+    },
+    {
+      "path": "src/nelisp-allocator.el",
+      "sha256": "f1e120c101b78048e604bbfe9ca884468837fab829882d50c6f1f7f8bdfe513e"
+    },
+    {
+      "path": "src/nelisp-gc-inner.el",
+      "sha256": "31fcd8186eece5fd24cc8c557d9effab128191ad5e9f6219eae8ff81f4a2b18a"
+    },
+    {
+      "path": "packages/nelisp-http/README.org",
+      "sha256": "7e076e4d0f2769254bb1ffd9f900f121dd2e6abe741eb5feb3f7fe51e2b2b048"
+    },
+    {
+      "path": "docs/design/164-wasm-backend-p3-blueprint.org",
+      "sha256": "f36101b8a4ec561b75bf48e377861756ea238442002f088b099aa65ced522d72"
+    },
+    {
+      "path": "docs/design/164-wasm-backend-p4-blueprint.org",
+      "sha256": "172c45f0907d46e1da33c5d63e5a63dfa52619dc41a71087a110dcbb93ba426c"
+    },
+    {
+      "path": "docs/design/192-wasm-backend-maturation.org",
+      "sha256": "3f3acae92a5345b13586262d2558ed1aac42796e53f7f1ced00bf23f42ed994e"
+    },
+    {
+      "path": "site/dtw/dtw.js",
+      "sha256": "f2fb4cb8f3b88a6e0930dfe05359516ff797a193ed53a623941f794452569c28"
+    },
+    {
+      "path": "site/dtw/dtw.wasm",
+      "sha256": "a96a3baecece5826ddc46a50249a78e7030cf06c2aafe9040fe2b4e0213dba29"
+    },
+    {
+      "path": "tools/wasm-dtw-p4b/site-smoke.mjs",
+      "sha256": "8d8ee5314d48102b240f2f47cf384fb5656b004d863507bcb5fa7b30a6134d75"
+    },
+    {
+      "path": "../anvil.el/docs/code-context-workflow.ja.md",
+      "sha256": "b17f9f0c11307837e66a1be09d7da72d10c62a61ccf8c9d7fad827634863cf62"
+    },
+    {
+      "path": "../nelisp-system-one/docs/capabilities.ja.md",
+      "sha256": "faf163a32ca5d02757f75443a52471811aa7ee242ba50643d4183fcfb81322b4"
+    }
+  ],
+  "primary_references": [
+    {
+      "url": "https://webassembly.org/docs/web/",
+      "access": "Opened",
+      "use": "Browser integration and host API boundary"
+    },
+    {
+      "url": "https://www.gnu.org/software/emacs/manual/html_node/elisp/nil-and-t",
+      "access": "Official search excerpt; page fetch timed out",
+      "use": "Nil truth and empty-list semantics"
+    },
+    {
+      "url": "https://www.gnu.org/s/emacs/manual/html_node/elisp/Function-Cells.html",
+      "access": "Official search excerpt; page fetch timed out",
+      "use": "Function cell and void-function semantics"
+    },
+    {
+      "url": "https://www.w3.org/TR/CSP3/",
+      "access": "Opened",
+      "use": "CSP policy requirements; browser acceptance still pending"
+    },
+    {
+      "url": "https://tc39.es/ecma262/multipage/structured-data.html#sec-json.stringify",
+      "access": "Opened",
+      "use": "JSON boundary serialization"
+    }
+  ],
+  "tool_limitations": [
+    "Anvil standalone worklog-search and defs-index calls responded.",
+    "Context worker returned wrong-type-argument arrayp (1) on two source files.",
+    "Targeted defs-index-update reported partial status and arrayp errors; no index completeness is claimed.",
+    "No shared MCP server was restarted. Source inspection used bounded reads after the connection was verified live."
+  ],
+  "runtime_tests_executed": [],
+  "existing_artifact_observation": "Wasm sources, four declared smoke fixtures, and browser demo assets exist; they were not executed in this design task."
+}

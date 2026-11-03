@@ -1,0 +1,123 @@
+#+TITLE: Hash-table storage and probing design for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — research only; no implementation or qualification
+#+SCOPE: General hash-table representation and compiler/runtime contracts
+
+* Decision boundary
+
+Use evidence from SBCL to guide measurement and representation work, not to
+copy its table layout. NeLisp already stores keys, values, chain links, and
+bucket indexes in vectors. The first step is to profile this representation
+and expose its existing storage operations to a general memory IR. No
+benchmark-specific lookup primitive or new hash algorithm is proposed here.
+
+* Measured baseline and limits
+
+The experimental GNU/NeLisp-ON comparison measured =hash-get1024= at
+=N=65,536=: GNU kernel 0.004760742 s and NeLisp kernel 0.110665798 s
+(23.245x ratio); whole-process elapsed times were 0.070853325 s and
+7.304602915 s. Whole-process elapsed includes two warmups, setup, validation,
+and the measured kernel; it is not pure startup time.
+The same-count old/new comparison at =N=262,144= measured 0.318349123 s and
+0.414268970 s kernel time respectively. These are experimental actual seconds,
+not strict qualification. The changed sample counts differ between these two
+comparisons, so they are not a time series. The data do not identify whether
+probing, equality, allocation, or guards caused the kernel gap. Whole-process
+elapsed includes two warmups, setup, validation, and kernel execution, so it
+cannot be interpreted as a pure startup measurement either.
+
+* Source-grounded mechanisms
+
+At SBCL commit =80dad386fc3536d0185dc4a2b9627a331c5f256f=, general tables use
+bucket heads and next-vector chains; table construction can defer storage,
+and key/value pair storage is distinct from indexes and links. Test selection
+chooses families for =eq=, =eql=, =equal=, =equalp=, or custom operations.
+Small flat tables and chain tables both exist. Growth may reuse indexes when
+hashes remain valid. This is not a Swiss-table design. SBCL's weak-table and
+moving-GC rehash behavior depends on its collector and pinning rules.
+Source files and exact inspected lines are pinned in
+[[file:source-manifest.json][source-manifest.json]]. Direct anchors include
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/target-hash-table.lisp#L1050][table construction]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/target-hash-table.lisp#L2096][chained probing]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/target-hash-table.lisp#L2674][test dispatch]].
+
+* NeLisp facts and proposed representation
+
+The measured frozen12 source uses vector-backed keys/values/next/index storage
+and has native probing helpers, custom callback guards, deletion handling,
+and identity-epoch repair. It is distinct from the user's shared V8 proposal
+Doc 215; that proposal is orientation, not the measured source baseline. See
+the manifest for hashes and exact anchors. Concrete measured-source anchors
+are =scripts/nelisp-stdlib-prelude.el:4283-4320,4400-4430,4474-4489= and
+=scripts/nelisp-standalone-build.el:19629-19633,19689-19692,19770-19804=.
+Prototype an IR description of table storage with typed loads/stores, capacity and index facts, and explicit
+effects for equality/hash callbacks. Keep the representation backend-neutral.
+
+The following proposed operations are new IR vocabulary, not existing APIs:
+=hash-load-shape(owner) -> {epoch, storage-kind, capacity, vectors}= is
+side-effect-free but requires a rooted owner; =hash-probe(owner,key,shape)=
+returns found/index/value for a proven built-in test; =hash-revalidate(owner,
+epoch,backing)= returns valid or a pre-probe fallback; =hash-store(owner,
+index,key,value)= carries the collector's reference-store effect. Lowering
+evaluates the public operation's source operands exactly once in its original
+API order (for example, =gethash= key then table; =puthash= key, value, then
+table), then roots them and validates the shape before probing. Do not derive
+source evaluation order from IR operand field order.
+
+The first optimized path is limited to proven built-in tests with no user
+callback. Custom hash/equality functions stay entirely on the generic path.
+If a future path invokes a callback, a failed post-callback guard may not
+restart generic lookup and repeat that callback; it must preserve the callback
+result and probe position in an explicit continuation or preserve the exact
+existing mutation/error behavior. Until such continuation exists, reject that
+path before the callback. Store only after all required validation.
+
+The IR may specialize a proven built-in test and a guarded shape, but must
+retain a generic path for custom hash/equality functions. A callback can
+signal, mutate the table, or reenter; evaluation order, mutation detection,
+and retry behavior must match the existing path. No assumed nonallocating or
+non-signaling comparator is permitted without a proven effect summary.
+
+* Required contracts
+
+- Preserve equality semantics, hash consistency, growth, deletion, and
+  iteration behavior for every supported test.
+- Preserve weak-key/value semantics and GC-visible references; custom test
+  state and callbacks remain rooted across any allocation or callback.
+- Guard capacity, epoch, backing-vector identity, and mutation state before
+  direct access. On guard failure, enter the existing generic implementation.
+- No raw address or cached pointer survives relocation unless a documented
+  pin/epoch protocol proves it valid. NeLisp's collector barrier contract is
+  not inferred from SBCL's generational barrier.
+- Keep custom-test, weak-GC, mutation/reentrancy, resize, deletion, and
+  negative-control tests as required acceptance gates.
+
+* Alternatives and staged work
+
+Dependency order is common effect/root and typed-memory IR (Doc 234), then
+hash shape/probe operations, then guarded table lowering. Stage 1: profile
+existing storage and callback costs; record allocation and probe counts.
+Stage 2: add typed memory-IR operations for the current layout,
+with an unchanged generic fallback. Stage 3: guarded lowering for built-in
+tests only. Consider a small-table regime or alternate probing only after
+representative size distributions and collision tests justify it. Reject
+open-addressing or weak-table redesign as an assumed consequence of SBCL.
+
+* Acceptance and rollback
+
+Before trials, freeze the matrix, counts, thresholds, and exclusion rules.
+Pass requires semantic controls, at least 10% median kernel-time improvement
+on the target row, no same-count row over 5% slower in median kernel time,
+and at most 10% code growth in the changed unit. Report every process-time
+regression; a whole-process regression above 5% blocks acceptance pending
+explicit review.
+
+Run identical row definitions, fixed =N= values, warmups, CPU placement, and
+seven paired repetitions on GNU bytecode, old NeLisp, and new NeLisp. Report
+kernel seconds and process seconds separately, plus code size, allocations,
+probe counts, and guard failures. Require exact semantic parity and passing
+custom-test, weak-GC, mutation, growth, deletion, collision, and corrupted
+result negative controls. A speed claim requires repeated improvement without
+regressing other table shapes or increasing code growth beyond a predeclared
+budget. Revert the specialization if any invariant fails or generic fallback
+cost increases materially. No speedup is promised by this proposal.

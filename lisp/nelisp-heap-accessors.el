@@ -320,6 +320,16 @@ Every operand is retained exactly once; dotted data is preserved."
                  (ptr-read-u64 ,p 24)))))
          ((eq (car source) 'str-bytes)
           (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
+         ;; Pointer hoisting: derive a string's data pointer once per scan
+         ;; (`str-data-ptr') and read bytes from it (`ptr-byte-at').  The
+         ;; pointer is valid until the next collection that compacts small
+         ;; strings; callers re-derive it after any allocation point.
+         ((eq (car source) 'str-data-ptr)
+          (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
+         ((eq (car source) 'ptr-byte-at)
+          (list 'ptr-read-u8
+                (nelisp-heap-accessors-lower (cadr source))
+                (nelisp-heap-accessors-lower (caddr source))))
          ((eq (car source) 'str-byte-at)
           (list 'ptr-read-u8
                 (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source)))

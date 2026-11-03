@@ -57,12 +57,12 @@
            (sexp-write-t presence-root)
            (if (and (record-make entry-tag-root 9 alias-entry-root)
                     (record-slot-set alias-entry-root 0 unbound-root)
-                    (record-slot-set alias-entry-root 1 unbound-root)
+                    (nl_symbol_set_function alias-entry-root unbound-root)
                     (record-slot-set alias-entry-root 4 target-root)
                     (record-slot-set alias-entry-root 5 presence-root)
                     (record-make entry-tag-root 9 target-entry-root)
                     (record-slot-set target-entry-root 0 unbound-root)
-                    (record-slot-set target-entry-root 1 unbound-root))
+                    (nl_symbol_set_function target-entry-root unbound-root))
                (setq status
                      (extern-call nelisp_mirror_alias_stage_insert_pair
                                   mirror-ptr alias-root alias-entry-root

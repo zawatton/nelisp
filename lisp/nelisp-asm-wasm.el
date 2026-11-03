@@ -178,6 +178,42 @@
   "Emit `i64.mul'."
   (nelisp-asm-wasm-emit-byte buf #x7e))
 
+(defun nelisp-asm-wasm-op-i64-and (buf)
+  "Emit `i64.and'."
+  (nelisp-asm-wasm-emit-byte buf #x83))
+
+(defun nelisp-asm-wasm-op-i64-or (buf)
+  "Emit `i64.or'."
+  (nelisp-asm-wasm-emit-byte buf #x84))
+
+(defun nelisp-asm-wasm-op-i64-xor (buf)
+  "Emit `i64.xor'."
+  (nelisp-asm-wasm-emit-byte buf #x85))
+
+(defun nelisp-asm-wasm-op-i64-shl (buf)
+  "Emit `i64.shl' (count modulo 64)."
+  (nelisp-asm-wasm-emit-byte buf #x86))
+
+(defun nelisp-asm-wasm-op-i64-shr-s (buf)
+  "Emit `i64.shr_s' (sign extension, count modulo 64)."
+  (nelisp-asm-wasm-emit-byte buf #x87))
+
+(defun nelisp-asm-wasm-op-i64-shr-u (buf)
+  "Emit `i64.shr_u' (zero extension, count modulo 64)."
+  (nelisp-asm-wasm-emit-byte buf #x88))
+
+(defun nelisp-asm-wasm-op-i64-atomic-rmw-cmpxchg (buf)
+  "Emit naturally aligned `i64.atomic.rmw.cmpxchg' at offset zero."
+  (nelisp-asm-wasm-emit-bytes buf (unibyte-string #xfe #x49 #x03 #x00)))
+
+(defun nelisp-asm-wasm-op-i64-atomic-rmw-add (buf)
+  "Emit sequentially consistent `i64.atomic.rmw.add' at offset zero.
+The memory argument declares the required natural eight-byte alignment."
+  (nelisp-asm-wasm-emit-byte buf #xfe)
+  (nelisp-asm-wasm-emit-uleb128 buf #x1f)
+  (nelisp-asm-wasm-emit-uleb128 buf 3)
+  (nelisp-asm-wasm-emit-uleb128 buf 0))
+
 (defun nelisp-asm-wasm-op-local-get (buf index)
   "Emit `local.get INDEX'."
   (nelisp-asm-wasm-emit-byte buf #x20)

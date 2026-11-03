@@ -50,7 +50,8 @@
     ("lisp/nelisp-lexframe.el" . "nelisp-lexframe-")
     ;; Shared Unicode providers are public nelisp-unicode-* functions;
     ;; compressed data and lookup helpers remain private nelisp--unicode-*.
-    ("lisp/nelisp-stdlib-unicode.el" . "nelisp-"))
+    ("lisp/nelisp-stdlib-unicode.el" . "nelisp-")
+    ("lisp/nelisp-standalone-arena-rewrite.el" . "nelisp-standalone-"))
   "Explicit `nl-ns-declare' overrides for files whose majority-prefix
 inference (`nl-ns-file-namespace') picks a narrower namespace than the
 file's own names actually share.  nelisp-sexp-layout.el defines several
@@ -66,7 +67,11 @@ sub-group alone crosses 50% (inference picks the longest
 majority-satisfying prefix, so the narrower sub-group wins over the
 file-level prefix once it has a bare majority), but every single name in
 the file -- verified by direct scan, 31/31 -- starts with the file-level
-`nelisp-lexframe-'.  Pin that instead.")
+`nelisp-lexframe-'.  Pin that instead.
+nelisp-standalone-arena-rewrite.el preserves nine canonical private definitions
+and exposes six public compiler accessors. The private group wins inference,
+but all fifteen names share `nelisp-standalone-'. Declare that actual shared
+namespace; cross-file private-reference checks remain enabled.")
 
 (defun nl-ns-inventory--declare-overrides ()
   "Apply `nl-ns-inventory--namespace-overrides' via `nl-ns-declare'."

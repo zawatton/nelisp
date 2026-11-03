@@ -1,0 +1,52 @@
+#+TITLE: Doc 238 — one object representation and call-site caches
+#+NOTE: Created 2026-11-01 before any implementation (user: implement Doc 238 in parallel). Workers: Sonnet. Primary metric: callgrind Ir per step (load independent); wall time once at the end under the frozen S8 protocol. Each stage ends with an E2E criterion on a built image. Pending criteria are not done.
+
+* A0 Representation census
+
+** A0.1 A debug-only census counts, per accessor and caller, which object shape (direct WORD vs legacy view) reaches nl_word_data, nl_word_length, nl_str_target and nl_bi_strptr; disabled builds are byte-identical in behaviour (structural tests + negative control)
+#+NOTE: 2026-11-01 merged (Sonnet lane): NELISP_REPR_CENSUS=1 build switch; a source transform inserts nl_census_bump into nl_word_data, nl_word_length, nl_str_target, both nl_bi_strptr defs, nl_sexp_clone_into, nl_word_clone, m5_fx_word_ptr; 512-byte BSS table nl_repr_census only when on; builtin (nelisp--repr-census RESET). Off: transform returns the input unchanged. Tests 5 (3 run, 2 skip without the switch), seed fails.
+cmd: (ulimit -v 8388608; emacs --batch -Q -l test/nelisp-repr-census-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q ', 0 unexpected') && (ulimit -v 8388608; NELISP_REPR_CENSUS=1 emacs --batch -Q -l test/nelisp-repr-census-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q ', 0 unexpected')
+
+** A0.2 E2E: census table produced on a built image over the eight driver rows, the reader probe, the print differential and the standalone checks
+#+NOTE: 2026-11-01 census build 21c (first attempt failed: :duplicate-defun nl_census_bump, because the cached-unit path and compile-to-unit both instrumented; fixed by an idempotency check plus ERT nelisp-repr-census-instrument-is-idempotent, which fails on the pre-fix script). Evidence r238-a0/b21c. Per process, startup passes ~4.98M legacy views (nl_word_data 2.71M, nl_bi_strptr 2.00M); the workload section is ~86-105k legacy views whatever N (integer-sum 16M vs vector-allocate64 1M), so no row's kernel loop creates or reads views per iteration; hash-get1024 reads direct strings (nl_word_data 339k, nl_bi_strptr 292k). The reader probe passes 8.69M legacy views in nl_word_data and 8.66M in nl_bi_strptr: the reader/startup string path is the main view consumer. Print differential: 71k legacy views in nl_word_data. Standalone checks run on the census image with the same 17-failure set as build18; their census is not aggregated (one process per check). nested-function-call2 uses nested-primary-on.el (no census hook).
+cmd: bash tools/ai/sbcl-impl-evidence/r238-a0/check-a02.sh
+
+* A1 No views on hot paths
+
+** A1.1 E2E: the census shows zero legacy views at the hot accessors on the same workloads; GNU differentials, kernel-diff and regression guard unchanged
+pending
+
+* A2 WORD-only accessors
+
+** A2.1 E2E: reader callers proven view-free use WORD-only accessors; Ir per input byte drops for the reader probe; Ir per step on the eight driver rows does not rise; correctness gates unchanged
+#+NOTE: 2026-11-01 criterion changed (user approved): callgrind on build26 shows the kernels' hot paths call none of the branching accessors (nl_word_data, nl_word_length, nl_str_target, nl_bi_strptr: 0 Ir/step on all eight rows; reads are already direct loads such as nc_aref_fast), so a driver-row drop cannot come from A2. The driver rows remain a no-regression bound.
+pending
+
+* A3 Retire views from the image
+
+** A3.1 E2E: the cold image holds zero views of the hot kinds; dump/restore histories accepted; allocation after restore unchanged
+pending
+
+* B0 Function epoch
+
+** B0.1 A global function epoch is bumped by every operation that can change what a symbol call resolves to (fset, defalias, advice through fset, function-cell makunbound, load redefinition, debug-policy toggles, image restore); a build-time check rejects direct writes to the function-cell offset outside the single bumping primitive
+#+NOTE: 2026-11-01 merged (Sonnet lane + coordinator BSS reconciliation): nl_symbol_set_function is the only function-cell writer (mirror set-function, set-function-or-insert, clear-function, install-entry(-or-insert), alias-install; new-entry paths and variable-alias shadow copies bump nl_function_epoch); restore bumps by 1 + monotonic ns low bits; debug-policy writers (nl_n3_globals_mode(_w)) bump; builtin nelisp--function-epoch; write-site scan test. BSS order: nl_ctl_slots 64, nl_repr_census (census builds) 512, nl_function_epoch 8. Tests 6/6; pre-B0 script fails 4/6.
+cmd: (ulimit -v 8388608; emacs --batch -Q -l test/nelisp-function-epoch-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q '^Ran 6 tests, 6 results as expected, 0 unexpected') && (ulimit -v 8388608; emacs --batch -Q -l test/nelisp-restore-alloc-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q ', 0 unexpected')
+
+** B0.2 E2E: on a built image each listed operation increments the epoch; existing guard checks (HASH-CUSTOM, LOGAND-FSET, *-FSET restores) pass
+#+NOTE: 2026-11-01 build21 (A0+B0, rc=0): fset, fset-redefine, defalias, defun, fmakunbound, advice-add, advice-remove, load-redefine each bump the epoch; first read is ~1.67e14, so restore adds monotonic ns. debug-on-entry is not fboundp in standalone (SKIP). Guard checks identical to build18; rows, semantic-diff (vs b20), kernel-diff (vs b18) and the standalone gate failure set (17, vs b18) unchanged. Negative controls: build20 (no B0) fails the probe; a mutated checks.out fails the check.
+cmd: bash tools/ai/sbcl-impl-evidence/r238-b0/check-b02.sh
+
+* B1 Call-site caches for native -> subr
+
+** B1.1 E2E: nc_dsubr_call hits a per-site cache when the epoch matches; fset/advice/defalias changes and variable-watcher / dynamic-binding mode toggles between two calls of the same site take effect on the next call (negative controls); kernel-diff unchanged; Ir per call drops for hash-get1024 and does not rise for the other dsubr rows; the gethash-only shortcut is removed
+#+NOTE: 2026-11-01 criterion changed (user approved): standalone has no debug-on-next-call; the hit path's per-call policy word (env+112, mask 3145728) holds the variable-watcher (bit 20) and dynamic-binding (bit 21) modes, so those toggles replace the debug-policy control. They check results only; no build without the per-call check exists to show they would fail.
+#+NOTE: 2026-11-01 criterion changed (user approved): function-call2 and nested-function-call2 never reach nc_dsubr_call (native -> native via nc_call; callgrind on build23), so their Ir requirement moved to B2.1.
+#+NOTE: 2026-11-01 known red (user decision: revert and move on). Rounds 1-3 of the nc_dsubr_call site cache (builds 23, 24, 26) were correct (rows, kernel-diff, guards, 10 B1 controls) but never beat b21: Ir/step hash-get1024 1025.8 -> 1108.7 / 1070.7 / 1049.7, allocating rows +62 / +37 / +11. The cache checks cost no less than b21's hash4 header test, and DSL branch codegen (value via rax, jmp chains, store-then-compare) inflates them. The cache is reverted to the b21 code; evidence and the r3 patch are in sbcl-impl-evidence/r238-b1.
+cmd: bash tools/ai/sbcl-impl-evidence/r238-b1/check-b11.sh
+
+* B2 Call-site caches for native -> native and closure calls
+
+** B2.1 E2E: native -> native sites take the guarded direct entry (function-call2: nc_d_ID once per step, no nc_call); a redefinition (fset/advice) of the callee between two calls of the warmed site takes effect on the next call and the restore returns to the native callee; kernel-diff unchanged; Ir per step for function-call2 not above b21
+#+NOTE: 2026-11-01 criterion rewritten (user approved). The per-site cache B2 was to add already exists: nc_d_ID (nc4/nc5) is a site-record-guarded direct entry. The remaining ~364 Ir/step in nc_d_/nc_enter are the backtrace record, depth limit and finish that GNU funcall also performs, so the Ir-drop requirement is dropped; further cuts need DSL branch codegen work (see B1.1 note). Negative controls: an nc_call edge, a failed control, or a kernel-diff change each fail the check.
+cmd: bash tools/ai/sbcl-impl-evidence/r238-b2/check-b21.sh

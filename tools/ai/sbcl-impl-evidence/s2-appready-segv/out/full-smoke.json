@@ -1,0 +1,10 @@
+{
+ "label": "full-smoke",
+ "rc": 0,
+ "wall_s": 6.85,
+ "route": "named-fx-default",
+ "result": "16000000:64000000",
+ "kernel_s": 0.061328173,
+ "stdout_tail": "BENCH-ROUTE engine=nelisp route=named-fx-default timer=float-time resolution=0.000002146\nBENCH-CHECK n=16000000 result=16000000:64000000 elapsed=0.061328173\n",
+ "stderr_tail": ""
+}

@@ -1,0 +1,16 @@
+#+TITLE: Source-authoritative runtime provider admission
+
+* S1 Source catalog and fail-closed admission
+
+** S1.1 Four-authority catalog is deterministic and source-bound
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-provider && { PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-provider-check.py catalog --output target/ai/runtime-provider/catalog.json >target/ai/runtime-provider/catalog.stdout 2>target/ai/runtime-provider/catalog.stderr; provider_rc=$?; printf '%s\n' "$provider_rc" >target/ai/runtime-provider/catalog.rc; exit "$provider_rc"; }
+
+** S1.2 Synthetic admission and effective negative controls pass
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-provider && { PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-provider-test.py >target/ai/runtime-provider/tests.stdout 2>target/ai/runtime-provider/tests.stderr; provider_rc=$?; printf '%s\n' "$provider_rc" >target/ai/runtime-provider/tests.rc; exit "$provider_rc"; }
+
+** S1.3 Real nl_eval_inner provider closure is admitted
+#+REQUIRES: NOTES_ROOT
+#+NOTE: Known-red until actual source closure, generated ownership, and dispatch are resolved. This criterion must not become pending.
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-provider && { PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-provider-check.py admit --catalog target/ai/runtime-provider/catalog.json --root nl_eval_inner --output target/ai/runtime-provider/admission.json >target/ai/runtime-provider/admission.stdout 2>target/ai/runtime-provider/admission.stderr; provider_rc=$?; printf '%s\n' "$provider_rc" >target/ai/runtime-provider/admission.rc; exit "$provider_rc"; }

@@ -1,0 +1,15 @@
+;;; standalone-literal-file-ranges.el --- GNU empty and EOF byte ranges -*- lexical-binding: t; -*-
+(require 'nelisp-stdlib-literal-file)
+(nelisp-stdlib-literal-file-install)
+(let ((file (getenv "NELISP_LITERAL_FIXTURE")))
+  (dolist (case '((20 nil 0) (1 20 7) (3 2 0)))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert "XY")
+      (goto-char 2)
+      (unless (equal (insert-file-contents-literally file nil (car case) (cadr case))
+                     (list (expand-file-name file) (nth 2 case)))
+        (error "EOF or reversed range differs"))
+      (unless (and (= (point) 2) (= (buffer-size) (+ 2 (nth 2 case))))
+        (error "EOF range changed insertion position or count")))))
+(princ "PUBLIC-LITERAL-RANGES-PASS\n")

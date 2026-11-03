@@ -1,0 +1,10 @@
+{
+ "label": "b-smoke",
+ "rc": -11,
+ "wall_s": 0.022,
+ "route": null,
+ "result": null,
+ "kernel_s": null,
+ "stdout_tail": "",
+ "stderr_tail": ""
+}

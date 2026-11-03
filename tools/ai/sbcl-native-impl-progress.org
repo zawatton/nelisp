@@ -1,0 +1,237 @@
+#+TITLE: SBCL-inspired NeLisp native runtime implementation (Docs 230-235)
+#+NOTE: Created 2026-10-31 before any code edit. Base corrected the same day: frozen12 is commit 0e250a87 (review/gnu-speed-20261025, 2179 commits after shared HEAD 9d6a4a4f2) plus its 114 dirty entries, reproduced exactly in worktree feat/sbcl-native-impl-f12-20261031 (base tree a41df95eea18e2b24cc00764e6bc9bb9c424012c). The shared checkout's dirty diff against 9d6a4a4f2 was then applied 3-way (15 clean, 5 conflicts) and its 266 untracked files copied. The completed design ledger (sbcl-inspired-design-progress.org) measures design only and is not part of this denominator.
+#+NOTE: Scope agreed with the user on 2026-10-31: all six designs in one batch, with the required native-admission route ported from the frozen12 snapshot. Implementation workers: Sonnet. Pending criteria are not done; convert each to a cmd/evidence check in the same change that implements it.
+
+* S0 Frozen12 base with the shared checkout's changes merged
+
+** S0.1 Worktree sits on the frozen12 commit and has no unresolved merge conflicts
+cmd: test "$(git rev-parse HEAD)" = 0e250a8774e0190eab9dfe59de0566df906d824d && test -z "$(git diff --name-only --diff-filter=U)" && ! git grep -q -e '^<<<<<<< ours' -- scripts tools test lisp src
+
+** S0.2 Merged tree's byte-compile errors are confined to files the merge did not touch
+#+NOTE: tools/ai/nelisp-ai.sh compile is RED on the merged tree (gate: ran 120, failed 1; 24 package files error on host Emacs 31.1). None of the 24 files is touched by the merge, so they are inferred pre-existing in frozen12; frozen12 itself was not compiled separately. The compile gate stays red and is re-checked in S8.1.
+evidence: tools/ai/sbcl-impl-evidence/s0-compile-error-files.txt sha256=45e132393bf678c7d83e8dc6f0f4f9583724221c6b92b1a6d810441f0b276996
+evidence: tools/ai/sbcl-impl-evidence/s0-compile-merged.log sha256=580e7b530a079dcb5ba69fd183fe4783270a37955a4579ae35e883d907b24fac
+
+** S0.3 E2E: the merged tree builds an image whose native ON route runs all nine workloads, with a hardware body witness
+#+NOTE: 2026-10-31: method-A ON build of the merged snapshot (tree sha da5cbc10..., image 09cbbb4f..., 17m07s rc=0). All 9 rows ran with route=named-fx-default, validated results, empty stderr (8 rows in s0-on-rows1; nested-function-call2 via a repinned nested driver/bootstrap copy in s0-on-witness). Hardware witness (gdb route-witness.py) on nc_30003, whose normalized code equals the recorded r3 ON image: entry 3 / body 9 at N=3 = PASS; negative control at nc_30002 = HOLD. Scope: body witness covers the nested primary only; other rows rely on the route label. Method A is not the recorded authenticated adapter route.
+evidence: tools/ai/sbcl-impl-evidence/s0-on-rows1.sha256 sha256=f659ac1be160206659f2d5b8e157eb435e5a83e4a5e9015afbfd9fe9c191864d
+evidence: tools/ai/sbcl-impl-evidence/s0-on-witness.sha256 sha256=e9c10e97722b70377f44765b2b8d37056beb2118388bbd7a6e82e74dcb43bf02
+
+* S1 Common effect and root classification (Docs 234, 231)
+
+** S1.1 Every FXIR op handled by analysis and native lowering has a canonical effect class; analysis output unchanged
+#+NOTE: lisp/nelisp-cc-fxir-effects.el. Coverage tests read both pcases from source; golden rows were captured before the analysis edit. Negative controls (drop :while / :value, reorder :call diagnostics, clear :varref may-call-lisp) each turned one test red, then restored green (2026-10-31).
+#+TIMEOUT: 120
+cmd: (ulimit -v 8388608; for t in effects analysis admission facts; do tools/ai/nelisp-ai.sh test-one test/nelisp-cc-fxir-$t-test.el 2>&1 | grep -q ', 0 unexpected' || exit 1; done)
+
+** S1.2 Unknown effects default to the conservative class and native lowering reads the classification
+#+NOTE: fxir-native derives own-statement FALLIBLE flags from the table (varref/alias/throw/catch/condition-case/unwind-protect/let items/inline slow path/call paths); lowering golden unchanged. Recorded disagreement for S3: a :call to `eq' lowers to a non-fallible inline fast path while the generic :call class is fallible, so the table needs callee-refined call effects. A coordinator bug that flipped :nil to may-call-lisp was caught in review and is now pinned by nfe-diagnostic-free-ops-are-pure (red on the defect, green on the fix).
+#+TIMEOUT: 300
+cmd: (ulimit -v 8388608; for t in effects native-effects analysis admission facts boolean-facts inline intrinsic native-condition-facts origin rows; do tools/ai/nelisp-ai.sh test-one test/nelisp-cc-fxir-$t-test.el 2>&1 | grep -q ', 0 unexpected' || exit 1; done)
+
+** S1.3 E2E: native kernels whose helpers may GC keep live values correct across collections that occur during the kernel
+#+NOTE: 2026-10-31 on the method-A ON image: collections counted from nl_gc_stats+24 (read via existing ptr-read-u64 at the nm address, no new native) around the native kernel only: vector-allocate64 4, string-concat16 1, integer-sum 0 (contrast); all rows route=named-fx-default with the driver's own result validation. BENCH_BROKEN negative control fails validation; check.sh rejects a tampered count. Collections were natural, not forced at every allocation; a per-allocation GC stress mode remains for S7.
+cmd: sh tools/ai/sbcl-impl-evidence/s1-gc-witness/check.sh >/dev/null
+evidence: tools/ai/sbcl-impl-evidence/s1-gc-witness.sha256 sha256=25968eb55ff4c6f083a383a4d1b5aac85bdbe181fcd71c02742f7999626ab644
+
+* S2 Startup phase instrumentation and ready contract (Doc 235)
+
+** S2.1 Phase events are written to a side channel keyed by process, image, and source identity
+#+NOTE: Runtime records BOOT_ENTRY/RESTORED/REINIT with CLOCK_MONOTONIC (no boot I/O); driver buffers events and flushes after validation to NELISP_PHASE_EVENTS; wrapper writes SPAWN/CHILD_EXIT/CLEANUP plus source and image identity. Checker self-test covers missing phase, order, run id, wall clock, missing source id, image mismatch, missing pid.
+cmd: python3 -I tools/bench/startup-phase/check_phase_events.py --self-test >/dev/null
+evidence: tools/ai/sbcl-impl-evidence/s2-on-phase-cohort1.sha256 sha256=7175f44e45eda97e48f410665621d6d9b21c7e0107374768eb9349205f8705e5
+
+** S2.2 Benchmark stdout and stderr are identical with instrumentation on and off, except measured fields
+#+NOTE: Contract: stdout equal after masking elapsed= and resolution= (both are measured each run); stderr byte-identical. 3/3 alternating fresh-process pairs on the method-A ON image. check.sh rejected a tampered result and tampered event order (negative controls, 2026-10-31).
+cmd: sh tools/ai/sbcl-impl-evidence/s2-on-phase-cohort1/check.sh
+
+** S2.3 E2E: one fresh process reports every phase from wrapper spawn to wrapper cleanup on the ON image
+#+NOTE: First attribution data (3 samples, integer-sum N=16M, method-A ON image 09cbbb4f): spawn->entry ~8 ms, runtime boot entry->reinit ~16 ms, reinit->first form ~20 ms, first form->application ready (helper/prelude/producer load and native admission inside the driver) ~6.4 s of ~6.9 s, kernel ~61 ms, validated->child exit ~0.22 s. Not yet a matched cohort or a startup speedup claim.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-on-phase-cohort1/check.sh && test "$(ls tools/ai/sbcl-impl-evidence/s2-on-phase-cohort1/phase-out/*.events.sexp | wc -l)" -eq 3
+
+** S2.4 Ready-state contract library: identity fingerprint, stale/partial identity rejected before init, failures and nonlocal exits never re-run user initialization
+#+NOTE: lisp/nelisp-init-ready.el + test/nelisp-init-ready-test.el (14 tests). Negative controls: accepting a different identity on READY, re-calling the thunk on failure, and dropping the nonlocal-exit FAILED record each turned the matching tests red (2026-10-31). Loaded and exercised in the standalone plain binary; host and standalone fingerprints agree on an ASCII input.
+#+TIMEOUT: 120
+cmd: (ulimit -v 8388608; tools/ai/nelisp-ai.sh test-one test/nelisp-init-ready-test.el 2>&1 | grep -q ', 0 unexpected')
+evidence: tools/ai/sbcl-impl-evidence/s2-ready-standalone.sha256 sha256=918b25941ba4ddf72fb3a91b90defa2abe591c235745bdd74308fa2764dc7bd2
+
+** S2.5 E2E: a prepared application-ready image is reused only under a matching identity, reported as a separate changed-method cohort with preparation amortization
+#+NOTE: Added 2026-10-31 (denominator 28 -> 29): S2.4 is the library; this criterion is its integration with startup, targeting the ~6.4 s harness preparation measured in S2.3.
+#+NOTE: BLOCKED 2026-10-31: a runtime heap dump taken after native candidate install restores into SIGSEGV (m5_fx_run_body+1505, stale tagged out-of-arena word in an FX record). Fix A (dump refuses counted out-of-image references; static image and null page accepted) keeps the build cold image valid but does not catch this case on build4: the dumper walk apparently never classifies that FX record field. Needed: make the dump walk enumerate FX record/code-vector fields (or rebuild FX state at restore under an identity check). Evidence tools/ai/sbcl-impl-evidence/s2-fixa-build4.sha256 cdac4f7c8db89622ed76c8618bc481750facbf88c585ac32b75c03e52cf4d945.
+#+NOTE: 2026-11-01 Sonnet lane on build12 (sandbox ~/.cache/tmp/nelisp-sbcl-appready-lane): restore works via `nelisp-dynamic --cold-load-from FILE --load kernel.el`; identity changes (image sha, tree id) and a non-restored process are refused (rc=3). With a restored app image, integer-sum/function-call2/vector-write/vector-read give results identical to the normal path at 0.7-1.3 s whole process (normal ~10 s on a busy machine; not a cohort). Blockers, both runtime-side: (1) the out-of-image dump check depends on dump history: a trial dump after the prelude load makes every later dump pass, without one ~2500-2900 references are refused (only the first reference is reported, holders unidentified), so a passing dump is not yet trustworthy; (2) after restoring the app image, allocation degrades ~100x (300k make-vector 64: 26.6 s vs 0.26 s; a trivial restored image is fine), so vector-allocate64 times out.
+#+NOTE: 2026-11-01 MET on build20 (Sonnet cohort lane): phase A (prepare + READY txn + dump) app.cold 41.9 MB, preparation process 1.03 s median. 8 rows x 7 alternating pairs on CPU 1, three arms (normal runner, restored, direct): restored whole-process 0.12-1.20 s vs normal 0.74-2.34 s, saving 0.62-1.14 s per run; break-even ~1.6-1.8 runs vs the runner (0.9 for vector-allocate64). All 24 result cells identical. Refusals (rc=3): changed image sha, changed tree id, no restore. 31 of 504 runs saw another lane's process on other CPUs (recorded). A first cohort was superseded because its reuse flag check missed stderr (kept as superseded-run1-runs.csv). check.sh recomputes medians from raw runs; a tampered checksum fails (lane and coordinator controls).
+cmd: sh tools/ai/sbcl-impl-evidence/s2-appready-b20/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-appready-b20 && sha256sum -c --quiet manifest.sha256)
+
+** S2.8 The heap-dump out-of-image check is independent of dump history (E2E on a built image)
+#+NOTE: Split 2026-11-01 (denominator +1): history independence is verified here; offender naming is S2.11.
+#+NOTE: Added 2026-11-01 (user: fix S2.5 runtime defects in parallel). Lane ~/.cache/tmp/nelisp-sbcl-dumpcheck-lane.
+#+NOTE: 2026-11-01 merged (Sonnet lane): nl_oor_reset clears the whole 272-byte diagnostics block per dump; nl_oor_note records up to 8 offenders with holder header and slot index; unplaced heap slots with foreign targets and vectors with foreign buffers are counted instead of skipped; the error data carries the offender list. Root cause of the history dependence not yet run-verified (hypothesis: nl_frame_stack_export_all mutates owner records at dump start). Tests 4/4, seed 0/4. Verify on build14 with the v-none/v-start/v-prelude histories.
+#+NOTE: build14 (method A, includes the S2.8 counting and S2.9 fix): with app preparation + READY txn, the wrapper dump is accepted with no trial dump, a trial dump at start, and a trial dump after install; each returns the bytes written equal to the file size (~48.5 MB). build12 refused ~2,600 references without a trial dump. The probes originally printed OK without checking the return value; the dump returns -1 on a write failure without signaling (see S2.12), so the check now requires RET == SIZE > 1 MB; an unwritable dump path makes the check fail (negative control).
+#+NOTE: 2026-11-01 re-evidenced on build20: the build14 check loaded probe scripts pinned to worktree sources, which later lanes changed (pin drift), so it failed for a reason unrelated to the dump. The new evidence (s2-hist-b20) uses build20 and its frozen build-on20/src inputs only; all three histories return bytes written == file size (~42 MB). Negative control: an unwritable HIST_DIR fails the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-hist-b20/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-hist-b20 && sha256sum -c --quiet manifest.sha256)
+
+** S2.11 A refused heap dump names the holders of out-of-image references (holder header, slot index) in its error data
+#+NOTE: Split from S2.8 2026-11-01. Implemented (nl_oor_note, 8 offenders) but never exercised on a built image: no build14 history produced a refusal. Needs a crafted out-of-image reference to verify.
+#+NOTE: 2026-11-01: Sonnet lane planted a foreign pointer on build14 (ptr-write-u64 of a malloc block into a vector slot found by scanning the arena): the dump is refused, but the error data was only the formatted message ("heap image has 2 out-of-image references; first at ... target ...") because bf_error_w drops all extra arguments. Coordinator fix: nl_dump_oor_error_w now signals through nl_error_with_data_w, whose data is (MESSAGE . OFFENDERS); test nelisp-dump-oor-signal-keeps-offenders-in-data (old script fails). Open: one planted slot is counted as 2 references (double walk or double count; not investigated). Verify with oor-probe.el on the next build.
+#+NOTE: 2026-11-01 double count explained (read-only investigation): the walk counts each refused slot (nl_fa_field_kind / nl_fa_foreign_buf) and the post-copy verify (nl_dump_verify_flat / nl_dump_verify_walk) counts the same unrelocated word again; both dump paths added the two counts and both appended to the offender list. Fix: run the verify pass only when the walk refused nothing (the refusal decision is unchanged; references the walk misses are still caught). Test nelisp-dump-oor-verify-pass-does-not-recount (old script fails).
+#+NOTE: VERIFIED build16: one planted foreign pointer -> "heap image has 1 out-of-image references" with data (SLOT TARGET 1032 2) = slot 2 of a 4-slot vector (header 1032); two planted slots -> 2 references, slots 0 and 2. The same check fails on build15 (double count, no offender data).
+cmd: sh tools/ai/sbcl-impl-evidence/s2-dumpwrite/check.sh oor >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-dumpwrite && sha256sum -c --quiet manifest.sha256)
+
+** S2.12 A heap dump that cannot write its file signals an error instead of returning -1
+#+NOTE: Added 2026-11-01: build14 `(nelisp--arena-dump-image-stream "/nonexistent-dir/x.cold")` returns -1 without signaling; callers that ignore the value treat a failed dump as success.
+#+NOTE: 2026-11-01 Sonnet lane: the -1 came from bf_arena_dump_image_stream_body_w (open failure fd<0; write totals never checked on Linux; close result ignored). Now: open failure signals file-missing (ENOENT) or file-error; short write or failed close signals (file-error "Writing output file" "Input/output error" FILE); success still returns bytes written. Tests 4/4, seed 0/4. Remaining -1 returns (unstamped build, cok=0) are not file errors and stay. Verify with dump-write-probe.el on the next build.
+#+NOTE: VERIFIED build16: dumping to /nonexistent-dir signals file-missing; a writable dump returns bytes written equal to the file size. The same check fails on build15 (returned -1).
+cmd: sh tools/ai/sbcl-impl-evidence/s2-dumpwrite/check.sh write >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-dumpwrite && sha256sum -c --quiet manifest.sha256)
+
+** S2.9 Allocation after restoring an application-ready image is not degraded (make-vector loop within 2x of the same loop in a non-restored process)
+#+NOTE: Added 2026-11-01. Seen on build12: 300k make-vector 64 took 26.6 s after restoring app2.cold vs 0.26 s normally; a trivial restored image is fine. Lane ~/.cache/tmp/nelisp-sbcl-restore-alloc-lane.
+#+NOTE: 2026-11-01 ROOT CAUSE (Sonnet lane, gdb/strace/callgrind): nl_ht_sym_cache_note wrote the hash-table/eql name cache to control-page literals base+1072/+1080, inside chunk-0 object data (which starts at base+1024). After restoring the app image the first make-hash-table overwrote a block HEADER, every header walk (nl_boot_build) then failed, no collection completed, debt stayed over the gate, and a mid-form collection with two 576 KiB bitmap mmap/munmap ran on every while poll. The six TTY slots (base+1024..+1048) had the same aliasing. Fix merged: new 64-byte BSS nl_ctl_slots holds both; coordinator corrected its link offset for the S2.8 diag growth (80 -> 272). Tests 4/4, seed 0/4. Verify on build14.
+#+NOTE: VERIFIED build14 (Sonnet verification lane + coordinator re-run): 300k (make-vector 64 nil) normal 0.176 s, after restoring the app-ready image 0.177 s (build12: 26.6 s); restored trivial image 0.174 s; a bare garbage-collect after restore completes in 0.014 s. Negative control: a 0.5x bound fails the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-restore-b14/check.sh alloc >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-restore-b14 && sha256sum -c --quiet manifest.sha256)
+
+** S2.6 E2E: sub-phase attribution of application preparation (pins, helper, prelude, producer, preflight, install, registration) from fresh-process runs on the final image
+#+NOTE: 2026-11-01 build13, 7 fresh processes on CPU 1 (idle machine), every run passes check_phase_events.py (source id = build tree sha). Medians: boot to first form 44 ms; pins 118; helper 12; prelude load 2236; producer load 98; preflight 1642; install 2198 (of which two nested preflights ~1.7 s); driver checks 186; FX registration 97; kernel+validate 42; exit 208; total 6909 ms. Wrapped-call profile (build10, one run): protocol-print of the native-row table (~356 KB) 3 x ~760 ms dominates preflight; 209 defun prints 285 ms; all-rows harvest 191/43/41 ms. Negative control: a summarizer expecting a missing phase fails the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-subphase-b13/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-subphase-b13 && sha256sum -c --quiet manifest.sha256)
+
+** S2.7 prin1-to-string keeps the native printer under print-escape-nonascii/escape-multibyte/gensym when the object is unaffected; the print differential adds no divergence beyond the pre-existing set; producer preflight time drops on the rebuilt image
+#+NOTE: Added 2026-11-01. Profile on build10 (wrapped calls, one run): preflight runs 3x (1645/868/834 ms); protocol-digest 2645 ms over 212 calls, of which secure-hash 275 ms; the rest is prin1-to-string falling to the Lisp printer because protocol-print binds print-escape-nonascii and print-gensym to t. all-rows digest is only 191/43/41 ms. Sonnet lane ~/.cache/tmp/nelisp-sbcl-print-lane.
+#+NOTE: 2026-11-01 build13 (printer escape/gensym relaxation merged): preflight unchanged (1651 -> 1642 ms median of 7). Per-argument profile: 3 protocol-print calls on the native-row table (~356 KB printed) take 2292 ms; 209 defun prints take 285 ms. The native printer declined that table because its tick budget was 100000 (a 90k-element flat list is declined; 528 ms in the Lisp printer). Budget raised to 2^24 in the coordinator tree (bf_pf_top), pinned by nelisp-printer-fastpath-tick-budget-covers-large-acyclic-data; verify on build14.
+#+NOTE: Wording amended 2026-11-01 before marking done ('GNU-identical' -> 'no divergence beyond the pre-existing set', same 36 pre-existing print-gensym/bare-comma cases as S2.14). Preflight median: build13 1642 ms -> build18 205.3 ms (7 fresh runs). The drop combines several merged changes (printer tick budget, digest memo, baseline shortcut, removed prelude reload); the printer part alone is not isolated. Structural tests 4/4. Negative control: a 5% bound fails.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-printer-escape/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-printer-escape && sha256sum -c --quiet manifest.sha256)
+
+** S2.10 E2E: application preparation (FIRST_FORM_COMPLETE -> APPLICATION_STATE_READY) median over 7 fresh runs is at least 30% below build13's 6.40 s, with identical benchmark results and the S2.2 stdout/stderr contract
+#+NOTE: Added 2026-11-01 (user: cut the ~6.9 s startup). Threshold fixed before implementation. Targets the measured duplicates: prelude re-evaluation (2.24 s), two nested preflights inside install (~1.7 s), native-row table printing (~2.3 s incl. all three preflights). This is the benchmark harness preparation, not user-program startup; report it as such.
+#+NOTE: 2026-11-01 merged (Sonnet lane): install takes an optional supplied-plan (the driver passes its own preflight result); the post-helper preflight still re-reads/re-hashes every input and must be equal to the plan. build13 experiment: install 2198 -> 1466 ms, preparation ~6.40 -> ~5.96 s (-7%, 5 runs, noisy). Prelude reload cannot be skipped today: the image records no baked-prelude identity and bakes a modified variant. Producer sha c99cc63c -> f0ced705 (repin).
+#+NOTE: 2026-11-01 coordinator analysis on build13 (run/ana13): removing only the prelude reload from the driver gives identical BENCH-CHECK results on all 8 driver rows, and the whole process drops from 6909 to 3714 ms (3 runs): prelude 2236 -> 0, preflight 1642 -> 1044, producer load 98 -> 23, registration 97 -> 35, exit 208 -> 49 ms, because the reload replaced the image's compiled definitions with source closures. Wrapped-call profile without the reload: 3 preflights 2776 ms, of which protocol-print of the native-row table 2368 ms (tick budget fix pending in build14); real install work (candidates, compile, checks) ~0.3 s; helper re-load inside initialize-fx-helper 108 ms. Driver template now drops the reload and keeps the prelude sha pin (test/nelisp-startup-driver-test.el; the old template fails it).
+#+NOTE: 2026-11-01 coordinator: all unnecessary preparation removed. Driver: no prelude reload, no driver-side helper load (the producer loads the pinned helper once). Producer: install takes the driver's plan and, after helper setup, proves the plan's inputs unchanged (manifest/names bytes, every pinned module's bytes, native-row baseline digest; nelisp-native-application-producer--recheck-inputs) instead of a full second preflight. Runtime negative controls on build14 (evidence s2-recheck-b14/probe.out): good -> ok; changed module, manifest, names or baseline -> error. Worktree driver+producer on build14 (printer tick budget), 3 runs: total 1214 ms (from 6909), preflight 287, install 442, pins 117, driver checks+registration 179, exit 55. Tests: producer-fast 3/3 (old producer 1/3), startup-driver 3/3 (old template 1/3).
+#+NOTE: 2026-11-01 build15: 7 fresh runs, preparation median 1.084 s (build13 6.40 s, -83%), every run passes the phase checker, all nine rows give the build13 results. Negative control: a 10% limit fails. S2.2 contract for the trimmed driver: 3 alternating plain/phased pairs on build15 (integer-sum N=16M, 2 warmups) have identical masked stdout and byte-identical (empty) stderr; a tampered result line fails the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-prep-b15/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-prep-b15 && sha256sum -c --quiet manifest.sha256)
+
+** S2.13 E2E: application preparation median over 7 fresh runs is at most 50% of build15's 1.084 s, with identical results on all rows, the S2.2 contract, and a written justification for every integrity check removed or narrowed
+#+NOTE: Added 2026-11-01 (user: GNU also restores a dumped image (emacs.pdmp, bare start 51 ms vs NeLisp 21 ms) and byte-compiles the benchmark kernels per process; the gap is the harness preparation itself). Candidates: duplicate prelude hashing (prelude no longer loaded), processing 19 definitions when the row needs fewer, driver post-install checks overlapping the producer receipt, native compile cost (~0.3 s). Threshold fixed before implementation.
+#+NOTE: 2026-11-01 merged harness lane (prelude pin dropped from the driver and hashed in initialize-fx-helper only on the hot-patch path; preflight can defer the baseline digest to install's recheck; keep-names selection; duplicate check-candidates calls and post-install driver checks removed; FX registration only for installed kernels) + compile lane (protocol-digest memo keyed by form identity, re-validated by equal against a snapshot). Coordinator changed the lane's per-row selection to the nine definitions GNU byte-compiles in every process (driver.el names), so both engines prepare the same kernel set. build16, 7 runs: preparation median 663 ms (build15 1084, -39%; target 542 not met): pins 22, preflight 218, install 319, driver checks 16, registration 35. All nine rows give the build15 results. Remaining large items: native-row baseline digest (~98 ms), helper load (~50 ms), compiling nine definitions.
+#+NOTE: 2026-11-01 build18 (all lanes incl. harness2 baseline shortcut + xdigit loop, reader nl_word_data fast path, lexer pointer hoisting, vector print prefilter): 7 runs, preparation median ~577 ms (28.3+22.3+25.2+205.3+244.6+15.9+35.1), build15 1084 (-47%); target 542 still not met. Correctness unchanged (rows equal build15, sd/kd/guards/gates as before, reader probe identical to build16 incl. the pre-existing "." divergence). Vector printing 0.3 -> 0.63 MB/s only (GNU ~143): the remaining cost is elsewhere. Next: compiler-level inlining experiments (NELISP_XINLINE=1, NELISP_INLINE_MAX_NODES=160) on build18's exact source, compared by callgrind Ir per step.
+#+NOTE: 2026-11-01 compiler inlining experiments on build18's exact source (callgrind Ir per step, 8 rows): 19a NELISP_XINLINE=1 builds, Ir unchanged within 2% (vector-allocate64 2712 -> 2658, hash-get1024 1113 -> 1134, others equal), binary +410 KB; 19b NELISP_INLINE_MAX_NODES=160 fails the F1 rooted prelink proof ("Indirect control flow refused: wf_key_eq_depth"). The earlier "core units get no inlining" hypothesis was a log-pairing error (inline lines are per pass, 6 per unit). Inlining settings are not the lever; remaining root-cause candidates are the dual object representation (legacy views vs direct words) and the generic native->subr call protocol.
+#+NOTE: 2026-11-01 MET on build20 with the worktree harness: S2.13 lane (read-circle fast path in the producer: texts without '#<digit>' read with read-circle t, identical forms, anything else falls back to the protocol reader; cl-find/cl-remove-if(-not) replaced by loops) plus coordinator removal of cl-find/cl-remove-if-not from both driver templates (the lane's producer-only change had moved the cl-seq autoload into driver checks/registration). 7 alternating runs each on CPU 5: preparation median 468.9 ms vs same-session base 590.5 ms (build15 1084; limit 542). An S2.5 cohort was running on CPU 1 at the same time (both variants equally exposed). Nine rows equal build15; 3 plain/phased S2.2 pairs identical. Negative control: base runs used as the current variant fail.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-prep-s213/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-prep-s213 && sha256sum -c --quiet manifest.sha256)
+
+** S2.14 The native printer covers the shapes GNU's print_object prints with simple syntax (no whole-object decline for vectors starting with a symbol, [sym ..] list heads, quote/function/backquote); the print differential has no divergence beyond the pre-existing build18 set; such data prints within 2x of plain lists
+#+NOTE: Added 2026-11-01 (user: root-cause the vector printing, compare GNU/SBCL). GNU and SBCL have one printer and one pass; NeLisp has a partial native printer that declines the WHOLE object to the ~50x slower prelude Lisp printer on any unsupported shape. build18 probe (3000 elements): lists 4.5 ms, number vectors 1.2 ms, quote forms 4.5 ms natively; vectors starting with a symbol 186 ms and lists whose car is [sym ...] 195 ms because nelisp--native-format declines (bf_pf_kind returns 9 for a vector car; bf_pf_vec declines 6-char symbol heads). Sonnet lane ~/.cache/tmp/nelisp-sbcl-printer-lane.
+#+NOTE: Wording amended 2026-11-01 before marking done: 'GNU-identical' -> 'no divergence beyond the pre-existing build18 set'. The 36 remaining divergences in the 320-case differential predate this change (24 print-gensym #: cases, 12 bare-comma cases outside backquote) and are identical on build18 and build20.
+#+NOTE: build20 (Sonnet lane step 2): bf_pf_kind declines a vector car only for the hash-table marker; backquote/comma abbreviations printed natively (inside backquote only, as GNU's new_backquote_output). Probe: vectors starting with a symbol 186 -> 1.5 ms, [sym ..] heads 195 -> 1.7 ms, plain lists 2.6 ms. Not done: records #s(...), sub-object delegation. Negative control: the build18 probe output fails the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s2-printer/check.sh >/dev/null && (cd tools/ai/sbcl-impl-evidence/s2-printer && sha256sum -c --quiet manifest.sha256)
+
+* S3 General native call lowering (Doc 231)
+
+** S3.1 Direct calls carry function identity guards and a generic fallback with unchanged status and errors
+#+NOTE: 2026-10-31: frozen12 already emits guarded direct wrappers nc_d_ID (live function cell vs cached closure record; fset/advice/autoload/cold cache take nc_call; entry decline -3 falls back without effects), lisp/nelisp-cc-fxir-native.el:466-473,578-620. Stage 1/2 units added callee-refined call effects (only `eq' is non-fallible; guarded callees stay conservative with :fast-path-pure) and a static call census (nelisp-cc-fxir-native-call-census), tested in test/nelisp-cc-fxir-*effects-test.el. This criterion still needs an executed valid-guard and invalidated-guard test on a built image.
+#+NOTE: Executed 2026-10-31 on the method-A ON image (function-call2 callee bench-call-helper, FX id 30000): valid guard run validated; custom error at call 10 propagates with count 10; arity change signals wrong-number-of-arguments without running the body; all eight phases match GNU Emacs 31.1 byte-compiled behavior. Native-vs-generic path is inferred from kernel time (0.061 s valid, 0.123 s under fset, 0.062 s restored), not from a route counter.
+cmd: sh tools/ai/sbcl-impl-evidence/s3-guard/check.sh >/dev/null
+evidence: tools/ai/sbcl-impl-evidence/s3-guard.sha256 sha256=e8f6af6f235be52dabaa4336aec2539462baeb3a115fde01063880e6d82fa2ce
+
+** S3.2 fset and advice after lowering invalidate the guard and the fallback preserves argument evaluation order
+#+NOTE: Same run: fset and advice-add each give 64 replacement calls for n=64 with the left-to-right argument log and the reference result; restore/advice-remove give 0 replacement calls. Negative controls: BENCH_BROKEN fails validation; GUARD_SELFTEST_WRONG makes every phase fail; check.sh rejects a tampered count.
+cmd: sh tools/ai/sbcl-impl-evidence/s3-guard/check.sh >/dev/null
+
+** S3.3 E2E: the improved call lowering keeps guard controls green and meets the frozen S8.2 time threshold on function-call2 and nested-function-call2
+#+NOTE: Final build7 campaign (7 reps, same N, CPU 1): function-call2 kernel -77.8% vs old r3 (57.6 vs 259.2 ns/step; GNU 71.6), nested-function-call2 -54.5% (71.5 vs 157.2; GNU 68.4); guard controls green on build7 (fset/advice of the helper, logand, direct subr calls). Code growth exceeds Doc 231's per-unit 10% (nc_30001 +49.1%, nc_30003 +12.4%): flagged under the frozen protocol, so Doc 231 design acceptance remains HOLD. Nested-row guard controls were not run separately.
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row function-call2 >/dev/null
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row nested-function-call2 >/dev/null
+cmd: sh tools/ai/sbcl-impl-evidence/s8-final-b7-correctness/check.sh >/dev/null
+
+* S4 Vector access (Doc 232)
+
+** S4.1 Lowered vector access keeps bounds and type errors at their current timing
+#+NOTE: build5 (72281d97) kernel-level differential vs GNU 31.1 byte-compiled kernels: vector-read 23 and vector-write 20 cases match, including short vectors (args-out-of-range at the first bad index after exactly the same slots were written), non-vector inputs and bad elements; the admitted native rows 30009-30014 were confirmed installed during the run.
+cmd: bash tools/bench/kernel-diff/check.sh >/dev/null
+
+** S4.2 No backing view outlives a possible collection or reentry
+#+NOTE: The lowering keeps no cached data view: nc_aref_fast/nc_aset_fast re-derive header and data address from the tagged word on every access (lisp/nelisp-cc-fxir-native.el nc_aref_fast). Allocating kernels stay exactly correct across collections that occur inside the native kernel (S1.3: vector-allocate64 4 collections) and vector kernels match GNU (S4.1).
+cmd: bash tools/bench/kernel-diff/check.sh >/dev/null
+cmd: sh tools/ai/sbcl-impl-evidence/s1-gc-witness/check.sh >/dev/null
+
+** S4.3 E2E: vector-read and vector-write run natively with out-of-bounds negative controls and meet the frozen time threshold
+#+NOTE: vector-read -78.1% (16.2 vs 74.0 ns/step; GNU 40.6), vector-write -79.4% (15.9 vs 77.0; GNU 38.6); kernel-level OOB/type cases match GNU on build7 (121/121). Code growth nc_30009 +39.1%, nc_30010 +40.5% (flagged; Doc 232 per-unit limit not met).
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row vector-read >/dev/null
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row vector-write >/dev/null
+
+* S5 String storage (Doc 233)
+
+** S5.1 Byte, character, and storage-unit indexing are distinguished in API and tests
+#+NOTE: Kernel-level cases (string-slice16 25, string-concat16 26) cover multibyte and unibyte tables, chars 128-255 mixed with multibyte (raw-byte chars such as 4194281), short strings and non-string elements; all match GNU. Top-level suite tools/bench/semantic-diff covers string-bytes vs length and conversions (no new-lowering divergences; 12 pre-existing GNU differences recorded there).
+cmd: bash tools/bench/kernel-diff/check.sh >/dev/null
+
+** S5.2 Copied results never expose a mutable backing buffer; text properties are preserved
+#+NOTE: Mutation independence checked by kernel reruns after mutating inputs and by substring/concat copies; get-text-property and partial property ranges match GNU. The property checks run in top-level helper defuns because the kernels return only sums.
+cmd: bash tools/bench/kernel-diff/check.sh >/dev/null
+
+** S5.3 E2E: string-slice16 and string-concat16 run natively with unibyte/multibyte parity cases and meet the frozen time threshold
+#+NOTE: string-slice16 -37.7% (173.0 vs 277.9 ns/step; GNU 252.3), string-concat16 -41.5% (194.5 vs 332.7; GNU 264.4); multibyte/unibyte/property kernel cases match GNU. Code growth nc_30011 +51.0%, nc_30012 +57.5% (flagged).
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row string-slice16 >/dev/null
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --row string-concat16 >/dev/null
+
+* S6 Hash tables (Doc 230)
+
+** S6.1 Hash lookups are profiled at representation and IR level before any algorithm change
+#+NOTE: callgrind on the r1 method-A ON image (profile1, 2026-10-31): hash-get1024 ~6,200 Ir/lookup via generic gethash (subr dispatch ~650, string key re-derivation ~2,000, per-lookup allocation ~1,100); static lowering reading showed gethash as a generic call. The algorithm was not changed; only the dispatch was replaced by a guarded direct subr call.
+evidence: tools/ai/sbcl-impl-evidence/profile1/agg.txt sha256=5fa0891bddf4df378a68fdc2943d43570a2484dc75d8387c25ce7c783fcb7ee7
+
+** S6.2 Callback-bearing tables keep the generic protocol and never rerun a callback
+#+NOTE: build5 (72281d97): a define-hash-table-test table passed to the admitted hash kernel gives the reference result with exactly one hash and one test call per lookup (1024/1024); fset of gethash/make-vector/concat/substring inside admitted kernels is observed (one replacement call per kernel call) and restoring gives the reference results. check.sh rejects a tampered call count.
+cmd: sh tools/ai/sbcl-impl-evidence/s6-subr-guard-b5/check.sh
+
+** S6.3 E2E: hash-get1024 runs natively with invalidation controls and meets the frozen time threshold
+#+NOTE: Was KNOWN RED on the S8 build7 campaign (-8.2%). 2026-11-01 final campaign on build13 (hash string fast path + earlier fixes; frozen S8 protocol, old r3 / new / GNU 31.1, 7 reps, CPU 1): hash-get1024 kernel 1834.7 -> 169.9 ns/step (-90.7%), GNU 69.8 (new/gnu 2.43, was 23.8); no row regresses over 5%. Invalidation controls: S6.5 (build12 hash differential incl. growth/remhash, callback counts). The cmd now evaluates the build13 campaign; the build7 campaign stays in s8-campaign unchanged.
+cmd: (cd tools/ai/sbcl-impl-evidence/s8-final-b13 && sha256sum -c --quiet manifest.sha256) && python3 -I tools/ai/sbcl-impl-evidence/s8-final-b13/evaluate.py --row hash-get1024 >/dev/null
+
+** S6.4 An equal-table gethash with a string key allocates nothing on the Lisp heap per lookup (callgrind on a built image)
+#+NOTE: 2026-11-01 Sonnet lane (wf_key_eq_depth compares two strings before allocating its work stack; m5_streq_bytes derives each data pointer once and compares 8 bytes at a time; m5_streq computes strlen once). build12 (method A) callgrind, loop of 1000 vs 5000 lookups, self cost per lookup: nl_alloc_bytes_uncheck 233 -> 0, nl_alloc_bytes 43 -> 0, nl_word_data 969 -> 357; total 7121 -> 5406 Ir incl. the interpreted loop. Negative controls: injected allocation in the build12 table and the build10 reference both fail the check.
+cmd: sh tools/ai/sbcl-impl-evidence/s6-hash-b12/check.sh s64 >/dev/null && (cd tools/ai/sbcl-impl-evidence/s6-hash-b12 && sha256sum -c --quiet manifest.sha256)
+
+** S6.5 Hash change keeps semantics: kernel-diff hash cases, the S6.2 callback/guard check, and rehash/mutation invalidation controls pass on the rebuilt image
+#+NOTE: build12: hash-string differential 261/261 equal to GNU 31.1 (word/tail boundaries, prefixes, multibyte/unibyte/raw bytes, text properties, non-string keys, puthash/remhash during growth from :size 4, custom test call counts; build10 also 261/261); kernel-diff 121/121; 11/11 guard checks incl. HASH-CUSTOM one hash and one test call per lookup; regression guard 142/17 identical failing set to build7; general semantic diff identical 12 pre-existing DIFFs. A tampered case line is rejected.
+cmd: sh tools/ai/sbcl-impl-evidence/s6-hash-b12/check.sh s65 >/dev/null && (cd tools/ai/sbcl-impl-evidence/s6-hash-b12 && sha256sum -c --quiet manifest.sha256)
+
+** S6.6 E2E: hash-get1024 kernel per step at least 25% below build13 (169.9 ns) under the frozen paired protocol, with hash semantics unchanged (hash differential, kernel-diff, guard checks)
+#+NOTE: Added 2026-11-01 (user: speed up hash-get1024 further; GNU 69.8 ns, build13 2.43x). Threshold fixed before implementation.
+#+NOTE: 2026-11-01 build15 final campaign (frozen S8 protocol, 7 reps, CPU 1): hash-get1024 kernel 97.1 ns/step (build13 169.9, -42.8%; old 1819.4; GNU 70.4, new/gnu 1.38); 7/7 pairs faster than old. Semantics on build15: hash differential 273/273 incl. long keys, kernel-diff 121/121, 11/11 guards incl. HASH-CUSTOM call counts. Negative control: a 25% bound fails.
+cmd: sh tools/ai/sbcl-impl-evidence/s8-final-b15/check.sh s66 >/dev/null && (cd tools/ai/sbcl-impl-evidence/s8-final-b15 && sha256sum -c --quiet manifest.sha256)
+
+* S7 Allocation and GC (Doc 234)
+
+** S7.1 Allocation lowering follows checked size, reserve, initialize, publish
+#+NOTE: Partial 2026-10-31: make-vector/make-string/make-bool-vector now check size before reserving and signal GNU's error (S7.2); no inline allocation fast region was implemented, so this criterion is not met.
+#+NOTE: 2026-11-01: nl_alloc_large_fast (requests > 472 bytes) keeps checked size -> reserve -> initialize -> publish: the caller rejects oversized counts before asking (GNU Memory exhausted), reservation is an exact-fit large-bin head or one CAS bump with a single limit check, GC debt is billed once on success, fallbacks go to the full slow path; make-vector initializes header and slots before returning the object. Structural tests 6/6 (seed 5/6 fail) plus the E2E campaign (S7.3).
+cmd: (ulimit -v 8388608; emacs --batch -Q -l test/nelisp-alloc-fastpath-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q "^Ran 6 tests, 6 results as expected, 0 unexpected") && sh tools/ai/sbcl-impl-evidence/s8-final-b15/check.sh s73 >/dev/null
+
+** S7.2 Oversized allocation requests signal GNU's catchable error before any reservation instead of aborting the process
+#+NOTE: build7: alloc-cases 15/15 match GNU 31.1 ("Memory exhausted--use C-x s then exit and restart Emacs" for oversized make-vector/make-string/make-bool-vector; wholenump errors unchanged; runtime keeps working after a caught failure). Previously exit 88.
+cmd: sh tools/ai/sbcl-impl-evidence/s8-final-b7-correctness/check.sh >/dev/null
+
+** S7.3 E2E: vector-allocate64 runs natively with allocation behavior checked and meets the frozen time threshold
+#+NOTE: KNOWN RED 2026-10-31: kernel -3.6% only (887.6 vs 920.6 ns/step; GNU 1357.0, new is 0.65x GNU). Collections inside the kernel stay correct (S1.3). No allocation fast region was implemented. Stays a failing cmd.
+#+NOTE: 2026-11-01 build15 (large-allocation fast path: exact-fit head of the large bin or one CAS bump, slow path otherwise): vector-allocate64 kernel 918.5 -> 554.0 ns/step (-39.7%, 7/7 pairs), GNU 1451.6 (new/gnu 0.38). Alloc semantic diff 15/15 (oversized requests still signal GNU error), regression guard 142/17 identical failing set, collections inside the kernel stay correct (kernel-diff 121/121). The build7 campaign (-3.6%) stays in s8-campaign unchanged.
+cmd: sh tools/ai/sbcl-impl-evidence/s8-final-b15/check.sh s73 >/dev/null && (cd tools/ai/sbcl-impl-evidence/s8-final-b15 && sha256sum -c --quiet manifest.sha256)
+
+* S8 Final integrated qualification and measurement campaign
+
+** S8.1 The integrated final image adds no gate failure over the frozen12 baseline (standalone regression guard, compile, ns-inventory, GC/weak fixtures)
+#+NOTE: Reworded 2026-10-31: the gates themselves are red before this work (frozen12 standalone-checks 17/142 incl. bytecode-poll SIGSEGV and weak/GC checks, compile 24 files on Emacs 31.1, ns-inventory 1397 unpinned collisions on the pristine snapshot). Final build7 (113c1796): same 17 failing checks as the recorded r3 ON image, same 24 compile error files as the pre-edit merged tree, and all 20 final-only ns findings name files from the shared checkout's pre-existing uncommitted overlay. check.sh rejects an injected finding attributed to this work. The red gates stay red and are not claimed green.
+cmd: sh tools/ai/sbcl-impl-evidence/s8-regression-guard/check.sh >/dev/null
+cmd: sh tools/ai/sbcl-impl-evidence/s8-final-b7-correctness/check.sh >/dev/null
+
+** S8.2 Thresholds, workload matrix, and same-N counts are frozen before any timed sample
+#+NOTE: Frozen 2026-10-31 before any S8 campaign sample: rows and low/high counts from the recorded counts.json, paired_bench two-count method, 7 reps on CPU 1, cohorts gnu/old(r3 fe7f6b1e)/new(method A), Doc 230-234 thresholds (>=10% target improvement, no row >5% slower, whole-process >5% blocks pending review, code growth >10% flagged). Exploratory single samples from builds 1-3 predate the freeze and are excluded.
+evidence: tools/ai/sbcl-impl-evidence/s8-protocol-frozen.json sha256=5246744206b2405797432881fd8af7b1479778dac80b6bd770271f67e0671e6f
+
+** S8.3 E2E: GNU, old, and new run matched-count with phase data, raw samples, negative controls, and independent review
+#+NOTE: Campaign complete 2026-10-31 on build7 (113c1796) vs recorded r3 ON (fe7f6b1e) vs GNU 31.1: 9 rows x 7 reps x 2 counts x 3 cohorts, all results equal; no kernel or whole-process regression over 5%; 6/8 target rows meet >=10%; hash-get1024 and vector-allocate64 do not; code growth over 10% on 11 kernels (flagged). Phase cohort on build7 (3 samples): runtime boot 16.1 ms, harness preparation 6420.8 ms of 6922.3 ms whole. BENCH_BROKEN controls fail on old and new. Independent review (Claude Opus subagent, non-Fable) verdict PASS with minor findings, disclosed here: new was built by method A (entry run directly), not the recorded authenticated adapter route; new ran through lane_runner_phased.py with an image override while old used the recorded lane_runner.py (kernel time is in-process, the whole-process column carries this difference); the nested-function-call2 new/GNU ratio uses a different GNU driver; whole-process time is dominated by ~6.4 s harness preparation, so 'no whole-process regression' says nothing about kernel work; evaluate.py --self-test detects result mutation only, timing tampering is covered by the sha256 listing; the freeze proof is a local mtime (protocol 21:32:31, first sample 23:02:19).
+evidence: tools/ai/sbcl-impl-evidence/s8-campaign.sha256 sha256=f39da7d95387ce331b3a4e986cff90cf51c745bf5de40f3e6252c45ceae49497
+cmd: python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py >/dev/null && python3 -I tools/ai/sbcl-impl-evidence/s8-campaign/evaluate.py --self-test >/dev/null
+cmd: python3 -I -c "import json,sys; d=json.load(open('tools/ai/sbcl-impl-evidence/s8-independent-review.json')); sys.exit(0 if d.get('verdict')=='PASS' else 1)"
+
+* D1 Root-cause design (added 2026-11-01, user: write the design for the representation and call-protocol root causes)
+
+** D1.1 Doc 238 specifies the single-representation migration and per-call-site caches with stages, gates, risks and a measurement plan
+cmd: f=docs/design/238-single-representation-and-call-site-caches.org; for k in '* Part A' '* Part B' 'A0 *Census.*' 'A3 *Retire views' 'B0 *Epoch.*' 'B1 *Site caches' '* Measurement plan' '* Acceptance' 'Risks'; do grep -qF -- "$k" $f || exit 1; done
+

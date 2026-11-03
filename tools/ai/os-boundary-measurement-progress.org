@@ -1,0 +1,28 @@
+#+TITLE: NeLisp OS boundary and user-space cost measurement
+
+* S1 Frozen inputs and preflight
+** S1.1 Binary, drivers, trip counts and protocol are pinned
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/input-manifest.json sha256=3d0b84924416286a94697dd0a7906eee09ed3784e00aec89f783b132b7cf07d5
+** S1.2 Rusage, checksum and diagnostic controls distinguish failure
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/raw-and-tooling.tar.gz sha256=0673ca5b96d6fe8ba78b6c85abbfdbce5d03b98e82732db03e2d0cf388c0a335
+** S1.3 Independent preflight accepts an ordinary checked execution
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/audit-preflight.json sha256=818de654589846922e0db20fc89ed92bdf73a9ee4007483c0e80cf697e0ae555
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/raw-and-tooling.tar.gz sha256=0673ca5b96d6fe8ba78b6c85abbfdbce5d03b98e82732db03e2d0cf388c0a335
+
+* S2 Measurements
+** S2.1 Fresh-process user/system CPU campaign is complete
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/analysis-final.json sha256=1ae46c39ecc0796a7771d39802645437398901adced23656a66facab32cd05cc
+** S2.2 Separate syscall-count campaign is complete
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/analysis-final.json sha256=1ae46c39ecc0796a7771d39802645437398901adced23656a66facab32cd05cc
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/measurement-index.json sha256=b2610d4678b5865172de6bba24e624aecd0ccf7b15fc5d6dd835833178b7a17e
+** S2.3 Bounded function-profile attempt and joint measurement record are preserved
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/profile-analysis-final.json sha256=3916b13e3e789ba5286938dde23d8488500ce8f7c513d3f070daf45e71f862e6
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/measurement-index.json sha256=b2610d4678b5865172de6bba24e624aecd0ccf7b15fc5d6dd835833178b7a17e
+
+* S3 Reviewable conclusion
+** S3.1 Saved raw measurements reproduce the analysis
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/reproduction.json sha256=9033294438a49985b9741d5e45f59a8614ac577b334003733db117cb1e5e552d
+** S3.2 Report distinguishes measured CPU, syscall counts and profile limitations
+evidence: ../../handoff/nelisp-os-boundary-measurement-results_2026-10-30.md sha256=aa90be816033e09e2d9e0a130c2e3ed7eb22275aa520770fb2404ff9e2f3c957
+** S3.3 Independent completion audit accepts the durable evidence and report
+evidence: ../../handoff/nelisp-os-boundary-measurement_2026-10-30-evidence/audit-completion.json sha256=33a22ee244fa7df12868442c0bf1e5c54206d89cd26afa4feceb15bcb0c013a8

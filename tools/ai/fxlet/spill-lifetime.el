@@ -1,0 +1,40 @@
+;;; spill-lifetime.el --- Popped binding-event lifetime probe -*- lexical-binding: t; -*-
+(defvar fxspill-table nil)
+(defvar fxspill-key nil)
+(defvar fxspill-pad nil)
+
+(defun fxspill-create ()
+  ;; The allocating activation ends before the outer activation binds KEY.
+  (setq fxspill-key (make-string 73 ?k))
+  (puthash fxspill-key t fxspill-table)
+  nil)
+
+(defmacro fxspill-define (name depth)
+  `(defun ,name ()
+     (fxspill-create)
+     (let ,(cons '(fxspill-key nil)
+                  (make-list (1- depth) '(fxspill-pad nil)))
+       nil)
+     (setq fxspill-key nil)
+     (garbage-collect)
+     (garbage-collect)
+     (hash-table-count fxspill-table)))
+
+(fxspill-define fxspill-24 24)
+(fxspill-define fxspill-25 25)
+
+(dolist (name '(fxspill-create fxspill-24 fxspill-25))
+  (when (fboundp 'nelisp--fx-register)
+    (nelisp--fx-register name)
+    (let ((record (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table)))
+      (unless (and (vectorp record) (>= (aref record 1) 0))
+        (error "Expected fx interpreter record: %S %S" name record))
+      (princ (format "FXVM %S locals=%S\n" name (aref record 1))))))
+
+(dolist (name '(fxspill-24 fxspill-25))
+  (setq fxspill-table (make-hash-table :test 'eq :weakness 'key))
+  (princ (format "INSIDE %S %S\n" name (funcall name)))
+  (garbage-collect)
+  (garbage-collect)
+  (princ (format "AFTER %S %S\n" name (hash-table-count fxspill-table))))
+(kill-emacs 0)

@@ -1,0 +1,83 @@
+Warning (files): Missing ‘lexical-binding’ cookie in "~/.cache/tmp/nelisp-sbcl-impl-f12-20261031/packages/nelisp-emacs-text-core/src/rx.el".
+You can add one with ‘M-x elisp-enable-lexical-binding RET’.
+See ‘(elisp)Selecting Lisp Dialect’ and ‘(elisp)Converting to Lexical Binding’
+for more information.
+
+In toplevel form:
+packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el:680:15: Error: the function ‘nelisp-text-buffer--standalone-p’ is not known to be defined.
+
+In toplevel form:
+packages/nelisp-emacs-buffer-core/src/nelisp-text-buffer.el:93:6: Error: the function ‘nelisp-text-buffer--set-slot’ is not known to be defined.
+
+In toplevel form:
+packages/nelisp-emacs-facade/src/nelisp-emacs.el:41:17: Error: reference to free variable ‘emacs-foundation-features’
+
+In toplevel form:
+packages/nelisp-emacs-io/src/nelisp-emacs-compat-fileio.el:118:40: Error: Lexical argument shadows the dynamic variable sym
+Warning: Optimization failure for cl-typep: Handler: cl-typep--inliner
+(error "Unknown type magit--git-variable")
+
+In toplevel form:
+packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el:721:28: Error: Unknown slot ‘scope’
+
+In toplevel form:
+packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el:226:9: Error: assignment to free variable ‘org-persist--index’
+
+In toplevel form:
+packages/nelisp-emacs-text-core/src/nelisp-regex.el:613:8: Error: function ‘nelisp-rx--build’ defined multiple times in this file
+Loading /home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/packages/nl-ffi/src/nl-ffi-loader.el (source)...
+Loading /home/madblack-21/.cache/tmp/nelisp-sbcl-impl-f12-20261031/packages/nl-ffi/src/nl-ffi-memory.el (source)...
+
+In toplevel form:
+packages/nelisp-gui-xcb/src/nelisp-gui-frontend.el:127:9: Error: assignment to free variable ‘nemacs-main--quit-flag’
+
+In toplevel form:
+packages/nelisp-gui-xcb/src/nelisp-gui-menu.el:61:26: Error: assignment to free variable ‘nelisp-gui-frontend--paint-needed’
+
+In toplevel form:
+packages/nelisp-gui-xcb/src/nelisp-gui-pango.el:116:10: Error: Unused lexical variable ‘natural’
+
+In toplevel form:
+packages/nelisp-gui-xcb/src/nelisp-gui-selection.el:285:30: Error: the function ‘ptr-read-bytes’ is not known to be defined.
+
+In toplevel form:
+packages/nelisp-gui-xcb/src/nelisp-gui-xcb.el:392:8: Error: the function ‘syscall-direct’ is not known to be defined.
+
+In toplevel form:
+packages/nelisp-http/src/nelisp-http.el:339:37: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nelisp-jit/src/nelisp-jit.el:161:36: Error: Lexical argument shadows the dynamic variable sym
+
+In toplevel form:
+packages/nelisp-network/src/nelisp-network.el:134:41: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nelisp-process/src/nelisp-process.el:472:41: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nelisp-textprop-display/src/nelisp-textprop-display.el:121:31: Error: Lexical argument shadows the dynamic variable sym
+
+In toplevel form:
+packages/nelisp-textprop-keymap/src/nelisp-textprop-keymap.el:282:45: Error: Lexical argument shadows the dynamic variable sym
+
+In toplevel form:
+packages/nl-clj/src/nl-clj-hash.el:338:31: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nl-clj/src/nl-clj-seq.el:270:21: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nl-ffi/src/nl-ffi-loader.el:1449:41: Error: Lexical argument shadows the dynamic variable s
+
+In toplevel form:
+packages/nl-libffi/src/nl-ffi-libffi.el:115:2: Error: docstring wider than 80 characters
+
+In toplevel form:
+packages/nl-ns/src/nl-ns.el:901:15: Error: Lexical argument shadows the dynamic variable sym
+
+In toplevel form:
+packages/nl-prelude/src/nl-prelude.el:463:30: Error: Lexical argument shadows the dynamic variable s
+removed 120 .elc (set NELISP_KEEP_ELC=1 to keep them)
+gate report: target/gates/compile.json (fail, ran 120, failed 1)
+rc=1

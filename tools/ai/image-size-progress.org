@@ -1,0 +1,51 @@
+#+TITLE: Doc 241 — compact cold image
+#+NOTE: Created 2026-11-02 before any implementation (user: shrink the base image as a new document). Workers: Sonnet. Primary metric: cold image bytes; correctness: restored heap identical plus verify22 and the Doc 240 checks; wall time once at the end. Pending criteria are not done.
+
+* S0 Measurement
+
+** S0.1 The build28 cold image is broken down by FLAT section with zero density, intern non-zero words and content zero runs
+evidence: tools/ai/sbcl-impl-evidence/a241-s0/sections-b28.txt sha256=6d274c01301f0b36aa6b982c82ab098d92b35aadf8f65d722c2d4b874e054c17
+
+* S1 Sparse intern table
+
+** S1.1 Structural: the dump writes only occupied intern buckets plus the name area; the loader restores them; the old format is refused loudly; tests fail on the pre-change generator (negative control)
+#+NOTE: 2026-11-02 Sonnet lane a241-s1: cold image format version 3 (sentinel 1397773107 at the start of the intern section; NREC records (slot index, word0, word1) for occupied slots of the 2^20 x 16 B table, then the raw name area); the loader refuses any other version ("cold-load rejected ... rebuild"). NELISP_COLD_IMAGE_FORMAT=dense (read from the initial environment) writes version 2 for comparison. 5 ERT tests; all 5 fail on the seed generator.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 900 emacs-31.1 --batch -Q -L lisp -L src -L scripts -l ert -l test/nelisp-cold-sparse-intern-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q "Ran 5 tests, 5 results as expected, 0 unexpected")
+
+** S1.2 E2E: on a rebuilt image the intern section is at most 1,000,000 bytes and the file at most 24,000,000 bytes; the restored intern table and arena equal build28's (heap-equality probe); verify22 equal to build28; Doc 240 S1.1, S1.2 and S2.1 pass against the new binary
+#+NOTE: 2026-11-02 build29 (S1 lane tree): cold image 39,666,560 -> 23,096,600 bytes; intern section 450,960 bytes (8,635 records). probe-equal.sh: a dense (v2) and a sparse (v3) dump from fresh processes with environments of identical shape decode to the same bytes except the 5-byte env value and one derived word (11 bytes, all inside 64-byte windows after the value); a 1-byte change elsewhere fails it. Intern probe passes (the worker probe wrongly treated (intern-soft "nil") as missing; fixed, and it also failed on build28). verify22 outputs equal to build28 (rows results, semantic/kernel diff, reader probe, epoch probe modulo values, the same 17 standalone-gate failures); Doc 240 S1.1, S1.2, S2.1 pass with build29. check-s12.sh checks all of these.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a241-s1/check-s12.sh
+
+* S2 Content zero runs
+
+** S2.1 The owners of the content zero runs of 64 KiB or more are identified on the S1 image (object type, allocation site, reachability)
+evidence: tools/ai/sbcl-impl-evidence/a241-s2/owners-b29.txt sha256=1a9173830913d5802b86c25e9d69df12e3d193f013cdd38841ba6727a85794f5
+
+** S2.2 E2E: content zero runs of 64 KiB or more total at most 256 KiB on a rebuilt image, with the S1.2 correctness gates
+#+NOTE: 2026-11-02 the owner of both runs is one 3,200,000-byte string, nlre--nat-scratch (native regexp scratch, lisp/nelisp-stdlib-regexp.el; created lazily by nlre--nat-run), left in the image by build-time regexp use. The two dump forms of the generator now reset it to nil before garbage-collect; it is recreated on the first native match. ERT test/nelisp-cold-scratch-drop-test.el fails on the seed. build30: cold image 23,096,600 -> 19,896,656 bytes, content zero runs >= 64 KiB 0 (build29: 3,191,759, check fails), scratch nil at start and 3,200,000 after a match, S1.2 gates pass.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a241-s2/check-s22.sh
+
+* S3 Relocation table
+
+** S3.1 E2E: relocation data at most half of build28's 4,381,392 bytes on a rebuilt image, cold-load time not higher (paired, quiet machine), with the S1.2 correctness gates
+#+NOTE: Doc 241 S3.1: v4 packed relocation section (sorted delta varint), reloc section <= 2,190,696 B, dense-vs-v4 probe, S1.2/S2.2 gates via v4-aware copies, paired cold-load timing vs build30 (median <= 1.02x) on a quiet machine.
+#+NOTE: 2026-11-02 build31 (S3 lane tree): reloc section 4,381,368 -> 549,619 bytes (547,671 entries; offsets unique, so order is irrelevant and the writer fails on a duplicate); cold image 19,896,656 -> 16,064,907 bytes (build28 39,666,560: -59.5%). Equality: reloc entries equal as a sorted multiset, other bytes equal except the 11-byte env window; verify22 equal to build28; Doc 240 S1.1/S1.2/S2.1 pass. Paired bare start (quiet, 15 rounds): build30 17.6 ms, build31 17.3 ms. The S1.2/S2.2 cmds keep their v3 binaries (build29/build30); v4-aware copies are in a241-s3.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a241-s3/check-s31.sh
+
+* S4 Wall time
+
+** S4.1 E2E: on a quiet machine, bare start and the Doc 240 app launcher (hash-get1024, N=16384) are faster than build28 in a paired run, with results equal
+#+NOTE: Produces a hash-get1024 app image for build28 and build31, waits for no nelisp-dynamic and a quiet machine (load1<=0.5, busy CPUs<=0.3, before and after), then runs 15 alternating rounds of bare start (--load nop.el) and the Doc 240 launcher (N=16384) for both; every run exits 0, BENCH-CHECK results must be equal, and median wall of new must be at least 5% below ref for both (5% margin: identical binaries show ~3.5% positional bias on the launcher). Table in tools/ai/sbcl-impl-evidence/a241-s4/s41-b31.txt.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a241-s4/check-s41.sh
+
+** S4.2 E2E: the app-lane campaign (s8-app-lane) runs once on the final image and passes evaluate_app.py
+#+NOTE: 2026-11-02 run-b31 (build31, --cpu 1, reps 7): results equal in all rows; kernel new/old 0.989-1.008 except allocating rows. Long-interval (2M..4M, 3 reps, run-b31/cadence): string-slice16 0.991, string-concat16 0.999 (GC cadence), but vector-allocate64 0.836 (build28 run: 1.041), so evaluate_app.py fails on that row. The app image starts from a compact live-only heap, while the full lane allocates during preparation (including the regexp scratch dropped from the base image in S2) before the kernel; an allocator-state difference, not a result difference. Not investigated further; the two-sided band is kept. Whole process new/GNU: 0.24-0.91 in eight rows, hash-get1024 1.13 (79.6 vs 70.5 ms; build28 run 1.32).
+#+NOTE: 2026-11-02 cause (a241-s4/cg-instr-s42-perstep-b31.txt sha256=9ac29aaf3e90a8c4560a11ead6467f85c9ad7f093f51e4337647d0cac4aeac07; pmc-s42-b31.txt): per kernel step the full lane runs 2907.7 vs 2848.2 Ir and 1389 vs 1054 cycles; free-list scanning is equal; the difference is GC work: nl_sweep_conses 34.7 vs 0.9, nl_gc_mark_cons_view 20.4 vs 0.6, typed-registry lookups about 20 vs 1 Ir/step. Objects restored from a cold image are immortal (not swept, cheaper marking), so the preparation results that the app image carries in its image cost nothing per collection, while in the full lane they are ordinary heap objects marked and swept by every collection of the allocating kernel. TLB misses, fills beyond L2 and page faults are equal. Not a kernel or allocator difference; why build28's run showed 1.041 was not measured.
+#+NOTE: 2026-11-02 user decision: measure build28 too, then treat the row as an explicit exception. build28 shows the same pattern (callgrind per step 2909.8 vs 2848.3 Ir, nl_sweep_conses 36.6 vs 0.9; PMC kernel 380.9 vs 331.1 ns, cycles 1406.6 vs 1267.7), so the earlier 1.041 long-interval figure (3 reps) did not reproduce. evaluate_app.py: an allocating row outside the band now also passes with GC attribution evidence (run-*/gc-attribution/<row>.json from a241-s4/gc-attr.py): new faster, GC Ir/step lower, non-GC Ir/step within 2% (build31 1.0011, build28 1.0010); flagged GC-ATTRIBUTED. Self-test 19 cases. Bound and band unchanged otherwise.
+#+TIMEOUT: 600
+cmd: cd tools/ai/sbcl-impl-evidence/s8-app-lane && python3 -I evaluate_app.py x --self-test > /dev/null && python3 -I evaluate_app.py run-b31 > /dev/null

@@ -1,0 +1,17 @@
+#+TITLE: Wasm target-state initialization contract (arena metadata and rootstack owners)
+
+* S1 Genuine init writes execute in Wasm and match the syntax-derived contract
+
+** S1.1 Genuine rootstack source embeds raw arena-metadata atoms with no Wasm owner
+cmd: test "$(cat target/wasm-target-init/red.rc)" -eq 1 && rg -q '^raw-arena-atoms=4 offsets=\(16 24 56 88\)$' target/wasm-target-init/red.log
+
+** S1.2 Contract table, deliberate Wasm adapters and negative controls reviewed
+evidence: target/wasm-target-init/coordinator-review.json sha256=9f69f1ea7612f3ca0e67f8296b446aa026ade907ac138adc144a13fda3772137
+
+** S1.3 Executed init in node matches every contract word
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" timeout 300 emacs -Q --batch -L lisp -L src -L test -L tools/ai --eval '(setq load-prefer-newer t)' -l lisp/nelisp-asm-wasm.el -l lisp/nelisp-aot-compiler.el -l tools/ai/wasm-target-init-probe.el > target/wasm-target-init/current.log 2>&1 && node --disable-wasm-trap-handler tools/ai/wasm-target-init-check.mjs > target/wasm-target-init/check.log 2>&1; rc=$?; test "$rc" -eq 0 && rg -q '^GATE-COUNT checked=[1-9][0-9]* findings=0$' target/wasm-target-init/check.log
+
+#+NOTE: 2026-10-25: ledger created before implementation (user chose the executed init-contract slice).
+#+NOTE: The Wasm allocator is the compiler bump cursor with no-op dealloc: an explicit noncollecting W0 limit, not reclamation.
+#+NOTE: Executing init words is not GC, builtin dispatch, image loading or W0 execution.

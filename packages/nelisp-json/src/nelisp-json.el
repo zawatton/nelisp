@@ -143,14 +143,30 @@ Return (VALUE . NEXT-POS) where NEXT-POS is after the closing quote."
   (let ((idx (1+ pos))
         (len (length json-string))
         (chunks nil)
-        start escape codepoint low-info low)
+        start escape codepoint low-info low literal-end)
+    ;; Search one long, unescaped, unibyte token with the existing byte-search
+    ;; primitive. Escape-heavy and multibyte strings keep the character loop;
+    ;; repeated suffix searches would make escaped input quadratic.
+    (when (and (fboundp 'nelisp--string-search)
+               (not (multibyte-string-p json-string)))
+      (let ((quote (nelisp--string-search "\"" json-string idx)))
+        (when (and quote (> (- quote idx) 256))
+          (let ((span (substring json-string idx quote)))
+            (unless (nelisp--string-search "\\" span 0)
+              (setq literal-end quote)
+              (dotimes (char 32)
+                (let ((control (nelisp--string-search (string char) span 0)))
+                  (when control
+                    (setq literal-end (min literal-end (+ idx control)))))))))))
     (catch 'done
       (while (< idx len)
         (setq start idx)
-        (while (and (< idx len)
-                    (not (memq (aref json-string idx) '(?\" ?\\)))
-                    (>= (aref json-string idx) #x20))
-          (setq idx (1+ idx)))
+        (if literal-end
+            (setq idx literal-end)
+          (while (and (< idx len)
+                      (not (memq (aref json-string idx) '(?\" ?\\)))
+                      (>= (aref json-string idx) #x20))
+            (setq idx (1+ idx))))
         (when (> idx start)
           (push (substring json-string start idx) chunks))
         (when (>= idx len)

@@ -1,0 +1,149 @@
+#+TITLE: One object representation and call-site caches for native code
+#+DATE: 2026-11-01
+#+STATUS: PROPOSED — design only; no implementation
+#+SCOPE: Finish the legacy-view -> direct-WORD migration for the hot object kinds, and replace the per-call native->subr re-validation with per-call-site caches invalidated by an epoch
+
+* Why this document exists
+
+The 2026-11-01 optimisation lanes (hash, allocation, reader, printer, startup)
+cut measured costs by working around two structural costs one call path at a
+time.  The coordinator's review concluded that these are symptoms:
+
+1. *Two object representations.*  A Lisp object reaches runtime code either as
+   a direct WORD (low bits =100= string, =010= cons, =110= vectorlike) or as a
+   legacy 32-byte view (tag byte at +0, fields at +8/+16/+24).  Every basic
+   accessor therefore branches on the shape: =nl_word_data=
+   (scripts/nelisp-standalone-build.el, the defun near "Reader fast path"),
+   =nl_word_length=, =nl_str_target=, =nl_bi_strptr= (two definitions; the later
+   one is live), =m5_strlen=.  Profiles of hash lookup, reading and printing all
+   showed these accessors as top self-cost entries (=nl_word_data= was 33% of
+   reader instructions; 969 Ir per hash lookup before the hash lanes).
+2. *Generic native->subr calls.*  A call from native code to a builtin
+   re-validates the callee on every call: =subr-guard= (lisp/nelisp-cc-fxir-native.el)
+   re-reads the symbol's function cell and the Subr header, then
+   =nc_dsubr_call= re-reads them again, then =nl_directcall_id= re-derives the
+   id, checks arity, debug-policy bits (env+112) and backtrace depth (env+176)
+   ("on EVERY call", =nl_directcall_id= comment).  There is no per-call-site
+   cache; redefinition is detected by re-comparing the header.  The hash4 lane's
+   gethash-only shortcut removed ~180 Ir for one subr; every other subr still
+   pays the full path.
+
+Measured evidence that inlining settings are not the lever: on build18's exact
+source, =NELISP_XINLINE=1= changed Ir per step by at most 2% (+410 KB text),
+and =NELISP_INLINE_MAX_NODES=160= fails the F1 rooted prelink proof
+("Indirect control flow refused: wf_key_eq_depth").
+
+* Non-goals
+
+- Changing the Lisp-visible semantics of any object, the reader syntax, or the
+  printer output.
+- Changing the heap image format in a way that makes existing pinned cold
+  images unusable without a rebuild (a rebuild is acceptable; silent misreads
+  are not).
+- Removing the redefinition guard: =fset=, =defalias=, =advice-add= and
+  reload must keep changing what a native call site invokes, exactly as today.
+
+* Part A — one representation for hot kinds
+
+** Current state (facts)
+- Docs 215 (WORD transport), 216 (header-less heap), 226 (symbols, D9), 227
+  (String WORD) moved most producers to direct WORDs.  Doc 226 records legacy
+  symbol views falling from 120,446 to 6,030 and then 1,514 in the cold image
+  (baked closure heads, =(builtin NAME)= definitions, unbound-marker copies).
+- Views are still materialised by =nl_sexp_clone_into=, =nl_word_clone=, and
+  =m5_fx_word_ptr= (lisp/nelisp-cc-fx-call-primitives.el), i.e. at evaluator
+  argument frames and some FFI/printer boundaries.  Doc 229 lists "pass values
+  across the boundary as WORDs" (S4.3) as unfinished.
+
+** Target
+For strings, conses, vectors/records and symbols, every runtime accessor
+receives a direct WORD; the 32-byte view exists only inside a small,
+named set of legacy entry points that convert once at the boundary.  The
+accessors then become single loads:
+- string data = =(heap-read-u64 (- w 4) 24)=, byte length = header +8 rule;
+- vector slot i = =(heap-read-u64 (+ (- w 6) 8 (* 8 i)))=;
+- cons car/cdr = two loads from =w-2=.
+
+** Stages (each ends with an E2E criterion)
+- A0 *Census.*  Instrument (debug build only) the branches of =nl_word_data=,
+  =nl_word_length=, =nl_str_target=, =nl_bi_strptr= to count which shape
+  arrives, per caller, while running the nine benchmark rows, the reader probe,
+  the print differential and the standalone checks.  Output: a table of
+  (accessor, caller, shape, count).  No behaviour change.
+- A1 *Stop producing views on hot paths.*  For each producer found in A0 with
+  a nonzero view count on a hot path, pass the WORD instead (Doc 229 S4.3).
+  Gate: the A0 census on the same workloads shows zero views at the hot
+  accessors; GNU differentials (semantic, alloc, bignum, hash, print, reader
+  probe) unchanged; kernel-diff unchanged; regression guard set unchanged.
+- A2 *Split the accessors.*  Add WORD-only accessors (=nl_w_str_data=,
+  =nl_w_str_len=, ...) with a debug assertion on the shape, and switch the hot
+  callers proven view-free by A1.  Keep the branching accessors for the legacy
+  entry points only.  Gate: Ir per step on the eight driver rows and per byte
+  for the reader drops; no correctness gate changes.
+- A3 *Retire views from the image.*  Convert the remaining 1,514 cold-image
+  views at build time (or at cold load) and make view creation a checked,
+  counted event.  Gate: cold image contains zero views of the hot kinds;
+  dump/restore histories (S2.8 evidence) still accepted; S2.9 allocation after
+  restore unchanged.
+
+** Risks
+- GC and the dumper understand both shapes today; removing a shape from a hot
+  path must not remove its handling from the collector until A3 proves none
+  exist.  Conservative stack scanning must still recognise WORD-only roots.
+- The two live definitions of =nl_bi_strptr= show that duplicate defuns
+  silently override each other; A2 must delete, not shadow.
+
+* Part B — per-call-site caches for native -> subr calls
+
+** Target
+Each native call site to a symbol's function keeps a cache record
+=(epoch, callee-entry, arity-ok, leaf-flag)=.  A global /function epoch/ is
+incremented by every operation that can change what a symbol call resolves to:
+=fset=, =defalias=, =advice-add=/=advice-remove= (through =fset=), =makunbound=
+of a function cell, loading a file that redefines a function, the debug-policy
+toggles that today live in env+112, and image restore.  At a call:
+#+begin_example
+if (site.epoch == global_epoch) goto site.callee_entry   ; one load + compare
+else revalidate (today's full checks), refill site, then call
+#+end_example
+Debug policy and backtrace depth: the policy bits move into the epoch (toggling
+debug-on-entry or backtrace recording bumps the epoch, so a fast-path site is
+never taken while recording is required); the depth limit check stays per call
+(one compare) because it guards stack exhaustion.
+
+** Stages
+- B0 *Epoch.*  Add the counter and bump it at every mutation point; add a
+  test that each listed operation bumps it (fset, defalias, advice, load,
+  policy toggle, restore).  No call path uses it yet.  Gate: the existing guard
+  checks (HASH-CUSTOM, LOGAND-FSET, *-FSET restore checks in run/b5 and run/b3)
+  pass.
+- B1 *Site caches for dsubr calls.*  =nc_dsubr_call= gains the cache; on a
+  miss it runs today's path unchanged.  Remove the hash4 gethash special case
+  once B1 covers it.  Gate: guard checks pass; new negative controls: fset a
+  cached builtin between two calls of the same site, advice it, toggle debug
+  policy — each must take the new definition on the very next call;
+  kernel-diff unchanged; Ir per call drops for function-call2,
+  nested-function-call2, hash-get1024.
+- B2 *Site caches for native -> native and closure calls* (=nc_call=,
+  =nc_funcall=), reusing the same epoch.  Gate: as B1 plus the nested row.
+
+** Risks
+- A missed epoch bump is a silent wrong-callee bug.  Mitigation: every write to
+  a symbol's function cell goes through one primitive that bumps the epoch;
+  a build-time check (like the DSL literal-range test) rejects direct
+  =ptr-write= to the function-cell offset outside that primitive.
+- Epoch overflow: 64-bit counter; not a practical concern.
+- Image dumps must not carry filled caches across a restore: restore bumps
+  the epoch.
+
+* Measurement plan
+Primary metric: callgrind Ir per step (deterministic, machine-load independent)
+for the eight driver rows, Ir per byte for the reader, Ir per element for the
+printer.  Secondary: the frozen S8 paired protocol for wall time, run once at
+the end of a stage group (user instruction: measure once at the end).
+
+* Acceptance
+Each stage gets a machine-checkable ledger criterion before implementation, a
+negative control, and unchanged GNU differentials for unannotated code.  The
+ledger for this work is a new file, =tools/ai/repr-callsite-progress.org=,
+created when implementation is approved.

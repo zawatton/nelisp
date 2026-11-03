@@ -245,4 +245,134 @@
       (should (equal (condition-case e (funcall (funcall actual 9)) (error (car e)))
                      (condition-case e (funcall (funcall golden 9)) (error (car e))))))))
 
+(ert-deftest nelisp-reader-strict-control-whitespace-and-sharp-dispatch ()
+  "The pure reader follows GNU ASCII whitespace and rejects unknown dispatch."
+  (let* ((controls (apply #'string (number-sequence 0 32)))
+         (source (concat controls "42"))
+         (atom (concat "x" controls "y"))
+         (nbsp-source (concat (string #xa0) "42"))
+         (unicode-token (concat (string #x2000) "42")))
+    (should (= (nelisp--rd-skip-ws source 0 (length source)) 33))
+    (should (= (nelisp--rd-atom-end atom 0 (length atom)) 1))
+    (should (equal (nelisp--rd-read-one source 0 (length source)) '(42 . 35)))
+    (should (equal (car (nelisp--rd-read-one nbsp-source 0 (length nbsp-source))) 42))
+    (should (eq (car (nelisp--rd-read-one unicode-token 0 (length unicode-token)))
+                (intern unicode-token))))
+  (dolist (source '("#." "#z"))
+    (should-error (nelisp--rd-read-one source 0 (length source))
+                  :type 'invalid-read-syntax))
+  (should (equal (nelisp--rd-read-one "#x10" 0 4) '(16 . 4)))
+  (should (eq (car (nelisp--rd-read-one "##" 0 2)) (intern ""))))
+
+(ert-deftest nelisp-reader-strict-read-circle-label-policy ()
+  "Object labels require read-circle while true mode retains label identity."
+  (dolist (source '("#1=42" "#1#" "#1=(a . #1#)"))
+    (let ((read-circle nil))
+      (should-error (nelisp--rd-read-one source 0 (length source))
+                    :type 'invalid-read-syntax)))
+
+  (let* ((read-circle t)
+         (source "#1=(a . #1#)")
+         (object (car (nelisp--rd-read-one source 0 (length source)))))
+    (should (eq object (cdr object)))))
+
+(ert-deftest nelisp-reader-strict-vt-public-and-protocol-entrypoints-match-gnu ()
+  "Public reading consumes VT as whitespace; protocol EOF trivia matches GNU."
+  (load (expand-file-name "../lisp/nelisp-native-application-protocol.el"
+                          nelisp-r9-reader-bytecode-label-test--directory)
+        nil t)
+  (let ((read-circle nil))
+    (should (equal (read-from-string "\v42\v") '(42 . 3)))
+    (should (equal (nelisp-native-application-protocol-forms "\v42") '(42)))
+    (should-error (nelisp-native-application-protocol-forms "\v42\v")
+                  :type 'end-of-file)))
+
+(ert-deftest nelisp-reader-strict-native-read-circle-declaration-preserves-prebound-values ()
+  "The native runtime declares read-circle special without replacing its value."
+  (let* ((host-read (symbol-function 'read))
+         (old-native (and (fboundp 'nelisp--read-all-from-string-native)
+                          (symbol-function 'nelisp--read-all-from-string-native)))
+         (declaration nil))
+    (with-temp-buffer
+      (insert-file-contents
+       (expand-file-name "../scripts/nelisp-stdlib-prelude.el"
+                         nelisp-r9-reader-bytecode-label-test--directory))
+      (goto-char (point-min))
+      (search-forward "(when (fboundp 'nelisp--read-all-from-string-native)")
+      (backward-char (length "(when (fboundp 'nelisp--read-all-from-string-native)"))
+      (setq declaration (funcall host-read (current-buffer))))
+    (unwind-protect
+        (progn
+          ;; Host GNU lacks this private native binding.  A stub activates only
+          ;; the guarded declaration form; the separate P5 controls prove its
+          ;; behavior on the runtime where read-circle is not builtin-special.
+          (fset 'nelisp--read-all-from-string-native (lambda (&rest _args) nil))
+          (let ((read-circle nil))
+            (eval declaration t)
+            (should (boundp 'read-circle))
+            (should (special-variable-p 'read-circle))
+            (should-not read-circle)
+            (let ((read-circle t))
+              (should read-circle)
+              (should (eq (car (nelisp--rd-read-one "#1=42" 0 5)) 42)))
+            (should-not read-circle)
+            (should-error (nelisp--rd-read-one "#1=42" 0 5)
+                          :type 'invalid-read-syntax))
+          (let ((read-circle t))
+            (eval declaration t)
+            (should (special-variable-p 'read-circle))
+            (should read-circle)))
+      (if old-native
+          (fset 'nelisp--read-all-from-string-native old-native)
+        (fmakunbound 'nelisp--read-all-from-string-native)))))
+
+(ert-deftest nelisp-reader-strict-public-native-shortcuts-obey-read-circle ()
+  "Both public shortcuts decline in strict mode and remain reachable by default."
+  (let* ((old-read (symbol-function 'read))
+         (old-read-from-string (symbol-function 'read-from-string))
+         (old-native (and (fboundp 'nelisp--read-all-from-string-native)
+                          (symbol-function 'nelisp--read-all-from-string-native)))
+         (old-check (and (fboundp 'nelisp--check-string)
+                         (symbol-function 'nelisp--check-string)))
+         (check-was-bound (fboundp 'nelisp--check-string))
+         (native-calls 0)
+         (form nil))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (insert-file-contents
+             (expand-file-name "../scripts/nelisp-stdlib-prelude.el"
+                               nelisp-r9-reader-bytecode-label-test--directory))
+            (goto-char (point-min))
+            (search-forward "(fset 'read-from-string")
+            (search-backward "(when (fboundp 'nelisp--read-all-from-string-native)")
+            (backward-char (length "(when (fboundp 'nelisp--read-all-from-string-native)"))
+            (setq form (funcall old-read (current-buffer))))
+          (fset 'nelisp--check-string
+                (lambda (value)
+                  (unless (stringp value)
+                    (signal 'wrong-type-argument (list 'stringp value)))))
+          (fset 'nelisp--read-all-from-string-native
+                (lambda (string start end)
+                  (setq native-calls (1+ native-calls))
+                  (cons 'native end)))
+          (eval form t)
+          (let ((read-circle nil))
+            (should (equal (read-from-string "42") '(42 . 2)))
+            (should (equal (read-from-string "42" 0 2) '(42 . 2)))
+            (should (= native-calls 0)))
+          (let ((read-circle t))
+            (should (equal (read-from-string "42") '(native . 2)))
+            (should (equal (read-from-string "42" 0 2) '(native . 2)))
+            (should (= native-calls 2)))
+          (should (functionp (symbol-function 'read-from-string))))
+      (fset 'read old-read)
+      (fset 'read-from-string old-read-from-string)
+      (if old-native
+          (fset 'nelisp--read-all-from-string-native old-native)
+        (fmakunbound 'nelisp--read-all-from-string-native))
+      (if check-was-bound
+          (fset 'nelisp--check-string old-check)
+        (fmakunbound 'nelisp--check-string)))))
+
 ;;; nelisp-r9-reader-bytecode-label-test.el ends here

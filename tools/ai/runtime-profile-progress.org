@@ -1,0 +1,16 @@
+#+TITLE: Native profile-selection diagnostics
+
+* S1 Source-bound reader and baked profile membership
+
+** S1.1 Literal positive fixture and fail-closed mutation controls pass
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-profile && { rm -f target/ai/runtime-profile/tests.rc || exit $?; PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-profile-test.py >target/ai/runtime-profile/tests.stdout 2>target/ai/runtime-profile/tests.stderr; profile_rc=$?; printf '%s\n' "$profile_rc" >target/ai/runtime-profile/tests.rc; exit "$profile_rc"; }
+
+** S1.2 Current-source reader and baked diagnostics explain all 21 trap pairs
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-profile && { rm -f target/ai/runtime-profile/report.rc || exit $?; PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-profile-check.py report --output target/ai/runtime-profile/report.json >target/ai/runtime-profile/report.stdout 2>target/ai/runtime-profile/report.stderr; profile_rc=$?; printf '%s\n' "$profile_rc" >target/ai/runtime-profile/report.rc; exit "$profile_rc"; }
+
+** S1.3 Real reader and baked profile membership is fully qualified
+#+REQUIRES: NOTES_ROOT
+#+NOTE: Known-red while target conditions and generated selection remain unresolved. No runtime or Wasm admission claim.
+cmd: ulimit -v 8388608; mkdir -p target/ai/runtime-profile && { rm -f target/ai/runtime-profile/completeness.rc || exit $?; PYTHONDONTWRITEBYTECODE=1 "$NOTES_ROOT/bin/heavy-run.sh" python3 tools/ai/runtime-profile-check.py complete --report target/ai/runtime-profile/report.json --output target/ai/runtime-profile/completeness.json >target/ai/runtime-profile/completeness.stdout 2>target/ai/runtime-profile/completeness.stderr; profile_rc=$?; printf '%s\n' "$profile_rc" >target/ai/runtime-profile/completeness.rc; exit "$profile_rc"; }

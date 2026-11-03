@@ -1,0 +1,106 @@
+#+TITLE: Guarded vector access and store effects for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — research only; no implementation or qualification
+#+SCOPE: General typed memory IR and vector access lowering
+
+* Decision boundary
+
+Introduce a general typed memory-IR model for vector access only after the
+compiler can prove representation, index range, backing storage lifetime, and
+store effects. The goal is not to add vectors: the measured NeLisp already
+uses vector-backed storage. Do not specialize a benchmark loop or drop checks
+from a particular primitive.
+
+* Measured baseline and limits
+
+At =N=4,194,304=, same-count old/new kernel seconds were 0.721647978/0.317495823
+for vector read and 0.685326815/0.325818062 for vector write. GNU/ON kernel
+seconds were 0.182685614/0.317495823 and 0.165211439/0.325818062. Process
+seconds were GNU/ON 0.608882401/8.056687495 for reads and
+0.551475821/8.004769108 for writes. These measurements are experimental. They
+do not isolate bounds checks, tagging, cache effects, barriers, or startup.
+
+* SBCL mechanism and current NeLisp
+
+Pinned SBCL has distinct checked, fast, fixnum, and untagged bounds VOPs;
+simple vectors and specialized numeric vectors use different register
+classes. Generic simple-vector setters emit a generational barrier; numeric
+setters are separate. Array headers may resolve to backing data and adjusted
+indices. This is a collector- and representation-specific design, not a
+portable recipe. Source hashes and inspected lines are in the source manifest.
+Direct anchors include
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/array.lisp#L196][bounds variants]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/array.lisp#L315][reference setter barrier]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/array.lisp#L48][backing data resolution]].
+
+The measured frozen12 code includes typed word-slot access, raw memory checks,
+clone-into behavior, cached backing addresses, and identity-epoch repair;
+anchors include =lisp/nelisp-cc-nlvector-set-slot.el:33-35,60-85=,
+=lisp/nelisp-cc-fxir-native.el:998-1005=, and
+=lisp/nelisp-heap-accessors.el:127-141=. The
+shared V8 proposal Doc 215 is separate from that measured code. The full
+contract of =wf_dirty= under snapshots and complete GC remains unproven; retain
+the current barrier until that contract is documented and tested.
+
+* Proposed IR and safety rules
+
+Proposed operations (not existing APIs) are =mem-view(owner,offset,kind,
+length,epoch)=, =index-normalize(index,logical-length,mode)=,
+=vector-load(view,index,element-kind)=, =vector-store(view,index,value,
+element-kind,store-effect)=, and =mem-revalidate(owner,epoch,backing)=. A view
+retains its backing owner and records byte offset and storage epoch; it is not
+a raw pointer. Evaluate container and index forms exactly once in source
+order. Preserve current type-check, index normalization, bounds, and error
+ordering; form direct access only after those checks. Any allocating or
+calling operation invalidates the view until owner, epoch, and backing
+identity are revalidated. Failure branches to generic code with materialized
+operands and no repeated evaluation.
+
+Model vector storage kind, element representation, logical length, physical
+capacity, index representation, mutability, and lifetime in a common memory
+IR. Lower an access to unboxed index arithmetic and direct data access only
+when guards prove vector kind, bounds, overflow safety, valid storage epoch,
+and alias assumptions. Guard failure calls the exact generic operation.
+
+Stores carry an explicit effect: reference store, numeric store, write
+barrier, mutation/version update, or unknown. Reference stores preserve the
+collector's required barrier and dirty state. Do not infer that SBCL's
+generational barrier and NeLisp's =wf_dirty= are equivalent. Cached addresses
+must be invalidated or revalidated after allocation, GC, resizing, clone,
+or any operation that may move or replace backing storage. Unknown mutation
+escapes invalidate facts.
+
+Keep Emacs-compatible errors, index interpretation, sequence behavior, and
+observable mutation. Do not silently turn errors into unchecked loads or
+change tagged/boxed values. Preserve aliasing and evaluation order. The direct
+path may not omit an effect just because its element type is numeric if the
+container operation has other observable behavior.
+
+* Stages and acceptance
+
+Dependency order: Doc 234 allocation/root/ownership and generic memory IR;
+then vector views and store effects; then string offsets (Doc 233) and hash
+slots (Doc 230). Stage 1: specify memory-IR facts and enumerate all
+invalidation points.
+Stage 2: implement analysis and generic fallback without changing codegen.
+Stage 3: lower guarded unboxed indexes/direct accesses for proven cases.
+Stage 4: consider store fusion only after the complete barrier/snapshot
+contract is proven. Alternatives are current checked access, general compiler
+lowering, an already permitted low-level primitive, or no optimization. Do
+not add a speed-only native primitive; choose from measurements.
+
+Freeze the threshold before trials. Pass requires all semantic controls, at
+least 10% median kernel-time improvement on the target row, no same-count row
+over 5% slower in median kernel time, and at most 10% code growth per changed
+unit. Report every whole-process regression; above 5% blocks acceptance
+pending explicit review.
+
+Run identical vector-read/write workloads and same counts on GNU bytecode,
+old NeLisp, and new NeLisp, seven paired runs, fixed warmups and CPU. Report
+kernel/process seconds, generated instructions, code bytes, bounds-guard
+failures, allocations, barrier operations, and invalidations. Correctness
+gates cover zero/negative/large indexes, overflow, wrong vector kinds,
+mutation during calls, aliases, clone/resize, forced GC, snapshots, dirty
+tracking, and negative controls that corrupt a guard or expected result. Roll
+back if generic semantics, dirty/snapshot behavior, or collector visibility
+changes, regardless of timing. No speed promise is made.

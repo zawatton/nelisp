@@ -99,6 +99,21 @@ NELISP_ROOT_EVIDENCE_REPORT logs the size of accepted evidence too."
         (cons (json-read-from-string (decode-coding-string bytes 'utf-8))
               (secure-hash 'sha256 bytes))))))
 
+(defun nelisp-native-rooted-startup-evidence--relocation-symbol (unit relocation)
+  "Resolve RELOCATION's symbol in UNIT, accepting the original string format."
+  (let ((value (alist-get 'symbol relocation))
+        (dictionary (assq 'relocation-symbols unit))
+        (format-entry (assq 'relocation-symbol-format unit)))
+    (if dictionary
+        (let ((names (cdr dictionary)))
+          (unless (and (equal (cdr format-entry) "dictionary-v1")
+                       (proper-list-p names) (cl-every #'stringp names)
+                       (integerp value) (<= 0 value) (< value (length names)))
+            (error "Invalid relocation symbol index"))
+          (nth value names))
+      (unless (and (null format-entry) (stringp value)) (error "Invalid relocation symbol"))
+      value)))
+
 (defun nelisp-native-rooted-startup-evidence--forms (path)
   "Return parsed forms and digest from the same bounded template bytes."
   (unless (<= (file-attribute-size (file-attributes path)) 4194304)
@@ -215,7 +230,8 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
             (when (and (<= start offset) (< offset (+ start size)))
               (push (list :offset (- offset start) :width 4
                           :type (intern (alist-get 'type relocation))
-                          :symbol (alist-get 'symbol relocation)
+                          :symbol (nelisp-native-rooted-startup-evidence--relocation-symbol
+                                   unit relocation)
                           :addend (alist-get 'addend relocation)) relocations))))
         (push (list :name name :size size :sha256 (alist-get 'normalized_sha256 record)
                     :relocations (nreverse relocations) :direct (alist-get 'direct record) :indirect nil) records)
@@ -450,6 +466,7 @@ dependencies, subprocess result and source owners are checked before return."
                   nelisp-native-rooted-startup-evidence--owners-valid-p
                   nelisp-native-rooted-startup-evidence--context-equal-p
                   nelisp-native-rooted-startup-evidence--json
+                  nelisp-native-rooted-startup-evidence--relocation-symbol
                   nelisp-native-rooted-startup-evidence--forms
                   nelisp-native-rooted-startup-evidence--source
                   nelisp-native-rooted-startup-evidence--data-bytes
@@ -458,6 +475,7 @@ dependencies, subprocess result and source owners are checked before return."
                   nelisp-native-rooted-startup-evidence--numeric-union-p
                   nelisp-native-rooted-startup-evidence-build
                   nelisp-native-rooted-build-evidence-source-hash
+                  nelisp-native-rooted-build-evidence--relocations
                   nelisp-native-rooted-build-evidence-write
                   nelisp-native-load-rooted-production-contract
                   nelisp-native-load-rooted-runtime-dependency-context
@@ -468,7 +486,8 @@ dependencies, subprocess result and source owners are checked before return."
                   call-process cl-every mapcar plist-get alist-get
                   car cdr caar cdar cadr cddr nth car-safe consp vectorp assoc
                   aref length integerp stringp symbolp string-bytes
-                  make-hash-table gethash puthash cons list nreverse push
+                  make-hash-table hash-table-count gethash puthash cons list nreverse push
+                  proper-list-p copy-sequence vconcat
                   cl-labels cond and or when unless pop dolist cl-find cl-pushnew
                   read check-parens forward-comment json-encode assq
                   insert-file-contents decode-coding-region emacs-lisp-mode
