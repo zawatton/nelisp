@@ -16,6 +16,7 @@ Read first:
 - `docs/design/25-library-consumer-contract.org`
 - `docs/design/26-library-residual-api-audit.org`
 - `docs/design/27-package-extraction-readiness.org`
+- `docs/design/28-nemacs-next-split-and-library-distribution.org`
 - `docs/design/29-release-signing-workflow.org`
 - `docs/design/12-development-gates.org`
 
