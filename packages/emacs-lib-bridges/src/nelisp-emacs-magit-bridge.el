@@ -141,11 +141,20 @@ graph the buffer already holds."
      (apply #'format (concat "MAGIT-BRIDGE " format-string "\n") args))))
 
 (defun nelisp-emacs-magit-bridge--trace-backtrace (prefix)
-  "Emit the current backtrace with PREFIX on each line."
-  (when (fboundp 'backtrace)
-    (let ((text (with-output-to-string (backtrace))))
-      (dolist (line (split-string text "\n" t))
-        (nelisp-emacs-magit-bridge--trace "%s %s" prefix line)))))
+  "Emit the current backtrace with PREFIX on each line.
+Does nothing unless `NEMACS_MAGIT_BRIDGE_TRACE' is enabled, and never
+signals: callers re-signal the error they caught, and a failure while
+formatting the backtrace (e.g. `text-read-only' from a read-only output
+buffer) must not replace that error."
+  (when (and (fboundp 'backtrace)
+             (equal (getenv "NEMACS_MAGIT_BRIDGE_TRACE") "1"))
+    (condition-case nil
+        (let* ((inhibit-read-only t)
+               (text (with-output-to-string (backtrace))))
+          (dolist (line (split-string text "\n" t))
+            (nelisp-emacs-magit-bridge--trace "%s %s" prefix line)))
+      (error
+       (nelisp-emacs-magit-bridge--trace "%s <backtrace unavailable>" prefix)))))
 
 (defun nelisp-emacs-magit-bridge--classinv (phase n)
   "Emit a transient class inventory for PHASE (a string) at part N."
@@ -2411,17 +2420,51 @@ mirroring the real Emacs startup invariant, not a vendor patch."
         (symbol-function
          'nelisp-emacs-magit-bridge--bufferp)))
 
+(defvar nelisp-emacs-magit-bridge--native-set-buffer nil
+  "The runtime's own `set-buffer', captured before the bridge replaces it.")
+
+(defun nelisp-emacs-magit-bridge--native-buffer-p (object)
+  "Return non-nil when OBJECT is a runtime-native (not `nelisp-ec') buffer."
+  (and (recordp object)
+       (eq (aref object 0) 'nelisp-buffer)))
+
+(defun nelisp-emacs-magit-bridge--set-buffer (buffer-or-name)
+  "Select BUFFER-OR-NAME, dispatching on which buffer model owns it.
+The runtime's `save-excursion' special form saves and restores the
+runtime-native current buffer through the global `set-buffer'.  Once
+`set-buffer' speaks `nelisp-ec' buffers, that restore hands it a native
+buffer and signals `wrong-type-argument nelisp-ec-buffer-p'.  A native
+buffer therefore goes to the runtime's own `set-buffer'; everything else
+goes to `nelisp-ec-set-buffer'."
+  (if (and nelisp-emacs-magit-bridge--native-set-buffer
+           (nelisp-emacs-magit-bridge--native-buffer-p buffer-or-name))
+      (funcall nelisp-emacs-magit-bridge--native-set-buffer buffer-or-name)
+    (nelisp-ec-set-buffer buffer-or-name)))
+
+(defun nelisp-emacs-magit-bridge--capture-native-set-buffer ()
+  "Remember the runtime's `set-buffer' before the bridge replaces it."
+  (when (and (null nelisp-emacs-magit-bridge--native-set-buffer)
+             (fboundp 'set-buffer)
+             (not (eq (symbol-function 'set-buffer)
+                      (symbol-function 'nelisp-emacs-magit-bridge--set-buffer)))
+             (not (and (fboundp 'nelisp-ec-set-buffer)
+                       (eq (symbol-function 'set-buffer)
+                           (symbol-function 'nelisp-ec-set-buffer)))))
+    (setq nelisp-emacs-magit-bridge--native-set-buffer
+          (symbol-function 'set-buffer))))
+
 (defun nelisp-emacs-magit-bridge--ensure-buffer-builtins ()
   "Ensure unprefixed buffer-editing functions use the standalone runtime."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-buffer-set-buffer-modified-p)
       (load (expand-file-name "src/emacs-buffer.el" root)
             nil 'no-message t t)))
+  (nelisp-emacs-magit-bridge--capture-native-set-buffer)
   (dolist (cell '((generate-new-buffer . nelisp-ec-generate-new-buffer)
                   (kill-buffer . nelisp-ec-kill-buffer)
                   (bufferp . nelisp-ec-buffer-p)
                   (current-buffer . nelisp-ec-current-buffer)
-                  (set-buffer . nelisp-ec-set-buffer)
+                  (set-buffer . nelisp-emacs-magit-bridge--set-buffer)
                   (point . nelisp-ec-point)
                   (point-min . nelisp-ec-point-min)
                   (point-max . nelisp-ec-point-max)
@@ -2448,7 +2491,11 @@ mirroring the real Emacs startup invariant, not a vendor patch."
                   (insert-before-markers . nelisp-ec-insert)
                   (buffer-modified-p . emacs-buffer-buffer-modified-p)
                   (set-buffer-modified-p . emacs-buffer-set-buffer-modified-p)
-                  (restore-buffer-modified-p . emacs-buffer-restore-buffer-modified-p)))
+                  (restore-buffer-modified-p . emacs-buffer-restore-buffer-modified-p)
+                  ;; The runtime's own versions reject `nelisp-ec' buffers
+                  ;; (`magit-section-mode' calls `buffer-disable-undo').
+                  (buffer-disable-undo . emacs-buffer-buffer-disable-undo)
+                  (buffer-enable-undo . emacs-buffer-buffer-enable-undo)))
     (when (fboundp (cdr cell))
       (fset (car cell) (symbol-function (cdr cell)))))
   ;; The buffer FUNCTIONS above now speak `nelisp-ec-buffer' objects, but the
@@ -2489,9 +2536,10 @@ Keep this narrower than `nelisp-emacs-magit-bridge--ensure-buffer-builtins':
 the vendor load path only needs the session-level current-buffer invariant
 before Magit's bundle is loaded, while the broader point/marker/editing
 surface is safer to reassert after bundle load."
+  (nelisp-emacs-magit-bridge--capture-native-set-buffer)
   (dolist (cell '((bufferp . nelisp-ec-buffer-p)
                   (current-buffer . nelisp-ec-current-buffer)
-                  (set-buffer . nelisp-ec-set-buffer)))
+                  (set-buffer . nelisp-emacs-magit-bridge--set-buffer)))
     (when (fboundp (cdr cell))
       (fset (car cell) (symbol-function (cdr cell))))))
 

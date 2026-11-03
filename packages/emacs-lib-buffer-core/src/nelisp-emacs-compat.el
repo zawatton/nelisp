@@ -325,12 +325,14 @@ HI is the absolute exclusive upper bound of the visible region."
 ;;; A. buffer registry + current buffer  (5 APIs)
 
 ;;;###autoload
-(defun nelisp-ec-generate-new-buffer (name)
+(defun nelisp-ec-generate-new-buffer (name &optional _inhibit-buffer-hooks)
   "Create and return a fresh buffer with a name derived from NAME.
 Like Emacs `generate-new-buffer': if NAME is already in use the new
 buffer is given a uniquified name (=NAME<2>=, =NAME<3>=, ...).
 The new buffer is empty, has POINT = 1, and is registered in
-`nelisp-ec--buffers'.  It does NOT become the current buffer."
+`nelisp-ec--buffers'.  It does NOT become the current buffer.
+The optional INHIBIT-BUFFER-HOOKS argument is accepted for GNU arity
+compatibility; this layer runs no buffer hooks."
   (unless (stringp name)
     (signal 'wrong-type-argument (list 'stringp name)))
   (let* ((unique (nelisp-ec--unique-name name))
@@ -386,11 +388,17 @@ global cell would keep reflecting whichever buffer BODY last selected,
 not the buffer being restored.  Unlike `nelisp-ec-set-buffer', this
 never signals on a killed BUF (restoring after `kill-buffer' ran inside
 the protected body is a normal occurrence) and accepts nil (no buffer
-selected)."
-  (let ((old nelisp-ec--current-buffer))
-    (setq nelisp-ec--current-buffer buf)
-    (when (fboundp 'emacs-buffer-switch-current-buffer)
-      (emacs-buffer-switch-current-buffer old buf)))
+selected).  Like GNU's `set_buffer_if_live', a BUF killed in the
+meantime is not reselected: the current buffer stays whatever BODY (or
+`kill-buffer') left selected, so a killed buffer never becomes current."
+  (unless (and buf
+               (nelisp-ec-buffer-p buf)
+               (nelisp-ec-buffer-killed-p buf)
+               (not (eq buf nelisp-ec--current-buffer)))
+    (let ((old nelisp-ec--current-buffer))
+      (setq nelisp-ec--current-buffer buf)
+      (when (fboundp 'emacs-buffer-switch-current-buffer)
+        (emacs-buffer-switch-current-buffer old buf))))
   buf)
 
 ;;;###autoload

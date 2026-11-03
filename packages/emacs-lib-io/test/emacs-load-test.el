@@ -559,6 +559,39 @@
       (when (fboundp target)
         (fmakunbound target)))))
 
+(ert-deftest emacs-load-test/source-lexical-binding-cookie ()
+  "Only the first-line cookie selects lexical binding, as in GNU `load'."
+  (should (eq t (emacs-load--source-lexical-binding
+                 ";;; x.el --- y  -*- lexical-binding: t; -*-\n(foo)\n")))
+  (should (eq t (emacs-load--source-lexical-binding
+                 ";; -*- mode: emacs-lisp; lexical-binding:t -*-")))
+  (should-not (emacs-load--source-lexical-binding
+               ";;; x.el --- y  -*- lexical-binding: nil; -*-\n"))
+  (should-not (emacs-load--source-lexical-binding ";;; x.el --- y\n(foo)\n"))
+  (should-not (emacs-load--source-lexical-binding
+               ";;; x.el\n;; -*- lexical-binding: t; -*-\n")))
+
+(ert-deftest emacs-load-test/source-incremental-honors-lexical-binding-cookie ()
+  "The incremental loader (sources above the large-source threshold) must
+create closures for a `lexical-binding: t' file and dynamic functions for
+a file without the cookie."
+  (skip-unless (emacs-load-test--standalone-active-p))
+  (let ((fn 'emacs-load-test--incremental-lexical-fn)
+        (body "(defun emacs-load-test--incremental-lexical-fn ()\n  (let ((captured 7)) (lambda () captured)))\n"))
+    (unwind-protect
+        (progn
+          (let ((lexical-binding nil))
+            (nelisp--load-eval-source-incremental
+             (concat ";;; t.el --- t  -*- lexical-binding: t; -*-\n" body)))
+          (should (= 7 (funcall (funcall fn))))
+          (fmakunbound fn)
+          (let ((lexical-binding t))
+            (nelisp--load-eval-source-incremental
+             (concat ";;; t.el --- t\n" body)))
+          (should-error (funcall (funcall fn)) :type 'void-variable))
+      (when (fboundp fn)
+        (fmakunbound fn)))))
+
 (ert-deftest emacs-load-test/source-incremental-unibyte-preserves-nonascii-and-escapes ()
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((fn 'emacs-load-test--unibyte-source-function)

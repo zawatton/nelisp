@@ -783,7 +783,18 @@ marker even when `cc-provide' is callable.  At interpreted load time
 its semantics are exactly `provide'."
     (when (and (consp form) (eq (car form) 'cc-provide))
       (setcar form 'provide))
-    (eval form))
+    (eval form (and (boundp 'lexical-binding) lexical-binding)))
+
+  (defun emacs-load--source-lexical-binding (source)
+    "Return the `lexical-binding' value SOURCE's first-line cookie selects.
+Like GNU `load', only the `-*- ... -*-' cookie on the first line is
+consulted; a file without one is loaded with dynamic binding (nil)."
+    (let* ((nl (emacs-load--artifact-string-search "\n" source 0))
+           (line (substring source 0 (or nl (min (length source) 1024)))))
+      (save-match-data
+        (and (string-match "-\\*-.*lexical-binding:[ \t]*\\([^ \t;]+\\)" line)
+             (not (equal (match-string 1 line) "nil"))
+             t))))
 
   (defconst emacs-load--native-read-probe-window-sizes '(512 2048 8192 32768)
     "Progressively larger byte windows `emacs-load--native-read-one' tries
@@ -926,7 +937,8 @@ avoiding a whole-tail fallback for one large container.
 Runtimes without the native probe continue through the original per-form
 scan unchanged."
     (setq source (emacs-load--byte-indexed-source source))
-    (let ((pos 0)
+    (let ((lexical-binding (emacs-load--source-lexical-binding source))
+          (pos 0)
           (len (length source))
           (last nil)
           (count 0)

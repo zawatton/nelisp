@@ -4441,11 +4441,12 @@ the native primitive otherwise."
           nil
         (funcall emacs-stub--native-commandp function for-call-interactively)))
 
-    (defun indirect-function (object)
+    (defun indirect-function (object &optional _noerror)
       "Return the function OBJECT ultimately refers to, following aliases.
 Matches host Emacs for OBJECT = nil (nil is unbound as a function, so the
 alias chain terminates immediately at nil); delegates to the native
-primitive otherwise."
+primitive otherwise.  The optional NOERROR argument is accepted for GNU
+arity compatibility; GNU ignores it as well."
       (if (null object) nil (funcall emacs-stub--native-indirect-function object)))))
 
 ;;;; --- with-wrapper-hook (GNU subr.el, verbatim) ---

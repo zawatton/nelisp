@@ -156,6 +156,23 @@
         (should (eq inner (nelisp-ec-current-buffer))))
       (should (eq outer (nelisp-ec-current-buffer))))))
 
+(ert-deftest nelisp-emacs-compat-test/restore-skips-buffer-killed-in-body ()
+  "A saved buffer killed inside BODY is not reselected on exit.
+GNU's `set_buffer_if_live' keeps the buffer BODY left current."
+  (nelisp-emacs-compat-test--with-fresh-world
+    (let ((outer (nelisp-ec-generate-new-buffer "killed-outer"))
+          (inner (nelisp-ec-generate-new-buffer "killed-inner")))
+      (nelisp-ec-set-buffer outer)
+      (nelisp-ec-save-current-buffer
+        (nelisp-ec-set-buffer inner)
+        (nelisp-ec-kill-buffer outer))
+      (should (eq inner (nelisp-ec-current-buffer)))
+      (let ((outer2 (nelisp-ec-generate-new-buffer "killed-outer2")))
+        (nelisp-ec-set-buffer outer2)
+        (nelisp-ec-with-current-buffer inner
+          (nelisp-ec-kill-buffer outer2))
+        (should (eq inner (nelisp-ec-current-buffer)))))))
+
 ;;;; F. with-temp-buffer (emacs-buffer-builtins) end-to-end return value
 ;;
 ;; This is the exact reported symptom (Doc 33 §8 item 222): under host
