@@ -780,3 +780,5 @@ emacs-lisp-api/emacs-lisp/avl-tree.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1
 emacs-lisp-api/font-core.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/font-core.el	sha256=4f8735c13c5af0372aac80a6aea1d117e2d77845e60bfba197880fba7bfd0fe1
 emacs-lisp-api/vc/vc-dir.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-dir.el	sha256=3da74038b3122069281e65316a638a6f125c48e26625bca1730b24772e40310a
 emacs-lisp-api/emacs-lisp/ewoc.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/ewoc.el	sha256=97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c
+emacs-lisp/emacs-lisp/macroexp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/macroexp.el	sha256=10df0fe326e6f436a3ec3a74fdaa79b06272e5a35556383d8e2741ce3c16a0c2
+emacs-lisp/emacs-lisp/gv.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/gv.el	sha256=81c55643fe98847746b80e3175e2e80e49a9573d9def2b5e430e9fdc617cef33
