@@ -3933,6 +3933,10 @@ subtrees are left untouched."
                          (symbolp (cadr name))
                          (not (memq (cadr name) emacs-load--alias-candidates)))
                 (push (cadr name) emacs-load--alias-candidates)))
+            ;; The rewritten form calls `nelisp-defalias-late', defined in
+            ;; emacs-eval.el; nothing else guarantees that file is loaded.
+            (unless (fboundp 'nelisp-defalias-late)
+              (require 'emacs-eval nil t))
             (setcar nelisp--load-rw-form 'nelisp-defalias-late)
             nelisp--load-rw-form)
            ((memq nelisp--load-rw-head nelisp--load-rewrite-wrapper-heads)
