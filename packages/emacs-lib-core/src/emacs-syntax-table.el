@@ -721,37 +721,6 @@ comments.  Whitespace is skipped only while looking for the next comment."
   (setq emacs-lisp-mode-syntax-table
         (emacs-char-table--storage emacs-lisp-mode-syntax-table)))
 
-;; A runtime that already ships real native char-tables for retained mode
-;; tables leaves objects `emacs-char-table-p' does not accept; every consumer
-;; (`make-syntax-table', `copy-syntax-table', `modify-syntax-entry') would
-;; then signal `wrong-type-argument char-table-p'.  Re-home the retained
-;; 8-bit entries into a library table so the local entries survive.
-(defun emacs-syntax-table--rehome-native (symbol)
-  "Replace SYMBOL's native char-table value with a library syntax table."
-  (let ((old (and (boundp symbol) (symbol-value symbol))))
-    (when (and old
-               (not (emacs-char-table-p old))
-               (not (recordp old))
-               (not (vectorp old))
-               ;; `type-of' is unreliable once the library wrappers are
-               ;; installed; a native char-table is addressable by length.
-               (condition-case nil
-                   (>= (length old) #x3FFFFF)
-                 (error nil)))
-      (let ((new (emacs-syntax-table-make))
-            (c 0))
-        (while (< c 256)
-          (let ((entry (condition-case nil (aref old c) (error nil))))
-            (when (consp entry)
-              (emacs-char-table-set new c entry)))
-          (setq c (1+ c)))
-        (set symbol new)))))
-
-(when (emacs-syntax-table--standalone-p)
-  (dolist (symbol '(emacs-lisp-mode-syntax-table text-mode-syntax-table
-                       outline-mode-syntax-table special-mode-syntax-table))
-    (emacs-syntax-table--rehome-native symbol)))
-
 (when (emacs-syntax-table--install-function-p 'string-to-syntax)
   (defun string-to-syntax (descriptor)
     "Parse DESCRIPTOR into a raw (CLASS-CODE . MATCH) syntax cons."
