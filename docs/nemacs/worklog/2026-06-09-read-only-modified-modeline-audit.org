@@ -1,0 +1,150 @@
+#+TITLE: Read-only / Modified / Modeline Audit
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-06-09
+
+* 0. Scope
+
+Audit target:
+
+- =src/nemacs-gui-file-bridge-runtime.el=
+- =test/nemacs-gui-file-bridge-runtime-test.el=
+- =nelisp-gui= modeline/status display paths
+
+No runtime implementation file was changed for this audit.
+
+* 1. Current contract
+
+| State | Current owner | Evidence | Notes |
+|-------+---------------+----------+-------|
+| read-only flag | =nelisp-emacs= runtime | =files--buffer-read-only-p=, =nemacs-read-only=, =nemacs-buffer-read-only-store/= | GUI should only render returned state. |
+| modified flag | =nelisp-emacs= runtime | =files--buffer-modified-p= and =files--write-redisplay-state= | There is no per-buffer transport store for modified state yet. |
+| modeline text | =nelisp-emacs= runtime | =files--write-redisplay-state= writes =nemacs-modeline=. | GUI reads and draws it; it should not synthesize mode-line state. |
+| status/refusal | =nelisp-emacs= runtime | =nemacs-status= receives =read-only= / =error= / =permission-denied= / =unsupported=. | GUI displays status text when present. |
+
+Mode-line prefix currently follows this order in runtime:
+
+1. default =--=
+2. read-only => =%%=
+3. modified => =**=
+
+That means read-only + modified currently displays =**=, not an Emacs-like
+=%*=.  It is uncommon in normal editing because read-only edits are rejected,
+but it is still observable through explicit modified-state operations or future
+commands.
+
+* 2. Existing coverage
+
+| Area | Existing smoke | What it proves |
+|------+----------------+----------------|
+| basic modeline/cursor | =standalone-redisplay-state= | Runtime writes =nemacs-cursor= and a =--  main= modeline. |
+| not-modified | text editing command suite around =not-modified= | =M-~= / =not-modified= can drive modeline from =**= back to =--=; prefix arg can force =**=. |
+| read-only open/refusal | read-only block in the standalone file/editing test | =find-file-read-only= sets =nemacs-read-only=, =self-insert-command= is refused, =nemacs-status= becomes =read-only=, toggling read-only permits editing. |
+| file error statuses | =standalone-error-statuses= | Missing file, no visited file save, and permission denied write/save paths write =nemacs-status=. |
+| GUI draw path | =nelisp-gui/scripts/verify-nemacs-gui.sh= visual/status smokes | Native GUI redraws when =nemacs-modeline= or =nemacs-status= changes. |
+| daily-driver edit dirty display | =verify-nemacs-gui.sh= session path | After raw =Z= insertion, =nemacs-modeline= starts with =**=. |
+
+* 3. Gaps
+
+| Gap | Risk | Missing smoke | Fix layer |
+|-----+------+---------------+-----------|
+| Editing commands set modified, but tests do not consistently assert modeline =**= after representative mutating commands. | A command can mutate text but leave modeline looking clean. | Direct and raw-key smokes for =self-insert-command=, =delete-char=, =kill-line=, =yank=, =replace-string= expecting =**=. | =nelisp-emacs= |
+| =save-buffer= / =write-file= / =revert-buffer= reset =files--buffer-modified-p=, but dedicated modeline assertions are sparse. | Buffer contents may be saved/reverted while modeline still shows dirty. | For each command, start dirty, run command, assert file/buffer result and modeline prefix =--=. | =nelisp-emacs= |
+| Modified state is not stored per buffer. =files--switch-to-buffer= restores buffer text/read-only/point/mark/window-start but then sets =files--buffer-modified-p= to nil. | Switching away from a dirty buffer can lose the dirty indicator.  A later =save-some-buffers= also has no per-buffer modified input. | Dirty =main=, switch to =other=, switch back, assert =main= modeline still =**=.  This likely fails today. | =nelisp-emacs= first; if file transport is needed, add =nemacs-buffer-modified-store/= initialization in =nelisp-gui= launcher/wrapper. |
+| read-only + modified mode-line prefix is not Emacs-like. | A read-only dirty buffer displays as plain dirty =**= and loses the read-only signal. | Set read-only and modified in one session, run redisplay, assert desired prefix =%*=. | =nelisp-emacs= |
+| =save-buffer= and =write-file= are treated as read-only-refused commands before their own implementations can run. | Emacs buffer read-only normally blocks text modification, not necessarily saving/writing.  Current behavior may make a read-only dirty buffer impossible to save without toggling. | Dirty read-only visited buffer, run =save-buffer=, assert expected policy.  If policy is Emacs parity, expect save to proceed or fail only on file permission. | =nelisp-emacs= |
+| read-only refusal status is asserted, but natural user-facing display is not pinned. | GUI may show terse =read-only= in status area but modeline/echo behavior may feel unlike Emacs. | Refused edit should assert unchanged buffer, =nemacs-status= =read-only=, =nemacs-read-only= =1=, modeline still carries read-only prefix, and GUI status visual smoke can render the status. | =nelisp-emacs= for status/modeline; =nelisp-gui= for visual placement only. |
+| GUI visual modeline smoke uses direct file writes, not runtime-generated modified/read-only transitions. | GUI can render a static modeline but still drift from runtime state after real commands. | End-to-end GUI smoke: launch isolated transport, edit via raw key, observe =**=; save, observe =--=; open read-only and refused edit, observe status/read-only display. | =nelisp-gui= smoke over =nelisp-emacs= semantics. |
+
+* 4. Small ERT addition plan
+
+Add focused tests to =test/nemacs-gui-file-bridge-runtime-test.el= rather than
+expanding the existing large command blocks.
+
+** A. dirty edit / save / write / revert modeline
+
+Purpose: pin the ordinary lifecycle.
+
+Steps:
+
+1. Seed visited file, clean buffer, =nemacs-read-only= =0=.
+2. Raw =Z= or direct =self-insert-command=.
+3. Assert =nemacs-buf= changed and =nemacs-modeline= starts with =**=.
+4. Run =save-buffer=.
+5. Assert disk content changed and =nemacs-modeline= starts with =--=.
+6. Dirty buffer again, run =write-file= to a second path.
+7. Assert second file content, =nemacs-file= second path, =nemacs-modeline= starts with =--=.
+8. Dirty buffer again, run =revert-buffer=.
+9. Assert buffer equals disk and =nemacs-modeline= starts with =--=.
+
+Expected owner: =nelisp-emacs=.
+
+** B. read-only refusal preserves state and display
+
+Purpose: keep read-only refusal visible and non-mutating.
+
+Steps:
+
+1. =find-file-read-only= a file.
+2. Assert =nemacs-read-only= =1= and =nemacs-modeline= starts with =%%=.
+3. Attempt =self-insert-command= or raw printable key.
+4. Assert buffer unchanged, point policy unchanged or explicitly documented,
+   =nemacs-status= =read-only=, =nemacs-read-only= =1=, and modeline still
+   starts with =%%=.
+
+Expected owner: =nelisp-emacs= for status/modeline state.  =nelisp-gui= only
+needs a visual smoke if status placement is unclear.
+
+** C. dirty flag survives buffer switch
+
+Purpose: expose the missing per-buffer modified state.
+
+Steps:
+
+1. Dirty =main= with =self-insert-command=.
+2. Assert =nemacs-modeline= starts with =**=.
+3. Switch to =other=.
+4. Switch back to =main=.
+5. Assert =main= modeline still starts with =**=.
+
+Expected current result: likely fails, because =files--switch-to-buffer= sets
+=files--buffer-modified-p= to nil and no =nemacs-buffer-modified-store/= exists.
+
+Expected owner: =nelisp-emacs= semantics.  If fixed through file transport,
+=nelisp-gui/bin/nemacs= and =nelisp-gui/nemacs-mx.sh= must initialize
+=nemacs-buffer-modified-store/= like the existing read-only store.
+
+** D. read-only + modified mode-line prefix
+
+Purpose: decide and pin the display policy.
+
+Steps:
+
+1. Make current buffer read-only.
+2. Force modified state with =not-modified= plus prefix arg or
+   =set-buffer-modified-p= inside a runtime probe.
+3. Run redisplay.
+4. Assert chosen prefix.  For Emacs parity, use =%*=.
+
+Expected owner: =nelisp-emacs=.
+
+* 5. Layer decisions
+
+| Concern | Fix layer | Reason |
+|---------+-----------+--------|
+| Which commands mark buffers modified | =nelisp-emacs= | This is Emacs command semantics. |
+| Save/write/revert clearing modified | =nelisp-emacs= | Runtime owns buffer and visited-file semantics. |
+| Per-buffer modified persistence | =nelisp-emacs= primary, =nelisp-gui= transport initialization if a file store is added | The meaning is semantic; launcher/wrapper only create/reset transport files. |
+| read-only edit refusal | =nelisp-emacs= | Runtime decides whether a command can mutate text. |
+| read-only refusal wording/status | =nelisp-emacs= | Runtime owns =nemacs-status= contents. |
+| modeline string contents | =nelisp-emacs= | Runtime writes =nemacs-modeline=. |
+| drawing modeline/status text | =nelisp-gui= | GUI should paint returned state without rewriting it. |
+
+* 6. Recommended order
+
+1. Add ERT A and B as passing smoke, because they should match the intended
+   current behavior and protect daily-driver UX.
+2. Add ERT C as =expected failure= or keep it as a design TODO until
+   =nemacs-buffer-modified-store/= is introduced.
+3. Decide the read-only dirty prefix policy, then add ERT D.
+4. Only after ERT A/B are stable, add one GUI visual smoke that drives real
+   runtime transitions instead of directly editing =nemacs-modeline=.

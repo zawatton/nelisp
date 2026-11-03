@@ -1,0 +1,1216 @@
+;;; nelisp-regex.el --- subset POSIX/Emacs regex engine on NeLisp  -*- lexical-binding: t; -*-
+
+;; Phase 9a/9b prerequisite for `looking-at' / `search-forward' (regex mode).
+;; Layer: extension package.
+;; Foundation: pure Elisp NFA simulator; no Emacs C regex (`string-match' / `re-search-forward')
+;; is consulted at run time.  The engine reads its own input string char-by-char
+;; and walks a Thompson-construction NFA, so it can be wired directly into
+;; NeLisp text buffers without depending on host Emacs regex semantics.
+;;
+;; MVP scope (syntax A only, see header table):
+;;   literal, ., ^, $, [..], [^..], ranges, *, +, ?, \\(...\\), \\|,
+;;   bounded \\{n\\} / \\{n,m\\} / \\{n,\\} / \\{,m\\} (+ lazy `...?'),
+;;   escapes (\\\\ \\. \\( \\) \\| \\+ \\* \\? \\^ \\$ \\[ \\]).
+;; Best-effort B (\\b \\B \\w \\W) — covered by ASCII rule only.
+;; Deferred to Phase 9c: backreferences \\1..\\9,
+;;   unicode property classes [:alpha:] etc, multibyte-coding aware match.
+;;
+;; Public API (5 entries):
+;;   (nelisp-rx-compile REGEX)              => opaque pattern
+;;   (nelisp-rx-string-match  PAT STR &opt START)  => match-data plist or nil
+;;   (nelisp-rx-string-match-all PAT STR &opt START) => list of match-data
+;;   (nelisp-rx-replace      PAT STR REPL)  => string (first match)
+;;   (nelisp-rx-replace-all  PAT STR REPL)  => string (all non-overlapping)
+;;
+;; Internal helpers use the `nelisp-rx--' prefix.  The module is intentionally
+;; standalone (require 'cl-lib only) so it can be byte-compiled in the same
+;; pass as the rest of `src/nelisp-*.el'.
+
+;;; Code:
+
+(require 'cl-lib)
+
+;;; --------------------------------------------------------------------------
+;;; AST
+;;; --------------------------------------------------------------------------
+;;
+;; Parse tree nodes are tagged lists for cheap allocation:
+;;
+;;   (:lit  CHAR)              literal character
+;;   (:any)                    matches any char except newline -- but our MVP
+;;                              does NOT exclude newline (Emacs default).
+;;   (:bol)                    ^ anchor
+;;   (:eol)                    $ anchor
+;;   (:wb)                     \b word boundary
+;;   (:nwb)                    \B not a word boundary
+;;   (:class POS-P RANGES)     [..] / [^..]; POS-P=t for positive class
+;;                              RANGES = list of (lo . hi) inclusive ranges,
+;;                              `:word' / `:nword' tags (\w / \W shorthand),
+;;                              and `(:syntax . C)' tags (\sC / \SC syntax
+;;                              classes; C is the class designator char)
+;;   (:concat NODES...)        concatenation
+;;   (:alt   N1 N2)            N1 \| N2
+;;   (:star  N)                N*       (:star-lazy N)  N*?  (non-greedy)
+;;   (:plus  N)                N+       (:plus-lazy N)  N+?  (non-greedy)
+;;   (:opt   N)                N?       (:opt-lazy  N)  N??  (non-greedy)
+;;   (:group IDX N)            \(..\); IDX is 1-based capture index
+
+(defun nelisp-rx--make-class (positive ranges)
+  "Build a :class node with POSITIVE flag and RANGES list."
+  (list :class positive ranges))
+
+;;; --------------------------------------------------------------------------
+;;; Parser
+;;; --------------------------------------------------------------------------
+
+(defvar nelisp-rx--parse-input nil
+  "Input string currently being parsed (dynamic).")
+(defvar nelisp-rx--parse-pos nil
+  "Index into `nelisp-rx--parse-input' (dynamic).")
+(defvar nelisp-rx--parse-group-counter nil
+  "Next capture-group index, starting at 1 (dynamic).")
+
+(defsubst nelisp-rx--peek ()
+  "Return char at current position, or nil at end."
+  (and (< nelisp-rx--parse-pos (length nelisp-rx--parse-input))
+       (aref nelisp-rx--parse-input nelisp-rx--parse-pos)))
+
+(defsubst nelisp-rx--peek2 ()
+  "Return char at current-position + 1, or nil at end."
+  (and (< (1+ nelisp-rx--parse-pos) (length nelisp-rx--parse-input))
+       (aref nelisp-rx--parse-input (1+ nelisp-rx--parse-pos))))
+
+(defsubst nelisp-rx--advance ()
+  "Consume one char and return it."
+  (let ((c (aref nelisp-rx--parse-input nelisp-rx--parse-pos)))
+    (setq nelisp-rx--parse-pos (1+ nelisp-rx--parse-pos))
+    c))
+
+(defun nelisp-rx--parse (regex)
+  "Parse REGEX string into AST.
+Signal `nelisp-rx-syntax-error' on malformed input."
+  (let ((nelisp-rx--parse-input regex)
+        (nelisp-rx--parse-pos 0)
+        (nelisp-rx--parse-group-counter 1))
+    (let ((ast (nelisp-rx--parse-alt)))
+      (when (< nelisp-rx--parse-pos (length regex))
+        ;; Trailing chars (typically a stray `\)') -- error.
+        (signal 'nelisp-rx-syntax-error
+                (list (format "unexpected char at pos %d in %S"
+                              nelisp-rx--parse-pos regex))))
+      ast)))
+
+(defun nelisp-rx--parse-alt ()
+  "Parse an alternation (top level / inside group)."
+  (let ((branches (list (nelisp-rx--parse-concat))))
+    (while (and (eq (nelisp-rx--peek) ?\\)
+                (eq (nelisp-rx--peek2) ?|))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume \|
+      (push (nelisp-rx--parse-concat) branches))
+    (if (= (length branches) 1)
+        (car branches)
+      ;; Build right-leaning alt tree to keep simulator simple.
+      (let ((rev (nreverse branches)))
+        (cl-reduce (lambda (a b) (list :alt a b)) rev)))))
+
+(defun nelisp-rx--parse-concat ()
+  "Parse a concatenation of atoms+quantifiers.
+Phase 4 B (2026-05-06): rewrote from bodyless `cl-loop' / `cl-return'
+to plain `while' so the function loads under NeLisp's restricted
+cl-lib (= bodyless cl-loop / cl-return are not built-ins)."
+  (let ((nodes nil)
+        (done nil))
+    (while (not done)
+      (let ((c (nelisp-rx--peek)))
+        (cond
+         ((null c) (setq done t))
+         ;; End-of-alternation / end-of-group sentinels.
+         ((and (eq c ?\\) (memq (nelisp-rx--peek2) '(?| ?\))))
+          (setq done t))
+         (t
+          (let ((atom (nelisp-rx--parse-atom)))
+            (push (nelisp-rx--parse-quant atom) nodes))))))
+    (let ((rev (nreverse nodes)))
+      (cond ((null rev) (list :concat))
+            ((null (cdr rev)) (car rev))
+            (t (cons :concat rev))))))
+
+(defun nelisp-rx--expand-bound (atom lo hi lazy)
+  "Expand a bounded repeat of ATOM into LO..HI copies as an AST.
+HI nil means unbounded (`\\{n,\\}').  LAZY selects the lazy quantifier
+variants for the optional / star tail.  The ATOM AST is shared across
+the copies; the NFA builder reads it without mutation, so sharing is
+safe.  A capturing group inside ATOM keeps a single group index across
+copies, so the last iteration wins -- matching Emacs semantics."
+  (let ((parts nil)
+        (opt  (if lazy :opt-lazy :opt))
+        (star (if lazy :star-lazy :star))
+        (i 0))
+    (while (< i lo) (push atom parts) (setq i (1+ i)))
+    (if (null hi)
+        (push (list star atom) parts)       ; `\{n,\}' -> n copies then ATOM*
+      (let ((j lo))
+        (while (< j hi) (push (list opt atom) parts) (setq j (1+ j)))))
+    (let ((rev (nreverse parts)))
+      (cond ((null rev) (list :concat))     ; `\{0\}' -> match empty
+            ((null (cdr rev)) (car rev))
+            (t (cons :concat rev))))))
+
+(defun nelisp-rx--parse-bound (atom)
+  "Parse the body of a bounded repeat applied to ATOM.
+The leading `\\{' is already consumed; read the bounds, the closing
+`\\}', and an optional trailing `?' (lazy), then return the expanded
+AST.  Handles `\\{n\\}', `\\{n,m\\}', `\\{n,\\}' and `\\{,m\\}'."
+  (let ((lo 0) (hi nil) (comma nil))
+    (let ((d (nelisp-rx--peek)))           ; lower bound digits
+      (while (and d (>= d ?0) (<= d ?9))
+        (setq lo (+ (* lo 10) (- d ?0)))
+        (nelisp-rx--advance)
+        (setq d (nelisp-rx--peek))))
+    (when (eq (nelisp-rx--peek) ?,)        ; optional `,' + upper bound
+      (setq comma t)
+      (nelisp-rx--advance)
+      (let ((d (nelisp-rx--peek)) (hv nil))
+        (while (and d (>= d ?0) (<= d ?9))
+          (setq hv (+ (* (or hv 0) 10) (- d ?0)))
+          (nelisp-rx--advance)
+          (setq d (nelisp-rx--peek)))
+        (setq hi hv)))                      ; nil if no digits after `,'
+    (unless comma (setq hi lo))             ; `\{n\}' -> exactly n
+    (unless (and (eq (nelisp-rx--peek) ?\\) (eq (nelisp-rx--peek2) ?}))
+      (signal 'nelisp-rx-syntax-error
+              (list (format "unterminated \\{...\\} at pos %d"
+                            nelisp-rx--parse-pos))))
+    (nelisp-rx--advance) (nelisp-rx--advance) ; consume `\}'
+    (when (and hi (< hi lo))
+      (signal 'nelisp-rx-syntax-error
+              (list (format "invalid \\{%d,%d\\} (upper < lower)" lo hi))))
+    (let ((lazy (eq (nelisp-rx--peek) ??)))
+      (when lazy (nelisp-rx--advance))
+      (nelisp-rx--expand-bound atom lo hi lazy))))
+
+(defun nelisp-rx--parse-quant (atom)
+  "Wrap ATOM in a (possibly lazy) quantifier if next char(s) are one.
+A `?' immediately following `*' / `+' / `?' makes the quantifier
+non-greedy (lazy): the backtracking matcher then prefers the SHORTEST
+match (cf. Emacs `*?' / `+?' / `??').  org-element relies on lazy
+quantifiers (e.g. `\\(.*?\\)' in `org-complex-heading-regexp'); without
+this they parsed as a quantifier followed by a bogus standalone `?',
+yielding `quantifier without operand'."
+  (let ((c (nelisp-rx--peek)))
+    (cond
+     ((eq c ?*) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :star-lazy atom))
+        (list :star atom)))
+     ((eq c ?+) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :plus-lazy atom))
+        (list :plus atom)))
+     ((eq c ??) (nelisp-rx--advance)
+      (if (eq (nelisp-rx--peek) ??)
+          (progn (nelisp-rx--advance) (list :opt-lazy atom))
+        (list :opt atom)))
+     ;; Bounded repeat `\{n\}' / `\{n,m\}' / `\{n,\}' / `\{,m\}' (and the
+     ;; lazy `...?' variants).  Emacs writes these with a backslash before
+     ;; the braces, so the postfix token is `\{'.
+     ((and (eq c ?\\) (eq (nelisp-rx--peek2) ?{))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume `\{'
+      (nelisp-rx--parse-bound atom))
+     (t atom))))
+
+(defun nelisp-rx--parse-atom ()
+  "Parse a single atom (literal / class / group / anchor / escape)."
+  (let ((c (nelisp-rx--peek)))
+    (cond
+     ((null c) (signal 'nelisp-rx-syntax-error '("unexpected EOS in atom")))
+     ((eq c ?.) (nelisp-rx--advance) (list :any))
+     ((eq c ?^) (nelisp-rx--advance) (list :bol))
+     ((eq c ?$) (nelisp-rx--advance) (list :eol))
+     ((eq c ?\[) (nelisp-rx--parse-class))
+     ((eq c ?\\) (nelisp-rx--parse-backslash))
+     ;; Bare ?* / ?+ / ?? / ?] etc are syntax errors here -- the quant parser
+     ;; only fires *after* an atom; if we encountered them as the first thing
+     ;; in an atom slot, that means the regex started with a bogus quantifier.
+     ((memq c '(?* ?+ ??))
+      (signal 'nelisp-rx-syntax-error
+              (list (format "quantifier without operand at pos %d"
+                            nelisp-rx--parse-pos))))
+     (t (nelisp-rx--advance) (list :lit c)))))
+
+(defun nelisp-rx--parse-backslash ()
+  "Parse the construct introduced by `\\\\' (escape, group, anchor, alt)."
+  (nelisp-rx--advance)                     ; consume the backslash itself
+  (let ((c (nelisp-rx--peek)))
+    (cond
+     ((null c) (signal 'nelisp-rx-syntax-error '("trailing backslash")))
+     ((eq c ?\() (nelisp-rx--advance) (nelisp-rx--parse-group))
+     ((eq c ?\)) (signal 'nelisp-rx-syntax-error
+                         (list "unmatched \\)")))
+     ((eq c ?|) (signal 'nelisp-rx-syntax-error
+                        (list "stray \\| outside alternation")))
+     ((eq c ?b) (nelisp-rx--advance) (list :wb))
+     ((eq c ?B) (nelisp-rx--advance) (list :nwb))
+     ;; Doc 51 Track J (2026-05-04) — directional word boundaries.
+     ;; `\<' matches the START of a word: previous char is non-word
+     ;; (or BOS) AND the current char is a word constituent.
+     ;; `\>' matches the END of a word: previous char is a word
+     ;; constituent AND the current char is non-word (or EOS).
+     ((eq c ?<) (nelisp-rx--advance) (list :wbs))
+     ((eq c ?>) (nelisp-rx--advance) (list :wbe))
+     ;; Phase 4 B (2026-05-06) — string-start / string-end anchors.
+     ;; backtick (= 96) matches position 0 of the input string;
+     ;; apostrophe (= 39) matches the very end (= position slen).
+     ;; Distinct from `^' / `$' which are line-relative.  s.el's
+     ;; s-trim-left / s-trim-right rely on these to anchor the trim.
+     ;; We use numeric literals here because the NeLisp reader trips
+     ;; on `?\`' / `?\'' escape sequences (the backtick is a reader
+     ;; macro under NeLisp's source-only mode).
+     ((eq c 96) (nelisp-rx--advance) (list :bos))
+     ((eq c 39) (nelisp-rx--advance) (list :eos))
+     ((eq c ?w) (nelisp-rx--advance)
+      (nelisp-rx--make-class t (list :word)))
+     ((eq c ?W) (nelisp-rx--advance)
+      (nelisp-rx--make-class t (list :nword)))
+     ;; `\sC' / `\SC' -- syntax classes.  C is the class designator char
+     ;; (e.g. `-' or space = whitespace, `w' = word, `_' = symbol, `.' =
+     ;; punctuation); matched against the current buffer's syntax table via
+     ;; `char-syntax'.  org-element regexps use these pervasively, e.g.
+     ;; `:\\S-+:' in `org-property-drawer-re'.  Without this, `\\S' fell
+     ;; through to the literal branch (matched the letter "S").
+     ((eq c ?s) (nelisp-rx--advance)
+      (let ((cls (nelisp-rx--peek)))
+        (unless cls (signal 'nelisp-rx-syntax-error '("trailing \\s")))
+        (nelisp-rx--advance)
+        (nelisp-rx--make-class t (list (cons :syntax cls)))))
+     ((eq c ?S) (nelisp-rx--advance)
+      (let ((cls (nelisp-rx--peek)))
+        (unless cls (signal 'nelisp-rx-syntax-error '("trailing \\S")))
+        (nelisp-rx--advance)
+        (nelisp-rx--make-class nil (list (cons :syntax cls)))))
+     ;; `\\1' .. `\\9' -- backreference (Doc 33 item 244: Magit's
+     ;; `magit-diff-wash-diff' matches `diff --git \\(?2:.+?\\) \\2',
+     ;; the first backreference the vendor chain actually exercises).
+     ((and (>= c ?1) (<= c ?9))
+      (nelisp-rx--advance)
+      (list :backref (- c ?0)))
+     ;; Any other char -> literal.  Covers the punctuation/escape table:
+     ;;   \\\\ \\. \\* \\+ \\? \\^ \\$ \\[ \\] \\{ \\} etc.
+     (t (nelisp-rx--advance) (list :lit c)))))
+
+(defun nelisp-rx--parse-group ()
+  "Parse a `\\(...\\)' group; the leading `\\(' is already consumed.
+Supports `\\(?:...\\)' shy (non-capturing) groups and `\\(?N:...\\)'
+explicitly numbered groups in addition to plain capturing groups.
+\(63 = ?, 58 = :; numeric literals avoid char-literal reader edge cases.)"
+  (let ((shy nil) (idx nil))
+    (cond
+     ;; `\(?:...\)' -- shy / non-capturing group.
+     ((and (eq (nelisp-rx--peek) 63) (eq (nelisp-rx--peek2) 58))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume ?:
+      (setq shy t))
+     ;; `\(?N:...\)' -- explicitly numbered group.
+     ((and (eq (nelisp-rx--peek) 63)
+           (let ((c2 (nelisp-rx--peek2))) (and c2 (>= c2 ?0) (<= c2 ?9))))
+      (nelisp-rx--advance)                      ; consume ?
+      (let ((n 0) (c (nelisp-rx--peek)))
+        (while (and c (>= c ?0) (<= c ?9))
+          (setq n (+ (* n 10) (- c ?0)))
+          (nelisp-rx--advance)
+          (setq c (nelisp-rx--peek)))
+        (unless (eq c 58)                       ; expect :
+          (signal 'nelisp-rx-syntax-error '("malformed \\(?N:...\\) group")))
+        (nelisp-rx--advance)                    ; consume :
+        (setq idx n)
+        (when (>= n nelisp-rx--parse-group-counter)
+          (setq nelisp-rx--parse-group-counter (1+ n)))))
+     (t
+      (setq idx nelisp-rx--parse-group-counter)
+      (setq nelisp-rx--parse-group-counter (1+ nelisp-rx--parse-group-counter))))
+    (let ((inner (nelisp-rx--parse-alt)))
+      (unless (and (eq (nelisp-rx--peek) ?\\)
+                   (eq (nelisp-rx--peek2) ?\)))
+        (signal 'nelisp-rx-syntax-error '("missing \\) for group")))
+      (nelisp-rx--advance) (nelisp-rx--advance) ; consume \)
+      (if shy inner (list :group idx inner)))))
+
+(defun nelisp-rx--posix-ranges (name)
+  "Return a list of (lo . hi) ranges for POSIX class NAME, nil if unknown."
+  (cond
+   ((equal name "digit")  (list (cons ?0 ?9)))
+   ((equal name "alpha")  (list (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "alnum")  (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z)))
+   ((equal name "word")   (list (cons ?0 ?9) (cons ?a ?z) (cons ?A ?Z) (cons ?_ ?_)))
+   ((equal name "upper")  (list (cons ?A ?Z)))
+   ((equal name "lower")  (list (cons ?a ?z)))
+   ((equal name "xdigit") (list (cons ?0 ?9) (cons ?a ?f) (cons ?A ?F)))
+   ((equal name "space")  (list (cons 9 13) (cons 32 32)))
+   ((equal name "blank")  (list (cons 9 9) (cons 32 32)))
+   ((equal name "punct")  (list (cons 33 47) (cons 58 64) (cons 91 96) (cons 123 126)))
+   ((equal name "cntrl")  (list (cons 0 31) (cons 127 127)))
+   ((equal name "graph")  (list (cons 33 126)))
+   ((equal name "print")  (list (cons 32 126)))
+   ((equal name "ascii")  (list (cons 0 127)))
+   (t nil)))
+
+(defun nelisp-rx--parse-class ()
+  "Parse a `[...]' character class; leading `[' is the lookahead char."
+  (nelisp-rx--advance)                     ; consume [
+  (let ((positive t)
+        (ranges nil))
+    (when (eq (nelisp-rx--peek) ?^)
+      (setq positive nil)
+      (nelisp-rx--advance))
+    ;; A literal `]' as the very first char is taken as itself.
+    (when (eq (nelisp-rx--peek) ?\])
+      (push (cons ?\] ?\]) ranges)
+      (nelisp-rx--advance))
+    (let ((done nil))
+      (while (not done)
+        (let ((c (nelisp-rx--peek)))
+          (cond
+           ((null c)
+            (signal 'nelisp-rx-syntax-error '("unterminated character class")))
+           ((eq c ?\]) (nelisp-rx--advance) (setq done t))
+           ;; POSIX class [:name:] -> expand to (lo . hi) ranges.
+           ((and (eq c ?\[) (eq (nelisp-rx--peek2) ?:))
+            (nelisp-rx--advance)            ; consume [
+            (nelisp-rx--advance)            ; consume :
+            (let ((chars nil) (cdone nil))
+              (while (not cdone)
+                (let ((nc (nelisp-rx--peek)))
+                  (if (or (null nc)
+                          (and (eq nc ?:) (eq (nelisp-rx--peek2) ?\])))
+                      (setq cdone t)
+                    (push nc chars)
+                    (nelisp-rx--advance))))
+              (when (eq (nelisp-rx--peek) ?:) (nelisp-rx--advance))
+              (when (eq (nelisp-rx--peek) ?\]) (nelisp-rx--advance))
+              (dolist (r (nelisp-rx--posix-ranges
+                          (apply #'string (nreverse chars))))
+                (push r ranges))))
+           (t
+            (let ((lo (nelisp-rx--class-char)))
+              (if (and (eq (nelisp-rx--peek) ?-)
+                       (not (eq (nelisp-rx--peek2) ?\])))
+                  (progn
+                    (nelisp-rx--advance)            ; consume `-'
+                    (let ((hi (nelisp-rx--class-char)))
+                      ;; GNU Emacs accepts inverted character ranges as an
+                      ;; empty range.  `rx.el' intentionally emits `[^z-a]'
+                      ;; for `anychar', so rejecting this shape breaks vendor
+                      ;; regexps generated through `rx-to-string'.
+                      (unless (> lo hi)
+                        (push (cons lo hi) ranges))))
+                (push (cons lo lo) ranges))))))))
+    (nelisp-rx--make-class positive (nreverse ranges))))
+
+(defun nelisp-rx--class-char ()
+  "Read one literal character inside `[...]'.
+In GNU Emacs regexp syntax backslash is an ORDINARY literal character
+inside a character class -- it does NOT introduce an escape.  So `[^\\]'
+means \"not backslash\" (its `]' closes the class), `[\\]' matches a
+backslash, and `[\\w]' matches a literal `\\' or `w'.  The previous
+implementation consumed the `\\' and returned the following character,
+i.e. treated `\\' as a PCRE-style escape; that mis-parsed `[^\\]' as an
+unterminated class (the `]' was swallowed as an escaped literal) and broke
+every Emacs regexp with a backslash inside a bracket expression (cc-mode's
+`noncontinued-line-end' and many others).  Return the character verbatim."
+  (let ((c (nelisp-rx--peek)))
+    (cond
+     ((null c)
+      (signal 'nelisp-rx-syntax-error '("unterminated class")))
+     (t (nelisp-rx--advance) c))))
+
+(define-error 'nelisp-rx-syntax-error "Invalid regex syntax" 'invalid-regexp)
+
+;;; --------------------------------------------------------------------------
+;;; NFA construction (Thompson)
+;;; --------------------------------------------------------------------------
+;;
+;; Each state is a vector [LABEL TRANS1 TRANS2 EXTRA].
+;;   LABEL  -- :char CHAR | :any | :class POS RANGES | :bol | :eol | :wb | :nwb
+;;            | :gstart IDX | :gend IDX | :split | :match
+;;   TRANS1 -- next state index (or nil for :match)
+;;   TRANS2 -- alternate next state for :split, else nil
+;;   EXTRA  -- payload (CHAR / class data / IDX), redundant with LABEL but
+;;             kept for symmetry / cheap access.
+;;
+;; The NFA is represented as a vector of state vectors, with `start' pinned
+;; at index 0 (we shuffle if needed).  We avoid linked lists to keep
+;; recursion shallow.
+
+(defun nelisp-rx--state-vec (label trans1 trans2 extra)
+  "Allocate a state vector."
+  (vector label trans1 trans2 extra))
+
+(cl-defstruct (nelisp-rx--frag (:constructor nelisp-rx--mkfrag)
+                               (:copier nil))
+  "Sub-NFA fragment used during Thompson construction.
+START is the entry state index; OUTS is a list of (STATE-IDX . SLOT) pairs
+where SLOT is 1 or 2 indicating which transition slot is dangling."
+  start outs)
+
+(defvar nelisp-rx--build-states nil
+  "Mutable vector of state vectors during NFA build (dynamic).")
+
+(defsubst nelisp-rx--add-state (label trans1 trans2 extra)
+  "Append a new state and return its index."
+  (let ((idx (length nelisp-rx--build-states)))
+    (setq nelisp-rx--build-states
+          (vconcat nelisp-rx--build-states
+                   (vector (nelisp-rx--state-vec label trans1 trans2 extra))))
+    idx))
+
+(defsubst nelisp-rx--patch (outs target)
+  "Patch every dangling OUT in OUTS to point to TARGET state index."
+  (dolist (o outs)
+    (let ((s (aref nelisp-rx--build-states (car o))))
+      (aset s (cdr o) target))))
+
+(defun nelisp-rx--build (ast)
+  "Build a fragment for AST."
+  (pcase (car ast)
+    (:lit
+     (let ((s (nelisp-rx--add-state :char nil nil (cadr ast))))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:any
+     (let ((s (nelisp-rx--add-state :any nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:bol
+     (let ((s (nelisp-rx--add-state :bol nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:eol
+     (let ((s (nelisp-rx--add-state :eol nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:wb
+     (let ((s (nelisp-rx--add-state :wb nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:nwb
+     (let ((s (nelisp-rx--add-state :nwb nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:wbs
+     (let ((s (nelisp-rx--add-state :wbs nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:wbe
+     (let ((s (nelisp-rx--add-state :wbe nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:bos
+     (let ((s (nelisp-rx--add-state :bos nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:eos
+     (let ((s (nelisp-rx--add-state :eos nil nil nil)))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:class
+     (let* ((positive (nth 1 ast))
+            (ranges   (nth 2 ast))
+            (s (nelisp-rx--add-state :class nil nil
+                                     (cons positive ranges))))
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:concat
+     (let ((children (cdr ast)))
+       (cond
+        ((null children)
+         ;; Empty concat — emit a no-op split with both branches identical.
+         (let ((s (nelisp-rx--add-state :split nil nil nil)))
+           (nelisp-rx--mkfrag :start s
+                              :outs (list (cons s 1) (cons s 2)))))
+        (t
+         ;; Track the dangling OUTS in a local rather than mutating the frag
+         ;; struct with `setf': the baked runtime image does not carry the
+         ;; `setf' expander for `nelisp-rx--frag-outs', so the old
+         ;; `(setf (nelisp-rx--frag-outs first) ...)' was a silent no-op --
+         ;; leaving FIRST's outs pointing at the first child, which the final
+         ;; `nelisp-rx--build-nfa' patch then redirected straight to :match,
+         ;; so every concatenation matched only its first element.
+         (let* ((first (nelisp-rx--build (car children)))
+                (start (nelisp-rx--frag-start first))
+                (outs  (nelisp-rx--frag-outs first)))
+           (dolist (rest (cdr children))
+             (let ((next (nelisp-rx--build rest)))
+               (nelisp-rx--patch outs (nelisp-rx--frag-start next))
+               (setq outs (nelisp-rx--frag-outs next))))
+           (nelisp-rx--mkfrag :start start :outs outs))))))
+    (:alt
+     (let* ((a (nelisp-rx--build (nth 1 ast)))
+            (b (nelisp-rx--build (nth 2 ast)))
+            (s (nelisp-rx--add-state :split
+                                     (nelisp-rx--frag-start a)
+                                     (nelisp-rx--frag-start b)
+                                     nil)))
+       (nelisp-rx--mkfrag :start s
+                          :outs (append (nelisp-rx--frag-outs a)
+                                        (nelisp-rx--frag-outs b)))))
+    (:star
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; greedy: try inner first (slot 1), else exit (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     (nelisp-rx--frag-start inner)
+                                     nil nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 2)))))
+    (:plus
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; one inner, then optional repeat via split.
+            (s (nelisp-rx--add-state :split
+                                     (nelisp-rx--frag-start inner)
+                                     nil nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                          :outs (list (cons s 2)))))
+    (:opt
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            (s (nelisp-rx--add-state :split
+                                     (nelisp-rx--frag-start inner)
+                                     nil nil)))
+       (nelisp-rx--mkfrag :start s
+                          :outs (cons (cons s 2)
+                                      (nelisp-rx--frag-outs inner)))))
+    ;; Lazy (non-greedy) variants: identical NFA topology to their greedy
+    ;; counterparts, but the `:split' branches are swapped so the matcher
+    ;; (depth-first, slot 1 before slot 2) tries the EXIT / fewer-repeats
+    ;; path first.  See `nelisp-rx--parse-quant'.
+    (:star-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; lazy: try exit (slot 1) first, else inner (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+    (:plus-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; one inner, then prefer exit (slot 1) over repeat (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+       (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                          :outs (list (cons s 1)))))
+    (:opt-lazy
+     (let* ((inner (nelisp-rx--build (nth 1 ast)))
+            ;; lazy: prefer skip (slot 1) over matching inner (slot 2).
+            (s (nelisp-rx--add-state :split
+                                     nil
+                                     (nelisp-rx--frag-start inner)
+                                     nil)))
+       (nelisp-rx--mkfrag :start s
+                          :outs (cons (cons s 1)
+                                      (nelisp-rx--frag-outs inner)))))
+    (:group
+     (let* ((idx (nth 1 ast))
+            (inner (nelisp-rx--build (nth 2 ast)))
+            (sstart (nelisp-rx--add-state :gstart nil nil idx))
+            (send   (nelisp-rx--add-state :gend nil nil idx)))
+       (aset (aref nelisp-rx--build-states sstart) 1
+             (nelisp-rx--frag-start inner))
+       (nelisp-rx--patch (nelisp-rx--frag-outs inner) send)
+       (nelisp-rx--mkfrag :start sstart :outs (list (cons send 1)))))
+    (_ (error "nelisp-rx: unknown AST node %S" ast))))
+
+(defun nelisp-rx--build (ast)
+  "Build a fragment for AST using standalone-safe dispatch."
+  (let ((tag (car ast)))
+    (cond
+     ((eq tag :lit)
+      (let ((s (nelisp-rx--add-state :char nil nil (cadr ast))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :any)
+      (let ((s (nelisp-rx--add-state :any nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :bol)
+      (let ((s (nelisp-rx--add-state :bol nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :eol)
+      (let ((s (nelisp-rx--add-state :eol nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wb)
+      (let ((s (nelisp-rx--add-state :wb nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :nwb)
+      (let ((s (nelisp-rx--add-state :nwb nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wbs)
+      (let ((s (nelisp-rx--add-state :wbs nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :wbe)
+      (let ((s (nelisp-rx--add-state :wbe nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :bos)
+      (let ((s (nelisp-rx--add-state :bos nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :eos)
+      (let ((s (nelisp-rx--add-state :eos nil nil nil)))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :class)
+      (let* ((positive (nth 1 ast))
+             (ranges (nth 2 ast))
+             (s (nelisp-rx--add-state :class nil nil
+                                      (cons positive ranges))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :concat)
+      (let ((children (cdr ast)))
+        (if (null children)
+            (let ((s (nelisp-rx--add-state :split nil nil nil)))
+              (nelisp-rx--mkfrag :start s
+                                 :outs (list (cons s 1) (cons s 2))))
+          (let* ((first (nelisp-rx--build (car children)))
+                 (start (nelisp-rx--frag-start first))
+                 (outs (nelisp-rx--frag-outs first)))
+            (dolist (rest (cdr children))
+              (let ((next (nelisp-rx--build rest)))
+                (nelisp-rx--patch outs (nelisp-rx--frag-start next))
+                (setq outs (nelisp-rx--frag-outs next))))
+            (nelisp-rx--mkfrag :start start :outs outs)))))
+     ((eq tag :alt)
+      (let* ((a (nelisp-rx--build (nth 1 ast)))
+             (b (nelisp-rx--build (nth 2 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start a)
+                                      (nelisp-rx--frag-start b)
+                                      nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (append (nelisp-rx--frag-outs a)
+                                         (nelisp-rx--frag-outs b)))))
+     ((eq tag :star)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 2)))))
+     ((eq tag :plus)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                           :outs (list (cons s 2)))))
+     ((eq tag :opt)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      (nelisp-rx--frag-start inner)
+                                      nil nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (cons (cons s 2)
+                                       (nelisp-rx--frag-outs inner)))))
+     ((eq tag :star-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     ((eq tag :plus-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) s)
+        (nelisp-rx--mkfrag :start (nelisp-rx--frag-start inner)
+                           :outs (list (cons s 1)))))
+     ((eq tag :opt-lazy)
+      (let* ((inner (nelisp-rx--build (nth 1 ast)))
+             (s (nelisp-rx--add-state :split
+                                      nil
+                                      (nelisp-rx--frag-start inner)
+                                      nil)))
+        (nelisp-rx--mkfrag :start s
+                           :outs (cons (cons s 1)
+                                       (nelisp-rx--frag-outs inner)))))
+     ((eq tag :group)
+      (let* ((idx (nth 1 ast))
+             (inner (nelisp-rx--build (nth 2 ast)))
+             (sstart (nelisp-rx--add-state :gstart nil nil idx))
+             (send (nelisp-rx--add-state :gend nil nil idx)))
+        (aset (aref nelisp-rx--build-states sstart) 1
+              (nelisp-rx--frag-start inner))
+        (nelisp-rx--patch (nelisp-rx--frag-outs inner) send)
+        (nelisp-rx--mkfrag :start sstart :outs (list (cons send 1)))))
+     ((eq tag :backref)
+      (let ((s (nelisp-rx--add-state :backref nil nil (nth 1 ast))))
+        (nelisp-rx--mkfrag :start s :outs (list (cons s 1)))))
+     (t
+      (error "nelisp-rx: unknown AST node %S" ast)))))
+
+(defun nelisp-rx--build-nfa (ast)
+  "Compile AST to an NFA struct.
+Returns plist: (:states VEC :start INT :match INT :groups INT)."
+  (let ((nelisp-rx--build-states (vector)))
+    (let* ((frag (nelisp-rx--build ast))
+           (mtch (nelisp-rx--add-state :match nil nil nil)))
+      (nelisp-rx--patch (nelisp-rx--frag-outs frag) mtch)
+      (list :states nelisp-rx--build-states
+            :start  (nelisp-rx--frag-start frag)
+            :match  mtch
+            :groups (1- (nelisp-rx--collect-max-group ast))))))
+
+(defun nelisp-rx--collect-max-group (ast)
+  "Return one-past-largest group index in AST (>=1).
+Phase 4 B (2026-05-06): rewritten from `pcase' with `(or :star
+:plus :opt)' to plain `cond' / `memq' so the body parses under
+NeLisp's restricted built-in pcase grammar."
+  (let ((tag (car ast)))
+    (cond
+     ((eq tag :group)
+      (max (1+ (nth 1 ast))
+           (nelisp-rx--collect-max-group (nth 2 ast))))
+     ((eq tag :concat)
+      (apply #'max 1 (mapcar #'nelisp-rx--collect-max-group (cdr ast))))
+     ((eq tag :alt)
+      (max (nelisp-rx--collect-max-group (nth 1 ast))
+           (nelisp-rx--collect-max-group (nth 2 ast))))
+     ((memq tag '(:star :plus :opt :star-lazy :plus-lazy :opt-lazy))
+      (nelisp-rx--collect-max-group (nth 1 ast)))
+     ;; A backreference to group N requires the groups vector to cover N
+     ;; even when the referenced group parses later (forward reference —
+     ;; matches empty, like real Emacs).
+     ((eq tag :backref) (1+ (nth 1 ast)))
+     (t 1))))
+
+;;; --------------------------------------------------------------------------
+;;; Compiled-pattern object
+;;; --------------------------------------------------------------------------
+
+(cl-defstruct (nelisp-rx-pattern (:constructor nelisp-rx--make-pattern)
+                                 (:copier nil))
+  "Compiled regex pattern."
+  source         ; original regex string
+  states         ; vector of state vectors
+  start          ; integer start state index
+  match          ; integer accept state index
+  ngroups)       ; number of capture groups (>=0)
+
+;;;###autoload
+(defun nelisp-rx-compile (regex)
+  "Compile REGEX (an Emacs-style regex string subset) to a pattern object.
+Signal `nelisp-rx-syntax-error' on malformed input."
+  (let* ((ast (nelisp-rx--parse regex))
+         (nfa (nelisp-rx--build-nfa ast)))
+    (nelisp-rx--make-pattern
+     :source regex
+     :states (plist-get nfa :states)
+     :start  (plist-get nfa :start)
+     :match  (plist-get nfa :match)
+     :ngroups (max 0 (plist-get nfa :groups)))))
+
+;;; --------------------------------------------------------------------------
+;;; NFA simulation
+;;; --------------------------------------------------------------------------
+;;
+;; We use a backtracking depth-first walk with capture-group bookkeeping.
+;; That's strictly weaker than the pure subset-construction Thompson sim
+;; (it can hit exponential blowup on adversarial input), but it gives us
+;; correct group captures with minimal code.  For the regex shapes that
+;; `looking-at' / `search-forward' will throw at us in Phase 9b (mostly
+;; literal + `\\(...\\)' wrappers + simple `*'/`+'), the constants are
+;; small enough that this is fine.
+
+(defun nelisp-rx--word-char-p (c)
+  "Return non-nil if char C is a word constituent (ASCII rule for MVP)."
+  (and c
+       (or (and (>= c ?a) (<= c ?z))
+           (and (>= c ?A) (<= c ?Z))
+           (and (>= c ?0) (<= c ?9))
+           (eq c ?_))))
+
+(defun nelisp-rx--syntax-match-p (designator char)
+  "Return non-nil if CHAR has the syntax class named by DESIGNATOR (\\sC).
+DESIGNATOR is the char following `\\s' / `\\S' (e.g. ?- whitespace, ?w
+word, ?_ symbol, ?. punctuation).
+
+This is an ASCII approximation of the standard syntax table.  We do NOT
+call `char-syntax' here: invoking it inside the matcher loop corrupts the
+standalone runtime so a *subsequent* `nelisp-rx-string-match' on an
+unrelated regex hard-aborts (exit 88).  The whitespace class is the one
+org-element actually depends on (`\\S-' = non-whitespace, e.g. in
+`org-property-drawer-re'); the others are best-effort."
+  (and char
+       (cond
+        ((memq designator '(?- 32))       ; whitespace
+         (memq char '(?\s ?\t ?\n ?\r ?\f ?\v)))
+        ((eq designator ?w)               ; word constituent
+         (nelisp-rx--word-char-p char))
+        ((eq designator ?_)               ; symbol constituent (ASCII-ish)
+         (or (nelisp-rx--word-char-p char)
+             (memq char '(?- ?+ ?* ?/ ?% ?$ ?& ?< ?> ?= ?~ ?^ ?! ?\?))))
+        ((eq designator ?.)               ; punctuation
+         (memq char '(?. ?, ?\; ?: ?! ?\? ?# ?@ ?| ?\\)))
+        (t nil))))
+
+(defun nelisp-rx--class-match-p (positive ranges char)
+  "Return non-nil if CHAR matches a [..]/[^..] class."
+  (let ((hit nil))
+    (dolist (r ranges)
+      (cond
+       ((eq r :word)  (when (nelisp-rx--word-char-p char) (setq hit t)))
+       ((eq r :nword) (when (and char (not (nelisp-rx--word-char-p char)))
+                        (setq hit t)))
+       ;; (:syntax . C) -- checked before the generic (lo . hi) range so the
+       ;; `(>= char (car r))' comparison never sees the `:syntax' symbol.
+       ((and (consp r) (eq (car r) :syntax))
+        (when (nelisp-rx--syntax-match-p (cdr r) char) (setq hit t)))
+       ((and (consp r)
+             char
+             (>= char (car r))
+             (<= char (cdr r)))
+        (setq hit t))))
+    (if positive hit (not hit))))
+
+(defun nelisp-rx--match-from (pat str start)
+  "Try to match PAT against STR starting exactly at START.
+Return (END . GROUPS) where GROUPS is a vector of (S . E) cells (1-based,
+slot 0 unused) on success, or nil on failure.  Greedy / leftmost-first
+backtracking semantics."
+  (let* ((states (nelisp-rx-pattern-states pat))
+         (ngrp   (nelisp-rx-pattern-ngroups pat))
+         (groups (make-vector (1+ ngrp) nil))
+         (slen   (length str))
+         ;; Epsilon-loop guard: per-`:split' record of the position at
+         ;; which that split is currently ON the DFS stack (nil = not).
+         ;; Re-entering the same split at the same position can only be a
+         ;; zero-width cycle (e.g. `\(?:x*\)*'); we cut it (see `:split').
+         (split-mark (make-vector (length states) nil))
+         ;; Failure memo: without backreferences, matchability from a given
+         ;; NFA state and input position is independent of capture contents.
+         ;; Memoizing only failures preserves capture side effects on success
+         ;; while avoiding exponential retry storms in large org regexps.
+         ;; With a backreference anywhere in the pattern that independence
+         ;; no longer holds (the same state+position can fail under one
+         ;; capture history and succeed under another), so the memo is
+         ;; disabled for such patterns (Doc 33 item 244).
+         (failed (make-hash-table :test 'equal))
+         (memo-ok (let ((i 0) (n (length states)) (found nil))
+                    (while (< i n)
+                      (when (eq (aref (aref states i) 0) :backref)
+                        (setq found t)
+                        (setq i n))
+                      (setq i (1+ i)))
+                    (not found)))
+         (best   nil))
+    (with-no-warnings
+      (cl-labels
+          ((char-at (pos) (and (< pos slen) (aref str pos)))
+           (prev-char (pos) (and (> pos 0) (aref str (1- pos))))
+           (fail-key (sidx pos) (+ (* sidx (1+ slen)) pos))
+           (walk
+            (sidx pos)
+            (if (and memo-ok (gethash (fail-key sidx pos) failed))
+                nil
+              (let* ((s (aref states sidx))
+                     (label (aref s 0))
+                     (ok
+                      (cond
+                       ((eq label :match)
+                        (setq best (cons pos (vconcat groups))) ; freeze copy
+                        t)
+                       ((eq label :char)
+                        (let ((c (char-at pos)))
+                          (and c (eq c (aref s 3))
+                               (walk (aref s 1) (1+ pos)))))
+                       ((eq label :any)
+                        (let ((c (char-at pos)))
+                          (and c (walk (aref s 1) (1+ pos)))))
+                       ((eq label :class)
+                        (let* ((c (char-at pos))
+                               (data (aref s 3)))
+                          (and c
+                               (nelisp-rx--class-match-p (car data) (cdr data) c)
+                               (walk (aref s 1) (1+ pos)))))
+                       ((eq label :bol)
+                        (and (or (= pos 0)
+                                 (eq (prev-char pos) ?\n))
+                             (walk (aref s 1) pos)))
+                       ((eq label :eol)
+                        (and (or (= pos slen)
+                                 (eq (char-at pos) ?\n))
+                             (walk (aref s 1) pos)))
+                       ((eq label :bos)
+                        (and (= pos 0)
+                             (walk (aref s 1) pos)))
+                       ((eq label :eos)
+                        (and (= pos slen)
+                             (walk (aref s 1) pos)))
+                       ((eq label :wb)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (not (eq before after))
+                               (walk (aref s 1) pos))))
+                       ((eq label :nwb)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (eq before after)
+                               (walk (aref s 1) pos))))
+                       ;; Doc 51 Track J — `\<' matches at word start.
+                       ((eq label :wbs)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and (not before) after
+                               (walk (aref s 1) pos))))
+                       ;; Doc 51 Track J — `\>' matches at word end.
+                       ((eq label :wbe)
+                        (let* ((before (and (> pos 0)
+                                            (nelisp-rx--word-char-p (prev-char pos))))
+                               (after  (and (< pos slen)
+                                            (nelisp-rx--word-char-p (char-at pos)))))
+                          (and before (not after)
+                               (walk (aref s 1) pos))))
+                       ((eq label :split)
+                        ;; If this split is already on the current path at POS,
+                        ;; re-entering is a zero-width epsilon cycle that yields no
+                        ;; new match -- cut it.  Otherwise mark, recurse, restore
+                        ;; (so sibling DFS branches may legitimately revisit later).
+                        (let ((mark (aref split-mark sidx)))
+                          (if (and mark (= mark pos))
+                              nil
+                            (aset split-mark sidx pos)
+                            (prog1 (or (walk (aref s 1) pos)
+                                       (and (aref s 2) (walk (aref s 2) pos)))
+                              (aset split-mark sidx mark)))))
+                       ((eq label :gstart)
+                        (let* ((idx (aref s 3))
+                               (saved (aref groups idx)))
+                          (aset groups idx (cons pos nil))
+                          (or (walk (aref s 1) pos)
+                              (progn (aset groups idx saved) nil))))
+                       ((eq label :gend)
+                        (let* ((idx   (aref s 3))
+                               (saved (aref groups idx))
+                               (open  (and saved (car saved))))
+                          (aset groups idx (cons open pos))
+                          (or (walk (aref s 1) pos)
+                              (progn (aset groups idx saved) nil))))
+                       ((eq label :backref)
+                        ;; Match the exact text group N captured earlier on
+                        ;; this path.  A group that has not (fully) matched
+                        ;; yet contributes an empty match, like real Emacs.
+                        (let* ((idx (aref s 3))
+                               (cell (and (< idx (length groups))
+                                          (aref groups idx))))
+                          (if (not (and cell (car cell) (cdr cell)))
+                              (walk (aref s 1) pos)
+                            (let* ((gs (car cell)) (ge (cdr cell))
+                                   (glen (- ge gs)))
+                              (and (<= (+ pos glen) slen)
+                                   (let ((i 0) (same t))
+                                     (while (and same (< i glen))
+                                       (unless (eq (aref str (+ pos i))
+                                                   (aref str (+ gs i)))
+                                         (setq same nil))
+                                       (setq i (1+ i)))
+                                     same)
+                                   (walk (aref s 1) (+ pos glen)))))))
+                       (t (error "nelisp-rx: unknown state label %S" label)))))
+                (when (and (not ok) memo-ok)
+                  (puthash (fail-key sidx pos) t failed))
+                ok))))
+        (walk (nelisp-rx-pattern-start pat) start)
+        best))))
+
+(defun nelisp-rx--scan (pat str start)
+  "Scan STR from START forward; return (ANCHOR END GROUPS) on first match, or nil.
+ANCHOR is the start position where the match was found."
+  (let* ((slen (length str))
+         (i start)
+         (hit nil)
+         ;; Only optimize anchors that are literally the first NFA state.
+         ;; Inferring anchors through epsilon edges would change the set of
+         ;; candidate positions for alternations and is deliberately avoided.
+         (start-label
+          (aref (aref (nelisp-rx-pattern-states pat)
+                      (nelisp-rx-pattern-start pat))
+                0)))
+    (catch 'done
+      (while (<= i slen)
+        (let ((candidate-p
+               (cond
+                ((eq start-label :bos) (= i 0))
+                ((eq start-label :bol)
+                 (or (= i 0)
+                     (and (> i 0) (= (aref str (1- i)) ?\n))))
+                (t t))))
+          (when candidate-p
+            (let ((m (nelisp-rx--match-from pat str i)))
+              (when m
+                (setq hit (list i (car m) (cdr m)))
+                (throw 'done nil)))))
+        (setq i (1+ i)))
+      nil)
+    hit))
+
+;;; --------------------------------------------------------------------------
+;;; Public match API
+;;; --------------------------------------------------------------------------
+
+(defun nelisp-rx--make-match-data (anchor end groups)
+  "Build the public match-data plist returned to callers.
+Phase 4 B (2026-05-06): rewrote `cl-loop' to plain `while' so the
+function loads under NeLisp's restricted cl-lib (= numeric `for VAR
+from N below M' isn't a NeLisp built-in)."
+  (let ((lst nil))
+    (when groups
+      ;; groups is a vector indexed 1..ngrp; slot 0 is unused.
+      (let ((i 1)
+            (n (length groups)))
+        (while (< i n)
+          (let ((cell (aref groups i)))
+            (push (if (and cell (cdr cell))
+                      (list :index i :start (car cell) :end (cdr cell))
+                    (list :index i :start nil :end nil))
+                  lst))
+          (setq i (1+ i)))))
+    (list :start anchor :end end :groups (nreverse lst))))
+
+(defun nelisp-rx--literal-suffix-of (pattern)
+  "Return the literal suffix for PATTERN of the shape LITERAL\\\\', else nil.
+The only regexp operator accepted is the trailing string-end anchor.
+Escaped regexp punctuation counts as literal text; escaped word classes,
+groups, backrefs, and other regexp constructs reject the fast path."
+  (let ((n (length pattern))
+        (i 0)
+        (chars nil)
+        (ok t))
+    (if (or (< n 2)
+            (not (eq (aref pattern (- n 2)) ?\\))
+            (not (eq (aref pattern (- n 1)) ?')))
+        nil
+      (setq n (- n 2))
+      (while (and ok (< i n))
+        (let ((c (aref pattern i)))
+          (cond
+           ((eq c ?\\)
+            (if (>= (1+ i) n)
+                (setq ok nil)
+              (let ((e (aref pattern (1+ i))))
+                (if (memq e '(?. ?* ?+ ?? ?\[ ?\] ?^ ?$ ?\\ ?\( ?\) ?\{ ?\} ?|))
+                    (progn
+                      (push e chars)
+                      (setq i (+ i 2)))
+                  (setq ok nil)))))
+           ((memq c '(?. ?* ?+ ?? ?\[ ?\] ?^ ?$))
+            (setq ok nil))
+           (t
+            (push c chars)
+            (setq i (1+ i))))))
+      (when ok
+        (apply #'string (nreverse chars))))))
+
+(defvar nelisp-rx--compile-cache (make-hash-table :test 'equal)
+  "Cache mapping a regex STRING to its compiled `nelisp-rx-pattern'.
+Compiling re-parses the regex and allocates a fresh NFA every time.
+org-element matches the same handful of regexps thousands of times, and
+`org-element-parse-buffer' runs with GC effectively disabled
+(`gc-cons-threshold' raised to ~1GB), so per-call NFA allocation would
+otherwise accumulate without bound and exhaust the runtime (exit 88).
+Caching keeps total allocation proportional to the number of DISTINCT
+regexps, not the number of matches.")
+
+(defun nelisp-rx--compile-cached (pattern)
+  "Return a compiled pattern for PATTERN.
+If PATTERN is already a `nelisp-rx-pattern' object, return it as-is.
+If it is a string, return the cached compile (compiling + caching on
+first use).  See `nelisp-rx--compile-cache'."
+  (if (nelisp-rx-pattern-p pattern)
+      pattern
+    (or (gethash pattern nelisp-rx--compile-cache)
+        (puthash pattern (or (and (stringp pattern)
+                                  (let ((suffix (nelisp-rx--literal-suffix-of pattern)))
+                                    (and suffix (cons :rx-suffix suffix))))
+                             (nelisp-rx-compile pattern))
+                 nelisp-rx--compile-cache))))
+
+(defun nelisp-rx--suffix-string-match (literal string start)
+  "Match LITERAL followed by end-of-string against STRING from START.
+Return the public match-data plist on success, or nil on failure."
+  (let* ((slen (length string))
+         (llen (length literal))
+         (anchor (- slen llen)))
+    (and (<= 0 anchor)
+         (<= (or start 0) anchor)
+         (equal literal (substring string anchor slen))
+         (nelisp-rx--make-match-data anchor slen nil))))
+
+;;;###autoload
+(defun nelisp-rx-string-match (pattern string &optional start)
+  "Search STRING for PATTERN starting at START (default 0).
+Return a match-data plist with keys :start :end :groups, or nil if
+no match.  PATTERN can be a string (compiled + cached on the fly) or a
+pre-compiled `nelisp-rx-pattern' object."
+  (let* ((pat (nelisp-rx--compile-cached pattern))
+         (s   (or start 0)))
+    (if (and (consp pat) (eq (car pat) :rx-suffix))
+        (nelisp-rx--suffix-string-match (cdr pat) string s)
+      (let ((hit (nelisp-rx--scan pat string s)))
+        (and hit
+             (nelisp-rx--make-match-data (nth 0 hit) (nth 1 hit) (nth 2 hit)))))))
+
+;;;###autoload
+(defun nelisp-rx-string-match-all (pattern string &optional start)
+  "Find every non-overlapping match of PATTERN in STRING from START.
+Return a list of match-data plists in left-to-right order."
+  (let* ((pat (nelisp-rx--compile-cached pattern))
+         (s   (or start 0))
+         (acc nil))
+    (if (and (consp pat) (eq (car pat) :rx-suffix))
+        (let ((m (nelisp-rx--suffix-string-match (cdr pat) string s)))
+          (if m (list m) nil))
+      (while
+          (let ((m (nelisp-rx--scan pat string s)))
+            (when m
+              (push (nelisp-rx--make-match-data (nth 0 m) (nth 1 m) (nth 2 m))
+                    acc)
+              ;; Advance: if the match consumed nothing, step by 1 to avoid
+              ;; infinite loop on patterns like "a*".
+              (let ((next (if (= (nth 0 m) (nth 1 m))
+                              (1+ (nth 1 m))
+                            (nth 1 m))))
+                (and (<= next (length string))
+                     (setq s next))))))
+      (nreverse acc))))
+
+;;;###autoload
+(defun nelisp-rx-replace (pattern string replacement)
+  "Replace the first occurrence of PATTERN in STRING with REPLACEMENT.
+Return the new string.  REPLACEMENT is a literal string; backreference
+substitution (`\\\\1' etc) is NOT performed in MVP — that lands with
+backref support in Phase 9c."
+  (let ((m (nelisp-rx-string-match pattern string)))
+    (if (null m)
+        string
+      (concat (substring string 0 (plist-get m :start))
+              replacement
+              (substring string (plist-get m :end))))))
+
+;;;###autoload
+(defun nelisp-rx-replace-all (pattern string replacement)
+  "Replace every non-overlapping match of PATTERN in STRING with REPLACEMENT.
+Return the new string.  REPLACEMENT is treated literally (see
+`nelisp-rx-replace')."
+  (let ((matches (nelisp-rx-string-match-all pattern string)))
+    (if (null matches)
+        string
+      (let ((parts nil)
+            (cursor 0))
+        (dolist (m matches)
+          (let ((s (plist-get m :start))
+                (e (plist-get m :end)))
+            (push (substring string cursor s) parts)
+            (push replacement parts)
+            (setq cursor e)))
+        (push (substring string cursor) parts)
+        (apply #'concat (nreverse parts))))))
+
+(provide 'nelisp-regex)
+
+;;; nelisp-regex.el ends here

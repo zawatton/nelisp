@@ -1,0 +1,74 @@
+* nelisp-emacs v2 pure Elisp checkpoint
+:PROPERTIES:
+:DATE: 2026-05-27
+:PROJECT: /home/madblack-21/Cowork/Notes/dev/nelisp-emacs
+:STATUS: stopped-at-checkpoint
+:END:
+
+Development was intentionally stopped at a stable checkpoint.
+
+Current progress estimate: about 86% for the v2 pure-Elisp daily-driver
+track.  Host Emacs verification is healthy, but standalone NeLisp driver
+readiness is still blocked.
+
+** Implemented in this slice
+
+- TUI selected-window/buffer sync after command execution, so commands
+  like find-file that switch current buffer update the selected TUI
+  window.
+- TUI buffer commands:
+  - C-x b -> nemacs-main-switch-to-buffer-interactive
+  - C-x k -> nemacs-main-kill-buffer-interactive
+  - C-x C-b -> nemacs-main-list-buffers-interactive
+- True Meta/M-x path in nemacs-main:
+  - meta modifier bit preservation
+  - modified-key lookup fallback for large key integers
+  - M-x prompt and command execution wrapper
+  - TUI prompt adapters for find-file, switch-to-buffer, list-buffers,
+    kill-buffer, dired, shell-command, and async-shell-command
+- README test counts were updated from 1533/1524 to 1536/1527 and the
+  make test comment now says 1536 tests.
+
+** Verification
+
+- Full host suite was previously run successfully:
+  - 1536 ERT
+  - 1527 expected pass
+  - 0 unexpected
+  - 9 intentional opt-in skips
+- make doctor was re-run at this checkpoint and still fails at the
+  standalone NeLisp readiness gate:
+
+#+begin_example
+nelisp-literal-eval: ok
+  42
+nelisp-list-eval: fail
+  nelisp: error: ("eval_inner")
+summary: fail (1)
+#+end_example
+
+** Important files
+
+- src/nemacs-main.el
+- test/nemacs-main-test.el
+- README.org
+- Makefile and bin/nemacs already contain the v2 pure-Elisp NeLisp
+  build/docs/test entry work from earlier slices.
+
+The worktree contains many existing modified and untracked files from
+prior sessions.  Do not revert unrelated changes.
+
+** Next resume point
+
+1. In sibling /home/madblack-21/Cowork/Notes/dev/nelisp, debug the
+   standalone list evaluation failure reported by nelisp-emacs make
+   doctor: nelisp-list-eval -> eval_inner.
+2. Re-run make doctor in nelisp-emacs.
+3. Continue runtime-image work: bake-vendor-core-runtime-image should
+   extend an existing base .nlri via NeLisp extend-runtime-image instead
+   of rebaking bootstrap every time.
+4. Re-run git diff --check and make test before the next checkpoint.
+
+This checkpoint is not project completion.  The main remaining blocker
+is standalone NeLisp driver boot readiness before nemacs-main/runtime
+image daily-driver validation can be claimed.

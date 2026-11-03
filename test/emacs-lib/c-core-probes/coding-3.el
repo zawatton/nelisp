@@ -1,0 +1,15 @@
+(unencodable-char-position
+  (unencodable-char-position 0 3 'utf-8 nil "abc")
+  (unencodable-char-position 0 5 'ascii nil "aλbλc")
+  (unencodable-char-position 0 5 'ascii 1 "aλbλc")
+  (unencodable-char-position 1 4 'ascii 4 "aλbλc")
+  (unencodable-char-position 0 2 'ascii nil "aλb")
+  (condition-case e (unencodable-char-position 0 4 'ascii nil "abc")
+    (error (list 'ERR (car e) (cdr e))))
+  (condition-case e (unencodable-char-position 0 3 'not-a-coding nil "abc")
+    (error (list 'ERR (car e) (cdr e))))
+  (condition-case e (unencodable-char-position nil 2 'ascii nil "abc")
+    (error (list 'ERR (car e) (cdr e))))
+  (with-temp-buffer
+    (insert "xλz")
+    (unencodable-char-position (point-min) (point-max) 'ascii 2)))

@@ -1,0 +1,308 @@
+#+TITLE: nelisp-emacs / nemacs-next New Machine Setup Guide
+#+AUTHOR: nelisp-emacs
+#+DATE: 2026-07-08
+#+STATUS: DRAFT
+
+* Purpose
+
+This document is a practical setup guide for using the current
+=nelisp-emacs-lib= work on another machine.
+
+It is intentionally separate from =README.org=.  Use this file when you want
+clone URLs, local directory layout, build commands, and first-run verification
+steps in one place.
+
+* What You Are Installing
+
+There are two related repositories:
+
+1. =nelisp= — the runtime / reader / evaluator.
+2. =nelisp-emacs-lib= — the Emacs-compatible library substrate.
+
+Optionally:
+
+3. =nemacs-next= — the separate runnable editor product / GUI shell.
+
+Current project boundary:
+
+- =nelisp-emacs-lib= is the reusable library substrate.
+- =nemacs-next= is the long-term runnable editor product.
+- =bin/nemacs= inside =nelisp-emacs-lib= is still useful for experiments and
+  local verification, but it is not the final product boundary.
+
+* Current Development Status
+
+As of 2026-07-08, the repository README describes the following as landed:
+
+- Phase 1 core editor substrate: shipped.
+- Phase 2 TUI backend reference implementation: shipped.
+- Phase 3 redisplay MVP: shipped.
+- Daily-driver Doc 02 v0.1 modules: shipped.
+
+Important caveats:
+
+- GTK runtime verification is still described as pending.
+- Large-package compatibility work is still in progress.
+- Magit and full upstream vendor execution are active development areas, not a
+  completed compatibility claim.
+
+So the realistic install target on a new machine is:
+
+1. build =nelisp=;
+2. run =nelisp-emacs-lib= tests and smoke gates;
+3. try =bin/nemacs=;
+4. optionally try =nemacs-next=.
+
+* Recommended Directory Layout
+
+Use sibling checkouts:
+
+#+begin_src text
+~/dev/
+  nelisp/
+  nelisp-emacs-lib/
+  nemacs-next/        # optional
+#+end_src
+
+This matches the auto-detection logic used by the launchers and helper scripts.
+
+* Repository URLs
+
+#+begin_src sh
+git clone https://github.com/zawatton/nelisp.git
+git clone https://github.com/zawatton/nelisp-emacs-lib.git
+git clone https://github.com/zawatton/nemacs-next.git   # optional
+#+end_src
+
+* Host Dependencies
+
+Minimum command-line requirements:
+
+- =git=
+- =make=
+- =emacs=
+
+For =nemacs-next=:
+
+- =node=
+- =npm=
+- =cargo= / =rustc= (or =rustup=)
+
+For Tauri / GUI work on Linux, you may also need:
+
+- =pkg-config=
+- WebKitGTK / JavaScriptCoreGTK development packages
+- =xvfb= and =xdotool= for GUI smoke tests
+
+Exact package names vary by distribution.
+
+* Step 1: Build NeLisp
+
+#+begin_src sh
+mkdir -p ~/dev
+cd ~/dev
+git clone https://github.com/zawatton/nelisp.git
+cd ~/dev/nelisp
+make standalone-reader
+#+end_src
+
+Expected output artifact:
+
+#+begin_src text
+~/dev/nelisp/target/nelisp
+#+end_src
+
+Some older revisions may produce:
+
+#+begin_src text
+~/dev/nelisp/target/nelisp-standalone-reader
+#+end_src
+
+* Step 2: Clone and Verify nelisp-emacs-lib
+
+#+begin_src sh
+cd ~/dev
+git clone https://github.com/zawatton/nelisp-emacs-lib.git
+cd ~/dev/nelisp-emacs-lib
+make doctor
+#+end_src
+
+The Makefile auto-detects a sibling =../nelisp= checkout, so this layout is
+preferred.
+
+* Step 3: Host-Emacs Build and Test
+
+Start with the host-Emacs lane because it is the fastest way to confirm the
+checkout is coherent:
+
+#+begin_src sh
+cd ~/dev/nelisp-emacs-lib
+make compile
+make test
+#+end_src
+
+Useful additional checks:
+
+#+begin_src sh
+make nemacs-library-gate
+make nemacs-library-contract
+#+end_src
+
+If =make test= fails, stop here before trying runtime-image or GUI steps.
+
+* Step 4: Build Runtime Images
+
+To verify the standalone NeLisp lane:
+
+#+begin_src sh
+cd ~/dev/nelisp-emacs-lib
+make build-nelisp-bootstrap
+make bake-runtime-image
+make test-nelisp-runtime-image
+#+end_src
+
+For a more interactive editor-oriented image:
+
+#+begin_src sh
+make bake-interactive-runtime-image
+make test-nelisp-interactive-runtime-image
+#+end_src
+
+Useful standalone checks:
+
+#+begin_src sh
+make test-nelisp
+make verify-nelisp-standalone
+#+end_src
+
+* Step 5: Try bin/nemacs
+
+The launcher is still useful for local validation:
+
+#+begin_src sh
+cd ~/dev/nelisp-emacs-lib
+bin/nemacs --doctor
+bin/nemacs
+#+end_src
+
+To inspect the resolved paths:
+
+#+begin_src sh
+bin/nemacs --print-paths
+#+end_src
+
+The default driver is the host Emacs driver.
+
+The experimental NeLisp driver can be probed after the host lane is healthy:
+
+#+begin_src sh
+bin/nemacs --driver=nelisp --doctor
+#+end_src
+
+* Step 6: Install and Try nemacs-next (Optional)
+
+Clone:
+
+#+begin_src sh
+cd ~/dev
+git clone https://github.com/zawatton/nemacs-next.git
+cd ~/dev/nemacs-next
+#+end_src
+
+Populate the upstream Emacs Lisp vendor tree from your =nelisp-emacs-lib=
+checkout:
+
+#+begin_src sh
+scripts/sync-vendor.sh
+scripts/sync-vendor.sh --check
+#+end_src
+
+Install frontend dependencies:
+
+#+begin_src sh
+npm install
+npm run check
+#+end_src
+
+Check the Tauri side:
+
+#+begin_src sh
+cargo check --manifest-path src-tauri/Cargo.toml
+#+end_src
+
+If your machine lacks system-wide WebKitGTK development packages, try the local
+sysroot helper:
+
+#+begin_src sh
+scripts/setup-tauri-sysroot.sh
+source ./.tauri-sysroot.env
+cargo check --manifest-path src-tauri/Cargo.toml
+#+end_src
+
+Start the app:
+
+#+begin_src sh
+npm run dev
+#+end_src
+
+For a restricted local shell:
+
+#+begin_src sh
+npm run dev:local
+#+end_src
+
+* Suggested Verification Order
+
+Use this order on a new machine:
+
+1. =nelisp/: make standalone-reader=
+2. =nelisp-emacs-lib/: make doctor=
+3. =nelisp-emacs-lib/: make compile=
+4. =nelisp-emacs-lib/: make test=
+5. =nelisp-emacs-lib/: make bake-runtime-image=
+6. =nelisp-emacs-lib/: make test-nelisp-runtime-image=
+7. =nelisp-emacs-lib/: =bin/nemacs --doctor=
+8. =nemacs-next/: scripts/sync-vendor.sh=
+9. =nemacs-next/: =npm install && npm run check=
+10. =nemacs-next/: =cargo check --manifest-path src-tauri/Cargo.toml=
+11. =nemacs-next/: =npm run dev=
+
+* Known Limits
+
+Do not treat a successful setup as proof that all upstream Elisp under
+=vendor/= is fully executable today.
+
+This guide gets you to the current project baseline:
+
+- the reusable library substrate builds;
+- the host tests run;
+- the standalone reader lane can be exercised;
+- the current application shell can be launched.
+
+That is the correct expectation for the present state of the project.
+
+* Quick Command Summary
+
+#+begin_src sh
+# nelisp
+cd ~/dev/nelisp
+make standalone-reader
+
+# nelisp-emacs-lib
+cd ~/dev/nelisp-emacs-lib
+make doctor
+make compile
+make test
+make build-nelisp-bootstrap
+make bake-runtime-image
+make test-nelisp-runtime-image
+bin/nemacs --doctor
+
+# nemacs-next (optional)
+cd ~/dev/nemacs-next
+scripts/sync-vendor.sh
+npm install
+npm run check
+cargo check --manifest-path src-tauri/Cargo.toml
+npm run dev
+#+end_src

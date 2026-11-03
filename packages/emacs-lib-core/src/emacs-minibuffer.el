@@ -1,0 +1,1972 @@
+;;; emacs-minibuffer.el --- Emacs C minibuffer.c port on top of nelisp-emacs-compat  -*- lexical-binding: t; -*-
+
+;; Phase 1 module 5/6 per nelisp-emacs Doc 01 (LOCKED-2026-04-25-v2).
+;; Layer: nelisp-emacs (Layer 2 extension on top of NeLisp).
+;; Namespace: `emacs-minibuffer-' so loading inside a host Emacs does
+;; NOT shadow `read-from-minibuffer', `y-or-n-p', `completing-read', etc.
+;;
+;; Foundation contracts:
+;;   - `nelisp-emacs-compat' (T39 SHIPPED) provides the buffer struct
+;;     (`nelisp-ec-buffer'), point/insert/delete-region/buffer-substring
+;;     primitives.  We never `setf' its struct slots from this module
+;;     except to read them (= treat as opaque).
+;;   - `emacs-buffer'  (T119 SHIPPED) provides extended buffer state
+;;     (text-properties / undo / modification tick).
+;;   - `emacs-window'  (T135 SHIPPED) provides the window tree;
+;;     the minibuffer window is a *dedicated* leaf created on demand.
+;;   - `emacs-keymap'  (T136 SHIPPED) provides the keymap chain and
+;;     the read-event plug-in (`emacs-keymap--read-event-fn').
+;;
+;; API surface (~18 public APIs across 5 categories):
+;;
+;;   A. core readers  (4 APIs)
+;;      read-from-minibuffer / read-string / read-no-blanks-input
+;;      read-key
+;;
+;;   B. typed readers  (5 APIs)
+;;      read-buffer / read-file-name / read-directory-name
+;;      read-passwd / read-number
+;;
+;;   C. confirmation  (2 APIs)
+;;      y-or-n-p / yes-or-no-p
+;;
+;;   D. completion  (5 APIs + 2 special vars)
+;;      completing-read / completing-read-default
+;;      try-completion / all-completions / test-completion
+;;      minibuffer-completion-table (var) /
+;;      minibuffer-completion-confirm (var)
+;;
+;;   E. minibuffer state / control  (8 APIs + 3 special vars)
+;;      minibufferp / active-minibuffer-window
+;;      minibuffer-window / minibuffer-prompt / minibuffer-contents
+;;      exit-minibuffer / abort-recursive-edit / minibuffer-message
+;;      minibuffer-prompt-end / minibuffer-prompt-width
+;;      minibuffer-history (var) / minibuffer-default (var) /
+;;      minibuffer-message-timeout (var)
+;;
+;; Plug-in pattern (= matches emacs-keymap T136):
+;;   `emacs-minibuffer--read-fn' is a defcustom of (PROMPT INITIAL DEFAULT
+;;   HIST KEYMAP READ) -> string.  When nil (default) the built-in line
+;;   reader is used; ERT can plug in a deterministic one.  In addition,
+;;   `emacs-minibuffer--y-or-n-fn' / `emacs-minibuffer--key-fn' allow
+;;   the confirmation and single-key readers to be steered the same way.
+;;
+;; Non-goals (deferred per task spec):
+;;   - completion framework (= MVP supports list/obarray/function tables
+;;     with try-completion, but no ido / helm / vertico)
+;;   - history full integration (= MVP is in-memory list per HIST symbol)
+;;   - real C-g abort interrupt path (= signal 'quit is what we use)
+;;   - resize-mini-windows / pixel-precise prompt rendering
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'nelisp-emacs-compat)
+(require 'emacs-buffer)
+(require 'emacs-window)
+(require 'emacs-keymap)
+
+;;; Errors
+
+(define-error 'emacs-minibuffer-error
+  "emacs-minibuffer error")
+(define-error 'emacs-minibuffer-no-input
+  "No input available for the minibuffer reader" 'emacs-minibuffer-error)
+(define-error 'emacs-minibuffer-bad-default
+  "DEFAULT must be a string, list of strings, or nil"
+  'emacs-minibuffer-error)
+
+;;; Customization / plug-in slots
+
+(defcustom emacs-minibuffer-prompt-properties nil
+  "PLIST of text properties applied to minibuffer prompts.
+MVP: stored verbatim, not actually rendered.  Phase 9c/redisplay will
+honour them.  Default nil keeps the inserted prompt plain text."
+  :type '(plist :key-type symbol :value-type sexp)
+  :group 'emacs-minibuffer)
+
+(defcustom emacs-minibuffer-default-history-symbol 'emacs-minibuffer-history
+  "Symbol used as the default history list when the caller passes no HIST."
+  :type 'symbol
+  :group 'emacs-minibuffer)
+
+(defcustom emacs-minibuffer-message-timeout 2
+  "Seconds the `minibuffer-message' overlay would persist (informational only)."
+  :type 'number
+  :group 'emacs-minibuffer)
+
+(defcustom emacs-minibuffer-completion-ignore-case nil
+  "If non-nil, completion matching is case-insensitive.
+Mirrors host Emacs `completion-ignore-case'.  Honoured by
+`emacs-minibuffer-try-completion', `emacs-minibuffer-all-completions',
+`emacs-minibuffer-test-completion', and the shared internal helpers."
+  :type 'boolean
+  :group 'emacs-minibuffer)
+
+(defvar emacs-minibuffer--read-fn nil
+  "Function used to read a line from the minibuffer.
+Signature: (PROMPT INITIAL DEFAULT HIST KEYMAP READ) -> STRING.
+nil = use the built-in line reader (drains
+`emacs-minibuffer--input-queue').  ERT plugs in deterministic fns.")
+
+(defvar emacs-minibuffer--key-fn nil
+  "Function used by `emacs-minibuffer-read-key'.
+Signature: (PROMPT) -> EVENT (= integer or symbol).  nil = use the
+built-in reader (drains `emacs-minibuffer--input-queue').")
+
+(defvar emacs-minibuffer--y-or-n-fn nil
+  "Function used by `emacs-minibuffer-y-or-n-p' / `yes-or-no-p'.
+Signature: (PROMPT) -> BOOLEAN.  nil = the built-in reader matches
+\"y\" / \"yes\" against the queue.")
+
+;;; Module state
+
+(defvar emacs-minibuffer--depth 0
+  "Current nesting depth (= 0 outside any minibuffer read).")
+
+(defvar emacs-minibuffer--buffers nil
+  "Stack of `nelisp-ec-buffer' objects, one per active read.
+The CAR is the topmost (= currently active) minibuffer buffer.")
+
+(defvar emacs-minibuffer--prompts nil
+  "Stack of prompt strings (PARALLEL to `emacs-minibuffer--buffers').")
+
+(defvar emacs-minibuffer--prompt-ends nil
+  "Stack of prompt-end positions (PARALLEL stacks).
+Each value is the buffer position immediately after the prompt text.")
+
+(defvar emacs-minibuffer--window nil
+  "Dedicated minibuffer leaf window, allocated lazily on first read.")
+
+(defvar emacs-minibuffer--saved-window nil
+  "Window that was selected when the read started (restored on exit).")
+
+(defvar emacs-minibuffer--input-queue nil
+  "FIFO of pending lines / events used by the built-in reader.
+Each element is either a string (= a complete input line) or one of the
+symbols :abort / :exit consumed by the typed-reader entry points.
+ERT can prefill this list with `emacs-minibuffer-feed-input'.")
+
+(defvar emacs-minibuffer-history nil
+  "Default history list (= what `emacs-minibuffer-history-symbol' resolves to).")
+
+(defvar emacs-minibuffer-default nil
+  "Most recent DEFAULT value passed to a reader.  Diagnostic only.")
+
+(defvar minibuffer-completion-table nil
+  "Completion table for the active read, or nil.
+Set by `emacs-minibuffer-completing-read', restored on exit.")
+
+(defvar minibuffer-completion-confirm nil
+  "When non-nil, `emacs-minibuffer-completing-read' insists on a hit.")
+
+;;; GUI backend state
+
+(defvar emacs-minibuffer-gui-backend nil
+  "PLIST of GUI minibuffer backend functions.
+Recognized keys are `:begin-read', `:set-initial-input', `:commit-read',
+`:complete', `:purpose', `:prompt', `:key', `:initial-input',
+`:mode-keymap-source', and `:keymap-source'.  The backend reads the
+public `emacs-minibuffer-gui-*' state variables below.")
+
+(defconst emacs-minibuffer-gui-standard-backend-keys
+  '(:begin-read :set-initial-input :commit-read :complete
+    :buffer-candidates :project-buffer-candidates :emoji-candidates
+    :extended-command-candidates :key-candidates
+    :key :purpose :prompt :initial-input
+    :mode-keymap-source :keymap-source
+    :set-text :set-cursor :finish-read
+    :start-followup :followup-prefill-text
+    :set-replace-from :replace-from :clear-replace-from
+    :execute-command-spec :execute-replace-command
+    :save-undo-if-needed :refresh-candidates
+    :set-effective-command :set-status
+    :delete-backward-char :insert-text
+    :clear-quit-state :handle-query-replace-key)
+  "Canonical GUI minibuffer backend callback keys.
+Concrete GUI bridges can build backend plists through
+`emacs-minibuffer-gui-standard-backend' so callback names remain owned by the
+minibuffer layer while storage stays transport-specific.")
+
+(defvar emacs-minibuffer-gui-purpose ""
+  "GUI minibuffer purpose string, usually the command name.")
+
+(defvar emacs-minibuffer-gui-prompt ""
+  "Prompt for the active GUI minibuffer read.")
+
+(defvar emacs-minibuffer-gui-history-symbol ""
+  "History symbol name selected for the active GUI minibuffer read.")
+
+(defvar emacs-minibuffer-gui-completion-table ""
+  "Newline-separated completion candidates for the GUI backend.")
+
+(defvar emacs-minibuffer-gui-collection nil
+  "Raw completion collection for the active GUI minibuffer read.")
+
+(defvar emacs-minibuffer-gui-initial-input ""
+  "Initial input string for the active GUI minibuffer read.")
+
+(defvar emacs-minibuffer-gui-require-match nil
+  "Non-nil when the active GUI completing-read requires a candidate match.")
+
+;;; Internal helpers
+
+(defun emacs-minibuffer--ensure-window ()
+  "Ensure the dedicated minibuffer window exists.
+Phase 1 — we just stash a leaf created via `emacs-window-split-window'
+on the implicit root.  When the host environment is not running with
+`emacs-window' tree initialized this returns the symbol :stub which
+satisfies `windowp'-checks via `emacs-minibuffer-active-minibuffer-window'."
+  (unless emacs-minibuffer--window
+    (setq emacs-minibuffer--window
+          (condition-case _err
+              (let* ((root (emacs-window-selected-window))
+                     (mini (emacs-window-split-window root 1 'below)))
+                ;; Mark with a parameter so `minibufferp' on its buffer works.
+                (emacs-window-set-window-parameter mini 'minibuffer t)
+                mini)
+            (error :stub))))
+  emacs-minibuffer--window)
+
+(defun emacs-minibuffer--allocate-buffer ()
+  "Create + register a fresh minibuffer buffer (= nelisp-ec-buffer)."
+  (let* ((depth (1+ emacs-minibuffer--depth))
+         (name  (format " *Minibuf-%d*" depth))
+         (buf   (nelisp-ec-generate-new-buffer name)))
+    buf))
+
+(defun emacs-minibuffer--push (buf prompt prompt-end)
+  (push buf        emacs-minibuffer--buffers)
+  (push prompt     emacs-minibuffer--prompts)
+  (push prompt-end emacs-minibuffer--prompt-ends)
+  (cl-incf emacs-minibuffer--depth))
+
+(defun emacs-minibuffer--pop ()
+  "Drop the topmost frame.  Returns the buffer that was popped."
+  (let ((buf (pop emacs-minibuffer--buffers)))
+    (pop emacs-minibuffer--prompts)
+    (pop emacs-minibuffer--prompt-ends)
+    (cl-decf emacs-minibuffer--depth)
+    (when buf
+      (ignore-errors (nelisp-ec-kill-buffer buf)))
+    buf))
+
+(defun emacs-minibuffer--insert-prompt (buf prompt)
+  "Insert PROMPT into BUF, return the prompt-end position."
+  (nelisp-ec-with-current-buffer buf
+    (nelisp-ec-insert prompt)
+    ;; If prompt-properties non-nil, attach them via emacs-buffer.
+    (when emacs-minibuffer-prompt-properties
+      (let ((plist emacs-minibuffer-prompt-properties))
+        (while plist
+          (emacs-buffer-put-text-property
+           1 (1+ (length prompt)) (car plist) (cadr plist) buf)
+          (setq plist (cddr plist)))))
+    (nelisp-ec-point)))
+
+(defun emacs-minibuffer--insert-initial (buf initial)
+  "Insert INITIAL (string or (STRING . POS) cons) into BUF."
+  (when initial
+    (let ((s (cond
+              ((stringp initial) initial)
+              ((and (consp initial) (stringp (car initial))) (car initial))
+              (t (signal 'emacs-minibuffer-error (list initial))))))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert s)))))
+
+(defun emacs-minibuffer--current-buffer ()
+  "Return the topmost active minibuffer buffer, or nil."
+  (car emacs-minibuffer--buffers))
+
+(defun emacs-minibuffer--current-prompt-end ()
+  "Return the prompt-end of the topmost active minibuffer, or nil."
+  (car emacs-minibuffer--prompt-ends))
+
+(defun emacs-minibuffer--default-as-string (default)
+  "Normalize DEFAULT into a single string for prompt-display purposes.
+DEFAULT may be nil, a string, or a list of strings — the first element
+of a list is what Emacs prints in the prompt."
+  (cond
+   ((null default) nil)
+   ((stringp default) default)
+   ((and (listp default) (cl-every #'stringp default)) (car default))
+   (t (signal 'emacs-minibuffer-bad-default (list default)))))
+
+(defun emacs-minibuffer--push-history (hist value)
+  "Push VALUE onto the history list represented by HIST.
+HIST is a symbol or (SYMBOL . OFFSET) cons; we treat the offset as
+informational.  Empty VALUE strings are NOT added (= matches Emacs)."
+  (let ((sym (cond
+              ((null hist) emacs-minibuffer-default-history-symbol)
+              ((symbolp hist) hist)
+              ((and (consp hist) (symbolp (car hist))) (car hist))
+              (t emacs-minibuffer-default-history-symbol))))
+    (when (and (stringp value) (not (string-empty-p value)))
+      (unless (boundp sym) (set sym nil))
+      (set sym (cons value (symbol-value sym))))))
+
+(defun emacs-minibuffer--read-line-default
+    (prompt initial _default _hist _keymap _read)
+  "Built-in line reader — pops one entry from the input queue.
+Returns the line as a string.  Accepts optional `:abort' / `:exit'
+sentinels for control-flow tests."
+  (ignore prompt initial)
+  (when (null emacs-minibuffer--input-queue)
+    (signal 'emacs-minibuffer-no-input (list prompt)))
+  (let ((next (pop emacs-minibuffer--input-queue)))
+    (cond
+     ((eq next :abort) (signal 'quit nil))
+     ((eq next :exit)  "")
+     ((stringp next)   next)
+     (t (signal 'emacs-minibuffer-error (list "unrecognized input" next))))))
+
+(defun emacs-minibuffer--read-line (prompt initial default hist keymap read)
+  (let ((fn (or emacs-minibuffer--read-fn
+                #'emacs-minibuffer--read-line-default)))
+    (funcall fn prompt initial default hist keymap read)))
+
+(defun emacs-minibuffer--with-frame (prompt initial body)
+  "Run BODY (a thunk) inside a fresh minibuffer frame.
+Pushes a new buffer + prompt + prompt-end stack entry, ensures the
+window exists, calls the thunk, and pops the frame on normal *or*
+abnormal exit.  Returns the BODY's value."
+  (emacs-minibuffer--ensure-window)
+  (let* ((buf       (emacs-minibuffer--allocate-buffer))
+         (prompt-end (emacs-minibuffer--insert-prompt buf prompt)))
+    (emacs-minibuffer--insert-initial buf initial)
+    (emacs-minibuffer--push buf prompt prompt-end)
+    (unwind-protect
+        (funcall body)
+      (emacs-minibuffer--pop))))
+
+;;; GUI backend helpers
+
+;;;###autoload
+(defun emacs-minibuffer-gui-register-backend (&rest backend)
+  "Register BACKEND as the GUI minibuffer adapter.
+BACKEND is a plist.  Passing nil clears the adapter."
+  (setq emacs-minibuffer-gui-backend backend))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-standard-backend (&rest callbacks)
+  "Return a normalized GUI minibuffer backend plist from CALLBACKS.
+CALLBACKS is a plist keyed by `emacs-minibuffer-gui-standard-backend-keys'.
+Unknown keys signal `wrong-type-argument'.  Nil callback values are omitted so
+bridges can share one call shape while leaving optional hooks absent."
+  (let ((result nil)
+        key value)
+    (while callbacks
+      (setq key (pop callbacks))
+      (setq value (pop callbacks))
+      (unless (memq key emacs-minibuffer-gui-standard-backend-keys)
+        (signal 'wrong-type-argument
+                (list 'emacs-minibuffer-gui-standard-backend-key key)))
+      (when value
+        (setq result (append result (list key value)))))
+    result))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-register-standard-backend (&rest callbacks)
+  "Register CALLBACKS as a normalized GUI minibuffer backend.
+This is the public installer for concrete GUI/minibuffer bridge adapters."
+  (apply #'emacs-minibuffer-gui-register-backend
+         (apply #'emacs-minibuffer-gui-standard-backend callbacks)))
+
+(defun emacs-minibuffer-gui--backend-call (key &rest args)
+  "Call GUI backend function KEY with ARGS, if registered."
+  (let ((fn (and emacs-minibuffer-gui-backend
+                 (plist-get emacs-minibuffer-gui-backend key))))
+    (when fn
+      (apply fn args))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-backend-call (key &rest args)
+  "Call registered GUI minibuffer backend callback KEY with ARGS.
+Return nil when no callback is registered for KEY."
+  (apply #'emacs-minibuffer-gui--backend-call key args))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-refresh-context-from-backend ()
+  "Refresh public GUI minibuffer context from the registered backend.
+The backend remains the owner of bridge-local mutable state; the
+minibuffer runtime owns the policy that consumes the refreshed values."
+  (let ((purpose (emacs-minibuffer-gui--backend-call :purpose))
+        (prompt (emacs-minibuffer-gui--backend-call :prompt))
+        (initial-input (emacs-minibuffer-gui--backend-call
+                        :initial-input)))
+    (when purpose
+      (setq emacs-minibuffer-gui-purpose purpose))
+    (when prompt
+      (setq emacs-minibuffer-gui-prompt prompt))
+    (when initial-input
+      (setq emacs-minibuffer-gui-initial-input initial-input)))
+  t)
+
+(defun emacs-minibuffer-gui--initial-string (initial)
+  "Normalize INITIAL into a string for GUI minibuffer display."
+  (cond
+   ((null initial) "")
+   ((stringp initial) initial)
+   ((and (consp initial) (stringp (car initial))) (car initial))
+   (t "")))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-history-symbol-for-purpose (&optional purpose)
+  "Return the GUI history symbol name for PURPOSE.
+When PURPOSE is nil, use `emacs-minibuffer-gui-purpose'.  The result is
+also stored in `emacs-minibuffer-gui-history-symbol'."
+  (let ((purpose (or purpose emacs-minibuffer-gui-purpose)))
+    (setq emacs-minibuffer-gui-history-symbol
+          (cond
+           ((member purpose
+                    '("execute-extended-command"
+                      "execute-extended-command-for-buffer"))
+            "extended-command-history")
+           ((equal purpose "eval-expression")
+            "read-expression-history")
+           ((member purpose
+                    '("find-file" "find-file-other-window"
+                      "find-file-other-frame" "find-file-other-tab"
+                      "project-find-file" "project-find-dir"
+                      "find-file-read-only"
+                      "find-file-read-only-other-window"
+                      "find-file-read-only-other-frame"
+                      "find-file-read-only-other-tab"
+                      "find-alternate-file" "list-directory"
+                      "dired" "dired-other-window" "dired-other-frame"
+                      "dired-other-tab" "insert-file" "write-file"))
+            "file-name-history")
+           ((member purpose
+                    '("switch-to-buffer" "rename-buffer" "insert-buffer"
+                      "switch-to-buffer-other-window"
+                      "switch-to-buffer-other-frame"
+                      "switch-to-buffer-other-tab"
+                      "project-switch-to-buffer" "display-buffer"
+                      "display-buffer-other-frame" "2C-associate-buffer"
+                      "kill-buffer"))
+            "buffer-name-history")
+           ((member purpose
+                    '("shell-command" "project-shell-command"
+                      "project-async-shell-command"))
+            "shell-command-history")
+           ((equal purpose "project-compile")
+            "compile-history")
+           ((member purpose
+                    '("project-find-regexp"
+                      "project-or-external-find-regexp"))
+            "grep-history")
+           ((member purpose
+                    '("project-query-replace-regexp" "highlight-regexp"
+                      "highlight-lines-matching-regexp"
+                      "unhighlight-regexp"))
+            "regexp-history")
+           ((member purpose
+                    '("emoji-insert" "emoji-search" "emoji-describe"))
+            "emoji-history")
+           ((equal purpose "highlight-phrase")
+            "search-ring")
+           ((member purpose
+                    '("set-input-method" "activate-transient-input-method"))
+            "input-method-history")
+           ((equal purpose "set-language-environment")
+            "language-environment-history")
+           ((member purpose
+                    '("set-file-name-coding-system"
+                      "set-next-selection-coding-system"
+                      "universal-coding-system-argument"
+                      "set-buffer-file-coding-system"
+                      "set-keyboard-coding-system"
+                      "set-buffer-process-coding-system"
+                      "revert-buffer-with-coding-system"
+                      "set-terminal-coding-system"
+                      "set-selection-coding-system"))
+            "coding-system-history")
+           (t "minibuffer-history")))))
+
+(defconst emacs-minibuffer-gui-read-purpose-names
+  '("find-file"
+    "find-file-other-window"
+    "find-file-other-frame"
+    "find-file-other-tab"
+    "project-find-file"
+    "project-find-dir"
+    "write-file"
+    "find-alternate-file"
+    "find-file-read-only"
+    "find-file-read-only-other-window"
+    "find-file-read-only-other-frame"
+    "find-file-read-only-other-tab"
+    "list-directory"
+    "dired"
+    "dired-other-window"
+    "dired-other-frame"
+    "dired-other-tab"
+    "insert-file"
+    "insert-buffer"
+    "point-to-register"
+    "jump-to-register"
+    "frameset-to-register"
+    "window-configuration-to-register"
+    "copy-to-register"
+    "insert-register"
+    "number-to-register"
+    "increment-register"
+    "add-global-abbrev"
+    "add-mode-abbrev"
+    "inverse-add-global-abbrev"
+    "inverse-add-mode-abbrev"
+    "2C-associate-buffer"
+    "bookmark-set"
+    "bookmark-set-no-overwrite"
+    "bookmark-jump"
+    "info-display-manual"
+    "Info-goto-emacs-command-node"
+    "Info-goto-emacs-key-command-node"
+    "info-lookup-symbol"
+    "describe-package"
+    "shell-command"
+    "project-shell-command"
+    "project-async-shell-command"
+    "project-compile"
+    "project-find-regexp"
+    "project-or-external-find-regexp"
+    "eval-expression"
+    "insert-char"
+    "emoji-describe"
+    "emoji-insert"
+    "emoji-search"
+    "highlight-regexp"
+    "highlight-phrase"
+    "highlight-lines-matching-regexp"
+    "unhighlight-regexp"
+    "activate-transient-input-method"
+    "set-input-method"
+    "set-file-name-coding-system"
+    "set-next-selection-coding-system"
+    "universal-coding-system-argument"
+    "set-buffer-file-coding-system"
+    "set-keyboard-coding-system"
+    "set-language-environment"
+    "set-buffer-process-coding-system"
+    "revert-buffer-with-coding-system"
+    "set-terminal-coding-system"
+    "set-selection-coding-system"
+    "xref-find-definitions"
+    "xref-find-references"
+    "xref-find-apropos"
+    "xref-find-definitions-other-window"
+    "xref-find-definitions-other-frame"
+    "copy-rectangle-to-register"
+    "string-rectangle"
+    "goto-line"
+    "goto-line-relative"
+    "goto-char"
+    "move-to-column"
+    "set-fill-column"
+    "rename-buffer"
+    "project-switch-to-buffer"
+    "zap-to-char"
+    "replace-string"
+    "replace-string-to"
+    "replace-regexp"
+    "replace-regexp-to"
+    "query-replace"
+    "query-replace-to"
+    "query-replace-regexp"
+    "query-replace-regexp-to"
+    "project-query-replace-regexp"
+    "project-query-replace-regexp-to")
+  "GUI minibuffer purposes that should use `read-from-minibuffer'.
+Purposes not in this list use `completing-read' so the GUI candidate
+list and require-match behavior are available.")
+
+;;;###autoload
+(defun emacs-minibuffer-gui-purpose-uses-read-p (&optional purpose)
+  "Return non-nil when GUI minibuffer PURPOSE should use raw read.
+When PURPOSE is nil, use `emacs-minibuffer-gui-purpose'."
+  (member (or purpose emacs-minibuffer-gui-purpose)
+          emacs-minibuffer-gui-read-purpose-names))
+
+(defun emacs-minibuffer-gui--split-keymap-rest (rest)
+  "Return (PURPOSE . PROMPT) from keymap REST.
+REST is the part after KEY<TAB> in a GUI minibuffer keymap line:
+PURPOSE<TAB>PROMPT.  Malformed REST returns nil."
+  (let ((rest (or rest ""))
+        (tab 0))
+    (while (and (< tab (length rest))
+                (not (= (aref rest tab) 9)))
+      (setq tab (+ tab 1)))
+    (when (< tab (length rest))
+      (cons (substring rest 0 tab)
+            (substring rest (+ tab 1))))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-keymap-entry (source key)
+  "Return (PURPOSE . PROMPT) for KEY in GUI minibuffer keymap SOURCE.
+SOURCE is a newline-separated KEY<TAB>PURPOSE<TAB>PROMPT table.
+Return nil when KEY is not present or the matching line is malformed."
+  (let ((source (or source ""))
+        (key (or key ""))
+        (rest ""))
+    (if (fboundp 'str-kv-line)
+        (progn
+          (setq rest (str-kv-line source key))
+          (if (equal rest "")
+              nil
+            (emacs-minibuffer-gui--split-keymap-rest rest)))
+      (let ((index 0)
+            (start 0)
+            (found nil))
+        (while (and (<= index (length source)) (not found))
+          (if (or (= index (length source))
+                  (= (aref source index) 10))
+              (let ((line (substring source start index))
+                    (tab 0))
+                (while (and (< tab (length line))
+                            (not (= (aref line tab) 9)))
+                  (setq tab (+ tab 1)))
+                (when (and (< tab (length line))
+                           (equal key (substring line 0 tab)))
+                  (setq found
+                        (emacs-minibuffer-gui--split-keymap-rest
+                         (substring line (+ tab 1)))))
+                (setq start (+ index 1)))
+            nil)
+          (setq index (+ index 1)))
+        found))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-start-from-keymap (source key)
+  "Start the GUI minibuffer for KEY if SOURCE contains a keymap entry.
+SOURCE is a newline-separated KEY<TAB>PURPOSE<TAB>PROMPT table.
+Return non-nil when a minibuffer was started."
+  (let ((spec (emacs-minibuffer-gui-start-spec-from-keymaps
+               "" source key nil)))
+    (emacs-minibuffer-gui-start-spec spec)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-start-spec-from-keymaps
+    (mode-source global-source key &optional initial-input)
+  "Return normalized GUI minibuffer start spec for KEY.
+MODE-SOURCE is checked before GLOBAL-SOURCE.  Each source is a
+newline-separated KEY<TAB>PURPOSE<TAB>PROMPT table.  The returned plist
+contains `:purpose', `:prompt', `:key', `:initial-input', and `:source',
+or nil when KEY has no minibuffer binding."
+  (let ((mode-entry (emacs-minibuffer-gui-keymap-entry
+                     (or mode-source "") key))
+        (global-entry nil))
+    (if mode-entry
+        (list :purpose (car mode-entry)
+              :prompt (cdr mode-entry)
+              :key (or key "")
+              :initial-input (or initial-input "")
+              :source 'mode)
+      (setq global-entry
+            (emacs-minibuffer-gui-keymap-entry
+             (or global-source "") key))
+      (when global-entry
+        (list :purpose (car global-entry)
+              :prompt (cdr global-entry)
+              :key (or key "")
+              :initial-input (or initial-input "")
+              :source 'global)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-start-spec (spec)
+  "Start a GUI minibuffer from normalized SPEC.
+SPEC is the plist returned by
+`emacs-minibuffer-gui-start-spec-from-keymaps'.  When SPEC contains a
+non-empty `:initial-input', install it, move the cursor to the end, and
+finish the read through the backend.  Return non-nil when SPEC was
+started."
+  (when spec
+    (emacs-minibuffer-gui-start-purpose-read
+     (plist-get spec :purpose)
+     (plist-get spec :prompt))
+    (let ((initial-input (plist-get spec :initial-input)))
+      (when (and initial-input
+                 (not (equal initial-input "")))
+        (emacs-minibuffer-gui--backend-call :set-text initial-input)
+        (emacs-minibuffer-gui--backend-call
+         :set-cursor (length initial-input))
+        (emacs-minibuffer-gui--backend-call :finish-read)))
+    t))
+
+(defconst emacs-minibuffer-gui-extended-command-followup-alist
+  '(("goto-line" . ("goto-line" . "Goto line: "))
+    ("goto-line-relative" . ("goto-line-relative" . "Goto line: "))
+    ("goto-char" . ("goto-char" . "Goto char: "))
+    ("move-to-column" . ("move-to-column" . "Move to column: "))
+    ("set-fill-column" . ("set-fill-column" . "Set fill column: "))
+    ("replace-string" . ("replace-string" . "Replace string: "))
+    ("query-replace" . ("query-replace" . "Query replace: "))
+    ("replace-regexp" . ("replace-regexp" . "Replace regexp: "))
+    ("query-replace-regexp" . ("query-replace-regexp" . "Query replace regexp: "))
+    ("project-query-replace-regexp"
+     . ("project-query-replace-regexp" . "Project query replace regexp: ")))
+  "M-x commands that start a second GUI minibuffer prompt.
+The cdr of each entry is (PURPOSE . PROMPT).")
+
+;;;###autoload
+(defun emacs-minibuffer-gui-extended-command-followup (command-name)
+  "Return (PURPOSE . PROMPT) follow-up minibuffer spec for COMMAND-NAME.
+Return nil when COMMAND-NAME can be executed directly."
+  (cdr (assoc command-name
+              emacs-minibuffer-gui-extended-command-followup-alist)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-extended-command-commit-spec (command-name)
+  "Return command commit spec for direct GUI M-x COMMAND-NAME.
+The result is (COMMAND . (EFFECTIVE-COMMAND . ARG)).  Return nil when
+COMMAND-NAME starts a follow-up minibuffer prompt."
+  (if (emacs-minibuffer-gui-extended-command-followup command-name)
+      nil
+    (cons "execute-extended-command"
+          (cons "execute-extended-command" command-name))))
+
+(defconst emacs-minibuffer-gui-replace-followup-alist
+  '(("replace-string" . ("replace-string-to" . "Replace string %s with: "))
+    ("replace-regexp" . ("replace-regexp-to" . "Replace regexp %s with: "))
+    ("query-replace" . ("query-replace-to" . "Query replace %s with: "))
+    ("query-replace-regexp" . ("query-replace-regexp-to" . "Query replace regexp %s with: "))
+    ("project-query-replace-regexp"
+     . ("project-query-replace-regexp-to" . "Project query replace regexp %s with: ")))
+  "Replacement-style GUI minibuffer purposes that need a second prompt.
+The cdr of each entry is (NEXT-PURPOSE . PROMPT-FORMAT).")
+
+;;;###autoload
+(defun emacs-minibuffer-gui-replace-followup (purpose from)
+  "Return (NEXT-PURPOSE . PROMPT) for replacement PURPOSE and FROM.
+Return nil when PURPOSE is not a replacement first-stage purpose."
+  (let ((spec (cdr (assoc purpose
+                          emacs-minibuffer-gui-replace-followup-alist))))
+    (when spec
+      (cons (car spec) (format (cdr spec) from)))))
+
+(defconst emacs-minibuffer-gui-replace-commit-command-alist
+  '(("replace-string-to" . "replace-string")
+    ("replace-regexp-to" . "replace-regexp")
+    ("query-replace-to" . "query-replace")
+    ("query-replace-regexp-to" . "query-replace-regexp")
+    ("project-query-replace-regexp-to" . "project-query-replace-regexp"))
+  "Map replacement second-stage purposes to executable commands.")
+
+;;;###autoload
+(defun emacs-minibuffer-gui-replace-commit-command (purpose)
+  "Return executable command name for replacement second-stage PURPOSE.
+Return nil when PURPOSE is not a replacement commit purpose."
+  (cdr (assoc purpose
+              emacs-minibuffer-gui-replace-commit-command-alist)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-replace-from-store-state (text)
+  "Return state for storing first-stage replacement TEXT.
+The result plist uses `:replace-from' so frontend storage adapters can
+apply it without owning replacement prompt policy."
+  (list :replace-from (or text "")
+        :changed t))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-replace-from-clear-state ()
+  "Return state for clearing first-stage replacement text."
+  (list :replace-from ""
+        :changed t))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-command-commit-spec (purpose text)
+  "Return generic command commit spec for GUI minibuffer PURPOSE and TEXT.
+The result is (COMMAND . (EFFECTIVE-COMMAND . ARG)).  Bridge adapters
+own transport writes and command execution; this function owns the
+Emacs-facing mapping from a completed minibuffer purpose to command
+metadata."
+  (cons purpose (cons purpose text)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-finish-followup (purpose prompt)
+  "Start a GUI minibuffer follow-up for PURPOSE and PROMPT.
+When the backend supplies a prefilled follow-up argument, finish it
+immediately.  Return non-nil when a follow-up was started."
+  (emacs-minibuffer-gui--backend-call :start-followup purpose prompt)
+  (let ((prefill (or (emacs-minibuffer-gui--backend-call
+                      :followup-prefill-text)
+                     "")))
+    (when (not (equal prefill ""))
+      (emacs-minibuffer-gui--backend-call :set-text prefill)
+      (emacs-minibuffer-gui--backend-call :set-cursor (length prefill))
+      (emacs-minibuffer-gui-finish-read)))
+  t)
+
+;;;###autoload
+(defun emacs-minibuffer-gui--finish-followup (purpose prompt)
+  "Compatibility wrapper for `emacs-minibuffer-gui-finish-followup'."
+  (emacs-minibuffer-gui-finish-followup purpose prompt))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-execute-command-spec (spec &optional save-undo)
+  "Execute command SPEC through the GUI backend.
+SPEC is (COMMAND . (EFFECTIVE-COMMAND . ARG)).  SAVE-UNDO non-nil asks
+the backend to save undo state before execution."
+  (when spec
+    (when save-undo
+      (emacs-minibuffer-gui--backend-call :save-undo-if-needed))
+    (emacs-minibuffer-gui--backend-call
+     :execute-command-spec
+     (car spec)
+     (car (cdr spec))
+     (cdr (cdr spec)))
+    t))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--execute-command-spec (spec &optional save-undo)
+  "Compatibility wrapper for `emacs-minibuffer-gui-execute-command-spec'."
+  (emacs-minibuffer-gui-execute-command-spec spec save-undo))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-finish-read ()
+  "Commit the active GUI minibuffer and dispatch follow-up command policy.
+The runtime owns purpose-to-command sequencing; the backend owns
+transport mutation and actual command execution."
+  (let ((purpose (or (emacs-minibuffer-gui--backend-call :purpose)
+                     emacs-minibuffer-gui-purpose
+                     ""))
+        (text (emacs-minibuffer-gui-commit-read)))
+    (when (equal purpose "execute-extended-command-for-buffer")
+      (setq purpose "execute-extended-command"))
+    (let ((followup nil))
+      (when (equal purpose "execute-extended-command")
+        (setq followup
+              (emacs-minibuffer-gui-extended-command-followup text)))
+      (if followup
+          (progn
+            (emacs-minibuffer-gui-finish-followup
+             (car followup) (cdr followup))
+            (setq purpose ""))
+        nil))
+    (when (equal purpose "execute-extended-command")
+      (when (emacs-minibuffer-gui-execute-command-spec
+             (emacs-minibuffer-gui-extended-command-commit-spec text)
+             nil)
+        (setq purpose "")))
+    (let ((replace-followup nil)
+          (replace-command nil))
+      (setq replace-followup
+            (emacs-minibuffer-gui-replace-followup purpose text))
+      (if replace-followup
+          (progn
+            (emacs-minibuffer-gui--backend-call :set-replace-from text)
+            (emacs-minibuffer-gui-finish-followup
+             (car replace-followup) (cdr replace-followup))
+            (setq purpose ""))
+        (progn
+          (setq replace-command
+                (emacs-minibuffer-gui-replace-commit-command purpose))
+          (when replace-command
+            (emacs-minibuffer-gui--backend-call
+             :execute-replace-command
+             replace-command
+             (or (emacs-minibuffer-gui--backend-call :replace-from) "")
+             text)
+            (emacs-minibuffer-gui--backend-call :clear-replace-from)
+            (setq purpose "")))))
+    (when (and (not (equal purpose ""))
+               (not (equal purpose "execute-extended-command")))
+      (emacs-minibuffer-gui-execute-command-spec
+       (emacs-minibuffer-gui-command-commit-spec purpose text)
+       t))
+    nil))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-collection-lines (&optional collection)
+  "Return COLLECTION as newline-separated candidate names.
+nil means use `emacs-minibuffer-gui-collection'.  String collections are
+already in transport format and are returned unchanged."
+  (let ((collection (or collection emacs-minibuffer-gui-collection))
+        (out ""))
+    (cond
+     ((null collection) "")
+     ((stringp collection) collection)
+     ((listp collection)
+      (dolist (entry collection)
+        (let ((name (cond
+                     ((stringp entry) entry)
+                     ((and (consp entry) (stringp (car entry))) (car entry))
+                     ((symbolp entry) (symbol-name entry))
+                     (t nil))))
+          (when name
+            (setq out (concat out name "\n")))))
+      out)
+     (t
+      (let ((table (emacs-minibuffer--collection->list collection)))
+        (dolist (name table)
+          (setq out (concat out name "\n")))
+        out)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--collection-lines (&optional collection)
+  "Compatibility wrapper for `emacs-minibuffer-gui-collection-lines'."
+  (emacs-minibuffer-gui-collection-lines collection))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-candidate-source-kind (&optional purpose)
+  "Return the candidate source kind for GUI minibuffer PURPOSE.
+The bridge backend owns transport-specific stores; this function owns
+the Emacs-facing purpose-to-source policy."
+  (let ((purpose (or purpose emacs-minibuffer-gui-purpose)))
+    (cond
+     ((not (equal emacs-minibuffer-gui-completion-table ""))
+      'explicit)
+     ((member purpose
+              '("switch-to-buffer" "switch-to-buffer-other-window"
+                "switch-to-buffer-other-frame" "switch-to-buffer-other-tab"
+                "display-buffer" "display-buffer-other-frame"
+                "2C-associate-buffer" "rename-buffer" "insert-buffer"
+                "kill-buffer"))
+      'buffer-list)
+     ((equal purpose "project-switch-to-buffer")
+      'project-buffer-list)
+     ((member purpose
+              '("emoji-insert" "emoji-search" "emoji-describe"))
+      'emoji)
+     ((member purpose
+              '("execute-extended-command"
+                "execute-extended-command-for-buffer"))
+      'extended-command)
+     ((equal purpose "describe-function")
+      'describe-function)
+     ((equal purpose "describe-variable")
+      'describe-variable)
+     ((member purpose '("describe-key" "describe-key-briefly"))
+      'key)
+     (t nil))))
+
+(defun emacs-minibuffer-gui--default-describe-function-candidates ()
+  "Return minimal function candidates for GUI describe-function."
+  (concat "find-file\n"
+          "save-buffer\n"
+          "switch-to-buffer\n"
+          "rename-buffer\n"
+          "kill-buffer\n"
+          "goto-line\n"
+          "forward-char\n"
+          "backward-char\n"))
+
+(defun emacs-minibuffer-gui--default-describe-variable-candidates ()
+  "Return minimal variable candidates for GUI describe-variable."
+  (concat "buffer-file-name\n"
+          "buffer-read-only\n"
+          "point\n"
+          "mark\n"))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-filter-candidate-lines (source prefix)
+  "Return newline-separated candidate lines in SOURCE that start with PREFIX.
+SOURCE is a newline-separated transport string.  Empty lines are ignored."
+  (let ((source (or source ""))
+        (prefix (or prefix ""))
+        (index 0)
+        (start 0)
+        (out ""))
+    (if (fboundp 'str-filter-prefix-lines)
+        (str-filter-prefix-lines source prefix)
+      (progn
+        (while (<= index (length source))
+          (if (if (= index (length source))
+                  t
+                (= (aref source index) 10))
+              (let ((line (substring source start index)))
+                (if (if (not (equal line ""))
+                        (if (<= (length prefix) (length line))
+                            (equal (substring line 0 (length prefix)) prefix)
+                          nil)
+                      nil)
+                    (setq out (concat out line "\n"))
+                  nil)
+                (setq start (+ index 1)))
+            nil)
+          (setq index (+ index 1)))
+        out))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-candidates-for-purpose (&optional purpose)
+  "Return newline-separated GUI minibuffer candidates for PURPOSE.
+Backend callbacks are transport adapters.  Policy for selecting which
+callback to ask lives here."
+  (let ((kind (emacs-minibuffer-gui-candidate-source-kind purpose)))
+    (cond
+     ((eq kind 'explicit)
+      emacs-minibuffer-gui-completion-table)
+     ((eq kind 'buffer-list)
+      (or (emacs-minibuffer-gui--backend-call :buffer-candidates) ""))
+     ((eq kind 'project-buffer-list)
+      (or (emacs-minibuffer-gui--backend-call :project-buffer-candidates) ""))
+     ((eq kind 'emoji)
+      (or (emacs-minibuffer-gui--backend-call :emoji-candidates) ""))
+     ((eq kind 'extended-command)
+      (or (emacs-minibuffer-gui--backend-call :extended-command-candidates)
+          (and (fboundp 'emacs-command-loop-gui-extended-command-candidates)
+               (emacs-command-loop-gui-extended-command-candidates))
+          ""))
+     ((eq kind 'describe-function)
+      (or (emacs-minibuffer-gui--backend-call :describe-function-candidates)
+          (emacs-minibuffer-gui--default-describe-function-candidates)))
+     ((eq kind 'describe-variable)
+      (or (emacs-minibuffer-gui--backend-call :describe-variable-candidates)
+          (emacs-minibuffer-gui--default-describe-variable-candidates)))
+     ((eq kind 'key)
+      (or (emacs-minibuffer-gui--backend-call :key-candidates) ""))
+     (t ""))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-filtered-candidates-for-purpose
+    (&optional purpose prefix)
+  "Return GUI minibuffer candidates for PURPOSE filtered by PREFIX."
+  (emacs-minibuffer-gui-filter-candidate-lines
+   (emacs-minibuffer-gui-candidates-for-purpose purpose)
+   (or prefix "")))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-candidate-refresh-state (&optional purpose text)
+  "Return candidate refresh state for GUI minibuffer PURPOSE and TEXT.
+The result plist contains `:purpose' and `:candidates'.  Frontends own
+storage; this helper owns the shared purpose/text-to-candidates policy."
+  (let ((purpose (or purpose "")))
+    (list :purpose purpose
+          :candidates
+          (emacs-minibuffer-gui-filtered-candidates-for-purpose
+           purpose (or text "")))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-completion-candidates (completion-fn input)
+  "Return candidates from COMPLETION-FN for INPUT, or nil on errors.
+COMPLETION-FN is a frontend callback of one argument.  This helper keeps
+GUI frontends from duplicating the same defensive call pattern."
+  (when completion-fn
+    (condition-case _err
+        (funcall completion-fn (or input ""))
+      (error nil))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-longest-common-prefix (strings)
+  "Return the longest common prefix for STRINGS.
+An empty list returns an empty string; a single entry returns that entry."
+  (cond
+   ((null strings) "")
+   ((null (cdr strings)) (car strings))
+   (t (emacs-minibuffer--common-prefix strings))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-candidate-suffix
+    (completion-enabled-p candidates)
+  "Return echo-area suffix text for minibuffer CANDIDATES.
+COMPLETION-ENABLED-P controls whether a suffix should be shown at all."
+  (cond
+   ((not completion-enabled-p) "")
+   ((null candidates) "  {no match}")
+   ((null (cdr candidates)) (format "  {%s}" (car candidates)))
+   (t
+    (format "  {%s}" (mapconcat #'identity candidates " ")))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-tab-completion-plan
+    (input candidates completion-fn)
+  "Return a frontend-neutral Tab completion plan.
+INPUT is the current minibuffer text, CANDIDATES are the currently cached
+matches, and COMPLETION-FN recomputes candidates after input changes.
+The result plist contains `:input', `:candidates', and optionally
+`:message'."
+  (let ((input (or input "")))
+    (cond
+     ((null candidates)
+      (list :input input
+            :candidates nil
+            :message "No match"))
+     ((null (cdr candidates))
+      (let* ((next-input (car candidates))
+             (next-candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input)))
+        (list :input next-input
+              :candidates next-candidates)))
+     (t
+      (let ((lcp (emacs-minibuffer-gui-longest-common-prefix candidates)))
+        (cond
+         ((and (stringp lcp)
+               (> (length lcp) (length input)))
+          (list :input lcp
+                :candidates
+                (emacs-minibuffer-gui-completion-candidates
+                 completion-fn lcp)))
+         (t
+          (list :input input
+                :candidates candidates
+                :message (format "%d candidates"
+                                 (length candidates))))))))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-key-plan
+    (event input candidates completion-fn)
+  "Return a frontend-neutral GUI minibuffer key plan.
+EVENT is one normalized key event.  INPUT, CANDIDATES, and COMPLETION-FN
+describe the current frontend minibuffer state.  The result plist always
+contains `:action'."
+  (let ((input (or input "")))
+    (cond
+     ((eq event 'return)
+      (list :action 'confirm
+            :input input))
+     ((or (eq event 7) (eq event 27))
+      (list :action 'cancel
+            :message "Quit"))
+     ((eq event 'tab)
+      (if completion-fn
+          (let ((plan (emacs-minibuffer-gui-tab-completion-plan
+                       input candidates completion-fn)))
+            (append (list :action 'update) plan))
+        (list :action 'ignore
+              :input input
+              :candidates candidates)))
+     ((eq event 'backspace)
+      (let ((next-input (if (> (length input) 0)
+                            (substring input 0 (1- (length input)))
+                          input)))
+        (list :action 'update
+              :input next-input
+              :candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input))))
+     ((and (integerp event) (>= event 32) (< event 127))
+      (let ((next-input (concat input (char-to-string event))))
+        (list :action 'update
+              :input next-input
+              :candidates
+              (emacs-minibuffer-gui-completion-candidates
+               completion-fn next-input))))
+     (t
+      (list :action 'ignore
+            :input input
+            :candidates candidates)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-text-delete-backward-state (text cursor)
+  "Return TEXT/CURSOR state after deleting one character backward.
+The result plist contains `:text', `:cursor', and `:changed'."
+  (let ((text (or text ""))
+        (cursor (max 0 (or cursor 0))))
+    (if (> cursor 0)
+        (list :text (concat (substring text 0 (1- cursor))
+                            (substring text cursor))
+              :cursor (1- cursor)
+              :changed t)
+      (list :text text :cursor cursor :changed nil))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-text-insert-state (text cursor insert)
+  "Return TEXT/CURSOR state after inserting INSERT at CURSOR.
+The result plist contains `:text', `:cursor', and `:changed'."
+  (let* ((text (or text ""))
+         (cursor (max 0 (min (or cursor 0) (length text))))
+         (insert (or insert "")))
+    (list :text (concat (substring text 0 cursor)
+                        insert
+                        (substring text cursor))
+          :cursor (+ cursor (length insert))
+          :changed (> (length insert) 0))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-complete-first-line-state (candidates)
+  "Return minibuffer text/cursor state for the first CANDIDATES line.
+CANDIDATES is a newline-separated string.  Return nil when there is no
+non-empty first candidate."
+  (let ((candidates (or candidates ""))
+        (index 0))
+    (while (and (< index (length candidates))
+                (not (= (aref candidates index) 10)))
+      (setq index (1+ index)))
+    (when (> index 0)
+      (let ((text (substring candidates 0 index)))
+        (list :text text
+              :cursor (length text)
+              :changed t)))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-begin-state (purpose prompt)
+  "Return initial state for a GUI minibuffer session.
+PURPOSE and PROMPT are frontend-neutral strings.  The result plist uses
+bridge-friendly field names so storage backends can apply it directly."
+  (list :purpose (or purpose "")
+        :prompt (or prompt "")
+        :active t
+        :text ""
+        :cursor 0
+        :candidates ""
+        :effective-command "minibuffer"
+        :status "minibuffer"))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-initial-input-state (initial-input)
+  "Return text/cursor state for non-empty INITIAL-INPUT, or nil."
+  (let ((input (or initial-input "")))
+    (when (not (equal input ""))
+      (list :text input
+            :cursor (length input)
+            :changed t))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-session-commit-state
+    (purpose text history history-symbol)
+  "Return commit/reset state for a GUI minibuffer session.
+PURPOSE, TEXT, HISTORY, and HISTORY-SYMBOL are strings.  Non-empty TEXT is
+appended to HISTORY under both PURPOSE and HISTORY-SYMBOL, matching the
+bridge history transport contract."
+  (let* ((purpose (or purpose ""))
+         (text (or text ""))
+         (history (or history ""))
+         (history-symbol (or history-symbol ""))
+         (next-history history))
+    (when (not (equal text ""))
+      (setq next-history
+            (concat next-history
+                    purpose "\t" text "\n"
+                    history-symbol "\t" text "\n")))
+    (list :committed-text text
+          :history next-history
+          :active nil
+          :prompt ""
+          :text ""
+          :cursor 0
+          :candidates ""
+          :require-match nil)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-enter-state
+    (prompt on-confirm &optional completion-fn)
+  "Return initial GUI minibuffer state for PROMPT and ON-CONFIRM.
+COMPLETION-FN, when non-nil, is called once with the empty input to seed
+the candidate cache."
+  (list :active t
+        :prompt prompt
+        :input ""
+        :on-confirm on-confirm
+        :completion-fn completion-fn
+        :candidates
+        (emacs-minibuffer-gui-completion-candidates completion-fn "")))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-exit-state ()
+  "Return cleared GUI minibuffer state."
+  (list :active nil
+        :prompt ""
+        :input ""
+        :on-confirm nil
+        :completion-fn nil
+        :candidates nil))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-begin-read ()
+  "Start a GUI minibuffer read using the registered backend."
+  (emacs-minibuffer-gui-history-symbol-for-purpose)
+  (emacs-minibuffer-gui--backend-call :begin-read))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-set-initial-input ()
+  "Ask the GUI backend to install `emacs-minibuffer-gui-initial-input'."
+  (emacs-minibuffer-gui--backend-call :set-initial-input))
+
+;;;###autoload
+(defun emacs-minibuffer-gui--set-initial-input ()
+  "Compatibility wrapper for `emacs-minibuffer-gui-set-initial-input'."
+  (emacs-minibuffer-gui-set-initial-input))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-commit-read ()
+  "Commit the active GUI minibuffer read through the registered backend."
+  (emacs-minibuffer-gui--backend-call :commit-read))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-complete ()
+  "Complete the active GUI minibuffer read through the registered backend."
+  (emacs-minibuffer-gui--backend-call :complete))
+
+(defconst emacs-minibuffer-gui-abort-key-names
+  '("C-g" "M-ESC ESC" "C-M-c" "C-]")
+  "GUI key names that abort or cancel the active minibuffer read.")
+
+;;;###autoload
+(defun emacs-minibuffer-gui-abort-key-p (&optional key)
+  "Return non-nil when KEY is a GUI minibuffer abort key."
+  (member (or key "") emacs-minibuffer-gui-abort-key-names))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-maybe-start-from-keymap
+    (source key &optional initial-input)
+  "Start a GUI minibuffer for KEY in SOURCE.
+When INITIAL-INPUT is non-empty, install it and immediately finish the
+read through the backend.  Return non-nil when a minibuffer was started."
+  (let ((started (emacs-minibuffer-gui-start-from-keymap source key)))
+    (when (and started
+               initial-input
+               (not (equal initial-input "")))
+      (emacs-minibuffer-gui--backend-call :set-text initial-input)
+      (emacs-minibuffer-gui--backend-call :set-cursor
+                                          (length initial-input))
+      (emacs-minibuffer-gui--backend-call :finish-read))
+    started))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-maybe-start-from-keymaps
+    (mode-source global-source key &optional initial-input)
+  "Start a GUI minibuffer for KEY from MODE-SOURCE or GLOBAL-SOURCE.
+Mode-local entries are checked first, then global entries.  When
+INITIAL-INPUT is non-empty, install it and immediately finish the read
+through the backend.  Return non-nil when a minibuffer was started."
+  (let ((spec (emacs-minibuffer-gui-start-spec-from-keymaps
+               mode-source global-source key initial-input)))
+    (emacs-minibuffer-gui-start-spec spec)))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-start-current-context ()
+  "Start a GUI minibuffer read using the backend's current context."
+  (emacs-minibuffer-gui-refresh-context-from-backend)
+  (emacs-minibuffer-gui-start-purpose-read
+   emacs-minibuffer-gui-purpose
+   emacs-minibuffer-gui-prompt))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-maybe-start-current-context ()
+  "Maybe start a GUI minibuffer from the backend's current key context."
+  (emacs-minibuffer-gui-refresh-context-from-backend)
+  (emacs-minibuffer-gui-maybe-start-from-keymaps
+   (or (emacs-minibuffer-gui--backend-call :mode-keymap-source) "")
+   (or (emacs-minibuffer-gui--backend-call :keymap-source) "")
+   (or (emacs-minibuffer-gui--backend-call :key) "")
+   emacs-minibuffer-gui-initial-input))
+
+(defun emacs-minibuffer-gui--mark-active ()
+  "Mark the active GUI minibuffer as the current bridge command."
+  (emacs-minibuffer-gui--backend-call :refresh-candidates)
+  (emacs-minibuffer-gui--backend-call :set-effective-command "minibuffer")
+  (emacs-minibuffer-gui--backend-call :set-status "minibuffer"))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-handle-key (&optional key purpose)
+  "Handle KEY for the active GUI minibuffer PURPOSE.
+The runtime owns key policy; the backend owns mutable bridge state."
+  (let ((key (or key
+                 (emacs-minibuffer-gui--backend-call :key)
+                 ""))
+        (purpose (or purpose
+                     (emacs-minibuffer-gui--backend-call :purpose)
+                     emacs-minibuffer-gui-purpose)))
+    (cond
+     ((equal purpose "query-replace-confirm")
+      (emacs-minibuffer-gui--backend-call :handle-query-replace-key))
+     ((emacs-minibuffer-gui-abort-key-p key)
+      (emacs-minibuffer-gui--backend-call :clear-quit-state)
+      (emacs-minibuffer-gui--backend-call :set-effective-command
+                                          "minibuffer")
+      (emacs-minibuffer-gui--backend-call :set-status "minibuffer"))
+     ((equal key "RET")
+      (emacs-minibuffer-gui--backend-call :finish-read))
+     ((equal key "DEL")
+      (emacs-minibuffer-gui--backend-call :delete-backward-char)
+      (emacs-minibuffer-gui--mark-active))
+     ((= (length key) 1)
+      (emacs-minibuffer-gui--backend-call :insert-text key)
+      (emacs-minibuffer-gui--mark-active))
+     ((equal key "TAB")
+      (emacs-minibuffer-gui-complete))
+     (t
+      (emacs-minibuffer-gui--backend-call :set-effective-command
+                                          "minibuffer")
+      (emacs-minibuffer-gui--backend-call :set-status "minibuffer")))))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-handle-key-current-context ()
+  "Handle the backend's current GUI minibuffer key context."
+  (emacs-minibuffer-gui-refresh-context-from-backend)
+  (emacs-minibuffer-gui-handle-key
+   (emacs-minibuffer-gui--backend-call :key)
+   emacs-minibuffer-gui-purpose))
+
+(defun emacs-minibuffer-gui-read-from-minibuffer
+    (prompt &optional initial _keymap _read _hist default _inherit-input-method)
+  "GUI backend implementation for `emacs-minibuffer-read-from-minibuffer'."
+  (setq emacs-minibuffer-default default
+        emacs-minibuffer-gui-prompt prompt
+        emacs-minibuffer-gui-initial-input
+        (emacs-minibuffer-gui--initial-string initial)
+        emacs-minibuffer-gui-collection nil
+        emacs-minibuffer-gui-completion-table ""
+        emacs-minibuffer-gui-require-match nil)
+  (let ((result (emacs-minibuffer-gui-begin-read)))
+    (emacs-minibuffer-gui-set-initial-input)
+    result))
+
+(defun emacs-minibuffer-gui-completing-read
+    (prompt collection &optional _predicate require-match initial-input
+            _hist def _inherit-input-method)
+  "GUI backend implementation for `emacs-minibuffer-completing-read'."
+  (setq emacs-minibuffer-default def
+        emacs-minibuffer-gui-prompt prompt
+        emacs-minibuffer-gui-collection collection
+        emacs-minibuffer-gui-completion-table
+        (emacs-minibuffer-gui-collection-lines collection)
+        emacs-minibuffer-gui-require-match (and require-match t)
+        emacs-minibuffer-gui-initial-input
+        (emacs-minibuffer-gui--initial-string initial-input))
+  (let ((result (emacs-minibuffer-gui-begin-read)))
+    (emacs-minibuffer-gui-set-initial-input)
+    result))
+
+;;;###autoload
+(defun emacs-minibuffer-gui-start-purpose-read (&optional purpose prompt)
+  "Start the GUI minibuffer for PURPOSE and PROMPT.
+PURPOSE defaults to `emacs-minibuffer-gui-purpose'.  PROMPT defaults to
+`emacs-minibuffer-gui-prompt'.  Runtime policy decides whether the read
+uses raw minibuffer input or completion candidates."
+  (let ((purpose (or purpose emacs-minibuffer-gui-purpose))
+        (prompt (or prompt emacs-minibuffer-gui-prompt)))
+    (setq emacs-minibuffer-gui-purpose purpose
+          emacs-minibuffer-gui-prompt prompt)
+    (if (emacs-minibuffer-gui-purpose-uses-read-p purpose)
+        (emacs-minibuffer-gui-read-from-minibuffer prompt)
+      (emacs-minibuffer-gui-completing-read prompt nil nil t))))
+
+;;; A. core readers
+
+;;;###autoload
+(defun emacs-minibuffer-read-from-minibuffer
+    (prompt &optional initial keymap read hist default _inherit-input-method)
+  "Read a string from the user.
+PROMPT is a string (mandatory).  INITIAL, if non-nil, is the initial
+content (string or (STRING . POS)).  KEYMAP, READ, HIST, DEFAULT have
+the same shape as the standard Emacs API; DEFAULT is normalized for
+display via `emacs-minibuffer--default-as-string'.
+
+If READ is non-nil, the resulting string is `read'-back into a Lisp
+object before returning (matches Emacs precedent)."
+  (unless (stringp prompt)
+    (signal 'wrong-type-argument (list 'stringp prompt)))
+  (if emacs-minibuffer-gui-backend
+      (emacs-minibuffer-gui-read-from-minibuffer
+       prompt initial keymap read hist default _inherit-input-method)
+    (let ((default-str (emacs-minibuffer--default-as-string default))
+          (saved-table minibuffer-completion-table)
+          (saved-confirm minibuffer-completion-confirm))
+      (setq emacs-minibuffer-default default)
+      (unwind-protect
+          (emacs-minibuffer--with-frame
+           prompt initial
+           (lambda ()
+             (let* ((line (emacs-minibuffer--read-line
+                           prompt initial default hist keymap read))
+                    (value (cond
+                            ((and (string-empty-p line) default-str)
+                             default-str)
+                            (t line))))
+               (emacs-minibuffer--push-history hist value)
+               (if read (read value) value))))
+        (setq minibuffer-completion-table saved-table
+              minibuffer-completion-confirm saved-confirm)))))
+
+;;;###autoload
+(defun emacs-minibuffer-read-string (prompt &optional initial hist default
+                                            _inherit-input-method)
+  "Convenience wrapper around `emacs-minibuffer-read-from-minibuffer'
+that always returns a string and never `read's it back."
+  (emacs-minibuffer-read-from-minibuffer
+   prompt initial nil nil hist default))
+
+;;;###autoload
+(defun emacs-minibuffer-read-no-blanks-input (prompt &optional initial
+                                                     _inherit-input-method)
+  "Read a string with no whitespace allowed.
+Whitespace is rejected by signalling `emacs-minibuffer-error'."
+  (let ((s (emacs-minibuffer-read-from-minibuffer prompt initial)))
+    (when (string-match-p "[ \t\n\r]" s)
+      (signal 'emacs-minibuffer-error
+              (list "Whitespace not allowed in input" s)))
+    s))
+
+;;;###autoload
+(defun emacs-minibuffer-read-key (&optional prompt)
+  "Read one event (= integer or symbol) and return it.
+Routes through `emacs-minibuffer--key-fn' if non-nil; otherwise drains
+`emacs-minibuffer--input-queue'.  Strings in the queue are interpreted
+as a sequence of characters and the first char is returned (with the
+remainder pushed back as one string)."
+  (let ((fn emacs-minibuffer--key-fn))
+    (cond
+     (fn (funcall fn prompt))
+     (t
+      (when (null emacs-minibuffer--input-queue)
+        (signal 'emacs-minibuffer-no-input (list prompt)))
+      (let ((next (pop emacs-minibuffer--input-queue)))
+        (cond
+         ((eq next :abort) (signal 'quit nil))
+         ((integerp next) next)
+         ((symbolp next)  next)
+         ((and (stringp next) (> (length next) 0))
+          (let ((ev (aref next 0))
+                (rest (substring next 1)))
+            (when (> (length rest) 0)
+              (push rest emacs-minibuffer--input-queue))
+            ev))
+         (t (signal 'emacs-minibuffer-error
+                    (list "unrecognized event" next)))))))))
+
+;;; B. typed readers
+
+;;;###autoload
+(defun emacs-minibuffer-read-buffer (prompt &optional default _require-match
+                                            _predicate)
+  "Read a buffer name.  DEFAULT, if non-nil, supplies the default value.
+This is a thin wrapper — completion is offered via `nelisp-ec--buffers'
+when `require-match' is non-nil (Phase 1 best-effort)."
+  (let* ((default-str
+          (cond
+           ((null default) nil)
+           ((stringp default) default)
+           ((nelisp-ec-buffer-p default) (nelisp-ec-buffer-name default))
+           (t (signal 'emacs-minibuffer-bad-default (list default)))))
+         (table (mapcar #'car nelisp-ec--buffers))
+         (minibuffer-completion-table table))
+    (let ((s (emacs-minibuffer-read-from-minibuffer
+              prompt nil nil nil nil default-str)))
+      s)))
+
+;;;###autoload
+(defun emacs-minibuffer-read-file-name (prompt &optional dir default
+                                               _mustmatch _initial _predicate)
+  "Read a file name with prompt PROMPT.
+DIR (string or nil) provides the implicit base directory; DEFAULT is
+the fallback if the user enters an empty string.  MUSTMATCH / PREDICATE
+are accepted for arity compatibility but are no-ops in Phase 1."
+  (let* ((default-str
+          (cond
+           ((null default) nil)
+           ((stringp default) default)
+           (t (signal 'emacs-minibuffer-bad-default (list default)))))
+         (s (emacs-minibuffer-read-from-minibuffer
+             prompt nil nil nil nil default-str)))
+    (if (and dir (not (string-match-p "\\`/" s)))
+        (concat (file-name-as-directory dir) s)
+      s)))
+
+;;;###autoload
+(defun emacs-minibuffer-read-directory-name (prompt &optional dir default
+                                                    _mustmatch _initial)
+  "Read a directory name.
+Same shape as `emacs-minibuffer-read-file-name', but the returned path
+always ends in a slash (= matches Emacs)."
+  (let ((s (emacs-minibuffer-read-file-name prompt dir default)))
+    (file-name-as-directory s)))
+
+;;;###autoload
+(defun emacs-minibuffer-read-passwd (prompt &optional confirm default)
+  "Read a password (= a string) without echoing.
+If CONFIRM is non-nil, the user is asked twice and the two entries
+must match; mismatch signals `emacs-minibuffer-error'.  DEFAULT, when
+non-nil, is returned for an empty input."
+  (let* ((s1 (emacs-minibuffer-read-from-minibuffer prompt nil nil nil nil
+                                                    default))
+         (s2 (and confirm
+                  (emacs-minibuffer-read-from-minibuffer
+                   (concat prompt " (confirm) ") nil nil nil nil default))))
+    (when (and confirm (not (string-equal s1 s2)))
+      (signal 'emacs-minibuffer-error (list "Passwords do not match")))
+    (cond
+     ((and (string-empty-p s1) default) default)
+     (t s1))))
+
+;;;###autoload
+(defun emacs-minibuffer-read-number (prompt &optional default _hist)
+  "Read a number from the minibuffer.
+DEFAULT, if non-nil, is returned for an empty input.  Non-numeric input
+re-prompts up to `emacs-minibuffer--read-number-max-tries' times and
+then signals `emacs-minibuffer-error'."
+  (let ((tries 5)
+        result)
+    (catch 'done
+      (while (> tries 0)
+        (let* ((default-str (cond
+                             ((numberp default) (number-to-string default))
+                             ((stringp default) default)
+                             (t nil)))
+               (s (emacs-minibuffer-read-from-minibuffer
+                   prompt nil nil nil nil default-str)))
+          (cond
+           ((and (string-empty-p s) (numberp default))
+            (setq result default) (throw 'done nil))
+           ((string-match-p "\\`-?[0-9]+\\(?:\\.[0-9]+\\)?\\'" s)
+            (setq result (string-to-number s)) (throw 'done nil))
+           (t
+            (cl-decf tries)))))
+      (signal 'emacs-minibuffer-error (list "Not a number" prompt)))
+    result))
+
+;;; C. confirmation
+
+(defun emacs-minibuffer--y-or-n-default (prompt)
+  "Built-in y-or-n-p reader: pops one entry from the input queue.
+Accepts string \"y\"/\"yes\" or symbol `y' / `yes' as t; \"n\"/\"no\" or
+symbol `n' / `no' as nil.  Anything else signals
+`emacs-minibuffer-error'."
+  (when (null emacs-minibuffer--input-queue)
+    (signal 'emacs-minibuffer-no-input (list prompt)))
+  (let* ((next (pop emacs-minibuffer--input-queue))
+         (canon (cond
+                 ((eq next :abort) (signal 'quit nil))
+                 ((symbolp next) (symbol-name next))
+                 ((stringp next) next)
+                 (t (signal 'emacs-minibuffer-error
+                            (list "unrecognized confirmation" next))))))
+    (cond
+     ((member (downcase canon) '("y" "yes")) t)
+     ((member (downcase canon) '("n" "no")) nil)
+     (t (signal 'emacs-minibuffer-error
+                (list "Bad confirmation answer" canon))))))
+
+;;;###autoload
+(defun emacs-minibuffer-y-or-n-p (prompt)
+  "Ask user a y-or-n question.  Return t or nil.
+Routes through `emacs-minibuffer--y-or-n-fn' if non-nil."
+  (let ((fn (or emacs-minibuffer--y-or-n-fn
+                #'emacs-minibuffer--y-or-n-default)))
+    (funcall fn prompt)))
+
+;;;###autoload
+(defun emacs-minibuffer-yes-or-no-p (prompt)
+  "Ask user a yes/no question (full word).
+Same plug-in as `emacs-minibuffer-y-or-n-p'; built-in reader requires
+\"yes\" or \"no\" verbatim (case-insensitive)."
+  (let ((fn emacs-minibuffer--y-or-n-fn))
+    (cond
+     (fn (funcall fn prompt))
+     (t
+      (when (null emacs-minibuffer--input-queue)
+        (signal 'emacs-minibuffer-no-input (list prompt)))
+      (let* ((next (pop emacs-minibuffer--input-queue))
+             (canon (cond
+                     ((eq next :abort) (signal 'quit nil))
+                     ((symbolp next) (symbol-name next))
+                     ((stringp next) next)
+                     (t (signal 'emacs-minibuffer-error
+                                (list "unrecognized confirmation" next))))))
+        (cond
+         ((string-equal (downcase canon) "yes") t)
+         ((string-equal (downcase canon) "no") nil)
+         (t (signal 'emacs-minibuffer-error
+                    (list "Bad yes/no answer" canon)))))))))
+
+;;; D. completion
+
+(defun emacs-minibuffer--collection->list (collection)
+  "Return COLLECTION as a list of strings.
+Accepts list of strings, list of (STRING . _) pairs, an obarray
+(=vector of symbols), or a function (= called with \"\" and
+predicate nil to enumerate)."
+  (cond
+   ((null collection) nil)
+   ((vectorp collection)
+    (let (acc)
+      (mapatoms (lambda (s) (push (symbol-name s) acc)) collection)
+      acc))
+   ((functionp collection)
+    (let ((res (funcall collection "" nil t)))
+      (cond
+       ((listp res)
+        (mapcar (lambda (e) (if (consp e) (car e) e)) res))
+       (t nil))))
+   ((listp collection)
+    (mapcar (lambda (e) (cond ((stringp e) e)
+                              ((consp e) (car e))
+                              ((symbolp e) (symbol-name e))
+                              (t (format "%S" e))))
+            collection))
+   (t (signal 'emacs-minibuffer-error
+              (list "Bad collection" collection)))))
+
+(defun emacs-minibuffer--prefix-match-p (prefix candidate)
+  "Return non-nil iff CANDIDATE begins with PREFIX.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (let ((plen (length prefix)))
+    (and (>= (length candidate) plen)
+         (if emacs-minibuffer-completion-ignore-case
+             (eq t (compare-strings prefix 0 plen candidate 0 plen t))
+           (string-prefix-p prefix candidate)))))
+
+(defun emacs-minibuffer--string-equal-cf (a b)
+  "Case-aware string equality honouring `emacs-minibuffer-completion-ignore-case'."
+  (if emacs-minibuffer-completion-ignore-case
+      (eq t (compare-strings a 0 nil b 0 nil t))
+    (string-equal a b)))
+
+(defun emacs-minibuffer--filter-candidates (string table predicate)
+  "Return entries of TABLE (list of strings) starting with STRING.
+PREDICATE, when non-nil, further filters the result."
+  (let ((cands (cl-remove-if-not
+                (lambda (c) (emacs-minibuffer--prefix-match-p string c))
+                table)))
+    (if predicate
+        (cl-remove-if-not predicate cands)
+      cands)))
+
+(defun emacs-minibuffer--common-prefix (cands)
+  "Return the longest common prefix of CANDS (non-empty list of strings).
+Case-fold honours `emacs-minibuffer-completion-ignore-case'."
+  (let ((prefix (car cands)))
+    (dolist (c (cdr cands))
+      (let ((i 0)
+            (lim (min (length prefix) (length c))))
+        (while (and (< i lim)
+                    (if emacs-minibuffer-completion-ignore-case
+                        (eq t (compare-strings prefix i (1+ i)
+                                               c i (1+ i) t))
+                      (eq (aref prefix i) (aref c i))))
+          (cl-incf i))
+        (setq prefix (substring prefix 0 i))))
+    prefix))
+
+(defun emacs-minibuffer--try-completion (string table &optional predicate)
+  "Return the longest common prefix in TABLE that begins with STRING,
+t if STRING is itself a unique exact match, or nil when no candidate matches.
+TABLE must already be a list of strings.  PREDICATE, when non-nil,
+filters candidates after the prefix match.  Honours
+`emacs-minibuffer-completion-ignore-case'."
+  (let ((cands (emacs-minibuffer--filter-candidates string table predicate)))
+    (cond
+     ((null cands) nil)
+     ((and (= (length cands) 1)
+           (emacs-minibuffer--string-equal-cf (car cands) string))
+      t)
+     (t (emacs-minibuffer--common-prefix cands)))))
+
+;;;###autoload
+(defun emacs-minibuffer-completing-read
+    (prompt collection &optional predicate require-match initial-input
+            hist def _inherit-input-method)
+  "Read a string in the minibuffer with completion.
+Phase 1 — supports list / obarray / function COLLECTION.  PREDICATE is
+applied as a filter when non-nil.  REQUIRE-MATCH non-nil insists the
+final string be in the (filtered) table; otherwise free input is OK.
+INITIAL-INPUT, HIST, DEF behave as in `read-from-minibuffer'."
+  (if emacs-minibuffer-gui-backend
+      (emacs-minibuffer-gui-completing-read
+       prompt collection predicate require-match initial-input hist def
+       _inherit-input-method)
+    (let* ((table (emacs-minibuffer--collection->list collection))
+           (table (if predicate
+                      (cl-remove-if-not predicate table)
+                    table))
+           (default-str (emacs-minibuffer--default-as-string def))
+           (minibuffer-completion-table table)
+           (minibuffer-completion-confirm require-match))
+      (let ((s (emacs-minibuffer-read-from-minibuffer
+                prompt initial-input nil nil hist default-str)))
+        (when require-match
+          (unless (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c s))
+                           table)
+            (signal 'emacs-minibuffer-error
+                    (list "Match required" s))))
+        s))))
+
+;;;###autoload
+(defalias 'emacs-minibuffer-completing-read-default
+  #'emacs-minibuffer-completing-read
+  "Alias for `emacs-minibuffer-completing-read'.
+Matches the host Emacs entry-point name used by libraries that bind
+`completing-read-function' explicitly.")
+
+;;;###autoload
+(defun emacs-minibuffer-try-completion (string collection &optional predicate)
+  "Public Phase 1 port of `try-completion'.
+COLLECTION is normalised via `emacs-minibuffer--collection->list'
+(= list of strings / alist / obarray / function).  Returns the longest
+common prefix of (filtered) COLLECTION entries that begin with STRING,
+or t when STRING is the unique exact match, or nil when nothing matches.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (emacs-minibuffer--try-completion
+   string
+   (emacs-minibuffer--collection->list collection)
+   predicate))
+
+;;;###autoload
+(defun emacs-minibuffer-all-completions (string collection &optional predicate)
+  "Public Phase 1 port of `all-completions'.
+Return a list of every entry in COLLECTION that begins with STRING and
+satisfies PREDICATE (when non-nil).  Order follows COLLECTION traversal
+order (= post-`--collection->list').  Honours
+`emacs-minibuffer-completion-ignore-case'."
+  (let ((table (emacs-minibuffer--collection->list collection)))
+    (emacs-minibuffer--filter-candidates string table predicate)))
+
+;;;###autoload
+(defun emacs-minibuffer-test-completion (string collection &optional predicate)
+  "Public Phase 1 port of `test-completion'.
+Return t iff STRING is an exact element of (filtered) COLLECTION.
+Honours `emacs-minibuffer-completion-ignore-case'."
+  (let* ((table (emacs-minibuffer--collection->list collection))
+         (table (if predicate (cl-remove-if-not predicate table) table)))
+    (and (cl-some (lambda (c) (emacs-minibuffer--string-equal-cf c string))
+                  table)
+         t)))
+
+;;; E. minibuffer state / control
+
+;;;###autoload
+(defun emacs-minibuffer-minibufferp (&optional buffer live)
+  "Return t if BUFFER is a minibuffer.
+BUFFER may be a buffer record or name; nil means the current buffer.
+When LIVE is non-nil, return t only for an active recursive minibuffer."
+  (let* ((arg (or buffer (nelisp-ec-current-buffer)))
+         (b (cond ((stringp arg)
+                   (cdr (assoc arg nelisp-ec--buffers)))
+                  ((or (null arg) (nelisp-ec-buffer-p arg)) arg)
+                  (t (signal 'wrong-type-argument (list 'bufferp arg))))))
+    (when (and (nelisp-ec-buffer-p b)
+               (not (nelisp-ec-buffer-killed-p b)))
+      (let ((active nil)
+            (stack emacs-minibuffer--buffers)
+            (depth emacs-minibuffer--depth))
+        (while (and stack (> depth 0) (not active))
+          (when (eq b (car stack))
+            (setq active t))
+          (setq stack (cdr stack)
+                depth (1- depth)))
+        (if live
+            (and active t)
+          (or active
+              (let ((name (nelisp-ec-buffer-name b)))
+                (and (stringp name)
+                     (string-match-p
+                      "\\` \\*Minibuf-[0-9]+\\*\\'" name)
+                     t))))))))
+
+;;;###autoload
+(defun emacs-minibuffer-active-minibuffer-window ()
+  "Return the window of the currently active minibuffer, or nil.
+Returns `:stub' if `emacs-window' tree is unavailable in the host."
+  (when (> emacs-minibuffer--depth 0)
+    emacs-minibuffer--window))
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-window (&optional _frame)
+  "Return the (single) minibuffer window if allocated, nil otherwise.
+FRAME is accepted for arity compatibility (Phase 1 = single frame)."
+  emacs-minibuffer--window)
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-prompt ()
+  "Return the prompt string of the active minibuffer, or nil."
+  (car emacs-minibuffer--prompts))
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-contents (&optional include-prompt)
+  "Return the user-typed portion of the active minibuffer.
+With INCLUDE-PROMPT non-nil the prompt is included.  Returns the empty
+string if no read is in progress."
+  (let ((buf (emacs-minibuffer--current-buffer))
+        (pe  (emacs-minibuffer--current-prompt-end)))
+    (cond
+     ((null buf) "")
+     (t
+      (nelisp-ec-with-current-buffer buf
+        (let ((max (nelisp-ec-point-max)))
+          (cond
+           ((or include-prompt (null pe))
+            (nelisp-ec-buffer-substring 1 max))
+           ((>= pe max) "")
+           (t (nelisp-ec-buffer-substring pe max)))))))))
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-prompt-end ()
+  "Return the prompt-end position of the active minibuffer, or 1 if none."
+  (or (emacs-minibuffer--current-prompt-end) 1))
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-prompt-width ()
+  "Return the width (in columns) of the active prompt, or 0 if none.
+Phase 1 is character-count (= no display-width / multi-byte adjust)."
+  (let ((p (emacs-minibuffer-minibuffer-prompt)))
+    (if (stringp p) (length p) 0)))
+
+;;;###autoload
+(defun emacs-minibuffer-exit-minibuffer ()
+  "Exit the active minibuffer reader normally.
+Implementation: queues a sentinel `:exit' onto the input queue, so the
+nearest pending built-in reader returns the empty string.  When the
+plug-in `emacs-minibuffer--read-fn' is in use this signals
+`emacs-minibuffer-error' (= caller is responsible)."
+  (cond
+   (emacs-minibuffer--read-fn
+    (signal 'emacs-minibuffer-error
+            '("exit-minibuffer requires the built-in reader"
+              "or a plug-in that honours :exit")))
+   (t
+    (push :exit emacs-minibuffer--input-queue)
+    nil)))
+
+;;;###autoload
+(defun emacs-minibuffer-abort-recursive-edit ()
+  "Abort the current minibuffer read with `quit'.
+With the built-in reader this queues an :abort sentinel; otherwise it
+signals `quit' immediately."
+  (cond
+   (emacs-minibuffer--read-fn
+    (signal 'quit nil))
+   (t
+    (push :abort emacs-minibuffer--input-queue)
+    nil)))
+
+;;;###autoload
+(defun emacs-minibuffer-minibuffer-message (format-string &rest args)
+  "Display a transient message in the minibuffer area.
+Phase 1 — emit to `*Messages*' equivalent (= `message') and return nil.
+ARGS are passed through to `format'."
+  (let ((msg (apply #'format format-string args)))
+    (message "%s" msg)
+    nil))
+
+;;; F. ERT helpers (not part of the public Emacs API)
+
+(defun emacs-minibuffer-feed-input (&rest entries)
+  "Append ENTRIES to the back of `emacs-minibuffer--input-queue'.
+Each entry is either a string (= one line / event source) or one of
+the sentinels `:abort' / `:exit' / a symbol for `read-key' / an int."
+  (setq emacs-minibuffer--input-queue
+        (append emacs-minibuffer--input-queue entries))
+  emacs-minibuffer--input-queue)
+
+(defun emacs-minibuffer-reset ()
+  "Reset all module state to a fresh world.
+Test-only convenience; not part of the public Emacs API surface."
+  ;; Pop all live frames so any allocated buffers get killed.
+  (while emacs-minibuffer--buffers
+    (emacs-minibuffer--pop))
+  (setq emacs-minibuffer--depth 0
+        emacs-minibuffer--buffers nil
+        emacs-minibuffer--prompts nil
+        emacs-minibuffer--prompt-ends nil
+        emacs-minibuffer--window nil
+        emacs-minibuffer--saved-window nil
+        emacs-minibuffer--input-queue nil
+        emacs-minibuffer--read-fn nil
+        emacs-minibuffer--key-fn nil
+        emacs-minibuffer--y-or-n-fn nil
+        emacs-minibuffer-gui-backend nil
+        emacs-minibuffer-gui-purpose ""
+        emacs-minibuffer-gui-prompt ""
+        emacs-minibuffer-gui-history-symbol ""
+        emacs-minibuffer-gui-completion-table ""
+        emacs-minibuffer-gui-collection nil
+        emacs-minibuffer-gui-initial-input ""
+        emacs-minibuffer-gui-require-match nil
+        minibuffer-completion-table nil
+        minibuffer-completion-confirm nil
+        emacs-minibuffer-default nil
+        emacs-minibuffer-history nil)
+  nil)
+
+(provide 'emacs-minibuffer)
+;;; emacs-minibuffer.el ends here

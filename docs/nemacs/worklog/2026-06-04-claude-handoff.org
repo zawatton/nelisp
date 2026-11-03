@@ -1,0 +1,253 @@
+* Claude handoff: nelisp-emacs persistent REPL work
+:PROPERTIES:
+:DATE: 2026-06-04
+:PROJECT: /home/madblack-21/Cowork/Notes/dev/nelisp-emacs
+:NELISP: /home/madblack-21/Cowork/Notes/dev/nelisp
+:STATUS: stopped-for-handoff
+:END:
+
+This file is the handoff note for continuing the =nelisp-emacs= vendor
+persistent REPL work after Codex was stopped by the user.
+
+** User constraints to preserve
+
+- =nelisp= must remain a pure Elisp runtime.  Do not add
+  =nelisp-emacs=-specific build tooling, vendor policy, proof selection, or
+  cache policy to =nelisp=.
+- =nelisp-emacs= build and diagnostic tools belong in the =nelisp-emacs=
+  repository.
+- Use the copied experiment binary:
+  =/home/madblack-21/Cowork/Notes/dev/nelisp-emacs/build/nelisp-experiment=.
+- Current NeLisp user CLI shape:
+  - no args starts the NeLisp REPL;
+  - user-facing commands are =--eval=, =--load=, and =--repl=.
+- Use files under =vendor/= as the source of truth.  Do not substitute vendor
+  sources except for the established =src/cp51932.el= and =src/eucjp-ms.el=
+  facades.
+- =org-element= has broad dependencies.  Keep it late unless there is a strong
+  reason to pull it forward.
+- =(kill-emacs)= should call the =exit= primitive implemented in =nelisp=.
+
+** Current top-level objective
+
+Continue toward these four items:
+
+1. Fix accumulated persistent REPL crashes at the current default prefix plus
+   additional vendor files.
+2. Make =define-minor-mode= / =define-globalized-minor-mode= materialize
+   standalone commands reliably.
+3. Find why runtime smoke proofs sometimes do not return to the sentinel.
+4. Add reader support for special literals and generated table payloads.
+
+** Current tool state
+
+- The =mcp__emacs_eval.nelisp_eval= tool was tried with =(+ 40 2)= and failed
+  with =Transport closed=.  Use local shell commands with
+  =build/nelisp-experiment= unless that tool is fixed.
+- Binary smoke passed:
+
+  #+begin_src sh
+  build/nelisp-experiment --eval '(+ 40 2)'
+  #+end_src
+
+  Result: printed =42=.
+
+- The user asked "ストップで" while a compact candidate validation loop was
+  running.  The loop was stopped.  A process check after stopping showed no
+  remaining =diagnose-vendor-repl-replay-fast= / =nelisp-experiment= process
+  except the check command itself.
+
+** Dirty worktree warning
+
+Both repositories are dirty.  Do not revert unrelated changes.
+
+=nelisp-emacs= has many modified files and untracked files.  Relevant files for
+the current lane include:
+
+- =Makefile=
+- =scripts/vendor-repl-standalone-replay.el=
+- =scripts/standalone-source-normalize.el=
+- =docs/design/04-small-vendor-foundation-candidates.org=
+- this handoff file
+
+The sibling =nelisp= checkout also has local changes:
+
+- modified =lisp/nelisp-cc-sf-let.el=
+- modified =lisp/nelisp-cc-sf-let-star.el=
+- untracked =docs/design/141-core-package-boundary.org=
+- untracked =docs/design/142-external-elisp-artifact-cache.org=
+
+Important: the current =nelisp-emacs/build/nelisp-experiment= was built from the
+dirty =nelisp= tree.  Earlier evidence showed the current working tree passes
+basic =let= / =let*= checks, while a previous save/restore implementation in
+those files broke simple =let=.
+
+** Current Makefile state
+
+At handoff, =VENDOR_REPL_FILES= is count-only proof with 306 default files.
+The proof is intentionally count-only:
+
+#+begin_src makefile
+VENDOR_REPL_PROOF_FORM := (and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (= vendor-standalone-load-ok-count 306))
+#+end_src
+
+Current =VENDOR_REPL_EXCLUDE_FILES= still excludes:
+
+- vendor cp51932/eucjp-ms originals; use =src/cp51932.el= and =src/eucjp-ms.el=
+  instead.
+- =vendor/emacs-lisp/emacs-lisp/backquote.el=
+- =vendor/emacs-lisp/progmodes/executable.el=
+- =vendor/emacs-lisp/emacs-lisp/shadow.el=
+- =vendor/emacs-lisp/progmodes/cl-font-lock.el=
+- =vendor/emacs-lisp/obsolete/starttls.el=
+- =vendor/emacs-lisp/vc/diff.el=
+- =vendor/emacs-lisp/dos-fns.el=
+- =vendor/emacs-lisp/emacs-lisp/crm.el=
+- =vendor/emacs-lisp/epg-config.el=
+- =vendor/emacs-lisp/org/ob-eval.el=
+- =vendor/emacs-lisp/org/oc-bibtex.el=
+- =vendor/emacs-lisp/org/oc-natbib.el=
+- =vendor/emacs-lisp/org/oc-biblatex.el=
+
+** Verified evidence before stop
+
+The compact validation loop regenerated =build/vendor-repl-files.txt= from the
+current =Makefile= and reported:
+
+#+begin_example
+base-count=306
+vendor/emacs-lisp/emacs-lisp/backquote.el rc=0 status=done elapsed=18.962464094161987
+vendor/emacs-lisp/progmodes/executable.el rc=0 status=done elapsed=18.96572732925415
+vendor/emacs-lisp/emacs-lisp/shadow.el rc=0 status=done elapsed=18.884639263153076
+#+end_example
+
+The loop was then stopped while testing =vendor/emacs-lisp/obsolete/starttls.el=.
+Treat =starttls.el= and all later candidates as unverified by the compact run.
+
+Earlier in the same Codex session, a noisy loop appeared to show more candidates
+passing, but output was truncated.  Do not rely on that as promotion evidence.
+Rerun compact checks before editing =Makefile=.
+
+** Known good checks from earlier in the session
+
+These were verified before the final handoff stop.  Rerun if you change any
+inputs.
+
+1. Default persistent REPL count proof with 306 files passed in about 19s:
+
+   #+begin_src sh
+   make --eval 'print-vendor-repl-files: ; @printf "%s\n" "$(VENDOR_REPL_FILES)"' print-vendor-repl-files > build/vendor-repl-files.txt
+   files="$(cat build/vendor-repl-files.txt)"
+   timeout 900s make -s diagnose-vendor-repl-replay-fast \
+     NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp-emacs/build/nelisp-experiment \
+     VENDOR_FAST_FILES="$files" \
+     VENDOR_FAST_PROOF_FORM='(and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (= vendor-standalone-load-ok-count 306))'
+   #+end_src
+
+2. Representative minor-mode/globalized-minor-mode =fboundp= proof over the
+   default 306 passed:
+
+   #+begin_src elisp
+   (and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count)
+        (= vendor-standalone-load-ok-count 306)
+        (fboundp 'display-line-numbers-mode)
+        (fboundp 'global-display-line-numbers-mode)
+        (fboundp 'visual-wrap-prefix-mode)
+        (fboundp 'minibuffer-depth-indicate-mode)
+        (fboundp 'minibuffer-electric-default-mode)
+        (fboundp 'file-name-shadow-mode)
+        (fboundp 'subword-mode)
+        (fboundp 'global-subword-mode)
+        (fboundp 'font-lock-mode)
+        (fboundp 'global-font-lock-mode))
+   #+end_src
+
+3. Isolated =rtree.el= REPL proof passed after fixing
+   =scripts/vendor-repl-standalone-replay.el= so long proof wrappers are emitted
+   as multi-line forms instead of one long REPL input line.
+
+** Recommended next action
+
+Continue the compact candidate validation from =starttls.el= onward.  Use this
+quiet form so output stays actionable:
+
+#+begin_src sh
+set -u
+make --eval 'print-vendor-repl-files: ; @printf "%s\n" "$(VENDOR_REPL_FILES)"' print-vendor-repl-files > build/vendor-repl-files.txt
+base="$(cat build/vendor-repl-files.txt)"
+printf 'base-count=%s\n' "$(wc -w < build/vendor-repl-files.txt)"
+for f in \
+  vendor/emacs-lisp/obsolete/starttls.el \
+  vendor/emacs-lisp/progmodes/cl-font-lock.el \
+  vendor/emacs-lisp/vc/diff.el \
+  vendor/emacs-lisp/dos-fns.el \
+  vendor/emacs-lisp/emacs-lisp/crm.el \
+  vendor/emacs-lisp/epg-config.el \
+  vendor/emacs-lisp/org/ob-eval.el \
+  vendor/emacs-lisp/org/oc-bibtex.el \
+  vendor/emacs-lisp/org/oc-natbib.el \
+  vendor/emacs-lisp/org/oc-biblatex.el
+do
+  out="$(mktemp)"
+  timeout 180s make -s diagnose-vendor-repl-replay-fast \
+    NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp-emacs/build/nelisp-experiment \
+    VENDOR_REPL_KEEP_TEMP=nil \
+    VENDOR_FAST_FILES="$base $(realpath "$f")" \
+    VENDOR_FAST_PROOF_FORM='(and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (= vendor-standalone-load-ok-count 307))' >"$out" 2>&1
+  rc=$?
+  status="$(rg -o 'status=[a-z]+' "$out" | tail -n 1 || true)"
+  sentinel="$(rg -o 'sentinel="[^"]*"' "$out" | tail -n 1 || true)"
+  elapsed="$(rg -o 'elapsed=[0-9.]+[^ ]*' "$out" | tail -n 1 || true)"
+  printf '%s rc=%s %s %s %s\n' "$f" "$rc" "$status" "$sentinel" "$elapsed"
+  if [ "$rc" -ne 0 ]; then
+    tail -n 8 "$out"
+  fi
+  rm -f "$out"
+done
+#+end_src
+
+Then promote only candidates with current, compact evidence.  The first three
+promotable candidates already have compact evidence:
+
+- =backquote.el=
+- =executable.el=
+- =shadow.el=
+
+If promoting only those three, update =Makefile= by removing those files from
+=VENDOR_REPL_EXCLUDE_FILES= and change the count proof from 306 to 309.
+
+After any promotion, verify:
+
+#+begin_src sh
+make --eval 'print-vendor-repl-files: ; @printf "%s\n" "$(VENDOR_REPL_FILES)"' print-vendor-repl-files > build/vendor-repl-files.txt
+wc -w build/vendor-repl-files.txt
+files="$(cat build/vendor-repl-files.txt)"
+timeout 900s make -s diagnose-vendor-repl-replay-fast \
+  NELISP_BIN=/home/madblack-21/Cowork/Notes/dev/nelisp-emacs/build/nelisp-experiment \
+  VENDOR_FAST_FILES="$files" \
+  VENDOR_FAST_PROOF_FORM='(and (= vendor-standalone-load-ok-count vendor-standalone-load-file-count) (= vendor-standalone-load-ok-count 309))'
+git diff --check
+#+end_src
+
+Adjust the expected count to match the number of promoted files.
+
+** Design docs added in nelisp
+
+A NeLisp-side design note was created for future artifact cache integration:
+
+=/home/madblack-21/Cowork/Notes/dev/nelisp/docs/design/142-external-elisp-artifact-cache.org=
+
+It states that after =nelisp= can emit real bytecode/native artifacts via
+external commands, =nelisp-emacs= should use the emitted artifact plus manifest
+as its cache storage format.  It keeps policy in =nelisp-emacs= and preserves
+=nelisp= as a pure Elisp runtime/toolchain.
+
+** Do not forget
+
+- Prefer fixing runtime/reader/materialization causes over papering over vendor
+  files.
+- Do not move =nelisp-emacs= build policy into =nelisp=.
+- Do not introduce an =org-element= expansion unless it is deliberately chosen
+  as a late dependency step.
+- Keep verification output compact.  The REPL file list is enormous and easily
+  hides the useful line.

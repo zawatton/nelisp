@@ -1,0 +1,158 @@
+#+TITLE: magit bridge diagnostic probes
+#+DATE: 2026-08-05
+
+* What these are
+
+Standalone driver programs used to find the root cause of the long-standing
+Magit bundle blocker
+
+: nelisp: uncaught error: invalid-slot-name: ("#<nil nil-190bced0>" :command)
+
+Each one is a single top-level =(progn ...)= handed to =exec-runtime-image= as
+one argument.  They are kept because the measurements they produced are the
+evidence base for =d3b51e71= and for the reader defect that is still open; a
+prose summary of a measurement is not the measurement.
+
+They are *not* tests and nothing runs them automatically.  They are stored
+*verbatim* as they were when they produced the numbers quoted below, including
+their hardcoded repository paths -- see "Caveats".
+
+* How to run one
+
+: cd dev/nelisp-emacs-lib
+: timeout 1800 env NELISP_HOME=$PWD/vendor/nelisp vendor/nelisp/target/nelisp \
+:   exec-runtime-image build/nemacs-runtime.nlri \
+:   "$(cat scripts/magit-bridge-probes/01-class-make.el)" > /tmp/probe.log 2>&1
+
+Roughly five minutes each; the bridge preconditions dominate.  Run them in the
+background.
+
+*Anchor every log grep at line start* (=^GATE=, =^PROBE=, =^MAGIT-BRIDGE=).  The
+error path dumps the failing source, which contains the whole bundle text, so an
+unanchored pattern matches inside it and reports a false pass.  That has already
+caused one wrong "all parts passed" report.
+
+* The probes
+
+** 01-class-make.el -- what actually builds a class object
+
+Reports =eieio--class-make='s definition, the struct registry entry, the
+=emacs-parity-eieio= accessor indices, and then evaluates a plain =defclass=.
+
+Measured 2026-08-05:
+
+: PROBE1 ctor-fn=(closure nil (name)
+:   (cons 'eieio--class (list (cons ':children nil) (cons ':initarg-tuples nil)
+:         (cons ':class-slots nil) (cons ':class-allocation-values nil)
+:         (cons ':default-object-cache nil) (cons ':options nil))))
+: PROBE10 reg=t name=nil nslots=0 nparents=0
+
+The constructor discards its =name= argument and the five =cl--class= slots are
+absent -- and a =defclass= with no magit or transient involved reproduces the
+whole defect.
+
+** 02-setf-path.el -- why the failure is silent
+
+Prints the accessor definitions and the =setf= expansion, then performs the
+writes =eieio-defclass-internal= performs, one at a time.
+
+Measured 2026-08-05:
+
+: S1 acc-name=(lambda (rec) (nelisp--record-ref rec 0))
+: S3 setf-expand=(nelisp--record-set zzobj 2 zzval)
+: STEP-A-OUT obj=(eieio--class (:children) (:initarg-tuples) ...)
+: STEP-B (setf (cl--class-parents c) '(p1))  -> obj unchanged, read=nil, no error
+: STEP-D (setf (cl--find-class 'zz) c)       -> found=t
+
+=nelisp--record-set= against a cons is a *silent no-op*, and only the class
+registration -- a =cl-simple-setter= place, evaluated before the slot loop --
+succeeds.  That is the whole mechanism.
+
+** 03-part2-form-walk.el -- is part 2 semantically loadable?
+
+Walks bundle part 2 one top-level form at a time.  After =d3b51e71=:
+
+: WALK-END forms=401
+: WALK-CLASSINV tdt=t suffix=t prefix=t
+
+401 forms, zero errors, transient classes registered.
+
+** 04-part2-whole-load.el -- loader path vs form-by-form
+
+Same, but a single =load= of the 181,638-character file.  After =d3b51e71=:
+
+: LOAD-PART2-OK
+: LOAD-CLASSINV tdt=t suffix=t prefix=t
+
+So the loader path is not implicated; 03 and 04 agree.
+
+** 05-part2-traps-armed.el -- the one-variable delta against the smoke
+
+Identical to 04 plus the three calls =nelisp-emacs-magit-bridge-load= makes
+before the bundle (=--wrap-oset-default= / =--wrap-make-instance= /
+=--symverify=, magit-bridge.el:4733-4735).  Measured:
+
+: WRAP-PART2-ERR (void-function c)
+
+Note =SYMVERIFY ... wrapped=nil mkwrapped=nil=: eieio does not exist yet at arm
+time, so the two =--wrap-*= calls are no-ops and the effective delta is
+=--symverify= alone.
+
+Also note the marker bug in this driver: =WRAP-PART2-OK= is printed
+unconditionally after the =condition-case=, so it appears even on failure.  Read
+the =-ERR= line, not the =-OK= line.
+
+** 06-driver-length-defect.el -- text after the failure changes the failure
+
+Intended as 03 with the traps armed.  It instead fails deterministically (two
+consecutive identical runs) during the bridge source load itself:
+
+: nelisp: uncaught error: void-function: (nelisp-emacs-magit-bridge--precond-trace cl-)
+
+=--precond-trace= (magit-bridge.el:4597) and =--ensure-preconditions= (:4603) are
+adjacent; a clean load defines both.  The later one is defined and the earlier
+one is void, and the string literal ="PRECOND 29 cl-declaim\n"= has been read as
+the symbol =cl-=.  Adding the walk loop to a driver changed the result of work
+that runs *before* it -- direct evidence that the remaining defect is in the
+parse layer, not in semantics.
+
+Keep this file as the reproduction.  Do not "fix" it.
+
+** 07-accessor-name-origin.el -- definition time or call time?
+
+The smoke now dies with =void-function: (eieio--class-class-slotseie)= -- the
+real name is =eieio--class-class-slots= with =eie= spliced onto the end.
+Measured:
+
+: AN1 good=t bad=nil
+: AN2 concat=eieio--class-class-slots intern-eq=t
+: AN3 defs=(name docstring parents slots index-table children initarg-tuples
+:           class-slots class-allocation-values default-object-cache options)
+
+The corrupt symbol is *not* bound, and =concat= / =intern= are correct in
+isolation, so the mangling happens where vendor code is *read*, not where the
+accessor is defined.  =AN3= is also the direct confirmation that =d3b51e71=
+works: eleven slots, so =:include cl--class= resolves at runtime.
+
+*=AN4 count=0 names=nil= is not usable evidence.* It contradicts =AN1=;
+=mapatoms= is very likely one of the =emacs-stub-bulk= nil stubs.
+
+* Caveats
+
+- *Hardcoded paths.* Every probe hardcodes
+  =/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib=.  They are stored
+  verbatim on purpose: they are evidence, and editing a verified artifact
+  without re-running it is how a broken probe gets inherited.  Adjust the path
+  when running elsewhere, and re-run before trusting an edited copy.
+- *Wall clock.* The bridge preconditions run before anything interesting, so
+  every probe costs about five minutes even when it fails immediately after.
+- *Do not lengthen a driver casually.* See 06.  Reproduction steps for the open
+  reader defect must stay short.
+- The pass/fail gate for the class defect is not here; it is
+  =scripts/nemacs-magit-bridge-defclass-gate.el=.
+
+* Background
+
+- =handoff/nelisp_magit_eieio_include_reader_2026-08-05b.org= (Notes repo) --
+  full write-up, including the two defects that remain open
+- =d3b51e71= -- the fix these probes led to

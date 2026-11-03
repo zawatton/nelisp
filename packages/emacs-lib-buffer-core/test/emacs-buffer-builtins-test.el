@@ -1,0 +1,888 @@
+;;; emacs-buffer-builtins-test.el --- ERT tests for emacs-buffer-builtins  -*- lexical-binding: t; -*-
+
+;;; Commentary:
+
+;; Tests for the Layer 2 Emacs buffer builtin bridge.  Under batch
+;; host Emacs the host C builtins remain active, so these tests lean on
+;; the `nelisp-ec-*' substrate directly to verify the contract that the
+;; polyfill body is supposed to bridge to.
+
+;;; Code:
+
+(require 'ert)
+(require 'emacs-buffer-builtins)
+(require 'emacs-buffer)
+(require 'cl-lib)
+
+(defmacro emacs-buffer-builtins-test--with-fresh-world (&rest body)
+  "Run BODY with a clean NeLisp buffer registry/current-buffer state."
+  (declare (indent 0) (debug (body)))
+  `(let ((nelisp-ec--buffers nil)
+         (nelisp-ec--current-buffer nil)
+         (nelisp-ec--match-data nil))
+     ,@body))
+
+(defmacro emacs-buffer-builtins-test--with-temp-buffer-polyfill (&rest body)
+  "Mirror the Phase 9 `with-temp-buffer' rewrite for macroexpand checks."
+  (declare (indent 0) (debug (body)))
+  (let ((buf (make-symbol "buf")))
+    (list 'let (list (list buf (list 'nelisp-ec-generate-new-buffer
+                                     " *temp*")))
+          (list 'unwind-protect
+                (cons 'nelisp-ec-with-current-buffer (cons buf body))
+                (list 'nelisp-ec-kill-buffer buf)))))
+
+;;;; A. Load cleanly
+
+(ert-deftest emacs-buffer-builtins-test/require-loads-cleanly ()
+  (should (featurep 'emacs-buffer-builtins))
+  (should (fboundp 'buffer-string))
+  (should (fboundp 'with-current-buffer))
+  (dolist (sym '(default-value default-boundp set-default get-char-property
+                 text-properties-at
+                 buffer-narrowed-p markerp copy-marker move-marker
+                 remove-overlays next-overlay-change previous-overlay-change
+                 copy-overlay overlay-recenter
+                 invisible-p add-to-invisibility-spec
+                 remove-from-invisibility-spec
+                 next-property-change previous-property-change
+                 next-single-property-change previous-single-property-change
+                 next-single-char-property-change
+                 previous-single-char-property-change
+                 insert-and-inherit char-before char-after following-char
+                 preceding-char subst-char-in-region
+                 buffer-modified-tick buffer-chars-modified-tick))
+    (should (fboundp sym)))
+  (should (boundp 'text-property-default-nonsticky)))
+
+(ert-deftest emacs-buffer-builtins-test/default-and-char-property-bridges-in-source ()
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         ;; Read the .el source, not a compiled .elc (binary) when present.
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (substring file 0 -1)
+                 file)))
+    (should (and file (file-exists-p file)))
+    (with-temp-buffer
+      (insert-file-contents file)
+      (dolist (needle '("(default-value             . emacs-buffer-default-value)"
+                        "(default-boundp            . emacs-buffer-default-boundp)"
+                        "(set-default               . emacs-buffer-set-default)"
+                        "(buffer-local-value        . emacs-buffer-buffer-local-value)"
+                        "(defun get-char-property"
+                        "(defalias 'text-properties-at"
+                        "emacs-buffer-text-property-at"
+                        "(defalias 'buffer-narrowed-p"
+                        "(defalias 'copy-marker"
+                        "(markerp                    . nelisp-ec-marker-p)"
+                        "(move-marker                . nelisp-ec-set-marker)"
+                        "(insert-before-markers      . nelisp-ec-insert)"
+                        "(remove-overlays    . emacs-buffer-remove-overlays)"
+                        "(next-overlay-change . emacs-buffer-next-overlay-change)"
+                        "(previous-overlay-change . emacs-buffer-previous-overlay-change)"
+                        "(copy-overlay       . emacs-buffer-copy-overlay)"
+                        "(defun overlay-recenter"
+                        "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
+                        "(defalias 'add-to-invisibility-spec"
+                        "(defalias 'remove-from-invisibility-spec"
+                        "(defalias 'next-single-char-property-change"
+                        "(defalias 'previous-single-char-property-change"
+                        "(insert-and-inherit         . nelisp-ec-insert)"
+                        "(defalias 'subst-char-in-region"
+                        "(defalias 'buffer-modified-tick"
+                        "(defalias 'buffer-chars-modified-tick"))
+        (goto-char (point-min))
+        (should (search-forward needle nil t))))))
+
+(ert-deftest emacs-buffer-builtins-test/buffer-local-value-falls-back-to-global ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer " *blv*"))
+          (sym (make-symbol "emacs-buffer-builtins-test-local")))
+      (unwind-protect
+          (progn
+            (set sym '(visible-global))
+            (should (equal '(visible-global)
+                           (emacs-buffer-buffer-local-value sym buf))))
+        (when (boundp sym)
+          (makunbound sym))
+        (nelisp-ec-kill-buffer buf)))))
+
+(ert-deftest emacs-buffer-builtins-test/text-properties-at-bridge-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props-at")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-add-text-properties
+         2 5 '(face bold mouse-face highlight) buf)
+        (should (equal '(face bold mouse-face highlight)
+                       (emacs-buffer-builtins-text-properties-at 3 buf)))
+        (should-not (emacs-buffer-builtins-text-properties-at
+                     3 "string-object"))))))
+
+(ert-deftest emacs-buffer-builtins-test/overlay-bridge-source-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "overlay-bridge")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (let ((ov (emacs-buffer-builtins--call-emacs-buffer
+                   'emacs-buffer-make-overlay
+                   (list 2 5 buf))))
+          (emacs-buffer-builtins--call-emacs-buffer
+           'emacs-buffer-overlay-put
+           (list ov 'face 'highlight))
+          (let ((copy (emacs-buffer-builtins--call-emacs-buffer
+                       'emacs-buffer-copy-overlay
+                       (list ov))))
+            (should (emacs-buffer-overlayp copy))
+            (should (eq 'highlight
+                        (emacs-buffer-overlay-get copy 'face))))
+          (should (= 5 (emacs-buffer-builtins--call-emacs-buffer
+                        'emacs-buffer-next-overlay-change
+                        (list 2 buf))))
+          (should (= 2 (emacs-buffer-builtins--call-emacs-buffer
+                        'emacs-buffer-previous-overlay-change
+                        (list 5 buf))))
+          (should-not (emacs-buffer-builtins--call-emacs-buffer
+                       'emacs-buffer-remove-overlays
+                       (list 1 6 'face 'highlight buf)))
+          (should-not (emacs-buffer-overlays-in 1 6 buf))
+          (should-not (overlay-recenter 3)))))))
+
+(ert-deftest emacs-buffer-builtins-test/invisible-p-helper-matches-core-shapes ()
+  (let ((buffer-invisibility-spec t))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'foo)))
+    (should (null (emacs-buffer-builtins-invisible-p nil))))
+  (let ((buffer-invisibility-spec nil))
+    (should (null (emacs-buffer-builtins-invisible-p 'foo))))
+  (let ((buffer-invisibility-spec '(foo (bar . t) baz)))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'foo)))
+    (should (= 2 (emacs-buffer-builtins-invisible-p 'bar)))
+    (should (eq t (emacs-buffer-builtins-invisible-p 'baz)))
+    (should (null (emacs-buffer-builtins-invisible-p 'qux)))
+    (should (eq t (emacs-buffer-builtins-invisible-p '(foo qux))))))
+
+(ert-deftest emacs-buffer-builtins-test/invisibility-spec-add-remove-shapes ()
+  (with-temp-buffer
+    (setq buffer-invisibility-spec nil)
+    (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+    (should (equal '(foo) buffer-invisibility-spec))
+    (emacs-buffer-builtins-add-to-invisibility-spec '(bar . t))
+    (should (equal '((bar . t) foo) buffer-invisibility-spec))
+    (emacs-buffer-builtins-remove-from-invisibility-spec 'foo)
+    (should (equal '((bar . t)) buffer-invisibility-spec))
+    (emacs-buffer-builtins-remove-from-invisibility-spec '(bar . t))
+    (should (equal nil buffer-invisibility-spec)))
+  (with-temp-buffer
+    (setq buffer-invisibility-spec t)
+    (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+    (should (equal '(foo t) buffer-invisibility-spec)))
+  (with-temp-buffer
+    (setq buffer-invisibility-spec nil)
+    (emacs-buffer-builtins-remove-from-invisibility-spec 'foo)
+    (should (equal '(t) buffer-invisibility-spec))))
+
+(ert-deftest emacs-buffer-builtins-test/invisibility-spec-buffer-locality ()
+  (let (first-buffer second-buffer)
+    (with-temp-buffer
+      (setq first-buffer (current-buffer))
+      (setq buffer-invisibility-spec nil)
+      (emacs-buffer-builtins-add-to-invisibility-spec 'foo)
+      (should (equal '(foo) buffer-invisibility-spec)))
+    (with-temp-buffer
+      (setq second-buffer (current-buffer))
+      (setq buffer-invisibility-spec nil)
+      (should (equal nil buffer-invisibility-spec))
+      (emacs-buffer-builtins-add-to-invisibility-spec '(bar . t))
+      (should (equal '((bar . t)) buffer-invisibility-spec)))
+    (should-not (eq first-buffer second-buffer))))
+
+(ert-deftest emacs-buffer-builtins-test/property-change-bridges-use-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-put-text-property 3 5 'face 'bold buf)
+        (should (= 3 (emacs-buffer-builtins-next-property-change 1 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-next-property-change 3 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-next-single-property-change
+                      3 'face buf nil)))
+        (should (= 5 (emacs-buffer-builtins-previous-property-change
+                      6 buf nil)))
+        (should (= 5 (emacs-buffer-builtins-previous-single-property-change
+                      5 'face buf nil)))
+      (should (= 9 (emacs-buffer-builtins-next-single-property-change
+                      1 'face "string-object" 9)))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-property-any-uses-substrate ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "props-any")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (emacs-buffer-put-text-property 3 5 'face 'bold buf)
+        (should (= 3 (emacs-buffer-text-property-any
+                      1 6 'face 'bold buf)))
+        (should (= 3 (emacs-buffer-text-property-any
+                      3 5 'face 'bold buf)))
+        (should-not (emacs-buffer-text-property-any
+                     1 3 'face 'bold buf))
+        (should-not (emacs-buffer-text-property-any
+                     1 6 'face 'italic buf))
+        (should-not (emacs-buffer-text-property-any
+                     1 6 'face 'bold "string-object"))))))
+
+(ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-creates-current ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (emacs-buffer-builtins-ensure-initial-buffer)))
+      (should (nelisp-ec-buffer-p buf))
+      (should (eq buf (nelisp-ec-current-buffer)))
+      (should (equal "*scratch*" (nelisp-ec-buffer-name buf)))
+      (should (eq buf (cdr (assoc "*scratch*" nelisp-ec--buffers)))))))
+
+(ert-deftest emacs-buffer-builtins-test/ensure-initial-buffer-reuses-existing ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((existing (nelisp-ec-generate-new-buffer "*scratch*")))
+      (should (eq existing (emacs-buffer-builtins-ensure-initial-buffer)))
+      (should (eq existing (nelisp-ec-current-buffer)))
+      (should-not (cdr (assoc "*scratch*<2>" nelisp-ec--buffers))))))
+
+(ert-deftest emacs-buffer-builtins-test/sxhash-fallback-is-deterministic ()
+  (let ((a (emacs-buffer-builtins--sxhash-object '(foo 1 "bar")))
+        (b (emacs-buffer-builtins--sxhash-object '(foo 1 "bar")))
+        (c (emacs-buffer-builtins--sxhash-object '(foo 2 "bar"))))
+    (should (integerp a))
+    (should (= a b))
+    (should-not (= a c))
+    (should (= a (emacs-buffer-builtins--sxhash-string
+                  (prin1-to-string '(foo 1 "bar")))))))
+
+;;;; B. Temp-buffer style roundtrip via nelisp-ec-*
+
+(ert-deftest emacs-buffer-builtins-test/temp-buffer-roundtrip-via-nelisp-ec ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf1 (nelisp-ec-generate-new-buffer " *temp*"))
+          (buf2 (nelisp-ec-generate-new-buffer " *temp*")))
+      (should (equal "" (nelisp-ec-with-current-buffer buf1
+                          (nelisp-ec-buffer-string))))
+      (should (equal "alpha" (nelisp-ec-with-current-buffer buf1
+                               (nelisp-ec-insert "alpha")
+                               (nelisp-ec-buffer-string))))
+      (should (equal 6 (nelisp-ec-with-current-buffer buf2
+                         (nelisp-ec-insert "alpha")
+                         (nelisp-ec-point))))
+      (should (equal "alpha" (nelisp-ec-with-current-buffer buf2
+                               (nelisp-ec-buffer-string)))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-buffer-insert-char-code-direct ()
+  "Layer 0 single-character insertion should work at edge and middle points."
+  (let ((tb (make-text-buffer "ac")))
+    (text-buffer-set-cursor tb 1)
+    (should (eq tb (text-buffer-insert-char-code tb ?b)))
+    (should (= 3 (text-buffer-length tb)))
+    (should (= 2 (text-buffer-cursor tb)))
+    (should (equal "abc" (text-buffer-substring tb 0 3)))
+    (text-buffer-set-cursor tb 0)
+    (text-buffer-insert-char-code tb ?_)
+    (should (equal "_abc" (text-buffer-substring tb 0 4)))
+    (text-buffer-set-cursor tb (text-buffer-length tb))
+    (text-buffer-insert-char-code tb ?!)
+    (should (equal "_abc!" (text-buffer-substring
+                            tb 0 (text-buffer-length tb))))))
+
+(ert-deftest emacs-buffer-builtins-test/text-buffer-stable-mutation-api ()
+  "Layer 0 text-buffer insert/delete/search APIs should be reusable directly."
+  (let ((tb (make-text-buffer "abef")))
+    (text-buffer-set-cursor tb 2)
+    (should (eq tb (text-buffer-insert tb "cd")))
+    (should (equal "abcdef" (text-buffer-substring
+                             tb 0 (text-buffer-length tb))))
+    (should (= 4 (text-buffer-cursor tb)))
+    (should (= 2 (text-buffer-search tb "cd")))
+    (should (= 5 (text-buffer-search tb "f" 4)))
+    (should-not (text-buffer-search tb "zz"))
+    (should (eq tb (text-buffer-delete tb 1 5)))
+    (should (equal "af" (text-buffer-substring
+                         tb 0 (text-buffer-length tb))))
+    (should (= 1 (text-buffer-cursor tb)))))
+
+(ert-deftest emacs-buffer-builtins-test/text-buffer-stable-byte-queries ()
+  "Layer 0 text-buffer byte/multibyte query APIs should reflect storage mode."
+  (let ((multi (make-text-buffer "aあ"))
+        (uni (make-text-buffer (string-as-unibyte "abc"))))
+    (should (text-buffer-multibyte-p multi))
+    (should (= 2 (text-buffer-length multi)))
+    (should (= 4 (text-buffer-byte-length multi)))
+    (should-not (text-buffer-multibyte-p uni))
+    (should (= 3 (text-buffer-length uni)))
+    (should (= 3 (text-buffer-byte-length uni)))))
+
+(ert-deftest emacs-buffer-builtins-test/text-tick-tracks-text-edits ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "tick")))
+      (nelisp-ec-with-current-buffer buf
+        (should (= 0 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-insert "abc")
+        (should (= 1 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-delete-region 2 3)
+        (should (= 2 (nelisp-ec-buffer-text-tick buf)))
+        (nelisp-ec-delete-region 2 2)
+        (should (= 2 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-skips-redundant-cursor-sync ()
+  "Repeated insertion at current point should not re-sync the text cursor."
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "sync"))
+          (set-cursor-calls 0)
+          (orig (symbol-function 'text-buffer-set-cursor)))
+      (cl-letf (((symbol-function 'text-buffer-set-cursor)
+                 (lambda (&rest args)
+                   (setq set-cursor-calls (1+ set-cursor-calls))
+                   (apply orig args))))
+        (nelisp-ec-with-current-buffer buf
+          (nelisp-ec-insert "a")
+          (nelisp-ec-insert "b")
+          (should (= 0 set-cursor-calls))
+          (should (= 3 (nelisp-ec-point)))
+          (should (equal "ab" (nelisp-ec-buffer-string))))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-char-code-fast-updates-buffer ()
+  "The single-char insert helper should preserve normal insert bookkeeping."
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "char-fast")))
+      (nelisp-ec-with-current-buffer buf
+        (should (= 2 (nelisp-ec-insert-char-code-fast ?a)))
+        (should (= 2 (nelisp-ec-point)))
+        (should (= 1 (nelisp-ec-buffer-text-tick buf)))
+        (should (nelisp-ec-buffer-modified-p buf))
+        (should (equal "a" (nelisp-ec-buffer-string)))))))
+
+(ert-deftest emacs-buffer-builtins-test/insert-accepts-character-codes ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "insert-char")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "a" ?b "c")
+        (should (equal "abc" (nelisp-ec-buffer-string)))
+        (should (= 4 (nelisp-ec-point)))
+        (should (= 3 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/forward-backward-char-respects-narrowing ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "move")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcd")
+        (nelisp-ec-goto-char 2)
+        (should (eq t (nelisp-ec-forward-char 2)))
+        (should (= 4 (nelisp-ec-point)))
+        (should (eq t (nelisp-ec-backward-char 1)))
+        (should (= 3 (nelisp-ec-point)))
+        (nelisp-ec-narrow-to-region 2 4)
+        (should (eq t (nelisp-ec-forward-char 1)))
+        (should (= 4 (nelisp-ec-point)))
+        (should-error (nelisp-ec-forward-char 1)
+                      :type 'nelisp-ec-args-out-of-range)
+        (should (= 4 (nelisp-ec-point)))
+        (should-error (nelisp-ec-backward-char 3)
+                      :type 'nelisp-ec-args-out-of-range)
+        (should (= 4 (nelisp-ec-point)))))))
+
+(ert-deftest emacs-buffer-builtins-test/delete-char-and-erase-buffer-mutate-text ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "delete")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (nelisp-ec-goto-char 3)
+        (should-not (nelisp-ec-delete-char 2))
+        (should (equal "abef" (nelisp-ec-buffer-string)))
+        (should (= 3 (nelisp-ec-point)))
+        (should-not (nelisp-ec-delete-char -1))
+        (should (equal "aef" (nelisp-ec-buffer-string)))
+        (should (= 2 (nelisp-ec-point)))
+        (should (= 3 (nelisp-ec-buffer-text-tick buf)))
+        (should-not (nelisp-ec-erase-buffer))
+        (should (equal "" (nelisp-ec-buffer-string)))
+        (should (= 1 (nelisp-ec-point)))
+        (should (= 4 (nelisp-ec-buffer-text-tick buf)))))))
+
+(ert-deftest emacs-buffer-builtins-test/char-accessors-and-subst-use-ec-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "chars")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abacad")
+        (nelisp-ec-goto-char 3)
+        (should (= ?b (emacs-buffer-builtins-char-before)))
+        (should (= ?a (emacs-buffer-builtins-char-after)))
+        (should (= ?b (emacs-buffer-builtins-preceding-char)))
+        (should (= ?a (emacs-buffer-builtins-following-char)))
+        (should (null (emacs-buffer-builtins-char-before
+                       (nelisp-ec-point-min))))
+        (should (null (emacs-buffer-builtins-char-after
+                       (nelisp-ec-point-max))))
+        (emacs-buffer-builtins-subst-char-in-region
+         1 (nelisp-ec-point-max) ?a ?x)
+        (should (equal "xbxcxd" (nelisp-ec-buffer-string)))
+        (should (= 3 (nelisp-ec-point)))))))
+
+;;;; C. with-current-buffer restores selection
+
+(ert-deftest emacs-buffer-builtins-test/with-current-buffer-restores-current-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "a"))
+          (b (nelisp-ec-generate-new-buffer "b")))
+      (nelisp-ec-set-buffer a)
+      (should (eq a (nelisp-ec-current-buffer)))
+      (nelisp-ec-with-current-buffer b
+        (should (eq b (nelisp-ec-current-buffer)))
+        (should (equal "b" (nelisp-ec-buffer-name (nelisp-ec-current-buffer)))))
+      (should (eq a (nelisp-ec-current-buffer))))))
+
+;;;; D. generate-new-buffer / kill-buffer
+
+(ert-deftest emacs-buffer-builtins-test/generate-and-kill-buffer-roundtrip ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "scratch")))
+      (should (nelisp-ec-buffer-p buf))
+      (should (equal "scratch" (nelisp-ec-buffer-name buf)))
+      (should (eq buf (cdr (assoc "scratch" nelisp-ec--buffers))))
+      (should (equal t (nelisp-ec-kill-buffer buf)))
+      (should (nelisp-ec-buffer-killed-p buf))
+      (should-not (assoc "scratch" nelisp-ec--buffers))
+      (should-error (nelisp-ec-set-buffer buf)
+                    :type 'nelisp-ec-buffer-killed))))
+
+;;;; E. point-min / point-max
+
+(ert-deftest emacs-buffer-builtins-test/point-min-max-on-populated-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "points")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcd")
+        (should (= 1 (nelisp-ec-point-min)))
+        (should (= 5 (nelisp-ec-point-max)))
+        (should (= 5 (nelisp-ec-point)))
+        (should (= 4 (nelisp-ec-buffer-size)))))))
+
+;;;; F. buffer-substring
+
+(ert-deftest emacs-buffer-builtins-test/buffer-substring-range-correct ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "substr")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (should (equal "bcd" (nelisp-ec-buffer-substring 2 5)))
+        (should (equal "bcd" (nelisp-ec-buffer-substring 5 2)))
+        (should (= 7 (nelisp-ec-point-max)))
+        (should (= 1 (nelisp-ec-point-min)))))))
+
+;;;; G. save-excursion
+
+(ert-deftest emacs-buffer-builtins-test/save-excursion-restores-point ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "excursion")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (nelisp-ec-goto-char 3)
+        (should (= 3 (nelisp-ec-point)))
+        (nelisp-ec-save-excursion
+          (nelisp-ec-goto-char 6)
+          (should (= 6 (nelisp-ec-point))))
+        (should (= 3 (nelisp-ec-point)))
+        (should (eq buf (nelisp-ec-current-buffer)))))))
+
+;;;; H. save-restriction
+
+(ert-deftest emacs-buffer-builtins-test/save-restriction-restores-bounds ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "restrict")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (nelisp-ec-narrow-to-region 2 5)
+        (should (= 2 (nelisp-ec-point-min)))
+        (should (= 5 (nelisp-ec-point-max)))
+        (nelisp-ec-save-restriction
+          (nelisp-ec-widen)
+          (should (= 1 (nelisp-ec-point-min)))
+          (should (= 7 (nelisp-ec-point-max)))
+          (nelisp-ec-narrow-to-region 3 4)
+          (should (= 3 (nelisp-ec-point-min)))
+          (should (= 4 (nelisp-ec-point-max))))
+        (should (= 2 (nelisp-ec-point-min)))
+        (should (= 5 (nelisp-ec-point-max)))))))
+
+(ert-deftest emacs-buffer-builtins-test/save-restriction-restores-current-buffer ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((outer (nelisp-ec-generate-new-buffer "restrict-outer"))
+          (inner (nelisp-ec-generate-new-buffer "restrict-inner")))
+      (nelisp-ec-with-current-buffer outer
+        (nelisp-ec-save-restriction
+          (nelisp-ec-set-buffer inner))
+        (should (eq outer (nelisp-ec-current-buffer)))))))
+
+;;;; H2. save-current-buffer
+
+(ert-deftest emacs-buffer-builtins-test/save-current-buffer-restores-selection ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "save-a"))
+          (b (nelisp-ec-generate-new-buffer "save-b")))
+      (nelisp-ec-set-buffer a)
+      (should (eq a (nelisp-ec-current-buffer)))
+      (nelisp-ec-save-current-buffer
+        (nelisp-ec-set-buffer b)
+        (should (eq b (nelisp-ec-current-buffer))))
+      (should (eq a (nelisp-ec-current-buffer)))
+      (ignore-errors
+        (nelisp-ec-save-current-buffer
+          (nelisp-ec-set-buffer b)
+          (error "boom")))
+      (should (eq a (nelisp-ec-current-buffer))))))
+
+;;;; I. narrow-to-region
+
+(ert-deftest emacs-buffer-builtins-test/narrow-to-region-clips-point-min-max ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "narrow")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abcdef")
+        (should-not (emacs-buffer-builtins-buffer-narrowed-p))
+        (nelisp-ec-goto-char 6)
+        (should (= 6 (nelisp-ec-point)))
+        (nelisp-ec-narrow-to-region 2 5)
+        (should (emacs-buffer-builtins-buffer-narrowed-p))
+        (should (= 2 (nelisp-ec-point-min)))
+        (should (= 5 (nelisp-ec-point-max)))
+        (should (= 5 (nelisp-ec-point)))
+        (nelisp-ec-widen)
+        (should-not (emacs-buffer-builtins-buffer-narrowed-p))
+        (should (= 1 (nelisp-ec-point-min)))
+        (should (= 7 (nelisp-ec-point-max)))))))
+
+;;;; J. markers
+
+(ert-deftest emacs-buffer-builtins-test/make-marker-set-marker-roundtrip ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "marker")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abc")
+        (let ((m (nelisp-ec-make-marker)))
+          (should (null (nelisp-ec-marker-position m)))
+          (should (null (nelisp-ec-marker-buffer m)))
+          (should (null (nelisp-ec-marker-insertion-type m)))
+          (should (eq t (nelisp-ec-set-marker-insertion-type m t)))
+          (should (eq t (nelisp-ec-marker-insertion-type m)))
+          (should (null (nelisp-ec-set-marker-insertion-type m nil)))
+          (should (null (nelisp-ec-marker-insertion-type m)))
+          (should (eq m (nelisp-ec-set-marker m 2 buf)))
+          (should (= 2 (nelisp-ec-marker-position m)))
+          (should (eq buf (nelisp-ec-marker-buffer m)))
+          (nelisp-ec-goto-char 3)
+          (let ((point-marker (nelisp-ec-point-marker)))
+            (should (= 3 (nelisp-ec-marker-position point-marker)))
+            (should (eq buf (nelisp-ec-marker-buffer point-marker))))
+          (should (eq m (nelisp-ec-set-marker m nil)))
+          (should (null (nelisp-ec-marker-position m)))
+          (should (null (nelisp-ec-marker-buffer m))))))))
+
+(ert-deftest emacs-buffer-builtins-test/copy-marker-uses-ec-marker-shape ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((buf (nelisp-ec-generate-new-buffer "copy-marker")))
+      (nelisp-ec-with-current-buffer buf
+        (nelisp-ec-insert "abc")
+        (let ((detached (emacs-buffer-builtins-copy-marker nil)))
+          (should (nelisp-ec-marker-p detached))
+          (should-not (nelisp-ec-marker-position detached))
+          (should-not (nelisp-ec-marker-buffer detached)))
+        (let ((from-int (emacs-buffer-builtins-copy-marker 2 t)))
+          (should (nelisp-ec-marker-p from-int))
+          (should (= 2 (nelisp-ec-marker-position from-int)))
+          (should (eq buf (nelisp-ec-marker-buffer from-int)))
+          (should (eq t (nelisp-ec-marker-insertion-type from-int))))
+        (let* ((source (nelisp-ec-set-marker (nelisp-ec-make-marker) 3 buf))
+               (copy (emacs-buffer-builtins-copy-marker source)))
+          (should (nelisp-ec-marker-p copy))
+          (should-not (eq source copy))
+          (should (= 3 (nelisp-ec-marker-position copy)))
+          (should (eq buf (nelisp-ec-marker-buffer copy)))
+          (should-not (nelisp-ec-marker-insertion-type copy)))))))
+
+;;;; K. macroexpand shape of with-temp-buffer rewrite
+
+(ert-deftest emacs-buffer-builtins-test/with-temp-buffer-macroexpand-uses-ec-substrate ()
+  (cl-letf (((symbol-function 'with-temp-buffer)
+             (symbol-function
+              'emacs-buffer-builtins-test--with-temp-buffer-polyfill)))
+    (let* ((expanded (macroexpand '(with-temp-buffer
+                                     (insert "x")
+                                     (buffer-string))))
+           (flat (flatten-tree expanded)))
+      (should (eq 'let (car expanded)))
+      (should (memq 'nelisp-ec-generate-new-buffer flat))
+      (should (memq 'nelisp-ec-with-current-buffer flat))
+      (should (memq 'nelisp-ec-kill-buffer flat)))))
+
+;;;; L. Nested temp-buffer style buffers stay independent
+
+(ert-deftest emacs-buffer-builtins-test/nested-buffers-preserve-separate-content ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((outer (nelisp-ec-generate-new-buffer "outer"))
+          (inner (nelisp-ec-generate-new-buffer "inner")))
+      (should (not (eq outer inner)))
+      (nelisp-ec-with-current-buffer outer
+        (nelisp-ec-insert "outer")
+        (should (equal "outer" (nelisp-ec-buffer-string)))
+        (nelisp-ec-with-current-buffer inner
+          (nelisp-ec-insert "inner")
+          (should (equal "inner" (nelisp-ec-buffer-string))))
+        (should (equal "outer" (nelisp-ec-buffer-string)))
+        (should (eq outer (nelisp-ec-current-buffer)))))))
+
+;;;; M. Phase L1 — get-buffer / get-buffer-create / buffer-list
+
+(defun emacs-buffer-builtins-test--get-buffer (buffer-or-name)
+  "Polyfill body of `get-buffer' (= verbatim from emacs-buffer-builtins)."
+  (cond
+   ((null buffer-or-name) nil)
+   ((nelisp-ec-buffer-p buffer-or-name)
+    (if (nelisp-ec-buffer-killed-p buffer-or-name)
+        nil
+      buffer-or-name))
+   ((stringp buffer-or-name)
+    (cdr (assoc buffer-or-name nelisp-ec--buffers)))
+   (t nil)))
+
+(defun emacs-buffer-builtins-test--get-buffer-create (buffer-or-name)
+  (or (emacs-buffer-builtins-test--get-buffer buffer-or-name)
+      (nelisp-ec-generate-new-buffer
+       (cond
+        ((stringp buffer-or-name) buffer-or-name)
+        ((nelisp-ec-buffer-p buffer-or-name)
+         (nelisp-ec-buffer-name buffer-or-name))
+        (t " *unnamed*")))))
+
+(defun emacs-buffer-builtins-test--buffer-list ()
+  (let ((acc nil))
+    (dolist (cell nelisp-ec--buffers)
+      (let ((buf (cdr cell)))
+        (when (and buf (not (nelisp-ec-buffer-killed-p buf)))
+          (setq acc (cons buf acc)))))
+    (let ((rev nil))
+      (while acc (setq rev (cons (car acc) rev)) (setq acc (cdr acc)))
+      rev)))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-by-string ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "alpha")))
+      (should (eq b (emacs-buffer-builtins-test--get-buffer "alpha")))
+      (should (null (emacs-buffer-builtins-test--get-buffer "beta"))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-by-buffer-passes-live-rejects-killed ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b (nelisp-ec-generate-new-buffer "live")))
+      (should (eq b (emacs-buffer-builtins-test--get-buffer b)))
+      (nelisp-ec-kill-buffer b)
+      (should (null (emacs-buffer-builtins-test--get-buffer b))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-get-buffer-create-returns-existing-or-creates ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((b1 (emacs-buffer-builtins-test--get-buffer-create "x")))
+      (should (nelisp-ec-buffer-p b1))
+      ;; Second call returns the same existing buffer.
+      (should (eq b1 (emacs-buffer-builtins-test--get-buffer-create "x")))
+      ;; Different name creates a fresh buffer.
+      (let ((b2 (emacs-buffer-builtins-test--get-buffer-create "y")))
+        (should (not (eq b1 b2)))
+        (should (nelisp-ec-buffer-p b2))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-buffer-list-returns-live-only ()
+  (emacs-buffer-builtins-test--with-fresh-world
+    (let ((a (nelisp-ec-generate-new-buffer "a"))
+          (b (nelisp-ec-generate-new-buffer "b"))
+          (c (nelisp-ec-generate-new-buffer "c")))
+      (should (equal 3 (length (emacs-buffer-builtins-test--buffer-list))))
+      (nelisp-ec-kill-buffer b)
+      (let ((live (emacs-buffer-builtins-test--buffer-list)))
+        (should (equal 2 (length live)))
+        (should (memq a live))
+        (should (memq c live))
+        (should-not (memq b live))))))
+
+(ert-deftest emacs-buffer-builtins-test/L1-fboundp-parity ()
+  (should (fboundp 'get-buffer))
+  (should (fboundp 'get-buffer-create))
+  (should (fboundp 'buffer-list)))
+
+;;;; M. Doc 51 Track X audit — keymap-bound polyfills carry interactive form
+
+(defun emacs-buffer-builtins-test--read-defun (file marker)
+  "Return the source of the form starting at MARKER (a regexp) in FILE."
+  (with-temp-buffer
+    (insert-file-contents file)
+    (goto-char (point-min))
+    (when (re-search-forward marker nil t)
+      (let* ((form-start (match-beginning 0))
+             (form-end (save-excursion
+                         (goto-char form-start)
+                         (forward-sexp)
+                         (point))))
+        (buffer-substring form-start form-end)))))
+
+(ert-deftest emacs-buffer-builtins-test/keymap-bound-cmd-shape-audit ()
+  "Doc 51 Track X (2026-05-04) regression: `forward-char' /
+`backward-char' / `delete-char' must be wrapper polyfills (= not
+plain `defalias' to `nelisp-ec-*') with `(interactive \"p\")', because
+the inner `nelisp-ec-delete-char' has a REQUIRED N parameter that
+would crash on a no-prefix-arg keymap dispatch (= same lambda-arity
+mismatch that bit `delete-backward-char' before its 2026-05-04 fix).
+
+`nelisp-ec-forward-char' / `nelisp-ec-backward-char' have all-optional
+arglists, so a plain alias would work today — but the prefix-arg path
+needs the wrapper's `(interactive \"p\")' so `C-u 4 C-f' actually moves
+4 chars instead of dropping the prefix."
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file)))
+    (should (and file (file-exists-p file)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(when (emacs-buffer-builtins--install-function-p 'forward-char)")))
+      (should s)
+      (should (string-match-p "forward-char (&optional n)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      ;; Track X EOB-handling: clamps + signals end-of-buffer /
+      ;; beginning-of-buffer rather than leaking the underlying
+      ;; primitive's `nelisp-ec-args-out-of-range'.
+      (should (string-match-p "end-of-buffer" s))
+      (should (string-match-p "beginning-of-buffer" s)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(when (emacs-buffer-builtins--install-function-p 'backward-char)")))
+      (should s)
+      (should (string-match-p "backward-char (&optional n)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      ;; Forwarder to forward-char with negated count.
+      (should (string-match-p "forward-char" s)))
+    (let ((s (emacs-buffer-builtins-test--read-defun
+              file "(when (emacs-buffer-builtins--install-function-p 'delete-char)")))
+      (should s)
+      (should (string-match-p "delete-char (n &optional killflag)" s))
+      (should (string-match-p "(interactive \"p\")" s))
+      (should (string-match-p "nelisp-ec-delete-char" s)))))
+
+;;;; N. Doc 51 Track X — forward-char / backward-char EOB / BOB semantics
+
+(ert-deftest emacs-buffer-builtins-test/forward-char-source-handles-eob ()
+  "Track X (2026-05-04) regression for the user-reported visible
+\"nelisp: eval error: args-out-of-range (29 1 28)\" when pressing
+<right> at end-of-buffer.
+
+Real Emacs's C `forward-char' clamps to ZV and signals `end-of-buffer'
+when target > ZV.  Our polyfill must match — leaking the underlying
+`nelisp-ec-args-out-of-range' would bubble into the Layer-1 nelisp
+eval-error printer and surface as a noisy console line.
+
+Source-shape test (rather than fboundp dispatch) so the polyfill body
+is verified even under host driver where the upstream C `forward-char'
+shadows our defun."
+  (let* ((file (locate-library "emacs-buffer-builtins"))
+         (file (if (and file (string-match-p "\\.elc\\'" file))
+                   (concat (substring file 0 (- (length file) 1)))
+                 file))
+         (s (emacs-buffer-builtins-test--read-defun
+             file "(when (emacs-buffer-builtins--install-function-p 'forward-char)"))
+         (bs (emacs-buffer-builtins-test--read-defun
+              file "(when (emacs-buffer-builtins--install-function-p 'backward-char)"))
+         (cf (locate-library "emacs-command-loop"))
+         (cf (if (and cf (string-match-p "\\.elc\\'" cf))
+                 (concat (substring cf 0 (- (length cf) 1)))
+               cf))
+         (cl (emacs-buffer-builtins-test--read-defun
+              cf "(defun emacs-command-loop-1")))
+    (should s) (should bs) (should cl)
+    ;; forward-char clamps + signals.
+    (should (string-match-p "(signal 'end-of-buffer" s))
+    (should (string-match-p "(signal 'beginning-of-buffer" s))
+    (should (string-match-p "(nelisp-ec-goto-char hi)" s))
+    (should (string-match-p "(nelisp-ec-goto-char lo)" s))
+    ;; backward-char delegates to forward-char with negated arg.
+    (should (string-match-p "(forward-char (- (or n 1)))" bs))
+    ;; command-loop-1 catches both signals.
+    (should (string-match-p "(end-of-buffer" cl))
+    (should (string-match-p "(beginning-of-buffer" cl))
+    (should (string-match-p "\"End of buffer\"" cl))
+    (should (string-match-p "\"Beginning of buffer\"" cl))))
+
+;;;; Standalone detection (nemacs binds `emacs-version', so the bridge keys
+;;;; off a reader-only primitive instead).
+
+(ert-deftest emacs-buffer-builtins-test/standalone-p-keys-off-reader-primitive ()
+  "Host (no reader primitive) -> nil; mocking the reader signal flips it to t."
+  (require 'cl-lib)
+  (should-not (emacs-buffer-builtins--standalone-p))
+  (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) (lambda (&rest _) nil)))
+    (should (emacs-buffer-builtins--standalone-p))))
+
+(ert-deftest emacs-buffer-builtins-test/native-buffer-family-is-preserved ()
+  "Standalone keeps a complete native family and fills an absent one."
+  (cl-letf (((symbol-function 'emacs-buffer-builtins--standalone-p)
+             (lambda () t)))
+    (should-not (emacs-buffer-builtins--replace-buffer-family-p))
+    (should-not (emacs-buffer-builtins--install-function-p 'current-buffer))
+    (should (emacs-buffer-builtins--install-function-p
+             (make-symbol "emacs-buffer-builtins-test-absent")))
+    (let ((saved (symbol-function 'current-buffer)))
+      (unwind-protect
+          (progn
+            (fmakunbound 'current-buffer)
+            (should (emacs-buffer-builtins--replace-buffer-family-p)))
+        (fset 'current-buffer saved)))))
+
+(ert-deftest emacs-buffer-builtins-test/install-function-p-respects-emacs-stub-bulk ()
+  "`--install-function-p' must let a stub-bulk-tagged name be overridden
+even though it is already `fboundp', not just when it is altogether
+absent -- otherwise a same-named throwaway placeholder installed by an
+earlier-loaded file (e.g. one of `emacs-stub.el''s synthetic buffer.c
+placeholders) wins the load-order race forever and this bridge's real
+`nelisp-ec'-backed definition never takes over.  Regression for the
+`get-buffer-create' buffer-identity mismatch fixed alongside this test:
+see `emacs-buffer-builtins-test/emacs-stub-buffer-placeholders-are-tagged-stub-bulk'
+and `test/nemacs-process-sync-smoke.el' (`wrong-type-argument:
+(stringp (buffer))' from `get-buffer'/`with-current-buffer' when handed
+the placeholder's throwaway buffer object)."
+  (let ((sym (make-symbol "emacs-buffer-builtins-test--temp-already-bound")))
+    (fset sym (lambda () 'placeholder))
+    (should (fboundp sym))
+    ;; Negative control: an ordinary already-fboundp, untagged name is left
+    ;; alone -- this is the real predicate under test seeing the real
+    ;; "not tagged yet" state, not a copy of unrelated data.
+    (should-not (get sym 'emacs-stub-bulk))
+    (should-not (emacs-buffer-builtins--install-function-p sym))
+    ;; Mutating the same symbol's plist (what `emacs-stub.el' does via
+    ;; `put' right after installing a placeholder) flips the same
+    ;; predicate call to non-nil.
+    (put sym 'emacs-stub-bulk t)
+    (should (emacs-buffer-builtins--install-function-p sym))))
+
+(ert-deftest emacs-buffer-builtins-test/emacs-stub-buffer-placeholders-are-tagged-stub-bulk ()
+  "Each `buffer.c' synthetic placeholder in `emacs-stub.el' must tag its
+own name `emacs-stub-bulk' (like the `display.c' placeholders just above
+them in that file) so `get-buffer-create' -- or any sibling absent from a
+given NeLisp build's own native buffer family -- is not stuck forever on
+this throwaway `(cons \\='buffer nil)' shape once
+`emacs-buffer-builtins.el' loads its real definition.  Without the tag,
+`--install-function-p' treats the placeholder as a trustworthy prior
+owner (like a host C subr) and never installs the real one; see
+`emacs-buffer-builtins-test/install-function-p-respects-emacs-stub-bulk'
+for that mechanism in isolation."
+  (let ((file (locate-library "emacs-stub")))
+    (should file)
+    (with-temp-buffer
+      (insert-file-contents (if (string-match-p "\\.elc\\'" file)
+                                (substring file 0 -1)
+                              file))
+      (dolist (name '("current-buffer" "bufferp" "buffer-live-p"
+                      "get-buffer" "get-buffer-create" "buffer-name"
+                      "buffer-list"))
+        (goto-char (point-min))
+        (should (search-forward (format "(unless (fboundp '%s)" name) nil t))
+        (goto-char (point-min))
+        (should (search-forward
+                 (format "(put '%s 'emacs-stub-bulk t)" name) nil t))))))
+
+(provide 'emacs-buffer-builtins-test)
+
+;;; emacs-buffer-builtins-test.el ends here
