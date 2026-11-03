@@ -242,10 +242,26 @@ else its author put there."
                                       (directory-files base t "\\`[^.]")))))
     (mapcar #'nelisp-pkg-scan-package dirs)))
 
+(defun nelisp-pkg-gnu-library-features (&optional root)
+  "Return the features of the genuine GNU libraries vendored below ROOT.
+Every file under vendor/emacs-lisp is a verbatim GNU Emacs library, and GNU
+names a library's feature after its file, so the file basenames are the
+features.  They are an external provider: requiring one creates no package
+edge and is not a host require."
+  (let ((dir (expand-file-name "vendor/emacs-lisp" (or root default-directory)))
+        (features nil))
+    (when (file-directory-p dir)
+      (dolist (file (directory-files-recursively dir "\\.el\\'"))
+        (cl-pushnew (intern (file-name-sans-extension
+                             (file-name-nondirectory file)))
+                    features)))
+    features))
+
 (defun nelisp-pkg-core-features (&optional root dirs)
   "Return the features provided outside `packages/'.
-DIRS defaults to src and lisp below ROOT."
-  (let ((features nil))
+DIRS defaults to src and lisp below ROOT.  The default also counts the GNU
+libraries vendored in vendor/emacs-lisp."
+  (let ((features (unless dirs (nelisp-pkg-gnu-library-features root))))
     (dolist (dir (or dirs '("src" "lisp")))
       (let ((full (expand-file-name dir (or root default-directory))))
         (when (file-directory-p full)
