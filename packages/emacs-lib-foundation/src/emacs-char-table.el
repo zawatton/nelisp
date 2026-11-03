@@ -194,7 +194,9 @@ slot count, which remains fixed for the lifetime of the table."
   (let ((slots (or (get subtype 'char-table-extra-slots)
                    ;; The standalone does not preload these symbol properties.
                    (cdr (assq subtype '((case-table . 3) (category-table . 2))))
-                   0)))
+                   ;; Subtypes without a declared count keep the legacy
+                   ;; fixed capacity that existing callers rely on.
+                   emacs-char-table--extra-slots)))
     (unless (and (integerp slots) (>= slots 0))
       (signal 'wrong-type-argument (list 'wholenump slots)))
     (let ((ct (make-vector 7 nil))
