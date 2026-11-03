@@ -12,8 +12,7 @@
 
 (ert-deftest emacs-gv-setter-bootstrap/bundler-orders-real-provider-first ()
   "The eager bundle puts genuine declaration providers before consumers."
-  (let* ((src (nelisp-bootstrap--src-dir))
-         (shim (expand-file-name "emacs-parity-eieio.el" src))
+  (let* ((shim (nelisp-bootstrap--package-file "emacs-parity-eieio.el"))
          (macroexp (nelisp-bootstrap--vendor-source-file
                     "emacs-lisp/emacs-lisp/macroexp.el"))
          (gv (nelisp-bootstrap--vendor-source-file
@@ -29,8 +28,7 @@
 
 (ert-deftest emacs-gv-setter-bootstrap/bundler-rejects-missing-provider ()
   "A missing GNU provider must fail bundle preparation."
-  (let ((shim (expand-file-name "emacs-parity-eieio.el"
-                                (nelisp-bootstrap--src-dir))))
+  (let ((shim (nelisp-bootstrap--package-file "emacs-parity-eieio.el")))
     (cl-letf (((symbol-function 'nelisp-bootstrap--vendor-source-file)
                (lambda (_) nil)))
       (should-error (nelisp-bootstrap--eager-runtime-files (list shim))

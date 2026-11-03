@@ -71,10 +71,84 @@ final `.el' suffix with `.repl'.")
     "emacs-tui-event.el")
   "Local src files that host Emacs may not load but standalone NeLisp needs.")
 
+;; Feature-to-package-path table (Doc 211 section 4.5).  Logical names keep the
+;; historical flat `src/<file>.el' spelling; the real files live in
+;; packages/emacs-lib-*/src (plus the FFI memory owner in packages/nl-ffi).
+(defvar nelisp-bootstrap--package-table nil
+  "Hash table mapping logical `src/<file>.el' names to real package paths.")
+
+(defvar nelisp-bootstrap--package-reverse-table nil
+  "Hash table mapping truenames of package sources to logical names.")
+
+(defconst nelisp-bootstrap--package-source-globs
+  '("packages/emacs-lib-*/src/*.el" "packages/nl-ffi/src/nl-ffi-memory.el")
+  "Repository-relative globs naming the bundled package sources.")
+
+(defun nelisp-bootstrap--package-source-dirs ()
+  "Return the absolute package src directories contributing bundle sources."
+  (let (dirs)
+    (dolist (file (nelisp-bootstrap--package-source-files))
+      (cl-pushnew (file-name-directory file) dirs :test #'equal))
+    (nreverse dirs)))
+
+(defun nelisp-bootstrap--package-source-files ()
+  "Return the sorted absolute package source files."
+  (let (files)
+    (dolist (glob nelisp-bootstrap--package-source-globs)
+      (setq files (append files
+                          (sort (file-expand-wildcards
+                                 (expand-file-name glob nelisp-bootstrap-repo-root))
+                                #'string<))))
+    files))
+
+(defun nelisp-bootstrap--build-package-table ()
+  "Build the logical-name table from package sources; fail on duplicates."
+  (let ((table (make-hash-table :test 'equal))
+        (reverse (make-hash-table :test 'equal)))
+    (dolist (file (nelisp-bootstrap--package-source-files))
+      (let ((name (concat "src/" (file-name-nondirectory file))))
+        (when (gethash name table)
+          (error "Duplicate package source for %s: %s and %s"
+                 name (gethash name table) file))
+        (unless (file-readable-p file)
+          (error "Unreadable package source for %s: %s" name file))
+        (puthash name file table)
+        (puthash (file-truename file) name reverse)))
+    (when (zerop (hash-table-count table))
+      (error "No package sources found below %s" nelisp-bootstrap-repo-root))
+    (setq nelisp-bootstrap--package-table table
+          nelisp-bootstrap--package-reverse-table reverse)
+    table))
+
+(defun nelisp-bootstrap--ensure-package-table ()
+  "Return the package table, building it on first use."
+  (or nelisp-bootstrap--package-table
+      (nelisp-bootstrap--build-package-table)))
+
+(defun nelisp-bootstrap--package-file (name)
+  "Return the real package path for src-relative NAME, or an absent path.
+The absent path is never readable, so callers keep their former
+\"file not present\" behavior."
+  (or (gethash (concat "src/" name) (nelisp-bootstrap--ensure-package-table))
+      (expand-file-name name "/nonexistent-doc211-package-src/")))
+
+(defun nelisp-bootstrap--logical-name (file)
+  "Return the logical bundle name of FILE.
+Package sources map to `src/<file>.el'; everything else (vendor inputs)
+is relative to `nelisp-bootstrap-repo-root'."
+  (nelisp-bootstrap--ensure-package-table)
+  (or (gethash (file-truename file) nelisp-bootstrap--package-reverse-table)
+      (file-relative-name file nelisp-bootstrap-repo-root)))
+
 (defun nelisp-bootstrap--c-core-unit-files ()
   "Return the src/emacs-cc-*.el C-core unit files, sorted by name."
-  (directory-files (expand-file-name "src" nelisp-bootstrap-repo-root)
-                   nil "\\`emacs-cc-.*\\.el\\'"))
+  (let (names)
+    (maphash (lambda (key _file)
+               (let ((name (substring key (length "src/"))))
+                 (when (string-match-p "\\`emacs-cc-.*\\.el\\'" name)
+                   (push name names))))
+             (nelisp-bootstrap--ensure-package-table))
+    (sort names #'string<)))
 
 (defvar nelisp-bootstrap-late-extra-files
   `("lisp.el"
@@ -367,8 +441,7 @@ bundled source that may evaluate a declaration."
                     "emacs-lisp/emacs-lisp/macroexp.el"))
          (gv (nelisp-bootstrap--vendor-source-file
               "emacs-lisp/emacs-lisp/gv.el"))
-         (shim (expand-file-name "emacs-parity-eieio.el"
-                                 (nelisp-bootstrap--src-dir))))
+         (shim (nelisp-bootstrap--package-file "emacs-parity-eieio.el")))
     (unless (and macroexp gv (member shim eager))
       (error "Cannot place GNU macroexp/gv before bootstrap sources"))
     ;; The declaration may be evaluated before the EIEIO shim itself, so
@@ -435,32 +508,38 @@ Normal bootstrap generation emits every normalized form directly as
 split: special and large forms remain direct, while ordinary small forms use
 `nelisp--eval-source-string'.")
 
-(defun nelisp-bootstrap--src-dir ()
-  "Return the absolute src directory."
-  (file-name-as-directory
-   (expand-file-name "src" nelisp-bootstrap-repo-root)))
-
 (defun nelisp-bootstrap--vendor-dir ()
   "Return the absolute vendor directory, honoring an explicit build override."
   (file-name-as-directory
    (expand-file-name (or (getenv "NELISP_BOOTSTRAP_VENDOR_DIR") "vendor")
                      nelisp-bootstrap-repo-root)))
 
+(defconst nelisp-bootstrap--host-only-package-sources
+  '("src/help-mode.el")
+  "Package sources host Emacs loads but the bundle must not carry.
+`help-mode.el' is a host shim that loads GNU help-mode through a filtered
+`load-path'.  The former flat staging tree never produced a bundle entry
+for it (the host loaded it from its package path, outside the staged
+`src/' prefix), so keep it out explicitly now that package paths are
+first-class.")
+
 (defun nelisp-bootstrap--source-file (file)
-  "Return local src source file for FILE, or nil.
+  "Return the package source file for FILE, or nil.
 FILE may be either the source `.el' path or the byte-compiled `.elc'
-path recorded in `load-history'."
-  (let ((src (nelisp-bootstrap--src-dir))
-        (abs (and (stringp file) (expand-file-name file))))
-    (and abs
-         (string-prefix-p src abs)
-         (cond
-          ((and (string-suffix-p ".el" abs)
-                (file-readable-p abs))
-           abs)
-          ((string-suffix-p ".elc" abs)
-           (let ((source (substring abs 0 -1)))
-             (and (file-readable-p source) source)))))))
+path recorded in `load-history'.  Only files named by the package table
+qualify; other loaded files (vendor, host Emacs) are not local sources."
+  (let* ((abs (and (stringp file) (expand-file-name file)))
+         (source (and abs
+                      (cond ((string-suffix-p ".el" abs) abs)
+                            ((string-suffix-p ".elc" abs) (substring abs 0 -1)))))
+         (logical (and source
+                       (file-readable-p source)
+                       (gethash (file-truename source)
+                                (progn (nelisp-bootstrap--ensure-package-table)
+                                       nelisp-bootstrap--package-reverse-table)))))
+    (and logical
+         (not (member logical nelisp-bootstrap--host-only-package-sources))
+         (gethash logical nelisp-bootstrap--package-table))))
 
 (defun nelisp-bootstrap--vendor-source-file (name)
   "Return absolute vendor source file for relative vendor NAME, or nil."
@@ -531,52 +610,50 @@ path recorded in `load-history'."
 
 (defun nelisp-bootstrap--complete-file-list (files)
   "Add standalone-only source files to FILES in a dependency-safe spot."
-  (let ((src (nelisp-bootstrap--src-dir))
-        (out files)
-        (anchor (expand-file-name "emacs-cl-macros.el"
-                                  (nelisp-bootstrap--src-dir))))
+  (let ((out files)
+        (anchor (nelisp-bootstrap--package-file "emacs-cl-macros.el")))
     (dolist (name nelisp-bootstrap-extra-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--package-file name)))
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
-    (setq anchor (expand-file-name "emacs-faces-builtins.el" src))
+    (setq anchor (nelisp-bootstrap--package-file "emacs-faces-builtins.el"))
     (unless (member anchor out)
-      (setq anchor (expand-file-name "emacs-faces.el" src)))
+      (setq anchor (nelisp-bootstrap--package-file "emacs-faces.el")))
     (dolist (name nelisp-bootstrap-late-extra-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--package-file name)))
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
     ;; Keep standalone bootstrap providers ahead of the consumers that
     ;; still load them at top level.
-    (let ((redisplay-core (expand-file-name "emacs-redisplay-core.el" src))
-          (window (expand-file-name "emacs-window.el" src)))
+    (let ((redisplay-core (nelisp-bootstrap--package-file "emacs-redisplay-core.el"))
+          (window (nelisp-bootstrap--package-file "emacs-window.el")))
       (when (and (member redisplay-core out)
                  (member window out))
         (setq out (nelisp-bootstrap--insert-before
                    window redisplay-core (delete window out)))))
-    (let ((compat (expand-file-name "nelisp-emacs-compat.el" src))
-          (window (expand-file-name "emacs-window.el" src)))
+    (let ((compat (nelisp-bootstrap--package-file "nelisp-emacs-compat.el"))
+          (window (nelisp-bootstrap--package-file "emacs-window.el")))
       (when (and (member compat out)
                  (member window out))
         (setq out (nelisp-bootstrap--insert-before
                    compat window (delete compat out)))))
-    (let ((compat (expand-file-name "nelisp-emacs-compat.el" src))
-          (regex (expand-file-name "nelisp-regex.el" src)))
+    (let ((compat (nelisp-bootstrap--package-file "nelisp-emacs-compat.el"))
+          (regex (nelisp-bootstrap--package-file "nelisp-regex.el")))
       (when (and (member compat out)
                  (member regex out))
         (setq out (nelisp-bootstrap--insert-before
                    regex compat (delete regex out)))))
-    (let ((compat (expand-file-name "nelisp-emacs-compat.el" src))
-          (text-buffer (expand-file-name "nelisp-text-buffer.el" src)))
+    (let ((compat (nelisp-bootstrap--package-file "nelisp-emacs-compat.el"))
+          (text-buffer (nelisp-bootstrap--package-file "nelisp-text-buffer.el")))
       (when (and (member compat out)
                  (member text-buffer out))
         (setq out (nelisp-bootstrap--insert-before
                    text-buffer compat (delete text-buffer out)))))
-    (let ((owner (expand-file-name "nl-ffi-memory.el" src))
-          (adapter (expand-file-name "emacs-network-syscall-shim.el" src))
-          (network-ffi (expand-file-name "emacs-network-ffi.el" src)))
+    (let ((owner (nelisp-bootstrap--package-file "nl-ffi-memory.el"))
+          (adapter (nelisp-bootstrap--package-file "emacs-network-syscall-shim.el"))
+          (network-ffi (nelisp-bootstrap--package-file "emacs-network-ffi.el")))
       (when (member network-ffi out)
         (unless (file-readable-p adapter)
           (error "Missing readable bootstrap network syscall shim: %s" adapter))
@@ -586,9 +663,9 @@ path recorded in `load-history'."
                    adapter network-ffi (delete adapter out)))
         (setq out (nelisp-bootstrap--insert-before
                    owner adapter (delete owner out)))))
-    (let ((fileio (expand-file-name "emacs-fileio.el" src))
-          (fileio-gui (expand-file-name "emacs-fileio-gui.el" src))
-          (mode-builtins (expand-file-name "emacs-mode-builtins.el" src)))
+    (let ((fileio (nelisp-bootstrap--package-file "emacs-fileio.el"))
+          (fileio-gui (nelisp-bootstrap--package-file "emacs-fileio-gui.el"))
+          (mode-builtins (nelisp-bootstrap--package-file "emacs-mode-builtins.el")))
       (when (and (member fileio out)
                  (member fileio-gui out))
         (setq out (nelisp-bootstrap--insert-before
@@ -597,8 +674,8 @@ path recorded in `load-history'."
                  (member mode-builtins out))
         (setq out (nelisp-bootstrap--insert-before
                    mode-builtins fileio (delete mode-builtins out)))))
-    (let ((mode (expand-file-name "emacs-mode.el" src))
-          (mode-builtins (expand-file-name "emacs-mode-builtins.el" src)))
+    (let ((mode (nelisp-bootstrap--package-file "emacs-mode.el"))
+          (mode-builtins (nelisp-bootstrap--package-file "emacs-mode-builtins.el")))
       (when (and (member mode out)
                  (member mode-builtins out))
         (setq out (nelisp-bootstrap--insert-before
@@ -607,18 +684,18 @@ path recorded in `load-history'."
     ;; no-op stubs only fill names still void after every real
     ;; implementation has loaded.  Loaded early, the stubs shadow real
     ;; impls gated with `unless (fboundp ...)' (e.g. mapcan / regexp-opt).
-    (let ((bulk (expand-file-name "emacs-stub-bulk.el" src)))
+    (let ((bulk (nelisp-bootstrap--package-file "emacs-stub-bulk.el")))
       (when (member bulk out)
         (setq out (append (delete bulk out) (list bulk)))))
-    (setq anchor (expand-file-name "emacs-mode.el" src))
+    (setq anchor (nelisp-bootstrap--package-file "emacs-mode.el"))
     (dolist (name nelisp-bootstrap-vendor-extra-files)
       (let ((file (nelisp-bootstrap--vendor-source-file name)))
         (unless file
           (error "Missing readable bootstrap vendor extra: %s" name))
         (setq out (nelisp-bootstrap--insert-after file anchor out))
         (setq anchor file)))
-    (let ((core-vars (expand-file-name "emacs-parity-core-vars.el" src))
-          (vars (expand-file-name "emacs-vars.el" src)))
+    (let ((core-vars (nelisp-bootstrap--package-file "emacs-parity-core-vars.el"))
+          (vars (nelisp-bootstrap--package-file "emacs-vars.el")))
       (when (and (member core-vars out)
                  (member vars out))
         (setq out (nelisp-bootstrap--insert-before
@@ -633,15 +710,15 @@ path recorded in `load-history'."
     ;; owns `locate-user-emacs-file'.  `emacs-fileio.el' lands strictly
     ;; after `emacs-mode-builtins.el', so anchoring here satisfies both
     ;; constraints and only ever moves calendar later.
-    (let ((calendar (expand-file-name "calendar.el" src))
-          (calendar-anchor (expand-file-name "emacs-fileio.el" src)))
+    (let ((calendar (nelisp-bootstrap--package-file "calendar.el"))
+          (calendar-anchor (nelisp-bootstrap--package-file "emacs-fileio.el")))
       (when (and (member calendar out)
                  (member calendar-anchor out))
         (setq out (nelisp-bootstrap--insert-after
                    calendar calendar-anchor
                    (delete calendar out)))))
     (dolist (name nelisp-bootstrap-tail-extra-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--package-file name)))
         (when (file-readable-p file)
           (setq out (append (delete file out) (list file))))))
     (dolist (name nelisp-bootstrap-vendor-tail-extra-files)
@@ -650,7 +727,7 @@ path recorded in `load-history'."
           (error "Missing readable bootstrap vendor tail extra: %s" name))
         (setq out (append (delete file out) (list file)))))
     (dolist (name nelisp-bootstrap-post-vendor-tail-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--package-file name)))
         (unless (file-readable-p file)
           (error "Missing readable bootstrap post-vendor-tail file: %s" name))
         (setq out (append (delete file out) (list file)))))
@@ -763,16 +840,15 @@ The standalone cold-boot path must install `cl-defmacro' before
 `generator.el' is evaluated.  Host Emacs can satisfy this through
 dynamic `load' indirection inside `cl-lib', but the generated
 concatenated bootstrap bundle must make the order explicit."
-  (let* ((src (nelisp-bootstrap--src-dir))
-         (macros (expand-file-name "emacs-cl-macros.el" src))
-         (cl-lib (expand-file-name "cl-lib.el" src))
-         (seq (expand-file-name "seq.el" src))
-         (generator (expand-file-name "generator.el" src))
-         (vars (expand-file-name "emacs-vars.el" src))
-         (numeric (expand-file-name "emacs-numeric.el" src))
-         (runtime (expand-file-name "files-runtime.el" src))
+  (let* ((macros (nelisp-bootstrap--package-file "emacs-cl-macros.el"))
+         (cl-lib (nelisp-bootstrap--package-file "cl-lib.el"))
+         (seq (nelisp-bootstrap--package-file "seq.el"))
+         (generator (nelisp-bootstrap--package-file "generator.el"))
+         (vars (nelisp-bootstrap--package-file "emacs-vars.el"))
+         (numeric (nelisp-bootstrap--package-file "emacs-numeric.el"))
+         (runtime (nelisp-bootstrap--package-file "files-runtime.el"))
          (early-foundation
-          (mapcar (lambda (name) (expand-file-name name src))
+          (mapcar (lambda (name) (nelisp-bootstrap--package-file name))
                   '("emacs-vars.el"
                     "emacs-fns.el"
                     "emacs-eval.el"
@@ -816,7 +892,7 @@ concatenated bootstrap bundle must make the order explicit."
                     "emacs-undo-builtins.el"
                     "emacs-edit-builtins.el")))
          (late-loaders
-          (mapcar (lambda (name) (expand-file-name name src))
+          (mapcar (lambda (name) (nelisp-bootstrap--package-file name))
                   '("emacs-foundation.el"
                     "emacs-buffer-core.el"
                     "emacs-editing.el"
@@ -861,15 +937,15 @@ concatenated bootstrap bundle must make the order explicit."
       (setq out (delete numeric out))
       (setq out (nelisp-bootstrap--insert-before numeric seq out)))
     (when (and (member runtime out)
-               (member (expand-file-name "files.el" src) out))
+               (member (nelisp-bootstrap--package-file "files.el") out))
       (setq out (delete runtime out))
       (setq out (nelisp-bootstrap--insert-before
-                 runtime (expand-file-name "files.el" src) out)))
+                 runtime (nelisp-bootstrap--package-file "files.el") out)))
     (dolist (anchor '("files-standalone-buffer.el"
                       "emacs-fileio-builtins.el"
                       "emacs-file-name-handler.el"
                       "nelisp-emacs-compat-fileio.el"))
-      (let ((anchor-file (expand-file-name anchor src)))
+      (let ((anchor-file (nelisp-bootstrap--package-file anchor)))
         (when (and (member runtime out) (member anchor-file out))
           (setq out (delete runtime out))
           (setq out (nelisp-bootstrap--insert-before runtime anchor-file out)))))
@@ -885,8 +961,8 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-keymap-builtins.el" . "emacs-help-gui.el")
                     ("emacs-command-loop-builtins.el" . "emacs-help-gui.el")
                     ("emacs-syntax-table.el" . "emacs-imenu.el")))
-      (let ((owner (expand-file-name (car pair) src))
-            (anchor (expand-file-name (cdr pair) src)))
+      (let ((owner (nelisp-bootstrap--package-file (car pair)))
+            (anchor (nelisp-bootstrap--package-file (cdr pair))))
         (when (and (member owner out) (member anchor out))
           (setq out (delete owner out))
           (setq out (nelisp-bootstrap--insert-before owner anchor out)))))
@@ -918,8 +994,8 @@ concatenated bootstrap bundle must make the order explicit."
                     ("emacs-buffer.el" . "emacs-buffer-builtins.el")
                     ("emacs-undo.el" . "emacs-undo-builtins.el")
                     ("emacs-font-lock.el" . "emacs-font-lock-builtins.el")))
-      (let ((owner (expand-file-name (car pair) src))
-            (builtins (expand-file-name (cdr pair) src)))
+      (let ((owner (nelisp-bootstrap--package-file (car pair)))
+            (builtins (nelisp-bootstrap--package-file (cdr pair))))
         (when (and (member owner out) (member builtins out))
           (setq out (delete owner out))
           (setq out (nelisp-bootstrap--insert-before owner builtins out)))))
@@ -1057,11 +1133,12 @@ concatenated bootstrap bundle must make the order explicit."
   (let* ((vendor (nelisp-bootstrap--vendor-dir))
          (api (expand-file-name "emacs-lisp-api" vendor)))
     (append
-     (cons (nelisp-bootstrap--src-dir)
-           (mapcar (lambda (relative)
-                     (expand-file-name (string-remove-prefix "vendor/" relative)
-                                       vendor))
-                   nelisp-bootstrap-vendor-load-path-subdirs))
+     (append
+      (mapcar (lambda (dir) dir) (nelisp-bootstrap--package-source-dirs))
+      (mapcar (lambda (relative)
+                (expand-file-name (string-remove-prefix "vendor/" relative)
+                                  vendor))
+              nelisp-bootstrap-vendor-load-path-subdirs))
      ;; The API vendor tree is intentionally separate from NeLisp core's
      ;; load-path.  A bundle build may point VENDOR at a nelisp checkout or
      ;; at a staging root containing both emacs-lisp/ and emacs-lisp-api/.
@@ -1102,7 +1179,7 @@ overrides them for workflow tests."
 
 (defun nelisp-bootstrap--emit-post-file-bundle-forms (file)
   "Return extra bundle forms that should follow FILE."
-  (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
+  (let ((rel (nelisp-bootstrap--logical-name file)))
     (cond
      ((string= rel "src/emacs-stub.el")
       '("(provide 'custom)\n"))
@@ -1119,7 +1196,7 @@ overrides them for workflow tests."
 
 (defun nelisp-bootstrap--emit-post-file-repl-forms (file)
   "Return extra REPL forms that should follow FILE."
-  (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
+  (let ((rel (nelisp-bootstrap--logical-name file)))
     (cond
      ((string= rel "src/emacs-stub.el")
       '((provide 'custom)))
@@ -1280,7 +1357,7 @@ strings or comments, and calls with any non-literal argument, are kept."
     (insert nelisp-bootstrap--feature-registry-prologue)
     (insert "\n")
     (dolist (file files)
-      (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
+      (let ((rel (nelisp-bootstrap--logical-name file)))
         (insert "\n;;; >>> " rel "\n")
         (nelisp-bootstrap--insert-bundle-file-body file rel)
         (dolist (feature (nelisp-bootstrap--file-features file))
@@ -1422,7 +1499,7 @@ Nested source-string evaluation is reserved for explicit diagnostics."
       (nelisp-bootstrap--insert-direct-repl-form form))
     (insert "\n")
     (dolist (file files)
-      (let ((rel (file-relative-name file nelisp-bootstrap-repo-root)))
+      (let ((rel (nelisp-bootstrap--logical-name file)))
         (insert "\n;;; >>> " rel "\n")
         (dolist (source-form (nelisp-bootstrap--read-forms-from-file file))
           (let* ((form (nelisp-bootstrap--standalone-repl-form source-form))
@@ -1441,10 +1518,11 @@ Nested source-string evaluation is reserved for explicit diagnostics."
 
 (defun nelisp-bootstrap-build-batch ()
   "Generate `nelisp-bootstrap-output-file' and print a short summary."
-  (let* ((src (nelisp-bootstrap--src-dir))
-         (vendor (nelisp-bootstrap--vendor-dir))
+  (let* ((vendor (nelisp-bootstrap--vendor-dir))
          (nelisp-emacs-vendor-root (directory-file-name vendor)))
-    (add-to-list 'load-path src)
+    (nelisp-bootstrap--build-package-table)
+    (dolist (dir (reverse (nelisp-bootstrap--package-source-dirs)))
+      (add-to-list 'load-path dir))
     (add-to-list 'load-path (expand-file-name "emacs-lisp" vendor) t)
     (add-to-list 'load-path (expand-file-name "emacs-lisp/emacs-lisp" vendor) t)
     (require 'nemacs-main)
@@ -1536,13 +1614,12 @@ This moves those files and leaves every other file in load-history order.  It
 is deliberately not the retired `nelisp-bootstrap--enforce-bootstrap-order'
 pass, which permuted around forty files and measured net-harmful (16 uncaught
 error lines against 3 for the raw order)."
-  (let* ((src (nelisp-bootstrap--src-dir))
-         (generator (expand-file-name "generator.el" src))
+  (let* ((generator (nelisp-bootstrap--package-file "generator.el"))
          (out files))
     (if (not (member generator out))
         out
       (dolist (name nelisp-bootstrap--standalone-definer-files out)
-        (let ((file (expand-file-name name src)))
+        (let ((file (nelisp-bootstrap--package-file name)))
           (when (and (member file out)
                      ;; `member' returns the tail from the element, so a
                      ;; SHORTER tail means a LATER position.  Only move the
@@ -1580,13 +1657,12 @@ call and the boot reported (file-missing \"cal-loaddefs\") even though
 Moving the small leaf shim is deliberate: hoisting `emacs-load.el' instead
 would put the `load' replacement ahead of ~50,000 lines that were measured
 loading under the native one."
-  (let* ((src (nelisp-bootstrap--src-dir))
-         (loader (expand-file-name "emacs-load.el" src))
+  (let* ((loader (nelisp-bootstrap--package-file "emacs-load.el"))
          (out files))
     (if (not (member loader out))
         out
       (dolist (name nelisp-bootstrap--bare-name-vendor-loaders out)
-        (let ((file (expand-file-name name src)))
+        (let ((file (nelisp-bootstrap--package-file name)))
           (when (and (member file out)
                      ;; A longer `member' tail means an earlier position, so
                      ;; this is "FILE currently precedes `emacs-load.el'".

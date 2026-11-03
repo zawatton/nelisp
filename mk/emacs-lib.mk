@@ -2012,14 +2012,15 @@ real-init-audit: build-nelisp-bootstrap
 NELISP_BOOTSTRAP_VENDOR_ROOT = $(if $(NELISP_BOOTSTRAP_VENDOR_DIR),$(NELISP_BOOTSTRAP_VENDOR_DIR),vendor)
 NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-api emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
 NELISP_EMACS_API_SRC_FILES = $(shell find packages/emacs-lib-*/src -type f -name '*.el' -print 2>/dev/null) packages/nl-ffi/src/nl-ffi-memory.el
-NELISP_BOOTSTRAP_SOURCE_ROOT = build/doc211-bootstrap-root
+# The bundle builder resolves features through the package table it builds from
+# packages/emacs-lib-*/src (Doc 211 section 4.5); no staged flat source root.
+NELISP_BOOTSTRAP_SOURCE_ROOT = .
 NELISP_CONSUMER_VENDOR_INPUTS = $(shell find vendor/compat vendor/cond-let vendor/dash.el vendor/llama vendor/magit vendor/transient vendor/with-editor vendor/emacs-etc -type f -print 2>/dev/null)
 
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
-$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/doc211-bootstrap-source-root.sh $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
-	@bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(NELISP_BOOTSTRAP_SOURCE_ROOT))" >/dev/null
-	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L $(NELISP_BOOTSTRAP_SOURCE_ROOT)/src -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \
+$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
+	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
 		--eval '(setq nelisp-bootstrap-repo-root "$(abspath $(NELISP_BOOTSTRAP_SOURCE_ROOT))")' \
