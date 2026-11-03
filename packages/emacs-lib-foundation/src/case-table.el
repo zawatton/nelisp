@@ -185,7 +185,22 @@ the standalone predicate in `emacs-char-table.el'."
 (when (case-table--install-function-p 'map-char-table)
   (defalias 'map-char-table #'case-table--map-char-table))
 
-(defvar case-table--standard (case-table--identity-table)
+(defun case-table--ascii-standard-table ()
+  "Return a fresh lightweight case table with GNU's ASCII letter pairs.
+Down maps A-Z to a-z; the up slot maps a-z back to A-Z.  An identity
+table here makes `upcase'/`downcase' no-ops on runtimes whose casing
+primitives consult `current-case-table'."
+  (let ((down (case-table--identity-table))
+        (up (case-table--identity-table))
+        (c ?A))
+    (while (<= c ?Z)
+      (case-table--set-char-table-range down c (+ c 32))
+      (case-table--set-char-table-range up (+ c 32) c)
+      (setq c (1+ c)))
+    (case-table--put-extra-slot down 0 up)
+    down))
+
+(defvar case-table--standard (case-table--ascii-standard-table)
   "Standard lightweight case table.")
 
 (defvar case-table--current case-table--standard

@@ -1746,6 +1746,20 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
         (setq c-style-alist (cons (cons style description) c-style-alist))))
     style))
 
+;;;; --- mark-marker (one mark marker per buffer, as in GNU buffer.c) ---
+;; Without this, `emacs-stub-bulk' binds `mark-marker' to a nil stub and
+;; `push-mark' (from `yank') signals (wrong-type-argument markerp nil).
+;; Defined before the bulk stubs load below, only when the runtime lacks it.
+
+(unless (fboundp 'mark-marker)
+  (defvar emacs-stub--mark-markers (make-hash-table :test 'eq :weakness 'key)
+    "Buffer -> its mark marker.")
+  (defun mark-marker ()
+    "Return this buffer's mark, as a marker (initially pointing nowhere)."
+    (let ((buf (current-buffer)))
+      (or (gethash buf emacs-stub--mark-markers)
+          (puthash buf (make-marker) emacs-stub--mark-markers)))))
+
 ;; Load the auto-generated bulk stubs last so emacs-stub.el's specific
 ;; (= more accurate) implementations above take precedence — bulk fills
 ;; only the remaining `(unless (fboundp X) ...)' gaps.  Without this
@@ -4433,3 +4447,164 @@ Matches host Emacs for OBJECT = nil (nil is unbound as a function, so the
 alias chain terminates immediately at nil); delegates to the native
 primitive otherwise."
       (if (null object) nil (funcall emacs-stub--native-indirect-function object)))))
+
+;;;; --- with-wrapper-hook (GNU subr.el, verbatim) ---
+;; simple.el's `buffer-substring--filter' (reached from `kill-region' via
+;; `filter-buffer-substring') expands `subr--with-wrapper-hook-no-warnings',
+;; which lives in subr.el and is not part of the standalone bundle.
+
+(unless (fboundp 'subr--with-wrapper-hook-no-warnings)
+  (defmacro subr--with-wrapper-hook-no-warnings (hook args &rest body)
+    "Like (with-wrapper-hook HOOK ARGS BODY), but without warnings."
+    (declare (debug (form sexp def-body)))
+    (let ((funs (make-symbol "funs"))
+          (global (make-symbol "global"))
+          (argssym (make-symbol "args"))
+          (runrestofhook (make-symbol "runrestofhook")))
+      `(letrec ((,runrestofhook
+                 (lambda (,funs ,global ,argssym)
+                   (if (consp ,funs)
+                       (if (eq t (car ,funs))
+                           (funcall ,runrestofhook
+                                    (append ,global (cdr ,funs)) nil ,argssym)
+                         (apply (car ,funs)
+                                (apply-partially
+                                 (lambda (,funs ,global &rest ,argssym)
+                                   (funcall ,runrestofhook ,funs ,global ,argssym))
+                                 (cdr ,funs) ,global)
+                                ,argssym))
+                     (apply (lambda ,args ,@body) ,argssym)))))
+         (funcall ,runrestofhook ,hook
+                  ,(if (symbolp hook)
+                       `(if (local-variable-p ',hook)
+                            (default-value ',hook)))
+                  (list ,@args))))))
+
+(unless (fboundp 'with-wrapper-hook)
+  (defmacro with-wrapper-hook (hook args &rest body)
+    "Run BODY, using wrapper functions from HOOK with additional ARGS."
+    (declare (indent 2) (debug (form sexp body)))
+    `(subr--with-wrapper-hook-no-warnings ,hook ,args ,@body)))
+
+;;;; --- add-to-history (GNU subr.el, verbatim; vars from minibuf.c) ---
+;; `kill-new' records into `kill-ring' through `add-to-history'.
+
+(defvar history-length 100
+  "Maximum length of history lists before truncation takes place.")
+(defvar history-delete-duplicates nil
+  "Non-nil means to delete duplicates in history.")
+
+(unless (fboundp 'add-to-history)
+  (defun add-to-history (history-var newelt &optional maxelt keep-all)
+    "Add NEWELT to the history list stored in the variable HISTORY-VAR.
+Return the new history list.  See GNU `add-to-history' for details."
+    (unless maxelt
+      (setq maxelt (or (get history-var 'history-length)
+                       history-length)))
+    (let ((history (symbol-value history-var))
+          tail)
+      (when (and (listp history)
+                 (or keep-all
+                     (not (stringp newelt))
+                     (> (length newelt) 0))
+                 (or keep-all
+                     (not (equal (car history) newelt))))
+        (if history-delete-duplicates
+            (setq history (delete newelt history)))
+        (setq history (cons newelt history))
+        (when (integerp maxelt)
+          (if (>= 0 maxelt)
+              (setq history nil)
+            (setq tail (nthcdr (1- maxelt) history))
+            (when (consp tail)
+              (setcdr tail nil))))
+        (set history-var history)))))
+
+;;;; --- insert-for-yank (GNU subr.el, verbatim) ---
+;; `yank' inserts through `insert-for-yank', which lives in subr.el.
+
+(defvar yank-undo-function)
+
+(unless (fboundp 'remove-yank-excluded-properties)
+(defun remove-yank-excluded-properties (start end)
+  "Process text properties between START and END, inserted for a `yank'.
+Perform the handling specified by `yank-handled-properties', then
+remove properties specified by `yank-excluded-properties'."
+  (let ((inhibit-read-only t))
+    (dolist (handler yank-handled-properties)
+      (let ((prop (car handler))
+            (fun  (cdr handler))
+            (run-start start))
+        (while (< run-start end)
+          (let ((value (get-text-property run-start prop))
+                (run-end (next-single-property-change
+                          run-start prop nil end)))
+            (funcall fun value run-start run-end)
+            (setq run-start run-end)))))
+    (if (eq yank-excluded-properties t)
+        (set-text-properties start end nil)
+      (remove-list-of-text-properties start end yank-excluded-properties))))
+)
+
+(unless (fboundp 'insert-for-yank)
+(defun insert-for-yank (string)
+  "Insert STRING at point for the `yank' command.
+
+This function is like `insert', except it honors the variables
+`yank-handled-properties' and `yank-excluded-properties', and the
+`yank-handler' text property, in the way that `yank' does.
+
+It also runs the string through `yank-transform-functions'."
+  ;; Allow altering the yank string.
+  (run-hook-wrapped 'yank-transform-functions
+                    (lambda (f) (setq string (funcall f string)) nil))
+  (let (to)
+    (while (setq to (next-single-property-change 0 'yank-handler string))
+      (insert-for-yank-1 (substring string 0 to))
+      (setq string (substring string to))))
+  (insert-for-yank-1 string))
+)
+
+(unless (fboundp 'insert-for-yank-1)
+(defun insert-for-yank-1 (string)
+  "Helper for `insert-for-yank', which see."
+  (let* ((handler (and (stringp string)
+		       (get-text-property 0 'yank-handler string)))
+	 (param (or (nth 1 handler) string))
+	 (opoint (point))
+	 (inhibit-read-only inhibit-read-only)
+	 end)
+
+    ;; FIXME: This throws away any yank-undo-function set by previous calls
+    ;; to insert-for-yank-1 within the loop of insert-for-yank!
+    (setq yank-undo-function t)
+    (if (nth 0 handler) ; FUNCTION
+	(funcall (car handler) param)
+      (insert param))
+    (setq end (point))
+
+    ;; Prevent read-only properties from interfering with the
+    ;; following text property changes.
+    (setq inhibit-read-only t)
+
+    (unless (nth 2 handler) ; NOEXCLUDE
+      (remove-yank-excluded-properties opoint end))
+
+    ;; If last inserted char has properties, mark them as rear-nonsticky.
+    (if (and (> end opoint)
+	     (text-properties-at (1- end)))
+	(put-text-property (1- end) end 'rear-nonsticky t))
+
+    (if (eq yank-undo-function t)		   ; not set by FUNCTION
+	(setq yank-undo-function (nth 3 handler))) ; UNDO
+    (if (nth 4 handler)				   ; COMMAND
+	(setq this-command (nth 4 handler)))))
+)
+
+;;;; --- buffer-read-only error symbol (GNU buffer.c) ---
+;; The runtime signals `buffer-read-only' without error conditions, so
+;; `(condition-case nil ... (error ...))' could not catch it.
+
+(unless (get 'buffer-read-only 'error-conditions)
+  (put 'buffer-read-only 'error-conditions '(buffer-read-only error))
+  (put 'buffer-read-only 'error-message "Buffer is read-only"))
