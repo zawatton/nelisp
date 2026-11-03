@@ -1,26 +1,35 @@
 ;;; nemacs-process-sync-smoke.el --- standalone sync process smoke -*- lexical-binding: nil; -*-
 
 ;; Run on the NeLisp standalone reader.  It loads the library process facade
-;; from src/ and proves the Emacs-shaped synchronous process gateway used by
+;; from the package src/ directories and proves the Emacs-shaped synchronous process gateway used by
 ;; Magit-style callers: `call-process' output capture, non-zero exits,
 ;; explicit buffer destinations, and `git --version'.
 
-(let ((src (or (getenv "NEMACS_PROCESS_SRC") "src")))
-  (setq load-path (cons src load-path))
-  (load (concat src "/emacs-vars.el") nil t)
-  (load (concat src "/emacs-symbol.el") nil t)
-  (load (concat src "/emacs-standalone.el") nil t)
-  (load (concat src "/nelisp-text-buffer.el") nil t)
-  (load (concat src "/nelisp-emacs-compat.el") nil t)
+(defun nemacs-process-smoke--find (dirs name)
+  "Return NAME inside the first of DIRS that holds it."
+  (let ((found nil))
+    (while (and dirs (not found))
+      (let ((path (concat (car dirs) "/" name)))
+        (if (file-exists-p path) (setq found path)))
+      (setq dirs (cdr dirs)))
+    (or found (error "Missing process smoke source %s" name))))
+
+(let ((src (split-string (or (getenv "NEMACS_PROCESS_SRC") "src") ":")))
+  (setq load-path (append src load-path))
+  (load (nemacs-process-smoke--find src "emacs-vars.el") nil t)
+  (load (nemacs-process-smoke--find src "emacs-symbol.el") nil t)
+  (load (nemacs-process-smoke--find src "emacs-standalone.el") nil t)
+  (load (nemacs-process-smoke--find src "nelisp-text-buffer.el") nil t)
+  (load (nemacs-process-smoke--find src "nelisp-emacs-compat.el") nil t)
   ;; `emacs-buffer.el' (required transitively by `emacs-buffer-builtins.el')
   ;; calls `advice-add' at top level.  Host Emacs preloads `nadvice.el', but
   ;; this smoke test's hand-picked load list does not, so the standalone
   ;; reader hits `void-function: advice-add' unless the repo's own
   ;; `unless (fboundp ...)'-guarded substrate for it is loaded first.
-  (load (concat src "/emacs-stub.el") nil t)
-  (load (concat src "/emacs-buffer-builtins.el") nil t)
-  (load (concat src "/emacs-process.el") nil t)
-  (load (concat src "/emacs-process-builtins.el") nil t))
+  (load (nemacs-process-smoke--find src "emacs-stub.el") nil t)
+  (load (nemacs-process-smoke--find src "emacs-buffer-builtins.el") nil t)
+  (load (nemacs-process-smoke--find src "emacs-process.el") nil t)
+  (load (nemacs-process-smoke--find src "emacs-process-builtins.el") nil t))
 
 (fset 'nemacs-process-sync-smoke--print
       '(lambda (line)

@@ -666,11 +666,10 @@ NEMACS_SRC_DIRS := $(filter packages/%/src,$(NEMACS_RESOLVED_DIRS))
 NEMACS_TEST_DIR := $(lastword $(NEMACS_RESOLVED_DIRS))
 NEMACS_PACKAGE_SRC_LOAD_PATH = $(foreach d,$(NEMACS_SRC_DIRS),-L $(NELISP_ROOT)/$(d))
 NELISP_LOAD_PATH = $(NEMACS_PACKAGE_SRC_LOAD_PATH) -L $(NELISP_ROOT)/src
-NEMACS_MERGED_SRC ?= $(BUILD_DIR)/doc211-bootstrap-root/src
-
-.PHONY: doc211-package-source-root
-doc211-package-source-root:
-	bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(BUILD_DIR)/doc211-bootstrap-root)" >/dev/null
+# Colon-separated absolute package source dirs (no staged flat source root).
+empty :=
+colon := :
+NEMACS_PACKAGE_SRC_PATH = $(subst $(empty) ,$(colon),$(foreach d,$(NEMACS_SRC_DIRS),$(abspath $(NELISP_ROOT)/$(d))))
 NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src,$(NEMACS_SRC_DIRS))
 SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
 # `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
@@ -1206,12 +1205,11 @@ nemacs-library-package-layout:
 		-l scripts/nemacs-library-package-layout.el \
 		-f nemacs-library-package-layout-batch
 
-nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide doc211-package-source-root
+nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
 	mkdir -p "$(BUILD_DIR)"
 	@set -eu; scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
 	mkdir -p "$$scaffold_root/scripts"; \
 	if [ ! -e "$$scaffold_root/packages" ]; then ln -s "$(abspath $(NELISP_ROOT)/packages)" "$$scaffold_root/packages"; fi; \
-	if [ ! -e "$$scaffold_root/src" ]; then ln -s "$(abspath $(NEMACS_MERGED_SRC))" "$$scaffold_root/src"; fi; \
 	cp scripts/nemacs-library-package-scaffold.el "$$scaffold_root/scripts/nemacs-library-package-scaffold.el"; \
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-scaffold-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
@@ -1882,10 +1880,10 @@ test-redisplay-core-smoke:
 # Standalone sync process gateway smoke for Magit/Tramp prerequisites:
 # `call-process' inserts output, preserves non-zero exit status, supports
 # explicit buffer destinations, and can run `git --version'.
-proc-smoke: standalone-reader-passthrough doc211-package-source-root
+proc-smoke: standalone-reader-passthrough
 	test -x "$(NELISP_BIN)"
 	@out="$$(timeout $(NELISP_BOOT_TIMEOUT) env \
-		NEMACS_PROCESS_SRC="$(abspath $(NEMACS_MERGED_SRC))" \
+		NEMACS_PROCESS_SRC="$(NEMACS_PACKAGE_SRC_PATH)" \
 		"$(NELISP_BIN)" --load "$(abspath test/emacs-lib/nemacs-process-sync-smoke.el)" 2>&1)"; \
 	printf '%s\n' "$$out"; \
 	if printf '%s\n' "$$out" | grep -q '^PROC-SMOKE-RESULT: PASS$$'; then \
@@ -1911,7 +1909,7 @@ proc-parity-smoke: standalone-reader-passthrough
 		$(EMACS) -Q --batch -l test/nemacs-process-gnu-parity-smoke.el \
 		> "$(BUILD_DIR)/proc-parity-host.out" 2> "$(BUILD_DIR)/proc-parity-host.err"
 	./tools/run-with-deadline.sh $(NELISP_BOOT_TIMEOUT) --label proc-parity-standalone -- \
-		env NEMACS_PROCESS_SRC="$(abspath src)" \
+		env NEMACS_PROCESS_SRC="$(NEMACS_PACKAGE_SRC_PATH)" \
 		"$(NELISP_BIN)" --load "$(abspath test/nemacs-process-gnu-parity-smoke.el)" \
 		2> "$(BUILD_DIR)/proc-parity-standalone.err" \
 		| grep -v '^nil$$' > "$(BUILD_DIR)/proc-parity-standalone.out"

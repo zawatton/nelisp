@@ -209,7 +209,8 @@ def image(b, e):
         return key, path
     tmp = d / ('.building-' + key)
     marker = 'GT-IMAGE-OK'
-    libroot = e / 'build/doc211-bootstrap-root/src'
+    libdirs = sorted(str(d) for d in (e / 'packages').glob('emacs-lib-*/src') if d.is_dir())
+    libdirs += [str(d) for d in [e / 'packages/nl-ffi/src'] if d.is_dir()]
     # Record the runtime's own definitions the bundle overrides; the support
     # file puts them back (see gnu-tests-support.el).
     saved = ' '.join("(cons (quote %s) (symbol-function (quote %s)))" % (n, n)
@@ -221,7 +222,7 @@ def image(b, e):
             '(unless (> (nelisp--arena-dump-image-stream %s) 0) (error "gnu-tests: heap dump failed")) '
             '(princ "%s\\n") t)') % (json.dumps(str(e / 'build/nemacs-bootstrap.el')),
                                      json.dumps(str(support)), json.dumps(str(tmp)), marker)
-    argv = [str(b)] + (['-L', str(libroot)] if libroot.is_dir() else []) + ['--eval', form]
+    argv = [str(b)] + [a for d in libdirs for a in ('-L', d)] + ['--eval', form]
     print(f'gnu-tests: building image {key[:12]} (bundle + ert)', file=sys.stderr)
     t0 = time.monotonic()
     rc = run(argv, base_env(b, e), str(e), int(os.environ.get('GNU_TESTS_IMAGE_TIMEOUT', '600')),

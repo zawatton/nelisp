@@ -76,7 +76,6 @@ if not bundle.is_file():
 # The helper keys images on the exact binary, .cold and bundle bytes.  Also
 # reject source edits that have not reached that bundle (no host build here).
 sources = [root / 'scripts/build-nelisp-bootstrap.el',
-           root / 'scripts/doc211-bootstrap-source-root.sh',
            root / 'packages/nl-ffi/src/nl-ffi-memory.el']
 sources += sorted(root.glob('packages/emacs-lib-*/src/*.el'))
 if any(path.stat().st_mtime_ns > bundle.stat().st_mtime_ns for path in sources if path.is_file()):
