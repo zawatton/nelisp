@@ -13,6 +13,26 @@
 
 (require 'ert)
 (require 'emacs-mode-builtins)
+
+(ert-deftest emacs-mode-builtins/shared-lisp-interaction-state ()
+  (require 'emacs-buffer)
+  (let ((buffer (nelisp-ec-generate-new-buffer "*interaction*"))
+        (major-mode 'fundamental-mode) (mode-name "Fundamental")
+        (emacs-mode--current-major-mode 'fundamental-mode)
+        (emacs-mode--current-mode-name "Fundamental"))
+    (unwind-protect
+        (nelisp-ec-with-current-buffer buffer
+          (emacs-mode-lisp-interaction-mode)
+          (should (eq (emacs-mode-major-mode) 'lisp-interaction-mode))
+          (should (equal (emacs-mode-mode-name) "Lisp Interaction"))
+          (should (eq (emacs-buffer-buffer-local-value 'major-mode buffer)
+                      'lisp-interaction-mode))
+          (should (equal (emacs-buffer-buffer-local-value 'mode-name buffer)
+                         "Lisp Interaction")))
+      (nelisp-ec-kill-buffer buffer))))
+
+(require 'ert)
+(require 'emacs-mode-builtins)
 (require 'cl-lib)
 
 (defmacro emacs-mode-builtins-test--with-fresh-mode (&rest body)
@@ -258,6 +278,36 @@ once, after the mode hook."
       (should-not (commandp 't58-parity-keyword-mode))
       (t58-parity-keyword-mode)
       (should (equal '(after-hook hook body) events)))))
+
+(ert-deftest emacs-mode-builtins-test/derived-mode-reuses-parent-syntax-table ()
+  (let* ((table (make-syntax-table))
+         (t58-shared-syntax-parent-mode-syntax-table table)
+         (t58-shared-syntax-child-mode-syntax-table table))
+    (defvar t58-shared-syntax-parent-mode-syntax-table)
+    (defvar t58-shared-syntax-child-mode-syntax-table)
+    (emacs-mode-define-derived-mode t58-shared-syntax-parent-mode nil "Parent")
+    (emacs-mode-define-derived-mode t58-shared-syntax-child-mode t58-shared-syntax-parent-mode "Child")
+    (with-temp-buffer
+      (t58-shared-syntax-child-mode)
+      (should (eq table (syntax-table)))
+      (should (eq (standard-syntax-table) (char-table-parent table))))))
+
+(defvar t58-bootstrap-syntax-child-mode-syntax-table)
+(ert-deftest emacs-mode-builtins-test/derived-mode-reuses-bootstrap-syntax-view ()
+  (require 'emacs-char-table)
+  (let* ((record (record 'nelisp--syntax-table (make-hash-table :test 'eql) nil))
+         (view (emacs-char-table--storage record))
+         (t58-bootstrap-syntax-child-mode-syntax-table record))
+    (cl-letf (((symbol-function 't58-bootstrap-syntax-parent-mode) #'ignore)
+              ((symbol-function 'syntax-table) (lambda () view))
+              ((symbol-function 'standard-syntax-table) (lambda () nil))
+              ((symbol-function 'char-table-parent) #'emacs-char-table-parent)
+              ((symbol-function 'set-char-table-parent) #'emacs-char-table-set-parent)
+              ((symbol-function 'set-syntax-table) #'identity))
+      (emacs-mode-define-derived-mode t58-bootstrap-syntax-child-mode
+        t58-bootstrap-syntax-parent-mode "Bootstrap")
+      (with-temp-buffer (t58-bootstrap-syntax-child-mode))
+      (should-not (emacs-char-table-parent record)))))
 
 ;;;; G. run-mode-hooks
 

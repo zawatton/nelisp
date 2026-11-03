@@ -92,13 +92,22 @@
 
 (defun emacs-isearch--current-buffer ()
   "Return the current `nelisp-ec-buffer' or signal `user-error'."
-  (or (nelisp-ec-current-buffer)
-      (signal 'user-error '("isearch requires an active nelisp buffer"))))
+  (or (nelisp-ec-current-buffer) (current-buffer)
+      (signal 'user-error '("isearch requires an active buffer"))))
+
+(defun emacs-isearch--point ()
+  "Return point in the active native or legacy buffer."
+  (if (nelisp-ec-current-buffer) (nelisp-ec-point) (point)))
+
+(defun emacs-isearch--goto-char (pos)
+  "Move point in the active native or legacy buffer to POS."
+  (if (nelisp-ec-current-buffer) (nelisp-ec-goto-char pos) (goto-char pos)))
 
 (defun emacs-isearch--with-buffer (buffer fn)
   "Call FN with BUFFER current in the nelisp substrate."
-  (nelisp-ec-with-current-buffer buffer
-    (funcall fn)))
+  (if (nelisp-ec-buffer-p buffer)
+      (nelisp-ec-with-current-buffer buffer (funcall fn))
+    (with-current-buffer buffer (funcall fn))))
 
 (defun emacs-isearch--prompt-string ()
   "Return the current isearch prompt string."
@@ -125,7 +134,9 @@
         (run-beg beg)
         (run-face nil))
     (while (< pos end)
-      (let ((face (emacs-buffer-get-text-property pos 'face buffer)))
+      (let ((face (if (nelisp-ec-buffer-p buffer)
+                      (emacs-buffer-get-text-property pos 'face buffer)
+                    (get-text-property pos 'face buffer))))
         (if (= pos beg)
             (setq run-face face)
           (unless (equal face run-face)
@@ -141,9 +152,14 @@
   "Restore BUFFER text properties from saved face RUNS."
   (dolist (run runs)
     (pcase-let ((`(,beg ,end ,face) run))
-      (if face
-          (emacs-buffer-put-text-property beg end 'face face buffer)
-        (emacs-buffer-remove-text-properties beg end '(face) buffer)))))
+      (if (nelisp-ec-buffer-p buffer)
+          (if face
+              (emacs-buffer-put-text-property beg end 'face face buffer)
+            (emacs-buffer-remove-text-properties beg end '(face) buffer))
+        (with-current-buffer buffer
+          (let ((buffer-undo-list t))
+            (if face (put-text-property beg end 'face face)
+              (remove-text-properties beg end '(face nil)))))))))
 
 (defun emacs-isearch--clear-highlight ()
   "Remove the active isearch highlight and restore prior face state."
@@ -162,9 +178,13 @@
   (emacs-isearch--clear-highlight)
   (setq emacs-isearch--saved-face-runs
         (emacs-isearch--snapshot-face-runs beg end emacs-isearch--buffer))
-  (emacs-buffer-put-text-property beg end 'face
-                                  emacs-isearch-highlight-face
-                                  emacs-isearch--buffer)
+  (if (nelisp-ec-buffer-p emacs-isearch--buffer)
+      (emacs-buffer-put-text-property beg end 'face
+                                      emacs-isearch-highlight-face
+                                      emacs-isearch--buffer)
+    (with-current-buffer emacs-isearch--buffer
+      (let ((buffer-undo-list t))
+        (put-text-property beg end 'face emacs-isearch-highlight-face))))
   (setq emacs-isearch--match-beg beg
         emacs-isearch--match-end end))
 
@@ -199,7 +219,7 @@ Return non-nil on success and update the temporary highlight."
 
 (defun emacs-isearch-restore-start-direct (start-point)
   "Restore point to START-POINT and return a movement plist."
-  (nelisp-ec-goto-char start-point)
+  (emacs-isearch--goto-char start-point)
   (list :status 'restored
         :point start-point
         :failing nil))
@@ -218,7 +238,7 @@ The returned plist contains `:status', `:found', `:failing', and
           :start-point start-point
           :found nil
           :failing nil
-          :point (nelisp-ec-point)))
+          :point (emacs-isearch--point)))
    (t
     (emacs-isearch-restore-start-direct start-point)
     (let ((found
@@ -235,7 +255,7 @@ The returned plist contains `:status', `:found', `:failing', and
               :start-point start-point
               :found found
               :failing nil
-              :point (nelisp-ec-point)))
+              :point (emacs-isearch--point)))
        (t
         (emacs-isearch-restore-start-direct start-point)
         (list :status 'failing
@@ -244,14 +264,14 @@ The returned plist contains `:status', `:found', `:failing', and
               :start-point start-point
               :found nil
               :failing t
-              :point (nelisp-ec-point))))))))
+              :point (emacs-isearch--point))))))))
 
 (defun emacs-isearch-repeat-direct (query direction)
   "Repeat QUERY search from current point in DIRECTION.
 Return a plist with `:status', `:found', `:failing', and `:point'.  When
 QUERY is empty or no match is found, point is left at the original
 position."
-  (let ((origin (nelisp-ec-point)))
+  (let ((origin (emacs-isearch--point)))
     (cond
      ((or (null query) (= (length query) 0))
       (list :status 'empty
@@ -274,9 +294,9 @@ position."
                 :direction direction
                 :found found
                 :failing nil
-                :point (nelisp-ec-point)))
+                :point (emacs-isearch--point)))
          (t
-          (nelisp-ec-goto-char origin)
+          (emacs-isearch--goto-char origin)
           (list :status 'failing
                 :query query
                 :direction direction
@@ -291,18 +311,18 @@ position."
    (lambda ()
      (if (= (length emacs-isearch--query) 0)
          (progn
-           (nelisp-ec-goto-char emacs-isearch--start-point)
+           (emacs-isearch--goto-char emacs-isearch--start-point)
            (setq emacs-isearch--failing nil)
            (emacs-isearch--clear-highlight)
            t)
        (let ((origin emacs-isearch--start-point))
-         (nelisp-ec-goto-char origin)
+         (emacs-isearch--goto-char origin)
          (let ((found (emacs-isearch--search-current
                        emacs-isearch--query
                        emacs-isearch--direction)))
            (setq emacs-isearch--failing (null found))
            (unless found
-             (nelisp-ec-goto-char origin)
+             (emacs-isearch--goto-char origin)
              (emacs-isearch--clear-highlight))
            found))))))
 
@@ -359,12 +379,17 @@ Return `commit', `abort', or `continue'."
 
 (defun emacs-isearch--finish (result)
   "Tear down the active session and return RESULT."
-  (let ((final-query emacs-isearch--query))
+  (let ((final-query emacs-isearch--query)
+        (native (not (nelisp-ec-buffer-p emacs-isearch--buffer))))
+    (when (and native (eq result 'commit))
+      (emacs-isearch--with-buffer
+       emacs-isearch--buffer
+       (lambda () (push-mark emacs-isearch--start-point t))))
     (when (eq result 'abort)
       (emacs-isearch--with-buffer
        emacs-isearch--buffer
        (lambda ()
-         (nelisp-ec-goto-char emacs-isearch--start-point))))
+         (emacs-isearch--goto-char emacs-isearch--start-point))))
     (emacs-isearch--clear-highlight)
     (setq emacs-isearch--active nil
           emacs-isearch--buffer nil
@@ -376,7 +401,8 @@ Return `commit', `abort', or `continue'."
      "%s"
      (if (eq result 'abort)
          "I-search aborted"
-       (format "I-search: %s" final-query)))
+       (if native "Mark saved where search started"
+         (format "I-search: %s" final-query))))
     (if (eq result 'abort) nil final-query)))
 
 (defun emacs-isearch--run (direction)
@@ -386,7 +412,7 @@ Return `commit', `abort', or `continue'."
         emacs-isearch--direction direction
         emacs-isearch--query ""
         emacs-isearch--start-point
-        (emacs-isearch--with-buffer emacs-isearch--buffer #'nelisp-ec-point)
+        (emacs-isearch--with-buffer emacs-isearch--buffer #'emacs-isearch--point)
         emacs-isearch--failing nil)
   (emacs-isearch--clear-highlight)
   (catch 'done

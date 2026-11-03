@@ -14,6 +14,14 @@
 (require 'emacs-command-loop-builtins)
 (require 'cl-lib)
 
+(ert-deftest emacs-command-loop-retains-recovered-condition-for-observers ()
+  (let ((emacs-command-loop--last-error nil))
+    (cl-letf (((symbol-function 'message) #'ignore))
+      (emacs-command-loop--recover-command-error '(error "observer negative")))
+    (should (equal emacs-command-loop--last-error '(error "observer negative")))
+    (emacs-command-loop-reset)
+    (should-not emacs-command-loop--last-error)))
+
 (defmacro emacs-command-loop-builtins-test--with-fresh-state (&rest body)
   "Run BODY with a clean substrate state."
   (declare (indent 0) (debug (body)))
@@ -266,13 +274,79 @@
       (fmakunbound sym))))
 
 (ert-deftest emacs-command-loop-builtins-test/kill-emacs-helper-calls-exit ()
-  (let (calls)
+  (let (calls kill-emacs-hook)
     (cl-letf (((symbol-function 'exit)
                (lambda (code) (push code calls) :exited)))
       (should (eq :exited (emacs-command-loop-kill-emacs)))
       (should (eq :exited (emacs-command-loop-kill-emacs 42)))
       (should (eq :exited (emacs-command-loop-kill-emacs 'bad))))
     (should (equal calls '(1 42 0)))))
+
+(ert-deftest emacs-command-loop-builtins-test/kill-restores-tty-before-immediate-exit ()
+  (let* (calls
+         (kill-emacs-hook (list (lambda () (push 'hook calls)))))
+    (cl-letf (((symbol-function 'terminal-raw-mode-leave)
+               (lambda () (push 'restore calls)))
+              ((symbol-function 'nelisp--exit-process)
+               (lambda (code) (push (list 'exit code) calls))))
+      (emacs-command-loop-kill-emacs 42))
+    (should (equal (nreverse calls) '(hook restore (exit 42))))))
+
+(ert-deftest emacs-command-loop-builtins-test/sit-for-interrupt-preserves-input ()
+  (let ((now 0.0) (unread-command-events nil)
+        (unread-post-input-method-events nil)
+        (unread-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-pending-function
+         (lambda () unread-command-events)))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now))
+              ((symbol-function 'sleep-for)
+               (lambda (seconds &optional _)
+                 (setq now (+ now seconds))
+                 (when (>= now 0.2) (setq unread-command-events '(?!)))))
+              ((symbol-function 'emacs-timer-run-pending) #'ignore)
+              ((symbol-function 'emacs-timer-run-idle) #'ignore))
+      (should-not (emacs-command-loop-sit-for 5 t))
+      (should (< now 0.22))
+      (should (equal unread-command-events '(?!))))))
+
+(ert-deftest emacs-command-loop-builtins-test/sit-for-timeout-and-timers ()
+  (let ((now 0.0) (regular 0) (idle 0)
+        (unread-command-events nil) (unread-post-input-method-events nil)
+        (unread-input-method-events nil)
+        (emacs-command-loop--unread-events nil)
+        (emacs-command-loop-input-pending-function (lambda () nil)))
+    (cl-letf (((symbol-function 'float-time) (lambda (&optional _) now))
+              ((symbol-function 'sleep-for)
+               (lambda (seconds &optional _) (setq now (+ now seconds))))
+              ((symbol-function 'emacs-timer-run-pending)
+               (lambda (&optional _) (setq regular (1+ regular))))
+              ((symbol-function 'emacs-timer-idle-seconds) (lambda () now))
+              ((symbol-function 'emacs-timer-run-idle)
+               (lambda (_) (setq idle (1+ idle)))))
+      (should (emacs-command-loop-sit-for 0.05 t))
+      (should (>= now 0.05))
+      (should (> regular 0))
+      (should (> idle 0))
+      (should (emacs-command-loop-sit-for 0 t))
+      (should-error (emacs-command-loop-sit-for "bad" t)
+                    :type 'wrong-type-argument))))
+
+(ert-deftest emacs-command-loop-builtins-test/process-exit-between-dispatch-and-source-query ()
+  ;; POSIX status access can reap a child after the first output poll.
+  ;; Its last output must still be dispatched before the wait returns.
+  (let ((exited nil) output)
+    (cl-letf (((symbol-function 'emacs-process-dispatch-pending)
+               (lambda (process just-this-one)
+                 (should (eq process 'child))
+                 (should just-this-one)
+                 (when exited (setq output "last output\n") t)))
+              ((symbol-function 'emacs-process-wait-source-p)
+               (lambda (_) (setq exited t) nil))
+              ((symbol-function 'emacs-frame-builtins-reconcile-terminal-sizes)
+               #'ignore))
+      (should (cdr (emacs-command-loop-wait 1 'process 'child t t)))
+      (should (equal output "last output\n")))))
 
 ;;;; M. Phase B.2 — read-key-sequence
 
@@ -1025,6 +1099,9 @@
     (emacs-command-loop-install-basic-edit-key-bindings m)
     (should (eq 'self-insert-command (lookup-key m (vector ?a))))
     (should (eq 'newline (lookup-key m (vector 13))))
+    (should (eq 'newline (lookup-key m [return])))
+    (should (eq 'newline (lookup-key m [10])))
+    (should (eq 'newline (lookup-key m [linefeed])))
     (should (eq 'delete-backward-char (lookup-key m (vector 127))))
     (should (eq 'delete-backward-char (lookup-key m (vector 'backspace))))
     (should (eq 'forward-char (lookup-key m (vector ?\C-f))))
@@ -2819,7 +2896,8 @@ and a queued event still takes precedence (Doc 06 A1)."
     (emacs-command-loop-feed-events ?q)
     (should (= ?q (emacs-command-loop-read-event)))
     (let ((emacs-command-loop-input-poll-function (lambda (_ms) nil)))
-      (should-error (emacs-command-loop-read-event)
+      ;; A live input provider returning nil means no key yet, not EOF.
+      (should-error (emacs-command-loop-read-event nil nil 0)
                     :type 'emacs-command-loop-no-input))))
 
 (ert-deftest emacs-command-loop-builtins-test/called-interactively-flag ()
@@ -2978,3 +3056,7 @@ keymap needs to override a frontend's default handling for that key."
         (should (eq 'emacs-command-loop-builtins-test--dispatch-fixture
                     (emacs-command-loop-dispatch-key ?n)))
         (should emacs-command-loop-builtins-test--dispatch-ran)))))
+
+(ert-deftest emacs-command-loop-standard-keymap-includes-copy-region ()
+  (let ((map (emacs-command-loop-build-standard-keymap)))
+    (should (eq (lookup-key map (kbd "M-w")) 'kill-ring-save))))

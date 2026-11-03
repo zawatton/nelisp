@@ -563,15 +563,26 @@ the standalone predicate in `emacs-char-table.el'."
     "Return non-nil when the active fallback region should be used."
     (region-active-p)))
 
+(defun lisp--region-mark ()
+  "Return the mark clipped to the accessible buffer, or signal an error."
+  (when (and (boundp 'transient-mark-mode) transient-mark-mode
+             (not mark-active)
+             (boundp 'mark-even-if-inactive) (not mark-even-if-inactive))
+    (signal 'mark-inactive nil))
+  (let ((position (mark t)))
+    (unless position
+      (error "The mark is not set now, so there is no region"))
+    (max (point-min) (min (point-max) position))))
+
 (when (lisp--install-function-p 'region-beginning)
   (defun region-beginning ()
-    "Return the smaller of point and the fallback mark."
-    (min (point) (or lisp--mark (point)))))
+    "Return the smaller of point and the accessible mark position."
+    (min (point) (lisp--region-mark))))
 
 (when (lisp--install-function-p 'region-end)
   (defun region-end ()
-    "Return the larger of point and the fallback mark."
-    (max (point) (or lisp--mark (point)))))
+    "Return the larger of point and the accessible mark position."
+    (max (point) (lisp--region-mark))))
 
 (when (lisp--install-function-p 'deactivate-mark)
   (defun deactivate-mark (&optional _force)

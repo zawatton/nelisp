@@ -31,6 +31,7 @@
          (nemacs-main--event-handle nil)
          (nemacs-main--tui-features-loaded-p nil)
          (nemacs-main--tui-state-prepared-p nil)
+         (nemacs-main--tui-heap-prepared-p nil)
          (nemacs-main--quit-flag nil))
      ,@body))
 
@@ -61,6 +62,31 @@
     (should (fboundp sym))))
 
 ;;;; B. nemacs-main-option
+
+(ert-deftest nemacs-main-test/xcb-startup-preserves-native-buffer-selection ()
+  "A startup function's selected buffer wins over the unused pure scratch."
+  (let ((nemacs-initialized t)
+        (nemacs-main-options '(:frontend xcb))
+        (emacs-window--root nil)
+        (emacs-window--selected nil)
+        (nelisp-ec--current-buffer nil)
+        (nelisp-ec--buffers nil)
+        (native (generate-new-buffer " *xcb-startup*")))
+    (unwind-protect
+        (progn
+          (nelisp-ec-set-buffer (nelisp-ec-generate-new-buffer "*scratch*"))
+          (cl-letf (((symbol-function 'nemacs-main--apply-options)
+                     (lambda ()
+                       (emacs-window-set-window-buffer
+                        (emacs-window-selected-window) native)))
+                    ((symbol-function 'nemacs-main--init-keymap) #'ignore)
+                    ((symbol-function 'require) (lambda (&rest _) t))
+                    ((symbol-function 'nelisp-gui-frontend-run)
+                     (lambda ()
+                       (should (eq (emacs-window-window-buffer
+                                    (emacs-window-selected-window)) native)))))
+            (nemacs-main)))
+      (kill-buffer native))))
 
 (ert-deftest nemacs-main-test/option-returns-default ()
   (nemacs-main-test--with-options nil
@@ -374,8 +400,8 @@ not the fatal `-l' error handler's 255."
       (nemacs-main--shutdown-tui)
       (nemacs-uninit))))
 
-(ert-deftest nemacs-main-test/realise-tui-reuses-prepared-image-state ()
-  "Runtime images can bake pure-Elisp TUI state before realisation."
+(ert-deftest nemacs-main-test/realise-tui-reuses-prepared-process-state ()
+  "Repeated realisation reuses in-process pure-Elisp TUI state."
   (let ((nemacs-initialized nil)
         (nemacs--initial-buffer nil))
     (unwind-protect
@@ -471,6 +497,24 @@ not the fatal `-l' error handler's 255."
         (should (= 1 redisplays))
         (should (= 1 flushes))))))
 
+(ert-deftest nemacs-main-test/idle-deadline-includes-repaint-time ()
+  (nemacs-main-test--fresh-runner
+    (let ((clock 100.0) (activity t) (elapsed nil)
+          (nemacs-main--idle-since nil))
+      (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+                ((symbol-function 'nemacs-main--handle-sigcont) (lambda () nil))
+                ((symbol-function 'nemacs-main--handle-winsize) (lambda () nil))
+                ((symbol-function 'nemacs-main--drain-input-burst) (lambda (_) activity))
+                ((symbol-function 'emacs-timer-run-pending) (lambda () nil))
+                ((symbol-function 'emacs-timer-reset-idle) (lambda () nil))
+                ((symbol-function 'nemacs-main--repaint-tui) (lambda () (setq clock 100.4)))
+                ((symbol-function 'emacs-timer-run-idle) (lambda (seconds) (setq elapsed seconds))))
+        (nemacs-main--event-loop-tick 0)
+        (setq activity nil)
+        (nemacs-main--event-loop-tick 0)
+        ;; A .2-second idle timer is already due after a .4-second repaint.
+        (should (> elapsed .2))))))
+
 (ert-deftest nemacs-main-test/event-loop-tick-burst-repaints-once ()
   "Queued input should drain in one tick and repaint once."
   (nemacs-main-test--fresh-runner
@@ -502,7 +546,7 @@ not the fatal `-l' error handler's 255."
   (nemacs-main-test--fresh-runner
     (let ((nemacs-main--backend 'backend)
           (nemacs-main--frame 'frame)
-          (nemacs-main--redisplay 'redisplay)
+          (nemacs-main--redisplay (list :core t))
           (nemacs-main--repaint-hint nil)
           (nemacs-main--insert-repaint-hint (vector 'insert-char 0 1 1))
           (nemacs-main--insert-text-repaint-hint (vector 'insert-text "" 1 1))
@@ -2642,6 +2686,42 @@ realised, and tolerates the absence of `terminal-current-winsize'."
         (nemacs-main--frame nil))
     (should-not (nemacs-main--enter-fullscreen))
     (should-not (nemacs-main--leave-fullscreen))))
+
+(ert-deftest nemacs-main-test/s22-image-preload-creates-no-terminal-handles ()
+  (nemacs-main-test--fresh-runner
+    (cl-letf (((symbol-function 'emacs-init-load-tui-core-features)
+               (lambda () nil))
+              ((symbol-function 'emacs-tui-backend-init)
+               (lambda (&rest _) (error "Image preload created terminal state"))))
+      (nemacs-main--prepare-tui-features)
+      (should nemacs-main--tui-features-loaded-p)
+      (should-not nemacs-main--backend)
+      (should-not nemacs-main--frame)
+      (should-not nemacs-main--redisplay)
+      (should-not nemacs-main--event-handle)
+      (should-not nemacs-main--tui-state-prepared-p))))
+
+(ert-deftest nemacs-main-test/image-heap-collection-is-retained-without-terminal-state ()
+  "Image preparation must settle GC without installing live terminal objects."
+  (nemacs-main-test--fresh-runner
+    (let ((collections 0))
+      (cl-letf (((symbol-function 'nelisp--repr) (lambda (_object) nil))
+                ((symbol-function 'garbage-collect)
+                 (lambda (&rest _) (setq collections (1+ collections))))
+                ((symbol-function 'emacs-init-load-tui-core-features)
+                 (lambda () (error "Heap cleanup loaded TUI features")))
+                ((symbol-function 'emacs-tui-backend-init)
+                 (lambda (&rest _) (error "Heap cleanup created terminal state"))))
+        (nemacs-main--prepare-image-heap)
+        (should nemacs-main--tui-heap-prepared-p)
+        ;; Restoring this flag avoids paying bootstrap GC again at startup.
+        (nemacs-main--prepare-image-heap)
+        (should (= collections 1))
+        (should-not nemacs-main--tui-features-loaded-p)
+        (should-not nemacs-main--backend)
+        (should-not nemacs-main--frame)
+        (should-not nemacs-main--redisplay)
+        (should-not nemacs-main--event-handle)))))
 
 (provide 'nemacs-main-test)
 

@@ -66,14 +66,18 @@
 
 (unless (fboundp 'get-truename-buffer)
   (defun get-truename-buffer (filename)
-    "Return a buffer visiting FILENAME by its file truename."
-    (unless (stringp filename) (signal 'wrong-type-argument (list 'stringp filename)))
-    (let ((true (file-truename filename)) found)
+    "Return the first live buffer whose file truename equals FILENAME.
+Compare FILENAME directly with `buffer-file-truename', without resolving
+the file name.  Symbols compare by their names, as with `string-equal'."
+    (catch 'found
       (dolist (buffer (buffer-list))
-        (when (and (buffer-live-p buffer) (buffer-file-name buffer)
-                   (equal (condition-case nil (file-truename (buffer-file-name buffer)) (error nil)) true))
-          (setq found buffer)))
-      found)))
+        (when (buffer-live-p buffer)
+          (let ((true (condition-case nil
+                          (buffer-local-value 'buffer-file-truename buffer)
+                        (void-variable nil))))
+            (when (and true (string-equal true filename))
+              (throw 'found buffer)))))
+      nil)))
 
 (unless (fboundp 'internal--set-buffer-modified-tick)
   (defun internal--set-buffer-modified-tick (tick &optional buffer)

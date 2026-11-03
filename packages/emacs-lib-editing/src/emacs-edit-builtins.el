@@ -16,9 +16,9 @@
 ;;   - kill-ring infra: `kill-ring' / `kill-new' / `copy-region-as-kill'
 ;;     / `kill-region' / `kill-line' / `kill-word' / `kill-sentence'
 ;;     / `kill-sexp' / `yank'
-;;   - word motion: `forward-word' / `backward-word' (= ASCII alnum
-;;     boundary — syntax-table integration deferred to a future phase
-;;     once `nelisp-ec' grows a syntax-class accessor).
+;;   - word motion: `forward-word' / `backward-word' (current syntax
+;;     table, with script/category boundaries when the runtime supplies
+;;     the corresponding tables).
 ;;
 ;; Out of scope (= deferred):
 ;;
@@ -53,8 +53,24 @@
   ;; did nothing there.  Only nil-returning bulk stubs and absent names are
   ;; installed.
   (or (get symbol 'emacs-stub-bulk)
+      ;; GNU's retained Lisp `newline' delegates to native primitives.
+      ;; This shared command also supports the explicit ec-buffer adapter
+      ;; while ordinary native commands keep their current buffer.
+      (and (eq symbol 'newline)
+           (fboundp 'nelisp--write-stdout-bytes))
       (not (boundp 'emacs-version))
       (not (fboundp symbol))))
+
+(defvar emacs-edit--pure-buffer-context nil
+  "Non-nil while the shared dispatcher edits its explicit ec-buffer.
+Ordinary native commands always use `current-buffer', even when an unrelated
+ec-buffer exists.  The shared key-dispatch adapter binds this context.")
+
+(defun emacs-edit--pure-buffer-p ()
+  "Return non-nil when the selected editing owner is an ec-buffer."
+  (and (nelisp-ec-current-buffer)
+       (or emacs-edit--pure-buffer-context
+           (nelisp-ec-buffer-p (current-buffer)))))
 
 ;;;; --- last-command-event placeholder ---------------------------------
 
@@ -65,6 +81,16 @@
 (unless (boundp 'last-command-event)
   (defvar last-command-event nil
     "Phase E placeholder for the command-loop-set last input event."))
+
+;; GNU's retained auto-save-mode reads this editing slot before the first
+;; save (SKK disables auto-save on its dictionary buffers).  Native buffers
+;; need the same zero default and per-buffer assignment behavior as GNU.
+(unless (boundp 'buffer-saved-size)
+  (defvar-local buffer-saved-size 0
+    "Buffer size recorded by the last save; negative values suspend auto-save."))
+;; The standalone reader does not implement defvar-local registration.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (emacs-buffer-declare-per-buffer 'buffer-saved-size 0))
 
 ;;;; --- character insertion --------------------------------------------
 
@@ -101,6 +127,11 @@ used for non-overwrite integer insertion."
                            (list 'character-or-string char)))))
          (single-integer (and (integerp char) char)))
     (cond
+     ((and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p (current-buffer))
+           (not (emacs-edit--pure-buffer-p)))
+      (let ((beg (point)))
+        (emacs-edit--self-insert-command 1 char)
+        (list :beg beg :end (point) :text text :overwrote nil)))
      ((and prefer-fast
            single-integer
            (not (emacs-edit-overwrite-mode-active-p))
@@ -179,77 +210,107 @@ The result contains `:status', `:message', and `:edit'."
           :edit edit)))
 
 (defun emacs-edit--self-insert-command (n char)
-  "Pure-Elisp body for `self-insert-command'."
-  (let* ((c (or char last-command-event))
-         (count (or n 1))
-         (s (cond
-             ((null c)
-              (signal 'error '("self-insert-command: no char to insert")))
-             ((stringp c) c)
-             ((integerp c) (string c))
-             (t (signal 'wrong-type-argument
-                        (list 'character-or-string c))))))
-    (let ((i 0))
-      (while (< i count)
-        (let ((beg (nelisp-ec-point)))
-          ;; Phase 2.AI overwrite: delete the char at point first
-          ;; (unless at EOB or just before a `\n', so we don't eat
-          ;; the line terminator).
-          (when (and overwrite-mode
-                     (< beg (nelisp-ec-point-max))
-                     (not (eq (let ((sub (nelisp-ec-buffer-substring
-                                          beg (1+ beg))))
-                                (and (> (length sub) 0) (aref sub 0)))
-                              ?\n)))
-            (let ((deleted (nelisp-ec-buffer-substring beg (1+ beg))))
-              (nelisp-ec-delete-region beg (1+ beg))
-              (when (fboundp 'emacs-undo-record-delete)
-                (emacs-undo-record-delete deleted beg))))
-          (nelisp-ec-insert s)
-          (when (fboundp 'emacs-undo-record-insert)
-            (emacs-undo-record-insert beg (nelisp-ec-point)))
-          ;; Doc 51 Track S — mark dirty for next jit-lock flush.
-          (when (fboundp 'emacs-font-lock-mark-dirty-region)
-            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))
-        (setq i (+ i 1))))
-    nil))
+  "Insert CHAR N times in the current buffer, running insertion hooks."
+  (unless (fixnump n)
+    (signal 'wrong-type-argument (list 'fixnump n)))
+  (when char
+    (setq last-command-event char))
+  (when (< n 0)
+    (error "Negative repetition argument %d" n))
+  (let ((c (or char last-command-event)))
+    (if (not (characterp c))
+        (ding)
+      (if (emacs-edit--pure-buffer-p)
+          (let ((remaining n))
+            (while (> remaining 0)
+              (emacs-edit-self-insert-direct c)
+              (setq remaining (1- remaining))))
+        (progn
+	  (when (and (> n 0) (not inhibit-read-only))
+            (barf-if-buffer-read-only))
+	  (when (and (boundp 'abbrev-mode) abbrev-mode
+                     (not (eq (char-syntax c) ?w))
+                     (eq (char-syntax (preceding-char)) ?w))
+            (expand-abbrev))
+	  (let ((beg (point)))
+            (when (and (emacs-edit-overwrite-mode-active-p) (> n 0))
+              (let ((end beg)
+                    (padding 0))
+		(if (eq overwrite-mode 'overwrite-mode-binary)
+                    (setq end (min (+ beg n) (point-max)))
+		  ;; Text overwrite preserves newlines and tabs extending past
+		  ;; the insertion's target column.  A partially covered wide
+		  ;; character is replaced by spaces for its remaining columns.
+		  (unless (eq c ?\n)
+                    (let* ((column (current-column))
+			   (target (+ column
+                                      (if (eq c ?\t)
+					  (+ (- tab-width (% column tab-width))
+                                             (* (1- n) tab-width))
+					(* n (char-width c)))))
+			   (scanning t))
+                      (while (and scanning (< end (point-max))
+				  (< column target))
+			(let* ((next (char-after end))
+                               (width (if (eq next ?\t)
+					  (- tab-width (% column tab-width))
+					(char-width next))))
+			  (cond
+			   ((or (eq next ?\n)
+				(and (eq next ?\t) (> (+ column width) target)))
+                            (setq scanning nil))
+			   (t
+                            (setq end (1+ end)
+				  column (+ column width))
+                            (when (> column target)
+                              (setq padding (- column target))))))))))
+		(let ((deleted (buffer-substring beg end)))
+		  (delete-region beg end)
+		  (when (fboundp 'emacs-undo-record-delete)
+                    (emacs-undo-record-delete deleted beg)))
+		(when (> padding 0)
+		  (insert-char ?\s padding t)
+		  (when (fboundp 'emacs-undo-record-insert)
+                    (emacs-undo-record-insert beg (point)))
+		  (goto-char beg))))
+            (insert-char c n t)
+            (when (fboundp 'emacs-undo-record-insert)
+              (emacs-undo-record-insert beg (point)))
+            (when (and (boundp 'auto-fill-function) auto-fill-function
+                       (boundp 'auto-fill-chars)
+                       (aref auto-fill-chars c))
+              (internal-auto-fill))
+            (when (fboundp 'emacs-font-lock-mark-dirty-region)
+              (emacs-font-lock-mark-dirty-region beg (point))))))
+      (run-hooks 'post-self-insert-hook)))
+  nil)
 
 (when (emacs-edit-builtins--install-function-p 'self-insert-command)
-  (defun self-insert-command (&optional n char)
-    "Phase E polyfill: insert CHAR (or `last-command-event') N times.
-N defaults to 1.  CHAR may be an integer or a single-char string;
-when nil, falls back to `last-command-event'.
-
-Track E.2: when the undo subsystem is loaded, records the
-inserted span on `buffer-undo-list'.
-
-Phase 2.AI: when `overwrite-mode' is non-nil and point is not at
-EOB or end-of-line, the char at point is deleted before each insert
-(= one-char-out, one-char-in, point advances by 1 not by 2).
-
-Bound to printable chars in `nemacs-main-keymap'.  The `(interactive
-\"p\")' form supplies N from the prefix-arg so `call-interactively'
-gets a fully-formed arg list."
+  (defun self-insert-command (n &optional char)
+    "Insert CHAR, or `last-command-event', N times.
+N must be a nonnegative integer.  Honor `overwrite-mode', expand abbrevs
+before inserting a non-word character, and run Auto Fill when appropriate.
+Run `post-self-insert-hook' once after the insertion, even when N is zero."
     (interactive "p")
     (emacs-edit--self-insert-command n char)))
 
 (when (emacs-edit-builtins--install-function-p 'newline)
   (defun newline (&optional n interactive)
-    "Phase E polyfill: insert N newlines (default 1).
-Track E.2: records the inserted span on `buffer-undo-list'.
-Bound to RET (= byte 13) in `nemacs-main-keymap'."
-    (interactive "p")
+    "Insert N newlines in the selected editing buffer (default one).
+Native commands use `current-buffer' and its change hooks/undo.  The shared
+pure-buffer adapter records changes in its ec-buffer undo history."
+    (interactive "*P\np")
     (ignore interactive)
-    (let ((c (or n 1)) (i 0))
-      (while (< i c)
+    (let ((count (prefix-numeric-value n)))
+      (when (< count 0) (error "Negative repetition argument %d" count))
+      (if (not (emacs-edit--pure-buffer-p))
+          (when (> count 0) (insert (make-string count ?\n)))
         (let ((beg (nelisp-ec-point)))
-          (nelisp-ec-insert "\n")
+          (nelisp-ec-insert (make-string count ?\n))
           (when (fboundp 'emacs-undo-record-insert)
             (emacs-undo-record-insert beg (nelisp-ec-point)))
-          ;; Doc 51 Track S — mark dirty for jit-lock.
           (when (fboundp 'emacs-font-lock-mark-dirty-region)
-            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))
-        (setq i (+ i 1))))
+            (emacs-font-lock-mark-dirty-region beg (nelisp-ec-point))))))
     nil))
 
 (when (emacs-edit-builtins--install-function-p 'ensure-empty-lines)
@@ -1891,6 +1952,14 @@ ARG selects the kill-ring entry using the same MVP rules as `yank'."
     (setq entry (and cell (car cell)))
     (setq kill-ring-yank-pointer (or cell kill-ring))
     (cond
+     ((and entry (fboundp 'nelisp-buffer-p)
+           (nelisp-buffer-p (current-buffer)) (null (nelisp-ec-current-buffer)))
+      (let ((beg (point)))
+        ;; GNU yank remembers the inserted span without activating it.
+        (push-mark beg nil)
+        (insert entry)
+        (setq emacs-edit--last-yank-bounds (cons beg (point)))
+        (list :beg beg :end (point) :text entry :deleted-newline nil)))
      (entry
       (let ((beg (nelisp-ec-point)))
         (nelisp-ec-insert entry)
@@ -1961,6 +2030,7 @@ first so the GUI clipboard wins over the local kill-ring head
 (= matches Emacs' `current-kill' behaviour).
 
 Track E.2: records the inserted span on `buffer-undo-list'."
+    (interactive "*P")
     (emacs-edit--yank arg)))
 
 (defun emacs-edit-yank-pop-direct (&optional arg)
@@ -2734,56 +2804,166 @@ Return an edit plist.  A zero-width range returns a no-op plist with
       (append (emacs-edit-kill-region-direct start end)
               (list :status 'killed))))))
 
+(unless (boundp 'words-include-escapes)
+  (defvar words-include-escapes nil
+    "Non-nil means escape and character-quote syntax belongs to words."))
+
+(defun emacs-edit--word-constituent-p (position)
+  "Return whether POSITION has word syntax in the current buffer."
+  (let* ((entry (and (fboundp 'syntax-after) (syntax-after position)))
+         (syntax (if (consp entry)
+                     (aref " .w_()'\"$\\/<>@!|" (logand (car entry) 255))
+                   (char-syntax (char-after position)))))
+    (or (eq syntax ?w)
+        (and (boundp 'words-include-escapes) words-include-escapes
+             (memq syntax '(?\\ ?/))))))
+
+(defun emacs-edit--word-category-match-p (left right pairs)
+  "Return whether LEFT and RIGHT match a category pair in PAIRS."
+  (let (matched)
+    (when (and (fboundp 'char-category-set)
+               (not (get 'char-category-set 'emacs-stub-bulk)))
+      (let ((left-set (char-category-set left))
+            (right-set (char-category-set right)))
+        (while (and pairs (not matched))
+          (let ((a (caar pairs)) (b (cdar pairs)))
+            (setq matched
+                  (and (or (null a) (aref left-set a))
+                       (or (null b) (aref right-set b))
+                       (or (null b) (not (aref left-set b)))
+                       (or (null a) (not (aref right-set a))))))
+          (setq pairs (cdr pairs)))))
+    matched))
+
+(defun emacs-edit--word-boundary-p (position)
+  "Return whether adjacent word characters separate at POSITION.
+Use the script and category tables when supplied by the runtime."
+  (when (and (boundp 'char-script-table)
+             (char-table-p char-script-table))
+    (let* ((left (char-before position))
+           (right (char-after position))
+           (same-script (eq (aref char-script-table left)
+                            (aref char-script-table right))))
+      (if same-script
+          (and (boundp 'word-separating-categories)
+               (emacs-edit--word-category-match-p
+                left right word-separating-categories))
+        (not (and (boundp 'word-combining-categories)
+                  (emacs-edit--word-category-match-p
+                   left right word-combining-categories)))))))
+
+(defun emacs-edit--word-field-at (position)
+  "Return the field property at POSITION, including overlays when available."
+  (if (and (fboundp 'get-char-property)
+           (not (get 'get-char-property 'emacs-stub-bulk)))
+      (get-char-property position 'field)
+    (get-text-property position 'field)))
+
+(defun emacs-edit--word-field-position (position start)
+  "Constrain POSITION to the field containing START."
+  (if (and (boundp 'inhibit-field-text-motion) inhibit-field-text-motion)
+      position
+    (let* ((low (point-min))
+           (high (point-max))
+           (at (emacs-edit--word-field-at start))
+           (before (and (> start low)
+                        (emacs-edit--word-field-at (1- start))))
+           ;; At an edge, motion belongs to the field before point.
+           (field (if (> start low) before at))
+           (edge start))
+      ;; GNU checks the endpoint properties before searching for an edge.
+      ;; Equal fields at both endpoints can span an intervening field.
+      (if (and (eq at before)
+               (eq at (emacs-edit--word-field-at position))
+               (eq at (and (> position low)
+                           (emacs-edit--word-field-at (1- position)))))
+          position
+        (if (> position start)
+            (progn
+              (while (and (< edge high)
+                          (eq (emacs-edit--word-field-at edge) field))
+                (setq edge (1+ edge)))
+              (min position edge))
+          (while (and (> edge low)
+                      (eq (emacs-edit--word-field-at (1- edge)) field))
+            (setq edge (1- edge)))
+          (max position edge))))))
+
 (when (emacs-edit-builtins--install-function-p 'forward-word)
   (defun forward-word (&optional arg)
-    "Phase E polyfill: ASCII alnum word motion.
-ARG > 0: move forward ARG words.  ARG < 0: move backward.
-Returns t when at least one boundary was crossed, nil otherwise."
-    (let* ((count (or arg 1))
-           (sign (if (>= count 0) 1 -1))
-           (n (abs count))
-           (moved 0))
-      (cond
-       ((= sign 1)
-        (while (> n 0)
-          (let ((p (nelisp-ec-point))
-                (em (nelisp-ec-point-max))
-                (start-p nil))
-            (while (and (< p em)
-                        (not (emacs-edit--word-char-p
-                              (emacs-edit--char-at p))))
-              (setq p (+ p 1)))
-            (setq start-p p)
-            (while (and (< p em)
-                        (emacs-edit--word-char-p
-                         (emacs-edit--char-at p)))
-              (setq p (+ p 1)))
-            (when (> p start-p) (setq moved (+ moved 1)))
-            (nelisp-ec-goto-char p)
-            (setq n (- n 1)))))
-       (t
-        (while (> n 0)
-          (let ((p (nelisp-ec-point))
-                (bm (nelisp-ec-point-min))
-                (start-p nil))
-            (while (and (> p bm)
-                        (not (emacs-edit--word-char-p
-                              (emacs-edit--char-at (- p 1)))))
-              (setq p (- p 1)))
-            (setq start-p p)
-            (while (and (> p bm)
-                        (emacs-edit--word-char-p
-                         (emacs-edit--char-at (- p 1))))
-              (setq p (- p 1)))
-            (when (< p start-p) (setq moved (+ moved 1)))
-            (nelisp-ec-goto-char p)
-            (setq n (- n 1))))))
-      (> moved 0))))
+    "Move point forward ARG words, or backward if ARG is negative.
+ARG defaults to one.  Word boundaries follow the current syntax table,
+script categories, and `find-word-boundary-function-table'.  Return t
+if all requested words were traversed, nil at a buffer or field edge."
+    (interactive "p")
+    (let ((count (or arg 1)))
+      (unless (fixnump count)
+        (signal 'wrong-type-argument (list 'fixnump count)))
+      (let* ((start (point))
+             (position start)
+             (low (point-min))
+             (high (point-max))
+             (forward (>= count 0))
+             (remaining (abs count))
+             (complete t))
+        ;; Scan without changing point: boundary callbacks see the original
+        ;; point, and an error from a callback leaves point untouched.
+        (while (and (> remaining 0) complete)
+          (while (and (if forward (< position high) (> position low))
+                      (not (emacs-edit--word-constituent-p
+                            (if forward position (1- position)))))
+            (setq position (+ position (if forward 1 -1))))
+          (if (if forward (>= position high) (<= position low))
+              (setq complete nil)
+            (let* ((first (if forward position (1- position)))
+                   (function
+                    (and (boundp 'find-word-boundary-function-table)
+                         (char-table-p find-word-boundary-function-table)
+                         (aref find-word-boundary-function-table
+                               (char-after first)))))
+              (if function
+                  (progn
+                    (unless (symbolp function)
+                      (signal 'wrong-type-argument (list 'symbolp function)))
+                    (let ((end (funcall function first (if forward high low))))
+                      (setq position
+                            (if (and (fixnump end)
+                                     (if forward (and (> end first) (<= end high))
+                                       (and (>= end low) (<= end first))))
+                                end
+                              (if forward (1+ first) first)))))
+                (setq position (+ position (if forward 1 -1)))
+                (while (and (if forward (< position high) (> position low))
+                            (emacs-edit--word-constituent-p
+                             (if forward position (1- position)))
+                            (not (emacs-edit--word-boundary-p position)))
+                  (setq position (+ position (if forward 1 -1)))))
+              (setq remaining (1- remaining)))))
+        (let ((constrained (emacs-edit--word-field-position position start)))
+          (goto-char constrained)
+          (and complete (= constrained position)))))))
 
 (when (emacs-edit-builtins--install-function-p 'backward-word)
   (defun backward-word (&optional arg)
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
     (forward-word (- (or arg 1)))))
+
+(defvar word-move-empty-char-table nil
+  "Char table used to suppress language-specific word boundary callbacks.")
+
+(when (emacs-edit-builtins--install-function-p 'forward-word-strictly)
+  (defun forward-word-strictly (&optional arg)
+    "Move by ARG words, ignoring find-word-boundary-function-table."
+    (let ((find-word-boundary-function-table
+           (if (char-table-p word-move-empty-char-table)
+               word-move-empty-char-table
+             (setq word-move-empty-char-table (make-char-table nil)))))
+      (forward-word (or arg 1)))))
+
+(when (emacs-edit-builtins--install-function-p 'backward-word-strictly)
+  (defun backward-word-strictly (&optional arg)
+    "Move backward by ARG words without language-specific word callbacks."
+    (forward-word-strictly (- (or arg 1)))))
 
 ;;;; --- skip-chars set scanning --------------------------------------
 
@@ -3118,6 +3298,7 @@ If BEFORE-P is non-nil, prepend it instead."
 (defun kill-ring-save (beg end &optional region)
   "Save BEG..END as if killed, without killing it.
 With REGION non-nil, ignore BEG and END and save the current region."
+  (interactive "r")
   (if region
       (copy-region-as-kill (region-beginning) (region-end))
     (copy-region-as-kill beg end))
@@ -3164,6 +3345,7 @@ With REGION non-nil, ignore BEG and END and save the current region."
 With numeric ARG N, put point N/10 of the way from the beginning.
 Pushes the mark at the previous position unless ARG is a raw prefix or the
 region is active."
+  (interactive "P")
   (or (consp arg)
       (and (fboundp 'region-active-p) (region-active-p))
       (push-mark))
@@ -3180,6 +3362,7 @@ region is active."
 With numeric ARG N, put point N/10 of the way from the end.
 Pushes the mark at the previous position unless ARG is a raw prefix or the
 region is active."
+  (interactive "P")
   (or (consp arg)
       (and (fboundp 'region-active-p) (region-active-p))
       (push-mark))
@@ -3303,6 +3486,59 @@ With ARG zero, exchange the object at point with the one at the mark."
            (when (> n 0) (newline n)))
        (forward-line n)))
    arg))
+
+(defvar emacs-edit--line-goal-column nil
+  "Display column retained across consecutive vertical motion commands.")
+
+(defun emacs-edit-next-line (&optional n)
+  "Move N display lines while preserving the current or explicit goal column.
+The standalone `vertical-motion' primitive owns display-line traversal."
+  (interactive "^p")
+  (let* ((n (or n 1))
+         (continuing (memq last-command '(next-line previous-line
+                                          emacs-edit-next-line emacs-edit-previous-line)))
+         (column (or goal-column
+                     (and continuing emacs-edit--line-goal-column)
+                     (current-column)))
+         (moved (if noninteractive
+                    (let ((left (forward-line n)))
+                      (move-to-column column) (- n left))
+                  (vertical-motion (cons column n)))))
+    (setq emacs-edit--line-goal-column column)
+    (unless (= moved n)
+      (signal (if (< n 0) 'beginning-of-buffer 'end-of-buffer) nil)))
+  nil)
+
+(defun emacs-edit-previous-line (&optional n)
+  "Move N display lines backward, retaining the vertical goal column."
+  (interactive "^p")
+  (emacs-edit-next-line (- (or n 1))))
+
+(defun emacs-edit-native-kill-line (&optional arg)
+  "Kill from point through the line end, or ARG buffer lines.
+The newline is included when point starts at the line end."
+  (interactive "P")
+  (let* ((beg (point))
+         (end (if arg
+                  (save-excursion (forward-line (prefix-numeric-value arg)) (point))
+                (let ((eol (line-end-position)))
+                  (if (= beg eol) (min (point-max) (1+ eol)) eol))))
+         (text (buffer-substring beg end))
+         (append-p (and (memq last-command '(kill-line kill-region)) kill-ring)))
+    (emacs-edit--kill-new
+     (if append-p (if (< end beg) (concat text (car kill-ring))
+                    (concat (car kill-ring) text)) text) append-p)
+    (delete-region beg end)
+    (setq this-command 'kill-line))
+  nil)
+
+(defun emacs-edit-install-native-command-shims ()
+  "Install native-buffer editing commands explicitly for standalone consumers.
+Host Emacs keeps its own commands.  Editor semantics remain in this module."
+  (when (fboundp 'nelisp-buffer-p)
+    (defalias 'next-line #'emacs-edit-next-line)
+    (defalias 'previous-line #'emacs-edit-previous-line)
+    (defalias 'kill-line #'emacs-edit-native-kill-line)))
 
 (provide 'emacs-edit-builtins)
 

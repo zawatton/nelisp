@@ -135,29 +135,80 @@ the bulk stub returned nil before this bridge was installed, so its next
       (should (eq (symbol-value cmd-sym) (symbol-function cmd-sym)))
       (should (eq (symbol-value cmd-sym) (symbol-value map-sym))))))
 
-;;;; E2. Substrate-direct: suppress-keymap body shape
+;;;; E2. GNU suppression and bootstrap handoff
 
-(ert-deftest emacs-keymap-builtins-test/suppress-keymap-body-shape ()
-  (let ((map (emacs-keymap-make-sparse-keymap)))
-    ;; Exercise the bridge semantics directly so host Emacs's own
-    ;; `suppress-keymap' implementation cannot hide regressions.
-    (let ((slot (emacs-keymap--full-slot map)))
-      (unless slot
-        (setq slot (cons t (make-vector 256 nil)))
-        (setcdr map (cons slot (cdr map))))
-      (let ((vec (cdr slot))
-            (i 32))
-        (while (<= i 126)
-          (aset vec i 'undefined)
-          (setq i (1+ i)))
-        (let ((digit ?0))
-          (while (<= digit ?9)
-            (aset vec digit 'digit-argument)
-            (setq digit (1+ digit))))
-        (aset vec ?- 'negative-argument)))
-    (should (eq 'undefined (emacs-keymap-lookup-key map (vector ?a))))
-    (should (eq 'digit-argument (emacs-keymap-lookup-key map (vector ?7))))
-    (should (eq 'negative-argument (emacs-keymap-lookup-key map (vector ?-))))))
+(defun emacs-keymap-builtins-test--shim-definition (name)
+  "Read NAME's actual guarded definition without replacing host builtins."
+  (with-temp-buffer
+    (let ((file (locate-library "emacs-keymap-builtins")))
+      (insert-file-contents (if (string-suffix-p ".elc" file)
+                                (substring file 0 -1) file)))
+    (goto-char (point-min))
+    (catch 'definition
+      (while t
+        (let ((form (read (current-buffer))))
+          (when (and (eq (car-safe form) 'when)
+                     (eq (car-safe (nth 2 form)) 'defun)
+                     (eq (cadr (nth 2 form)) name))
+            (let ((definition (copy-tree (nth 2 form))))
+              (setcar (cdr definition) 'emacs-keymap-builtins-test--shim)
+              (eval definition t)
+              (throw 'definition
+                     (symbol-function 'emacs-keymap-builtins-test--shim)))))))))
+
+(ert-deftest emacs-keymap-builtins-test/suppression-matches-gnu ()
+  (let ((shim (emacs-keymap-builtins-test--shim-definition 'suppress-keymap)))
+    (dolist (full '(nil t))
+      (dolist (nodigits '(nil t))
+        (let ((map (if full (emacs-keymap-make-keymap)
+                     (emacs-keymap-make-sparse-keymap)))
+              (gnu (if full (make-keymap) (make-sparse-keymap))))
+          (emacs-keymap-builtins--define-key map [C-f5] 'modified-command)
+          (define-key gnu [C-f5] 'modified-command)
+          (should (eq (suppress-keymap gnu nodigits)
+                      (funcall shim map nodigits)))
+          (dolist (key '([remap self-insert-command] "a" "7" "-" [C-f5]))
+            (should (equal (lookup-key gnu key)
+                           (emacs-keymap-builtins--lookup-key map key))))
+          (emacs-keymap-builtins--define-key map "gd" 'prefix-command)
+          (define-key gnu "gd" 'prefix-command)
+          (should (eq 'prefix-command
+                      (emacs-keymap-builtins--lookup-key map "gd")))
+          (emacs-keymap-builtins--define-key map "q" 'undefined)
+          (should-error (emacs-keymap-builtins--define-key map "qd" 'bad)
+                        :type 'error))))))
+
+(ert-deftest emacs-keymap-builtins-test/keymap-set-validates-prefixes ()
+  (let ((shim (emacs-keymap-builtins-test--shim-definition 'keymap-set))
+        (suppress (emacs-keymap-builtins-test--shim-definition 'suppress-keymap)))
+    (dolist (full '(nil t))
+      (let ((map (if full (emacs-keymap-make-keymap)
+                   (emacs-keymap-make-sparse-keymap))))
+        (funcall suppress map t)
+        (funcall shim map "g d" 'prefix-command)
+        (should (eq 'prefix-command
+                    (emacs-keymap-builtins--lookup-key map "gd")))
+        (funcall shim map "q" 'undefined)
+        (should-error (funcall shim map "q d" 'bad) :type 'error)
+        (should (eq 'undefined
+                    (emacs-keymap-builtins--lookup-key map "q")))))))
+
+(ert-deftest emacs-keymap-builtins-test/bootstrap-vector-event-migration ()
+  (let* ((canonical (emacs-keymap-make-sparse-keymap))
+         (map (list 'keymap (cons [24] 'legacy-prefix)
+                    (cons 24 canonical) (cons [27] 'legacy-escape)
+                    (cons [f5] 'legacy-command) (cons 'f5 nil)
+                    (cons [f6] 'new-command))))
+    (should (eq map (emacs-keymap-builtins--migrate-bootstrap-events map)))
+    (should (eq canonical (emacs-keymap-builtins--lookup-key map [24])))
+    (should (eq 'legacy-escape (emacs-keymap-builtins--lookup-key map [27])))
+    (should (equal '(f5) (emacs-keymap-builtins--own-binding map 'f5)))
+    (should (eq 'new-command (emacs-keymap-builtins--lookup-key map [f6])))
+    (emacs-keymap-map-keymap
+     (lambda (event _binding) (should-not (vectorp event))) map)
+    (let ((before (copy-tree map)))
+      (emacs-keymap-builtins--migrate-bootstrap-events map)
+      (should (equal before map)))))
 
 ;;;; F. Substrate-direct: current-global-map returns a keymap
 
@@ -175,7 +226,7 @@ the bulk stub returned nil before this bridge was installed, so its next
       (insert-file-contents file)
       (goto-char (point-min))
       (should (search-forward
-               "(defalias 'key-description #'emacs-keymap-key-description"
+               "(defun key-description (keys &optional prefix)"
                nil t)))))
 
 ;;;; F2. Bridge shape: standard prefix maps exist
@@ -286,10 +337,10 @@ P2 can verify the command-surface keymap behavior directly."
     (should (and file (file-exists-p file)))
     (with-temp-buffer
       (insert-file-contents file)
-      (dolist (snippet '("(defalias 'keymap-set #'emacs-keymap-keymap-set"
+      (dolist (snippet '("(defun keymap-set (keymap key definition)"
                          "(defalias 'keymap-lookup #'emacs-keymap-keymap-lookup"
                          "(defalias 'keymap-unset #'emacs-keymap-keymap-unset"
-                         "(defalias 'copy-keymap #'emacs-keymap-copy-keymap"
+                         "(defun copy-keymap (keymap)"
                          "(defalias 'key-parse #'emacs-keymap-key-parse"
                          "(defalias 'key-valid-p #'emacs-keymap-key-valid-p"))
         (goto-char (point-min))

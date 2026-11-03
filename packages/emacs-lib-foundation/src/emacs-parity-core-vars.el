@@ -24,6 +24,19 @@
 (unless (boundp 'emacs-minor-version) (defvar emacs-minor-version 1))
 (unless (boundp 'emacs-build-time) (defvar emacs-build-time nil))
 (unless (boundp 'emacs-build-system) (defvar emacs-build-system "nemacs"))
+;; GNU consumers (including treesit, loaded by Org) inspect this string for
+;; configure switches.  The standalone runtime is built without GNU's
+;; configure script, so it has no such switches; do not copy the host build's
+;; optional-capability flags into this runtime.
+(unless (boundp 'system-configuration-options)
+  (defvar system-configuration-options ""
+    "GNU configure options used to build this runtime; none for standalone."))
+;; treesit.c supplies the registry before Lisp mode autoloads populate it.
+;; The library bootstrap has no mode registrations yet.  GNU treesit.el's
+;; Custom type reads this registry whenever the real parser is available.
+(unless (boundp 'treesit-major-mode-remap-alist)
+  (defvar treesit-major-mode-remap-alist nil
+    "Alist of ordinary modes and tree-sitter alternatives registered by modes."))
 
 ;; --- batch/display context ---
 (unless (boundp 'window-system) (defvar window-system nil))
@@ -62,6 +75,12 @@
 ;; above).  `global-mode-string' is read by mode-line construction in many
 ;; packages and signalled void-variable in the full-init audit. ---
 (unless (boundp 'global-mode-string) (defvar global-mode-string nil))
+
+;; GNU bindings.el's standard construct.  Preserve user/customized values;
+;; mode-line packages append to this even in a headless library consumer.
+(unless (boundp 'mode-line-misc-info)
+  (defvar mode-line-misc-info '((global-mode-string ("" global-mode-string)))))
+(put 'mode-line-misc-info 'risky-local-variable t)
 
 ;; --- password prompt words (stock international/mule-conf default) ---
 ;; `comint', `eshell' and `tramp' build their password prompt regexps from
@@ -247,16 +266,36 @@ If INPUT-METHOD is nil, this function turns off the input method."
     default-input-method))
 
 ;; --- headless display-hint functions -----------------------------------
-;; The batch substrate has no frame/redisplay, so these C display primitives
-;; are correctly inert here: `force-window-update' only schedules a redisplay
-;; and `set-window-fringes' sets display-only geometry; both return nil like
-;; the C originals do for a non-interactive frame.  They surfaced as
-;; void-function in the full-init audit (mode/ui setup calling them at load).
+;; Redisplay requests report whether a target was found even in batch mode.
+;; Invalidate the substrate's cache when a redisplay handle is active.
 ;; Guarded with `fboundp' so a real GUI build keeps its native primitives.
 (unless (fboundp 'force-window-update)
-  (defun force-window-update (&optional _object)
-    "Headless no-op: no frame redisplay to force in the batch substrate."
-    nil))
+  (defun force-window-update (&optional object)
+    "Force windows displaying OBJECT to be updated on next redisplay.
+OBJECT may be a live window, a buffer, or a buffer name.  Nil requests
+an update of all windows.  Return t if an update was requested, and nil
+if OBJECT does not identify a displayed buffer or a live window."
+    (let ((handle (and (boundp 'emacs-redisplay--current-handle)
+                       emacs-redisplay--current-handle)))
+      (cond
+       ((null object)
+        (when handle
+          (emacs-redisplay-mark-frame-dirty handle))
+        t)
+       ((window-live-p object)
+        (when handle
+          (emacs-redisplay-mark-window-dirty handle object))
+        t)
+       ((or (bufferp object) (stringp object))
+        (let ((window (get-buffer-window object t)))
+          (when window
+            (when handle
+              (let ((buffer (window-buffer window)))
+                (dolist (target (window-list-1 nil t t))
+                  (when (eq (window-buffer target) buffer)
+                    (emacs-redisplay-mark-window-dirty handle target)))))
+            t)))
+       (t nil)))))
 (unless (fboundp 'set-window-fringes)
   (defun set-window-fringes (&rest _args)
     "Headless no-op: fringe geometry is display-only in the batch substrate."

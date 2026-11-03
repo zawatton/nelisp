@@ -14,8 +14,16 @@
   (defun set-window-combination-limit (window limit)
     "Set combination limit of window WINDOW to LIMIT; return LIMIT."
     (emacs-cc-window-2--check window 'window-valid-p)
-    ;; The selected batch window is the root leaf; this primitive rejects it.
-    (error "Combination limit is meaningful for internal windows only")))
+    (when (window-live-p window)
+      (error "Combination limit is meaningful for internal windows only"))
+    (let ((entry (assq 'ccore-combination-limit
+                       (emacs-window-parameters window))))
+      (if entry
+          (setcdr entry limit)
+        (setf (emacs-window-parameters window)
+              (cons (cons 'ccore-combination-limit limit)
+                    (emacs-window-parameters window))))
+      limit)))
 
 (unless (fboundp 'set-window-cursor-type)
   (defun set-window-cursor-type (window type)
@@ -90,7 +98,11 @@
     (unless (integerp x) (signal 'wrong-type-argument (list 'integerp x)))
     (unless (integerp y) (signal 'wrong-type-argument (list 'integerp y)))
     (when frame (emacs-cc-window-2--check frame 'frame-live-p))
-    (if (and (<= 0 x 79) (<= 0 y 23)) (selected-window) nil)))
+    (catch 'found
+      (dolist (window (window-list frame t))
+        (when (coordinates-in-window-p (cons x y) window)
+          (throw 'found window)))
+      nil)))
 
 (unless (fboundp 'window-bottom-divider-width)
   (defun window-bottom-divider-width (&optional window)

@@ -42,8 +42,26 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- process filter/sentinel state lives in the nemacs event-loop bridge.
 ;;; Code:
 
+(require 'emacs-process-coding)
+
 (require 'emacs-network-ffi)
 
+
+(defun emacs-process-events--signal-network-error (failure)
+  "Signal a network FAILURE using GNU's server-bind error data.
+The FFI adapter returns (:error STRING); preserve other diagnostics."
+  (let ((diagnostic (cadr failure)) reason)
+    (save-match-data
+      (when (string-match "\\`bind(.*) failed: errno=\\([0-9]+\\)\\'" diagnostic)
+        (setq reason
+              (cdr (assq (string-to-number (match-string 1 diagnostic))
+                         '((1 . "Operation not permitted")
+                           (2 . "No such file or directory")
+                           (13 . "Permission denied")
+                           (20 . "Not a directory")
+                           (22 . "Invalid argument")))))))
+    (signal 'file-error (if reason (list "Cannot bind server socket" reason)
+                         (list diagnostic)))))
 
 ;;;; --- registry ---------------------------------------------------------
 
@@ -79,12 +97,54 @@ elisp do not have a kernel pid; we hand out ids from this counter.")
        (>= (length x) 14)
        (eq (aref x 0) emacs-process-events--vec-tag)))
 
+(defun emacs-process-events--pipe-p (process)
+  "Recognize the pipe connection representation supplied by the prelude."
+  (and (vectorp process) (= (length process) 7)
+       (eq (aref process 0) 'pipe-process)))
+
+(defun emacs-process-events--require-process (process)
+  "Validate a process owned by this provider."
+  (unless (or (emacs-process-events--processp process)
+              (emacs-process-events--pipe-p process))
+    (signal 'wrong-type-argument (list 'processp process)))
+  process)
+
+(defun emacs-process-events--resolve-process (process)
+  "Resolve a process object, process name, buffer, or current buffer."
+  (if (stringp process)
+      (or (get-process process)
+          (error "Process %s does not exist" process))
+    (emacs-process-builtins--resolve-process process)))
+
 (defun emacs-process-events--get (proc idx)
-  (and (emacs-process-events--processp proc) (aref proc idx)))
+  (emacs-process-events--require-process proc)
+  (if (emacs-process-events--processp proc)
+      (aref proc idx)
+    ;; The prelude retains only name, status, fd, filter and output.
+    ;; Slot 4 is available for attributes subsequently set by this API.
+    ;; Creation-time buffer, coding and query options are not retained.
+    (cond ((= idx 1) (aref proc 1))
+          ((= idx 2) (aref proc 3))
+          ((= idx 3) 'pipe)
+          ((= idx 4) (aref proc 2))
+          ((= idx 5) (or (aref proc 5) 'internal-default-process-filter))
+          ((= idx 6) (or (plist-get (aref proc 4) idx)
+                        'internal-default-process-sentinel))
+          ((= idx 11) nil)
+          ((= idx 12) (aref proc 6))
+          (t (plist-get (aref proc 4) idx)))))
 
 (defun emacs-process-events--set (proc idx val)
-  (when (emacs-process-events--processp proc)
-    (aset proc idx val)))
+  (emacs-process-events--require-process proc)
+  (if (emacs-process-events--processp proc)
+      (aset proc idx val)
+    (cond ((= idx 1) (aset proc 1 val))
+          ((= idx 2) (aset proc 3 val))
+          ((= idx 4) (aset proc 2 val))
+          ((= idx 5) (aset proc 5 val))
+          ((= idx 12) (aset proc 6 val))
+          (t (aset proc 4 (plist-put (aref proc 4) idx val)))))
+  val)
 
 
 ;;;; --- public API: query / accessor ------------------------------------
@@ -135,8 +195,7 @@ string, or when `decode-coding-string' is unavailable (Doc 06 C4)."
             (emacs-process-events--no-conversion-p dec)
             (not (fboundp 'decode-coding-string)))
         chunk
-      (condition-case _err (decode-coding-string chunk dec t)
-        (error chunk)))))
+      (emacs-process-coding-convert chunk dec nil))))
 
 (defun emacs-process-events--encode-input (string coding)
   "Encode input STRING per CODING's encoder via the coding machinery.
@@ -147,8 +206,7 @@ string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
             (emacs-process-events--no-conversion-p enc)
             (not (fboundp 'encode-coding-string)))
         string
-      (condition-case _err (encode-coding-string string enc t)
-        (error string)))))
+      (emacs-process-coding-convert string enc t))))
 
 (when emacs-process-events--standalone-p
 
@@ -157,8 +215,18 @@ string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
     (emacs-process-events--processp object))
 
   (defun process-name (process) (emacs-process-events--get process 1))
-  (defun process-status (process) (emacs-process-events--get process 4))
-  (defun process-id (process) (emacs-process-events--get process 11))
+  (defun process-status (process)
+    (if (and (stringp process) (not (get-process process)))
+        nil
+      (setq process (emacs-process-events--resolve-process process))
+      (if (emacs-process-events--child-process-p process)
+          (emacs-process-process-status process)
+        (emacs-process-events--get process 4))))
+  (defun process-id (process)
+    (if (memq (emacs-process-events--get process 3)
+              '(network-server network-connection pipe))
+        nil
+      (emacs-process-events--get process 11)))
   (defun process-buffer (process) (emacs-process-events--get process 7))
   (defun process-filter (process) (emacs-process-events--get process 5))
   (defun process-sentinel (process) (emacs-process-events--get process 6))
@@ -176,18 +244,26 @@ string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
   ;; --- mutator -----
 
   (defun set-process-filter (process function)
+    (setq function (or function 'internal-default-process-filter))
     (emacs-process-events--set process 5 function)
     function)
 
   (defun set-process-sentinel (process function)
+    (setq function (or function 'internal-default-process-sentinel))
     (emacs-process-events--set process 6 function)
     function)
 
   (defun set-process-buffer (process buffer)
+    (emacs-process-events--require-process process)
+    (unless (or (null buffer) (bufferp buffer))
+      (signal 'wrong-type-argument (list 'bufferp buffer)))
     (emacs-process-events--set process 7 buffer)
     buffer)
 
   (defun set-process-plist (process plist)
+    (emacs-process-events--require-process process)
+    (unless (listp plist)
+      (signal 'wrong-type-argument (list 'listp plist)))
     (emacs-process-events--set process 8 plist)
     plist)
 
@@ -204,7 +280,7 @@ A bare-symbol slot value (legacy) is widened to (SYM . SYM)."
       (if (consp c) c (cons c c))))
 
   (defun set-process-query-on-exit-flag (process flag)
-    (emacs-process-events--set process 13 flag)
+    (emacs-process-events--set process 13 (and flag t))
     flag)
 
   (defun process-query-on-exit-flag (process)
@@ -232,18 +308,26 @@ iteration cost ~3 s on 20 kB payloads in NeLisp standalone because
 the runtime's `substring' walks/copies the source byte-by-byte.
 Fast-path: when no bytes have been sent yet, pass STRING in as-is;
 only fall through to `substring' on the rare partial-write retry."
-    (unless (emacs-process-events--processp process)
-      (signal 'wrong-type-argument (list 'processp process)))
+    (unless (stringp string)
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (setq process (emacs-process-events--resolve-process process))
+    (unless (memq (process-status process) '(run open stop))
+      (error "Process %s not running: finished\n" (process-name process)))
     ;; C4: encode the string per the process's encoding coding-system before
     ;; the bytes go on the wire (identity for utf-8 / no-conversion).
     (setq string (emacs-process-events--encode-input
                   string (emacs-process-events--get process 9)))
-    (let ((fd (process-id-fd process))
+    (let ((fd (if (and (eq (emacs-process-events--get process 3) 'pipe)
+                       (> (length process) 18))
+                  (aref process 16)
+                (process-id-fd process)))
+          (pipe (memq (emacs-process-events--get process 3) '(pipe pipe-process)))
           (i 0)
           (n (length string)))
       (while (< i n)
         (let* ((chunk (if (= i 0) string (substring string i n)))
-               (sent (emacs-network-ffi--send fd chunk 0)))
+               (sent (if pipe (emacs-network-ffi--write fd chunk)
+                       (emacs-network-ffi--send fd chunk 0))))
           (cond
            ((and (integerp sent) (> sent 0)) (setq i (+ i sent)))
            ((and (integerp sent) (zerop sent))
@@ -261,12 +345,24 @@ only fall through to `substring' on the rare partial-write retry."
       nil))
 
   (defun process-send-region (process start end)
+    "Send the current buffer's region to PROCESS."
+    (setq process (emacs-process-events--resolve-process process))
     (process-send-string
      process (buffer-substring-no-properties start end)))
 
-  (defun delete-process (process)
+  (defun delete-process (&optional process)
     "Polyfill: close the underlying fd, fire the sentinel, drop from registry."
+    (setq process (emacs-process-events--resolve-process process))
     (let ((fd (process-id-fd process)))
+      (when (and (eq (emacs-process-events--get process 3) 'pipe)
+                 (> (length process) 18))
+        (let ((i 16))
+          (while (< i 19)
+            (let ((peer (aref process i)))
+              (when (and (integerp peer) (>= peer 0))
+                (emacs-network-ffi--close peer)
+                (aset process i -1)))
+            (setq i (1+ i)))))
       (when (and fd (>= fd 0))
         (emacs-network-ffi--close fd)
         (remhash fd emacs-process-events--by-fd))
@@ -303,9 +399,53 @@ async filters never fire (Doc 06 C1)."
     (dolist (proc emacs-process-events--all)
       (let ((fd (process-id-fd proc)))
         (when (and (integerp fd) (>= fd 0)
-                   (not (eq (emacs-process-events--get proc 4) 'closed)))
+                   (not (memq (emacs-process-events--get proc 4) '(closed stop exit signal)))
+                   (not (eq (process-filter proc) t)))
           (push fd fds))))
     fds))
+
+(defun emacs-process-events-dispatch-pending (&optional process just-this-one)
+  "Poll registered network/pipe fds without waiting; dispatch ready callbacks.
+Return activity for PROCESS, or any activity when nil.  Native subprocess
+reaping belongs to emacs-process; this registry never reaps unrelated PIDs."
+  (let* ((fds (if (and process just-this-one)
+                  (list (process-id-fd process))
+                (emacs-process-events--all-fds)))
+         (count (length fds)) (any nil))
+    (when (> count 0)
+      (let ((buf (nl-ffi-malloc (* count 8))) (index 0))
+        (unwind-protect
+            (progn
+              (dolist (fd fds)
+                (nl-ffi-write-i32 buf (* index 8) fd)
+                (nl-ffi-write-i16 buf (+ (* index 8) 4) 1)
+                (nl-ffi-write-i16 buf (+ (* index 8) 6) 0)
+                (setq index (1+ index)))
+              (when (> (emacs-network-ffi--call
+                        "poll" [:sint32 :pointer :sint32 :sint32] buf count 0) 0)
+                (setq index 0)
+                (dolist (fd fds)
+                  (let ((target (emacs-process-events--lookup-by-fd fd)))
+                    (when (and target (/= 0 (nl-ffi-read-i16 buf (+ (* index 8) 6))))
+                      (let ((activity nil))
+                        (if (eq (emacs-process-events--get target 3) 'network-server)
+                            (let ((child t))
+                              (while child
+                                (setq child (emacs-process-events--accept-child target))
+                                (when child (setq activity t))))
+                          (setq activity (emacs-process-events--read-and-dispatch target)))
+                        (when (and activity (or (null process) (eq process target)))
+                          (setq any t)))))
+                  (setq index (1+ index)))))
+          (nl-ffi-free buf))))
+    (let ((reaped (emacs-process-events--reap-children)))
+      (when (and reaped
+                 (or (null process)
+                     (and (vectorp process) (> (length process) 8)
+                          (eq (aref process 0) :emacs-process-events)
+                          (assoc (plist-get (aref process 8) :pid) reaped))))
+        (setq any t)))
+    any))
 
 ;;;; --- SIGCHLD-fallback child reaping (Doc 06 C2) ----------------------
 ;;
@@ -340,36 +480,29 @@ iterate; see `emacs-process-events--all-fds')."
     found))
 
 (defun emacs-process-events--reap-children ()
-  "Reap exited children via non-blocking `wait4(-1, WNOHANG)' in a loop.
-For each reaped pid matched to a process (by plist `:pid') set its status to
-`exit' / `signal' and fire its sentinel.  Untracked children are still reaped
-\(no zombies).  Returns the list of reaped (PID . EXIT-CODE) pairs (Doc 06 C2)."
-  (let ((reaped nil) (loop t))
-    (while loop
-      (let* ((stbuf (nl-ffi-malloc 8))
-             (pid (emacs-network-ffi--call
-                   "wait4" [:sint32 :sint32 :pointer :sint32 :sint32]
-                   -1 stbuf 1 0)))           ; WNOHANG = 1, rusage = NULL
-        (cond
-         ((and (integerp pid) (> pid 0))
-          (let* ((status (nl-ffi-read-i32 stbuf 0))
-                 (exited (emacs-process-events--wait-exited-p status))
-                 (code (emacs-process-events--wait-exit-code status))
-                 (sig (emacs-process-events--wait-signal status))
-                 (proc (emacs-process-events--lookup-by-pid pid)))
-            (push (cons pid code) reaped)
-            (when proc
-              (emacs-process-events--set proc 4 (if exited 'exit 'signal))
-              (let ((sent (process-sentinel proc)))
-                (when (functionp sent)
-                  (condition-case _err
-                      (funcall sent proc
-                               (if exited
-                                   (format "finished with code %d\n" code)
-                                 (format "terminated by signal %d\n" sig)))
-                    (error nil)))))))
-         (t (setq loop nil)))
-        (nl-ffi-free stbuf)))
+  "Reap only tracked pipe children; leave other process owners' PIDs alone."
+  (let ((reaped nil))
+    (dolist (proc (copy-sequence emacs-process-events--all))
+      (let ((pid (plist-get (emacs-process-events--get proc 8) :pid)))
+        (when (and (integerp pid) (> pid 0)
+                   (not (memq (emacs-process-events--get proc 4) '(exit signal))))
+          (let ((buf (nl-ffi-malloc 8)))
+            (unwind-protect
+                (when (= pid (emacs-network-ffi--call
+                              "wait4" [:sint32 :sint32 :pointer :sint32 :sint32]
+                              pid buf 1 0))
+                  (let* ((status (nl-ffi-read-i32 buf 0))
+                         (exited (emacs-process-events--wait-exited-p status))
+                         (code (emacs-process-events--wait-exit-code status)))
+                    (push (cons pid code) reaped)
+                    (emacs-process-events--set proc 4 (if exited 'exit 'signal))
+                    (let ((sent (process-sentinel proc)))
+                      (when (functionp sent)
+                        (funcall sent proc (if exited
+                                               (format "finished with code %d\n" code)
+                                             (format "terminated by signal %d\n"
+                                                     (emacs-process-events--wait-signal status))))))))
+              (nl-ffi-free buf))))))
     (nreverse reaped)))
 
 (defun emacs-process-events--accept-child (server)
@@ -437,7 +570,7 @@ Pipe fds are not sockets, so `recv(2)' (ENOTSOCK) cannot be used; plain
   "Read up to 4096 bytes from PROC's FD, picking read(2) vs recv(2) by type.
 Pipe-subprocess fds (kind `pipe-process') use `read(2)'; socket fds use
 `recv(2)' (Doc 06 C1)."
-  (if (eq (emacs-process-events--get proc 3) 'pipe-process)
+  (if (memq (emacs-process-events--get proc 3) '(pipe pipe-process))
       (emacs-process-events--read-fd fd 4096)
     (emacs-network-ffi--recv fd 4096 0)))
 
@@ -450,20 +583,18 @@ Returns t if dispatch happened, nil if peer closed."
      ((eq chunk :would-block) nil)
      ((eq chunk :interrupted) nil)
      ((or (null chunk) (and (stringp chunk) (= 0 (length chunk))))
-      (let ((sent (process-sentinel proc)))
-        (when (functionp sent)
-          (condition-case err
-              (funcall sent proc "connection broken by remote peer\n")
-            (error
-             (when (fboundp 'nelisp--write-stderr-line)
-               (nelisp--write-stderr-line
-                (format "[emacs-process-events] sentinel ERR on close: %S"
-                        err)))))))
       (emacs-network-ffi--close fd)
       (remhash fd emacs-process-events--by-fd)
-      (emacs-process-events--set proc 4 'closed)
       (emacs-process-events--set proc 2 -1)
-      nil)
+      (unless (and (memq (emacs-process-events--get proc 3) '(pipe pipe-process))
+                   (integerp (plist-get (emacs-process-events--get proc 8) :pid)))
+        (emacs-process-events--set proc 4 'closed)
+        (let ((sent (process-sentinel proc)))
+          (when (functionp sent)
+            (save-current-buffer
+              (save-match-data
+                (funcall sent proc "connection broken by remote peer\n"))))))
+      t)
      ((stringp chunk)
       (let ((filt (process-filter proc))
             ;; C4: decode the raw bytes per the process's decoding
@@ -522,12 +653,14 @@ Returns the process vector on success, signals `file-error' on failure."
              ((eq k :coding) (setq coding v))
              ((eq k :plist) (setq plist v)))
             (setq tail (cddr tail)))))
-      (unless name
-        (signal 'wrong-type-argument
-                (list 'make-network-process "missing :name")))
-      (unless service
-        (signal 'wrong-type-argument
-                (list 'make-network-process "missing :service")))
+      (unless (stringp name)
+        (error ":name value not a string"))
+      (unless (or (null family) (integerp family)
+                  (memq family '(local ipv4 ipv6)))
+        (error "Unknown address family"))
+      (when (or (null family) (eq family 'local))
+        (unless (stringp service)
+          (signal 'wrong-type-argument (list 'stringp service))))
       (unless (or (null family) (eq family 'local) (eq family 'ipv4))
         (signal 'file-error
                 (list (format "make-network-process: only :family local / ipv4 supported in Phase 7b, got %S"
@@ -552,7 +685,7 @@ Returns the process vector on success, signals `file-error' on failure."
                   (t
                    (emacs-network-ffi-client-unix service)))))
         (when (and (consp fd) (eq (car fd) :error))
-          (signal 'file-error (list (cadr fd))))
+          (emacs-process-events--signal-network-error fd))
         (let ((proc (emacs-process-events--make-vec
                      name fd
                      (if server 'network-server 'network-connection)
@@ -561,6 +694,97 @@ Returns the process vector on success, signals `file-error' on failure."
           (emacs-process-events--register proc)
           proc)))))
 
+
+(defun emacs-process-events--child-process-p (process)
+  (and (fboundp 'emacs-process--native-process-p)
+       (or (emacs-process--native-process-p process)
+           (emacs-process--fallback-process-p process))))
+
+(defun emacs-process-events--combined-list ()
+  (let ((result (funcall (get 'process-list 'emacs-process-events--event-owner))))
+    (dolist (process (emacs-process-process-list))
+      (unless (memq process result)
+        (setq result (append result (list process)))))
+    result))
+
+(defun emacs-process-events--capture-owner-functions ()
+  "Save this provider's raw public process functions before merging owners.
+This runs on every reload after the raw definitions above have been
+re-evaluated, and also runs when the facade has not loaded yet."
+  (dolist (name '(processp process-list process-name process-status process-id
+                  process-buffer process-filter process-sentinel process-plist
+                  process-query-on-exit-flag set-process-filter
+                  set-process-sentinel set-process-buffer set-process-plist
+                  set-process-query-on-exit-flag process-send-string
+                  delete-process))
+    (when (fboundp name)
+      (put name 'emacs-process-events--event-owner (symbol-function name)))))
+
+(when emacs-process-events--standalone-p
+  (emacs-process-events--capture-owner-functions))
+
+(when (and emacs-process-events--standalone-p (fboundp 'emacs-process-processp))
+  ;; Keep both owners. A late event-provider load must not erase child
+  ;; accessors, while child bridges must not steal event-owned vectors.
+  (dolist (entry '((process-name emacs-process-process-name)
+                   (process-status emacs-process-process-status)
+                   (process-id emacs-process-process-id)
+                   (process-buffer emacs-process-process-buffer)
+                   (process-filter emacs-process-process-filter)
+                   (process-sentinel emacs-process-process-sentinel)
+                   (process-plist emacs-process-process-plist)
+                   (process-query-on-exit-flag emacs-process-process-query-on-exit-flag)))
+    (let ((name (car entry)))
+      (put name 'emacs-process-events--event-owner (symbol-function name))
+      (put name 'emacs-process-events--child-owner (symbol-function (cadr entry)))
+      (fset name
+            `(lambda (process)
+               (funcall (get ',name
+                             (if (emacs-process-events--child-process-p process)
+                                 'emacs-process-events--child-owner
+                               'emacs-process-events--event-owner)) process)))))
+  (dolist (entry '((set-process-filter emacs-process-set-process-filter)
+                   (set-process-sentinel emacs-process-set-process-sentinel)
+                   (set-process-buffer emacs-process-set-process-buffer)
+                   (set-process-plist emacs-process-set-process-plist)
+                   (set-process-query-on-exit-flag emacs-process-set-process-query-on-exit-flag)
+                   (process-send-string emacs-process-process-send-string)))
+    (let ((name (car entry)))
+      (put name 'emacs-process-events--event-owner (symbol-function name))
+      (put name 'emacs-process-events--child-owner (symbol-function (cadr entry)))
+      (fset name
+            `(lambda (process value)
+               (when (eq ',name 'process-send-string)
+                 (unless (stringp value)
+                   (signal 'wrong-type-argument (list 'stringp value)))
+                 (setq process (emacs-process-events--resolve-process process)))
+               (funcall (get ',name
+                             (if (emacs-process-events--child-process-p process)
+                                 'emacs-process-events--child-owner
+                               'emacs-process-events--event-owner)) process value)))))
+  (put 'delete-process 'emacs-process-events--event-owner (symbol-function 'delete-process))
+  (fset 'delete-process
+        '(lambda (&optional process)
+           (setq process
+                 (if (and (stringp process)
+                          (not (get-process process))
+                          (fboundp 'emacs-process-builtins--resolve-process))
+                     (emacs-process-builtins--resolve-process process)
+                   (emacs-process-events--resolve-process process)))
+           (if (emacs-process-events--child-process-p process)
+               (progn (emacs-process-delete-process process) nil)
+             (funcall (get 'delete-process 'emacs-process-events--event-owner) process))))
+  (put 'process-list 'emacs-process-events--event-owner (symbol-function 'process-list))
+  (fset 'process-list #'emacs-process-events--combined-list)
+  (fset 'processp
+        '(lambda (process)
+           (or (emacs-process-events--processp process)
+               (emacs-process-processp process)))))
+
+(when emacs-process-events--standalone-p
+  (require 'emacs-process-coding)
+  (fset 'process-coding-system #'emacs-process-coding-get)
+  (fset 'set-process-coding-system #'emacs-process-coding-set))
 
 (provide 'emacs-process-events)
 

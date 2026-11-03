@@ -51,6 +51,34 @@ item 9 helpers in `emacs-window.el')."
 
 ;;;; A. window query (8 tests)
 
+(ert-deftest emacs-window-unbound-leaf-adopts-native-buffer-owner ()
+  (emacs-window-test--with-fresh-world
+    (let ((unrelated (nelisp-ec-generate-new-buffer "*unrelated*")))
+      (nelisp-ec-set-buffer unrelated)
+      (with-temp-buffer
+        (insert "native\n")
+        (goto-char 4)
+        ;; Model the standalone reader's complete native buffer family.
+        (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+          (let ((window (emacs-window-selected-window)))
+            (should (eq (emacs-window-window-buffer window) (current-buffer)))
+            (should (= (emacs-window-point window) 4))
+            (should (eq (nelisp-ec-current-buffer) unrelated))
+            ;; An explicit shared-buffer consumer still owns its window.
+            (emacs-window-set-window-buffer window unrelated)
+            (should (eq (emacs-window-window-buffer window) unrelated))))))))
+
+(ert-deftest emacs-window-unbound-leaf-adopts-current-shared-buffer ()
+  (emacs-window-test--with-fresh-world
+    (let ((buffer (nelisp-ec-generate-new-buffer "*plain*")))
+      (nelisp-ec-set-buffer buffer)
+      (nelisp-ec-insert "scratch\n")
+      (let ((window (emacs-window-selected-window)))
+        (should (eq (emacs-window-window-buffer window) buffer))
+        (should (= (emacs-window-window-point window) (nelisp-ec-point)))
+        (nelisp-ec-set-buffer (nelisp-ec-generate-new-buffer "*other*"))
+        (should (eq (emacs-window-window-buffer window) buffer))))))
+
 (ert-deftest emacs-window-windowp-true-and-false ()
   (emacs-window-test--with-fresh-world
     (let ((w (emacs-window-selected-window)))
@@ -474,6 +502,27 @@ points, since the unprefixed names are host-guarded since T100."
         (setq saw (emacs-window-selected-window)))
       (should (eq w2 saw))
       (should (eq w1 (emacs-window-selected-window))))))
+
+(ert-deftest emacs-window-with-selected-window-restores-buffer-and-points ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-3-buffers (b1 b2)
+      (dolist (buffer (list b1 b2))
+        (nelisp-ec-with-current-buffer buffer (nelisp-ec-insert "abcdefghij")))
+      (nelisp-ec-set-buffer b1)
+      (nelisp-ec-goto-char 3)
+      (let* ((w1 (emacs-window-selected-window))
+             (w2 (emacs-window-split-window)))
+        (emacs-window-set-window-buffer w1 b1)
+        (emacs-window-set-window-buffer w2 b2)
+        (emacs-window-set-window-point w2 6)
+        (emacs-window-with-selected-window w2
+          (should (eq (nelisp-ec-current-buffer) b2))
+          (should (= (nelisp-ec-point) 6))
+          (nelisp-ec-goto-char 8))
+        (should (eq (emacs-window-selected-window) w1))
+        (should (eq (nelisp-ec-current-buffer) b1))
+        (should (= (nelisp-ec-point) 3))
+        (should (= (emacs-window-window-point w2) 8))))))
 
 ;;;; X. error / edge-case (3 tests)
 
@@ -925,6 +974,58 @@ a load under host Emacs never clobbers the real subr/Lisp definition."
                  (format "(when (emacs-window--install-function-p '%s)" sym)
                  nil t))))))
 
+(ert-deftest emacs-window-test/s22-prefixed-setter-accepts-native-buffer ()
+  (with-temp-buffer
+    (insert "native buffer")
+    (goto-char 4)
+    (let ((emacs-window--root nil) (emacs-window--selected nil)
+          (emacs-window--id-counter 0))
+      (let ((window (emacs-window-selected-window)))
+        (emacs-window-set-window-buffer window (current-buffer))
+        (should (eq (emacs-window-buffer window) (current-buffer)))
+        (should (= (emacs-window-point window) 4))
+        (should (= (emacs-window-start window) 1))
+        (emacs-window-set-window-buffer window (buffer-name))
+        (should (eq (emacs-window-buffer window) (current-buffer)))))))
+
 (provide 'emacs-window-test)
 
 ;;; emacs-window-test.el ends here
+
+(ert-deftest emacs-window-select-restores-shared-buffer-and-window-point ()
+  (emacs-window-test--with-fresh-world
+    (emacs-window-test--with-numbered-lines buffer 10
+      (nelisp-ec-set-buffer buffer)
+      (let* ((upper (emacs-window-selected-window))
+             (_ (emacs-window-set-window-buffer upper buffer))
+             (lower (emacs-window-split-window-below)))
+        (nelisp-ec-goto-char 5)
+        (emacs-window-set-window-point lower 9)
+        (emacs-window-select-window lower)
+        (should (eq (nelisp-ec-current-buffer) buffer))
+        (should (= (nelisp-ec-point) 9))
+        (should (= (emacs-window-window-point upper) 5))
+        (nelisp-ec-goto-char 13)
+        (emacs-window-select-window upper)
+        (should (= (nelisp-ec-point) 5))
+        (should (= (emacs-window-window-point lower) 13))))))
+
+(ert-deftest emacs-window-select-hands-off-native-and-shared-buffers ()
+  (emacs-window-test--with-fresh-world
+    (with-temp-buffer
+      (insert "native text")
+      (goto-char 4)
+      (let* ((native (current-buffer))
+             (shared (nelisp-ec-generate-new-buffer "reader"))
+             (upper (emacs-window-selected-window))
+             (lower (emacs-window-split-window-below)))
+        (emacs-window-set-window-buffer upper native)
+        (nelisp-ec-with-current-buffer shared (nelisp-ec-insert "prompt"))
+        (emacs-window-set-window-buffer lower shared)
+        (emacs-window-select-window lower)
+        (should (eq (nelisp-ec-current-buffer) shared))
+        (should (= (nelisp-ec-point) 7))
+        (emacs-window-select-window upper)
+        (should-not (nelisp-ec-current-buffer))
+        (should (eq (current-buffer) native))
+        (should (= (point) 4))))))

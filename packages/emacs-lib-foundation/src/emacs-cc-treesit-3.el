@@ -1,5 +1,7 @@
 ;;; emacs-cc-treesit-3.el --- tree-sitter C primitive compatibility -*- lexical-binding: t; -*-
 
+(require 'emacs-cc-treesit-1)
+
 (unless (fboundp 'treesit-node-start)
   (defun treesit-node-start (node)
     "Return the NODE's start position in its buffer.
@@ -68,7 +70,12 @@ programs should widen as necessary should they want to use a parser in
 an indirect buffer."
     (unless (symbolp language)
       (signal 'wrong-type-argument (list 'symbolp language)))
-    (signal 'treesit-error (list "Tree-sitter is not available"))))
+    (when buffer
+      (unless (bufferp buffer) (signal 'wrong-type-argument (list 'bufferp buffer))))
+    (unless (symbolp tag) (signal 'wrong-type-argument (list 'symbolp tag)))
+    (when (eq tag t) (signal 'wrong-type-argument (list '(not t) tag)))
+    (emacs-cc-treesit-load-language language)
+    (signal 'treesit-error '("Parsing with installed grammars is not implemented"))))
 
 (unless (fboundp 'treesit-parser-delete)
   (defun treesit-parser-delete (parser)

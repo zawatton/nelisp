@@ -8,9 +8,7 @@
     (let ((win (or window (selected-window))))
       (unless (window-valid-p win)
         (signal 'wrong-type-argument (list 'window-valid-p win)))
-      (if (emacs-window-parent win)
-          (- (1- (frame-height (window-frame win))) (window-height win))
-        (window-height win)))))
+      (* (window-height win) (frame-char-height (window-frame win))))))
 (unless (fboundp 'window-pixel-left)
   (defun window-pixel-left (&optional window)
     "Return left pixel edge of window WINDOW."
@@ -24,10 +22,8 @@
     (let ((win (or window (selected-window))))
       (unless (window-valid-p win)
         (signal 'wrong-type-argument (list 'window-valid-p win)))
-      (let ((top (cadr (emacs-window-window-edges win))))
-        (if (and (/= top 0) (emacs-window-parent win))
-            (- (1- (frame-height (window-frame win))) top)
-          top)))))
+      (* (cadr (emacs-window-window-edges win))
+         (frame-char-height (window-frame win))))))
 (unless (fboundp 'window-pixel-width)
   (defun window-pixel-width (&optional window)
     "Return the width of window WINDOW in pixels."

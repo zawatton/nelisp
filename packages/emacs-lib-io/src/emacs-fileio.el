@@ -57,6 +57,10 @@ buffer becomes current via `find-file'.")
 (defvar emacs-fileio--buffer-mode-names nil
   "Alist mapping live buffers to their `mode-name' string.")
 
+(defvar switch-to-buffer-preserve-window-point t
+  "Whether switching buffers preserves their previous window point.
+GNU file commands bind this option while entering and reverting Dired.")
+
 (defvar emacs-fileio-auto-mode-alist
   '(("\\.el\\'" . emacs-lisp-mode)
     ("\\.org\\'" . org-mode))
@@ -143,40 +147,51 @@ buffer becomes current via `find-file'.")
 
 (defun emacs-fileio--registry-buffer-name-in-use-p (name &optional except)
   "Return non-nil when NAME is used by a live buffer other than EXCEPT."
-  (catch 'found
-    (dolist (buffer (buffer-list))
-      (when (and (not (eq buffer except))
-                 (emacs-fileio--buffer-live-p buffer)
-                 (equal name (emacs-fileio--buffer-name buffer)))
-        (throw 'found t)))
-    nil))
+  (let ((buffer (if (and (fboundp 'nelisp-buffer-p)
+                         (nelisp-buffer-p except))
+                    (gethash name nelisp-buffer--registry)
+                  (get-buffer name))))
+    (and buffer
+         (not (eq buffer except))
+         (emacs-fileio--buffer-live-p buffer))))
 
 (defun emacs-fileio--generate-buffer-name (name &optional except)
   "Return a buffer name based on NAME that is not used, ignoring EXCEPT."
   (if (not (emacs-fileio--registry-buffer-name-in-use-p name except))
       name
-    (let ((n 2)
-          (candidate ""))
-      (setq candidate (format "%s<%d>" name n))
+    (let* ((base (if (and (> (length name) 0) (= (aref name 0) ?\s))
+                     (format "%s-%d" name (random 1000000))
+                   name))
+           (n 1)
+           (candidate base))
       (while (emacs-fileio--registry-buffer-name-in-use-p candidate except)
         (setq n (1+ n))
-        (setq candidate (format "%s<%d>" name n)))
+        (setq candidate (format "%s<%d>" base n)))
       candidate)))
 
 (defun emacs-fileio--rename-standalone-buffer (buffer name unique)
   "Rename standalone BUFFER to NAME, uniquifying when UNIQUE is non-nil."
-  (let* ((old-name (nelisp-ec-buffer-name buffer))
-         (new-name (if unique
-                       (emacs-fileio--generate-buffer-name name buffer)
-                     name)))
-    (when (and (not unique)
-               (emacs-fileio--registry-buffer-name-in-use-p new-name buffer))
-      (signal 'error (list "Buffer name is in use" new-name)))
-    (setq nelisp-ec--buffers
-          (cons (cons new-name buffer)
-                (assoc-delete-all old-name nelisp-ec--buffers)))
-    (nelisp-ec-buffer-name--setter buffer new-name)
-    new-name))
+  (let ((old-name (emacs-fileio--buffer-name buffer)))
+    (if (and (not unique) (equal name old-name))
+        old-name
+      (let ((new-name (if unique
+                          (emacs-fileio--generate-buffer-name name buffer)
+                        name)))
+        (when (and (not unique)
+                   (emacs-fileio--registry-buffer-name-in-use-p name buffer))
+          (signal 'error (list (format "Buffer name ‘%s’ is in use" name))))
+        (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+            (progn
+              (remhash old-name nelisp-buffer--registry)
+              (setf (nelisp-buffer-name buffer) new-name)
+              (puthash new-name buffer nelisp-buffer--registry))
+          (setq nelisp-ec--buffers
+                (cons (cons new-name buffer)
+                      (assoc-delete-all old-name nelisp-ec--buffers)))
+          (nelisp-ec-buffer-name--setter buffer new-name))
+        (force-mode-line-update)
+        (run-hooks 'buffer-list-update-hook)
+        new-name))))
 
 (defun emacs-fileio--buffer-default-directory (&optional buffer)
   "Return BUFFER's recorded default directory, or nil."
@@ -186,10 +201,13 @@ buffer becomes current via `find-file'.")
 (defun emacs-fileio--visited-file-name (&optional buffer)
   "Return BUFFER's visited filename across host and standalone modes."
   (let ((buf (or buffer (current-buffer))))
-    (or (cdr (assq buf emacs-fileio--buffer-files))
+    (if (and (fboundp 'emacs-fileio-native-public-buffer-p)
+             (emacs-fileio-native-public-buffer-p buf))
+        (emacs-fileio--direct-buffer-file-name buf)
+      (or (cdr (assq buf emacs-fileio--buffer-files))
         (condition-case nil
             (buffer-file-name buf)
-          (error nil)))))
+          (error nil))))))
 
 (defun emacs-fileio-buffer-file-name (&optional buffer)
   "Return BUFFER's visited filename.
@@ -260,7 +278,9 @@ Thin helper so callers do not need to know the builtins' state table."
   (or
    (catch 'found
      (dolist (cell emacs-fileio--buffer-files)
-       (when (and (equal filename (cdr cell))
+       (when (and (not (and (fboundp 'emacs-fileio-native-public-buffer-p)
+                            (emacs-fileio-native-public-buffer-p (car cell))))
+                  (equal filename (cdr cell))
                   (emacs-fileio--buffer-live-p (car cell)))
          (throw 'found (car cell))))
      nil)
@@ -306,16 +326,122 @@ Thin helper so callers do not need to know the builtins' state table."
     (emacs-fileio--apply-buffer-state buffer)
     buffer))
 
+;; The legacy window shim aliases this entry point to `pop-to-buffer',
+;; which both splits windows and accepts only compatibility buffers.  The
+;; file/buffer boundary already resolves both buffer families.  Use the
+;; public window handoff without reactivating an existing major mode.
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (defvar emacs-fileio--legacy-display-buffer (symbol-function 'display-buffer))
+  (defvar emacs-fileio--legacy-pop-to-buffer (symbol-function 'pop-to-buffer))
+
+  (defun display-buffer-same-window (buffer alist)
+    "Display BUFFER in the selected window when ALIST permits it."
+    (let ((window (selected-window)))
+      (unless (or (cdr (assq 'inhibit-same-window alist))
+                  (and (window-dedicated-p window)
+                       (not (eq buffer (window-buffer window)))))
+        (set-window-buffer window buffer)
+        window)))
+
+  (defun display-buffer-in-direction (buffer alist)
+    "Try to display BUFFER on ALIST's specified side of a reference window."
+    (let ((direction (cdr (assq 'direction alist))))
+      (when direction
+        (let* ((reference (cdr (assq 'window alist)))
+               (reference (if (window-live-p reference) reference (selected-window)))
+               (side (cond ((memq direction '(left leftmost)) 'left)
+                           ((memq direction '(right rightmost)) 'right)
+                           ((memq direction '(above up top)) 'above)
+                           (t 'below)))
+               (edges (emacs-window-window-edges reference)) window)
+          (dolist (candidate (window-list))
+            (let ((other (emacs-window-window-edges candidate)))
+              (when (and (not window) (not (eq reference candidate))
+                         (not (window-dedicated-p candidate))
+                         (cond
+                          ((eq side 'left) (= (nth 2 other) (nth 0 edges)))
+                          ((eq side 'right) (= (nth 0 other) (nth 2 edges)))
+                          ((eq side 'above) (= (nth 3 other) (nth 1 edges)))
+                          (t (= (nth 1 other) (nth 3 edges)))))
+                (setq window candidate))))
+          (setq window (or window (condition-case nil
+                                     (split-window reference nil side)
+                                   (error nil))))
+          (when window (set-window-buffer window buffer) window)))))
+
+  (defun display-buffer-pop-up-window (buffer alist)
+    "Display BUFFER by splitting a window below."
+    (display-buffer-in-direction buffer (cons '(direction . below) alist)))
+
+  (defun emacs-fileio--native-display-buffer (buffer action)
+    "Run ACTION's display functions for native BUFFER without selecting it.
+With no successful action, use the library's existing reuse/other/split
+policy through public window operations.  Buffer objects stay native."
+    (let* ((functions (car-safe action))
+           (alist (cdr-safe action))
+           (functions (if (functionp functions) (list functions) functions))
+           (selected (selected-window))
+           window)
+      (while (and functions (not window))
+        (setq window (funcall (pop functions) buffer alist)))
+      (unless window
+        (dolist (candidate (window-list))
+          (when (and (not window) (eq buffer (window-buffer candidate))
+                     (not (and (eq candidate selected)
+                               (cdr (assq 'inhibit-same-window alist)))))
+            (setq window candidate)))
+        (unless window
+          (dolist (candidate (window-list))
+            (when (and (not window) (not (eq candidate selected))
+                       (not (window-dedicated-p candidate)))
+              (setq window candidate)))
+          (setq window (or window (split-window selected nil 'below)))
+          (set-window-buffer window buffer)))
+      window))
+
+  (defun display-buffer (buffer-or-name &optional action frame)
+    "Display BUFFER-OR-NAME, honoring ACTION for native buffers."
+    (let ((buffer (emacs-fileio--buffer-object buffer-or-name)))
+      (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+          (emacs-fileio--native-display-buffer buffer action)
+        (funcall emacs-fileio--legacy-display-buffer buffer-or-name action frame))))
+
+  (defun pop-to-buffer (buffer-or-name &optional action norecord)
+    "Display BUFFER-OR-NAME using ACTION and select its window."
+    (let ((buffer (emacs-fileio--get-buffer-create buffer-or-name)))
+      (if (and (fboundp 'nelisp-buffer-p) (nelisp-buffer-p buffer))
+          (progn (select-window (display-buffer buffer action) norecord) buffer)
+        (funcall emacs-fileio--legacy-pop-to-buffer buffer-or-name action norecord))))
+
+  (defun pop-to-buffer-same-window (buffer-or-name &optional norecord)
+    "Display BUFFER-OR-NAME in the selected window and return its buffer."
+    (let ((buffer (emacs-fileio--get-buffer-create buffer-or-name))
+          (window (selected-window)))
+      (set-window-buffer window buffer)
+      (select-window window norecord)
+      buffer)))
+
 ;;;###autoload
 (defun rename-buffer (newname &optional unique)
-  "Rename the current buffer to NEWNAME and return NEWNAME.
+  "Rename the current buffer to NEWNAME and return the actual name.
 When UNIQUE is non-nil, append a numeric suffix if NEWNAME is already
-in use."
-  (interactive "sRename buffer: ")
+in use by another buffer.  Otherwise, signal an error for a name in use.
+For names starting with a space, try a random suffix before numbering.
+NEWNAME must be a nonempty string."
+  (interactive
+   (list (read-string "Rename buffer (to new name): " nil
+                      'buffer-name-history (buffer-name (current-buffer)))
+         current-prefix-arg))
+  (unless (stringp newname)
+    (signal 'wrong-type-argument (list 'stringp newname)))
+  (when (= (length newname) 0)
+    (signal 'error '("Empty string is invalid as a buffer name")))
   (let ((buffer (current-buffer)))
     (cond
-     ((and (fboundp 'nelisp-ec-buffer-p)
-           (nelisp-ec-buffer-p buffer))
+     ((or (and (fboundp 'nelisp-ec-buffer-p)
+               (nelisp-ec-buffer-p buffer))
+          (and (fboundp 'nelisp-buffer-p)
+               (nelisp-buffer-p buffer)))
       (emacs-fileio--rename-standalone-buffer buffer newname unique))
      (emacs-fileio--primitive-rename-buffer
       (funcall emacs-fileio--primitive-rename-buffer newname unique))
@@ -397,7 +523,9 @@ FILES-ONLY limits rows to buffers visiting files."
         (with-current-buffer buf
           (when (file-exists-p abs)
             (insert-file-contents abs))
-          (set-visited-file-name abs)
+          (if (emacs-fileio-native-public-buffer-p (current-buffer))
+              (emacs-fileio-set-visited-file-name-direct abs)
+            (set-visited-file-name abs))
           (emacs-fileio--remember-default-directory buf abs)
           (emacs-fileio--remember-major-mode
            buf
@@ -422,7 +550,11 @@ FILES-ONLY limits rows to buffers visiting files."
 When the buffer is unmodified, emit a message and do nothing."
   (interactive "P")
   (ignore arg)
-  (let ((filename (buffer-file-name)))
+  (let* ((buffer (current-buffer))
+         (native-p (emacs-fileio-native-public-buffer-p buffer))
+         (filename (if native-p
+                       (emacs-fileio--direct-buffer-file-name buffer)
+                     (buffer-file-name))))
     (cond
      ((null filename)
       (signal 'error '("save-buffer: buffer is not visiting a file")))
@@ -430,9 +562,13 @@ When the buffer is unmodified, emit a message and do nothing."
       (message "(No changes need to be saved)")
       nil)
      (t
-      (write-region (point-min) (point-max) filename nil nil)
-      (set-buffer-modified-p nil)
-      filename))))
+      (if native-p
+          (progn
+            (emacs-fileio-save-buffer-direct :buffer (current-buffer))
+            nil)
+        (write-region (point-min) (point-max) filename nil nil)
+        (set-buffer-modified-p nil)
+        filename)))))
 
 ;;;###autoload
 (defun write-file (filename &optional confirm)

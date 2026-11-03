@@ -6,9 +6,9 @@
   "Buffer/tick pairs recording the last explicit auto-save mark.")
 
 (defun emacs-cc-fileio-2--tick (&optional buffer)
-  "Return BUFFER's character modification tick when available."
-  (and (fboundp 'buffer-chars-modified-tick)
-       (condition-case nil (buffer-chars-modified-tick buffer) (error nil))))
+  "Return BUFFER's modification tick when available."
+  (and (fboundp 'buffer-modified-tick)
+       (condition-case nil (buffer-modified-tick buffer) (error nil))))
 
 (unless (fboundp 'recent-auto-save-p)
   (defun recent-auto-save-p ()
@@ -16,8 +16,12 @@
     (let* ((buffer (current-buffer))
            (saved (assq buffer emacs-cc-fileio-2--auto-saved-ticks))
            (saved-tick (cdr saved))
-           (current-tick (emacs-cc-fileio-2--tick buffer)))
-      (and saved current-tick (equal saved-tick current-tick)))))
+           (save-tick (and (fboundp 'files--buffer-save-tick)
+                           (files--buffer-save-tick buffer))))
+      (if (numberp save-tick)
+          (and saved (numberp saved-tick) (< save-tick saved-tick))
+        (let ((current-tick (emacs-cc-fileio-2--tick buffer)))
+          (and saved current-tick (equal saved-tick current-tick)))))))
 
 (unless (fboundp 'set-binary-mode)
   (defun set-binary-mode (stream mode)

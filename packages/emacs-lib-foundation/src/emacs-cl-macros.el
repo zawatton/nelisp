@@ -982,15 +982,14 @@ cycles."
              (setq guard (1+ guard))))
          hit)))
 
-(when (emacs-cl-macros--define-p 'cl-defstruct)
-  (defmacro cl-defstruct (name &rest slots)
-    "Stub: defstruct → minimal alist/vector-backed accessors.
+(defun emacs-cl-macros--expand-defstruct (name slots)
+    "Expand alist or untagged sequence structure definitions.
 
 Skips a leading docstring among SLOTS (= host `cl-defstruct'
 accepts an optional docstring before the slot list).  For the
 NAME-options shape `(NAME (:constructor X) (:copier nil) ...)'
 supports default, disabled, renamed, and positional constructors.
-Also supports the `(:type vector)' shape used by `avl-tree.el'."
+Also supports untagged `(:type vector)' and `(:type list)' structures."
     (let* ((sname (if (consp name) (car name) name))
            (opts (and (consp name) (cdr name)))
            (ctor-opts nil)
@@ -1042,7 +1041,7 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
               (setq ctor-saw t)
               (when (cadr o)
                 (setq ctor-opts
-                      (cons (list (cadr o) (cadr (cdr o))) ctor-opts))))
+                      (cons (list (cadr o) (cadr (cdr o)) (> (length o) 2)) ctor-opts))))
              ((and (consp o) (eq (car o) :predicate))
               (setq pred-saw t)
               (setq pred-from-opts (cadr o)))
@@ -1075,6 +1074,7 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
         (dolist (ctor (nreverse ctor-opts))
           (let* ((ctor-name (car ctor))
                  (ctor-args (car (cdr ctor)))
+                 (ctor-boa-p (or ctor-args (nth 2 ctor)))
                  (ctor-parts
                   (and ctor-args
                        (emacs-cl-macros--defstruct-ctor-parts ctor-args)))
@@ -1082,11 +1082,11 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                  (ctor-aux-bindings (cadr ctor-parts))
                  (ctor-value-syms (caddr ctor-parts)))
             (push
-             (if (eq type-from-opts 'vector)
-                 (if ctor-args
+             (if (memq type-from-opts '(vector list))
+                 (if ctor-boa-p
                      (list 'defun ctor-name ctor-formals
                            (let ((body
-                                  (cons 'vector
+                                  (cons type-from-opts
                                         (mapcar
                                          (lambda (slot)
                                            (if (memq slot ctor-value-syms)
@@ -1099,18 +1099,28 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                    (list 'defun ctor-name '(&rest args)
                          (list 'let
                                (list (list 'values
-                                           (cons 'vector
+                                           (cons type-from-opts
                                                  (mapcar #'cdr slot-defaults)))
                                      '(cur args))
-                               '(while cur
-                                  (let ((pos (cl-position
-                                              (intern
-                                               (substring (symbol-name (car cur)) 1))
-                                              (quote nil))))
-                                    (ignore pos))
-                                  (setq cur (cdr (cdr cur))))
+                               (list 'while 'cur
+                                     (list 'let
+                                           (list (list 'cell
+                                                       (list 'assq '(car cur)
+                                                             (list 'quote
+                                                                   (let ((index -1))
+                                                                     (mapcar
+                                                                      (lambda (slot)
+                                                                        (cons (intern (concat ":" (symbol-name slot)))
+                                                                              (setq index (1+ index))))
+                                                                      slot-names))))))
+                                           (if (eq type-from-opts 'vector)
+                                               '(when cell (aset values (cdr cell) (cadr cur)))
+                                             '(when cell
+                                                (setcar (nthcdr (cdr cell) values)
+                                                        (cadr cur)))))
+                                     '(setq cur (cddr cur)))
                                'values)))
-               (if ctor-args
+               (if ctor-boa-p
                    (list 'defun ctor-name ctor-formals
                          (let ((body
                                 (list 'cons
@@ -1161,12 +1171,14 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
         ;; NAME-p predicate (or whatever (:predicate X) renamed it to).
         (let ((pred-name (if pred-saw
                              pred-from-opts
-                           (intern (concat (symbol-name sname) "-p")))))
+                           (unless (memq type-from-opts '(vector list))
+                             (intern (concat (symbol-name sname) "-p"))))))
           (when pred-name
             (push (list 'defun pred-name
                         '(obj)
-                        (if (eq type-from-opts 'vector)
-                            (list 'and '(vectorp obj)
+                        (if (memq type-from-opts '(vector list))
+                            (list 'and (list (if (eq type-from-opts 'vector)
+                                                'vectorp 'listp) 'obj)
                                   (list '= '(length obj) (length slot-names)))
                           (list 'and '(consp obj)
                                 (list 'emacs-cl-macros--struct-isa
@@ -1191,15 +1203,22 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                  (acc (intern (concat conc-name (symbol-name slot))))
                  (setter (intern (concat conc-name (symbol-name slot) "--setter")))
                  (gv-setter (intern (format "(setf %s)" acc))))
-            (push (if (eq type-from-opts 'vector)
-                      (list 'defun acc '(obj) (list 'aref 'obj index))
+            (push (if (memq type-from-opts '(vector list))
+                      (list 'defun acc '(obj)
+                            (if (eq type-from-opts 'vector)
+                                (list 'aref 'obj index)
+                              (list 'nth index 'obj)))
                     (list 'defun acc
                           '(obj)
                           (list 'cdr (list 'assoc kw '(cdr obj)))))
                   forms)
-            (push (if (eq type-from-opts 'vector)
+            (push (if (memq type-from-opts '(vector list))
                       (list 'defun setter '(obj val)
-                            (list 'aset 'obj index 'val))
+                            (if (eq type-from-opts 'vector)
+                                (list 'aset 'obj index 'val)
+                              (list 'progn
+                                    (list 'setcar (list 'nthcdr index 'obj) 'val)
+                                    'val)))
                     (list 'defun setter
                           '(obj val)
                           (list 'let
@@ -1230,14 +1249,35 @@ Also supports the `(:type vector)' shape used by `avl-tree.el'."
                              (intern (concat "copy-" (symbol-name sname))))))
           (when copier-name
             (push (list 'defun copier-name '(obj)
-                        (if (eq type-from-opts 'vector)
+                        (if (memq type-from-opts '(vector list))
                             '(copy-sequence obj)
                           '(cons (car obj)
                                  (mapcar (lambda (--c--)
                                            (cons (car --c--) (cdr --c--)))
                                          (cdr obj)))))
                   forms)))
-        (cons 'progn (nreverse forms))))))
+        (cons 'progn (nreverse forms)))))
+
+(when (emacs-cl-macros--define-p 'cl-defstruct)
+  (defmacro cl-defstruct (name &rest slots)
+    "Expand a library-owned structure declaration."
+    (emacs-cl-macros--expand-defstruct name slots)))
+
+;; The standalone prelude's record constructor ignores explicit sequence
+;; types.  Keep its record/inheritance path and route untagged sequences
+;; through the shared implementation: GNU timers are vectors and decoded
+;; times are lists, including after genuine simple.el redefines accessors.
+(when (and (fboundp 'nelisp--repr)
+           (not (eq (get 'cl-defstruct 'emacs-cl-macros-vector-provider)
+                    'sequence-v2)))
+  (let ((emacs-cl-macros--record-expander (cdr (symbol-function 'cl-defstruct))))
+    (defmacro cl-defstruct (name &rest slots)
+      (if (and (consp name)
+               (memq (cadr (assq :type (cdr name))) '(vector list))
+               (not (memq :named (cdr name))))
+          (emacs-cl-macros--expand-defstruct name slots)
+        (apply emacs-cl-macros--record-expander name slots)))
+    (put 'cl-defstruct 'emacs-cl-macros-vector-provider 'sequence-v2)))
 
 ;; `cl--class' :include seed (magit bridge cl-defstruct inheritance fix).
 ;;
@@ -2142,6 +2182,9 @@ convention, and the compound forms (integer LO HI), (float ...),
        ((eq type 'hash-table) (hash-table-p val))
        ((eq type 'function) (functionp val))
        ((eq type 'boolean) (and (memq val '(nil t)) t))
+       ((get type 'cl-deftype-handler)
+        ;; A `cl-deftype' type: expand it as GNU's `cl-typep' does.
+        (cl-typep val (funcall (get type 'cl-deftype-handler))))
        (t
         ;; Fall back to a `TYPEp' or `TYPE-p' predicate when one exists.
         (let* ((name (symbol-name type))
@@ -2172,8 +2215,57 @@ convention, and the compound forms (integer LO HI), (float ...),
             (dolist (sub (cdr type) r)
               (unless (cl-typep val sub) (setq r nil)))))
          ((eq head 'not) (not (cl-typep val (nth 1 type))))
+         ;; A parameterized `cl-deftype' type such as EIEIO's (list-of X).
+         ((and (symbolp head) (get head 'cl-deftype-handler))
+          (cl-typep val (apply (get head 'cl-deftype-handler) (cdr type))))
          (t nil))))
      (t nil))))
+
+;; GNU `cl-deftype' stores (cl-function (lambda (&cl-defs (DEFAULT) ...) ...))
+;; as the type's handler.  Until GNU cl-macs.el (with `cl--transform-lambda')
+;; is loaded, the standalone `cl-function' is the prelude pass-through, which
+;; leaves `&cl-defs' in a plain lambda list.  Lower that one construct here:
+;; DEFAULT applies to each optional parameter given without its own default.
+(when (and (not (fboundp 'cl--transform-lambda))
+           (fboundp 'nelisp--write-stdout-bytes))
+  (defun emacs-cl--lower-cl-defs-lambda (func)
+    "Return FUNC, a lambda whose arglist holds `&cl-defs', as a plain lambda."
+    (let* ((args (cadr func))
+           (body (cddr func))
+           (rest (make-symbol "args"))
+           (default nil)
+           (mode 'required)
+           (bindings nil))
+      (while args
+        (let ((arg (car args)))
+          (cond
+           ((eq arg '&cl-defs)
+            (setq default (car-safe (cadr args))
+                  args (cdr args)))
+           ((eq arg '&optional) (setq mode 'optional))
+           ((eq arg '&rest) (setq mode 'rest))
+           ((eq mode 'rest)
+            (push (list arg rest) bindings))
+           ((eq mode 'optional)
+            (let ((name (if (consp arg) (car arg) arg))
+                  (value (if (consp arg) (cadr arg) default)))
+              (push (list name (list 'if rest (list 'pop rest) value)) bindings)))
+           (t
+            (push (list arg (list 'if rest (list 'pop rest)
+                                  (list 'signal ''wrong-number-of-arguments
+                                        (list 'list (list 'quote (cadr func)) 0))))
+                  bindings))))
+        (setq args (cdr args)))
+      (list 'function
+            (list 'lambda (list '&rest rest)
+                  (cons 'let* (cons (nreverse bindings) body))))))
+
+  (defmacro cl-function (func)
+    "Return FUNC; lower a `&cl-defs' lambda list as GNU's `cl-function' does."
+    (if (and (eq (car-safe func) 'lambda)
+             (memq '&cl-defs (car-safe (cdr func))))
+        (emacs-cl--lower-cl-defs-lambda func)
+      (list 'function func))))
 
 (unless (fboundp 'cl-the)
   (defmacro cl-the (_type form)

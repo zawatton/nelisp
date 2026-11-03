@@ -101,6 +101,37 @@
     (emacs-char-table-set child ?x 'override)
     (should (eq 'override (emacs-char-table-ref child ?x)))))
 
+(ert-deftest emacs-char-table-test/logical-identity-query ()
+  (let* ((record (record 'nelisp--syntax-table (make-hash-table :test 'eql) nil))
+         (view (emacs-char-table--storage record))
+         (other (emacs-char-table-make 'syntax-table)))
+    (should (emacs-char-table-same-p record view))
+    (should (emacs-char-table-same-p view record))
+    (should-not (emacs-char-table-same-p record other))
+    (should-not (emacs-char-table-parent record))
+    (when (emacs-char-table-test--host-p)
+      (let ((host (make-char-table 'syntax-table)))
+        (should (emacs-char-table-same-p host host))
+        (should-not (emacs-char-table-same-p host (copy-sequence host)))))))
+
+(ert-deftest emacs-char-table-test/parent-bootstrap-storage-identity ()
+  (let* ((record (record 'nelisp--syntax-table (make-hash-table :test 'eql) nil))
+         (view (emacs-char-table--storage record)))
+    (should-error (emacs-char-table-set-parent record view))
+    (should-error (emacs-char-table-set-parent view record))
+    (should-not (emacs-char-table-parent record))))
+
+(ert-deftest emacs-char-table-test/parent-rejects-existing-cycle ()
+  (let ((a (emacs-char-table-make 'test))
+        (b (emacs-char-table-make 'test))
+        (child (emacs-char-table-make 'test)))
+    ;; Deliberately corrupted input: attaching CHILD must terminate without
+    ;; changing its parent, even though the cycle never visits CHILD.
+    (emacs-char-table--raw-set a emacs-char-table--i-parent b)
+    (emacs-char-table--raw-set b emacs-char-table--i-parent a)
+    (should-error (emacs-char-table-set-parent child a))
+    (should-not (emacs-char-table-parent child))))
+
 (ert-deftest emacs-char-table-test/subtype ()
   (should (eq 'my-subtype
              (emacs-char-table-subtype (emacs-char-table-make 'my-subtype)))))

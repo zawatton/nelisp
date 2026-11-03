@@ -87,11 +87,17 @@ the real library, such as the package load-path smoke.")
       (file-name-directory source-file))
      ((and (boundp 'default-directory)
            (stringp default-directory))
-      (let ((src (expand-file-name "src/" default-directory)))
-        (if (and (fboundp 'file-directory-p)
-                 (file-directory-p src))
-            src
-          default-directory)))
+      (or (catch 'source-dir
+            (dolist (entry load-path)
+              (when (and (stringp entry)
+                         (file-readable-p
+                          (expand-file-name "emacs-cl-macros.el" entry)))
+                (throw 'source-dir (file-name-as-directory entry))))
+          (let ((src (expand-file-name "src/" default-directory)))
+            (if (and (fboundp 'file-directory-p)
+                     (file-directory-p src))
+                src
+              default-directory)))))
      (t nil)))
   "Directory that contains the cl-lib shim and its sibling features.")
 

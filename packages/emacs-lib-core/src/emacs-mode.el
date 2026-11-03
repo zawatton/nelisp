@@ -161,6 +161,21 @@ mode-tracking vars.  Returns nil."
 
 ;;;; --- define-derived-mode -------------------------------------------
 
+(defun emacs-mode-lisp-interaction-mode ()
+  "Enter the shared Lisp Interaction mode used by the initial scratch buffer."
+  (interactive)
+  (emacs-mode-emacs-lisp-mode)
+  (emacs-mode-set-major-mode 'lisp-interaction-mode "Lisp Interaction")
+  (when (and (fboundp 'emacs-buffer-set-buffer-local-value)
+             (fboundp 'nelisp-ec-current-buffer) (nelisp-ec-current-buffer))
+    (emacs-buffer-set-buffer-local-value 'major-mode (nelisp-ec-current-buffer)
+                                       'lisp-interaction-mode)
+    (emacs-buffer-set-buffer-local-value 'mode-name (nelisp-ec-current-buffer)
+                                       "Lisp Interaction"))
+  (emacs-mode-run-mode-hooks (when (boundp 'lisp-interaction-mode-hook)
+                               'lisp-interaction-mode-hook))
+  nil)
+
 (defmacro emacs-mode-define-derived-mode
     (child parent name &optional doc &rest body)
   "Track H `define-derived-mode', GNU-semantics MVP.
@@ -319,8 +334,16 @@ the isolation that pinned this down to backquote specifically, not
                                       (list 'not
                                             (list 'eq 'emacs-mode--dd-parent-syntax
                                                   (list 'standard-syntax-table))))
-                                (list 'set-char-table-parent syntax-var
-                                      (list 'syntax-table)))))))
+                                ;; An existing mode table can deliberately be
+                                ;; its parent's table (GNU outline-mode does
+                                ;; this).  Reuse it without making it its own
+                                ;; parent on first activation.
+                                (list 'unless
+                                      (list 'if (list 'fboundp ''emacs-char-table-same-p)
+                                            (list 'emacs-char-table-same-p syntax-var (list 'syntax-table))
+                                            (list 'eq syntax-var (list 'syntax-table)))
+                                      (list 'set-char-table-parent syntax-var
+                                            (list 'syntax-table))))))))
            (abbrev-parent-fixup-form
             (when declare-abbrev
               (list 'when (list 'and (list 'fboundp (list 'quote 'abbrev-table-get))

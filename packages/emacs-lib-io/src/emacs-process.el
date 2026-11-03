@@ -186,6 +186,71 @@ and anvil's socket daemon died the moment it bound one (measured
       (emacs-process--native-process-p object)
       (emacs-process--network-process-p object)))
 
+(defun emacs-process--event-process-p (object)
+  "Return non-nil when OBJECT belongs to the saved event-process owner."
+  (and (emacs-standalone-mode-p)
+       (let ((predicate (get 'processp 'emacs-process-events--event-owner)))
+         (and (functionp predicate) (funcall predicate object)))))
+
+(defun emacs-process--event-process-list ()
+  "Return the process list from the saved event-process owner, if loaded."
+  (and (emacs-standalone-mode-p)
+       (let ((owner (get 'process-list 'emacs-process-events--event-owner)))
+         (if (functionp owner) (funcall owner) nil))))
+
+(defun emacs-process--event-status-reference (argument)
+  "Resolve the process named by status ARGUMENT without changing its owner."
+  (cond
+   ((stringp argument) (and (fboundp 'get-process) (get-process argument)))
+   ((or (bufferp argument) (null argument))
+    (let ((buffer (if (null argument) (current-buffer) argument))
+          (found nil))
+      (catch 'found
+        (dolist (process (process-list))
+          (when (eq (process-buffer process) buffer)
+            (setq found process)
+            (throw 'found process))))
+      found))
+   (t argument)))
+
+(defun emacs-process--event-delete-target (argument)
+  "Resolve event-owned deletion ARGUMENT using the builtin resolver."
+  (if (emacs-process--event-process-p argument)
+      argument
+    (when (and (or (stringp argument) (bufferp argument) (null argument))
+               (fboundp 'emacs-process-builtins--resolve-process))
+      (let ((target (condition-case nil
+                        (emacs-process-builtins--resolve-process argument)
+                      (error nil))))
+        (and (emacs-process--event-process-p target) target)))))
+
+(defun emacs-process--event-owner-for-call-p (sym args)
+  "Return non-nil when saved event owner should handle SYM with ARGS.
+Only `process-status' has the broader Emacs argument forms (name, buffer,
+or nil); all other event operations require an event-owned process object."
+  (and (emacs-standalone-mode-p)
+       (functionp (get sym 'emacs-process-events--event-owner))
+       (or (emacs-process--event-process-p (car args))
+           ;; Strict object-only accessors must preserve the provider's
+           ;; processp error for invalid arguments. Native, fallback, and
+           ;; network processes stay with the facade's existing branches.
+           (and (memq sym '(process-name process-buffer
+                            process-query-on-exit-flag
+                            set-process-query-on-exit-flag))
+                (not (emacs-process--process-object-p (car args))))
+           (and (eq sym 'process-status)
+                (or (stringp (car args))
+                    (bufferp (car args))
+                    (null (car args)))
+                (let ((target
+                       (emacs-process--event-status-reference (car args))))
+                  (or (null target)
+                      (emacs-process--event-process-p target)
+                      (emacs-process--native-process-p target)
+                      (emacs-process--fallback-process-p target))))
+           (and (eq sym 'delete-process)
+                (emacs-process--event-delete-target (car args))))))
+
 (defun emacs-process--native-start-available-p ()
   "Return non-nil when native NeLisp async process start exists."
   (or (fboundp 'nelisp-process-start-process)
@@ -217,9 +282,11 @@ and anvil's socket daemon died the moment it bound one (measured
 
 (defun emacs-process--native-status-code (process)
   "Return native integer status code for PROCESS."
-  (if (fboundp 'nelisp-process-status)
-      (nelisp-process-status process)
-    3))
+  (cond ((and (fboundp 'emacs-process-posix--available-p)
+              (emacs-process-posix--available-p))
+         (emacs-process-posix--refresh process))
+        ((fboundp 'nelisp-process-status) (nelisp-process-status process))
+        (t 3)))
 
 (defun emacs-process--native-status-symbol (process)
   "Return Emacs status symbol for native PROCESS."
@@ -228,24 +295,39 @@ and anvil's socket daemon died the moment it bound one (measured
      ((= code 0) 'run)
      ((= code 1) 'exit)
      ((= code 2) 'signal)
+     ((= code 4) 'stop)
      (t 'closed))))
 
 (defun emacs-process--native-exit-status (process)
   "Return native PROCESS exit status."
-  (if (fboundp 'nelisp-process-exit-status)
-      (nelisp-process-exit-status process)
-    0))
+  (let ((status (emacs-process--native-status-code process)))
+    (cond ((= status 0) 0)
+          ((= status 4) (emacs-process--native-metadata process :stop-signal))
+          (t (let ((code (if (fboundp 'nelisp-process-exit-status)
+                            (nelisp-process-exit-status process) 0)))
+               (if (and (= status 2) (>= code 128)) (- code 128) code))))))
 
-(defun emacs-process--native-start (name buffer command filter sentinel)
+(defun emacs-process--native-start (name buffer command filter sentinel &optional pty stderr)
   "Start native NeLisp COMMAND and attach Emacs metadata."
-  (let* ((launcher (cond
+  (let* ((command (and command
+                       (cons (or (executable-find (car command)) (car command))
+                             (cdr command))))
+         (launcher (cond
                     ((fboundp 'nelisp-process-start-process)
                      'nelisp-process-start-process)
                     ((fboundp 'nelisp-process-start)
                      'nelisp-process-start)
                     (t nil)))
          (process (and launcher command
-                       (apply launcher command))))
+                       (cond (pty (emacs-process-posix-spawn-pty command stderr))
+                             ((and (eq system-type 'gnu/linux)
+                                   (fboundp 'syscall-direct)
+                                   (fboundp 'emacs-process-posix-spawn-pipe))
+                              (emacs-process-posix-spawn-pipe command stderr))
+                             (t (apply launcher command)))))
+         (stderr-fd (and process (emacs-process--native-metadata process :stderr-fd)))
+         (pty-master (and process (emacs-process--native-metadata process :pty-master)))
+         (tty-name (and process (emacs-process--native-metadata process :tty-name))))
     (when process
       (emacs-process--native-put-metadata
        process
@@ -254,43 +336,125 @@ and anvil's socket daemon died the moment it bound one (measured
              :command command
              :filter filter
              :sentinel sentinel
+             :pty-master pty-master
+             :tty-name tty-name
+             :stderr-fd stderr-fd
+             :stderr-buffer (emacs-process--fallback-buffer stderr)
              :sentinel-fired nil
              :deleted nil)))
     process))
 
 (defun emacs-process--native-drain-output (process)
-  "Drain native PROCESS output into buffer/filter."
-  (let ((observed nil)
-        (chunk t)
+  "Drain native PROCESS output through its filter, or into its buffer."
+  (let ((observed nil) (chunk t)
         (buffer (emacs-process--native-metadata process :buffer))
         (filter (emacs-process--native-metadata process :filter)))
-    (while (and (fboundp 'nelisp-process-read-output) chunk)
-      (setq chunk (nelisp-process-read-output process 4096))
-      (when (and (stringp chunk) (> (length chunk) 0))
-        (setq observed t)
-        (when buffer
-          (with-current-buffer buffer
-            (goto-char (point-max))
-            (insert chunk)))
-        (when (functionp filter)
-          (funcall filter process chunk))))
+    (unless (eq filter t)
+      (while (and (fboundp 'nelisp-process-read-output) chunk)
+        (setq chunk (nelisp-process-read-output process 4096))
+        (when (and (stringp chunk) (> (length chunk) 0))
+          (when (fboundp 'emacs-process-coding-get)
+            (setq chunk (emacs-process-coding-convert
+                         chunk (car (emacs-process-coding-get process)) nil)))
+          (setq observed t)
+          (save-current-buffer
+            (save-match-data
+              (if (functionp filter)
+                  (let ((inhibit-quit t) (last-nonmenu-event t))
+                    (funcall filter process chunk))
+                (when (and buffer (buffer-live-p buffer))
+                  (with-current-buffer buffer
+                    (goto-char (point-max))
+                    (insert chunk)))))))))
     observed))
 
+(defun emacs-process--native-drain-stderr (process)
+  "Drain a separate nonblocking stderr pipe before the terminal sentinel.
+The descriptor is independent of stdout readiness.  Close it at EOF or
+explicit deletion, retaining NUL bytes and the requested buffer boundary."
+  (let ((fd (emacs-process--native-metadata process :stderr-fd))
+        (buffer (emacs-process--native-metadata process :stderr-buffer))
+        (observed nil))
+    (when (integerp fd)
+      (let* ((owner (nl-ffi-memory-allocate 4096))
+             (pointer (nl-ffi-memory-address owner)) (count 1))
+        (unwind-protect
+            (while (> count 0)
+              (setq count (syscall-direct 0 fd pointer 4096 0 0 0))
+              (cond
+               ((> count 0)
+                (setq observed t)
+                (let ((chunk (ptr-read-bytes pointer count)))
+                  (when (fboundp 'emacs-process-coding-get)
+                    (setq chunk (emacs-process-coding-convert
+                                 chunk (car (emacs-process-coding-get process)) nil)))
+                  (when (and buffer (buffer-live-p buffer))
+                    (with-current-buffer buffer
+                      (let ((inhibit-read-only t))
+                        (goto-char (point-max)) (insert chunk))))))
+               ((= count -4) (setq count 1)) ; EINTR
+               ((= count -11))              ; EAGAIN: try at the next pump
+               (t
+                (syscall-direct 3 fd 0 0 0 0 0)
+                (emacs-process--native-set-metadata process :stderr-fd nil)
+                (when (< count 0) (error "Cannot read process stderr: %s" count)))))
+          (nl-ffi-memory-release owner))))
+    observed))
+
+(defun emacs-process--native-invoke-sentinel (process event)
+  "Run one notification with the asynchronous callback dynamic context."
+  (let ((sentinel (emacs-process--native-metadata process :sentinel))
+        (inhibit-quit t) (last-nonmenu-event t)
+        (deactivate-mark (and (boundp 'deactivate-mark) deactivate-mark)))
+    (when (functionp sentinel)
+      (save-current-buffer
+        (save-match-data
+          (condition-case err
+              (funcall sentinel process event)
+            (error (if (and (boundp 'debug-on-error) debug-on-error)
+                       (signal (car err) (cdr err))
+                     (if (and (boundp 'command-error-function)
+                              (functionp command-error-function))
+                         (funcall command-error-function err "error in process sentinel: " nil)
+                       (message "error in process sentinel: %s"
+                                (error-message-string err)))))))))))
+
 (defun emacs-process--native-maybe-fire-sentinel (process)
-  "Fire native PROCESS sentinel once after exit or signal."
-  (let ((status (emacs-process--native-status-symbol process)))
-    (if (or (eq status 'run)
-            (emacs-process--native-metadata process :sentinel-fired))
-        nil
-      (let ((sentinel (emacs-process--native-metadata process :sentinel))
-            (event (if (eq status 'exit)
-                       "finished\n"
-                     (format "exited abnormally with code %s\n"
-                             (emacs-process--native-exit-status process)))))
-        (emacs-process--native-set-metadata process :sentinel-fired t)
-        (when (functionp sentinel)
-          (funcall sentinel process event))
-        t))))
+  "Dispatch observed transitions without making a stop terminal."
+  (let* ((status (emacs-process--native-status-symbol process))
+         (events (emacs-process--native-metadata process :pending-status-events))
+         (sentinel (emacs-process--native-metadata process :sentinel))
+         (observed nil))
+    ;; The native poller may reap a terminal wait itself. Cover that path,
+    ;; while POSIX reference waits preserve every stop/continue transition.
+    (when (and (null events) (memq status '(exit signal))
+               (not (emacs-process--native-metadata process :sentinel-fired)))
+      (setq events (list (cons status (aref process 4)))))
+    (emacs-process--native-set-metadata process :pending-status-events nil)
+    (dolist (entry events)
+      (let* ((state (car entry)) (code (cdr entry))
+             (event (cond ((memq state '(stop signal))
+                           (require 'emacs-network-ffi)
+                           (require 'nl-ffi)
+                           (ffi:library emacs-network-ffi-libc-path)
+                           (let* ((number (if (eq state 'stop) code (- code 128)))
+                                  (pointer (nl-ffi--invoke
+                                            'emacs-process-signal-message "strsignal"
+                                            '(:sint32) :pointer (list number)))
+                                  (text (if (and (integerp pointer) (> pointer 0))
+                                            (nl-ffi-get-string pointer) "unknown")))
+                             (concat (downcase (substring text 0 1))
+                                     (substring text 1) "\n")))
+                          ((eq state 'run) "run")
+                          ((and (eq state 'exit) (= code 0)) "finished\n")
+                          (t (format "exited abnormally with code %s\n" code)))))
+        (when (memq state '(exit signal))
+          (emacs-process--native-set-metadata process :sentinel-fired t)
+          (emacs-process--native-drain-output process)
+          (emacs-process--native-drain-stderr process))
+        (setq observed t)
+        (emacs-process--native-invoke-sentinel process event)))
+    observed))
 
 (defun emacs-process--native-poll-event (process)
   "Return native PROCESS poll event as (READY EXITED EXIT-CODE), or nil."
@@ -328,18 +492,43 @@ and anvil's socket daemon died the moment it bound one (measured
                          (not (eq (emacs-process--native-status-symbol process)
                                   'run))))
             (when (emacs-process--native-drain-output process)
-              (setq observed t))
-            (when (emacs-process--native-maybe-fire-sentinel process)
-              (setq observed t))))))
+              (setq observed t)))
+          (when (emacs-process--native-drain-stderr process)
+            (setq observed t))
+          (when (emacs-process--native-maybe-fire-sentinel process)
+            (setq observed t)))))
     observed))
 
 (defun emacs-process--native-delete (process)
   "Delete native PROCESS and mark metadata deleted."
+  (let ((fd (emacs-process--native-metadata process :stderr-fd)))
+    (when (integerp fd)
+      (syscall-direct 3 fd 0 0 0 0 0)
+      (emacs-process--native-set-metadata process :stderr-fd nil)))
+  (let ((status (emacs-process--native-status-code process)))
+    (emacs-process--native-set-metadata process :delete-status status)
+    (emacs-process--native-set-metadata process :delete-exit-code (aref process 4)))
+  (when (and (fboundp 'emacs-process-posix--available-p)
+             (emacs-process-posix--available-p)
+             (= (aref process 3) 0))
+    ;; SIGTERM can remain pending forever in a stopped child, or be caught.
+    (let* ((pid (nelisp-process-pid process))
+           (group (emacs-process-posix--syscall 121 #x2000097 pid 0 0)))
+      (emacs-process-posix--signal (if (= group pid) (- group) pid) 'KILL)))
   (when (fboundp 'nelisp-process-close-stdin)
     (ignore-errors (nelisp-process-close-stdin process)))
   (when (fboundp 'nelisp-process-delete)
     (nelisp-process-delete process))
+  ;; Cleanup closes descriptors and uses a private deleted state. Public
+  ;; accessors and the sentinel retain the actual terminal process status.
+  (let ((status (emacs-process--native-metadata process :delete-status)))
+    (if (memq status '(0 4))
+        (progn (aset process 3 2) (aset process 4 (+ 128 9)))
+      (aset process 3 status)
+      (aset process 4 (emacs-process--native-metadata process :delete-exit-code))))
   (emacs-process--native-set-metadata process :deleted t)
+  (emacs-process--native-set-metadata process :pending-status-events nil)
+  (emacs-process--native-maybe-fire-sentinel process)
   process)
 
 (defun emacs-process--fallback-process-deleted-p (process)
@@ -438,9 +627,10 @@ unprefixed name to one of our substrate functions."
 
 Lookup order:
   1. host-mode + host has a non-shadow binding → apply host.
-  2. a standalone primitive is registered for SYM → dispatch.
-  3. a loaded `nelisp-process' facade is available → dispatch.
-  4. otherwise signal `emacs-process-not-implemented'.
+  2. a saved event-process owner recognizes the arguments → apply it.
+  3. a standalone primitive is registered for SYM → dispatch.
+  4. a loaded `nelisp-process' facade is available → dispatch.
+  5. otherwise signal `emacs-process-not-implemented'.
 
 Steps 2 and 3 are what let NeLisp replace the host primitive while
 keeping this file as the Emacs-shaped compatibility boundary."
@@ -454,6 +644,15 @@ keeping this file as the Emacs-shaped compatibility boundary."
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p sym))
     (apply (indirect-function sym) args))
+   ;; The event provider saves its raw bodies before installing merged
+   ;; wrappers. Call that function cell directly; redispatching the public
+   ;; name would re-enter this facade after a later builtins load.
+   ((emacs-process--event-owner-for-call-p sym args)
+    (apply (get sym 'emacs-process-events--event-owner)
+           (if (eq sym 'delete-process)
+               (cons (emacs-process--event-delete-target (car args))
+                     (cdr args))
+             args)))
    ((emacs-standalone-has-primitive-p sym)
     (emacs-standalone-call-primitive sym args))
    ((emacs-process--nelisp-delegate sym)
@@ -923,7 +1122,8 @@ matches the `files.el' convention of dispatching `start-file-process' on
            (emacs-process--native-start-available-p)
            (ignore-errors
              (emacs-process--native-start
-              name buffer (cons program program-args) nil nil)))
+              name buffer (cons program program-args) nil nil
+              (and (boundp 'process-connection-type) process-connection-type))))
       (condition-case nil
           (emacs-process--delegate
            'start-process
@@ -936,15 +1136,30 @@ matches the `files.el' convention of dispatching `start-file-process' on
 
 (defun emacs-process-make-process (&rest plist)
   "Start a process described by PLIST (= keyword/value pairs)."
+  (when (plist-member plist :coding)
+    (let ((coding (plist-get plist :coding)))
+      (check-coding-system (if (consp coding) (car coding) coding))
+      (check-coding-system (if (consp coding) (cdr coding) coding))))
   (or (and (emacs-standalone-mode-p)
            (emacs-process--native-start-available-p)
            (ignore-errors
-             (emacs-process--native-start
+             (let ((process (emacs-process--native-start
               (or (plist-get plist :name) "process")
               (plist-get plist :buffer)
               (plist-get plist :command)
               (plist-get plist :filter)
-              (plist-get plist :sentinel))))
+              (plist-get plist :sentinel)
+              (let ((type (plist-get plist :connection-type)))
+                (if (eq type 'pipe) nil
+                  (or (eq type 'pty)
+                      (and (boundp 'process-connection-type) process-connection-type))))
+              (plist-get plist :stderr))))
+               (when (and process (plist-member plist :coding))
+                 (let ((coding (plist-get plist :coding)))
+                   (emacs-process-coding-set
+                    process (if (consp coding) (car coding) coding)
+                    (if (consp coding) (cdr coding) coding))))
+               process)))
       (condition-case nil
           (emacs-process--delegate 'make-process plist)
         (emacs-process-not-implemented
@@ -957,6 +1172,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
   (cond
    ((emacs-process--fallback-process-p object) t)
    ((emacs-process--native-process-p object) t)
+   ((emacs-process--event-process-p object) t)
    ((emacs-process--network-process-p object) t)
    ((and (not (emacs-standalone-mode-p))
          (emacs-process--delegate-p 'processp))
@@ -975,6 +1191,9 @@ matches the `files.el' convention of dispatching `start-file-process' on
         (push process processes))
       (dolist (process emacs-process--fallback-processes)
         (unless (emacs-process--fallback-process-deleted-p process)
+          (push process processes)))
+      (dolist (process (emacs-process--event-process-list))
+        (unless (memq process processes)
           (push process processes)))
       (nreverse processes)))))
 
@@ -1070,56 +1289,149 @@ matches the `files.el' convention of dispatching `start-file-process' on
    (t (emacs-process--delegate 'set-process-sentinel
                                (list process sentinel)))))
 
+(defun emacs-process-dispatch-pending (&optional process just-this-one)
+  "Dispatch pending process/network output and status without waiting.
+Return activity for PROCESS, or any activity if nil.  Other processes are
+serviced as well unless JUST-THIS-ONE requests isolated dispatch."
+  (let ((any nil))
+    (dolist (target (if (and process just-this-one)
+                        (list process)
+                      (emacs-process--native-live-processes)))
+      (when (emacs-process--native-accept (list target))
+        (when (or (null process) (eq process target)) (setq any t))))
+    (when (and (fboundp 'emacs-process-events-dispatch-pending)
+               (or (not just-this-one)
+                   (and (vectorp process) (> (length process) 0)
+                        (eq (aref process 0) :emacs-process-events))))
+      (when (emacs-process-events-dispatch-pending process just-this-one)
+        (setq any t)))
+    any))
+
+(defun emacs-process-wait-source-p (&optional process)
+  "Return non-nil while PROCESS (or any process) can produce output/status."
+  (let ((sources (if process (list process)
+                   (append (emacs-process--native-live-processes)
+                           (and (boundp 'emacs-process-events--all)
+                                emacs-process-events--all))))
+        (live nil))
+    (dolist (target sources)
+      (when (cond
+             ((emacs-process--native-process-p target)
+              (memq (emacs-process--native-status-symbol target) '(run stop)))
+             ((and (vectorp target) (> (length target) 4)
+                   (eq (aref target 0) :emacs-process-events))
+              (memq (aref target 4) '(run open listen connect stop))))
+        (setq live t)))
+    live))
+
+(defun emacs-process-wait-fds (seconds input-fd &optional process just-this-one)
+  "Wait on live process/network fds and optional INPUT-FD for SECONDS.
+Return t when an OS wait was performed, including a timeout.  A nil result
+asks the shared wait to use its raw delay on hosts without this syscall ABI.
+Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
+  (when (and (eq system-type 'gnu/linux) (fboundp 'syscall-direct)
+             (fboundp 'alloc-bytes) (fboundp 'dealloc-bytes))
+    (let ((fds (and (integerp input-fd) (list input-fd))))
+      (dolist (target (if (and process just-this-one) (list process)
+                       (emacs-process--native-live-processes)))
+        (when (and (emacs-process--native-process-p target)
+                   (memq (emacs-process--native-status-symbol target) '(run stop)))
+          (when (and (not (eq (emacs-process--native-metadata target :filter) t))
+                     (integerp (aref target 2)) (>= (aref target 2) 0))
+            (push (aref target 2) fds))
+          ;; Stderr can become ready without stdout.  It must wake the same
+          ;; shared wait even when the caller deliberately discards stdout.
+          (let ((fd (emacs-process--native-metadata target :stderr-fd)))
+            (when (and (integerp fd) (>= fd 0)) (push fd fds)))))
+      (when (and just-this-one (vectorp process) (> (length process) 2)
+                 (eq (aref process 0) :emacs-process-events)
+                 (integerp (aref process 2)) (>= (aref process 2) 0))
+        (push (aref process 2) fds))
+      (when (and (fboundp 'emacs-process-events--all-fds) (not just-this-one))
+        (setq fds (append (emacs-process-events--all-fds) fds)))
+      (let* ((count (length fds)) (size (max 8 (* count 8)))
+             (buf (alloc-bytes size 8)) (index 0))
+        (unwind-protect
+            (progn
+              (dolist (fd fds)
+                (ptr-write-u32 buf (* index 8) fd)
+                ;; events=POLLIN in the low short, revents=0 in the high short.
+                (ptr-write-u32 buf (+ (* index 8) 4) 1)
+                (setq index (1+ index)))
+              (syscall-direct 7 buf count (max 0 (ceiling (* seconds 1000))) 0 0 0))
+          (dealloc-bytes buf size 8)))
+      t)))
+
 (defun emacs-process--native-accept-until (processes budget-ms)
-  "Poll PROCESSES for output/status changes for up to BUDGET-MS.
-Returns non-nil as soon as `emacs-process--native-accept' observes
-something; otherwise sleeps in 10ms slices and retries until BUDGET-MS
-elapses.  Doc 37 risk #1 (insurance): Tramp's synchronous connection
-setup blocks on `accept-process-output' for multi-second stretches, so a
-single non-blocking poll (the previous behaviour here) is not enough --
-the bidirectional process layer in
-`scripts/nemacs-runtime-process-preload.el' already honours SECONDS this
-way; this mirrors that for the `nelisp-process' native-object path."
-  (let ((slice-ms 10)
-        (waited 0)
-        (observed (emacs-process--native-accept processes)))
-    (while (and (not observed)
-               (< waited budget-ms)
-               (fboundp 'sleep-for))
-      (sleep-for 0 slice-ms)
-      (setq waited (+ waited slice-ms))
-      (setq observed (emacs-process--native-accept processes)))
-    observed))
+  "Compatibility helper: service PROCESSES through the shared wait."
+  (if (fboundp 'emacs-command-loop-wait)
+      (cdr (emacs-command-loop-wait (/ budget-ms 1000.0) 'process
+                                    (and (= (length processes) 1) (car processes))))
+    (emacs-process--native-accept processes)))
 
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
-  "Block until PROCESS produces output or SECONDS pass.
-
-Same calling convention as Emacs's `accept-process-output'.  When
-the host primitive is available, delegate.  Otherwise the
-substrate returns nil when only synchronous fallback processes exist."
+  "Wait with timer/input/process dispatch; host Emacs keeps its native wait."
+  (when (and process (not (emacs-process-processp process)))
+    (signal 'wrong-type-argument (list 'processp process)))
+  (unless (or (null seconds) (numberp seconds))
+    (signal 'wrong-type-argument (list 'numberp seconds)))
+  (unless (or (null millisec) (integerp millisec))
+    (signal 'wrong-type-argument (list 'fixnump millisec)))
   (condition-case nil
-      (if (or (emacs-process--native-process-p process)
-              (and (null process)
-                   emacs-process--native-process-metadata))
-          (emacs-process--native-accept-until
-           (if process
-               (list process)
-             (emacs-process--native-live-processes))
-           (+ (* (or seconds 0) 1000) (or millisec 0)))
-        (emacs-process--delegate 'accept-process-output
-                                 (list process seconds millisec just-this-one)))
+      (if (and (emacs-standalone-mode-p) (fboundp 'emacs-command-loop-wait))
+          (let ((budget (and (or seconds millisec)
+                             (+ (or seconds 0) (/ (or millisec 0) 1000.0)))))
+            (when (or budget process (emacs-process--native-live-processes)
+                      (and (fboundp 'emacs-process-events--all-fds)
+                           (emacs-process-events--all-fds)))
+              (cdr (emacs-command-loop-wait budget 'process process just-this-one))))
+        (if (or (emacs-process--native-process-p process)
+                (and (null process) emacs-process--native-process-metadata))
+            (emacs-process--native-accept-until
+             (if process (list process) (emacs-process--native-live-processes))
+             (+ (* (or seconds 0) 1000) (or millisec 0)))
+          (emacs-process--delegate 'accept-process-output
+                                   (list process seconds millisec just-this-one))))
     (emacs-process-not-implemented nil)))
 
-(defun emacs-process-signal-process (process-or-pid signum)
+(defun emacs-process-signal-process (process-or-pid signum &optional remote)
   "Send SIGNUM (number or symbol) to PROCESS-OR-PID."
-  (if (emacs-process--fallback-process-p process-or-pid)
-      (progn
-        (aset process-or-pid 4 'signal)
-        (aset process-or-pid 5 1)
-        process-or-pid)
-    (if (emacs-process--native-process-p process-or-pid)
-        (emacs-process--native-delete process-or-pid)
-      (emacs-process--delegate 'signal-process (list process-or-pid signum)))))
+  (if remote
+      (emacs-process--delegate 'signal-process (list process-or-pid signum remote))
+    (let ((unknown-name nil))
+      (when (stringp process-or-pid)
+        (let ((process (get-process process-or-pid)))
+          (cond (process (setq process-or-pid process))
+                ((string-match-p "\\`[0-9]+\\'" process-or-pid)
+                 (setq process-or-pid (string-to-number process-or-pid)))
+                (t (setq unknown-name t)))))
+      (if unknown-name nil
+        (if (emacs-process--fallback-process-p process-or-pid)
+            (progn
+              (aset process-or-pid 4 'signal)
+              (aset process-or-pid 5 1)
+              process-or-pid)
+          (if (and (fboundp 'emacs-process-posix--available-p)
+                   (emacs-process-posix--available-p)
+                   (or (emacs-process--native-process-p process-or-pid)
+                       (integerp process-or-pid)))
+              (emacs-process-posix--signal process-or-pid signum)
+            (emacs-process--delegate 'signal-process (list process-or-pid signum))))))))
+
+(defun emacs-process-send-control-signal (process signal current-group)
+  "Send a lifecycle SIGNAL without deleting PROCESS or closing its pipes."
+  (if (and (emacs-process--native-process-p process)
+           (fboundp 'emacs-process-posix--available-p)
+           (emacs-process-posix--available-p))
+      (emacs-process-posix--send process signal current-group)
+    (error "Process control signaling is unavailable")))
+
+(defun emacs-process-continue-process (process &optional current-group)
+  (emacs-process-send-control-signal process 'CONT current-group)
+  (unless (emacs-process--native-metadata process :control-inhibited)
+    (emacs-process--native-set-metadata process :stop-signal nil)
+    (emacs-process--native-invoke-sentinel process "run"))
+  process)
 
 (defun emacs-process-kill-process (process)
   "Send SIGKILL to PROCESS.
@@ -1142,7 +1454,11 @@ top-level alias for parity with the Emacs API."
    ((emacs-process--fallback-process-p process) nil)
    ((emacs-process--native-process-p process)
     (when (fboundp 'nelisp-process-write)
-      (nelisp-process-write process string))
+      (nelisp-process-write
+       process (if (fboundp 'emacs-process-coding-get)
+                   (emacs-process-coding-convert
+                    string (cdr (emacs-process-coding-get process)) t)
+                 string)))
     nil)
    (t
     (emacs-process--delegate 'process-send-string (list process string)))))
@@ -1152,8 +1468,10 @@ top-level alias for parity with the Emacs API."
   (cond
    ((emacs-process--fallback-process-p process) nil)
    ((emacs-process--native-process-p process)
-    (when (fboundp 'nelisp-process-close-stdin)
-      (nelisp-process-close-stdin process))
+    (if (emacs-process--native-metadata process :pty-master)
+        (emacs-process-process-send-string process "\004")
+      (when (fboundp 'nelisp-process-close-stdin)
+        (nelisp-process-close-stdin process)))
     nil)
    (t
     (emacs-process--delegate 'process-send-eof (list process)))))

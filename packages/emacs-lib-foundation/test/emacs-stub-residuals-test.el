@@ -657,7 +657,7 @@ spelling of it."
   "Suffixes this codebase uses to name a host-vs-standalone detection gate.
 T89 audit (2026-09): every confirmed `(not (boundp 'emacs-version))'-alone
 defect in this codebase (`emacs-syntax-table--standalone-p' before its T53
-fix; `case-table--standalone-p' / `charprop--standalone-p' /
+fix; `nelisp-casetab--standalone-p' / `charprop--standalone-p' /
 `charscript--standalone-p' / `lisp--install-function-p' /
 `regi--install-function-p' / `emacs-time--host-runtime-p' before their T89
 fix) was a `defun'/`defvar'/`defconst' whose own name carries one of these

@@ -272,7 +272,7 @@ When the native NeLisp process primitives are present, force standalone mode
 on for this session so the shared capture path is used."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-standalone-mode-p)
-      (load (expand-file-name "src/emacs-standalone.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-standalone.el" root)
             nil 'no-message t t))
     (when (and (boundp 'emacs-standalone-force-mode)
                (or (fboundp 'nelisp-process-start)
@@ -283,24 +283,24 @@ on for this session so the shared capture path is used."
   "Ensure buffer regexp/search builtins are backed by the shared substrate."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (featurep 'nelisp-regex)
-      (load (expand-file-name "src/nelisp-regex.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/nelisp-regex.el" root)
             nil 'no-message t t))
     (unless (featurep 'emacs-search-builtins)
-      (load (expand-file-name "src/emacs-search-builtins.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-search-builtins.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-list-runtime ()
   "Ensure record-aware list/copy helpers are loaded before EIEIO object creation."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (featurep 'emacs-list)
-      (load (expand-file-name "src/emacs-list.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-list.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-symbol-runtime ()
   "Ensure symbol helpers such as `intern-soft' are available."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'intern-soft)
-      (load (expand-file-name "src/emacs-symbol.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-symbol.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-callproc-runtime ()
@@ -309,7 +309,7 @@ on for this session so the shared capture path is used."
     (unless (and (boundp 'process-environment)
                  (fboundp 'getenv)
                  (fboundp 'setenv))
-      (load (expand-file-name "src/emacs-callproc.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-callproc.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-fileio-runtime ()
@@ -321,7 +321,7 @@ workflow.  Real Emacs gets that from preloaded `files.el'; this
 runtime needs the shared fileio owner loaded explicitly."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (boundp 'default-directory)
-      (load (expand-file-name "src/emacs-fileio.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-fileio.el" root)
             nil 'no-message t t))
     (unless (boundp 'default-directory)
       (defvar default-directory "/"))))
@@ -338,7 +338,7 @@ contract."
   (let ((root (nelisp-emacs-magit-bridge--repo-root))
         missing)
     (unless (featurep 'emacs-subr-extras)
-      (load (expand-file-name "src/emacs-subr-extras.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-subr-extras.el" root)
             nil 'no-message t t))
     (dolist (symbol '(length= length< length>))
       (unless (fboundp symbol)
@@ -353,7 +353,7 @@ contract."
     (unless (and (fboundp 'float-time)
                  (fboundp 'current-time)
                  (fboundp 'current-time-string))
-      (load (expand-file-name "src/emacs-time.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-time.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-emacs-version-identity ()
@@ -459,12 +459,12 @@ before the bundle reaches `cl-generic.el'."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (nelisp-emacs-magit-bridge--precond-trace "SHIM 1 before cl-preloaded\n")
     (unless (featurep 'cl-preloaded-shim)
-      (load (expand-file-name "src/cl-preloaded-shim.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/cl-preloaded-shim.el" root)
             nil 'no-message t t))
     (nelisp-emacs-magit-bridge--precond-trace "SHIM 2 after cl-preloaded\n")
     (nelisp-emacs-magit-bridge--precond-trace "SHIM 3 before oclosure\n")
     (unless (featurep 'oclosure-shim)
-      (load (expand-file-name "src/oclosure-shim.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/oclosure-shim.el" root)
             nil 'no-message t t))
     (nelisp-emacs-magit-bridge--precond-trace "SHIM 4 done\n")))
 
@@ -511,7 +511,7 @@ shim already expands this form correctly under the standalone reader."
     (unless (and (fboundp 'cl-defstruct)
                  (fboundp 'cl--class-p)
                  (fboundp 'cl--make-slot-descriptor))
-      (load (expand-file-name "src/emacs-cl-macros.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-cl-macros.el" root)
             nil 'no-message t t))
     ;; `src/emacs-parity-eieio.el' registers the eieio accessor -> record
     ;; slot indices that NeLisp's `setf' consults; without it the vendor
@@ -520,7 +520,7 @@ shim already expands this form correctly under the standalone reader."
     ;; time (measured 2026-08-03).  The registration must happen before the
     ;; vendor eieio files are read, and nothing else loads this shim.
     (unless (featurep 'emacs-parity-eieio)
-      (load (expand-file-name "src/emacs-parity-eieio.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-parity-eieio.el" root)
             nil 'no-message t t))
     ;; The shim records `:include' parents only at macro-expansion time and
     ;; emits `cl-struct-setter' as top-level `put' forms; neither survives a
@@ -572,7 +572,7 @@ The runtime image can phantom-provide `pcase' while still missing macros such
 as `pcase-exhaustive'.  Magit's buffer setup hits that macro directly."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'pcase-exhaustive)
-      (load (expand-file-name "src/emacs-pcase.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-pcase.el" root)
             nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-macroexp-runtime ()
@@ -626,7 +626,7 @@ below as a second line of defense (mirrors the existing
                  (fboundp 'advice-add)
                  (fboundp 'advice-remove)
                  (fboundp 'advice-member-p))
-      (load (expand-file-name "src/emacs-stub.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-stub.el" root)
             nil 'no-message t t))
     ;; Defense in depth, mirroring the `add-function'/`remove-function'
     ;; fallbacks just below: the `load' above already (re)defines these
@@ -2042,7 +2042,7 @@ when it local-binds or reads these names."
 (defun nelisp-emacs-magit-bridge--ensure-window-selection-macros ()
   "Ensure the `window.el' selection macros transient expects are available."
   (unless (fboundp 'emacs-window-parent)
-    (load (expand-file-name "src/emacs-window.el"
+    (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-window.el"
                             (nelisp-emacs-magit-bridge--repo-root))
           nil 'no-message t t))
   (unless (fboundp 'window-parent)
@@ -2057,10 +2057,10 @@ when it local-binds or reads these names."
   "Ensure unprefixed window helpers resolve to the shared window substrate."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-window-get-buffer-window)
-      (load (expand-file-name "src/emacs-window.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-window.el" root)
             nil 'no-message t t))
     (unless (fboundp 'get-buffer-window)
-      (load (expand-file-name "src/emacs-window-builtins.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-window-builtins.el" root)
             nil 'no-message t t))
     (unless (fboundp 'get-buffer-window)
       (defalias 'get-buffer-window #'emacs-window-get-buffer-window))
@@ -2357,13 +2357,13 @@ commands."
   (unless (fboundp 'special-mode)
     (let ((root (nelisp-emacs-magit-bridge--repo-root)))
       (unless (fboundp 'emacs-mode-define-derived-mode)
-        (load (expand-file-name "src/emacs-mode.el" root)
+        (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-mode.el" root)
               nil 'no-message t t))
       (unless (fboundp 'define-derived-mode)
-        (load (expand-file-name "src/emacs-mode-builtins.el" root)
+        (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-mode-builtins.el" root)
               nil 'no-message t t))
       (unless (fboundp 'derived-mode-p)
-        (load (expand-file-name "src/emacs-stub.el" root)
+        (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-stub.el" root)
               nil 'no-message t t)))
     (unless (boundp 'special-mode-map)
       (defvar special-mode-map
@@ -2457,7 +2457,7 @@ goes to `nelisp-ec-set-buffer'."
   "Ensure unprefixed buffer-editing functions use the standalone runtime."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-buffer-set-buffer-modified-p)
-      (load (expand-file-name "src/emacs-buffer.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-buffer.el" root)
             nil 'no-message t t)))
   (nelisp-emacs-magit-bridge--capture-native-set-buffer)
   (dolist (cell '((generate-new-buffer . nelisp-ec-generate-new-buffer)
@@ -2555,10 +2555,10 @@ already accepted by the current `define-key' substrate, and
 `suppress-keymap' becomes a no-op that preserves the map object."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-keymap-define-key)
-      (load (expand-file-name "src/emacs-keymap.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-keymap.el" root)
             nil 'no-message t t))
     (unless (fboundp 'define-key)
-      (load (expand-file-name "src/emacs-keymap-builtins.el" root)
+      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-keymap-builtins.el" root)
             nil 'no-message t t)))
   (let ((probe
          (condition-case nil

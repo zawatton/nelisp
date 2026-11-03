@@ -66,6 +66,17 @@
 (require 'nelisp-emacs-compat)
 (require 'nelisp-regex)
 
+;; The runtime line scanner uses string-match internally.  Line motion has
+;; no search side effect in Emacs; preserve captures used by callers such as
+;; dired-get-filename while keeping the runtime's buffer/motion implementation.
+(when (and (fboundp 'nelisp--repr) (fboundp 'nelisp--motion-eol))
+  (let ((emacs-search-builtins--raw-motion-eol
+         (symbol-function 'nelisp--motion-eol)))
+    (defun nelisp--motion-eol (position buffer)
+      "Find the line end without changing the caller's match data."
+      (save-match-data
+        (funcall emacs-search-builtins--raw-motion-eol position buffer)))))
+
 (defun emacs-search-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
   ;; Native-first (see `emacs-edit-builtins--install-function-p'): a search

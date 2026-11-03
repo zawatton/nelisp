@@ -11,19 +11,22 @@
   (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
 
 (defconst emacs-load-test--source-file
-  (expand-file-name "src/emacs-load.el" emacs-load-test--root))
+  (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-load.el"
+                    (expand-file-name ".." emacs-load-test--root)))
 
 (defvar emacs-load-test--stream-order nil)
 
 ;; Load the source implementation directly so the tests do not depend on a
 ;; potentially stale compiled .elc.
-(let ((host-load (symbol-function 'load))
+(let ((host-locate-library (symbol-function 'locate-library))
+      (host-load (symbol-function 'load))
       (host-load-file (symbol-function 'load-file))
       (native-comp-enable-subr-trampolines nil))
   (let ((emacs-version 1))
     (funcall host-load-file emacs-load-test--source-file))
   (fset 'load host-load)
-  (fset 'load-file host-load-file))
+  (fset 'load-file host-load-file)
+  (fset 'locate-library host-locate-library))
 
 (defmacro emacs-load-test--with-fresh-native-cache (&rest body)
   "Run BODY with a fresh native artifact cache."
@@ -3217,6 +3220,188 @@ pathology itself, which host Emacs cannot reproduce."
     (should (= normalize-calls 1))
     (should (equal one-shot (concat "(progn\n" normalized "\n)")))))
 
+
+(ert-deftest emacs-load-test/symbolic-macro-alias-follows-target ()
+  (let ((emacs-load--alias-candidates '(emacs-load-test--alias)))
+    (unwind-protect
+        (progn
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+          (fset 'emacs-load-test--alias 'emacs-load-test--target)
+          (should (emacs-load--symbolic-macro-alias-p 'emacs-load-test--alias))
+          (should (eq (nelisp--load-eval-one-form '(emacs-load-test--alias missing)) 'missing))
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote (list 'changed name))))
+          (should (equal (nelisp--load-eval-one-form '(emacs-load-test--alias missing)) '(changed missing)))
+          (should (eq (symbol-function 'emacs-load-test--alias) 'emacs-load-test--target))
+          (fset 'emacs-load-test--target (lambda (name) (list 'ordinary name)))
+          (should-not (emacs-load--symbolic-macro-alias-p 'emacs-load-test--alias))
+          (should (equal (nelisp--load-eval-one-form '(emacs-load-test--alias 'argument)) '(ordinary argument))))
+      (fmakunbound 'emacs-load-test--alias)
+      (fmakunbound 'emacs-load-test--target))))
+
+(ert-deftest emacs-load-test/active-alias-forces-incremental-small-source ()
+  (let ((emacs-load--alias-candidates '(emacs-load-test--alias))
+        (emacs-load-large-source-threshold 32768))
+    (unwind-protect
+        (progn
+          (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+          (fset 'emacs-load-test--alias 'emacs-load-test--target)
+          (cl-letf (((symbol-function 'nelisp--eval-source-string) #'ignore))
+            (should (eq (nelisp--load-source-loader "(emacs-load-test--alias unbound)")
+                        'nelisp--load-eval-source-incremental))
+            (should (eq (nelisp--load-source-loader "(ordinary-call nil)")
+                        'nelisp--load-eval-source-hybrid))
+            (fset 'emacs-load-test--target #'ignore)
+            (should (eq (nelisp--load-source-loader "(emacs-load-test--alias nil)")
+                        'nelisp--load-eval-source-hybrid))))
+      (fmakunbound 'emacs-load-test--alias)
+      (fmakunbound 'emacs-load-test--target))))
+
+(ert-deftest emacs-load-test/alias-registration-respects-quoted-data ()
+  (let ((emacs-load--alias-candidates nil))
+    (nelisp--load-rewrite-defalias-form
+     '(progn (defalias 'registered #'target) (defalias 'registered #'target)
+             '(defalias 'data #'target)))
+    (should (equal emacs-load--alias-candidates '(registered)))
+    (should-not (emacs-load--symbolic-macro-alias-p 's52c-never-defined))))
+
+(ert-deftest emacs-load-test/dependency-can-introduce-a-macro-alias ()
+  ;; Select the evaluator BEFORE the dependency supplies its macro, as a
+  ;; small real package such as magit.el does.  No active alias exists yet.
+  (let ((emacs-load--alias-candidates nil)
+        (emacs-load-large-source-threshold 32768))
+    (cl-letf (((symbol-function 'nelisp--eval-source-string) #'ignore))
+      (dolist (dependency '("(require 'provider)" "(load \"provider\")"
+                            "(load-file \"provider.el\")"))
+        (let ((loader (nelisp--load-source-loader
+                       (concat dependency "\n(example:--argument unbound)"))))
+          (should (eq loader 'nelisp--load-eval-source-incremental))))
+      (should (eq (nelisp--load-source-loader "(+ 2 3)")
+                  'nelisp--load-eval-source-hybrid)))))
+
 (provide 'emacs-load-test)
 
 ;;; emacs-load-test.el ends here
+
+(ert-deftest emacs-load-test/nested-symbolic-macro-alias-is-expanded ()
+  (unwind-protect
+      (progn
+        (fset 'emacs-load-test--target '(macro lambda (name) (list 'quote name)))
+        (fset 'emacs-load-test--alias 'emacs-load-test--target)
+        (let ((form '(defun emacs-load-test--nested ()
+                       (let ((value (emacs-load-test--alias unbound))) value))))
+          (should (emacs-load--macro-alias-form-p form))
+          (should-not (emacs-load--macro-alias-form-p
+                       '(quote (emacs-load-test--alias unbound))))
+          ;; GNU eval can follow the alias itself, so assert the expansion
+          ;; boundary as well as the installed function's behavior.
+          (let ((calls 0) (expand (symbol-function 'macroexpand-all)))
+            (cl-letf (((symbol-function 'macroexpand-all)
+                       (lambda (value &optional env)
+                         (setq calls (1+ calls))
+                         (funcall expand value env))))
+              (nelisp--load-eval-one-form form))
+            (should (= calls 1)))
+          (should (eq (emacs-load-test--nested) 'unbound))))
+    (fmakunbound 'emacs-load-test--alias)
+    (fmakunbound 'emacs-load-test--target)
+    (fmakunbound 'emacs-load-test--nested)))
+
+(ert-deftest emacs-load-test/source-lexical-binding-header ()
+  (should (emacs-load--source-lexical-binding-p ";;; -*- lexical-binding: t; -*-\n"))
+  (should (emacs-load--source-lexical-binding-p "#!/bin/emacs\n;;; -*- mode: emacs-lisp; lexical-binding: t; -*-\n"))
+  (should-not (emacs-load--source-lexical-binding-p ";;; -*- lexical-binding: nil; -*-\n"))
+  (should-not (emacs-load--source-lexical-binding-p ";;; no modeline\n;; lexical-binding: t\n")))
+
+(ert-deftest emacs-load-test/incremental-eval-keeps-file-local-defvar ()
+  "An initializer-free `defvar' stays in effect for later forms of the file.
+GNU custom.el's recursive sorter relies on this (lane K6, org ol-eww)."
+  (let ((source (concat ";;; -*- lexical-binding: t; -*-\n"
+                        "(defvar emacs-load-test--local-special)\n"
+                        "(progn (defvar emacs-load-test--local-special-2))\n"
+                        "(defun emacs-load-test--read-special ()\n"
+                        "  (list emacs-load-test--local-special\n"
+                        "        emacs-load-test--local-special-2))\n"
+                        "(defun emacs-load-test--bind-special ()\n"
+                        "  (let ((emacs-load-test--local-special 42)\n"
+                        "        (emacs-load-test--local-special-2 17))\n"
+                        "    (emacs-load-test--read-special)))\n"
+                        "(defun emacs-load-test--bind-unrelated ()\n"
+                        "  (let ((emacs-load-test--unrelated 1))\n"
+                        "    (lambda () emacs-load-test--unrelated)))\n")))
+    (unwind-protect
+        (let ((lexical-binding t))
+          (nelisp--load-eval-source-incremental source)
+          (should (equal (emacs-load-test--bind-special) '(42 17)))
+          ;; Undeclared variables remain lexical.
+          (should (= (funcall (emacs-load-test--bind-unrelated)) 1))
+          ;; The declaration is file-local: the value cell stays unbound and
+          ;; the symbol does not become globally special.
+          (should-not (boundp 'emacs-load-test--local-special))
+          (should-not (special-variable-p 'emacs-load-test--local-special))
+          (should-not nelisp--load-file-local-specials))
+      (dolist (f '(emacs-load-test--read-special emacs-load-test--bind-special
+                   emacs-load-test--bind-unrelated))
+        (fmakunbound f)))))
+
+(ert-deftest emacs-load-test/incremental-eval-ends-defvar-scope-at-bundle-member ()
+  "A concatenated bundle's member markers end the file-local declarations."
+  (let ((source (concat ";;; -*- lexical-binding: t; -*-\n"
+                        ";;; >>> first.el\n"
+                        "(defvar emacs-load-test--member-special)\n"
+                        "(defun emacs-load-test--member-first ()\n"
+                        "  (let ((emacs-load-test--member-special 1))\n"
+                        "    (lambda () emacs-load-test--member-special)))\n"
+                        ";;; <<< first.el\n"
+                        ";;; >>> second.el\n"
+                        "(defun emacs-load-test--member-second ()\n"
+                        "  (let ((emacs-load-test--member-special 2))\n"
+                        "    (lambda () emacs-load-test--member-special)))\n"
+                        ";;; <<< second.el\n")))
+    (unwind-protect
+        (let ((lexical-binding t))
+          (nelisp--load-eval-source-incremental source)
+          ;; Declared in the first member: the binding is dynamic and the
+          ;; closure sees the global (void) value after the `let' exits.
+          (should-error (funcall (emacs-load-test--member-first)) :type 'void-variable)
+          ;; The second member never declared it: the binding is lexical.
+          (should (= (funcall (emacs-load-test--member-second)) 2)))
+      (fmakunbound 'emacs-load-test--member-first)
+      (fmakunbound 'emacs-load-test--member-second))))
+
+(ert-deftest emacs-load-test/periodic-gc-starts-clock-per-process ()
+  "A last-GC time inherited from another process (a heap image) is not due.
+The first check in a process starts its clock; later checks keep the
+cost-ratio policy."
+  (let* ((clock 1000.0)
+         (collections 0)
+         (load-garbage-collect-interval 1)
+         (emacs-load--gc-cost-ratio 10)
+         (emacs-load--gc-last-end 10.0)      ; recorded by an image builder
+         (emacs-load--gc-last-cost 4.0)
+         (emacs-load--gc-pid (1+ (emacs-pid))))
+    (cl-letf (((symbol-function 'float-time) (lambda (&rest _) clock))
+              ((symbol-function 'garbage-collect)
+               (lambda () (setq collections (1+ collections)))))
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      (should (eql emacs-load--gc-pid (emacs-pid)))
+      (should (= emacs-load--gc-last-end 1000.0))
+      ;; Not yet 10x the last cost since this process started its clock.
+      (setq clock 1030.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 0))
+      ;; Due again under the ordinary policy.
+      (setq clock 1041.0)
+      (emacs-load--periodic-gc 1)
+      (should (= collections 1)))))
+
+(ert-deftest emacs-load-test/incremental-eval-preserves-lexical-environment ()
+  (let ((lexical-binding t))
+    (nelisp--load-eval-one-form
+     '(defun emacs-load-test--make-closure (captured)
+        (lambda (argument) (eq captured argument)))))
+  (unwind-protect
+      (let ((predicate (emacs-load-test--make-closure 'value)))
+        (should (funcall predicate 'value))
+        (should-not (funcall predicate 'other)))
+    (fmakunbound 'emacs-load-test--make-closure)))

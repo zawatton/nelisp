@@ -82,6 +82,29 @@ expander (either a function or a `(macro . EXPANDER)' cell)."
   (cond
    ((not (consp form)) form)
    ((eq (car form) 'quote) form)
+   ((memq (car form) '(let let*))
+    ;; Binding entries are syntax, not calls.  A variable named `do' must
+    ;; not invoke the CL `do' macro while expanding a pcase-generated let.
+    (cons (car form)
+          (cons (mapcar (lambda (binding)
+                          (if (consp binding)
+                              (cons (car binding)
+                                    (mapcar #'macroexpand-all--rec (cdr binding)))
+                            binding))
+                        (cadr form))
+                (mapcar #'macroexpand-all--rec (cddr form)))))
+   ((eq (car form) 'cond)
+    ;; Expand the expressions inside each clause, not the clause as a call.
+    (cons 'cond (mapcar (lambda (clause)
+                         (mapcar #'macroexpand-all--rec clause))
+                       (cdr form))))
+   ((eq (car form) 'condition-case)
+    (append (list 'condition-case (cadr form)
+                  (macroexpand-all--rec (nth 2 form)))
+            (mapcar (lambda (handler)
+                      (cons (car handler)
+                            (mapcar #'macroexpand-all--rec (cdr handler))))
+                    (cdddr form))))
    ((eq (car form) 'function)
     ;; Mirror GNU's macroexp.el `(function . REST)' case: only
     ;; `#'(lambda ARGLIST . BODY)' needs expanding, and only its BODY (the

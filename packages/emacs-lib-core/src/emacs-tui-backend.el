@@ -458,6 +458,22 @@ plus the optional color-tier capability if COLOR-MODE elevates."
 
 ;;; A. backend lifecycle
 
+(defvar emacs-tui-backend--alt-screen-handles nil
+  "Live handles whose terminals need restoration at process exit.")
+
+(defun emacs-tui-backend--forget-alt-screen (handle)
+  (setq emacs-tui-backend--alt-screen-handles
+        (delq handle emacs-tui-backend--alt-screen-handles))
+  (unless emacs-tui-backend--alt-screen-handles
+    (remove-hook 'kill-emacs-hook #'emacs-tui-backend--restore-alt-screens)))
+
+(defun emacs-tui-backend--restore-alt-screens ()
+  "Restore every active terminal before the process exits."
+  (dolist (handle (copy-sequence emacs-tui-backend--alt-screen-handles))
+    (when (and (emacs-tui-backend-handlep handle)
+               (emacs-tui-backend-handle-alive-p handle))
+      (emacs-tui-backend-leave-alt-screen handle))))
+
 ;;;###autoload
 (defun emacs-tui-backend-init (&optional capabilities)
   "Initialize a fresh TUI backend and return its handle.
@@ -499,6 +515,7 @@ After shutdown, calling any operation other than
   (when (emacs-tui-backend-handle-alt-screen-p handle)
     (emacs-tui-backend--emit emacs-tui-backend--alt-screen-off)
     (setf (emacs-tui-backend-handle-alt-screen-p handle) nil))
+  (emacs-tui-backend--forget-alt-screen handle)
   (emacs-tui-backend--log "shutdown handle=%S frames=%d events=%d"
                           (emacs-tui-backend-handle-id handle)
                           (length (emacs-tui-backend-handle-frames handle))
@@ -525,6 +542,8 @@ emitted, nil when it was already on."
     (emacs-tui-backend--emit emacs-tui-backend--clear-screen)
     (emacs-tui-backend--emit (emacs-tui-backend--cup 0 0))
     (setf (emacs-tui-backend-handle-alt-screen-p handle) t)
+    (push handle emacs-tui-backend--alt-screen-handles)
+    (add-hook 'kill-emacs-hook #'emacs-tui-backend--restore-alt-screens)
     (emacs-tui-backend--log "enter-alt-screen handle=%S"
                             (emacs-tui-backend-handle-id handle))
     t)))
@@ -543,6 +562,7 @@ returns nil when alt-screen is already off."
     (emacs-tui-backend--emit emacs-tui-backend--reset)
     (emacs-tui-backend--emit emacs-tui-backend--alt-screen-off)
     (setf (emacs-tui-backend-handle-alt-screen-p handle) nil)
+    (emacs-tui-backend--forget-alt-screen handle)
     (emacs-tui-backend--log "leave-alt-screen handle=%S"
                             (emacs-tui-backend-handle-id handle))
     t)))

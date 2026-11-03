@@ -98,7 +98,7 @@ then from real Emacs ~/.emacs.d versus XDG precedence.")
 
 (unless (boundp 'initial-scratch-message)
   (defvar initial-scratch-message
-    ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n"
+    ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with ‘C-x C-f’ and enter text in its buffer.\n\n"
     "Initial contents inserted into a newly-created *scratch* buffer."))
 
 (unless (boundp 'inhibit-startup-screen)
@@ -161,7 +161,9 @@ standalone evaluator aborts on flagless)."
                  (equal (nelisp-ec-buffer-string) "")
                  (stringp initial-scratch-message)
                  (> (length initial-scratch-message) 0))
-        (nelisp-ec-insert initial-scratch-message)))
+        (nelisp-ec-insert initial-scratch-message)
+        ;; Initial contents are startup state, not an unsaved user edit.
+        (setf (nelisp-ec-buffer-modified-p buf) nil)))
     buf))
 
 (defun nemacs--home-directory ()
@@ -329,6 +331,12 @@ to the Phase 1 raw-load lane unchanged."
        (let ((wrapper (nemacs--init-wrapped-transport-path)))
          (nemacs-init-transport-consume wrapper (concat wrapper "-report")))))
 
+(defconst nemacs-user-init-preloaded-features '(isearch)
+  "GNU-preloaded features the image loads lazily; required before user init.
+`nelisp-bootstrap-runtime-lazy-vendor-files' keeps their sources out of the
+eager boot, which is right for -Q sessions but not for an init file that
+uses them as GNU guarantees.")
+
 (defun nemacs-load-user-init-files ()
   "Load early-init.el, run the package slot, then load init.el.
 The loader is session-owned; frontend wrappers should delegate here instead
@@ -345,6 +353,12 @@ unchanged."
   (setq nemacs-user-emacs-directory (nemacs-resolve-user-emacs-directory))
   (when (boundp 'user-emacs-directory)
     (setq user-emacs-directory nemacs-user-emacs-directory))
+  (unless (null init-file-user)
+    ;; GNU dumps these before any init runs; the image defers them to the
+    ;; first `require' to keep -Q startup short.  User init may use their
+    ;; variables directly (e.g. `define-key' on `isearch-mode-map').
+    (dolist (feature nemacs-user-init-preloaded-features)
+      (require feature nil t)))
   (unless (null init-file-user)
     (let* ((early (concat nemacs-user-emacs-directory "early-init.el"))
            (early-readable (nemacs--init-file-readable-p early))

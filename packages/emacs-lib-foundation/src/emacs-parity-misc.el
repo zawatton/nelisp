@@ -37,11 +37,10 @@
 ;;   `if--setter'                       (unknown provenance; cannot source real
 ;;                                       semantics)
 ;; `add-variable-watcher' / `remove-variable-watcher' / `get-variable-watchers'
-;; (T62 + T63) are provided below as an explicit, graceful store-only port:
-;; registration/query/removal match stock Emacs's data shape and order
-;; exactly, but no core `set'/`setq'/`let' hook exists in this runtime to
-;; ever invoke a registered watch function -- see the dedicated comment
-;; ahead of the definitions for the full rationale.
+;; (T62 + T63) are provided below by a Lisp registry and dispatcher.
+;; Standalone evaluator hooks notify before semantic writes and dynamic
+;; binding changes; buffer-local providers supply WHERE. See the definitions
+;; below for recursion suppression and callback error behavior.
 ;;
 ;; `native-compile-async' is provided below as an explicit, graceful "native
 ;; compilation unavailable" no-op that returns nil (it is not a placeholder for
@@ -359,15 +358,11 @@ SEQUENCE should be a vector or list of strings."
 
 ;;;; --- tree-sitter font-lock rules (treesit.el) ----------------------
 
-;; When tree-sitter is not compiled into the runtime, `treesit-available-p'
-;; returns nil and `treesit-font-lock-rules' short-circuits to nil -- which is
-;; exactly stock behaviour (font-lock rules are only meaningful with a live
-;; tree-sitter parser).
 (unless (fboundp 'treesit-available-p)
   (defun treesit-available-p ()
-    "Return non-nil if tree-sitter support is built and available.
-This runtime is not built with tree-sitter, so this returns nil."
-    nil))
+    "Return t only when the external tree-sitter library is usable."
+    (require 'emacs-cc-treesit-1)
+    (emacs-cc-treesit-available-p)))
 
 (unless (fboundp 'treesit-font-lock-rules)
   (defun treesit-font-lock-rules (&rest query-specs)
@@ -695,74 +690,156 @@ returns nil (no asynchronous compilation is scheduled)."
 ;;;; --- data.c: add-variable-watcher / remove-variable-watcher /
 ;;;;             get-variable-watchers (T62 + T63) -------------------
 
-;; Was DEFERRED (see the Commentary list above and the matching notes in
-;; `emacs-parity-shims.el' / `emacs-parity-fns2.el'): real Emacs fires every
-;; registered watch function -- called as (WATCH-FUNCTION SYMBOL NEWVAL
-;; OPERATION WHERE) -- from inside the core `set'/`setq'/`let'-binding/
-;; `makunbound' primitives, and this runtime's `set' has no such hook, so a
-;; firing port is not possible without interpreter-core changes (out of
-;; this consumer repo's scope).  The real init load-matrix hit
-;; `(void-function add-variable-watcher)' for `mixed-pitch', `whitespace'
-;; and `solaire-mode' -- all three call it unconditionally at top level
-;; (e.g. `whitespace.el': `(dolist (var ...) (add-variable-watcher var
-;; #'whitespace--variable-watcher))'), so the failure being fixed here is
-;; `void-function' during `require', not missing reactive behaviour: a
-;; store-only port (registration / query / removal match stock Emacs's own
-;; data shape and order exactly; the stored function is simply never
-;; invoked) is enough for those `require's to succeed.  Verified against
-;; host Emacs 31.1: `add-variable-watcher' returns nil; re-adding a
-;; function already registered for SYMBOL is a no-op (not moved, not
-;; duplicated); `get-variable-watchers' returns the registered functions
-;; most-recently-added-first; `remove-variable-watcher' deletes by `equal'
-;; and also returns nil; an unset SYMBOL reports an empty list.
+;; The reusable foundation owns registry and dispatch policy. The standalone
+;; evaluator calls the dispatcher before semantic dynamic/global writes and
+;; checks one activation flag when no watcher exists. Buffer-local policy
+;; supplies WHERE and inhibits internal context swaps.
 
-(unless (boundp 'emacs-parity-misc--variable-watchers)
-  (defvar emacs-parity-misc--variable-watchers (make-hash-table :test 'eq)
-    "SYMBOL -> registered watch functions, most-recently-added-first.
-Store-only bookkeeping for `add-variable-watcher' et al.; see the comment
-above -- no core `set'/`setq'/`let' hook actually invokes these."))
+(defvar emacs-parity-misc--variable-watchers (make-hash-table :test 'eq)
+  "SYMBOL -> watch functions, most recently added first.")
+(defvar emacs-parity-misc--has-user-watchers nil
+  "Non-nil when user callbacks require private local-cell name resolution.")
+(defvar nelisp--defvaralias-notifications (make-hash-table :test 'eq)
+  "Alias/base names mapped to their canonical copied-cell variable.")
+(defvar emacs-parity-misc--watching nil
+  "Variables whose callbacks are currently running.")
+(defvar emacs-parity-misc--inhibit-watchers nil
+  "Internal mirror/swap writes are not semantic assignments.")
 
 (defun emacs-parity-misc--remove-equal (item list)
-  "Return LIST with every element `equal' to ITEM removed, order preserved."
+  "Return LIST with all elements equal to ITEM removed."
   (let (out)
     (dolist (x list) (unless (equal x item) (push x out)))
     (nreverse out)))
 
+(defun emacs-parity-misc--watcher-flag ()
+  "Enable write notifications for user watchers or copied variable aliases."
+  (setq emacs-parity-misc--has-user-watchers
+        (> (hash-table-count emacs-parity-misc--variable-watchers) 0))
+  (when (fboundp 'nelisp--env-globals-op)
+    (nelisp--env-globals-op 'variable-watchers nil
+                           (or emacs-parity-misc--has-user-watchers
+                               (and (boundp 'nelisp--defvaralias-registry)
+                                    nelisp--defvaralias-registry t)))))
+
+(defun emacs-parity-misc--watcher-symbol (symbol)
+  (unless (symbolp symbol)
+    (signal 'wrong-type-argument (list 'symbolp symbol)))
+  (if (fboundp 'indirect-variable) (indirect-variable symbol) symbol))
+
+(defun emacs-parity-misc--notify
+    (emacs-watch--symbol emacs-watch--value emacs-watch--operation emacs-watch--where)
+  "Notify consumers before mirroring a pending dynamic variable write.
+Callbacks see the old values, and a signal/throw cancels the write.
+Private lexical names avoid collisions with a consumer's dynamic bindings."
+  ;; Most writes are unrelated to either registry. Do not resolve variable
+  ;; aliases or scan the registry for those writes: this callback is also on
+  ;; the evaluator's hot dynamic-binding path during real package loading.
+  ;; Alias bookkeeping alone must not make unrelated writes inspect symbol
+  ;; properties. Public registry matches retain their existing fast path;
+  ;; only a user-watched private local cell needs its logical name resolved.
+  (when (and (not emacs-parity-misc--inhibit-watchers)
+             ;; Canonical names are symbols, including nil.  A numeric missing
+             ;; value distinguishes an alias to nil from an unrelated write.
+             (or (symbolp (gethash emacs-watch--symbol nelisp--defvaralias-notifications 0))
+                 (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)
+                 (and emacs-parity-misc--has-user-watchers
+                      (let ((emacs-watch--local-variable
+                             (get emacs-watch--symbol 'nelisp--buffer-local-variable)))
+                        (and emacs-watch--local-variable
+                             (gethash emacs-watch--local-variable
+                                      emacs-parity-misc--variable-watchers))))))
+    ;; Keep the physical written cell for copied-alias mirroring. Watchers
+    ;; receive the public variable and the local cell's owning buffer instead.
+    (let ((emacs-watch--written-symbol emacs-watch--symbol)
+          (emacs-watch--local-variable
+           (and emacs-parity-misc--has-user-watchers
+                (not (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers))
+                (not (symbolp (gethash emacs-watch--symbol
+                                       nelisp--defvaralias-notifications 0)))
+                (get emacs-watch--symbol 'nelisp--buffer-local-variable))))
+      (when emacs-watch--local-variable
+        (unless emacs-watch--where
+          (setq emacs-watch--where
+                (get emacs-watch--symbol 'nelisp--buffer-local-buffer)))
+        (setq emacs-watch--symbol emacs-watch--local-variable))
+      (setq emacs-watch--symbol
+            (if (eq emacs-watch--operation 'defvaralias) emacs-watch--symbol
+              (emacs-parity-misc--watcher-symbol emacs-watch--symbol)))
+      (let ((emacs-watch--watchers
+             (gethash emacs-watch--symbol emacs-parity-misc--variable-watchers)))
+        (when (and emacs-watch--watchers
+                   (not (memq emacs-watch--symbol emacs-parity-misc--watching)))
+          (unless (or emacs-watch--where
+                      (memq emacs-watch--operation '(defvaralias makunbound)))
+            (when (and (fboundp 'local-variable-p)
+                       (local-variable-p emacs-watch--symbol))
+              (setq emacs-watch--where (current-buffer))))
+          (when (eq emacs-watch--where 'default) (setq emacs-watch--where nil))
+          (let ((emacs-parity-misc--watching
+                 (cons emacs-watch--symbol emacs-parity-misc--watching)))
+            (dolist (emacs-watch--watcher emacs-watch--watchers)
+              (funcall emacs-watch--watcher emacs-watch--symbol
+                       (condition-case nil emacs-watch--value (void-variable nil))
+                       emacs-watch--operation emacs-watch--where)))))
+      ;; Alias mirroring follows callbacks so they retain GNU's old-value
+      ;; visibility, and a callback that signals still cancels the write.
+      (when (and (fboundp 'nelisp--alias-write-mirrors)
+                 (not (memq emacs-watch--operation '(defvaralias makunbound)))
+                 (symbolp (gethash emacs-watch--written-symbol nelisp--defvaralias-notifications 0)))
+        ;; An unlet notification can carry the runtime's void-cell sentinel.
+        ;; Reading that argument signals, including for unrelated variables;
+        ;; consume it only for aliases, and preserve a void restoration.
+        (if (condition-case nil (progn emacs-watch--value t) (void-variable nil))
+            (nelisp--alias-write-mirrors emacs-watch--written-symbol
+                                       emacs-watch--value emacs-watch--operation)
+          (nelisp--alias-write-mirrors emacs-watch--written-symbol nil 'unlet-void)))))
+  nil)
+
 (unless (fboundp 'add-variable-watcher)
   (defun add-variable-watcher (symbol watch-function)
-    "Store-only compatibility port of `add-variable-watcher'.
-Registers WATCH-FUNCTION for SYMBOL with the same data shape and
-insertion-order semantics as stock Emacs (a function already registered
-for SYMBOL is left in place, not moved or duplicated) so
-`get-variable-watchers' and `remove-variable-watcher' behave identically
-to the real primitive.  WATCH-FUNCTION is never actually invoked: see the
-file commentary above for why no faithful firing port exists in this
-runtime.  Returns nil, like the real primitive."
+    "Register WATCH-FUNCTION for SYMBOL. Existing entries retain their order."
+    (setq symbol (emacs-parity-misc--watcher-symbol symbol))
+    (when (or (null symbol) (eq symbol t) (keywordp symbol)
+              (and (fboundp 'nelisp--env-globals-op)
+                   (nelisp--env-globals-op 'is-constant symbol)))
+      (signal 'trapping-constant (list symbol)))
     (let ((existing (gethash symbol emacs-parity-misc--variable-watchers)))
       (unless (member watch-function existing)
         (puthash symbol (cons watch-function existing)
                  emacs-parity-misc--variable-watchers)))
+    (emacs-parity-misc--watcher-flag)
     nil))
 
 (unless (fboundp 'remove-variable-watcher)
   (defun remove-variable-watcher (symbol watch-function)
-    "Store-only compatibility port of `remove-variable-watcher'.
-Removes WATCH-FUNCTION (compared with `equal', matching stock Emacs) from
-SYMBOL's registered watchers.  Returns nil, like the real primitive."
-    (puthash symbol
-             (emacs-parity-misc--remove-equal
-              watch-function
-              (gethash symbol emacs-parity-misc--variable-watchers))
-             emacs-parity-misc--variable-watchers)
+    "Remove WATCH-FUNCTION from SYMBOL using equal comparison."
+    (setq symbol (emacs-parity-misc--watcher-symbol symbol))
+    (let ((left (emacs-parity-misc--remove-equal
+                 watch-function (gethash symbol emacs-parity-misc--variable-watchers))))
+      (if left (puthash symbol left emacs-parity-misc--variable-watchers)
+        (remhash symbol emacs-parity-misc--variable-watchers)))
+    (emacs-parity-misc--watcher-flag)
     nil))
 
 (unless (fboundp 'get-variable-watchers)
   (defun get-variable-watchers (symbol)
-    "Store-only compatibility port of `get-variable-watchers'.
-Returns SYMBOL's registered watch functions, most-recently-added-first
-(nil for a SYMBOL with none registered), matching stock Emacs's data
-shape exactly."
-    (gethash symbol emacs-parity-misc--variable-watchers)))
+    "Return SYMBOL's watchers in most recently added first order."
+    (gethash (emacs-parity-misc--watcher-symbol symbol)
+             emacs-parity-misc--variable-watchers)))
+
+;; Special subrs have metadata, but GNU does not classify them as callable
+;; functions. Keep this compatibility predicate in Lisp, and preserve host
+;; Emacs's C predicate. The capability belongs to the N3 standalone prelude.
+(when (and (fboundp 'nelisp--set-special-form-implementation)
+           (not (and (boundp 'emacs-parity-misc--special-functionp-installed)
+                     emacs-parity-misc--special-functionp-installed)))
+  (let ((emacs-parity-misc--raw-functionp (symbol-function 'functionp)))
+    (defun functionp (object)
+      "Return non-nil if OBJECT is callable; special forms return nil."
+      (and (not (special-form-p object))
+           (funcall emacs-parity-misc--raw-functionp object))))
+  (defvar emacs-parity-misc--special-functionp-installed t))
 
 (provide 'emacs-parity-misc)
 

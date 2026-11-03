@@ -100,5 +100,8 @@ Return t if TYPE is a supported image type.
 If image libraries are loaded dynamically (currently the case only on
 MS-Windows), load the library for TYPE if it is not yet loaded, using
 the library file(s) specified by dynamic-library-alist."
-    (and (memq type '(png jpeg gif tiff xpm svg pbm imagemagick postscript)) t)))
+    ;; No ImageMagick or Ghostscript backend exists here.  Claiming them
+    ;; made treemacs choose `imagemagick' icons and fail in `create-image';
+    ;; GNU built without those libraries answers nil as well.
+    (and (memq type '(png jpeg gif tiff xpm svg pbm)) t)))
 (provide 'emacs-cc-image-1)

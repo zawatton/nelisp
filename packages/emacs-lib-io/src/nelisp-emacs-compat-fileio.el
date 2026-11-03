@@ -882,7 +882,8 @@ Phase 7.5 will swap this to `nl-syscall-write-file' once T76 lands."
     (nl-append-file file unibyte)
     (length unibyte))
    ((and (fboundp 'nl-write-file) (not append))
-    (nl-write-file file unibyte)
+    (unless (nl-write-file file unibyte)
+      (signal 'file-error (list "Writing file failed" file)))
     (length unibyte))
    (t
     (let ((coding-system-for-write 'no-conversion)

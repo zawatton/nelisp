@@ -113,6 +113,17 @@
 
 (require 'nelisp-emacs)
 
+(defun emacs-init-load-command-features ()
+  "Install shared interactive commands for any standalone frontend.
+The editing and search libraries own these commands; app assembly must not
+leave XCB on a different command family than the terminal consumer."
+  (when (fboundp 'nelisp--repr)
+    (require 'emacs-edit-builtins)
+    (require 'emacs-replace)
+    (emacs-edit-install-native-command-shims)
+    (emacs-replace-install))
+  t)
+
 (defun emacs-init-load-tui-core-features ()
   "Load the minimal TUI runtime features needed to realise a frame.
 
@@ -122,10 +133,9 @@ TUI event parser, so they stay lazy until `nemacs-main' actually
 realises an interactive frame.  Keep this core loader smaller than
 `emacs-init-load-editor-features' so interactive startup does not pay
 font-lock / mode setup before the first frame exists."
-  ;; Use the fast first-frame core unless the full redisplay engine has
-  ;; already been loaded by tests or an editor feature.
-  (unless (featurep 'emacs-redisplay)
-    (require 'emacs-redisplay-core))
+  ;; Share mode-line formatting while retaining the fast row painter.
+  (require 'emacs-redisplay-core)
+  (emacs-init-load-command-features)
   (require 'emacs-tui-backend)
   ;; `emacs-tui-event' provides the byte-stream -> key event parser
   ;; that nemacs-main's event loop drains under the nelisp driver.

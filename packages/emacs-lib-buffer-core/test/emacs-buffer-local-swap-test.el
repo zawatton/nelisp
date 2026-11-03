@@ -178,4 +178,23 @@
         (nelisp-ec-set-buffer b2)
         (should-not (eq emacs-buffer-local-swap-test--plain 'b1val))))))
 
+(ert-deftest emacs-buffer-local-swap-s22-clear-compat-selection ()
+  (emacs-buffer-local-swap-test--with-fresh-world
+    (let ((buffer (nelisp-ec-generate-new-buffer "s22-handoff"))
+          (native (current-buffer)))
+      (nelisp-ec-set-buffer buffer)
+      (nelisp-ec-insert "abc")
+      (nelisp-ec-goto-char 2)
+      (setq emacs-buffer-local-swap-test--var 'selected)
+      (should-not (nelisp-ec-clear-current-buffer))
+      (should-not (nelisp-ec-current-buffer))
+      (should (eq (current-buffer) native))
+      ;; A later native owner must not overwrite the saved legacy cell.
+      (setq emacs-buffer-local-swap-test--var 'native-handoff)
+      ;; Handoff must preserve the old buffer and its local state.
+      (nelisp-ec-set-buffer buffer)
+      (should (= (nelisp-ec-point) 2))
+      (should (equal (nelisp-ec-buffer-string) "abc"))
+      (should (eq emacs-buffer-local-swap-test--var 'selected)))))
+
 ;;; emacs-buffer-local-swap-test.el ends here

@@ -29,6 +29,15 @@
           (fset 'nl-write-file (lambda (&rest _) nil))
           (load emacs-parity-setf-places-test--source nil nil)
           (should-not (eq host-setf (symbol-function 'setf)))
+          (eval '(defmacro emacs-parity-setf-places-test:offset (request)
+                   (list 'aref request 3)) t)
+          (should
+           (equal '(12 1)
+                  (eval '(let ((request (vector nil nil nil 2)) (calls 0))
+                           (setf (emacs-parity-setf-places-test:offset
+                                  (progn (setq calls (1+ calls)) request)) 9)
+                           (cl-incf (emacs-parity-setf-places-test:offset request) 3)
+                           (list (aref request 3) calls)) t)))
           ;; Quoted input is expanded after installation, even when this test
           ;; file itself was byte-compiled with the host macro installed.
           (should

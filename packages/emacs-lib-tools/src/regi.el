@@ -36,9 +36,140 @@ standalone path by a NeLisp-only primitive instead, matching
     (not (fboundp symbol))))
 
 (when (regi--install-function-p 'current-column)
+  (defvar ctl-arrow t
+    "Non-nil means display ASCII control characters using caret notation.")
+  (defvar buffer-display-table nil
+    "Display table for the current buffer, or nil for the standard table.")
+  (when (fboundp 'make-variable-buffer-local)
+    (make-variable-buffer-local 'ctl-arrow)
+    (make-variable-buffer-local 'buffer-display-table)))
+
+(defun regi--column-character (char column tab-size control-arrow table multibyte)
+  "Advance COLUMN over CHAR using the current buffer's display policy."
+  (let ((glyphs (and table (aref table char))))
+    (cond
+     ((vectorp glyphs)
+      ;; Display-table glyphs occupy one column, even for wide characters.
+      ;; Tab and newline glyphs retain their column-motion meaning.
+      (let ((i 0))
+        (while (< i (length glyphs))
+          (let ((glyph (aref glyphs i)))
+            (when (integerp glyph) (setq glyph (logand glyph #x3fffff)))
+            (setq column
+                  (cond
+                   ((eq glyph ?\t) (+ column (- tab-size (% column tab-size))))
+                   ((eq glyph ?\n) 0)
+                   (t (1+ column)))))
+          (setq i (1+ i))))
+      column)
+     ((eq char ?\t) (+ column (- tab-size (% column tab-size))))
+     ((eq char ?\n) 0)
+     ((or (< char 32) (= char 127))
+      (+ column (if control-arrow 2 4)))
+     ((or (and (>= char 128) (< char 160))
+          (>= char #x3fff80)
+          (and (not multibyte) (>= char 128)))
+      (+ column 4))
+     (t (+ column (char-width char))))))
+
+(defun regi--column-string (string tab-size control-arrow table)
+  "Return STRING's display width, with fixed-width tabs in replacements."
+  (let ((width 0) (i 0) (multibyte (multibyte-string-p string)))
+    (while (< i (length string))
+      (let* ((char (aref string i))
+             (glyphs (and table (aref table char))))
+        (if (vectorp glyphs)
+            (let ((j 0))
+              (while (< j (length glyphs))
+                (let ((glyph (aref glyphs j)))
+                  (setq width
+                        (+ width (if (integerp glyph)
+                                     (regi--column-character
+                                      (logand glyph #x3fffff) 0 tab-size
+                                      control-arrow nil t)
+                                   1))))
+                (setq j (1+ j))))
+          (setq width (+ width (regi--column-character
+                                char 0 tab-size control-arrow nil multibyte)))))
+      (setq i (1+ i)))
+    width))
+
+(defun regi--column-hidden-p (position)
+  "Return non-nil if POSITION is invisible without an ellipsis."
+  (let ((property (get-char-property position 'invisible))
+        (spec (and (boundp 'buffer-invisibility-spec) buffer-invisibility-spec))
+        (hidden nil))
+    (when property
+      (if (eq spec t)
+          (setq hidden t)
+        (while (consp spec)
+          (let* ((entry (car spec))
+                 (key (if (consp entry) (car entry) entry)))
+            (when (or (eq property key) (and (consp property) (memq key property)))
+              (if (and (consp entry) (cdr entry))
+                  (setq hidden 'ellipsis)
+                (unless (eq hidden 'ellipsis) (setq hidden t)))))
+          (setq spec (cdr spec)))))
+    (eq hidden t)))
+
+(when (regi--install-function-p 'current-column)
   (defun current-column ()
-    "Return current zero-based column."
-    (- (point) (line-beginning-position))))
+    "Return the zero-based display column of point on its accessible line.
+Expand tabs using `tab-width' and count character display widths.
+With `selective-display' equal to t, carriage return starts a new line.
+Invisible text without ellipses occupies no columns."
+    (let* ((start (line-beginning-position))
+           (text (buffer-substring-no-properties start (point)))
+           (tab-size (if (and (boundp 'tab-width) (integerp tab-width)
+                              (> tab-width 0) (<= tab-width 1000))
+                         tab-width 8))
+           (control-arrow (if (boundp 'ctl-arrow) ctl-arrow t))
+           (multibyte (if (boundp 'enable-multibyte-characters)
+                          enable-multibyte-characters t))
+           (table (or (and (fboundp 'window-display-table)
+                           (window-display-table))
+                      (and (boundp 'buffer-display-table) buffer-display-table)
+                      (and (boundp 'standard-display-table) standard-display-table)))
+           (column 0)
+           (i 0))
+      (unless (char-table-p table) (setq table nil))
+      ;; Find the last carriage return before measuring, so hidden text
+      ;; and display-table substitutions cannot conceal a line boundary.
+      (when (and (boundp 'selective-display) (eq selective-display t))
+        (let ((j 0))
+          (while (< j (length text))
+            (when (eq (aref text j) ?\r) (setq i (1+ j)))
+            (setq j (1+ j)))))
+      (while (< i (length text))
+        (let* ((position (+ start i))
+               (display (get-char-property position 'display)))
+          (cond
+           ;; GNU counts the underlying text when invisibility requests
+           ;; ellipses (invisible-p returns 2), rather than hiding it here.
+           ((regi--column-hidden-p position))
+           ((stringp display)
+            (setq column (+ column (regi--column-string
+                                    display tab-size control-arrow table)))
+            (while (and (< (1+ i) (length text))
+                        (eq (get-char-property (+ start i 1) 'display) display))
+              (setq i (1+ i))))
+           ((and (consp display) (eq (car display) 'space)
+                 (let ((width (plist-get (cdr display) :width))
+                       (align (plist-get (cdr display) :align-to)))
+                   (cond
+                    ((and (integerp width) (> width 0))
+                     (setq column (+ column width)))
+                    ((and (integerp align) (> align column))
+                     (setq column align)))))
+            (while (and (< (1+ i) (length text))
+                        (eq (get-char-property (+ start i 1) 'display) display))
+              (setq i (1+ i))))
+           (t
+            (setq column (regi--column-character
+                          (aref text i) column tab-size control-arrow
+                          table multibyte)))))
+        (setq i (1+ i)))
+      column)))
 
 (when (regi--install-function-p 'back-to-indentation)
   (defun back-to-indentation ()

@@ -7,7 +7,11 @@
     "internal\n\n(fn)"
     ;; The standalone runtime exposes no evaluator-stack counters.  In batch
     ;; its primitive's initial report is one frame and one run.
-    (message "1 stack frames, 1 runs")
+    ;; This is a raw diagnostic in GNU bytecode.c, not an echo-area message:
+    ;; it ignores inhibit-message and leaves pending stdout separation alone.
+    (if (fboundp 'nelisp--write-stderr-line)
+        (nelisp--write-stderr-line "1 stack frames, 1 runs")
+      (princ "1 stack frames, 1 runs\n" #'external-debugging-output))
     nil))
 
 (provide 'emacs-cc-bytecode-1)

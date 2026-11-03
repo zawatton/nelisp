@@ -265,6 +265,17 @@
 
 ;;; F. polling
 
+(ert-deftest emacs-tui-event-test-pending-live-input-does-not-consume ()
+  (let* ((bytes '(97 13))
+         (emacs-tui-event-input-fn
+          (lambda () (prog1 (car bytes) (setq bytes (cdr bytes)))))
+         (handle (emacs-tui-event-init)))
+    (should (emacs-tui-event-pending-event-p handle))
+    (should (emacs-tui-event-pending-event-p handle))
+    (should (= 97 (plist-get (emacs-tui-event-poll handle) :name)))
+    (should (eq 'return (plist-get (emacs-tui-event-poll handle) :name)))
+    (should-not (emacs-tui-event-pending-event-p handle))))
+
 (ert-deftest emacs-tui-event-test-poll-empty-returns-nil ()
   "poll on an empty handle returns nil immediately (Doc 43 §2.6)."
   (let ((h (emacs-tui-event-init)))

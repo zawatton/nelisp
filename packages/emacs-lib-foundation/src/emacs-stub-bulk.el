@@ -268,7 +268,7 @@ Forwarder to `forward-char' with negated count."
     assq atom auto-fill-mode autoload autoload-do-load auto-save-mode backtrace backtrace-frame--internal
     backward-delete-char backward-sexp backward-word beep beginning-of-line bobp bolp bool-vector
     bool-vector-p boundp bounds-of-thing-at-point buffer-file-name buffer-list buffer-live-p buffer-local-value buffer-modified-p
-    buffer-name bufferp buffer-size buffer-string buffer-substring buffer-substring-no-properties byte-code byte-compile byte-compile-disable-warning byte-compile-enable-warning byte-compile-warning-enabled-p byte-compile-warn-obsolete byte-run--set-speed cancel-timer capitalize-word
+    buffer-name bufferp buffer-size buffer-string buffer-substring buffer-substring-no-properties byte-code byte-compile byte-compile-disable-warning byte-compile-enable-warning byte-compile-warning-enabled-p byte-compile-warn-obsolete byte-run--set-speed cancel-timer 
     car car-less-than-car car-safe cdr cdr-safe char-after
     char-before char-syntax char-table-p char-table-range char-to-string chmod cl--assertion-failed cl--class-allparents
     cl--class-docstring cl--class-index-table cl--class-name cl--class-parents cl--class-slots cl-generic-combine-methods cl--generic-dispatches cl--generic-generalizer-name
@@ -276,78 +276,78 @@ Forwarder to `forward-char' with negated count."
     cl--generic-method-call-con cl--generic-method-function cl--generic-method-qualifiers cl--generic-method-specializers cl--generic-method-table cl--generic-name cl--generic-options cl-method-qualifiers
     cl-no-applicable-method cl-no-next-method cl-no-primary-method cl-old-struct-compat-mode cl-prin1-to-string cl--slot-descriptor-initform cl--slot-descriptor-name cl--slot-descriptor-props
     cl--slot-descriptor-type cl--struct-class-named cl--struct-class-p cl--struct-class-print cl--struct-class-slots cl--struct-class-type cl-struct-define cl--struct-get-class
-    cl--struct-name-p cl-type-of c-mode combine-after-change-execute commandp command-remapping compare-window-configurations
-    comp-el-to-eln-rel-filename compile completing-read compose-mail concat cons consp copy-keymap
+    cl--struct-name-p cl-type-of c-mode commandp compare-window-configurations
+    compile completing-read compose-mail concat cons consp copy-keymap
     copy-marker copy-sequence ctl-x-4-prefix ctl-x-5-prefix current-buffer current-case-table current-column current-global-map
-    current-input-mode current-local-map current-message current-window-configuration cursor-intangible-mode cursor-sensor-mode debug defalias
-    default-boundp default-file-modes default-value define-button-type define-key defining-kbd-macro defvaralias delete
-    delete-backward-char delete-char delete-minibuffer-contents delete-overlay delete-region delq describe-bindings describe-function
-    describe-key describe-symbol describe-variable ding directory-file-name discard-input display-buffer display-graphic-p
-    display-popup-menus-p display-warning documentation documentation-property downcase downcase-region downcase-word drop
+    current-local-map current-window-configuration cursor-intangible-mode cursor-sensor-mode debug defalias
+    default-boundp default-value define-button-type define-key defvaralias delete
+    delete-backward-char delete-char delete-minibuffer-contents delete-region delq describe-bindings describe-function
+    describe-key describe-symbol describe-variable directory-file-name display-buffer display-graphic-p
+    display-popup-menus-p display-warning downcase drop
     elt emacs-pid emacs-version end-of-line enlarge-window eobp eq eql
-    equal erase-buffer error-message-string eval eval-after-load eval-buffer event-convert-list exec-path
-    execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-font face-stipple face-underline-p
-    fboundp featurep fetch-bytecode field-beginning field-end file-exists-p file-modes file-name-extension file-name-nondirectory file-name-sans-extension file-newer-than-file-p fillarray find-function-search-for-symbol
+    equal erase-buffer error-message-string eval eval-after-load event-convert-list exec-path
+    execute-extended-command-for-buffer exit-minibuffer exp expand-file-name face-background-pixmap face-stipple face-underline-p
+    fboundp featurep fetch-bytecode file-exists-p file-modes file-name-extension file-name-nondirectory file-name-sans-extension find-function-search-for-symbol
     find-lisp-object-file-name flatten-list floatp float-time fmakunbound format
     format-message format-spec forward-char forward-line forward-sexp forward-word
     frame-height frame-live-p framep frame-parameter frame-parameters frame-selected-window frame-toggle-on-screen-keyboard
-    frame-visible-p frame-width fset funcall funcall-with-delayed-message function-documentation functionp function-put
-    garbage-collect generate-new-buffer-name get get-advertised-calling-convention get-buffer get-buffer-create get-buffer-process get-char-property
-    getenv gethash get-load-suffixes get-register get-text-property gnus goto-char grep
+    frame-visible-p frame-width fset funcall function-documentation functionp function-put
+    garbage-collect generate-new-buffer-name get get-advertised-calling-convention get-buffer get-buffer-create get-char-property
+    getenv gethash get-register get-text-property gnus goto-char grep
     hack-local-variables handler-bind-1 hash-table-p help help-add-fundoc-usage help-buffer help--docstring-quote help-form-show
     help-function-arglist help-insert-xref-button help-mode help-setup-xref help-split-fundoc hs-minor-mode iconify-frame
-    indent-to indent-to-column indirect-function info input-pending-p insert insert-buffer-substring integerp
-    intern internal-event-symbol-parse-modifiers internal--labeled-narrow-to-region internal--labeled-widen internal--track-mouse intern-soft invocation-directory
-    invocation-name isearch-mode key-binding keyboard-coding-system key-description keymap-global-lookup keymap-global-set keymap-global-unset
+    indent-to indent-to-column indirect-function info insert integerp
+    intern intern-soft 
+    isearch-mode key-binding key-description keymap-global-lookup keymap-global-set keymap-global-unset
     keymap-local-lookup keymap-local-set keymap-local-unset keymapp keymap-parent keymap-prompt keymap-set-after keymap-substitute
     key-parse key-translate keywordp kill-buffer kill-emacs kill-local-variable kmacro-end-macro length
     libxml-parse-html-region libxml-parse-xml-region line-beginning-position line-end-position lisp-indent-line list listp load
-    loadhist-unload-element load-library load-with-code-conversion local-variable-if-set-p local-variable-p locate-file locate-file-internal locate-user-emacs-file
+    loadhist-unload-element load-library load-with-code-conversion local-variable-p locate-file locate-user-emacs-file
     log logand logb logior lognot logxor looking-at lookup-key
     macroexpand macroexpand-all macroexp-compiling-p macroexp-const-p macroexp-copyable-p macroexp--fgrep macroexp--funcall-if-compiled macroexp-progn
     macroexp--warn-and-return macroexp-warn-and-return mail make-char-table make-directory make-directory-autoloads make-frame-invisible make-frame-visible
     make-hash-table make-keymap make-list make-local-variable make-obsolete make-obsolete-variable make-overlay make-sparse-keymap
     make-string make-symbol make-text-button make-variable-buffer-local make-vector mapatoms mapbacktrace mapc
     mapcar mapconcat maphash map-keymap mark markerp marker-position
-    mark-marker match-beginning match-data match-data--translate match-end max member memq
+    mark-marker match-beginning match-data match-end max member memq
     message min minibuffer-message minibufferp minibuffer-prompt minibuffer-prompt-end minibuffer-recenter-top-bottom
-    minibuffer-scroll-down-command minibuffer-scroll-other-window minibuffer-scroll-other-window-down minibuffer-scroll-up-command minibuffer-window mkdir mod modify-frame-parameters
-    mouse-position move-marker move-overlay move-to-column mutex-lock mutex-unlock narrow-to-region native-comp-available-p
-    native-comp-function-p native-comp-unit-file natnump nconc newline next-frame next-property-change next-single-property-change
+    minibuffer-scroll-down-command minibuffer-scroll-other-window minibuffer-scroll-other-window-down minibuffer-scroll-up-command mkdir mod modify-frame-parameters
+    move-marker move-to-column narrow-to-region 
+    native-comp-function-p natnump nconc newline next-property-change next-single-property-change
     next-window nlistp normal-mode nreverse nth nthcdr null number-at-point
-    numberp number-to-string object-intervals occur oclosure-type other-frame overlay-buffer overlay-end
-    overlay-get overlay-lists overlay-properties overlay-put overlay-recenter overlays-in overlay-start overwrite-mode
-    pcase--make-docstring play-sound-internal plist-get plist-member plist-put point point-at-bol point-at-eol
-    point-marker point-max point-min pos-bol pos-eol posn-at-point prefix-numeric-value prin1
-    prin1-to-string princ print process-attributes process-file process-filter process-plist process-query-on-exit-flag
+    numberp number-to-string occur oclosure-type other-frame 
+    overlay-recenter overwrite-mode
+    pcase--make-docstring plist-get plist-member plist-put point point-at-bol point-at-eol
+    point-marker point-max point-min prefix-numeric-value prin1
+    prin1-to-string princ print process-file process-filter process-plist process-query-on-exit-flag
     process-send-region process-sentinel progress-reporter-make propertize purecopy put puthash
     put-text-property raise-frame random rassq read read-from-minibuffer read-from-string read-kbd-macro
-    read-library-name read-string recenter recenter-top-bottom record recordp redirect-frame-focus regexp-opt
-    regexp-quote remember remove-list-of-text-properties rename-buffer repeat replace-match re-search-backward re-search-forward
+    read-library-name read-string recenter recenter-top-bottom record recordp regexp-opt
+    regexp-quote remember rename-buffer repeat replace-match re-search-backward re-search-forward
     restore-buffer-modified-p reverse rplaca rplacd run-hooks run-hook-with-args run-hook-with-args-until-success
-    run-hook-wrapped run-window-configuration-change-hook run-with-idle-timer safe-length save-current-buffer save-excursion save-restriction scroll-bar-scale
-    scroll-down scroll-down-command scroll-left scroll-other-window scroll-other-window-down scroll-right scroll-up scroll-up-command
-    search-backward-regexp search-forward search-forward-regexp secure-hash selected-frame selected-window select-frame select-window
+    run-with-idle-timer safe-length save-current-buffer save-excursion save-restriction scroll-bar-scale
+    scroll-down scroll-down-command scroll-other-window scroll-other-window-down scroll-up scroll-up-command
+    search-forward search-forward-regexp secure-hash selected-frame selected-window select-frame select-window
     self-insert-command send-region send-string seq-concatenate seq-find seq-some seq-subseq seq-uniq
     set-advertised-calling-convention set-buffer set-buffer-modified-p setcar set-case-table setcdr set-char-table-parent set-char-table-range
-    set-default set-default-file-modes setenv set-face-font set-face-stipple set-face-underline set-file-modes set-frame-height
-    set-frame-parameter set-frame-selected-window set-frame-width set-input-mode set-keymap-parent set-mark set-marker set-match-data
-    set-mouse-position setplist set-process-buffer set-process-filter set-process-plist set-process-sentinel set-register set-standard-case-table
-    set-syntax-table set-temporary-overlay-map set-terminal-parameter set-text-conversion-style set-text-properties set-visited-file-modtime set-visited-file-name set-window-buffer
-    set-window-configuration set-window-dedicated-p set-window-display-table set-window-hscroll set-window-parameter set-window-point set-window-start shell
-    signal single-key-description skip-chars-backward skip-chars-forward skip-syntax-backward skip-syntax-forward sleep-for sort
+    set-default setenv set-face-font set-face-stipple set-face-underline set-file-modes 
+    set-frame-parameter set-keymap-parent set-mark set-marker set-match-data
+    setplist set-process-buffer set-process-filter set-process-plist set-process-sentinel set-register set-standard-case-table
+    set-syntax-table set-temporary-overlay-map set-text-conversion-style set-text-properties set-visited-file-name set-window-buffer
+    set-window-configuration set-window-parameter set-window-point set-window-start shell
+    signal single-key-description skip-chars-backward skip-chars-forward sort
     special-variable-p standard-case-table standard-syntax-table start-file-process store-match-data string string-as-multibyte string-as-unibyte
     string-equal string-lessp string-make-multibyte string-make-unibyte string-match stringp string-search string-split
-    string-to-multibyte string-to-number string-to-unibyte string-width subr-native-comp-unit substitute-quotes substring substring-no-properties suspend-emacs switch-to-buffer sxhash sxhash-equal symbol-function
+    string-to-multibyte string-to-number string-to-unibyte string-width substitute-quotes substring substring-no-properties switch-to-buffer sxhash sxhash-equal symbol-function
     symbol-name symbolp symbol-plist symbol-value syntax-ppss-flush-cache syntax-propertize syntax-table take
     temp-buffer-resize-mode temporary-file-directory terminal-parameter terpri text-properties-at time-convert time-less-p truncate
     tty-top-frame type-of undo-amalgamate-change-group undo-auto-amalgamate undo-more unhandled-file-name-directory unintern upcase
-    upcase-region upcase-word update-directory-autoloads use-global-map use-local-map user-login-name user-original-login-name variable-at-point
-    vconcat vector vectorp view-mode visited-file-modtime walk-windows warn wholenump
-    widen window-buffer window-combination-limit window-configuration-equal-p window-dedicated-p window-display-table window-end window-font-height
-    window-font-width window-frame window-height window-hscroll window-live-p windowp window-parameter window-point
-    window-start window-width with-no-warnings write-region x-popup-dialog xterm-mouse-mode yank yes-or-no-p
-    y-or-n-p-with-timeout zlib-available-p)))
+    update-directory-autoloads use-global-map use-local-map user-login-name user-original-login-name variable-at-point
+    vconcat vector vectorp view-mode walk-windows warn wholenump
+    widen window-buffer window-end window-font-height
+    window-font-width window-frame window-height window-live-p windowp window-parameter window-point
+    window-start window-width with-no-warnings write-region xterm-mouse-mode yank yes-or-no-p
+    y-or-n-p-with-timeout )))
   (dolist (--s-- --stub-defuns--)
     (unless (fboundp --s--)
       (fset --s-- (lambda (&rest _) nil))

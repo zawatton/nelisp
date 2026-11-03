@@ -2,9 +2,9 @@
 
 EMACS = emacs --batch
 # NeLisp is driven through the pure-Elisp standalone reader.
-VENDOR_NELISP = vendor/nelisp
-DEFAULT_NELISP_ROOT := $(firstword $(wildcard $(VENDOR_NELISP) ../nelisp $(HOME)/Notes/dev/nelisp))
-NELISP_ROOT  ?= $(if $(DEFAULT_NELISP_ROOT),$(DEFAULT_NELISP_ROOT),$(VENDOR_NELISP))
+VENDOR_NELISP =
+DEFAULT_NELISP_ROOT := .
+NELISP_ROOT  ?= $(DEFAULT_NELISP_ROOT)
 DEFAULT_NELISP_BIN := $(firstword $(wildcard $(NELISP_ROOT)/target/nelisp $(NELISP_ROOT)/target/nelisp-standalone-reader build/nelisp-experiment))
 NELISP_BIN   ?= $(if $(DEFAULT_NELISP_BIN),$(DEFAULT_NELISP_BIN),$(NELISP_ROOT)/target/nelisp)
 NELISP_BOOT_TIMEOUT ?= 420s
@@ -145,7 +145,7 @@ NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT_ELISP := $(if $(filter 1 t true yes,$(NEMAC
 NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT ?= 0
 
 proc-async-smoke:
-	$(EMACS) -Q -L src -L test \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l emacs-process-builtins-test \
 	  --eval '(ert-run-tests-batch "^emacs-process-builtins-test/\\(make-process-uses-native-nelisp-object\\|native-poll-pump-git-probe\\)$$")'
@@ -661,13 +661,22 @@ VENDOR_FAST_PROOF_FORM_FILE ?=
 VENDOR_FAST_DETAIL_FORM ?= (concat "load-ok-count=" (number-to-string vendor-standalone-load-ok-count) "/" (number-to-string vendor-standalone-load-file-count))
 VENDOR_FAST_PROOF_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_PROOF_FORM))
 VENDOR_FAST_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_DETAIL_FORM))
-NELISP_LOAD_PATH = -L $(NELISP_ROOT)/src \
-	$(foreach d,$(wildcard $(NELISP_ROOT)/packages/*/src),-L $(d))
-SRC_FILES = $(wildcard src/*.el)
+NEMACS_RESOLVED_DIRS := $(shell DOC211_SOURCE_ROOTS_PRINT=1 $(EMACS) -Q -L $(NELISP_ROOT)/packages/nelisp-pkg/src -l $(NELISP_ROOT)/scripts/doc211-source-roots.el)
+NEMACS_SRC_DIRS := $(filter packages/%/src,$(NEMACS_RESOLVED_DIRS))
+NEMACS_TEST_DIR := $(lastword $(NEMACS_RESOLVED_DIRS))
+NEMACS_PACKAGE_SRC_LOAD_PATH = $(foreach d,$(NEMACS_SRC_DIRS),-L $(NELISP_ROOT)/$(d))
+NELISP_LOAD_PATH = $(NEMACS_PACKAGE_SRC_LOAD_PATH) -L $(NELISP_ROOT)/src
+NEMACS_MERGED_SRC ?= $(BUILD_DIR)/doc211-bootstrap-root/src
+
+.PHONY: doc211-package-source-root
+doc211-package-source-root:
+	bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(BUILD_DIR)/doc211-bootstrap-root)" >/dev/null
+NEMACS_API_SRC_DIRS := $(filter packages/nelisp-emacs-%/src packages/STAYS/src,$(NEMACS_SRC_DIRS))
+SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
 # `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
 # host byte-compilation trips over upstream macro shapes, so `make compile'
 # validates it through a load proof instead of compiling it.
-SRC_BYTE_COMPILE_EXCLUDE = src/generator.el
+SRC_BYTE_COMPILE_EXCLUDE = $(NELISP_ROOT)/packages/nelisp-emacs-foundation/src/generator.el
 SRC_BYTE_COMPILE_FILES = $(filter-out $(SRC_BYTE_COMPILE_EXCLUDE),$(SRC_FILES))
 NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES = \
 	emacs-foundation \
@@ -978,9 +987,8 @@ help:
 	@echo "  make bench           run redisplay benchmark"
 	@echo "  make demo            run Phase 1 close demo"
 	@echo "  make demo-phase2     run Phase 2 close demo"
-	@echo "  make nelisp          build vendor/nelisp (dynamic reader + cold image; --plain opt-out; no auto-switch of an existing checkout)"
+	@echo "  make nelisp          build the in-tree NeLisp standalone reader"
 	@echo "  make nelisp-rebuild  clean + rebuild the vendored NeLisp standalone reader"
-	@echo "  make nelisp-clean    remove vendor/nelisp/ entirely"
 	@echo "  make clean           remove .elc files"
 	@echo "Variables:"
 	@echo "  NELISP_STACK_LIMIT=$(NELISP_STACK_LIMIT)  stack limit for large pure-Elisp loads"
@@ -1017,15 +1025,24 @@ help:
 # run then reads as void to every module that requires it, and the
 # build fails on source that is perfectly correct.
 compile:
-	$(EMACS) -L src $(NELISP_LOAD_PATH) \
+	$(EMACS) $(NELISP_LOAD_PATH) \
 		--eval '(setq load-prefer-newer t)' \
 		--eval '(setq native-comp-enable-subr-trampolines nil)' \
 		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
-	$(EMACS) -Q -L src -l src/generator.el \
+	$(EMACS) -Q $(NELISP_PACKAGE_SRC_LOAD_PATH) \
+		-l $(NELISP_ROOT)/packages/nelisp-emacs-foundation/src/generator.el \
 		--eval '(unless (featurep (quote generator)) (kill-emacs 1))'
 
-nemacs-library-gate: compile nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
-	$(EMACS) -Q -L src -l test/nelisp-emacs-test.el \
+# Library-gate recipes emit reports and scaffold mirrors; none edits package
+# manifests or packages/*/src/*.el, so their one-process resolver snapshot is stable.
+nemacs-library-gate: export DOC211_SOURCE_ROOTS_SNAPSHOT = 1
+nemacs-library-gate:
+	+$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) compile
+	+$(MAKE) --no-print-directory -j4 -f $(firstword $(MAKEFILE_LIST)) nemacs-library-gate-checks
+
+.PHONY: nemacs-library-gate-checks
+nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
+	$(EMACS) -Q $(NEMACS_PACKAGE_SRC_LOAD_PATH) -l $(NELISP_ROOT)/test/nelisp-emacs-lib/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
 	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
 	@awk -F '\t' 'NR > 1 && $$1 == "UNOWNED" { count++ } END { if (count != 0) { printf "nemacs-library-gate: public API UNOWNED rows=%d\n", count; exit 1 } }' "$(NEMACS_PUBLIC_API_INVENTORY)"
@@ -1037,12 +1054,12 @@ nemacs-library-gate: compile nemacs-ownership-coverage nemacs-public-api-invento
 	@echo "nemacs-library-gate: ok"
 
 nemacs-library-consumer-smoke:
-	$(EMACS) -Q -L src -l test/nelisp-emacs-consumer-smoke-test.el \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -l $(NELISP_ROOT)/$(NEMACS_TEST_DIR)/nelisp-emacs-consumer-smoke-test.el \
 		-f ert-run-tests-batch-and-exit
 
 nemacs-library-contract:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-contract-output "$(abspath $(NEMACS_LIBRARY_CONTRACT))")' \
 		--eval '(setq nemacs-library-contract-summary-output "$(abspath $(NEMACS_LIBRARY_CONTRACT_SUMMARY))")' \
 		-l scripts/nemacs-library-contract.el \
@@ -1053,7 +1070,7 @@ nemacs-library-package-smoke:
 	for feature in $(NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES); do \
 		echo "nemacs-library-package-smoke: $$feature"; \
 		NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURE="$$feature" \
-			$(EMACS) -Q -L src -L scripts \
+			$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 			-l scripts/nemacs-library-package-smoke.el \
 			-f nemacs-library-package-smoke-batch; \
 	done
@@ -1071,7 +1088,7 @@ nemacs-library-package-path-smoke: nemacs-library-package-scaffold
 nemacs-library-package-consumer-smoke: nemacs-library-package-scaffold
 	$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
 		$(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) \
-		-l test/nelisp-emacs-consumer-smoke-test.el \
+		-l $(NELISP_ROOT)/$(NEMACS_TEST_DIR)/nelisp-emacs-consumer-smoke-test.el \
 		-f ert-run-tests-batch-and-exit
 
 nemacs-library-package-lazy-smoke: nemacs-library-package-scaffold
@@ -1100,7 +1117,7 @@ nemacs-library-package-gui-bridge-smoke: nemacs-library-package-scaffold nemacs-
 	NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
 		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/nelisp-emacs-app-gui)" \
 		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
-		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L test -L scripts \
+		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_SMOKE_SELECTOR)))'
 
@@ -1111,13 +1128,13 @@ nemacs-library-package-gui-bridge-standalone-smoke: nemacs-library-package-scaff
 		NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
 		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/nelisp-emacs-app-gui)" \
 		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
-		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L test -L scripts \
+		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_LIBRARY_PACKAGE_GUI_BRIDGE_STANDALONE_SMOKE_SELECTOR)))'
 
 nemacs-library-package-manifest:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-manifest-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MANIFEST))")' \
 		--eval '(setq nemacs-library-package-manifest-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MANIFEST_SUMMARY))")' \
 		-l scripts/nemacs-library-package-manifest.el \
@@ -1125,7 +1142,7 @@ nemacs-library-package-manifest:
 
 nemacs-library-package-deps:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-deps-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS))")' \
 		--eval '(setq nemacs-library-package-deps-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS_SUMMARY))")' \
 		--eval '(setq nemacs-library-package-deps-migration-queue-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_MIGRATION_QUEUE))")' \
@@ -1135,7 +1152,7 @@ nemacs-library-package-deps:
 
 nemacs-library-package-descriptors:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-descriptors-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DESCRIPTORS))")' \
 		--eval '(setq nemacs-library-package-descriptors-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DESCRIPTORS_SUMMARY))")' \
 		-l scripts/nemacs-library-package-descriptors.el \
@@ -1143,7 +1160,7 @@ nemacs-library-package-descriptors:
 
 nemacs-library-package-guide:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-guide-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_GUIDE))")' \
 		--eval '(setq nemacs-library-package-guide-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_GUIDE_SUMMARY))")' \
 		-l scripts/nemacs-library-package-guide.el \
@@ -1151,7 +1168,7 @@ nemacs-library-package-guide:
 
 nemacs-library-package-api:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-api-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_API))")' \
 		--eval '(setq nemacs-library-package-api-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_API_SUMMARY))")' \
 		-l scripts/nemacs-library-package-api.el \
@@ -1159,7 +1176,7 @@ nemacs-library-package-api:
 
 nemacs-library-package-catalog:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-catalog-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_CATALOG))")' \
 		--eval '(setq nemacs-library-package-catalog-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_CATALOG_SUMMARY))")' \
 		-l scripts/nemacs-library-package-catalog.el \
@@ -1167,7 +1184,7 @@ nemacs-library-package-catalog:
 
 nemacs-library-compat-api-policy:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-compat-api-policy-output "$(abspath $(NEMACS_LIBRARY_COMPAT_API_POLICY))")' \
 		--eval '(setq nemacs-library-compat-api-policy-summary-output "$(abspath $(NEMACS_LIBRARY_COMPAT_API_POLICY_SUMMARY))")' \
 		-l scripts/nemacs-library-compat-api-policy.el \
@@ -1175,7 +1192,7 @@ nemacs-library-compat-api-policy:
 
 nemacs-library-api-promotion-queue:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-api-promotion-queue-output "$(abspath $(NEMACS_LIBRARY_API_PROMOTION_QUEUE))")' \
 		--eval '(setq nemacs-library-api-promotion-queue-summary-output "$(abspath $(NEMACS_LIBRARY_API_PROMOTION_QUEUE_SUMMARY))")' \
 		-l scripts/nemacs-library-api-promotion-queue.el \
@@ -1183,23 +1200,28 @@ nemacs-library-api-promotion-queue:
 
 nemacs-library-package-layout:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-layout-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAYOUT))")' \
 		--eval '(setq nemacs-library-package-layout-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAYOUT_SUMMARY))")' \
 		-l scripts/nemacs-library-package-layout.el \
 		-f nemacs-library-package-layout-batch
 
-nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
+nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide doc211-package-source-root
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	@set -eu; scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
+	mkdir -p "$$scaffold_root/scripts"; \
+	if [ ! -e "$$scaffold_root/packages" ]; then ln -s "$(abspath $(NELISP_ROOT)/packages)" "$$scaffold_root/packages"; fi; \
+	if [ ! -e "$$scaffold_root/src" ]; then ln -s "$(abspath $(NEMACS_MERGED_SRC))" "$$scaffold_root/src"; fi; \
+	cp scripts/nemacs-library-package-scaffold.el "$$scaffold_root/scripts/nemacs-library-package-scaffold.el"; \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-scaffold-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq nemacs-library-package-scaffold-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD_SUMMARY))")' \
-		-l scripts/nemacs-library-package-scaffold.el \
+		-l "$$scaffold_root/scripts/nemacs-library-package-scaffold.el" \
 		-f nemacs-library-package-scaffold-batch
 
 nemacs-library-app-scaffold:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-app-scaffold-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
 		--eval '(setq nemacs-library-app-scaffold-summary-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD_SUMMARY))")' \
 		-l scripts/nemacs-library-app-scaffold.el \
@@ -1227,7 +1249,7 @@ nemacs-library-package-app-require-guard: nemacs-library-package-scaffold nemacs
 
 nemacs-library-package-metadata: nemacs-library-package-scaffold
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-metadata-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
 		--eval '(setq nemacs-library-package-metadata-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA_SUMMARY))")' \
 		-l scripts/nemacs-library-package-metadata.el \
@@ -1389,7 +1411,7 @@ nemacs-library-package-signature-release-sign: nemacs-library-package-signature-
 		-f nemacs-library-package-signature-release-sign-batch
 
 nemacs-library-package-signature-release-verify:
-	$(MAKE) nemacs-library-package-release-key-policy \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-key-policy \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
@@ -1461,7 +1483,7 @@ nemacs-library-package-release-bundle-smoke: nemacs-library-package-release-bund
 		-f nemacs-library-package-release-bundle-smoke-summary-batch
 
 nemacs-library-package-release-publication-policy: nemacs-library-package-release-bundle-smoke
-	$(MAKE) nemacs-library-package-release-publication-policy-run
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-publication-policy-run
 
 nemacs-library-package-release-publication-policy-run:
 	mkdir -p "$(BUILD_DIR)"
@@ -1476,15 +1498,15 @@ nemacs-library-package-release-publication-policy-run:
 		-f nemacs-library-package-release-publication-policy-batch
 
 nemacs-library-package-release-bundle: nemacs-library-package-dependency-publication-policy nemacs-library-package-signature-release
-	$(MAKE) nemacs-library-package-release-bundle-manifest \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle-manifest \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
-	$(MAKE) nemacs-library-package-release-bundle-smoke \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle-smoke \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_SIGNATURE_STRICT=1
-	$(MAKE) nemacs-library-package-release-publication-policy-run \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-publication-policy-run \
 		NEMACS_LIBRARY_RELEASE_PUBLICATION_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_BUNDLE_STRICT=1 \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1 \
@@ -1507,7 +1529,7 @@ nemacs-library-package-release-rehearsal: nemacs-library-package-release-rehears
 		exit 1; \
 	fi; \
 	GNUPGHOME="$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_GNUPGHOME))" \
-		$(MAKE) nemacs-library-package-release-bundle \
+		$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_FILE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_PUBLIC_KEY)" \
 		NEMACS_LIBRARY_RELEASE_SIGNING_KEY_FINGERPRINT="$$fingerprint" \
 		NEMACS_LIBRARY_PACKAGE_ARCHIVE="$(NEMACS_LIBRARY_PACKAGE_RELEASE_REHEARSAL_ROOT)/archive.tsv" \
@@ -1592,27 +1614,36 @@ nemacs-library-package-release-config-check:
 		"$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_CONFIG_CHECK_SUMMARY))"
 
 nemacs-library-package-release-ready: nemacs-library-package-release-config-check
-	$(MAKE) nemacs-library-package-release-key-policy \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-key-policy \
 		NEMACS_LIBRARY_RELEASE_PUBLIC_KEY_STRICT=1
 
 nemacs-library-package-release-from-config:
-	$(MAKE) nemacs-library-package-release-ready
-	$(MAKE) nemacs-library-package-release-bundle
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-ready
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-bundle
 
 nemacs-library-package-dependency-publication-policy: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
 	mkdir -p "$(BUILD_DIR)"
+	@cp scripts/nemacs-library-package-dependency-publication-policy.el \
+		"$(abspath $(BUILD_DIR)/doc211-scaffold-root/scripts/nemacs-library-package-dependency-publication-policy.el)"
 	$(EMACS) -Q -L scripts \
 		--eval '(setq nemacs-library-package-dependency-publication-policy-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
 		--eval '(setq nemacs-library-package-dependency-publication-policy-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq nemacs-library-package-dependency-publication-policy-deps "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPS))")' \
 		--eval '(setq nemacs-library-package-dependency-publication-policy-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY))")' \
 		--eval '(setq nemacs-library-package-dependency-publication-policy-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_DEPENDENCY_PUBLICATION_POLICY_SUMMARY))")' \
-		-l scripts/nemacs-library-package-dependency-publication-policy.el \
+		-l "$(abspath $(BUILD_DIR)/doc211-scaffold-root/scripts/nemacs-library-package-dependency-publication-policy.el)" \
 		-f nemacs-library-package-dependency-publication-policy-batch
 
 nemacs-library-package-lazy-metadata: nemacs-library-package-metadata nemacs-library-package-scaffold nemacs-library-package-deps
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	@scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
+	if [ ! -e "$$scaffold_root/scripts/doc211-source-roots.el" ]; then \
+		ln -s "$(abspath $(NELISP_ROOT)/scripts/doc211-source-roots.el)" "$$scaffold_root/scripts/doc211-source-roots.el"; \
+	fi
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
+		--eval '(setq nemacs-library-package-lazy-metadata-repo-root "$(abspath $(BUILD_DIR)/doc211-scaffold-root)")' \
+		--eval '(setq nemacs-library-package-deps-repo-root "$(abspath $(BUILD_DIR)/doc211-scaffold-root)")' \
+		--eval '(setq nemacs-library-package-deps-ownership-doc "$(abspath $(NELISP_ROOT)/docs/design/nemacs/18-library-package-ownership-inventory.org)")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-metadata "$(abspath $(NEMACS_LIBRARY_PACKAGE_METADATA))")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq nemacs-library-package-lazy-metadata-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_LAZY_METADATA))")' \
@@ -1631,14 +1662,14 @@ nemacs-library-package-vendor-lock: nemacs-library-package-dependency-publicatio
 		-f nemacs-library-package-vendor-lock-batch
 
 nemacs-library-package-vendor-release-verify:
-	$(MAKE) nemacs-library-package-vendor-lock \
+	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-vendor-lock \
 		NEMACS_LIBRARY_VENDOR_RELEASE_STRICT=1 \
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK)" \
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK_SUMMARY)"
 
 nemacs-library-package-verify:
 	mkdir -p "$(BUILD_DIR)"
-	$(EMACS) -Q -L src -L scripts \
+	DOC211_SOURCE_ROOTS_SNAPSHOT=1 $(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-verify-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VERIFY))")' \
 		--eval '(setq nemacs-library-package-verify-summary-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VERIFY_SUMMARY))")' \
 		-l scripts/nemacs-library-package-verify.el \
@@ -1656,13 +1687,13 @@ nemacs-runtime-image-input-inventory: build-nelisp-bootstrap nemacs-library-pack
 
 test:
 	$(EMACS) $(NEMACS_HOST_TEST_PRELUDE) \
-		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
+		$(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo -L scripts $(NELISP_LOAD_PATH) \
 		$(foreach t,$(TEST_UNIT_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
 
 test-fast:
 	$(EMACS) $(NEMACS_HOST_TEST_PRELUDE) \
-		-L src -L test -L demo -L scripts $(NELISP_LOAD_PATH) \
+		$(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo -L scripts $(NELISP_LOAD_PATH) \
 		$(foreach t,$(TEST_FAST_FILES),-l $(t)) \
 		-f ert-run-tests-batch-and-exit
 
@@ -1672,7 +1703,7 @@ gate-nemacs-complete: test-fast nemacs-gui-keymap-coverage gui-bridge-runtime-in
 test-nemacs-gui-bridge:
 	test -x "$(NELISP_BIN)"
 	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
-		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		-f ert-run-tests-batch-and-exit
 
@@ -1689,21 +1720,21 @@ NEMACS_GUI_BRIDGE_SLOW_SELECTOR ?= (or $(NEMACS_GUI_BRIDGE_SLOW_TESTS))
 test-nemacs-gui-bridge-gate:
 	test -x "$(NELISP_BIN)"
 	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
-		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_GATE_SELECTOR)))'
 
 test-nemacs-gui-bridge-slow:
 	test -x "$(NELISP_BIN)"
 	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
-		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
 
 test-nemacs-gui-bridge-slow-profile:
 	test -x "$(NELISP_BIN)"
 	NEMACS_GUI_BRIDGE_PROFILE=1 NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
-		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_SLOW_SELECTOR)))'
 
@@ -1726,7 +1757,7 @@ nemacs-gui-bridge-run-shape:
 test-nemacs-gui-bridge-select:
 	test -x "$(NELISP_BIN)"
 	NEMACS_RUN_GUI_BRIDGE=1 NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
-		$(EMACS) -L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
 		--eval '(ert-run-tests-batch-and-exit (quote $(NEMACS_GUI_BRIDGE_TEST_SELECTOR)))'
 
@@ -1734,14 +1765,14 @@ test-nemacs-server-client:
 	test -x "$(NELISP_BIN)"
 	timeout $(NEMACS_SERVER_CLIENT_TIMEOUT) env NELISP="$(abspath $(NELISP_BIN))" \
 		$(EMACS) --eval '(setq load-prefer-newer t)' \
-		-L src -L test -L scripts $(NELISP_LOAD_PATH) \
+		$(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts $(NELISP_LOAD_PATH) \
 		-l test/emacs-server-client-test.el \
 		-f ert-run-tests-batch-and-exit
 
 verify-production-runtime-path: build-nelisp-bootstrap nemacs-library-package-scaffold nemacs-library-app-scaffold
 	$(EMACS) -Q -L scripts \
 		--eval '(setq verify-production-runtime-path-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
-		--eval '(setq verify-production-runtime-path-main "$(abspath src/nemacs-main.el)")' \
+		--eval '(setq verify-production-runtime-path-main "$(abspath packages/nelisp-emacs-app-gui/src/nemacs-main.el)")' \
 		--eval '(setq verify-production-runtime-path-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-summary-output "$(abspath $(NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY))")' \
@@ -1753,7 +1784,7 @@ verify-nemacs-daily-driver: verify-production-runtime-path
 
 SOAK_ITER ?= 20
 soak:
-	@$(EMACS) -L src $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER))) (p (standalone-soak-process)) (s (standalone-soak-project-scan "src"))) (princ (standalone-soak-report-string r)) (terpri) (princ (format "process: ran=%s ok=%s\n" (plist-get p :ran) (plist-get p :ok))) (princ (format "project-scan src: files=%s dirs=%s\n" (plist-get s :files) (plist-get s :dirs))) (kill-emacs (if (and (= 0 (plist-get r :errors)) (or (not (plist-get p :ran)) (plist-get p :ok))) 0 1)))'
+	@$(EMACS) $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) --eval "(require 'standalone-soak)" --eval '(let ((r (standalone-soak-run $(SOAK_ITER))) (p (standalone-soak-process)) (s (standalone-soak-project-scan "src"))) (princ (standalone-soak-report-string r)) (terpri) (princ (format "process: ran=%s ok=%s\n" (plist-get p :ran) (plist-get p :ok))) (princ (format "project-scan src: files=%s dirs=%s\n" (plist-get s :files) (plist-get s :dirs))) (kill-emacs (if (and (= 0 (plist-get r :errors)) (or (not (plist-get p :ran)) (plist-get p :ok))) 0 1)))'
 
 nemacs-gui-keymap-coverage:
 	mkdir -p "$(BUILD_DIR)"
@@ -1812,7 +1843,7 @@ nemacs-ownership-coverage:
 		-f nemacs-ownership-coverage-batch
 
 gate5:
-	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		-L $(NELISP_ROOT)/src \
 		-L $(NELISP_ROOT)/lisp \
 		-l scripts/nemacs-artifact-gate5.el \
@@ -1820,7 +1851,7 @@ gate5:
 		-f ert-run-tests-batch-and-exit
 
 gate6:
-	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		$(NELISP_LOAD_PATH) \
 		-L $(NELISP_ROOT)/lisp \
 		-l scripts/nemacs-artifact-gate6.el \
@@ -1828,7 +1859,7 @@ gate6:
 		-f ert-run-tests-batch-and-exit
 
 vendor-nelc-cache:
-	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		-L $(NELISP_ROOT)/lisp \
 		-L $(NELISP_ROOT)/src \
 		-l scripts/nemacs-vendor-cache.el \
@@ -1836,7 +1867,7 @@ vendor-nelc-cache:
 		-f ert-run-tests-batch-and-exit
 
 vendor-nelc-cache-set:
-	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L test \
+	NEMACS_NELISP_ROOT="$(abspath $(NELISP_ROOT))" $(EMACS) -Q -L scripts -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		-L $(NELISP_ROOT)/lisp \
 		-L $(NELISP_ROOT)/src \
 		-l scripts/nemacs-vendor-cache-set.el \
@@ -1844,18 +1875,18 @@ vendor-nelc-cache-set:
 		-f ert-run-tests-batch-and-exit
 
 test-redisplay-core-smoke:
-	$(EMACS) -L src -L scripts \
+	$(EMACS) $(NELISP_LOAD_PATH) -L scripts \
 		-l scripts/emacs-redisplay-core-smoke.el \
 		-f ert-run-tests-batch-and-exit
 
 # Standalone sync process gateway smoke for Magit/Tramp prerequisites:
 # `call-process' inserts output, preserves non-zero exit status, supports
 # explicit buffer destinations, and can run `git --version'.
-proc-smoke: standalone-reader-passthrough
+proc-smoke: standalone-reader-passthrough doc211-package-source-root
 	test -x "$(NELISP_BIN)"
 	@out="$$(timeout $(NELISP_BOOT_TIMEOUT) env \
-		NEMACS_PROCESS_SRC="$(abspath src)" \
-		"$(NELISP_BIN)" --load "$(abspath test/nemacs-process-sync-smoke.el)" 2>&1)"; \
+		NEMACS_PROCESS_SRC="$(abspath $(NEMACS_MERGED_SRC))" \
+		"$(NELISP_BIN)" --load "$(abspath test/nelisp-emacs-lib/nemacs-process-sync-smoke.el)" 2>&1)"; \
 	printf '%s\n' "$$out"; \
 	if printf '%s\n' "$$out" | grep -q '^PROC-SMOKE-RESULT: PASS$$'; then \
 	  echo "[proc-smoke] PASS"; \
@@ -1908,7 +1939,7 @@ test-nemacs-process-bidi-smoke: standalone-reader-passthrough
 # implementation plan treats as primary); CI-safe, no sshd required.
 tramp-stub-smoke:
 	$(EMACS) --eval '(setq load-prefer-newer t)' \
-		-L src -L test \
+		$(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		-l test/nemacs-tramp-stub-ssh-test.el \
 		-f ert-run-tests-batch-and-exit
 
@@ -1920,7 +1951,7 @@ tramp-stub-smoke:
 # is not configured.
 tramp-localhost-smoke:
 	$(EMACS) --eval '(setq load-prefer-newer t)' \
-		-L src -L test \
+		$(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) \
 		-l test/nemacs-tramp-localhost-smoke.el \
 		-f ert-run-tests-batch-and-exit
 
@@ -1947,14 +1978,14 @@ doctor:
 nemacs-cold-image-policy-smoke:
 	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
-		sh test/nemacs-cold-image-policy-smoke.sh
+		sh test/nelisp-emacs-lib/nemacs-cold-image-policy-smoke.sh
 
 .PHONY: nemacs-cold-image
 nemacs-cold-image: build-nelisp-bootstrap
 	NELISP_HOME="$(abspath $(NELISP_ROOT))" \
 		NEMACS_NELISP="$(abspath $(NELISP_BIN))" \
 		NEMACS_COLD_BUILD=1 \
-		./bin/nemacs --driver=nelisp --batch --no-banner \
+		./nelisp-emacs-lib/bin/nemacs --driver=nelisp --batch --no-banner \
 		--eval '(princ "cold-image=ready\n")'
 
 # How much of each provided feature actually exists.  `load' stops on an error
@@ -1980,13 +2011,18 @@ real-init-audit: build-nelisp-bootstrap
 
 NELISP_BOOTSTRAP_VENDOR_ROOT = $(if $(NELISP_BOOTSTRAP_VENDOR_DIR),$(NELISP_BOOTSTRAP_VENDOR_DIR),vendor)
 NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-api emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
+NELISP_EMACS_API_SRC_FILES = $(shell find packages/nelisp-emacs-*/src -type f -name '*.el' -print 2>/dev/null) packages/nl-ffi/src/nl-ffi-memory.el
+NELISP_BOOTSTRAP_SOURCE_ROOT = build/doc211-bootstrap-root
+NELISP_CONSUMER_VENDOR_INPUTS = $(shell find vendor/compat vendor/cond-let vendor/dash.el vendor/llama vendor/magit vendor/transient vendor/with-editor vendor/emacs-etc -type f -print 2>/dev/null)
 
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
-$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
-	$(EMACS) -Q -L src -L scripts $(NELISP_LOAD_PATH) \
+$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/doc211-bootstrap-source-root.sh $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
+	@bash scripts/doc211-bootstrap-source-root.sh "$(abspath $(NELISP_BOOTSTRAP_SOURCE_ROOT))" >/dev/null
+	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L $(NELISP_BOOTSTRAP_SOURCE_ROOT)/src -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \
+		--eval '(setq nelisp-bootstrap-repo-root "$(abspath $(NELISP_BOOTSTRAP_SOURCE_ROOT))")' \
 		-l scripts/build-nelisp-bootstrap.el \
 		-f nelisp-bootstrap-build-batch
 
@@ -1995,7 +2031,7 @@ $(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(SRC_FILES) $(NEL
 compile-nelisp-bootstrap-artifact: $(NEMACS_BOOTSTRAP_ARTIFACT)
 	@test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el" || { \
 		rm -f "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
-		$(MAKE) "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
+		$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_BOOTSTRAP_ARTIFACT)"; \
 	}
 	test -r "$(NEMACS_BOOTSTRAP_ARTIFACT).manifest.el"
 
@@ -2064,7 +2100,7 @@ $(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME
 	mv "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE).tmp" "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE)"
 
 bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
-	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_VENDOR_CORE_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -2083,20 +2119,20 @@ bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-a
 # mirrors bake-vendor-core-runtime-image's mechanism (extend-runtime-image
 # on the base batch image), calling
 # nemacs-runtime-image-preload-magit-extension.
-$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el
+$(NEMACS_MAGIT_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-magit-bridge-bundle.el packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
 	NEMACS_MAGIT_BUNDLE_TRACE_FORMS="$(NEMACS_MAGIT_BUNDLE_TRACE_FORMS)" $(EMACS) -Q -L scripts \
 		--eval '(setq nelisp-emacs-magit-bridge-bundle-output-file "$(abspath $(NEMACS_MAGIT_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-magit-bridge-bundle.el \
 		-f nelisp-emacs-magit-bridge-bundle-build-batch
 
-$(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el src/nelisp-emacs-org-bridge.el scripts/standalone-source-normalize.el
-	$(EMACS) --batch -Q -L src -L scripts \
+$(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el scripts/standalone-source-normalize.el $(NELISP_BOOTSTRAP_VENDOR_INPUTS) $(NELISP_CONSUMER_VENDOR_INPUTS)
+	$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nelisp-emacs-org-bridge-bundle-output-file "$(abspath $(NEMACS_ORG_BRIDGE_BUNDLE))")' \
 		-l scripts/build-nelisp-emacs-org-bridge-bundle.el \
 		-f nelisp-emacs-org-bridge-bundle-build-batch
 
 bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-scaffold nemacs-library-app-scaffold
-	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) "$(NEMACS_RUNTIME_IMAGE)"
+	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_MAGIT_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -2325,7 +2361,7 @@ test-nelisp-ert: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		-f ert-run-tests-batch-and-exit
 
@@ -2336,7 +2372,7 @@ test-nelisp-project-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/project-callable$$")'
 
@@ -2347,7 +2383,7 @@ test-nelisp-xref-imenu-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/imenu-xref-callable$$")'
 
@@ -2358,7 +2394,7 @@ test-nelisp-help-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/help-callable$$")'
 
@@ -2369,7 +2405,7 @@ test-nelisp-dired-workflow-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/dired-workflow-callable$$")'
 
@@ -2380,7 +2416,7 @@ test-nelisp-minibuffer-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/minibuffer-callable$$")'
 
@@ -2391,7 +2427,7 @@ test-nelisp-vc-workflow-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/vc-workflow-callable$$")'
 
@@ -2402,7 +2438,7 @@ test-nelisp-shell-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/shell-callable$$")'
 
@@ -2413,7 +2449,7 @@ test-nelisp-eshell-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/eshell-callable$$")'
 
@@ -2424,7 +2460,7 @@ test-nelisp-compile-smoke: bake-runtime-image
 		NEMACS_NELISP_STACK="$(NELISP_STACK_LIMIT)" \
 		NEMACS_RUNTIME_IMAGE="$(abspath $(NEMACS_RUNTIME_IMAGE))" \
 		NEMACS_RUN_NELISP_BOOTSTRAP=1 \
-		$(EMACS) --batch -Q -L src -L test -L demo $(NELISP_LOAD_PATH) \
+		$(EMACS) --batch -Q $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l test/nemacs-bootstrap-nelisp-test.el \
 		--eval '(ert-run-tests-batch-and-exit "nemacs-bootstrap-nelisp-test/compile-callable$$")'
 
@@ -2674,32 +2710,25 @@ verify-vendor-core: build-nelisp-bootstrap
 		./scripts/verify-vendor-core-repl.sh
 
 bench:
-	$(EMACS) -L src -L bench $(NELISP_LOAD_PATH) \
+	$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/nelisp-emacs-lib/bench $(NELISP_LOAD_PATH) \
 		-l bench-redisplay.el \
 		-f bench-redisplay-run-all
 
 demo:
-	$(EMACS) -L src -L demo $(NELISP_LOAD_PATH) \
+	$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l phase1-close-demo \
 		--eval "(prin1 (phase1-close-demo-run))" \
 		--eval "(terpri)"
 
 demo-phase2:
-	$(EMACS) -L src -L demo $(NELISP_LOAD_PATH) \
+	$(EMACS) $(NELISP_LOAD_PATH) -L $(NELISP_ROOT)/nelisp-emacs-lib/demo $(NELISP_LOAD_PATH) \
 		-l phase2-close-demo \
 		--eval "(prin1 (phase2-close-demo-run))" \
 		--eval "(terpri)"
 
-# Layer-2 self-containment: fetch + build NeLisp into vendor/nelisp/.
-# Pure-Elisp NeLisp checkouts provide target/nelisp.
+# NeLisp is built from this repository; core build targets live in the root Makefile.
 nelisp:
-	bin/build-nelisp
-
-nelisp-rebuild:
-	bin/build-nelisp --rebuild
-
-nelisp-clean:
-	rm -rf $(VENDOR_NELISP)
+	$(MAKE) -C "$(NELISP_ROOT)" standalone-reader
 
 elprop:
 	bin/elprop-run

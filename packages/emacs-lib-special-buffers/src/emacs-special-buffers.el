@@ -245,8 +245,13 @@ The result contains `:status', `:buffer', `:buffer-name',
       (unless (equal text trimmed)
         (emacs-special-buffers--replace-buffer-text buffer trimmed)))))
 
+(defvar emacs-special-buffers-echo-message nil
+  "Current interactive echo-area text; nil means the area is clear.")
+
 (defun emacs-special-buffers--set-echo-message (text)
   "Publish TEXT to known echo-area state holders."
+  (setq emacs-special-buffers-echo-message
+        (and text (> (length text) 0) text))
   (when (boundp 'nemacs-next-session-echo-message)
     (setq nemacs-next-session-echo-message (or text ""))))
 
@@ -267,23 +272,29 @@ The result contains `:status', `:buffer', `:buffer-name',
 
 (defun emacs-special-buffers-message (format-string &rest args)
   "Echo and record formatted message in `messages-buffer-name'.
-Nil FORMAT-STRING clears the echo area and does not log."
-  (if (null format-string)
-      (progn
-        (emacs-special-buffers--set-echo-message "")
-        nil)
-    (let ((text (apply #'format format-string args)))
-      (emacs-special-buffers--set-echo-message text)
-      (unless (null message-log-max)
-        (emacs-special-buffers-append-to-buffer
-         messages-buffer-name
-         (concat text "\n"))
-        (emacs-special-buffers--trim-message-log))
-      (when (emacs-special-buffers--standalone-batch-p)
-        (if (fboundp 'nelisp--write-stderr-line)
-            (nelisp--write-stderr-line text)
-          (nelisp--write-stdout-bytes (concat "nemacs: " text "\n"))))
-      text)))
+Nil or empty text clears the echo area and does not log.  In batch mode
+both emit a blank stderr line.  `inhibit-message' suppresses display and
+stderr output independently of `message-log-max'."
+  (let ((text (and format-string
+                   (apply #'format-message format-string args))))
+    (unless (and (boundp 'inhibit-message) inhibit-message)
+      (emacs-special-buffers--set-echo-message (or text "")))
+    (when (and text (> (length text) 0) message-log-max)
+      (emacs-special-buffers-append-to-buffer
+       messages-buffer-name
+       (concat text "\n"))
+      (emacs-special-buffers--trim-message-log))
+    (when (and (emacs-special-buffers--standalone-batch-p)
+               (not (and (boundp 'inhibit-message) inhibit-message)))
+      (if (fboundp 'nelisp--write-stderr-line)
+          (progn
+            (when (and (boundp 'emacs-batch-stdio-pending-newline)
+                       emacs-batch-stdio-pending-newline)
+              (setq emacs-batch-stdio-pending-newline nil)
+              (nelisp--write-stderr-line ""))
+            (nelisp--write-stderr-line (or text "")))
+        (nelisp--write-stdout-bytes (concat "nemacs: " (or text "") "\n"))))
+    text))
 
 (defun emacs-special-buffers-display-warning
     (type message &optional level buffer-name)

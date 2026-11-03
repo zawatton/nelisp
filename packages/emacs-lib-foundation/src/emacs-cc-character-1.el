@@ -5,23 +5,31 @@
     "Resolve modifiers in the character CHAR.
 The value is a character with modifiers resolved into the character
 code.  Unresolved modifiers are kept in the value."
-    (unless (integerp char)
+    (unless (fixnump char)
       (signal 'wrong-type-argument (list 'fixnump char)))
-    (let* ((control #x0400000)
-           (shift #x2000000)
-           (meta #x0800000)
-           (bits (logand char (logior control shift meta)))
-           (base (logand char (lognot (logior control shift)))))
-      (when (/= 0 (logand bits shift))
-        (setq base (upcase base)))
-      (when (/= 0 (logand bits control))
-        (setq base (cond ((= base ?\s) 0) ((= base ??) 127)
-                         ((and (>= base ?@) (<= base ?_))
-                          (logand base 31))
-                         ((and (>= base ?a) (<= base ?z))
-                          (logand base 31))
-                         (t base))))
-      (logior base (logand bits meta)))))
+    (let ((control #x4000000) (shift #x2000000) (modifiers #xfc00000))
+      ;; Reflect Shift/Control only into ASCII.  Preserve all other modifier
+      ;; bits and unresolved modifiers, matching character.c.
+      (when (<= (logand char (lognot modifiers)) 127)
+        (when (/= 0 (logand char shift))
+          (let ((byte (logand char 255)))
+            (cond
+             ((and (>= byte ?A) (<= byte ?Z))
+              (setq char (logand char (lognot shift))))
+             ((and (>= byte ?a) (<= byte ?z))
+              (setq char (- (logand char (lognot shift)) 32)))
+             ((<= (logand char (lognot modifiers)) 32)
+              (setq char (logand char (lognot shift)))))))
+        (when (/= 0 (logand char control))
+          (let ((byte (logand char 255)) (base (logand char 127)))
+            (cond
+             ((= byte 32) (setq char (logand char (lognot (logior 127 control)))))
+             ((= byte 63)
+              (setq char (logior 127 (logand char (lognot (logior 127 control))))))
+             ((or (and (>= (logand char 95) ?A) (<= (logand char 95) ?Z))
+                  (and (>= base ?@) (<= base ?_)))
+              (setq char (logand char (logior 31 (lognot (logior 127 control))))))))))
+      char)))
 
 (unless (fboundp 'get-byte)
   (defun get-byte (&optional position string)

@@ -4,6 +4,59 @@
 (defvar emacs-cc-macros-1--events nil)
 (defvar last-kbd-macro nil)
 (defvar defining-kbd-macro nil)
+(defvar executing-kbd-macro nil)
+(defvar auto-composition-mode t)
+(defvar disable-point-adjustment nil)
+(defvar global-disable-point-adjustment nil)
+
+(defun emacs-cc-macros-1--finish-command (buffer previous-point)
+  "Perform the automatic-composition line scan after a macro command.
+GNU command_loop_1 checks composition at the previous point after an edit.
+The check scans back to the line beginning even when no composition exists;
+this lazily creates the buffer's newline cache.  Keep point unchanged."
+  (when (and (eq buffer (current-buffer))
+             (eq buffer (window-buffer (selected-window)))
+             (/= previous-point (point))
+             enable-multibyte-characters auto-composition-mode)
+    (let ((position (cond ((and (not disable-point-adjustment)
+                                (not global-disable-point-adjustment)
+                                (> previous-point (point-min))
+                                (< previous-point (point-max)))
+                           previous-point)
+                          ((and (> (point) (point-min))
+                                (< (point) (point-max)))
+                           (point)))))
+      (when (and position (not (get-text-property position 'composition)))
+        (save-excursion
+          (goto-char position)
+          (line-beginning-position))))))
+
+(defun emacs-cc-macros-1--execute-events (macro)
+  "Dispatch MACRO through the shared key reader and command primitives."
+  (let ((unread-command-events (append macro nil))
+        (prefix-arg nil))
+    (set-buffer (window-buffer (selected-window)))
+    (while unread-command-events
+      (set-buffer (window-buffer (selected-window)))
+      (let* ((keys (read-key-sequence-vector nil))
+             (command (key-binding keys))
+             (buffer (current-buffer))
+             (previous-point (point)))
+        ;; The headless bootstrap has an empty global map until editor
+        ;; initialization.  Supply its usual printable-character binding
+        ;; without mutating that map; explicit bindings still win.
+        (when (and (null command) (= (length keys) 1)
+                   (characterp (aref keys 0)) (>= (aref keys 0) 32)
+                   (/= (aref keys 0) 127))
+          (setq command 'self-insert-command))
+        (setq this-command command real-this-command command
+              last-command-event (aref keys (1- (length keys)))
+              disable-point-adjustment nil)
+        (run-hooks 'pre-command-hook)
+        (when this-command (command-execute this-command))
+        (run-hooks 'post-command-hook)
+        (setq last-command this-command)
+        (emacs-cc-macros-1--finish-command buffer previous-point)))))
 
 (unless (fboundp 'execute-kbd-macro)
   (defun execute-kbd-macro (macro &optional count loopfunc)
@@ -19,9 +72,11 @@ The selected-window buffer is made current before execution."
         (setq macro (and macro (symbol-function macro))))
       (unless (or (stringp macro) (vectorp macro))
         (error "Keyboard macros must be strings or vectors"))
-      (let ((n (or count 1)) (i 0))
+      (let ((n (or count 1)) (i 0)
+            (executing-kbd-macro macro))
         (while (and (or (= n 0) (< i n))
                     (or (null loopfunc) (funcall loopfunc)))
+          (emacs-cc-macros-1--execute-events macro)
           (setq i (1+ i))))
       nil)))
 
@@ -32,7 +87,7 @@ The selected-window buffer is made current before execution."
     (setq emacs-cc-macros-1--recording t
           defining-kbd-macro t
           emacs-cc-macros-1--events (if append (append last-kbd-macro nil) nil))
-    (message "Defining kbd macro...")
+    (message (if append "Appending to kbd macro..." "Defining kbd macro..."))
     t))
 
 (unless (fboundp 'store-kbd-macro-event)
@@ -53,6 +108,7 @@ The selected-window buffer is made current before execution."
     "Finish defining a keyboard macro."
     (unless emacs-cc-macros-1--recording (error "Not defining kbd macro"))
     (setq emacs-cc-macros-1--recording nil defining-kbd-macro nil)
+    (message "Keyboard macro defined")
     (if (and repeat (> repeat 1))
         (execute-kbd-macro last-kbd-macro (1- repeat) loopfunc)
       nil)))

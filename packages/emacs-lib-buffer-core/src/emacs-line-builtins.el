@@ -34,6 +34,9 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- line/point motion must operate on the ec-buffer layer.
 ;;; Code:
 
+(defvar auto-window-vscroll t
+  "Non-nil means line motion can vertically scroll unusually tall lines.")
+
 (require 'nelisp-emacs-compat)
 (require 'emacs-buffer-builtins)
 
@@ -214,6 +217,26 @@ Matches Emacs C semantics where moving past the last `\\n' onto the
 final line (or to point-max from a line with no trailing newline)
 counts as 1 line consumed."
     (emacs-line-forward-line-direct n)))
+
+;; The standalone's prebound motion closure counts an attempted forward move
+;; from an unterminated final line as successful.  GNU leaves point at EOB and
+;; returns the full number of lines still to move in this case.  Preserve the
+;; existing motion implementation for every other starting position.
+(when (and (fboundp 'nl-write-file)
+           (fboundp 'forward-line)
+           (not (get 'forward-line 'emacs-line-builtins-eob-corrected)))
+  (let ((original (symbol-function 'forward-line)))
+    (fset 'forward-line
+          (lambda (&optional n)
+            (let ((count (or n 1)))
+              (if (and (integerp count)
+                       (> count 0)
+                       (= (point) (point-max))
+                       (or (= (point-min) (point-max))
+                           (not (eq (char-before) ?\n))))
+                  count
+                (funcall original n)))))
+    (put 'forward-line 'emacs-line-builtins-eob-corrected t)))
 
 ;;;; --- line-number-at-pos ---------------------------------------------
 

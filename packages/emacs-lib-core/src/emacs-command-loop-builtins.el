@@ -57,26 +57,57 @@
 
 (defun emacs-command-loop-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (not (boundp 'emacs-version))
+  (or (and (memq symbol '(sit-for sleep-for input-pending-p kill-emacs))
+           (fboundp 'nelisp--write-stdout-bytes))
+      (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
       (not (fboundp symbol))))
 
 (defun emacs-command-loop-kill-emacs (&optional exit-code)
-  "Terminate standalone NeLisp through its `exit' primitive.
+  "Restore terminal input and terminate standalone NeLisp.
 
 Host Emacs keeps its native `kill-emacs'.  This helper is installed as
-`kill-emacs' only when the unprefixed name is absent or still points at
-an `emacs-stub-bulk' placeholder."
+`kill-emacs' in standalone, or when the name is absent or a bulk stub."
   (let ((code (or exit-code 0)))
     (unless (and (integerp code) (<= 0 code) (<= code 255))
       (setq code 1))
-    (exit code)))
+    (unwind-protect
+        (when (boundp 'kill-emacs-hook) (run-hooks 'kill-emacs-hook))
+      (when (fboundp 'terminal-raw-mode-leave) (terminal-raw-mode-leave)))
+    (if (fboundp 'nelisp--exit-process)
+        (nelisp--exit-process code)
+      (exit code))))
+
+;; The headless prelude provides these names but cannot see frontend input
+;; or restore the library's raw-mode state before its immediate process exit.
+;; These are deliberate standalone compatibility shims; host Emacs wins.
+(when (emacs-command-loop-builtins--install-function-p 'sit-for)
+  (defalias 'sit-for #'emacs-command-loop-sit-for))
+
+(when (emacs-command-loop-builtins--install-function-p 'sleep-for)
+  (defalias 'sleep-for #'emacs-command-loop-sleep-for))
+
+(when (emacs-command-loop-builtins--install-function-p 'input-pending-p)
+  (defalias 'input-pending-p #'emacs-command-loop-input-pending-p))
+
+(defun emacs-command-loop-builtins--read-input (reader prompt inherit seconds)
+  "Call READER, returning nil on timeout while preserving its no-input signal."
+  (condition-case err
+      (funcall reader prompt inherit seconds)
+    (emacs-command-loop-no-input
+     (unless seconds (signal (car err) (cdr err))))))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-event)
-  (defalias 'read-event #'emacs-command-loop-read-event))
+  (defun read-event (&optional prompt inherit-input-method seconds)
+    "Read an event, returning nil when SECONDS expires."
+    (emacs-command-loop-builtins--read-input
+     #'emacs-command-loop-read-event prompt inherit-input-method seconds)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-char)
-  (defalias 'read-char #'emacs-command-loop-read-char))
+  (defun read-char (&optional prompt inherit-input-method seconds)
+    "Read a character, returning nil when SECONDS expires."
+    (emacs-command-loop-builtins--read-input
+     #'emacs-command-loop-read-char prompt inherit-input-method seconds)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-command)
   (defalias 'read-command #'emacs-command-loop-read-command))
@@ -89,9 +120,9 @@ an `emacs-stub-bulk' placeholder."
     #'emacs-command-loop-this-command-keys-vector))
 
 (when (emacs-command-loop-builtins--install-function-p 'this-single-command-keys)
-  ;; MVP: no menu-event distinction; same as `this-command-keys'.
-  (defalias 'this-single-command-keys
-    #'emacs-command-loop-this-command-keys))
+  (defun this-single-command-keys ()
+    "Return the last command's key sequence as a vector of events."
+    (emacs-command-loop-this-command-keys-vector)))
 
 (when (emacs-command-loop-builtins--install-function-p 'this-single-command-raw-keys)
   (defalias 'this-single-command-raw-keys
@@ -105,15 +136,71 @@ an `emacs-stub-bulk' placeholder."
   (defalias 'recent-keys #'emacs-command-loop-recent-keys))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence)
-  (defalias 'read-key-sequence
-    #'emacs-command-loop-read-key-sequence))
+  (defun read-key-sequence (prompt &optional continue-echo dont-downcase-last
+                                  can-return-switch-frame cmd-loop
+                                  disable-text-conversion)
+    "Read a complete key sequence, displaying PROMPT when non-nil."
+    (unless (or (null prompt) (stringp prompt))
+      (signal 'wrong-type-argument (list 'stringp prompt)))
+    (emacs-command-loop-read-key-sequence
+     prompt continue-echo dont-downcase-last can-return-switch-frame cmd-loop)))
 
 (when (emacs-command-loop-builtins--install-function-p 'read-key-sequence-vector)
-  (defalias 'read-key-sequence-vector
-    #'emacs-command-loop-read-key-sequence-vector))
+  (defun read-key-sequence-vector (prompt &optional continue-echo
+                                         dont-downcase-last
+                                         can-return-switch-frame cmd-loop
+                                         disable-text-conversion)
+    "Read a complete key sequence and return it as a vector of events."
+    (unless (or (null prompt) (stringp prompt))
+      (signal 'wrong-type-argument (list 'stringp prompt)))
+    (emacs-command-loop-read-key-sequence-vector
+     prompt continue-echo dont-downcase-last can-return-switch-frame cmd-loop)))
+
+;; The fixed reader does not expose GNU 31 nadvice oclosure metadata.
+;; Keep its ordinary recognition, adding the shared advice composition path.
+(defvar emacs-command-loop-builtins--native-commandp nil)
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (unless emacs-command-loop--native-interactive-form
+    (setq emacs-command-loop--native-interactive-form
+          (symbol-function 'interactive-form)))
+  (unless emacs-command-loop-builtins--native-commandp
+    (setq emacs-command-loop-builtins--native-commandp (symbol-function 'commandp)))
+  (defalias 'interactive-form #'emacs-command-loop--interactive-form)
+  (defun commandp (object &optional for-call-interactively)
+    "Recognize commands, including GNU nadvice's composed interactive spec."
+    (or (funcall emacs-command-loop-builtins--native-commandp
+                 object for-call-interactively)
+        (emacs-command-loop--commandp object))))
 
 (when (emacs-command-loop-builtins--install-function-p 'call-interactively)
-  (defalias 'call-interactively #'emacs-command-loop-call-interactively))
+  (defun call-interactively (function &optional record-flag keys)
+    "Call FUNCTION using its interactive specification and current prefix.
+When RECORD-FLAG is non-nil, record the invocation in `command-history'.
+KEYS, when non-nil, must be a vector of invoking events."
+    (unless (or (null keys) (vectorp keys))
+      (signal 'wrong-type-argument (list 'vectorp keys)))
+    (unless (emacs-command-loop--commandp function)
+      (signal 'wrong-type-argument (list 'commandp function)))
+    (let* ((form (emacs-command-loop--interactive-form function))
+           (emacs-command-loop--current-prefix-arg current-prefix-arg)
+           (args (emacs-command-loop--build-args (cadr form))))
+      (unless (listp args)
+        (signal 'wrong-type-argument (list 'listp args)))
+      (when record-flag
+        (let ((entry (list function))
+              (rest args))
+          (while rest
+            (let ((arg (car rest)))
+              (setq entry
+                    (append entry
+                            (list (if (or (consp arg)
+                                          (and (symbolp arg) arg
+                                               (not (eq arg t))))
+                                      (list 'quote arg)
+                                    arg)))))
+            (setq rest (cdr rest)))
+          (setq command-history (cons entry command-history))))
+      (apply #'funcall-interactively function args))))
 
 (when (emacs-command-loop-builtins--install-function-p 'funcall-interactively)
   (defalias 'funcall-interactively #'emacs-command-loop-funcall-interactively))
@@ -154,8 +241,12 @@ an `emacs-stub-bulk' placeholder."
   (defalias 'keyboard-quit #'emacs-command-loop-keyboard-quit))
 
 (when (emacs-command-loop-builtins--install-function-p 'exit-recursive-edit)
-  (defalias 'exit-recursive-edit
-    #'emacs-command-loop-exit-recursive-edit))
+  (defun exit-recursive-edit ()
+    "Exit the innermost recursive edit, or signal a user error."
+    (interactive)
+    (if (zerop emacs-command-loop--recursion-depth)
+        (signal 'user-error '("No recursive edit is in progress"))
+      (emacs-command-loop-exit-recursive-edit))))
 
 (when (emacs-command-loop-builtins--install-function-p 'kill-emacs)
   (defalias 'kill-emacs #'emacs-command-loop-kill-emacs))
@@ -208,18 +299,12 @@ idempotent success value expected by `nemacs-main'."
 
 ;;;; --- variable bridges ----------------------------------------------
 
-(unless (boundp 'this-command)
-  (defvar this-command nil
-    "Phase B.1 bridge: the command being executed.  See
-`emacs-command-loop--this-command'."))
-
-(unless (boundp 'last-command)
-  (defvar last-command nil
-    "Phase B.1 bridge: the previously executed command."))
-
-(unless (boundp 'real-this-command)
-  (defvar real-this-command nil
-    "Phase B.1 bridge: the command actually dispatched (= pre-remap)."))
+(defvar this-command nil
+  "Command being dispatched; hooks may replace it for command history.")
+(defvar last-command nil
+  "Command completed by the preceding command-loop iteration.")
+(defvar real-this-command nil
+  "Selected command, preserved when hooks replace `this-command'.")
 
 (unless (boundp 'last-command-event)
   (defvar last-command-event nil
@@ -263,6 +348,26 @@ secondary source after `emacs-command-loop--unread-events' is empty."))
 (unless (boundp 'pre-command-hook)
   (defvar pre-command-hook nil
     "Phase B.4 bridge: hook run before each command-loop dispatch."))
+
+(unless (fboundp 'tooltip-hide)
+  (defvar tooltip-timeout-id nil)
+  (defvar tooltip-hide-time nil)
+  (defun tooltip-hide (&optional _ignored-arg)
+    "Hide a tooltip, clearing its echo-area fallback on non-graphic frames."
+    (when (timerp tooltip-timeout-id)
+      (cancel-timer tooltip-timeout-id)
+      (setq tooltip-timeout-id nil))
+    (if (display-graphic-p)
+        (when (and (fboundp 'x-hide-tip) (x-hide-tip))
+          (setq tooltip-hide-time (float-time)))
+      (let ((text (current-message)))
+        (message "")
+        (when (and text (not (equal text "")))
+          (setq tooltip-hide-time (float-time))))))
+  ;; GNU's default pre-command hook hides tooltips before every command,
+  ;; including macro commands.  Keep this in the shared loop so binding or
+  ;; removing the hook also suppresses the echo-area clear normally.
+  (add-hook 'pre-command-hook #'tooltip-hide))
 
 (unless (boundp 'post-command-hook)
   (defvar post-command-hook nil

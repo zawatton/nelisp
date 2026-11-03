@@ -28,7 +28,7 @@ If PROCESS is a network or serial process, resume handling of incoming
 traffic."
     (let ((p (emacs-cc-process-1--process process)))
       (if p (if (fboundp 'emacs-process-continue-process)
-                (emacs-process-continue-process p current-group)
+                (progn (emacs-process-continue-process p current-group) process)
               (error "Process %s cannot be continued" (process-name p)))
         (emacs-cc-process-1--signal-process-error process)))))
 
@@ -38,8 +38,8 @@ traffic."
 It shall be the last element in list `interrupt-process-functions'.
 See function `interrupt-process' for more details on usage."
     (let ((p (emacs-cc-process-1--process process)))
-      (if p (if (fboundp 'emacs-process-signal-process)
-                (emacs-process-signal-process p 'SIGINT current-group)
+      (if p (if (fboundp 'emacs-process-send-control-signal)
+                (progn (emacs-process-send-control-signal p 'INT current-group) process)
               (error "Process %s cannot be signaled" (process-name p)))
         (emacs-cc-process-1--signal-process-error process)))))
 
@@ -96,9 +96,16 @@ send the signal.
 This function calls the functions of `interrupt-process-functions' in
 the order of the list, until one of them returns non-nil."
     (let ((p (emacs-cc-process-1--process process)))
-      (if p (if (fboundp 'emacs-process-signal-process)
-                (emacs-process-signal-process p 'SIGINT current-group)
+      (if p (if (fboundp 'emacs-process-send-control-signal)
+                (progn (emacs-process-send-control-signal p 'INT current-group) process)
               (error "Process cannot be interrupted"))
+        (emacs-cc-process-1--signal-process-error process)))))
+
+(unless (fboundp 'stop-process)
+  (defun stop-process (&optional process current-group)
+    "Stop PROCESS without deleting its object or closing its output stream."
+    (let ((p (emacs-cc-process-1--process process)))
+      (if p (progn (emacs-process-send-control-signal p 'TSTP current-group) process)
         (emacs-cc-process-1--signal-process-error process)))))
 
 (unless (fboundp 'list-system-processes)

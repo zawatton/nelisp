@@ -316,6 +316,60 @@
                             (emacs-minibuffer-completing-read
                              "P: " '("apple" "banana") nil t))))))
 
+(ert-deftest emacs-minibuffer-completion-obarray-command-predicate ()
+  (let ((table (make-vector 7 0)))
+    (fset (intern "k2:command" table) '(lambda () (interactive) t))
+    (intern "k2:noncommand" table)
+    (should (equal (emacs-minibuffer-all-completions "k2:" table #'commandp)
+                   '("k2:command")))
+    (should (eq t (emacs-minibuffer-try-completion "k2:command" table #'commandp)))
+    (should (emacs-minibuffer-test-completion "k2:command" table #'commandp))
+    (emacs-minibuffer-test--with-fresh-world
+      (emacs-minibuffer-feed-input "k2:command")
+      (should (equal (emacs-minibuffer-completing-read "M-x " table #'commandp t)
+                     "k2:command")))))
+
+(ert-deftest emacs-minibuffer-completion-alist-predicate-entry ()
+  (should (equal (emacs-minibuffer-all-completions
+                  "" '(("keep" . 1) ("drop" . 2))
+                  (lambda (entry) (= (cdr entry) 1)))
+                 '("keep"))))
+
+(ert-deftest emacs-minibuffer-nested-completion-preserves-outer-request ()
+  (emacs-minibuffer-test--with-fresh-world
+    (let ((nested nil))
+      (setq emacs-minibuffer--read-fn
+            (lambda (&rest _args)
+              (if nested "inner"
+                (setq nested t)
+                (should (equal (emacs-minibuffer-completing-read
+                                "Inner: " '("inner") nil t) "inner"))
+                "outer")))
+      (should (equal (emacs-minibuffer-completing-read
+                      "Outer: " '("outer") nil t) "outer")))))
+
+(ert-deftest emacs-minibuffer-functional-table-exact-test ()
+  (let* ((seen nil)
+         (predicate (lambda (entry) (equal entry "exact")))
+         (table (lambda (input pred action)
+                  (push (list input pred action) seen)
+                  (and (eq action 'lambda) (equal input "exact")
+                       (funcall pred input)))))
+    (should (emacs-minibuffer-test-completion "exact" table predicate))
+    (should (equal (car seen) (list "exact" predicate 'lambda)))
+    (should-not (emacs-minibuffer-test-completion "absent" table predicate))
+    (emacs-minibuffer-test--with-fresh-world
+      (emacs-minibuffer-feed-input "exact")
+      (should (equal (emacs-minibuffer-completing-read
+                      "Exact: " table predicate t) "exact")))))
+
+(ert-deftest emacs-minibuffer-functional-private-command-table ()
+  (let* ((private (make-vector 7 0))
+         (table (lambda (input pred action)
+                  (if (eq action 'metadata) '(metadata (category . command))
+                    (emacs-minibuffer-test-completion input private pred)))))
+    (should-not (emacs-minibuffer-test-completion "forward-char" table #'commandp))))
+
 ;;;; E. minibuffer state / control (6 tests)
 
 (ert-deftest emacs-minibuffer-minibufferp-during-read ()
@@ -1466,5 +1520,102 @@
         (quit (setq caught t)))
       (should caught))))
 
+(ert-deftest emacs-minibuffer-s22-detached-window-preserves-layout ()
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-window--id-counter 0) (emacs-minibuffer--window nil))
+    (emacs-window-layout-frame 80 24 0)
+    (let* ((root (emacs-window-selected-window))
+           (mini (emacs-minibuffer--ensure-window)))
+      (should (= (emacs-window-window-height root) 23))
+      (should (equal (emacs-window-window-edges mini) '(0 23 80 24)))
+      (should (equal (emacs-window-window-list) (list root)))
+      (should (eq mini (emacs-minibuffer--ensure-window)))
+      (emacs-window-split-window root)
+      (should (= (length (emacs-window-window-list)) 2))
+      (should (= (emacs-window-window-height root) 12)))))
+
 (provide 'emacs-minibuffer-test)
 ;;; emacs-minibuffer-test.el ends here
+
+(ert-deftest emacs-minibuffer-live-provider-line-and-default ()
+  "Read GUI/TTY events through the shared loop without a prefilled line queue."
+  (require 'emacs-command-loop)
+  (emacs-minibuffer-test--with-fresh-world
+    (let* ((events (list 1 11 ?a ?b ?c 'left 127 ?X 'end ?d 13))
+           (emacs-command-loop-input-poll-function (lambda (_timeout) (pop events)))
+           (emacs-command-loop--unread-events nil)
+           (unread-command-events nil)
+           (paints 0)
+           (emacs-minibuffer-redisplay-function (lambda () (setq paints (1+ paints)))))
+      (should (equal "aXcd" (emacs-minibuffer-read-string "Live: " "old")))
+      (should (> paints 0)))
+    (let ((emacs-command-loop-input-poll-function (lambda (_timeout) 13))
+          (emacs-command-loop--unread-events nil)
+          (unread-command-events nil))
+      (should (equal "/fixture/" (emacs-minibuffer-read-directory-name
+                                  "Dir: " nil "/fixture/"))))))
+
+(ert-deftest emacs-minibuffer-live-provider-abort-and-queue-priority ()
+  (require 'emacs-command-loop)
+  (emacs-minibuffer-test--with-fresh-world
+    (let ((emacs-command-loop-input-poll-function (lambda (_timeout) 7))
+          (emacs-command-loop--unread-events nil)
+          (unread-command-events nil))
+      (emacs-minibuffer-feed-input "queued")
+      (should (equal "queued" (emacs-minibuffer-read-string "Queue: ")))
+      (should (eq 'quit (condition-case nil
+                            (emacs-minibuffer-read-string "Abort: ")
+                          (quit 'quit)))))
+    (let ((emacs-command-loop-input-poll-function nil))
+      (should-error (emacs-minibuffer-read-string "No provider: ")
+                    :type 'emacs-minibuffer-no-input))))
+
+(ert-deftest emacs-minibuffer-live-provider-visible-buffer-and-unwind ()
+  "The renderer sees the prompt buffer, and quit restores a live mini buffer."
+  (require 'emacs-command-loop)
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-window--id-counter 0))
+    (emacs-minibuffer-test--with-fresh-world
+      (emacs-window-layout-frame 80 24 0)
+      (let* ((root (emacs-window-selected-window))
+             (mini (emacs-minibuffer--ensure-window))
+             (original (nelisp-ec-generate-new-buffer " *Original minibuffer*"))
+             (emacs-command-loop--unread-events nil)
+             (unread-command-events nil)
+             (events '(?x 7))
+             (frames nil)
+             (emacs-command-loop-input-poll-function (lambda (_timeout) (pop events)))
+             (emacs-minibuffer-redisplay-function
+              (lambda ()
+                (let ((buffer (emacs-window-window-buffer mini)))
+                  (should (eq mini (emacs-window-selected-window)))
+                  (should (eq buffer (emacs-minibuffer--current-buffer)))
+                  (push (nelisp-ec-with-current-buffer buffer
+                          (nelisp-ec-buffer-string)) frames)))))
+        (emacs-window-set-window-buffer mini original)
+        (should (eq 'quit (condition-case nil
+                              (emacs-minibuffer-read-string "Live: ")
+                            (quit 'quit))))
+        (should (member "Live: x" frames))
+        (should (eq root (emacs-window-selected-window)))
+        (should (eq original (emacs-window-window-buffer mini)))
+        (should-not (nelisp-ec-buffer-killed-p original))
+        (should-not (emacs-minibuffer-active-minibuffer-window))))))
+
+(ert-deftest emacs-minibuffer-active-window-is-in-shared-redisplay-view ()
+  (let ((emacs-window--root nil) (emacs-window--selected nil)
+        (emacs-minibuffer--window nil) (emacs-minibuffer--depth 0)
+        (emacs-minibuffer--buffers nil) (emacs-minibuffer--prompts nil)
+        (emacs-minibuffer--prompt-ends nil)
+        (emacs-minibuffer--input-queue '("daily.txt"))
+        (emacs-minibuffer--read-fn nil) (observed nil))
+    (let ((emacs-minibuffer--read-fn
+           (lambda (&rest _)
+             (setq observed t)
+             (should (memq emacs-minibuffer--window (emacs-window-window-list)))
+             (should-not (memq emacs-minibuffer--window (emacs-window-window-list nil 'never)))
+             "daily.txt")))
+      (should (equal (emacs-minibuffer-read-string "Find file: ") "daily.txt")))
+    (should observed)
+    (should-not (memq emacs-minibuffer--window (emacs-window-window-list)))
+    (should (memq emacs-minibuffer--window (emacs-window-window-list nil t)))))

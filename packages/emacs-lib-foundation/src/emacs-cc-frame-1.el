@@ -81,14 +81,14 @@
     "Return FRAME's native height in pixels (or characters on a terminal)."
     (let ((f (emacs-cc-frame-1--require-framep
               (or frame (emacs-cc-frame-1--selected)))))
-      (frame-height f))))
+      (frame-pixel-height f))))
 
 (unless (fboundp 'frame-native-width)
   (defun frame-native-width (&optional frame)
     "Return FRAME's native width in pixels (or characters on a terminal)."
     (let ((f (emacs-cc-frame-1--require-framep
               (or frame (emacs-cc-frame-1--selected)))))
-      (frame-width f))))
+      (frame-pixel-width f))))
 
 (unless (fboundp 'frame-parent)
   (defun frame-parent (&optional frame)

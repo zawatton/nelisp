@@ -67,6 +67,17 @@ Also resets kill-ring + kill-ring-yank-pointer."
 
 ;;;; B. self-insert-command body — inserts char N times
 
+(ert-deftest emacs-edit-builtins-test/newline-shim-is-standalone-only ()
+  "A retained GNU newline must use the ec-buffer shim only in standalone."
+  (let ((marker (get 'newline 'emacs-stub-bulk)))
+    (unwind-protect
+        (progn
+          (put 'newline 'emacs-stub-bulk nil)
+          (should-not (emacs-edit-builtins--install-function-p 'newline))
+          (cl-letf (((symbol-function 'nelisp--write-stdout-bytes) #'ignore))
+            (should (emacs-edit-builtins--install-function-p 'newline))))
+      (put 'newline 'emacs-stub-bulk marker))))
+
 (defun emacs-edit-builtins-test--self-insert (char &optional n)
   (let* ((count (or n 1))
          (s (cond ((stringp char) char)
@@ -179,8 +190,8 @@ install-function guard."
   "Doc 51 Track X (2026-05-04) audit regression: every command bound
 in `nemacs-main-keymap' must carry an `(interactive ...)' form so
 `call-interactively' supplies a non-empty arg list, and must accept
-0 required args so the lambda dispatch never raises
-`wrong-number-of-arguments' under no-prefix-arg keymap routing.
+the arguments supplied by their interactive spec, including the mandatory
+repeat count for `self-insert-command'.
 
 This audit covers the polyfills shipped from `emacs-edit-builtins.el'
 (self-insert-command / newline / kill-line; delete-backward-char is
@@ -193,13 +204,15 @@ checked by its dedicated shape test above)."
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'self-insert-command)")))
       (should s)
-      (should (string-match-p "self-insert-command (&optional n char)" s))
+      (should (string-match-p "self-insert-command (n &optional char)" s))
       (should (string-match-p "(interactive \"p\")" s)))
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'newline)")))
       (should s)
-      (should (string-match-p "newline (&optional n interactive)" s))
-      (should (string-match-p "(interactive \"p\")" s)))
+      (let ((definition (caddr (read s))))
+        (should (equal '(newline (&optional n interactive))
+                       (list (nth 1 definition) (nth 2 definition))))
+        (should (equal '(interactive "*P\np") (nth 4 definition)))))
     (let ((s (emacs-edit-builtins-test--read-defun
               file "(when (emacs-edit-builtins--install-function-p 'kill-line)")))
       (should s)
@@ -1459,6 +1472,20 @@ checked by its dedicated shape test above)."
         (should (equal "XYZ" (plist-get edit :text)))
         (should-not (plist-get edit :deleted-newline))))))
 
+(ert-deftest emacs-edit-native-yank-sets-mark-without-activating-region ()
+  (with-temp-buffer
+    (insert "Alpha beta gamma\n")
+    (goto-char 11)
+    (let ((nelisp-ec--current-buffer nil)
+          (kill-ring '("外\n")) (interprogram-paste-function nil)
+          (transient-mark-mode t) (mark-active nil))
+      (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+        (emacs-edit-yank-direct))
+      (should (equal (buffer-string) "Alpha beta外\n gamma\n"))
+      (should (= (point) 13))
+      (should (= (mark t) 11))
+      (should-not mark-active))))
+
 (ert-deftest emacs-edit-builtins-test/mouse-yank-primary-direct-moves-and-yanks ()
   (emacs-edit-builtins-test--with-fresh-buffer "ABCD"
     (let ((kill-ring '("X"))
@@ -1500,7 +1527,8 @@ checked by its dedicated shape test above)."
 ;; Phase 2.AI — overwrite-mode toggles self-insert from insert→replace.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-replaces ()
   (emacs-edit-builtins-test--with-fresh-buffer "ABCDE"
-    (let ((overwrite-mode t)
+    (let ((emacs-edit--pure-buffer-context t)
+          (overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 2)            ; before B
       (emacs-edit--self-insert-command 1 nil)
@@ -1511,7 +1539,8 @@ checked by its dedicated shape test above)."
 ;; Phase 2.AI — overwrite-mode does NOT eat the line terminator.
 (ert-deftest emacs-edit-builtins-test/overwrite-mode-skips-newline ()
   (emacs-edit-builtins-test--with-fresh-buffer "AB\nCD"
-    (let ((overwrite-mode t)
+    (let ((emacs-edit--pure-buffer-context t)
+          (overwrite-mode t)
           (last-command-event ?X))
       (nelisp-ec-goto-char 3)            ; on the \n
       (emacs-edit--self-insert-command 1 nil)
@@ -2030,6 +2059,69 @@ clipboard — `arg' explicitly chose a kill-ring entry."
     (should (eq before-yank (symbol-function 'yank)))
     (should (eq before-kill (symbol-function 'kill-new)))))
 
+
+(ert-deftest emacs-edit-builtins-test/s22-native-goal-column ()
+  (with-temp-buffer
+    (insert "abcdefghij\nx\n日本語abcdef\n")
+    (goto-char 8)
+    (let ((goal-column nil) (last-command nil)
+          (emacs-edit--line-goal-column nil))
+      (emacs-edit-next-line 1)
+      (should (= (current-column) 1))
+      (setq last-command 'next-line)
+      (emacs-edit-next-line 1)
+      (should (= (current-column) 7))
+      (emacs-edit-previous-line 2)
+      (should (= (point) 8)))))
+
+(ert-deftest emacs-edit-builtins-test/s22-native-kill-append ()
+  (with-temp-buffer
+    (insert "日本語\nsecond\n")
+    (goto-char 1)
+    (let ((kill-ring nil) (kill-ring-yank-pointer nil)
+          (last-command nil) (this-command nil))
+      (emacs-edit-native-kill-line)
+      (should (equal (buffer-string) "\nsecond\n"))
+      (should (equal (car kill-ring) "日本語"))
+      (setq last-command this-command)
+      (emacs-edit-native-kill-line)
+      (should (equal (buffer-string) "second\n"))
+      (should (equal kill-ring '("日本語\n"))))))
+
+(ert-deftest emacs-edit-builtins-test/s22-native-insert-undo-once ()
+  (require 'emacs-undo)
+  (with-temp-buffer
+    (buffer-enable-undo)
+    (let ((nelisp-ec--current-buffer nil)
+          (post-self-insert-hook nil))
+      (cl-letf (((symbol-function 'nelisp-buffer-p) #'bufferp))
+        (emacs-edit-self-insert-direct ?x)
+        (should (equal (buffer-string) "x"))
+        (emacs-undo-record-insert 1 2)
+        (should (= (cl-count '(1 . 2) buffer-undo-list :test #'equal) 1))
+        (undo-boundary)
+        (primitive-undo 1 (cdr buffer-undo-list))
+        (should (equal (buffer-string) ""))))))
+
 (provide 'emacs-edit-builtins-test)
 
 ;;; emacs-edit-builtins-test.el ends here
+
+(ert-deftest emacs-edit-kill-ring-save-is-an-interactive-region-command ()
+  (let* ((kill-ring nil) (exported nil) (transient-mark-mode t)
+        (interprogram-cut-function (lambda (text) (setq exported text))))
+    (with-temp-buffer
+      (insert "Alpha beta gamma\n")
+      (set-mark 7) (goto-char 11) (setq mark-active t)
+      (should (commandp 'kill-ring-save))
+      (call-interactively #'kill-ring-save)
+      (should (equal (car kill-ring) "beta"))
+      (should (equal exported "beta"))
+      (should (= (point) 11))
+      (should (= (mark) 7))
+      (should-not mark-active))))
+
+(ert-deftest emacs-edit-mark-preload-preserves-consumer-default ()
+  (let ((transient-mark-mode nil))
+    (load (locate-library "emacs-mark-state") nil t)
+    (should-not transient-mark-mode)))

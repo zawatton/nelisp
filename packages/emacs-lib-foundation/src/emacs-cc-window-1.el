@@ -13,9 +13,12 @@
     "Return non-nil if COORDINATES are in WINDOW."
     (unless (consp coordinates) (signal 'wrong-type-argument (list 'consp coordinates)))
     (unless (window-live-p window) (signal 'wrong-type-argument (list 'window-live-p window)))
-    (if (and (equal coordinates '(0 . 0)) (eq window (selected-window)))
-        '(0 . 0)
-      nil)))
+    (let* ((edges (emacs-window-window-edges window))
+           (x (car coordinates)) (y (cdr coordinates)))
+      (when (and (numberp x) (numberp y)
+                 (<= (car edges) x) (< x (nth 2 edges))
+                 (<= (cadr edges) y) (< y (nth 3 edges)))
+        (cons (- x (car edges)) (- y (cadr edges)))))))
 (unless (fboundp 'delete-other-windows-internal)
   (defun delete-other-windows-internal (&optional window root)
     "Make WINDOW fill its frame."
@@ -45,7 +48,19 @@
 (unless (fboundp 'minibuffer-selected-window)
   (defun minibuffer-selected-window ()
     "Return window selected just before minibuffer window was selected."
-    nil))
+    (let ((mini (and (boundp 'emacs-minibuffer--window)
+                     emacs-minibuffer--window))
+          (saved (and (boundp 'emacs-minibuffer--saved-window)
+                      emacs-minibuffer--saved-window)))
+      (when (and mini saved
+                 (boundp 'emacs-minibuffer--depth)
+                 (> emacs-minibuffer--depth 0)
+                 (fboundp 'emacs-window-selected-window)
+                 (fboundp 'emacs-window-window-live-p)
+                 (eq (emacs-window-selected-window) mini)
+                 (emacs-window-window-live-p mini)
+                 (emacs-window-window-live-p saved))
+        saved))))
 (unless (fboundp 'move-to-window-line)
   (defun move-to-window-line (arg)
     "Position point relative to window."

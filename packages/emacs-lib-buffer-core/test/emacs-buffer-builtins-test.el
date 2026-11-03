@@ -66,7 +66,7 @@
       (insert-file-contents file)
       (dolist (needle '("(default-value             . emacs-buffer-default-value)"
                         "(default-boundp            . emacs-buffer-default-boundp)"
-                        "(set-default               . emacs-buffer-set-default)"
+                        "(set-default               . emacs-buffer-setq-default-1)"
                         "(buffer-local-value        . emacs-buffer-buffer-local-value)"
                         "(defun get-char-property"
                         "(defalias 'text-properties-at"
@@ -882,6 +882,31 @@ for that mechanism in isolation."
         (goto-char (point-min))
         (should (search-forward
                  (format "(put '%s 'emacs-stub-bulk t)" name) nil t))))))
+
+(ert-deftest emacs-buffer-builtins-test/buffer-list-keeps-native-family ()
+  (let* ((source (locate-library "emacs-buffer-builtins"))
+         (source (if (string-match-p "\\.elc\\'" source)
+                     (substring source 0 -1) source))
+         definition)
+    (with-temp-buffer
+      (insert-file-contents source)
+      (goto-char (point-min))
+      (while (not definition)
+        (let ((form (read (current-buffer))))
+          (when (equal (cadr form)
+                       '(emacs-buffer-builtins--install-function-p 'buffer-list))
+            (setq definition form)))))
+    (with-temp-buffer
+      (let ((native (current-buffer))
+            (nelisp-ec--buffers nil))
+        (nelisp-ec-generate-new-buffer "*legacy-only*")
+        (cl-letf (((symbol-function 'buffer-list) (symbol-function 'buffer-list))
+                  ((symbol-function 'nelisp-buffer-list) (lambda () (list native)))
+                  ((symbol-function 'emacs-buffer-builtins--install-function-p)
+                   (lambda (_) t)))
+          (eval definition t)
+          (should (equal (buffer-list) (list native)))
+          (should (cl-every #'bufferp (buffer-list))))))))
 
 (provide 'emacs-buffer-builtins-test)
 

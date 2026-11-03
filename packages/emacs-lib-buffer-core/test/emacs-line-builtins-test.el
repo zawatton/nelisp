@@ -21,7 +21,45 @@
 
 (require 'ert)
 (require 'emacs-line-builtins)
+(require 'emacs-cc-search-1)
 (require 'cl-lib)
+
+(ert-deftest emacs-line-builtins-test/newline-cache-created-lazily ()
+  (with-temp-buffer
+    (let ((cache-long-scans t))
+      (should-not (newline-cache-check))
+      (forward-line 0)
+      (should (equal (newline-cache-check) [[] []])))))
+
+(ert-deftest emacs-line-builtins-test/newline-cache-edits-and-narrowing ()
+  (with-temp-buffer
+    (let ((cache-long-scans t))
+      (insert "é\nb\nc\n") (goto-char 1) (end-of-line)
+      (should (equal (newline-cache-check) [[2 4 6] [2 4 6]]))
+      (goto-char 1) (insert "z\n")
+      (should (equal (newline-cache-check) [[2 4 6 8] [2 4 6 8]]))
+      (narrow-to-region 3 7)
+      (should (equal (newline-cache-check) [[4 6] [4 6]]))
+      (let ((cache-long-scans nil)) (should-not (newline-cache-check))))))
+
+(ert-deftest emacs-line-builtins-test/newline-cache-buffer-policy ()
+  (with-temp-buffer
+    (let ((cache-long-scans t))
+      (insert "a\n") (forward-line 0)
+      (let ((result (newline-cache-check)))
+        (aset (aref result 0) 0 99)
+        (should (equal (newline-cache-check (current-buffer)) [[2] [2]])))
+      (let ((cache-long-scans nil)) (forward-line 0))
+      (should-not (newline-cache-check)))))
+
+(ert-deftest emacs-line-builtins-test/newline-cache-buffer-lifetime ()
+  (let ((dead (generate-new-buffer "newline-cache-dead")))
+    (kill-buffer dead)
+    (should-not (newline-cache-check dead)))
+  (with-temp-buffer
+    (forward-line 0)
+    (kill-all-local-variables)
+    (should (equal (newline-cache-check) [[] []]))))
 
 (defmacro emacs-line-builtins-test--with-fresh-buffer (text &rest body)
   "Run BODY against a fresh nelisp-ec buffer pre-filled with TEXT."
