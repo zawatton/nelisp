@@ -140,6 +140,21 @@
             ((and (consp place) (symbolp (car place))
                   (fboundp 'gv-get) (get (car place) 'gv-expander))
              (gv-get place (lambda (_getter setter) (funcall setter val))))
+            ;; A macro place: expand once and retry (GNU gv does the same).
+            ((and (consp place) (symbolp (car place)) (fboundp (quote macrop)) (macrop (car place)))
+             (list 'setf (macroexpand-1 place) val))
+            ;; GNU gv fallback: bind the arguments, then call the
+            ;; `(setf HEAD)' function, so unknown places expand instead of
+            ;; signalling during eager macroexpansion.
+            ((and (consp place) (symbolp (car place)))
+             (let ((bindings nil) (syms nil))
+               (dolist (arg (cdr place))
+                 (let ((s (make-symbol "v")))
+                   (push (list s arg) bindings)
+                   (push s syms)))
+               (list 'let* (nreverse bindings)
+                     (cons (intern (format "(setf %s)" (car place)))
+                           (cons val (nreverse syms))))))
             (t
              (signal 'error
                      (list "setf: unsupported place"

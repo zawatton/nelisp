@@ -495,7 +495,13 @@ font/charset capability query."
 
 (when (or (not (boundp 'emacs-version))
           (not (fboundp 'set-default-toplevel-value)))
-  (defalias 'set-default-toplevel-value #'set-default))
+  ;; Route through `setq-default' semantics so the live global value is
+  ;; updated too; the substrate `set-default' only records the per-buffer
+  ;; default, which leaves `boundp' nil after `defcustom'.
+  (defun set-default-toplevel-value (symbol value)
+    (if (fboundp 'emacs-buffer-setq-default-1)
+        (emacs-buffer-setq-default-1 symbol value)
+      (set-default symbol value))))
 
 (when (or (not (boundp 'emacs-version))
           (not (fboundp 'default-toplevel-value)))
