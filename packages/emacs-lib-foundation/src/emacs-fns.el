@@ -44,55 +44,6 @@
 (unless (boundp 'features)
   (defvar features nil))
 
-(defvar emacs-fns--standalone-feature-index nil
-  "Internal eq-hash index used for standalone `featurep' lookups.
-Keyed by feature symbols in `features'.")
-(defvar emacs-fns--standalone-feature-index-source nil
-  "Snapshot of the `features' list used to build the index.
-If `features' is rebound, index is rebuilt lazily.")
-(defvar emacs-fns--standalone-feature-index-build-count 0
-  "Number of times the standalone feature index has been rebuilt.")
-
-(defun emacs-fns--standalone-feature-index-build ()
-  "Rebuild standalone feature index from current `features`.
-Returns the rebuilt hash table.
-
-This is a lazy cache that is rebuilt when `features' is rebound.
-Destructive mutation of the same `features' list object is not tracked
-and may make the index stale; callers can call this function
-explicitly after such mutation."
-  (let ((table (make-hash-table :test 'eq))
-        (current features))
-    (setq emacs-fns--standalone-feature-index-build-count
-          (1+ emacs-fns--standalone-feature-index-build-count))
-    (setq emacs-fns--standalone-feature-index table)
-    (setq emacs-fns--standalone-feature-index-source current)
-    (while (consp current)
-      (puthash (car current) t table)
-      (setq current (cdr current)))
-    table))
-
-(defun emacs-fns--standalone-feature-index-reset ()
-  "Reset standalone feature index state (tests only)."
-  (setq emacs-fns--standalone-feature-index nil
-        emacs-fns--standalone-feature-index-source nil
-        emacs-fns--standalone-feature-index-build-count 0))
-
-(defun emacs-fns--standalone-feature-index-ensure ()
-  "Ensure standalone feature index is synced with current `features'."
-  (unless (and emacs-fns--standalone-feature-index
-               (eq emacs-fns--standalone-feature-index-source features))
-    (emacs-fns--standalone-feature-index-build)))
-
-(defun emacs-fns--standalone-featurep (feature &optional _subfeature)
-  "Index-backed membership test for FEATURE in `features'.
-
-Fast path only: it trusts the eq-hash index, which is rebuilt when
-`features' is rebound but cannot see destructive edits of the same list.
-The installed `featurep' uses `emacs-fns--standalone-featurep-exact'."
-  (emacs-fns--standalone-feature-index-ensure)
-  (and (gethash feature emacs-fns--standalone-feature-index) t))
-
 (defun emacs-fns--standalone-featurep-exact (feature &optional subfeature)
   "Pure-Elisp fallback for `featurep' used by standalone runtimes.
 
@@ -117,13 +68,9 @@ Functions registered for FEATURE in `after-load-alist' run each time."
     (signal 'wrong-type-argument (list 'symbolp feature)))
   (unless (listp subfeatures)
     (signal 'wrong-type-argument (list 'listp subfeatures)))
-  ;; Keep the eq-hash index coherent for `emacs-fns--standalone-featurep';
-  ;; membership itself is decided on the list, as in GNU.
-  (emacs-fns--standalone-feature-index-ensure)
+  ;; Membership is decided on the list itself, as in GNU.
   (unless (memq feature features)
     (setq features (cons feature features)))
-  (puthash feature t emacs-fns--standalone-feature-index)
-  (setq emacs-fns--standalone-feature-index-source features)
   (when subfeatures
     (put feature 'subfeatures subfeatures))
   (setq current-load-list (cons (cons 'provide feature) current-load-list))

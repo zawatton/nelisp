@@ -105,62 +105,17 @@
 
 ;;;; --- standalone feature registry -----------------------------------------
 
-(ert-deftest emacs-fns-test/standalone-feature-index-initializes-from-features ()
-  (let ((saved-features features))
-    (setq features '(a b c))
-    (emacs-fns--standalone-feature-index-reset)
-    (unwind-protect
-        (progn
-          (should (= emacs-fns--standalone-feature-index-build-count 0))
-          (should (eq (emacs-fns--standalone-featurep 'a) t))
-          (should (eq (emacs-fns--standalone-featurep 'nope) nil))
-          (should (= emacs-fns--standalone-feature-index-build-count 1)))
-      (setq features saved-features)
-      (emacs-fns--standalone-feature-index-reset))))
-
-(ert-deftest emacs-fns-test/standalone-feature-index-fast-path-hits-and-misses ()
-  (let ((saved-features features))
-    (setq features '(alpha beta gamma))
-    (emacs-fns--standalone-feature-index-reset)
-    (unwind-protect
-        (progn
-          (dotimes (_ 32)
-            (should (eq (emacs-fns--standalone-featurep 'alpha) t))
-            (should (eq (emacs-fns--standalone-featurep 'missing) nil)))
-          (should (= emacs-fns--standalone-feature-index-build-count 1)))
-      (setq features saved-features)
-      (emacs-fns--standalone-feature-index-reset))))
-
 (ert-deftest emacs-fns-test/standalone-provide-like-insertion-is-idempotent ()
   (let ((saved-features features))
     (setq features '(existing))
-    (emacs-fns--standalone-feature-index-reset)
     (unwind-protect
         (progn
           (should (eq (emacs-fns--standalone-provide 'added) 'added))
           (should (equal features '(added existing)))
-          (should (= emacs-fns--standalone-feature-index-build-count 1))
           (should (eq (emacs-fns--standalone-provide 'added) 'added))
           (should (equal features '(added existing)))
-          (should (eq (emacs-fns--standalone-featurep 'added) t))
-          (should (= emacs-fns--standalone-feature-index-build-count 1)))
-      (setq features saved-features)
-      (emacs-fns--standalone-feature-index-reset))))
-
-(ert-deftest emacs-fns-test/standalone-feature-index-rebind-invalidation ()
-  (let ((saved-features features))
-    (setq features '(first))
-    (emacs-fns--standalone-feature-index-reset)
-    (unwind-protect
-        (progn
-          (should (eq (emacs-fns--standalone-featurep 'second) nil))
-          (should (= emacs-fns--standalone-feature-index-build-count 1))
-          (setq features '(second third))
-          (should (eq (emacs-fns--standalone-featurep 'second) t))
-          (should (= emacs-fns--standalone-feature-index-build-count 2))
-          (should (equal features '(second third))))
-      (setq features saved-features)
-      (emacs-fns--standalone-feature-index-reset))))
+          (should (eq (emacs-fns--standalone-featurep-exact 'added) t)))
+      (setq features saved-features))))
 
 
 ;;;; --- provide ------------------------------------------------------------
