@@ -36,6 +36,12 @@
     (cond
      (source-file
       (file-name-directory source-file))
+     ((catch 'source-dir
+        (dolist (entry load-path)
+          (when (and (stringp entry)
+                     (file-readable-p
+                      (expand-file-name "emacs-stub-bulk.el" entry)))
+            (throw 'source-dir (file-name-as-directory entry))))))
      ((and (boundp 'default-directory)
            (stringp default-directory))
       (let ((src (expand-file-name "src/" default-directory)))
@@ -301,6 +307,22 @@ is accepted for API parity but ignored."
 this; for now we follow `display-graphic-p'."
   (emacs-display-graphic-p display))
 
+(defun emacs-display-color-cells (&optional display)
+  "Return DISPLAY's color capacity through its active shared provider.
+Like GNU frame.el, use terminal color capacity for a non-graphic display.
+The GUI provider owns the visual's depth and may load after this shim."
+  (if (and (fboundp 'emacs-frame-display-color-cells)
+           (fboundp 'emacs-frame-frame-parameter)
+           (integerp (emacs-frame-frame-parameter nil 'display-depth)))
+      (emacs-frame-display-color-cells display)
+    (tty-display-color-cells display)))
+
+(defun emacs-display-images-p (&optional display)
+  "Return non-nil if DISPLAY is graphical and has GNU image primitives."
+  (and (display-graphic-p display)
+       (fboundp 'image-mask-p)
+       (fboundp 'image-size)))
+
 (defun emacs-display-multi-frame-p (&optional display)
   "MVP: any non-nil backend can host multiple frames.  Refined when
 single-frame backends (= some bare-minimum TUIs) ship."
@@ -340,6 +362,12 @@ conservatively reports nil, matching stock Emacs's own tty default."
 
 (when (emacs-stub--install-function-p 'display-color-p)
   (defalias 'display-color-p #'emacs-display-color-p))
+
+(when (emacs-stub--install-function-p 'display-color-cells)
+  (defalias 'display-color-cells #'emacs-display-color-cells))
+
+(when (emacs-stub--install-function-p 'display-images-p)
+  (defalias 'display-images-p #'emacs-display-images-p))
 
 (when (emacs-stub--install-function-p 'display-multi-frame-p)
   (defalias 'display-multi-frame-p #'emacs-display-multi-frame-p))
@@ -471,6 +499,27 @@ font/charset capability query."
 (unless (fboundp 'subrp)
   (defun subrp (object) (ignore object) nil))
 
+(defvar emacs-subr-metadata--buffer-constructor
+  (and (fboundp 'nelisp-get-buffer-create)
+       (fboundp 'get-buffer-create)
+       (symbol-function 'get-buffer-create))
+  "Exact standalone buffer constructor installed by the runtime prelude.
+It replaces a GNU C primitive with Lisp, while retaining its calling contract.
+Keep the callable itself, so later user redefinitions are not classified as
+primitive replacements just because they use the same symbol name.")
+
+(unless (fboundp 'subr-arity)
+  (defun subr-arity (subr)
+    "Return argument counts of SUBR or the registered buffer primitive.
+The standalone buffer constructor is Lisp; GNU packages such as org-compat
+introspect this primitive to select its optional-argument calling convention.
+Unregistered Lisp functions still fail the ordinary subr type check."
+    (unless (or (subrp subr)
+                (and emacs-subr-metadata--buffer-constructor
+                     (eq subr emacs-subr-metadata--buffer-constructor)))
+      (signal 'wrong-type-argument (list 'subrp subr)))
+    (func-arity subr)))
+
 (unless (fboundp 'special-form-p)
   (defun special-form-p (object) (ignore object) nil))
 
@@ -495,13 +544,29 @@ font/charset capability query."
 
 (when (or (not (boundp 'emacs-version))
           (not (fboundp 'set-default-toplevel-value)))
-  ;; Route through `setq-default' semantics so the live global value is
-  ;; updated too; the substrate `set-default' only records the per-buffer
-  ;; default, which leaves `boundp' nil after `defcustom'.
   (defun set-default-toplevel-value (symbol value)
-    (if (fboundp 'emacs-buffer-setq-default-1)
-        (emacs-buffer-setq-default-1 symbol value)
-      (set-default symbol value))))
+    "Set SYMBOL's default value outside dynamic bindings to VALUE."
+    (unless (symbolp symbol)
+      (signal 'wrong-type-argument (list 'symbolp symbol)))
+    (when (or (null symbol) (eq symbol t) (keywordp symbol))
+      (signal 'setting-constant (list symbol)))
+    (if (fboundp 'nelisp--env-globals-set-value)
+        (let ((target (if (fboundp 'indirect-variable)
+                          (indirect-variable symbol) symbol)))
+          (nelisp--env-globals-set-value target value)
+          ;; GNU Custom initializes through this global-cell primitive
+          ;; rather than `set'.  Keep declared variable aliases live.
+          (when (boundp 'nelisp--defvaralias-reverse)
+            (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
+              (nelisp--env-globals-set-value alias value))))
+      ;; Host path: route through `setq-default' semantics so the live
+      ;; global value is updated too; the substrate `set-default' only
+      ;; records the per-buffer default, leaving `boundp' nil after
+      ;; `defcustom'.
+      (if (fboundp 'emacs-buffer-setq-default-1)
+          (emacs-buffer-setq-default-1 symbol value)
+        (set-default symbol value)))
+    nil))
 
 (when (or (not (boundp 'emacs-version))
           (not (fboundp 'default-toplevel-value)))
@@ -511,10 +576,16 @@ font/charset capability query."
           (not (fboundp 'internal--define-uninitialized-variable)))
   (defun internal--define-uninitialized-variable (symbol &optional doc)
     "Mark SYMBOL as declared without assigning it a value."
+    (unless (symbolp symbol)
+      (signal 'wrong-type-argument (list 'symbolp symbol)))
+    ;; The native runtime keeps GNU's declared_special bit in the symbol;
+    ;; its declaration op also updates this registry (Doc 226).
+    (if (fboundp 'nelisp--env-globals-op)
+        (nelisp--env-globals-op 'variable-declare-special symbol)
+      (puthash symbol t nelisp--special-variables))
     (when doc
       (put symbol 'variable-documentation doc))
-    (put symbol 'custom--uninitialized t)
-    symbol))
+    nil))
 
 (when (or (not (boundp 'emacs-version))
           (get 'make-variable-buffer-local 'emacs-stub-bulk)
@@ -549,8 +620,29 @@ set nil or another constant symbol in standalone NeLisp."
 
 (unless (fboundp 'with-silent-modifications)
   (defmacro with-silent-modifications (&rest body)
-    "Stub: evaluate BODY without modified-flag bookkeeping."
-    (cons 'progn body)))
+    "Execute BODY, pretending it does not modify the buffer.
+This macro is typically used around modifications of
+text properties that do not really affect the buffer's content.
+If BODY performs real modifications to the buffer's text, other
+than cosmetic ones, undo data may become corrupted.
+
+This macro will run BODY normally, but doesn't count its buffer
+modifications as being buffer modifications.  This affects things
+like `buffer-modified-p', checking whether the file is locked by
+someone else, running buffer modification hooks, and other things
+of that nature."
+    (declare (debug t) (indent 0))
+    (let ((modified (make-symbol "modified")))
+      (list 'let*
+            (list (list modified (list 'buffer-modified-p))
+                  (list 'buffer-undo-list t)
+                  (list 'inhibit-read-only t)
+                  (list 'inhibit-modification-hooks t))
+            (list 'unwind-protect
+                  (cons 'progn body)
+                  (list 'when
+                        (list 'memq modified (list 'quote (list nil 'autosaved)))
+                        (list 'restore-buffer-modified-p modified)))))))
 
 ;; Quoting helpers
 (unless (fboundp 'kbd)
@@ -958,16 +1050,24 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
              (help-function-arglist (cdr f)))
             (t nil)))))
 
+(defun emacs-stub--indirect-function (object)
+  "Resolve OBJECT's function aliases, detecting cycles in linear time."
+  (let ((original object) (slow object) (advance nil))
+    (while (and object (symbolp object))
+      (setq object (symbol-function object))
+      (when advance
+        (setq slow (and slow (symbolp slow) (symbol-function slow))))
+      (setq advance (not advance))
+      (when (and object (eq object slow))
+        (signal 'cyclic-function-indirection (list original))))
+    object))
+
 (when (or (not (boundp 'emacs-version))
           (emacs-stub--install-function-p 'indirect-function))
-  (defun indirect-function (object)
+  (defun indirect-function (object &optional noerror)
     "Return OBJECT's ultimate function definition."
-    (while (and (symbolp object) (fboundp object))
-      (let ((next (symbol-function object)))
-        (if (eq next object)
-            (setq object nil)
-          (setq object next))))
-    object))
+    (ignore noerror)
+    (emacs-stub--indirect-function object)))
 
 (unless (fboundp 'advice--p)
   (defun advice--p (object)
@@ -1024,7 +1124,51 @@ without attempting to weave advice into existing function cells."
   (defun match-data (&optional integers reuse reseat) (ignore integers reuse reseat) nil))
 
 (unless (fboundp 'set-match-data)
-  (defun set-match-data (list &optional reseat) (ignore list reseat) nil))
+  (defun set-match-data (list &optional reseat)
+    "Restore search registers from LIST, optionally detaching its markers."
+    (unless (listp list)
+      (signal 'wrong-type-argument (list 'listp list)))
+    (let ((tail list) (pairs nil) (count 0) (last 0))
+      (while (consp tail)
+        (let ((start (car tail)))
+          (setq tail (cdr tail))
+          (unless (listp tail)
+            (signal 'wrong-type-argument (list 'listp tail)))
+          (when tail
+            (let ((end (car tail)))
+              (setq tail (cdr tail))
+              (when start
+                (unless (or (integerp start) (markerp start))
+                  (signal 'wrong-type-argument
+                          (list 'integer-or-marker-p start)))
+                (unless (or (integerp end) (markerp end))
+                  (signal 'wrong-type-argument
+                          (list 'integer-or-marker-p end)))
+                (setq start (if (markerp start)
+                                (or (marker-position start) 0) start)
+                      end (if (markerp end)
+                              (or (marker-position end) 0) end)))
+              (setq count (1+ count))
+              (if (and start (>= start 0))
+                  (progn
+                    (setq pairs (cons (cons start end) pairs))
+                    (setq last count))
+                (setq pairs (cons nil pairs)))))))
+      (unless (listp tail)
+        (signal 'wrong-type-argument (list 'listp tail)))
+      ;; The prelude's search primitives all use this capture vector.
+      ;; Discard trailing unmatched registers as GNU match-data does.
+      (setq pairs (nreverse pairs))
+      (let ((caps (make-vector last nil)) (i 0))
+        (while (< i last)
+          (aset caps i (car pairs))
+          (setq pairs (cdr pairs) i (1+ i)))
+        (setq nlre--last-caps caps))
+      (when reseat
+        (dolist (position list)
+          (when (markerp position)
+            (set-marker position nil))))
+      nil)))
 
 (unless (fboundp 'function-get)
   (defun function-get (f prop &optional _autoload)
@@ -1079,7 +1223,17 @@ nadvice, etc.; the runtime previously left it void."
   (defun forward-char (&optional n) (ignore n) nil))
 
 (unless (fboundp 'backward-char)
-  (defun backward-char (&optional n) (ignore n) nil))
+  (defun backward-char (&optional n)
+    "Move point N characters backward, stopping and signaling at a boundary."
+    (interactive "p")
+    (setq n (or n 1))
+    (unless (fixnump n)
+      (signal 'wrong-type-argument (list 'fixnump n)))
+    (let ((target (- (point) n)) (lo (point-min)) (hi (point-max)))
+      (cond
+       ((< target lo) (goto-char lo) (signal 'beginning-of-buffer nil))
+       ((> target hi) (goto-char hi) (signal 'end-of-buffer nil))
+       (t (goto-char target) nil)))))
 
 ;; These are degenerate placeholders (no-op / fixed position).  The REAL
 ;; line-navigation primitives live in `emacs-line-builtins', which only
@@ -1114,12 +1268,10 @@ nadvice, etc.; the runtime previously left it void."
 
 (unless (fboundp 'line-number-display-width)
   (defun line-number-display-width (&optional pixelwise)
-    "Standalone fallback line-number display width.
-Return one canonical column by default; callers such as
-`display-line-numbers-update-width' only need a stable positive width
-when no real redisplay window is available."
-    (ignore pixelwise)
-    1))
+    "Return the line-number width of the headless selected window.
+There is no redisplay margin in the standalone.  The `columns' unit
+returns a float, while pixels and face columns return an integer."
+    (if (eq pixelwise 'columns) 0.0 0)))
 
 (unless (boundp 'display-line-numbers)
   (defvar display-line-numbers nil))
@@ -1276,19 +1428,26 @@ when no real redisplay window is available."
 In standalone batch mode write to stderr with
 `nelisp--write-stderr-line'.  The stdout fallback is for runtimes that expose
 only `nelisp--write-stdout-bytes'; its prefix keeps diagnostics distinct from
-machine-readable stdout."
-  (if (null format-string)
-      nil
-    (let ((text (apply #'format format-string args)))
-      (cond
-       ((and (emacs-stub--standalone-batch-message-p)
-             (fboundp 'nelisp--write-stderr-line))
-        (nelisp--write-stderr-line text))
-       ((emacs-stub--standalone-batch-message-p)
-        (nelisp--write-stdout-bytes (concat "nemacs: " text "\n")))
-       (t
-        (princ text)
-        (princ "\n")))
+machine-readable stdout.  Nil and empty messages emit a blank line unless
+`inhibit-message' is non-nil.  Use the message-log owner when available."
+  (if (fboundp 'emacs-special-buffers-message)
+      (apply #'emacs-special-buffers-message format-string args)
+    (let ((text (and format-string
+                     (apply #'format-message format-string args))))
+      (unless (and (boundp 'inhibit-message) inhibit-message)
+        (cond
+         ((and (emacs-stub--standalone-batch-message-p)
+               (fboundp 'nelisp--write-stderr-line))
+          (when (and (boundp 'emacs-batch-stdio-pending-newline)
+                     emacs-batch-stdio-pending-newline)
+            (setq emacs-batch-stdio-pending-newline nil)
+            (nelisp--write-stderr-line ""))
+          (nelisp--write-stderr-line (or text "")))
+         ((emacs-stub--standalone-batch-message-p)
+          (nelisp--write-stdout-bytes (concat "nemacs: " (or text "") "\n")))
+         (t
+          (princ (or text ""))
+          (princ "\n"))))
       text)))
 
 ;; The standalone runtime may already expose a silent `message' binding.
@@ -1419,11 +1578,26 @@ machine-readable stdout."
 ;;;; --- display.c ----------------------------------------------------------
 
 (unless (fboundp 'redraw-display)
-  (defun redraw-display (&rest _) nil)
+  (defun redraw-display (&rest args)
+    (when args
+      (signal 'wrong-number-of-arguments
+              (list 'redraw-display (length args))))
+    (let ((handle (and (fboundp 'emacs-redisplay-current-handle)
+                       (emacs-redisplay-current-handle))))
+      (when (and handle (fboundp 'emacs-redisplay-redraw-display))
+        (emacs-redisplay-redraw-display handle)))
+    nil)
   (put 'redraw-display 'emacs-stub-bulk t))
 
 (unless (fboundp 'redisplay)
-  (defun redisplay (&optional force) (ignore force) nil)
+  (defun redisplay (&rest args)
+    (when (cdr args)
+      (signal 'wrong-number-of-arguments
+              (list 'redisplay (length args))))
+    (unless (and (boundp 'executing-kbd-macro) executing-kbd-macro)
+      (when (fboundp 'emacs-redisplay-trigger-redisplay)
+        (emacs-redisplay-trigger-redisplay (car args)))
+      t))
   (put 'redisplay 'emacs-stub-bulk t))
 
 (unless (fboundp 'force-mode-line-update)
@@ -3559,8 +3733,9 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 
 (unless (fboundp 'char-or-string-p)
   (defun char-or-string-p (obj)
-    "Return t if OBJ is a character (= integer) or string."
-    (or (integerp obj) (stringp obj))))
+    "Return t if OBJ is a character or string."
+    (or (stringp obj)
+        (and (integerp obj) (>= obj 0) (<= obj #x3fffff)))))
 
 ;;;; --- file path utility polyfills --------------------------------------
 
@@ -3617,10 +3792,22 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
 
 (unless (fboundp 'send-string-to-terminal)
   (defun send-string-to-terminal (s &optional terminal)
-    (ignore terminal)
-    (when (stringp s) (princ s)) nil))
+    "Send S to the selected terminal, or to stdout in batch mode."
+    (when (and terminal (not (frame-live-p terminal))
+               (not (and (fboundp 'terminal-live-p)
+                         (terminal-live-p terminal))))
+      (signal 'wrong-type-argument (list 'terminal-live-p terminal)))
+    (unless (stringp s)
+      (signal 'wrong-type-argument (list 'stringp s)))
+    (unless terminal
+      (princ s t))
+    nil))
 (unless (fboundp 'discard-input) (defun discard-input () nil))
-(unless (fboundp 'open-termscript) (defun open-termscript (&rest _) nil))
+(unless (fboundp 'open-termscript)
+  (defun open-termscript (file)
+    "Open a terminal transcript; a headless frame has no tty device."
+    (ignore file)
+    (signal 'error (list "Current frame is not on a tty device"))))
 (unless (fboundp 'set-input-method) (defun set-input-method (&rest _) nil))
 
 ;;;; --- timers ------------------------------------------------------------
@@ -3737,7 +3924,45 @@ NUMBER may be int or float; DIVISOR optional (= NUMBER / DIVISOR)."
 (unless (fboundp 'sit-for)
   (defun sit-for (&rest _) nil))
 (unless (fboundp 'sleep-for)
-  (defun sleep-for (&rest _) nil))
+  (defun sleep-for (seconds &optional milliseconds)
+    "Pause without redisplay for SECONDS plus MILLISECONDS / 1000.
+SECONDS must be a number; MILLISECONDS must be nil or a fixnum.
+Service timers and process output when their providers are available.
+Non-positive durations return immediately.  Always return nil."
+    (unless (numberp seconds)
+      (signal 'wrong-type-argument (list 'numberp seconds)))
+    (unless (or (null milliseconds) (fixnump milliseconds))
+      (signal 'wrong-type-argument (list 'fixnump milliseconds)))
+    (let ((duration (+ seconds (/ (or milliseconds 0) 1000.0))))
+      (when (> duration 0)
+        (when (fboundp 'emacs-frame-builtins-reconcile-terminal-sizes)
+          (emacs-frame-builtins-reconcile-terminal-sizes))
+        (let ((deadline (+ (float-time) duration))
+              (remaining duration)
+              (timespec nil))
+          (while (> remaining 0)
+            ;; Bound each OS wait, including when SECONDS is infinity,
+            ;; so converting it to a timespec cannot overflow.
+            (let ((interval (min remaining 3600.0)))
+              (cond
+               ((fboundp 'nelisp-process-adapter--wait)
+                (nelisp-process-adapter--wait nil interval nil nil))
+               ((fboundp 'nelisp-async-core-sit-for)
+                (nelisp-async-core-sit-for interval))
+               (t
+                ;; Allocate only on the OS fallback path and reuse this
+                ;; timespec if a signal interrupts the system call.
+                (unless timespec (setq timespec (alloc-bytes 16 8)))
+                (let ((whole (truncate interval)))
+                  (ptr-write-u64 timespec 0 whole)
+                  (ptr-write-u64 timespec 8
+                                 (truncate (* (- interval whole)
+                                              1000000000.0)))
+                  (nl-nanosleep timespec)))))
+            ;; Output and signals may end a wait early, but do not
+            ;; shorten the requested sleep.
+            (setq remaining (- deadline (float-time)))))))
+    nil))
 (unless (boundp 'timer-list) (defvar timer-list nil))
 (unless (boundp 'timer-idle-list) (defvar timer-idle-list nil))
 
@@ -3812,6 +4037,13 @@ release that package version targets."))
     (when (fboundp 'nelisp--defvaralias-resync)
       (nelisp--defvaralias-resync symbol))
     symbol))
+
+;; The standalone Custom fallback initializes values immediately.  If GNU
+;; custom.el is loaded later, it must also initialize :initialize-delay values
+;; in this running editor instead of queueing them for a host startup that will
+;; never run.  Keep an existing host startup queue untouched.
+(defvar custom-delayed-init-variables t
+  "Standalone Custom initialization is complete; GNU may initialize normally.")
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)
@@ -4334,22 +4566,109 @@ is required."
 ;; clients as double-encoded UTF-8 and was written back as invalid
 ;; UTF-8.  This mirrors the reader's own definitions in
 ;; nelisp-stdlib-misc.el, which this layer replaces on standalone.
+(defun emacs-stub--latin-1-eol-type (coding)
+  "Return CODING's Latin-1 EOL type, or nil for another encoding.
+The unsuffixed aliases detect line endings when decoding."
+  (let ((seen nil) (result nil))
+    (while (and (symbolp coding) coding (not result)
+                (not (memq coding seen)))
+      (push coding seen)
+      (setq result
+            (cond
+             ((memq coding '(latin-1 iso-latin-1 iso-8859-1)) 'detect)
+             ((memq coding '(latin-1-unix iso-latin-1-unix iso-8859-1-unix)) 0)
+             ((memq coding '(latin-1-dos iso-latin-1-dos iso-8859-1-dos)) 1)
+             ((memq coding '(latin-1-mac iso-latin-1-mac iso-8859-1-mac)) 2)))
+      (unless result
+        (setq coding (get coding 'coding-system-base))))
+    result))
+
+(defun emacs-stub--latin-1-convert (text eol decode)
+  "Convert TEXT between Latin-1 bytes and characters.
+EOL is 0, 1, 2 or `detect'; DECODE selects the direction."
+  (unless (stringp text)
+    (signal 'wrong-type-argument (list 'stringp text)))
+  (let ((index 0) (size (length text)) (characters nil))
+    ;; GNU detects DOS only when every LF is preceded by CR; a lone CR
+    ;; does not rule out DOS.  CR-only input is Mac, mixed LF/CRLF is Unix.
+    (when (eq eol 'detect)
+      (setq eol 0)
+      (when decode
+        (let ((lf nil) (cr nil) (bare-lf nil))
+          (while (< index size)
+            (let ((char (aref text index)))
+              (when (= char 13) (setq cr t))
+              (when (= char 10)
+                (setq lf t)
+                (unless (and (> index 0) (= (aref text (1- index)) 13))
+                  (setq bare-lf t))))
+            (setq index (1+ index)))
+          (setq eol (cond (bare-lf 0) (lf 1) (cr 2) (t 0))
+                index 0))))
+    (while (< index size)
+      (let ((char (aref text index)))
+        ;; Raw byte characters represent bytes rather than substitutions.
+        (when (and (>= char #x3fff80) (<= char #x3fffff))
+          (setq char (- char #x3fff00)))
+        (unless decode
+          (when (> char 255) (setq char 32)))
+        (cond
+         ((and decode (= eol 1) (= char 13)
+               (< (1+ index) size) (= (aref text (1+ index)) 10))
+          (push 10 characters)
+          (setq index (1+ index)))
+         ((and decode (= eol 2) (= char 13)) (push 10 characters))
+         ((and (not decode) (= char 10) (= eol 1))
+          (push 13 characters) (push 10 characters))
+         ((and (not decode) (= char 10) (= eol 2)) (push 13 characters))
+         (t (push char characters))))
+      (setq index (1+ index)))
+    (if decode
+        (string-as-multibyte (apply #'string (nreverse characters)))
+      (apply #'unibyte-string (nreverse characters)))))
+
 (when (emacs-stub--install-function-p 'decode-coding-string)
-  (defun decode-coding-string (string &optional _coding-system _nocopy &rest _)
-    "Return STRING's UTF-8 bytes as a multibyte string."
-    (if (and (stringp string)
-             (not (multibyte-string-p string))
-             (fboundp 'string-as-multibyte))
-        (string-as-multibyte string)
-      string)))
+  (defun decode-coding-string (string &optional coding-system _nocopy &rest _)
+    "Decode STRING using Latin-1 or the standalone UTF-8 representation."
+    (let ((eol (emacs-stub--latin-1-eol-type coding-system)))
+      (if eol
+          (emacs-stub--latin-1-convert string eol t)
+        (if (and (stringp string)
+                 (not (multibyte-string-p string))
+                 (fboundp 'string-as-multibyte))
+            (string-as-multibyte string)
+          string)))))
 (when (emacs-stub--install-function-p 'encode-coding-string)
-  (defun encode-coding-string (string &optional _coding-system _nocopy &rest _)
-    "Return multibyte STRING as its unibyte UTF-8 bytes."
-    (if (and (stringp string)
-             (multibyte-string-p string)
-             (fboundp 'string-as-unibyte))
-        (string-as-unibyte string)
-      string)))
+  (defun encode-coding-string (string &optional coding-system _nocopy &rest _)
+    "Encode STRING as unibyte Latin-1 or UTF-8 bytes."
+    (let ((eol (emacs-stub--latin-1-eol-type coding-system)))
+      (if eol
+          (emacs-stub--latin-1-convert string eol nil)
+        (if (and (stringp string)
+                 (multibyte-string-p string)
+                 (fboundp 'string-as-unibyte))
+            (string-as-unibyte string)
+          string)))))
+
+(defun emacs-stub--encode-latin-1 (original &rest arguments)
+  "Handle Latin-1 ARGUMENTS, preserving ORIGINAL for other coding systems."
+  (let ((eol (emacs-stub--latin-1-eol-type (nth 1 arguments))))
+    (if (and eol (>= (length arguments) 2) (<= (length arguments) 3))
+        (emacs-stub--latin-1-convert (car arguments) eol nil)
+      (apply original arguments))))
+
+(defun emacs-stub--decode-latin-1 (original &rest arguments)
+  "Handle Latin-1 ARGUMENTS, preserving ORIGINAL for other coding systems."
+  (let ((eol (emacs-stub--latin-1-eol-type (nth 1 arguments))))
+    (if (and eol (>= (length arguments) 2) (<= (length arguments) 3))
+        (emacs-stub--latin-1-convert (car arguments) eol t)
+      (apply original arguments))))
+
+;; A frozen reader may already bind both functions and `emacs-version'.
+;; Extend that reader's coding support without changing its other encodings.
+(when (fboundp 'nelisp--repr)
+  (advice-add 'encode-coding-string :around #'emacs-stub--encode-latin-1)
+  (advice-add 'decode-coding-string :around #'emacs-stub--decode-latin-1))
 
 ;; T75 (2026-09) — `fboundp' / `macrop' / `commandp' / `indirect-function'
 ;; all incorrectly signal `(wrong-type-argument symbolp nil)' when called on
@@ -4441,171 +4760,8 @@ the native primitive otherwise."
           nil
         (funcall emacs-stub--native-commandp function for-call-interactively)))
 
-    (defun indirect-function (object &optional _noerror)
+    (defun indirect-function (object &optional noerror)
       "Return the function OBJECT ultimately refers to, following aliases.
-Matches host Emacs for OBJECT = nil (nil is unbound as a function, so the
-alias chain terminates immediately at nil); delegates to the native
-primitive otherwise.  The optional NOERROR argument is accepted for GNU
-arity compatibility; GNU ignores it as well."
-      (if (null object) nil (funcall emacs-stub--native-indirect-function object)))))
-
-;;;; --- with-wrapper-hook (GNU subr.el, verbatim) ---
-;; simple.el's `buffer-substring--filter' (reached from `kill-region' via
-;; `filter-buffer-substring') expands `subr--with-wrapper-hook-no-warnings',
-;; which lives in subr.el and is not part of the standalone bundle.
-
-(unless (fboundp 'subr--with-wrapper-hook-no-warnings)
-  (defmacro subr--with-wrapper-hook-no-warnings (hook args &rest body)
-    "Like (with-wrapper-hook HOOK ARGS BODY), but without warnings."
-    (declare (debug (form sexp def-body)))
-    (let ((funs (make-symbol "funs"))
-          (global (make-symbol "global"))
-          (argssym (make-symbol "args"))
-          (runrestofhook (make-symbol "runrestofhook")))
-      `(letrec ((,runrestofhook
-                 (lambda (,funs ,global ,argssym)
-                   (if (consp ,funs)
-                       (if (eq t (car ,funs))
-                           (funcall ,runrestofhook
-                                    (append ,global (cdr ,funs)) nil ,argssym)
-                         (apply (car ,funs)
-                                (apply-partially
-                                 (lambda (,funs ,global &rest ,argssym)
-                                   (funcall ,runrestofhook ,funs ,global ,argssym))
-                                 (cdr ,funs) ,global)
-                                ,argssym))
-                     (apply (lambda ,args ,@body) ,argssym)))))
-         (funcall ,runrestofhook ,hook
-                  ,(if (symbolp hook)
-                       `(if (local-variable-p ',hook)
-                            (default-value ',hook)))
-                  (list ,@args))))))
-
-(unless (fboundp 'with-wrapper-hook)
-  (defmacro with-wrapper-hook (hook args &rest body)
-    "Run BODY, using wrapper functions from HOOK with additional ARGS."
-    (declare (indent 2) (debug (form sexp body)))
-    `(subr--with-wrapper-hook-no-warnings ,hook ,args ,@body)))
-
-;;;; --- add-to-history (GNU subr.el, verbatim; vars from minibuf.c) ---
-;; `kill-new' records into `kill-ring' through `add-to-history'.
-
-(defvar history-length 100
-  "Maximum length of history lists before truncation takes place.")
-(defvar history-delete-duplicates nil
-  "Non-nil means to delete duplicates in history.")
-
-(unless (fboundp 'add-to-history)
-  (defun add-to-history (history-var newelt &optional maxelt keep-all)
-    "Add NEWELT to the history list stored in the variable HISTORY-VAR.
-Return the new history list.  See GNU `add-to-history' for details."
-    (unless maxelt
-      (setq maxelt (or (get history-var 'history-length)
-                       history-length)))
-    (let ((history (symbol-value history-var))
-          tail)
-      (when (and (listp history)
-                 (or keep-all
-                     (not (stringp newelt))
-                     (> (length newelt) 0))
-                 (or keep-all
-                     (not (equal (car history) newelt))))
-        (if history-delete-duplicates
-            (setq history (delete newelt history)))
-        (setq history (cons newelt history))
-        (when (integerp maxelt)
-          (if (>= 0 maxelt)
-              (setq history nil)
-            (setq tail (nthcdr (1- maxelt) history))
-            (when (consp tail)
-              (setcdr tail nil))))
-        (set history-var history)))))
-
-;;;; --- insert-for-yank (GNU subr.el, verbatim) ---
-;; `yank' inserts through `insert-for-yank', which lives in subr.el.
-
-(defvar yank-undo-function)
-
-(unless (fboundp 'remove-yank-excluded-properties)
-(defun remove-yank-excluded-properties (start end)
-  "Process text properties between START and END, inserted for a `yank'.
-Perform the handling specified by `yank-handled-properties', then
-remove properties specified by `yank-excluded-properties'."
-  (let ((inhibit-read-only t))
-    (dolist (handler yank-handled-properties)
-      (let ((prop (car handler))
-            (fun  (cdr handler))
-            (run-start start))
-        (while (< run-start end)
-          (let ((value (get-text-property run-start prop))
-                (run-end (next-single-property-change
-                          run-start prop nil end)))
-            (funcall fun value run-start run-end)
-            (setq run-start run-end)))))
-    (if (eq yank-excluded-properties t)
-        (set-text-properties start end nil)
-      (remove-list-of-text-properties start end yank-excluded-properties))))
-)
-
-(unless (fboundp 'insert-for-yank)
-(defun insert-for-yank (string)
-  "Insert STRING at point for the `yank' command.
-
-This function is like `insert', except it honors the variables
-`yank-handled-properties' and `yank-excluded-properties', and the
-`yank-handler' text property, in the way that `yank' does.
-
-It also runs the string through `yank-transform-functions'."
-  ;; Allow altering the yank string.
-  (run-hook-wrapped 'yank-transform-functions
-                    (lambda (f) (setq string (funcall f string)) nil))
-  (let (to)
-    (while (setq to (next-single-property-change 0 'yank-handler string))
-      (insert-for-yank-1 (substring string 0 to))
-      (setq string (substring string to))))
-  (insert-for-yank-1 string))
-)
-
-(unless (fboundp 'insert-for-yank-1)
-(defun insert-for-yank-1 (string)
-  "Helper for `insert-for-yank', which see."
-  (let* ((handler (and (stringp string)
-		       (get-text-property 0 'yank-handler string)))
-	 (param (or (nth 1 handler) string))
-	 (opoint (point))
-	 (inhibit-read-only inhibit-read-only)
-	 end)
-
-    ;; FIXME: This throws away any yank-undo-function set by previous calls
-    ;; to insert-for-yank-1 within the loop of insert-for-yank!
-    (setq yank-undo-function t)
-    (if (nth 0 handler) ; FUNCTION
-	(funcall (car handler) param)
-      (insert param))
-    (setq end (point))
-
-    ;; Prevent read-only properties from interfering with the
-    ;; following text property changes.
-    (setq inhibit-read-only t)
-
-    (unless (nth 2 handler) ; NOEXCLUDE
-      (remove-yank-excluded-properties opoint end))
-
-    ;; If last inserted char has properties, mark them as rear-nonsticky.
-    (if (and (> end opoint)
-	     (text-properties-at (1- end)))
-	(put-text-property (1- end) end 'rear-nonsticky t))
-
-    (if (eq yank-undo-function t)		   ; not set by FUNCTION
-	(setq yank-undo-function (nth 3 handler))) ; UNDO
-    (if (nth 4 handler)				   ; COMMAND
-	(setq this-command (nth 4 handler)))))
-)
-
-;;;; --- buffer-read-only error symbol (GNU buffer.c) ---
-;; The runtime signals `buffer-read-only' without error conditions, so
-;; `(condition-case nil ... (error ...))' could not catch it.
-
-(unless (get 'buffer-read-only 'error-conditions)
-  (put 'buffer-read-only 'error-conditions '(buffer-read-only error))
-  (put 'buffer-read-only 'error-message "Buffer is read-only"))
+The obsolete NOERROR argument is accepted and ignored."
+      (ignore noerror)
+      (emacs-stub--indirect-function object))))
