@@ -1,12 +1,12 @@
 #!/bin/bash
 # Doc 243 S3.1: end-to-end Ir and wall of a bare start under SYN, plus the Doc 242 checks on the candidate.
-# Env: COLD_INIT_BIN (candidate, default build-on50), COLD_INIT_REF (default build-on33), COLD_INIT_BUILDS,
+# Env: COLD_INIT_BIN (candidate, default build-on56), COLD_INIT_REF (default build-on33), COLD_INIT_BUILDS,
 #      NL243_W (worktree root override), COLD_INIT_ROUNDS (15), A242_QUIET_LOAD/A242_QUIET_BUSY/A242_QUIET_WAIT,
 #      COLD_INIT_SKIP_DOC242=1 skips part (c) (debugging only; never counts as PASS).
 set -u; export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 NB=${COLD_INIT_BUILDS:-$HOME/.cache/tmp/nelisp-sbcl-impl-builds}
-BIN=${COLD_INIT_BIN:-$NB/build-on50/nelisp-dynamic}
+BIN=${COLD_INIT_BIN:-$NB/build-on56/nelisp-dynamic}
 REF=${COLD_INIT_REF:-$NB/build-on33/nelisp-dynamic}
 W=${NL243_W:-$(cd "$HERE/../../../.." && pwd)}
 EV=$W/tools/ai/sbcl-impl-evidence

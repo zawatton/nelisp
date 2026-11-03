@@ -399,8 +399,15 @@ compile-parallel: nl-check-gate
 	printf '%s\n' $$files | xargs -r -n 1 -P $(JOBS) sh -c \
 	  '$(EMACS) --batch -Q -L src $(PACKAGE_SRC_LOADS) --eval '\''(setq byte-compile-error-on-warn nil)'\'' -f batch-byte-compile "$$0"'
 
+# Deletes every .elc except the ones git tracks (checked-in fixtures such as
+# test/fixtures/native-bytecode/gnu-31.1-mini.elc, which `make test' --
+# through this target -- used to delete).  Outside a git checkout the list
+# is empty and every .elc goes, as before.
 clean:
-	find . -name '*.elc' -type f -delete
+	@tracked=" $$(git ls-files -- '*.elc' 2>/dev/null | sed 's|^|./|' | tr '\n' ' ') "; \
+	find . -name '*.elc' -type f | while IFS= read -r f; do \
+	  case "$$tracked" in *" $$f "*) ;; *) rm -f "$$f" ;; esac; \
+	done
 
 # ===================================================================
 # Standalone NeLisp eval binary (pure-elisp AOT, ZERO Rust).

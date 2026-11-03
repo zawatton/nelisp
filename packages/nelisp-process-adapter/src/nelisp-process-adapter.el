@@ -1460,10 +1460,17 @@ reads it back with getsockname(2), which the standalone runtime does not
 expose.  Instead try random ports of the IANA ephemeral range 49152-65535
 \(the range the kernel itself uses for such binds on most systems): bind
 fails with EADDRINUSE (-98) on a port in use, so the port answered is free
-and is the one actually bound.  Any other error is signaled at once."
-  (let ((tries nelisp--network-listen-any-port-tries) (result nil))
+and is the one actually bound.  Any other error is signaled at once.
+The walk starts at a point derived from the process id and the clock and
+steps by a prime, so concurrent processes try different ports; `random'
+is not used (its unseeded sequence is the same in every process, and
+seeding it would change the caller's sequence)."
+  (let ((tries nelisp--network-listen-any-port-tries) (result nil)
+        (start (mod (+ (* (emacs-pid) 7919) (truncate (* 1000 (float-time)))) 16384))
+        (i 0))
     (while (and (null result) (> tries 0))
-      (let ((port (+ 49152 (random 16384))))
+      (let ((port (+ 49152 (mod (+ start (* i 4099)) 16384))))
+        (setq i (1+ i))
         (condition-case err
             (setq result (cons (nelisp-socket-listen host port t) port))
           (error

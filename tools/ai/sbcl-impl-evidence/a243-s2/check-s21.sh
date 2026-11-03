@@ -1,13 +1,13 @@
 #!/bin/bash
 # Doc 243 S2.1: no nl_ht_reindex call on the fast path; hash tables and the Doc 240 launcher
 # behave the same on the forced-relocation path.
-# Env: COLD_INIT_BIN (candidate, default build-on50), COLD_INIT_REF (default build-on33),
+# Env: COLD_INIT_BIN (candidate, default build-on56), COLD_INIT_REF (default build-on33),
 #      COLD_INIT_BUILDS, NL243_W (worktree root override), COLD_INIT_DRIVERS / COLD_INIT_REF_DRIVERS
 #      (dirs holding benchmark-driver-native-on.el; default run/bK of each build, else run/b33).
 set -u; export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 NB=${COLD_INIT_BUILDS:-$HOME/.cache/tmp/nelisp-sbcl-impl-builds}
-BIN=${COLD_INIT_BIN:-$NB/build-on50/nelisp-dynamic}
+BIN=${COLD_INIT_BIN:-$NB/build-on56/nelisp-dynamic}
 REF=${COLD_INIT_REF:-$NB/build-on33/nelisp-dynamic}
 W=${NL243_W:-$(cd "$HERE/../../../.." && pwd)}
 NOP=$HERE/../a242-s2/nop.el; [ -r "$NOP" ] || NOP=$W/tools/ai/sbcl-impl-evidence/a242-s2/nop.el

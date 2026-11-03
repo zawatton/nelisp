@@ -1,10 +1,10 @@
 #!/bin/bash
 # Doc 243 S4.2 E2E: no behaviour change on the verify22 suite.  verify22 outputs of the
 # candidate (rows results, sd/kd, reader probe, epoch probe) equal build33's.
-# Env: COLD_INIT_BIN (default build-on50); reference verify dir COLD_INIT_REF_VERIFY (default verify33).
+# Env: COLD_INIT_BIN (default build-on56); reference verify dir COLD_INIT_REF_VERIFY (default verify33).
 set -u
 NB=$HOME/.cache/tmp/nelisp-sbcl-impl-builds
-BIN=${COLD_INIT_BIN:-$NB/build-on50/nelisp-dynamic}
+BIN=${COLD_INIT_BIN:-$NB/build-on56/nelisp-dynamic}
 REF=${COLD_INIT_REF_VERIFY:-$NB/verify33}
 K=$(basename "$(dirname "$BIN")" | sed -n 's/^build-on//p'); NEWV=$NB/verify$K
 fail() { echo "FAIL: $*"; echo S4.2-FAIL; exit 1; }

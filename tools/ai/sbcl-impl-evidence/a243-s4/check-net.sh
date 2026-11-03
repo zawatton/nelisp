@@ -4,12 +4,12 @@
 # `1+'.  net = ((Ir_kind(2000) - Ir_kind(0)) - (Ir_base(2000) - Ir_base(0))) / 2000.
 # Pass: candidate net <= 25% of the reference's net, and RESULT lines equal GNU Emacs
 # for kind and base on both binaries.  Usage: check-net.sh KIND LABEL
-# Env: COLD_INIT_BIN (default build-on50), COLD_INIT_REF (default build-on33), GNU_EMACS.
+# Env: COLD_INIT_BIN (default build-on56), COLD_INIT_REF (default build-on33), GNU_EMACS.
 set -u
 KIND=$1; LABEL=$2
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 NB=$HOME/.cache/tmp/nelisp-sbcl-impl-builds
-BIN=${COLD_INIT_BIN:-$NB/build-on50/nelisp-dynamic}
+BIN=${COLD_INIT_BIN:-$NB/build-on56/nelisp-dynamic}
 REF=${COLD_INIT_REF:-$NB/build-on33/nelisp-dynamic}
 GNU=${GNU_EMACS:-emacs-31.1}
 for f in "$BIN" "$REF"; do [ -x "$f" ] || { echo "FAIL: not executable: $f"; echo "$LABEL-FAIL"; exit 1; }; done

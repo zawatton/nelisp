@@ -6,7 +6,7 @@ set -u
 H=$(cd "$(dirname "$0")" && pwd)
 B=${BUILDS:-$HOME/.cache/tmp/nelisp-sbcl-impl-builds}
 REF=${REF_BIN:-$B/build-on45/nelisp-dynamic}
-BIN=${CAND_BIN:-$B/build-on50/nelisp-dynamic}
+BIN=${CAND_BIN:-$B/build-on56/nelisp-dynamic}
 T=$(mktemp -d) || exit 1; trap 'rm -rf "$T"' EXIT
 for f in "$REF" "$BIN"; do [ -x "$f" ] || { echo "FAIL: missing $f"; exit 1; }; done
 net() {

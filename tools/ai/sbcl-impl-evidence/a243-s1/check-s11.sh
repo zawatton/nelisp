@@ -1,11 +1,11 @@
 #!/bin/bash
 # Doc 243 S1.1: environment reinit cost and equality.
-# Env: COLD_INIT_BIN (candidate, default build-on50), COLD_INIT_REF (default build-on33),
+# Env: COLD_INIT_BIN (candidate, default build-on56), COLD_INIT_REF (default build-on33),
 #      COLD_INIT_BUILDS (build root), NL243_W (worktree root override, for tests outside the worktree).
 set -u; export LC_ALL=C
 HERE=$(cd "$(dirname "$0")" && pwd)
 NB=${COLD_INIT_BUILDS:-$HOME/.cache/tmp/nelisp-sbcl-impl-builds}
-BIN=${COLD_INIT_BIN:-$NB/build-on50/nelisp-dynamic}
+BIN=${COLD_INIT_BIN:-$NB/build-on56/nelisp-dynamic}
 REF=${COLD_INIT_REF:-$NB/build-on33/nelisp-dynamic}
 W=${NL243_W:-$(cd "$HERE/../../../.." && pwd)}
 NOP=$HERE/../a242-s2/nop.el; [ -r "$NOP" ] || NOP=$W/tools/ai/sbcl-impl-evidence/a242-s2/nop.el
