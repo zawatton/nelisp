@@ -81,7 +81,9 @@
           (put 'exp 'emacs-stub-bulk t)
           (load emacs-numeric-test--module-file t t)
           (should-not called)
-          (should (= 0 (atan 1)))
+          ;; GNU Emacs 31.1 measured: (atan 1) => 0.7853981633974483.
+          (should (< (abs (- (atan 1) 0.7853981633974483)) 1e-12))
+          ;; `exp' stays a constant bootstrap fallback (GNU gives 2.718...).
           (should (= 1 (exp 1)))
           (should-not (get 'atan 'emacs-stub-bulk))
           (should-not (get 'exp 'emacs-stub-bulk)))

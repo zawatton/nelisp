@@ -85,21 +85,49 @@ explicitly after such mutation."
     (emacs-fns--standalone-feature-index-build)))
 
 (defun emacs-fns--standalone-featurep (feature &optional _subfeature)
-  "Pure-Elisp fallback for `featurep' used by standalone runtimes.
+  "Index-backed membership test for FEATURE in `features'.
 
-`features' remains authoritative; this function mirrors `featurep'
-semantics with an O(1) hot-path using the eq-hash index."
+Fast path only: it trusts the eq-hash index, which is rebuilt when
+`features' is rebound but cannot see destructive edits of the same list.
+The installed `featurep' uses `emacs-fns--standalone-featurep-exact'."
   (emacs-fns--standalone-feature-index-ensure)
   (and (gethash feature emacs-fns--standalone-feature-index) t))
 
-(defun emacs-fns--standalone-provide (feature &optional _subfeatures)
+(defun emacs-fns--standalone-featurep-exact (feature &optional subfeature)
+  "Pure-Elisp fallback for `featurep' used by standalone runtimes.
+
+FEATURE must be a symbol.  SUBFEATURE, when non-nil, must occur in
+FEATURE's `subfeatures' property as well as FEATURE in `features'."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  ;; Like GNU, inspect the list itself: destructive changes to `features'
+  ;; must take effect even when its head is still the same cons cell.
+  (and (memq feature features)
+       (or (null subfeature)
+           (memq subfeature (get feature 'subfeatures)))
+       t))
+
+(defun emacs-fns--standalone-provide (feature &optional subfeatures)
   "Pure-Elisp fallback for `provide' used by standalone runtimes.
 
-Adds FEATURE once to `features' and returns FEATURE."
-  (unless (emacs-fns--standalone-featurep feature)
-    (setq features (cons feature features))
-    (puthash feature t emacs-fns--standalone-feature-index)
-    (setq emacs-fns--standalone-feature-index-source features))
+Adds FEATURE once to `features', records the load, and returns FEATURE.
+A non-nil SUBFEATURES list replaces FEATURE's `subfeatures' property.
+Functions registered for FEATURE in `after-load-alist' run each time."
+  (unless (symbolp feature)
+    (signal 'wrong-type-argument (list 'symbolp feature)))
+  (unless (listp subfeatures)
+    (signal 'wrong-type-argument (list 'listp subfeatures)))
+  ;; Keep the eq-hash index coherent for `emacs-fns--standalone-featurep';
+  ;; membership itself is decided on the list, as in GNU.
+  (emacs-fns--standalone-feature-index-ensure)
+  (unless (memq feature features)
+    (setq features (cons feature features)))
+  (puthash feature t emacs-fns--standalone-feature-index)
+  (setq emacs-fns--standalone-feature-index-source features)
+  (when subfeatures
+    (put feature 'subfeatures subfeatures))
+  (setq current-load-list (cons (cons 'provide feature) current-load-list))
+  (mapc #'funcall (cdr (assq feature after-load-alist)))
   feature)
 
 (defun emacs-fns--load-and-check-required-feature (feature path noerror)
@@ -129,15 +157,15 @@ providing FEATURE signals an error, even when the loader returns nil."
   ;; selecting an `.elc' that will later be misread as source text.
   (setq load-suffixes (list ".el"))
 
-  (defun provide (feature &optional _subfeatures)
+  (defun provide (feature &optional subfeatures)
     "Mark FEATURE as available and return FEATURE.
-Optional SUBFEATURES are accepted for Emacs compatibility and ignored."
-    (emacs-fns--standalone-provide feature _subfeatures))
+Optional SUBFEATURES lists the subfeatures supported by FEATURE."
+    (emacs-fns--standalone-provide feature subfeatures))
 
-  (defun featurep (feature &optional _subfeature)
+  (defun featurep (feature &optional subfeature)
     "Return non-nil if FEATURE has been provided.
-Optional SUBFEATURE is accepted for Emacs compatibility and ignored."
-    (emacs-fns--standalone-featurep feature _subfeature))
+Optional SUBFEATURE must also occur in FEATURE's subfeatures."
+    (emacs-fns--standalone-featurep-exact feature subfeature))
 
   (defun emacs-fns--file-name-has-directory-p (filename)
     "Return non-nil when FILENAME contains a directory separator."
@@ -223,22 +251,91 @@ string, or a list of strings, and PREDICATE defaults to `file-exists-p'."
            ;; `locate-file' searches every PATH directory even when FILENAME
            ;; contains a subdirectory (for example, "term/xterm").
            (dirs path)
+           ;; For a canonical absolute directory and a plain relative name,
+           ;; `expand-file-name' is plain concatenation; skip it.
+           (plain-name (emacs-fns--plain-relative-name-p filename))
            found)
       (while (and dirs (not found))
-        (let ((suffixes-left suffix-list))
+        (let ((suffixes-left suffix-list)
+              (prefix (and plain-name
+                           (emacs-fns--canonical-directory (car dirs)))))
           (while (and suffixes-left (not found))
             (let ((candidate
-                   (expand-file-name
-                    (concat filename (car suffixes-left))
-                    (car dirs))))
-              (when (and (not (emacs-fns--byte-code-file-p candidate))
-                         (if predicate
-                             (funcall predicate candidate)
-                           (file-exists-p candidate)))
+                   (if prefix
+                       (concat prefix filename (car suffixes-left))
+                     (expand-file-name
+                      (concat filename (car suffixes-left))
+                      (car dirs)))))
+              ;; Most candidates do not exist; test existence before the
+              ;; byte-code check, which only matters for an existing file.
+              (when (and (cond
+                          ;; `require' passes this predicate; the stat
+                          ;; primitive answers it identically ('file).
+                          ((and prefix
+                                (eq predicate 'emacs-fns--regular-file-p)
+                                (fboundp 'nelisp--syscall-stat))
+                           (eq (nelisp--syscall-stat candidate) 'file))
+                          (predicate (funcall predicate candidate))
+                          ;; A canonical local path needs no handler or
+                          ;; expansion; ask the stat primitive directly
+                          ;; (the prelude `file-exists-p' semantics).
+                          ((and prefix (fboundp 'nelisp--syscall-stat))
+                           (memq (nelisp--syscall-stat candidate)
+                                 '(file directory)))
+                          (t (file-exists-p candidate)))
+                         (not (emacs-fns--byte-code-file-p candidate)))
                 (setq found candidate)))
             (setq suffixes-left (cdr suffixes-left))))
         (setq dirs (cdr dirs)))
       found))
+
+  (defun emacs-fns--path-canonical-p (path)
+    "Return non-nil when PATH has no `~', `:', `.'/`..' component or `//'.
+Conservative: any component starting with `.' (including hidden names) is
+rejected, so such paths keep the `expand-file-name' route.  Uses
+`string-search' because a per-character loop costs ~15x more on the
+standalone runtime and this runs once per `load-path' entry."
+    (not (or (string-prefix-p "." path)
+             (string-search "/." path)
+             (string-search "//" path)
+             (string-search "~" path)
+             (string-search ":" path))))
+
+  (defun emacs-fns--plain-relative-name-p (name)
+    "Return non-nil when NAME needs no expansion relative to a directory.
+NAME must be relative, without `~', `.'/`..' components, doubled
+slashes or a trailing slash."
+    (and (stringp name)
+         (> (length name) 0)
+         (not (memq (aref name 0) '(?/ ?~)))
+         ;; The standalone `expand-file-name' drops a trailing slash.
+         (not (eq (aref name (1- (length name))) ?/))
+         (emacs-fns--path-canonical-p name)))
+
+  (defvar emacs-fns--canonical-directory-cache (make-hash-table :test 'equal)
+    "Memo of `emacs-fns--canonical-directory', keyed by directory string.
+The result depends only on the string, and the same `load-path' entries
+are scanned for every library lookup.  `none' records a non-canonical one.")
+
+  (defun emacs-fns--canonical-directory (directory)
+    "Return DIRECTORY with a trailing slash when it is canonical, else nil.
+Canonical means absolute, without `~', `.'/`..' components or doubled
+slashes, so `expand-file-name' would return it unchanged."
+    (when (stringp directory)
+      (let ((cached (gethash directory emacs-fns--canonical-directory-cache)))
+        (if cached
+            (and (not (eq cached 'none)) cached)
+          (let ((result
+                 (and (> (length directory) 0)
+                      (eq (aref directory 0) ?/)
+                      (emacs-fns--path-canonical-p directory)
+                      (if (eq (aref directory (1- (length directory))) ?/)
+                          (copy-sequence directory)
+                        (concat directory "/")))))
+            ;; Key on a copy so later mutation of DIRECTORY cannot alias it.
+            (puthash (copy-sequence directory) (or result 'none)
+                     emacs-fns--canonical-directory-cache)
+            result)))))
 
   (defun emacs-fns--regular-file-p (candidate)
     "Return non-nil when CANDIDATE names an existing non-directory file."
@@ -616,14 +713,37 @@ on identity should re-bind the variable holding PLIST."
   (defvar terminal-raw-mode--dev-tty nil)
   (defvar terminal-raw-mode--active nil)
   (defvar terminal-raw-mode--winsize-changed nil)
+  (defvar terminal-raw-mode--memory nil
+    "Named external memory owners for the current terminal session.")
 
   (defun terminal-raw-mode--ensure-buf (name size align)
-    (let ((ptr (and (boundp name) (symbol-value name))))
-      (if ptr
-          ptr
-        (let ((fresh (alloc-bytes size align)))
-          (set name fresh)
-          fresh))))
+    ;; An integer address does not keep alloc-bytes storage alive across GC.
+    ;; Page-aligned external mappings satisfy the termios/poll byte alignment
+    ;; and must remain owned until raw mode has restored the terminal.
+    (ignore align)
+    (let ((owner (cdr (assq name terminal-raw-mode--memory))))
+      (unless owner
+        (require 'nl-ffi-memory)
+        (setq owner (nl-ffi-memory-allocate size))
+        (push (cons name owner) terminal-raw-mode--memory))
+      (let ((pointer (nl-ffi-memory-address owner)))
+        (set name pointer)
+        pointer)))
+
+  (defun terminal-raw-mode--release-bufs ()
+    "Release terminal scratch after its final native use.
+Keep failed releases owned so a later leave can retry them."
+    (let ((pending nil) (failure nil))
+      (dolist (cell terminal-raw-mode--memory)
+        (condition-case err
+            (progn
+              (nl-ffi-memory-release (cdr cell))
+              (set (car cell) nil))
+          (error
+           (push cell pending)
+           (unless failure (setq failure err)))))
+      (setq terminal-raw-mode--memory (nreverse pending))
+      (when failure (signal (car failure) (cdr failure)))))
 
   (defun terminal-raw-mode--dev-tty-path ()
     (let ((buf (terminal-raw-mode--ensure-buf
@@ -685,17 +805,18 @@ on identity should re-bind the variable holding PLIST."
               t))))))
 
   (defun terminal-raw-mode-leave ()
-    (if (not terminal-raw-mode--active)
-        nil
-      (let ((fd terminal-raw-mode--fd)
-            (saved terminal-raw-mode--saved-termios))
-        (when (and fd saved)
-          (syscall-direct 16 fd 21506 saved 0 0 0)
-          (when (> fd 2)
-            (syscall-direct 3 fd 0 0 0 0 0)))
+    (let ((active terminal-raw-mode--active)
+          (fd terminal-raw-mode--fd)
+          (saved terminal-raw-mode--saved-termios))
+      (unwind-protect
+          (when (and active fd saved)
+            (syscall-direct 16 fd 21506 saved 0 0 0)
+            (when (> fd 2)
+              (syscall-direct 3 fd 0 0 0 0 0)))
         (setq terminal-raw-mode--active nil)
         (setq terminal-raw-mode--fd nil)
-        t)))
+        (terminal-raw-mode--release-bufs))
+      active))
 
   (defun read-stdin-byte-available (timeout-ms)
     (let ((fd (or terminal-raw-mode--fd 0))

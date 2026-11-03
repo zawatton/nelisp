@@ -45,24 +45,37 @@ Currently a no-op in the standalone port — output is always compact.")
   "Value used to represent JSON `null' on input/output (default = nil).")
 
 (defun emacs-json--escape-string (s)
-  "Return JSON-escaped representation of string S (no surrounding quotes)."
-  (let ((out "")
-        (i 0)
-        (len (length s)))
-    (while (< i len)
-      (let ((c (aref s i)))
-        (cond
-         ((eq c ?\")  (setq out (concat out "\\\"")))
-         ((eq c ?\\)  (setq out (concat out "\\\\")))
-         ((eq c ?\n)  (setq out (concat out "\\n")))
-         ((eq c ?\r)  (setq out (concat out "\\r")))
-         ((eq c ?\t)  (setq out (concat out "\\t")))
-         ((eq c ?\b)  (setq out (concat out "\\b")))
-         ((eq c ?\f)  (setq out (concat out "\\f")))
-         ((< c 32)    (setq out (concat out (format "\\u%04x" c))))
-         (t           (setq out (concat out (char-to-string c))))))
+  "Return JSON-escaped representation of string S (no surrounding quotes).
+Linear: text between escapes is copied as substrings and joined once."
+  (let ((i 0) (seg 0) (n (length s)) (pieces nil) (c 0))
+    (while (< i n)
+      (setq c (aref s i))
+      (when (or (< c 32) (eq c ?\") (eq c ?\\))
+        (setq pieces
+              (cons (cond
+                     ((eq c ?\")  "\\\"")
+                     ((eq c ?\\)  "\\\\")
+                     ((eq c ?\n)  "\\n")
+                     ((eq c ?\r)  "\\r")
+                     ((eq c ?\t)  "\\t")
+                     ((eq c ?\b)  "\\b")
+                     ((eq c ?\f)  "\\f")
+                     (t (format "\\u%04x" c)))
+                    (cons (substring s seg i) pieces))
+              seg (1+ i)))
       (setq i (1+ i)))
-    out))
+    (if (null pieces)
+        s
+      (apply #'concat (nreverse (cons (substring s seg n) pieces))))))
+
+(defun emacs-json--join (parts sep)
+  "Join the list of strings PARTS with SEP using a single `concat'."
+  (if (null parts)
+      ""
+    (let ((out (list (car parts))))
+      (dolist (p (cdr parts))
+        (setq out (cons p (cons sep out))))
+      (apply #'concat (nreverse out)))))
 
 (defun emacs-json--encode-string (s)
   (concat "\"" (emacs-json--escape-string s) "\""))
@@ -114,7 +127,7 @@ responses.  An alist may legitimately have list-valued cdrs."
                     ":"
                     (json-encode (cdr p)))
             parts))
-    (concat "{" (mapconcat 'identity (nreverse parts) ",") "}")))
+    (concat "{" (emacs-json--join (nreverse parts) ",") "}")))
 
 (defun emacs-json--plist-to-pairs (plist)
   (let ((acc nil))
@@ -128,7 +141,7 @@ responses.  An alist may legitimately have list-valued cdrs."
                    (append vec-or-list nil)
                  vec-or-list)))
     (concat "["
-            (mapconcat (lambda (x) (json-encode x)) items ",")
+            (emacs-json--join (mapcar #'json-encode items) ",")
             "]")))
 
 (defun emacs-json--encode-hash-table (h)
@@ -350,12 +363,17 @@ empty JSON object in initialize / capabilities responses."
       (emacs-json--read-number))
      (t (emacs-json--read-error "unexpected character %c" c)))))
 
-(defun json-read-from-string (string)
-  "Parse JSON STRING into an elisp value.
-Objects are returned as alists with symbol keys; arrays as lists;
-numbers as int or float; `true' / `false' / `null' as t /
-`json-false' / `json-null' respectively.  Signals `json-error' on
-malformed input."
+(defvar json-object-type 'alist
+  "Type used to represent JSON objects: `alist', `plist' or `hash-table'.")
+(defvar json-array-type 'vector
+  "Type used to represent JSON arrays: `vector' (`array') or `list', as in GNU json.el.
+Before 2026-11-01 the standalone reader returned lists only; callers that need a
+list bind this to `list', as they must on GNU Emacs.")
+(defvar json-key-type nil
+  "Type of object keys: nil (symbols, keywords for plists), `string', `symbol' or `keyword'.")
+
+(defun emacs-json--read-slow (string)
+  "Parse STRING with the character reader (alists, lists, symbol keys)."
   (let ((emacs-json--read-pos 0)
         (emacs-json--read-src string))
     (let ((value (emacs-json--read-value)))
@@ -363,6 +381,34 @@ malformed input."
       (unless (emacs-json--read-eof-p)
         (emacs-json--read-error "trailing garbage after JSON value"))
       value)))
+
+(defun json-read-from-string (string)
+  "Parse JSON STRING into an elisp value.
+Objects are returned as alists with symbol keys and arrays as vectors (GNU
+defaults); numbers as int or float; `true' / `false' / `null' as t /
+`json-false' / `json-null' respectively.  `json-object-type' and
+`json-array-type' select the representation.  Signals `json-error' on
+malformed input."
+  (let ((fast (and (stringp string)
+                   (or (null json-key-type)
+                       (and (eq json-key-type 'symbol) (eq json-object-type 'alist)))
+                   (memq json-object-type '(alist plist hash-table))
+                   (memq json-array-type '(list vector array))
+                   (fboundp 'nelisp--json-parse-fast)
+                   (funcall 'nelisp--json-parse-fast
+                            string
+                            (vector json-object-type
+                                    (if (eq json-array-type 'list) 'list 'array)
+                                    json-null json-false)))))
+    ;; The native-shaped parser declines (nil) on anything irregular; the
+    ;; character reader below then produces the `json-error' as before.
+    (if (and fast (funcall 'nelisp--jp-trailing-ws-p string (cdr fast)))
+        (car fast)
+      (let ((value (emacs-json--read-slow string)))
+        (cond ((and (eq json-object-type 'alist) (eq json-array-type 'list)) value)
+              (t (emacs-json--reshape value json-object-type
+                                      (if (eq json-array-type 'list) 'list 'array)
+                                      json-null json-false)))))))
 
 ;; Emacs 27+ native JSON entry points.  The reader has no native json_*
 ;; C functions, so alias them onto the elisp reader/encoder.  anvil and

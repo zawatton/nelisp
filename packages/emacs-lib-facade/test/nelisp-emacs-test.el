@@ -1360,6 +1360,7 @@
                    emacs-cl-macros
                    emacs-stub-bulk
                    emacs-stub
+                   emacs-mark-state
                    emacs-button-builtins
                    emacs-os-detect
                    emacs-easy-mmode
@@ -1387,6 +1388,9 @@
                    emacs-fileio-builtins
                    emacs-standalone
                    emacs-process
+                   emacs-process-posix-signals
+                   emacs-process-posix-spawn
+                   emacs-process-coding
                    emacs-process-builtins)))
   (should (equal emacs-editing-features
                  '(emacs-undo
