@@ -128,6 +128,26 @@
         then-form
       (cons 'progn else-forms))))
 
+;;;; --- static-when / static-unless (subr.el, Emacs 31) -----------------
+;; compat-31 skips these when `emacs-version' is "31.1", so vendor code
+;; (magit-base.el) expects the runtime to provide them.
+
+(unless (fboundp 'static-when)
+  (defmacro static-when (condition &rest body)
+    "Expansion-time `when': eval CONDITION now; keep BODY only if non-nil."
+    (declare (indent 1))
+    (if (eval condition (and (boundp 'lexical-binding) lexical-binding))
+        (cons 'progn body)
+      nil)))
+
+(unless (fboundp 'static-unless)
+  (defmacro static-unless (condition &rest body)
+    "Expansion-time `unless': eval CONDITION now; keep BODY only if nil."
+    (declare (indent 1))
+    (if (eval condition (and (boundp 'lexical-binding) lexical-binding))
+        nil
+      (cons 'progn body))))
+
 ;;;; --- docstring line filler (subr.el) -------------------------------
 
 (unless (fboundp 'internal--fill-string-single-line)
