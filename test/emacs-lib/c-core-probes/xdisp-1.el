@@ -30,7 +30,7 @@
   (lookup-image-map '(((rect . ((1 . 1) . (5 . 5))) id (:x 1))) 3 4))
  (move-point-visually
   (with-temp-buffer (insert "abc") (goto-char 2) (condition-case e (move-point-visually 1) (error (list (car e) (cdr e)))))
-  (with-temp-buffer (insert "abc") (goto-char 2) (condition-case e (move-point-visually -1) (error (list (car e) (cdr e)))))
+  (with-temp-buffer (insert "abc") (goto-char 2) (condition-case e (move-point-visually -1) (error (list (car e) (cdr e))))))
  (remember-mouse-glyph
   (condition-case e (remember-mouse-glyph nil 0 0) (error (car e)))
   (let ((f (selected-frame))) (condition-case e (remember-mouse-glyph f 1 1) (error (car e)))))

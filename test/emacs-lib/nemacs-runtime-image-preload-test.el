@@ -357,8 +357,8 @@
     emacs-process-shell-command-on-region-output-file
     lisp--mark
     mark-active
-    case-table--standard
-    case-table--current
+    nelisp-casetab--standard
+    nelisp-casetab--current
     case-table--standard-syntax-table
     read-answer-short
     read-answer-map--memoize

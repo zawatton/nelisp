@@ -2,9 +2,22 @@
  (thread-last-error)
  (thread-last-error t))
 (thread-live-p
+ (thread-live-p (current-thread))
+ (let ((thread (make-thread (lambda () nil) "finished")))
+   (while (thread-live-p thread) (thread-yield))
+   (thread-live-p thread))
+ (condition-case err (thread-live-p) (error err))
+ (condition-case err (thread-live-p nil nil) (error err))
  (condition-case e (thread-live-p nil) (error (list (car e) (cdr e))))
  (condition-case e (thread-live-p 'not-a-thread) (error (list (car e) (cdr e)))))
 (thread-name
+ (thread-name (current-thread))
+ (let* ((name (copy-sequence "named-thread"))
+        (thread (make-thread (lambda () nil) name)))
+   (while (thread-live-p thread) (thread-yield))
+   (list (thread-name thread) (eq (thread-name thread) name)))
+ (condition-case err (thread-name) (error err))
+ (condition-case err (thread-name nil nil) (error err))
  (condition-case e (thread-name nil) (error (list (car e) (cdr e))))
  (condition-case e (thread-name 'not-a-thread) (error (list (car e) (cdr e)))))
 (thread-set-buffer-disposition
