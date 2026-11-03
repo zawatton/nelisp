@@ -326,12 +326,28 @@ after it."
 
 ;;;; The graph -----------------------------------------------------------
 
+(defvar nelisp-pkg--gnu-features-cache nil
+  "(DIRECTORY . FEATURES) memo for `nelisp-pkg-provider-table'.")
+
+(defun nelisp-pkg--gnu-features ()
+  "Return the vendored GNU library features for `default-directory'."
+  (unless (equal (car nelisp-pkg--gnu-features-cache) default-directory)
+    (setq nelisp-pkg--gnu-features-cache
+          (cons default-directory (nelisp-pkg-gnu-library-features))))
+  (cdr nelisp-pkg--gnu-features-cache))
+
 (defun nelisp-pkg-provider-table (packages)
-  "Return a hash of FEATURE -> package name for PACKAGES."
-  (let ((table (make-hash-table :test #'eq)))
+  "Return a hash of FEATURE -> package name for PACKAGES.
+A feature that a vendored GNU library provides belongs to that library,
+even when a package also `provide's it (a compatibility stub that marks
+the feature loaded): requiring it is a GNU library dependency, not an
+edge to the stub's package."
+  (let ((table (make-hash-table :test #'eq))
+        (gnu (nelisp-pkg--gnu-features)))
     (dolist (package packages)
       (dolist (feature (plist-get package :provides))
-        (puthash feature (plist-get package :name) table)))
+        (unless (memq feature gnu)
+          (puthash feature (plist-get package :name) table))))
     table))
 
 (defun nelisp-pkg-edges (packages)
