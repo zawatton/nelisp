@@ -89,8 +89,6 @@ lisp/nelisp-cc-val-load.el	nl_val_clone_into	tag-test-read-u8	0	walked	Read this
 lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	1	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el	nelisp-eventloop-multiplex-unregister-fd	unresolved-numeric	0	n-a	This validates the six-field eventloop registration handle shape, not a Sexp tag.
-packages/nelisp-eventloop/src/nelisp-async-core.el	nelisp-async-core-cancel-timer	unresolved-numeric	0	n-a	This validates the five-field timer record shape, not a Sexp tag.
-packages/nelisp-eventloop/src/nelisp-async-core.el	nelisp-async-core-timerp	unresolved-numeric	0	n-a	This validates the five-field timer record shape, not a Sexp tag.
 packages/nelisp-process-adapter/src/nelisp-process-adapter.el	nelisp-process-adapter--signal-name	unresolved-numeric	0	n-a	This compares POSIX signal number 6 (SIGABRT), not a Sexp tag.
 scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
