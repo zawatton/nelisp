@@ -260,3 +260,27 @@
                  '(1 2 (3 4)))))
 
 ;;; nelisp-pcase-app-test.el ends here
+
+;;; Nested `or' with branch-local bindings (GNU macroexp shape)
+
+(defvar nelisp-pcase-test--count 0)
+(defun nelisp-pcase-test--tick (v) (setq nelisp-pcase-test--count (1+ nelisp-pcase-test--count)) v)
+
+(ert-deftest nelisp-pcase-or-branch-local-bindings ()
+  ;; macroexp pattern, both arms
+  (should (equal (pcase '(7 8) ((and x (or `(,v ,e) (and (pred symbolp) v (let e v)))) (list v e)))
+                 '(7 8)))
+  (should (equal (pcase 'foo ((and x (or `(,v ,e) (and (pred symbolp) v (let e v)))) (list v e)))
+                 '(foo foo)))
+  ;; arm binding a subset: others nil
+  (should (equal (pcase 5 ((and x (or (and (pred integerp) a) (and (pred stringp) b))) (list a b))) '(5 nil)))
+  (should (equal (pcase "s" ((and x (or (and (pred integerp) a) (and (pred stringp) b))) (list a b))) '(nil "s")))
+  ;; first match wins
+  (should (equal (pcase 5 ((and x (or (and (pred integerp) (let a 'one)) (and (pred numberp) (let a 'two)))) a)) 'one))
+  ;; value expressions evaluated once, only in the winning arm
+  (setq nelisp-pcase-test--count 0)
+  (should (equal (pcase 5 ((and x (or (and (pred stringp) (let a (nelisp-pcase-test--tick 1)))
+                                      (and (pred integerp) (let b (nelisp-pcase-test--tick 2)))))
+                           (list a b)))
+                 '(nil 2)))
+  (should (= nelisp-pcase-test--count 1)))

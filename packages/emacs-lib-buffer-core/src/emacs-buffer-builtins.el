@@ -2385,6 +2385,19 @@ Ignores narrowing (hashes the whole buffer)."
       (funcall emacs-buffer-builtins--native-char-before
                (and position (emacs-buffer-builtins--checked-position position)))
     (funcall emacs-buffer-builtins--substrate-char-before position)))
+(defun emacs-buffer-builtins--install-native-marker-position-bridges ()
+  "Keep marker validation at the shared buffer boundary after IO loads."
+  ;; Capture once: the IO adapter may itself capture this bridge, so capturing
+  ;; its replacement later would form a cycle through that adapter.
+  (unless emacs-buffer-builtins--native-goto-char
+    (setq emacs-buffer-builtins--native-goto-char (symbol-function 'goto-char)))
+  (unless emacs-buffer-builtins--native-char-after
+    (setq emacs-buffer-builtins--native-char-after (symbol-function 'char-after)))
+  (unless emacs-buffer-builtins--native-char-before
+    (setq emacs-buffer-builtins--native-char-before (symbol-function 'char-before)))
+  (defalias 'goto-char #'emacs-buffer-builtins-goto-char)
+  (defalias 'char-after #'emacs-buffer-builtins-char-after)
+  (defalias 'char-before #'emacs-buffer-builtins-char-before))
 (when (emacs-buffer-builtins--standalone-p)
   (emacs-buffer-builtins--install-native-marker-position-bridges)
   ;; Standalone provide executes named feature callbacks. This also handles
