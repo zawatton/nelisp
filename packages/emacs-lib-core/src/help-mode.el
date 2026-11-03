@@ -44,6 +44,15 @@
       (help-mode--install-standalone-command symbol))
   (help-mode--host-load-standard))
 
+;; GNU libraries such as `cl-extra' only need the help button types to exist so
+;; they can define subtypes of them; the lightweight help buffer has no use for
+;; the full GNU button actions.
+(when (and help-mode--standalone-p (fboundp 'define-button-type))
+  (unless (get 'help-xref 'button-category-symbol)
+    (define-button-type 'help-xref))
+  (unless (get 'help-function-def 'button-category-symbol)
+    (define-button-type 'help-function-def :supertype 'help-xref)))
+
 (provide 'help-mode)
 
 ;;; help-mode.el ends here

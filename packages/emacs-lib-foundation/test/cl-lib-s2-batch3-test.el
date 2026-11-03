@@ -4,10 +4,7 @@
 
 (require 'ert)
 
-(load (expand-file-name
-       "../src/cl-lib.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
-      nil t)
+(require 'cl-lib)
 
 ;; S2 coverage batch 3 (2026-09-28): the pure `cl-lib' accessors/constants
 ;; ported verbatim in `src/cl-lib.el' (3/4-deep car/cdr accessors,

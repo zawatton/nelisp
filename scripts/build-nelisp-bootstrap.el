@@ -125,11 +125,20 @@ final `.el' suffix with `.repl'.")
   (or nelisp-bootstrap--package-table
       (nelisp-bootstrap--build-package-table)))
 
+(defconst nelisp-bootstrap--gnu-library-files
+  '(("cl-lib.el" . "emacs-lisp/emacs-lisp/cl-lib.el")
+    ("subr-x.el" . "emacs-lisp/emacs-lisp/subr-x.el")
+    ("generator.el" . "emacs-lisp/emacs-lisp/generator.el"))
+  "Logical bundle names served by the genuine GNU library in the vendor tree.
+These libraries have no package shim; the bundle uses the GNU source.")
+
 (defun nelisp-bootstrap--package-file (name)
   "Return the real package path for src-relative NAME, or an absent path.
 The absent path is never readable, so callers keep their former
 \"file not present\" behavior."
-  (or (gethash (concat "src/" name) (nelisp-bootstrap--ensure-package-table))
+  (or (let ((gnu (cdr (assoc name nelisp-bootstrap--gnu-library-files))))
+        (and gnu (expand-file-name gnu (nelisp-bootstrap--vendor-dir))))
+      (gethash (concat "src/" name) (nelisp-bootstrap--ensure-package-table))
       (expand-file-name name "/nonexistent-doc211-package-src/")))
 
 (defun nelisp-bootstrap--logical-name (file)

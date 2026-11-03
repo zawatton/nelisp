@@ -671,11 +671,7 @@ colon := :
 NEMACS_PACKAGE_SRC_PATH = $(subst $(empty) ,$(colon),$(foreach d,$(NEMACS_SRC_DIRS),$(abspath $(NELISP_ROOT)/$(d))))
 NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src,$(NEMACS_SRC_DIRS))
 SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
-# `generator.el' is vendored verbatim from GNU Emacs.  It loads correctly but
-# host byte-compilation trips over upstream macro shapes, so `make compile'
-# validates it through a load proof instead of compiling it.
-SRC_BYTE_COMPILE_EXCLUDE = $(NELISP_ROOT)/packages/emacs-lib-foundation/src/generator.el
-SRC_BYTE_COMPILE_FILES = $(filter-out $(SRC_BYTE_COMPILE_EXCLUDE),$(SRC_FILES))
+SRC_BYTE_COMPILE_FILES = $(SRC_FILES)
 NEMACS_LIBRARY_PACKAGE_SMOKE_FEATURES = \
 	emacs-foundation \
 	emacs-text-core \
@@ -1026,9 +1022,6 @@ compile:
 		--eval '(setq load-prefer-newer t)' \
 		--eval '(setq native-comp-enable-subr-trampolines nil)' \
 		-f batch-byte-compile $(SRC_BYTE_COMPILE_FILES)
-	$(EMACS) -Q $(NELISP_PACKAGE_SRC_LOAD_PATH) \
-		-l $(NELISP_ROOT)/packages/emacs-lib-foundation/src/generator.el \
-		--eval '(unless (featurep (quote generator)) (kill-emacs 1))'
 
 # Library-gate recipes emit reports and scaffold mirrors; none edits package
 # manifests or packages/*/src/*.el, so their one-process resolver snapshot is stable.

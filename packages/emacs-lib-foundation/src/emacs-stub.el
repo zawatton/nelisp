@@ -3641,6 +3641,13 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 ;; `cl-some' / `cl-pushnew' / etc. stubs lower in this file.
 (unless (featurep 'cl-lib) (provide 'cl-lib))
 (unless (featurep 'cl-loaddefs) (provide 'cl-loaddefs))
+;; The genuine `cl-loaddefs' registers `cl-typep--inliner' (a `define-inline'
+;; product of cl-macs.el) as the `cl-typep' compiler macro.  Standalone keeps
+;; the native `cl-typep' and does not load cl-macs.el, so drop the dangling
+;; compiler macro instead of letting every expansion warn.
+(when (and (get 'cl-typep 'compiler-macro)
+           (not (fboundp 'cl-typep--inliner)))
+  (function-put 'cl-typep 'compiler-macro nil))
 
 ;;;; --- standard error symbols ---------------------------------------------
 ;; Common Emacs error symbols that subr / cl-lib / vendor code signals;
