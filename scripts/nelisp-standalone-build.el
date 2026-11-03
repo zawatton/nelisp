@@ -3966,7 +3966,26 @@ directory tracks the tree rather than accumulating every key ever built."
          (key (unless stub
                 (nelisp-standalone--build-trace-phase "cache-key"
                   (nelisp-standalone--unit-cache-key source))))
-         (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir)))
+         (cache (expand-file-name (format "%s.%s.unit" name key) cache-dir))
+         ;; Diagnostic: NELISP_STANDALONE_UNIT_SOURCE_DUMP=DIR writes the
+         ;; keyed source, inline imports, direct-only list and xinline digest
+         ;; of every unit whose name matches the regexp
+         ;; NELISP_STANDALONE_UNIT_SOURCE_DUMP_MATCH (default: all) to
+         ;; DIR/NAME.el, to find what makes a unit's key differ between two
+         ;; builds.
+         (_dump (let ((dir (getenv "NELISP_STANDALONE_UNIT_SOURCE_DUMP")))
+                  (when (and dir (not stub) (> (length dir) 0)
+                             (string-match-p
+                              (or (getenv "NELISP_STANDALONE_UNIT_SOURCE_DUMP_MATCH") "")
+                              name))
+                    (make-directory dir t)
+                    (let ((print-length nil) (print-level nil)
+                          (print-circle t) (coding-system-for-write 'utf-8-unix))
+                      (with-temp-file (expand-file-name (concat name ".el") dir)
+                        (prin1 (list source nelisp-standalone--inline-import-sources
+                                     nelisp-aot-compiler--x86-direct-only-defuns
+                                     (nelisp-standalone--xinline-digest))
+                               (current-buffer))))))))
     (cond
      (stub (list :name name :sections nil :nelisp-prewarm-stub t))
      ((and target (file-exists-p cache))
@@ -47614,8 +47633,57 @@ and TCO mode, so reusing it is safe across those build variants."
          (nelisp-standalone--unit-inline-imports "driver.o")))
     (nelisp-standalone--cached-unit
      "driver.o"
-     (nelisp-standalone--reader-driver-source)
+     (nelisp-standalone--hoist-large-str-lits
+      (nelisp-standalone--reader-driver-source) "nl_driver_lit")
      nelisp-standalone--this-file)))
+
+(defconst nelisp-standalone--str-lit-blob-min 4096
+  "Byte length from which `nelisp-standalone--hoist-large-str-lits' moves a
+`sexp-write-str-lit' literal into a rodata blob.")
+
+(defun nelisp-standalone--hoist-large-str-lits (source prefix)
+  "Return SOURCE with every large `sexp-write-str-lit' literal in rodata.
+
+`(sexp-write-str-lit SLOT LIT)' is compiled into one 64-bit immediate move
+and push per 8 bytes of LIT, then a call to `nl_alloc_str' on that stack
+buffer.  The reader driver embeds seven bootstrap sources of 1.7-4.7 MB
+this way: about 67 MB of unit, a 4.7 MB stack buffer at run time, and
+~110 s of compile per build.  For a literal of at least
+`nelisp-standalone--str-lit-blob-min' bytes this rewrites the form to
+`(nl_alloc_str (data-addr BLOB) LEN SLOT)' -- the same helper with the same
+bytes, length and slot -- and adds `(data-blob BLOB BYTES rodata)' to the
+unit.  BLOB is PREFIX plus an index.  Linux x86-64 only (as in
+`nelisp-standalone--copy-lit-u64-defuns'); SOURCE must be a `(seq ...)'
+unit.  Other targets and sources get SOURCE unchanged."
+  (if (not (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+                (eq (car-safe source) 'seq)))
+      source
+    (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
+      (cl-labels
+          ((walk (x)
+             (cond
+              ((not (consp x)) x)
+              ((memq (car x) '(quote function data-blob)) x)
+              ((and (eq (car x) 'sexp-write-str-lit)
+                    (= (length x) 3)
+                    (stringp (nth 2 x))
+                    (>= (string-bytes (nth 2 x)) nelisp-standalone--str-lit-blob-min))
+               (let* ((bytes (encode-coding-string (nth 2 x) 'utf-8 t))
+                      (blob (intern (format "%s_%d" prefix n))))
+                 (setq n (1+ n))
+                 (push `(data-blob ,blob ,bytes rodata) blobs)
+                 `(nl_alloc_str (data-addr ,blob) ,(length bytes) ,(walk (nth 1 x)))))
+              (t (let ((out nil) (tail x))
+                   (while (consp tail)
+                     (push (walk (car tail)) out)
+                     (setq tail (cdr tail)))
+                   (let ((res (nreverse out)))
+                     (when tail (setcdr (last res) tail))
+                     res))))))
+        (let ((body (mapcar #'walk (cdr source))))
+          (if (null blobs)
+              source
+            `(seq ,@(nreverse blobs) ,@body)))))))
 
 ;;;###autoload
 (defun nelisp-standalone-compile-chunk ()
