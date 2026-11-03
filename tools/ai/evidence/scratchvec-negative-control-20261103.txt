@@ -1,0 +1,16 @@
+# Negative control for the scratch-vector pin, 2026-11-03.
+# target/nelisp built from origin/main a3f79db87; NATIVE_LOAD = lisp/nelisp-native-load.el from a3f79db87 (strings pinned, scratch vectors not).
+## tools/ai/rawptr-gc-probe.sh with the a3f79db87 loader
+case-A no explicit GC: 0/200 bad
+case-A string-in-raw-cell after GC: 0/200 bad
+case-B no explicit GC: 47/50 bad
+case-B scratch-vector in mmap slots after GC: 49/50 bad
+positive control (unreferenced blocks reclaimed): 50/50
+exit=1
+## the same probe with the fixed loader
+case-A no explicit GC: 0/200 bad
+case-A string-in-raw-cell after GC: 0/200 bad
+case-B no explicit GC: 0/50 bad
+case-B scratch-vector in mmap slots after GC: 0/50 bad
+positive control (unreferenced blocks reclaimed): 49/50
+exit=0

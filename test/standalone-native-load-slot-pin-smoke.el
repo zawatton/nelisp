@@ -9,6 +9,9 @@
 ;; back-edge (or `garbage-collect') freed the string while the slot still
 ;; pointed at it: on the unfixed loader about 184 of 200 strings came back
 ;; wrong with no explicit GC at all, and 200 of 200 after one.
+;; `nelisp-native-load--make-scratch-vector' has the same gap: the loader's
+;; slots are mmap'd, outside the arena, so the scratch vector's box was
+;; reclaimed (49 of 50 on a3f79db87) until it was pinned the same way.
 ;; Run by `make standalone-reader-native-load-slot-pin-smoke', which loads
 ;; lisp/nelisp-native-load.el first.
 
@@ -46,17 +49,40 @@
       (setq i (1+ i)))
     (length keep)))
 
+(defun native-load-slot-pin--scratch-bad ()
+  "Scratch vectors in an mmap page (as the loader's slots are) whose box
+no longer reads its capacity after GC and a 32-byte churn."
+  (let* ((n 50) (page (nelisp-native-load--mmap 4096 nil)) (k 0) (bad 0))
+    (while (< k n)
+      (nelisp-native-load--make-scratch-vector (+ page (* 32 k)))
+      (setq k (1+ k)))
+    (garbage-collect)
+    (let ((i 0) (keep nil))
+      (while (< i 20000)
+        (let ((b (alloc-bytes 32 8)))
+          (ptr-write-u64 b 0 99)
+          (setq keep (cons b keep)))
+        (setq i (1+ i))))
+    (setq k 0)
+    (while (< k n)
+      (unless (= (ptr-read-u64 (ptr-read-u64 (+ page (* 32 k)) 8) 0)
+                 nelisp-native-load-scratch-slots)
+        (setq bad (1+ bad)))
+      (setq k (1+ k)))
+    bad))
+
 (let* ((n 200)
        (first (native-load-slot-pin--box-all n))
        (first-bad (native-load-slot-pin--bad first))
        (second (native-load-slot-pin--box-all n))
        (_ (garbage-collect))
        (_ (native-load-slot-pin--churn (* 4 n)))
-       (second-bad (native-load-slot-pin--bad second)))
-  (if (= 0 (+ first-bad second-bad))
-      (princ (format "native-load-slot-pin: PASS (%d strings)\n" n))
+       (second-bad (native-load-slot-pin--bad second))
+       (scratch-bad (native-load-slot-pin--scratch-bad)))
+  (if (= 0 (+ first-bad second-bad scratch-bad))
+      (princ (format "native-load-slot-pin: PASS (%d strings, 50 scratch vectors)\n" n))
     (signal 'error
-            (list (format "native-load-slot-pin: FAIL %d/%d wrong under mid-form GC, %d/%d after garbage-collect"
-                          first-bad n second-bad n)))))
+            (list (format "native-load-slot-pin: FAIL %d/%d wrong under mid-form GC, %d/%d after garbage-collect, %d/50 scratch vectors freed"
+                          first-bad n second-bad n scratch-bad)))))
 
 ;;; standalone-native-load-slot-pin-smoke.el ends here

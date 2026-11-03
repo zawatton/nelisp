@@ -128,7 +128,15 @@ Fixture sketch: A = (alloc-bytes 32 8); (nelisp-native-load--make-scratch-vector
 - The pin is dropped whenever the slot is rewritten (nelisp-native-load--zero-slot), and for each scratch cell once nl_vector_set_slot has copied it.
 - Gate: standalone-reader-native-load-slot-pin-smoke, with a gate-mutation row.
 
-** lisp/nelisp-native-load.el:857 nelisp-native-load--make-scratch-vector: NOT REPRODUCED
-- 50 scratch vectors were checked before and after garbage-collect plus churn. Their box words and slot words were identical on origin/main.
-- The probe did not establish why the box survives. It may be outside the swept arena or held through another path. The probe also has not shown that it would detect a freed box, so this verdict is "not reproduced", not "proven safe".
-- No change was made for this site.
+** lisp/nelisp-native-load.el:857 nelisp-native-load--make-scratch-vector: REPRODUCED IN MMAP SLOTS, FIXED
+- Corrected on 2026-11-03, after a3f79db87. The first probe put the scratch vectors in alloc-bytes memory and nothing changed. That was the wrong condition.
+- In alloc-bytes memory, a plainly stored address keeps a block alive. In the same run, the same blocks stored XOR-masked were reclaimed 50 of 50.
+- The loader's slots, however, come from mmap (nelisp-native-load--mmap), outside the arena, and the GC does not scan them.
+- With the vectors in an mmap page, the a3f79db87 loader lost 49 of 50 boxes after garbage-collect, and 47 of 50 with no explicit GC (mid-form GC).
+- Fix: the box goes into nelisp-native-load--slot-pins, keyed by the slot. nelisp-native-load-unload drops the pins inside the unmapped slots.
+- Evidence: tools/ai/evidence/scratchvec-negative-control-20261103.txt. Ledger: tools/ai/scratchvec-pin-progress.org.
+
+** Open question (not needed for either fix)
+- The XOR-masked control shows that alloc-bytes blocks referenced plainly from a live alloc-bytes buffer survive GC.
+- The case-A strings stored in live alloc-bytes cells were nevertheless reclaimed, until they were pinned.
+- So nl_alloc_str payloads are not retained by whatever mechanism keeps those blocks alive. Which mechanism that is was not established.

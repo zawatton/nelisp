@@ -702,6 +702,12 @@ standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|
 # restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
 # loaded from source, so no rebuild is needed.
 standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
+# 2026-11-03 (second row): the same gate polices the scratch-vector pin.
+# The injection drops the box pin, so a scratch vector in the mmap'd slots
+# is held only by memory the GC does not scan.  RED: "... 49/50 scratch
+# vectors freed"; restored: "native-load-slot-pin: PASS (200 strings, 50
+# scratch vectors)".
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^    (puthash addr box nelisp-native-load--slot-pins)$/    (ignore addr box nelisp-native-load--slot-pins)/|scratch vector boxes stop being pinned while the mmap'd slot holds them
 # Doc 201 §4 item 2.  `standalone-reader-fileattrs-smoke' polices the
 # windows-native `stat'/`readdir' shims and the `nelisp--syscall-stat'
 # classification that moved onto st_mode with them.  The injection changes

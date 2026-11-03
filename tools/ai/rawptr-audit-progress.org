@@ -23,7 +23,7 @@ cmd: rows=$(grep -E '^\| *[a-z].*:[0-9]+ *\|' tools/ai/rawptr-audit-report.org) 
 * S2 Decision
 
 ** S2.1 Each at-risk site has a recorded decision from a probe
-cmd: grep -q '^\* Decision' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:773 .*REPRODUCED, FIXED' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:857 .*NOT REPRODUCED' tools/ai/rawptr-audit-report.org
+cmd: grep -q '^\* Decision' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:773 .*REPRODUCED, FIXED' tools/ai/rawptr-audit-report.org && grep -q 'nelisp-native-load.el:857 .*REPRODUCED IN MMAP SLOTS, FIXED' tools/ai/rawptr-audit-report.org
 
 ** S2.2 Negative control: on origin/main the probe goes red, and with mid-form GC off the no-GC row reads 0
 evidence: tools/ai/evidence/rawptr-probe-negative-control-20261103.txt sha256=e222599077cfe6487247299a749e93cf7a6e9581dabb4da2d91082f7f9f7fc34

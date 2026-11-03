@@ -1,0 +1,41 @@
+#+TITLE: The native-load scratch vector survives GC (mmap'd slots are not scanned)
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/scratchvec-pin-progress.org
+# Follows tools/ai/rawptr-audit-progress.org (a3f79db87), whose probe put
+# the scratch vectors in arena memory and so missed the defect: the loader's
+# slots are mmap'd and the GC does not scan them.
+
+* S1 Reproduction
+
+** S1.1 Negative control: on a3f79db87 the scratch vectors in mmap slots are reclaimed, and the positive control shows the probe sees frees
+evidence: tools/ai/evidence/scratchvec-negative-control-20261103.txt sha256=8cb548c96179405758f28a11147d0d97cc5f85d1524d17353c51b023cede739c
+
+** S1.2 The probe passes with the fix (exit 0 also requires the positive control to see frees)
+#+TIMEOUT: 600
+cmd: tools/ai/rawptr-gc-probe.sh >target/scratchvec-probe.log 2>&1
+
+* S2 Gate and checks
+
+** S2.1 The slot-pin smoke covers scratch vectors and has a gate-mutation row for the box pin
+cmd: grep -q 'native-load-slot-pin--scratch-bad' test/standalone-native-load-slot-pin-smoke.el && grep -q '^standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^    (puthash addr box' tools/gate-mutations.txt
+
+** S2.2 Both rows turn the gate red (gate-mutation-verify)
+evidence: tools/ai/evidence/scratchvec-gate-mutation-verify-20261103.txt sha256=be6526a8caec8cb97f5be54806d2fac435ef76360c757b4ed2e1dae7958e67bc
+
+** S2.3 The existing loader checks still pass (ERT and the in-reader loader driver)
+#+TIMEOUT: 600
+cmd: emacs --batch -Q -L lisp -L src -L scripts -L test -l test/nelisp-native-load-test.el -f ert-run-tests-batch-and-exit >target/native-load-ert.log 2>&1 && make neln-loader-test >target/neln-loader-test.log 2>&1
+
+** S2.4 The ratchets that scan lisp/ pass
+#+TIMEOUT: 600
+cmd: make unsafe-inventory >target/sv-unsafe.log 2>&1 && make ns-gate >target/sv-nsgate.log 2>&1 && make ns-inventory >target/sv-nsinv.log 2>&1 && make emacs-compat >target/sv-compat.log 2>&1
+
+** S2.5 The audit report records the corrected verdict
+cmd: grep -q 'nelisp-native-load.el:857 .*REPRODUCED IN MMAP SLOTS, FIXED' tools/ai/rawptr-audit-report.org
+
+* S3 End to end
+
+** S3.1 The standalone-reader-smokes aggregate passes
+#+TIMEOUT: 600
+cmd: make standalone-reader-smokes >target/sv-reader-smokes.log 2>&1

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Run tools/ai/rawptr-gc-probe.el on a standalone binary.
 # Exit 0: nothing freed; 1: an object reachable only from raw memory was
-# clobbered.  NATIVE_LOAD=FILE loads another nelisp-native-load.el (for
+# clobbered; 2: the positive control saw no free, so the probe is blind.
+# NATIVE_LOAD=FILE loads another nelisp-native-load.el (for
 # the negative control: the file as of origin/main).
 root=$(cd "$(dirname "$0")/../.." && pwd)
 bin=${1:-$root/target/nelisp}
