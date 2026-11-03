@@ -12231,8 +12231,35 @@ only arms with one unambiguous binding set are accepted here."
             (setq rest (cdr rest)))
           same)
         (cons test (car binding-sets)))
+       ;; Arms bind different variables or different expressions.  Each
+       ;; variable becomes a first-match `cond' over the arms' tests in
+       ;; order: the winning arm's value expression, or nil when that arm
+       ;; does not bind the variable.  Value expressions are evaluated at
+       ;; most once, only inside the winning arm's branch.  Arm tests are
+       ;; re-run once per variable (they are predicates over VALUE-FORM).
        (t
-        (error "pcase or pattern has branch-local bindings: %S" patterns))))))
+        (let ((arms nil) (vars nil) (cur2 patterns))
+          (while cur2
+            (unless (eq (car cur2) 'pcase--dontcare)
+              (let ((built (nelisp-pcase--test (car cur2) value-form)))
+                (setq arms (cons built arms))
+                (dolist (b (cdr built))
+                  (unless (memq (car b) vars)
+                    (setq vars (cons (car b) vars))))))
+            (setq cur2 (cdr cur2)))
+          (let ((ordered-arms (nreverse arms))
+                (ordered-vars (nreverse vars))
+                (out nil))
+            (dolist (var ordered-vars)
+              (let ((clauses nil))
+                (dolist (arm ordered-arms)
+                  (let ((b (assq var (cdr arm))))
+                    (setq clauses
+                          (cons (list (car arm) (if b (car (cdr b)) nil))
+                                clauses))))
+                (setq out (cons (list var (cons 'cond (nreverse clauses)))
+                                out))))
+            (cons test (nreverse out)))))))))
 
 (defun nelisp-pcase--cons (rest value-form)
   "Build (TEST . BINDINGS) for a `(cons P1 P2)' pattern."
