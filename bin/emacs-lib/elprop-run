@@ -7,7 +7,7 @@
 #
 # Env overrides:
 #   EMACS          host Emacs binary (default: emacs)
-#   NEMACS_NELISP  NeLisp binary (default: vendor/nelisp/target/nelisp)
+#   NEMACS_NELISP  NeLisp binary (default: target/nelisp)
 #   ELPROP_FORMS   corpus file (default: test/elprop-forms-auto.el)
 #   ELPROP_STRICT  set to exit non-zero on any mismatch (CI gate)
 set -euo pipefail

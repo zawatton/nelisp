@@ -38,7 +38,7 @@ that is a true, currently-red "not yet usable" fact, not a skip.
 
 NELISP_BIN should point at a built NeLisp standalone binary. This repo
 vendors its own pinned copy at vendor/nelisp (default NELISP_ROOT), so
-NELISP_BIN=<repo>/vendor/nelisp/target/nelisp works without touching
+NELISP_BIN=<repo>/target/nelisp works without touching
 dev/nelisp.
 
 * S1 Build and bootstrap on the current NeLisp standalone

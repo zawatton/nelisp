@@ -8,7 +8,7 @@
 ;;
 ;; Run (from the nelisp-emacs repo root, after `make nelisp'):
 ;;
-;;   vendor/nelisp/target/nelisp --load test/emacs-pty-ffi-binary-verify.el
+;;   target/nelisp --load test/emacs-pty-ffi-binary-verify.el
 ;;
 ;; Expected last line: "PTY-VERIFY: PASS ...".
 ;; Verified 2026-06-27: open /dev/ptmx + ioctl TIOCSPTLCK/TIOCGPTN yields a real

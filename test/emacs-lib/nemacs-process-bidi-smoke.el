@@ -12,7 +12,7 @@
 ;;
 ;; Run on the NeLisp standalone reader / nemacs runtime (NOT host Emacs):
 ;;
-;;   ./vendor/nelisp/target/nelisp --load \
+;;   ./target/nelisp --load \
 ;;     scripts/nemacs-runtime-process-preload.el \
 ;;     --load test/nemacs-process-bidi-smoke.el
 ;;

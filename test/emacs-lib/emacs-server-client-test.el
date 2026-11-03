@@ -19,7 +19,7 @@
   "Return an executable standalone reader, or nil."
   (let ((candidates
          (list (getenv "NELISP")
-               (expand-file-name "vendor/nelisp/target/nelisp"
+               (expand-file-name "target/nelisp"
                                  emacs-server-client-test--root))))
     (catch 'found
       (dolist (c candidates)

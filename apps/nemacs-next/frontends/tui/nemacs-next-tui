@@ -9,12 +9,12 @@ HEIGHT=${NEMACS_NEXT_TUI_HEIGHT:-24}
 DRAW=${NEMACS_NEXT_TUI_DRAW:-auto}
 
 if [ -z "$NELISP_BIN" ]; then
-  if [ -x "$ROOT/../nelisp/target/nelisp" ]; then
+  if [ -x "$ROOT/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/target/nelisp
+  elif [ -x "$ROOT/../nelisp/target/nelisp" ]; then
     NELISP_BIN=$ROOT/../nelisp/target/nelisp
-  elif [ -x "$ROOT/vendor/nelisp/target/nelisp" ]; then
-    NELISP_BIN=$ROOT/vendor/nelisp/target/nelisp
   else
-    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+    NELISP_BIN=$ROOT/target/nelisp
   fi
 fi
 

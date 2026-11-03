@@ -6,7 +6,7 @@
 #   NAME        server name (default: nemacs)
 #   SOCKET_DIR  socket directory (default: /tmp/nemacs-server)
 # Env:
-#   NELISP      reader binary (default: vendor/nelisp/target/nelisp)
+#   NELISP      reader binary (default: target/nelisp)
 #
 # Connect with:  emacsclient -s SOCKET_DIR/NAME -e '(+ 1 2)'
 set -euo pipefail
@@ -14,7 +14,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 NAME=${1:-nemacs}
 SOCK_DIR=${2:-/tmp/nemacs-server}
-NELISP=${NELISP:-$ROOT/vendor/nelisp/target/nelisp}
+NELISP=${NELISP:-$ROOT/target/nelisp}
 [ -x "$NELISP" ] || { echo "nemacs-server: reader not executable: $NELISP" >&2; exit 1; }
 
 # The reader's getenv is a stub; configuration travels in a generated

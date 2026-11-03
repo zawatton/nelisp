@@ -23,7 +23,7 @@
 # Usage:
 #   scripts/nemacs-feature-coverage.sh
 # Env:
-#   NELISP_BIN   standalone binary (default: vendor/nelisp/target/nelisp)
+#   NELISP_BIN   standalone binary (default: target/nelisp)
 #   BUILD_DIR    output directory  (default: build)
 
 set -uo pipefail
@@ -36,7 +36,7 @@ build_dir=${BUILD_DIR:-$repo_root/build}
 mkdir -p "$build_dir"
 
 host_emacs=${EMACS:-emacs}
-nelisp_bin=${NELISP_BIN:-$repo_root/vendor/nelisp/target/nelisp}
+nelisp_bin=${NELISP_BIN:-$repo_root/target/nelisp}
 bundle=${NEMACS_BOOTSTRAP_REPL:-$build_dir/nemacs-bootstrap.repl}
 
 if [[ ! -x "$nelisp_bin" ]]; then

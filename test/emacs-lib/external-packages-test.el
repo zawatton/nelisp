@@ -18,7 +18,7 @@
 
 (defun external-packages-test--reader ()
   (let ((c (or (getenv "NEMACS_NELISP")
-               (expand-file-name "vendor/nelisp/target/nelisp"
+               (expand-file-name "target/nelisp"
                                  external-packages-test--root))))
     (and (file-executable-p c) c)))
 

@@ -6,12 +6,12 @@ NELISP_BIN=${NELISP_BIN:-${NELISP:-}}
 BOOTSTRAP_REPL=${NEMACS_BOOTSTRAP_REPL:-$ROOT/build/nemacs-bootstrap.repl}
 
 if [ -z "$NELISP_BIN" ]; then
-  if [ -x "$ROOT/../nelisp/target/nelisp" ]; then
+  if [ -x "$ROOT/target/nelisp" ]; then
+    NELISP_BIN=$ROOT/target/nelisp
+  elif [ -x "$ROOT/../nelisp/target/nelisp" ]; then
     NELISP_BIN=$ROOT/../nelisp/target/nelisp
-  elif [ -x "$ROOT/vendor/nelisp/target/nelisp" ]; then
-    NELISP_BIN=$ROOT/vendor/nelisp/target/nelisp
   else
-    NELISP_BIN=$ROOT/../nelisp/target/nelisp
+    NELISP_BIN=$ROOT/target/nelisp
   fi
 fi
 

@@ -237,7 +237,7 @@ and app copies for staged app/frontend glue; otherwise return SOURCE."
           "/tmp/nelisp-snap/nelisp"
           (expand-file-name "../nelisp/target/nelisp"
                             nemacs-gui-file-bridge-runtime-test--repo-root)
-          (expand-file-name "vendor/nelisp/target/nelisp"
+          (expand-file-name "target/nelisp"
                             nemacs-gui-file-bridge-runtime-test--repo-root))))
     (catch 'found
       (dolist (candidate candidates)

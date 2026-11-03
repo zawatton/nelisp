@@ -9,7 +9,7 @@
 ;;
 ;; Run (from the nelisp-emacs repo root, after `make nelisp'):
 ;;
-;;   vendor/nelisp/target/nelisp --load test/emacs-sigchld-reap-binary-verify.el
+;;   target/nelisp --load test/emacs-sigchld-reap-binary-verify.el
 ;;
 ;; Expected last line: "C2-VERIFY: PASS reaped=(PID . 42) status=exit ...".
 
