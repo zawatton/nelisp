@@ -2003,6 +2003,11 @@ GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
           (t (if (and (<= ?A character) (<= character ?Z))
                  (+ character 32) character)))))
 
+;; GNU declares this per-buffer variable special (default nil); without the
+;; declaration a `let' binding in compiled or lexical code is invisible here.
+(defvar case-symbols-as-words nil
+  "Non-nil means case conversion treats symbol-syntax characters as word parts.")
+
 (defun nelisp--case-word-character-p (character)
   "Return whether CHARACTER continues a casing word in the current syntax."
   (let ((syntax (if (fboundp 'char-syntax) (char-syntax character)
@@ -2084,6 +2089,106 @@ needs the general per-character logic: no case table, final sigma, or a raw byte
                                       (nreverse chars)))
             (concat (nreverse chars)))))))
 
+(defun nelisp--case-title-index ()
+  "Return the full titlecase mapping index hash, or nil when unavailable."
+  (and (boundp 'nelisp--unicode-full-titlecase) nelisp--unicode-full-titlecase
+       (fboundp 'nelisp--unicode-full-map)
+       (fboundp 'nelisp--unicode-full-index)
+       (nelisp--unicode-full-index nelisp--unicode-full-titlecase)))
+
+(defun nelisp--case-natnum-mapped (key mode table)
+  "Return KEY's single-character case mapping for MODE as a character.
+Same value as the first character of `nelisp--case-character-piece' with FULL
+nil, without building the intermediate string."
+  (let ((simple (nelisp--case-simple-character key mode table)))
+    (if (eq mode 'title)
+        (let* ((index (nelisp--case-title-index))
+               (hit (and index (gethash key index))))
+          (if (and hit (= (length hit) 1)) (aref hit 0) simple))
+      simple)))
+
+(defun nelisp--case-string-general (object action table)
+  "Case the non-empty string OBJECT for ACTION, tracking word state per character.
+Per-call invariants (mapping tables, full-mapping indexes, syntax flags) are
+read once.  Each character yields a character; a string piece appears only for
+a one-to-many full mapping, and the result is built once at the end."
+  (let* ((unibyte (unibyte-string-p object))
+         (n (length object))
+         (i 0) (inword nil) (parts nil) (mixed nil)
+         (upmap (and table (nelisp-casetab--get-extra-slot table 0)))
+         (upplain (not (and upmap (nelisp-casetab--sparse-table-p upmap))))
+         (downplain (not (and table (nelisp-casetab--sparse-table-p table))))
+         (tprop (fboundp 'nelisp-unicode-titlecase-property))
+         (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
+         (syn (fboundp 'char-syntax))
+         (full-up (and (not unibyte) (boundp 'nelisp--unicode-full-upcase)
+                       nelisp--unicode-full-upcase
+                       (fboundp 'nelisp--unicode-full-map)
+                       (fboundp 'nelisp--unicode-full-index)
+                       (nelisp--unicode-full-index nelisp--unicode-full-upcase)))
+         (full-down (and (not unibyte) (boundp 'nelisp--unicode-full-downcase)
+                         nelisp--unicode-full-downcase
+                         (fboundp 'nelisp--unicode-full-map)
+                         (fboundp 'nelisp--unicode-full-index)
+                         (nelisp--unicode-full-index nelisp--unicode-full-downcase)))
+         (full-title (nelisp--case-title-index)))
+    (while (< i n)
+      (let* ((byte (aref object i))
+             (character (if (and unibyte (>= byte 128)) (+ byte #x3fff00) byte))
+             (word (if syn
+                       (let ((s (char-syntax character)))
+                         (or (eq s ?w) (and csw (eq s ?_))))
+                     (nelisp--case-word-character-p character)))
+             (mode (cond ((eq action 'capitalize) (if inword 'lower 'title))
+                         ((eq action 'initials) (and (not inword) 'title))
+                         (t action)))
+             (piece character))
+        (when mode
+          (let* ((value (if (and tprop (eq mode 'title))
+                            (nelisp-unicode-titlecase-property character)))
+                 (value (or value
+                            (if (eq mode 'lower)
+                                (and table (if downplain (aref table character)
+                                             (nelisp-casetab--ref table character)))
+                              (and upmap (if upplain (aref upmap character)
+                                           (nelisp-casetab--ref upmap character))))))
+                 (simple (if (and (integerp value) (>= value 0)) value
+                           (nelisp--case-simple-character character mode table)))
+                 (index (cond ((eq mode 'title) full-title)
+                              ((eq mode 'lower) full-down)
+                              (t full-up)))
+                 (hit (and index (gethash character index))))
+            (setq piece (cond ((null hit) simple)
+                              ((= (length hit) 1) (aref hit 0))
+                              ;; A multi-character title entry cannot expand a
+                              ;; unibyte string (case_single_character).
+                              (unibyte simple)
+                              (t (setq mixed t) hit)))))
+        ;; GNU applies final sigma after ordinary mapping, based on the
+        ;; immediately preceding and following word-syntax characters.
+        (when (and (not unibyte) inword (= character #x3a3)
+                   (not (eq piece character))
+                   (or (= (1+ i) n)
+                       (not (nelisp--case-word-character-p
+                             (aref object (1+ i))))))
+          (setq piece #x3c2))
+        (push (if unibyte (nelisp--case-byte byte piece mode) piece) parts)
+        (setq inword word i (1+ i))))
+    (setq parts (nreverse parts))
+    (if unibyte
+        ;; GNU do_casify_unibyte_string: copy the input, properties included,
+        ;; then store the cased bytes.
+        (let ((result (copy-sequence object)) (k 0))
+          (dolist (byte parts)
+            (aset result k byte)
+            (setq k (1+ k)))
+          result)
+      (string-make-multibyte
+       (if mixed
+           (apply #'concat (mapcar (lambda (piece) (if (integerp piece) (char-to-string piece) piece))
+                                   parts))
+         (concat parts))))))
+
 (defun nelisp--case-object (object action)
   "Case character or string OBJECT with the current buffer's case table.
 ACTION is `upper', `lower', `capitalize', or `initials'."
@@ -2094,53 +2199,27 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
       (if (> object #xfc00000) object
         (let* ((flags (logand object #xfc00000))
                (character (logand object #x3fffff))
-               (unibyte (and (< character 256) (not (nelisp--case-multibyte-p))))
-               (key (if (and unibyte (>= character 128))
-                        (+ character #x3fff00) character))
-               (mode (if (memq action '(capitalize initials)) 'title action))
-               (mapped (aref (nelisp--case-character-piece key mode table nil) 0)))
-          (logior flags (if unibyte (logand mapped 255) mapped)))))
+               (mode (if (memq action '(capitalize initials)) 'title action)))
+          (if (>= character 256)
+              (logior flags (nelisp--case-natnum-mapped character mode table))
+            ;; The buffer's multibyte flag matters only for a byte >= 128 or a
+            ;; mapping that leaves the byte range.
+            (let ((mapped (and (< character 128)
+                               (nelisp--case-natnum-mapped character mode table))))
+              (if (and mapped (< mapped 256))
+                  (logior flags mapped)
+                (let* ((unibyte (not (nelisp--case-multibyte-p)))
+                       (key (if (and unibyte (>= character 128))
+                                (+ character #x3fff00) character))
+                       (m (if (and mapped (= key character)) mapped
+                            (nelisp--case-natnum-mapped key mode table))))
+                  (logior flags (if unibyte (logand m 255) m)))))))))
      ((not (stringp object))
       (signal 'wrong-type-argument (list 'char-or-string-p object)))
      ((= (length object) 0) object)
      ((and (memq action '(upper lower)) (not (unibyte-string-p object))
            (nelisp--case-string-fast object action table)))
-     (t
-      (let ((unibyte (unibyte-string-p object))
-            (i 0) (n (length object)) (inword nil) parts)
-        (while (< i n)
-          (let* ((byte (aref object i))
-                 (character (if (and unibyte (>= byte 128))
-                                (+ byte #x3fff00) byte))
-                 (word (nelisp--case-word-character-p character))
-                 (mode (cond ((eq action 'capitalize) (if inword 'lower 'title))
-                             ((eq action 'initials) (and (not inword) 'title))
-                             (t action)))
-                 (piece (if mode
-                            (nelisp--case-character-piece character mode table
-                                                          (not unibyte))
-                          (char-to-string character))))
-            ;; GNU applies final sigma after ordinary mapping, based on the
-            ;; immediately preceding and following word-syntax characters.
-            (when (and (not unibyte) inword (= character #x3a3)
-                       (not (equal piece (char-to-string character)))
-                       (or (= (1+ i) n)
-                           (not (nelisp--case-word-character-p
-                                 (aref object (1+ i))))))
-              (setq piece "ς"))
-            (push (if unibyte
-                      (nelisp--case-byte byte (aref piece 0) mode)
-                    piece) parts)
-            (setq inword word i (1+ i))))
-        (if unibyte
-            ;; GNU do_casify_unibyte_string: copy the input, properties included,
-            ;; then store the cased bytes.
-            (let ((result (copy-sequence object)) (k 0))
-              (dolist (byte (nreverse parts))
-                (aset result k byte)
-                (setq k (1+ k)))
-              result)
-          (string-make-multibyte (apply #'concat (nreverse parts)))))))))
+     (t (nelisp--case-string-general object action table)))))
 
 (defun upcase (object)
   "Convert character or string OBJECT to uppercase using the current case table."
@@ -2540,15 +2619,31 @@ Return (FROM . TO).  STR, START, and END are used only for the
              (n (if (< n1 n2) n1 n2))
              (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
              (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
+             ;; IGNORE-CASE fast path: upcase both whole strings once.  The
+             ;; native answer is exact only for ASCII-only strings (lengths
+             ;; unchanged, so the indices below stay valid); otherwise nil
+             ;; and the per-character loop runs as before.
+             (fast (and ignore-case
+                        (fboundp 'nelisp--casify-fast)
+                        (fboundp 'current-case-table)
+                        (let* ((tbl (current-case-table))
+                               (u1 (nelisp--casify-fast str1 1 tbl))
+                               (u2 (and (stringp u1)
+                                        (nelisp--casify-fast str2 1 tbl))))
+                          (and (stringp u2) (cons u1 u2)))))
+             (s1 (if fast (car fast) str1))
+             (s2 (if fast (cdr fast) str2))
              (i 0)
              (result t))
         (while (and (< i n) (eq result t))
-          (let* ((ch1 (aref str1 (+ a i)))
-                 (ch2 (aref str2 (+ c i)))
+          (let* ((ch1 (aref s1 (+ a i)))
+                 (ch2 (aref s2 (+ c i)))
                  (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
                  (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
-                 (k1 (if ignore-case (upcase ch1) ch1))
-                 (k2 (if ignore-case (upcase ch2) ch2)))
+                 (k1 (if (and ignore-case (not fast)) (upcase ch1) ch1))
+                 (k2 (if (and ignore-case (not fast))
+                         (if (eq ch1 ch2) k1 (upcase ch2))
+                       ch2)))
             (cond
              ((< k1 k2) (setq result (- (1+ i))))
              ((> k1 k2) (setq result (1+ i)))

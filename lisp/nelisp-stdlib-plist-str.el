@@ -470,15 +470,31 @@ Return (FROM . TO).  STR, START, and END are used only for the
            (n (if (< n1 n2) n1 n2))
            (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
            (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
+           ;; IGNORE-CASE fast path: upcase both whole strings once.  The
+           ;; native answer is exact only for ASCII-only strings (lengths
+           ;; unchanged, so the indices below stay valid); otherwise nil
+           ;; and the per-character loop runs as before.
+           (fast (and ignore-case
+                      (fboundp 'nelisp--casify-fast)
+                      (fboundp 'current-case-table)
+                      (let* ((tbl (current-case-table))
+                             (u1 (nelisp--casify-fast str1 1 tbl))
+                             (u2 (and (stringp u1)
+                                      (nelisp--casify-fast str2 1 tbl))))
+                        (and (stringp u2) (cons u1 u2)))))
+           (s1 (if fast (car fast) str1))
+           (s2 (if fast (cdr fast) str2))
            (i 0)
            (result t))
       (while (and (< i n) (eq result t))
-        (let* ((ch1 (aref str1 (+ a i)))
-               (ch2 (aref str2 (+ c i)))
+        (let* ((ch1 (aref s1 (+ a i)))
+               (ch2 (aref s2 (+ c i)))
                (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
                (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
-               (k1 (if ignore-case (upcase ch1) ch1))
-               (k2 (if ignore-case (upcase ch2) ch2)))
+               (k1 (if (and ignore-case (not fast)) (upcase ch1) ch1))
+               (k2 (if (and ignore-case (not fast))
+                       (if (eq ch1 ch2) k1 (upcase ch2))
+                     ch2)))
           (cond
            ((< k1 k2) (setq result (- (1+ i))))
            ((> k1 k2) (setq result (1+ i)))
