@@ -99,11 +99,145 @@ primitive to distinguish standalone execution from host Emacs."
 (when (emacs-minibuffer-builtins--install-function-p 'completing-read)
   (defalias 'completing-read #'emacs-minibuffer-completing-read))
 
+(defun emacs-minibuffer-builtins--check-arity (name arguments minimum maximum)
+  "Check the number of ARGUMENTS against NAME's primitive arity."
+  (let ((count (length arguments)))
+    (unless (and (>= count minimum) (<= count maximum))
+      (signal 'wrong-number-of-arguments (list name count)))))
+
+(defun emacs-minibuffer-builtins--completion-name (item)
+  "Return ITEM's string or symbol key as a string, ignoring other keys."
+  (let ((key (if (consp item) (car item) item)))
+    (cond ((stringp key) key)
+          ((symbolp key) (symbol-name key)))))
+
+(defun emacs-minibuffer-builtins--completion-match-p (string candidate)
+  "Check CANDIDATE's prefix and the completion regular expressions."
+  (let ((ignore-case (and (boundp 'completion-ignore-case)
+                          completion-ignore-case)))
+    (and (>= (length candidate) (length string))
+         (eq t (compare-strings string 0 nil candidate 0 (length string)
+                                ignore-case))
+         (let ((patterns (and (boundp 'completion-regexp-list)
+                              completion-regexp-list))
+               (case-fold-search ignore-case)
+               (accepted t))
+           (while (and patterns accepted)
+             (unless (string-match-p (car patterns) candidate)
+               (setq accepted nil))
+             (setq patterns (cdr patterns)))
+           accepted))))
+
+(defun emacs-minibuffer-builtins--completion-candidates (string collection predicate)
+  "Collect matching names, passing original entries to PREDICATE."
+  (let (matches)
+    (cond
+     ((hash-table-p collection)
+      (maphash
+       (lambda (key value)
+         (let ((name (and (or (stringp key) (symbolp key))
+                          (emacs-minibuffer-builtins--completion-name key))))
+           (when (and name
+                      (emacs-minibuffer-builtins--completion-match-p string name)
+                      (or (null predicate) (funcall predicate key value)))
+             (setq matches (cons name matches)))))
+       collection))
+     ((obarrayp collection)
+      (mapatoms
+       (lambda (symbol)
+         (let ((name (symbol-name symbol)))
+           (when (and (emacs-minibuffer-builtins--completion-match-p string name)
+                      (or (null predicate) (funcall predicate symbol)))
+             (setq matches (cons name matches)))))
+       collection))
+     ((listp collection)
+      ;; GNU ignores improper tails and keys other than strings or symbols.
+      (while (consp collection)
+        (let* ((item (car collection))
+               (name (emacs-minibuffer-builtins--completion-name item)))
+          (when (and name
+                     (emacs-minibuffer-builtins--completion-match-p string name)
+                     (or (null predicate) (funcall predicate item)))
+            (setq matches (cons name matches))))
+        (setq collection (cdr collection))))
+     ((vectorp collection)
+      (signal 'wrong-type-argument (list 'obarrayp collection))))
+    (nreverse matches)))
+
+(defun emacs-minibuffer-builtins--completion-result (string matches)
+  "Return GNU's common prefix or unique exact-match result for MATCHES."
+  (cond
+   ((null matches) nil)
+   ((let ((rest matches) (exact t))
+      (while (and rest exact)
+        (unless (string= string (car rest)) (setq exact nil))
+        (setq rest (cdr rest)))
+      exact)
+    t)
+   (t
+    (let* ((best (car matches))
+           (common (length best))
+           (ignore-case (and (boundp 'completion-ignore-case)
+                            completion-ignore-case)))
+      (dolist (candidate (cdr matches))
+        (let ((i 0) (limit (min common (length candidate))))
+          (while (and (< i limit)
+                      (eq t (compare-strings best i (1+ i)
+                                             candidate i (1+ i) ignore-case)))
+            (setq i (1+ i)))
+          (setq common i))
+        ;; Prefer a candidate that is itself the common prefix, then
+        ;; a spelling whose prefix agrees with the input's case.
+        (when (and ignore-case
+                   (or (and (= (length candidate) common)
+                            (> (length best) common))
+                       (and (or (> (length best) common)
+                                (= (length candidate) common))
+                            (not (eq t (compare-strings
+                                        string 0 nil best 0 (length string))))
+                            (eq t (compare-strings
+                                   string 0 nil candidate 0 (length string))))))
+          (setq best candidate)))
+      (substring best 0 common)))))
+
 (when (emacs-minibuffer-builtins--install-function-p 'try-completion)
-  (defalias 'try-completion #'emacs-minibuffer-try-completion))
+  (defun try-completion (&rest arguments)
+    "Return the common prefix of completions of STRING in COLLECTION.
+The optional PREDICATE receives original collection entries.  Function
+collections receive STRING, PREDICATE and nil.  Case folding and regular
+expression filtering follow the standard completion variables."
+    (emacs-minibuffer-builtins--check-arity 'try-completion arguments 2 3)
+    (let ((string (car arguments))
+          (collection (cadr arguments))
+          (predicate (car (cddr arguments))))
+      (unless (stringp string)
+        (signal 'wrong-type-argument (list 'stringp string)))
+      (if (or (functionp collection)
+              (not (or (listp collection) (hash-table-p collection)
+                       (obarrayp collection) (vectorp collection))))
+          (funcall collection string predicate nil)
+        (emacs-minibuffer-builtins--completion-result
+         string (emacs-minibuffer-builtins--completion-candidates
+                 string collection predicate))))))
 
 (when (emacs-minibuffer-builtins--install-function-p 'all-completions)
-  (defalias 'all-completions #'emacs-minibuffer-all-completions))
+  (defun all-completions (&rest arguments)
+    "Return all completions of STRING in COLLECTION.
+The optional PREDICATE receives original list entries, obarray symbols,
+or hash keys and values.  Function collections receive STRING, PREDICATE
+and t.  Matching honors the standard completion variables."
+    (emacs-minibuffer-builtins--check-arity 'all-completions arguments 2 3)
+    (let ((string (car arguments))
+          (collection (cadr arguments))
+          (predicate (car (cddr arguments))))
+      (unless (stringp string)
+        (signal 'wrong-type-argument (list 'stringp string)))
+      (if (or (functionp collection)
+              (not (or (listp collection) (hash-table-p collection)
+                       (obarrayp collection) (vectorp collection))))
+          (funcall collection string predicate t)
+        (emacs-minibuffer-builtins--completion-candidates
+         string collection predicate)))))
 
 (when (emacs-minibuffer-builtins--install-function-p 'test-completion)
   (defalias 'test-completion #'emacs-minibuffer-test-completion))
@@ -111,22 +245,39 @@ primitive to distinguish standalone execution from host Emacs."
 ;;;; --- minibuffer state / control --------------------------------------
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibufferp)
+  ;; Alias the substrate so `indirect-function' identity holds; the substrate
+  ;; takes (BUFFER LIVE) and host arity enforcement covers extra arguments.
   (defalias 'minibufferp #'emacs-minibuffer-minibufferp))
 
 (when (emacs-minibuffer-builtins--install-function-p 'active-minibuffer-window)
   (defalias 'active-minibuffer-window #'emacs-minibuffer-active-minibuffer-window))
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-window)
-  (defalias 'minibuffer-window #'emacs-minibuffer-minibuffer-window))
+  (defun minibuffer-window (&optional frame)
+    "Return the minibuffer window belonging to FRAME."
+    (emacs-cc-census-display-b34window01--minibuffer-window frame)))
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt)
   (defalias 'minibuffer-prompt #'emacs-minibuffer-minibuffer-prompt))
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-contents)
-  (defalias 'minibuffer-contents #'emacs-minibuffer-minibuffer-contents))
+  (defun minibuffer-contents (&rest arguments)
+    "Return the accessible contents of the current buffer after its prompt.
+In an ordinary buffer return its entire accessible contents, retaining
+text properties."
+    (emacs-minibuffer-builtins--check-arity 'minibuffer-contents arguments 0 0)
+    (buffer-substring (minibuffer-prompt-end) (point-max))))
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-end)
-  (defalias 'minibuffer-prompt-end #'emacs-minibuffer-minibuffer-prompt-end))
+  (defun minibuffer-prompt-end (&rest arguments)
+    "Return the end of the current minibuffer's prompt field.
+Return `point-min' in an ordinary buffer or when no prompt field exists."
+    (emacs-minibuffer-builtins--check-arity 'minibuffer-prompt-end arguments 0 0)
+    (let ((start (point-min)))
+      (if (minibufferp)
+          (or (next-single-property-change start 'field)
+              (if (get-text-property start 'field) (point-max) start))
+        start))))
 
 (when (emacs-minibuffer-builtins--install-function-p 'minibuffer-prompt-width)
   (defalias 'minibuffer-prompt-width #'emacs-minibuffer-minibuffer-prompt-width))
@@ -203,6 +354,43 @@ The standalone substrate currently keeps this disabled by default."))
     "Fallback keymap for visible completion navigation.
 The standalone substrate does not yet install the upstream navigation
 bindings here, but vendor code can safely compose this map."))
+
+(unless (fboundp 'add-to-history)
+(defun add-to-history (history-var newelt &optional maxelt keep-all)
+  "Add NEWELT to the history list stored in the variable HISTORY-VAR.
+Return the new history list.
+If MAXELT is non-nil, it specifies the maximum length of the history.
+Otherwise, the maximum history length is the value of the `history-length'
+property on symbol HISTORY-VAR, if set, or the value of the `history-length'
+variable.  The possible values of maximum length have the same meaning as
+the values of `history-length'.
+Remove duplicates of NEWELT if `history-delete-duplicates' is non-nil.
+If optional fourth arg KEEP-ALL is non-nil, add NEWELT to history even
+if it is empty or duplicates the most recent entry in the history.
+HISTORY-VAR cannot refer to a lexical variable."
+  (unless maxelt
+    (setq maxelt (or (get history-var 'history-length)
+		     history-length)))
+  (let ((history (symbol-value history-var))
+	tail)
+    (when (and (listp history)
+	       (or keep-all
+		   (not (stringp newelt))
+		   (> (length newelt) 0))
+	       (or keep-all
+		   (not (equal (car history) newelt))))
+      (if history-delete-duplicates
+	  (setq history (delete newelt history)))
+      (setq history (cons newelt history))
+      (when (integerp maxelt)
+        (if (>= 0 maxelt)
+	    (setq history nil)
+	  (setq tail (nthcdr (1- maxelt) history))
+	  (when (consp tail)
+            (setcdr tail nil))))
+      (set history-var history))))
+
+)
 
 (provide 'emacs-minibuffer-builtins)
 
