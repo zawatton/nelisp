@@ -83,8 +83,13 @@
           (should-not called)
           ;; GNU Emacs 31.1 measured: (atan 1) => 0.7853981633974483.
           (should (< (abs (- (atan 1) 0.7853981633974483)) 1e-12))
-          ;; `exp' stays a constant bootstrap fallback (GNU gives 2.718...).
-          (should (= 1 (exp 1)))
+          ;; GNU Emacs 31.1 measured values.
+          (should (equal (exp 0) 1.0))
+          (should (< (abs (- (exp 1) 2.718281828459045)) 1e-15))
+          (should (< (abs (- (exp -1) 0.36787944117144233)) 1e-16))
+          (should (< (abs (/ (- (exp 10) 22026.465794806718) 22026.465794806718)) 1e-15))
+          (should (equal (exp 1000) 1.0e+INF))
+          (should (equal (exp -1000) 0.0))
           (should-not (get 'atan 'emacs-stub-bulk))
           (should-not (get 'exp 'emacs-stub-bulk)))
       (if original-atan
