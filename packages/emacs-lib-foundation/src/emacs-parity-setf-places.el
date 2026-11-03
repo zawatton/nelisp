@@ -41,7 +41,17 @@
            (cond
             ;; --- prelude branches (verbatim) --------------------------------
             ((symbolp place)
-             (list 'setq place val))
+             ;; A symbol macro (`cl-symbol-macrolet', `with-slots') expands
+             ;; to its place first, as GNU gv does.  Emitting `setq' here
+             ;; looped: `cl--sm-macroexpand-1' turns that `setq' back into
+             ;; this `setf' (transient-infix-read hit excessive nesting).
+             (let ((exp (macroexpand-1
+                         place
+                         (and (boundp 'macroexpand-all-environment)
+                              macroexpand-all-environment))))
+               (if (eq exp place)
+                   (list 'setq place val)
+                 (list 'setf exp val))))
             ((and (consp place) (eq (car place) 'car))
              (list 'setcar (cadr place) val))
             ((and (consp place) (eq (car place) 'cdr))

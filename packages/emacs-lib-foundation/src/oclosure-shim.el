@@ -29,8 +29,23 @@
 ;; standalone runtime it exists for.  Detect the standalone path by a
 ;; NeLisp-only primitive instead, matching
 ;; `emacs-char-table--standalone-p' in `emacs-char-table.el'.
-(when (or (fboundp 'nl-write-file)
-          (not (boundp 'emacs-version)))
+(defun oclosure-shim--genuine-oclosures-work-p ()
+  "Return non-nil when the genuine oclosure.el/nadvice.el already work.
+Their `oclosure--copy' rebuilds the closure with new slot values, so an
+advice made with `advice--make' reads its function back.  This shim's
+identity `oclosure--copy' would instead hand back the slot-less prototype,
+and every later `advice-add' wrapper calls (apply nil nil ARGS) --
+`cl-symbol-macrolet' (via `with-slots' in transient.el) then leaves
+`macroexpand-1' broken for all later macroexpansion."
+  (and (fboundp 'advice--make)
+       (fboundp 'advice--car)
+       (condition-case nil
+           (eq (advice--car (advice--make :around #'car #'cdr nil)) #'car)
+         (error nil))))
+
+(when (and (or (fboundp 'nl-write-file)
+               (not (boundp 'emacs-version)))
+           (not (oclosure-shim--genuine-oclosures-work-p)))
 
   (defmacro oclosure-lambda (type-and-slots args &rest body)
     (let* ((type (car type-and-slots))
