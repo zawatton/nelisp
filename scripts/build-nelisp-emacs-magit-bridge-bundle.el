@@ -499,7 +499,7 @@ relocatable."
          (api-file
           (and (string-prefix-p "vendor/emacs-lisp/" rel)
                (expand-file-name
-                (concat "vendor/emacs-lisp-api/"
+                (concat "vendor/emacs-lisp/"
                         (substring rel (length "vendor/emacs-lisp/")))
                 nelisp-emacs-magit-bridge-bundle-repo-root)))
          (saw-self-provide nil))

@@ -102,7 +102,7 @@
              (api-file
               (and (string-prefix-p "vendor/emacs-lisp/" rel)
                    (expand-file-name
-                    (concat "vendor/emacs-lisp-api/"
+                    (concat "vendor/emacs-lisp/"
                             (substring rel (length "vendor/emacs-lisp/")))
                     nelisp-emacs-org-bridge-bundle-repo-root)))
              (file (if (and (not (file-readable-p file)) api-file

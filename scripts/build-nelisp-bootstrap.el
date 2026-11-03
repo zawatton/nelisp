@@ -411,9 +411,9 @@ Use this for vendor sources whose dependencies are only guaranteed after the
 self-healing replay phase has completed.")
 
 (defconst nelisp-bootstrap-runtime-lazy-vendor-files
-  '("emacs-lisp-api/emacs-lisp/cl-macs.el"
-    "emacs-lisp-api/man.el"
-    "emacs-lisp-api/woman.el"
+  '("emacs-lisp/emacs-lisp/cl-macs.el"
+    "emacs-lisp/man.el"
+    "emacs-lisp/woman.el"
     "emacs-lisp/isearch.el")
   "Vendor sources omitted from the eager .el boot and resolved on first require.
 
@@ -489,7 +489,8 @@ These files must not run during the self-healing replay phase itself.")
     "vendor/emacs-lisp/term"
     "vendor/emacs-lisp/erc"
     "vendor/emacs-lisp/org"
-    "vendor/emacs-lisp/gnus")
+    "vendor/emacs-lisp/gnus"
+    "vendor/emacs-lisp/obsolete")
   "Vendor directories that should be present on standalone `load-path'.")
 
 (defvar nelisp-bootstrap-repl-direct-character-limit 1000000
@@ -548,14 +549,8 @@ qualify; other loaded files (vendor, host Emacs) are not local sources."
                    (concat "emacs-lisp/"
                            (substring name (length "emacs-lisp-31.1/")))
                  name))
-         (file (expand-file-name name vendor))
-         (api-file
-          (and (string-prefix-p "emacs-lisp/" name)
-               (expand-file-name
-                (substring name (length "emacs-lisp/"))
-                (expand-file-name "emacs-lisp-api" vendor)))))
-    (cond ((file-readable-p file) file)
-          ((and api-file (file-readable-p api-file)) api-file))))
+         (file (expand-file-name name vendor)))
+    (and (file-readable-p file) file)))
 
 (defun nelisp-bootstrap--collect-loaded-src-files ()
   "Return loaded local src files in dependency-first order."
@@ -1130,22 +1125,13 @@ concatenated bootstrap bundle must make the order explicit."
 
 (defun nelisp-bootstrap--default-load-paths ()
   "Return the default standalone load-path baked into the bootstrap."
-  (let* ((vendor (nelisp-bootstrap--vendor-dir))
-         (api (expand-file-name "emacs-lisp-api" vendor)))
+  (let* ((vendor (nelisp-bootstrap--vendor-dir)))
     (append
-     (append
-      (mapcar (lambda (dir) dir) (nelisp-bootstrap--package-source-dirs))
-      (mapcar (lambda (relative)
-                (expand-file-name (string-remove-prefix "vendor/" relative)
-                                  vendor))
-              nelisp-bootstrap-vendor-load-path-subdirs))
-     ;; The API vendor tree is intentionally separate from NeLisp core's
-     ;; load-path.  A bundle build may point VENDOR at a nelisp checkout or
-     ;; at a staging root containing both emacs-lisp/ and emacs-lisp-api/.
-     (when (file-directory-p api)
-       (cons api
-             (seq-filter #'file-directory-p
-                         (directory-files api t "^[^.].*" t)))))))
+     (mapcar (lambda (dir) dir) (nelisp-bootstrap--package-source-dirs))
+     (mapcar (lambda (relative)
+               (expand-file-name (string-remove-prefix "vendor/" relative)
+                                 vendor))
+             nelisp-bootstrap-vendor-load-path-subdirs))))
 
 (defun nelisp-bootstrap--runtime-anchor-prologue-forms ()
   "Return standalone REPL forms that seed source-location globals.
@@ -1206,11 +1192,11 @@ overrides them for workflow tests."
       (nelisp-bootstrap--runtime-load-path-prologue-forms)))))
 
 (defvar nelisp-bootstrap-normalized-bundle-files
-  '("vendor/emacs-lisp-31.1/vc/vc-hooks.el"
-    "vendor/emacs-lisp-31.1/vc/vc-dispatcher.el"
-    "vendor/emacs-lisp-31.1/vc/vc.el"
+  '("vendor/emacs-lisp/vc/vc-hooks.el"
+    "vendor/emacs-lisp/vc/vc-dispatcher.el"
+    "vendor/emacs-lisp/vc/vc.el"
     "vendor/emacs-lisp/man.el"
-    "vendor/emacs-lisp-31.1/progmodes/xref.el"
+    "vendor/emacs-lisp/progmodes/xref.el"
     "vendor/emacs-lisp/replace.el"
     "vendor/emacs-lisp/comint.el"
     "vendor/emacs-lisp/simple.el"
@@ -1220,16 +1206,16 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/ehelp.el"
     "vendor/emacs-lisp/term.el"
     "vendor/emacs-lisp/woman.el"
-    "vendor/emacs-lisp-31.1/progmodes/project.el"
+    "vendor/emacs-lisp/progmodes/project.el"
     "vendor/emacs-lisp/isearch.el"
-    "vendor/emacs-lisp-31.1/imenu.el"
-    "vendor/emacs-lisp-31.1/json.el"
-    "vendor/emacs-lisp-31.1/ielm.el"
-    "vendor/emacs-lisp-31.1/url/url-vars.el"
-    "vendor/emacs-lisp-31.1/dired.el"
+    "vendor/emacs-lisp/imenu.el"
+    "vendor/emacs-lisp/json.el"
+    "vendor/emacs-lisp/ielm.el"
+    "vendor/emacs-lisp/url/url-vars.el"
+    "vendor/emacs-lisp/dired.el"
     "vendor/emacs-lisp-31.1/button.el"
-    "vendor/emacs-lisp-31.1/imenu.el"
-    "vendor/emacs-lisp-31.1/obsolete/cl.el"
+    "vendor/emacs-lisp/imenu.el"
+    "vendor/emacs-lisp/obsolete/cl.el"
     "vendor/emacs-lisp/emacs-lisp/cl-macs.el")
   "Bundle members inserted as normalized source rather than verbatim text.
 
@@ -1279,23 +1265,12 @@ here is not simply proportional to bundle text size, so the extra
 (defun nelisp-bootstrap--normalized-bundle-file-p (file rel)
   "Whether FILE or REL names a bundle member selected for normalization.
 
-An explicit vendor root can live outside this repository.  In particular,
-GNU files resolved from its `emacs-lisp-api/' fallback must retain the same
-normalization policy as their former `emacs-lisp/' paths."
+An explicit vendor root can live outside this repository.  Matching is by
+the vendor-relative path (`vendor/emacs-lisp/...')."
   (or (member rel nelisp-bootstrap-normalized-bundle-files)
-      (let* ((vendor (nelisp-bootstrap--vendor-dir))
-             (relative (file-relative-name file vendor))
-             (api-prefix "emacs-lisp-api/")
-             (api-relative
-              (and (string-prefix-p api-prefix relative)
-                   (substring relative (length api-prefix)))))
-        (or (member (concat "vendor/" relative)
-                    nelisp-bootstrap-normalized-bundle-files)
-            (and api-relative
-                 (or (member (concat "vendor/emacs-lisp/" api-relative)
-                             nelisp-bootstrap-normalized-bundle-files)
-                     (member (concat "vendor/emacs-lisp-31.1/" api-relative)
-                             nelisp-bootstrap-normalized-bundle-files)))))))
+      (member (concat "vendor/" (file-relative-name
+                                 file (nelisp-bootstrap--vendor-dir)))
+              nelisp-bootstrap-normalized-bundle-files)))
 
 (defun nelisp-bootstrap--fold-constant-regexp-opt (start)
   "Fold literal `regexp-opt' calls between START and point into strings.

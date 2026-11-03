@@ -2010,7 +2010,7 @@ real-init-audit: build-nelisp-bootstrap
 		./scripts/real-init-audit.sh
 
 NELISP_BOOTSTRAP_VENDOR_ROOT = $(if $(NELISP_BOOTSTRAP_VENDOR_DIR),$(NELISP_BOOTSTRAP_VENDOR_DIR),vendor)
-NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-api emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
+NELISP_BOOTSTRAP_VENDOR_INPUTS = $(shell for d in emacs-lisp emacs-lisp-31.1; do test ! -d "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" || find -L "$(NELISP_BOOTSTRAP_VENDOR_ROOT)/$$d" -type f -name '*.el' -print; done)
 NELISP_EMACS_API_SRC_FILES = $(shell find packages/emacs-lib-*/src -type f -name '*.el' -print 2>/dev/null) packages/nl-ffi/src/nl-ffi-memory.el
 # The bundle builder resolves features through the package table it builds from
 # packages/emacs-lib-*/src (Doc 211 section 4.5); no staged flat source root.

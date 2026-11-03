@@ -57,9 +57,9 @@
 
 ;; GNU's loaddefs autoload cl-print; the runtime has no loaddefs, so
 ;; autoload the entry points ERT and the tests use from this tree's
-;; vendored GNU 31.1 cl-print.el (vendor/emacs-lisp-api).
+;; vendored GNU 31.1 cl-print.el (vendor/emacs-lisp).
 (setq load-path (append load-path
-                        (list (expand-file-name "../../vendor/emacs-lisp-api/emacs-lisp"
+                        (list (expand-file-name "../../vendor/emacs-lisp/emacs-lisp"
                                                 gnu-tests-support-root))))
 (dolist (f '(cl-prin1 cl-prin1-to-string cl-print-to-string-with-limit
              cl-print-object))
