@@ -1,0 +1,10 @@
+# tools/ai/gc-outslot-probe.sh on target/nelisp-base (origin/main bcb1a7186), 2026-11-03, 3 runs
+out-slot unbox at once (mid-form GC armed): bad=0/2000
+positive control, GC in the gap: bad=50/50
+exit=0
+out-slot unbox at once (mid-form GC armed): bad=0/2000
+positive control, GC in the gap: bad=50/50
+exit=0
+out-slot unbox at once (mid-form GC armed): bad=0/2000
+positive control, GC in the gap: bad=50/50
+exit=0

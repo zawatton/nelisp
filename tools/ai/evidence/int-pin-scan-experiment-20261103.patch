@@ -1,0 +1,21 @@
+diff --git a/scripts/nelisp-standalone-build.el b/scripts/nelisp-standalone-build.el
+index 0a686273c..9c1608d11 100644
+--- a/scripts/nelisp-standalone-build.el
++++ b/scripts/nelisp-standalone-build.el
+@@ -4216,9 +4216,16 @@ REPL-facing module it feeds."
+                          (nl_hdr_set_mark (- owner 8) 4)
+                          (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                                         (logior (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 4))
++                         (nl_gc_pin_int_scan owner)
+                          1)
+                       0)))))
+           0)))
++    (defun nl_gc_pin_int_scan (w)
++      (let* ((end (+ (- w 8) (nl_hdr_bt (- w 8)))) (p w))
++        (while (< p end)
++          (nl_gc_pin_int_addr (ptr-read-u64 p 0))
++          (setq p (+ p 8)))
++        0))
+     (defun nl_gc_conserv_word (w)
+       (let ((owner (nl_gc_conserv_resolve w)))
+         (if (= owner 0) 0 (nl_gc_conserv_pin owner))))
