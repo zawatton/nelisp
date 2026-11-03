@@ -2424,20 +2424,47 @@ Standalone: returns FILENAME unchanged (no home-dir abbreviation)."
 (unless (fboundp 'expt)
   (defun expt (base exponent)
     "Return BASE raised to EXPONENT.
-Standalone supports an integer EXPONENT (the common case, e.g.
-\(expt 2 N)) by repeated multiplication; a negative integer EXPONENT
-yields a float reciprocal.  A non-integer EXPONENT is unsupported and
-degrades to 1 (no pow primitive in the standalone reader)."
+Integer BASE and non-negative integer EXPONENT give an integer.  A negative
+integer EXPONENT gives a float reciprocal.  A float EXPONENT is computed as
+exp(EXPONENT * log(BASE)) for a positive BASE; a zero BASE gives 0.0 or
+infinity; a negative BASE with a non-integral EXPONENT gives NaN.  An
+integral float EXPONENT is treated as that integer, on a float result."
+    (unless (numberp base)
+      (signal 'wrong-type-argument (list 'numberp base)))
+    (unless (numberp exponent)
+      (signal 'wrong-type-argument (list 'numberp exponent)))
     (cond
      ((and (integerp exponent) (>= exponent 0))
-      (let ((acc 1) (i 0))
-        (while (< i exponent) (setq acc (* acc base)) (setq i (1+ i)))
+      (let ((acc 1) (b base) (n exponent))
+        (while (> n 0)
+          (when (= (% n 2) 1) (setq acc (* acc b)))
+          (setq n (/ n 2))
+          (when (> n 0) (setq b (* b b))))
         acc))
      ((integerp exponent)
-      (let ((acc 1) (i 0) (n (- exponent)))
-        (while (< i n) (setq acc (* acc base)) (setq i (1+ i)))
-        (/ 1.0 acc)))
-     (t 1))))
+      (let ((acc 1) (b base) (n (- exponent)))
+        (while (> n 0)
+          (when (= (% n 2) 1) (setq acc (* acc b)))
+          (setq n (/ n 2))
+          (when (> n 0) (setq b (* b b))))
+        (/ 1.0 (float acc))))
+     (t
+      (let ((x (float base)) (y (float exponent)))
+        (cond
+         ((or (/= x x) (/= y y)) (+ x y))
+         ((and (< (abs y) 9007199254740992.0) (/= y 0.0)
+               (= y (float (truncate y))))
+          (float (expt x (truncate y))))
+         ((= y 0.0) 1.0)
+         ((= x 0.0) (if (< y 0.0) (/ 1.0 0.0) 0.0))
+         ((< x 0.0)
+          (if (= y (* y 0.5)) (if (< y 0.0) 0.0 (/ 1.0 0.0)) (/ 0.0 0.0)))
+         ;; Split Y so the integral part uses exact-ish repeated squaring and
+         ;; only the fraction goes through exp/log (keeps large results tight).
+         (t (let* ((yi (truncate y)) (yf (- y (float yi))))
+              (if (and (/= yi 0) (< (abs yi) 1000000))
+                  (* (expt x yi) (exp (* yf (log x))))
+                (exp (* y (log x))))))))))))
 
 ;;;; --- define-inline (Doc 15 B4): runtime-compatible function-only impl ---
 ;;

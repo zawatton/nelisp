@@ -335,6 +335,119 @@ sum the Taylor series of e^R, then scale by 2^K."
                (emacs-numeric--exp-pow2 k2))))))))
   (put 'exp 'emacs-stub-bulk nil))
 
+;;;; --- log / sin / cos (pure-Elisp fallbacks) ---
+;; The standalone reader defines `sin' and `cos' (and so `tan') as
+;; `fboundp' stubs that signal `nelisp-unsupported-primitive', so a plain
+;; `fboundp' guard would never install the fallback.  Probe with a call.
+
+(defun emacs-numeric--primitive-works-p (fn arg)
+  "Return non-nil if calling FN on ARG yields a number instead of an error."
+  (condition-case nil
+      (numberp (funcall fn arg))
+    (error nil)))
+
+(defun emacs-numeric--log (arg &optional base)
+    "Return the natural logarithm of ARG, or its logarithm to BASE.
+Pure-Elisp fallback: write ARG as M*2^K with M in [sqrt(1/2), sqrt(2)),
+then sum the series 2*atanh((M-1)/(M+1))."
+    (unless (numberp arg)
+      (signal 'wrong-type-argument (list 'numberp arg)))
+    (when base
+      (unless (numberp base)
+        (signal 'wrong-type-argument (list 'numberp base))))
+    (let ((x (float arg)))
+      (cond
+       (base
+        (/ (emacs-numeric--log x) (emacs-numeric--log (float base))))
+       ((not (= x x)) x)
+       ((< x 0.0) (/ 0.0 0.0))
+       ((= x 0.0) (/ -1.0 0.0))
+       ((= x (* x 0.5)) x)
+       (t
+        (let ((k 0))
+          (while (>= x 1.4142135623730951)
+            (setq x (/ x 2.0) k (1+ k)))
+          (while (< x 0.7071067811865476)
+            (setq x (* x 2.0) k (1- k)))
+          (let* ((s (/ (- x 1.0) (+ x 1.0)))
+                 (s2 (* s s))
+                 (term s)
+                 (sum s)
+                 (n 3))
+            (while (<= n 41)
+              (setq term (* term s2))
+              (setq sum (+ sum (/ term n)))
+              (setq n (+ n 2)))
+            (+ (* k 0.6931471805599453)
+               (* 2.0 sum))))))))
+
+(unless (emacs-numeric--primitive-works-p 'log 2.0)
+  (defun log (arg &optional base)
+    "Return the natural logarithm of ARG, or its logarithm to BASE."
+    (emacs-numeric--log arg base)))
+
+(defun emacs-numeric--trig-reduce (x)
+  "Return (N . R) with X = N*pi/2 + R, N an integer and |R| <= pi/4.
+Uses a Cody-Waite reduction with pi/2 split into 33-bit pieces; N is split
+into 15-bit-shifted halves so every partial product is exact.  Accurate to
+about 1e-16 relative for |X| below roughly 1e10."
+  (let* ((q (/ x 1.5707963267948966))
+         (n (truncate (if (< q 0) (- q 0.5) (+ q 0.5))))
+         (nl (float (% n 32768)))
+         (nh (float (- n (% n 32768))))
+         (r x))
+    (dolist (c '(1.57079632673412561417e+00 6.07710050630396597660e-11
+                 2.02226624871116645580e-21 8.47842766036889956997e-32))
+      (setq r (- (- r (* nh c)) (* nl c))))
+    (cons n r)))
+
+(defun emacs-numeric--sin-kernel (r)
+  "Taylor series of sin(R) for |R| <= pi/4."
+  (let* ((r2 (* r r)) (term r) (sum r) (i 1))
+    (while (<= i 13)
+      (setq term (/ (* (- term) r2) (* (* 2 i) (1+ (* 2 i)))))
+      (setq sum (+ sum term))
+      (setq i (1+ i)))
+    sum))
+
+(defun emacs-numeric--cos-kernel (r)
+  "Taylor series of cos(R) for |R| <= pi/4."
+  (let* ((r2 (* r r)) (term 1.0) (sum 1.0) (i 1))
+    (while (<= i 13)
+      (setq term (/ (* (- term) r2) (* (1- (* 2 i)) (* 2 i))))
+      (setq sum (+ sum term))
+      (setq i (1+ i)))
+    sum))
+
+(defun emacs-numeric--trig (x cos-p)
+  "Return sin(X), or cos(X) when COS-P, as a float."
+  (unless (numberp x)
+    (signal 'wrong-type-argument (list 'numberp x)))
+  (let ((xf (float x)))
+    (if (or (not (= xf xf)) (= xf (* xf 0.5)) (> (abs xf) 1e18))
+        (if (and (= xf xf) (= xf (* xf 0.5)) (/= xf 0.0)) (/ 0.0 0.0)
+          (if (and cos-p (= xf 0.0)) 1.0 xf))
+      (let* ((red (emacs-numeric--trig-reduce xf))
+             (m (% (car red) 4))
+             (m (if (< m 0) (+ m 4) m))
+             (m (if cos-p (% (1+ m) 4) m))
+             (r (cdr red)))
+        (cond
+         ((= m 0) (emacs-numeric--sin-kernel r))
+         ((= m 1) (emacs-numeric--cos-kernel r))
+         ((= m 2) (- (emacs-numeric--sin-kernel r)))
+         (t (- (emacs-numeric--cos-kernel r))))))))
+
+(unless (emacs-numeric--primitive-works-p 'sin 1.0)
+  (defun sin (arg)
+    "Return the sine of ARG (radians).  Pure-Elisp fallback."
+    (emacs-numeric--trig arg nil)))
+
+(unless (emacs-numeric--primitive-works-p 'cos 1.0)
+  (defun cos (arg)
+    "Return the cosine of ARG (radians).  Pure-Elisp fallback."
+    (emacs-numeric--trig arg t)))
+
 (unless (fboundp '/=)
   (defun /= (a b) (not (= a b))))
 (unless (fboundp 'float)
