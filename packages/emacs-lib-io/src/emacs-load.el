@@ -4174,8 +4174,11 @@ loader's defalias rewrites or native artifact compilation.  Top-level
         '("")
       (let ((suffixes nil)
             (qualified (file-name-directory file))
-            (representations (if (boundp 'load-file-rep-suffixes)
-                                 load-file-rep-suffixes '(""))))
+            ;; GNU's value always contains ""; a bound-but-nil value
+            ;; (the standalone runtime) would otherwise yield no suffix.
+            (representations (or (and (boundp 'load-file-rep-suffixes)
+                                      load-file-rep-suffixes)
+                                 '(""))))
         (dolist (suffix (if (boundp 'load-suffixes)
                            load-suffixes '(".elc" ".el")))
           ;; GNU recognizes an explicitly supplied .el/.elc even if the
@@ -4253,8 +4256,9 @@ Like GNU subr.el, this preserves suffix order even if `load-prefer-newer'
 is non-nil; that option controls `load' and `require'."
     (let ((file (emacs-load--find-file
                  library (if nosuffix
-                             (if (boundp 'load-file-rep-suffixes)
-                                 load-file-rep-suffixes '(""))
+                             (or (and (boundp 'load-file-rep-suffixes)
+                                      load-file-rep-suffixes)
+                                 '(""))
                            (emacs-load--candidate-suffixes library nil nil))
                  (or path (and (boundp 'load-path) load-path)) nil)))
       (when interactive-call
