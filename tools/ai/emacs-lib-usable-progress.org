@@ -9,7 +9,7 @@ the nemacs standalone/TUI editor as consumers. Read with:
   bin/progress-meter.sh --ledger dev/nelisp-emacs-lib/tools/ai/usable-progress.org --json
 
 Repo identification (see worklog for the full trail): the user's path
-"nelisp's packages/nelisp-emacs-lib" does not exist — dev/nelisp/packages/
+"nelisp's packages/emacs-lib-lib" does not exist — dev/nelisp/packages/
 holds small, unrelated nelisp-* utility packages (base64, sqlite, tramp,
 ...), none named emacs-lib. dev/nelisp-emacs-lib is a separate top-level
 repo (origin: github.com/zawatton/nelisp-emacs-lib) whose own README.org
@@ -139,7 +139,7 @@ evidence: build/nemacs-feature-coverage.tsv sha256=1ce260f520d21ccaf6b8947ce1d83
 #+NOTE: `with-current-buffer' dispatches through had no case for this
 #+NOTE: bridge's own `nelisp-ec-buffer' struct, signalling `(wrong-type-
 #+NOTE: argument stringp BUF)'. Fixed in emacs-buffer-builtins.el (both
-#+NOTE: src/ and packages/nelisp-emacs-buffer-core/lisp/ copies): `get-buffer'
+#+NOTE: src/ and packages/emacs-lib-buffer-core/src/ copies): `get-buffer'
 #+NOTE: is now always installed on the standalone and recognizes
 #+NOTE: `nelisp-ec-buffer-p' objects directly, falling back to the
 #+NOTE: pre-existing (native or stub) implementation for everything else, so

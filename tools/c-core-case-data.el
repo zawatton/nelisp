@@ -5,7 +5,7 @@
 (let ((character 0) (entries nil)
       (output (or (getenv "C_CORE_CASE_DATA")
                   (expand-file-name
-                   "../packages/nelisp-emacs-foundation/src/emacs-cc-case-data.el"
+                   "../packages/emacs-lib-foundation/src/emacs-cc-case-data.el"
                    (file-name-directory load-file-name)))))
   (while (< character #x110000)
     (when (or (/= character (upcase character))

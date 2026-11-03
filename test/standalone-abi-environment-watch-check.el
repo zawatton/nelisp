@@ -1,7 +1,7 @@
 ;;; standalone-abi-environment-watch-check.el --- WORD writer callbacks -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
-(load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-parity-misc.el") nil t)
+(load (expand-file-name "packages/emacs-lib-foundation/src/emacs-parity-misc.el") nil t)
 (defvar abi-environment-events nil)
 (defun abi-environment-watch (symbol value operation where)
   (push (list symbol value operation (null where)) abi-environment-events))

@@ -5,10 +5,10 @@
 (defconst emacs-long-line-state-test--root
   (expand-file-name "../.." (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (directory '("packages/nelisp-emacs-foundation/src"
-                     "packages/nelisp-emacs-buffer-core/src"
-                     "packages/nelisp-emacs-text-core/src"
-                     "packages/nelisp-emacs-core/src"
+(dolist (directory '("packages/emacs-lib-foundation/src"
+                     "packages/emacs-lib-buffer-core/src"
+                     "packages/emacs-lib-text-core/src"
+                     "packages/emacs-lib-core/src"
                      "packages/nelisp-regex/src"))
   (add-to-list 'load-path
                (expand-file-name directory emacs-long-line-state-test--root)))
@@ -31,15 +31,15 @@
 
 (defun emacs-long-line-state-test--load-xdisp-fallback ()
   "Load the xdisp fallback without a host implementation."
-  (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-cc-xdisp-1.el"
+  (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-cc-xdisp-1.el"
                           emacs-long-line-state-test--root) nil t))
 
 (defun emacs-long-line-state-test--load-renderer (kind)
   "Load the redisplay implementation named KIND."
   (load (expand-file-name
          (if (eq kind 'core)
-             "packages/nelisp-emacs-core/src/emacs-redisplay-core.el"
-           "packages/nelisp-emacs-core/src/emacs-redisplay.el")
+             "packages/emacs-lib-core/src/emacs-redisplay-core.el"
+           "packages/emacs-lib-core/src/emacs-redisplay.el")
          emacs-long-line-state-test--root) nil t))
 
 (defmacro emacs-long-line-state-test--with-world (&rest body)

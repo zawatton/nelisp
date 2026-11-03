@@ -4783,14 +4783,14 @@ doc211-bytecomp-needs-measure:
 # Doc 211 S6: the imported consumer build now runs from this source tree.
 .PHONY: build-nelisp-bootstrap build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el
 build-nelisp-bootstrap:
-	$(MAKE) -f nelisp-emacs-lib/Makefile $@
+	$(MAKE) -f mk/emacs-lib.mk $@
 
 build/nelisp-emacs-magit-bridge-bundle.el build/nelisp-emacs-org-bridge-bundle.el:
-	$(MAKE) -f nelisp-emacs-lib/Makefile $@
+	$(MAKE) -f mk/emacs-lib.mk $@
 
 .PHONY: nemacs-library-gate
 nemacs-library-gate:
-	$(MAKE) -f nelisp-emacs-lib/Makefile $@ NELISP_ROOT=.
+	$(MAKE) -f mk/emacs-lib.mk $@ NELISP_ROOT=.
 
 .PHONY: doc211-api-ownership doc211-api-inventory doc211-api-consumer-smoke
 doc211-api-ownership:
@@ -4800,4 +4800,4 @@ doc211-api-inventory:
 	$(MAKE) ns-inventory emacs-compat
 
 doc211-api-consumer-smoke:
-	@bash -c 'set -e; args=(); for d in packages/nelisp-emacs-*/src; do args+=(-L "$$d"); done; exec emacs --batch -Q "$${args[@]}" --eval "(require (quote nelisp-emacs))"'
+	@bash -c 'set -e; args=(); for d in packages/emacs-lib-*/src; do args+=(-L "$$d"); done; exec emacs --batch -Q "$${args[@]}" --eval "(require (quote nelisp-emacs))"'

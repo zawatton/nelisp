@@ -29,8 +29,8 @@ MODES = ("api", "behaviour")
 BEGIN = ";; BEGIN GENERATED CASETAB SOURCES"
 END = ";; END GENERATED CASETAB SOURCES"
 SOURCES = (
-    "packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el",
-    "packages/nelisp-emacs-foundation/src/case-table.el",
+    "packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el",
+    "packages/emacs-lib-foundation/src/case-table.el",
 )
 PRELUDE = "scripts/nelisp-stdlib-prelude.el"
 
@@ -330,8 +330,8 @@ def final():
         "lisp/nelisp-stdlib-regexp.el",
         "lisp/nelisp-stdlib-unicode.el",
         "tools/nelisp-generate-unicode.el",
-        "packages/nelisp-emacs-foundation/src/emacs-cc-case-region-1.el",
-        "packages/nelisp-emacs-foundation/src/emacs-string.el",
+        "packages/emacs-lib-foundation/src/emacs-cc-case-region-1.el",
+        "packages/emacs-lib-foundation/src/emacs-string.el",
         "test/nelisp-shadow-differential-cases.el",
     }
     required_sources |= {relative(fixture(mode)) for mode in MODES}

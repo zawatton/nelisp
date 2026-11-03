@@ -12,7 +12,7 @@
 (require 'ert)
 (let ((here (file-name-directory (or load-file-name buffer-file-name))))
   (add-to-list 'load-path
-               (expand-file-name "../packages/nelisp-emacs-io/lisp" here)))
+               (expand-file-name "../packages/emacs-lib-io/src" here)))
 (require 'emacs-http)
 
 (defvar emacs-http-hardened-test--crypto

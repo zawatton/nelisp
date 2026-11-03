@@ -31,37 +31,37 @@
   "Generated app/frontend scaffold identifier.")
 
 (defconst nemacs-library-app-scaffold--entries
-  '(("app-bootstrap" "packages/nelisp-emacs-app-gui/src/emacs-init.el"
-     "packages/nelisp-emacs-app-gui/lisp/emacs-init.el" "src/emacs-init.el")
-    ("app-bootstrap" "packages/nelisp-emacs-app-gui/src/nemacs-loadup.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-loadup.el" "src/nemacs-loadup.el")
-    ("app-utility" "packages/nelisp-emacs-app-gui/src/nemacs-init-transport.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-init-transport.el")
-    ("app-utility" "packages/nelisp-emacs-app-gui/src/image-baker.el"
-     "packages/nelisp-emacs-app-gui/lisp/image-baker.el" "src/image-baker.el")
-    ("app-entry" "packages/nelisp-emacs-app-gui/src/nemacs-main.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-main.el" "src/nemacs-main.el")
-    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-fileio-gui.el"
-     "packages/nelisp-emacs-app-gui/lisp/emacs-fileio-gui.el")
-    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-dired-min-gui.el"
-     "packages/nelisp-emacs-app-gui/lisp/emacs-dired-min-gui.el")
-    ("bridge-family" "packages/nelisp-emacs-app-gui/src/emacs-help-gui.el"
-     "packages/nelisp-emacs-app-gui/lisp/emacs-help-gui.el")
-    ("bridge-runtime" "packages/nelisp-emacs-app-gui/src/nemacs-gui-file-bridge-runtime.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-gui-file-bridge-runtime.el")
-    ("frontend" "packages/nelisp-emacs-app-gui/src/nemacs-gtk-view-menu.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-gtk-view-menu.el")
-    ("frontend" "packages/nelisp-emacs-app-gui/src/nemacs-gtk-frontend.el"
-     "packages/nelisp-emacs-app-gui/lisp/nemacs-gtk-frontend.el"))
+  '(("app-bootstrap" "packages/emacs-lib-app-gui/src/emacs-init.el"
+     "packages/emacs-lib-app-gui/src/emacs-init.el" "src/emacs-init.el")
+    ("app-bootstrap" "packages/emacs-lib-app-gui/src/nemacs-loadup.el"
+     "packages/emacs-lib-app-gui/src/nemacs-loadup.el" "src/nemacs-loadup.el")
+    ("app-utility" "packages/emacs-lib-app-gui/src/nemacs-init-transport.el"
+     "packages/emacs-lib-app-gui/src/nemacs-init-transport.el")
+    ("app-utility" "packages/emacs-lib-app-gui/src/image-baker.el"
+     "packages/emacs-lib-app-gui/src/image-baker.el" "src/image-baker.el")
+    ("app-entry" "packages/emacs-lib-app-gui/src/nemacs-main.el"
+     "packages/emacs-lib-app-gui/src/nemacs-main.el" "src/nemacs-main.el")
+    ("bridge-family" "packages/emacs-lib-app-gui/src/emacs-fileio-gui.el"
+     "packages/emacs-lib-app-gui/src/emacs-fileio-gui.el")
+    ("bridge-family" "packages/emacs-lib-app-gui/src/emacs-dired-min-gui.el"
+     "packages/emacs-lib-app-gui/src/emacs-dired-min-gui.el")
+    ("bridge-family" "packages/emacs-lib-app-gui/src/emacs-help-gui.el"
+     "packages/emacs-lib-app-gui/src/emacs-help-gui.el")
+    ("bridge-runtime" "packages/emacs-lib-app-gui/src/nemacs-gui-file-bridge-runtime.el"
+     "packages/emacs-lib-app-gui/src/nemacs-gui-file-bridge-runtime.el")
+    ("frontend" "packages/emacs-lib-app-gui/src/nemacs-gtk-view-menu.el"
+     "packages/emacs-lib-app-gui/src/nemacs-gtk-view-menu.el")
+    ("frontend" "packages/emacs-lib-app-gui/src/nemacs-gtk-frontend.el"
+     "packages/emacs-lib-app-gui/src/nemacs-gtk-frontend.el"))
   "App/frontend source files staged for package-backed smoke tests.")
 
 (defconst nemacs-library-app-scaffold--readme
-  "packages/nelisp-emacs-app-gui/README.org"
+  "packages/emacs-lib-app-gui/README.org"
   "README target for the generated app/frontend scaffold.")
 
 (defconst nemacs-library-app-scaffold--obsolete-targets
-  '("packages/nelisp-emacs-app-gui/lisp/emacs-dump.el"
-    "packages/nelisp-emacs-app-gui/lisp/image-loader.el")
+  '("packages/emacs-lib-app-gui/src/emacs-dump.el"
+    "packages/emacs-lib-app-gui/src/image-loader.el")
   "Generated app scaffold targets that moved to reusable packages.")
 
 (defun nemacs-library-app-scaffold--tsv-cell (value)
@@ -84,7 +84,7 @@
          (source-identity
           (or (nth 3 entry)
               (if (string-match
-                   "\\`packages/nelisp-emacs-[^/]+/src/\\(.+\\)\\'"
+                   "\\`packages/emacs-lib-[^/]+/src/\\(.+\\)\\'"
                    source-relative)
                   (concat "src/"
                           (file-name-nondirectory (match-string 1 source-relative)))
@@ -158,7 +158,7 @@
       (insert (format "- copied files: %d\n" file-count))
       (insert (format "- app readmes: %d\n" readme-count))
       (insert "- source of truth: =src/=\n")
-      (insert "- scaffold root: =packages/nelisp-emacs-app-gui/=\n")
+      (insert "- scaffold root: =packages/emacs-lib-app-gui/=\n")
       (insert "- package-count impact: none; app scaffold is outside reusable package descriptors\n\n")
       (insert "* Counts By Role\n\n")
       (insert "| Role | Entries |\n|------+---------|\n")

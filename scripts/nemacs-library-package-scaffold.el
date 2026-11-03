@@ -30,15 +30,15 @@
   "Org summary output path.")
 
 (defconst nemacs-library-package-scaffold--facade-source
-  "packages/nelisp-emacs-facade/src/nelisp-emacs.el"
+  "packages/emacs-lib-facade/src/nelisp-emacs.el"
   "Source file for the generated umbrella facade scaffold.")
 
 (defconst nemacs-library-package-scaffold--facade-target
-  "packages/nelisp-emacs-facade/lisp/nelisp-emacs.el"
+  "packages/emacs-lib-facade/src/nelisp-emacs.el"
   "Target file for the generated umbrella facade scaffold.")
 
 (defconst nemacs-library-package-scaffold--facade-readme
-  "packages/nelisp-emacs-facade/README.org"
+  "packages/emacs-lib-facade/README.org"
   "README target for the generated umbrella facade scaffold.")
 
 (defun nemacs-library-package-scaffold--symbol-name (value)

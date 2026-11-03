@@ -57,7 +57,7 @@ this fixture's coverage.
 S4.3 selection acceptance:
 #+begin_src sh
 python3 scripts/gui-daily-gate.py S4.3 --init=-Q --fixture=selections --peer=xclip --bytes=1048576
-emacs -Q --batch -L packages/nelisp-emacs-core/src -l packages/nelisp-gui-xcb/test/selection-policy.el
+emacs -Q --batch -L packages/emacs-lib-core/src -l packages/nelisp-gui-xcb/test/selection-policy.el
 #+end_src
 
 =emacs-select.el= owns GNU-style selection flags, clipboard preference,

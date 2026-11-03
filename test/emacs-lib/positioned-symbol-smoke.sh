@@ -12,7 +12,7 @@ host = sys.argv[3]
 out = root / 'build/positioned-symbol-smoke'
 out.mkdir(parents=True, exist_ok=True)
 resource.setrlimit(resource.RLIMIT_STACK, (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
-source = 'test/nelisp-emacs-lib/positioned-symbol-smoke.el'
+source = 'test/emacs-lib/positioned-symbol-smoke.el'
 rows = []
 for label, argv in [('gnu', [host, '-Q', '--batch', '-l', source]),
                     ('nelisp', [str(binary), '--eval', f'(load "{source}" nil t)', '--eval', 'nil'])]:
@@ -27,7 +27,7 @@ for label, argv in [('gnu', [host, '-Q', '--batch', '-l', source]),
 if (out / 'gnu.out').read_bytes() != (out / 'nelisp.out').read_bytes():
     raise SystemExit(f'positioned-symbol-smoke: FAIL transcripts differ; see {out}')
 image = out / 'positioned.flat'
-image_source = 'test/nelisp-emacs-lib/positioned-symbol-image.el'
+image_source = 'test/emacs-lib/positioned-symbol-image.el'
 env = os.environ.copy()
 env['N4A_POSITIONED_IMAGE'] = str(image)
 for label, args, marker in [('image-create', [], b'N4A-IMAGE-CREATED\n'),

@@ -6,9 +6,9 @@
                                  (file-name-directory load-file-name))))
        (source-root (or (getenv "ELC_LOAD_SOURCE_ROOT") root))
        (file (make-temp-file "elc-load-check-" nil ".elc")))
-  (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-fns.el" source-root) nil t t)
-  (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-eval.el" source-root) nil t t)
-  (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-load.el" source-root) nil t t)
+  (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-fns.el" source-root) nil t t)
+  (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-eval.el" source-root) nil t t)
+  (load (expand-file-name "packages/emacs-lib-io/src/emacs-load.el" source-root) nil t t)
   (write-region (emacs-load--read-file-string
                  (expand-file-name "test/fixtures/elc-load-fixture.elc-data" root))
                 nil file nil 'silent)

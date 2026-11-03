@@ -8,7 +8,7 @@ all code, comments and docstrings in English.
 
 The NeLisp standalone runtime re-implements GNU Emacs C primitives in Emacs
 Lisp. For the names in `names.txt`, the probe rows in
-`test/nelisp-emacs-lib/c-core-probes/UNIT.el` (UNIT is in `unit.txt`) differ
+`test/emacs-lib/c-core-probes/UNIT.el` (UNIT is in `unit.txt`) differ
 from GNU Emacs 31.1. `DIVERGENCES.txt` shows the differing rows (`<` GNU,
 `>` standalone). Make every row of this unit match GNU by implementing the
 real GNU behaviour of those primitives.

@@ -12,9 +12,9 @@
     (byte-run . "vendor/emacs-lisp/emacs-lisp/byte-run.el")
     (macroexp . "vendor/emacs-lisp/emacs-lisp/macroexp.el")
     (inline . "vendor/emacs-lisp/emacs-lisp/inline.el")
-    (json . "packages/nelisp-emacs-foundation/src/json.el")
+    (json . "packages/emacs-lib-foundation/src/json.el")
     (easy-mmode . "vendor/emacs-lisp/emacs-lisp/easy-mmode.el")
-    (rx . "packages/nelisp-emacs-text-core/src/rx.el")
+    (rx . "packages/emacs-lib-text-core/src/rx.el")
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")
     (nelisp-process-buffer . "lisp/nelisp-process-buffer.el")))
 

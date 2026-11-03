@@ -8,11 +8,11 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (defconst emacs-cc-frame-3-test--foundation
-  (expand-file-name "packages/nelisp-emacs-foundation/src"
+  (expand-file-name "packages/emacs-lib-foundation/src"
                     emacs-cc-frame-3-test--root))
 
 (defconst emacs-cc-frame-3-test--core
-  (expand-file-name "packages/nelisp-emacs-core/src"
+  (expand-file-name "packages/emacs-lib-core/src"
                     emacs-cc-frame-3-test--root))
 
 (add-to-list 'load-path emacs-cc-frame-3-test--foundation)

@@ -9,15 +9,15 @@
   (expand-file-name "../.." (file-name-directory (or load-file-name buffer-file-name))))
 
 (defun emacs-cc-sqlite-1-test--load-paths ()
-  (list (expand-file-name "packages/nelisp-emacs-foundation/src"
+  (list (expand-file-name "packages/emacs-lib-foundation/src"
                           emacs-cc-sqlite-1-test--root)
-        (expand-file-name "packages/nelisp-emacs-io/src"
+        (expand-file-name "packages/emacs-lib-io/src"
                           emacs-cc-sqlite-1-test--root)))
 
 (defun emacs-cc-sqlite-1-test--load-unit ()
   (let ((load-path (append (emacs-cc-sqlite-1-test--load-paths) load-path)))
     (load (expand-file-name
-           "packages/nelisp-emacs-foundation/src/emacs-cc-sqlite-1.el"
+           "packages/emacs-lib-foundation/src/emacs-cc-sqlite-1.el"
            emacs-cc-sqlite-1-test--root)
           nil t)))
 

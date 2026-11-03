@@ -113,7 +113,7 @@
     (append
      (cl-mapcan
       (lambda (dir)
-        (when (or (string-match-p "/packages/nelisp-emacs-[^/]+/src\\'" dir)
+        (when (or (string-match-p "/packages/emacs-lib-[^/]+/src\\'" dir)
                   (string-match-p "/packages/STAYS/src\\'" dir))
           (directory-files-recursively dir "\\.el\\'")))
       (doc211-source-root-dirs nemacs-library-package-deps-repo-root))

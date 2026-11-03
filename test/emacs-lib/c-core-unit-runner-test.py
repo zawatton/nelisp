@@ -102,7 +102,7 @@ def main():
         checks[label] = result.returncode != 0
     with tempfile.TemporaryDirectory(prefix="ccore-old-unavailable-") as td:
         root = Path(td)
-        lib = root / "test/nelisp-emacs-lib"
+        lib = root / "test/emacs-lib"
         lib.mkdir(parents=True)
         probes = lib / "c-core-probes"
         probes.mkdir()

@@ -78,7 +78,7 @@ if not bundle.is_file():
 sources = [root / 'scripts/build-nelisp-bootstrap.el',
            root / 'scripts/doc211-bootstrap-source-root.sh',
            root / 'packages/nl-ffi/src/nl-ffi-memory.el']
-sources += sorted(root.glob('packages/nelisp-emacs-*/src/*.el'))
+sources += sorted(root.glob('packages/emacs-lib-*/src/*.el'))
 if any(path.stat().st_mtime_ns > bundle.stat().st_mtime_ns for path in sources if path.is_file()):
     fail('bootstrap bundle is stale; rebuild with EMACS=emacs make build-nelisp-bootstrap, then --build-image')
 env = os.environ.copy()

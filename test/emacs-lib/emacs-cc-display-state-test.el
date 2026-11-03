@@ -5,10 +5,10 @@
 (defconst emacs-cc-display-state-test--root
   (expand-file-name "../.." (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (directory '("packages/nelisp-emacs-foundation/src"
-                     "packages/nelisp-emacs-buffer-core/src"
-                     "packages/nelisp-emacs-text-core/src"
-                     "packages/nelisp-emacs-core/src"
+(dolist (directory '("packages/emacs-lib-foundation/src"
+                     "packages/emacs-lib-buffer-core/src"
+                     "packages/emacs-lib-text-core/src"
+                     "packages/emacs-lib-core/src"
                      "packages/nelisp-regex/src"))
   (add-to-list 'load-path
                (expand-file-name directory emacs-cc-display-state-test--root)))
@@ -20,7 +20,7 @@
 
 (defun emacs-cc-display-state-test--load-window-fallback ()
   "Load the C-core window unit with its minibuffer function unbound."
-  (load (expand-file-name "packages/nelisp-emacs-foundation/src/emacs-cc-window-1.el"
+  (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-cc-window-1.el"
                           emacs-cc-display-state-test--root) nil t))
 
 (defmacro emacs-cc-display-state-test--with-world (&rest body)

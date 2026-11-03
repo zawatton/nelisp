@@ -9,5 +9,5 @@ cmd: python3 test/nelisp-cl-optional-parity-test.py
 cmd: python3 test/nelisp-focused-parity-verifier-test.py && python3 test/nelisp-cl-optional-parity-test.py --expect-defect "$NELISP_BEFORE_BIN"
 ** S1.3 End to end: expanded optional arguments remove GTK input's unbound variable
 #+REQUIRES: NELISP_BIN,NELISP_LIBRARY_ROOT
-cmd: cd "$NELISP_LIBRARY_ROOT" && NELISP_BIN="$NELISP_BIN" bash test/nelisp-emacs-lib/c-core-parity-smoke.sh run --unit pgtkim-1
+cmd: cd "$NELISP_LIBRARY_ROOT" && NELISP_BIN="$NELISP_BIN" bash test/emacs-lib/c-core-parity-smoke.sh run --unit pgtkim-1
 #+NOTE: Existing Lisp macro owner only; no new native public entry. Whole C-core remains 24 criteria with known-red checks retained. Full CL destructuring, aux and key supplied-p semantics are outside this bounded optional-argument regression and remain unqualified.

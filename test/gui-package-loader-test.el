@@ -6,7 +6,7 @@
   (unwind-protect
       (let ((emacs-version 1))
         (funcall original-load-file
-                 "packages/nelisp-emacs-foundation/src/emacs-load.el"))
+                 "packages/emacs-lib-io/src/emacs-load.el"))
     (fset 'load original-load)
     (fset 'load-file original-load-file)))
 
@@ -32,7 +32,7 @@
 
 (ert-deftest gui-package-display/images-require-graphic-and-both-primitives ()
   (let* ((source (with-temp-buffer
-                   (insert-file-contents "packages/nelisp-emacs-foundation/src/emacs-stub.el")
+                   (insert-file-contents "packages/emacs-lib-foundation/src/emacs-stub.el")
                    (goto-char (point-min))
                    (search-forward "(defun emacs-display-images-p")
                    (goto-char (match-beginning 0)) (read (current-buffer))))
@@ -76,7 +76,7 @@
                      (lambda (name) (funcall file-function name)))
                     ((symbol-function 'delete-directory)
                      (lambda (name) (funcall directory-function name))))
-            (funcall loader "packages/nelisp-emacs-foundation/src/emacs-cc-fileio-1.el"))
+            (funcall loader "packages/emacs-lib-foundation/src/emacs-cc-fileio-1.el"))
           (cl-letf (((symbol-function 'delete-file)
                      (lambda (&rest _) (error "file facade reentry")))
                     ((symbol-function 'delete-directory)

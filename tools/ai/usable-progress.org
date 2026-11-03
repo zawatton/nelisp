@@ -11,7 +11,7 @@ the nemacs standalone/TUI editor as consumers. Read with:
 Set PROGRESS_METER to the Notes workspace's bin/progress-meter.sh.
 This ledger originated in nelisp-emacs-lib and is retained by the Doc 211
 history-preserving import. Canonical imported sources live in
-packages/nelisp-emacs-*/src; generated publication mirrors are not sources.
+packages/emacs-lib-*/src; generated publication mirrors are not sources.
 The frozen external library remains available until cutover acceptance
 and verified archival complete.
 
@@ -133,7 +133,7 @@ evidence: build/nemacs-feature-coverage.tsv sha256=17b2860d827f55d3f811d0ed39391
 #+NOTE: `with-current-buffer' dispatches through had no case for this
 #+NOTE: bridge's own `nelisp-ec-buffer' struct, signalling `(wrong-type-
 #+NOTE: argument stringp BUF)'. Fixed in emacs-buffer-builtins.el (both
-#+NOTE: src/ and packages/nelisp-emacs-buffer-core/lisp/ copies): `get-buffer'
+#+NOTE: src/ and packages/emacs-lib-buffer-core/src/ copies): `get-buffer'
 #+NOTE: is now always installed on the standalone and recognizes
 #+NOTE: `nelisp-ec-buffer-p' objects directly, falling back to the
 #+NOTE: pre-existing (native or stub) implementation for everything else, so
@@ -209,34 +209,34 @@ Phase 1 (Doc 34 §9.5 / gate-M9): buffer, window, keymap, minibuffer ported
 to Elisp, exercised together by demo/phase1-close-demo.el.
 
 ** S3.1 The buffer core ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-buffer-core-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L packages/emacs-lib-buffer-core/test -l emacs-buffer-core-test -f ert-run-tests-batch-and-exit
 
 ** S3.2 The window core ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l emacs-window-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L packages/emacs-lib-core/test -l emacs-window-test -f ert-run-tests-batch-and-exit
 
 ** S3.3 The keymap core ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-keymap-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L packages/emacs-lib-core/test -l emacs-keymap-test -f ert-run-tests-batch-and-exit
 
 ** S3.4 The minibuffer core ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l emacs-minibuffer-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L packages/emacs-lib-core/test -l emacs-minibuffer-test -f ert-run-tests-batch-and-exit
 
 ** S3.5 End to end: the Phase 1 close demo drives buffer, window, overlay, keymap and minibuffer together in one scenario
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L nelisp-emacs-lib/demo -L test/nelisp-emacs-lib -l phase1-close-demo-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L docs/nemacs/legacy-root/demo -L test/emacs-lib -l phase1-close-demo-test -f ert-run-tests-batch-and-exit
 
 * S4 File / process / IO
 
 ** S4.1 The file I/O ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-fileio-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L packages/emacs-lib-io/test -l emacs-fileio-test -f ert-run-tests-batch-and-exit
 
 ** S4.2 The process builtins ERT suite passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L test/nelisp-emacs-lib -l emacs-process-builtins-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L src -L packages/emacs-lib-io/test -l emacs-process-builtins-test -f ert-run-tests-batch-and-exit
 
 ** S4.3 The Tramp ssh-stub workflow smoke passes on host Emacs
-cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L test/nelisp-emacs-lib -l nemacs-tramp-stub-ssh-test -f ert-run-tests-batch-and-exit
+cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L packages/emacs-lib-runtime/test -l nemacs-tramp-stub-ssh-test -f ert-run-tests-batch-and-exit
 
 ** S4.4 End to end: call-process (echo/false/buffer-redirect/git) works through the real NeLisp standalone binary
 #+REQUIRES: NELISP_BIN
-cmd: timeout 30 make -s -f nelisp-emacs-lib/Makefile proc-smoke NELISP_BIN="$NELISP_BIN"
+cmd: timeout 30 make -s -f mk/emacs-lib.mk proc-smoke NELISP_BIN="$NELISP_BIN"
 
 * S5 Loading a real vendor package (magit) on the standalone
 
@@ -262,11 +262,11 @@ report an invalid command, through one bridge smoke.
 
 ** S6.1 bin/nemacs --doctor runs a self-diagnostic against the standalone binary and exits cleanly
 #+REQUIRES: NELISP_BIN
-cmd: timeout 20 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" ./nelisp-emacs-lib/bin/nemacs --doctor
+cmd: timeout 20 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" ./bin/emacs-lib/nemacs --doctor
 
 ** S6.2 The cold-image startup policy smoke passes against the standalone binary
 #+REQUIRES: NELISP_BIN
-cmd: timeout 30 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" sh test/nelisp-emacs-lib/nemacs-cold-image-policy-smoke.sh
+cmd: timeout 30 env NELISP_HOME="." NEMACS_NELISP="$NELISP_BIN" sh test/emacs-lib/nemacs-cold-image-policy-smoke.sh
 
 ** S6.3 The GUI/TUI keymap coverage inventory can be computed on host Emacs
 cmd: timeout 30 env EMACSLOADPATH="$(printf '%s:' packages/*/src)" emacs -Q --batch -L scripts -l nemacs-gui-keymap-coverage > /dev/null

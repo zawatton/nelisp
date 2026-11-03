@@ -9,8 +9,8 @@ import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PROBE = ROOT / "test/nelisp-emacs-lib/c-core-probes/pgtkfns-1.el"
-DRIVER = ROOT / "test/nelisp-emacs-lib/c-core-parity-driver.el"
+PROBE = ROOT / "test/emacs-lib/c-core-probes/pgtkfns-1.el"
+DRIVER = ROOT / "test/emacs-lib/c-core-parity-driver.el"
 NAMES = {"pgtk-backend-display-class", "pgtk-display-monitor-attributes-list", "pgtk-font-name",
          "pgtk-frame-edges", "pgtk-frame-geometry", "pgtk-frame-restack", "pgtk-get-page-setup",
          "pgtk-mouse-absolute-pixel-position", "pgtk-page-setup-dialog", "pgtk-print-frames-dialog",

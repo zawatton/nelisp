@@ -12,8 +12,8 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DRIVER = ROOT / "test/nelisp-emacs-lib/c-core-parity-driver.el"
-PROBES = ROOT / "test/nelisp-emacs-lib/c-core-probes"
+DRIVER = ROOT / "test/emacs-lib/c-core-parity-driver.el"
+PROBES = ROOT / "test/emacs-lib/c-core-probes"
 ACTIVE_ARTIFACT = None
 
 
@@ -135,7 +135,7 @@ def main():
     if not args.binary:
         raise ValueError("NELISP_BIN or positional binary is required")
     probe = PROBES / (args.unit + ".el")
-    impl = ROOT / "packages/nelisp-emacs-foundation/src" / ("emacs-cc-" + args.unit + ".el")
+    impl = ROOT / "packages/emacs-lib-foundation/src" / ("emacs-cc-" + args.unit + ".el")
     if not probe.is_file() or not impl.is_file():
         ap.error(f"unit probe or implementation missing: {args.unit}")
     binary = resolve_file(args.binary, "binary")

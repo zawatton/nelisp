@@ -6,7 +6,7 @@ bin=${NELISP_BIN:-$here/target/nelisp}
 host=${EMACS:-emacs}
 bundle=${NELISP_BUNDLE:-$here/build/nemacs-bootstrap.el}
 mode=${1:-}
-cases="$here/test/nelisp-emacs-lib/case-table-lazy-cases.el"
+cases="$here/test/emacs-lib/case-table-lazy-cases.el"
 fail() { printf 'case-table-lazy: FAIL: %s\n' "$*" >&2; exit 1; }
 [ -x "$bin" ] || fail "standalone binary missing: $bin"
 [ -f "$bundle" ] || fail "bootstrap bundle missing: $bundle"
@@ -30,7 +30,7 @@ ELISP
 
 case "$mode" in
   --lifecycle|--control)
-    source="$here/packages/nelisp-emacs-foundation/src/case-table.el"
+    source="$here/packages/emacs-lib-foundation/src/case-table.el"
     if [ "$mode" = --control ]; then
       [ $# -eq 2 ] || fail '--control requires the retained eager source path'
       [ -f "$2" ] || fail "control source missing: $2"
