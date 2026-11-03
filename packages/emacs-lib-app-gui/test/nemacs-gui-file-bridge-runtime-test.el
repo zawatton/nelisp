@@ -11123,7 +11123,7 @@ runs its body and returns its value (verified via nl-write-file roundtrip)."
 	                     (nemacs-gui-file-bridge-runtime-test--slurp
 	                      "/tmp/nemacs-buf"))))
 	        (when (file-exists-p image)
-	          (delete-file image)))))
+	          (delete-file image))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-completes-m-x ()
   "In one standalone NeLisp runtime, TAB should complete M-x input."
@@ -11297,7 +11297,7 @@ runs its body and returns its value (verified via nl-write-file roundtrip)."
 			                     (nemacs-gui-file-bridge-runtime-test--slurp
 			                      "/tmp/nemacs-minibuffer-history"))))
 	        (when (file-exists-p image)
-	          (delete-file image)))))
+	          (delete-file image))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-minibuffer-require-match-contract ()
   "In one standalone NeLisp runtime, minibuffer entry kind should be visible."
@@ -11673,7 +11673,7 @@ runs its body and returns its value (verified via nl-write-file roundtrip)."
 				                            read-only-other-state
 				                            goto-state))
           (when (file-exists-p file)
-            (delete-file file)))))))))
+            (delete-file file)))))))
 
 (ert-deftest nemacs-gui-file-bridge-runtime-test/standalone-keymap-override-dispatch ()
   "In standalone NeLisp, raw key dispatch should obey the keymap table."
