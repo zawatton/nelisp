@@ -1647,7 +1647,7 @@ When INTERVAL is nil, poll every 0.1s."
           nemacs-gui-file-bridge-runtime-test--fileio-gui)))
     (should
      (string-suffix-p
-      "packages/nelisp-emacs-core/lisp/emacs-info.el"
+      "packages/emacs-lib-core/src/emacs-info.el"
       (file-relative-name
        info-source
        nemacs-gui-file-bridge-runtime-test--repo-root)))
@@ -1665,13 +1665,13 @@ When INTERVAL is nil, poll every 0.1s."
           nemacs-gui-file-bridge-runtime-test--source)))
     (should
      (string-suffix-p
-      "packages/nelisp-emacs-app-gui/lisp/emacs-fileio-gui.el"
+      "packages/emacs-lib-app-gui/src/emacs-fileio-gui.el"
       (file-relative-name
        fileio-gui-source
        nemacs-gui-file-bridge-runtime-test--repo-root)))
     (should
      (string-suffix-p
-      "packages/nelisp-emacs-app-gui/lisp/nemacs-gui-file-bridge-runtime.el"
+      "packages/emacs-lib-app-gui/src/nemacs-gui-file-bridge-runtime.el"
       (file-relative-name
        bridge-runtime-source
        nemacs-gui-file-bridge-runtime-test--repo-root)))))

@@ -3,7 +3,7 @@
 (require 'ert)
 (defconst emacs-cc-x-resource-1-test--source
   (expand-file-name
-   "../../packages/nelisp-emacs-foundation/src/emacs-cc-x-resource-1.el"
+   "../../packages/emacs-lib-foundation/src/emacs-cc-x-resource-1.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 (load emacs-cc-x-resource-1-test--source nil t)
 

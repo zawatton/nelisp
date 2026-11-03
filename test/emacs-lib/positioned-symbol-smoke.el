@@ -1,7 +1,7 @@
 ;;; positioned-symbol-smoke.el --- GNU 31.1 positioned-symbol transcript -*- lexical-binding: t; -*-
 
-;; Run on GNU: emacs -Q --batch -l test/nelisp-emacs-lib/positioned-symbol-smoke.el
-;; Run on standalone: NELISP_BIN --eval '(load "test/nelisp-emacs-lib/positioned-symbol-smoke.el" nil t)' --eval nil
+;; Run on GNU: emacs -Q --batch -l test/emacs-lib/positioned-symbol-smoke.el
+;; Run on standalone: NELISP_BIN --eval '(load "test/emacs-lib/positioned-symbol-smoke.el" nil t)' --eval nil
 ;; Identical output is required. The constructor is expected to fail before N4a.
 (defun n4a-smoke-emit (label value)
   (princ label) (princ "|") (prin1 value) (terpri))

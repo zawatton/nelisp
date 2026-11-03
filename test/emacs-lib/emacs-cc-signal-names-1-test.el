@@ -14,7 +14,7 @@
         (lambda (&rest _) (error "Unmocked nl-ffi-get-string"))))
 
 (defconst emacs-cc-signal-names-1-test--source
-  (expand-file-name "../../packages/nelisp-emacs-foundation/src/emacs-cc-signal-names-1.el"
+  (expand-file-name "../../packages/emacs-lib-foundation/src/emacs-cc-signal-names-1.el"
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (ert-deftest emacs-cc-signal-names-1-test/preserves-host-binding ()

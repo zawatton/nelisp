@@ -14,7 +14,7 @@ import tempfile
 import time
 
 RUNNER = Path(sys.argv[1])
-HELPERS = Path(sys.argv[2]) / "test/nelisp-emacs-lib"
+HELPERS = Path(sys.argv[2]) / "test/emacs-lib"
 AREAS = ("x-gui", "display", "process", "buffer", "chars", "files", "other")
 NAMES = ("alpha", "message", "gamma", "delta", "epsilon", "zeta", "eta")
 checks = []
@@ -107,7 +107,7 @@ case "${FAKE_CASE:-pass}:$role:$area" in
     printf '%s %s\n' "$$" "$!" > "$FAKE_ROOT/timeout.pids"
     wait
     ;;
-  mutate:nelisp:files) printf '; changed during run\n' >> packages/nelisp-emacs-foundation/src/fixture.el;;
+  mutate:nelisp:files) printf '; changed during run\n' >> packages/emacs-lib-foundation/src/fixture.el;;
   stderr:nelisp:buffer) printf 'unexpected diagnostic\n' >&2;;
 esac
 awk -F '\t' -v area="$area" 'area=="" || $2==area {print $1}' tools/c-core-areas.tsv |
@@ -136,11 +136,11 @@ date +%s%N > "$FAKE_ROOT/events/$role-${area:-unit}.end"
 '''
 
 def main(root):
-    test = root / "test/nelisp-emacs-lib"
+    test = root / "test/emacs-lib"
     (test / "c-core-probes").mkdir(parents=True)
     (root / "tools").mkdir()
     (root / "build").mkdir()
-    package = root / "packages/nelisp-emacs-foundation/src"
+    package = root / "packages/emacs-lib-foundation/src"
     package.mkdir(parents=True)
     (package / "fixture.el").write_text("; package identity\n")
     (root / "build/nemacs-bootstrap.el").write_text("; fixture bundle\n")

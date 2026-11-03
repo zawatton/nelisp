@@ -31,19 +31,19 @@ def invoke(script, root, case, *args, shell="bash"):
 def main():
     with tempfile.TemporaryDirectory(prefix="c-core-parity-fixture-") as td:
         root = Path(td)
-        (root / "test/nelisp-emacs-lib/c-core-probes").mkdir(parents=True)
+        (root / "test/emacs-lib/c-core-probes").mkdir(parents=True)
         (root / "tools").mkdir()
         (root / "build").mkdir()
         (root / "target").mkdir()
         (root / "build/nemacs-bootstrap.el").write_text("; fixture\n")
-        (root / "packages/nelisp-emacs-foundation/src").mkdir(parents=True)
-        (root / "packages/nelisp-emacs-foundation/src/c-core-fixture.el").write_text("; package source identity\n")
-        (root / "test/nelisp-emacs-lib/c-core-parity-driver.el").write_text("; fake driver identity\n")
+        (root / "packages/emacs-lib-foundation/src").mkdir(parents=True)
+        (root / "packages/emacs-lib-foundation/src/c-core-fixture.el").write_text("; package source identity\n")
+        (root / "test/emacs-lib/c-core-parity-driver.el").write_text("; fake driver identity\n")
         for name in ("c-core-stderr.py", "c-core-stderr-test.py",
                      "c-core-inventory-verify.py"):
-            shutil.copy2(TEST_DIR / name, root / "test/nelisp-emacs-lib" / name)
+            shutil.copy2(TEST_DIR / name, root / "test/emacs-lib" / name)
         # Test-only seven-name fixture; production has no census-size override.
-        inventory = root / "test/nelisp-emacs-lib/c-core-inventory-verify.py"
+        inventory = root / "test/emacs-lib/c-core-inventory-verify.py"
         source = inventory.read_text(encoding="utf-8")
         expected_count = "EXPECTED_CENSUS_COUNT = 1460"
         if source.count(expected_count) != 1:
@@ -54,7 +54,7 @@ def main():
         (root / "build/c-core-census.tsv").write_text(
             "# synthetic C census\n" + "".join(
                 row.split("\t")[0] + "\tinterpreted\t1\t0\t0\n" for row in AREAS))
-        (root / "test/nelisp-emacs-lib/c-core-probes/fixture.el").write_text(
+        (root / "test/emacs-lib/c-core-probes/fixture.el").write_text(
             "\n".join("(%s %d)" % (row.split("\t")[0], i + 1) for i, row in enumerate(AREAS)) + "\n")
         fake = root / "fake-cli"
         fake.write_text("""#!/usr/bin/env python3
@@ -135,17 +135,17 @@ if target and case == 'pass': print('t')
         fake.chmod(0o755)
         (root / "fake-cli.cold").write_text("fixture cold image\n")
         shutil.copy2(TEST_DIR.parents[1] / "tools/c-core-image.sh", root / "tools/c-core-image.sh")
-        script = root / "test/nelisp-emacs-lib/c-core-parity-smoke.sh"
+        script = root / "test/emacs-lib/c-core-parity-smoke.sh"
         shutil.copy2(RUNNER, script)
         (root / "build/c-core-parity").mkdir(parents=True)
         cases = {}
-        validator_test = root / "test/nelisp-emacs-lib/c-core-stderr-test.py"
+        validator_test = root / "test/emacs-lib/c-core-stderr-test.py"
         validator_run = subprocess.run(["python3", str(validator_test)], text=True,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15)
         validator_report = json.loads(validator_run.stdout)
         cases["malloc_validator_negative_controls_pass"] = (
             validator_run.returncode == 0 and validator_report["passed"] == validator_report["total"])
-        validator = root / "test/nelisp-emacs-lib/c-core-stderr.py"
+        validator = root / "test/emacs-lib/c-core-stderr.py"
         validator_source = validator.read_text()
         validator.write_text("def validate(stdout, stderr, label):\n    return 0\n")
         mutation_run = subprocess.run(["python3", str(validator_test)], text=True,
@@ -167,12 +167,12 @@ if target and case == 'pass': print('t')
         cases["sh_run_passes"] = invoke(script, root, "pass", "run", shell="sh").returncode == 0
         cases["sh_check_passes"] = invoke(script, root, "pass", "check", "files", shell="sh").returncode == 0
         cases["precheck_rejects_non_31_1"] = invoke(script, root, "precheck_wrong_version", "run").returncode != 0
-        probe = root / "test/nelisp-emacs-lib/c-core-probes/fixture.el"
+        probe = root / "test/emacs-lib/c-core-probes/fixture.el"
         original = probe.read_text()
         probe.write_text(original + "(extra 1)\n")
         cases["changed_probe_invalidates_result"] = invoke(script, root, "pass", "check", "files").returncode != 0
         probe.write_text(original)
-        source = root / "packages/nelisp-emacs-foundation/src/c-core-fixture.el"
+        source = root / "packages/emacs-lib-foundation/src/c-core-fixture.el"
         source.write_text(source.read_text() + "; changed source\n")
         cases["changed_package_source_invalidates_result"] = invoke(script, root, "pass", "check", "files").returncode != 0
         helper_source = validator.read_text()
@@ -193,7 +193,7 @@ if target and case == 'pass': print('t')
             invoke(script, root, "host_stderr", "run", "--unit", "fixture").returncode != 0)
         cases["nonalloc_unit_nelisp_stderr_rejected"] = (
             invoke(script, root, "nelisp_stderr", "run", "--unit", "fixture").returncode != 0)
-        alloc_probe = root / "test/nelisp-emacs-lib/c-core-probes/alloc-1.el"
+        alloc_probe = root / "test/emacs-lib/c-core-probes/alloc-1.el"
         alloc_probe.write_text("(malloc-info t)\n")
         result = invoke(script, root, "alloc_valid", "run", "--unit", "alloc-1")
         cases["alloc_unit_validates_both_xml_streams"] = (

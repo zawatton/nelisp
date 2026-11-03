@@ -13,7 +13,7 @@
 # Environment: NELISP_BIN (standalone binary), EMACS (GNU Emacs 31.1 host).
 set -u
 here=$(cd "$(dirname "$0")/../.." && pwd)
-cases="$here/test/nelisp-emacs-lib/buffer-modified-parity-cases.el"
+cases="$here/test/emacs-lib/buffer-modified-parity-cases.el"
 bin=${NELISP_BIN:-$here/target/nelisp}
 host=${EMACS:-emacs}
 bundle="$here/build/nemacs-bootstrap.el"

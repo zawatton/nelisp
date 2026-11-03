@@ -6,9 +6,9 @@
   (expand-file-name "../.."
                     (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (dir '("packages/nelisp-emacs-foundation/src"
-               "packages/nelisp-emacs-buffer-core/src"
-               "packages/nelisp-emacs-text-core/src"))
+(dolist (dir '("packages/emacs-lib-foundation/src"
+               "packages/emacs-lib-buffer-core/src"
+               "packages/emacs-lib-text-core/src"))
   (add-to-list 'load-path
                (expand-file-name dir emacs-cc-print-properties-test--root)))
 

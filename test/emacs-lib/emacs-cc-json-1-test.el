@@ -8,7 +8,7 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (load (expand-file-name
-       "packages/nelisp-emacs-foundation/src/emacs-cc-json-1.el"
+       "packages/emacs-lib-foundation/src/emacs-cc-json-1.el"
        emacs-cc-json-1-test--root)
       nil t)
 

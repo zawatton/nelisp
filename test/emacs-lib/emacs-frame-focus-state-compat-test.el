@@ -3,11 +3,11 @@
 (require 'ert)
 (defconst emacs-frame-focus-state-compat-test--terminal-source
   (expand-file-name
-   "../../packages/nelisp-emacs-foundation/src/emacs-cc-terminal-focus-1.el"
+   "../../packages/emacs-lib-foundation/src/emacs-cc-terminal-focus-1.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 (defconst emacs-frame-focus-state-compat-test--state-source
   (expand-file-name
-   "../../packages/nelisp-emacs-foundation/src/emacs-frame-focus-state-compat.el"
+   "../../packages/emacs-lib-foundation/src/emacs-frame-focus-state-compat.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 (load emacs-frame-focus-state-compat-test--terminal-source nil t)
 (load emacs-frame-focus-state-compat-test--state-source nil t)

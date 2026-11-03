@@ -18,7 +18,7 @@
 (when (fboundp 'nl-ffi-call)
   (load "packages/nl-ffi/src/nl-ffi-memory.el" nil t)
   (load (or (getenv "NELISP_SQLITE_FFI_SOURCE")
-            "packages/nelisp-emacs-io/src/emacs-sqlite-ffi.el") nil t)
+            "packages/emacs-lib-io/src/emacs-sqlite-ffi.el") nil t)
   (setq sqlite-owned--original-call (symbol-function 'emacs-sqlite-ffi--call))
   (fset 'emacs-sqlite-ffi--call
         (lambda (name &rest args)

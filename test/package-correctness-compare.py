@@ -45,7 +45,7 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     filename, prefix, count, marker = SUITES[args.suite]
-    probe = ROOT/'test/nelisp-emacs-lib'/filename
+    probe = ROOT/'test/emacs-lib'/filename
     args.output.mkdir(parents=True, exist_ok=True)
     binary = os.environ['NELISP_BIN']
     observed = {}

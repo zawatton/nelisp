@@ -7,7 +7,7 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (add-to-list 'load-path
-             (expand-file-name "packages/nelisp-emacs-foundation/src"
+             (expand-file-name "packages/emacs-lib-foundation/src"
                                emacs-cc-logcount-1-test--root))
 (load "emacs-cc-logcount-1" nil t)
 

@@ -250,7 +250,7 @@ the load so host Emacs keeps its own definitions; only used from
                                   emacs-backquote-test--repo-root))
         (mirror
          (expand-file-name
-          "packages/nelisp-emacs-foundation/lisp/emacs-backquote.el"
+          "packages/emacs-lib-foundation/src/emacs-backquote.el"
           emacs-backquote-test--repo-root)))
     (should (equal (with-temp-buffer
                      (insert-file-contents source)

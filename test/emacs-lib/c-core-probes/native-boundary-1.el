@@ -1,5 +1,5 @@
 ;;; nelisp-native-boundary-cases.el --- named bare-native probes -*- lexical-binding: t; -*-
-;; Each row is (NAME FORM), compatible with test/nelisp-emacs-lib/c-core-parity-driver.el.
+;; Each row is (NAME FORM), compatible with test/emacs-lib/c-core-parity-driver.el.
 (puthash (let ((h (make-hash-table))) (list (puthash 'key 17 h) (gethash 'key h))))
 (puthash (let ((h (make-hash-table))) (puthash 'key 17 h) (list (puthash 'key 23 h) (gethash 'key h))))
 (puthash (puthash 'key 17 "bad"))
