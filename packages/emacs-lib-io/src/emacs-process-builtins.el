@@ -37,11 +37,16 @@
 ;;;; --- function bridges ----------------------------------------------
 
 (defun emacs-process-builtins--install-function-p (symbol)
-  "Return non-nil when SYMBOL should be installed as an unprefixed bridge."
-  (or (and (fboundp 'emacs-standalone-mode-p)
-           (emacs-standalone-mode-p))
-      (not (boundp 'emacs-version))
-      (not (fboundp symbol))))
+  "Return non-nil when SYMBOL should be installed as an unprefixed bridge.
+In standalone mode the definition being replaced is remembered first,
+so bridges can still reach the substrate's own primitive (Doc 213)."
+  (let ((standalone (and (fboundp 'emacs-standalone-mode-p)
+                         (emacs-standalone-mode-p))))
+    (when standalone
+      (emacs-process-remember-substrate-primitive symbol))
+    (or standalone
+        (not (boundp 'emacs-version))
+        (not (fboundp symbol)))))
 
 (defun emacs-process-builtins--check-string (value)
   "Require VALUE to be a string, using the public Emacs error predicate."
