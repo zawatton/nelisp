@@ -782,3 +782,8 @@ emacs-lisp/vc/vc-dir.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-di
 emacs-lisp/emacs-lisp/ewoc.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/ewoc.el	sha256=97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c
 emacs-lisp/emacs-lisp/macroexp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/macroexp.el	sha256=10df0fe326e6f436a3ec3a74fdaa79b06272e5a35556383d8e2741ce3c16a0c2
 emacs-lisp/emacs-lisp/gv.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/gv.el	sha256=81c55643fe98847746b80e3175e2e80e49a9573d9def2b5e430e9fdc617cef33
+emacs-lisp/emacs-lisp/cl-lib.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-lib.el	sha256=43cff37ef2ec238e7668a1d1bce949a25b217d61316a985cb06f457418f46ba4
+emacs-lisp/emacs-lisp/cl-extra.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-extra.el	sha256=4aca78d4d9c161ba688bf0253f0c4445415d5c0fcb9a8f573cc6ab1270583d42
+emacs-lisp/emacs-lisp/cl-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-loaddefs.el	sha256=fedb9a1496121bff88513b3f31e531599b11603a87c1faaac78a3abc8b47a7e2
+emacs-lisp/emacs-lisp/generator.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/generator.el	sha256=79744868cc96772d511696aa8c10fa055a1016ecc0fb7ec159e41994eeb72b4d
+emacs-lisp/emacs-lisp/cl-preloaded.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-preloaded.el	sha256=73c114b7a8899ae278fdd1eae29c902703f20bc0662f99c3edb391362a35514c
