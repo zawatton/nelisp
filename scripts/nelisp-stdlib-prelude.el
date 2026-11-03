@@ -22055,7 +22055,7 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
   (unless (get (car row) 'error-conditions)
     (put (car row) 'error-conditions (list (car row) 'file-error 'error))))
 ;; --- GNU cl-loop (GNU Emacs 31.1 cl-macs.el) ------------------------------
-;; The section of vendor/emacs-lisp/emacs-lisp/cl-macs.el from the
+;; The section of vendor/emacs-lisp-api/emacs-lisp/cl-macs.el from the
 ;; cl--loop-* defvars through cl--loop-build-ands, plus the helpers it
 ;; needs that the prelude lacked (cl--pop2, cl--const-expr-p,
 ;; cl--expr-contains[-any], cl--expr-depends-p, cl-psetf, cl-psetq).  It
