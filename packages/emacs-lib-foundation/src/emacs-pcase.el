@@ -43,7 +43,47 @@
   (or (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
       (not (stringp emacs-version))
-      (not (fboundp symbol))))
+      (not (fboundp symbol))
+      (emacs-pcase--destructuring-unfaithful-p symbol)))
+
+;; GNU `pcase-let' / `pcase-let*' / `pcase-dolist' only destructure: the
+;; pattern is ASSUMED to match, so `(pcase-let ((`(,a ,b ,c) '(1 2))) BODY)'
+;; runs BODY with C = nil.  A runtime whose version expands to `pcase'
+;; instead silently skips BODY on a shape mismatch -- GNU `cl-defstruct'
+;; then emits no constructors (its `constrs' entries are 2-element lists
+;; matched against `(,cname ,args ,doc)').  Probe the behavior once.
+(defun emacs-pcase--destructuring-unfaithful-p (symbol)
+  "Return non-nil when the runtime's SYMBOL skips BODY on a shape mismatch."
+  (and (memq symbol '(pcase-let pcase-let* pcase-dolist))
+       (fboundp symbol)
+       (condition-case nil
+           (not (eval (if (eq symbol 'pcase-dolist)
+                          '(let ((ran nil))
+                             (pcase-dolist (`(,_a ,_b) '((1))) (setq ran t))
+                             ran)
+                        (list symbol '((`(,_a ,_b) '(1))) t))
+                      t))
+         (error t))))
+
+(defvar emacs-pcase--runtime-macros
+  (let ((saved nil))
+    (dolist (sym '(pcase-let pcase-dolist))
+      (when (emacs-pcase--destructuring-unfaithful-p sym)
+        (push (cons sym (symbol-function sym)) saved)))
+    saved)
+  "Runtime definitions replaced only for their destructuring semantics.
+Patterns outside this module's subset (for example `cl-struct') still
+expand through them.")
+
+(defun emacs-pcase--expand-or-fallback (symbol args thunk)
+  "Return THUNK's expansion; on an unsupported pattern use the runtime SYMBOL."
+  (let ((runtime (cdr (assq symbol emacs-pcase--runtime-macros))))
+    (if (null runtime)
+        (funcall thunk)
+      (condition-case nil
+          (funcall thunk)
+        (error (apply (if (eq (car-safe runtime) 'macro) (cdr runtime) runtime)
+                      args))))))
 
 (defun emacs-pcase--pred-form (fn value-form)
   "Build a predicate test form for (pred FN) against VALUE-FORM."
@@ -507,6 +547,9 @@ on real pcase-let's lenient destructuring; under the strict variant
 that macro expanded to nil, so `magit-status-refresh-buffer' never
 created the root section and the whole status section tree came out
 empty."
+    (emacs-pcase--expand-or-fallback
+     'pcase-let (cons bindings body)
+     (lambda ()
     (let ((forms body)
           (rev-bindings nil))
       (dolist (binding bindings)
@@ -520,7 +563,7 @@ empty."
                             (if pattern-bindings
                                 (cons 'let (cons pattern-bindings forms))
                               (cons 'progn forms)))))))
-      (if bindings (car forms) (cons 'progn body)))))
+      (if bindings (car forms) (cons 'progn body)))))))
 
 (when (emacs-pcase--install-function-p 'pcase-let*)
   (defmacro pcase-let* (bindings &rest body)
@@ -536,6 +579,9 @@ empty."
 Like `pcase-let' (see there), Emacs treats PATTERN as if it always
 matches, so each element destructures unconditionally -- no per-element
 match filtering (Doc 33 item 243, same lenient-destructure fix)."
+    (emacs-pcase--expand-or-fallback
+     'pcase-dolist (cons spec body)
+     (lambda ()
     (let* ((pattern (car spec))
            (list-form (car (cdr spec)))
            (result-form (car (cdr (cdr spec))))
@@ -545,7 +591,7 @@ match filtering (Doc 33 item 243, same lenient-destructure fix)."
       (list 'dolist (list value-sym list-form result-form)
             (if pattern-bindings
                 (cons 'let (cons pattern-bindings body))
-              (cons 'progn body))))))
+              (cons 'progn body))))))))
 
 ;; Task #17 M2: real `pcase-exhaustive' (was a nil-expanding bulk stub).
 ;; Magit/transient use it in load-bearing dispatch positions

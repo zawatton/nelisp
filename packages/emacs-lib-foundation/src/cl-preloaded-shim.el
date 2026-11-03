@@ -27,8 +27,15 @@
 ;; standalone runtime it exists for.  Detect the standalone path by a
 ;; NeLisp-only primitive instead, matching
 ;; `emacs-char-table--standalone-p' in `emacs-char-table.el'.
-(when (or (fboundp 'nl-write-file)
-          (not (boundp 'emacs-version)))
+(when (and (or (fboundp 'nl-write-file)
+               (not (boundp 'emacs-version)))
+           ;; Skip when the genuine GNU lattice is already installed (newer
+           ;; runtimes load cl-preloaded's built-in types at boot); its
+           ;; `built-in-class--make' takes parent SYMBOLS, so re-running the
+           ;; shim's class-object variant signals (symbolp CLASS).
+           (not (and (get 'atom 'cl--class)
+                     (fboundp 'built-in-class--make)
+                     (fboundp 'cl--class-allparents))))
 
   ;; --- class object structs -------------------------------------------------
   ;; cl--class: abstract base.  oclosure.el's `(cl-defstruct (oclosure--class
