@@ -1776,25 +1776,25 @@ pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-s
 # Batch D''' (2026-10-22): the case-fold canon shortcut and the epoch that
 # lets the regexp matcher memoize its canon read are defined in the casetab
 # source and mirrored in the prelude's generated block.
-pinned-collision ns-collision	nelisp-casetab--builtin-canon	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-casetab--epoch	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-casetab--epoch-owner	packages/nelisp-emacs-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-casetab--builtin-canon	packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-casetab--epoch	packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp-casetab--epoch-owner	packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el scripts/nelisp-stdlib-prelude.el
 # Doc 225 P1 (2026-10-21): the prelude defines GNU syntax.c's
 # string-to-syntax, syntax-class-to-char and matching-paren on native
 # syntax char-tables.  The package copies are (unless (fboundp ...))
 # fallbacks, inert wherever the prelude loads first.
-pinned-collision ns-collision-divergent	matching-paren	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	c3def36c6882
-pinned-collision ns-collision-divergent	string-to-syntax	packages/nelisp-emacs-core/src/emacs-syntax-table.el scripts/nelisp-stdlib-prelude.el	ba327ca575b8
-pinned-collision ns-collision-divergent	syntax-class-to-char	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	61a8be9fc58e
+pinned-collision ns-collision-divergent	matching-paren	packages/emacs-lib-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	c3def36c6882
+pinned-collision ns-collision-divergent	string-to-syntax	packages/emacs-lib-core/src/emacs-syntax-table.el scripts/nelisp-stdlib-prelude.el	ba327ca575b8
+pinned-collision ns-collision-divergent	syntax-class-to-char	packages/emacs-lib-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	61a8be9fc58e
 # Doc 225 S3 (2026-10-21): the runtime owns the char-table family.  The
 # prelude's arrayp and sequencep now answer t for char-tables (GNU), its
 # and optimize-char-table is chartab.c's (the foundation's is a no-op stub).
-pinned-collision ns-collision-divergent	optimize-char-table	packages/nelisp-emacs-foundation/src/emacs-cc-chartab-1.el scripts/nelisp-stdlib-prelude.el	deeff09d6702
+pinned-collision ns-collision-divergent	optimize-char-table	packages/emacs-lib-foundation/src/emacs-cc-chartab-1.el scripts/nelisp-stdlib-prelude.el	deeff09d6702
 # Batch E (2026-10-22): the prelude defines doc.c's text-quoting-style,
 # variable and function, with internal--text-quoting-flag set from the
 # locale.  The package copy is an (unless (fboundp ...)) fallback, inert
 # wherever the prelude loads first.
-pinned-collision ns-collision	text-quoting-style	packages/nelisp-emacs-foundation/src/emacs-cc-doc-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	text-quoting-style	packages/emacs-lib-foundation/src/emacs-cc-doc-1.el scripts/nelisp-stdlib-prelude.el
 # Batch F (2026-10-22): eval/gnu-semantics-20261022 ports GNU definitions into the prelude and the canonical sources,
 # and the library packages define the same names.  Seven identities are new against batch E's 1290 unpinned:
 #   backward-prefix-chars: GNU syntax.c:3091-3133, ported into the prelude (gnu-semantics S1.7).  emacs-cc-syntax-1.el defines it under (unless (fboundp ...)), so it is inert now.
@@ -1805,27 +1805,27 @@ pinned-collision ns-collision	text-quoting-style	packages/nelisp-emacs-foundatio
 #   float-output-format: The prelude's printer port defines it (gnu-semantics S1.6); emacs-cc-print-1.el only defvars it, which keeps the bound value.
 #   nelisp--setf-1: The setf unknown-place boundary (GNU gv.el:108-120, gnu-semantics S1.5), held in the canonical source and in the prelude.
 # The library can defer to the runtime's native skip-syntax-forward, skip-syntax-backward and backward-prefix-chars.
-pinned-collision ns-collision-divergent	backward-prefix-chars	packages/nelisp-emacs-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	d57c77f3e497
-pinned-collision ns-collision-divergent	skip-syntax-backward	packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	247c6b07656a
-pinned-collision ns-collision-divergent	skip-syntax-forward	packages/nelisp-emacs-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	d11f391bb8e0
-pinned-collision ns-collision-divergent	error	lisp/nelisp-stdlib-misc.el packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	0133068e26ef
-pinned-collision ns-collision-divergent	macroexpand	lisp/nelisp-load-macroexpand.el packages/nelisp-emacs-foundation/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	c8c4ddfc6e7d
-pinned-collision ns-collision	float-output-format	packages/nelisp-emacs-foundation/src/emacs-cc-print-1.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	backward-prefix-chars	packages/emacs-lib-foundation/src/emacs-cc-syntax-1.el scripts/nelisp-stdlib-prelude.el	d57c77f3e497
+pinned-collision ns-collision-divergent	skip-syntax-backward	packages/emacs-lib-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	247c6b07656a
+pinned-collision ns-collision-divergent	skip-syntax-forward	packages/emacs-lib-foundation/src/emacs-cc-census-buffer-w204.el scripts/nelisp-stdlib-prelude.el	d11f391bb8e0
+pinned-collision ns-collision-divergent	error	lisp/nelisp-stdlib-misc.el packages/emacs-lib-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	0133068e26ef
+pinned-collision ns-collision-divergent	macroexpand	lisp/nelisp-load-macroexpand.el packages/emacs-lib-foundation/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	c8c4ddfc6e7d
+pinned-collision ns-collision	float-output-format	packages/emacs-lib-foundation/src/emacs-cc-print-1.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp--setf-1	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 # 2026-10-20 native alias facades versus the legacy library providers.
-pinned-collision ns-collision-divergent	defvaralias	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	7737c4e742ad
-pinned-collision ns-collision-divergent	indirect-variable	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	126e2a4d8ba0
-pinned-collision ns-collision-divergent	internal-delete-indirect-variable	packages/nelisp-emacs-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	a3973f3ad4af
+pinned-collision ns-collision-divergent	defvaralias	packages/emacs-lib-foundation/src/emacs-cc-variable-alias-1.el packages/emacs-lib-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	7737c4e742ad
+pinned-collision ns-collision-divergent	indirect-variable	packages/emacs-lib-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	126e2a4d8ba0
+pinned-collision ns-collision-divergent	internal-delete-indirect-variable	packages/emacs-lib-foundation/src/emacs-cc-variable-alias-1.el scripts/nelisp-stdlib-prelude.el	a3973f3ad4af
 # Same t initializer, guarded on native-provider / library startup respectively.
-pinned-collision ns-collision	enable-multibyte-characters	lisp/nelisp-buffer-local.el packages/nelisp-emacs-foundation/src/emacs-parity-core-vars.el
+pinned-collision ns-collision	enable-multibyte-characters	lisp/nelisp-buffer-local.el packages/emacs-lib-foundation/src/emacs-parity-core-vars.el
 # gc-port merge (7b8916b7f), dry run: the prelude gained its own copies of the marker record
 # helpers (f4b02c8be, same definitions as src/nelisp-buffer.el) and of two GNU internals the
 # symbols lane stages (internal--define-uninitialized-variable, internal-make-var-non-special).
 pinned-collision ns-collision	nelisp-marker--make	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-marker--set-insertion-type	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-marker-insertion-type	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
-pinned-collision ns-collision-divergent	internal--define-uninitialized-variable	packages/nelisp-emacs-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	02c8acacb368
-pinned-collision ns-collision-divergent	internal-make-var-non-special	packages/nelisp-emacs-foundation/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	7ca3ce2a9e4b
+pinned-collision ns-collision-divergent	internal--define-uninitialized-variable	packages/emacs-lib-foundation/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	02c8acacb368
+pinned-collision ns-collision-divergent	internal-make-var-non-special	packages/emacs-lib-foundation/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	7ca3ce2a9e4b
 # integ-wh fix 27 (021c33983, 2026-10-23): the prelude's `nelisp-insert' and `nelisp-insert-before-markers' own the properties of the strings inserted
 # into a buffer (GNU graft_intervals_into_buffer), so they no longer equal the host-side copies in src/nelisp-buffer.el and lisp/nelisp-stdlib-misc.el,
 # which the standalone runtime does not load.  The two plain-duplicate pins (ns-collision) that stood for them are replaced by the divergences.

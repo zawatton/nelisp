@@ -28,8 +28,8 @@
 ;;   - `lognot' = arithmetic two's-complement inversion (correct).
 ;;   - `ash' / `lsh' = positive-only repeated multiplication / division
 ;;     by 2 (correct for any sign of COUNT, but quadratic in |COUNT|).
-;;   - `exp' is a bootstrap fallback for vendor load-time constants.
-;;     `atan' uses range reduction and a double-double power series.
+;;   - `exp' uses range reduction and a Taylor series; `atan' uses range
+;;     reduction and a double-double power series.
 ;;
 ;; A future phase will replace these with bit-correct implementations
 ;; and real libm-backed math; until then the restriction is documented
@@ -288,15 +288,51 @@ Otherwise return the angle in [-pi, pi], preserving signed zero."
           (if negative-y (- angle) angle))))))
   (put 'atan 'emacs-stub-bulk nil))
 
+(defun emacs-numeric--exp-pow2 (n)
+  "Return the float 2^N for an integer N whose result does not overflow."
+  (let ((result 1.0)
+        (base (if (< n 0) 0.5 2.0))
+        (count (abs n)))
+    (while (> count 0)
+      (when (= (% count 2) 1)
+        (setq result (* result base)))
+      (setq count (/ count 2))
+      (when (> count 0)
+        (setq base (* base base))))
+    result))
+
 (unless (and (fboundp 'exp)
              (not (get 'exp 'emacs-stub-bulk)))
   (defun exp (x)
-    "Polyfill: approximate e raised to X.
-Implemented with range reduction plus a Taylor series; intended for
-vendor load-time constants such as `(exp 1)'."
-    ;; Avoid float literals in this standalone bootstrap fallback and
-    ;; prefer load progress over precision here.
-    (if x 1 1))
+    "Return e raised to the power X, as a float.
+Pure-Elisp fallback: reduce X to R + K*ln(2) with |R| <= ln(2)/2,
+sum the Taylor series of e^R, then scale by 2^K."
+    (unless (numberp x)
+      (signal 'wrong-type-argument (list 'numberp x)))
+    (let ((xf (float x)))
+      (cond
+       ;; NaN propagates (with its sign, as in GNU).
+       ((not (= xf xf)) xf)
+       ((> xf 709.782712893384) (/ 1.0 0.0))
+       ((< xf -745.1332191019412) 0.0)
+       (t
+        (let* ((q (/ xf 0.6931471805599453))
+               (k (truncate (if (< q 0) (- q 0.5) (+ q 0.5))))
+               ;; ln(2) split so that K*LN2-HI is exact for |K| < 2^11.
+               (r (- (- xf (* k 6.93147180369123816490e-01))
+                     (* k 1.90821492927058770002e-10)))
+               (term 1.0)
+               (sum 1.0)
+               (i 1))
+          (while (<= i 22)
+            (setq term (/ (* term r) i))
+            (setq sum (+ sum term))
+            (setq i (1+ i)))
+          ;; Split the scale so 2^K never overflows before the product.
+          (let* ((k1 (/ k 2))
+                 (k2 (- k k1)))
+            (* (* sum (emacs-numeric--exp-pow2 k1))
+               (emacs-numeric--exp-pow2 k2))))))))
   (put 'exp 'emacs-stub-bulk nil))
 
 (unless (fboundp '/=)

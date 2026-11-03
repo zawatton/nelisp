@@ -90,6 +90,15 @@ the shared table still gives vendor libraries real mutation semantics.")
 (defvar emacs-char-table--raw-aref (symbol-function 'aref))
 (defvar emacs-char-table--raw-aset (symbol-function 'aset))
 
+;; Native char-table accessors, captured before this file installs its own
+;; definitions over the same names (nil when the runtime has none).
+(defvar emacs-char-table--native-subtype-fn
+  (and (fboundp 'char-table-subtype) (symbol-function 'char-table-subtype)))
+(defvar emacs-char-table--native-parent-fn
+  (and (fboundp 'char-table-parent) (symbol-function 'char-table-parent)))
+(defvar emacs-char-table--native-extra-slot-fn
+  (and (fboundp 'char-table-extra-slot) (symbol-function 'char-table-extra-slot)))
+
 (defun emacs-char-table--native-vector-bridge-p ()
   "Return non-nil when NeLisp dispatches tagged vectors natively."
   (and (fboundp 'nelisp--char-table-vector-bridge-p)
@@ -121,6 +130,32 @@ the shared table still gives vendor libraries real mutation semantics.")
       (cons (if (< code (length spec)) code 2)
             (cdr (assq char '((40 . 41) (41 . 40) (91 . 93) (93 . 91)
                              (123 . 125) (125 . 123))))))))
+
+;; A standalone binary can retain real native char-tables (for example the
+;; syntax tables of modes loaded before this library).  They are neither
+;; tagged vectors nor bootstrap records; the only portable signature is
+;; their length.  Host Emacs never takes these paths: its char-tables are
+;; accepted by the host's own primitives, which this layer does not replace.
+(defun emacs-char-table--native-p (object)
+  "Return non-nil when OBJECT is a retained native char-table (standalone)."
+  (and (not (vectorp object))
+       (not (recordp object))
+       (not (consp object))
+       (not (stringp object))
+       (not (null object))
+       (emacs-char-table--standalone-p)
+       (condition-case nil
+           (>= (length object) emacs-char-table--max-char)
+         (error nil))))
+
+(defun emacs-char-table--native-ref (ct char)
+  "Read CHAR from the native char-table CT using the original `aref'."
+  (and (integerp char) (<= 0 char emacs-char-table--max-char)
+       (funcall emacs-char-table--raw-aref ct char)))
+
+(defun emacs-char-table--native-set (ct char value)
+  "Store VALUE for CHAR in the native char-table CT using the original `aset'."
+  (funcall emacs-char-table--raw-aset ct char value))
 
 (defun emacs-char-table--storage (table)
   "Return TABLE's sparse storage, retaining bootstrap record identity.
@@ -218,6 +253,7 @@ slot count, which remains fixed for the lifetime of the table."
 (defun emacs-char-table-p (object)
   "Return non-nil when OBJECT is a NeLisp char-table."
   (or (emacs-char-table--native-syntax-p object)
+      (emacs-char-table--native-p object)
       (and (vectorp object)
            (> (length object) 6)
            (eq (emacs-char-table--raw-ref object 0) emacs-char-table--tag))))
@@ -262,6 +298,7 @@ identity.  This query does not modify either table."
 (defun emacs-char-table-ref (ct char)
   "Return CT's value for character CHAR (with default / parent fallback)."
   (cond
+   ((emacs-char-table--native-p ct) (emacs-char-table--native-ref ct char))
    ((not (integerp char)) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (>= char 0) (< char emacs-char-table--ascii-size))
     (let ((v (emacs-char-table--raw-ref
@@ -275,13 +312,15 @@ identity.  This query does not modify either table."
 
 (defun emacs-char-table-set (ct char value)
   "Set CT's value for a single character CHAR to VALUE."
-  (if (and (integerp char) (>= char 0) (< char emacs-char-table--ascii-size))
+  (if (emacs-char-table--native-p ct)
+      (emacs-char-table--native-set ct char value)
+   (if (and (integerp char) (>= char 0) (< char emacs-char-table--ascii-size))
       (emacs-char-table--raw-set
        (emacs-char-table--raw-ref ct emacs-char-table--i-ascii) char value)
     (emacs-char-table--raw-set
      ct emacs-char-table--i-ranges
      (cons (cons (cons char char) value)
-           (emacs-char-table--raw-ref ct emacs-char-table--i-ranges))))
+           (emacs-char-table--raw-ref ct emacs-char-table--i-ranges)))))
   value)
 
 ;;;; --- category-table integration ------------------------------------
@@ -412,6 +451,16 @@ or a cons (FROM . TO).  Large supra-ASCII ranges are stored sparsely
 rather than materialised."
   (emacs-char-table--check-table ct)
   (cond
+   ((emacs-char-table--native-p ct)
+    ;; Native tables are written element-wise; only single characters and
+    ;; bounded ranges are supported (the default slot is not reachable).
+    (let ((from (cond ((integerp range) range) ((consp range) (car range))))
+          (to (cond ((integerp range) range) ((consp range) (cdr range)))))
+      (unless (and from to (<= 0 from) (<= to emacs-char-table--max-char))
+        (error "Unsupported RANGE for a native char-table: %S" range))
+      (while (<= from to)
+        (emacs-char-table--native-set ct from value)
+        (setq from (1+ from)))))
    ((null range)
     (emacs-char-table--raw-set ct emacs-char-table--i-default value))
    ((eq range t)
@@ -446,6 +495,7 @@ rather than materialised."
   "Return CT's default or its value at RANGE's first character."
   (emacs-char-table--check-table ct)
   (cond
+   ((and (emacs-char-table--native-p ct) (null range)) nil)
    ((null range) (emacs-char-table--raw-ref ct emacs-char-table--i-default))
    ((and (integerp range) (<= 0 range)
          (<= range emacs-char-table--max-char))
@@ -467,11 +517,16 @@ rather than materialised."
 (defun emacs-char-table-parent (ct)
   "Return CT's parent char-table, or nil."
   (emacs-char-table--check-table ct)
-  (emacs-char-table--raw-ref ct emacs-char-table--i-parent))
+  (if (emacs-char-table--native-p ct)
+      (and emacs-char-table--native-parent-fn
+           (funcall emacs-char-table--native-parent-fn ct))
+    (emacs-char-table--raw-ref ct emacs-char-table--i-parent)))
 
 (defun emacs-char-table-set-parent (ct parent)
   "Set CT's parent to PARENT (a char-table or nil).  Returns PARENT."
   (emacs-char-table--check-table ct)
+  (when (emacs-char-table--native-p ct)
+    (error "Cannot set the parent of a native char-table"))
   (when parent
     (unless (emacs-char-table-p parent)
       (signal 'wrong-type-argument (list 'char-table-p parent)))
@@ -480,7 +535,8 @@ rather than materialised."
     ;; rather than looping while attaching a new child.
     (let ((target (emacs-char-table--storage ct))
           (ancestor parent) (seen nil))
-      (while (and ancestor (emacs-char-table-p ancestor))
+      (while (and ancestor (emacs-char-table-p ancestor)
+                  (not (emacs-char-table--native-p ancestor)))
         (setq ancestor (emacs-char-table--storage ancestor))
         (when (eq ancestor target)
           (error "Attempt to make a chartable be its own parent"))
@@ -495,25 +551,34 @@ rather than materialised."
 (defun emacs-char-table-subtype (ct)
   "Return CT's subtype."
   (emacs-char-table--check-table ct)
-  (emacs-char-table--raw-ref ct emacs-char-table--i-subtype))
+  (if (emacs-char-table--native-p ct)
+      (and emacs-char-table--native-subtype-fn
+           (funcall emacs-char-table--native-subtype-fn ct))
+    (emacs-char-table--raw-ref ct emacs-char-table--i-subtype)))
 
 (defun emacs-char-table-extra-slot (ct n)
   "Return CT's extra slot N."
   (emacs-char-table--check-table ct)
   (unless (integerp n)
     (signal 'wrong-type-argument (list 'fixnump n)))
-  (let ((slots (length (emacs-char-table--raw-ref
-                        ct emacs-char-table--i-extra))))
-    (unless (and (<= 0 n) (< n slots))
-      (signal 'args-out-of-range (list ct n))))
-  (emacs-char-table--raw-ref
-   (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n))
+  (if (emacs-char-table--native-p ct)
+      (if emacs-char-table--native-extra-slot-fn
+          (funcall emacs-char-table--native-extra-slot-fn ct n)
+        (signal 'args-out-of-range (list ct n)))
+    (let ((slots (length (emacs-char-table--raw-ref
+                          ct emacs-char-table--i-extra))))
+      (unless (and (<= 0 n) (< n slots))
+        (signal 'args-out-of-range (list ct n))))
+    (emacs-char-table--raw-ref
+     (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n)))
 
 (defun emacs-char-table-set-extra-slot (ct n value)
   "Set CT's extra slot N to VALUE."
   (emacs-char-table--check-table ct)
   (unless (integerp n)
     (signal 'wrong-type-argument (list 'fixnump n)))
+  (when (emacs-char-table--native-p ct)
+    (signal 'args-out-of-range (list ct n)))
   (let ((slots (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
     (unless (and (<= 0 n) (< n (length slots)))
       (signal 'args-out-of-range (list ct n))))
@@ -594,7 +659,17 @@ inherited from defaults and parents.  Return nil."
   "Return a copy of CT.
 When VALFN is non-nil it transforms each non-nil value (used by
 `copy-keymap' to recurse into nested keymaps)."
-  (let ((new (emacs-char-table-make
+  (if (emacs-char-table--native-p ct)
+      ;; Re-home the 8-bit part of a native table into a library table.
+      (let ((new (emacs-char-table-make 'syntax-table))
+            (c 0))
+        (while (< c emacs-char-table--ascii-size)
+          (let ((v (emacs-char-table--native-ref ct c)))
+            (when v
+              (emacs-char-table-set new c (if valfn (funcall valfn v) v))))
+          (setq c (1+ c)))
+        new)
+   (let ((new (emacs-char-table-make
               (emacs-char-table--raw-ref ct emacs-char-table--i-subtype)
               (emacs-char-table--raw-ref ct emacs-char-table--i-default))))
     (emacs-char-table--raw-set
@@ -618,7 +693,7 @@ When VALFN is non-nil it transforms each non-nil value (used by
      new emacs-char-table--i-extra
      (copy-sequence
       (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
-    new))
+    new)))
 
 ;;;; --- public array bridge -------------------------------------------
 
