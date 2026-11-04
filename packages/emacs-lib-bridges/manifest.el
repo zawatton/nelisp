@@ -1,2 +1,2 @@
 (:name "emacs-lib-bridges"
- :requires ("emacs-lib-foundation" "emacs-lib-io"))
+ :requires ("emacs-lib-core"))
