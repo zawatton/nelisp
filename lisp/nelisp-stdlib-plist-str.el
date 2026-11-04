@@ -449,7 +449,10 @@ Return (FROM . TO).  STR, START, and END are used only for the
         (signal 'args-out-of-range (list str start end)))
       (cons from to))))
 
-(defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+;; The body lives in an ordinary function: `compare-strings' itself carries a
+;; whole-function VM intrinsic that declines IGNORE-CASE and would then run the
+;; body in the interpreter.
+(defun nelisp--compare-strings-1 (str1 start1 end1 str2 start2 end2 &optional ignore-case)
   (nelisp--check-string str1)
   (nelisp--check-string str2)
   (let ((len1 (length str1))
@@ -504,6 +507,9 @@ Return (FROM . TO).  STR, START, and END are used only for the
        ((= n1 n2) t)
        ((< n1 n2) (- (1+ n)))
        (t (1+ n))))))
+
+(defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case))
 
 ;; Rust-min (2026-05-06): regexp-quote — pure char-by-char escape of
 ;; the GNU Emacs regex meta-charset.  Migrated from build-tool/src/

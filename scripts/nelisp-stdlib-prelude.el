@@ -2100,12 +2100,65 @@ needs the general per-character logic: no case table, final sigma, or a raw byte
   "Return KEY's single-character case mapping for MODE as a character.
 Same value as the first character of `nelisp--case-character-piece' with FULL
 nil, without building the intermediate string."
-  (let ((simple (nelisp--case-simple-character key mode table)))
-    (if (eq mode 'title)
-        (let* ((index (nelisp--case-title-index))
-               (hit (and index (gethash key index))))
-          (if (and hit (= (length hit) 1)) (aref hit 0) simple))
-      simple)))
+  (if (and (eq mode 'title) (>= key ?a) (<= key ?z)
+           (fboundp 'nelisp-unicode-titlecase-property))
+      ;; The titlecase property of a-z is the fixed pair c-32 and takes
+      ;; precedence over the table; ASCII has no full titlecase mapping.
+      (- key 32)
+    (let ((simple (nelisp--case-simple-character key mode table)))
+      (if (eq mode 'title)
+          (let* ((index (nelisp--case-title-index))
+                 (hit (and index (gethash key index))))
+            (if (and hit (= (length hit) 1)) (aref hit 0) simple))
+        simple))))
+
+(defun nelisp--case-string-ascii (object action table)
+  "Case non-empty ASCII-only string OBJECT for `capitalize' or `initials'.
+Answers nil, leaving OBJECT to `nelisp--case-string-general', unless the native
+`nelisp--casify-fast' can lower the whole string exactly.  Lowercase letters come
+from that one native call; titlecase uses the same source as the general path
+(the a-z titlecase property c-32, then the table's upcase mapping).  The result
+is built like the general path builds it."
+  (when (and table (memq action '(capitalize initials))
+             (fboundp 'nelisp--casify-fast)
+             (fboundp 'nelisp-unicode-titlecase-property)
+             (fboundp 'char-syntax))
+    (let ((upmap (nelisp-casetab--get-extra-slot table 0)))
+      (when (and upmap (not (nelisp-casetab--sparse-table-p upmap)))
+        (let ((lower (nelisp--casify-fast object 0 table)))
+          (when (stringp lower)
+            (let ((unibyte (unibyte-string-p object))
+                  (cap (eq action 'capitalize))
+                  (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
+                  (n (length object))
+                  (i 0) (inword nil) (parts nil))
+              (while (< i n)
+                (let* ((c (aref object i))
+                       (sx (char-syntax c))
+                       (piece c) (mode nil))
+                  (cond ((and inword cap)
+                         (setq piece (aref lower i) mode 'lower))
+                        (inword nil)
+                        (t
+                         (setq mode 'title
+                               piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
+                                       (let ((v (aref upmap c)))
+                                         (if (and (integerp v) (>= v 0)) v
+                                           (nelisp--case-simple-character
+                                            c 'title table)))))))
+                  (when (and unibyte (>= piece 256))
+                    (setq piece (nelisp--case-byte c piece mode)))
+                  (setq parts (cons piece parts)
+                        inword (or (eq sx ?w) (and csw (eq sx ?_)))
+                        i (1+ i))))
+              (setq parts (nreverse parts))
+              (if unibyte
+                  (let ((result (copy-sequence object)) (k 0))
+                    (dolist (byte parts)
+                      (aset result k byte)
+                      (setq k (1+ k)))
+                    result)
+                (string-make-multibyte (concat parts))))))))))
 
 (defun nelisp--case-string-general (object action table)
   "Case the non-empty string OBJECT for ACTION, tracking word state per character.
@@ -2219,7 +2272,8 @@ ACTION is `upper', `lower', `capitalize', or `initials'."
      ((= (length object) 0) object)
      ((and (memq action '(upper lower)) (not (unibyte-string-p object))
            (nelisp--case-string-fast object action table)))
-     (t (nelisp--case-string-general object action table)))))
+     (t (or (nelisp--case-string-ascii object action table)
+            (nelisp--case-string-general object action table))))))
 
 (defun upcase (object)
   "Convert character or string OBJECT to uppercase using the current case table."
@@ -2597,62 +2651,67 @@ Return (FROM . TO).  STR, START, and END are used only for the
       (unless (and (<= 0 from) (<= from to) (<= to size))
         (signal 'args-out-of-range (list str start end)))
       (cons from to))))
+;; The body lives in an ordinary function: `compare-strings' itself carries a
+;; whole-function VM intrinsic that declines IGNORE-CASE and would then run the
+;; body in the interpreter.
+(defun nelisp--compare-strings-1 (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  (nelisp--check-string str1)
+  (nelisp--check-string str2)
+  (let ((len1 (length str1))
+        (len2 (length str2)))
+    ;; Backward compatibility: silently bring a too-large positive END
+    ;; into range (mirrors the check in Fcompare_strings before it
+    ;; calls validate_subarray).
+    (when (and (integerp end1) (< len1 end1)) (setq end1 len1))
+    (when (and (integerp end2) (< len2 end2)) (setq end2 len2))
+    (let* ((range1 (nelisp--compare-strings-subarray str1 start1 end1 len1))
+           (a (car range1))
+           (b (cdr range1))
+           (range2 (nelisp--compare-strings-subarray str2 start2 end2 len2))
+           (c (car range2))
+           (d (cdr range2))
+           (n1 (- b a))
+           (n2 (- d c))
+           (n (if (< n1 n2) n1 n2))
+           (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
+           (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
+           ;; IGNORE-CASE fast path: upcase both whole strings once.  The
+           ;; native answer is exact only for ASCII-only strings (lengths
+           ;; unchanged, so the indices below stay valid); otherwise nil
+           ;; and the per-character loop runs as before.
+           (fast (and ignore-case
+                      (fboundp 'nelisp--casify-fast)
+                      (fboundp 'current-case-table)
+                      (let* ((tbl (current-case-table))
+                             (u1 (nelisp--casify-fast str1 1 tbl))
+                             (u2 (and (stringp u1)
+                                      (nelisp--casify-fast str2 1 tbl))))
+                        (and (stringp u2) (cons u1 u2)))))
+           (s1 (if fast (car fast) str1))
+           (s2 (if fast (cdr fast) str2))
+           (i 0)
+           (result t))
+      (while (and (< i n) (eq result t))
+        (let* ((ch1 (aref s1 (+ a i)))
+               (ch2 (aref s2 (+ c i)))
+               (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
+               (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
+               (k1 (if (and ignore-case (not fast)) (upcase ch1) ch1))
+               (k2 (if (and ignore-case (not fast))
+                       (if (eq ch1 ch2) k1 (upcase ch2))
+                     ch2)))
+          (cond
+           ((< k1 k2) (setq result (- (1+ i))))
+           ((> k1 k2) (setq result (1+ i)))
+           (t (setq i (1+ i))))))
+      (cond
+       ((not (eq result t)) result)
+       ((= n1 n2) t)
+       ((< n1 n2) (- (1+ n)))
+       (t (1+ n))))))
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
-    (nelisp--check-string str1)
-    (nelisp--check-string str2)
-    (let ((len1 (length str1))
-          (len2 (length str2)))
-      ;; Backward compatibility: silently bring a too-large positive END
-      ;; into range (mirrors the check in Fcompare_strings before it
-      ;; calls validate_subarray).
-      (when (and (integerp end1) (< len1 end1)) (setq end1 len1))
-      (when (and (integerp end2) (< len2 end2)) (setq end2 len2))
-      (let* ((range1 (nelisp--compare-strings-subarray str1 start1 end1 len1))
-             (a (car range1))
-             (b (cdr range1))
-             (range2 (nelisp--compare-strings-subarray str2 start2 end2 len2))
-             (c (car range2))
-             (d (cdr range2))
-             (n1 (- b a))
-             (n2 (- d c))
-             (n (if (< n1 n2) n1 n2))
-             (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
-             (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
-             ;; IGNORE-CASE fast path: upcase both whole strings once.  The
-             ;; native answer is exact only for ASCII-only strings (lengths
-             ;; unchanged, so the indices below stay valid); otherwise nil
-             ;; and the per-character loop runs as before.
-             (fast (and ignore-case
-                        (fboundp 'nelisp--casify-fast)
-                        (fboundp 'current-case-table)
-                        (let* ((tbl (current-case-table))
-                               (u1 (nelisp--casify-fast str1 1 tbl))
-                               (u2 (and (stringp u1)
-                                        (nelisp--casify-fast str2 1 tbl))))
-                          (and (stringp u2) (cons u1 u2)))))
-             (s1 (if fast (car fast) str1))
-             (s2 (if fast (cdr fast) str2))
-             (i 0)
-             (result t))
-        (while (and (< i n) (eq result t))
-          (let* ((ch1 (aref s1 (+ a i)))
-                 (ch2 (aref s2 (+ c i)))
-                 (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
-                 (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
-                 (k1 (if (and ignore-case (not fast)) (upcase ch1) ch1))
-                 (k2 (if (and ignore-case (not fast))
-                         (if (eq ch1 ch2) k1 (upcase ch2))
-                       ch2)))
-            (cond
-             ((< k1 k2) (setq result (- (1+ i))))
-             ((> k1 k2) (setq result (1+ i)))
-             (t (setq i (1+ i))))))
-        (cond
-         ((not (eq result t)) result)
-         ((= n1 n2) t)
-         ((< n1 n2) (- (1+ n)))
-         (t (1+ n)))))))
+    (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case)))
 (unless (fboundp 'string-to-list)
   (defun string-to-list (s)
     (nelisp--check-seq-list s)
