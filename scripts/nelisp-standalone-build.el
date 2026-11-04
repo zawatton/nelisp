@@ -3562,32 +3562,43 @@ twice appears twice; readers keep the last occurrence of each unit."
 (defun nelisp-standalone--unit-cache-encode (unit)
   "Encode UNIT for stable ASCII cache storage.
 Section payloads are raw bytes; keeping them as printed Lisp strings depends on
-the host's read/write coding-system behavior.  Store them as hex ASCII so cached
-Windows PE units round-trip exactly like freshly compiled in-memory units."
+the host's read/write coding-system behavior.  Store them as base64 ASCII (hex
+for a payload that is not a unibyte string) so cached Windows PE units
+round-trip exactly like freshly compiled in-memory units."
   (let ((copy (copy-sequence unit)))
     (plist-put
      copy :sections
      (mapcar (lambda (section)
-               (cons (car section)
-                     (list :nelisp-cache-bytes-hex
-                           (nelisp-standalone--bytes-to-hex (cdr section)))))
+               (let ((bytes (cdr section)))
+                 (cons (car section)
+                       ;; Base64 decodes in C; the interpreted hex decoder
+                       ;; made cache-decode ~4.4 s of a warm build.  Hex
+                       ;; stays for anything but a unibyte string.
+                       (if (and (stringp bytes) (not (multibyte-string-p bytes)))
+                           (list :nelisp-cache-bytes-base64
+                                 (base64-encode-string bytes t))
+                         (list :nelisp-cache-bytes-hex
+                               (nelisp-standalone--bytes-to-hex bytes))))))
              (plist-get unit :sections)))
     copy))
 
 (defun nelisp-standalone--unit-cache-decode (unit)
   "Decode UNIT read from the standalone cache.
-Old cache entries stored raw strings; accept them for compatibility, while new
-entries carry explicit hex-encoded byte sections."
+Old cache entries stored raw strings or hex sections; accept them for
+compatibility, while new entries carry base64-encoded byte sections."
   (let ((copy (copy-sequence unit)))
     (plist-put
      copy :sections
      (mapcar (lambda (section)
                (let ((payload (cdr section)))
                  (cons (car section)
-                       (if (and (consp payload)
-                                (eq (car payload) :nelisp-cache-bytes-hex))
-                           (nelisp-standalone--hex-to-bytes (cadr payload))
-                         payload))))
+                       (cond ((and (consp payload)
+                                   (eq (car payload) :nelisp-cache-bytes-base64))
+                              (base64-decode-string (cadr payload)))
+                             ((and (consp payload)
+                                   (eq (car payload) :nelisp-cache-bytes-hex))
+                              (nelisp-standalone--hex-to-bytes (cadr payload)))
+                             (t payload)))))
              (plist-get unit :sections)))
     copy))
 
