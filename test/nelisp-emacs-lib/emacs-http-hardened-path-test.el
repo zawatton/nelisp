@@ -11,12 +11,13 @@
 
 (require 'ert)
 (require 'emacs-http)
+(require 'nemacs-test-paths)
 
 (defvar emacs-http-hardened-test--crypto
   (or (getenv "ANVIL_CRYPTO")
-      (let ((here (file-name-directory (or load-file-name buffer-file-name))))
-        (expand-file-name "../../anvil.el/anvil-crypto.el" here)))
-  "Path to anvil-crypto.el (sibling repo).")
+      (expand-file-name "../anvil.el/anvil-crypto.el"
+                        nemacs-test-paths-repo-root))
+  "Path to anvil-crypto.el in the anvil.el checkout beside the repository.")
 
 (defun emacs-http-hardened-test--load-crypto ()
   (if (file-exists-p emacs-http-hardened-test--crypto)
