@@ -787,3 +787,9 @@ emacs-lisp/emacs-lisp/cl-extra.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lis
 emacs-lisp/emacs-lisp/cl-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-loaddefs.el	sha256=fedb9a1496121bff88513b3f31e531599b11603a87c1faaac78a3abc8b47a7e2
 emacs-lisp/emacs-lisp/generator.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/generator.el	sha256=79744868cc96772d511696aa8c10fa055a1016ecc0fb7ec159e41994eeb72b4d
 emacs-lisp/emacs-lisp/cl-preloaded.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-preloaded.el	sha256=73c114b7a8899ae278fdd1eae29c902703f20bc0662f99c3edb391362a35514c
+emacs-lisp/url/url.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/url/url.el	sha256=9905f3f50d8071cebed45ff2c25a861420bfda767ee811cbe630ae8c53bfc05b
+emacs-lisp/gnus/mm-view.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/gnus/mm-view.el	sha256=efc00cf0760d7ad663c738b4d70fc66f4ae1ae6c81a806290bcd3fb1d452bc3b
+emacs-lisp/gnus/smime.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/gnus/smime.el	sha256=6d5f2aa0099c78b65238cc2cd59a056e2169d38c021171e0d3be5db789cf05ae
+emacs-lisp/gnus/mml-smime.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/gnus/mml-smime.el	sha256=93b08067062a5bb20d7f5422fca3ba6812bf03adfbbeb046f7acb56dbc5f53c0
+emacs-lisp/net/dig.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/net/dig.el	sha256=50dd6b8f4248fb835a54278dcc6d8be473256476fce88096983364964a4393dd
+emacs-lisp/net/gnutls.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/net/gnutls.el	sha256=2e6db1b361e1e6f6734d61641e98a15ae35dba6ca7c09b3327048d9e39d3f111

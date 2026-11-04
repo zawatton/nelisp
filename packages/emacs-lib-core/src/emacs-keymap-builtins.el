@@ -482,6 +482,17 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 (unless (emacs-keymap-keymapp minibuffer-local-map)
   (setq minibuffer-local-map (emacs-keymap-make-sparse-keymap)))
 
+;; `minibuffer-local-completion-map' is owned by GNU minibuffer.el, which the
+;; standalone runtime does not load.  Libraries such as mm-decode (pulled in
+;; by url.el) take it as a keymap parent, so bind an empty child of
+;; `minibuffer-local-map' unless a real keymap is already present.
+(unless (and (boundp 'minibuffer-local-completion-map)
+             (emacs-keymap-keymapp minibuffer-local-completion-map))
+  (defvar minibuffer-local-completion-map nil
+    "Keymap for completing input in the minibuffer.")
+  (setq minibuffer-local-completion-map (emacs-keymap-make-sparse-keymap))
+  (set-keymap-parent minibuffer-local-completion-map minibuffer-local-map))
+
 (defun emacs-keymap-builtins--migrate-bootstrap-events (keymap)
   "Canonicalize legacy one-event vector cells in bootstrap KEYMAP.
 Keep an existing event binding, including an explicit nil, in preference

@@ -794,3 +794,9 @@ fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435  vendor/emacs-l
 fedb9a1496121bff88513b3f31e531599b11603a87c1faaac78a3abc8b47a7e2  vendor/emacs-lisp/emacs-lisp/cl-loaddefs.el
 79744868cc96772d511696aa8c10fa055a1016ecc0fb7ec159e41994eeb72b4d  vendor/emacs-lisp/emacs-lisp/generator.el
 73c114b7a8899ae278fdd1eae29c902703f20bc0662f99c3edb391362a35514c  vendor/emacs-lisp/emacs-lisp/cl-preloaded.el
+9905f3f50d8071cebed45ff2c25a861420bfda767ee811cbe630ae8c53bfc05b  vendor/emacs-lisp/url/url.el
+efc00cf0760d7ad663c738b4d70fc66f4ae1ae6c81a806290bcd3fb1d452bc3b  vendor/emacs-lisp/gnus/mm-view.el
+6d5f2aa0099c78b65238cc2cd59a056e2169d38c021171e0d3be5db789cf05ae  vendor/emacs-lisp/gnus/smime.el
+93b08067062a5bb20d7f5422fca3ba6812bf03adfbbeb046f7acb56dbc5f53c0  vendor/emacs-lisp/gnus/mml-smime.el
+50dd6b8f4248fb835a54278dcc6d8be473256476fce88096983364964a4393dd  vendor/emacs-lisp/net/dig.el
+2e6db1b361e1e6f6734d61641e98a15ae35dba6ca7c09b3327048d9e39d3f111  vendor/emacs-lisp/net/gnutls.el
