@@ -97,10 +97,12 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
-# 270 -> 973 on 2026-11-04: NOT new shadowing.  The gate's count rose when the
-# emacs-lib packages were imported into this tree; the guard commits then took
-# it from 1213 down to 973.  973 is the residue, every name accounted for:
-#   core, out of scope (lisp/ 111, scripts/ 259, src/ 1, packages/nelisp-textprop-hook 2) 373
+# 270 -> 870 on 2026-11-04 (Doc 211 import).  870 = the 270 core names this
+# file already allowed + the 600 emacs-lib names below, each kept on purpose.
+# The gate measures 973: core is now 373 (lisp/ 111, scripts/ 259, src/ 1,
+# packages/nelisp-textprop-hook 2), i.e. 103 core names more than the 270
+# allowed on 2026-09-20.  Those 103 are NOT accepted here: the gate stays red
+# by exactly that amount until they are guarded or justified one by one.
 #   emacs-lib, kept on purpose                                                          600
 #     nemacs-gui-file-bridge-runtime.el  470  fset replay baked into the runtime image
 #     fontset.el 27, emacs-completion-ui 6, map-ynp 4, emacs-elisp-eval 3,
@@ -119,7 +121,7 @@
 #       are never run on load; opt-in by design
 #     emacs-cc-fns-1 make-hash-table 1, nelisp-emacs-org-bridge org-agenda-list 1
 #       deliberate wrappers around the existing native/definition
-shared-shadowing 973
+shared-shadowing 870
 
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # entries in `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
