@@ -141,7 +141,7 @@ for ((i=0; i<JOBS; i++)); do
   while IFS= read -r f; do
     [ -n "$f" ] && files_lisp+=" \"$f\""
   done <<< "${SHARD_FILES[i]}"
-  load_expr="(let ((seen (make-hash-table :test 'equal))) (dolist (f '($files_lisp)) (let ((k (file-name-sans-extension (file-truename (expand-file-name f))))) (unless (gethash k seen) (load (expand-file-name f) nil t) (dolist (h load-history) (when (stringp (car h)) (puthash (file-name-sans-extension (file-truename (car h))) t seen)))))))"
+  load_expr="(let ((seen (make-hash-table :test 'equal))) (dolist (f '($files_lisp)) (let ((k (file-name-sans-extension (file-truename (expand-file-name f))))) (unless (gethash k seen) (condition-case err (load (expand-file-name f) nil t) (error (message \"TEST-LOAD-ERROR %s: %S\" f err) (eval (list (quote ert-deftest) (intern (concat \"test-file-load/\" (file-name-base f))) nil (list (quote ert-fail) (format \"%s: %S\" f err)))))) (dolist (h load-history) (when (stringp (car h)) (puthash (file-name-sans-extension (file-truename (car h))) t seen)))))))"
   log="$OUT_DIR/shard-$i.log"
   (
     "$EMACS" --batch -Q "${LOAD_DIRS[@]}" \

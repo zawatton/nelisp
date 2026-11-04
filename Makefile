@@ -54,6 +54,9 @@ TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
 # files, so a plain `-l' list can load a file twice and ERT then aborts with
 # "redefined (or loaded twice)".  Skip any file already in `load-history'
 # (compared by truename, ignoring .el/.elc).  File order is unchanged.
+# A file that signals while loading becomes one failing ERT test named
+# test-file-load/BASENAME instead of aborting the whole suite, so every
+# other file still runs and the CI log lists all failures at once.
 define TEST_LOAD_ONCE
 (let ((seen (make-hash-table :test (quote equal))))
   (dolist (h load-history)
@@ -62,7 +65,14 @@ define TEST_LOAD_ONCE
   (dolist (f (quote ($(patsubst %,"%",$(TESTS)))))
     (let ((k (file-name-sans-extension (file-truename (expand-file-name f)))))
       (unless (gethash k seen)
-        (load (expand-file-name f) nil t)
+        (condition-case err
+            (load (expand-file-name f) nil t)
+          (error
+           (message "TEST-LOAD-ERROR %s: %S" f err)
+           (eval (list (quote ert-deftest)
+                       (intern (concat "test-file-load/" (file-name-base f)))
+                       nil
+                       (list (quote ert-fail) (format "%s: %S" f err))))))
         (dolist (h load-history)
           (when (stringp (car h))
             (puthash (file-name-sans-extension (file-truename (car h))) t seen)))))))
