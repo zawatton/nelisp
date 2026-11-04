@@ -4,7 +4,7 @@
 
 (defconst emacs-cc-xfaces-1-test--source
   (expand-file-name
-   "../../packages/emacs-lib-foundation/src/emacs-cc-xfaces-1.el"
+   "../../packages/emacs-lib-core/src/emacs-cc-xfaces-1.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 
 (defconst emacs-cc-xfaces-1-test--functions

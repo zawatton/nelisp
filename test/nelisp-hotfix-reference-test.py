@@ -109,8 +109,8 @@ def main():
         driver = output / 'activation.el'
         driver.write_text(';;; -*- lexical-binding: t; -*-\n' + ''.join(
             '(load ' + json.dumps(str(ROOT / path)) + ' nil t)\n' for path in (
-                'packages/emacs-lib-foundation/src/emacs-cc-thread-1.el',
-                'packages/emacs-lib-foundation/src/emacs-cc-thread-predicates-1.el',
+                'packages/emacs-lib-core/src/emacs-cc-thread-1.el',
+                'packages/emacs-lib-core/src/emacs-cc-thread-predicates-1.el',
                 'test/nelisp-n4b-reference.el')) + 'nil\n')
         reference = lines(run('activation-gnu', [args.emacs, '-Q', '--batch', '-l', str(driver)]))
         candidate = lines(run('activation-candidate', [report['binaries']['candidate']['path'], '--load', str(driver)]))

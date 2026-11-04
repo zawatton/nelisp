@@ -36,8 +36,8 @@ def main():
         (root / "build").mkdir()
         (root / "target").mkdir()
         (root / "build/nemacs-bootstrap.el").write_text("; fixture\n")
-        (root / "packages/emacs-lib-foundation/src").mkdir(parents=True)
-        (root / "packages/emacs-lib-foundation/src/c-core-fixture.el").write_text("; package source identity\n")
+        (root / "packages/emacs-lib-core/src").mkdir(parents=True)
+        (root / "packages/emacs-lib-core/src/c-core-fixture.el").write_text("; package source identity\n")
         (root / "test/emacs-lib/c-core-parity-driver.el").write_text("; fake driver identity\n")
         for name in ("c-core-stderr.py", "c-core-stderr-test.py",
                      "c-core-inventory-verify.py"):
@@ -172,7 +172,7 @@ if target and case == 'pass': print('t')
         probe.write_text(original + "(extra 1)\n")
         cases["changed_probe_invalidates_result"] = invoke(script, root, "pass", "check", "files").returncode != 0
         probe.write_text(original)
-        source = root / "packages/emacs-lib-foundation/src/c-core-fixture.el"
+        source = root / "packages/emacs-lib-core/src/c-core-fixture.el"
         source.write_text(source.read_text() + "; changed source\n")
         cases["changed_package_source_invalidates_result"] = invoke(script, root, "pass", "check", "files").returncode != 0
         helper_source = validator.read_text()

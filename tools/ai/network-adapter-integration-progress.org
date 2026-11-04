@@ -3,7 +3,7 @@
 
 * S1 Integrate the reviewed adapter prerequisites without backend regressions
 ** S1.1 Integrated providers, Lisp builder and source-root script parse completely
-cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/emacs-lib-io/src/emacs-network-syscall-shim.el" "packages/emacs-lib-io/src/emacs-network-ffi.el" "scripts/build-nelisp-bootstrap.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/emacs-lib-core/src/emacs-network-syscall-shim.el" "packages/emacs-lib-core/src/emacs-network-ffi.el" "scripts/build-nelisp-bootstrap.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
 ** S1.2 Real minimal-source I/O passes in both runtime modes with retained backend and ownership controls
 evidence: target/progress/batch36/network-adapter/minimal-source-evidence.json sha256=4d8bedebb3872bfe60d47bac5c9409e406aeb852c6412634e555a25d7b36738d
 ** S1.3 Identical real-I/O input rejects the retained old provider

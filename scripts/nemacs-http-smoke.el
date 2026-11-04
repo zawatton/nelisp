@@ -39,12 +39,12 @@
   (unless (boundp 'load-path) (defvar load-path nil))
   (setq load-path
         (append (list (concat r "/src")
-                      (concat r "/packages/emacs-lib-io/src")
+                      (concat r "/packages/emacs-lib-core/src")
                       (concat r "/vendor/emacs-lisp")
                       (concat r "/vendor/emacs-lisp/emacs-lisp"))
                 (and (boundp 'load-path) load-path)))
   (load (concat r "/vendor/emacs-lisp/emacs-lisp/cl-lib.el") nil t)
-  (load (concat r "/packages/emacs-lib-io/src/emacs-http.el") nil t))
+  (load (concat r "/packages/emacs-lib-core/src/emacs-http.el") nil t))
 
 (defun nemacs-http-smoke-handler (req)
   "Demo handler: /echo returns the body, everything else 404."

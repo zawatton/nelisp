@@ -7,7 +7,7 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (add-to-list 'load-path
-             (expand-file-name "packages/emacs-lib-foundation/src"
+             (expand-file-name "packages/emacs-lib-core/src"
                                emacs-cc-bare-symbol-1-test--root))
 (load "emacs-cc-bare-symbol-1" nil t)
 

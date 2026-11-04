@@ -31,7 +31,7 @@ def environment(case):
     if case.startswith("dynamic-bindings-"):
         env["WH_THREAD_DYNAMIC_CASE"] = case.rsplit("-", 1)[1]
     env.update(WH_FRAME_CASE=case, NELISP_FX_DISABLE="1",
-               WH_FRAME_THREAD_PROVIDER=str(ROOT / "packages/emacs-lib-foundation/src"))
+               WH_FRAME_THREAD_PROVIDER=str(ROOT / "packages/emacs-lib-core/src"))
     return env
 
 
@@ -117,7 +117,7 @@ def main():
                "checker": pin(Path(__file__).resolve()), "repeats": args.repeats,
                "expect_broken": args.expect_broken, "runs": {}, "binaries": {},
                "gnu": pin(Path(gnu).resolve()),
-               "providers": [pin(ROOT / "packages/emacs-lib-foundation/src" / name)
+               "providers": [pin(ROOT / "packages/emacs-lib-core/src" / name)
                              for name in ("emacs-cc-thread-1.el", "emacs-cc-thread-predicates-1.el", "emacs-cc-thread-2.el")]}
     runs = summary["runs"]
     runs["gnu/version"] = run(output, "gnu-version", [gnu, "--version"])

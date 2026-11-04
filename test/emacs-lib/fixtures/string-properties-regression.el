@@ -6,20 +6,20 @@
                         (file-name-directory (or load-file-name buffer-file-name)))))
 
 (when (fboundp 'nelisp--buffer-multibyte-p)
-  (dolist (dir '("packages/emacs-lib-foundation/src"
+  (dolist (dir '("packages/emacs-lib-core/src"
                  "packages/emacs-lib-core/src"
-                 "packages/emacs-lib-buffer-core/src"
+                 "packages/emacs-lib-core/src"
                  "packages/emacs-lib-text-core/src"))
     (add-to-list 'load-path (expand-file-name dir string-properties-regression--root)))
-  (dolist (file '("packages/emacs-lib-foundation/src/emacs-stub.el"
+  (dolist (file '("packages/emacs-lib-core/src/emacs-stub.el"
                   "packages/emacs-lib-core/src/emacs-frame.el"
                   "packages/emacs-lib-core/src/emacs-frame-builtins.el"
                   "packages/emacs-lib-core/src/emacs-window.el"
                   "packages/emacs-lib-core/src/emacs-window-builtins.el"
-                  "packages/emacs-lib-buffer-core/src/nelisp-emacs-compat.el"
-                  "packages/emacs-lib-buffer-core/src/emacs-buffer.el"
-                  "packages/emacs-lib-buffer-core/src/emacs-buffer-builtins.el"
-                  "packages/emacs-lib-foundation/src/emacs-string.el"))
+                  "packages/emacs-lib-core/src/nelisp-emacs-compat.el"
+                  "packages/emacs-lib-core/src/emacs-buffer.el"
+                  "packages/emacs-lib-core/src/emacs-buffer-builtins.el"
+                  "packages/emacs-lib-core/src/emacs-string.el"))
     (load (expand-file-name file string-properties-regression--root) nil t)))
 
 (let* ((styled (propertize (copy-sequence "abcd") 'face 'bold))

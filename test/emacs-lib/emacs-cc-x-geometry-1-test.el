@@ -2,7 +2,7 @@
 
 (require 'ert)
 (load (expand-file-name
-       "../../packages/emacs-lib-foundation/src/emacs-cc-x-geometry-1.el"
+       "../../packages/emacs-lib-core/src/emacs-cc-x-geometry-1.el"
        (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (ert-deftest emacs-cc-x-geometry-1/x-parse-geometry-valid-matrix ()

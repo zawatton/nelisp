@@ -176,7 +176,7 @@ NEMACS_LIBRARY_PACKAGE_VERIFY ?= $(BUILD_DIR)/nemacs-library-package-verify.tsv
 NEMACS_LIBRARY_PACKAGE_VERIFY_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-verify.org
 NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY ?= $(BUILD_DIR)/nemacs-production-runtime-path.org
 NEMACS_LIBRARY_PACKAGE_LOAD_PATH ?= $(shell sh scripts/nemacs-library-package-load-path.sh 2>/dev/null)
-NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH ?= -L packages/emacs-lib-app-gui/src
+NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH ?= -L packages/emacs-lib-core/src
 NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH ?= $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) $(NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH)
 NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE ?= --eval '(require (quote ert))'
 NEMACS_HOST_TEST_PRELUDE ?= $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
@@ -1105,7 +1105,7 @@ nemacs-library-package-frontend-smoke: nemacs-library-package-scaffold nemacs-li
 
 nemacs-library-package-gui-bridge-smoke: nemacs-library-package-scaffold nemacs-library-app-scaffold
 	NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
-		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/emacs-lib-app-gui)" \
+		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/emacs-lib-core)" \
 		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
 		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
@@ -1116,7 +1116,7 @@ nemacs-library-package-gui-bridge-standalone-smoke: nemacs-library-package-scaff
 	NEMACS_RUN_GUI_BRIDGE=1 \
 		NEMACS_GUI_BRIDGE_NELISP="$(abspath $(NELISP_BIN))" \
 		NEMACS_GUI_BRIDGE_PACKAGE_SCAFFOLD_ROOT="$(abspath packages)" \
-		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/emacs-lib-app-gui)" \
+		NEMACS_GUI_BRIDGE_APP_SCAFFOLD_ROOT="$(abspath packages/emacs-lib-core)" \
 		$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
 		$(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) -L $(NELISP_ROOT)/$(NEMACS_TEST_DIR) -L scripts \
 		-l test/nemacs-gui-file-bridge-runtime-test.el \
@@ -1761,7 +1761,7 @@ test-nemacs-server-client:
 verify-production-runtime-path: build-nelisp-bootstrap nemacs-library-package-scaffold nemacs-library-app-scaffold
 	$(EMACS) -Q -L scripts \
 		--eval '(setq verify-production-runtime-path-bootstrap "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
-		--eval '(setq verify-production-runtime-path-main "$(abspath packages/emacs-lib-app-gui/src/nemacs-main.el)")' \
+		--eval '(setq verify-production-runtime-path-main "$(abspath packages/emacs-lib-core/src/nemacs-main.el)")' \
 		--eval '(setq verify-production-runtime-path-package-scaffold "$(abspath $(NEMACS_LIBRARY_PACKAGE_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-app-scaffold "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
 		--eval '(setq verify-production-runtime-path-summary-output "$(abspath $(NEMACS_PRODUCTION_RUNTIME_PATH_SUMMARY))")' \

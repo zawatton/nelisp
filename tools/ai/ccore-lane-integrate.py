@@ -14,7 +14,7 @@ worker's report, and classifies the lane:
 
 Clean and partial lanes are integrated: `package' files replace the library
 file (only when the library file still equals the lane's seed), `unit' files
-are added to packages/emacs-lib-foundation/src/, and `prelude' override
+are added to packages/emacs-lib-core/src/, and `prelude' override
 files are copied to the prelude queue for the coordinator to splice into the
 runtime.  One TSV row per lane is printed: LANE, VERDICT, BEFORE, AFTER, NOTE.
 
@@ -125,7 +125,7 @@ def integrate(lane, queue, dry_run):
             if filecmp.cmp(target, source, shallow=False):
                 continue
         elif file_kind == "unit":
-            target = LIBRARY / "packages/emacs-lib-foundation/src" / name
+            target = LIBRARY / "packages/emacs-lib-core/src" / name
             if target.exists():
                 raise ValueError("unit already exists: " + name)
         elif file_kind == "prelude":

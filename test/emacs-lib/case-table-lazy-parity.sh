@@ -30,7 +30,7 @@ ELISP
 
 case "$mode" in
   --lifecycle|--control)
-    source="$here/packages/emacs-lib-foundation/src/case-table.el"
+    source="$here/packages/emacs-lib-core/src/case-table.el"
     if [ "$mode" = --control ]; then
       [ $# -eq 2 ] || fail '--control requires the retained eager source path'
       [ -f "$2" ] || fail "control source missing: $2"

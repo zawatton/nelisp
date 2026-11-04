@@ -567,7 +567,7 @@
   (let ((source (standalone-diagnostics-test--src-file "calendar.el"))
         (mirror
          (expand-file-name
-          "packages/emacs-lib-foundation/src/calendar.el"
+          "packages/emacs-lib-core/src/calendar.el"
           standalone-diagnostics-test--repo-root)))
     (should
      (equal

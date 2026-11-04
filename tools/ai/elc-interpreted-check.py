@@ -48,7 +48,7 @@ def run_case(tag, binary, body, source, *, image=None, heavy=False, timeout=60):
         options = ['--cold-load-from', image]
     elif not tag.startswith('gnu-'):
         for name in ('emacs-fns.el', 'emacs-eval.el', 'emacs-load.el'):
-            bootstrap += f'(load {C.lisp(source / "packages/emacs-lib-foundation/src" / name)} nil t t)\n'
+            bootstrap += f'(load {C.lisp(source / "packages/emacs-lib-core/src" / name)} nil t t)\n'
     script.write_text(';;; -*- lexical-binding: t; -*-\n' + bootstrap + C.driver(body))
     result = C.execute([binary, *options, '--load', script], OUT / tag, env=ENV, timeout=timeout, heavy=heavy)
     if tag.endswith('-ddskk'):

@@ -234,11 +234,8 @@ buffer) must not replace that error."
         (error nil)))))
 
 (defconst nelisp-emacs-magit-bridge--source-packages
-  '("emacs-lib-app-gui" "emacs-lib-bridges" "emacs-lib-buffer-core"
-    "emacs-lib-core" "emacs-lib-editing" "emacs-lib-facade"
-    "emacs-lib-foundation" "emacs-lib-io" "emacs-lib-runtime"
-    "emacs-lib-special-buffers" "emacs-lib-text-core"
-    "emacs-lib-textmodes-stub" "emacs-lib-tools")
+  '("emacs-lib-bridges" "emacs-lib-core" "emacs-lib-facade"
+    "emacs-lib-special-buffers" "emacs-lib-text-core")
   "Packages whose `src/' directories hold the imported library sources.")
 
 (defun nelisp-emacs-magit-bridge--package-source (name root)

@@ -43,7 +43,7 @@
           (expand-file-name ".." emacs-vars-test--directory))
          (source (expand-file-name "src/emacs-vars.el" repository-root))
          (mirror (expand-file-name
-                  "packages/emacs-lib-foundation/src/emacs-vars.el"
+                  "packages/emacs-lib-core/src/emacs-vars.el"
                   repository-root)))
     (should (string=
              (with-temp-buffer

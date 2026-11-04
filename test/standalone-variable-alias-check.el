@@ -58,7 +58,7 @@
   (let ((before (mapcar #'symbol-function
                        '(symbol-value boundp set makunbound defvaralias)))
         (provider (expand-file-name
-                   "../packages/emacs-lib-foundation/src/emacs-cc-variable-alias-1.el"
+                   "../packages/emacs-lib-core/src/emacs-cc-variable-alias-1.el"
                    (file-name-directory load-file-name))))
     (unless (and (fboundp 'nelisp--repr) nelisp--native-variable-aliases)
       (error "Native library capability was not exercised"))
