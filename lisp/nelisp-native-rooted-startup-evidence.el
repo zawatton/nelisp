@@ -222,6 +222,11 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (= (plist-get layout :sexp-bytes) 32)
                  (= (length (plist-get layout :exports)) 17))
       (error "Unauthenticated protocol generation inputs"))
+    ;; A unit's relocations sorted by offset (OFFSET POSITION RELOCATION),
+    ;; built once per unit: each record takes its range by bisection instead
+    ;; of scanning every relocation of its unit (842,818 scans for F1's 363
+    ;; records), then visits it in the unit's original order.
+    (let ((by-offset (make-hash-table :test #'eq)))
     (dolist (record (alist-get 'records closure))
       (let* ((name (alist-get 'name record))
              (unit-name (alist-get 'unit record))
@@ -229,23 +234,51 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
              (start (alist-get 'unit_offset record)) (size (alist-get 'size record)) relocations)
         (unless (and unit (not (alist-get 'indirect record)) (<= 1 size 65536))
           (error "Unknown protocol helper ownership"))
-        (dolist (relocation (alist-get 'relocations unit))
-          (let ((offset (alist-get 'offset relocation)))
-            (when (and (<= start offset) (< offset (+ start size)))
-              (push (list :offset (- offset start) :width 4
-                          :type (intern (alist-get 'type relocation))
-                          :symbol (nelisp-native-rooted-startup-evidence--relocation-symbol
-                                   unit relocation)
-                          :addend (alist-get 'addend relocation)) relocations))))
+        (let* ((sorted (or (gethash unit by-offset)
+                           (puthash unit
+                                    (let ((position -1))
+                                      (vconcat
+                                       (sort (mapcar (lambda (relocation)
+                                                       (list (alist-get 'offset relocation)
+                                                             (setq position (1+ position))
+                                                             relocation))
+                                                     (alist-get 'relocations unit))
+                                             (lambda (a b) (< (car a) (car b))))))
+                                    by-offset)))
+               (low 0) (high (length sorted)) hits)
+          (while (< low high)
+            (let ((middle (/ (+ low high) 2)))
+              (if (< (car (aref sorted middle)) start)
+                  (setq low (1+ middle))
+                (setq high middle))))
+          (while (and (< low (length sorted)) (< (car (aref sorted low)) (+ start size)))
+            (push (aref sorted low) hits)
+            (setq low (1+ low)))
+          (dolist (hit (sort hits (lambda (a b) (< (cadr a) (cadr b)))))
+            (let ((relocation (nth 2 hit)) (offset (car hit)))
+              (when (and (<= start offset) (< offset (+ start size)))
+                (push (list :offset (- offset start) :width 4
+                            :type (intern (alist-get 'type relocation))
+                            :symbol (nelisp-native-rooted-startup-evidence--relocation-symbol
+                                     unit relocation)
+                            :addend (alist-get 'addend relocation)) relocations)))))
         (push (list :name name :size size :sha256 (alist-get 'normalized_sha256 record)
                     :relocations (nreverse relocations) :direct (alist-get 'direct record) :indirect nil) records)
-        (cl-pushnew (list :name unit-name :sha256 (alist-get 'unit-sha256 unit)) units :test #'equal)))
+        (cl-pushnew (list :name unit-name :sha256 (alist-get 'unit-sha256 unit)) units :test #'equal))))
+    ;; The test below depends only on the relocation's symbol, and
+    ;; DATA-TARGETS is a set sorted afterwards, so each symbol is tested
+    ;; once.  The `unless' form itself is kept verbatim: the F1 derivation
+    ;; (nelisp-native-funcall-startup-evidence.el) replaces it by exact match
+    ;; with one that also scans every unit's symbols.
+    (let ((tested (make-hash-table :test #'equal)))
     (dolist (record records)
       (dolist (relocation (plist-get record :relocations))
+        (unless (gethash (plist-get relocation :symbol) tested)
+          (puthash (plist-get relocation :symbol) t tested)
         (unless (or (member (plist-get relocation :symbol) (alist-get 'os_imports closure))
                     (cl-find (plist-get relocation :symbol) records
                          :key (lambda (item) (plist-get item :name)) :test #'equal))
-          (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))
+          (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))))
     (dolist (name (sort data-targets #'string<))
       (let ((symbol (cl-find name (alist-get 'symbols data)
                             :key (lambda (item) (alist-get 'name item)) :test #'equal)))
