@@ -57,10 +57,9 @@ buffer becomes current via `find-file'.")
 (defvar emacs-fileio--buffer-mode-names nil
   "Alist mapping live buffers to their `mode-name' string.")
 
-(unless (boundp 'switch-to-buffer-preserve-window-point)
-  (defvar switch-to-buffer-preserve-window-point t
-    "Whether switching buffers preserves their previous window point.
-GNU file commands bind this option while entering and reverting Dired."))
+(defvar switch-to-buffer-preserve-window-point t
+  "Whether switching buffers preserves their previous window point.
+GNU file commands bind this option while entering and reverting Dired.")
 
 (defvar emacs-fileio-auto-mode-alist
   '(("\\.el\\'" . emacs-lisp-mode)

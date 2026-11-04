@@ -292,37 +292,30 @@ accepted for API parity but ignored in the MVP."
 
 ;;;; --- Custom theme subset -----------------------------------------------
 
-(unless (boundp 'custom-known-themes)
-  (defvar custom-known-themes '(user)
-    "Loaded custom theme names known to the standalone face substrate."))
+(defvar custom-known-themes '(user)
+  "Loaded custom theme names known to the standalone face substrate.")
 
-(unless (boundp 'custom-enabled-themes)
-  (defvar custom-enabled-themes nil
-    "Enabled custom themes, highest precedence first."))
+(defvar custom-enabled-themes nil
+  "Enabled custom themes, highest precedence first.")
 
-(unless (boundp 'custom-theme-directory)
-  (defvar custom-theme-directory
-    (or (and (boundp 'user-emacs-directory) user-emacs-directory)
+(defvar custom-theme-directory
+  (or (and (boundp 'user-emacs-directory) user-emacs-directory)
 	"~/.emacs.d/")
-    "Default user directory for standalone custom theme files."))
+  "Default user directory for standalone custom theme files.")
 
-(unless (boundp 'custom-theme-load-path)
-  (defvar custom-theme-load-path (list 'custom-theme-directory t)
-    "Directories searched for THEME-theme.el files."))
+(defvar custom-theme-load-path (list 'custom-theme-directory t)
+  "Directories searched for THEME-theme.el files.")
 
-(unless (boundp 'custom-safe-themes)
-  (defvar custom-safe-themes '(default)
-    "Standalone theme safety policy.
+(defvar custom-safe-themes '(default)
+  "Standalone theme safety policy.
 The current standalone loader cannot prompt or persist hashes, so callers
-should pass NO-CONFIRM to `load-theme' from init.el or set this to t."))
+should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
 
-(unless (boundp 'custom--inhibit-theme-enable)
-  (defvar custom--inhibit-theme-enable nil
-    "When non-nil, theme setters record settings without applying them."))
+(defvar custom--inhibit-theme-enable nil
+  "When non-nil, theme setters record settings without applying them.")
 
-(unless (boundp 'data-directory)
-  (defvar data-directory nil
-    "Compatibility variable for built-in data lookup."))
+(defvar data-directory nil
+  "Compatibility variable for built-in data lookup.")
 
 (unless (fboundp 'custom-theme-name-valid-p)
   (defun custom-theme-name-valid-p (name)

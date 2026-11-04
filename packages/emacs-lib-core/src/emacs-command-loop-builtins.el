@@ -299,15 +299,12 @@ idempotent success value expected by `nemacs-main'."
 
 ;;;; --- variable bridges ----------------------------------------------
 
-(unless (boundp 'this-command)
-  (defvar this-command nil
-    "Command being dispatched; hooks may replace it for command history."))
-(unless (boundp 'last-command)
-  (defvar last-command nil
-    "Command completed by the preceding command-loop iteration."))
-(unless (boundp 'real-this-command)
-  (defvar real-this-command nil
-    "Selected command, preserved when hooks replace `this-command'."))
+(defvar this-command nil
+  "Command being dispatched; hooks may replace it for command history.")
+(defvar last-command nil
+  "Command completed by the preceding command-loop iteration.")
+(defvar real-this-command nil
+  "Selected command, preserved when hooks replace `this-command'.")
 
 (unless (boundp 'last-command-event)
   (defvar last-command-event nil

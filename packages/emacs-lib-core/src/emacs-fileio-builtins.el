@@ -46,10 +46,9 @@
 (require 'files-runtime)
 (require 'emacs-file-name-handler)
 
-(unless (boundp 'auto-save-visited-file-name)
-  (defvar auto-save-visited-file-name nil
-    "Non-nil means auto-saving writes the visited file itself.
-This GNU C-core option is also read by genuine files.el before auto-save."))
+(defvar auto-save-visited-file-name nil
+  "Non-nil means auto-saving writes the visited file itself.
+This GNU C-core option is also read by genuine files.el before auto-save.")
 
 ;; `file-attributes' is deliberately absent (audit 2026-09-29): the native one is
 ;; GNU-correct while `nelisp-ec-file-attributes' returned nil uid/modes and size 0.

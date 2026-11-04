@@ -2948,9 +2948,8 @@ if all requested words were traversed, nil at a buffer or field edge."
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
     (forward-word (- (or arg 1)))))
 
-(unless (boundp 'word-move-empty-char-table)
-  (defvar word-move-empty-char-table nil
-    "Char table used to suppress language-specific word boundary callbacks."))
+(defvar word-move-empty-char-table nil
+  "Char table used to suppress language-specific word boundary callbacks.")
 
 (when (emacs-edit-builtins--install-function-p 'forward-word-strictly)
   (defun forward-word-strictly (&optional arg)

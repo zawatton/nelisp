@@ -1,7 +1,6 @@
 ;;; emacs-cc-xsettings-1.el --- xsettings C primitives -*- lexical-binding: t; -*-
 
-(unless (boundp 'tool-bar-style)
-  (defvar tool-bar-style))
+(defvar tool-bar-style)
 
 (unless (fboundp 'font-get-system-font)
   (defun font-get-system-font ()

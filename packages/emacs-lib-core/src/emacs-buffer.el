@@ -224,9 +224,8 @@ killed buffers' state.")
         (puthash ext entry emacs-buffer--local-indexes)))
     (cdr entry)))
 
-(unless (boundp 'inhibit-read-only)
-  (defvar inhibit-read-only nil
-    "Non-nil means buffer and text read-only checks are ignored."))
+(defvar inhibit-read-only nil
+  "Non-nil means buffer and text read-only checks are ignored.")
 
 (defun emacs-buffer--ensure-ext (buf)
   "Return the `emacs-buffer--ext' record for BUF, creating it lazily."

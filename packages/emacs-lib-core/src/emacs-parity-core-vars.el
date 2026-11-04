@@ -64,8 +64,7 @@
   (defvar lisp-mode-symbol-regexp "\\(?:\\sw\\|\\s_\\|\\\\.\\)+"))
 (unless (boundp 'completion-styles-alist) (defvar completion-styles-alist nil))
 ;; GNU minibuffer.el default; read at load time by gnus-util (via url.el).
-(unless (boundp 'completion-styles)
-  (defvar completion-styles '(basic partial-completion emacs22)))
+(defvar completion-styles '(basic partial-completion emacs22))
 (unless (boundp 'completion-ignored-extensions)
   (defvar completion-ignored-extensions '(".o" ".elc" "~" ".bin" ".obj")))
 (unless (boundp 'face-attribute-name-alist) (defvar face-attribute-name-alist nil))

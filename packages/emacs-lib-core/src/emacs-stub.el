@@ -4063,9 +4063,8 @@ release that package version targets."))
 ;; custom.el is loaded later, it must also initialize :initialize-delay values
 ;; in this running editor instead of queueing them for a host startup that will
 ;; never run.  Keep an existing host startup queue untouched.
-(unless (boundp 'custom-delayed-init-variables)
-  (defvar custom-delayed-init-variables t
-    "Standalone Custom initialization is complete; GNU may initialize normally."))
+(defvar custom-delayed-init-variables t
+  "Standalone Custom initialization is complete; GNU may initialize normally.")
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)

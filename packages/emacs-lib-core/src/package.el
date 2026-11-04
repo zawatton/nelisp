@@ -24,17 +24,14 @@
     "Return NEW-NAME under `user-emacs-directory'."
     (expand-file-name new-name user-emacs-directory)))
 
-(unless (boundp 'package-enable-at-startup)
-  (defvar package-enable-at-startup t
-    "Non-nil means startup should activate installed packages."))
+(defvar package-enable-at-startup t
+  "Non-nil means startup should activate installed packages.")
 
-(unless (boundp 'package-user-dir)
-  (defvar package-user-dir (locate-user-emacs-file "elpa")
-    "Directory containing per-user ELPA package directories."))
+(defvar package-user-dir (locate-user-emacs-file "elpa")
+  "Directory containing per-user ELPA package directories.")
 
-(unless (boundp 'package-directory-list)
-  (defvar package-directory-list nil
-    "Additional system package roots scanned for installed packages."))
+(defvar package-directory-list nil
+  "Additional system package roots scanned for installed packages.")
 
 (defvar package-load-list '(all)
   "List controlling which packages may be activated.")
@@ -45,13 +42,11 @@
 (defvar package-alist nil
   "Alist of installed package descriptors keyed by package symbol.")
 
-(unless (boundp 'package-activated-list)
-  (defvar package-activated-list nil
-    "List of package names activated in the current session."))
+(defvar package-activated-list nil
+  "List of package names activated in the current session.")
 
-(unless (boundp 'package--activated)
-  (defvar package--activated nil
-    "Non-nil after `package-activate-all' has run."))
+(defvar package--activated nil
+  "Non-nil after `package-activate-all' has run.")
 
 (defvar package--initialized nil
   "Non-nil after `package-initialize' has run.")

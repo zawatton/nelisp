@@ -3,8 +3,7 @@
 ;;; Code:
 
 (require 'json)
-(unless (boundp 'inhibit-read-only)
-  (defvar inhibit-read-only nil))
+(defvar inhibit-read-only nil)
 
 (defun emacs-cc-json-1-insert (object &rest args)
   "Insert OBJECT as compact JSON, forwarding serializer keyword ARGS.

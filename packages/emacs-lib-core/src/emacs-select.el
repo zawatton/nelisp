@@ -3,21 +3,14 @@
 ;; Backend callbacks own transport. This module owns select.el policy and the
 ;; explicit compatibility shim; loading it never replaces host Emacs functions.
 (defvar emacs-select-backend nil "Plist of :set, :get, :owner and :exists callbacks.")
-(unless (boundp 'select-enable-clipboard)
-  (defvar select-enable-clipboard t))
-(unless (boundp 'select-enable-primary)
-  (defvar select-enable-primary nil))
-(unless (boundp 'interprogram-cut-function)
-  (defvar interprogram-cut-function nil))
-(unless (boundp 'interprogram-paste-function)
-  (defvar interprogram-paste-function nil))
-(unless (boundp 'x-select-request-type)
-  (defvar x-select-request-type nil))
+(defvar select-enable-clipboard t)
+(defvar select-enable-primary nil)
+(defvar interprogram-cut-function nil)
+(defvar interprogram-paste-function nil)
+(defvar x-select-request-type nil)
 (defvar emacs-select--last nil)
-(unless (boundp 'gui-last-cut-in-clipboard)
-  (defvar gui-last-cut-in-clipboard nil))
-(unless (boundp 'gui-last-cut-in-primary)
-  (defvar gui-last-cut-in-primary nil))
+(defvar gui-last-cut-in-clipboard nil)
+(defvar gui-last-cut-in-primary nil)
 
 (defun emacs-select-display-selections-p (&optional _display)
   "Whether the installed display transport supports selections.

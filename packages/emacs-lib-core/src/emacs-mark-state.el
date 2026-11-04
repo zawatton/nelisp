@@ -1,10 +1,9 @@
 ;;; emacs-mark-state.el --- Buffer-owned mark state -*- lexical-binding: t; -*-
 
-(unless (boundp 'transient-mark-mode)
-  (defvar transient-mark-mode (not (and (boundp 'noninteractive) noninteractive))
-    "Whether commands use and deactivate an active region.
+(defvar transient-mark-mode (not (and (boundp 'noninteractive) noninteractive))
+  "Whether commands use and deactivate an active region.
 GNU simple.el expects this C-core variable before defining its global mode.
-Preserve any host or consumer setting that already exists."))
+Preserve any host or consumer setting that already exists.")
 
 (defun emacs-mark-state-initialize-interactive ()
   "Apply GNU's interactive mark default before consumer customization.
@@ -13,15 +12,12 @@ apply this shared default at startup; buffer-local overrides remain intact."
   (setq-default transient-mark-mode t))
 
 (defvar emacs-cc-mark--markers (make-hash-table :test 'eq))
-(unless (boundp 'select-active-regions)
-  (defvar select-active-regions t
-    "Whether activating a region also owns the primary selection."))
-(unless (boundp 'deactivate-mark)
-  (defvar deactivate-mark nil
-    "Whether the command loop should deactivate the active mark."))
-(unless (boundp 'saved-region-selection)
-  (defvar saved-region-selection nil
-    "Primary selection saved while the active region owns it."))
+(defvar select-active-regions t
+  "Whether activating a region also owns the primary selection.")
+(defvar deactivate-mark nil
+  "Whether the command loop should deactivate the active mark.")
+(defvar saved-region-selection nil
+  "Primary selection saved while the active region owns it.")
 
 ;; Replace only the disposable nil bulk fallbacks. GNU definitions remain.
 (dolist (name '(mark mark-marker set-mark))

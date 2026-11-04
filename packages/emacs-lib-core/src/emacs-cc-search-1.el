@@ -9,8 +9,7 @@
         (nelisp-ec-rx-match-data-to-ec 0 m))
       (plist-get m :start))))
 
-(unless (boundp 'cache-long-scans)
-  (defvar cache-long-scans t))
+(defvar cache-long-scans t)
 (defvar emacs-cc-search-1--newline-cache nil
   "Buffer-local newline cache: t before its first diagnostic snapshot.
 A snapshot contains the modification tick, accessible bounds and positions.")
