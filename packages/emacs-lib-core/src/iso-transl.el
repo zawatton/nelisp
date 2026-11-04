@@ -243,9 +243,10 @@
 
 (defun iso-transl--ensure-keymaps ()
   "Ensure the keymaps used by this lightweight facade exist."
-  (unless iso-transl-ctl-x-8-map
-    (setq iso-transl-ctl-x-8-map (make-sparse-keymap))
-    (fset 'iso-transl-ctl-x-8-map iso-transl-ctl-x-8-map))
+  (when (fboundp 'nl-ffi-call)
+    (unless iso-transl-ctl-x-8-map
+      (setq iso-transl-ctl-x-8-map (make-sparse-keymap))
+      (fset 'iso-transl-ctl-x-8-map iso-transl-ctl-x-8-map)))
   (unless key-translation-map
     (setq key-translation-map (make-sparse-keymap)))
   (define-key key-translation-map "\C-x8" iso-transl-ctl-x-8-map))

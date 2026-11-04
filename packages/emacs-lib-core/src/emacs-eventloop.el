@@ -139,11 +139,13 @@ Returns a list of (FD . REVENTS) cons cells whose REVENTS is non-zero."
 (when (or emacs-eventloop--standalone-p (not (fboundp 'accept-process-output)))
   (defalias 'accept-process-output #'emacs-process-accept-process-output))
 
-(when (or emacs-eventloop--standalone-p (not (fboundp 'sit-for)))
-  (defalias 'sit-for #'emacs-command-loop-sit-for))
+(when (fboundp 'nl-ffi-call)
+  (when (or emacs-eventloop--standalone-p (not (fboundp 'sit-for)))
+    (defalias 'sit-for #'emacs-command-loop-sit-for)))
 
-(when (or emacs-eventloop--standalone-p (not (fboundp 'sleep-for)))
-  (defalias 'sleep-for #'emacs-command-loop-sleep-for))
+(when (fboundp 'nl-ffi-call)
+  (when (or emacs-eventloop--standalone-p (not (fboundp 'sleep-for)))
+    (defalias 'sleep-for #'emacs-command-loop-sleep-for)))
 
 (provide 'emacs-eventloop)
 

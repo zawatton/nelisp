@@ -73,57 +73,61 @@ substitution."
     (apply #'format string objects))
   (put 'format-message 'emacs-stub-bulk nil))
 
-(unless (and (fboundp 'with-local-quit)
-             (not (get 'with-local-quit 'emacs-stub-bulk)))
-  (defmacro with-local-quit (&rest body)
-    "Standalone polyfill: evaluate BODY with quits locally enabled."
-    (declare (indent 0) (debug (body)))
-    (cons 'let (cons '((inhibit-quit nil)) body)))
-  (put 'with-local-quit 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'with-local-quit)
+               (not (get 'with-local-quit 'emacs-stub-bulk)))
+    (defmacro with-local-quit (&rest body)
+      "Standalone polyfill: evaluate BODY with quits locally enabled."
+      (declare (indent 0) (debug (body)))
+      (cons 'let (cons '((inhibit-quit nil)) body)))
+    (put 'with-local-quit 'emacs-stub-bulk nil)))
 
-(unless (and (fboundp 'with-demoted-errors)
-             (not (get 'with-demoted-errors 'emacs-stub-bulk)))
-  (defmacro with-demoted-errors (format &rest body)
-    "Standalone polyfill: run BODY and turn `error' signals into messages."
-    (declare (indent 1) (debug (form body)))
-    `(condition-case err
-         (progn ,@body)
-       (error
-        (let ((msg (if (fboundp 'error-message-string)
-                       (error-message-string err)
-                     (format "%S" err))))
-          (when (fboundp 'message)
-            (message ,format msg))
-          nil))))
-  (put 'with-demoted-errors 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'with-demoted-errors)
+               (not (get 'with-demoted-errors 'emacs-stub-bulk)))
+    (defmacro with-demoted-errors (format &rest body)
+      "Standalone polyfill: run BODY and turn `error' signals into messages."
+      (declare (indent 1) (debug (form body)))
+      `(condition-case err
+           (progn ,@body)
+	 (error
+          (let ((msg (if (fboundp 'error-message-string)
+			 (error-message-string err)
+                       (format "%S" err))))
+            (when (fboundp 'message)
+              (message ,format msg))
+            nil))))
+    (put 'with-demoted-errors 'emacs-stub-bulk nil)))
 
 (unless (boundp 'after-load-alist)
   (defvar after-load-alist nil
     "Pending `eval-after-load' registrations keyed by feature/file."))
 
-(unless (and (fboundp 'eval-after-load)
-             (not (get 'eval-after-load 'emacs-stub-bulk)))
-  (defun eval-after-load (file form)
-    "Standalone polyfill: defer FORM until FILE loads.
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'eval-after-load)
+               (not (get 'eval-after-load 'emacs-stub-bulk)))
+    (defun eval-after-load (file form)
+      "Standalone polyfill: defer FORM until FILE loads.
 This early bootstrap variant records the request in `after-load-alist'.
 When FILE is already present in `features' the FORM runs immediately."
-    (if (and (symbolp file) (featurep file))
-        (eval form)
-      (let ((cell (assoc file after-load-alist)))
-        (if cell
-            (setcdr cell (cons form (cdr cell)))
-          (setq after-load-alist
-                (cons (cons file (list form)) after-load-alist)))))
-    form)
-  (put 'eval-after-load 'emacs-stub-bulk nil))
+      (if (and (symbolp file) (featurep file))
+          (eval form)
+	(let ((cell (assoc file after-load-alist)))
+          (if cell
+              (setcdr cell (cons form (cdr cell)))
+            (setq after-load-alist
+                  (cons (cons file (list form)) after-load-alist)))))
+      form)
+    (put 'eval-after-load 'emacs-stub-bulk nil)))
 
-(unless (and (fboundp 'with-eval-after-load)
-             (not (get 'with-eval-after-load 'emacs-stub-bulk)))
-  (defmacro with-eval-after-load (file &rest body)
-    "Standalone polyfill: register BODY to run after FILE loads."
-    (declare (indent 1) (debug (form body)))
-    (list 'eval-after-load file (list 'quote (cons 'progn body))))
-  (put 'with-eval-after-load 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'with-eval-after-load)
+               (not (get 'with-eval-after-load 'emacs-stub-bulk)))
+    (defmacro with-eval-after-load (file &rest body)
+      "Standalone polyfill: register BODY to run after FILE loads."
+      (declare (indent 1) (debug (form body)))
+      (list 'eval-after-load file (list 'quote (cons 'progn body))))
+    (put 'with-eval-after-load 'emacs-stub-bulk nil)))
 
 ;; `interactive' — Emacs special form marking a defun as interactively
 ;; callable + parsing arg-spec for `M-x'.  Under NeLisp standalone there

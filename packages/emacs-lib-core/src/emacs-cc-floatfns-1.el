@@ -45,10 +45,11 @@
 
 ;; The standalone reader's `tan' is an `fboundp' stub that signals
 ;; `nelisp-unsupported-primitive'; probe with a call instead of `fboundp'.
-(unless (condition-case nil (numberp (tan 1.0)) (error nil))
-  (defun tan (arg)
-    "Return the tangent of ARG.\n\n(fn ARG)"
-    (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
-    (/ (sin arg) (cos arg))))
+(when (fboundp 'nl-ffi-call)
+  (unless (condition-case nil (numberp (tan 1.0)) (error nil))
+    (defun tan (arg)
+      "Return the tangent of ARG.\n\n(fn ARG)"
+      (unless (numberp arg) (signal 'wrong-type-argument (list 'numberp arg)))
+      (/ (sin arg) (cos arg)))))
 
 (provide 'emacs-cc-floatfns-1)

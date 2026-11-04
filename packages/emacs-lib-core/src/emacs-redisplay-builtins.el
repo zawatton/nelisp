@@ -54,10 +54,11 @@
 (defvar display-line-numbers-type t
   "Kind of numbers enabled by `display-line-numbers-mode'.")
 
-(when (or (not (fboundp 'display-line-numbers-mode))
-          (get 'display-line-numbers-mode 'emacs-stub-bulk))
-  (defalias 'display-line-numbers-mode #'emacs-redisplay-display-line-numbers-mode)
-  (put 'display-line-numbers-mode 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'display-line-numbers-mode))
+            (get 'display-line-numbers-mode 'emacs-stub-bulk))
+    (defalias 'display-line-numbers-mode #'emacs-redisplay-display-line-numbers-mode)
+    (put 'display-line-numbers-mode 'emacs-stub-bulk nil)))
 
 ;;;; --- current-handle slot -------------------------------------------
 

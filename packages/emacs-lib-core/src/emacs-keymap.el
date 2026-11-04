@@ -1410,154 +1410,155 @@ motivation for dropping."
             (error nil)))))
     map))
 
-(when (or (fboundp 'nl-write-file)
-          (not (boundp 'emacs-version))
-          (get 'key-parse 'emacs-stub-bulk)
-          (get 'defvar-keymap 'emacs-stub-bulk))
-  ;; GNU keymap.el's regexp-heavy parser is too much for the current
-  ;; standalone NeLisp regex subset.  Route the common API through the
-  ;; shared keymap substrate with a small kbd parser.
-  (defalias 'key-parse #'emacs-keymap--standalone-key-parse)
-  (defalias 'key-valid-p #'emacs-keymap--standalone-key-valid-p)
-  (defalias 'kbd #'emacs-keymap--standalone-key-parse)
-  ;; `read-kbd-macro' is the pre-`kbd' Emacs API for the exact same
-  ;; kbd-syntax parsing (vendor callers like evil-maps.el still call it
-  ;; directly).  Reclaim it from `emacs-stub-bulk.el's nil stub the
-  ;; same way `kbd' is reclaimed just above -- see Doc 49 T49 note
-  ;; below `key-parse (= delegate)' in the header comment for why this
-  ;; symbol needed its own alias instead of following `kbd' for free.
-  (defalias 'read-kbd-macro #'emacs-keymap--standalone-key-parse)
-  (defun keymap-set (keymap key definition)
-    "Standalone NeLisp fallback for GNU `keymap-set'."
-    (let ((parsed (emacs-keymap--standalone-key-parse key))
-          (def (if (stringp definition)
-                   (emacs-keymap--standalone-key-parse definition)
-                 definition)))
-      (emacs-keymap-define-key keymap parsed def)
-      def))
-  (defun keymap-global-set (key command &optional interactive)
-    "Standalone NeLisp fallback for GNU `keymap-global-set'."
-    (ignore interactive)
-    (keymap-set (emacs-keymap-current-global-map) key command))
-  (defun keymap-local-set (key command &optional interactive)
-    "Standalone NeLisp fallback for GNU `keymap-local-set'."
-    (ignore interactive)
-    (let ((map (or (emacs-keymap-current-local-map)
-                   (emacs-keymap-make-sparse-keymap))))
-      (emacs-keymap-use-local-map map)
-      (keymap-set map key command)))
-  (defun keymap-lookup (keymap key &optional accept-default no-remap position)
-    "Standalone NeLisp fallback for GNU `keymap-lookup'."
-    (ignore no-remap position)
-    (emacs-keymap-lookup-key keymap
-                             (emacs-keymap--standalone-key-parse key)
-                             accept-default))
-  (defun keymap-unset (keymap key &optional remove)
-    "Standalone NeLisp fallback for GNU `keymap-unset'."
-    (ignore remove)
-    (emacs-keymap-define-key keymap
-                             (emacs-keymap--standalone-key-parse key)
-                             nil))
-  (defun keymap-global-unset (key &optional remove)
-    "Standalone NeLisp fallback for GNU `keymap-global-unset'."
-    (keymap-unset (emacs-keymap-current-global-map) key remove))
-  (defun keymap-local-unset (key &optional remove)
-    "Standalone NeLisp fallback for GNU `keymap-local-unset'."
-    (let ((map (emacs-keymap-current-local-map)))
-      (when map
-        (keymap-unset map key remove))))
-  (defun define-keymap (&rest definitions)
-    "Standalone NeLisp fallback for GNU `define-keymap'."
-    (let (full suppress parent name keymap prefix)
-      (while (and definitions
-                  (keywordp (car definitions))
-                  (not (eq (car definitions) :menu)))
-        (let ((keyword (pop definitions)))
-          (unless definitions
-            (error "Missing keyword value for %s" keyword))
-          (let ((value (pop definitions)))
-            (cond
-             ((eq keyword :full) (setq full value))
-             ((eq keyword :keymap) (setq keymap value))
-             ((eq keyword :parent) (setq parent value))
-             ((eq keyword :suppress) (setq suppress value))
-             ((eq keyword :name) (setq name value))
-             ((eq keyword :prefix)
-              (setq prefix value))
-             (t (error "Invalid keyword: %s" keyword))))))
-      (let ((map (or keymap
-                     ;; :prefix -> a sparse keymap stored as the symbol's
-                     ;; function (a prefix command) and value cell, matching
-                     ;; GNU `define-prefix-command'.
-                     (and prefix
-                          (let ((m (emacs-keymap-make-sparse-keymap name)))
-                            (fset prefix m)
-                            (set prefix m)
-                            m))
-                     (if full
-                         (emacs-keymap-make-keymap name)
-                       (emacs-keymap-make-sparse-keymap name)))))
-        (when suppress
-          (suppress-keymap map (eq suppress 'nodigits)))
-        (when parent
-          (emacs-keymap-set-keymap-parent map parent))
-        (while definitions
-          (let ((key (pop definitions)))
+(when (fboundp 'nl-ffi-call)
+  (when (or (fboundp 'nl-write-file)
+            (not (boundp 'emacs-version))
+            (get 'key-parse 'emacs-stub-bulk)
+            (get 'defvar-keymap 'emacs-stub-bulk))
+    ;; GNU keymap.el's regexp-heavy parser is too much for the current
+    ;; standalone NeLisp regex subset.  Route the common API through the
+    ;; shared keymap substrate with a small kbd parser.
+    (defalias 'key-parse #'emacs-keymap--standalone-key-parse)
+    (defalias 'key-valid-p #'emacs-keymap--standalone-key-valid-p)
+    (defalias 'kbd #'emacs-keymap--standalone-key-parse)
+    ;; `read-kbd-macro' is the pre-`kbd' Emacs API for the exact same
+    ;; kbd-syntax parsing (vendor callers like evil-maps.el still call it
+    ;; directly).  Reclaim it from `emacs-stub-bulk.el's nil stub the
+    ;; same way `kbd' is reclaimed just above -- see Doc 49 T49 note
+    ;; below `key-parse (= delegate)' in the header comment for why this
+    ;; symbol needed its own alias instead of following `kbd' for free.
+    (defalias 'read-kbd-macro #'emacs-keymap--standalone-key-parse)
+    (defun keymap-set (keymap key definition)
+      "Standalone NeLisp fallback for GNU `keymap-set'."
+      (let ((parsed (emacs-keymap--standalone-key-parse key))
+            (def (if (stringp definition)
+                     (emacs-keymap--standalone-key-parse definition)
+                   definition)))
+	(emacs-keymap-define-key keymap parsed def)
+	def))
+    (defun keymap-global-set (key command &optional interactive)
+      "Standalone NeLisp fallback for GNU `keymap-global-set'."
+      (ignore interactive)
+      (keymap-set (emacs-keymap-current-global-map) key command))
+    (defun keymap-local-set (key command &optional interactive)
+      "Standalone NeLisp fallback for GNU `keymap-local-set'."
+      (ignore interactive)
+      (let ((map (or (emacs-keymap-current-local-map)
+                     (emacs-keymap-make-sparse-keymap))))
+	(emacs-keymap-use-local-map map)
+	(keymap-set map key command)))
+    (defun keymap-lookup (keymap key &optional accept-default no-remap position)
+      "Standalone NeLisp fallback for GNU `keymap-lookup'."
+      (ignore no-remap position)
+      (emacs-keymap-lookup-key keymap
+                               (emacs-keymap--standalone-key-parse key)
+                               accept-default))
+    (defun keymap-unset (keymap key &optional remove)
+      "Standalone NeLisp fallback for GNU `keymap-unset'."
+      (ignore remove)
+      (emacs-keymap-define-key keymap
+                               (emacs-keymap--standalone-key-parse key)
+                               nil))
+    (defun keymap-global-unset (key &optional remove)
+      "Standalone NeLisp fallback for GNU `keymap-global-unset'."
+      (keymap-unset (emacs-keymap-current-global-map) key remove))
+    (defun keymap-local-unset (key &optional remove)
+      "Standalone NeLisp fallback for GNU `keymap-local-unset'."
+      (let ((map (emacs-keymap-current-local-map)))
+	(when map
+          (keymap-unset map key remove))))
+    (defun define-keymap (&rest definitions)
+      "Standalone NeLisp fallback for GNU `define-keymap'."
+      (let (full suppress parent name keymap prefix)
+	(while (and definitions
+                    (keywordp (car definitions))
+                    (not (eq (car definitions) :menu)))
+          (let ((keyword (pop definitions)))
             (unless definitions
-              (error "Uneven number of key/definition pairs"))
-            (let ((def (pop definitions)))
-              (unless (eq key :menu)
-                (keymap-set map key def)))))
-        map)))
-  (defmacro defvar-keymap (variable-name &rest defs)
-    "Standalone NeLisp fallback for GNU `defvar-keymap'."
-    (let ((opts nil)
-          doc
-          parent
-          suppress
-          keymap
-          repeat)
-      (while (and defs
-                  (keywordp (car defs))
-                  (not (eq (car defs) :menu)))
-        (let ((keyword (pop defs)))
-          (unless defs
-            (error "Uneven number of keywords"))
-          (cond
-           ((eq keyword :doc) (setq doc (pop defs)))
-           ((eq keyword :repeat) (setq repeat (pop defs)))
-           ((eq keyword :parent) (setq parent (pop defs)))
-           ((eq keyword :suppress) (setq suppress (pop defs)))
-           ((eq keyword :keymap) (setq keymap (pop defs)))
-           (t
-            (push keyword opts)
-            (push (pop defs) opts)))))
-      (ignore repeat)
-      (ignore opts)
-      (unless (zerop (% (length defs) 2))
-        (error "Uneven number of key/definition pairs: %S" defs))
-      ;; Apply the bindings through `emacs-keymap--defvar-keymap-build':
-      ;; parent/suppress and every parseable KEY/DEF pair land in the
-      ;; map; only a key the standalone parser cannot handle (complex
-      ;; GNU syntax such as "<remap> <foo>") is skipped.  The previous
-      ;; expansion dropped ALL of them and returned an empty keymap --
-      ;; loadable, but every vendor mode map defined via this macro had
-      ;; zero keybindings at runtime (Doc 33 SS9 D2).
-      ;;
-      ;; Build the expansion without backquote.  The standalone prelude
-      ;; installs its own backquote/macroexpander before this file is
-      ;; loaded in replay diagnostics, so avoiding backquote here keeps
-      ;; the macro independent of that implementation.
-      (cons 'progn
-            (cons (append (list 'defvar
-                                variable-name
-                                (list 'emacs-keymap--defvar-keymap-build
-                                      keymap
-                                      parent
-                                      suppress
-                                      (cons 'list defs)))
-                          (and doc (list doc)))
-                  (cons (list 'quote variable-name) nil))))))
+              (error "Missing keyword value for %s" keyword))
+            (let ((value (pop definitions)))
+              (cond
+               ((eq keyword :full) (setq full value))
+               ((eq keyword :keymap) (setq keymap value))
+               ((eq keyword :parent) (setq parent value))
+               ((eq keyword :suppress) (setq suppress value))
+               ((eq keyword :name) (setq name value))
+               ((eq keyword :prefix)
+		(setq prefix value))
+               (t (error "Invalid keyword: %s" keyword))))))
+	(let ((map (or keymap
+                       ;; :prefix -> a sparse keymap stored as the symbol's
+                       ;; function (a prefix command) and value cell, matching
+                       ;; GNU `define-prefix-command'.
+                       (and prefix
+                            (let ((m (emacs-keymap-make-sparse-keymap name)))
+                              (fset prefix m)
+                              (set prefix m)
+                              m))
+                       (if full
+                           (emacs-keymap-make-keymap name)
+			 (emacs-keymap-make-sparse-keymap name)))))
+          (when suppress
+            (suppress-keymap map (eq suppress 'nodigits)))
+          (when parent
+            (emacs-keymap-set-keymap-parent map parent))
+          (while definitions
+            (let ((key (pop definitions)))
+              (unless definitions
+		(error "Uneven number of key/definition pairs"))
+              (let ((def (pop definitions)))
+		(unless (eq key :menu)
+                  (keymap-set map key def)))))
+          map)))
+    (defmacro defvar-keymap (variable-name &rest defs)
+      "Standalone NeLisp fallback for GNU `defvar-keymap'."
+      (let ((opts nil)
+            doc
+            parent
+            suppress
+            keymap
+            repeat)
+	(while (and defs
+                    (keywordp (car defs))
+                    (not (eq (car defs) :menu)))
+          (let ((keyword (pop defs)))
+            (unless defs
+              (error "Uneven number of keywords"))
+            (cond
+             ((eq keyword :doc) (setq doc (pop defs)))
+             ((eq keyword :repeat) (setq repeat (pop defs)))
+             ((eq keyword :parent) (setq parent (pop defs)))
+             ((eq keyword :suppress) (setq suppress (pop defs)))
+             ((eq keyword :keymap) (setq keymap (pop defs)))
+             (t
+              (push keyword opts)
+              (push (pop defs) opts)))))
+	(ignore repeat)
+	(ignore opts)
+	(unless (zerop (% (length defs) 2))
+          (error "Uneven number of key/definition pairs: %S" defs))
+	;; Apply the bindings through `emacs-keymap--defvar-keymap-build':
+	;; parent/suppress and every parseable KEY/DEF pair land in the
+	;; map; only a key the standalone parser cannot handle (complex
+	;; GNU syntax such as "<remap> <foo>") is skipped.  The previous
+	;; expansion dropped ALL of them and returned an empty keymap --
+	;; loadable, but every vendor mode map defined via this macro had
+	;; zero keybindings at runtime (Doc 33 SS9 D2).
+	;;
+	;; Build the expansion without backquote.  The standalone prelude
+	;; installs its own backquote/macroexpander before this file is
+	;; loaded in replay diagnostics, so avoiding backquote here keeps
+	;; the macro independent of that implementation.
+	(cons 'progn
+              (cons (append (list 'defvar
+                                  variable-name
+                                  (list 'emacs-keymap--defvar-keymap-build
+					keymap
+					parent
+					suppress
+					(cons 'list defs)))
+                            (and doc (list doc)))
+                    (cons (list 'quote variable-name) nil)))))))
 
 ;;;###autoload
 (defun emacs-keymap-key-parse (keys)

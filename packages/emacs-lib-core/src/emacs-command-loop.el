@@ -2410,7 +2410,8 @@ child status transitions are checked at most 10 milliseconds apart."
   nil)
 
 (defvar emacs-command-loop--post-input-event-p nil)
-(defvar unread-post-input-method-events nil)
+(unless (boundp 'unread-post-input-method-events)
+  (defvar unread-post-input-method-events nil))
 (unless (boundp 'input-method-function)
   (defvar input-method-function #'list))
 

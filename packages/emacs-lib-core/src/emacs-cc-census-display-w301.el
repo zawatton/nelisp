@@ -14,14 +14,15 @@
     (when (> count maximum)
       (signal 'wrong-number-of-arguments (list name count)))))
 
-(when (or (not (fboundp 'current-message)) (fboundp 'nelisp--repr))
-  (defun current-message (&rest arguments)
-    "Return the current echo-area message, or nil when there is none.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'current-message)) (fboundp 'nelisp--repr))
+    (defun current-message (&rest arguments)
+      "Return the current echo-area message, or nil when there is none.
 The standalone batch message implementation writes to stderr and does
 not create an echo-area message."
-    (emacs-cc-census-display-w301--arity 'current-message arguments 0)
-    (and (not noninteractive) (boundp 'emacs-special-buffers-echo-message)
-         emacs-special-buffers-echo-message)))
+      (emacs-cc-census-display-w301--arity 'current-message arguments 0)
+      (and (not noninteractive) (boundp 'emacs-special-buffers-echo-message)
+           emacs-special-buffers-echo-message))))
 
 (unless (fboundp 'ding)
   (defun ding (&rest arguments)

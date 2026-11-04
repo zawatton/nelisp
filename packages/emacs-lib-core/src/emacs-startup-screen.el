@@ -35,7 +35,8 @@
   (defvar user-init-file))
 (unless (boundp 'buffer-read-only)
   (defvar buffer-read-only))
-(defvar inhibit-read-only)
+(unless (boundp 'inhibit-read-only)
+  (defvar inhibit-read-only))
 
 (defgroup emacs-startup-screen nil
   "Startup splash screen for the nemacs runtime."
