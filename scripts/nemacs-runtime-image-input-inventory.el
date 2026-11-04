@@ -50,7 +50,7 @@
     (base load-path foundation-lisp "packages/emacs-lib-core/src")
     (base load-path io-lazy "packages/emacs-lib-core/src")
     (base load-path io-lisp "packages/emacs-lib-core/src")
-    (base load-path special-buffers-lisp "packages/emacs-lib-special-buffers/src")
+    (base load-path special-buffers-lisp "packages/emacs-lib-core/src")
     (base load-path text-core-lazy "packages/emacs-lib-text-core/src")
     (base load-path text-core-lisp "packages/emacs-lib-text-core/src")
     (base load-path textmodes-stub-lisp "packages/emacs-lib-core/src")

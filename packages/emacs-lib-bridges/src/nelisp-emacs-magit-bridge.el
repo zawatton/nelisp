@@ -235,7 +235,7 @@ buffer) must not replace that error."
 
 (defconst nelisp-emacs-magit-bridge--source-packages
   '("emacs-lib-bridges" "emacs-lib-core" "emacs-lib-facade"
-    "emacs-lib-special-buffers" "emacs-lib-text-core")
+    "emacs-lib-text-core")
   "Packages whose `src/' directories hold the imported library sources.")
 
 (defun nelisp-emacs-magit-bridge--package-source (name root)

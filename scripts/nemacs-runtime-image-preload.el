@@ -26,7 +26,7 @@
         "packages/emacs-lib-core/src"
         "packages/emacs-lib-core/src"
         "packages/emacs-lib-core/src"
-        "packages/emacs-lib-special-buffers/src"
+        "packages/emacs-lib-core/src"
         "packages/emacs-lib-text-core/src"
         "packages/emacs-lib-text-core/src"
         "packages/emacs-lib-core/src"

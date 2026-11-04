@@ -845,6 +845,14 @@ back to `self-insert-command'."
        (when (fboundp 'message)
          (message "command error during self-insert"))))))
 
+(defvar nemacs-main-gui-frontend-feature 'nelisp-gui-frontend
+  "Feature that provides the GUI frontend `nemacs-main' starts with --gui.
+The frontend is a pluggable backend that depends on this library, not the
+other way round, so it is named here instead of required at top level.")
+
+(defvar nemacs-main-gui-frontend-function 'nelisp-gui-frontend-run
+  "Function `nemacs-main' calls after loading the GUI frontend feature.")
+
 (defun nemacs-main--sync-selected-window-buffer (&optional buffer)
   "Make the selected TUI window display BUFFER or the current buffer.
 Return non-nil when the selected window's buffer changed."
@@ -2074,8 +2082,8 @@ takes over and dispatches TUI events directly."
     ;; Preserve that view; use the shared scratch only for an unbound window.
     (nemacs-main--sync-selected-window-buffer
      (emacs-window-buffer (emacs-window-selected-window)))
-    (require 'nelisp-gui-frontend)
-    (nelisp-gui-frontend-run))
+    (require nemacs-main-gui-frontend-feature)
+    (funcall nemacs-main-gui-frontend-function))
    (t
     (unless nemacs-initialized
       (nemacs-main--apply-startup-gate)
