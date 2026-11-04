@@ -1,6 +1,6 @@
 ;;; case-table-mapping-order-test.el --- Ordered mapping regressions -*- lexical-binding: t; -*-
 (require 'ert)
-(load (expand-file-name "../../packages/emacs-lib-foundation/src/case-table.el"
+(load (expand-file-name "../../packages/emacs-lib-core/src/case-table.el"
                         (file-name-directory (or load-file-name buffer-file-name))) nil t)
 
 (ert-deftest case-table-mapping-order/character-boundaries-and-stability ()

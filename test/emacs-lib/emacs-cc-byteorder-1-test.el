@@ -4,7 +4,7 @@
 (defvar emacs-cc-byteorder-1-test--host-byteorder (symbol-function 'byteorder))
 (defconst emacs-cc-byteorder-1-test--source
   (expand-file-name
-   "../../packages/emacs-lib-foundation/src/emacs-cc-byteorder-1.el"
+   "../../packages/emacs-lib-core/src/emacs-cc-byteorder-1.el"
    (file-name-directory (or load-file-name buffer-file-name))))
 (load emacs-cc-byteorder-1-test--source nil t)
 

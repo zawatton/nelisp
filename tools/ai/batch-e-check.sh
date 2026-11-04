@@ -123,7 +123,7 @@ case ${1:-} in
       fail "not exactly one canon read"
     grep -q 'nelisp-casetab--builtin-canon' lisp/nelisp-stdlib-regexp.el || fail "canon shortcut missing"
     ! grep -q 'search-canon' lisp/nelisp-stdlib-regexp.el scripts/nelisp-stdlib-prelude.el \
-        packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el || fail "a second canon shortcut remains"
+        packages/emacs-lib-core/src/emacs-cc-casetab-1.el || fail "a second canon shortcut remains"
     ! grep -q "(provide 'nelisp-elc-reader)" scripts/nelisp-stdlib-prelude.el || fail "nelisp-elc-reader provided"
     say "PASS merged" ;;
   integrity)

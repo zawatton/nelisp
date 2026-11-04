@@ -37,13 +37,13 @@
 
 (defconst nemacs-library-app-boundary--app-files
   '(("app-bootstrap" "src/emacs-init.el"
-     "packages/emacs-lib-app-gui/src/emacs-init.el")
+     "packages/emacs-lib-core/src/emacs-init.el")
     ("app-bootstrap" "src/nemacs-loadup.el"
-     "packages/emacs-lib-app-gui/src/nemacs-loadup.el")
+     "packages/emacs-lib-core/src/nemacs-loadup.el")
     ("app-entry" "src/nemacs-main.el"
-     "packages/emacs-lib-app-gui/src/nemacs-main.el")
+     "packages/emacs-lib-core/src/nemacs-main.el")
     ("app-utility" "src/image-baker.el"
-     "packages/emacs-lib-app-gui/src/image-baker.el"))
+     "packages/emacs-lib-core/src/image-baker.el"))
   "App/bootstrap policy files that must stay outside reusable packages.")
 
 (defconst nemacs-library-app-boundary--obsolete-app-files

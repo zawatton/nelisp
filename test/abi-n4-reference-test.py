@@ -13,8 +13,8 @@ directory = Path(tempfile.mkdtemp(dir=parent))
 env = dict(os.environ, TMPDIR=str(directory), XDG_CACHE_HOME=str(directory / 'cache'))
 corpus = directory / 'driver.el'
 corpus.write_text(';;; -*- lexical-binding: t; -*-\n' + ''.join('(load ' + __import__('json').dumps(str(ROOT / path)) + ' nil t)\n'
-                          for path in ('packages/emacs-lib-foundation/src/emacs-cc-thread-1.el',
-                                       'packages/emacs-lib-foundation/src/emacs-cc-thread-predicates-1.el',
+                          for path in ('packages/emacs-lib-core/src/emacs-cc-thread-1.el',
+                                       'packages/emacs-lib-core/src/emacs-cc-thread-predicates-1.el',
                                        'test/nelisp-n4b-reference.el',
                                        'test/nelisp-n4c-reference.el')) + 'nil\n')
 commands = {

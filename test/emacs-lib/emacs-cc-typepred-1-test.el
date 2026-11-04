@@ -7,7 +7,7 @@
                     (file-name-directory (or load-file-name buffer-file-name))))
 
 (add-to-list 'load-path
-             (expand-file-name "packages/emacs-lib-buffer-core/src"
+             (expand-file-name "packages/emacs-lib-core/src"
                                emacs-cc-typepred-1-test--root))
 (load "emacs-cc-typepred-1" nil t)
 

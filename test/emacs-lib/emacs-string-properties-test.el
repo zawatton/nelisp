@@ -6,8 +6,8 @@
   (expand-file-name "../.."
                     (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (dir '("packages/emacs-lib-foundation/src"
-               "packages/emacs-lib-buffer-core/src"
+(dolist (dir '("packages/emacs-lib-core/src"
+               "packages/emacs-lib-core/src"
                "packages/emacs-lib-text-core/src"))
   (add-to-list 'load-path (expand-file-name dir emacs-string-properties-test--root)))
 
@@ -103,7 +103,7 @@
 (ert-deftest emacs-string-properties-test/gnu-propertize-binding-is-preserved ()
   "Loading the fallback source does not replace an existing GNU propertize."
   (let ((before (symbol-function 'propertize)))
-    (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-string.el"
+    (load (expand-file-name "packages/emacs-lib-core/src/emacs-string.el"
                             emacs-string-properties-test--root)
           nil t)
     (should (eq before (symbol-function 'propertize)))))

@@ -35,7 +35,7 @@ OUT = ROOT / "target/wh-s4f/frames"
 PROBE = Path(__file__).with_name("word-heap-frames-parity.el")
 CASES = ("loop-capture", "capture-sharing", "backtrace-frame",
          "backtrace-locals", "nonlocal", "recursion", "threads", "public-threads", "legacy-threads")
-THREAD_PROVIDER = ROOT / "packages/emacs-lib-foundation/src"
+THREAD_PROVIDER = ROOT / "packages/emacs-lib-core/src"
 THREAD_FILES = ("emacs-cc-thread-1.el", "emacs-cc-thread-predicates-1.el", "emacs-cc-thread-2.el")
 LINKAGES = ("dynamic", "static")
 GROUPS = ("provenance", "source", "parity", "witness", "floor")

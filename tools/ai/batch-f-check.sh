@@ -247,7 +247,7 @@ case ${1:-} in
         grep -q 'nelisp-casetab--builtin-canon' lisp/nelisp-stdlib-regexp.el || fail "E's canon shortcut missing"
         grep -q 'nlre--unibyte-fold-agrees-p' lisp/nelisp-stdlib-regexp.el || fail "the wider domain proof is missing"
         ! grep -q 'search-canon' lisp/nelisp-stdlib-regexp.el scripts/nelisp-stdlib-prelude.el \
-            packages/emacs-lib-foundation/src/emacs-cc-casetab-1.el || fail "a second canon shortcut remains"
+            packages/emacs-lib-core/src/emacs-cc-casetab-1.el || fail "a second canon shortcut remains"
         [ -f test/standalone-casefold-domain-check.el ] && [ -f test/standalone-casefold-domain-check.expected ] ||
           fail "casefold-domain fixture missing"
         say "PASS merged casefold (one canon shortcut, wider domain proof)" ;;

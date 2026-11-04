@@ -107,7 +107,7 @@ case "${FAKE_CASE:-pass}:$role:$area" in
     printf '%s %s\n' "$$" "$!" > "$FAKE_ROOT/timeout.pids"
     wait
     ;;
-  mutate:nelisp:files) printf '; changed during run\n' >> packages/emacs-lib-foundation/src/fixture.el;;
+  mutate:nelisp:files) printf '; changed during run\n' >> packages/emacs-lib-core/src/fixture.el;;
   stderr:nelisp:buffer) printf 'unexpected diagnostic\n' >&2;;
 esac
 awk -F '\t' -v area="$area" 'area=="" || $2==area {print $1}' tools/c-core-areas.tsv |
@@ -140,7 +140,7 @@ def main(root):
     (test / "c-core-probes").mkdir(parents=True)
     (root / "tools").mkdir()
     (root / "build").mkdir()
-    package = root / "packages/emacs-lib-foundation/src"
+    package = root / "packages/emacs-lib-core/src"
     package.mkdir(parents=True)
     (package / "fixture.el").write_text("; package identity\n")
     (root / "build/nemacs-bootstrap.el").write_text("; fixture bundle\n")

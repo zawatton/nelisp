@@ -9,7 +9,7 @@
 
 (defun emacs-cc-indent-1-test--load-fallbacks ()
   (load (expand-file-name
-         "packages/emacs-lib-foundation/src/emacs-cc-indent-1.el"
+         "packages/emacs-lib-core/src/emacs-cc-indent-1.el"
          emacs-cc-indent-1-test--root)
         nil t))
 

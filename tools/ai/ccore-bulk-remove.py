@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 LIBRARY = Path(__file__).resolve().parents[2]
-BULK = LIBRARY / "packages/emacs-lib-foundation/src/emacs-stub-bulk.el"
+BULK = LIBRARY / "packages/emacs-lib-core/src/emacs-stub-bulk.el"
 
 
 def guarded_names(path):

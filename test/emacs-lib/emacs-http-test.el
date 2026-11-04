@@ -3,7 +3,7 @@
 (require 'ert)
 (let ((here (file-name-directory (or load-file-name buffer-file-name))))
   (add-to-list 'load-path
-               (expand-file-name "../packages/emacs-lib-io/src" here)))
+               (expand-file-name "../packages/emacs-lib-core/src" here)))
 (require 'emacs-http)
 
 ;;;; --- pure: request parsing ---------------------------------------------

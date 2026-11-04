@@ -141,16 +141,16 @@ def source_root():
 
 
 def runtime_files():
-    return [source_root() / "packages/emacs-lib-foundation/src" / name
+    return [source_root() / "packages/emacs-lib-core/src" / name
             for name in ("emacs-fns.el", "emacs-eval.el", "emacs-load.el")]
 
 
 def corpus_runtime_files():
     return [source_root() / name for name in (
-        "packages/emacs-lib-foundation/src/emacs-vars.el",
-        "packages/emacs-lib-foundation/src/emacs-char-table.el",
-        "packages/emacs-lib-buffer-core/src/nelisp-emacs-compat.el",
-        "packages/emacs-lib-buffer-core/src/emacs-buffer.el",
+        "packages/emacs-lib-core/src/emacs-vars.el",
+        "packages/emacs-lib-core/src/emacs-char-table.el",
+        "packages/emacs-lib-core/src/nelisp-emacs-compat.el",
+        "packages/emacs-lib-core/src/emacs-buffer.el",
         "packages/emacs-lib-core/src/emacs-faces.el",
         "packages/emacs-lib-core/src/emacs-syntax-table.el",
         "packages/emacs-lib-core/src/lisp.el")]
@@ -476,7 +476,7 @@ def build_context():
     original = consumer / "build/nemacs-bootstrap.el"
     recipe = consumer / "tools/c-core-image.sh"
     need((consumer / "packages").is_dir(), "missing canonical consumer packages tree")
-    loader = source_root() / "packages/emacs-lib-io/src/emacs-load.el"
+    loader = source_root() / "packages/emacs-lib-core/src/emacs-load.el"
     raw, replacement = original.read_bytes(), loader.read_bytes()
     start = list(re.finditer(rb"^;;; >>> src/emacs-load\.el\r?$", raw, re.M))
     end = list(re.finditer(rb"^;;; <<< src/emacs-load\.el\r?$", raw, re.M))

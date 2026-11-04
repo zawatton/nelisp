@@ -3,7 +3,7 @@
 ;; Run from the library root with the dynamic reader's --load option.
 ;; The grammar-independent transcript is also evaluated on GNU Emacs below.
 (add-to-list 'load-path (expand-file-name "packages/nl-ffi/src"))
-(add-to-list 'load-path (expand-file-name "packages/emacs-lib-foundation/src"))
+(add-to-list 'load-path (expand-file-name "packages/emacs-lib-core/src"))
 (defvar user-emacs-directory (expand-file-name "~/.emacs.d/"))
 (require 'emacs-cc-treesit-1)
 (require 'emacs-cc-treesit-3)

@@ -5,8 +5,8 @@
 (defconst emacs-long-line-state-test--root
   (expand-file-name "../.." (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (directory '("packages/emacs-lib-foundation/src"
-                     "packages/emacs-lib-buffer-core/src"
+(dolist (directory '("packages/emacs-lib-core/src"
+                     "packages/emacs-lib-core/src"
                      "packages/emacs-lib-text-core/src"
                      "packages/emacs-lib-core/src"
                      "packages/nelisp-regex/src"))
@@ -31,7 +31,7 @@
 
 (defun emacs-long-line-state-test--load-xdisp-fallback ()
   "Load the xdisp fallback without a host implementation."
-  (load (expand-file-name "packages/emacs-lib-foundation/src/emacs-cc-xdisp-1.el"
+  (load (expand-file-name "packages/emacs-lib-core/src/emacs-cc-xdisp-1.el"
                           emacs-long-line-state-test--root) nil t))
 
 (defun emacs-long-line-state-test--load-renderer (kind)

@@ -3,10 +3,10 @@
 
 * S1 Preserve top-level local cells across dynamic bindings
 ** S1.1 Provider source and supplemental probes parse completely
-cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/emacs-lib-foundation/src/emacs-cc-buffer-toplevel-1.el" "packages/emacs-lib-foundation/src/emacs-cc-census-buffer-w101.el" "test/emacs-lib/c-core-probes/buffer-toplevel-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
+cmd: emacs -Q --batch --eval '(dolist (p (quote ("packages/emacs-lib-core/src/emacs-cc-buffer-toplevel-1.el" "packages/emacs-lib-core/src/emacs-cc-census-buffer-w101.el" "test/emacs-lib/c-core-probes/buffer-toplevel-1.el"))) (with-temp-buffer (insert-file-contents p) (emacs-lisp-mode) (check-parens) (goto-char (point-min)) (while (progn (forward-comment (point-max)) (< (point) (point-max))) (read (current-buffer)))))'
 ** S1.2 Minimal provider checks match GNU for local, default, dynamic and constant behavior
 #+REQUIRES: NELISP_BIN
-cmd: NELISP_LIBRARY_ROOT="$PWD" "$NELISP_BIN" --load target/progress/batch35/buffer-toplevel/feasibility-calibrated.el && python3 test/emacs-lib/c-core-unit-smoke.py --unit buffer-toplevel-1 --dependency packages/emacs-lib-buffer-core/src/nelisp-emacs-compat.el --dependency packages/emacs-lib-buffer-core/src/emacs-buffer.el --dependency packages/emacs-lib-foundation/src/emacs-cc-buffer-local-owner-1.el --dependency packages/emacs-lib-foundation/src/emacs-cc-census-buffer-w101.el
+cmd: NELISP_LIBRARY_ROOT="$PWD" "$NELISP_BIN" --load target/progress/batch35/buffer-toplevel/feasibility-calibrated.el && python3 test/emacs-lib/c-core-unit-smoke.py --unit buffer-toplevel-1 --dependency packages/emacs-lib-core/src/nelisp-emacs-compat.el --dependency packages/emacs-lib-core/src/emacs-buffer.el --dependency packages/emacs-lib-core/src/emacs-cc-buffer-local-owner-1.el --dependency packages/emacs-lib-core/src/emacs-cc-census-buffer-w101.el
 ** S1.3 Identical inputs reject the retained incomplete provider
 pending
 ** S1.4 End to end: all supplemental top-level cell probes match GNU after the full integrated bootstrap

@@ -1,2 +1,2 @@
 (:name "nelisp-http"
- :requires ("emacs-lib-foundation" "nelisp-process" "nelisp-state" "nelisp-sys"))
+ :requires ("emacs-lib-core" "nelisp-process" "nelisp-state" "nelisp-sys"))

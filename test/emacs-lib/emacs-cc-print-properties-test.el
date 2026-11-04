@@ -6,8 +6,8 @@
   (expand-file-name "../.."
                     (file-name-directory (or load-file-name buffer-file-name))))
 
-(dolist (dir '("packages/emacs-lib-foundation/src"
-               "packages/emacs-lib-buffer-core/src"
+(dolist (dir '("packages/emacs-lib-core/src"
+               "packages/emacs-lib-core/src"
                "packages/emacs-lib-text-core/src"))
   (add-to-list 'load-path
                (expand-file-name dir emacs-cc-print-properties-test--root)))

@@ -40,7 +40,7 @@ def main():
     fixture.write_bytes(data)
     binary = args.binary if args.gnu else str(Path(args.binary).resolve(strict=True))
     command = [binary] + (['-Q', '--batch'] if args.gnu else [])
-    bridge_source = ROOT / 'packages/emacs-lib-io/src/files-standalone-buffer.el'
+    bridge_source = ROOT / 'packages/emacs-lib-core/src/files-standalone-buffer.el'
     if args.bridge:
         source = bridge_source.read_text()
         start = source.index("(when (and (fboundp 'rdf) (fboundp 'nelisp--write-stderr-line))")

@@ -135,7 +135,7 @@ def main():
     if not args.binary:
         raise ValueError("NELISP_BIN or positional binary is required")
     probe = PROBES / (args.unit + ".el")
-    impl = ROOT / "packages/emacs-lib-foundation/src" / ("emacs-cc-" + args.unit + ".el")
+    impl = ROOT / "packages/emacs-lib-core/src" / ("emacs-cc-" + args.unit + ".el")
     if not probe.is_file() or not impl.is_file():
         ap.error(f"unit probe or implementation missing: {args.unit}")
     binary = resolve_file(args.binary, "binary")
