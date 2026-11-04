@@ -29,9 +29,12 @@
 (require 'emacs-buffer-builtins)
 (require 'emacs-buffer)
 
-(defvar inhibit-startup-screen)
-(defvar user-init-file)
-(defvar buffer-read-only)
+(unless (boundp 'inhibit-startup-screen)
+  (defvar inhibit-startup-screen))
+(unless (boundp 'user-init-file)
+  (defvar user-init-file))
+(unless (boundp 'buffer-read-only)
+  (defvar buffer-read-only))
 (defvar inhibit-read-only)
 
 (defgroup emacs-startup-screen nil

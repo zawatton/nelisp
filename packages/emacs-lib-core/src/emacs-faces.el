@@ -292,42 +292,52 @@ accepted for API parity but ignored in the MVP."
 
 ;;;; --- Custom theme subset -----------------------------------------------
 
-(defvar custom-known-themes '(user)
-  "Loaded custom theme names known to the standalone face substrate.")
+(unless (boundp 'custom-known-themes)
+  (defvar custom-known-themes '(user)
+  "Loaded custom theme names known to the standalone face substrate."))
 
-(defvar custom-enabled-themes nil
-  "Enabled custom themes, highest precedence first.")
+(unless (boundp 'custom-enabled-themes)
+  (defvar custom-enabled-themes nil
+  "Enabled custom themes, highest precedence first."))
 
-(defvar custom-theme-directory
+(unless (boundp 'custom-theme-directory)
+  (defvar custom-theme-directory
   (or (and (boundp 'user-emacs-directory) user-emacs-directory)
       "~/.emacs.d/")
-  "Default user directory for standalone custom theme files.")
+  "Default user directory for standalone custom theme files."))
 
-(defvar custom-theme-load-path (list 'custom-theme-directory t)
-  "Directories searched for THEME-theme.el files.")
+(unless (boundp 'custom-theme-load-path)
+  (defvar custom-theme-load-path (list 'custom-theme-directory t)
+  "Directories searched for THEME-theme.el files."))
 
-(defvar custom-safe-themes '(default)
+(unless (boundp 'custom-safe-themes)
+  (defvar custom-safe-themes '(default)
   "Standalone theme safety policy.
 The current standalone loader cannot prompt or persist hashes, so callers
-should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
+should pass NO-CONFIRM to `load-theme' from init.el or set this to t."))
 
-(defvar custom--inhibit-theme-enable nil
-  "When non-nil, theme setters record settings without applying them.")
+(unless (boundp 'custom--inhibit-theme-enable)
+  (defvar custom--inhibit-theme-enable nil
+  "When non-nil, theme setters record settings without applying them."))
 
-(defvar data-directory nil
-  "Compatibility variable for built-in data lookup.")
+(unless (boundp 'data-directory)
+  (defvar data-directory nil
+  "Compatibility variable for built-in data lookup."))
 
-(defun custom-theme-name-valid-p (name)
+(unless (fboundp 'custom-theme-name-valid-p)
+  (defun custom-theme-name-valid-p (name)
   "Return non-nil when NAME is a valid Custom theme name."
   (and (symbolp name)
        (not (memq name '(nil user changed)))
-       (not (equal (symbol-name name) ""))))
+       (not (equal (symbol-name name) "")))))
 
-(defun custom-make-theme-feature (theme)
+(unless (fboundp 'custom-make-theme-feature)
+  (defun custom-make-theme-feature (theme)
   "Return THEME's conventional THEME-theme feature symbol."
-  (intern (concat (symbol-name theme) "-theme")))
+  (intern (concat (symbol-name theme) "-theme"))))
 
-(defun custom-declare-theme (theme feature &optional doc properties)
+(unless (fboundp 'custom-declare-theme)
+  (defun custom-declare-theme (theme feature &optional doc properties)
   "Declare THEME with FEATURE, DOC, and PROPERTIES."
   (unless (custom-theme-name-valid-p theme)
     (signal 'emacs-faces-error (list 'invalid-theme-name theme)))
@@ -338,39 +348,45 @@ should pass NO-CONFIRM to `load-theme' from init.el or set this to t.")
     (put theme 'theme-documentation doc))
   (when properties
     (put theme 'theme-properties properties))
-  theme)
+  theme))
 
-(defmacro deftheme (theme &optional doc &rest properties)
+(unless (fboundp 'deftheme)
+  (defmacro deftheme (theme &optional doc &rest properties)
   "Declare THEME to be a Custom theme."
   (declare (doc-string 2) (indent 1))
   `(custom-declare-theme ',theme
                          ',(custom-make-theme-feature theme)
                          ,doc
-                         ',properties))
+                         ',properties)))
 
-(defun custom-theme-p (theme)
+(unless (fboundp 'custom-theme-p)
+  (defun custom-theme-p (theme)
   "Return non-nil when THEME has been declared."
-  (and (symbolp theme) (memq theme custom-known-themes)))
+  (and (symbolp theme) (memq theme custom-known-themes))))
 
-(defun custom-theme-enabled-p (theme)
+(unless (fboundp 'custom-theme-enabled-p)
+  (defun custom-theme-enabled-p (theme)
   "Return non-nil if THEME is enabled.
 Ports GNU Emacs's `custom-theme-enabled-p' (custom.el), a `defsubst'
 over `custom-enabled-themes'."
-  (memq theme custom-enabled-themes))
+  (memq theme custom-enabled-themes)))
 
-(defun custom-check-theme (theme)
+(unless (fboundp 'custom-check-theme)
+  (defun custom-check-theme (theme)
   "Signal unless THEME has been declared."
   (unless (or (eq theme 'user) (custom-theme-p theme))
     (signal 'emacs-faces-error (list 'undefined-theme theme)))
-  theme)
+  theme))
 
-(defun provide-theme (theme)
+(unless (fboundp 'provide-theme)
+  (defun provide-theme (theme)
   "Provide THEME's THEME-theme feature."
   (custom-check-theme theme)
   (provide (or (get theme 'theme-feature)
-               (custom-make-theme-feature theme))))
+               (custom-make-theme-feature theme)))))
 
-(defun custom-theme--load-path ()
+(unless (fboundp 'custom-theme--load-path)
+  (defun custom-theme--load-path ()
   "Expand `custom-theme-load-path' into existing directories."
   (let (out)
     (dolist (entry custom-theme-load-path)
@@ -382,9 +398,10 @@ over `custom-enabled-themes'."
                   (t entry))))
         (when (and (stringp dir) (file-directory-p dir))
           (setq out (cons dir out)))))
-    (nreverse out)))
+    (nreverse out))))
 
-(defun custom-available-themes ()
+(unless (fboundp 'custom-available-themes)
+  (defun custom-available-themes ()
   "Return custom themes found in `custom-theme-load-path'."
   (let (themes)
     (dolist (dir (custom-theme--load-path))
@@ -393,7 +410,7 @@ over `custom-enabled-themes'."
           (when (and (custom-theme-name-valid-p theme)
                      (not (memq theme themes)))
             (setq themes (cons theme themes))))))
-    (nreverse themes)))
+    (nreverse themes))))
 
 (defun custom-theme--locate-file (theme)
   "Return THEME's file path from `custom-theme-load-path', or nil."
@@ -410,7 +427,8 @@ over `custom-enabled-themes'."
   (let ((settings (get theme 'theme-settings)))
     (put theme 'theme-settings (append settings (list setting)))))
 
-(defun custom-theme-set-faces (theme &rest args)
+(unless (fboundp 'custom-theme-set-faces)
+  (defun custom-theme-set-faces (theme &rest args)
   "Initialize THEME face settings from ARGS.
 Each entry has the Emacs shape (FACE SPEC [NOW [COMMENT]]).  SPEC is
 stored on THEME's `theme-settings' property and, when enabled, on FACE's
@@ -430,13 +448,15 @@ stored on THEME's `theme-settings' property and, when enabled, on FACE's
              (cons (cons theme spec)
                    (assq-delete-all theme (get face 'theme-face))))
         (emacs-redisplay-face-cache-clear))))
-  theme)
+  theme))
 
-(defun custom-set-faces (&rest args)
+(unless (fboundp 'custom-set-faces)
+  (defun custom-set-faces (&rest args)
   "Install user face customizations from ARGS."
-  (apply #'custom-theme-set-faces 'user args))
+  (apply #'custom-theme-set-faces 'user args)))
 
-(defun custom-theme-set-variables (theme &rest args)
+(unless (fboundp 'custom-theme-set-variables)
+  (defun custom-theme-set-variables (theme &rest args)
   "Record THEME variable settings from ARGS.
 This MVP stores `theme-value' rows for inspection but only applies
 settings for already-bound variables."
@@ -451,13 +471,15 @@ settings for already-bound variables."
                      (not custom--inhibit-theme-enable))
                  (boundp symbol))
         (set symbol (eval value-form)))))
-  theme)
+  theme))
 
-(defun custom-set-variables (&rest args)
+(unless (fboundp 'custom-set-variables)
+  (defun custom-set-variables (&rest args)
   "Install user variable customizations from ARGS."
-  (apply #'custom-theme-set-variables 'user args))
+  (apply #'custom-theme-set-variables 'user args)))
 
-(defun enable-theme (theme)
+(unless (fboundp 'enable-theme)
+  (defun enable-theme (theme)
   "Enable THEME with highest precedence among non-user themes."
   (custom-check-theme theme)
   (unless (eq theme 'user)
@@ -475,9 +497,10 @@ settings for already-bound variables."
        ((and (eq prop 'theme-value) (boundp symbol))
         (set symbol (eval value))))))
   (emacs-redisplay-face-cache-clear)
-  theme)
+  theme))
 
-(defun disable-theme (theme)
+(unless (fboundp 'disable-theme)
+  (defun disable-theme (theme)
   "Disable THEME and expose lower-precedence theme or defface defaults."
   (when (custom-theme-enabled-p theme)
     (dolist (setting (get theme 'theme-settings))
@@ -488,9 +511,10 @@ settings for already-bound variables."
                (assq-delete-all theme (get symbol 'theme-face))))))
     (setq custom-enabled-themes (delq theme custom-enabled-themes))
     (emacs-redisplay-face-cache-clear))
-  theme)
+  theme))
 
-(defun load-theme (theme &optional no-confirm no-enable)
+(unless (fboundp 'load-theme)
+  (defun load-theme (theme &optional no-confirm no-enable)
   "Load THEME from `custom-theme-load-path' and enable it.
 Standalone policy: pass NO-CONFIRM from init.el, or set
 `custom-safe-themes' to t.  Hash prompts are intentionally not
@@ -513,7 +537,7 @@ implemented in the noninteractive NeLisp loader."
       (load file nil t))
     (unless no-enable
       (enable-theme theme))
-    t))
+    t)))
 
 ;;;; --- reset (test helper) -------------------------------------------
 

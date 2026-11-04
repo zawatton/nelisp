@@ -1,8 +1,11 @@
 ;;; emacs-cc-coding-2.el --- Coding C primitive compatibility -*- lexical-binding: t; -*-
 
-(defvar file-coding-system-alist nil)
-(defvar process-coding-system-alist nil)
-(defvar network-coding-system-alist nil)
+(unless (boundp 'file-coding-system-alist)
+  (defvar file-coding-system-alist nil))
+(unless (boundp 'process-coding-system-alist)
+  (defvar process-coding-system-alist nil))
+(unless (boundp 'network-coding-system-alist)
+  (defvar network-coding-system-alist nil))
 
 (unless (fboundp 'detect-coding-string)
   (defun detect-coding-string (string &optional highest)

@@ -75,19 +75,23 @@ libffi primitive is available).")
 ;;;; --- C-level variables that vendor server.el touches ----------------
 
 ;; Daemon-mode globals — nil since standalone is not an Emacs daemon.
-(defvar internal--daemon-sockname nil)
+(unless (boundp 'internal--daemon-sockname)
+  (defvar internal--daemon-sockname nil))
 (defvar internal--daemon-mode nil)
 
 ;; Init-time bookkeeping — server.el sometimes references these in
 ;; debug / startup-time messages.
-(defvar before-init-time '(0 0 0 0))
+(unless (boundp 'before-init-time)
+  (defvar before-init-time '(0 0 0 0)))
 (defvar after-init-time '(0 0 0 0))
 (defvar emacs-pid 0)
-(defvar load-in-progress t)
+(unless (boundp 'load-in-progress)
+  (defvar load-in-progress t))
 
 ;; Minor mode book-keeping — `push'ed by `server-start' when it flips
 ;; `server-mode' on.
-(defvar global-minor-modes nil)
+(unless (boundp 'global-minor-modes)
+  (defvar global-minor-modes nil))
 ;; server-start builds the listener :coding from this C-level scalar;
 ;; on the standalone reader an unbound variable reference hard-aborts
 ;; the whole form (it does not signal through `condition-case'), so
@@ -96,7 +100,8 @@ libffi primitive is available).")
 
 ;; Frame / TTY globals — only consulted inside `daemonp' branches we
 ;; never take, but stubbed for safety.
-(defvar terminal-frame t)
+(unless (boundp 'terminal-frame)
+  (defvar terminal-frame t))
 
 ;; Top-level keymap server.el augments in its keybinding section.  A
 ;; 256-element no-op vector is enough to keep `define-key' stubs happy.

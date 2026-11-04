@@ -1040,7 +1040,8 @@ display core."
              arg))))
 
 ;;;###autoload
-(defun help-mode ()
+(unless (fboundp 'help-mode)
+  (defun help-mode ()
   "Major mode for the shared `*Help*' buffer."
   (interactive)
   (emacs-mode-kill-all-local-variables)
@@ -1049,7 +1050,7 @@ display core."
   (setq mode-name "Help")
   (use-local-map help-mode-map)
   (setq truncate-lines t)
-  nil)
+  nil))
 
 ;;;###autoload
 (defun emacs-help-quit-window ()

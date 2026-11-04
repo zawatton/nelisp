@@ -16,9 +16,10 @@
 
 (require 'cl-lib)
 
-(defun seqp (object)
+(unless (fboundp 'seqp)
+  (defun seqp (object)
   "Return non-nil when OBJECT is a list, string, or vector."
-  (or (listp object) (stringp object) (vectorp object)))
+  (or (listp object) (stringp object) (vectorp object))))
 
 (defun seq--define-p (symbol)
   "Return non-nil when this shim should define SYMBOL: it is unbound or only
@@ -36,17 +37,20 @@ an autoload stub (audit 2026-09-29: native definitions must win)."
     "Return the Nth element of SEQUENCE."
     (elt sequence n)))
 
-(defun seq-first (sequence)
+(unless (fboundp 'seq-first)
+  (defun seq-first (sequence)
   "Return the first element of SEQUENCE."
-  (seq-elt sequence 0))
+  (seq-elt sequence 0)))
 
-(defun seq-rest (sequence)
+(unless (fboundp 'seq-rest)
+  (defun seq-rest (sequence)
   "Return SEQUENCE without its first element."
-  (seq-drop sequence 1))
+  (seq-drop sequence 1)))
 
-(defun seq-copy (sequence)
+(unless (fboundp 'seq-copy)
+  (defun seq-copy (sequence)
   "Return a shallow copy of SEQUENCE."
-  (copy-sequence sequence))
+  (copy-sequence sequence)))
 
 (defun seq--list (sequence)
   "Return SEQUENCE as a list."
@@ -82,7 +86,8 @@ TYPE can be `list', `vector', `string', or `sequence'."
      ((eq type 'string) (apply #'string (seq--list sequence)))
      (t (signal 'wrong-type-argument (list 'type-specifier-p type))))))
 
-(defalias 'seq-into-sequence #'seq-into)
+(unless (fboundp 'seq-into-sequence)
+  (defalias 'seq-into-sequence #'seq-into))
 
 (when (seq--define-p 'seq-do)
   (defun seq-do (function sequence)
@@ -94,21 +99,24 @@ TYPE can be `list', `vector', `string', or `sequence'."
     (mapc function (seq--list sequence))
     sequence))
 
-(defalias 'seq-each #'seq-do)
+(unless (fboundp 'seq-each)
+  (defalias 'seq-each #'seq-do))
 
-(defmacro seq-doseq (spec &rest body)
+(unless (fboundp 'seq-doseq)
+  (defmacro seq-doseq (spec &rest body)
   "Loop over SPEC's sequence, evaluating BODY for each element."
   (declare (indent 1))
-  `(seq-do (lambda (,(car spec)) ,@body) ,(cadr spec)))
+  `(seq-do (lambda (,(car spec)) ,@body) ,(cadr spec))))
 
-(defun seq-do-indexed (function sequence)
+(unless (fboundp 'seq-do-indexed)
+  (defun seq-do-indexed (function sequence)
   "Call FUNCTION for every element of SEQUENCE with element and index."
   (let ((i 0))
     (seq-do (lambda (elt)
               (funcall function elt i)
               (setq i (1+ i)))
             sequence))
-  nil)
+  nil))
 
 (when (seq--define-p 'seq-map)
   (defun seq-map (function sequence)
@@ -116,13 +124,14 @@ TYPE can be `list', `vector', `string', or `sequence'."
     ;; `seq--list' first: the runtime's `mapcar' only handles lists.
     (mapcar function (seq--list sequence))))
 
-(defun seq-map-indexed (function sequence)
+(unless (fboundp 'seq-map-indexed)
+  (defun seq-map-indexed (function sequence)
   "Return a list of FUNCTION applied to each element and index."
   (let ((i 0))
     (seq-map (lambda (elt)
                (prog1 (funcall function elt i)
                  (setq i (1+ i))))
-             sequence)))
+             sequence))))
 
 (when (seq--define-p 'seq-mapn)
   (defun seq-mapn (function sequence &rest sequences)
@@ -175,7 +184,8 @@ TYPE can be `list', `vector', `string', or `sequence'."
 	sequence
       (seq-subseq sequence (min n (seq-length sequence))))))
 
-(defun seq-take-while (predicate sequence)
+(unless (fboundp 'seq-take-while)
+  (defun seq-take-while (predicate sequence)
   "Return leading elements of SEQUENCE while PREDICATE is non-nil."
   (let (out
         done)
@@ -185,14 +195,15 @@ TYPE can be `list', `vector', `string', or `sequence'."
                     (push elt out)
                   (setq done t))))
             sequence)
-    (seq--same-type (nreverse out) sequence)))
+    (seq--same-type (nreverse out) sequence))))
 
-(defun seq-drop-while (predicate sequence)
+(unless (fboundp 'seq-drop-while)
+  (defun seq-drop-while (predicate sequence)
   "Drop leading elements of SEQUENCE while PREDICATE is non-nil."
   (let ((list (seq--list sequence)))
     (while (and list (funcall predicate (car list)))
       (setq list (cdr list)))
-    (seq--same-type list sequence)))
+    (seq--same-type list sequence))))
 
 (when (seq--define-p 'seq-filter)
   (defun seq-filter (predicate sequence)
@@ -299,11 +310,12 @@ TYPE can be `list', `vector', `string', or `sequence'."
           ((stringp sequence) (concat sorted))
           (t sorted))))
 
-(defun seq-sort-by (function predicate sequence)
+(unless (fboundp 'seq-sort-by)
+  (defun seq-sort-by (function predicate sequence)
   "Sort SEQUENCE by values returned from FUNCTION using PREDICATE."
   (seq-sort (lambda (a b)
               (funcall predicate (funcall function a) (funcall function b)))
-            sequence))
+            sequence)))
 
 (when (seq--define-p 'seq-max)
   (defun seq-max (sequence)
@@ -319,12 +331,13 @@ TYPE can be `list', `vector', `string', or `sequence'."
       (unless list (error "empty sequence"))
       (seq-reduce #'min (cdr list) (car list)))))
 
-(defun seq-random-elt (sequence)
+(unless (fboundp 'seq-random-elt)
+  (defun seq-random-elt (sequence)
   "Return a random element from SEQUENCE."
   (let ((len (seq-length sequence)))
     (when (= len 0)
       (error "empty sequence"))
-    (seq-elt sequence (random len))))
+    (seq-elt sequence (random len)))))
 
 (when (seq--define-p 'seq-group-by)
   (defun seq-group-by (function sequence)
@@ -371,27 +384,31 @@ The result is a sequence of TYPE, or a list when TYPE is nil."
     (apply #'seq-concatenate (or type 'list)
            (seq-map function sequence))))
 
-(defun seq-keep (function sequence)
+(unless (fboundp 'seq-keep)
+  (defun seq-keep (function sequence)
   "Apply FUNCTION to each element of SEQUENCE, returning the non-nil results."
-  (delq nil (seq-map function sequence)))
+  (delq nil (seq-map function sequence))))
 
-(defun seq-difference (sequence1 sequence2 &optional testfn)
+(unless (fboundp 'seq-difference)
+  (defun seq-difference (sequence1 sequence2 &optional testfn)
   "Return a list of the elements of SEQUENCE1 that are not in SEQUENCE2.
 Equality is tested with TESTFN (default `equal')."
   (seq-remove (lambda (elt) (seq-contains-p sequence2 elt testfn))
-              sequence1))
+              sequence1)))
 
-(defun seq-intersection (sequence1 sequence2 &optional testfn)
+(unless (fboundp 'seq-intersection)
+  (defun seq-intersection (sequence1 sequence2 &optional testfn)
   "Return a list of the elements that appear in both SEQUENCE1 and SEQUENCE2.
 Equality is tested with TESTFN (default `equal')."
   (seq-filter (lambda (elt) (seq-contains-p sequence2 elt testfn))
-              sequence1))
+              sequence1)))
 
-(defun seq-union (sequence1 sequence2 &optional testfn)
+(unless (fboundp 'seq-union)
+  (defun seq-union (sequence1 sequence2 &optional testfn)
   "Return a list of the elements that appear in either SEQUENCE1 or SEQUENCE2.
 Equality is tested with TESTFN (default `equal')."
   (append (append sequence1 nil)
-          (seq-difference sequence2 sequence1 testfn)))
+          (seq-difference sequence2 sequence1 testfn))))
 
 ;;; Doc 16 breadth round 13 — seq-let destructuring macro.
 ;; The Emacs `seq-let' expands to `pcase-let' + `seq--make-pcase-patterns',
@@ -429,39 +446,45 @@ ARGS may end with `&rest VAR' to bind VAR to the remaining elements."
 ;;; `seq-subseq' / `seq-concatenate' / `seq-do-indexed'), matching the
 ;;; file's existing style.
 
-(defun seq--count-successive (pred sequence)
+(unless (fboundp 'seq--count-successive)
+  (defun seq--count-successive (pred sequence)
   "Count successive elements in SEQUENCE for which PRED returns non-nil."
   (let ((n 0)
         (len (seq-length sequence)))
     (while (and (< n len)
                 (funcall pred (seq-elt sequence n)))
       (setq n (+ 1 n)))
-    n))
+    n)))
 
-(defun seq--elt-safe (sequence n)
+(unless (fboundp 'seq--elt-safe)
+  (defun seq--elt-safe (sequence n)
   "Return the element of SEQUENCE whose zero-based index is N.
 If no element is found, return nil."
-  (ignore-errors (seq-elt sequence n)))
+  (ignore-errors (seq-elt sequence n))))
 
-(defun seq--into-list (sequence)
+(unless (fboundp 'seq--into-list)
+  (defun seq--into-list (sequence)
   "Concatenate the elements of SEQUENCE into a list."
   (if (listp sequence)
       sequence
-    (append sequence nil)))
+    (append sequence nil))))
 
-(defun seq--into-vector (sequence)
+(unless (fboundp 'seq--into-vector)
+  (defun seq--into-vector (sequence)
   "Concatenate the elements of SEQUENCE into a vector."
   (if (vectorp sequence)
       sequence
-    (vconcat sequence)))
+    (vconcat sequence))))
 
-(defun seq--into-string (sequence)
+(unless (fboundp 'seq--into-string)
+  (defun seq--into-string (sequence)
   "Concatenate the elements of SEQUENCE into a string."
   (if (stringp sequence)
       sequence
-    (concat sequence)))
+    (concat sequence))))
 
-(defun seq-split (sequence length)
+(unless (fboundp 'seq-split)
+  (defun seq-split (sequence length)
   "Split SEQUENCE into a list of sub-sequences of at most LENGTH elements.
 All the sub-sequences will be LENGTH long, except the last one, which
 may be shorter.  This does not modify SEQUENCE."
@@ -474,26 +497,29 @@ may be shorter.  This does not modify SEQUENCE."
       (push (seq-subseq sequence start
                          (setq start (min len (+ start length))))
             result))
-    (nreverse result)))
+    (nreverse result))))
 
-(defun seq-contains (sequence elt &optional testfn)
+(unless (fboundp 'seq-contains)
+  (defun seq-contains (sequence elt &optional testfn)
   "Return the first element in SEQUENCE that is \"equal\" to ELT.
 \"Equality\" is defined by the function TESTFN, which defaults to `equal'.
 Obsolete since Emacs 27.1; use `seq-contains-p' instead."
   (seq-some (lambda (e)
               (when (funcall (or testfn #'equal) elt e)
                 e))
-            sequence))
+            sequence)))
 
-(defun seq-set-equal-p (sequence1 sequence2 &optional testfn)
+(unless (fboundp 'seq-set-equal-p)
+  (defun seq-set-equal-p (sequence1 sequence2 &optional testfn)
   "Return non-nil if SEQUENCE1 and SEQUENCE2 contain the same elements.
 The order of the elements in the sequences is not important.
 \"Equality\" of elements is defined by the function TESTFN, which
 defaults to `equal'."
   (and (seq-every-p (lambda (item1) (seq-contains-p sequence2 item1 testfn)) sequence1)
-       (seq-every-p (lambda (item2) (seq-contains-p sequence1 item2 testfn)) sequence2)))
+       (seq-every-p (lambda (item2) (seq-contains-p sequence1 item2 testfn)) sequence2))))
 
-(defun seq-positions (sequence elt &optional testfn)
+(unless (fboundp 'seq-positions)
+  (defun seq-positions (sequence elt &optional testfn)
   "Return list of indices of SEQUENCE elements for which TESTFN returns non-nil.
 
 TESTFN is a two-argument function which is called with each element of
@@ -505,9 +531,10 @@ to `equal'.  The result is a list of (zero-based) indices."
        (when (funcall (or testfn #'equal) e elt)
          (push index result)))
      sequence)
-    (nreverse result)))
+    (nreverse result))))
 
-(defun seq-remove-at-position (sequence n)
+(unless (fboundp 'seq-remove-at-position)
+  (defun seq-remove-at-position (sequence n)
   "Return a copy of SEQUENCE with the element at index N removed.
 N is the (zero-based) index of the element that should not be in the
 result.  The result is a sequence of the same type as SEQUENCE.  This
@@ -515,7 +542,7 @@ does not modify SEQUENCE."
   (seq-concatenate
    (if (listp sequence) 'list (type-of sequence))
    (seq-subseq sequence 0 n)
-   (seq-subseq sequence (1+ n))))
+   (seq-subseq sequence (1+ n)))))
 
 ;; `seq-setq' is GNU's `(pcase-setq (seq--make-pcase-patterns ARGS) SEQUENCE)'.
 ;; This facade's `seq-let' above already destructures directly with

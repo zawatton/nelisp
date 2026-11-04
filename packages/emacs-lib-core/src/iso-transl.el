@@ -19,13 +19,16 @@
 (defconst iso-transl--alt-modifier-mask 4194304
   "Integer modifier bit used by Emacs for Alt-key translations.")
 
-(defvar key-translation-map nil
-  "Key translation map used by standalone NeLisp when Emacs has not set one.")
+(unless (boundp 'key-translation-map)
+  (defvar key-translation-map nil
+  "Key translation map used by standalone NeLisp when Emacs has not set one."))
 
-(defvar isearch-mode-map nil
-  "Isearch keymap placeholder for standalone NeLisp.")
+(unless (boundp 'isearch-mode-map)
+  (defvar isearch-mode-map nil
+  "Isearch keymap placeholder for standalone NeLisp."))
 
-(defvar iso-transl-dead-key-alist
+(unless (boundp 'iso-transl-dead-key-alist)
+  (defvar iso-transl-dead-key-alist
   '((?' . mute-acute)
     (?` . mute-grave)
     (?\" . mute-diaeresis)
@@ -39,9 +42,10 @@
     (?^ . dead-circum)
     (?^ . dead-circumflex)
     (?~ . dead-tilde))
-  "Mapping of ASCII accent characters to dead-key symbols.")
+  "Mapping of ASCII accent characters to dead-key symbols."))
 
-(defvar iso-transl-char-map
+(unless (boundp 'iso-transl-char-map)
+  (defvar iso-transl-char-map
   '(("* " . [#x00a0])
     (" " . [#x00a0])
     ("*!" . [#x00a1])
@@ -192,9 +196,10 @@
     ("\" " . "\"")
     ("^ " . "^")
     ("~ " . "~"))
-  "Alist of character translations for entering ISO characters.")
+  "Alist of character translations for entering ISO characters."))
 
-(defvar iso-transl-language-alist
+(unless (boundp 'iso-transl-language-alist)
+  (defvar iso-transl-language-alist
   '(("Esperanto"
      ("C" . [#x0108])
      ("G" . [#x011c])
@@ -230,10 +235,11 @@
      ("?" . [#x00bf])
      ("N" . [#x00d1])
      ("n" . [#x00f1])))
-  "Language-specific shorter translation lists for `C-x 8'.")
+  "Language-specific shorter translation lists for `C-x 8'."))
 
-(defvar iso-transl-ctl-x-8-map nil
-  "Keymap for the `C-x 8' ISO translation prefix.")
+(unless (boundp 'iso-transl-ctl-x-8-map)
+  (defvar iso-transl-ctl-x-8-map nil
+  "Keymap for the `C-x 8' ISO translation prefix."))
 
 (defun iso-transl--ensure-keymaps ()
   "Ensure the keymaps used by this lightweight facade exist."
@@ -264,7 +270,8 @@
           (define-key key-translation-map deadvec translated-vec)
           (iso-transl--define-isearch-dead-key (vector deadkey)))))))
 
-(defun iso-transl-define-keys (alist)
+(unless (fboundp 'iso-transl-define-keys)
+  (defun iso-transl-define-keys (alist)
   "Install ISO translations from ALIST.
 Each entry is (KEY . TRANSLATION), matching GNU Emacs'
 `iso-transl-char-map' shape."
@@ -273,9 +280,10 @@ Each entry is (KEY . TRANSLATION), matching GNU Emacs'
     (let ((key (car entry))
           (translated-vec (cdr entry)))
       (define-key iso-transl-ctl-x-8-map key translated-vec)
-      (iso-transl--define-alt-and-dead-keys key translated-vec))))
+      (iso-transl--define-alt-and-dead-keys key translated-vec)))))
 
-(defun iso-transl-set-language (lang)
+(unless (fboundp 'iso-transl-set-language)
+  (defun iso-transl-set-language (lang)
   "Set shorter key bindings for characters relevant for LANG."
   (interactive
    (list (let ((completion-ignore-case t))
@@ -284,7 +292,7 @@ Each entry is (KEY . TRANSLATION), matching GNU Emacs'
   (let ((entry (assoc lang iso-transl-language-alist)))
     (unless entry
       (error "Unknown iso-transl language: %s" lang))
-    (iso-transl-define-keys (cdr entry))))
+    (iso-transl-define-keys (cdr entry)))))
 
 (iso-transl-define-keys iso-transl-char-map)
 

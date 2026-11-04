@@ -8,8 +8,9 @@
 (defvar global-tab-line-mode nil
   "Non-nil when the minimal tab line is globally enabled.")
 
-(defvar tab-line-format nil
-  "Minimal tab-line format placeholder.")
+(unless (boundp 'tab-line-format)
+  (defvar tab-line-format nil
+  "Minimal tab-line format placeholder."))
 
 (defun tab-line-mode (&optional arg)
   "Toggle minimal buffer-local tab-line mode."

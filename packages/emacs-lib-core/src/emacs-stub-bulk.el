@@ -411,7 +411,8 @@ Forwarder to `forward-char' with negated count."
 ;; cc-defs.el.  They need real Emacs defaults rather than the nil placeholder
 ;; used for ordinary presence-only variables above.
 (defvar max-lisp-eval-depth 1600)
-(defvar max-specpdl-size 2500)
+(unless (boundp 'max-specpdl-size)
+  (defvar max-specpdl-size 2500))
 
 (unless (fboundp 'define-abbrev-table)
   (defun define-abbrev-table (symbol definitions &optional _docstring &rest _props)

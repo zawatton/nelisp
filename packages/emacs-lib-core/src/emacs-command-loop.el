@@ -2410,7 +2410,8 @@ child status transitions are checked at most 10 milliseconds apart."
 
 (defvar emacs-command-loop--post-input-event-p nil)
 (defvar unread-post-input-method-events nil)
-(defvar input-method-function #'list)
+(unless (boundp 'input-method-function)
+  (defvar input-method-function #'list))
 
 (defun emacs-command-loop--read-event-raw (&optional prompt _suppress seconds)
   "Read one event: from the queue, else via
@@ -2924,10 +2925,11 @@ nil = silently skip and continue.")
    ((fboundp 'key-binding) (key-binding key-seq))
    (t nil)))
 
-(defvar special-event-map nil
+(unless (boundp 'special-event-map)
+  (defvar special-event-map nil
   "Keymap for events handled immediately, outside normal command dispatch
 (Doc 06 B4).  When the next pending event is bound here, its binding runs at
-once and does not become `this-command'.  nil = no special events.")
+once and does not become `this-command'.  nil = no special events."))
 
 (defun emacs-command-loop--maybe-run-special-event ()
   "Run a special event when the next pending event is bound in

@@ -45,10 +45,12 @@
 
 (require 'emacs-redisplay)
 
-(defvar display-line-numbers nil
-  "Whether the current buffer displays line numbers.")
-(defvar display-line-numbers-mode nil
-  "Whether the current buffer's line-number mode is enabled.")
+(unless (boundp 'display-line-numbers)
+  (defvar display-line-numbers nil
+  "Whether the current buffer displays line numbers."))
+(unless (boundp 'display-line-numbers-mode)
+  (defvar display-line-numbers-mode nil
+  "Whether the current buffer's line-number mode is enabled."))
 (defvar display-line-numbers-type t
   "Kind of numbers enabled by `display-line-numbers-mode'.")
 
