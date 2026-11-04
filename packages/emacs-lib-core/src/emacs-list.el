@@ -423,10 +423,12 @@ TEST defaults to `equal'."
 
 ;;;; --- symbol-backed history lists ---------------------------------------
 
-(defvar history-length 100
-  "Default maximum length of symbol-backed history lists; t means unlimited.")
-(defvar history-delete-duplicates nil
-  "Non-nil means adding a history element removes its older duplicates.")
+(unless (boundp 'history-length)
+  (defvar history-length 100
+  "Default maximum length of symbol-backed history lists; t means unlimited."))
+(unless (boundp 'history-delete-duplicates)
+  (defvar history-delete-duplicates nil
+  "Non-nil means adding a history element removes its older duplicates."))
 
 (defun emacs-list-add-to-history (history-var newelt &optional maxelt keep-all)
   "Add NEWELT to HISTORY-VAR, respecting GNU subr.el history list policy.

@@ -2948,8 +2948,9 @@ if all requested words were traversed, nil at a buffer or field edge."
     "Phase E polyfill: equivalent to `(forward-word (- ARG))'."
     (forward-word (- (or arg 1)))))
 
-(defvar word-move-empty-char-table nil
-  "Char table used to suppress language-specific word boundary callbacks.")
+(unless (boundp 'word-move-empty-char-table)
+  (defvar word-move-empty-char-table nil
+  "Char table used to suppress language-specific word boundary callbacks."))
 
 (when (emacs-edit-builtins--install-function-p 'forward-word-strictly)
   (defun forward-word-strictly (&optional arg)
@@ -3309,17 +3310,19 @@ With REGION non-nil, ignore BEG and END and save the current region."
     (deactivate-mark))
   nil)
 
-(defun kill-forward-chars (arg)
+(unless (fboundp 'kill-forward-chars)
+  (defun kill-forward-chars (arg)
   "Kill ARG characters forward from point."
   (when (listp arg) (setq arg (car arg)))
   (when (eq arg '-) (setq arg -1))
-  (kill-region (point) (+ (point) arg)))
+  (kill-region (point) (+ (point) arg))))
 
-(defun kill-backward-chars (arg)
+(unless (fboundp 'kill-backward-chars)
+  (defun kill-backward-chars (arg)
   "Kill ARG characters backward from point."
   (when (listp arg) (setq arg (car arg)))
   (when (eq arg '-) (setq arg -1))
-  (kill-region (point) (- (point) arg)))
+  (kill-region (point) (- (point) arg))))
 
 ;;;; --- buffer motion and transposition -------------------------------
 ;;
@@ -3396,17 +3399,20 @@ the beginning of the accessible portion rather than widening first."
   "Go to LINE, counting from line 1 at the beginning of the accessible part."
   (goto-line line buffer t))
 
-(defun forward-to-indentation (&optional arg)
+(unless (fboundp 'forward-to-indentation)
+  (defun forward-to-indentation (&optional arg)
   "Move forward ARG lines and position at the first nonblank character."
   (forward-line (or arg 1))
-  (skip-chars-forward " \t"))
+  (skip-chars-forward " \t")))
 
-(defun backward-to-indentation (&optional arg)
+(unless (fboundp 'backward-to-indentation)
+  (defun backward-to-indentation (&optional arg)
   "Move backward ARG lines and position at the first nonblank character."
   (forward-line (- (or arg 1)))
-  (skip-chars-forward " \t"))
+  (skip-chars-forward " \t")))
 
-(defun transpose-subr-1 (pos1 pos2)
+(unless (fboundp 'transpose-subr-1)
+  (defun transpose-subr-1 (pos1 pos2)
   "Transpose the regions POS1 and POS2, each a cons of buffer positions."
   (unless (and pos1 pos2)
     (error "Don't have two things to transpose"))
@@ -3440,9 +3446,10 @@ the beginning of the accessible portion rather than widening first."
     (goto-char (+ (marker-position boundary) len1))
     (delete-region (point) (+ (point) len2))
     (set-marker boundary nil))
-  nil)
+  nil))
 
-(defun transpose-subr (mover arg &optional special)
+(unless (fboundp 'transpose-subr)
+  (defun transpose-subr (mover arg &optional special)
   "Transpose the objects MOVER moves over, ARG of them.
 With ARG zero, exchange the object at point with the one at the mark."
   (let ((aux (if special mover
@@ -3469,7 +3476,7 @@ With ARG zero, exchange the object at point with the one at the mark."
       (setq pos2 (funcall aux arg))
       (transpose-subr-1 pos1 pos2)
       (goto-char (+ (car pos2) (- (cdr pos1) (car pos1))))))
-    nil))
+    nil)))
 
 (defun transpose-words (arg)
   "Interchange the words around point, leaving point at the end of them."

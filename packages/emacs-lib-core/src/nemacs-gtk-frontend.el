@@ -1186,7 +1186,8 @@ last line.  Empty input is a no-op."
 	                           (plist-get edit :total-lines))))
 	           (nemacs-gtk--ensure-cursor-visible))))))))) ; cursor-on-screen
 
-(defun what-line ()
+(unless (fboundp 'what-line)
+  (defun what-line ()
   "Echo the current line number / total line count of the active
 buffer (Phase 2.X).  Bound nowhere directly — accessible via
 `M-x what-line'.  Mirrors real Emacs's `what-line' contract
@@ -1197,7 +1198,7 @@ in the echo for readability)."
     (let* ((line  (line-number-at-pos))
            (total (nemacs-gtk--buffer-line-count)))
       (setq nemacs-gtk--last-key-text
-            (format "Line %d/%d" line total)))))
+            (format "Line %d/%d" line total))))))
 
 (defun nemacs-gtk--case-change-word (case-fn)
   "Helper for upcase-word / downcase-word / capitalize-word.  Apply

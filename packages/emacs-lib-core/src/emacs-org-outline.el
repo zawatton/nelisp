@@ -176,8 +176,9 @@ Entries have the shape (LINK DESCRIPTION).")
 (defvar-local outline-regexp "\\*+ "
   "Regexp matching the start of an outline heading line.")
 
-(defvar outline-level #'outline-level
-  "Function returning the level of the current outline heading.")
+(unless (boundp 'outline-level)
+  (defvar outline-level #'outline-level
+  "Function returning the level of the current outline heading."))
 
 (defun emacs-outline--line-string ()
   "Return the current line as a string without text properties."
