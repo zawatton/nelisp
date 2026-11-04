@@ -805,7 +805,14 @@ when CH is not an ASCII letter."
   "Return the current simple case table, deriving invalidated extras."
   (when (fboundp 'current-case-table)
     (let ((table (current-case-table)))
-      (when (and table (null (nelisp-casetab--get-extra-slot table 1)))
+      (when (and table
+                 (null (if (and (not (fboundp 'emacs-char-table-p))
+                                (eq (symbol-function 'char-table-extra-slot)
+                                    nelisp-casetab--native-extra))
+                           ;; No sparse adapter and the native reader is in
+                           ;; place: skip the generic accessor's checks.
+                           (char-table-extra-slot table 1)
+                         (nelisp-casetab--get-extra-slot table 1))))
         (set-case-table table))
       table)))
 

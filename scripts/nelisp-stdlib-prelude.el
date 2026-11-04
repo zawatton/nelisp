@@ -1980,7 +1980,14 @@ GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
   "Return the current simple case table, deriving invalidated extras."
   (when (fboundp 'current-case-table)
     (let ((table (current-case-table)))
-      (when (and table (null (nelisp-casetab--get-extra-slot table 1)))
+      (when (and table
+                 (null (if (and (not (fboundp 'emacs-char-table-p))
+                                (eq (symbol-function 'char-table-extra-slot)
+                                    nelisp-casetab--native-extra))
+                           ;; No sparse adapter and the native reader is in
+                           ;; place: skip the generic accessor's checks.
+                           (char-table-extra-slot table 1)
+                         (nelisp-casetab--get-extra-slot table 1))))
         (set-case-table table))
       table)))
 
@@ -2113,6 +2120,9 @@ nil, without building the intermediate string."
             (if (and hit (= (length hit) 1)) (aref hit 0) simple))
         simple))))
 
+(defvar nelisp--char-syntax-prelude-def nil
+  "The prelude's own `char-syntax' function object, or nil when it is not in use.")
+
 (defun nelisp--case-string-ascii (object action table)
   "Case non-empty ASCII-only string OBJECT for `capitalize' or `initials'.
 Answers nil, leaving OBJECT to `nelisp--case-string-general', unless the native
@@ -2123,13 +2133,20 @@ is built like the general path builds it."
   (when (and table (memq action '(capitalize initials))
              (fboundp 'nelisp--casify-fast)
              (fboundp 'nelisp-unicode-titlecase-property)
-             (fboundp 'char-syntax))
-    (let ((upmap (nelisp-casetab--get-extra-slot table 0)))
-      (when (and upmap (not (nelisp-casetab--sparse-table-p upmap)))
+             (or nelisp--char-syntax-prelude-def (fboundp 'char-syntax)))
+    (let* ((plain (and (not (fboundp 'emacs-char-table-p))
+                       (eq (symbol-function 'char-table-extra-slot)
+                           nelisp-casetab--native-extra)))
+           (upmap (if plain
+                      (char-table-extra-slot table 0)
+                    (nelisp-casetab--get-extra-slot table 0))))
+      (when (and upmap (or plain (not (nelisp-casetab--sparse-table-p upmap))))
         (let ((lower (nelisp--casify-fast object 0 table)))
           (when (stringp lower)
-            (let* ((unibyte (unibyte-string-p object))
-                   (cap (eq action 'capitalize))
+            (let* ((cap (eq action 'capitalize))
+                   ;; Word-interior characters of CAPITALIZE need an aset only
+                   ;; when lowering changed something.
+                   (fixlow (and cap (not (equal lower object))))
                    (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
                    (n (length object))
                    (i 0) (inword nil)
@@ -2139,44 +2156,38 @@ is built like the general path builds it."
                    (result (copy-sequence object))
                    ;; Inline the buffer-syntax lookup of the prelude
                    ;; `char-syntax' (hoisting the table fetch out of the
-                   ;; loop) only while that definition is still in force.
-                   ;; OBJECT is ASCII-only, so its unibyte 128-255 adjustment
-                   ;; never applies.
-                   (stab (and (boundp 'nelisp--char-syntax-prelude-def)
+                   ;; loop) only while that definition is still in force; its
+                   ;; variables are bound whenever it is.  Syntax classes 2
+                   ;; and 3 are `w' and `_' in `nelisp--syntax-code-classes'.
+                   ;; OBJECT is ASCII-only, so the unibyte 128-255 adjustment
+                   ;; of `char-syntax' never applies.
+                   (stab (and nelisp--char-syntax-prelude-def
                               (eq (symbol-function 'char-syntax)
                                   nelisp--char-syntax-prelude-def)
-                              (boundp 'nelisp--syntax-buffer-tables)
-                              (boundp 'nelisp--buffer-defaults-syntax-table)
-                              (eq (aref nelisp--syntax-code-classes 2) ?w)
-                              (eq (aref nelisp--syntax-code-classes 3) ?_)
                               (or (gethash nelisp--current-buffer
                                            nelisp--syntax-buffer-tables)
                                   nelisp--buffer-defaults-syntax-table))))
-              (progn
-                (while (< i n)
-                  (let* ((c (aref object i))
-                         (piece nil))
-                    (if inword
-                        (when cap
-                          (setq piece (aref lower i))
-                          (unless (eq piece c) (aset result i piece)))
-                      (setq piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
-                                    (let ((v (aref upmap c)))
-                                      (if (and (integerp v) (>= v 0)) v
-                                        (nelisp--case-simple-character
-                                         c 'title table)))))
-                      (when (and unibyte (>= piece 256))
+              (while (< i n)
+                (let ((c (aref object i)))
+                  (if inword
+                      (when fixlow (aset result i (aref lower i)))
+                    (let ((piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
+                                   (let ((v (aref upmap c)))
+                                     (if (and (integerp v) (>= v 0)) v
+                                       (nelisp--case-simple-character
+                                        c 'title table))))))
+                      (when (and (>= piece 256) (unibyte-string-p object))
                         (setq piece (nelisp--case-byte c piece 'title)))
-                      (unless (eq piece c) (aset result i piece)))
-                    (setq inword
-                          (if stab
-                              (let* ((entry (aref stab c))
-                                     (cls (if (consp entry) (logand (car entry) 255) 0)))
-                                (or (eq cls 2) (and csw (eq cls 3))))
-                            (let ((sx (char-syntax c)))
-                              (or (eq sx ?w) (and csw (eq sx ?_)))))
-                          i (1+ i))))
-                result))))))))
+                      (unless (eq piece c) (aset result i piece))))
+                  (setq inword
+                        (if stab
+                            (let ((entry (aref stab c)))
+                              (setq entry (if (consp entry) (logand (car entry) 255) 0))
+                              (or (eq entry 2) (and csw (eq entry 3))))
+                          (let ((sx (char-syntax c)))
+                            (or (eq sx ?w) (and csw (eq sx ?_)))))
+                        i (1+ i))))
+              result))))))
 
 (defun nelisp--case-string-general (object action table)
   "Case the non-empty string OBJECT for ACTION, tracking word state per character.
@@ -19581,7 +19592,7 @@ character `w' (119) is returned."
             (if (consp entry) (logand (car entry) 255) 0))))
   ;; Remember the prelude definition so `nelisp--case-string-ascii' can
   ;; tell when it may inline the same table lookup.
-  (defvar nelisp--char-syntax-prelude-def (symbol-function 'char-syntax)))
+  (setq nelisp--char-syntax-prelude-def (symbol-function 'char-syntax)))
 
 (unless (fboundp 'matching-paren)
   (defun matching-paren (character)
