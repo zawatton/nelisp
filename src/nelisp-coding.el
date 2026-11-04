@@ -39,7 +39,8 @@
 ;;   - EUC-JP encode: reverse-lookup Unicode → EUC bytes, X 0212 → 3-byte,
 ;;     X 0208 → 2-byte
 ;;   - table data = =src/nelisp-coding-jis-tables.el= (separate file,
-;;     generated artifact) with golden SHA-256 hash for tampering detection
+;;     generated artifact, lazy-loaded on first Japanese codec use) with
+;;     golden SHA-256 hash for tampering detection
 ;;   - MVP partial table (~885 entries) validates algorithm; full ~14000
 ;;     entry generation deferred to Phase 7.5 via =tools/coding-table-gen.el=
 ;;
@@ -76,11 +77,9 @@
 ;; Emacs underneath it to load `subr-x' from -- and does not need one.  Every
 ;; name the tree uses from it (string-empty-p, string-trim, string-blank-p,
 ;; when-let, if-let, hash-table-keys/-values) is already defined by the stdlib
-;; prelude there; measured 2026-08-19, `fboundp' answers t for all of them in
-;; the built reader.  A hard require asks for a file rather than for the
+;; prelude there.  A hard require asks for a file rather than for the
 ;; functions, and the file is the part that does not exist.
 (require 'subr-x nil t)
-(require 'nelisp-coding-jis-tables)
 
 ;;; Customization
 
@@ -693,6 +692,16 @@ The EUC-INT here is (lead << 8) | trail; the 0x8F prefix is implicit.")
 (defvar nelisp-coding--jis-tables-built nil
   "Non-nil once the JIS lookup hash-tables have been built this session.")
 
+(defun nelisp-coding--ensure-jis-tables-loaded ()
+  "Load generated JIS table data when a Japanese codec needs it."
+  (unless (featurep 'nelisp-coding-jis-tables)
+    (require 'nelisp-coding-jis-tables)))
+
+(defun nelisp-coding-jis-tables-verify-hash ()
+  "Lazy wrapper for `nelisp-coding-jis-tables-verify-hash'."
+  (nelisp-coding--ensure-jis-tables-loaded)
+  (nelisp-coding-jis-tables-verify-hash))
+
 (defun nelisp-coding--jis-tables-build ()
   "Promote the 4 JIS alists to hash-tables for O(1) decode/encode lookup.
 
@@ -700,6 +709,7 @@ Idempotent: returns immediately if `nelisp-coding--jis-tables-built' is set.
 Use `nelisp-coding-jis-tables-rebuild' to force a rebuild (e.g. after the
 generator script regenerates the table file)."
   (unless nelisp-coding--jis-tables-built
+    (nelisp-coding--ensure-jis-tables-loaded)
     ;; SJIS decode: X 0208 first, then CP932 ext (NEC + IBM) merged in.
     (setq nelisp-coding--shift-jis-decode-hash
           (make-hash-table :test 'eql :size 1024))
