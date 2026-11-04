@@ -668,7 +668,7 @@ NELISP_LOAD_PATH = $(NEMACS_PACKAGE_SRC_LOAD_PATH) -L $(NELISP_ROOT)/src
 # Colon-separated absolute package source dirs (no staged flat source root).
 empty :=
 colon := :
-NEMACS_PACKAGE_SRC_PATH = $(subst $(empty) ,$(colon),$(foreach d,$(NEMACS_SRC_DIRS),$(abspath $(NELISP_ROOT)/$(d))))
+NEMACS_PACKAGE_SRC_PATH = $(subst $(empty) ,$(colon),$(foreach d,$(NEMACS_SRC_DIRS),$(abspath $(NELISP_ROOT)/$(d)))):$(abspath $(NELISP_ROOT)/src)
 NEMACS_API_SRC_DIRS := $(filter packages/emacs-lib-%/src,$(NEMACS_SRC_DIRS))
 SRC_FILES = $(foreach d,$(NEMACS_API_SRC_DIRS),$(wildcard $(NELISP_ROOT)/$(d)/*.el))
 SRC_BYTE_COMPILE_FILES = $(SRC_FILES)

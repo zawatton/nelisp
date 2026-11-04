@@ -87,9 +87,25 @@ final `.el' suffix with `.repl'.")
 (defun nelisp-bootstrap--package-source-dirs ()
   "Return the absolute package src directories contributing bundle sources."
   (let (dirs)
+    ;; Core-owned files are found by logical name; the core `src/' directory
+    ;; itself never joins the baked load-path.
     (dolist (file (nelisp-bootstrap--package-source-files))
-      (cl-pushnew (file-name-directory file) dirs :test #'equal))
+      (unless (member file (nelisp-bootstrap--core-owned-source-files))
+        (cl-pushnew (file-name-directory file) dirs :test #'equal)))
     (nreverse dirs)))
+
+(defconst nelisp-bootstrap--core-owned-sources
+  '("src/nelisp-coding.el"
+    "src/nelisp-coding-jis-tables.el"
+    "src/nelisp-text-buffer.el")
+  "Core `src/' files that ship in the bundle under their own logical name.
+These have a single owner in the NeLisp core tree; no package carries a
+copy, so the package globs alone would not find them.")
+
+(defun nelisp-bootstrap--core-owned-source-files ()
+  "Return the absolute paths of `nelisp-bootstrap--core-owned-sources'."
+  (mapcar (lambda (rel) (expand-file-name rel nelisp-bootstrap-repo-root))
+          nelisp-bootstrap--core-owned-sources))
 
 (defun nelisp-bootstrap--package-source-files ()
   "Return the sorted absolute package source files."
@@ -99,7 +115,7 @@ final `.el' suffix with `.repl'.")
                           (sort (file-expand-wildcards
                                  (expand-file-name glob nelisp-bootstrap-repo-root))
                                 #'string<))))
-    files))
+    (append files (nelisp-bootstrap--core-owned-source-files))))
 
 (defun nelisp-bootstrap--build-package-table ()
   "Build the logical-name table from package sources; fail on duplicates."
