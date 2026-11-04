@@ -236,8 +236,8 @@
             ((eq object 'ticket-gc-memory-v1)
              (setq domains (1+ domains)) 'compiler-constructor-memory-v1)
             ((equal object "nelisp-rooted-prelink-text-v1") "nelisp-compiler-constructor-prelink-v1")
-            ((equal object "scripts/nelisp-native-rooted-prelink-closure.py")
-             "scripts/nelisp-native-compiler-constructor-prelink.py")
+            ((equal object "scripts/nelisp-native-rooted-prelink-closure.el")
+             "scripts/nelisp-native-compiler-constructor-prelink.el")
             ((equal object "nelisp-rooted-elf-proof") "nelisp-compiler-constructor-proof")
             ((equal object "Require the reviewed ticket+GC closure; other operation eligibility is refused.")
              "Require the reviewed constructor closure; numeric and call eligibility remain refused.")
@@ -275,7 +275,7 @@
                     (expand-file-name "lisp/nelisp-native-compiler-startup-evidence.el" root)
                     (expand-file-name "lisp/nelisp-native-rooted-startup-evidence.el" root)
                     (expand-file-name "templates/nelisp-native-rooted-abi-proof.el.in" root)
-                    (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.py" root)))
+                    (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.el" root)))
             ((and generator (consp object) (eq (car object) 'list)
                   (equal (cl-subseq object 0 (min 5 (length object))) '(list :version 1 :layout layout)))
              (setq expected (1+ expected))
@@ -291,8 +291,8 @@
                                '("lisp/nelisp-native-compiler-startup-evidence.el"
                                  "lisp/nelisp-native-rooted-startup-evidence.el"
                                  "templates/nelisp-native-rooted-abi-proof.el.in"
-                                 "scripts/nelisp-native-rooted-prelink-closure.py"
-                                 "scripts/nelisp-native-compiler-constructor-prelink.py"
+                                 "scripts/nelisp-native-rooted-prelink-closure.el"
+                                 "scripts/nelisp-native-compiler-constructor-prelink.el"
                                  "lisp/nelisp-native-compiler-runtime-capability.el"))
                        :compiler-exports nelisp-native-compiler-startup-evidence--exports)))
             ((consp object) (cons (walk (car object)) (walk (cdr object))))

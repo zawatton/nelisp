@@ -406,11 +406,10 @@ dependencies, subprocess result and source owners are checked before return."
          (context-owner (symbol-function 'nelisp-native-load-rooted-runtime-dependency-context))
          (context (funcall context-owner))
          (layout (car (funcall layout-owner)))
-         (script (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.py" root))
+         (script (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.el" root))
          (owner-script (expand-file-name "scripts/nelisp-native-rooted-direct-closure.py" root))
          (template (expand-file-name "templates/nelisp-native-rooted-abi-proof.el.in" root))
          (loader (expand-file-name "lisp/nelisp-native-load.el" root))
-         (python (executable-find (if (eq system-type 'windows-nt) "python" "python3")))
          (source-paths (list (expand-file-name "lisp/nelisp-native-windows.el" root)
                              (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
                              script owner-script template loader
@@ -420,9 +419,8 @@ dependencies, subprocess result and source owners are checked before return."
          (sources (mapcar (lambda (path)
                             (cons path (nelisp-native-rooted-build-evidence-source-hash path 4194304)))
                           source-paths)))
-    (unless (and python
-                 (equal (file-truename (or (symbol-file 'nelisp-native-load-rooted-production-contract 'defun) ""))
-                        (file-truename loader)))
+    (unless (equal (file-truename (or (symbol-file 'nelisp-native-load-rooted-production-contract 'defun) ""))
+                   (file-truename loader))
       (error "Unknown rooted build tool or loader source owner"))
     (let* ((capture (nelisp-native-rooted-build-evidence-write units builder root directory))
            (closure (expand-file-name "prelink-closure.json" directory))
@@ -436,8 +434,14 @@ dependencies, subprocess result and source owners are checked before return."
                       "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow"))
         (setq arguments (append arguments (list "--root" name))))
       (with-temp-buffer
-        (unless (and (eq (apply #'call-process python nil (list (current-buffer) t) nil arguments) 0)
-                     (string-match-p "\\`[0-9a-f]\\{64\\}\n\\'" (buffer-string)))
+        ;; The proof runs in process: load the script and call its `-main'
+        ;; with the CLI-style arguments, capturing the digest line it returns.
+        (insert (condition-case err
+                    (progn (load script nil t t)
+                           (funcall (intern (concat (file-name-base script) "-main"))
+                                    (cdr arguments)))
+                  (error (format "%s\n" (error-message-string err)))))
+        (unless (string-match-p "\\`[0-9a-f]\\{64\\}\n\\'" (buffer-string))
           (error "Authenticated prelink closure generation failed: %s"
                  (substring (buffer-string) 0 (min 2000 (buffer-size)))))
         (setq result (nelisp-native-rooted-startup-evidence-render

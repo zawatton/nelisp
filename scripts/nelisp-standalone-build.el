@@ -50392,9 +50392,11 @@ top-level form defines NAME that way."
                         "lisp/nelisp-native-rooted-startup-evidence.el"
                         "lisp/nelisp-native-load.el" "lisp/nelisp-runtime-reload-abi.el"
                         "lisp/nelisp-native-raw-file.el"
-                        "scripts/nelisp-native-rooted-prelink-closure.py"
+                        "lisp/nelisp-x86-64-decode.el"
+                        "scripts/nelisp-native-rooted-prelink-closure.el"
                         "scripts/nelisp-native-rooted-direct-closure.py"
-                        "scripts/nelisp-native-compiler-constructor-prelink.py"
+                        "scripts/nelisp-native-compiler-constructor-prelink.el"
+                        "scripts/nelisp-native-compiler-f1-prelink.el"
                         "lisp/nelisp-native-compiler-startup-evidence.el"
                         "lisp/nelisp-native-compiler-runtime-capability.el"
                         "templates/nelisp-native-rooted-abi-proof.el.in"))
@@ -50409,13 +50411,8 @@ top-level form defines NAME that way."
     (require 'nelisp-native-rooted-startup-evidence)
     (require 'nelisp-native-funcall-startup-evidence)
     (unless (and (fboundp 'nelisp-native-load-rooted-production-contract)
-                 (fboundp 'nelisp-native-load-rooted-runtime-dependency-context)
-                 (executable-find (if (eq system-type 'windows-nt) "python" "python3")))
-      (error "Missing rooted protocol layout owner or generation tool"))
-    (with-temp-buffer
-      (unless (eq (call-process (executable-find (if (eq system-type 'windows-nt) "python" "python3")) nil (list (current-buffer) t) nil
-                                "-c" "import capstone; import elftools") 0)
-        (error "Missing rooted protocol decoder dependency")))
+                 (fboundp 'nelisp-native-load-rooted-runtime-dependency-context))
+      (error "Missing rooted protocol layout owner"))
     t))
 
 (defun nelisp-standalone--native-startup-autoload-src (source)
