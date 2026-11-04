@@ -2,8 +2,9 @@
 
 ;;; Code:
 
-(defvar executing-kbd-macro nil
-  "Non-nil while executing a keyboard macro.")
+(unless (boundp 'executing-kbd-macro)
+  (defvar executing-kbd-macro nil
+    "Non-nil while executing a keyboard macro."))
 (unless (boundp 'ring-bell-function)
   (defvar ring-bell-function nil
     "Function called instead of ringing the terminal bell interactively."))
