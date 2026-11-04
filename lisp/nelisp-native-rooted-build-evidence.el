@@ -12,11 +12,29 @@
     (insert-file-contents-literally path)
     (secure-hash 'sha256 (current-buffer))))
 
+(defconst nelisp-native-rooted-build-evidence--hex-digits
+  (let ((table (make-vector 256 nil)))
+    (dotimes (byte 256) (aset table byte (format "%02x" byte)))
+    table)
+  "Two lowercase hex digits of every byte value.
+A table lookup instead of `format' per byte: this file runs interpreted
+during the build, where `format' made encoding the units cost ~8.5 s.")
+
+(defvar nelisp-native-rooted-build-evidence--hex-cache
+  (make-hash-table :test #'equal :weakness 'key)
+  "Hex encodings of unit section bytes, keyed by the bytes.")
+
 (defun nelisp-native-rooted-build-evidence--hex (bytes)
   "Encode exact unit BYTES without character decoding."
   (unless (and (stringp bytes) (not (multibyte-string-p bytes)))
     (error "Rooted unit payload is not exact bytes"))
-  (mapconcat (lambda (byte) (format "%02x" byte)) bytes ""))
+  ;; One build writes the same units for three proofs; reuse the encoding
+  ;; of equal bytes (keys compared by content, so a changed string misses).
+  (or (gethash bytes nelisp-native-rooted-build-evidence--hex-cache)
+      (puthash bytes
+               (let ((table nelisp-native-rooted-build-evidence--hex-digits))
+                 (mapconcat (lambda (byte) (aref table byte)) bytes ""))
+               nelisp-native-rooted-build-evidence--hex-cache)))
 
 (defun nelisp-native-rooted-build-evidence--relocations (relocations)
   "Intern relocation symbol names while preserving every relocation in order."
