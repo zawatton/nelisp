@@ -486,10 +486,10 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 ;; standalone runtime does not load.  Libraries such as mm-decode (pulled in
 ;; by url.el) take it as a keymap parent, so bind an empty child of
 ;; `minibuffer-local-map' unless a real keymap is already present.
-(unless (and (boundp 'minibuffer-local-completion-map)
-             (emacs-keymap-keymapp minibuffer-local-completion-map))
+(unless (boundp 'minibuffer-local-completion-map)
   (defvar minibuffer-local-completion-map nil
-    "Keymap for completing input in the minibuffer.")
+    "Keymap for completing input in the minibuffer."))
+(unless (emacs-keymap-keymapp minibuffer-local-completion-map)
   (setq minibuffer-local-completion-map (emacs-keymap-make-sparse-keymap))
   (set-keymap-parent minibuffer-local-completion-map minibuffer-local-map))
 
