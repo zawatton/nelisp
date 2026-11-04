@@ -3,12 +3,20 @@
 (require 'nl-ffi-libffi)
 (require 'emacs-command-loop)
 (define-error 'nelisp-gui-xcb-error "XCB transport error")
+(declare-function ptr-call "ext:nelisp-runtime")
+(declare-function ptr-call-typed "ext:nelisp-runtime")
+(declare-function ptr-write-u32 "ext:nelisp-runtime")
+(declare-function ptr-write-u64 "ext:nelisp-runtime")
 (defconst nelisp-gui-xcb-cookie-type '(:struct :uint32))
 ;; State: connection, window, visual, screen, xkb context/keymap/state, alive,
 ;; negotiated XKB event base, input fd, owned pollfd storage, selected device,
 ;; serialized effective keyboard group, prefetched owned native event.
 ;; No live native pointer is installed while loading/baking this file.
 
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (pointer offset))
+(declare-function ptr-read-u64 "ext:nelisp-runtime" (pointer offset))
+(declare-function syscall-direct "ext:nelisp-runtime"
+                  (number a b c d e f))
 (defvar nelisp-gui-xcb--calls (make-hash-table :test 'eq)
   "Process-local prepared scalar calls; never populated at image build time.")
 

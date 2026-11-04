@@ -5,6 +5,8 @@
 (require 'emacs-window)
 (require 'emacs-frame-pixels)
 
+(declare-function ptr-read-u64 "ext:nelisp-runtime")
+(declare-function ptr-write-u8 "ext:nelisp-runtime")
 (defvar nelisp-gui-pango-cell-width 12)
 (defvar nelisp-gui-pango-line-height 28)
 (defvar nelisp-gui-pango-font-size 20.0)
@@ -102,6 +104,10 @@ Clear the owned cache on capacity pressure; plain typing reuses its layouts.")
       (nelisp-gui-xcb-call "g_object_unref" [:void :pointer] layout)
       (nelisp-gui-xcb-call "g_object_unref" [:void :pointer] context))))
 
+(defvar nelisp-gui-frontend--renderer)
+(defvar nelisp-gui-frontend--timing-redisplay)
+(declare-function nelisp-gui-frontend--point "nelisp-gui-frontend")
+
 (defun nelisp-gui-pango-natural-size (r text)
   "Measure a string with the same font, tabs and DPI as painting."
   (let ((layout (aref r 2)) (desc (aref r 3)))
@@ -113,7 +119,7 @@ Clear the owned cache on capacity pressure; plain typing reuses its layouts.")
 
 (defun nelisp-gui-pango-measure (r text)
   "Measure the realized grid-aligned Pango run, including fallback and tabs."
-  (let ((natural (nelisp-gui-pango-natural-size r text)))
+  (let ((_natural (nelisp-gui-pango-natural-size r text)))
     (cons (* (emacs-frame-pixels-string-columns text emacs-redisplay-default-tab-width)
              nelisp-gui-pango-cell-width)
           nelisp-gui-pango-line-height)))
@@ -453,7 +459,7 @@ lazily with shared glyph rows.  Expose/resize and menu changes force repaint."
                        (not (and old-cursor (eq w (car old-cursor)) (= i (cadr old-cursor))))
                        (not (and cursor (= i (car cursor)))))
                   nil
-		(let* ((row (aref rows i)) (glyphs (emacs-redisplay-glyph-row-glyphs row))
+		(let* ((row (aref rows i)) (_glyphs (emacs-redisplay-glyph-row-glyphs row))
                        (text-row (or (emacs-redisplay-glyph-row-start-pos row)
                                      (= (emacs-redisplay-glyph-row-used row) 0)))
                        (nelisp-gui-pango--row-inset (if text-row inset 0))

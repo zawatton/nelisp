@@ -57,6 +57,9 @@
 ;; the built reader.  A hard require asks for a file rather than for the
 ;; functions, and the file is the part that does not exist.
 (require 'subr-x nil t)
+
+;; Owned by `nelisp-coding-jis-tables' (loaded lazily).
+(defvar nelisp-coding-jis-tables-sha256)
 (require 'nelisp-cc-runtime)
 (require 'nelisp-cc-bootstrap)
 

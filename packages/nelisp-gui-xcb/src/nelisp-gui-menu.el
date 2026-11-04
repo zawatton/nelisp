@@ -2,6 +2,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-gui-pango)
 (require 'emacs-keymap)
+(defvar nelisp-gui-frontend--paint-needed)
 (defvar nelisp-gui-menu--boxes nil)
 (defvar nelisp-gui-menu--popup nil)
 (defvar nelisp-gui-menu--suppress-release nil)
