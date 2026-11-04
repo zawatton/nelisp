@@ -106,8 +106,14 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
                                    (list (car section) :nelisp-cache-bytes-hex
                                          (nelisp-native-rooted-build-evidence--hex (cdr section)))
                                  section)) sections))
+          ;; `print-circle' stays off: a freshly compiled unit shares one
+          ;; name string between :symbols and :stackmap, the same unit read
+          ;; back from the unit cache does not, and `#1=' labels made the
+          ;; file (and so the driver's key) differ between the two, so the
+          ;; build after any recompile recompiled driver.o (~12 s).  Units
+          ;; are acyclic; a cycle would signal here, not loop.
           (with-temp-file path
-            (let ((print-circle t) (print-length nil) (print-level nil))
+            (let ((print-circle nil) (print-length nil) (print-level nil))
               (prin1 encoded (current-buffer))))
           (setq encoded-total (+ encoded-total (file-attribute-size (file-attributes path))))
           (unless (<= encoded-total 33554432) (error "Encoded active unit aggregate bound"))
