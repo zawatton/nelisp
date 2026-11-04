@@ -105,7 +105,7 @@
 #     nemacs-gui-file-bridge-runtime.el  470  fset replay baked into the runtime image
 #     fontset.el 27, emacs-completion-ui 6, map-ynp 4, emacs-elisp-eval 3,
 #       emacs-info 2, emacs-eshell 2, emacs-capf 2, let-alist 1, emacs-undo-ui 1,
-#       emacs-project 1, emacs-ielm 1, emacs-dired-min 1   (49)  host tests exercise
+#       emacs-project 1, emacs-ielm 1, emacs-dired-min 1   (51)  host tests exercise
 #       this tree's implementation, so deferring to the host breaks them
 #     emacs-time 11, emacs-load 7, files 6, emacs-numeric 4, emacs-fns 3, ert 1  (32)
 #       host tests of standalone behaviour / this tree's ert shim fail when the
