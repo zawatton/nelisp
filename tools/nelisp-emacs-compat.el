@@ -134,7 +134,52 @@ the host already has the name.  The name alone is never trusted."
                                (symbol-name (car (cdr form))))
                (nelisp-emacs-compat--mentions-p
                 (cdr (cdr form)) '(fboundp boundp)))
-      (puthash (car (cdr form)) t table))))
+      (puthash (car (cdr form)) t table))
+    ;; Standalone-only gates: `(when STANDALONE-P ...)'.  A defun named
+    ;; *standalone*-p, or a defconst/defvar named *standalone*-p, whose
+    ;; definition probes a primitive with fboundp.  Same trust level as the
+    ;; install predicates: the body is checked, the name only selects.
+    (when (and (consp form) (memq (car form) '(defun defconst defvar))
+               (symbolp (car-safe (cdr-safe form)))
+               (string-match-p "standalone[a-z0-9-]*-p\\'"
+                               (symbol-name (car (cdr form))))
+               (nelisp-emacs-compat--mentions-p
+                (cdr (cdr form)) '(fboundp)))
+      (puthash (car (cdr form)) 'standalone table))))
+
+(defun nelisp-emacs-compat--standalone-test-p (test)
+  "Non-nil when TEST is true only on a standalone NeLisp, never on a host.
+Accepts a collected standalone predicate/variable, an fboundp probe of a
+name stock Emacs lacks, an `and' with such a conjunct, or an `or' whose
+every disjunct is such a test."
+  (cond
+   ((symbolp test)
+    (and test nelisp-emacs-compat--guard-predicates
+         (eq (gethash test nelisp-emacs-compat--guard-predicates) 'standalone)))
+   ((not (consp test)) nil)
+   ((and nelisp-emacs-compat--guard-predicates
+         (symbolp (car test))
+         (eq (gethash (car test) nelisp-emacs-compat--guard-predicates)
+             'standalone))
+    t)
+   ((eq (car test) 'fboundp)
+    (let ((arg (car-safe (cdr-safe test))))
+      (and (eq (car-safe arg) 'quote)
+           (symbolp (car-safe (cdr-safe arg)))
+           (not (fboundp (car (cdr arg)))))))
+   ((eq (car test) 'and)
+    (let ((tail (cdr test)) (hit nil))
+      (while (and (consp tail) (not hit))
+        (setq hit (nelisp-emacs-compat--standalone-test-p (car tail))
+              tail (cdr tail)))
+      hit))
+   ((eq (car test) 'or)
+    (and (consp (cdr test))
+         (let ((tail (cdr test)) (all t))
+           (while (and (consp tail) all)
+             (setq all (nelisp-emacs-compat--standalone-test-p (car tail))
+                   tail (cdr tail)))
+           all)))))
 
 (defun nelisp-emacs-compat--guard-p (form)
   "Non-nil when FORM is a `unless'/`when' gated on a host-definition check.
@@ -143,12 +188,15 @@ predicate that was verified to consult fboundp/boundp."
   (and (consp form)
        (memq (car form) '(unless when))
        (let ((test (car-safe (cdr-safe form))))
-         (and (consp test)
-              (or (memq (car test) '(fboundp boundp))
-                  (and nelisp-emacs-compat--guard-predicates
-                       (symbolp (car test))
-                       (gethash (car test)
-                                nelisp-emacs-compat--guard-predicates)))))))
+         (or (and (eq (car form) 'when)
+                  (nelisp-emacs-compat--standalone-test-p test))
+             (and (consp test)
+                  (or (memq (car test) '(fboundp boundp))
+                      (and nelisp-emacs-compat--guard-predicates
+                           (symbolp (car test))
+                           (eq (gethash (car test)
+                                        nelisp-emacs-compat--guard-predicates)
+                               t))))))))
 
 (defun nelisp-emacs-compat--walk (form guarded table file)
   "Record every definition in FORM into TABLE, noting whether it is GUARDED.
