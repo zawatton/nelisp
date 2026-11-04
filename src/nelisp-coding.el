@@ -81,6 +81,12 @@
 ;; functions, and the file is the part that does not exist.
 (require 'subr-x nil t)
 
+;; Owned by `nelisp-coding-jis-tables' (loaded lazily).
+(defvar nelisp-coding-shift-jis-x0208-decode-table)
+(defvar nelisp-coding-cp932-extension-decode-table)
+(defvar nelisp-coding-euc-jp-x0208-decode-table)
+(defvar nelisp-coding-euc-jp-x0212-decode-table)
+
 ;;; Customization
 
 (defgroup nelisp-coding nil

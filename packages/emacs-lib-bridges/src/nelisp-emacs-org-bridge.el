@@ -11,6 +11,18 @@
 
 ;;; Code:
 
+(defvar org-element--latex-begin-environment-nogroup)
+(defvar org-element-drawer-re-nogroup)
+(defvar org-element-dynamic-block-open-re-nogroup)
+(defvar org-footnote-definition-re)
+(defvar org-element--current-element-re)
+(declare-function org-element-at-point "org-element")
+(declare-function org-agenda-files "org")
+(defvar org-persist--index)
+(defvar org-persist--index-hash)
+(defvar org-element-use-cache)
+(defvar org-element-cache-persistent)
+
 (defvar nelisp-emacs-org-bridge-repo-root nil
   "Repository root used to resolve the generated Org bundle path.")
 

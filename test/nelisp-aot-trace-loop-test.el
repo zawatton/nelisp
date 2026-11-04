@@ -1,4 +1,7 @@
 ;;; nelisp-aot-trace-loop-test.el --- Ended call-free loop traces -*- lexical-binding: t; -*-
+;; Guarded so that loading this file twice (e.g. a Makefile `-l' plus a
+;; `require' from another test) defines its tests only once.
+(unless (featurep 'nelisp-aot-trace-loop-test)
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
@@ -258,3 +261,4 @@
       (should (= (length scope) 10))
       (dolist (p (car (plist-get trace :plan))) (should (memq (car p) scope))))
     (should (nelisp-aot-trace-loop-test--replan r loop owner))))
+(provide 'nelisp-aot-trace-loop-test))

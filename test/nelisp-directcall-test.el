@@ -1,4 +1,7 @@
 ;;; nelisp-directcall-test.el --- Validated primitive argv boundary -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-directcall-test)
 
 (require 'ert)
 (require 'cl-lib)
@@ -216,3 +219,4 @@
 
 
 (provide 'nelisp-directcall-test)
+)

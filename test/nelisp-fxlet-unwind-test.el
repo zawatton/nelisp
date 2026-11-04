@@ -1,4 +1,7 @@
 ;;; nelisp-fxlet-unwind-test.el --- Generated event-root lifetime -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-fxlet-unwind-test)
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-standalone-build)
@@ -259,3 +262,4 @@
     (should (equal (gethash 1072 mem) 3))))
 
 (provide 'nelisp-fxlet-unwind-test)
+)

@@ -1,4 +1,7 @@
 ;;; nelisp-aot-pure-tree-test.el --- Pure GP expression temporaries -*- lexical-binding: t; -*-
+;; Guarded so that loading this file twice (a Makefile `-l' plus the
+;; `require' in nelisp-aot-compare-tree-test) defines its tests only once.
+(unless (featurep 'nelisp-aot-pure-tree-test)
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
@@ -118,3 +121,4 @@
 
 (provide 'nelisp-aot-pure-tree-test)
 ;;; nelisp-aot-pure-tree-test.el ends here
+)

@@ -2,6 +2,12 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-gui-xcb)
 (require 'emacs-select)
+(declare-function ptr-write-bytes "ext:nelisp-runtime")
+(declare-function ptr-write-u32 "ext:nelisp-runtime")
+(declare-function ptr-write-u8 "ext:nelisp-runtime")
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (pointer offset))
+(declare-function ptr-read-u64 "ext:nelisp-runtime" (pointer offset))
+(declare-function ptr-read-bytes "ext:nelisp-runtime" (pointer size))
 (defvar nelisp-gui-selection--state nil)
 (defvar nelisp-gui-selection--atoms nil)
 (defvar nelisp-gui-selection--owners nil)

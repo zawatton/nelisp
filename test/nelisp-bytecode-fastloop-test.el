@@ -1,4 +1,7 @@
 ;;; nelisp-bytecode-fastloop-test.el --- Fast-loop coverage -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-bytecode-fastloop-test)
 
 (require 'nelisp-bytecode-stackset-fast-test)
 
@@ -291,3 +294,4 @@
     (should (= (plist-get r :sp) 0))))
 
 (provide 'nelisp-bytecode-fastloop-test)
+)

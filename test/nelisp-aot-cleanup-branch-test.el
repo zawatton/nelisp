@@ -1,4 +1,7 @@
 ;;; nelisp-aot-cleanup-branch-test.el --- Region outcome cleanup -*- lexical-binding: t; -*-
+;; Guarded so that loading this file twice (e.g. a Makefile `-l' plus a
+;; `require' from another test) defines its tests only once.
+(unless (featurep 'nelisp-aot-cleanup-branch-test)
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
@@ -131,3 +134,4 @@
    (advice-remove 'nelisp-aot-compiler--emit-cleanup-branch-x86 count-edge)
    (advice-remove 'nelisp-aot-compiler--emit-promotion-cleanup-x86 count-flush)
    (unless (getenv "NELISP_CLEANUP_BRANCH_KEEP") (delete-directory dir t)))))
+(provide 'nelisp-aot-cleanup-branch-test))

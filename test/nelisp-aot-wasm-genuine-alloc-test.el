@@ -1,4 +1,7 @@
 ;;; nelisp-aot-wasm-genuine-alloc-test.el --- Opt-in allocation tests -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-aot-wasm-genuine-alloc-test)
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
@@ -95,3 +98,4 @@
                   :type 'nelisp-aot-compiler-error)))
 
 (provide 'nelisp-aot-wasm-genuine-alloc-test)
+)

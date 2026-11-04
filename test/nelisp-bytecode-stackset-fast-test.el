@@ -1,4 +1,7 @@
 ;;; nelisp-bytecode-stackset-fast-test.el --- Stack-set batching -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-bytecode-stackset-fast-test)
 
 (require 'ert)
 (require 'cl-lib)
@@ -173,3 +176,4 @@ both sides of the stack. Return packed state, memory and stack accesses."
 
 (provide 'nelisp-bytecode-stackset-fast-test)
 ;;; nelisp-bytecode-stackset-fast-test.el ends here
+)

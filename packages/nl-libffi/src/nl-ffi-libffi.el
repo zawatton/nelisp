@@ -4,6 +4,12 @@
 (require 'nl-ffi)
 (require 'nl-ffi-memory)
 
+(declare-function ptr-write-u32 "ext:nelisp-runtime")
+(declare-function ptr-write-u64 "ext:nelisp-runtime")
+(declare-function ptr-write-u8 "ext:nelisp-runtime")
+(declare-function ptr-read-u8 "ext:nelisp-runtime" (pointer offset))
+(declare-function ptr-read-u64 "ext:nelisp-runtime" (pointer offset))
+
 (defvar nl-ffi-libffi--cache nil)
 (defvar nl-ffi-libffi--types nil)
 
@@ -114,7 +120,8 @@ The cache retains the library handle, CIF, types and aggregate descriptors."
 
 (defun nl-ffi-libffi-call (library name result arguments &rest values)
   "Call NAME with explicitly typed VALUES, including real by-value structs.
-Aggregate arguments are pointers to native cells; aggregate results are byte vectors.
+Aggregate arguments are pointers to native cells; aggregate results are
+byte vectors.
 Full-width unsigned integers outside the runtime fixnum range are refused."
   (unless (= (length arguments) (length values)) (error "libffi: argument count"))
   (let* ((cif (nl-ffi-libffi-prepare library name result arguments))

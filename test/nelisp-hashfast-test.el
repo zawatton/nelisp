@@ -1,4 +1,7 @@
 ;;; nelisp-hashfast-test.el --- Hash/walker production IR checks -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-hashfast-test)
 (require 'ert)
 (require 'cl-lib)
 
@@ -400,3 +403,4 @@ the index vector, all vectorlike WORDS (low bits 6)."
                   (puthash (+ 16384 8 (* 3 8)) (funcall fix 3) mem)))))
     (should (= (car r) 3))
     (should (equal (nth 1 r) '((1 10) (21 28) (35 42) (49 56))))))
+)

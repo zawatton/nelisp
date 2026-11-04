@@ -1,4 +1,7 @@
 ;;; nelisp-aot-stack-args-test.el --- Direct SysV GP stack tail -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-aot-stack-args-test)
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
@@ -168,3 +171,4 @@
 
 (provide 'nelisp-aot-stack-args-test)
 ;;; nelisp-aot-stack-args-test.el ends here
+)

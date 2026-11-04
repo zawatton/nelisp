@@ -394,7 +394,14 @@ Forwarder to `forward-char' with negated count."
     translation-table-for-input undo-in-progress use-dialog-box values vertical-scroll-bar
     x-gtk-use-window-move yank-transform-functions)))
   (dolist (--s-- --stub-defvars--)
-    (unless (boundp --s--)
+    ;; `s', `sym', `needed' and `output' are not Emacs special variables;
+    ;; they are listed only for vendored code that leaks free references
+    ;; on the NeLisp runtime.  On a host Emacs, making them special would
+    ;; turn every later `(lambda (s) ...)' in the same process into a
+    ;; "Lexical argument shadows the dynamic variable" byte-compile error.
+    (unless (or (boundp --s--)
+                (and (not (fboundp 'nl-ffi-call))
+                     (memq --s-- '(s sym needed output))))
       ;; Constructed `defvar', not `set': every name in this list is a
       ;; real dynamic (special) variable in Emacs, and vendor code
       ;; let-binds many of them expecting other functions to observe the
