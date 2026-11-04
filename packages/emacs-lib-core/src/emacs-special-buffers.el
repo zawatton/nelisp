@@ -18,11 +18,11 @@
 
 (unless (boundp 'messages-buffer-name)
   (defvar messages-buffer-name emacs-special-buffers-messages-name
-  "Name of the buffer used for `message' history in this substrate."))
+    "Name of the buffer used for `message' history in this substrate."))
 
 (unless (boundp 'message-log-max)
   (defvar message-log-max t
-  "Maximum number of lines kept in `messages-buffer-name'.
+    "Maximum number of lines kept in `messages-buffer-name'.
 Nil disables logging; t keeps all lines; an integer keeps that many newest
 lines."))
 

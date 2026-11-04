@@ -162,12 +162,12 @@ ERT can prefill this list with `emacs-minibuffer-feed-input'.")
 
 (unless (boundp 'minibuffer-completion-table)
   (defvar minibuffer-completion-table nil
-  "Completion table for the active read, or nil.
+    "Completion table for the active read, or nil.
 Set by `emacs-minibuffer-completing-read', restored on exit."))
 
 (unless (boundp 'minibuffer-completion-confirm)
   (defvar minibuffer-completion-confirm nil
-  "When non-nil, `emacs-minibuffer-completing-read' insists on a hit."))
+    "When non-nil, `emacs-minibuffer-completing-read' insists on a hit."))
 
 (defvar emacs-minibuffer--functional-exact-input nil
   "Dynamically scoped input being tested by a functional completion table.")

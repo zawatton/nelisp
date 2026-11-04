@@ -48,7 +48,7 @@
 
 (unless (boundp 'auto-save-visited-file-name)
   (defvar auto-save-visited-file-name nil
-  "Non-nil means auto-saving writes the visited file itself.
+    "Non-nil means auto-saving writes the visited file itself.
 This GNU C-core option is also read by genuine files.el before auto-save."))
 
 ;; `file-attributes' is deliberately absent (audit 2026-09-29): the native one is

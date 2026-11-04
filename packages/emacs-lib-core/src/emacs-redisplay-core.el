@@ -783,42 +783,43 @@ NOERROR permits falling back to raw text for an invalid coding system."
     4)
    (t (char-width char))))
 
-(when (or (not (fboundp 'string-width))
-          (fboundp 'nelisp--repr))
-  (defun string-width (&rest args)
-    "Return STRING's display width in the current buffer.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'string-width))
+            (fboundp 'nelisp--repr))
+    (defun string-width (&rest args)
+      "Return STRING's display width in the current buffer.
 FROM and TO delimit a substring, including negative substring indices.
 Each tab occupies `tab-width' columns, independently of its position.
 
 (fn STRING &optional FROM TO)"
-    (unless (<= 1 (length args) 3)
-      (signal 'wrong-number-of-arguments (list 'string-width (length args))))
-    (let ((string (car args))
-          (from (cadr args))
-          (to (nth 2 args)))
-      (unless (stringp string)
-        (signal 'wrong-type-argument (list 'stringp string)))
-      (let* ((text (substring string (or from 0) to))
-             (table (or (and (boundp 'buffer-display-table)
-                             buffer-display-table)
-                        (and (boundp 'standard-display-table)
-                             standard-display-table)))
-             (width 0)
-             (i 0))
-        (while (< i (length text))
-          (let* ((char (aref text i))
-                 (glyphs (and (char-table-p table) (aref table char))))
-            (if (vectorp glyphs)
-                (let ((j 0))
-                  (while (< j (length glyphs))
-                    (setq width
-                          (+ width (emacs-redisplay-core--character-width
-                                    (logand (aref glyphs j) #x3fffff)))
-                          j (1+ j))))
-              (setq width (+ width
-                             (emacs-redisplay-core--character-width char)))))
-          (setq i (1+ i)))
-        width))))
+      (unless (<= 1 (length args) 3)
+	(signal 'wrong-number-of-arguments (list 'string-width (length args))))
+      (let ((string (car args))
+            (from (cadr args))
+            (to (nth 2 args)))
+	(unless (stringp string)
+          (signal 'wrong-type-argument (list 'stringp string)))
+	(let* ((text (substring string (or from 0) to))
+               (table (or (and (boundp 'buffer-display-table)
+                               buffer-display-table)
+                          (and (boundp 'standard-display-table)
+                               standard-display-table)))
+               (width 0)
+               (i 0))
+          (while (< i (length text))
+            (let* ((char (aref text i))
+                   (glyphs (and (char-table-p table) (aref table char))))
+              (if (vectorp glyphs)
+                  (let ((j 0))
+                    (while (< j (length glyphs))
+                      (setq width
+                            (+ width (emacs-redisplay-core--character-width
+                                      (logand (aref glyphs j) #x3fffff)))
+                            j (1+ j))))
+		(setq width (+ width
+                               (emacs-redisplay-core--character-width char)))))
+            (setq i (1+ i)))
+          width)))))
 
 (defun emacs-redisplay-core--uid (uid)
   "Convert UID to an unsigned 32-bit user ID, or signal GNU's error."

@@ -43,50 +43,51 @@ and every later `advice-add' wrapper calls (apply nil nil ARGS) --
            (eq (advice--car (advice--make :around #'car #'cdr nil)) #'car)
          (error nil))))
 
-(when (and (or (fboundp 'nl-write-file)
-               (not (boundp 'emacs-version)))
-           (not (oclosure-shim--genuine-oclosures-work-p)))
+(when (fboundp 'nl-ffi-call)
+  (when (and (or (fboundp 'nl-write-file)
+		 (not (boundp 'emacs-version)))
+             (not (oclosure-shim--genuine-oclosures-work-p)))
 
-  (defmacro oclosure-lambda (type-and-slots args &rest body)
-    (let* ((type (car type-and-slots))
-           (fields (cdr type-and-slots))
-           (class (or (cl--find-class type)
-                      (error "Unknown class: %S" type)))
-           (slots (oclosure--class-slots class))
-           (slot-names (and slots
-                            (mapcar (lambda (s) (cl--slot-descriptor-name s)) slots)))
-           (slot-binds (let ((bs nil))
-                         (dolist (sn slot-names (nreverse bs))
-                           (let ((f (assq sn fields)))
-                             (push (list sn (if f (car (cdr f)) nil)) bs))))))
-      (list 'let* slot-binds
-            (append (list 'lambda args
-                          ;; literal type marker = first body form (nth 3).
-                          (list 'quote (cons '--oclosure-type-- type)))
-                    ;; force lexical capture of any slot vars referenced by BODY.
-                    (if slot-names (list (cons 'ignore slot-names)))
-                    body))))
+    (defmacro oclosure-lambda (type-and-slots args &rest body)
+      (let* ((type (car type-and-slots))
+             (fields (cdr type-and-slots))
+             (class (or (cl--find-class type)
+			(error "Unknown class: %S" type)))
+             (slots (oclosure--class-slots class))
+             (slot-names (and slots
+                              (mapcar (lambda (s) (cl--slot-descriptor-name s)) slots)))
+             (slot-binds (let ((bs nil))
+                           (dolist (sn slot-names (nreverse bs))
+                             (let ((f (assq sn fields)))
+                               (push (list sn (if f (car (cdr f)) nil)) bs))))))
+	(list 'let* slot-binds
+              (append (list 'lambda args
+                            ;; literal type marker = first body form (nth 3).
+                            (list 'quote (cons '--oclosure-type-- type)))
+                      ;; force lexical capture of any slot vars referenced by BODY.
+                      (if slot-names (list (cons 'ignore slot-names)))
+                      body))))
 
-  (defun oclosure-type (oclosure)
-    "Return the OClosure type of OCLOSURE, or nil if it is not one."
-    (and (closurep oclosure)
-         (let ((marker (nth 3 oclosure)))
-           (and (eq (car-safe marker) 'quote)
-                (eq (car-safe (car-safe (cdr marker))) '--oclosure-type--)
-                (cdr (car-safe (cdr marker)))))))
+    (defun oclosure-type (oclosure)
+      "Return the OClosure type of OCLOSURE, or nil if it is not one."
+      (and (closurep oclosure)
+           (let ((marker (nth 3 oclosure)))
+             (and (eq (car-safe marker) 'quote)
+                  (eq (car-safe (car-safe (cdr marker))) '--oclosure-type--)
+                  (cdr (car-safe (cdr marker)))))))
 
-  (defun oclosure--fix-type (_ignore oclosure) oclosure)
-  (defun oclosure--copy (oclosure _mutlist &rest _args) oclosure)
-  ;; Best-effort: list-closure slot cells aren't externally readable; cl-generic
-  ;; never reads slots off an OClosure (only the type, above).
-  (defun oclosure--get (_oclosure _index &optional _mutable) nil)
-  (defun oclosure--set (value _oclosure _index) value)
+    (defun oclosure--fix-type (_ignore oclosure) oclosure)
+    (defun oclosure--copy (oclosure _mutlist &rest _args) oclosure)
+    ;; Best-effort: list-closure slot cells aren't externally readable; cl-generic
+    ;; never reads slots off an OClosure (only the type, above).
+    (defun oclosure--get (_oclosure _index &optional _mutable) nil)
+    (defun oclosure--set (value _oclosure _index) value)
 
-  ;; cl-generic-define-method companions the reader lacks (harmless stubs).
-  (unless (fboundp 'get-advertised-calling-convention)
-    (defun get-advertised-calling-convention (_function) nil))
-  (unless (fboundp 'set-advertised-calling-convention)
-    (defun set-advertised-calling-convention (_function _cc _when) nil)))
+    ;; cl-generic-define-method companions the reader lacks (harmless stubs).
+    (unless (fboundp 'get-advertised-calling-convention)
+      (defun get-advertised-calling-convention (_function) nil))
+    (unless (fboundp 'set-advertised-calling-convention)
+      (defun set-advertised-calling-convention (_function _cc _when) nil))))
 
 (provide 'oclosure-shim)
 ;;; oclosure-shim.el ends here

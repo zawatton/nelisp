@@ -328,7 +328,7 @@ adjusts those positions before calling this function."
 
 (unless (boundp 'combine-after-change-calls)
   (defvar combine-after-change-calls nil
-  "Non-nil means defer after-change notifications when possible."))
+    "Non-nil means defer after-change notifications when possible."))
 (defvar inhibit-modification-hooks nil
   "Non-nil means suppress buffer modification hooks.")
 
@@ -790,7 +790,7 @@ under the live Magit bridge even when the actual current buffer is valid."
 
 (unless (boundp 'buffer-invisibility-spec)
   (defvar buffer-invisibility-spec nil
-  "Standalone bridge for Emacs's per-buffer invisibility spec."))
+    "Standalone bridge for Emacs's per-buffer invisibility spec."))
 
 (when (fboundp 'make-variable-buffer-local)
   (make-variable-buffer-local 'buffer-invisibility-spec))
@@ -1556,10 +1556,11 @@ The sidecar stores overlays in a flat list, so no repartition is needed."
 ;; stub over it would report every string as multibyte again.  Ask the
 ;; runtime about a pure-ASCII string and keep the stub only for a reader
 ;; that predates Doc 200 (or has no `multibyte-string-p' at all).
-(when (and (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
-           (condition-case nil (multibyte-string-p "a") (error t)))
-  (defun multibyte-string-p (object)
-    (stringp object)))
+(when (fboundp 'nl-ffi-call)
+  (when (and (emacs-buffer-builtins--install-function-p 'multibyte-string-p)
+             (condition-case nil (multibyte-string-p "a") (error t)))
+    (defun multibyte-string-p (object)
+      (stringp object))))
 
 ;;;; --- registry lookup (Phase L1, 2026-05-03) --------------------------
 
@@ -1595,26 +1596,27 @@ recognize as one of its own `nelisp-ec-buffer' structs or registry
 entries, so buffers created outside this bridge keep resolving exactly
 as before.")
 
-(when (or (emacs-buffer-builtins--install-function-p 'get-buffer)
-          (emacs-buffer-builtins--standalone-p))
-  (defun get-buffer (buffer-or-name)
-    "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
+(when (fboundp 'nl-ffi-call)
+  (when (or (emacs-buffer-builtins--install-function-p 'get-buffer)
+            (emacs-buffer-builtins--standalone-p))
+    (defun get-buffer (buffer-or-name)
+      "Phase L1 polyfill: look BUFFER-OR-NAME up in the `nelisp-ec' registry.
 When BUFFER-OR-NAME is a buffer object, return it if live else nil.
 When it is a string, return the matching buffer record if this bridge
 has one; otherwise fall back to `emacs-buffer-builtins--native-get-buffer'
 (covers native-only buffers such as *Messages*, and host Emacs's own
 buffers when this polyfill is active there)."
-    (cond
-     ((null buffer-or-name) nil)
-     ((nelisp-ec-buffer-p buffer-or-name)
-      (if (nelisp-ec-buffer-killed-p buffer-or-name)
-          nil
-        buffer-or-name))
-     ((and (stringp buffer-or-name) (assoc buffer-or-name nelisp-ec--buffers))
-      (cdr (assoc buffer-or-name nelisp-ec--buffers)))
-     (emacs-buffer-builtins--native-get-buffer
-      (funcall emacs-buffer-builtins--native-get-buffer buffer-or-name))
-     (t nil))))
+      (cond
+       ((null buffer-or-name) nil)
+       ((nelisp-ec-buffer-p buffer-or-name)
+	(if (nelisp-ec-buffer-killed-p buffer-or-name)
+            nil
+          buffer-or-name))
+       ((and (stringp buffer-or-name) (assoc buffer-or-name nelisp-ec--buffers))
+	(cdr (assoc buffer-or-name nelisp-ec--buffers)))
+       (emacs-buffer-builtins--native-get-buffer
+	(funcall emacs-buffer-builtins--native-get-buffer buffer-or-name))
+       (t nil)))))
 
 (when (emacs-buffer-builtins--install-function-p 'get-buffer-create)
   (defun get-buffer-create (buffer-or-name &optional inhibit-buffer-hooks)

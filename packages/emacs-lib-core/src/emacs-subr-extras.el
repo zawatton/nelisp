@@ -189,45 +189,47 @@ Return the colon-separated account fields, or nil for an unknown account."
                    (or (not (stringp key)) (equal key (car fields))))
           fields)))))
 
-(when (or (not (fboundp 'user-login-name))
-          (get 'user-login-name 'emacs-stub-bulk))
-  (defun user-login-name (&optional uid)
-    "Return the current login name, or the login name belonging to UID.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'user-login-name))
+            (get 'user-login-name 'emacs-stub-bulk))
+    (defun user-login-name (&optional uid)
+      "Return the current login name, or the login name belonging to UID.
 An unknown numeric user ID returns nil."
-    (if (null uid)
-        (if (boundp 'user-login-name)
-            (symbol-value 'user-login-name)
-          (or (getenv "LOGNAME") (getenv "USER")
-              (car (emacs-subr-extras--passwd (user-uid)))))
-      (car (emacs-subr-extras--passwd
-            (emacs-subr-extras--uid uid)))))
-  (put 'user-login-name 'emacs-stub-bulk nil))
+      (if (null uid)
+          (if (boundp 'user-login-name)
+              (symbol-value 'user-login-name)
+            (or (getenv "LOGNAME") (getenv "USER")
+		(car (emacs-subr-extras--passwd (user-uid)))))
+	(car (emacs-subr-extras--passwd
+              (emacs-subr-extras--uid uid)))))
+    (put 'user-login-name 'emacs-stub-bulk nil)))
 
 (unless (fboundp 'user-real-login-name)
   (defun user-real-login-name ()
     "Return the current real login name for standalone consumers."
     (user-login-name)))
 
-(when (or (not (fboundp 'user-full-name))
-          (eq (symbol-function 'user-full-name) 'nelisp--unbound-marker))
-  (defun user-full-name (&optional uid)
-    "Return the current full name, or the full name of UID.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'user-full-name))
+            (eq (symbol-function 'user-full-name) 'nelisp--unbound-marker))
+    (defun user-full-name (&optional uid)
+      "Return the current full name, or the full name of UID.
 UID may be a numeric user ID or a login name.  Unknown users return nil."
-    (if (and (null uid) (boundp 'user-full-name))
-        (symbol-value 'user-full-name)
-      (unless (or (null uid) (stringp uid) (numberp uid))
-        (signal 'error '("Invalid UID specification")))
-      (let* ((key (if (stringp uid) uid
-                    (emacs-subr-extras--uid (or uid (user-uid)))))
-             (fields (emacs-subr-extras--passwd key)))
-        (if fields
-            (let* ((name (car (split-string (nth 4 fields) ",")))
-                   (login (car fields))
-                   (capitalized (if (= (length login) 0) login
-                                  (concat (upcase (substring login 0 1))
-                                          (substring login 1)))))
-              (replace-regexp-in-string "&" capitalized (or name "") t t))
-          (and (null uid) "unknown"))))))
+      (if (and (null uid) (boundp 'user-full-name))
+          (symbol-value 'user-full-name)
+	(unless (or (null uid) (stringp uid) (numberp uid))
+          (signal 'error '("Invalid UID specification")))
+	(let* ((key (if (stringp uid) uid
+                      (emacs-subr-extras--uid (or uid (user-uid)))))
+               (fields (emacs-subr-extras--passwd key)))
+          (if fields
+              (let* ((name (car (split-string (nth 4 fields) ",")))
+                     (login (car fields))
+                     (capitalized (if (= (length login) 0) login
+                                    (concat (upcase (substring login 0 1))
+                                            (substring login 1)))))
+		(replace-regexp-in-string "&" capitalized (or name "") t t))
+            (and (null uid) "unknown")))))))
 
 ;; ---- length comparison primitives (Emacs 29+ C builtins) ----
 ;; Vendor packages (and modern subr-x users) call `length<' / `length=' /
@@ -446,10 +448,10 @@ KIND is accepted for API parity but not distinguished."
 ;; replay version with this simpler, replay-safe one is the correct fix.
 (when (fboundp 'nl-ffi-call)
   (defun define-symbol-prop (symbol prop val)
-  "Define the property PROP of SYMBOL to be VAL.
+    "Define the property PROP of SYMBOL to be VAL.
 Minimal subr.el port — matches host Emacs `put' behaviour but
 skips the `current-load-list' bookkeeping (= unused on standalone)."
-  (put symbol prop val)))
+    (put symbol prop val)))
 
 ;; ---- byte-compile-only metadata declarations ----
 ;;
@@ -574,33 +576,35 @@ skips the `current-load-list' bookkeeping (= unused on standalone)."
   (defun event-modifiers (event) (emacs-subr-extras-event-modifiers event)))
 (unless (fboundp 'event-basic-type)
   (defun event-basic-type (event) (emacs-subr-extras-event-basic-type event)))
-(unless (and (fboundp 'event-convert-list)
-             (not (get 'event-convert-list 'emacs-stub-bulk)))
-  (defun event-convert-list (list) (emacs-subr-extras-event-convert-list list))
-  (put 'event-convert-list 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'event-convert-list)
+               (not (get 'event-convert-list 'emacs-stub-bulk)))
+    (defun event-convert-list (list) (emacs-subr-extras-event-convert-list list))
+    (put 'event-convert-list 'emacs-stub-bulk nil)))
 
 ;; Doc 06 A2: GC statistics API.  The standalone runtime collects automatically
 ;; at form boundaries and exposes no manual-collect-with-stats primitive, so
 ;; these provide the host-shaped return structure (counts are placeholders) to
 ;; unblock callers that depend on the API shape.  Under host Emacs the C
 ;; builtins win.  `garbage-collect' is stub-aware (it ships as a nil stub).
-(unless (and (fboundp 'garbage-collect)
-             (not (get 'garbage-collect 'emacs-stub-bulk)))
-  (defun garbage-collect ()
-    "Return a host-shaped garbage-collection statistics list.
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'garbage-collect)
+               (not (get 'garbage-collect 'emacs-stub-bulk)))
+    (defun garbage-collect ()
+      "Return a host-shaped garbage-collection statistics list.
 The standalone nelisp runtime collects automatically; counts here are
 placeholders, but the list structure matches Emacs so callers that index it
 work."
-    (list '(conses 16 0 0)
-          '(symbols 48 0 0)
-          '(strings 32 0 0)
-          '(string-bytes 1 0)
-          '(vectors 16 0)
-          '(vector-slots 8 0 0)
-          '(floats 8 0 0)
-          '(intervals 56 0 0)
-          '(buffers 1000 0)))
-  (put 'garbage-collect 'emacs-stub-bulk nil))
+      (list '(conses 16 0 0)
+            '(symbols 48 0 0)
+            '(strings 32 0 0)
+            '(string-bytes 1 0)
+            '(vectors 16 0)
+            '(vector-slots 8 0 0)
+            '(floats 8 0 0)
+            '(intervals 56 0 0)
+            '(buffers 1000 0)))
+    (put 'garbage-collect 'emacs-stub-bulk nil)))
 
 (unless (fboundp 'memory-use-counts)
   (defun memory-use-counts ()
@@ -639,9 +643,9 @@ QUERY-SPECS is a series of QUERY-SPECs; each QUERY is preceded by pairs of
     ;; whether tree-sitter is enabled, so we guard on availability.
     (when (treesit-available-p)
       (let (current-language current-override
-            current-feature
-            default-language
-            (result nil))
+			     current-feature
+			     default-language
+			     (result nil))
         (while query-specs
           (let ((token (pop query-specs)))
             (pcase token

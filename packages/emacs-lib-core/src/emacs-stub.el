@@ -542,69 +542,74 @@ Unregistered Lisp functions still fail the ordinary subr type check."
   (defun set-default (symbol value)
     (set symbol value)))
 
-(when (or (not (boundp 'emacs-version))
-          (not (fboundp 'set-default-toplevel-value)))
-  (defun set-default-toplevel-value (symbol value)
-    "Set SYMBOL's default value outside dynamic bindings to VALUE."
-    (unless (symbolp symbol)
-      (signal 'wrong-type-argument (list 'symbolp symbol)))
-    (when (or (null symbol) (eq symbol t) (keywordp symbol))
-      (signal 'setting-constant (list symbol)))
-    (if (fboundp 'nelisp--env-globals-set-value)
-        (let ((target (if (fboundp 'indirect-variable)
-                          (indirect-variable symbol) symbol)))
-          (nelisp--env-globals-set-value target value)
-          ;; GNU Custom initializes through this global-cell primitive
-          ;; rather than `set'.  Keep declared variable aliases live.
-          (when (boundp 'nelisp--defvaralias-reverse)
-            (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
-              (nelisp--env-globals-set-value alias value))))
-      ;; Host path: route through `setq-default' semantics so the live
-      ;; global value is updated too; the substrate `set-default' only
-      ;; records the per-buffer default, leaving `boundp' nil after
-      ;; `defcustom'.
-      (if (fboundp 'emacs-buffer-setq-default-1)
-          (emacs-buffer-setq-default-1 symbol value)
-        (set-default symbol value)))
-    nil))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (not (fboundp 'set-default-toplevel-value)))
+    (defun set-default-toplevel-value (symbol value)
+      "Set SYMBOL's default value outside dynamic bindings to VALUE."
+      (unless (symbolp symbol)
+	(signal 'wrong-type-argument (list 'symbolp symbol)))
+      (when (or (null symbol) (eq symbol t) (keywordp symbol))
+	(signal 'setting-constant (list symbol)))
+      (if (fboundp 'nelisp--env-globals-set-value)
+          (let ((target (if (fboundp 'indirect-variable)
+                            (indirect-variable symbol) symbol)))
+            (nelisp--env-globals-set-value target value)
+            ;; GNU Custom initializes through this global-cell primitive
+            ;; rather than `set'.  Keep declared variable aliases live.
+            (when (boundp 'nelisp--defvaralias-reverse)
+              (dolist (alias (cdr (assq target nelisp--defvaralias-reverse)))
+		(nelisp--env-globals-set-value alias value))))
+	;; Host path: route through `setq-default' semantics so the live
+	;; global value is updated too; the substrate `set-default' only
+	;; records the per-buffer default, leaving `boundp' nil after
+	;; `defcustom'.
+	(if (fboundp 'emacs-buffer-setq-default-1)
+            (emacs-buffer-setq-default-1 symbol value)
+          (set-default symbol value)))
+      nil)))
 
-(when (or (not (boundp 'emacs-version))
-          (not (fboundp 'default-toplevel-value)))
-  (defalias 'default-toplevel-value #'default-value))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (not (fboundp 'default-toplevel-value)))
+    (defalias 'default-toplevel-value #'default-value)))
 
-(when (or (not (boundp 'emacs-version))
-          (not (fboundp 'internal--define-uninitialized-variable)))
-  (defun internal--define-uninitialized-variable (symbol &optional doc)
-    "Mark SYMBOL as declared without assigning it a value."
-    (unless (symbolp symbol)
-      (signal 'wrong-type-argument (list 'symbolp symbol)))
-    ;; The native runtime keeps GNU's declared_special bit in the symbol;
-    ;; its declaration op also updates this registry (Doc 226).
-    (if (fboundp 'nelisp--env-globals-op)
-        (nelisp--env-globals-op 'variable-declare-special symbol)
-      (puthash symbol t nelisp--special-variables))
-    (when doc
-      (put symbol 'variable-documentation doc))
-    nil))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (not (fboundp 'internal--define-uninitialized-variable)))
+    (defun internal--define-uninitialized-variable (symbol &optional doc)
+      "Mark SYMBOL as declared without assigning it a value."
+      (unless (symbolp symbol)
+	(signal 'wrong-type-argument (list 'symbolp symbol)))
+      ;; The native runtime keeps GNU's declared_special bit in the symbol;
+      ;; its declaration op also updates this registry (Doc 226).
+      (if (fboundp 'nelisp--env-globals-op)
+          (nelisp--env-globals-op 'variable-declare-special symbol)
+	(puthash symbol t nelisp--special-variables))
+      (when doc
+	(put symbol 'variable-documentation doc))
+      nil)))
 
-(when (or (not (boundp 'emacs-version))
-          (get 'make-variable-buffer-local 'emacs-stub-bulk)
-          (not (fboundp 'make-variable-buffer-local)))
-  (defun make-variable-buffer-local (variable)
-    "Stub: accept VARIABLE and return it.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (get 'make-variable-buffer-local 'emacs-stub-bulk)
+            (not (fboundp 'make-variable-buffer-local)))
+    (defun make-variable-buffer-local (variable)
+      "Stub: accept VARIABLE and return it.
 Even without a full buffer-local subsystem, callers such as
 `setq-local' depend on Emacs's contract that this returns the symbol
 that can then be passed to `set'."
-    variable))
+      variable)))
 
-(when (or (not (boundp 'emacs-version))
-          (get 'make-local-variable 'emacs-stub-bulk)
-          (not (fboundp 'make-local-variable)))
-  (defun make-local-variable (variable)
-    "Stub: accept VARIABLE and return it.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (get 'make-local-variable 'emacs-stub-bulk)
+            (not (fboundp 'make-local-variable)))
+    (defun make-local-variable (variable)
+      "Stub: accept VARIABLE and return it.
 This keeps `(set (make-local-variable 'foo) value)' from attempting to
 set nil or another constant symbol in standalone NeLisp."
-    variable))
+      variable)))
 
 (unless (fboundp 'local-variable-p)
   (defun local-variable-p (variable &optional buffer) (ignore variable buffer) nil))
@@ -1035,20 +1040,21 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
     "Return F unchanged in the standalone advice substrate."
     f))
 
-(when (or (not (boundp 'emacs-version))
-          (emacs-stub--install-function-p 'help-function-arglist)
-          (get 'help-function-arglist 'emacs-stub-placeholder))
-  (defun help-function-arglist (def &optional _preserve-names)
-    "Return DEF's arglist for the standalone advice/help substrate."
-    (let ((f (cond ((symbolp def)
-                    (and (fboundp def) (symbol-function def)))
-                   (t def))))
-      (cond ((null f) nil)
-            ((and (consp f) (eq (car f) 'lambda)) (cadr f))
-            ((and (consp f) (eq (car f) 'closure)) (caddr f))
-            ((and (consp f) (eq (car f) 'macro))
-             (help-function-arglist (cdr f)))
-            (t nil)))))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (emacs-stub--install-function-p 'help-function-arglist)
+            (get 'help-function-arglist 'emacs-stub-placeholder))
+    (defun help-function-arglist (def &optional _preserve-names)
+      "Return DEF's arglist for the standalone advice/help substrate."
+      (let ((f (cond ((symbolp def)
+                      (and (fboundp def) (symbol-function def)))
+                     (t def))))
+	(cond ((null f) nil)
+              ((and (consp f) (eq (car f) 'lambda)) (cadr f))
+              ((and (consp f) (eq (car f) 'closure)) (caddr f))
+              ((and (consp f) (eq (car f) 'macro))
+               (help-function-arglist (cdr f)))
+              (t nil))))))
 
 (defun emacs-stub--indirect-function (object)
   "Resolve OBJECT's function aliases, detecting cycles in linear time."
@@ -1062,12 +1068,13 @@ Return -1, 0, or 1 when V1 is less than, equal to, or greater than V2."
         (signal 'cyclic-function-indirection (list original))))
     object))
 
-(when (or (not (boundp 'emacs-version))
-          (emacs-stub--install-function-p 'indirect-function))
-  (defun indirect-function (object &optional noerror)
-    "Return OBJECT's ultimate function definition."
-    (ignore noerror)
-    (emacs-stub--indirect-function object)))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (emacs-stub--install-function-p 'indirect-function))
+    (defun indirect-function (object &optional noerror)
+      "Return OBJECT's ultimate function definition."
+      (ignore noerror)
+      (emacs-stub--indirect-function object))))
 
 (unless (fboundp 'advice--p)
   (defun advice--p (object)
@@ -1348,11 +1355,12 @@ returns a float, while pixels and face columns return an integer."
 (unless (fboundp 'with-temp-buffer)
   (defmacro with-temp-buffer (&rest body) (cons 'progn body)))
 
-(when (or (emacs-stub--install-function-p 'bound-and-true-p)
-          (get 'bound-and-true-p 'emacs-stub-bulk))
-  (defmacro bound-and-true-p (var)
-    "Return VAR's value if VAR is bound and non-nil."
-    `(and (boundp ',var) ,var)))
+(when (fboundp 'nl-ffi-call)
+  (when (or (emacs-stub--install-function-p 'bound-and-true-p)
+            (get 'bound-and-true-p 'emacs-stub-bulk))
+    (defmacro bound-and-true-p (var)
+      "Return VAR's value if VAR is bound and non-nil."
+      `(and (boundp ',var) ,var))))
 
 (unless (fboundp 'narrow-to-region)
   (defun narrow-to-region (start end) (ignore start end) nil))
@@ -1370,11 +1378,12 @@ returns a float, while pixels and face columns return an integer."
 (unless (fboundp 'set-syntax-table)
   (defun set-syntax-table (table) (ignore table) nil))
 
-(when (or (not (fboundp 'make-syntax-table))
-          (get 'make-syntax-table 'emacs-stub-bulk))
-  (defun make-syntax-table (&optional table)
-    "Standalone load-time fallback for syntax table objects."
-    (list 'syntax-table table)))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'make-syntax-table))
+            (get 'make-syntax-table 'emacs-stub-bulk))
+    (defun make-syntax-table (&optional table)
+      "Standalone load-time fallback for syntax table objects."
+      (list 'syntax-table table))))
 
 (unless (fboundp 'modify-syntax-entry)
   (defun modify-syntax-entry (char newentry &optional table) (ignore char newentry table) nil))
@@ -1833,19 +1842,19 @@ resolved to its canonical (obsolete-alias aware) variable first."
 ;; (closure (&rest _) nil), so always install the real implementation.
 (when (fboundp 'nl-ffi-call)
   (defun regexp-opt (strings &optional paren)
-  "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
+    "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
 PAREN nil -> shy group; t / string -> capture group; words / symbols add
 word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
-  (let* ((body (mapconcat #'regexp-quote strings "\\|"))
-         (open (cond ((stringp paren) paren)
-                     ((eq paren 'words) "\\<\\(")
-                     ((eq paren 'symbols) "\\_<\\(")
-                     (paren "\\(")
-                     (t "\\(?:")))
-         (close (cond ((eq paren 'words) "\\)\\>")
-                      ((eq paren 'symbols) "\\)\\_>")
-                      (t "\\)"))))
-    (concat open body close))))
+    (let* ((body (mapconcat #'regexp-quote strings "\\|"))
+           (open (cond ((stringp paren) paren)
+                       ((eq paren 'words) "\\<\\(")
+                       ((eq paren 'symbols) "\\_<\\(")
+                       (paren "\\(")
+                       (t "\\(?:")))
+           (close (cond ((eq paren 'words) "\\)\\>")
+			((eq paren 'symbols) "\\)\\_>")
+			(t "\\)"))))
+      (concat open body close))))
 
 (unless (fboundp 'easy-menu-define)
   (defmacro easy-menu-define (&rest _args)
@@ -2027,42 +2036,44 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
                  . emacs-stub--remove-function-value)))
   (defalias (car pair) (cdr pair)))
 
-(when (or (not (boundp 'emacs-version))
-          (get 'add-function 'emacs-stub-bulk))
-  (defmacro add-function (how place function &optional props)
-    "Standalone subset of `nadvice.el' `add-function'.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (get 'add-function 'emacs-stub-bulk))
+    (defmacro add-function (how place function &optional props)
+      "Standalone subset of `nadvice.el' `add-function'.
 Supports symbol variables and `(local 'SYMBOL)' function variables."
-    (cond
-     ((and (consp place)
-           (eq (car place) 'local)
-           (eq (car-safe (cadr place)) 'quote))
-      (list 'emacs-stub--add-function-symbol how (cadr place) function props t))
-     ((and (consp place)
-           (eq (car place) 'var))
-      (list 'setq (cadr place)
-            (list 'emacs-stub--add-function-value
-                  how (cadr place) function props)))
-     ((symbolp place)
-      (list 'emacs-stub--add-function-symbol
-            how (list 'quote place) function props nil))
-     (t nil))))
+      (cond
+       ((and (consp place)
+             (eq (car place) 'local)
+             (eq (car-safe (cadr place)) 'quote))
+	(list 'emacs-stub--add-function-symbol how (cadr place) function props t))
+       ((and (consp place)
+             (eq (car place) 'var))
+	(list 'setq (cadr place)
+              (list 'emacs-stub--add-function-value
+                    how (cadr place) function props)))
+       ((symbolp place)
+	(list 'emacs-stub--add-function-symbol
+              how (list 'quote place) function props nil))
+       (t nil)))))
 
-(when (or (not (boundp 'emacs-version))
-          (get 'remove-function 'emacs-stub-bulk))
-  (defmacro remove-function (place function)
-    "Standalone subset of `nadvice.el' `remove-function'."
-    (cond
-     ((and (consp place)
-           (eq (car place) 'local)
-           (eq (car-safe (cadr place)) 'quote))
-      (list 'emacs-stub--remove-function-symbol (cadr place) function t))
-     ((and (consp place)
-           (eq (car place) 'var))
-      (list 'setq (cadr place)
-            (list 'emacs-stub--remove-function-value (cadr place) function)))
-     ((symbolp place)
-      (list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
-     (t nil))))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (boundp 'emacs-version))
+            (get 'remove-function 'emacs-stub-bulk))
+    (defmacro remove-function (place function)
+      "Standalone subset of `nadvice.el' `remove-function'."
+      (cond
+       ((and (consp place)
+             (eq (car place) 'local)
+             (eq (car-safe (cadr place)) 'quote))
+	(list 'emacs-stub--remove-function-symbol (cadr place) function t))
+       ((and (consp place)
+             (eq (car place) 'var))
+	(list 'setq (cadr place)
+              (list 'emacs-stub--remove-function-value (cadr place) function)))
+       ((symbolp place)
+	(list 'emacs-stub--remove-function-symbol (list 'quote place) function nil))
+       (t nil)))))
 
 (unless (fboundp 'register-definition-prefixes)
   (defun register-definition-prefixes (file prefixes)
@@ -2774,17 +2785,18 @@ E is V itself when V is self-quoting, otherwise (quote V)."
 ;; carried `(quote SYM)' in the slot instead of SYM — downstream,
 ;; magit-section's `(symbol-value keymap)' on that cons aborted the whole
 ;; enclosing form flagless.  Semantics copied from macroexp.el.
-(when (or (not (fboundp 'macroexp-const-p))
-          (get 'macroexp-const-p 'emacs-stub-bulk))
-  (defun macroexp-const-p (exp)
-    "Return non-nil if EXP will always evaluate to the same value."
-    (cond ((consp exp) (or (eq (car exp) 'quote)
-                           (and (eq (car exp) 'function)
-                                (symbolp (cadr exp)))))
-          ((symbolp exp) (or (memq exp '(nil t))
-                             (keywordp exp)))
-          (t t)))
-  (put 'macroexp-const-p 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'macroexp-const-p))
+            (get 'macroexp-const-p 'emacs-stub-bulk))
+    (defun macroexp-const-p (exp)
+      "Return non-nil if EXP will always evaluate to the same value."
+      (cond ((consp exp) (or (eq (car exp) 'quote)
+                             (and (eq (car exp) 'function)
+                                  (symbolp (cadr exp)))))
+            ((symbolp exp) (or (memq exp '(nil t))
+                               (keywordp exp)))
+            (t t)))
+    (put 'macroexp-const-p 'emacs-stub-bulk nil)))
 
 ;;;; --- Doc 16 breadth round 15: copy-hash-table (was void) -------------
 ;; `copy-hash-table' was void, which broke `map-copy' on hash tables.  The
@@ -2841,9 +2853,10 @@ normal macro-writing contract."
 ;; `(&rest _) nil' macro, so a plain `unless fboundp' guard never installed
 ;; the working version below (`cl-callf' then expanded to nil and silently
 ;; skipped the write, e.g. eieio's slots-list -> vector conversion).
-(unless (and (fboundp 'gv-letplace) (not (fboundp 'nelisp--record-set)))
-  (defmacro gv-letplace (vars place &rest body)
-    "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'gv-letplace) (not (fboundp 'nelisp--record-set)))
+    (defmacro gv-letplace (vars place &rest body)
+      "Simplified `gv-letplace': bind VARS to PLACE's expression and a setter.
 
 Binds VARS' first symbol (GETTER) to the PLACE expression itself and
 its second symbol (SETTER) to a function that, given a value
@@ -2855,22 +2868,22 @@ The previous stub here expanded to a bare `(progn BODY...)' with VARS
 completely unbound, so every real user of the contract (e.g. Compat
 31's `incf'/`decf', which Magit's `magit--with-refresh-cache' relies
 on) hit `void-variable' on the setter symbol at first invocation."
-    (let ((getter (nth 0 vars))
-          (setter (nth 1 vars)))
-      (cons 'let*
-            (cons
-             (list
-              (list getter place)
-              (list setter
-                    (list 'lambda '(v)
-                          (list 'list
-                                (list 'quote 'setf)
-                                ;; GETTER holds the place FORM at macro time;
-                                ;; splice its value (quoting the symbol built
-                                ;; `(setf getter V)', a write to a global).
-                                getter
-                                'v))))
-             body)))))
+      (let ((getter (nth 0 vars))
+            (setter (nth 1 vars)))
+	(cons 'let*
+              (cons
+               (list
+		(list getter place)
+		(list setter
+                      (list 'lambda '(v)
+                            (list 'list
+                                  (list 'quote 'setf)
+                                  ;; GETTER holds the place FORM at macro time;
+                                  ;; splice its value (quoting the symbol built
+                                  ;; `(setf getter V)', a write to a global).
+                                  getter
+                                  'v))))
+               body))))))
 
 (unless (fboundp 'gv-get)
   (defun gv-get (place do)
@@ -4084,7 +4097,7 @@ release that package version targets."))
 ;; never run.  Keep an existing host startup queue untouched.
 (unless (boundp 'custom-delayed-init-variables)
   (defvar custom-delayed-init-variables t
-  "Standalone Custom initialization is complete; GNU may initialize normally."))
+    "Standalone Custom initialization is complete; GNU may initialize normally."))
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)
@@ -4260,14 +4273,14 @@ release that package version targets."))
                      (cons :tag "Width" :extra-offset 2
                            (integer :tag "Vertical")
                            (integer :tag "Horizontal"))
-		   (const :format "" :value :color)
-		   (choice :tag "Color" (const :tag "*" nil) color)
-		   (const :format "" :value :style)
-		   (choice :tag "Style"
-			   (const :tag "Raised" released-button)
-			   (const :tag "Sunken" pressed-button)
-			   (const :tag "Flat"   flat-button)
-			   (const :tag "None" nil))))
+		     (const :format "" :value :color)
+		     (choice :tag "Color" (const :tag "*" nil) color)
+		     (const :format "" :value :style)
+		     (choice :tag "Style"
+			     (const :tag "Raised" released-button)
+			     (const :tag "Sunken" pressed-button)
+			     (const :tag "Flat"   flat-button)
+			     (const :tag "None" nil))))
        ;; filter to make value suitable for customize
        ,(lambda (real-value)
 	  (and real-value

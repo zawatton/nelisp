@@ -26,15 +26,15 @@
 
 (unless (boundp 'package-enable-at-startup)
   (defvar package-enable-at-startup t
-  "Non-nil means startup should activate installed packages."))
+    "Non-nil means startup should activate installed packages."))
 
 (unless (boundp 'package-user-dir)
   (defvar package-user-dir (locate-user-emacs-file "elpa")
-  "Directory containing per-user ELPA package directories."))
+    "Directory containing per-user ELPA package directories."))
 
 (unless (boundp 'package-directory-list)
   (defvar package-directory-list nil
-  "Additional system package roots scanned for installed packages."))
+    "Additional system package roots scanned for installed packages."))
 
 (defvar package-load-list '(all)
   "List controlling which packages may be activated.")
@@ -47,11 +47,11 @@
 
 (unless (boundp 'package-activated-list)
   (defvar package-activated-list nil
-  "List of package names activated in the current session."))
+    "List of package names activated in the current session."))
 
 (unless (boundp 'package--activated)
   (defvar package--activated nil
-  "Non-nil after `package-activate-all' has run."))
+    "Non-nil after `package-activate-all' has run."))
 
 (defvar package--initialized nil
   "Non-nil after `package-initialize' has run.")
@@ -161,10 +161,10 @@
 
 (unless (fboundp 'package--description-file)
   (defun package--description-file (pkg-dir)
-  "Return the package descriptor file in PKG-DIR, or nil."
-  (let ((files (and (file-directory-p pkg-dir)
-                    (directory-files pkg-dir nil "-pkg\\.el\\'"))))
-    (car files))))
+    "Return the package descriptor file in PKG-DIR, or nil."
+    (let ((files (and (file-directory-p pkg-dir)
+                      (directory-files pkg-dir nil "-pkg\\.el\\'"))))
+      (car files))))
 
 (defun package-load-descriptor (pkg-dir)
   "Load the package description file in directory PKG-DIR."
@@ -201,10 +201,10 @@
 
 (unless (fboundp 'package-installed-p)
   (defun package-installed-p (pkg &optional _min-version)
-  "Return non-nil when PKG is installed or already provided."
-  (let ((name (package--name-symbol pkg)))
-    (or (featurep name)
-        (package--registered-p name)))))
+    "Return non-nil when PKG is installed or already provided."
+    (let ((name (package--name-symbol pkg)))
+      (or (featurep name)
+          (package--registered-p name)))))
 
 (defun package-disabled-p (pkg-name _version)
   "Return non-nil when PKG-NAME is disabled by `package-load-list'."
@@ -259,44 +259,44 @@
 
 (unless (fboundp 'package-activate-all)
   (defun package-activate-all ()
-  "Activate all installed packages."
-  (setq package--activated t)
-  (dolist (entry (package--alist))
-    (condition-case err
-        (package-activate (car entry))
-      (error
-       (when (fboundp 'message)
-         (message "%s" (error-message-string err))))))
-  package-activated-list))
+    "Activate all installed packages."
+    (setq package--activated t)
+    (dolist (entry (package--alist))
+      (condition-case err
+          (package-activate (car entry))
+	(error
+	 (when (fboundp 'message)
+           (message "%s" (error-message-string err))))))
+    package-activated-list))
 
 (unless (fboundp 'package-initialize)
   (defun package-initialize (&optional no-activate)
-  "Load package descriptors and, unless NO-ACTIVATE, activate packages."
-  (interactive)
-  (setq package-alist nil)
-  (package-load-all-descriptors)
-  (setq package--initialized t)
-  (unless no-activate
-    (package-activate-all))
-  t))
+    "Load package descriptors and, unless NO-ACTIVATE, activate packages."
+    (interactive)
+    (setq package-alist nil)
+    (package-load-all-descriptors)
+    (setq package--initialized t)
+    (unless no-activate
+      (package-activate-all))
+    t))
 
 (unless (fboundp 'package-refresh-contents)
   (defun package-refresh-contents (&optional _async)
-  "Signal that archive refresh is outside current package support."
-  (interactive)
-  (user-error "package archive refresh requires URL/process/GPG support")))
+    "Signal that archive refresh is outside current package support."
+    (interactive)
+    (user-error "package archive refresh requires URL/process/GPG support")))
 
 (unless (fboundp 'package-install)
   (defun package-install (pkg &optional _dont-select)
-  "Signal that installing PKG is outside current package support."
-  (interactive "SPackage: ")
-  (user-error "package install requires URL/process/GPG support: %s" pkg)))
+    "Signal that installing PKG is outside current package support."
+    (interactive "SPackage: ")
+    (user-error "package install requires URL/process/GPG support: %s" pkg)))
 
 (unless (fboundp 'package-install-selected-packages)
   (defun package-install-selected-packages (&optional _noconfirm)
-  "Signal that installing selected packages is outside current support."
-  (interactive)
-  (user-error "package install requires URL/process/GPG support")))
+    "Signal that installing selected packages is outside current support."
+    (interactive)
+    (user-error "package install requires URL/process/GPG support")))
 
 (defun define-package (_name-string _version-string
                                     &optional _docstring _requirements

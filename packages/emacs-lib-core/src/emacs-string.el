@@ -114,24 +114,25 @@ is non-nil, each returned line keeps its trailing newline when present."
           (setq start (if pos (1+ pos) len)))))
       (nreverse out))))
 
-(unless (and (fboundp 'string<)
-             (not (get 'string< 'emacs-stub-bulk)))
-  (defun string< (a b)
-    "Return non-nil if string A is lexicographically less than string B."
-    (let ((i 0)
-          (na (length a))
-          (nb (length b))
-          (answer nil)
-          (done nil))
-      (while (and (not done) (< i na) (< i nb))
-        (let ((ca (aref a i))
-              (cb (aref b i)))
-          (cond
-           ((< ca cb) (setq answer t done t))
-           ((> ca cb) (setq answer nil done t))
-           (t (setq i (1+ i))))))
-      (if done answer (< na nb))))
-  (put 'string< 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'string<)
+               (not (get 'string< 'emacs-stub-bulk)))
+    (defun string< (a b)
+      "Return non-nil if string A is lexicographically less than string B."
+      (let ((i 0)
+            (na (length a))
+            (nb (length b))
+            (answer nil)
+            (done nil))
+	(while (and (not done) (< i na) (< i nb))
+          (let ((ca (aref a i))
+		(cb (aref b i)))
+            (cond
+             ((< ca cb) (setq answer t done t))
+             ((> ca cb) (setq answer nil done t))
+             (t (setq i (1+ i))))))
+	(if done answer (< na nb))))
+    (put 'string< 'emacs-stub-bulk nil)))
 
 (unless (and (fboundp 'char-equal)
              (not (get 'char-equal 'emacs-stub-bulk)))
@@ -152,12 +153,13 @@ is non-nil, each returned line keeps its trailing newline when present."
                   (if (and (integerp db) (>= db 0)) db cb))))))
   (put 'char-equal 'emacs-stub-bulk nil))
 
-(unless (and (fboundp 'string-width)
-             (not (get 'string-width 'emacs-stub-bulk)))
-  (defun string-width (string)
-    "Return the display width of STRING (sum of per-character widths)."
-    (emacs-string--string-width string))
-  (put 'string-width 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'string-width)
+               (not (get 'string-width 'emacs-stub-bulk)))
+    (defun string-width (string)
+      "Return the display width of STRING (sum of per-character widths)."
+      (emacs-string--string-width string))
+    (put 'string-width 'emacs-stub-bulk nil)))
 
 (unless (and (fboundp 'int-to-string)
              (not (get 'int-to-string 'emacs-stub-bulk)))
@@ -166,35 +168,36 @@ is non-nil, each returned line keeps its trailing newline when present."
     (format "%d" integer))
   (put 'int-to-string 'emacs-stub-bulk nil))
 
-(unless (and (fboundp 'assoc-string)
-             (not (get 'assoc-string 'emacs-stub-bulk)))
-  (defun emacs-string--assoc-string-key (value)
-    "Return VALUE as a string key for `assoc-string', or nil."
-    (cond
-     ((stringp value) value)
-     ((symbolp value) (symbol-name value))
-     (t nil)))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'assoc-string)
+               (not (get 'assoc-string 'emacs-stub-bulk)))
+    (defun emacs-string--assoc-string-key (value)
+      "Return VALUE as a string key for `assoc-string', or nil."
+      (cond
+       ((stringp value) value)
+       ((symbolp value) (symbol-name value))
+       (t nil)))
 
-  (defun assoc-string (key list &optional case-fold)
-    "Return first alist element whose string key matches KEY.
+    (defun assoc-string (key list &optional case-fold)
+      "Return first alist element whose string key matches KEY.
 CASE-FOLD non-nil compares via `downcase'."
-    (let ((needle (emacs-string--assoc-string-key key))
-          (cur list)
-          (found nil))
-      (when case-fold
-        (setq needle (and needle (downcase needle))))
-      (when needle
-        (while (and cur (not found))
-          (let* ((cell (car cur))
-                 (head (emacs-string--assoc-string-key
-                        (if (consp cell) (car cell) cell))))
-            (when head
-              (let ((candidate (if case-fold (downcase head) head)))
-                (when (string= needle candidate)
-                  (setq found cell)))))
-          (setq cur (cdr cur))))
-      found))
-  (put 'assoc-string 'emacs-stub-bulk nil))
+      (let ((needle (emacs-string--assoc-string-key key))
+            (cur list)
+            (found nil))
+	(when case-fold
+          (setq needle (and needle (downcase needle))))
+	(when needle
+          (while (and cur (not found))
+            (let* ((cell (car cur))
+                   (head (emacs-string--assoc-string-key
+                          (if (consp cell) (car cell) cell))))
+              (when head
+		(let ((candidate (if case-fold (downcase head) head)))
+                  (when (string= needle candidate)
+                    (setq found cell)))))
+            (setq cur (cdr cur))))
+	found))
+    (put 'assoc-string 'emacs-stub-bulk nil)))
 
 (unless (fboundp 'string-lessp) (defun string-lessp (a b) (string< a b)))
 (unless (fboundp 'string-greaterp) (defun string-greaterp (a b) (string< b a)))
@@ -227,12 +230,13 @@ when it sorts before it.  IGNORE-CASE non-nil compares folded strings."
              ((< len1 len2) (- (1+ i)))
              ((> len1 len2) (1+ i))
              (t t)))))))
-(unless (and (fboundp 'substring-no-properties) (not (fboundp 'nelisp--repr)))
-  (defun substring-no-properties (s &optional from to)
-    "Copy the selected part of S, removing all text properties."
-    (let ((copy (substring s (or from 0) (or to (length s)))))
-      (set-text-properties 0 (length copy) nil copy)
-      copy)))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'substring-no-properties) (not (fboundp 'nelisp--repr)))
+    (defun substring-no-properties (s &optional from to)
+      "Copy the selected part of S, removing all text properties."
+      (let ((copy (substring s (or from 0) (or to (length s)))))
+	(set-text-properties 0 (length copy) nil copy)
+	copy))))
 (unless (fboundp 'truncate-string-to-width)
   (defun truncate-string-to-width (str width &rest _)
     (if (<= (length str) width) str (substring str 0 (max 0 width)))))
@@ -340,13 +344,14 @@ TAB resolves to `tab-width' (matching host `char-width')."
             i (1+ i)))
     w))
 
-(unless (and (fboundp 'char-width) (not (get 'char-width 'emacs-stub-bulk)))
-  (defun char-width (char)
-    "Return the column width of CHAR (default policy, ASCII + rough EAW)."
-    (unless (characterp char)
-      (signal 'wrong-type-argument (list 'characterp char)))
-    (emacs-string--char-width char))
-  (put 'char-width 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'char-width) (not (get 'char-width 'emacs-stub-bulk)))
+    (defun char-width (char)
+      "Return the column width of CHAR (default policy, ASCII + rough EAW)."
+      (unless (characterp char)
+	(signal 'wrong-type-argument (list 'characterp char)))
+      (emacs-string--char-width char))
+    (put 'char-width 'emacs-stub-bulk nil)))
 
 ;;;; --- character.c: unibyte-char-to-multibyte / multibyte-char-to-unibyte
 ;; Real Emacs C primitives (character.c), void anywhere in src/ (T52, load
@@ -541,21 +546,22 @@ Inverse of `combine-and-quote-strings'."
                         (split-string-and-unquote (substring string (cdr rfs))
                                                   sep))))))))
 
-(unless (and (fboundp 'propertize) (not (get 'propertize 'emacs-stub-bulk)))
-  (defun propertize (string &rest properties)
-    "Return a copy of STRING with PROPERTIES applied across its contents."
-    (unless (stringp string)
-      (signal 'wrong-type-argument (list 'stringp string)))
-    (let ((copy (copy-sequence string)))
-      (when (fboundp 'emacs-buffer-string-text-property)
-        (emacs-buffer-string-text-property 'copy string copy))
-      (when properties
-        (unless (fboundp 'emacs-buffer-string-text-property)
-          (signal 'void-function (list 'emacs-buffer-string-text-property)))
-        (emacs-buffer-string-text-property
-         'add copy 0 (length copy) properties))
-      copy))
-  (put 'propertize 'emacs-stub-bulk nil))
+(when (fboundp 'nl-ffi-call)
+  (unless (and (fboundp 'propertize) (not (get 'propertize 'emacs-stub-bulk)))
+    (defun propertize (string &rest properties)
+      "Return a copy of STRING with PROPERTIES applied across its contents."
+      (unless (stringp string)
+	(signal 'wrong-type-argument (list 'stringp string)))
+      (let ((copy (copy-sequence string)))
+	(when (fboundp 'emacs-buffer-string-text-property)
+          (emacs-buffer-string-text-property 'copy string copy))
+	(when properties
+          (unless (fboundp 'emacs-buffer-string-text-property)
+            (signal 'void-function (list 'emacs-buffer-string-text-property)))
+          (emacs-buffer-string-text-property
+           'add copy 0 (length copy) properties))
+	copy))
+    (put 'propertize 'emacs-stub-bulk nil)))
 
 (unless (fboundp 'string-glyph-split)
   (defun string-glyph-split (string)

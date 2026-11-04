@@ -1042,15 +1042,15 @@ display core."
 ;;;###autoload
 (unless (fboundp 'help-mode)
   (defun help-mode ()
-  "Major mode for the shared `*Help*' buffer."
-  (interactive)
-  (emacs-mode-kill-all-local-variables)
-  (emacs-mode-set-major-mode 'help-mode "Help")
-  (setq major-mode 'help-mode)
-  (setq mode-name "Help")
-  (use-local-map help-mode-map)
-  (setq truncate-lines t)
-  nil))
+    "Major mode for the shared `*Help*' buffer."
+    (interactive)
+    (emacs-mode-kill-all-local-variables)
+    (emacs-mode-set-major-mode 'help-mode "Help")
+    (setq major-mode 'help-mode)
+    (setq mode-name "Help")
+    (use-local-map help-mode-map)
+    (setq truncate-lines t)
+    nil))
 
 ;;;###autoload
 (defun emacs-help-quit-window ()

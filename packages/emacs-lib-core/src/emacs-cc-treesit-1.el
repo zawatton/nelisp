@@ -179,7 +179,7 @@ On failure signal GNU's loader condition with actual dlerror diagnostics."
     (when language
       (condition-case nil
           (emacs-cc-treesit-1--call "ts_language_version"
-                                  (car (emacs-cc-treesit-load-language language)))
+                                    (car (emacs-cc-treesit-load-language language)))
         (treesit-load-language-error nil)))))
 
 (unless (fboundp 'treesit-language-available-p)

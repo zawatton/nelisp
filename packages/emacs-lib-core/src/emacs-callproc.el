@@ -19,7 +19,7 @@
 
 (when (fboundp 'nl-ffi-call)
   (defvar process-environment nil
-  "List of `KEY=VALUE' strings used as the elisp environment overlay."))
+    "List of `KEY=VALUE' strings used as the elisp environment overlay."))
 
 (declare-function nl-syscall-getenv "nelisp-runtime" (variable))
 (declare-function nelisp-sys-getenv "nelisp-sys" (variable))
@@ -122,42 +122,44 @@ Non-alist members and non-string keys/values are ignored."
 ;; `process-environment'-based getenv whenever the reader file primitive
 ;; `rdf' is present (= standalone); on host Emacs (`rdf' unbound) only
 ;; when getenv is missing, so the C builtin is never clobbered.
-(when (or (not (fboundp 'getenv)) (fboundp 'rdf))
-  (defun getenv (variable &optional frame)
-    "Polyfill: look VARIABLE up in the NeLisp-compatible environment."
-    (emacs-callproc-getenv variable frame)))
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'getenv)) (fboundp 'rdf))
+    (defun getenv (variable &optional frame)
+      "Polyfill: look VARIABLE up in the NeLisp-compatible environment."
+      (emacs-callproc-getenv variable frame))))
 
 ;; Same reader/host split as getenv above: keep setenv writing to the
 ;; `process-environment' overlay that our getenv reads.
-(when (or (not (fboundp 'setenv)) (fboundp 'rdf))
-  (defun setenv (variable &optional value substitute-env-vars)
-    "Polyfill: prepend `VARIABLE=VALUE' to `process-environment'.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'setenv)) (fboundp 'rdf))
+    (defun setenv (variable &optional value substitute-env-vars)
+      "Polyfill: prepend `VARIABLE=VALUE' to `process-environment'.
 Returns VALUE.  When VALUE is nil this removes the entry (= matches
 Emacs C semantics).  SUBSTITUTE-ENV-VARS is accepted for arglist
 parity and ignored (= no `$VAR' interpolation in the polyfill)."
-    (ignore substitute-env-vars)
-    ;; Strip any existing entry for VARIABLE.
-    (let ((prefix (concat variable "="))
-          (prefix-len 0)
-          (acc nil)
-          (cur process-environment))
-      (setq prefix-len (length prefix))
-      (while cur
-        (let ((entry (car cur)))
-          (unless (and (>= (length entry) prefix-len)
-                       (equal (substring entry 0 prefix-len) prefix))
-            (setq acc (cons entry acc))))
-        (setq cur (cdr cur)))
-      ;; Reverse acc back to original order, then prepend new entry.
-      (let ((forward nil))
-        (while acc
-          (setq forward (cons (car acc) forward))
-          (setq acc (cdr acc)))
-        (setq process-environment
-              (if value
-                  (cons (concat variable "=" value) forward)
-                forward))))
-    value))
+      (ignore substitute-env-vars)
+      ;; Strip any existing entry for VARIABLE.
+      (let ((prefix (concat variable "="))
+            (prefix-len 0)
+            (acc nil)
+            (cur process-environment))
+	(setq prefix-len (length prefix))
+	(while cur
+          (let ((entry (car cur)))
+            (unless (and (>= (length entry) prefix-len)
+			 (equal (substring entry 0 prefix-len) prefix))
+              (setq acc (cons entry acc))))
+          (setq cur (cdr cur)))
+	;; Reverse acc back to original order, then prepend new entry.
+	(let ((forward nil))
+          (while acc
+            (setq forward (cons (car acc) forward))
+            (setq acc (cdr acc)))
+          (setq process-environment
+		(if value
+                    (cons (concat variable "=" value) forward)
+                  forward))))
+      value)))
 
 
 ;;;; --- standalone-reader environment seeding --------------------------

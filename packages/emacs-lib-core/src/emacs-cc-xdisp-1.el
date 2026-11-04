@@ -79,7 +79,7 @@
 
 (unless (boundp 'long-line-threshold)
   (defvar long-line-threshold 50000
-  "Minimum displayed line length that enables long-line optimizations.
+    "Minimum displayed line length that enables long-line optimizations.
 Nil disables detection, matching GNU Emacs."))
 
 (defun emacs-cc-xdisp-1--long-line-clip (buffer)

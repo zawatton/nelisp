@@ -2,11 +2,12 @@
 
 ;;; Code:
 
-(defvar executing-kbd-macro nil
-  "Non-nil while executing a keyboard macro.")
+(unless (boundp 'executing-kbd-macro)
+  (defvar executing-kbd-macro nil
+    "Non-nil while executing a keyboard macro."))
 (unless (boundp 'ring-bell-function)
   (defvar ring-bell-function nil
-  "Function called instead of ringing the terminal bell interactively."))
+    "Function called instead of ringing the terminal bell interactively."))
 
 (defun emacs-cc-census-display-w301--arity (name arguments maximum)
   "Validate that NAME received at most MAXIMUM ARGUMENTS."
@@ -14,14 +15,15 @@
     (when (> count maximum)
       (signal 'wrong-number-of-arguments (list name count)))))
 
-(when (or (not (fboundp 'current-message)) (fboundp 'nelisp--repr))
-  (defun current-message (&rest arguments)
-    "Return the current echo-area message, or nil when there is none.
+(when (fboundp 'nl-ffi-call)
+  (when (or (not (fboundp 'current-message)) (fboundp 'nelisp--repr))
+    (defun current-message (&rest arguments)
+      "Return the current echo-area message, or nil when there is none.
 The standalone batch message implementation writes to stderr and does
 not create an echo-area message."
-    (emacs-cc-census-display-w301--arity 'current-message arguments 0)
-    (and (not noninteractive) (boundp 'emacs-special-buffers-echo-message)
-         emacs-special-buffers-echo-message)))
+      (emacs-cc-census-display-w301--arity 'current-message arguments 0)
+      (and (not noninteractive) (boundp 'emacs-special-buffers-echo-message)
+           emacs-special-buffers-echo-message))))
 
 (unless (fboundp 'ding)
   (defun ding (&rest arguments)
