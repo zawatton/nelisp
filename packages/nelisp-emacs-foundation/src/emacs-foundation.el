@@ -58,7 +58,12 @@ and every feature is still loaded exactly as before."
   (unless (featurep feature)
     (let ((file (expand-file-name (concat (symbol-name feature) ".el")
                                   emacs-foundation--load-directory)))
-      (unless (load file nil t)
+      ;; GNU `load' signals `file-missing' for an absent absolute FILE even
+      ;; with NOERROR, and a sibling feature may live in another package's
+      ;; src/ directory; fall back to `require' through `load-path'.
+      (unless (and (or (not (fboundp 'file-exists-p))
+                       (file-exists-p file))
+                   (load file nil t))
         (require feature)))))
 
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
