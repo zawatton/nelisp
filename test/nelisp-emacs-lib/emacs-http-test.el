@@ -1,9 +1,6 @@
 ;;; emacs-http-test.el --- Tests for emacs-http -*- lexical-binding: t; -*-
 
 (require 'ert)
-(let ((here (file-name-directory (or load-file-name buffer-file-name))))
-  (add-to-list 'load-path
-               (expand-file-name "../packages/nelisp-emacs-io/lisp" here)))
 (require 'emacs-http)
 
 ;;;; --- pure: request parsing ---------------------------------------------
