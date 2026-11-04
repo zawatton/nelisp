@@ -49515,11 +49515,82 @@ which reach this non-inline prelude variant with INLINE nil)."
 
 (defvar nelisp-standalone--core-bytecode-build-cache nil
   "Successful core generations in the current reader build, or nil to disable.")
+
+(defun nelisp-standalone--core-bytecode-disk-cached (inputs thunk)
+  "Return THUNK's (SOURCE REPORTS NATIVE-STARTUP-SOURCE), reusing the shared cache.
+INPUTS are the (PATH . TEXT) pairs THUNK compiles.  The key covers their
+repository-relative names and texts, the bytes of every src/, lisp/ and
+scripts/ file (`nelisp-standalone--native-cache-source-identity', which
+holds this generator, the transform and the native-row data it reads),
+NELISP_STANDALONE_TARGET, `nelisp-standalone--native-startup-lazy' and the
+host Emacs version.  A hit writes the report file THUNK would have written.
+Only used when NELISP_STANDALONE_UNIT_CACHE_DIR names a shared cache; the
+repository root is stored as `nelisp-standalone--prelude-cache-root-token'.
+With NELISP_STANDALONE_PRELUDE_CACHE_VERIFY=1 a hit is recomputed and must
+be equal, or the build stops.  A failed THUNK signals and caches nothing."
+  (let* ((dir (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR"))
+         (root (nelisp-standalone--prelude-cache-root))
+         (file (and dir (not (string= dir ""))
+                    (not (cl-some (lambda (input)
+                                    (string-search nelisp-standalone--prelude-cache-root-token
+                                                   (cdr input)))
+                                  inputs))
+                    (expand-file-name
+                     (concat "core-src/"
+                             (secure-hash
+                              'sha256
+                              (prin1-to-string
+                               (list 'core-bytecode-v1
+                                     (mapcar (lambda (input)
+                                               (cons (file-relative-name
+                                                      (car input) nelisp-standalone--repo-root)
+                                                     (secure-hash 'sha256 (cdr input))))
+                                             inputs)
+                                     (nelisp-standalone--native-cache-source-identity)
+                                     (getenv "NELISP_STANDALONE_TARGET")
+                                     (and (bound-and-true-p nelisp-standalone--native-startup-lazy) t)
+                                     emacs-version)))
+                             ".eld")
+                     dir)))
+         (entry (and file (file-readable-p file)
+                     (nelisp-standalone--prelude-cache-read file)))
+         (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
+    (if (and entry (not verify))
+        (let ((report-path (expand-file-name "target/nelisp-core-bytecode-report.tsv"
+                                             nelisp-standalone--repo-root)))
+          (make-directory (file-name-directory report-path) t)
+          (nelisp-prelude-bytecode-write-report report-path (nth 1 entry))
+          (message "[standalone-reader] core byte-code: shared cache hit %s"
+                   (file-name-nondirectory file))
+          entry)
+      (let ((new (funcall thunk)))
+        (when entry
+          (unless (equal entry new)
+            (error "Core byte-code cache entry %s differs from a fresh compile" file))
+          (message "[standalone-reader] core byte-code: shared cache entry verified"))
+        (when (and file (not entry))
+          (make-directory (file-name-directory file) t)
+          (let ((tmp (make-temp-file (concat file ".tmp")))
+                (text (let ((print-length nil) (print-level nil) (print-circle nil)
+                            (print-escape-newlines nil) (print-escape-multibyte nil)
+                            (print-escape-nonascii nil))
+                        (string-replace root nelisp-standalone--prelude-cache-root-token
+                                        (prin1-to-string new)))))
+            (let ((coding-system-for-write 'utf-8-emacs-unix))
+              (with-temp-file tmp (insert text)))
+            (rename-file tmp file t))
+          (unless (equal new (nelisp-standalone--prelude-cache-read file))
+            (delete-file file)
+            (message "[standalone-reader] core byte-code: entry does not round-trip; not cached")))
+        new))))
+
 (defun nelisp-standalone--core-bytecode-src ()
   "Compile core modules, reusing successful generation within one reader build.
 Ordered input names and complete source hashes are checked on every call.
-Each build owns a fresh cache; failures are never cached. Reports are published
-on every invocation. Keep this generator self-contained for source-only tools."
+Each build owns a fresh in-process cache; across builds the shared cache
+of `nelisp-standalone--core-bytecode-disk-cached' (keyed by every input it
+reads) replays a generation.  Failures are never cached. Reports are
+published on every invocation. Keep this generator self-contained for source-only tools."
   (require 'bytecomp)
   (require 'nelisp-prelude-bytecode)
   (let* ((files (append (directory-files
@@ -49643,7 +49714,17 @@ on every invocation. Keep this generator self-contained for source-only tools."
 					nelisp-standalone--repo-root)
                       (nth 2 cached))
                      (nth 1 cached))
-		 (let ((source (generate)))
+		 ;; Across builds the shared cache replays GENERATE's results:
+		 ;; its source, its reports and the deferred loader entry.
+		 (let* ((result (nelisp-standalone--core-bytecode-disk-cached
+				 inputs
+				 (lambda ()
+				   (let ((source (generate)))
+				     (list source generated-reports
+					   nelisp-standalone--native-startup-bytecode-source)))))
+			(source (nth 0 result)))
+		   (setq generated-reports (nth 1 result)
+			 nelisp-standalone--native-startup-bytecode-source (nth 2 result))
                    (when cache (puthash key (list transformer source generated-reports) cache))
 		   source)))))
 
