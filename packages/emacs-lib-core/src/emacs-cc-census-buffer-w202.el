@@ -97,7 +97,8 @@ UNIBYTE is obsolete.  DO-ALLOW-PRINT permits output without PRINTFLAG."
 
 (unless (boundp 'unread-command-events)
   (defvar unread-command-events nil))
-(defvar unread-post-input-method-events nil)
+(unless (boundp 'unread-post-input-method-events)
+  (defvar unread-post-input-method-events nil))
 (unless (boundp 'unread-input-method-events)
   (defvar unread-input-method-events nil))
 
