@@ -2950,7 +2950,7 @@ if all requested words were traversed, nil at a buffer or field edge."
 
 (unless (boundp 'word-move-empty-char-table)
   (defvar word-move-empty-char-table nil
-  "Char table used to suppress language-specific word boundary callbacks."))
+    "Char table used to suppress language-specific word boundary callbacks."))
 
 (when (emacs-edit-builtins--install-function-p 'forward-word-strictly)
   (defun forward-word-strictly (&optional arg)
@@ -3203,8 +3203,8 @@ skip the kill entirely."))
 (unless (boundp 'yank-excluded-properties)
   (defvar yank-excluded-properties
     '(category field follow-link fontified font-lock-face help-echo
-      intangible invisible keymap local-map mouse-face read-only
-      yank-handler)
+	       intangible invisible keymap local-map mouse-face read-only
+	       yank-handler)
     "Text properties to discard when yanking, or t to discard all of them."))
 
 (unless (boundp 'yank-handled-properties)
@@ -3312,17 +3312,17 @@ With REGION non-nil, ignore BEG and END and save the current region."
 
 (unless (fboundp 'kill-forward-chars)
   (defun kill-forward-chars (arg)
-  "Kill ARG characters forward from point."
-  (when (listp arg) (setq arg (car arg)))
-  (when (eq arg '-) (setq arg -1))
-  (kill-region (point) (+ (point) arg))))
+    "Kill ARG characters forward from point."
+    (when (listp arg) (setq arg (car arg)))
+    (when (eq arg '-) (setq arg -1))
+    (kill-region (point) (+ (point) arg))))
 
 (unless (fboundp 'kill-backward-chars)
   (defun kill-backward-chars (arg)
-  "Kill ARG characters backward from point."
-  (when (listp arg) (setq arg (car arg)))
-  (when (eq arg '-) (setq arg -1))
-  (kill-region (point) (- (point) arg))))
+    "Kill ARG characters backward from point."
+    (when (listp arg) (setq arg (car arg)))
+    (when (eq arg '-) (setq arg -1))
+    (kill-region (point) (- (point) arg))))
 
 ;;;; --- buffer motion and transposition -------------------------------
 ;;
@@ -3401,82 +3401,82 @@ the beginning of the accessible portion rather than widening first."
 
 (unless (fboundp 'forward-to-indentation)
   (defun forward-to-indentation (&optional arg)
-  "Move forward ARG lines and position at the first nonblank character."
-  (forward-line (or arg 1))
-  (skip-chars-forward " \t")))
+    "Move forward ARG lines and position at the first nonblank character."
+    (forward-line (or arg 1))
+    (skip-chars-forward " \t")))
 
 (unless (fboundp 'backward-to-indentation)
   (defun backward-to-indentation (&optional arg)
-  "Move backward ARG lines and position at the first nonblank character."
-  (forward-line (- (or arg 1)))
-  (skip-chars-forward " \t")))
+    "Move backward ARG lines and position at the first nonblank character."
+    (forward-line (- (or arg 1)))
+    (skip-chars-forward " \t")))
 
 (unless (fboundp 'transpose-subr-1)
   (defun transpose-subr-1 (pos1 pos2)
-  "Transpose the regions POS1 and POS2, each a cons of buffer positions."
-  (unless (and pos1 pos2)
-    (error "Don't have two things to transpose"))
-  (when (> (car pos1) (cdr pos1)) (setq pos1 (cons (cdr pos1) (car pos1))))
-  (when (> (car pos2) (cdr pos2)) (setq pos2 (cons (cdr pos2) (car pos2))))
-  (when (> (car pos1) (car pos2))
-    (let ((swap pos1)) (setq pos1 pos2 pos2 swap)))
-  (when (> (cdr pos1) (car pos2))
-    (error "Don't have two things to transpose"))
-  ;; GNU Emacs wraps the mutation below in `atomic-change-group', which is
-  ;; not ported here.  What that buys is a single undo unit and a rollback
-  ;; if the body signals.  Every check that can signal in this function runs
-  ;; ABOVE this point, before anything is mutated, so the rollback case is
-  ;; not reachable from here; the undo grouping is genuinely lost and this
-  ;; says so rather than implying otherwise.
-  (let* ((word (buffer-substring (car pos2) (cdr pos2)))
-         (len1 (- (cdr pos1) (car pos1)))
-         (len2 (length word))
-         (boundary (make-marker)))
-    (set-marker boundary (car pos2))
-    (goto-char (cdr pos1))
-    (insert-before-markers word)
-    (setq word (delete-and-extract-region (car pos1) (+ (car pos1) len1)))
-    (goto-char (marker-position boundary))
-    (insert word)
-    ;; GNU Emacs writes `(+ boundary len1)': there a marker satisfies
-    ;; `number-or-marker-p' and arithmetic reads its position.  Here a
-    ;; marker is a record and `+' rejects it, so the position is taken
-    ;; explicitly.  Same value either way -- `marker-position' is read at
-    ;; the same point in the sequence, after `insert' has moved the marker.
-    (goto-char (+ (marker-position boundary) len1))
-    (delete-region (point) (+ (point) len2))
-    (set-marker boundary nil))
-  nil))
+    "Transpose the regions POS1 and POS2, each a cons of buffer positions."
+    (unless (and pos1 pos2)
+      (error "Don't have two things to transpose"))
+    (when (> (car pos1) (cdr pos1)) (setq pos1 (cons (cdr pos1) (car pos1))))
+    (when (> (car pos2) (cdr pos2)) (setq pos2 (cons (cdr pos2) (car pos2))))
+    (when (> (car pos1) (car pos2))
+      (let ((swap pos1)) (setq pos1 pos2 pos2 swap)))
+    (when (> (cdr pos1) (car pos2))
+      (error "Don't have two things to transpose"))
+    ;; GNU Emacs wraps the mutation below in `atomic-change-group', which is
+    ;; not ported here.  What that buys is a single undo unit and a rollback
+    ;; if the body signals.  Every check that can signal in this function runs
+    ;; ABOVE this point, before anything is mutated, so the rollback case is
+    ;; not reachable from here; the undo grouping is genuinely lost and this
+    ;; says so rather than implying otherwise.
+    (let* ((word (buffer-substring (car pos2) (cdr pos2)))
+           (len1 (- (cdr pos1) (car pos1)))
+           (len2 (length word))
+           (boundary (make-marker)))
+      (set-marker boundary (car pos2))
+      (goto-char (cdr pos1))
+      (insert-before-markers word)
+      (setq word (delete-and-extract-region (car pos1) (+ (car pos1) len1)))
+      (goto-char (marker-position boundary))
+      (insert word)
+      ;; GNU Emacs writes `(+ boundary len1)': there a marker satisfies
+      ;; `number-or-marker-p' and arithmetic reads its position.  Here a
+      ;; marker is a record and `+' rejects it, so the position is taken
+      ;; explicitly.  Same value either way -- `marker-position' is read at
+      ;; the same point in the sequence, after `insert' has moved the marker.
+      (goto-char (+ (marker-position boundary) len1))
+      (delete-region (point) (+ (point) len2))
+      (set-marker boundary nil))
+    nil))
 
 (unless (fboundp 'transpose-subr)
   (defun transpose-subr (mover arg &optional special)
-  "Transpose the objects MOVER moves over, ARG of them.
+    "Transpose the objects MOVER moves over, ARG of them.
 With ARG zero, exchange the object at point with the one at the mark."
-  (let ((aux (if special mover
-               (lambda (x)
-                 (cons (progn (funcall mover x) (point))
-                       (progn (funcall mover (- x)) (point))))))
-        pos1 pos2)
-    (cond
-     ((= arg 0)
-      (save-excursion
-        (setq pos1 (funcall aux 1))
-        (goto-char (or (mark) (error "No mark set in this buffer")))
-        (setq pos2 (funcall aux 1))
-        (transpose-subr-1 pos1 pos2))
-      (exchange-point-and-mark))
-     ((> arg 0)
-      (setq pos1 (funcall aux -1))
-      (setq pos2 (funcall aux arg))
-      (transpose-subr-1 pos1 pos2)
-      (goto-char (car pos2)))
-     (t
-      (setq pos1 (funcall aux -1))
-      (goto-char (car pos1))
-      (setq pos2 (funcall aux arg))
-      (transpose-subr-1 pos1 pos2)
-      (goto-char (+ (car pos2) (- (cdr pos1) (car pos1))))))
-    nil)))
+    (let ((aux (if special mover
+		 (lambda (x)
+                   (cons (progn (funcall mover x) (point))
+			 (progn (funcall mover (- x)) (point))))))
+          pos1 pos2)
+      (cond
+       ((= arg 0)
+	(save-excursion
+          (setq pos1 (funcall aux 1))
+          (goto-char (or (mark) (error "No mark set in this buffer")))
+          (setq pos2 (funcall aux 1))
+          (transpose-subr-1 pos1 pos2))
+	(exchange-point-and-mark))
+       ((> arg 0)
+	(setq pos1 (funcall aux -1))
+	(setq pos2 (funcall aux arg))
+	(transpose-subr-1 pos1 pos2)
+	(goto-char (car pos2)))
+       (t
+	(setq pos1 (funcall aux -1))
+	(goto-char (car pos1))
+	(setq pos2 (funcall aux arg))
+	(transpose-subr-1 pos1 pos2)
+	(goto-char (+ (car pos2) (- (cdr pos1) (car pos1))))))
+      nil)))
 
 (defun transpose-words (arg)
   "Interchange the words around point, leaving point at the end of them."

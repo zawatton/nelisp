@@ -173,23 +173,23 @@ child `eieio--class' as declared in eieio-core.el.")
 ;; parent class through it.
 (when (fboundp 'nl-ffi-call)
   (defun cl--builtin-type-p (name)
-  "Verbatim GNU `cl-preloaded.el' early-bootstrap fallback: this substrate
+    "Verbatim GNU `cl-preloaded.el' early-bootstrap fallback: this substrate
 has no `built-in-class-p'/EIEIO-style built-in-type registry, so every
 name correctly reads as \"not a builtin type\"."
-  (if (not (fboundp 'built-in-class-p))
-      nil
-    (let ((class (and (symbolp name) (get name 'cl--class))))
-      (and class (built-in-class-p class))))))
+    (if (not (fboundp 'built-in-class-p))
+	nil
+      (let ((class (and (symbolp name) (get name 'cl--class))))
+	(and class (built-in-class-p class))))))
 
 (when (fboundp 'nl-ffi-call)
   (defun cl--struct-name-p (name)
-  "Return t if NAME is a valid structure name for `cl-defstruct'."
-  (and name (symbolp name) (not (keywordp name))
-       (not (cl--builtin-type-p name)))))
+    "Return t if NAME is a valid structure name for `cl-defstruct'."
+    (and name (symbolp name) (not (keywordp name))
+	 (not (cl--builtin-type-p name)))))
 
 (unless (fboundp 'cl-struct-define)
   (defun cl-struct-define (name _docstring _parent _type named slots
-                                 children-sym tag _print)
+                                children-sym tag _print)
     (if (boundp children-sym)
         (add-to-list children-sym tag)
       (set children-sym (list tag)))
@@ -220,7 +220,7 @@ port must too, or `(get VECTOR 'cl--class)' aborts with
     (if (emacs-parity-eieio--struct-class-p name)
         name
       (let ((class (and (symbolp name) (fboundp 'cl--find-class)
-                         (cl--find-class name))))
+                        (cl--find-class name))))
         (and (emacs-parity-eieio--struct-class-p class) class)))))
 
 ;; `:include' layout fix (S5.4, eieio accessor index mix-up).  GNU

@@ -74,7 +74,7 @@
 
 (unless (boundp 'font-lock-mode)
   (defvar font-lock-mode nil
-  "Non-nil when Font Lock is enabled in the current buffer."))
+    "Non-nil when Font Lock is enabled in the current buffer."))
 (emacs-buffer-declare-per-buffer 'font-lock-mode nil)
 
 (defvar emacs-font-lock--state (make-hash-table :test 'eq :weakness 'key)

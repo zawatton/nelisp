@@ -10,7 +10,7 @@
 
 (unless (boundp 'tab-line-format)
   (defvar tab-line-format nil
-  "Minimal tab-line format placeholder."))
+    "Minimal tab-line format placeholder."))
 
 (defun tab-line-mode (&optional arg)
   "Toggle minimal buffer-local tab-line mode."

@@ -4,7 +4,7 @@
 (require 'emacs-window)
 (unless (boundp 'tty-defined-color-alist)
   (defvar tty-defined-color-alist nil
-  "Terminal palette, initially empty before a terminal driver registers it."))
+    "Terminal palette, initially empty before a terminal driver registers it."))
 
 (defun emacs-frame-pixels-install (frame width height provider)
   "Attach measured cell WIDTH/HEIGHT and a pixel PROVIDER to FRAME.

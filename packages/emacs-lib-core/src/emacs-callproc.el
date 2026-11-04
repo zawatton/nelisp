@@ -19,7 +19,7 @@
 
 (when (fboundp 'nl-ffi-call)
   (defvar process-environment nil
-  "List of `KEY=VALUE' strings used as the elisp environment overlay."))
+    "List of `KEY=VALUE' strings used as the elisp environment overlay."))
 
 (declare-function nl-syscall-getenv "nelisp-runtime" (variable))
 (declare-function nelisp-sys-getenv "nelisp-sys" (variable))

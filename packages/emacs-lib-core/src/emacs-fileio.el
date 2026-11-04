@@ -59,7 +59,7 @@ buffer becomes current via `find-file'.")
 
 (unless (boundp 'switch-to-buffer-preserve-window-point)
   (defvar switch-to-buffer-preserve-window-point t
-  "Whether switching buffers preserves their previous window point.
+    "Whether switching buffers preserves their previous window point.
 GNU file commands bind this option while entering and reverting Dired."))
 
 (defvar emacs-fileio-auto-mode-alist

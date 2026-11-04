@@ -178,7 +178,7 @@ Entries have the shape (LINK DESCRIPTION).")
 
 (unless (boundp 'outline-level)
   (defvar outline-level #'outline-level
-  "Function returning the level of the current outline heading."))
+    "Function returning the level of the current outline heading."))
 
 (defun emacs-outline--line-string ()
   "Return the current line as a string without text properties."

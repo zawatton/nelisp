@@ -1833,19 +1833,19 @@ resolved to its canonical (obsolete-alias aware) variable first."
 ;; (closure (&rest _) nil), so always install the real implementation.
 (when (fboundp 'nl-ffi-call)
   (defun regexp-opt (strings &optional paren)
-  "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
+    "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
 PAREN nil -> shy group; t / string -> capture group; words / symbols add
 word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
-  (let* ((body (mapconcat #'regexp-quote strings "\\|"))
-         (open (cond ((stringp paren) paren)
-                     ((eq paren 'words) "\\<\\(")
-                     ((eq paren 'symbols) "\\_<\\(")
-                     (paren "\\(")
-                     (t "\\(?:")))
-         (close (cond ((eq paren 'words) "\\)\\>")
-                      ((eq paren 'symbols) "\\)\\_>")
-                      (t "\\)"))))
-    (concat open body close))))
+    (let* ((body (mapconcat #'regexp-quote strings "\\|"))
+           (open (cond ((stringp paren) paren)
+                       ((eq paren 'words) "\\<\\(")
+                       ((eq paren 'symbols) "\\_<\\(")
+                       (paren "\\(")
+                       (t "\\(?:")))
+           (close (cond ((eq paren 'words) "\\)\\>")
+			((eq paren 'symbols) "\\)\\_>")
+			(t "\\)"))))
+      (concat open body close))))
 
 (unless (fboundp 'easy-menu-define)
   (defmacro easy-menu-define (&rest _args)
@@ -4084,7 +4084,7 @@ release that package version targets."))
 ;; never run.  Keep an existing host startup queue untouched.
 (unless (boundp 'custom-delayed-init-variables)
   (defvar custom-delayed-init-variables t
-  "Standalone Custom initialization is complete; GNU may initialize normally."))
+    "Standalone Custom initialization is complete; GNU may initialize normally."))
 
 (unless (fboundp 'custom-declare-face)
   (defun custom-declare-face (face spec doc &rest args)
@@ -4260,14 +4260,14 @@ release that package version targets."))
                      (cons :tag "Width" :extra-offset 2
                            (integer :tag "Vertical")
                            (integer :tag "Horizontal"))
-		   (const :format "" :value :color)
-		   (choice :tag "Color" (const :tag "*" nil) color)
-		   (const :format "" :value :style)
-		   (choice :tag "Style"
-			   (const :tag "Raised" released-button)
-			   (const :tag "Sunken" pressed-button)
-			   (const :tag "Flat"   flat-button)
-			   (const :tag "None" nil))))
+		     (const :format "" :value :color)
+		     (choice :tag "Color" (const :tag "*" nil) color)
+		     (const :format "" :value :style)
+		     (choice :tag "Style"
+			     (const :tag "Raised" released-button)
+			     (const :tag "Sunken" pressed-button)
+			     (const :tag "Flat"   flat-button)
+			     (const :tag "None" nil))))
        ;; filter to make value suitable for customize
        ,(lambda (real-value)
 	  (and real-value

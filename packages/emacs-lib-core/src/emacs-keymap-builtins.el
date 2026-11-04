@@ -478,7 +478,7 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 ;; nil placeholder into the empty keymap that the preloaded runtime promises.
 (when (fboundp 'nl-ffi-call)
   (defvar minibuffer-local-map nil
-  "Base keymap for active minibuffer input."))
+    "Base keymap for active minibuffer input."))
 (unless (emacs-keymap-keymapp minibuffer-local-map)
   (setq minibuffer-local-map (emacs-keymap-make-sparse-keymap)))
 

@@ -36,7 +36,7 @@
 
 (unless (boundp 'auto-window-vscroll)
   (defvar auto-window-vscroll t
-  "Non-nil means line motion can vertically scroll unusually tall lines."))
+    "Non-nil means line motion can vertically scroll unusually tall lines."))
 
 (require 'nelisp-emacs-compat)
 (require 'emacs-buffer-builtins)

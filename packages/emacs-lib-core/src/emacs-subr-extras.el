@@ -446,10 +446,10 @@ KIND is accepted for API parity but not distinguished."
 ;; replay version with this simpler, replay-safe one is the correct fix.
 (when (fboundp 'nl-ffi-call)
   (defun define-symbol-prop (symbol prop val)
-  "Define the property PROP of SYMBOL to be VAL.
+    "Define the property PROP of SYMBOL to be VAL.
 Minimal subr.el port — matches host Emacs `put' behaviour but
 skips the `current-load-list' bookkeeping (= unused on standalone)."
-  (put symbol prop val)))
+    (put symbol prop val)))
 
 ;; ---- byte-compile-only metadata declarations ----
 ;;
@@ -639,9 +639,9 @@ QUERY-SPECS is a series of QUERY-SPECs; each QUERY is preceded by pairs of
     ;; whether tree-sitter is enabled, so we guard on availability.
     (when (treesit-available-p)
       (let (current-language current-override
-            current-feature
-            default-language
-            (result nil))
+			     current-feature
+			     default-language
+			     (result nil))
         (while query-specs
           (let ((token (pop query-specs)))
             (pcase token

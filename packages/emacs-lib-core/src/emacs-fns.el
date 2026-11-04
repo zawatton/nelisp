@@ -396,7 +396,7 @@ whole file, then this shim slices the string when offsets are supplied."
 ;; defvar them as nil so `symbol-value' / bare-symbol-eval succeed.
 (when (fboundp 'nl-ffi-call)
   (defvar null nil
-  "Polyfill alias of nil — works around NeLisp eval paths that fall
+    "Polyfill alias of nil — works around NeLisp eval paths that fall
 back to `symbol-value' lookup for symbols whose function cell is
 bound but value cell is unbound."))
 

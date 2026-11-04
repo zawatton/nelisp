@@ -328,7 +328,7 @@ adjusts those positions before calling this function."
 
 (unless (boundp 'combine-after-change-calls)
   (defvar combine-after-change-calls nil
-  "Non-nil means defer after-change notifications when possible."))
+    "Non-nil means defer after-change notifications when possible."))
 (defvar inhibit-modification-hooks nil
   "Non-nil means suppress buffer modification hooks.")
 
@@ -790,7 +790,7 @@ under the live Magit bridge even when the actual current buffer is valid."
 
 (unless (boundp 'buffer-invisibility-spec)
   (defvar buffer-invisibility-spec nil
-  "Standalone bridge for Emacs's per-buffer invisibility spec."))
+    "Standalone bridge for Emacs's per-buffer invisibility spec."))
 
 (when (fboundp 'make-variable-buffer-local)
   (make-variable-buffer-local 'buffer-invisibility-spec))
