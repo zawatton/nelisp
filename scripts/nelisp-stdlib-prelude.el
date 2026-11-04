@@ -34739,6 +34739,11 @@ with LO <= index < HI run on the VM: bisect a divergence over them."
   "Compile every function defined before the VM's hooks; answer the count.
 The cold-image dump calls this just before dumping, so a `--cold-load-from'
 boot starts with the prelude already on the VM."
+  ;; Apply the compiler once from here first, so the runtime's first-call
+  ;; hook gives each of its own functions a record.  Reached only from the
+  ;; registration path below, they kept none and took the slow miss path
+  ;; on every call of every compilation (cold image dump 7.8 -> 5.7 s).
+  (condition-case nil (nelisp--fx-compile '(progn nil)) (error nil))
   (let ((names (reverse nelisp--fx-early-names)))
     (setq nelisp--fx-early-names nil)
     ;; And everything defined since that has not been called yet.
