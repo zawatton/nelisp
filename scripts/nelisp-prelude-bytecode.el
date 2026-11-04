@@ -841,6 +841,9 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
     (let ((position 0)
         (source-length (length source))
         (count 0)
+        ;; Line of LINE-POS, so each report row counts newlines only from
+        ;; the previous row's start instead of from the beginning of SOURCE.
+        (line-pos 0) (line-no 1)
         (report nil)
         (replacements nil)
         (whole-file-mode whole-file-compile-p)
@@ -1187,7 +1190,12 @@ reason, source line, source-form digest, opcode sequence, and retained metadata.
                        (nelisp-prelude-bytecode--vendor-replacement
                         form replacement)))
                (push (list provenance
-                           (1+ (cl-count ?\n source :end start))
+                           (progn
+                             (when (< start line-pos) (setq line-pos 0 line-no 1))
+                             (setq line-no (+ line-no (cl-count ?\n source :start line-pos
+                                                                :end start))
+                                   line-pos start)
+                             line-no)
                            name status reason source-digest
                            (format "%S" opcodes) metadata
                            (if fixture (nth 3 fixture)
