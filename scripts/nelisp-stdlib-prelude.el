@@ -2133,13 +2133,10 @@ is built like the general path builds it."
                    (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
                    (n (length object))
                    (i 0) (inword nil)
-                   ;; RESULT starts as a fresh string and only the characters
-                   ;; that change are stored into it.  CAPITALIZE starts from
-                   ;; the lowered copy (word-interior characters are already
-                   ;; right); INITIALS starts from OBJECT itself.
-                   (result (if cap
-                               (if (eq lower object) (copy-sequence lower) lower)
-                             (copy-sequence object)))
+                   ;; RESULT starts as a copy of OBJECT (keeping its text
+                   ;; properties and multibyteness); only the characters that
+                   ;; change are stored into it.
+                   (result (copy-sequence object))
                    ;; Inline the buffer-syntax lookup of the prelude
                    ;; `char-syntax' (hoisting the table fetch out of the
                    ;; loop) only while that definition is still in force.
@@ -2155,14 +2152,14 @@ is built like the general path builds it."
                               (or (gethash nelisp--current-buffer
                                            nelisp--syntax-buffer-tables)
                                   nelisp--buffer-defaults-syntax-table))))
-              (cond ((and unibyte (multibyte-string-p result)) (setq result nil))
-                    ((and (not unibyte) (not (multibyte-string-p result)))
-                     (setq result (string-make-multibyte result))))
-              (when result
+              (progn
                 (while (< i n)
                   (let* ((c (aref object i))
                          (piece nil))
-                    (unless inword
+                    (if inword
+                        (when cap
+                          (setq piece (aref lower i))
+                          (unless (eq piece c) (aset result i piece)))
                       (setq piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
                                     (let ((v (aref upmap c)))
                                       (if (and (integerp v) (>= v 0)) v
@@ -2170,8 +2167,7 @@ is built like the general path builds it."
                                          c 'title table)))))
                       (when (and unibyte (>= piece 256))
                         (setq piece (nelisp--case-byte c piece 'title)))
-                      (unless (eq piece (aref result i))
-                        (aset result i piece)))
+                      (unless (eq piece c) (aset result i piece)))
                     (setq inword
                           (if stab
                               (let* ((entry (aref stab c))
