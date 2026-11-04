@@ -98,18 +98,25 @@
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
 # 270 -> 872 on 2026-11-04 (Doc 211 import, recomputed after the defvar fix).
-# 872 = the 270 core names this file already allowed + the 602 emacs-lib names
-# below, each kept on purpose.  `defvar'/`defcustom'/`defvar-local' are now
-# always shared-deferring (GNU never lets them overwrite a bound variable), so
-# no variable counts against emacs-lib any more; the `(unless (boundp ...))'
-# wrappers that tried to appease the gate are gone because a non-top-level
-# defvar in a lexical-binding file is not special.  emacs-faces.el's 17 theme
-# functions are plain again (the host-side theme tests exercise this tree's
-# implementation) and are counted below.
-# The gate measures 928 on emacs 31.1: core is 326 (lisp/ 103, scripts/ 222,
-# src/ 1), i.e. 56 core names more than the 270 allowed on 2026-09-20.  Those
-# 56 are NOT accepted here: the gate stays red by exactly that amount until
-# they are guarded or justified one by one.
+# 932 = 254 core names (lisp/ 107, scripts/ 146, src/ 1; under the 270
+# allowed on 2026-09-20) + 602 emacs-lib package names + 76 emacs-lib
+# runtime-image preload names that live under scripts/ (see below).
+# Re-measured 2026-11-04 on emacs 31.1 after merging notes-d0's
+# feat/sbcl-native-impl-f12-20261031.  The earlier "56 core names over" was
+# a path artefact: the gate counted the imported runtime-image preload cells
+# as core because they sit in scripts/.
+# `defvar'/`defcustom'/`defvar-local' are always shared-deferring (GNU never
+# lets them overwrite a bound variable), so no variable counts against
+# emacs-lib; the `(unless (boundp ...))' wrappers that tried to appease the
+# gate are gone because a non-top-level defvar in a lexical-binding file is
+# not special.  emacs-faces.el's 17 theme functions are plain again (the
+# host-side theme tests exercise this tree's implementation) and are counted
+# below.
+#   emacs-lib runtime-image preload cells under scripts/                                  76
+#     nemacs-runtime-frame-tab-preload.el 47, nemacs-runtime-process-preload.el 28,
+#     nemacs-runtime-image-preload.el 1: fset replay inputs of the runtime image
+#     (scripts/nemacs-runtime-image-input-inventory.el), the same kind as
+#     nemacs-gui-file-bridge-runtime.el below; never loaded on a host Emacs
 #   emacs-lib, kept on purpose                                                          602
 #     nemacs-gui-file-bridge-runtime.el  471  fset replay baked into the runtime image
 #     emacs-faces.el 17  theme machinery; host tests exercise this tree's
@@ -131,7 +138,7 @@
 #       are never run on load; opt-in by design
 #     emacs-cc-fns-1 make-hash-table 1, nelisp-emacs-org-bridge org-agenda-list 1
 #       deliberate wrappers around the existing native/definition
-shared-shadowing 872
+shared-shadowing 932
 
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # entries in `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
