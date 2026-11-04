@@ -1,2 +1,2 @@
 (:name "nelisp-network"
- :requires ("emacs-lib-core" "nelisp-actor"))
+ :requires ("nelisp-actor"))

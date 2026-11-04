@@ -3745,42 +3745,10 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 
 (unless (featurep 'rx) (provide 'rx))
 
-;;;; --- url stack pre-provide (= avoid url-vars `(append "STR" nil)` choke) ---
-;; nelisp-eval requires url-parse only for cl-defstruct accessor names
-;; (url-host/url-port/url-filename/url-type) when running URL retrievals.
-;; FFI standalone path doesn't issue URL retrievals, so we satisfy the
-;; (require 'url-parse) by pre-providing it + defining empty accessors.
-
-(unless (fboundp 'url-host)
-  (defun url-host (&rest _) nil)
-  (defun url-port (&rest _) nil)
-  (defun url-filename (&rest _) nil)
-  (defun url-type (&rest _) nil)
-  (defun url-user (&rest _) nil)
-  (defun url-password (&rest _) nil)
-  (defun url-target (&rest _) nil)
-  (defun url-attributes (&rest _) nil)
-  (defun url-fullness (&rest _) nil)
-  (defun url-generic-parse-url (&rest _) nil)
-  (defun url-encode-url (&rest _) nil)
-  (defun url-hexify-string (&rest _) nil)
-  (defun url-unhex-string (&rest _) nil)
-  (defun url-retrieve-synchronously (&rest _) nil))
-
-(unless (boundp 'url-request-method) (defvar url-request-method nil))
-(unless (boundp 'url-request-extra-headers) (defvar url-request-extra-headers nil))
-(unless (boundp 'url-request-data) (defvar url-request-data nil))
-(unless (boundp 'url-mime-separator-chars) (defvar url-mime-separator-chars nil))
-(unless (boundp 'url-bad-port-list) (defvar url-bad-port-list nil))
-
-(unless (featurep 'url-vars) (provide 'url-vars))
-(unless (featurep 'url-parse) (provide 'url-parse))
-;; The genuine GNU url.el (31.1) was tried in place of this phantom provide:
-;; its dependencies are all vendored, but `(require 'url)' on the standalone
-;; binary does not finish within 100 s (the load never returns), so the
-;; phantom stays until that load is fixed in core.  nelisp-http and
-;; nelisp-network therefore depend on this package for `url'.
-(unless (featurep 'url) (provide 'url))
+;;;; --- url stack ---
+;; The genuine GNU url stack (url.el, url-vars, url-parse, ...) is vendored
+;; and loads on the standalone binary, so no phantom provide or accessor
+;; stubs are installed here any more.
 
 ;;;; --- char-or-string-p (= simple type predicate combo) ---
 
