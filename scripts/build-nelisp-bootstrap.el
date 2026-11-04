@@ -220,6 +220,7 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; command on top of nelisp-ec-directory-files / -file-attributes) then
     ;; the `dired' feature facade.  Wired once the standalone reader's
     ;; readdir/stat syscalls return real entries (Doc 142 gate-5).
+    "emacs-cl-struct-setf.el"
     "emacs-dired-min.el"
     "dired.el"
     ;; Reusable Emacs parity owners needed by vendor libraries.  Keep the
@@ -486,6 +487,7 @@ bundled source that may evaluate a declaration."
     ;; ec-buffer editing shim.  Restore the shared editing owner last;
     ;; its install gates still preserve all unselected native commands.
     "emacs-edit-builtins.el"
+    "emacs-cl-struct-setf.el"
     "emacs-dired-min.el"
     "dired.el")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
