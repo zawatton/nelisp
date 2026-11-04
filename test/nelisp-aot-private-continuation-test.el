@@ -3,8 +3,8 @@
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-standalone-build)
-(load "nelisp-aot-cleanup-branch-test" nil t)
-(load "nelisp-aot-trace-loop-test" nil t)
+(require 'nelisp-aot-cleanup-branch-test)
+(require 'nelisp-aot-trace-loop-test)
 (defconst nelisp-private-continuation-test--prefixes
  '("cj-if-evaluated" "cj-cleanup-taken" "cj-cleanup-done"))
 (defvar nelisp-private-continuation-test--labels nil)
