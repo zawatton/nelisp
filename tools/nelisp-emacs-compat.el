@@ -102,12 +102,53 @@ is a definition somewhere, whereas a quoted list of head symbols is not a
 definition anywhere."
   (and (consp form) (memq (car form) '(quote function))))
 
+(defvar nelisp-emacs-compat--guard-predicates nil
+  "Hash of install-predicate names found in the scanned sources, or nil.
+Filled by `nelisp-emacs-compat--collect-predicates' before the walk.")
+
+(defconst nelisp-emacs-compat--predicate-name-regexp
+  "--[a-z0-9-]*\\(install\\|define\\)[a-z0-9-]*-p\\'"
+  "Names that may be a per-file install predicate.")
+
+(defun nelisp-emacs-compat--mentions-p (form symbols)
+  "Non-nil when any of SYMBOLS occurs anywhere in FORM (improper lists ok)."
+  (let ((found nil) (tail form))
+    (cond
+     ((symbolp form) (memq form symbols))
+     ((consp form)
+      (while (and (consp tail) (not found))
+        (setq found (nelisp-emacs-compat--mentions-p (car tail) symbols)
+              tail (cdr tail)))
+      (or found (and tail (symbolp tail) (memq tail symbols)))))))
+
+(defun nelisp-emacs-compat--collect-predicates (forms table)
+  "Record in TABLE every top-level install predicate defined in FORMS.
+A predicate counts only when its name looks like `FILE--install-...-p' /
+`...--define-...-p' AND its body consults `fboundp'/`boundp' (directly or
+through a `--function-cell-live-p' helper), i.e. it genuinely asks whether
+the host already has the name.  The name alone is never trusted."
+  (dolist (form forms)
+    (when (and (consp form) (eq (car form) 'defun)
+               (symbolp (car-safe (cdr-safe form)))
+               (string-match-p nelisp-emacs-compat--predicate-name-regexp
+                               (symbol-name (car (cdr form))))
+               (nelisp-emacs-compat--mentions-p
+                (cdr (cdr form)) '(fboundp boundp)))
+      (puthash (car (cdr form)) t table))))
+
 (defun nelisp-emacs-compat--guard-p (form)
-  "Non-nil when FORM is an `unless'/`when' whose test is an fboundp/boundp check."
+  "Non-nil when FORM is a `unless'/`when' gated on a host-definition check.
+The test is either an fboundp/boundp call or a call to an install
+predicate that was verified to consult fboundp/boundp."
   (and (consp form)
        (memq (car form) '(unless when))
        (let ((test (car-safe (cdr-safe form))))
-         (and (consp test) (memq (car test) '(fboundp boundp))))))
+         (and (consp test)
+              (or (memq (car test) '(fboundp boundp))
+                  (and nelisp-emacs-compat--guard-predicates
+                       (symbolp (car test))
+                       (gethash (car test)
+                                nelisp-emacs-compat--guard-predicates)))))))
 
 (defun nelisp-emacs-compat--walk (form guarded table file)
   "Record every definition in FORM into TABLE, noting whether it is GUARDED.
@@ -161,26 +202,37 @@ reporting a smaller table as if it were the whole one would be the defect,
 not a shortcut.  (`end-of-file\=' means two different things and they must
 not be conflated: the file ended, or a form did not.  Same distinction
 `nelisp-fallback-inventory--scan-file\=' draws, for the same reason.)"
-  (let ((table (make-hash-table :test 'eq)))
+  (let ((table (make-hash-table :test 'eq))
+        (preds (make-hash-table :test 'eq))
+        (per-file nil))
     (dolist (file (nelisp-emacs-compat--files))
-      (with-temp-buffer
-        (insert-file-contents file)
-        (goto-char (point-min))
-        (let ((done nil))
-          (while (not done)
-            (let* ((start (point))
-                   (form (condition-case err
-                             (read (current-buffer))
-                           (end-of-file
-                            (if (nelisp-emacs-compat--only-blanks-p start)
-                                (progn (setq done t) nil)
-                              (error "emacs-compat: %s ends inside a form at %d"
-                                     file start)))
-                           (error
-                            (error "emacs-compat: %s unreadable at %d: %s"
-                                   file start (error-message-string err))))))
-              (when form
-                (nelisp-emacs-compat--walk form nil table file)))))))
+      (let ((forms nil))
+        (with-temp-buffer
+          (insert-file-contents file)
+          (goto-char (point-min))
+          (let ((done nil))
+            (while (not done)
+              (let* ((start (point))
+                     (form (condition-case err
+                               (read (current-buffer))
+                             (end-of-file
+                              (if (nelisp-emacs-compat--only-blanks-p start)
+                                  (progn (setq done t) nil)
+                                (error "emacs-compat: %s ends inside a form at %d"
+                                       file start)))
+                             (error
+                              (error "emacs-compat: %s unreadable at %d: %s"
+                                     file start (error-message-string err))))))
+                (when form (push form forms))))))
+        (setq forms (nreverse forms))
+        (nelisp-emacs-compat--collect-predicates forms preds)
+        (push (cons file forms) per-file)))
+    ;; Predicates are collected over the whole tree first: a guard may be
+    ;; defined in one file and used in another.
+    (let ((nelisp-emacs-compat--guard-predicates preds))
+      (dolist (entry (nreverse per-file))
+        (dolist (form (cdr entry))
+          (nelisp-emacs-compat--walk form nil table (car entry)))))
     table))
 
 (defun nelisp-emacs-compat--classify (name kind)
