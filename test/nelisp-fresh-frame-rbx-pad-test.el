@@ -1,8 +1,14 @@
 ;;; nelisp-fresh-frame-rbx-pad-test.el --- Policy save-area pad -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(load (expand-file-name "nelisp-aot-fresh-frame-test.el"
-                        (file-name-directory (or load-file-name buffer-file-name))) nil t)
+(let ((f (expand-file-name "nelisp-aot-fresh-frame-test.el"
+                           (file-name-directory (or load-file-name buffer-file-name)))))
+  ;; Skip when the suite loader already loaded it (avoids ERT "loaded twice").
+  (unless (cl-some (lambda (h) (and (stringp (car h))
+                                       (equal (file-name-sans-extension (car h))
+                                              (file-name-sans-extension f))))
+                  load-history)
+    (load f nil t)))
 
 (defconst nelisp-rbx-pad--fixture
   (expand-file-name "fixtures/nelisp-rbx-pad-unselected.el"

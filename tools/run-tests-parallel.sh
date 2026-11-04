@@ -135,15 +135,18 @@ T0=$(date +%s.%N)
 declare -a PIDS
 for ((i=0; i<JOBS; i++)); do
   [ -z "${SHARD_FILES[i]}" ] && continue
-  load_args=()
+  # Load each file once: skip files already in `load-history' (other test
+  # files may load/require them) so ERT never sees a test defined twice.
+  files_lisp=""
   while IFS= read -r f; do
-    [ -n "$f" ] && load_args+=(-l "$f")
+    [ -n "$f" ] && files_lisp+=" \"$f\""
   done <<< "${SHARD_FILES[i]}"
+  load_expr="(let ((seen (make-hash-table :test 'equal))) (dolist (f '($files_lisp)) (let ((k (file-name-sans-extension (file-truename (expand-file-name f))))) (unless (gethash k seen) (load (expand-file-name f) nil t) (dolist (h load-history) (when (stringp (car h)) (puthash (file-name-sans-extension (file-truename (car h))) t seen)))))))"
   log="$OUT_DIR/shard-$i.log"
   (
     "$EMACS" --batch -Q "${LOAD_DIRS[@]}" \
       --eval '(setq load-prefer-newer t)' \
-      -l ert "${load_args[@]}" \
+      -l ert --eval "$load_expr" \
       --eval "(ert-run-tests-batch-and-exit '$SELECTOR)" \
       > "$log" 2>&1
     echo "$?" > "$OUT_DIR/shard-$i.rc"

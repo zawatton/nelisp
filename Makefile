@@ -50,7 +50,24 @@ TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
                   $(wildcard test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nl-*-test.el)))
-TEST_LOADS := $(addprefix -l ,$(TESTS))
+# Load each test file once.  Many test files `load'/`require' other test
+# files, so a plain `-l' list can load a file twice and ERT then aborts with
+# "redefined (or loaded twice)".  Skip any file already in `load-history'
+# (compared by truename, ignoring .el/.elc).  File order is unchanged.
+define TEST_LOAD_ONCE
+(let ((seen (make-hash-table :test (quote equal))))
+  (dolist (h load-history)
+    (when (stringp (car h))
+      (puthash (file-name-sans-extension (file-truename (car h))) t seen)))
+  (dolist (f (quote ($(patsubst %,"%",$(TESTS)))))
+    (let ((k (file-name-sans-extension (file-truename (expand-file-name f)))))
+      (unless (gethash k seen)
+        (load (expand-file-name f) nil t)
+        (dolist (h load-history)
+          (when (stringp (car h))
+            (puthash (file-name-sans-extension (file-truename (car h))) t seen)))))))
+endef
+TEST_LOADS := --eval '$(strip $(TEST_LOAD_ONCE))'
 PACKAGE_SRC_LOADS := $(addprefix -L ,$(PACKAGE_SRC_DIRS))
 PACKAGE_TEST_LOADS := $(addprefix -L ,$(PACKAGE_TEST_DIRS))
 
