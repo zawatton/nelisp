@@ -453,6 +453,24 @@ Return (FROM . TO).  STR, START, and END are used only for the
 ;; whole-function VM intrinsic that declines IGNORE-CASE and would then run the
 ;; body in the interpreter.
 (defun nelisp--compare-strings-1 (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  ;; Early IGNORE-CASE fast path, taken only for plain in-range bounds, so
+  ;; every error case still reaches the validating body below unchanged.
+  (let* ((early (and ignore-case (stringp str1) (stringp str2)
+                     (fboundp 'nelisp--casify-fast) (fboundp 'current-case-table)
+                     (let* ((len1 (length str1)) (len2 (length str2))
+                            (a (or start1 0)) (c (or start2 0))
+                            (b (or end1 len1)) (d (or end2 len2)))
+                       (and (integerp a) (integerp b) (integerp c) (integerp d)
+                            (progn (when (< len1 b) (setq b len1))
+                                   (when (< len2 d) (setq d len2))
+                                   (and (<= 0 a) (<= a b) (<= 0 c) (<= c d)))
+                            (list a b c d)))))
+         (tbl (and early (current-case-table)))
+         (u1 (and tbl (nelisp--casify-fast str1 1 tbl)))
+         (u2 (and (stringp u1) (nelisp--casify-fast str2 1 tbl))))
+    (if (stringp u2)
+        (compare-strings u1 (car early) (car (cdr early)) u2
+                         (car (cdr (cdr early))) (car (cdr (cdr (cdr early)))) nil)
   (nelisp--check-string str1)
   (nelisp--check-string str2)
   (let ((len1 (length str1))
@@ -509,7 +527,7 @@ Return (FROM . TO).  STR, START, and END are used only for the
        ((not (eq result t)) result)
        ((= n1 n2) t)
        ((< n1 n2) (- (1+ n)))
-       (t (1+ n))))))
+       (t (1+ n))))))))
 
 (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
   (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case))

@@ -2128,38 +2128,59 @@ is built like the general path builds it."
       (when (and upmap (not (nelisp-casetab--sparse-table-p upmap)))
         (let ((lower (nelisp--casify-fast object 0 table)))
           (when (stringp lower)
-            (let ((unibyte (unibyte-string-p object))
-                  (cap (eq action 'capitalize))
-                  (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
-                  (n (length object))
-                  (i 0) (inword nil) (parts nil))
-              (while (< i n)
-                (let* ((c (aref object i))
-                       (sx (char-syntax c))
-                       (piece c) (mode nil))
-                  (cond ((and inword cap)
-                         (setq piece (aref lower i) mode 'lower))
-                        (inword nil)
-                        (t
-                         (setq mode 'title
-                               piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
-                                       (let ((v (aref upmap c)))
-                                         (if (and (integerp v) (>= v 0)) v
-                                           (nelisp--case-simple-character
-                                            c 'title table)))))))
-                  (when (and unibyte (>= piece 256))
-                    (setq piece (nelisp--case-byte c piece mode)))
-                  (setq parts (cons piece parts)
-                        inword (or (eq sx ?w) (and csw (eq sx ?_)))
-                        i (1+ i))))
-              (setq parts (nreverse parts))
-              (if unibyte
-                  (let ((result (copy-sequence object)) (k 0))
-                    (dolist (byte parts)
-                      (aset result k byte)
-                      (setq k (1+ k)))
-                    result)
-                (string-make-multibyte (concat parts))))))))))
+            (let* ((unibyte (unibyte-string-p object))
+                   (cap (eq action 'capitalize))
+                   (csw (and (boundp 'case-symbols-as-words) case-symbols-as-words))
+                   (n (length object))
+                   (i 0) (inword nil)
+                   ;; RESULT starts as a fresh string and only the characters
+                   ;; that change are stored into it.  CAPITALIZE starts from
+                   ;; the lowered copy (word-interior characters are already
+                   ;; right); INITIALS starts from OBJECT itself.
+                   (result (if cap
+                               (if (eq lower object) (copy-sequence lower) lower)
+                             (copy-sequence object)))
+                   ;; Inline the buffer-syntax lookup of the prelude
+                   ;; `char-syntax' (hoisting the table fetch out of the
+                   ;; loop) only while that definition is still in force.
+                   ;; OBJECT is ASCII-only, so its unibyte 128-255 adjustment
+                   ;; never applies.
+                   (stab (and (boundp 'nelisp--char-syntax-prelude-def)
+                              (eq (symbol-function 'char-syntax)
+                                  nelisp--char-syntax-prelude-def)
+                              (boundp 'nelisp--syntax-buffer-tables)
+                              (boundp 'nelisp--buffer-defaults-syntax-table)
+                              (eq (aref nelisp--syntax-code-classes 2) ?w)
+                              (eq (aref nelisp--syntax-code-classes 3) ?_)
+                              (or (gethash nelisp--current-buffer
+                                           nelisp--syntax-buffer-tables)
+                                  nelisp--buffer-defaults-syntax-table))))
+              (cond ((and unibyte (multibyte-string-p result)) (setq result nil))
+                    ((and (not unibyte) (not (multibyte-string-p result)))
+                     (setq result (string-make-multibyte result))))
+              (when result
+                (while (< i n)
+                  (let* ((c (aref object i))
+                         (piece nil))
+                    (unless inword
+                      (setq piece (if (and (>= c ?a) (<= c ?z)) (- c 32)
+                                    (let ((v (aref upmap c)))
+                                      (if (and (integerp v) (>= v 0)) v
+                                        (nelisp--case-simple-character
+                                         c 'title table)))))
+                      (when (and unibyte (>= piece 256))
+                        (setq piece (nelisp--case-byte c piece 'title)))
+                      (unless (eq piece (aref result i))
+                        (aset result i piece)))
+                    (setq inword
+                          (if stab
+                              (let* ((entry (aref stab c))
+                                     (cls (if (consp entry) (logand (car entry) 255) 0)))
+                                (or (eq cls 2) (and csw (eq cls 3))))
+                            (let ((sx (char-syntax c)))
+                              (or (eq sx ?w) (and csw (eq sx ?_)))))
+                          i (1+ i))))
+                result))))))))
 
 (defun nelisp--case-string-general (object action table)
   "Case the non-empty string OBJECT for ACTION, tracking word state per character.
@@ -2656,6 +2677,24 @@ Return (FROM . TO).  STR, START, and END are used only for the
 ;; whole-function VM intrinsic that declines IGNORE-CASE and would then run the
 ;; body in the interpreter.
 (defun nelisp--compare-strings-1 (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  ;; Early IGNORE-CASE fast path, taken only for plain in-range bounds, so
+  ;; every error case still reaches the validating body below unchanged.
+  (let* ((early (and ignore-case (stringp str1) (stringp str2)
+                     (fboundp 'nelisp--casify-fast) (fboundp 'current-case-table)
+                     (let* ((len1 (length str1)) (len2 (length str2))
+                            (a (or start1 0)) (c (or start2 0))
+                            (b (or end1 len1)) (d (or end2 len2)))
+                       (and (integerp a) (integerp b) (integerp c) (integerp d)
+                            (progn (when (< len1 b) (setq b len1))
+                                   (when (< len2 d) (setq d len2))
+                                   (and (<= 0 a) (<= a b) (<= 0 c) (<= c d)))
+                            (list a b c d)))))
+         (tbl (and early (current-case-table)))
+         (u1 (and tbl (nelisp--casify-fast str1 1 tbl)))
+         (u2 (and (stringp u1) (nelisp--casify-fast str2 1 tbl))))
+    (if (stringp u2)
+        (compare-strings u1 (car early) (car (cdr early)) u2
+                         (car (cdr (cdr early))) (car (cdr (cdr (cdr early)))) nil)
   (nelisp--check-string str1)
   (nelisp--check-string str2)
   (let ((len1 (length str1))
@@ -2712,7 +2751,7 @@ Return (FROM . TO).  STR, START, and END are used only for the
        ((not (eq result t)) result)
        ((= n1 n2) t)
        ((< n1 n2) (- (1+ n)))
-       (t (1+ n))))))
+       (t (1+ n))))))))
 (unless (fboundp 'compare-strings)
   (defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
     (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case)))
@@ -19543,7 +19582,10 @@ character `w' (119) is returned."
                            nelisp--buffer-defaults-syntax-table)
                        character)))
       (aref nelisp--syntax-code-classes
-            (if (consp entry) (logand (car entry) 255) 0)))))
+            (if (consp entry) (logand (car entry) 255) 0))))
+  ;; Remember the prelude definition so `nelisp--case-string-ascii' can
+  ;; tell when it may inline the same table lookup.
+  (defvar nelisp--char-syntax-prelude-def (symbol-function 'char-syntax)))
 
 (unless (fboundp 'matching-paren)
   (defun matching-paren (character)
@@ -35157,9 +35199,14 @@ Unlike `set-char-table-range', this never accepts a range or default key."
     (aset table character value)))
 
 (defun nelisp-casetab--get-extra-slot (table slot)
-  (if (nelisp-casetab--sparse-table-p table)
-      (emacs-char-table-extra-slot table slot)
-    (funcall nelisp-casetab--native-extra table slot)))
+  (cond ((nelisp-casetab--sparse-table-p table)
+         (emacs-char-table-extra-slot table slot))
+        ;; Direct call while the symbol still holds the native function;
+        ;; a later redefinition keeps going through the saved original so
+        ;; it cannot recurse into itself.
+        ((eq (symbol-function 'char-table-extra-slot) nelisp-casetab--native-extra)
+         (char-table-extra-slot table slot))
+        (t (funcall nelisp-casetab--native-extra table slot))))
 
 ;; GNU's searches read the buffer's case_canon_table slot, which only
 ;; `set-case-table' and `set-standard-case-table' change.  The regexp
