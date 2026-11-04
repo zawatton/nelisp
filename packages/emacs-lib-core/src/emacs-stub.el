@@ -2580,7 +2580,7 @@ left them intact, yielding `void-function inline-const-val' at runtime."
             (cons 'progn (mapcar #'emacs-stub--inline-lower body))
           (emacs-stub--inline-lower (car body)))))
 
-(when (fboundp 'rdf)
+(when (and (fboundp 'rdf) (not (featurep 'inline)))
   (defmacro define-inline (name args &rest body)
     "Runtime `define-inline': define NAME as a plain function (no inlining).
 The inline DSL in BODY is lowered against the runtime backquote."
@@ -2592,7 +2592,7 @@ The inline DSL in BODY is lowered against the runtime backquote."
 ;; subsequent `define-inline' form then fails (observed: org-element-ast.el,
 ;; which does `(require 'inline)' before defining many inline accessors, crashed
 ;; the whole load).  Providing the feature here keeps the working macro.
-(when (fboundp 'rdf)
+(when (and (fboundp 'rdf) (not (featurep 'inline)))
   (provide 'inline))
 
 ;; `buffer-base-buffer' (C primitive, buffer.c) returns the base buffer of an

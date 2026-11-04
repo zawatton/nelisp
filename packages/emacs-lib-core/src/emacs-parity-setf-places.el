@@ -150,6 +150,16 @@
             ((and (consp place) (symbolp (car place))
                   (fboundp 'gv-get) (get (car place) 'gv-expander))
              (gv-get place (lambda (_getter setter) (funcall setter val))))
+            ;; Places whose head has a `compiler-macro' (e.g. `define-inline'
+            ;; accessors, GNU `cl-defstruct' slot accessors): GNU gv.el
+            ;; expands the compiler-macro to reach the underlying
+            ;; `aref'/`nth' place, which also yields the read-only slot
+            ;; error.  Narrower than "any gv-get-able head": plain functions
+            ;; with no compiler-macro still take the `(setf HEAD)' fallback.
+            ((and (consp place) (symbolp (car place))
+                  (fboundp 'gv-get) (not (macrop (car place)))
+                  (function-get (car place) 'compiler-macro))
+             (gv-get place (lambda (_getter setter) (funcall setter val))))
             ;; A macro place: expand once and retry (GNU gv does the same).
             ((and (consp place) (symbolp (car place)) (fboundp (quote macrop)) (macrop (car place)))
              (list 'setf (macroexpand-1 place) val))
