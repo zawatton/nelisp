@@ -1,0 +1,40 @@
+#+TITLE: NeLisp case-conversion slow paths (handoff build55 item 1), 2026-11-04
+
+* S1 Correctness
+
+** S1.1 test/nelisp-string-equal-ignore-case-parity-test.el prints the same on the new binary as on GNU Emacs
+#+REQUIRES: CASE_NEW_BIN
+#+TIMEOUT: 300
+cmd: cd target/case && g=$(emacs --batch -Q -l ../../test/nelisp-string-equal-ignore-case-parity-test.el 2>/dev/null) && test -n "$g" && test "$( (ulimit -v 8388608; "$CASE_NEW_BIN" --load ../../test/nelisp-string-equal-ignore-case-parity-test.el 2>/dev/null) | head -n "$(printf '%s\n' "$g" | wc -l)")" = "$g"
+
+** S1.2 Case parity corpus: new binary agrees with GNU on every form (incl. case-symbols-as-words)
+#+REQUIRES: CASE_NEW_BIN
+#+TIMEOUT: 300
+cmd: cd target/case && ~/Cowork/Notes/.claude/skills/nelisp-parity-probe/probe.sh --repo "$PWD/../.." --bin "$CASE_NEW_BIN" ../../tools/ai/case-bench/parity-cases.el
+
+** S1.3 E2E: new binary boots with the cold image and passes the casefold domain check against GNU's expected rows
+#+REQUIRES: CASE_NEW_BIN
+#+TIMEOUT: 300
+cmd: cd target/case && test "$( (ulimit -v 8388608; "$CASE_NEW_BIN" --eval '(princ (hash-table-count nelisp--fx-table))' 2>/dev/null) | head -c 4)" -ge 2000 && (ulimit -v 8388608; "$CASE_NEW_BIN" --load ../../test/standalone-casefold-domain-check.el 2>/dev/null) | diff -q - ../../test/standalone-casefold-domain-check.expected
+
+* S2 Speed (h.el ns per call, rows of tools/ai/case-bench/case-calls.txt)
+
+** S2.1 compare-strings ignore-case "abc def"/"ABC DEF" at most 10 us (build55: 82 us)
+# Changed 2026-11-05: was one run (CASE_NEW_OUT); median of >=3 runs, as S2.4.
+#+REQUIRES: CASE_NEW_RUNS
+cmd: tools/ai/case-bench/check.sh row-median 1 10000
+
+** S2.2 capitalize "abc def" at most 15 us (build55: 44 us)
+# Changed 2026-11-05: was one run (CASE_NEW_OUT); median of >=3 runs, as S2.4.
+#+REQUIRES: CASE_NEW_RUNS
+cmd: tools/ai/case-bench/check.sh row-median 8 15000
+
+** S2.3 capitalize ?a at most 4 us (build55: 10.7 us)
+# Changed 2026-11-05: was one run (CASE_NEW_OUT); median of >=3 runs, as S2.4.
+#+REQUIRES: CASE_NEW_RUNS
+cmd: tools/ai/case-bench/check.sh row-median 7 4000
+
+** S2.4 E2E: paired against the base build, median of >=3 bench runs per row: no row >25% slower and the total is lower
+# Changed 2026-11-04: was one run (CASE_NEW_OUT), which one-run spikes failed (downcase 1954 vs 1531/1522 ns).
+#+REQUIRES: CASE_NEW_RUNS,CASE_BASE_OUT
+cmd: tools/ai/case-bench/check.sh paired-median
