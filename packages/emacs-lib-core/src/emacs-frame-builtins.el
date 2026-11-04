@@ -68,9 +68,22 @@
 ;; `(require 'tool-bar)' after the bundle has fully loaded (i.e. once
 ;; `load-path' driven lookups are safe again) works fine too, but this
 ;; form runs before that point.
+;; `default-directory' is the repo root under `bin/nemacs', but under a
+;; byte-compile or a host `load' it is the compiled file's directory; fall
+;; back to the nearest ancestor of this file holding the vendor tree.
 (unless (featurep 'tool-bar)
-  (load (expand-file-name "vendor/emacs-lisp/tool-bar.el" default-directory)
-        nil 'no-message t t))
+  (let ((file (expand-file-name "vendor/emacs-lisp/tool-bar.el"
+                                default-directory)))
+    (when (and (not (file-readable-p file)) load-file-name)
+      (let ((dir (file-name-directory load-file-name)) (found nil))
+        (while (and dir (not found))
+          (let ((cand (expand-file-name "vendor/emacs-lisp/tool-bar.el" dir))
+                (parent (file-name-directory (directory-file-name dir))))
+            (if (file-readable-p cand)
+                (setq found cand)
+              (setq dir (and parent (not (equal parent dir)) parent)))))
+        (when found (setq file found))))
+    (load file nil 'no-message t t)))
 
 (defvar emacs-frame-builtins--adopt-blank-frame-owner
   (and (fboundp 'nelisp--write-stdout-bytes)
