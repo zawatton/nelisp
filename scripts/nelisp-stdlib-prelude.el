@@ -2005,8 +2005,9 @@ GNU subr.el: `defvar' followed by `make-variable-buffer-local'.
 
 ;; GNU declares this per-buffer variable special (default nil); without the
 ;; declaration a `let' binding in compiled or lexical code is invisible here.
-(defvar case-symbols-as-words nil
-  "Non-nil means case conversion treats symbol-syntax characters as word parts.")
+(unless (boundp 'case-symbols-as-words)
+  (defvar case-symbols-as-words nil
+    "Non-nil means case conversion treats symbol-syntax characters as word parts."))
 
 (defun nelisp--case-word-character-p (character)
   "Return whether CHARACTER continues a casing word in the current syntax."
