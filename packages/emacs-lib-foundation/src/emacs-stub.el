@@ -3761,6 +3761,11 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 
 (unless (featurep 'url-vars) (provide 'url-vars))
 (unless (featurep 'url-parse) (provide 'url-parse))
+;; The genuine GNU url.el (31.1) was tried in place of this phantom provide:
+;; its dependencies are all vendored, but `(require 'url)' on the standalone
+;; binary does not finish within 100 s (the load never returns), so the
+;; phantom stays until that load is fixed in core.  nelisp-http and
+;; nelisp-network therefore depend on this package for `url'.
 (unless (featurep 'url) (provide 'url))
 
 ;;;; --- char-or-string-p (= simple type predicate combo) ---
