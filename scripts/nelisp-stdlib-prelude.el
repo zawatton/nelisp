@@ -2187,7 +2187,7 @@ is built like the general path builds it."
                           (let ((sx (char-syntax c)))
                             (or (eq sx ?w) (and csw (eq sx ?_)))))
                         i (1+ i))))
-              result))))))
+              result)))))))
 
 (defun nelisp--case-string-general (object action table)
   "Case the non-empty string OBJECT for ACTION, tracking word state per character.
