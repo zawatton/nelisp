@@ -608,6 +608,29 @@ Returns the populated symtab (= a hash table)."
   "Return the patch-target section name for RELoc, default `text'."
   (or (plist-get rel :section) 'text))
 
+(defvar nelisp-link--unibyte-aset-ok 'unknown
+  "Whether `aset' patches a unibyte string byte in place; `unknown' until probed.")
+
+(defun nelisp-link--unibyte-aset-p ()
+  "Return non-nil when a copied unibyte string can be patched with `aset'.
+Probed once: writing bytes 0..255 must keep the string unibyte, keep its
+length and read back the same bytes.  Otherwise relocation falls back to
+byte vectors."
+  (when (eq nelisp-link--unibyte-aset-ok 'unknown)
+    (setq nelisp-link--unibyte-aset-ok
+          (condition-case nil
+              (let ((s (copy-sequence (unibyte-string 0 1 2 3)))
+                    (ok t))
+                (dolist (b '(255 128 127 0))
+                  (aset s 1 b)
+                  (unless (and (not (multibyte-string-p s))
+                               (= (length s) 4) (= (string-bytes s) 4)
+                               (= (aref s 1) b) (= (aref s 0) 0) (= (aref s 2) 2))
+                    (setq ok nil)))
+                ok)
+            (error nil))))
+  nelisp-link--unibyte-aset-ok)
+
 (defun nelisp-link--resolve-relocs (units combined section-layout symtab)
   "Pass 2: patch every unit's relocs against the merged SYMTAB.
 For each RELOC, the target byte position within its combined
@@ -623,9 +646,14 @@ SECTION-LAYOUT is the same alist passed to pass 1."
     (dolist (sn sections)
       (let* ((entry (cdr (assq sn combined)))
              (bytes (plist-get entry :bytes))
-             (vec (nelisp-link--ensure-mutable
-                   (if (stringp bytes) bytes
-                     (or bytes "")))))
+             (vec (if (and (stringp bytes) (not (multibyte-string-p bytes))
+                           (nelisp-link--unibyte-aset-p))
+                      ;; Patch a copy of the section string in place: the
+                      ;; byte-vector round trip cost ~11 s per link.
+                      (copy-sequence bytes)
+                    (nelisp-link--ensure-mutable
+                     (if (stringp bytes) bytes
+                       (or bytes ""))))))
         (push (cons sn vec) out)))
     (let ((bss-entry (cdr (assq 'bss combined))))
       (push (cons 'bss (plist-get bss-entry :bytes)) out))
