@@ -1,0 +1,47 @@
+;;; nelisp-native-rooted-driver-order-test.el --- Driver ordering source proof -*- lexical-binding: t; -*-
+(require 'ert)
+(require 'cl-lib)
+
+(defun nelisp-native-rooted-driver-order-test--read (path)
+  (unless (<= (file-attribute-size (file-attributes path)) 4194304)
+    (error "Builder source input bound"))
+  (with-temp-buffer
+    (insert-file-contents path)
+    (goto-char (point-min))
+    (let (form found)
+      (while (and (not found) (< (point) (point-max)))
+        (setq form (read (current-buffer)))
+        (when (and (eq (car-safe form) 'defun)
+                   (eq (cadr form) 'nelisp-standalone--reader-units))
+          (setq found form)))
+      (or found (error "Reader unit owner is missing")))))
+
+(ert-deftest nelisp-root-driver-compiles-last-with-exactly-unchanged-link-list ()
+  (let* ((before (nelisp-native-rooted-driver-order-test--read
+                  (getenv "NELISP_ROOT_DRIVER_ORDER_BEFORE")))
+         (after (nelisp-native-rooted-driver-order-test--read
+                 (getenv "NELISP_ROOT_DRIVER_ORDER_AFTER")))
+         (old (cl-find-if (lambda (form) (eq (car-safe form) 'let*)) (cdddr before)))
+         (new (cl-find-if (lambda (form) (eq (car-safe form) 'let*)) (cdddr after))))
+    (should (equal (car (last (cadr new))) (assq 'driver (cadr old))))
+    (should (equal (cl-remove 'driver (cadr old) :key #'car)
+                   (cl-remove-if (lambda (binding)
+                                   (memq (car binding)
+                                         '(driver _protocol-inputs
+                                           nelisp-standalone--rooted-protocol-startup-source)))
+                                 (cadr new))))
+    (should (equal (car (cadr new))
+                   '(_protocol-inputs (nelisp-standalone--rooted-protocol-preflight))))
+    (let* ((capture (assq 'nelisp-standalone--rooted-protocol-startup-source (cadr new)))
+           (inputs (cadr (cadr capture)))
+           (final (copy-tree (car (last new)))))
+      (should (eq (car (cadr capture)) 'nelisp-standalone--rooted-protocol-startup-src))
+      (setcar (cdr final) '(list start applyfn))
+      (should (equal inputs final))
+      (should (eq (car (car (last (butlast (cadr new)))))
+                  'nelisp-standalone--rooted-protocol-startup-source)))
+    ;; No builder definitions or generated DSL are evaluated by this test.
+    (should (equal (cddr old) (cddr new)))
+    (let ((wrong (copy-tree new)))
+      (setcar (cdr (car (last wrong))) '(list driver start applyfn))
+      (should-not (equal (cddr old) (cddr wrong))))))

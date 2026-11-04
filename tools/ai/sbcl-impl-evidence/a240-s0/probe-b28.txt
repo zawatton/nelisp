@@ -1,0 +1,4 @@
+N=    16 full-driver  wall   544.6 ms  kernel   938.8 ns/step  result=16:119320
+N=    16 cold-app     wall    85.8 ms  kernel  1072.9 ns/step  result=16:119320
+N= 65536 full-driver  wall   551.8 ms  kernel    67.1 ns/step  result=65536:16416768
+N= 65536 cold-app     wall    90.0 ms  kernel    68.4 ns/step  result=65536:16416768

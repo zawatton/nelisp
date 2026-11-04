@@ -15,6 +15,63 @@
 (require 'nelisp-aot-compiler)
 (require 'nelisp-wasm-write)
 
+(ert-deftest nelisp-asm-wasm/raw-shift-encoding ()
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-op-i64-shl buf)
+    (nelisp-asm-wasm-op-i64-shr-s buf)
+    (nelisp-asm-wasm-op-i64-shr-u buf)
+    (should (equal (nelisp-asm-wasm-buffer-bytes buf)
+                   (unibyte-string #x86 #x87 #x88)))))
+
+(ert-deftest nelisp-asm-wasm/compiler-visits-raw-shift-imports ()
+  (dolist (op '(shl sar shr))
+    (let* ((unit (nelisp-aot-compile-to-link-unit
+                  `(defun f () (,op (extern-call audit_value) (extern-call audit_count)))
+                  :arch 'wasm32 :format 'wasm))
+           (names (mapcar (lambda (entry) (plist-get entry :field))
+                          (plist-get unit :wasm-imports))))
+      (should (equal names '("audit_count" "audit_value"))))))
+
+(ert-deftest nelisp-asm-wasm/compiler-visits-raw-shift-handlers ()
+  (dolist (op '(shl sar shr))
+    (let ((unit (nelisp-aot-compile-to-link-unit
+                 `(defun f () (,op (catch 3 (throw 3 8)) (catch 4 (throw 4 1))))
+                 :arch 'wasm32 :format 'wasm)))
+      (should (integerp (plist-get unit :wasm-tag-type-index))))))
+
+(ert-deftest nelisp-asm-wasm/atomic-rmw-add-encoding ()
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-op-i64-atomic-rmw-add buf)
+    (should (equal (nelisp-asm-wasm-buffer-bytes buf)
+                   (unibyte-string #xfe #x1f 3 0)))))
+
+(ert-deftest nelisp-asm-wasm/bitwise-integer-encoding ()
+  (let ((buf (nelisp-asm-wasm-make-buffer)))
+    (nelisp-asm-wasm-op-i64-and buf)
+    (nelisp-asm-wasm-op-i64-or buf)
+    (nelisp-asm-wasm-op-i64-xor buf)
+    (should (equal (nelisp-asm-wasm-buffer-bytes buf)
+                   (unibyte-string #x83 #x84 #x85)))))
+
+(ert-deftest nelisp-asm-wasm/compiler-visits-atomic-and-tag-import-operands ()
+  (dolist (case '(((atomic-fetch-add (extern-call operand_ptr)
+                                    (extern-call operand_delta))
+                   "operand_ptr" "operand_delta")
+                  ((sexp-tag (extern-call operand_word)) "operand_word")))
+    (let* ((unit (nelisp-aot-compile-to-link-unit
+                  `(defun f () ,(car case)) :arch 'wasm32 :format 'wasm))
+           (names (mapcar (lambda (entry) (plist-get entry :field))
+                          (plist-get unit :wasm-imports))))
+      (should (equal names (cdr case))))))
+
+(ert-deftest nelisp-asm-wasm/compiler-visits-atomic-and-tag-handler-operands ()
+  (dolist (body '((atomic-fetch-add (catch 3 (throw 3 1040)) 1)
+                  (atomic-fetch-add 1040 (catch 3 (throw 3 2)))
+                  (sexp-tag (catch 3 (throw 3 169)))))
+    (let ((unit (nelisp-aot-compile-to-link-unit
+                 `(defun f () ,body) :arch 'wasm32 :format 'wasm)))
+      (should (integerp (plist-get unit :wasm-tag-type-index))))))
+
 (defun nelisp-asm-wasm-test--decode-uleb128 (bytes)
   "Decode unsigned LEB128 BYTES."
   (let ((result 0)

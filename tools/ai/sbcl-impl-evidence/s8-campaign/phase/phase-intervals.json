@@ -1,0 +1,29 @@
+[
+ {
+  "spawn_to_entry": 7647322,
+  "runtime_boot": 15480416,
+  "reinit_to_first_form": 20442757,
+  "first_form_to_ready": 6415301608,
+  "kernel": 61119261,
+  "validated_to_exit": 189061895,
+  "whole": 6871791645
+ },
+ {
+  "spawn_to_entry": 7984762,
+  "runtime_boot": 16244506,
+  "reinit_to_first_form": 19588807,
+  "first_form_to_ready": 6420772729,
+  "kernel": 61055422,
+  "validated_to_exit": 233346651,
+  "whole": 6922828913
+ },
+ {
+  "spawn_to_entry": 7914923,
+  "runtime_boot": 16089995,
+  "reinit_to_first_form": 20651957,
+  "first_form_to_ready": 6448879140,
+  "kernel": 61069751,
+  "validated_to_exit": 203581490,
+  "whole": 6922325943
+ }
+]

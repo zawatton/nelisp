@@ -1,0 +1,6 @@
+;;; -*- lexical-binding: t -*-
+(defun nl243-inner (l) (mapcar (lambda (x) (+ x 1)) l))
+(defun nl243-free (l k) (mapcar (lambda (x) (+ x k)) l))
+(nl243-inner '(1 2 3)) (nl243-free '(1 2 3) 2)
+(let ((l (number-sequence 1 @N@)))
+  (princ (format "RESULT %S %S\n" (apply #'+ (nl243-inner l)) (apply #'+ (nl243-free l 5)))))

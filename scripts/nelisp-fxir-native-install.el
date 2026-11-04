@@ -2,9 +2,11 @@
 
 ;; Spliced into the boot source after the prelude, with `nelisp-nc--table'
 ;; defined just before it (generated from lisp/nelisp-fxir-native-data.el).
-;; A table row is (NAME ID CALLEES IR ARITY [:mutant]): the fxir native
-;; function nc_ID was lowered from, the names its call nodes call and the
-;; record's (MIN MAX REST-INDEX).  A live fx record
+;; A table row is (NAME ID TEXT [:mutant]), TEXT the printed (CALLEES IR
+;; ARITY): the fxir native function nc_ID was lowered from, the names its
+;; call nodes call and the record's (MIN MAX REST-INDEX); `nelisp-nc--row'
+;; reads it for the comparison (compall2: kept as text so the table costs
+;; the collector one string per row).  A live fx record
 ;; whose code compiles again to the same fxir with the same callees gets its
 ;; NLOCALS slot replaced by -(16+ID); the word VM then runs nc_ID.  The code
 ;; vector, its constants and call-site caches stay the live ones (read by the
@@ -67,13 +69,17 @@
 (defvar nelisp-nc--converted nil "Names whose fx record runs native code.")
 
 (defun nelisp-nc--row (name &optional mutant)
+  "NAME's row as (NAME ID CALLEES IR ARITY [:mutant]), its TEXT read, or nil."
   (let ((rows nelisp-nc--table) (found nil))
     (while (and rows (not found))
       (when (and (eq (car (car rows)) name)
                  (eq (and (memq :mutant (car rows)) t) (and mutant t)))
         (setq found (car rows)))
       (setq rows (cdr rows)))
-    found))
+    (when found
+      (append (list (car found) (nth 1 found))
+              (car (read-from-string (nth 2 found)))
+              (nthcdr 3 found)))))
 
 (defun nelisp-nc--convert (name fn &optional mutant)
   "Switch NAME's fx record (closure FN) to its native function when the fxir matches."

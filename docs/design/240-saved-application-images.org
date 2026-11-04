@@ -1,0 +1,143 @@
+#+TITLE: Saved application images: install once, cold-load many times
+#+DATE: 2026-11-02
+#+STATUS: SHIPPED in the uncommitted worktree (2026-11-02) — producer, launcher and app-lane campaign; ledger tools/ai/startup-progress.org
+#+SCOPE: Remove the per-process authenticate/load/compile/register cost of native applications by saving the prepared heap once and cold-loading it, without weakening what the install receipt proves
+#+LEDGER: tools/ai/startup-progress.org
+
+* Why this document exists
+
+On build28 the frozen S8 campaign (s8-final-b28) shows every kernel faster
+than GNU Emacs 31.1, but whole-process time slower in 7 of 9 rows.  The
+handoff of 2026-11-02 called this "startup".  Measurement shows it is not the
+runtime's start: a bare =nelisp-dynamic --load= of a one-form file takes
+19.4 ms, against 48.6 ms for =emacs-31.1 --batch -Q=.  The cost is the
+application preparation that the generated ON-lane driver repeats in every
+process.
+
+* Measured cause (evidence: tools/ai/sbcl-impl-evidence/a240-s0)
+
+Row hash-get1024, N=16, build28, one instrumented run of a copy of
+=run/b28/benchmark-driver-native-on.el= (README.txt has the method):
+
+| Part                                                   | ms   |
+|--------------------------------------------------------+------|
+| python + bwrap lane wrapper (590 minus in-process 488) | ~100 |
+| image start before the first form                      |  ~22 |
+| driver forms 0-11 and reading the preparation form     |  ~44 |
+| verify-pins, twice (Elisp read + sha256 of 12 files)   |   36 |
+| load nelisp-native-application-producer.el from source |   26 |
+| preflight                                              |   52 |
+| install: fx helper + fxir-effects/analysis source load |   31 |
+| install: recheck-inputs (a second preflight)           |   34 |
+| install: prepare + compile + install candidates        |  103 |
+| registration and native-mapping checks (form 16)       |   37 |
+| benchmark main (input, check, validate)                |   50 |
+
+GNU's whole process for the same row is 67.7 ms (campaign median).
+
+* Feasibility probe (a240-s0/probe-app-image.sh, probe-b28.txt)
+
+The heap-saving primitive already exists: =nelisp--arena-dump-image-stream
+PATH= writes the live arena; the same binary restores it with
+=--cold-load-from PATH= (build digest checked).  Application native code is
+AOT code inside the binary; the heap only holds fx records that point at it,
+so a heap dump keeps the native route.
+
+The probe runs forms 0-17 of the generated driver (all preparation and
+checks), dumps the heap (41.7 MB), then times fresh processes that cold-load
+the dump and run only form 18 (benchmark main).  Medians of 7, no wrapper:
+
+| N     | path        | wall ms | kernel ns/step | result         |
+|-------+-------------+---------+----------------+----------------|
+| 16    | full driver |   544.6 |          938.8 | 16:119320      |
+| 16    | cold app    |    85.8 |         1072.9 | 16:119320      |
+| 65536 | full driver |   551.8 |           67.1 | 65536:16416768 |
+| 65536 | cold app    |    90.0 |           68.4 | 65536:16416768 |
+
+Results are identical, the kernel speed is unchanged, and the in-process
+wall time falls by about 84%.
+
+* SBCL analogue
+
+SBCL separates compile time from run time: =compile-file= writes a fasl, and
+=save-lisp-and-die= writes a core with everything already loaded.  A program
+started from that core does no compiling or loading.  NeLisp already has the
+core half (arena dump plus cold-load); what is missing is a defined product
+that owns the dump, records what was proved before it, and a launcher that
+re-establishes trust cheaply instead of repeating the proof.
+
+* Design
+
+** D1 Application image producer
+A tool runs, in one disposable process: the existing authenticated
+preparation (pins, preflight, =nelisp-native-application-producer-install=,
+receipt checks, registration checks), then dumps the heap.  Before the dump
+it stores an application-image record in the heap: the receipt, the pins and
+their sha256, the binary build digest, the producer image sha256, and the
+installed names with their function cells.  It writes a sidecar manifest
+with the dump's sha256 and the same pins.  Any failed check aborts before
+the dump; no partial image is left behind.
+
+** D2 Launch and trust
+The launcher verifies the dump's sha256 against the manifest pin (the same
+rule the lane already applies to the binary) and starts
+=BINARY --cold-load-from APP_IMAGE --load MAIN=.  MAIN's first form checks,
+in the restored heap, that the application-image record is present, that
+every recorded name's function cell is =eq= to the recorded cell, and that
+no recorded name was redefined.  The checks that need the producing process
+(closure =eq= identity, provider witnesses, collision checks) ran there and
+are part of the record; the restored heap is that same heap, byte for byte,
+so the identities still hold.  The source pins are not re-hashed per
+process: the image sha256 covers everything derived from them.
+
+** D3 Residual fixed cost
+After D1/D2 the remaining ~85 ms is cold-load of a 41.7 MB image plus the
+benchmark main run by the evaluator.  Candidates, to be measured before
+choosing: mapping instead of reading the image, dropping the producer and
+fxir analysis code from the dumped heap, and compiling the driver's
+non-kernel helpers.
+
+* Decisions (user, 2026-11-02)
+1. Wall time is measured by a new supplementary "app-lane" campaign: the
+   frozen S8 rows, N, reps and evaluator, with only the launcher changed
+   (D2).  The frozen S8 campaign stays the reference and is not revised.
+2. Trust model: per-process re-hashing of the 12 source pins is replaced by
+   one sha256 of the dump, checked by the launcher, plus the in-heap record
+   and function-cell identity checks of D2.  Pins and the receipt are
+   verified once, at production.  The launcher must hash the file it hands
+   to the binary (no check-then-swap window).
+
+* Results (2026-11-02, build28)
+
+- Producer (tools/nelisp-application-image-produce.sh, tools/nelisp-application-image.el):
+  runs the generated driver's preparation unchanged, compiles pending fx
+  functions before the dump (NELISP_FX_DUMP=all plus an explicit
+  nelisp--fx-warm-for-dump and a nothing-pending assertion), records names,
+  cells, pins and digests in the heap, dumps through a byte-checked rename.
+- Launcher (tools/nelisp-application-image-launch.sh; the Python version is
+  kept and passes the same controls): strict manifest, binary pin, sha256 of
+  the opened image and main file, the same descriptors passed as /dev/fd/N,
+  the binary held behind a FIFO gate until both digests match, post-run
+  same-file check.
+- First-call compilation was the largest hidden cost: the driver helpers
+  (bench-input 26 ms, validate 20 ms, check-input 12 ms on first call)
+  compiled in every process until they were compiled before the dump.
+- hash-get1024, N=16384, quiet machine: GNU about 61 ms, full lane 590 ms,
+  app launcher 63-65 ms (1.03-1.08x GNU), kernel unchanged.
+- App-lane campaign (s8-app-lane/run-b28, CPU 1, 7 reps): results equal in
+  all rows; kernel new/old 0.993-1.006, allocating rows faster at the frozen
+  interval but within 5% over 2M..4M (GC cadence).  Whole process new/GNU
+  0.30-0.94 in eight rows; hash-get1024 1.32 under CPU pinning.
+- Fixed cost per process (whole minus three kernel runs at HIGH): 68-80 ms in
+  every row including nested-function-call2 (GNU 54-75 ms).  Its floor is the
+  per-process sha256 of the 41.8 MB image (about 24 ms; 39.6 MB of it is the
+  base image) plus cold-load (about 20 ms) and bwrap (about 6 ms).
+- Load sensitivity: the launcher is a short pipeline of processes and loses
+  more than GNU's single process under machine load; S3.1 is measured only on
+  a quiet machine (sampled before and after).
+
+* Further options (not taken)
+- fs-verity on the image (kernel-verified sha256 Merkle tree, O(1) digest)
+  would remove the per-process hash; this ext4 lacks the verity feature and
+  enabling it needs a root tune2fs change.
+- A smaller base image would shrink both hashing and cold-load.

@@ -1,0 +1,22 @@
+{
+  "reviewer_model":"gpt-6.1-sol",
+  "status":"PASS",
+  "scope":"Final shared-tree integration of original five designs plus startup Doc235 and evidence; no new source audit",
+  "inventory":"coordinator-evidence/integration-files.json",
+  "inventory_unique_paths":25,
+  "immutable_inventory_files_matching_sha256":24,
+  "mutable_ledger_excluded_from_receipt_hash_set":"tools/ai/sbcl-inspired-design-progress.org",
+  "ledger_structure":"PASS: S1 has 3 evidence criteria; S2 has 2 evidence criteria and final integration E2E pending criterion; denominator-change note 3 to 6 present. Final receipt hash may replace pending after this check without creating a cyclic ledger hash.",
+  "org_local_links":"PASS: every file link in integrated Org documents resolves relative to its containing file",
+  "manifest_parse":"PASS: original source-manifest.json and 235-source-manifest.json parse; both themselves match immutable inventory hashes",
+  "original_package":"PASS: original five document, source manifest, evidence and frozen independent-review receipt bytes match integration inventory; new startup package hashes also match",
+  "preservation_snapshot":"coordinator-evidence/shared-before.json",
+  "preexisting_entries_preserved":272,
+  "preservation_check":"Existence and regular-file sha256 match snapshot; no original content was changed by this review",
+  "head_unchanged":"9d6a4a4f2c01952cb03f9333aa7afeb6bdf6d835",
+  "startup_document_sha256":"568673dd4fcd8a149b7c63e738ce4dcbf7c9076a5cb438c940f10632d9ebdef9",
+  "startup_manifest_sha256":"07b6d050e113016bbe2867539341163b21cae59f775abfb3bcc5604cb0bd7f5a",
+  "runtime_build_samples":"NOT RUN; document integration only",
+  "validation_limits":"ulimit -v 8388608; ulimit -c 0",
+  "qualification":"HOLD unchanged; process elapsed is not measured pure startup"
+}

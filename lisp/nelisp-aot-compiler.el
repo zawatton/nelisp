@@ -260,6 +260,8 @@ ignores this var (= AAPCS64 only).")
   "Nil, or the symbol naming why the defun being emitted keeps a full-frame scan.")
 (defvar nelisp-aot-compiler--stackmap-memo nil
   "Scratch `eq' hash node -> slots referenced in its subtree.")
+(defvar nelisp-aot-compiler--stackmap-input-memo nil
+  "Scratch `eq' hash node -> slots read from outside its lexical bindings.")
 (defvar nelisp-aot-compiler--stackmap-converged t)
 (defvar nelisp-aot-compiler--stackmap-plet nil
   "Non-nil when the defun being emitted uses the private-let region plan (flagged, still mapped).")
@@ -11747,7 +11749,7 @@ functions `((NAME . ARITY) ...)'."
       (cond
        ((null args)
         (nelisp-aot-compiler--parse-value
-         (if (eq op '*) 1 0)
+         (pcase op ('* 1) ('logand -1) (_ 0))
          env fenv defuns))
        ((null (cdr args))
         (nelisp-aot-compiler--parse-value
@@ -25361,6 +25363,113 @@ all other arms retain their evaluation and zero test."
         (nelisp-aot-compiler--emit-cond-jump no buf label jump-if-true)
         (nelisp-asm-x86_64-define-label buf done))))))
 
+(defun nelisp-aot-compiler--x86-literal-branch-bounded-p (node)
+  "Bound canonical IR occurrences and structural work before proof recursion.
+Count shared DAG occurrences separately.  Active-path ownership detects cycles
+without rejecting a shared object after its matching exit."
+  (let ((work (list (list 'enter node 0)))
+        (active (make-hash-table :test #'eq))
+        (occurrences 0) (scheduled 1) (valid t)
+        (kinds '(imm ref arith shift ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
+                     sexp-tag call extern-call syscall-direct cmp logic if value-seq let-rt)))
+    (while (and valid work)
+      (let* ((frame (pop work)) (item (nth 1 frame)) (depth (nth 2 frame)))
+        (if (eq (car frame) 'exit)
+            (remhash item active)
+          (cond
+           ((> depth 128) (setq valid nil))
+           ((or (consp item) (vectorp item))
+            (let* ((vector (vectorp item))
+                   (size (if vector (length item) 2)))
+              (cond
+               ((or (gethash item active)
+                    (and vector (or (> size 64) (= size 0)
+                                    (not (memq (aref item 0) kinds))
+                                    (> (setq occurrences (1+ occurrences)) 256)))
+                    (> (+ scheduled size) (* 256 64))
+                    (and (> size 0) (>= depth 128)))
+                (setq valid nil))
+               (t
+                (setq scheduled (+ scheduled size))
+                (puthash item t active)
+                (push (list 'exit item depth) work)
+                (if vector
+                    (dotimes (i size)
+                      (push (list 'enter (aref item (- size i 1)) (1+ depth)) work))
+                  (push (list 'enter (cdr item) (1+ depth)) work)
+                  (push (list 'enter (car item) (1+ depth)) work))))))
+           ((not (or (null item) (symbolp item) (integerp item) (stringp item)))
+            (setq valid nil))))))
+    valid))
+
+(defun nelisp-aot-compiler--x86-literal-branch-tree-p (node)
+  "Preflight IF scopes and ordinary GP leaves; require a constant leaf.
+Calls and reads are not purity facts: nonconstant leaves retain value emission."
+  (let ((constants 0))
+    (cl-labels
+        ((safe (n result-p)
+           (and (not (nelisp-aot-compiler--x86-zero-branch-value-boundary-p n))
+                (not (nelisp-aot-compiler--ir-get n :root-p))
+                (if (eq (nelisp-aot-compiler--ir-kind n) 'if)
+                    (and (nelisp-aot-compiler--x86-zero-branch-let-safe-p n)
+                         (safe (nelisp-aot-compiler--ir-get n :test) nil)
+                         (safe (nelisp-aot-compiler--ir-get n :then) result-p)
+                         (safe (nelisp-aot-compiler--ir-get n :else) result-p))
+                  (and (memq (nelisp-aot-compiler--ir-kind n)
+                             '(imm ref arith shift ptr-read-u8 ptr-read-u16 ptr-read-u32 ptr-read-u64
+                                   sexp-tag call extern-call syscall-direct cmp))
+                       (nelisp-aot-compiler--x86-zero-branch-gp-p n)
+                       (progn (when (and result-p (eq (nelisp-aot-compiler--ir-kind n) 'imm))
+                                (setq constants (1+ constants))) t))))))
+      (and (safe node t) (> constants 0)))))
+
+(defun nelisp-aot-compiler--x86-literal-branch-plan (test)
+  "Return (IF LITERAL OP) for a preflighted signed32 RAW comparison.
+The zero probe preserves TEST's annotations and reuses every old mode/GP guard."
+  (when (and (eq (nelisp-aot-compiler--ir-kind test) 'cmp)
+             (memq (nelisp-aot-compiler--ir-get test :op) '(= /=))
+             (nelisp-aot-compiler--x86-literal-branch-bounded-p test))
+    (let* ((a (nelisp-aot-compiler--ir-get test :a)) (b (nelisp-aot-compiler--ir-get test :b))
+           (key (cond ((nelisp-aot-compiler--imm-int-p b) :b)
+                      ((nelisp-aot-compiler--imm-int-p a) :a)))
+           (literal (and key (nelisp-aot-compiler--ir-get (if (eq key :b) b a) :value)))
+           (subject (if (eq key :b) a b)))
+      (when (and (integerp literal) (/= literal 0) (<= (- (ash 1 31)) literal (1- (ash 1 31)))
+                 (eq (nelisp-aot-compiler--ir-kind subject) 'if)
+                 (nelisp-aot-compiler--x86-zero-branch-gp-p test)
+                 (nelisp-aot-compiler--x86-literal-branch-tree-p subject))
+        (let ((probe (copy-sequence test)))
+          (cl-loop for i from 1 below (length probe) by 2
+                   when (eq (aref probe i) key)
+                   do (aset probe (1+ i) (nelisp-aot-compiler--make-ir 'imm :value 0)))
+          (when (eq (nelisp-aot-compiler--x86-zero-branch-subject probe) subject)
+            (list subject literal (nelisp-aot-compiler--ir-get test :op))))))))
+
+(defun nelisp-aot-compiler--emit-literal-branch-x86 (node literal op buf label sense)
+  "Compare the selected IF leaf exactly, retaining each original test once."
+  (pcase (nelisp-aot-compiler--ir-kind node)
+    ('if
+     (let ((otherwise (nelisp-aot-compiler--x86-continuation-label "literal-else"))
+           (done (nelisp-aot-compiler--x86-continuation-label "literal-done")))
+       (nelisp-aot-compiler--emit-cond-jump (nelisp-aot-compiler--ir-get node :test) buf otherwise nil)
+       (nelisp-aot-compiler--emit-literal-branch-x86
+        (nelisp-aot-compiler--ir-get node :then) literal op buf label sense)
+       (nelisp-asm-x86_64-jmp-rel32 buf done)
+       (nelisp-asm-x86_64-define-label buf otherwise)
+       (nelisp-aot-compiler--emit-literal-branch-x86
+        (nelisp-aot-compiler--ir-get node :else) literal op buf label sense)
+       (nelisp-asm-x86_64-define-label buf done)))
+    ('imm
+     (let ((equalp (= (nelisp-aot-compiler--x86-wrap-i64 (nelisp-aot-compiler--ir-get node :value))
+                      (nelisp-aot-compiler--x86-wrap-i64 literal))))
+       (when (eq (if (eq op '=) equalp (not equalp)) sense)
+         (nelisp-asm-x86_64-jmp-rel32 buf label))))
+    (_
+     (nelisp-aot-compiler--emit-cond-jump
+      (nelisp-aot-compiler--make-ir 'cmp :op op :a node
+                                  :b (nelisp-aot-compiler--make-ir 'imm :value literal))
+      buf label sense))))
+
 (defun nelisp-aot-compiler--emit-cond-jump (test buf label jump-if-true)
   "x86-64: jump to LABEL when TEST's truth is JUMP-IF-TRUE, else fall through.
 CG1 (Doc 224): GCC lowers `&&' and `||' conditions to chains of
@@ -25375,7 +25484,8 @@ against 0.  Operands are evaluated in source order and only as far as
 the short circuit reaches, exactly as the value-position `and' / `or'
 do, so only the materialized 0/1 disappears."
   (let ((kind (nelisp-aot-compiler--ir-kind test))
-        (subject (nelisp-aot-compiler--x86-zero-branch-subject test)))
+        (subject (nelisp-aot-compiler--x86-zero-branch-subject test))
+        (literal-plan (nelisp-aot-compiler--x86-literal-branch-plan test)))
     (cond
      ((and nelisp-aot-compiler--x86-zero-branch-context
            (or (nelisp-aot-compiler--x86-zero-branch-value-boundary-p test)
@@ -25395,6 +25505,10 @@ do, so only the materialized 0/1 disappears."
          subject buf label
          (if (eq (nelisp-aot-compiler--ir-get test :op) '=)
              (not jump-if-true) jump-if-true))))
+     (literal-plan
+      (let ((nelisp-aot-compiler--x86-zero-branch-context t))
+        (nelisp-aot-compiler--emit-literal-branch-x86
+         (nth 0 literal-plan) (nth 1 literal-plan) (nth 2 literal-plan) buf label jump-if-true)))
      ((and nelisp-aot-compiler--x86-zero-branch-context (eq kind 'let-rt)
            (nelisp-aot-compiler--x86-zero-branch-let-safe-p test))
       (nelisp-aot-compiler--emit-let-rt-x86
@@ -28433,10 +28547,54 @@ flags, preserving every incoming GP/XMM argument and the frame layout."
                  nelisp-aot-compiler--stackmap-memo))))
 
 (defun nelisp-aot-compiler--stackmap-note (node after)
-  (let ((set (logior after (nelisp-aot-compiler--stackmap-uses node)))
+  (let ((set (logior after
+                     (if (memq (aref node 0) '(call extern-call f64-call))
+                         ;; Argument temporaries are saved while later args
+                         ;; run. At CALL, GP args within the register budget
+                         ;; move into ABI registers and then callee parameter
+                         ;; roots; larger calls also retain their save area.
+                         ;; An argument's private bindings have ended (or
+                         ;; never initialized). Interior calls get own ranges.
+                         (nelisp-aot-compiler--stackmap-inputs node)
+                       (nelisp-aot-compiler--stackmap-uses node))))
         (old (gethash node nelisp-aot-compiler--stackmap-live-table)))
     (puthash node (if old (logior old set) set)
              nelisp-aot-compiler--stackmap-live-table)))
+
+(defun nelisp-aot-compiler--stackmap-inputs (node)
+  "Return NODE's external slot reads, excluding its private lexical slots.
+Keep subtree reads for interior scopes: a safepoint inside a binding must
+still retain that binding. Sibling live-in transfer and direct-call boundary
+attribution use this external-read set."
+  (or (gethash node nelisp-aot-compiler--stackmap-input-memo)
+      (puthash
+       node
+       (let ((kind (aref node 0)))
+         (cond
+          ((eq kind 'ref)
+           (nelisp-aot-compiler--stackmap-slot-bit
+            (nelisp-aot-compiler--ir-get node :slot)))
+          ((memq kind '(let-rt let-rt-n))
+           (let ((m 0)
+                 (bindings (if (eq kind 'let-rt)
+                               (list (list nil (nelisp-aot-compiler--ir-get node :slot)
+                                           (nelisp-aot-compiler--ir-get node :value-ir)))
+                             (nelisp-aot-compiler--ir-get node :bindings))))
+             (dolist (b (nelisp-aot-compiler--stackmap-nodes-in
+                         (nelisp-aot-compiler--ir-get node :body)))
+               (setq m (logior m (nelisp-aot-compiler--stackmap-inputs b))))
+             ;; Initializers run in order, before their own slot is written.
+             (dolist (b (reverse bindings))
+               (setq m (logand m (lognot (nelisp-aot-compiler--stackmap-slot-bit (nth 1 b)))))
+               (when (nelisp-aot-compiler--ir-node-p (nth 2 b))
+                 (setq m (logior m (nelisp-aot-compiler--stackmap-inputs (nth 2 b))))))
+             m))
+          (t
+           (let ((m 0))
+             (dolist (k (nelisp-aot-compiler--stackmap-kids node))
+               (setq m (logior m (nelisp-aot-compiler--stackmap-inputs k))))
+             m))))
+       nelisp-aot-compiler--stackmap-input-memo)))
 
 (defun nelisp-aot-compiler--stackmap-seq (forms after)
   "Live-in of FORMS (a node or a list of nodes) evaluated in order, given AFTER."
@@ -28447,7 +28605,7 @@ flags, preserving every incoming GP/XMM argument and the frame layout."
 
 (defun nelisp-aot-compiler--stackmap-siblings (nodes after)
   "Live-in of NODES evaluated in an unspecified order, given AFTER."
-  (let ((uses (mapcar #'nelisp-aot-compiler--stackmap-uses nodes))
+  (let ((uses (mapcar #'nelisp-aot-compiler--stackmap-inputs nodes))
         (in after) (all 0))
     (dolist (u uses) (setq all (logior all u)))
     ;; Each sibling sees every sibling's uses as still to come (a superset of
@@ -28607,6 +28765,7 @@ Sets `--stackmap-live-table' (nil when the defun stays FULL) and `--stackmap-rea
             (and (not (condition-case nil (> (ash 1 80) 0) (error nil))) 'no-bignum)))
   (unless nelisp-aot-compiler--stackmap-reason
     (let ((nelisp-aot-compiler--stackmap-memo (make-hash-table :test #'eq))
+          (nelisp-aot-compiler--stackmap-input-memo (make-hash-table :test #'eq))
           (table (make-hash-table :test #'eq)))
       (setq nelisp-aot-compiler--stackmap-live-table table)
       (nelisp-aot-compiler--stackmap-an body 0)
@@ -29800,6 +29959,12 @@ drift (= a Doc 92 emitter invariant violation)."
          (pass2 (nelisp-aot-compiler--pass
                  ir defuns str-offsets rodata-vaddr table-vaddrs))
          (text-bytes (nelisp-asm-x86_64-resolve-fixups pass2)))
+    ;; Unlike relocatable objects/units, this frontend has no later linker.
+    ;; Eligible local externs already became label fixups during emission.
+    ;; Every remaining call or data relocation would otherwise ship as zero.
+    (when-let ((unresolved (nelisp-asm-x86_64-extract-relocs pass2)))
+      (signal 'nelisp-aot-compiler-error
+              (list :unresolved-executable-relocations unresolved)))
     ;; Pass-1's fixups remain unresolved (= we never inspect them);
     ;; only pass-2's resolved bytes ship to the ELF writer.
     (ignore pass1)
@@ -30044,31 +30209,115 @@ drift (= a Doc 92 emitter invariant violation)."
   (nelisp-asm-wasm-op-end buf)
   (nelisp-asm-wasm-op-end buf))
 
+(defvar nelisp-aot-compiler-wasm-genuine-alloc nil
+  "When non-nil, Wasm `alloc-bytes' calls module-local `nl_alloc_bytes'.
+Bind around compilation; nil preserves the original byte stream.  The allocator
+must take two arguments.  Its module call graph may contain no allocation
+sites (explicit or literal-slot), indirect calls, external calls or imports.
+Raw sites are configured by `nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers'.
+This static check does not enforce initialization order or one-shot execution.
+This noncollecting mode leaves `dealloc-bytes' unchanged.")
+
+(defvar nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers nil
+  "Functions retaining raw Wasm reservation in genuine allocation mode.
+Each listed function present in the module must contain exactly one explicit
+`alloc-bytes' site and no literal-slot allocation sites.  With nil, no function
+is exempt.  A listed function is still forbidden in the allocator call graph.
+Bind around compilation; this variable has no effect in default mode.")
+
+(defun nelisp-aot-compiler--wasm-check-genuine-alloc (defuns)
+  "Validate the static allocator boundary and configured raw sites in DEFUNS."
+  (let (rows raw-counts)
+    (dolist (definition defuns)
+      (let ((name (nelisp-aot-compiler--ir-get definition :name)) calls allocs externals)
+        (cl-labels
+            ((walk (node)
+               (cond
+                ((and (vectorp node) (> (length node) 0))
+                 (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
+                   ;; Literal boundary slots also allocate through this emitter.
+                   (when (memq tag '(0 90 91)) (push tag allocs))
+                   (when (memq tag '(5 23))
+                     (push (if (nelisp-aot-compiler--ir-get node :fn-value)
+                               :indirect
+                             (nelisp-aot-compiler--ir-get node :name)) calls))
+                   (when (or (= tag 104)
+                             (and (= tag 23)
+                                  (not (nelisp-aot-compiler--ir-get node :fn-value))))
+                     (push (nelisp-aot-compiler--ir-get node :name) externals))
+                   (when (= tag 78)
+                     (let* ((nr-node (nelisp-aot-compiler--ir-get node :nr))
+                            (nr (and (= (nelisp-aot-compiler--ir-kind-tag nr-node) 30)
+                                     (nelisp-aot-compiler--ir-get nr-node :value)))
+                            (import (cdr (assq nr nelisp-aot-compiler--wasm-linux-nr-to-wasi))))
+                       (when import (push import externals)))))
+                 (mapc #'walk (append node nil)))
+                ((consp node) (walk (car node)) (walk (cdr node))))))
+          (walk (nelisp-aot-compiler--ir-get definition :body)))
+        (when (memq name nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)
+          (let ((count (+ (or (cdr (assq name raw-counts)) 0) (length allocs))))
+            (setf (alist-get name raw-counts) count)
+            (unless (and (equal allocs '(0)) (= count 1))
+              (signal 'nelisp-aot-compiler-error
+                      (list :wasm-genuine-alloc-raw-reservation name count)))))
+        (push (list name calls allocs definition externals) rows)))
+    (let ((allocator (assq 'nl_alloc_bytes rows)))
+      (unless allocator
+        (signal 'nelisp-aot-compiler-error
+                '(:wasm-genuine-alloc-missing nl_alloc_bytes)))
+      (unless (= (length (nelisp-aot-compiler--ir-get (nth 3 allocator) :params)) 2)
+        (signal 'nelisp-aot-compiler-error
+                '(:wasm-genuine-alloc-arity nl_alloc_bytes)))
+      (let ((pending '(nl_alloc_bytes)) seen)
+        (while pending
+          (let* ((name (pop pending)) (row (assq name rows)))
+            (unless (memq name seen)
+              (push name seen)
+              (when (or (nth 2 row) (memq :indirect (nth 1 row)))
+                (signal 'nelisp-aot-compiler-error
+                        (list :wasm-genuine-alloc-recursion name 'nl_alloc_bytes)))
+              (when (or (not row) (nth 4 row))
+                (signal 'nelisp-aot-compiler-error
+                        (list :wasm-genuine-alloc-external (if row (car (nth 4 row)) name))))
+              (dolist (callee (nth 1 row))
+                (push callee pending)))))))))
+
 (defun nelisp-aot-compiler--wasm-emit-alloc-bytes (node buf ctx)
   "Emit wasm alloc-bytes NODE into BUF under CTX."
-  (let ((scratch (nelisp-aot-compiler--wasm-alloc-scratch-local ctx)))
-    (nelisp-asm-wasm-op-global-get buf nelisp-aot-compiler--wasm-heap-ptr-global)
-    (nelisp-aot-compiler--wasm-emit-value
-     (nelisp-aot-compiler--ir-get node :align) buf ctx)
-    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
-    (nelisp-asm-wasm-op-i32-add buf)
-    (nelisp-asm-wasm-op-i32-const buf 1)
-    (nelisp-asm-wasm-op-i32-sub buf)
-    (nelisp-asm-wasm-op-i32-const buf 0)
-    (nelisp-aot-compiler--wasm-emit-value
-     (nelisp-aot-compiler--ir-get node :align) buf ctx)
-    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
-    (nelisp-asm-wasm-op-i32-sub buf)
-    (nelisp-asm-wasm-op-i32-and buf)
-    (nelisp-asm-wasm-op-local-tee buf scratch)
-    (nelisp-aot-compiler--wasm-emit-value
-     (nelisp-aot-compiler--ir-get node :size) buf ctx)
-    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
-    (nelisp-asm-wasm-op-i32-add buf)
-    (nelisp-asm-wasm-op-global-set buf nelisp-aot-compiler--wasm-heap-ptr-global)
-    (nelisp-aot-compiler--wasm-emit-heap-growth-loop buf)
-    (nelisp-asm-wasm-op-local-get buf scratch)
-    (nelisp-asm-wasm-op-i64-extend-i32-u buf)))
+  (if (and nelisp-aot-compiler-wasm-genuine-alloc
+           (not (memq (plist-get ctx :function-name)
+                      nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers)))
+      (let ((index (nelisp-aot-compiler--wasm-function-index ctx 'nl_alloc_bytes)))
+        (unless (integerp index)
+          (signal 'nelisp-aot-compiler-error
+                  '(:wasm-genuine-alloc-missing nl_alloc_bytes)))
+        (dolist (field '(:size :align))
+          (nelisp-aot-compiler--wasm-emit-value
+           (nelisp-aot-compiler--ir-get node field) buf ctx))
+        (nelisp-asm-wasm-op-call buf index))
+    (let ((scratch (nelisp-aot-compiler--wasm-alloc-scratch-local ctx)))
+      (nelisp-asm-wasm-op-global-get buf nelisp-aot-compiler--wasm-heap-ptr-global)
+      (nelisp-aot-compiler--wasm-emit-value
+       (nelisp-aot-compiler--ir-get node :align) buf ctx)
+      (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+      (nelisp-asm-wasm-op-i32-add buf)
+      (nelisp-asm-wasm-op-i32-const buf 1)
+      (nelisp-asm-wasm-op-i32-sub buf)
+      (nelisp-asm-wasm-op-i32-const buf 0)
+      (nelisp-aot-compiler--wasm-emit-value
+       (nelisp-aot-compiler--ir-get node :align) buf ctx)
+      (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+      (nelisp-asm-wasm-op-i32-sub buf)
+      (nelisp-asm-wasm-op-i32-and buf)
+      (nelisp-asm-wasm-op-local-tee buf scratch)
+      (nelisp-aot-compiler--wasm-emit-value
+       (nelisp-aot-compiler--ir-get node :size) buf ctx)
+      (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+      (nelisp-asm-wasm-op-i32-add buf)
+      (nelisp-asm-wasm-op-global-set buf nelisp-aot-compiler--wasm-heap-ptr-global)
+      (nelisp-aot-compiler--wasm-emit-heap-growth-loop buf)
+      (nelisp-asm-wasm-op-local-get buf scratch)
+      (nelisp-asm-wasm-op-i64-extend-i32-u buf))))
 
 (defun nelisp-aot-compiler--wasm-emit-dealloc-bytes (node buf ctx)
   "Emit wasm dealloc-bytes NODE into BUF under CTX."
@@ -30309,6 +30558,147 @@ drift (= a Doc 92 emitter invariant violation)."
   (nelisp-asm-wasm-op-i64-add buf)
   (nelisp-asm-wasm-op-i32-wrap-i64 buf))
 
+(defun nelisp-aot-compiler--wasm-emit-shift (node buf ctx)
+  "Emit raw IR shift NODE with the native count-before-value contract.
+Keep the count on the operand stack while evaluating the value.  Copy both
+completed operands into scratch locals only afterwards, so nested shifts
+cannot overwrite an enclosing count.  Wasm supplies low-six-bit masking."
+  (let ((value (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+        (count (nelisp-aot-compiler--wasm-arith-scratch-local ctx)))
+    (nelisp-aot-compiler--wasm-emit-value
+     (nelisp-aot-compiler--ir-get node :b) buf ctx)
+    (nelisp-aot-compiler--wasm-emit-value
+     (nelisp-aot-compiler--ir-get node :a) buf ctx)
+    (nelisp-asm-wasm-op-local-set buf value)
+    (nelisp-asm-wasm-op-local-set buf count)
+    (nelisp-asm-wasm-op-local-get buf value)
+    (nelisp-asm-wasm-op-local-get buf count)
+    (pcase (nelisp-aot-compiler--ir-get node :op)
+      ('shl (nelisp-asm-wasm-op-i64-shl buf))
+      ('sar (nelisp-asm-wasm-op-i64-shr-s buf))
+      ('shr (nelisp-asm-wasm-op-i64-shr-u buf))
+      (op (signal 'nelisp-aot-compiler-error (list :wasm-unsupported-shift op))))))
+
+(defun nelisp-aot-compiler--wasm-emit-atomic-compare-exchange (node buf ctx)
+  "Emit SeqCst CAS for NODE and return the native i64 Boolean contract.
+Evaluate pointer, expected and desired once before validation.  Leave all
+three on the operand stack until evaluation finishes, so nested operations
+cannot clobber outer values.  Reject full-width pointer aliases before
+narrowing; the atomic instruction enforces alignment and bounds."
+  (let ((pointer (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+        (desired (nelisp-aot-compiler--wasm-arith-scratch-local ctx))
+        (expected (nelisp-aot-compiler--wasm-context-get ctx :cas-expected-local)))
+    (dolist (field '(:ptr :expected :new-val))
+      (nelisp-aot-compiler--wasm-emit-value
+       (nelisp-aot-compiler--ir-get node field) buf ctx))
+    (nelisp-asm-wasm-op-local-set buf desired)
+    (nelisp-asm-wasm-op-local-set buf expected)
+    (nelisp-asm-wasm-op-local-tee buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf #xffffffff)
+    (nelisp-asm-wasm-op-i64-gt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-local-get buf expected)
+    (nelisp-asm-wasm-op-local-get buf desired)
+    (nelisp-asm-wasm-op-i64-atomic-rmw-cmpxchg buf)
+    (nelisp-asm-wasm-op-local-get buf expected)
+    (nelisp-aot-compiler--wasm-emit-bool-to-i64 buf #'nelisp-asm-wasm-op-i64-eq)))
+
+(defun nelisp-aot-compiler--wasm-emit-atomic-fetch-add (node buf ctx)
+  "Emit genuine SeqCst i64 RMW for NODE, returning the pre-add value.
+Evaluate pointer then delta once, before validating the address.  Preserve
+the pointer on the operand stack while delta runs, including nested RMWs.
+Reject full-width pointers before narrowing; the atomic instruction traps
+on unaligned or out-of-bounds access on private or shared linear memory."
+  (let ((pointer (nelisp-aot-compiler--wasm-logic-scratch-local ctx))
+        (delta (nelisp-aot-compiler--wasm-arith-scratch-local ctx)))
+    (nelisp-aot-compiler--wasm-emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf ctx)
+    (nelisp-aot-compiler--wasm-emit-value
+     (nelisp-aot-compiler--ir-get node :delta) buf ctx)
+    (nelisp-asm-wasm-op-local-set buf delta)
+    (nelisp-asm-wasm-op-local-tee buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i64-const buf #xffffffff)
+    (nelisp-asm-wasm-op-i64-gt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf pointer)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-local-get buf delta)
+    (nelisp-asm-wasm-op-i64-atomic-rmw-add buf)))
+
+(defun nelisp-aot-compiler--wasm-emit-sexp-tag (node buf ctx)
+  "Emit an immediate-aware Sexp tag read, retaining the raw i64 value word.
+Evaluate NODE's operand exactly once.  Preserve native Int/Nil/T immediates,
+including negative immediate integers.  A boxed value must be an aligned
+wasm32 pointer; trap before narrowing an invalid pointer to avoid aliasing."
+  (let ((scratch (nelisp-aot-compiler--wasm-logic-scratch-local ctx)))
+    (nelisp-aot-compiler--wasm-emit-value
+     (nelisp-aot-compiler--ir-get node :ptr) buf ctx)
+    (nelisp-asm-wasm-op-local-tee buf scratch)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-i32-const buf 3)
+    (nelisp-asm-wasm-op-i32-and buf)
+    (nelisp-asm-wasm-op-i32-const buf 1)
+    (nelisp-asm-wasm-op-i32-eq buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-i64-const buf 2)
+    (nelisp-asm-wasm-op-else buf)
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i64-const buf 3)
+    (nelisp-asm-wasm-op-i64-eq buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-else buf)
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i64-const buf 7)
+    (nelisp-asm-wasm-op-i64-eq buf)
+    (nelisp-asm-wasm-op-if buf nelisp-aot-compiler--wasm-i64-type)
+    (nelisp-asm-wasm-op-i64-const buf 1)
+    (nelisp-asm-wasm-op-else buf)
+    ;; Check the preserved full-width pointer before i32.wrap_i64.
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i64-const buf 0)
+    (nelisp-asm-wasm-op-i64-lt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i64-const buf #xffffffff)
+    (nelisp-asm-wasm-op-i64-gt-s buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-i32-const buf 7)
+    (nelisp-asm-wasm-op-i32-and buf)
+    (nelisp-asm-wasm-op-if buf)
+    (nelisp-asm-wasm-op-unreachable buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-local-get buf scratch)
+    (nelisp-asm-wasm-op-i32-wrap-i64 buf)
+    (nelisp-asm-wasm-op-i64-load8-u buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-end buf)
+    (nelisp-asm-wasm-op-end buf)))
+
 (defun nelisp-aot-compiler--wasm-emit-sexp-write-lit (node buf ctx tag-byte)
   "Emit wasm `sexp-write-symbol-lit'/`sexp-write-str-lit' NODE into BUF.
 CTX is the wasm emit context; TAG-BYTE is 4 (symbol) or 5 (str), matching
@@ -30402,6 +30792,18 @@ also returns the slot pointer)."
   (when node
     (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
       (cond
+       ((= tag 67)
+        (dolist (field '(:b :a))
+          (nelisp-aot-compiler--wasm-register-ir-imports
+           (nelisp-aot-compiler--ir-get node field)
+           imports-box import-map-box type-map-box type-keys-box
+           module-defun-names)))
+       ((memq tag '(2 3 61))
+        (dolist (field (pcase tag (2 '(:ptr :expected :new-val)) (3 '(:ptr :delta)) (_ '(:ptr))))
+          (nelisp-aot-compiler--wasm-register-ir-imports
+           (nelisp-aot-compiler--ir-get node field)
+           imports-box import-map-box type-map-box type-keys-box
+           module-defun-names)))
        ((= tag 23)
         (let ((fn-value (nelisp-aot-compiler--ir-get node :fn-value)))
           (unless fn-value
@@ -30583,6 +30985,12 @@ also returns the slot pointer)."
                   (when n
                     (let ((tag (nelisp-aot-compiler--ir-kind-tag n)))
                       (cond
+                       ((= tag 67)
+                        (walk (nelisp-aot-compiler--ir-get n :b))
+                        (walk (nelisp-aot-compiler--ir-get n :a)))
+                       ((memq tag '(2 3 61))
+                        (dolist (field (pcase tag (2 '(:ptr :expected :new-val)) (3 '(:ptr :delta)) (_ '(:ptr))))
+                          (walk (nelisp-aot-compiler--ir-get n field))))
                        ((= tag 106)
                         (push (nelisp-aot-compiler--ir-get n :id) acc)
                         (walk (nelisp-aot-compiler--ir-get n :tag))
@@ -30811,6 +31219,14 @@ also returns the slot pointer)."
   "Emit wasm P1 code for value NODE into BUF."
   (let ((tag (nelisp-aot-compiler--ir-kind-tag node)))
     (cond
+     ((= tag 67)
+      (nelisp-aot-compiler--wasm-emit-shift node buf ctx))
+     ((= tag 2)
+      (nelisp-aot-compiler--wasm-emit-atomic-compare-exchange node buf ctx))
+     ((= tag 3)
+      (nelisp-aot-compiler--wasm-emit-atomic-fetch-add node buf ctx))
+     ((= tag 61)
+      (nelisp-aot-compiler--wasm-emit-sexp-tag node buf ctx))
      ((= tag 30)
       (nelisp-asm-wasm-op-i64-const buf
                                     (nelisp-aot-compiler--ir-get node :value)))
@@ -30833,11 +31249,11 @@ also returns the slot pointer)."
        buf (nelisp-aot-compiler--ir-get node :slot)))
      ((= tag 1)
       (let ((op (nelisp-aot-compiler--ir-get node :op)))
-        (unless (memq op '(+ - * / % mod))
+        (unless (memq op '(+ - * / % mod logand logior logxor))
           (signal 'nelisp-aot-compiler-error
                   (list :wasm-unsupported-arith op)))
         (pcase op
-          ((or '+ '- '* '/ '%)
+          ((or '+ '- '* '/ '% 'logand 'logior 'logxor)
            (nelisp-aot-compiler--wasm-emit-value
             (nelisp-aot-compiler--ir-get node :a) buf ctx)
            (nelisp-aot-compiler--wasm-emit-value
@@ -30846,6 +31262,9 @@ also returns the slot pointer)."
              ('+ (nelisp-asm-wasm-op-i64-add buf))
              ('- (nelisp-asm-wasm-op-i64-sub buf))
              ('* (nelisp-asm-wasm-op-i64-mul buf))
+             ('logand (nelisp-asm-wasm-op-i64-and buf))
+             ('logior (nelisp-asm-wasm-op-i64-or buf))
+             ('logxor (nelisp-asm-wasm-op-i64-xor buf))
              ('/ (nelisp-asm-wasm-op-i64-div-s buf))
              ('% (nelisp-asm-wasm-op-i64-rem-s buf))))
           ('mod
@@ -31168,6 +31587,8 @@ also returns the slot pointer)."
 (defun nelisp-aot-compiler--compile-to-wasm-unit (defuns &optional data-blobs)
   "Compile DEFUNS and DATA-BLOBS into a wasm link unit."
   (require 'nelisp-asm-wasm)
+  (when nelisp-aot-compiler-wasm-genuine-alloc
+    (nelisp-aot-compiler--wasm-check-genuine-alloc defuns))
   (let* ((type-keys-box (list nil))
          (type-map-box (list nil))
          (imports-box (list nil))
@@ -31274,14 +31695,21 @@ also returns the slot pointer)."
             (let* ((logic-scratch-local next-local)
                    (arith-scratch-local (1+ logic-scratch-local))
                    (alloc-scratch-local (1+ arith-scratch-local))
+                   (cas-expected-local
+                    (and (nelisp-aot-compiler--wasm-ir-contains-tag-p
+                          (nelisp-aot-compiler--ir-get defun-ir :body) 2)
+                         (1+ alloc-scratch-local)))
                    (locals (append (make-list rt-slot-count
                                               nelisp-aot-compiler--wasm-i64-type)
                                    (make-list (* 2 (length handler-ids))
                                               nelisp-aot-compiler--wasm-i64-type)
                                    (list nelisp-aot-compiler--wasm-i64-type
                                          nelisp-aot-compiler--wasm-i64-type
-                                         nelisp-aot-compiler--wasm-i32-type)))
+                                         nelisp-aot-compiler--wasm-i32-type)
+                                   (when cas-expected-local
+                                     (list nelisp-aot-compiler--wasm-i64-type))))
                    (ctx (list :function-indices function-indices
+                              :function-name name
                               :import-indices import-map
                               :table-indices table-indices
                               :type-map type-map
@@ -31289,6 +31717,7 @@ also returns the slot pointer)."
                               :logic-scratch-local logic-scratch-local
                               :arith-scratch-local arith-scratch-local
                               :alloc-scratch-local alloc-scratch-local
+                              :cas-expected-local cas-expected-local
                               :data-symbol-addrs (and layout
                                                       (plist-get layout :symbol-addrs))))
                    (expr (nelisp-asm-wasm-make-buffer)))

@@ -1,0 +1,30 @@
+;;; standalone-easy-menu.el --- Genuine menu owner and mutation controls -*- lexical-binding: t; -*-
+(require 'nelisp-stdlib-easy-menu)
+(let ((before (symbol-function 'easy-menu-define)) (feature-before (featurep 'easymenu)))
+  (when (eq (nelisp-stdlib-easy-menu-install) 'preserved)
+    (unless (and (eq before (symbol-function 'easy-menu-define))
+                 (eq feature-before (featurep 'easymenu)))
+      (error "GNU menu host owner changed"))))
+(let ((map (make-sparse-keymap)))
+  (easy-menu-define nil map "Control" '("Control" ["Run" nelisp-menu-command :help "Actual menu"]))
+  (unless (and (keymapp (lookup-key map [menu-bar]))
+               (eq (lookup-key map [menu-bar control Run]) 'nelisp-menu-command))
+    (error "Genuine menu source did not construct command binding")))
+(when (eq (nelisp-stdlib-easy-menu-install) 'installed)
+  (let ((owner (symbol-function 'easy-menu-create-menu)) refused reached)
+    (unwind-protect
+        (progn
+          (fset 'easy-menu-create-menu (lambda (&rest ignored) (setq reached t)))
+          (condition-case nil (nelisp-stdlib-easy-menu-install)
+            (error (setq refused t)))
+          (unless (and refused (not reached)) (error "Mutated menu owner accepted")))
+      (fset 'easy-menu-create-menu owner))))
+(let ((original nelisp-stdlib-easy-menu--forms) refused)
+  (unwind-protect
+      (progn
+        (setq nelisp-stdlib-easy-menu--forms nil)
+        (condition-case nil (nelisp-stdlib-easy-menu-install)
+          (error (setq refused t)))
+        (unless refused (error "Mutated menu source accepted")))
+    (setq nelisp-stdlib-easy-menu--forms original)))
+(princ "GENUINE-EASY-MENU-OWNERS-PASS\n")

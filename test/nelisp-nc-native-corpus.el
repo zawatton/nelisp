@@ -39,6 +39,13 @@
                     (condition-case e (nelisp--motion-charset-member-p 'x '(?a)) (error e))))
 (nc "put" (let ((s (make-symbol "nc-s"))) (list (put s 'p 1) (get s 'p) (put s 'p 2) (get s 'p) (put s 'q nil) (symbol-plist s) (condition-case e (put 5 'p 1) (error e)))))
 (nc "checks" (list (nelisp--check-symbol 'a) (condition-case e (nelisp--check-symbol 5) (error e)) (nelisp--check-number 5) (nelisp--check-number 1.5) (condition-case e (nelisp--check-number 'x) (error e))))
+;; compall2: with generated rows the negative-control row is `add-hook' (the first
+;; row, in sorted-name order, whose fxir has a `<': its (< 0 depth)), so the corpus
+;; calls it with depths on both sides of 0.
+(nc "add-hook" (let ((h (make-symbol "nc-hook")))
+                 (set h nil)
+                 (add-hook h 'a) (add-hook h 'b 90) (add-hook h 'c -50) (add-hook h 'd t) (add-hook h 'a)
+                 (list (symbol-value h) (get h 'hook--depth-alist))))
 (nc "bignump" (list (bignump 5) (bignump (expt 2 70)) (bignump 1.0) (bignump nil) (bignump most-positive-fixnum) (bignump (1+ most-positive-fixnum))))
 (nc "char-table-p" (list (nelisp-casetab--char-table-p (make-char-table 'test)) (nelisp-casetab--char-table-p (vector 1 2 3 4 5 6 7)) (nelisp-casetab--char-table-p nil) (nelisp-casetab--char-table-p "x")))
 (nc "case" (list (upcase ?a) (downcase ?A) (upcase "MiXed é") (downcase "MiXed É") (upcase ?1) (condition-case e (upcase 'x) (error e))))

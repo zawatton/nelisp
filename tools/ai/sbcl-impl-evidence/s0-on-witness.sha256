@@ -1,0 +1,10 @@
+659ac737bc7b2b6adbfda340e684a02d165e3ea1dd50cadf218dd3db65773174  s0-on-witness/manifest.txt
+d3a056e688306e177e4b9a4b9be24d9acafc6e10e66750b728a57361821c1e26  s0-on-witness/nc_30003-impl-normalized.dis
+d3a056e688306e177e4b9a4b9be24d9acafc6e10e66750b728a57361821c1e26  s0-on-witness/nc_30003-r3-normalized.dis
+1f4b9ec403f8fcae094f3377764c42ff7c20616acc541a0088a359bee5f04597  s0-on-witness/nested-primary-on.el
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  s0-on-witness/rows1-nested.err
+ee97efc48866e0e5b355539d97968382451bf374a74035db77ff80603bcc6f7d  s0-on-witness/rows1-nested.out
+501e941de769b15c5d161d3ace38c423f95b2dde335522e7a0b39be5afde9d10  s0-on-witness/runtime-bootstrap-on.el
+bc7d43ba6088522d3314bafd4a6bfbf5643127392222475914c8797a2731b8a2  s0-on-witness/verify-primary-route-impl.py
+0ac95574281340223c869ad9562751e1437afb4863a2b182be64daae6c597f67  s0-on-witness/witness-on-impl.json
+3cd20567875b171d610ef73dc38cb6e048b974023d95b9a5e5d9235fee55b8e9  s0-on-witness/witness-on-impl-negative.json

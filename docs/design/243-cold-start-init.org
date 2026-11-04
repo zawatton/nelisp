@@ -1,0 +1,125 @@
+#+TITLE: Cheaper start after cold-load: environment reinit and identity tables
+#+DATE: 2026-11-03
+#+STATUS: IN PROGRESS in the uncommitted worktree (build42); ledger 42.9% of 7
+#+SCOPE: Cut the work a bare start does after the Doc 242 v5 cold image is mapped, without changing observable results
+#+LEDGER: tools/ai/cold-init-progress.org
+
+* Why this document exists
+
+After Doc 242 a bare start of build33 takes 14.7 M Ir and about 7.1 ms.
+=--version=, which exits before cold-load, already takes 7.2 M Ir (4.3 M of
+it in ld.so for 19 shared libraries) and 2.6 ms.  The user chose to attack
+the other 7.5 M Ir (cold-load, reinit and evaluation) first; lazy dynamic
+linking is out of scope.
+
+* Measured (evidence: tools/ai/sbcl-impl-evidence/a243-s0/bare-start-b33.txt)
+
+| item                                        | Ir         |
+|---------------------------------------------+------------|
+| bare start, user environment (56 vars)      | 14,707,700 |
+| bare start, =env -i PATH=...=               | 12,215,742 |
+| =--version=                                 |  7,228,408 |
+| =nl_eval_source_all= (inclusive, 2 calls)   |  5,303,638 |
+| =nl_ht_identity_sync= (inclusive, 8 calls)  |  1,173,648 |
+
+- The environment alone costs 2.49 M Ir, about 44 k Ir per variable.  It is
+  spent inside the =<cold-boot>= reinit source
+  (=nelisp-standalone--cold-boot-reinit-source=): rebuilding
+  =process-environment= from =nelisp--environment= and
+  =emacs-os-detect-and-set-dirs!=, run as m5 code.
+- Identity (address-keyed) hash tables carry the process epoch (word at
+  268436376) and their own payload address in meta slots 6 and 7.  After a
+  cold load the epoch differs, so each table is reindexed on first use
+  (=nl_ht_reindex=, 0.89 M Ir self).  On the v5 fast path no object moves.
+- Wall time is mostly kernel time; huge-page faults cost about 0.8 ms and
+  disabling THP makes the start slower, so THP stays.
+
+* Design
+
+** D1 Environment reinit (S1)
+
+Find which part of the reinit is per-variable expensive (the
+=process-environment= rebuild, =getenv=, or the directory detection) and
+make it linear and cheap: for example build =process-environment= with
+direct string construction in the runtime instead of an m5 =mapcar= +
+=concat= per cell, and avoid repeated linear =getenv= scans.  Results must
+match build33 exactly under the MIN, SYN and ALT environments of the ledger.
+
+** D2 Keep identity tables valid on the fast path (S2)
+
+When the v5 image is mapped at its recorded base with no relocation,
+addresses equal the dumping process's, so identity hashes stay valid.  Carry
+the dumped epoch over (or mark restored tables as current) on the fast path
+only; the relocation fallback keeps the lazy reindex.  The epoch's other
+users (anything that bumps it, such as a moving collection) must be checked
+before the change.
+
+* Out of scope
+
+- Dynamic-linking cost (ld.so, 19 libraries).
+- Windows and macOS, which keep the v4 image.
+
+* Results (build42, 2026-11-03)
+
+| item                                   | build33     | build42     |
+|----------------------------------------+-------------+-------------|
+| bare start Ir, SYN env (60 vars)       | 15,039,084  | 11,405,909  |
+| env cost Ir (SYN - MIN)                | 2,776,699   | 644,625     |
+| bare start wall, quiet (ms)            | 8.5         | 7.7         |
+| hash-get1024 launcher wall (ms)        | 42.6        | 41.8        |
+| free-var lambda, steady net Ir/call    | 13,867      | 3,838       |
+| closed lambda, steady net Ir/call      | 2,925       | 1,060 (b45) |
+
+GNU Emacs 31.1 on the same quiet run: bare start 51.0 ms, hash-get1024
+61.1 ms (a243-s3/gnu-pair-b42.txt): build42/GNU 0.151 and 0.684.
+
+Changes (built from lane tree ~/.cache/tmp/a243-s4b/wt; the five changed files were
+copied into this worktree on 2026-11-03, equal to build-on42/src; originals
+backed up in ~/.cache/tmp/a243-integrate-backup):
+- D1: the cold-boot environment reinit is the compiled prelude function
+  `nelisp--cold-boot-reinit-environment' (no inner lambda); `m5_streq'
+  compares byte lengths first; `wf_assoc_walk_w' is iterative and rejects a
+  string car of another byte length from its WORD (no box clone per entry).
+- S4: the anonymous-lambda countdown lives in `nelisp--fx-table'
+  (`nl_fx_lookup_in' decrements it); the filtered capture walk no longer
+  captures a name twice (it defeated chain sharing and compilation);
+  `nelisp_frame_chain_shareable' accepts plain pairs and wraps them in Cells;
+  anonymous lambdas over 1..4 read-only captures are fx-compiled (captured
+  values prepended to the arguments, read with `nl_cell_get_value_w').
+- build45: `mapcar' over a closure value runs the closure's cached VM
+  record on the rooted argument word (`wf_mapcar_fx_call': the VM call-site
+  cache `m5_fx_site_rec' in the walk's free root slot, `m5_fx_call_words');
+  a closure whose captured environment binds a variable is marked once per
+  walk and keeps the old route.
+- The producer pins the prelude sha256
+  (tools/nelisp-native-application-producer.el); update it with every
+  prelude change.
+- build46 (S5): `nelisp--fx-compile' was a `cl-labels' closure over
+  mutated locals, which the VM declines, so every compile ran on the
+  tree-walking interpreter (~4-5 M Ir for one small lambda).  Its helpers are
+  now top-level `nelisp--fxc-' functions over special variables bound by
+  `nelisp--fx-compile' (a nested compile rebinds them), and the VM compiles
+  them at the dump.  Registering an anonymous closure: 4,023,245 -> 874,180
+  Ir; the compiler output is unchanged for all 1873 named functions; bare
+  start +583 Ir.  With the threshold kept at 256: S4.1 2,396, S4.3 5,263;
+  100 lambdas x 10 calls 586.8 M -> 265.2 M Ir.  Threshold sweep on build46
+  (closed / free / x10 / x300): 256: 2,397 / 5,264 / 265.2 M / 611.4 M;
+  64: 1,718 / 4,587 / 265.2 M / 475.7 M; 8: 1,520 / 4,389 / 352.2 M / 436.1 M.
+- build47: `nelisp--fx-anon-calls' 256 -> 64 (user decision).  S4.1
+  1,717 Ir (0.215, PASS), S4.3 4,586 (0.331); bare start unchanged
+  (SYN 11,406,563 Ir); 100 lambdas x300 475.3 M Ir.  Paired with GNU Emacs
+  31.1 (15 rounds, load1 ~2): bare 51.4 vs 7.8 ms (0.152), hash-get1024
+  63.3 vs 42.4 ms (0.669), results equal (a243-b47/gnu-pair-b47.txt).
+- build48 (S4.3): `mapcar' over a closure with 1..4 read-only captures
+  runs its S4d cap record directly.  Once per walk `wf_mapcar_cap_setup'
+  finds the record without counting a call (`m5_fx_peek_body'), resolves
+  the captured binding pairs and stores them with an argument buffer in the
+  walk's cache vector [309 REC K PAIRS... ARGS...]; each element reads the
+  values through `nl_cell_get_value_w' and runs the VM on the buffer.
+  S4.3 4,586 -> 1,893 Ir (0.137); S4.1 1,738; bare start unchanged.
+- build49: cl-generic dispatch on an EIEIO object (record tag = class name)
+  uses the class's precedence list (`nelisp-cl-generic--class-tag-allparents';
+  a raw-slot C3 walk when the substrate's `cl--class-allparents' rejects a
+  built-in-class parent).  Requested by session notes-9b (magit smoke).
+- D2 (identity-table rehash) deferred by the user: needed because the dump
+  packs the heap; avoiding it requires rehashing in the written image.

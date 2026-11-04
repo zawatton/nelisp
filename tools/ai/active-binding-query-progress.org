@@ -1,0 +1,18 @@
+#+TITLE: Shared active saved-binding query prototype
+#+NOTE: Five new criteria for an isolated query-only prototype. The frozen FXIR, integration and investigation ledgers retain their criteria and known failures. No frame elision, new event production or global performance acceptance is implied.
+
+* S1 Freeze identity and query contract
+** S1.1 The isolated source seed preserves the frozen runtime and original reviewed inputs
+evidence: target/binding-state/seed.json sha256=c5460b9471543e825ed5692f01c18d9666b01df8c7ae57be2184222aa6d79030
+** S1.2 Caller scope and representation ownership justify a bounded read-only frame/AUX query
+pending
+
+* S2 Implement and distinguish the query
+** S2.1 Focused execution of genuine old/new DSL distinguishes typed-record visibility and rejects malformed or unrelated records
+pending
+** S2.2 A real generated native query distinguishes matching and adverse controls without changing event production or physical frame accounting
+pending
+
+* S3 Preserve the runtime baseline
+** S3.1 A separately built candidate preserves original resource bounds and baseline-compatible standalone behavior on the relevant end-to-end corpus
+pending

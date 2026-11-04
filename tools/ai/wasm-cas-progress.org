@@ -1,0 +1,15 @@
+#+TITLE: Genuine Wasm raw CAS compiler slice
+
+* S1 IR2 sequentially consistent Boolean CAS
+
+** S1.1 Pre-slice genuine CAS compilation is red
+cmd: test "$(cat target/wasm-cas/red.rc)" -eq 255 && rg -q ':wasm-unsupported-ir atomic-compare-exchange' target/wasm-cas/red.log
+
+** S1.2 Native differential, focused tests and effective mutations
+evidence: target/wasm-cas/focused-evidence.json sha256=a4b0e717e0224fb8df87f50a3b254e23c07ddaa4edc94ccfbf5e3df24385bf42
+
+** S1.3 Actual Wasm CAS executes the complete maintained corpus
+#+REQUIRES: NOTES_ROOT
+cmd: ulimit -v 8388608; "$NOTES_ROOT/bin/heavy-run.sh" env PYTHONDONTWRITEBYTECODE=1 node --disable-wasm-trap-handler tools/ai/wasm-cas-check.mjs
+
+#+NOTE: W0 application-image execution remains a separate failing objective.

@@ -73,6 +73,19 @@ tools/ai/nelisp-ai.sh verify                             # the verdict
 tools/ai/nelisp-ai.sh presence                           # ~354-name fboundp sweep, minutes
 ```
 
+For an opt-in memory-saving standalone build, run
+`tools/ai/nelisp-standalone-build-split.sh` under the usual bounded build guard.
+It builds `target/nelisp` without cold dumping, then uses a fresh GNU Emacs
+process to require a newly created, nonempty `target/nelisp.cold`. It supports
+the host/default Linux x86_64 target; `EMACS` accepts one executable path with
+ordinary path characters and spaces. Target/output overrides are rejected.
+The guarded run took 95.345 s with peak aggregate RSS 1,915,364 KiB, compared
+with the historical combined-build reference of 102.9 s / 2,086,004 KiB;
+this is a reference comparison, not a matched rerun. Dump creation and normal
+ABI/constructor startup passed. Cold-image capability validation has a known
+failure on frozen r8h, so script success establishes dump creation, not cold
+boot. Production cohort selection remains a separate validation step.
+
 `check` runs as one step of the CI Linux lane
 (`.github/workflows/ci.yml`, "AI toolchain check-tier gates") and then
 verifies, so "what will CI say" about that tier is answerable before

@@ -1,0 +1,128 @@
+#+TITLE: No-GC ownership regions for NeLisp
+#+DATE: 2026-11-01
+#+STATUS: PROPOSED — implementation tracked in tools/ai/ownership-region-progress.org
+#+SCOPE: Off-heap, explicitly owned memory regions that the collector never scans
+
+* Decision boundary
+
+Doc 234 allowed an explicit no-GC/ownership region only as a separately
+specified extension with bounded duration, no user call, no signal/quit/GC
+boundary, explicit roots and ownership, and an enforced exit path. This
+document specifies that extension in its narrowest useful form. A region is
+memory outside the Lisp heap. It holds only unboxed data, so the collector
+never has to trace it, and it has exactly one owner, so it is released
+deterministically. It does not suspend or disable the collector and does not
+change the meaning of any existing Emacs Lisp form.
+
+Not in scope: storing Lisp references in a region, inhibiting GC around
+arbitrary Lisp code, sharing a region between threads, static borrow checking
+(see Doc 236 for the type layer that may later check ownership statically),
+and native inlining of region operations in FXIR.
+
+* Model
+
+A region is an anonymous private mapping of a fixed byte size, zero-filled on
+creation. A region table in static storage holds a bounded number of slots;
+each slot records base address, byte size, generation, and a live flag.
+
+A handle is a fixnum encoding a slot index and the slot's generation. Handles
+are ordinary immediates: the collector does not see the mapping, and copying
+a handle copies a name, not the memory. Validity is checked on every
+operation: the slot must be live and the handle's generation must equal the
+slot's generation. Closing a region unmaps it, clears the live flag, and
+advances the generation, so every older handle becomes invalid. A handle can
+never reach memory of a later region that reuses the same slot.
+
+Ownership is linear by convention and enforced by generation:
+
+- =open= creates a region and returns its only valid handle.
+- =move= transfers ownership: it advances the generation and returns a new
+  handle; the old handle becomes invalid. The receiver now owns the region.
+- =close= releases it; any later use of any handle to it signals.
+
+* Primitives
+
+All primitives run in native code without allocating on the Lisp heap,
+without calling Lisp, and without reaching a GC safepoint. Their only
+non-local effect is a signal on misuse. Their effect class is therefore
+=may-signal= only.
+
+| Primitive                              | Result                                        |
+|----------------------------------------+-----------------------------------------------|
+| =(nelisp--region-open BYTES)=          | new handle; BYTES is a positive fixnum        |
+| =(nelisp--region-close H)=             | =t=                                           |
+| =(nelisp--region-move H)=              | new handle; H becomes invalid                 |
+| =(nelisp--region-live-p H)=            | =t= or =nil=; never signals                   |
+| =(nelisp--region-size H)=              | byte size                                     |
+| =(nelisp--region-u8-ref H I)=          | byte at offset I                              |
+| =(nelisp--region-u8-set H I V)=        | V, 0..255                                     |
+| =(nelisp--region-i64-ref H I)=         | fixnum at word index I                        |
+| =(nelisp--region-i64-set H I V)=       | V, a fixnum                                   |
+| =(nelisp--region-stats)=               | =(OPEN-COUNT LIVE-BYTES PEAK-BYTES)=          |
+
+=nelisp--region-stats= allocates its result list and is the one exception: it
+is a diagnostic, not a region operation.
+
+Errors use existing GNU condition symbols so the SHA-pinned prelude does not
+change: a stale, closed, or non-fixnum handle signals
+=(wrong-type-argument nelisp-region-live-p H)=; an index or byte value out of
+range signals =(args-out-of-range H I)=; a non-fixnum stored value signals
+=(wrong-type-argument fixnump V)=; a zero, negative, or over-budget size,
+slot exhaustion, or a failed mapping signals =error= with a message naming
+the cause. Word access requires 0 <= I and 8*(I+1) <= size; byte access
+requires 0 <= I < size.
+
+Budgets: at most 64 live regions and at most 256 MiB of live region bytes per
+process. Both are compile-time constants and are checked before mapping.
+
+* Enforced exit path
+
+=lisp/nelisp-region.el= provides =nelisp-with-region=:
+
+#+begin_src emacs-lisp
+(nelisp-with-region (r 4096)
+  (nelisp--region-i64-set r 0 42)
+  (nelisp--region-i64-ref r 0))
+#+end_src
+
+It opens the region, runs the body inside =unwind-protect=, and closes the
+region on every exit, including =throw=, =signal=, and quit, unless the body
+moved or closed it. A moved region belongs to its new owner, which must close
+it or hand it to another =nelisp-with-region=. =nelisp--region-stats= exposes
+open count and live bytes, so tests can assert that no region leaks.
+
+* Interaction with the collector and the runtime
+
+- The collector does not scan, mark, or account for region memory, and the
+  region primitives never trigger collection. A full GC while regions are
+  live leaves their contents unchanged.
+- Region bytes do not count toward =gc-cons-threshold= debt.
+- Heap image dumps do not include regions. A restored image starts with an
+  empty region table; handles stored in the image are stale and signal.
+- Single evaluator thread only. The bounded parallel section (Doc 199) must
+  not touch regions; this is documented, not enforced.
+- A handle that becomes garbage without =close= leaks its mapping until
+  process exit. There is no finalizer; the macro is the supported path.
+
+* Acceptance
+
+The implementation ledger is =tools/ai/ownership-region-progress.org=. It
+requires the following:
+
+- structural tests for the native primitives;
+- host tests for the macro's exit paths;
+- an end-to-end probe on a built image covering:
+  - every error case;
+  - stale handles after =close= and =move=;
+  - double close;
+  - non-local exits;
+  - leak accounting;
+  - contents across forced GC;
+- unchanged S8 correctness on the new image.
+
+The campaign at the end measures two things only after all of that passes:
+
+- full-GC pause with a large live dataset held in a vector versus in a region;
+- region word access per step versus =aref=/=aset=.
+
+Measurement claims are limited to what that campaign shows.

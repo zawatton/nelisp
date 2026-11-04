@@ -1,0 +1,10 @@
+{
+  "status": "PASS",
+  "checks": 317,
+  "issues": [],
+  "inputs": {
+    "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/all-time-comparisons.json": "1487b4ca002bbaa4a7c1d9fcde42be53f828b986c9b5a7e91f569c91f021b21b",
+    "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/gnu-comparison/old-new-timecomparison.json": "925a235b714ed97d38c93fee285018781e5f90e7a919c3ea8d65109336a15afb"
+  },
+  "rows": 9
+}

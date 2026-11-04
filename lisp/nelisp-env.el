@@ -38,6 +38,7 @@
 ;;     slot 1 = FUNCTION  : Sexp or `nelisp--unbound-marker'
 ;;     slot 2 = PLIST     : Sexp (list, default nil)
 ;;     slot 3 = CONSTANT  : Sexp::T / Sexp::Nil
+;;     slot 4 = ALIAS     : variable-alias target symbol, or nil
 ;;
 ;; The `unbound-marker' sentinel is shared with the fast-hash
 ;; module via `lisp/nelisp-stdlib-fast-hash.el's defvar.  See Doc
@@ -51,21 +52,29 @@
 ;; ---- Symbol entry construction + accessors ----
 
 (defun nelisp-env--make-symbol-entry
-    (&optional value function plist constant)
+    (&optional value function plist constant alias-target)
   "Build a fresh symbol-entry record.
 VALUE / FUNCTION default to `nelisp--unbound-marker' (= the
 Option::None sentinel).  PLIST defaults to nil (= empty plist).
-CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
+CONSTANT defaults to nil (= mutable cell). ALIAS-TARGET defaults to nil.
+Doc 102 §2.1 spec."
   (nelisp--make-record 'symbol-entry
                        (or value nelisp--unbound-marker)
                        (or function nelisp--unbound-marker)
                        (or plist nil)
-                       (or constant nil)))
+                       (or constant nil)
+                       alias-target))
 
 (defun nelisp-env--symbol-entry-p (obj)
   "Return non-nil iff OBJ is a symbol-entry record."
   (and (recordp obj)
        (eq (nelisp--record-type obj) 'symbol-entry)))
+
+(defun nelisp-env--check-symbol-entry (entry)
+  "Signal `wrong-type-argument' unless ENTRY has the symbol-entry tag."
+  (unless (nelisp-env--symbol-entry-p entry)
+    (signal 'wrong-type-argument (list 'nelisp-env--symbol-entry-p entry)))
+  entry)
 
 (defun nelisp-env--symbol-entry-value (entry)
   "Return ENTRY's value cell (= may be the unbound-marker sentinel)."
@@ -82,6 +91,25 @@ CONSTANT defaults to nil (= mutable cell).  Doc 102 §2.1 spec."
 (defun nelisp-env--symbol-entry-constant-p (entry)
   "Return non-nil iff ENTRY is marked constant (= setq rejects writes)."
   (nelisp--record-ref entry 3))
+
+(defun nelisp-env--symbol-entry-alias-target (entry)
+  "Return ENTRY's variable-alias target, or nil for a legacy entry.
+Four-slot symbol-entry records predate alias storage and read as nil."
+  (nelisp-env--check-symbol-entry entry)
+  ;; `length' includes the type-tag cell at index 0.
+  (when (> (length entry) 5)
+    (nelisp--record-ref entry 4)))
+
+(defun nelisp-env--symbol-entry-set-alias-target (entry target)
+  "Set ENTRY's private variable-alias TARGET when its slot exists.
+Return TARGET; a legacy four-slot entry is left unchanged and returns nil."
+  (nelisp-env--check-symbol-entry entry)
+  (unless (or (null target) (symbolp target))
+    (signal 'wrong-type-argument (list 'symbolp target)))
+  ;; `length' includes the type-tag cell at index 0.
+  (when (> (length entry) 5)
+    (nelisp--record-set entry 4 target)
+    target))
 
 (defun nelisp-env--symbol-entry-set-value (entry value)
   "Set ENTRY's value cell.  Returns VALUE."

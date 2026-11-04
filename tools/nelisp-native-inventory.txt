@@ -143,6 +143,8 @@ nelisp--read-all-from-string-native	native-review	R2 existing reader escape fix:
 nl-current-unix-time	native-review	No classification row; review against Doc 211 §6.
 nl-unix-time-usec	native-review	No classification row; review against Doc 211 §6.
 float-time	native-must-stay	clock syscall
+nelisp--monotonic-ns	native-must-stay	AGENTS.md clause 4 (clock needed before the first Lisp form; no Lisp form exists)
+nelisp--boot-phase-ns	native-must-stay	AGENTS.md clause 4 (clock needed before the first Lisp form; no Lisp form exists)
 exit	native-review	No classification row; review against Doc 211 §6.
 consp	native-must-stay	type predicate on tag bits
 atom	native-must-stay	type predicate on tag bits

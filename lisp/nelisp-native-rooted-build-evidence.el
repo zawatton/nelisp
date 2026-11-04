@@ -12,11 +12,45 @@
     (insert-file-contents-literally path)
     (secure-hash 'sha256 (current-buffer))))
 
+(defconst nelisp-native-rooted-build-evidence--hex-digits
+  (let ((table (make-vector 256 nil)))
+    (dotimes (byte 256) (aset table byte (format "%02x" byte)))
+    table)
+  "Two lowercase hex digits of every byte value.
+A table lookup instead of `format' per byte: this file runs interpreted
+during the build, where `format' made encoding the units cost ~8.5 s.")
+
+(defvar nelisp-native-rooted-build-evidence--hex-cache
+  (make-hash-table :test #'equal :weakness 'key)
+  "Hex encodings of unit section bytes, keyed by the bytes.")
+
 (defun nelisp-native-rooted-build-evidence--hex (bytes)
   "Encode exact unit BYTES without character decoding."
   (unless (and (stringp bytes) (not (multibyte-string-p bytes)))
     (error "Rooted unit payload is not exact bytes"))
-  (mapconcat (lambda (byte) (format "%02x" byte)) bytes ""))
+  ;; One build writes the same units for three proofs; reuse the encoding
+  ;; of equal bytes (keys compared by content, so a changed string misses).
+  (or (gethash bytes nelisp-native-rooted-build-evidence--hex-cache)
+      (puthash bytes
+               (let ((table nelisp-native-rooted-build-evidence--hex-digits))
+                 (mapconcat (lambda (byte) (aref table byte)) bytes ""))
+               nelisp-native-rooted-build-evidence--hex-cache)))
+
+(defun nelisp-native-rooted-build-evidence--relocations (relocations)
+  "Intern relocation symbol names while preserving every relocation in order."
+  (let ((indices (make-hash-table :test #'equal)) names encoded)
+    (dolist (relocation relocations)
+      (let* ((name (plist-get relocation :symbol))
+             (index (gethash name indices)))
+        (unless (stringp name) (error "Invalid relocation symbol"))
+        (unless index
+          (setq index (hash-table-count indices))
+          (puthash name index indices)
+          (push name names))
+        (let ((copy (copy-sequence relocation)))
+          (plist-put copy :symbol index)
+          (push copy encoded))))
+    (cons (vconcat (nreverse names)) (vconcat (nreverse encoded)))))
 
 (defun nelisp-native-rooted-build-evidence-write (units builder root directory)
   "Capture exact active non-driver UNITS and BUILDER beneath ROOT.
@@ -80,9 +114,13 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
           (let ((hash (nelisp-native-rooted-build-evidence-source-hash path 16777216)))
             (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash) records)
             (when (and (stringp text) (> (length text) 0))
-              (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash
-                          :symbols (vconcat unit-symbols)
-                          :relocations (vconcat (plist-get unit :relocs))) metadata))))
+              (let ((relocations (nelisp-native-rooted-build-evidence--relocations
+                                  (plist-get unit :relocs))))
+                (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash
+                            :symbols (vconcat unit-symbols)
+                            :relocation-symbol-format "dictionary-v1"
+                            :relocation-symbols (car relocations)
+                            :relocations (cdr relocations)) metadata)))))
         (when (and (integerp bss) (> bss 0)
                    (cl-find "nl_arena_base" unit-symbols
                             :key (lambda (symbol) (plist-get symbol :name)) :test #'equal))

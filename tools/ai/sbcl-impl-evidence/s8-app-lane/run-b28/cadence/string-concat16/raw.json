@@ -1,0 +1,110 @@
+[
+ {
+  "engine": "old",
+  "n": 2097152,
+  "process_ns": 2396188919,
+  "inner_ns": 334373951,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "new",
+  "n": 2097152,
+  "process_ns": 1810878886,
+  "inner_ns": 329367876,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 2749593331,
+  "inner_ns": 696514130,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 2169894970,
+  "inner_ns": 688091993,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 0
+ },
+ {
+  "engine": "new",
+  "n": 2097152,
+  "process_ns": 1827443342,
+  "inner_ns": 334434032,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 2097152,
+  "process_ns": 2398262469,
+  "inner_ns": 335936785,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 2169157070,
+  "inner_ns": 685981989,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 2749149401,
+  "inner_ns": 693513870,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 1
+ },
+ {
+  "engine": "old",
+  "n": 2097152,
+  "process_ns": 2395125108,
+  "inner_ns": 333673954,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "new",
+  "n": 2097152,
+  "process_ns": 1810399746,
+  "inner_ns": 331218004,
+  "result": "2097152:11010048",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "old",
+  "n": 4194304,
+  "process_ns": 2748158450,
+  "inner_ns": 697263956,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 2
+ },
+ {
+  "engine": "new",
+  "n": 4194304,
+  "process_ns": 2169567020,
+  "inner_ns": 688148022,
+  "result": "4194304:5242880",
+  "pmc": null,
+  "rep": 2
+ }
+]

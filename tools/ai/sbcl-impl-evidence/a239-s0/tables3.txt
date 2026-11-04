@@ -1,0 +1,24 @@
+N=20000: call-A (bin1) scans=19328, call-B splits=20000, mean nodes/A-scan=6.74, mean nodes/step(A+B)=7.51, max A vis=12, cap(>127) hits=0
+   A-scans      0-  4832: mean vis 1.5 (small 1.1, nosplit 0.4)
+   A-scans   4832-  9664: mean vis 6.2 (small 3.8, nosplit 2.4)
+   A-scans   9664- 14496: mean vis 8.5 (small 5.5, nosplit 3.0)
+   A-scans  14496- 19328: mean vis 10.7 (small 7.7, nosplit 3.0)
+N=80000: call-A (bin1) scans=79325, call-B splits=79997, mean nodes/A-scan=19.63, mean nodes/step(A+B)=20.47, max A vis=27, cap(>127) hits=0
+   A-scans      0- 19831: mean vis 6.9 (small 4.7, nosplit 2.2)
+   A-scans  19831- 39662: mean vis 19.3 (small 13.2, nosplit 6.1)
+   A-scans  39662- 59493: mean vis 26.0 (small 18.0, nosplit 8.0)
+   A-scans  59493- 79324: mean vis 26.3 (small 18.3, nosplit 8.0)
+   A-scans  79324- 79325: mean vis 27.0 (small 19.0, nosplit 8.0)
+callgrind diff N=80000 vs 20000, self Ir/step; total 3748
+  nl_freelist_scan_head          1861
+  nl_alloc_bytes_uncheck         603
+  nc_30011                       306
+  nl_eic_prim_make_vector        217
+  nl_alloc_bytes                 115
+  nc_aset_fast                   110
+  nl_directcall_invoke           96
+  nc_dsubr_call                  85
+  GC/sweep fns: {'nl_gc_ctx_push': 0.0, 'nl_gc_mark_thread_roots': 0.0, 'nl_gc_midform_collect_now': 0.0, 'nl_gc_conserv_maybe': 0.0, 'nl_gc_index_prepare': 0.0, 'nl_gc_sweep_merge_chunks': 0.0, 'nl_gc_block_elem_cap': 0.0, 'nl_gc_midform_collect': 0.0, 'nl_gc_mark_legacy_slot': 0.0, 'nl_gc_mark_vl': 0.0, 'nl_gc_mark_cons': 0.0, 'nl_gc_weak_survives': 0.0, 'nl_gc_vm_poll': 0.0, 'nl_gc_frame_record_armed_p': 0.0, 'nl_gc_weak_note_table': 0.0, 'nl_gc_conserv_scan': 0.0, 'nl_gc_mark_word': 0.0, 'nl_gc_conserv_typed': 0.0, 'nl_gc_debt_limit_for': 0.0, 'nl_gc_index_fill_boot': 0.0, 'nl_gc_scan_regs': 0.0, 'nl_gc_mark_pool_slots': 0.0, 'nl_gc_mark_thread_roots_from': 0.0, 'nl_gc_sweep_merge_range': 0.0, 'nl_gc_clear_freelist_large_bins': 0.0, 'nl_gc_weak_table_mode': 0.0, 'nl_gc_weak_preserve_meta': 0.0, 'nl_gc_conserv_string_area': 0.0, 'nl_gc_mark_symbol_slots': 0.0, 'nl_gc_ctx_pop': 0.0, 'nl_gc_mark_slot': 0.0, 'nl_gc_mark_cons_view': 0.0, 'nl_gc_mark_rootstack': 0.0, 'nl_gc_mark_mirror_buckets': 0.0, 'nl_gc_conserv_resolve_heap': 0.0, 'nl_gc_conserv_resolve': 0.0, 'nl_gc_boundary_due': 0.0, 'nl_gc_object_start_p': 0.0, 'nl_gc_clear_freelist_buckets': 0.0, 'nl_gc_mark_block': 0.0, 'nl_gc_in_arena': 0.0, 'nl_gc_budget_refill': 0.0, 'nl_gc_mark_recorded_frame': 0.0, 'nl_gc_mark_vl_img': 0.0, 'nl_gc_weak_finish': 0.0, 'nl_gc_symname_mark_roots': 0.0, 'nl_gc_weak_preserve_vector_storage': 0.0, 'nl_gc_weak_mark_word': 0.0, 'nl_gc_sweep': 0.0, 'nl_gc_weak_visit': 0.0, 'nl_gc_mark_recorded_contexts_from': 0.0, 'nl_gc_mark_string_word': 0.0, 'nl_gc_index_test': 0.0, 'nl_gc_mark_symentry': 0.0, 'nl_gc_conserv_word': 0.0, 'nl_gc_conserv_scan_range': 0.0, 'nl_gc_mark_symview': 0.0, 'nl_gc_mark_vectorlike': 0.0, 'nl_gc_weak_owner_live': 0.0, 'nl_gc_conserv_seen_clear': 0.0, 'nl_gc_mark_vectorlike_img': 0.0, 'nl_gc_mark_pinned_roots': 0.0, 'nl_gc_mark_rootstack_walk': 0.0, 'nl_gc_pool_cap_of': 0.0}
+scan_head self 1861/step: in_arena block 1339, rest 522
+kernel sweeps (gdb nl_gc_sweep bp, all 4 gc-related fns in callgrind diff): 0 at N=20000 and N=80000 (only the startup sweep); bump (nl_chunk_try_alloc) events after it: 0
+interval 20000..80000 nodes/step ~24.8 (call A ~24, call B 1); x54 Ir in_arena = 1339 (matches)

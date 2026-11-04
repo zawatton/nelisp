@@ -394,17 +394,25 @@ lifetime of a Sexp value.  No `let' binding needed.")
              (entry (nl_symbol_name_entry_for 1 key len)))
         (if (if (= entry 0) 0 (/= (heap-read-u64 entry 80) 0))
             (heap-read-u64 entry 80)
-          (let* ((mark (nl_root_mark 0))
-                 (symbol-root (nl_root_reserve_checked 0))
-                 (name-root (nl_root_reserve_checked 0))
+          (nl_record_type_intern_own_env 0 word))))
+    ;; Additive execution-Env entry; legacy cache hits retain their exact path.
+    (defun nl_record_type_intern_own_env (env word)
+      (let* ((key (heap-read-u64 word 16))
+             (len (heap-read-u64 word 24))
+             (entry (nl_symbol_name_entry_for 1 key len)))
+        (if (if (= entry 0) 0 (/= (heap-read-u64 entry 80) 0))
+            (heap-read-u64 entry 80)
+          (let* ((mark (nl_root_mark env))
+                 (symbol-root (nl_root_reserve_checked env))
+                 (name-root (nl_root_reserve_checked env))
                  (result 0))
             (if (or (= symbol-root 0) (= name-root 0))
-                (seq (nl_root_release 0 mark) 0)
+                (seq (nl_root_release env mark) 0)
               (seq
                (nl_symname_copy32 word symbol-root 0)
                ;; Use the ordinary name constructor: its independently owned
                ;; mutable string must not alias the immutable intern key.
-               (if (= (nl_symbol_name_value 0 symbol-root name-root) 0) 0
+               (if (= (nl_symbol_name_value env symbol-root name-root) 0) 0
                  (let* ((owned (alloc-bytes 32 8)))
                    ;; The root is reread after allocation/possible compaction.
                    ;; Symbol identity is its interned name; this shallow owned
@@ -417,13 +425,19 @@ lifetime of a Sexp value.  No `let' binding needed.")
                        (seq (if (= (heap-read-u64 row 80) 0)
                                 (ptr-write-u64 row 80 owned) 0)
                             (setq result (heap-read-u64 row 80)))))))
-               (nl_root_release 0 mark)
+               (nl_root_release env mark)
                result))))))
 
     (defun nl_record_type_own (word)
       (if (/= (logand word 7) 0) word
         (if (= (nl_val_tag word) 4)
             (nl_record_type_intern_own word)
+          (let* ((storage (alloc-bytes 8 8)))
+            (nl_val_clone_into word storage)))))
+    (defun nl_record_type_own_env (env word)
+      (if (/= (logand word 7) 0) word
+        (if (= (nl_val_tag word) 4)
+            (nl_record_type_intern_own_env env word)
           (let* ((storage (alloc-bytes 8 8)))
             (nl_val_clone_into word storage)))))
 

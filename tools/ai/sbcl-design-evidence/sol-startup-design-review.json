@@ -1,0 +1,21 @@
+{
+  "reviewer_model":"gpt-6.1-sol",
+  "status":"PASS",
+  "scope":"Independent review of proposed Doc235; source/data inspection only",
+  "document_sha256":"568673dd4fcd8a149b7c63e738ce4dcbf7c9076a5cb438c940f10632d9ebdef9",
+  "manifest_sha256":"07b6d050e113016bbe2867539341163b21cae59f775abfb3bcc5604cb0bd7f5a",
+  "research_sha256":"824ac94fadd6fc13702661ef19a75ab813c8141cea7c16be78c98cba774d0a04",
+  "blocking_findings":[],
+  "resolved_findings":[
+    {"severity":"minor","location":"235:36-38","resolution":"Paired runner parses elapsed reported by driver"},
+    {"severity":"major","location":"235:108-113","resolution":"Stale identity rejected before initialization; later failures propagate/resume recorded state without repeating user effects"},
+    {"severity":"minor","location":"235:28-32","resolution":"Negative-control support is conditional and used by separate control runs, not asserted on ordinary successful samples"},
+    {"severity":"major","location":"235:97-100","resolution":"Immutable artifact fingerprint does not freeze live fset/advice/module mutation; normal invalidation semantics remain"}
+  ],
+  "source_accuracy":"PASS: concrete harness phase map, repeated explicit load requests, conditional helper hotpatch, source/cold-image normal boot, and SBCL core/resume mechanisms match bounded research anchors. No unobserved conditional execution or phase cost is claimed.",
+  "design_contract":"PASS: explicit identity/state transitions, semantic-ready publication, failure/reentrancy discipline, mutable post-READY state, native admission preservation, phase boundaries and matched future cohorts are actionable proposed contracts.",
+  "package_checks":{"source_hashes":12,"package_hashes":3,"org_relative_links":"PASS","json_parse_and_essential_fields":"PASS","same_N_reference":"Integer-sum N16000000 values match existing pinned comparison record","negative_control":"Identical SHA256 comparator rejects in-memory all-zero expected document hash"},
+  "runtime_build_timing":"NOT RUN; no new sampling authorized or required",
+  "validation_limits":"ulimit -v 8388608; ulimit -c 0",
+  "qualification":"HOLD unchanged; experimental process7-10s is not a pure-startup measurement and no new speed claim follows from this review"
+}

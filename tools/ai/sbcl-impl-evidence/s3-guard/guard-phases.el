@@ -1,0 +1,70 @@
+;;; -*- lexical-binding: t; -*-
+;;; guard-phases.el -- guarded-direct-call invalidation phases (shared by NeLisp driver and GNU control).
+;; Callee: bench-call-helper (x y) = x+y+1.  Kernel: bench-function-call2 calls it n times
+;; with args ((logand i 255) (logand (+ i 37) 255)), i = 0..n-1.
+(defvar guard-count 0)
+(defvar guard-log nil)
+(defvar guard-fail-at 0)
+(define-error 'guard-test-error "Guard test error")
+(defun guard--expected-log (n)
+  (let ((i (1- n)) (acc nil))
+    (while (>= i 0) (setq acc (cons (cons (logand i 255) (logand (+ i 37) 255)) acc) i (1- i)))
+    acc))
+(defun guard--ref (n) (let ((i 0) (s 0)) (while (< i n) (setq s (logand (+ s (+ (logand i 255) (logand (+ i 37) 255) 1)) 16777215) i (1+ i))) (cons n s)))
+(defun guard--counting (x y)
+  (setq guard-count (1+ guard-count) guard-log (cons (cons x y) guard-log))
+  (+ x y 1))
+(defun guard--call (n)
+  (setq guard-count 0 guard-log nil)
+  (condition-case e (list 'ok (bench-function-call2 n nil)) (error (list 'err e))))
+(defun guard--rec (name n res want-count want-log want-result)
+  (let* ((ok-res (and (eq (car res) 'ok) (equal (cadr res) want-result)))
+         (ok-count (= guard-count want-count))
+         (ok-log (equal (reverse guard-log) want-log)))
+    (list name (if (and ok-res ok-count ok-log) 'pass 'fail) 'n n 'count guard-count 'want-count want-count
+          'result-ok ok-res 'log-ok ok-log 'res (if ok-res 'ok res))))
+(defun guard-run-all (n k wrong)
+  (let* ((orig (symbol-function 'bench-call-helper)) (ref (guard--ref n)) (elog (guard--expected-log n))
+         (w (if wrong 1 0)) (out nil) res)
+    ;; 1 fset invalidation
+    (fset 'bench-call-helper (symbol-function 'guard--counting))
+    (setq res (guard--call n))
+    (setq out (cons (guard--rec 'fset n res (+ n w) elog ref) out))
+    ;; 2 restore
+    (fset 'bench-call-helper orig)
+    (setq res (guard--call n))
+    (setq out (cons (guard--rec 'restore n res (+ 0 w) nil ref) out))
+    (setq out (cons (list 'restore-cell-eq (if (eq (symbol-function 'bench-call-helper) orig) 'pass 'fail)) out))
+    ;; 3 advice
+    (if (fboundp 'advice-add)
+        (progn
+          (advice-add 'bench-call-helper :around
+                      (lambda (f x y) (setq guard-count (1+ guard-count) guard-log (cons (cons x y) guard-log)) (funcall f x y))
+                      '((name . guard-adv)))
+          (setq res (guard--call n))
+          (setq out (cons (guard--rec 'advice n res (+ n w) elog ref) out))
+          (advice-remove 'bench-call-helper 'guard-adv)
+          (setq res (guard--call n))
+          (setq out (cons (guard--rec 'advice-removed n res (+ 0 w) nil ref) out)))
+      (setq out (cons (list 'advice 'unavailable) out)))
+    (fset 'bench-call-helper orig)
+    ;; 4 error on k-th call
+    (setq guard-fail-at k)
+    (fset 'bench-call-helper
+          (lambda (x y) (setq guard-count (1+ guard-count) guard-log (cons (cons x y) guard-log))
+                  (if (= guard-count guard-fail-at) (signal 'guard-test-error (list 'at guard-count x y)) (+ x y 1))))
+    (setq res (guard--call n))
+    (let* ((e (cadr res))
+           (ok (and (eq (car res) 'err) (eq (car e) 'guard-test-error) (equal (cdr e) (list 'at k (1- k) (logand (+ (1- k) 37) 255)))
+                    (= guard-count (+ k w)))))
+      (setq out (cons (list 'error (if ok 'pass 'fail) 'k k 'count guard-count 'want-count (+ k w) 'res res) out)))
+    (fset 'bench-call-helper orig)
+    ;; 5 arity
+    (fset 'bench-call-helper (lambda (x) (setq guard-count (1+ guard-count)) x))
+    (setq res (guard--call n))
+    (let ((ok (and (eq (car res) 'err) (eq (car (cadr res)) 'wrong-number-of-arguments) (= guard-count w))))
+      (setq out (cons (list 'arity (if ok 'pass 'fail) 'count guard-count 'res (list (car res) (and (eq (car res) 'err) (car (cadr res))))) out)))
+    (fset 'bench-call-helper orig)
+    (setq res (guard--call n))
+    (setq out (cons (guard--rec 'final-restore n res w nil ref) out))
+    (nreverse out)))

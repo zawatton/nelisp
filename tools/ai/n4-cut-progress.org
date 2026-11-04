@@ -1,0 +1,18 @@
+#+TITLE: Exact N4 binding-view cuts
+#+NOTE: This isolated implementation lane serves the parent typed-save S1.2 and S2.2 criteria. It cannot approve producer activation or replace the parent ten-criterion objective.
+
+* S1 Preserve logical binding views under reflection
+** S1.1 Exact tagged cuts and every N4 creation, reuse, mark and rewrite owner preserve the existing layout
+#+NOTE: Host production-body models and structural field/caller checks only; separate source audit and native qualification remain required.
+evidence: target/typed-save/n4-cut-lane-evidence/cuts-expanded3.stderr sha256=0929d2768aea9f29edae1ef050c83d2cea15e8ae1e1d48ee413684d42f389d37
+evidence: target/typed-save/n4-cut-lane-evidence/fixture-compatibility1.stderr sha256=a9894be8f3fa9e905a53d6261fb69a36aea940d4a5577e0242828fef7f0fd935
+#+NOTE: Subsequent migration ownership repair: full39 run retained38passing cases plus one primitive-stub ABI failure; only that corrected case was rerun, passing. No known semantic failure was removed.
+evidence: target/typed-save/n4-cut-lane-evidence/migration-correction2.stderr sha256=2bb28da53ba42115990b57de593c813b85855a1153442dc51677072502cb210b
+#+NOTE: Both image-root publishers now use a rooted visible record2 copy for scoped owners; two changed-only production-model checks passed. No actual dump/reload claim.
+evidence: target/typed-save/n4-cut-lane-evidence/image-correction1.stderr sha256=9199f4ba99b6cf29bf3c587bf848cbe31874bc9d80470da836ec346e626ea5b1
+** S1.2 Genuine production models preserve array boundaries, empty owners, mixed events and exact outer tails across spill and exceptional transfer
+evidence: target/typed-save/n4-cut-lane-evidence/cuts-expanded3.stderr sha256=0929d2768aea9f29edae1ef050c83d2cea15e8ae1e1d48ee413684d42f389d37
+** S1.3 Scoped and nested frame-eval views exclude suspended bindings while retaining new evaluation bindings and restore ownership on replacement exits
+evidence: target/typed-save/n4-cut-lane-evidence/cuts-expanded3.stderr sha256=0929d2768aea9f29edae1ef050c83d2cea15e8ae1e1d48ee413684d42f389d37
+** S1.4 A separately built native candidate passes the focused GNU reflection and moving-GC schedules plus the unchanged runtime regression corpus
+pending

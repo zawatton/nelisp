@@ -1,0 +1,77 @@
+#+TITLE: Doc 213 — End-to-end design walkthrough and failure review
+#+DATE: 2026-10-24
+#+STATUS: DRAFT — coordinator desk review of the design only; no independent audit or executable acceptance result
+
+* Review scope
+
+Review [[file:213-web-application-platform.org][Doc 213]] as a design package. This record traces the
+source-to-browser flow and checks ownership and failure boundaries. It does not
+establish that the planned runtime, APIs, or tests exist. Runtime readiness
+remains unmeasured by this task. The design ledger measures these deliverables
+only; W0-W4 in the platform document are future implementation stages.
+
+* Scenario A: two applications, one host adapter
+
+1. Build the counter's ordinary NeLisp forms and lexical metadata into an image.
+   The compiler/runtime build produces core.wasm; it does not emit application JS.
+2. Browser boot verifies the ABI, profile, image limits, and manifest before
+   registering application callbacks. Unsupported image requirements stop boot.
+3. The evaluator materializes the closure, counter state, and DOM callback root.
+   DOM operations cross the checked command buffer into the fixed host adapter.
+4. A click becomes an event record. The next pump invokes the NeLisp callback;
+   NeLisp increments its state and emits a text update. JS does no business work.
+5. Dispose releases the event subscription/DOM handles and then the Lisp roots.
+6. Replace the counter image with a greeting application using the same profile.
+   host.mjs must retain the same hash. A change in business logic must change
+   only application data/code and its manifest, not inject application JS.
+
+Design result: responsibilities and the proposed acceptance observable are
+explicit. Execution and byte-identity evidence are pending W2.
+
+* Scenario B: Japanese form, asynchronous response, and disposal
+
+1. A browser-native input receives composition events and committed Unicode text.
+   The adapter sends text plus composition status; the NeLisp view does not
+   overwrite the active composition buffer.
+2. NeLisp validates the input and constructs schema-checked request data. Integer
+   fields are range checked; nil/false/null have distinct external encodings.
+3. nlweb-fetch creates a rooted task owned by the view generation. The host
+   starts fetch and returns immediately. There is no synchronous HTTP wait.
+4. The response is copied into the bounded ingress region and queued. The pump
+   decodes it, reports validation failures as Lisp conditions, and runs the
+   appropriate success/error continuation. Lisp code chooses the UI state.
+5. If the view is disposed first, its request is aborted and its roots are
+   released. A racing completion carries the old generation and is discarded.
+6. If a mutating endpoint timed out, the client shows an uncertain outcome;
+   no automatic retry is inferred from a transport error.
+
+Design result: data, scheduler, error, and ownership contracts connect end to
+end. Network, IME, cancellation, and server behavior remain pending W3/W4.
+
+* Failure review
+
+| Failure | Design response | Unproved acceptance |
+|---------+-----------------+---------------------|
+| Compiler works only for arithmetic | W0 requires a Wasm evaluator running cons/string/closure image forms | Actual shared-runtime lowering |
+| Lisp builtins moved to JS | Prohibited host builtin dispatcher; provider-removal negative control | Host/core inspection and mutation fixture |
+| Nil/0/string truth differs | Explicit Lisp semantics and three-runtime differential corpus | Admitted feature corpus |
+| Native image pointer is used in wasm | Versioned portable image, IDs, offset/layout validation | Malformed image and alias/cycle tests |
+| JS object and Lisp closure retain one another | Explicit owner registry and ordered release | Mount/dispose registry/heap measurements |
+| memory.grow leaves a stale JS view | Host reacquires typed-array views after growth | Growth-plus-event fixture |
+| Event callback reenters the evaluator | Delivery queues; later fuel-bounded pump executes | Reentrancy and generation fixtures |
+| Infinite application loop blocks the UI | Fuel at evaluator steps/backedges; kernels instrumented or isolated | Browser responsiveness fixture |
+| GC was only simulated or bump allocation grows forever | Trace the real Wasm heap; reclamation is a release prerequisite | Root liveness and heap plateau evidence |
+| Late fetch writes into a removed view | Cancellation plus generation check before continuation | Delayed-response disposal fixture |
+| Prevent-default is called after the event ended | Declarative synchronous subscription policy | Real input/submit behavior |
+| Web success is inferred from Node/mock canvas | Real-browser exits required in W2-W4 | Versioned browser matrix |
+| NeLisp API names in this document appear implemented | Interfaces and commands are labeled proposed; no SHIPPED claim | Future source/API acceptance |
+| Full-stack claim relies on an HTTP client package | Backend and HTTP adapter have a separate explicit exit | Native backend/browser fixture |
+
+* Review conclusion
+
+The architecture follows the user's clarified goal: NeLisp executes the
+application inside Wasm, and a fixed host adapter exposes browser APIs.
+The first unresolved dependency is general runtime feasibility, not rendering.
+Implement W0 first. The design does not justify a completion date, a performance
+claim, current browser compatibility, or a claim that JavaScript source/npm
+packages can run unchanged.

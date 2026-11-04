@@ -50,17 +50,39 @@
     (should (= (nth 1 result) 0))
     (should (equal (nth 4 row) "source-form-digest-mismatch"))))
 
-(ert-deftest nelisp-prelude-bytecode-selector-requires-explicit-pop-handler-evidence ()
+(ert-deftest nelisp-prelude-bytecode-selector-admits-genuine-call-with-parity-digest ()
   (let* ((source "(defun foo (n list) (take n list))\n")
+         (form (read source))
+         (compiled (byte-compile (cons 'lambda (cddr form))))
+         (opcodes (nelisp-prelude-bytecode--decode-opcodes (aref compiled 1)))
          (digest (secure-hash 'sha256
                               (substring source 0 (1- (length source)))))
          (result (nelisp-prelude-bytecode-transform
-                  source "pop-handler.el"
+                  source "call.el"
                   `((foo "(foo 1 '(a b))" "(a)" "pass" "fixture" "bytecode"
                          ,digest ""))))
          (row (car (nth 2 result))))
-    (should (= (nth 1 result) 0))
-    (should (equal (nth 4 row) "opcode-32-not-explicitly-verified"))))
+    ;; GNU 31.1 emitted a real CALL opcode for this source form.
+    (should (memq 32 opcodes))
+    (should (= (nth 1 result) 1))
+    (should (equal (nth 3 row) "adopt"))
+    (should (equal (nth 4 row)
+                   "opcode-allowlisted-and-host-parity-fixture-passed"))))
+
+(ert-deftest nelisp-prelude-bytecode-selector-refuses-call-without-parity-or-current-digest ()
+  (let* ((source "(defun foo (n list) (take n list))\n")
+         (without-parity (nelisp-prelude-bytecode-transform
+                          source "call.el" nil))
+         (without-digest (nelisp-prelude-bytecode-transform
+                          source "call.el"
+                          `((foo "(foo 1 '(a b))" "(a)" "pass" "fixture"
+                                 "bytecode" ""))))
+         (parity-row (car (nth 2 without-parity)))
+         (digest-row (car (nth 2 without-digest))))
+    (should (= (nth 1 without-parity) 0))
+    (should (equal (nth 4 parity-row) "no-parity-fixture"))
+    (should (= (nth 1 without-digest) 0))
+    (should (equal (nth 4 digest-row) "source-form-digest-mismatch"))))
 
 (ert-deftest nelisp-prelude-bytecode-vendor-transfer-preserves-unicode-and-raw-bytes ()
   (let* ((source (concat ";;; -*- lexical-binding: t; coding: utf-8 -*-\n"

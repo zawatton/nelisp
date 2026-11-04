@@ -1,0 +1,61 @@
+{
+  "status": "EXPERIMENTAL_DATA_COMPLETE_WITH_RECOVERED_INPUT_AVAILABILITY_INTERRUPTION",
+  "data_status": "PASS",
+  "completion_limit": "Original cross-driver cache path was missing after last sample; exact authenticated archived bytes exclusively restored. No continuous availability claim.",
+  "old_evidence": {
+    "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/count-matched/old-actual-times.json",
+    "sha256": "c3782034e130bdce037eeeb8c2c60f994bf476b7e051e58830742c442ec904d8",
+    "authenticated_receipts": 112,
+    "authenticated_outputs": 224,
+    "no_old_execution": true
+  },
+  "fixed_counts": {
+    "path": "/home/madblack-21/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/count-matched/count-matched-counts.json",
+    "sha256": "c5798dcc17c5c9be599b5003b4f9a0417b21094bf8d72b9915f4dee839225da1",
+    "no_calibration": true
+  },
+  "fresh_rows": {
+    "vector-allocate64": {
+      "samples": 14,
+      "low": 16384,
+      "high": 65536,
+      "raw_sha256": "e8e18dc5a59383a1480875702141b78cf87982af6c76f947f0678c9480ce12e6",
+      "report_sha256": "32d55e74322891a539c69524a946c492b6580e8daa852374aea8a87d5efc2170",
+      "minimum_timer_units": 4822.455435162531
+    },
+    "string-concat16": {
+      "samples": 14,
+      "low": 65536,
+      "high": 262144,
+      "raw_sha256": "4beb362f0dfc627b05248df2a4c3ee7908e3bcdbf4c7e2aa903c671441f3a8be",
+      "report_sha256": "4c7fdfb899fa128e6734ba042edc81ea5d261b22c77c6ab533ad82940d7cae70",
+      "minimum_timer_units": 6479.5519049283475
+    },
+    "hash-get1024": {
+      "samples": 14,
+      "low": 65536,
+      "high": 262144,
+      "raw_sha256": "ce6f738a9700c77c69bc69f9f83eba8113034d1fb42e8e31445794780d5dbcf3",
+      "report_sha256": "94be37e03f301f4b1f7c5971be7948de153908390785410378da1adc95f61a99",
+      "minimum_timer_units": 38154.13946172667
+    }
+  },
+  "reused_rows": [
+    "integer-sum",
+    "vector-read",
+    "vector-write",
+    "string-slice16",
+    "function-call2"
+  ],
+  "fresh_samples": 42,
+  "actual_same_count_rows": 8,
+  "all_owned_processes_reaped": true,
+  "postcheck_sha256": "00025129e36c48c6e86c149774d98d51e3c26eb5feee291b01b0578ffd081f9d",
+  "input_recovery_receipt_sha256": "56d1f87a67b319c725a46bd4821514e9dd24cfbca1147d700a8f987633b3bcd8",
+  "final_reports": {
+    "same-count-time-comparisons.json": "912aa4b5cc0d28bfa0cb5e955215fe4eac1c832e03303fc11c3ecf7f7b628e22",
+    "same-count-time-comparisons.csv": "2e52e6c6fa79be9326736f958542fc902cca3fd9c9003221b09103aaaeb474b2"
+  },
+  "source_gate": "HOLD_UNCHANGED",
+  "qualification_credit": false
+}

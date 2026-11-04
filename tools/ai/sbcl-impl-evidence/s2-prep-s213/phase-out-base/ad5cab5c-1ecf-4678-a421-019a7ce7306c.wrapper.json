@@ -1,0 +1,15 @@
+{
+ "ad5cab5c-1ecf-4678-a421-019a7ce7306c": {
+  "SPAWN": 727956845208266,
+  "CHILD_EXIT": 727957560927804,
+  "WRAPPER_CLEANUP_COMPLETE": 727957561391154,
+  "clock": "CLOCK_MONOTONIC",
+  "exit_code": 0,
+  "events_copied": true,
+  "lane": "on",
+  "row": "integer-sum",
+  "source_id": "x",
+  "image": "/home/madblack-21/.cache/tmp/nelisp-sbcl-impl-builds/build-on20/nelisp-dynamic",
+  "image_sha256": "1333e71cc60f016428b1e00f2852956211763726a91a43cdd0a2ec9dc3f99ae4"
+ }
+}

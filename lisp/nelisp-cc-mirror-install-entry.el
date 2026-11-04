@@ -66,7 +66,7 @@
           0
         (and
          (nl_ent_set entry-ptr 0 value-ptr)
-         (record-slot-set entry-ptr 1 function-ptr)
+         (nl_symbol_set_function entry-ptr function-ptr)
          (record-slot-set entry-ptr 2 plist-ptr)
          (nl_ent_set entry-ptr 3 constant-ptr))))
     (defun nelisp_mirror_install_entry

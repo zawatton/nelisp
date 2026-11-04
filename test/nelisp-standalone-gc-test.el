@@ -129,7 +129,7 @@ same native probe returns a nonzero status there."
            nelisp-standalone--gc-source
            'nl_compact_clear_large_fl))
          (large-mask-clear
-          (cl-subst (+ nelisp-standalone-gc-test--freelist-large-page 2048)
+          (cl-subst (+ nelisp-standalone-gc-test--freelist-large-page 3072)
                     '(data-addr nl_freelist_large_mask)
                     (nelisp-standalone-gc-test--find-defun
                      nelisp-standalone--arena-source 'nl_freelist_large_mask_clear_all)
@@ -189,7 +189,7 @@ same native probe returns a nonzero status there."
            '(defun nl_compact_clear_large_fl (_n) 0))
       ,compact-small
       (defun nl_probe_seed-large (n)
-        (if (> n 203) 0
+        (if (> n 350) 0
           (nl_seq2
            (ptr-write-u64 (nl_freelist_large_head n) 0 (+ 9000 n))
            (nl_probe_seed-large (+ n 1)))))
@@ -201,10 +201,13 @@ same native probe returns a nonzero status there."
            (nl_probe_seed-small (+ n 1)))))
       (defun nl_probe_seed-large-mask ()
         (seq
-         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 0 ,(1- (ash 1 51)))
-         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 8 ,(1- (ash 1 51)))
-         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 16 ,(1- (ash 1 51)))
-         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 24 ,(1- (ash 1 51)))))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 0 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 8 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 16 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 24 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 32 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 40 ,(1- (ash 1 51)))
+         (ptr-write-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 48 ,(1- (ash 1 51)))))
       (defun nl_probe_seed-all ()
         (nl_seq2
          (seq (nl_probe_seed-small 0) (nl_probe_seed-large-mask))
@@ -212,7 +215,7 @@ same native probe returns a nonzero status there."
                   (ptr-write-u64
                    (nl_freelist_small_mask_ptr) 0 ,(1- (ash 1 58))))))
       (defun nl_probe-zero-large (n)
-        (if (> n 203) 1
+        (if (> n 350) 1
           (if (= (ptr-read-u64 (nl_freelist_large_head n) 0) 0)
               (nl_probe-zero-large (+ n 1))
             0)))
@@ -223,10 +226,13 @@ same native probe returns a nonzero status there."
               (nl_probe-zero-small (+ n 1))
             0)))
       (defun nl_probe_zero-large-mask ()
-        (if (and (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 0) 0)
-                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 8) 0)
-                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 16) 0)
-                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 2048) 24) 0)) 1 0))
+        (if (and (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 0) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 8) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 16) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 24) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 32) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 40) 0)
+                 (= (ptr-read-u64 ,(+ nelisp-standalone-gc-test--freelist-large-page 3072) 48) 0)) 1 0))
       (defun nl_probe-all-zero ()
         (if (and (= (ptr-read-u64 (nl_freelist_small_mask_ptr) 0) 0)
                  (= (nl_probe-zero-small 0) 1)
@@ -317,7 +323,7 @@ can use a scratch page while still observing the real mask transitions."
         (setq form
               (cl-subst (+ nelisp-standalone-gc-test--freelist-page 1040)
                         '(data-addr nl_gc_diag) form :test #'equal))
-        (setq form (cl-subst (+ nelisp-standalone-gc-test--freelist-large-page 2048)
+        (setq form (cl-subst (+ nelisp-standalone-gc-test--freelist-large-page 3072)
                             '(data-addr nl_freelist_large_mask) form :test #'equal))
         (push form forms)))
     `(seq
@@ -498,7 +504,7 @@ can use a scratch page while still observing the real mask transitions."
   "Exercise the real large-mask, free/relink/split/scan/purge routes."
   (let* ((source (nelisp-standalone-gc-test--mask-source))
          (forms (butlast (cdr source)))
-         (mask (+ nelisp-standalone-gc-test--freelist-large-page 2048)))
+         (mask (+ nelisp-standalone-gc-test--freelist-large-page 3072)))
     ;; Replace the small-probe purge stub with the production large walker.
     (setq forms (cl-remove-if (lambda (form)
                                (eq (cadr form) 'nl_gc_freelist_purge_large_bins)) forms))
@@ -513,24 +519,24 @@ can use a scratch page while still observing the real mask transitions."
       ,@forms
       (defun nl_alloc_diag_linear (obj) obj)
       (defun nl_probe_large_bt (i)
-        (if (< i 50) (+ 480 (* i 32))
-          (if (< i 114) (+ 2056 (* (- i 50) 32))
-            (if (< i 178) (+ 4104 (* (- i 114) 64))
-              (if (< i 202) (+ 8200 (* (- i 178) 1024))
-                (if (= i 202) 32776 262152))))))
+        (if (< i 197) (+ 480 (* i 8))
+          (if (< i 261) (+ 2056 (* (- i 197) 32))
+            (if (< i 325) (+ 4104 (* (- i 261) 64))
+              (if (< i 349) (+ 8200 (* (- i 325) 1024))
+                (if (= i 349) 32776 262152))))))
       (defun nl_probe_large_hdr (i)
         (+ ,nelisp-standalone-gc-test--freelist-chunk-page (* i 16)))
       (defun nl_probe_large_oracle (start)
         (let ((i start) (result -1))
           (seq
-           (while (and (< i 204) (= result -1))
+           (while (and (< i 351) (= result -1))
              (if (= (ptr-read-u64 (nl_freelist_large_head i) 0) 0)
                  (setq i (+ i 1)) (setq result i)))
            result)))
       (defun nl_probe_large_compare ()
         (let ((i 0) (bad 0))
           (seq
-           (while (and (< i 205) (= bad 0))
+           (while (and (< i 352) (= bad 0))
              (if (= (nl_freelist_large_next i) (nl_probe_large_oracle i)) 0
                (setq bad 1))
              (setq i (+ i 1)))
@@ -540,10 +546,10 @@ can use a scratch page while still observing the real mask transitions."
           (seq
            (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-page 4096 3 50 -1 0)
            (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-large-page 4096 3 50 -1 0)
-           (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-chunk-page 4096 3 50 -1 0)
-           ;; 73 is coprime to 204; visit every bin in a dispersed order.
-           (while (and (< i 204) (= bad 0))
-             (setq bin (mod (* i 73) 204))
+           (syscall-direct 9 ,nelisp-standalone-gc-test--freelist-chunk-page 8192 3 50 -1 0)
+           ;; 73 is coprime to 351; visit every bin in a dispersed order.
+           (while (and (< i 351) (= bad 0))
+             (setq bin (mod (* i 73) 351))
              (setq hdr (nl_probe_large_hdr bin))
              (ptr-write-u64 hdr 0 (nl_probe_large_bt bin))
              (if (= (mod i 2) 0) (nl_gc_free_block hdr)
@@ -551,35 +557,35 @@ can use a scratch page while still observing the real mask transitions."
              (if (= (nl_probe_large_compare) 0) 0 (setq bad 10))
              (setq i (+ i 1)))
            (setq i 0)
-           (while (and (< i 204) (= bad 0))
-             (setq bin (mod (* i 73) 204))
+           (while (and (< i 351) (= bad 0))
+             (setq bin (mod (* i 73) 351))
              (ptr-write-u64 (nl_freelist_large_head bin) 0 0)
              (nl_freelist_large_mask_sync bin (nl_freelist_large_head bin))
              (if (= (nl_probe_large_compare) 0) 0 (setq bad 11))
              (setq i (+ i 1)))
            ;; Split a 1024-byte block into a 496-byte head and a 528-byte
            ;; tail.  A request this large never makes a current run, so the
-           ;; tail goes to large bin 1.
+           ;; tail goes to large bin 6.
            (setq hdr (nl_probe_large_hdr 0))
            (nl_freelist_split_tail hdr 1024 496)
-           (if (= (nl_freelist_large_next 0) 1) 0 (setq bad 12))
+           (if (= (nl_freelist_large_next 0) 6) 0 (setq bad 12))
            ;; Consume that exact tail through the production scanner.
            (if (= (nl_freelist_scan_large_from 0 528) (+ hdr 504)) 0 (setq bad 13))
            (if (= (nl_freelist_large_next 0) -1) 0 (setq bad 14))
            ;; Purge must both remove empty bits and preserve nonempty bits.
            (ptr-write-u64 (nl_freelist_large_head 51) 0 7777)
-           (ptr-write-u64 (nl_freelist_large_head 203) 0 8888)
+           (ptr-write-u64 (nl_freelist_large_head 350) 0 8888)
            (nl_freelist_large_mask_sync 51 (nl_freelist_large_head 51))
-           (nl_freelist_large_mask_sync 203 (nl_freelist_large_head 203))
+           (nl_freelist_large_mask_sync 350 (nl_freelist_large_head 350))
            (nl_gc_freelist_purge_large_bins 0 0 0)
-           (if (= (nl_freelist_large_next 0) 203) 0 (setq bad 15))
+           (if (= (nl_freelist_large_next 0) 350) 0 (setq bad 15))
            (nl_freelist_large_mask_clear_all)
            (if (= (nl_freelist_large_next 0) -1) 0 (setq bad 16))
            bad)))
       (exit (nl_probe_large_routes)))))
 
 (ert-deftest nelisp-standalone-gc-large-mask-native-routes ()
-  "All 204 bins obey the independent oracle and production mutation routes."
+  "All 351 bins obey the independent oracle and production mutation routes."
   (unless (and (eq system-type 'gnu/linux)
                (string-match-p "x86_64\\|amd64" system-configuration))
     (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
@@ -603,7 +609,7 @@ can use a scratch page while still observing the real mask transitions."
                  (mapcar (lambda (form)
                            (if (memq (cadr form) '(nl_boundary_clear_large_fl
                                                  nl_compact_clear_large_fl))
-                               (cl-subst '(> n 7) '(> n 203) form :test #'equal)
+                               (cl-subst '(> n 7) '(> n 350) form :test #'equal)
                              form))
                          (cdr (nelisp-standalone-gc-test--freelist-clear-source 0)))) path)
           (should (equal (call-process path nil nil nil) 1)))
@@ -1542,12 +1548,12 @@ mixes small and large sizes and ends on a run the walk must flush."
 
 (defun nelisp-standalone-gc-test--sweep-large-bin (bt)
   "Elisp copy of `nl_freelist_large_bin' for the oracle."
-  (cond ((< bt 2049) (if (< bt 481) 0 (/ (- bt 480) 32)))
-        ((< bt 4097) (+ 50 (/ (- bt 2049) 32)))
-        ((< bt 8193) (+ 114 (/ (- bt 4097) 64)))
-        ((< bt 32769) (+ 178 (/ (- bt 8193) 1024)))
-        ((< bt 262145) 202)
-        (t 203)))
+  (cond ((< bt 2049) (if (< bt 481) 0 (/ (+ (- bt 480) 7) 8)))
+        ((< bt 4097) (+ 197 (/ (- bt 2049) 32)))
+        ((< bt 8193) (+ 261 (/ (- bt 4097) 64)))
+        ((< bt 32769) (+ 325 (/ (- bt 8193) 1024)))
+        ((< bt 262145) 349)
+        (t 350)))
 
 (defun nelisp-standalone-gc-test--sweep-oracle (blocks &optional markonly desync)
   "Expected state after the one-pass sweep over BLOCKS.
@@ -1596,7 +1602,7 @@ stub count matches the Elisp oracle."
          (heap nelisp-standalone-gc-test--sweep-heap)
          (holes nelisp-standalone-gc-test--sweep-holes)
          (diag (+ page 1040)) (check (+ page 1200)) (hmap (+ page 1304))
-         (stats (+ page 1400)) (counts (+ page 1600)) (lmask (+ large 2048))
+         (stats (+ page 1400)) (counts (+ page 1600)) (lmask (+ large 3072))
          (desync (and (eq mode 'desync) 120))
          (oracle (nelisp-standalone-gc-test--sweep-oracle
                   blocks (eq mode 'markonly) desync))
@@ -1639,7 +1645,7 @@ stub count matches the Elisp oracle."
       (dolist (h (plist-get oracle :headers))
         (expect `(ptr-read-u64 ,(car h) 0) (cdr h)))
       ;; Free lists: each run head pushed in address order.
-      (let ((lists nil) (small 0) (lmasks (make-vector 4 0)))
+      (let ((lists nil) (small 0) (lmasks (make-vector 7 0)))
         (dolist (r (plist-get oracle :runs))
           (let* ((total (cdr r))
                  (slot (if (< total 473) (+ 268435696 (- total 16))
@@ -1657,7 +1663,7 @@ stub count matches the Elisp oracle."
               (setq at (+ node 8)))
             (expect `(ptr-read-u64 ,at 0) 0)))
         (expect `(ptr-read-u64 ,(+ page 1024) 0) small)
-        (dotimes (w 4)
+        (dotimes (w 7)
           (expect `(ptr-read-u64 ,(+ lmask (* 8 w)) 0) (aref lmasks w))))
       (expect '(ptr-read-u64 268435640 0) (plist-get oracle :kept))
       (expect '(ptr-read-u64 268435632 0) (plist-get oracle :freed))
@@ -1982,7 +1988,7 @@ function applied to the production forms (for red checks)."
                       (nelisp-standalone-gc-test--find-defun nelisp-standalone--gc-source name))))
         (unless form (error "current-run probe defun absent: %S" name))
         (setq form (cl-subst diag '(data-addr nl_gc_diag) form :test #'equal))
-        (setq form (cl-subst (+ large 2048) '(data-addr nl_freelist_large_mask) form :test #'equal))
+        (setq form (cl-subst (+ large 3072) '(data-addr nl_freelist_large_mask) form :test #'equal))
         (push form forms)))
     (setq forms (nreverse forms))
     (when mutate (setq forms (funcall mutate forms)))
@@ -2020,7 +2026,7 @@ function applied to the production forms (for red checks)."
              (if (< k 0) (setq n -100000) (setq n (+ n k)))
              (setq i (+ i 1)))
            (setq i 0)
-           (while (< i 204)
+           (while (< i 351)
              (setq k (nl_probe_run_list_nodes (nl_freelist_large_head i)))
              (if (< k 0) (setq n -100000) (setq n (+ n k)))
              (setq i (+ i 1)))

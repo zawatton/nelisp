@@ -1,0 +1,13 @@
+#+TITLE: V8-inspired native NeLisp optimization design (document delivery only)
+
+* S1 Reviewable design
+
+** S1.1 Current native implementation and V8 references are pinned
+evidence: tools/ai/native-v8-design-sources.json sha256=9e3e0621a16bafc5b8c6b8cbe9b125aed5fdced864eef1cfdebba091d8649880
+
+** S1.2 Design specifies implementation boundaries and falsifiable acceptance
+evidence: docs/design/215-v8-inspired-native-optimization.org sha256=663b828c2d4e7747cc0592c517a436ce6e9a2c932f94e66eea198cbb2363700f
+
+** S1.3 Independent Astra audit accepts the final document and delivery checks pass
+evidence: tools/ai/native-v8-design-audit.json sha256=78477569d4b5f0831acc698c082fec5622cefabce1ffc30dc427434821490d49
+cmd: (ulimit -v 8388608; python3 -c 'import hashlib,json,pathlib; p=pathlib.Path("docs/design/215-v8-inspired-native-optimization.org"); s=pathlib.Path("tools/ai/native-v8-design-sources.json"); a=json.loads(pathlib.Path("tools/ai/native-v8-design-audit.json").read_text()); assert a["decision"]=="ACCEPT" and a["model"]=="gpt-6-astra" and a["reasoning_effort"]=="ultra" and not a["findings"]; assert a["document_path"]==str(p) and a["document_sha256"]==hashlib.sha256(p.read_bytes()).hexdigest() and a["sources_sha256"]==hashlib.sha256(s.read_bytes()).hexdigest(); print("Final document and source manifest accepted by independent Astra audit")')

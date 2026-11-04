@@ -2,10 +2,20 @@
 
 (require 'nelisp-directcall-test)
 
+(defun ndc-decline--unsupported-names ()
+  "Recognized static primitive names absent from actual directcall metadata."
+  (let ((names (cl-loop for arity in (nelisp-standalone--builtin-arities)
+                        for name = (car arity)
+                        when (and (nelisp-standalone--sid name)
+                                  (not (assoc name nelisp-standalone--directcall-specs)))
+                        collect name)))
+    (unless names (error "No true unsupported static directcall fixtures"))
+    names))
+
 (ert-deftest ndc-decline-symbol-miss-precedes-descriptor-reads ()
   (ndc--with-definitions
    (lambda (_defs)
-     (dolist (name '("vector" "make-vector" "make-string"))
+     (dolist (name (ndc-decline--unsupported-names))
        (let ((reads 0))
          (cl-letf (((symbol-function 'nl_val_tag) (lambda (_) 4))
                    ((symbol-function 'nl_sym_sid)
@@ -14,6 +24,40 @@
                     (lambda (&rest _) (ert-fail "Miss inspected the descriptor"))))
            (should (= (nl_directcall_id 10002 20022 1) 0))
            (should (= reads 1))))))))
+
+(ert-deftest ndc-decline-admitted-allocating-and-conservative-controls ()
+  (ndc--with-definitions
+   (lambda (_defs)
+     (dolist (spec (cl-remove-if-not (lambda (s) (>= (cadr s) 112))
+                                   nelisp-standalone--directcall-specs))
+       (let* ((name (car spec)) (id (cadr spec))
+              (arity (assoc name (nelisp-standalone--builtin-arities)))
+              (mem (make-hash-table :test #'eql)) (reads 0)
+              (zero nil))
+         (puthash 10000 20006 mem) (puthash 10008 10018 mem)
+         (puthash 10016 20022 mem) (puthash 10024 3 mem)
+         (cl-letf (((symbol-function 'ptr-read-u64)
+                    (lambda (p i) (cl-incf reads) (gethash (+ p i) mem)))
+                   ((symbol-function 'nl_sym_sid)
+                    (lambda (w) (if (= w 20006) (nelisp-standalone--sid "builtin")
+                                  (if (and zero (= w 20038)) 0
+                                    (or (nelisp-standalone--sid name) 0)))))
+                   ((symbol-function 'nl_val_tag) (lambda (_) 4))
+                   ((symbol-function 'sexp-name-eq)
+                    (lambda (_w text) (if (equal text name) 1 0))))
+           ;; Current admitted allocating primitives must inspect descriptors.
+           (should (= (nl_directcall_id 10002 20022 (nth 1 arity)) id))
+           (should (> reads 0))
+           ;; Alias identity, held function, and zero static identity all retain
+           ;; the conservative name/shape checks rather than blanket rejection.
+           (should (= (nl_directcall_id 10002 20038 (nth 1 arity)) id))
+           (should (= (nl_directcall_id 10002 10002 (nth 1 arity)) id))
+           (setq zero t)
+           (should (= (nl_directcall_id 10002 20038 (nth 1 arity)) id))
+           (setq zero nil)
+           ;; Supported metadata cannot authorize a redefined/advised cell.
+           (puthash 10024 10002 mem)
+           (should (= (nl_directcall_id 10002 20022 (nth 1 arity)) 0))))))))
 
 (ert-deftest ndc-decline-descriptor-sid-read-once-and-revalidated ()
   (ndc--with-definitions
@@ -85,5 +129,33 @@
                     (walk (car x)) (walk (cdr x)))))
       (walk form))
     (should (= count 1))))
+
+(ert-deftest ndc-decline-both-targets-run-production-validation ()
+  (let ((generator (symbol-function 'nelisp-standalone--directcall-defuns)))
+    (dolist (target '(linux-x86_64 win64))
+      (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target) (lambda () target))
+                ((symbol-function 'nelisp-standalone--directcall-defuns) generator))
+        (funcall (ert-test-body (ert-get-test 'ndc-decline-symbol-miss-precedes-descriptor-reads)))
+        (funcall (ert-test-body (ert-get-test 'ndc-decline-descriptor-sid-read-once-and-revalidated)))
+        (funcall (ert-test-body (ert-get-test 'ndc-decline-admitted-allocating-and-conservative-controls)))))))
+
+(ert-deftest ndc-decline-authorizing-metadata-mutant-is-rejected ()
+  (let* ((generator (symbol-function 'nelisp-standalone--directcall-defuns))
+         (forms (funcall generator)) (mutations 0))
+    (cl-labels ((mutate (x)
+                  (if (and (consp x) (eq (car x) 'if)
+                           (equal (cadr x) '(if (= original-sid 0) 0 (= original-desc 0))))
+                      (progn (cl-incf mutations)
+                             '(if (= original-desc 0) 0 (- (logand original-desc 255) 17)))
+                    (if (consp x) (cons (mutate (car x)) (mutate (cdr x))) x))))
+      (setq forms (mutate forms)))
+    (should (= mutations 1))
+    (cl-letf (((symbol-function 'nelisp-standalone--directcall-defuns) (lambda () forms)))
+      (should-error
+       (funcall (ert-test-body (ert-get-test 'ndc-decline-descriptor-sid-read-once-and-revalidated)))
+       :type 'ert-test-failed)
+      (should-error
+       (funcall (ert-test-body (ert-get-test 'ndc-decline-admitted-allocating-and-conservative-controls)))
+       :type 'ert-test-failed))))
 
 (provide 'nelisp-directcall-decline-test)

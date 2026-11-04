@@ -1,0 +1,20 @@
+{
+ "scope": "Supplement to the frozen S8 protocol (s8-protocol-frozen.json is unchanged and keeps its verdicts). Long-interval rows for allocating workloads, where the frozen two-trip-count difference can bill one whole collection to the kernel when GC cadence shifts between builds (found 2026-11-02, s8-final-b28/string-rows-analysis.txt).",
+ "added_at": "2026-11-02",
+ "method": {
+  "engines": ["old", "new", "gnu"],
+  "reps": 5,
+  "cpu": 1,
+  "warmups": 2,
+  "intervals": "two paired_bench runs per row: short = (n1, n2), long = (n2, n4); BENCH_HIGH = n4 in both so warmups are identical",
+  "reported": "kernel ns/step from the long interval (median of per-rep differences of inner_ns)",
+  "cadence_check": "per engine, |median(short) - median(long)| / median(long); above cadence_tolerance the row is marked cadence_sensitive and its comparison is not to be quoted without the short value",
+  "cadence_tolerance": 0.10
+ },
+ "rows": {
+  "vector-allocate64": {"n1": 1048576, "n2": 2097152, "n4": 4194304},
+  "string-slice16":    {"n1": 1048576, "n2": 2097152, "n4": 4194304},
+  "string-concat16":   {"n1": 1048576, "n2": 2097152, "n4": 4194304},
+  "hash-get1024":      {"n1": 65536,   "n2": 131072,  "n4": 262144}
+ }
+}

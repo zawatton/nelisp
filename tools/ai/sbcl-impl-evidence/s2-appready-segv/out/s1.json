@@ -1,0 +1,10 @@
+{
+ "label": "s1",
+ "rc": 0,
+ "wall_s": 0.021,
+ "route": null,
+ "result": null,
+ "kernel_s": null,
+ "stdout_tail": "hi\n",
+ "stderr_tail": ""
+}

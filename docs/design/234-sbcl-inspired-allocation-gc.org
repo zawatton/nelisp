@@ -1,0 +1,109 @@
+#+TITLE: Allocation lowering and collector contracts for NeLisp
+#+DATE: 2026-10-31
+#+STATUS: PROPOSED — research only; no implementation or qualification
+#+SCOPE: General allocation IR, object representation, roots, and GC effects
+
+* Decision boundary
+
+First optimize a fast region for NeLisp's current collector model, with
+explicit allocation size, alignment, zeroing, rooting, publication, overflow,
+and slow-path contracts. A future moving or generational collector redesign
+is a separate project. Do not copy SBCL's TLAB or page barrier without its
+collector invariants.
+
+* Measured baseline and limits
+
+For =vector-allocate64=, old/new same-count kernel seconds at =N=65,536=
+were 0.028858900/0.056630135; GNU/ON at =N=1,048,576= measured
+1.483497143/1.047301054. These counts differ, and neither comparison alone
+explains allocation cost. Whole-process elapsed includes warmups, setup,
+validation, and kernel execution; it is not pure startup time. The same-count
+allocation result is a measured regression at its fixed count and must remain
+visible. These data are experimental references, not strict acceptance.
+
+* SBCL facts and NeLisp limits
+
+Pinned SBCL x86-64 allocation emits per-thread cons/mixed TLAB bump checks,
+updates a free pointer, tags the object, and enters an allocator trampoline
+on overflow; large objects may bypass the region. Object headers and padding
+are initialized as part of allocation. Its gencgc path documents page
+prezeroing and a generational barrier that relies on page state. Those are
+SBCL-specific collector contracts. Source hashes and exact lines are in the
+source manifest. Direct anchors include
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/alloc.lisp#L229][TLAB allocation]],
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/gencgc.c#L2571][page barrier]], and
+[[https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/runtime/gencgc.c#L4166][slow allocation]].
+
+Frozen12 NeLisp already has a CAS chunk bump allocator, typed cons blocks,
+slow allocation, GC debt, reuse zeroing, and collector builders. Treat its
+current object layout and collector as the baseline. The shared Doc 215 V8
+proposal is not this measured implementation. Exact NeLisp source hashes are
+listed in the manifest; relevant anchors include =scripts/nelisp-standalone-build.el:4080-4100,4500-4520,5672-5676,6158-6169,6205-6263=. Rooting across may-GC helper calls and complete
+transitive effects of hash comparators remain questions to resolve before
+lowering any allocation region.
+
+* Proposed allocation IR and correctness contract
+
+Proposed operations (not existing APIs) are =alloc-size(layout,fields)=,
+=alloc-reserve(size,alignment,kind)=, =alloc-initialize(object,field,value)=,
+=alloc-publish(object,owner,barrier-kind)=, and =alloc-slow(size,roots,
+accounting-state)=. Lower in order: validate size and overflow; reserve only
+after proving capacity; initialize header and required fields; set reference
+barriers; then publish. On reserve failure, root every live value before the
+may-GC slow path and save allocation/GC-debt accounting state. On slow-path
+failure, restore or commit accounting exactly once and propagate original
+error/status. No partially initialized object becomes visible. Names describe
+proposed contracts, not existing APIs.
+
+Make allocation a typed effect in the common IR: object kind/layout, size,
+alignment, zero/init state, owner, roots live across the operation,
+publication state, and may-GC/may-signal effects. A fast allocation region
+may use a bounded bump pointer only if integer overflow and capacity checks
+dominate the store, zeroing is complete before publication, and every live
+Lisp reference is visible to the collector at every safepoint. Slow paths
+must preserve errors, GC debt/accounting, scheduling, and return convention.
+
+An object is unpublished until all fields that the collector or mutator may
+observe are initialized. Reference stores use the actual NeLisp barrier and
+dirty-state protocol. Do not assume page prezeroing or omit initialization.
+Do not retain interior pointers across operations that may relocate or
+replace storage. Use checked fallback when object kind, size, or effects are
+unknown.
+
+An explicit no-GC/ownership region may be considered only as a future,
+separately specified extension. It requires bounded duration, no user call,
+no signal/quit/GC boundary, explicit roots/ownership, and an enforced exit
+path. It must not disable normal Emacs-compatible behavior or be used to
+paper over missing effect metadata.
+
+* Stages, alternatives, and acceptance
+
+Dependency order: this allocation/root/effect IR is foundational; vector,
+string, hash direct views, and call lowering consume its ownership and
+may-GC facts before specializing. Stage 1: audit allocation sites, object
+layouts, initialization, safepoints,
+roots, and slow-path effects in the current collector. Stage 2: encode these
+facts in common memory/effect IR without changing allocation. Stage 3: lower
+one existing general allocation shape to a fast region, retaining the
+existing slow path. Stage 4: separately evaluate TLABs, moving GC, or
+generational barriers only with a new collector design and proof. Alternatives
+include current allocator, size-class caches, and bounded thread-local regions;
+choose by representative allocation profiles, not a single row.
+
+Freeze counts, code-size ceiling, and thresholds before trials. Pass requires
+all forced-GC and visibility controls, at least 10% median kernel-time
+improvement on the selected row, no same-count row over 5% slower in median
+kernel time, and at most 10% code growth per changed unit. Report every
+whole-process regression; above 5% blocks acceptance pending explicit review.
+Any lost root, partial object, or accounting mismatch is an unconditional
+failure.
+
+Acceptance runs identical allocation workloads and counts on GNU bytecode,
+old NeLisp, and new NeLisp with seven paired repetitions. Report kernel and
+process seconds, allocation counts, bytes, zeroed bytes, slow-path frequency,
+GC debt/collections, pause time, code size, and root metadata. Force GC at
+each allocation boundary; test overflow, large objects, partial initialization,
+reference fields, weak references, snapshots, reused storage, signals, and
+negative controls for missing roots/zeroing. Roll back if any object becomes
+visible partially initialized, any reference is lost, or GC/snapshot behavior
+changes. No speed promise is made.

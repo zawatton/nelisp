@@ -1,0 +1,14 @@
+# Dedicated variable-alias provider requires these functions as byte code.
+defvaralias dedicated-variable-alias-provider
+indirect-variable dedicated-variable-alias-provider
+internal-delete-indirect-variable dedicated-variable-alias-provider
+nelisp--native-variable-alias-pairs dedicated-variable-alias-provider
+default-boundp dedicated-buffer-local-provider
+default-value dedicated-buffer-local-provider
+set-default dedicated-buffer-local-provider
+nelisp-buffer-local--redirect dedicated-buffer-local-provider
+nelisp-buffer-local--redirect-vector dedicated-buffer-local-provider
+nelisp-buffer-local-default dedicated-buffer-local-provider
+nelisp-buffer-local-kill dedicated-buffer-local-provider
+nelisp-buffer-local-make dedicated-buffer-local-provider
+nelisp-buffer-local-p dedicated-buffer-local-provider

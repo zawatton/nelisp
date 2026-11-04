@@ -1,0 +1,26 @@
+packages/nelisp-emacs-buffer-core/src/nelisp-emacs-compat.el
+packages/nelisp-emacs-buffer-core/src/nelisp-text-buffer.el
+packages/nelisp-emacs-facade/src/nelisp-emacs.el
+packages/nelisp-emacs-io/src/nelisp-emacs-compat-fileio.el
+packages/nelisp-emacs-io/src/nelisp-emacs-magit-bridge.el
+packages/nelisp-emacs-io/src/nelisp-emacs-org-bridge.el
+packages/nelisp-emacs-text-core/src/nelisp-regex.el
+packages/nelisp-gui-xcb/src/nelisp-gui-frontend.el
+packages/nelisp-gui-xcb/src/nelisp-gui-menu.el
+packages/nelisp-gui-xcb/src/nelisp-gui-pango.el
+packages/nelisp-gui-xcb/src/nelisp-gui-selection.el
+packages/nelisp-gui-xcb/src/nelisp-gui-xcb.el
+packages/nelisp-http/src/nelisp-http.el
+packages/nelisp-jit/src/nelisp-jit.el
+packages/nelisp-network/src/nelisp-network.el
+packages/nelisp-process/src/nelisp-process.el
+packages/nelisp-textprop-display/src/nelisp-textprop-display.el
+packages/nelisp-textprop-keymap/src/nelisp-textprop-keymap.el
+packages/nl-clj/src/nl-clj-hash.el
+packages/nl-clj/src/nl-clj-seq.el
+packages/nl-ffi/src/nl-ffi-loader.el
+packages/nl-libffi/src/nl-ffi-libffi.el
+packages/nl-ns/src/nl-ns.el
+packages/nl-prelude/src/nl-prelude.el
+merge-touched files among compile errors:
+0

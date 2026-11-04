@@ -486,10 +486,32 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
       (setq cur (cdr cur)))
     hit))
 
+(defun nelisp--locate-source-file-regular (filename path suffixes)
+  "Find FILENAME in PATH with SUFFIXES, accepting regular files only."
+  (let ((dirs path) (hit nil))
+    (while (and dirs (null hit))
+      (let ((dir (car dirs)))
+        (when (stringp dir)
+          (setq hit
+                (nelisp--locate-probe
+                 (expand-file-name filename dir) suffixes))))
+      (setq dirs (cdr dirs)))
+    hit))
+
 (defun locate-library (library &optional _nosuffix _path _interactive-call)
-    "Find LIBRARY on `load-path', trying .el; nil when not found."
+    "Find LIBRARY on `load-path', preferring compiled Elisp files."
     (nelisp--check-string library)
-    (locate-file library load-path '(".el" "")))
+    (let ((dirs load-path) (hit nil))
+      (while (and dirs (null hit))
+        (let ((dir (car dirs)))
+          (when (stringp dir)
+            (dolist (suffix '(".elc" ".el" ""))
+              (let ((candidate
+                     (concat (expand-file-name library dir) suffix)))
+                (when (and (null hit) (file-regular-p candidate))
+                  (setq hit candidate))))))
+        (setq dirs (cdr dirs)))
+      hit))
 
 ;; Rust-min batch 7f (2026-05-07, Doc 50 stage 2): `load' migrated
 ;; from Rust to elisp on top of two new I/O / reader primitives:
@@ -499,8 +521,9 @@ regular file (per `nelisp--syscall-stat'), or nil if none match."
 ;; `file-name-directory' (Rust-min 2026-05-06).
 ;;
 ;; Behaviour matches the prior `bi_load' contract:
-;;   1. Resolve FILE through `locate-library'; if not found and
-;;      NOERROR is nil, signal `file-error' "Cannot open load file".
+;;   1. Resolve FILE to a regular source file (.el, then bare path),
+;;      independently of `locate-library''s .elc-first discovery order;
+;;      if not found and NOERROR is nil, signal `file-error'.
 ;;   2. Slurp file via `nelisp--syscall-read-file'; if it returns nil
 ;;      and NOERROR is nil, signal `file-error' "read error".
 ;;   3. Read/eval top-level forms incrementally via `read-from-string'.
@@ -589,7 +612,11 @@ overflow the standalone arena on upstream-sized package files."
 (defun load (file &optional noerror _nomessage _nosuffix _must-suffix)
   "Execute the elisp file FILE.  See `nelisp-stdlib-misc.el' top-of-
 section comment for the full contract."
-  (let ((resolved (locate-library file)))
+  ;; This runtime evaluates source text only.  `locate-library' exposes
+  ;; GNU's .elc-first discovery order, but the source loader must continue
+  ;; to resolve .el (or an explicitly named source path) without reading a
+  ;; GNU bytecode artifact as text.
+  (let ((resolved (nelisp--locate-source-file-regular file load-path '(".el" ""))))
     (cond
      ((null resolved)
       (if noerror nil
@@ -1870,6 +1897,8 @@ process from `void-variable'ing on a host that has not bound it yet."))
 ;; reason.  `file-exists-p'/`expand-file-name'/`string-as-unibyte' are
 ;; real Emacs names (a host running this file for real, or a standalone
 ;; image that already loaded the prelude, already has them).
+;; The standard buffer view is initialized by the genuine prelude provider.
+(declare-function nelisp--env-globals-set-value "nelisp-stdlib-prelude" (symbol value))
 (declare-function nelisp--syscall-read-file "nelisp-stdlib-prelude")
 (declare-function nelisp-point "nelisp-stdlib-prelude")
 (declare-function nelisp-insert "nelisp-stdlib-prelude")
@@ -1964,6 +1993,7 @@ char'/`insert-before-markers'/`decode-coding-region' to consult; there
 is no raw-8-bit pseudo-character scheme here to re-encode, so nothing
 else changes."
     (puthash nelisp--current-buffer (and flag t) nelisp--buffer-multibyte-table)
+    (nelisp--env-globals-set-value 'enable-multibyte-characters (and flag t))
     flag))
 
 (unless (fboundp 'insert)

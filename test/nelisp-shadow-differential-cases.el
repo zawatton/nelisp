@@ -209,6 +209,16 @@
              (progn (fset symbol 'car) (funcall symbol '(19)))
              (apply symbol '((23))))
      (fmakunbound symbol)))
+ ;; GNU Fapply spreads leading arguments and the final list before Ffuncall.
+ ;; Keep builtin values, proper-list operands and error payloads in the corpus.
+ (let ((tail '(2 9)) (parts '("a" "b")))
+   (list (apply #'max -1 tail)
+         (apply #'concat parts)
+         (funcall (symbol-function 'append) '(a) '(b))
+         (assoc 'b '((a . 1) (b . 2)))
+         (alist-get 'b '((a . 1) (b . 2)))
+         (condition-case error (apply #'max '(1 bad-number))
+           (error (list (car error) (cdr error))))))
  ;; Argument WORD reads retain immediate tags and negative integer payloads.
  (mapcar (lambda (value)
            (list (car (list value)) (cdr (cons 'head value))

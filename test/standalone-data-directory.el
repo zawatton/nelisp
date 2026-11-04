@@ -1,0 +1,33 @@
+;;; standalone-data-directory.el --- Explicit genuine resource controls -*- lexical-binding: t; -*-
+(require 'nelisp-stdlib-data-directory)
+(let* ((source (getenv "NELISP_GNU_DATA_SOURCE_ROOT"))
+       (root (getenv "NELISP_GNU_DATA_ROOT"))
+       (before (and (boundp 'data-directory) data-directory))
+       (status (nelisp-stdlib-data-directory-install source root)))
+  (if (eq status 'preserved)
+      (unless (equal data-directory before) (error "GNU data directory changed"))
+    (unless (equal data-directory (file-name-as-directory (file-truename root)))
+      (error "Actual configured resource directory differs"))
+    (dolist (control
+             (list (list nil nil "unconfigured")
+                   (list source source "differs from source bundle")
+                   (list (getenv "NELISP_MISSING_DATA_SOURCE_ROOT")
+                         (getenv "NELISP_MISSING_DATA_ROOT") "resource missing")))
+      (let (condition)
+        (condition-case err
+            (nelisp-stdlib-data-directory-install (nth 0 control) (nth 1 control))
+          (error (setq condition err)))
+        (unless (and condition (stringp (cadr condition))
+                     (string-match-p (nth 2 control) (cadr condition)))
+          (error "Resource refusal differs: %S" condition))
+        (unless (equal data-directory (file-name-as-directory (file-truename root)))
+          (error "Rejected resource changed public directory"))))))
+(let ((owner (symbol-function 'secure-hash)) refused reached)
+  (unwind-protect
+      (progn
+        (fset 'secure-hash (lambda (&rest ignored) (setq reached t)))
+        (condition-case nil (nelisp-stdlib-data-directory-install)
+          (error (setq refused t)))
+        (unless (and refused (not reached)) (error "Mutated resource owner accepted")))
+    (fset 'secure-hash owner)))
+(princ "GENUINE-DATA-DIRECTORY-PASS\n")

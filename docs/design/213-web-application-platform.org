@@ -1,0 +1,335 @@
+#+TITLE: Doc 213 — NeLisp application execution in the browser
+#+DATE: 2026-10-24
+#+STATUS: DRAFT — architecture and acceptance plan only; no runtime implementation or browser validation performed in this task
+
+* 1. Outcome and scope
+
+Run application logic as NeLisp inside WebAssembly in an ordinary browser.
+Application authors write NeLisp, not TypeScript or JavaScript. NeLisp owns
+values, functions, state, evaluation, error handling, and task continuations.
+The fixed JavaScript host adapter owns browser API calls and loading only.
+Application source is not translated into JavaScript.
+
+The initial product is a browser execution target for NeLisp, not an
+ECMAScript-compatible engine. Existing JavaScript source and npm packages do
+not become executable NeLisp programs. Libraries require explicit bindings or
+ports. TypeScript-equivalent static checking is a separate workstream;
+boundary schemas and capability checks are required here.
+
+This design assumes a small JavaScript host adapter is acceptable. Eliminating
+even that adapter in an ordinary browser is not a delivered capability. A
+custom browser embedding would be a separate architecture and distribution
+project. Full Emacs editor compatibility is also outside this browser target.
+
+* 2. Existing evidence and reuse boundary
+
+The source manifest is =../../tools/ai/web-platform-design-sources.json=.
+It pins inspected files, including local modifications, to their hashes.
+Source inspection establishes implementation locations, not passing runtime
+behavior. No Wasm or browser test was rerun for this design task.
+
+| Existing artifact | What it supplies | What it does not establish |
+|-------------------+------------------+----------------------------|
+| =lisp/nelisp-asm-wasm.el=, =lisp/nelisp-wasm-write.el= | Wasm instructions and module writer, including memory, imports, tables, and data-related sections | A general browser Lisp runtime |
+| =Makefile= target =wasm-smoke= | Four named compile/run fixtures are currently declared | A fresh pass, full builtin coverage, or DOM support |
+| =site/dtw/=, =tools/wasm-dtw-p4b/site-smoke.mjs= | Canvas/key host adapter, Wasm application assets, and a simulated-browser harness | General forms, accessibility, arbitrary Elisp, or a real-browser test in this session |
+| Docs 164, its P3/P4 blueprints, and Doc 192 | Memory/import proofs and known generic-call/runtime gaps | Current passing status for every historical claim |
+| =lisp/nelisp-heap-image.el= | Object-ID graph serialization; identity-preserving image design | A Wasm boot loader or compatibility with native process images |
+| =src/nelisp-eval.el= and runtime providers | Semantic reference and reusable Lisp implementations to investigate | That host-dependent code can already compile and run under Wasm |
+| =src/nelisp-allocator.el=, =src/nelisp-gc-inner.el= | Allocator/collector contracts and source implementations | Correct browser reclamation; these files also describe modeled heaps |
+| =packages/nelisp-http/= | HTTP client helpers and dependency information | An HTTP server |
+
+Doc 192 records that a general symbol-dispatching Wasm builtin bridge was
+unbuilt in its measured scope. Before implementation, remeasure that boundary
+against the actual compiler and selected runtime. Do not turn historical
+limitations into assertions about today's binary without a probe.
+
+* 3. Architecture decision
+
+#+begin_example
+Build time                         Browser
+
+NeLisp application .el             index.html + CSS
+  -> pinned macro expansion             |
+  -> validated application image        +-- fixed host.mjs
+                  |                     |     load / DOM / fetch / timers
+                  +--> app.nlwb         |             |
+                                        +-- versioned browser ABI
+Shared NeLisp runtime source                          |
+  -> Wasm target adapters                       core.wasm
+  -> existing AOT/Wasm backend                  NeLisp evaluator
+  -> core.wasm                                 values / heap / GC
+                                                task scheduler
+                                                    |
+                                                app.nlwb
+#+end_example
+
+Start by executing an application image in an AOT-compiled NeLisp evaluator.
+This separates the difficult runtime port from compiling every ordinary Lisp
+application into native Wasm immediately. The first executable image may hold
+expanded forms with lexical metadata and source spans; a bytecode image is
+optional after that path works. Neither native heap addresses nor unverified
+GNU .elc loading are assumed to be portable.
+
+Use shared runtime logic and narrow target adapters. Do not create a second
+JavaScript implementation of Lisp builtins. Audit each runtime dependency as
+Wasm core, compiled Lisp provider, browser host operation, or unsupported.
+Unsupported operations produce a build diagnostic or a named Lisp condition;
+they must not silently return nil or delegate evaluation to JavaScript.
+
+The existing AOT dialect is an implementation substrate for compiling the
+runtime. It must not become a mandatory reduced language for application
+authors. Admit ordinary Lisp features only after differential acceptance.
+
+Initial code ownership, all proposed:
+
+| Area | Responsibility |
+|------+----------------|
+| Existing Wasm compiler/writer | Correct runtime code generation, imports, layout, and linking |
+| =packages/nelisp-web-runtime/= | Wasm boot, image loader, shared runtime target adapters, event pump |
+| =packages/nelisp-web-browser/= | NeLisp browser API and fixed host adapter |
+| =packages/nelisp-web-build/= | Capability analysis, image/asset packaging, debug metadata |
+| =packages/nelisp-web-test/= | Semantic corpus, host conformance, browser end-to-end fixtures |
+
+Do not modify the shared checkout's existing compiler/runtime edits as part of
+this design task. Implementation requires an isolated worktree and review of
+the current baseline first.
+
+* 4. Lisp semantics and capability contract
+
+The reference is GNU Emacs Lisp plus existing documented NeLisp extensions.
+The initial browser profile is an explicit supported subset, not a promise
+that every Emacs package runs. The build manifest lists required features;
+boot rejects an incompatible core before any application initialization.
+
+| Contract | Required behavior / admission rule |
+|----------+------------------------------------|
+| Truth | Only nil is false; 0 and the empty string remain true. nil is also the empty list. |
+| Names | Separate function and value cells; lexical closures retain their environment. |
+| Binding | Preserve let versus let* initialization and mutation. Reject a dynamic-binding dependency until its actual semantics are supported. |
+| Values | Symbols, cons identity/mutation, vectors, strings, integers, and floats remain Lisp values in Wasm, not JS values. |
+| Numbers | Publish the exact integer range in the core profile; no silent i64 overflow or conversion through JS Number. Larger integers raise a documented condition until bignums are admitted. |
+| Strings | Distinguish Lisp character indexing from UTF-8 transport and JS UTF-16. Admit the published Unicode text profile; byte-string and unsupported character operations are explicit capabilities. |
+| Equality | Preserve eq versus equal for supported value families. Do not infer string identity from interning. |
+| Errors | condition-case, signal, catch/throw, and unwind-protect require real cleanup and condition behavior before admission. |
+| Dynamic code | First release loads build-produced images only. Runtime eval/load, advice, and live redefinition are unavailable until separately implemented and tested. |
+| OS/editor APIs | Files, processes, raw syscalls, editor buffers, and arbitrary native FFI are absent unless an explicit browser implementation is provided. |
+
+Compile-time macros may run in a pinned trusted build environment. Record
+macro providers and versions; package discovery must not execute arbitrary
+application forms. Build-time access does not make an API available at runtime.
+The host GNU Emacs may be a declared bootstrap tool, but may never stand in
+for the browser runtime in acceptance evidence.
+
+* 5. Wasm value, memory, and boot contract
+
+Use wasm32 linear-memory offsets for memory addressing. Keep the existing
+runtime's logical 64-bit value lanes where the layout proof permits it;
+retain tags and box contracts rather than inventing new ones casually.
+Offset narrowing must reject out-of-range addresses before =i32.wrap_i64=.
+Lisp closures use a Wasm function-table index plus an environment reference,
+never a native code pointer. The layout proof is an implementation prerequisite.
+
+The image format =NLWB v1= contains versioned symbol/string/object/function
+sections, roots, lexical metadata, source spans, required features, and export
+identifiers. Reuse the existing object-ID graph codec where its semantics fit.
+Allocate placeholders and then fill references; preserve cycles and sharing.
+Native runtime images are not accepted merely because their suffix matches.
+Validate section bounds, counts, reference IDs, target profile, and limits.
+Image initialization is explicit after validation; it is not source replay
+hidden inside deserialization.
+
+Wasm supplies memory allocation, not Lisp GC. Port a real collector and root
+protocol before claiming long-lived readiness. A nonmoving mark/sweep first
+implementation is acceptable if its native/source contract is shared and
+reviewed. Roots include evaluator frames, captured environments, image roots,
+pending tasks, and registered callbacks. Trace the actual Wasm heap, not a host
+simulation. A bump-only demo cannot satisfy the application release gate.
+
+Set an explicit memory maximum and allocation budget per build. Allocation
+failure yields a named out-of-memory fault using preallocated diagnostic space;
+it does not recurse into further allocations. JS typed-array views must be
+recreated after memory.grow. Published GC pause/heap claims require measurement;
+no latency or speed claim is made by this document.
+
+Boot order: validate manifest and host ABI -> instantiate core -> validate and
+materialize image -> install explicit browser capabilities -> register entry
+point -> run the event pump. Any mismatch fails before application side effects.
+
+* 6. Browser ABI v1
+
+Do not expose raw Lisp pointers to JavaScript. Use checked byte ranges for
+transport and generation-tagged opaque handles for browser objects.
+
+Proposed exports:
+
+| Export | Contract |
+|--------+----------|
+| =nlweb_abi_version() -> i32= | Identify the browser ABI before boot. |
+| =nlweb_ingress_ptr() -> i32=, =nlweb_ingress_capacity() -> i32= | Describe the bounded input region before image boot; neither call executes application code. |
+| =nlweb_boot(ptr, len) -> status= | Validate and load one application image. |
+| =nlweb_deliver(ptr, len) -> status= | Copy/enqueue an event or completion; do not execute application callbacks here. |
+| =nlweb_pump(fuel) -> state= | Run bounded work; return idle, more, application-error, or fatal-runtime-fault. |
+| =nlweb_dispose() -> status= | Cancel tasks, release callback roots, and issue host cleanup. |
+| =nlweb_diagnostic_ptr() -> i32=, =nlweb_diagnostic_len() -> i32= | Read a bounded preallocated diagnostic record after an error; copy it before the next state-changing call. |
+
+Export the Wasm memory explicitly. The input buffer is a bounded runtime-owned
+ingress region described by the two ingress exports; the host must not guess
+an allocation address. Image/event size must fit this region or fail before
+copying; a later chunked-loader protocol needs its own version. Versioned imports
+provide =host_dispatch(in_ptr, in_len, out_ptr, out_capacity) -> i32= and a
+monotonic clock. A nonnegative return is the reply byte count; a negative return
+is a versioned transport error. Input and output regions must be disjoint and
+bounds checked without integer wraparound. Synchronous operations return typed
+reply records, including created object handles; dependent commands wait for
+those replies. Asynchronous operations return a request token immediately and
+deliver their final result as a later event. Host exceptions become bounded
+error replies rather than escaping unpredictably through Wasm. Command and
+event records specify opcode, request ID, generation, payload length, and
+payload. Unknown required opcodes are errors; optional capabilities negotiate.
+
+V1 supports text DOM nodes, elements, allowed attributes, event subscriptions,
+timers, fetch, cancellation, and resource release. UTF-8 is the wire encoding;
+typed records distinguish nil, false, null, strings, and numeric fields.
+Schemas validate exact integer ranges before conversion to a DOM number or
+JSON. JSON is an external data format, not a generic Lisp object graph codec.
+
+The host must be a small transport/API adapter: no application branching,
+Lisp evaluator, Lisp builtin symbol dispatcher, or business state. The same
+adapter bytes must work for two different applications using the same ABI and
+capability set. An optional third-party JS binding is explicit, separately
+versioned, and outside the zero-application-JS acceptance claim.
+
+* 7. Events, asynchronous tasks, and resource lifetime
+
+Keep the first runtime on the browser main thread with cooperative scheduling.
+The evaluator consumes fuel at bounded steps, including loop backedges. AOT
+kernels must instrument fuel or run in a separate worker; an unbounded native
+call cannot be advertised as interruptible. Main-thread synchronous network IO
+is unavailable. GC pauses also need a measured bound for the release fixture.
+
+Browser callbacks normalize event data and enqueue it. Schedule a later pump
+as a browser task, not an unbounded microtask chain, so rendering and input
+receive turns; coordinate visual updates with the browser frame scheduler.
+Never reenter application evaluation from inside =host_dispatch=. A subscription
+declares synchronous policies such as prevent-default before registration, so
+the adapter can apply them during the original browser event. APIs requiring
+user activation need an explicit synchronous host policy; queuing alone is
+not assumed to preserve the necessary browser context.
+
+NeLisp task records hold continuation roots, completion status, cancellation
+token, and owner generation. Success, rejection, cancellation, and timeout are
+distinct. A late completion for a disposed owner is discarded. Dynamic bindings
+must not leak across tasks; supporting them requires an explicit task-local
+environment, not a JS-global variable.
+
+Browser objects have generation-tagged handles. JS stores handles and callback
+IDs, not closures capturing Lisp heap pointers. Wasm keeps callback closures in
+an explicit rooted registry. Disposing a view unregisters listeners, aborts
+requests, releases DOM handles, and then drops Wasm roots. Repeated mount and
+dispose must return both registries to baseline. Do not rely on browser GC or
+FinalizationRegistry to collect cross-runtime ownership cycles.
+
+* 8. Application API and DOM behavior
+
+All names below are proposed interfaces, not currently callable APIs:
+
+- =nlweb-dom-create=, =nlweb-dom-append=, =nlweb-dom-set-text=,
+  =nlweb-dom-set-attribute=, =nlweb-dom-listen=, =nlweb-dispose=.
+- =nlweb-fetch= returns a NeLisp task; =nlweb-task-then= and
+  =nlweb-task-cancel= manage completion and lifetime.
+- =nlweb-schema-encode= / =nlweb-schema-decode= validate external data.
+
+Start with direct DOM bindings and an owner scope, not a new UI framework.
+Standard HTML controls preserve labels, keyboard operation, focus, selection,
+and IME composition. Text APIs use text nodes; HTML insertion is not a default
+escape hatch. A declarative view/reconciliation layer can be added after the
+direct-DOM acceptance app works. Canvas remains an optional renderer, not the
+default replacement for forms or accessibility.
+
+The first application example is a counter with a captured Lisp variable,
+a normal button, a text node, and a registered NeLisp callback. The second is
+a Japanese text form that validates input, sends a request, displays success
+or an error, and cancels cleanly when its owner is removed.
+
+* 9. Server boundary and packaging
+
+The browser target must not depend on a new HTTP server being finished first.
+Use a bounded same-origin test endpoint for the initial fetch fixture, with
+its implementation and limitations disclosed. Backend logic may later run in
+native NeLisp behind an existing HTTP server's one-shot/stdio adapter, or in a
+separately verified long-lived service. The existing HTTP client package is not
+the server implementation. A full-stack claim requires a native-NeLisp backend
+fixture and real browser acceptance, not just a mock response.
+
+An RPC layer, if added, uses an explicit endpoint registry and data schemas.
+Do not dispatch arbitrary user-provided Lisp symbols. Authentication,
+authorization, CSRF protection, size limits, and mutation retry policy belong
+to the exposed endpoint contract. A timeout does not prove a server mutation
+failed; retries require an explicit idempotency policy.
+
+Static output: =index.html=, CSS, a manifest, fixed =host.mjs=, =core.wasm=,
+and =app.nlwb=. The manifest pins ABI, target features, hashes, limits, and
+entry point. Secret/server-only code is excluded by explicit module manifests;
+dynamic reachability analysis alone is not proof it was excluded. Repeated
+builds of identical pinned inputs should produce identical artifacts.
+
+Production needs no JS eval, Function constructor, or runtime JS code generation.
+Declare the CSP required to instantiate Wasm on the tested browser set, using
+=wasm-unsafe-eval= only where required rather than general =unsafe-eval=.
+Development code/image loading is a separate opt-in channel. First development
+reload resets the application; preserving a live heap requires a later versioned
+migration design. No local-note or remote-model service is enabled by this target.
+
+* 10. Diagnostics and developer workflow
+
+Every image function/form carries file, line, and column metadata. Conditions
+report a NeLisp call chain, cause, request ID, runtime generation, and core/image
+hashes. Wasm faults remain distinguishable from Lisp conditions. Provide a
+NeLisp-aware inspector/REPL transport over an explicit development channel.
+Native JS source maps alone do not map an interpreted application image back
+to its Lisp frames; a Lisp debug table is mandatory.
+
+Proposed application commands integrate with the existing project CLI after
+checking its extension points: web build, web serve, web test, and web inspect.
+These are requirements, not existing CLI flags. Publish build/start time,
+download size, pump duration, GC pauses, heap use, and adapter registry counts
+for each release fixture. Optimizations require before/after measurements.
+
+* 11. Delivery stages and acceptance
+
+All gates below are planned, not executed. Each stage needs a negative control
+and its own end-to-end evidence; a successful compile never substitutes for
+execution. Optional platform features do not become implicitly supported.
+
+| Stage | Required result | End-to-end exit | Negative control |
+|-------+-----------------+-----------------+------------------|
+| W0 Runtime feasibility | Pin the baseline; classify runtime dependencies; prove layout/import handling and a general builtin path | A Wasm core evaluates an image using cons/car, a string operation, and a captured closure, without a JS builtin dispatcher | Remove the Wasm builtin provider; the fixture must fail rather than run in JS |
+| W1 Semantic runtime | Add admitted forms, value families, image boot, conditions, and actual heap reclamation | The same semantic corpus runs on GNU Emacs, native NeLisp, and browser Wasm with an explicit comparison policy and no hidden skips | Mutate nil truth, integer overflow handling, or an unwind path; the corresponding check fails |
+| W2 Browser execution | Implement ABI, bounded pump, DOM handles, events, and disposal | A real-browser counter runs wholly from its NeLisp image; replacing its image with a second app leaves host.mjs byte-identical | Stale handle and reentrant delivery fixtures are rejected; an infinite Lisp loop still yields |
+| W3 Practical application | Add text/IME, tasks, fetch, codecs, and diagnostic spans | Japanese form: input -> Lisp validation -> HTTP -> Lisp completion -> DOM success/error; disposal cancels and releases resources | Delayed completion after disposal cannot update the DOM; malformed data reaches the error view |
+| W4 Release target | Package reproducibly; negotiate features; set CSP; measure lifecycle and browser behavior | Fresh static deployment passes the app suite on the declared Chromium/Firefox/WebKit versions under the release CSP | Tampered/ABI-mismatched image fails before initialization; repeated mount/dispose exposes a deliberately retained listener |
+
+W0 is the first implementation slice. Do not start a large UI framework or
+claim JavaScript replacement is delivered before the runtime feasibility exit.
+If the shared evaluator cannot be lowered, record the first unsupported source
+operation and fix that bounded compiler/runtime edge; do not quietly swap in
+a JavaScript evaluator or shrink the application into a numeric demo.
+
+Run build/tests under the workspace memory cap and heavy-job guard. Confirm
+that the browser harness can start within those constraints; do not raise the
+cap to hide engine reservation or runtime failures. A mock-DOM or Node proof
+is useful focused evidence, but cannot satisfy a real-browser exit criterion.
+
+* 12. Primary references and open decisions
+
+- [[https://webassembly.org/docs/web/][WebAssembly web embedding]]: browser API integration and host boundary.
+- [[https://www.gnu.org/software/emacs/manual/html_node/elisp/nil-and-t][GNU Emacs nil and t]] and [[https://www.gnu.org/s/emacs/manual/html_node/elisp/Function-Cells.html][function cells]]: semantic reference.
+- [[https://www.w3.org/TR/CSP3/][CSP Level 3]]: release code-loading policy; confirm actual browser behavior in W4.
+- [[https://tc39.es/ecma262/multipage/structured-data.html#sec-json.stringify][ECMAScript JSON serialization]]: external serialization is not a Lisp heap codec.
+- [[file:164-wasm-backend.org][Doc 164]], [[file:164-wasm-backend-p3-blueprint.org][P3]], [[file:164-wasm-backend-p4-blueprint.org][P4]], and [[file:192-wasm-backend-maturation.org][Doc 192]]: repository-specific predecessors.
+
+Open decisions requiring W0/W1 evidence: the exact shared evaluator entry and
+provider set; which existing collector is truly targetable; admitted numeric
+and string profiles; Wasm exception lowering; and first stable supported
+browser versions. None is assumed resolved merely by choosing WebAssembly.

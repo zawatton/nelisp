@@ -442,6 +442,22 @@ only `alist' changed in this segment."
     (should (= (gethash "a" parsed) 1))
     (should (= (gethash "b" parsed) 2))))
 
+(ert-deftest nelisp-json-parse-long-literal-span ()
+  (let ((text (make-string 4096 ?x)))
+    (should (equal (nelisp-json-parse-string (concat "\"" text "\"")) text))))
+
+(ert-deftest nelisp-json-parse-long-span-rejects-every-control ()
+  (dotimes (char 32)
+    (nelisp-json-test--should-parse-error
+     (concat "\"" (make-string 300 ?x) (string char) "\""))))
+
+(ert-deftest nelisp-json-parse-long-span-escape-and-multibyte-fallback ()
+  (let ((prefix (make-string 300 ?x)))
+    (should (equal (nelisp-json-parse-string (concat "\"" prefix "\\n日本語\""))
+                   (concat prefix "\n日本語")))
+    (should (equal (nelisp-json-parse-string (concat "\"" prefix "日本語\""))
+                   (concat prefix "日本語")))))
+
 (provide 'nelisp-json-test)
 
 ;;; nelisp-json-test.el ends here

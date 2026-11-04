@@ -1,0 +1,51 @@
+#+TITLE: Doc 240 — saved application images
+#+NOTE: Created 2026-11-02 before any implementation (user: start the startup work as a new document; direction: save the compiled application). Workers: Sonnet. Primary metric: whole-process wall time per row versus GNU 31.1; kernel ns/step and BENCH-CHECK results must not change. Pending criteria are not done.
+
+* S0 Measurement
+
+** S0.1 The per-process cost of the ON-lane driver is broken down on build28 (bare start, wrapper, pins, producer load, preflight, install parts, registration, main)
+evidence: tools/ai/sbcl-impl-evidence/a240-s0/README.txt sha256=9679b1cc51ad4f980e4361799a8f5a6ac4a371904dcdb74cb5829bcfe53f3589
+
+** S0.2 Feasibility: dumping the heap after preparation and cold-loading it gives identical results and unchanged kernel speed (probe-app-image.sh on build28)
+evidence: tools/ai/sbcl-impl-evidence/a240-s0/probe-b28.txt sha256=badf505180dd6afee68d1ef42c7c532b3331bd8d8770997848bed1dc6f4172d7
+
+* S1 Application image producer
+
+** S1.1 Structural: the producer writes an image and manifest only after every preparation check passes; the heap carries the application-image record; tests fail on the pre-change tree and a failed check leaves no image (negative control)
+#+NOTE: Structural check with three negative controls (corrupted pin, redefined name, foreign row); fails if tools/nelisp-application-image.el is absent.
+cmd: bash tools/ai/sbcl-impl-evidence/a240-s1/check-s11.sh
+
+** S1.2 E2E: on build28, images produced for all nine S8 rows cold-load and print the same BENCH-CHECK result as the full driver at the campaign low and high N
+#+NOTE: Nine rows, LOW and HIGH N, full driver vs cold image: BENCH-CHECK result must match; binary via STARTUP_BIN.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a240-s1/check-s12.sh
+
+* S2 Launch and trust
+
+** S2.1 Structural: the launcher refuses a dump whose sha256 differs from the manifest, a different binary, a missing record, and a redefined application name (one negative control each)
+#+NOTE: Structural check, negative controls: flipped image byte, edited manifest sha, other binary (two forms), missing record (two forms), redefined name (stale and updated main sha), unknown manifest key; fails if tools/nelisp-application-image-launch.py is absent.
+#+NOTE: 2026-11-02 (S3): the check now runs against both launchers (default launch.sh, then launch.py via LAUNCHER=); both must pass every control.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a240-s2/check-s21.sh && LAUNCHER=tools/nelisp-application-image-launch.py bash tools/ai/sbcl-impl-evidence/a240-s2/check-s21.sh
+
+** S2.2 E2E: through the new launcher (bwrap included) hash-get1024 whole-process median at N=16384 is at most 150 ms on build28, with kernel ns/step within 5% of the full driver
+#+NOTE: 7 alternating pairs, full lane-new vs launcher, hash-get1024 N=16384; needs no other nelisp-dynamic running; table in tools/ai/sbcl-impl-evidence/a240-s2/s22-b28.txt. Bound 150 ms is not relaxed.
+#+NOTE: 2026-11-02 (S3): cmd unchanged; the default launcher is now tools/nelisp-application-image-launch.sh (LAUNCHER= selects launch.py) and images are produced with NELISP_FX_DUMP=all.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a240-s2/check-s22.sh
+
+* S3 Residual fixed cost
+
+** S3.1 E2E: hash-get1024 whole-process median at N=16384 is at most 1.10 x GNU 31.1 measured in the same paired run, through the app launcher used by S2.1 (all S2.1 controls pass against it), with kernel ns/step within 5% of the full lane
+#+NOTE: 2026-11-02 wording made concrete before S3 work (same denominator): S2's breakdown showed 50 ms of python start and hashing in the launcher and about 50 ms of first-call compilation of the driver helpers in the child (bench-input 26, validate 20, check-input 12 ms; second calls 2.3/0.9/3.2 ms). A probe with NELISP_FX_DUMP=all at production cut the in-image time from 90.9 to 31.7 ms.
+#+NOTE: 2026-11-02 cmd: paired 9 rotating rounds GNU 31.1 / full lane-new / default app launcher (launch.sh), hash-get1024 N=16384; also requires helpers carried compiled (cold-load probe), results(app)=results(lane), wall <= 1.10 x GNU median, kernel within 5%; table in tools/ai/sbcl-impl-evidence/a240-s3/s31-b28.txt. The S2.1 controls run against launch.sh in the S2.1 criterion.
+#+NOTE: 2026-11-02 quiet-machine rule (user decision): after S4 the check failed under load from other sessions (app 74.9/77.9 ms, 1.17x/1.22x GNU; it had passed at 1.026x when quiet). check-s31.sh now samples load1 (<= 0.5) and busy CPUs over 2 s (<= 0.3) before timing (waits up to 300 s) and after timing; a busy sample makes the run INVALID (exit 1, never PASS). Bound unchanged. First quiet run: app 65.1 ms, 1.0756x GNU, kernel ratio 0.986.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a240-s3/check-s31.sh
+
+* S4 Wall time
+
+** S4.1 E2E: the supplementary app-lane campaign (frozen rows, N, warmups, reps, CPU pinning and GNU engine; only the NeLisp launcher changed) runs once at the end and passes evaluate_app.py (integrity, equal results, kernel new/old within 5% or long-interval evidence for allocating rows)
+#+NOTE: 2026-11-02 wording corrected after the run (same denominator): the frozen evaluate.py judges a kernel improvement of >= 10% new vs old, which does not apply to a launcher change, so the campaign has its own evaluator. Campaign: tools/ai/sbcl-impl-evidence/s8-app-lane (campaign-app.sh, evaluate_app.py); engine old is the full ON lane of the same binary, new is the Doc 240 bash launcher on per-row images produced before timing.
+#+NOTE: 2026-11-02 run-b28 (build28, --cpu 1, reps 7): all rows equal results; kernel new/old 0.993-1.006 except the three allocating rows (string-slice16 0.790, string-concat16 0.808, vector-allocate64 0.925, faster). Paired long-interval reruns (2M..4M, 3 reps, run-b28/cadence/) give 0.957, 0.986, 1.041: GC cadence, not kernel change. evaluate_app.py was changed before passing: the 1.15 one-sided cadence allowance and the silent supplement-file fallback were removed; an allocating row outside +-5% now passes only with long-interval evidence inside +-5% (self-test 14 cases). Whole process new/gnu: 0.30-0.94 in eight rows, hash-get1024 1.32 (93.9 vs 71.0 ms; fixed cost about 75-80 ms vs GNU 57 ms under CPU pinning).
+cmd: cd tools/ai/sbcl-impl-evidence/s8-app-lane && python3 -I evaluate_app.py x --self-test > /dev/null && python3 -I evaluate_app.py run-b28 > /dev/null

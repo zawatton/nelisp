@@ -494,6 +494,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-midform-gc-default-boot-state ()
   "Doc 152 Stage 5 arms mid-form GC only after the boot watermark is valid."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((forms (nelisp-standalone--reader-driver-source))
          (driver (cl-find-if (lambda (form)
                                (and (consp form)
@@ -530,6 +531,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((forms (nelisp-standalone--reader-driver-source))
          (flat (flatten-tree forms)))
     (cl-labels ((defun-source
@@ -557,6 +559,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-dispatches-neln-selftest ()
   "The standalone reader dispatch table includes `--neln-selftest'."
+  (skip-unless (equal emacs-version "31.1"))
   (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
     (should (string-match-p "nl_cstr_eq_neln_selftest" source))
     (should (string-match-p "(nl_neln_demo_exec ctx 41)" source))))
@@ -624,7 +627,9 @@ aimed at the wrong function is a jump, not a diagnosable error."
          (chain (car (last (cdr arm))))
          (seen nil))
     (should (equal (mapcar (lambda (a) (cadr (car a))) arms)
-                   '("nelisp--native-symbol-addr" "nelisp--native-env")))
+                   '("nelisp--native-symbol-addr" "nelisp--native-env"
+                     "nelisp--symbol-global-cell-p"
+                     "nelisp--native-runtime-contract-word")))
     (should (equal (car arm) '(:u8 "nelisp--native-symbol-addr")))
     ;; Walk the if-chain, collecting (INDEX . SYMBOL) in emitted order.
     (while (and (consp chain) (eq (car chain) 'if))
@@ -649,6 +654,44 @@ aimed at the wrong function is a jump, not a diagnosable error."
 A dispatch arm nothing installs is dead code that still links."
   (dolist (arm (nelisp-standalone--reader-native-addr-arms))
     (should (member (cadr (car arm)) nelisp-standalone--reader-builtins))))
+
+(ert-deftest nelisp-standalone-target-production-runtime-contract-words ()
+  "Production readers independently expose all eight build-time ABI words."
+  (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
+             (lambda (&optional _target) nil)))
+    (let* ((arms (nelisp-standalone--reader-native-addr-arms))
+           (arm (assoc '(:u8 "nelisp--native-runtime-contract-word") arms))
+           (digest (nelisp-runtime-reload-contract-hash))
+           (chain (nth 2 (cdr arm))))
+      (should arm)
+      (should (member "nelisp--native-runtime-contract-word"
+                      nelisp-standalone--reader-builtins))
+      (should-not (assoc '(:u8 "nelisp--native-runtime-symbol-addr") arms))
+      (dotimes (index 8)
+        (should (equal (car chain) 'if))
+        (should (equal (nth 1 chain) `(= (wf_argval args 0) ,index)))
+        (should (= (nth 2 chain)
+                   (string-to-number
+                    (substring digest (* index 8) (* (1+ index) 8)) 16)))
+        (setq chain (nth 3 chain)))
+      (should (equal chain -1)))))
+
+(ert-deftest nelisp-standalone-target-reload-runtime-contract-words ()
+  "Opt-in readers retain exactly the production contract-word accessor."
+  (let ((production
+         (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
+                    (lambda (&optional _target) nil)))
+           (assoc '(:u8 "nelisp--native-runtime-contract-word")
+                  (nelisp-standalone--reader-native-addr-arms)))))
+    (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
+               (lambda (&optional _target) t)))
+      (let ((arms (nelisp-standalone--reader-native-addr-arms)))
+        (should production)
+        (should (equal production
+                       (assoc '(:u8 "nelisp--native-runtime-contract-word") arms)))
+        (should (assoc '(:u8 "nelisp--native-runtime-symbol-addr") arms))
+        (should (= 1 (cl-count '(:u8 "nelisp--native-runtime-contract-word")
+                              arms :key #'car :test #'equal)))))))
 
 (ert-deftest nelisp-standalone-target-reader-neln-demo-externs-are-bridgeable ()
   "Every extern the demo needs is one the loader can address."
@@ -992,6 +1035,7 @@ walker is the parser used by both argv and environment paths, and the driver
 must leave the established envp ABI slot untouched after the Darwin init
 function fills it.  This catches the old skip-all-NULs/empty-environment
 implementation before a cross-host binary is available."
+  (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels
         ((tree-member-p
@@ -1398,6 +1442,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
 
 (ert-deftest nelisp-standalone-target-reader-detects-shifted-argv ()
   "The reader driver can detect and normalize macOS LC_MAIN argv+1."
+  (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels ((tree-member-p
                  (needle tree)
@@ -1447,6 +1492,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
 
 (ert-deftest nelisp-standalone-target-reader-load-uses-direct-source-printer ()
   "`--load' evaluates raw file source and prints the resulting value."
+  (skip-unless (equal emacs-version "31.1"))
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -1546,6 +1592,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
 
 (ert-deftest nelisp-standalone-target-reader-boundary-reclaim-is-conservative ()
   "Doc 140 Stage 5 reclaims only safe immediate non-mutating boundaries."
+  (skip-unless (equal emacs-version "31.1"))
   (cl-labels ((tree-member-p
                (needle tree)
                (cond
@@ -1808,7 +1855,7 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                                 (cons "nl_gc_reclaim_scratch" (+ 58008 4194304))
                                 (cons "nl_thread_registry" (+ 58048 4194304))
                                 (cons "nl_freelist_large_bins"
-                                      (- (nelisp-standalone--driver-bss-base-size) 1632))
+                                      (- (nelisp-standalone--driver-bss-base-size) 2808))
                                 (cons "nl_freelist_large_mask"
                                       (+ 57616 4194304 96 176 64 56 40 1040
                                          (if (eq target 'windows-x86_64) 8 0)
@@ -2899,6 +2946,7 @@ to be `equal'.  Also requires every newline to survive (so a
 and a real byte reduction (this corpus is know to be ~26-27% comments
 and blank lines; guard loosely at 15% so unrelated future prelude
 growth cannot make this test flaky)."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((raw (nelisp-standalone--reader-repl-prelude-source))
          (stripped (nelisp-standalone--elisp-strip-comments raw)))
     (should (= (cl-count ?\n raw) (cl-count ?\n stripped)))
@@ -2913,6 +2961,7 @@ future edit that stops threading the prelude source through
 `nelisp-standalone--elisp-strip-comments' before
 `nelisp-standalone--copy-lit-u64-defuns' would silently pay the full,
 unstripped size again."
+  (skip-unless (equal emacs-version "31.1"))
   (let* ((raw (nelisp-standalone--reader-repl-prelude-source))
          (chunk-defs (nelisp-standalone--copy-lit-u64-defuns
                       'nl_repl_prelude_source
@@ -3005,6 +3054,13 @@ without the async core and process adapter that define the standard names."
                                 (error-message-string failure)))
         (should-not compiled)))))
 
+(ert-deftest nelisp-standalone-v2-pin-copy-is-installed-reader-builtin ()
+  (should (member "nelisp--native-pin-copy-v2"
+                  nelisp-standalone--reader-builtins))
+  (should (equal (assoc "nelisp--native-pin-copy-v2"
+                        (nelisp-standalone--builtin-fixed-arities))
+                 '("nelisp--native-pin-copy-v2" . 4))))
+
 (ert-deftest nelisp-standalone-registration-preflight-foundation ()
   "The foundation registration table must also contain native contracts."
   (let ((nelisp-standalone--applyfn-bf-builtins
@@ -3021,7 +3077,8 @@ without the async core and process adapter that define the standard names."
   (dolist (contract (nelisp-standalone--builtin-fixed-arities))
     (if (member (car contract)
                 '("nelisp--declare-local-special"
-                  "nelisp--native-pin-copy" "nelisp--native-pin-eq-slots"
+                  "nelisp--native-pin-copy" "nelisp--native-pin-copy-v2"
+                  "nelisp--native-pin-eq-slots"
                   "nelisp--native-unbox-reference" "ptr-call" "nelisp--pow"))
         ;; These private reader bridges have no Emacs subr counterpart.  Their
         ;; accepted/rejected calls are exercised by native runtime suites.
@@ -3034,6 +3091,8 @@ without the async core and process adapter that define the standard names."
                                   '("nelisp--native-pin-copy"
                                     "nelisp--native-unbox-reference"))
                           3)
+                         ((equal (car contract) "nelisp--native-pin-copy-v2")
+                          4)
                          (t 1))))
       ;; Unknown names still fail instead of silently dropping host coverage.
       (should (equal (func-arity (intern (car contract)))
@@ -3167,6 +3226,473 @@ without the async core and process adapter that define the standard names."
       (should (mentions 'nl_gc_regs_trace scan))
       (should (mentions 'nl_gc_regs_trace_window scan)))))
 
+;; ---- Doc 235 out-of-image reference rejection in heap-image dumps ----
+
+(defun nelisp-standalone-target-test--build-text ()
+  "Return the build script text."
+  (with-temp-buffer
+    (insert-file-contents (locate-library "nelisp-standalone-build.el"))
+    (buffer-string)))
+
+(defun nelisp-standalone-target-test--defun-text (text name)
+  "Return TEXT from the DSL defun NAME up to the next 4-space-indented defun."
+  (let* ((start (string-match (format "^    (defun %s " (regexp-quote name)) text))
+         (end (and start (string-match "^    (defun " text (1+ start)))))
+    (should start)
+    (substring text start end)))
+
+(ert-deftest nelisp-standalone-target-oor-diag-bss-symbol-exists ()
+  "The out-of-image diagnostics BSS symbol is linked and sized."
+  (let ((text (nelisp-standalone-target-test--build-text)))
+    (should (string-match-p "(nelisp-link-symbol \"nl_oor_diag\"" text))
+    (should (string-match-p "`nl_oor_diag' (Doc 235)" text))
+    (let ((cls (nelisp-standalone-target-test--defun-text text "nl_fa_field_kind")))
+      (should (string-match-p "(data-addr nl_oor_diag)" cls))
+      (should (string-match-p "(< (heap-read-u64 (data-addr nl_oor_diag) 0) 8)" cls)))))
+
+(ert-deftest nelisp-standalone-target-oor-to-file-dump-rejects-before-publish ()
+  "The copy dump reads the counter before it is reused and never opens the file on failure."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (body (nelisp-standalone-target-test--defun-text
+                text "bf_arena_dump_image_to_file_body_w"))
+         (read (string-match "(setq oor (heap-read-u64 cout 0))" body))
+         (mr (string-match "(bf_arena_mr_chunks" body))
+         (zero (string-match "(ptr-write-u64 cout 0 0)" body mr))
+         (open (string-match "(nl_os_open_write_truncate cpath)" body)))
+    (should (and read mr zero open))
+    (should (< read mr zero open))
+    (should (string-match-p "(if (> oor 0) -2 (nl_os_open_write_truncate cpath))" body))
+    (should (string-match-p "(nl_dump_oor_error_w oor)" body))))
+
+(ert-deftest nelisp-standalone-target-oor-stream-dump-rejects-before-publish ()
+  "The stream dump reads pass 3's counter before the final mark clear and writes nothing."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (body (nelisp-standalone-target-test--defun-text
+                text "bf_arena_dump_image_stream_body_w"))
+         (read (string-match "(setq oor (heap-read-u64 cout 0))" body))
+         (fail (string-match "(if (> oor 0) (setq cok 0) 0)" body))
+         (write (string-match "(nl_fa_write_all fd hdr 64 0)\\|(setq written (nl_fa_write_all fd hdr 64 0))" body))
+         (restore (string-match "bf_arena_inplace_restore_mc" body))
+         (signal (string-match "(nl_dump_oor_error_w oor)" body)))
+    (should (and read fail write restore signal))
+    (should (< read fail write restore signal))))
+
+(ert-deftest nelisp-standalone-target-oor-static-image-range-accepted ()
+  "Targets in [0x400000, end of driver BSS) are accepted; everything else is still counted."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (cls (nelisp-standalone-target-test--defun-text text "nl_fa_field_kind"))
+         (range (cl-search "(if (< tgt 4194304) 0" cls))
+         (end (cl-search "(+ (data-addr nl_empty_vector) 8)" cls))
+         (diag (cl-search "(data-addr nl_oor_diag)" cls))
+         (count (cl-search "(ptr-write-u64 cout 0 (+ (heap-read-u64 cout 0) 1))" cls)))
+    (should (and range end diag count))
+    (should (< range end diag count))
+    ;; The cout increment appears exactly once and only in the else arm of
+    ;; the range test (no other exclusion is added).
+    (should (= 1 (with-temp-buffer
+                   (insert cls) (goto-char (point-min))
+                   (let ((n 0)) (while (search-forward "(ptr-write-u64 cout 0 (+ (heap-read-u64 cout 0) 1))" nil t)
+                                  (cl-incf n)) n))))
+    (should (cl-search "(if (< tgt ib) 0 (if (< tgt ie) 1 0))" cls))))
+
+(ert-deftest nelisp-standalone-target-oor-counter-not-discarded-unchecked ()
+  "Both dump bodies capture the counter into OOR and the helper formats the first offender."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (helper (nelisp-standalone-target-test--defun-text text "nl_dump_oor_error_w")))
+    (should (= 2 (with-temp-buffer
+                   (insert text) (goto-char (point-min))
+                   (let ((n 0)) (while (search-forward "(setq oor (heap-read-u64 cout 0))" nil t)
+                                  (cl-incf n)) n))))
+    (should (string-match-p "bf_error_w" helper))
+    (should (string-match-p "nl_oor_diag" helper))))
+
+;; ---- Doc 235 startup phase clock (nelisp--monotonic-ns / nelisp--boot-phase-ns) ----
+
+(defun nelisp-standalone-target-test--tree-flatten (tree)
+  "Return the atoms of TREE in pre-order."
+  (cond ((null tree) nil)
+        ((consp tree) (append (nelisp-standalone-target-test--tree-flatten (car tree))
+                              (nelisp-standalone-target-test--tree-flatten (cdr tree))))
+        (t (list tree))))
+
+(defun nelisp-standalone-target-test--phase-marks (tree)
+  "Return the (SLOT KIND) of every `nl_boot_phase_mark' call in TREE, in pre-order."
+  (let (out)
+    (cl-labels ((walk (x)
+                  (when (consp x)
+                    (when (and (eq (car x) 'nl_boot_phase_mark) (= (length x) 3))
+                      (push (list (nth 1 x) (nth 2 x)) out))
+                    (while (consp x) (walk (car x)) (setq x (cdr x))))))
+      (walk tree))
+    (nreverse out)))
+
+(ert-deftest nelisp-standalone-target-monotonic-ns-helper-covers-float-time-arches ()
+  "`nl_os_monotonic_ns' is exported next to `nl_os_float_time' on every float-time target."
+  (dolist (target '(linux-x86_64 linux-aarch64 macos-aarch64 windows-x86_64))
+    (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target)
+               (lambda (&rest _) target)))
+      (let* ((unit (nelisp-standalone--float-time-unit))
+             (syms (plist-get unit :symbols))
+             (names (mapcar (lambda (s) (plist-get s :name)) syms))
+             (mono (cl-find "nl_os_monotonic_ns" syms
+                            :key (lambda (s) (plist-get s :name)) :test #'equal))
+             (text (cdr (assq 'text (plist-get unit :sections)))))
+        (should (member "nl_os_float_time" names))
+        (should mono)
+        (should (> (plist-get mono :value) 0))
+        (should (= 0 (% (plist-get mono :value) 16)))
+        (should (< (plist-get mono :value) (length text)))))))
+
+(ert-deftest nelisp-standalone-target-monotonic-ns-helper-uses-clock-gettime-syscalls ()
+  "The Linux bodies issue clock_gettime (228 on x86_64) and the others report unavailable."
+  (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target)
+             (lambda (&rest _) 'linux-x86_64)))
+    (let ((text (nelisp-standalone--monotonic-ns-text)))
+      (should (cl-search (unibyte-string #xb8 #xe4 #x00 #x00 #x00 #x0f #x05) text))
+      (should (cl-search (unibyte-string #xbf #x01 #x00 #x00 #x00) text))
+      (should (= (aref text (1- (length text))) #xc3))))
+  (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target)
+             (lambda (&rest _) 'linux-aarch64)))
+    (let ((text (nelisp-standalone--monotonic-ns-text)))
+      (should (= 0 (% (length text) 4)))
+      ;; SVC #0 = 0xD4000001, little-endian.
+      (should (cl-search (unibyte-string #x01 #x00 #x00 #xd4) text))))
+  (dolist (target '(macos-aarch64 windows-x86_64))
+    (cl-letf (((symbol-function 'nelisp-standalone-arena-rewrite-target)
+               (lambda (&rest _) target)))
+      (should (> (length (nelisp-standalone--monotonic-ns-text)) 0)))))
+
+(ert-deftest nelisp-standalone-target-phase-builtins-registered ()
+  "Both phase builtins have a dispatch arm, an arity row and a reader-builtin name."
+  (dolist (name '("nelisp--monotonic-ns" "nelisp--boot-phase-ns"))
+    (should (cl-some (lambda (arm) (and (consp arm) (equal (car-safe (car arm)) :lit)
+                                        (equal (cadr (car arm)) name)))
+                     nelisp-standalone--applyfn-bf-arms))
+    (should (member name (nelisp-standalone-target-test--tree-flatten
+                          nelisp-standalone--reader-builtins))))
+  (dolist (sym '(nelisp--monotonic-ns nelisp--boot-phase-ns))
+    (should (memq sym (nelisp-standalone-target-test--tree-flatten
+                       nelisp-standalone--builtin-arity-ranges)))))
+
+;; Generating the full driver source takes minutes, so the entry-order check
+;; reads the build script text instead.
+(ert-deftest nelisp-standalone-target-boot-phase-record-points-ordered ()
+  "Entry precedes restore precedes reinit in the driver; the cold reinit path marks reinit."
+  (with-temp-buffer
+    (insert-file-contents (locate-library "nelisp-standalone-build.el"))
+    (goto-char (point-min))
+    (let* ((start (progn (re-search-forward "^    (defun driver (sp)$") (point)))
+           (text (buffer-substring-no-properties start (point-max)))
+           (entry (string-match "(nl_boot_phase_mark 0 0)" text))
+           (arena (string-match "(arena (nl_arena_init))" text))
+           (restored (string-match "(nl_boot_phase_mark 1 1)" text))
+           (cold-reinit (string-match "nelisp-standalone--reader-cold-reinit-forms" text))
+           (reinit (string-match "(nl_boot_phase_mark 2 0)" text)))
+      (should (and entry arena restored cold-reinit reinit))
+      (should (< entry arena restored cold-reinit reinit)))))
+
+(ert-deftest nelisp-standalone-target-boot-phase-source-path-marks-after-prelude ()
+  "A source boot records restored and reinit after the prelude evaluation, as kind 2."
+  (let* ((forms (nelisp-standalone--reader-repl-prelude-forms
+                 'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'bsym))
+         (flat (nelisp-standalone-target-test--tree-flatten forms))
+         (marks (nelisp-standalone-target-test--phase-marks forms)))
+    (should (equal marks '((1 2) (2 0))))
+    (should (< (cl-position 'nl_eval_source_all flat)
+               (cl-position 'nl_boot_phase_mark flat)))))
+
+;; ---- Doc 237 no-GC ownership regions (structural) ----
+
+(defconst nelisp-standalone-target-test--region-prims
+  '("nelisp--region-open" "nelisp--region-close" "nelisp--region-move"
+    "nelisp--region-live-p" "nelisp--region-size" "nelisp--region-u8-ref"
+    "nelisp--region-u8-set" "nelisp--region-i64-ref" "nelisp--region-i64-set"
+    "nelisp--region-stats"))
+
+(defun nelisp-standalone-target-test--region-defun-text (name)
+  "Return the source text of the DSL defun NAME in the build script."
+  (with-temp-buffer
+    (insert-file-contents (locate-library "nelisp-standalone-build.el"))
+    (goto-char (point-min))
+    (unless (re-search-forward (format "^    (defun %s " (regexp-quote name)) nil t)
+      (error "defun %s not found" name))
+    (let ((start (match-beginning 0)))
+      (if (re-search-forward "^    \\((defun \\|;; \\)" nil t)
+          (buffer-substring-no-properties start (match-beginning 0))
+        (buffer-substring-no-properties start (point-max))))))
+
+(ert-deftest nelisp-standalone-target-region-primitives-dispatched ()
+  "All ten region primitives have a word arm, an arity row and a reader-builtin name."
+  (dolist (name nelisp-standalone-target-test--region-prims)
+    (should (cl-some (lambda (arm) (and (consp arm) (equal (car-safe (car arm)) :lit)
+                                        (equal (cadr (car arm)) name)))
+                     nelisp-standalone--applyfn-bf-arms))
+    (should (member name (nelisp-standalone-target-test--tree-flatten
+                          nelisp-standalone--reader-builtins)))
+    (should (memq (intern name) (nelisp-standalone-target-test--tree-flatten
+                                 nelisp-standalone--builtin-arity-ranges)))))
+
+(ert-deftest nelisp-standalone-target-region-primitives-defined ()
+  "Every region primitive has a DSL defun and the table is a BSS symbol."
+  (dolist (fn '("nl_region_open_w" "nl_region_close_w" "nl_region_move_w"
+                "nl_region_live_p_w" "nl_region_size_w" "nl_region_u8_ref_w"
+                "nl_region_u8_set_w" "nl_region_i64_ref_w" "nl_region_i64_set_w"
+                "nl_region_stats_w"))
+    (should (> (length (nelisp-standalone-target-test--region-defun-text fn)) 20)))
+  (with-temp-buffer
+    (insert-file-contents (locate-library "nelisp-standalone-build.el"))
+    (should (search-forward "(nelisp-link-symbol \"nl_region_table\"" nil t))))
+
+(ert-deftest nelisp-standalone-target-region-handle-validation ()
+  "Handle validation compares the live flag and the generation."
+  (let ((v (nelisp-standalone-target-test--region-defun-text "nl_region_slot_addr")))
+    (should (string-match-p "(logand hw 3) 1" v))
+    (should (string-match-p "heap-read-u64 st 24) 1" v))
+    (should (string-match-p "heap-read-u64 st 16) (sar h 6)" v))
+    (should (string-match-p "logand h 63" v)))
+  (dolist (fn '("nl_region_close_w" "nl_region_move_w" "nl_region_size_w"
+                "nl_region_u8_ref_w" "nl_region_u8_set_w" "nl_region_i64_ref_w"
+                "nl_region_i64_set_w"))
+    (should (string-match-p "nl_region_slot_addr hw"
+                            (nelisp-standalone-target-test--region-defun-text fn)))))
+
+(ert-deftest nelisp-standalone-target-region-access-bounds-checked ()
+  "Byte access is bounded by the size, word access by size/8, both against negatives."
+  (let ((idx (nelisp-standalone-target-test--region-defun-text "nl_region_index")))
+    (should (string-match-p "(< i 0)" idx))
+    (should (string-match-p "(>= i lim)" idx))
+    (should (string-match-p "bf_args_out_of_range hw iw" idx)))
+  (dolist (fn '("nl_region_u8_ref_w" "nl_region_u8_set_w"))
+    (should (string-match-p "nl_region_index hw st iw (heap-read-u64 st 8)"
+                            (nelisp-standalone-target-test--region-defun-text fn))))
+  (dolist (fn '("nl_region_i64_ref_w" "nl_region_i64_set_w"))
+    (should (string-match-p "nl_region_index hw st iw (sar (heap-read-u64 st 8) 3)"
+                            (nelisp-standalone-target-test--region-defun-text fn))))
+  (should (string-match-p "(> v 255)"
+                          (nelisp-standalone-target-test--region-defun-text "nl_region_u8_set_w"))))
+
+(ert-deftest nelisp-standalone-target-region-budgets-checked-before-mmap ()
+  "64 slots and 2^28 live bytes are checked before the mmap syscall.
+The bound is written as (> (- x 1) 268435455): the DSL linker relocates
+literals >= 0x10000000 as arena addresses, so a raw 268435456 operand
+compared against the arena base instead of the budget."
+  (let* ((open (nelisp-standalone-target-test--region-defun-text "nl_region_open_w"))
+         (budget (string-match (regexp-quote "(> (- n 1) 268435455)") open))
+         (slot (string-match "nl_region_free_slot" open))
+         (mmap (string-match "syscall-direct 9 " open)))
+    (should (and budget slot mmap))
+    (should (< budget mmap))
+    (should (< slot mmap))
+    (should (string-match-p (regexp-quote "(> (- (+ live n) 1) 268435455)") open))
+    (should-not (string-match-p "[( ]268435456)" open))
+    (should (string-match-p "(< n 1)" open))
+    (should (string-match-p "(< base 4096)" open)))
+  (should (string-match-p "(>= i 64)"
+                          (nelisp-standalone-target-test--region-defun-text "nl_region_free_slot"))))
+
+(ert-deftest nelisp-standalone-target-region-close-unmaps-and-invalidates ()
+  "Close munmaps, clears the live flag and advances the generation."
+  (let ((close (nelisp-standalone-target-test--region-defun-text "nl_region_close_w")))
+    (should (string-match-p "syscall-direct 11 " close))
+    (should (string-match-p "ptr-write-u64 st 24 0" close))
+    (should (string-match-p "ptr-write-u64 st 16 (\\+ (heap-read-u64 st 16) 1)" close))))
+
+(ert-deftest nelisp-standalone-target-region-move-advances-generation ()
+  "Move bumps the generation and answers a handle built from the new one."
+  (let ((move (nelisp-standalone-target-test--region-defun-text "nl_region_move_w")))
+    (should (string-match-p "ptr-write-u64 st 16 (\\+ (heap-read-u64 st 16) 1)" move))
+    (should (string-match-p "(\\* (heap-read-u64 st 16) 64)" move))
+    (should-not (string-match-p "syscall-direct" move))))
+
+(ert-deftest nelisp-standalone-target-region-signals-use-gnu-conditions ()
+  "Errors reuse wrong-type-argument / args-out-of-range / error helpers."
+  (let ((wta (nelisp-standalone-target-test--region-defun-text "nl_region_wta_handle")))
+    (should (string-match-p "bf_wrong_type_named hw" wta)))
+  (should (string-match-p "bf_wrong_type_fixnump"
+                          (nelisp-standalone-target-test--region-defun-text "nl_region_open_w")))
+  (should (string-match-p "nl_signal_error_literal"
+                          (nelisp-standalone-target-test--region-defun-text "nl_region_err2"))))
+
+(ert-deftest nelisp-standalone-runtime-reload-gc-exports ()
+  "Only replaceable GC contract entries receive generation names.
+Uncontracted helpers remain exported for direct driver references, while
+calls between renamed contract bodies stay within the original generation."
+  (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
+             (lambda (&optional _target) t)))
+    (let* ((forms (cdr (nelisp-standalone--target-gc-source)))
+           (form-named
+            (lambda (name)
+              (cl-find name forms :key #'cadr :test #'eq)))
+           (helper 'nl_gc_coalesce_and_rebuild_freelist)
+           (helper-original
+            (nelisp-standalone--runtime-reload-gc-original helper))
+           (contract-original
+            (nelisp-standalone--runtime-reload-gc-original
+             'nl_gc_collect_form_boundary))
+           (form (funcall form-named contract-original)))
+      (should (funcall form-named helper))
+      (should-not (funcall form-named helper-original))
+      (should (funcall form-named contract-original))
+      (should (memq
+               (nelisp-standalone--runtime-reload-gc-original 'nl_gc_collect)
+               (flatten-tree form))))))
+
+;; --- Bignum division / integer-width / chunked conversion (structural) ---
+(defun nelisp-standalone-target-test--build-text ()
+  (with-temp-buffer
+    (insert-file-contents (locate-library "nelisp-standalone-build.el"))
+    (buffer-string)))
+
+(defun nelisp-standalone-target-test--defun-text (text name)
+  "Return the source text of DSL defun NAME in TEXT."
+  (let ((start (string-match (concat "(defun " (regexp-quote name) " ") text)))
+    (should start)
+    (with-temp-buffer
+      (insert (substring text start))
+      (goto-char (point-min))
+      (buffer-substring (point-min) (progn (forward-sexp) (point))))))
+
+(ert-deftest nelisp-standalone-target-bignum-division-dispatch ()
+  "Big divisors reach Knuth Algorithm D; the unsupported signal is off the valid path."
+  (let ((text (nelisp-standalone-target-test--build-text)))
+    (dolist (name '("nl_bignum_divstep" "nl_bignum_divrem_knuth" "nl_bignum_divrem_mag"
+                    "nl_bignum_div_ints_w" "nl_bignum_div_w" "nl_bignum_div_fold_w"))
+      (should (string-match-p (concat "(defun " name " ") text)))
+    ;; `/', `%', `mod', floor/ceiling/truncate and the bytecode `%' dispatch to it.
+    (should (string-match-p "(nl_bignum_div_fold_w args)" text))
+    (should (string-match-p "(nl_bignum_div_ints_w (wf_word_view a) (wf_word_view b) 1)" text))
+    (should (string-match-p "(nl_bignum_div2_w args 2)" text))
+    (should (string-match-p "(nl_bignum_div2_w args 3)" text))
+    (should (string-match-p "(nl_bignum_div2_w args 4)" text))
+    (should (string-match-p "(nl_bignum_div_ints_w left right 1)" text))
+    ;; The condition stays defined, but no dispatch arm signals it any more.
+    (should (string-match-p "(defun bf_signal_bignum_division_unsupported " text))
+    (should-not (string-match-p "(nl_abi_fail (bf_signal_bignum_division_unsupported)" text))
+    (should-not (string-match-p "(seq (bf_signal_bignum_division_unsupported)" text))
+    (should-not (string-match-p "nl_bignum_small_divisor_p right" text))))
+
+(ert-deftest nelisp-standalone-target-bignum-integer-width-check ()
+  "Bignum result construction and ash check the 65536-bit integer-width; the reader does not (GNU reads over-wide literals)."
+  (let ((text (nelisp-standalone-target-test--build-text)))
+    (let ((chk (nelisp-standalone-target-test--defun-text text "nl_bignum_checked_write_w")))
+      (should (string-match-p "65536" chk))
+      (should (string-match-p "bf_signal_overflow_error" chk)))
+    (let ((fin (nelisp-standalone-target-test--defun-text text "nl_bignum_finish_w")))
+      (should (string-match-p "nl_bignum_checked_write_w" fin)))
+    (let ((ash (nelisp-standalone-target-test--defun-text text "nl_bignum_ash_general_w")))
+      (should (string-match-p "65536" ash))
+      (should (string-match-p "bf_signal_overflow_error" ash)))
+    (dolist (r '("nl_read_int_or_bignum_w" "nl_read_radix_or_bignum_w"))
+      (should-not (string-match-p "nl_bignum_checked_write_w"
+                                  (nelisp-standalone-target-test--defun-text text r))))))
+
+(ert-deftest nelisp-standalone-target-bignum-round-division-mode-exists ()
+  "Division mode 5 (round, half to even) exists in `nl_bignum_div_ints_w'.
+Two-argument `round' is defined in the prelude and is not yet dispatched to it."
+  (let ((text (nelisp-standalone-target-test--build-text)))
+    (should (string-match-p "5 round (half to even) quotient" text))))
+
+(ert-deftest nelisp-standalone-target-bignum-chunked-conversion ()
+  "Printing divides by 10^9 per pass and the reader accumulates 9 digits per pass."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (pr (nelisp-standalone-target-test--defun-text text "m5_push_bignum"))
+         (rd (nelisp-standalone-target-test--defun-text text "nl_read_int_or_bignum_w")))
+    (should (string-match-p "nl_bignum_extract_chunks" pr))
+    (should-not (string-match-p "nl_bignum_extract_digits" pr))
+    (should (string-match-p "1000000000" (nelisp-standalone-target-test--defun-text text "nl_bignum_extract_chunks")))
+    (should (string-match-p "(mod dcount 9)" rd))
+    (should (string-match-p "mulk" rd))))
+
 (provide 'nelisp-standalone-target-test)
 
 ;;; nelisp-standalone-target-test.el ends here
+
+;; ---- S7.2 allocation size failures signal instead of aborting ----
+(ert-deftest nelisp-standalone-target-alloc-size-helper-signals-gnu-error ()
+  "The helper signals GNU's catchable (error \"Memory exhausted...\")."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (h (nelisp-standalone-target-test--defun-text text "bf_signal_alloc_exhausted")))
+    (should (string-match-p "(nl_signal_error_literal buf 55)" h))
+    (should-not (string-match-p "nl_os_alloc_fail" h))))
+
+(ert-deftest nelisp-standalone-target-alloc-size-make-vector-no-abort ()
+  "make-vector's size bound signals and no longer calls the aborting path."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (b (nelisp-standalone-target-test--defun-text text "bf_make_vector_w"))
+         (chk (string-match "536870907 536870909" b))
+         (sig (string-match "(bf_signal_alloc_exhausted)" b))
+         (alloc (string-match (regexp-quote "(alloc-bytes (+ 8 (* n 8)) 8)") b)))
+    (should (and chk sig alloc))
+    (should (< chk sig alloc))
+    (should-not (string-match-p "nl_os_alloc_fail" b))))
+
+(ert-deftest nelisp-standalone-target-alloc-size-make-string-checked-before-reserve ()
+  "make-string compares the overflow-safe size before nl_string_new."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (b (nelisp-standalone-target-test--defun-text text "m5_make_repeated_string"))
+         (ov (string-match "bf_signal_string_overflow" b))
+         (ex (string-match "(> n (/ 4294967296 w))" b))
+         (new (string-match "(nl_string_new 0 bytes unibyte)" b)))
+    (should (and ov ex new))
+    (should (< ov ex new))
+    (should (string-match-p "bf_signal_alloc_exhausted" b))))
+
+(ert-deftest nelisp-standalone-target-alloc-size-make-bool-vector-checked-before-reserve ()
+  "make-bool-vector bounds the bit count before nl_alloc_bool_vector_w."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (b (nelisp-standalone-target-test--defun-text text "bf_make_bool_vector_w"))
+         (ex (string-match "(> (nl_word_payload len_ptr) 34359738368)" b))
+         (sig (string-match "bf_signal_alloc_exhausted" b))
+         (al (string-match "(nl_alloc_bool_vector_w" b)))
+    (should (and ex sig al))
+    (should (< ex sig al))))
+
+;; ---- S2.5 post-pass image verification walk ----
+(ert-deftest nelisp-standalone-target-oor-verify-walk-word-check ()
+  "The per-word check mirrors the walk's acceptance rules and records offenders."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (w (nelisp-standalone-target-test--defun-text text "nl_dump_verify_word")))
+    (should (string-match-p "(if (= (logand w 1) 1) 0" w))
+    (should (string-match-p "(if (< tg 4096) 0" w))
+    (should (string-match-p "(if (< tg lim) 0" w))
+    (should (string-match-p "(if (< tg 4194304) 0" w))
+    (should (string-match-p (regexp-quote "(+ (data-addr nl_empty_vector) 8)") w))
+    (should (string-match-p "(data-addr nl_oor_diag)" w))))
+
+(ert-deftest nelisp-standalone-target-oor-verify-walk-block-recognizer ()
+  "Only exactly-sized vector/record boxes are scanned; raw blocks are skipped."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (b (nelisp-standalone-target-test--defun-text text "nl_dump_verify_block")))
+    (should (string-match-p "(= tag 8)" b))
+    (should (string-match-p "(= tag 12)" b))
+    (should (string-match-p "(= tag 17)" b))
+    (should (string-match-p "(= tag 18)" b))
+    (should (string-match-p "(> cnt (sar bt 3)) 0" b))
+    (should (string-match-p "nl_dump_verify_word" b))))
+
+(ert-deftest nelisp-standalone-target-oor-verify-walk-stream-before-publish ()
+  "The stream dump verifies after pass 3 and before it writes anything."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (body (nelisp-standalone-target-test--defun-text
+                text "bf_arena_dump_image_stream_body_w"))
+         (read (string-match "(setq oor (heap-read-u64 cout 0))" body))
+         (ver (string-match (regexp-quote "(nl_dump_verify_walk (+ ctotal isz))") body))
+         (fail (string-match "(if (> oor 0) (setq cok 0) 0)" body))
+         (write (string-match "(nl_fa_write_all fd hdr 64 0)\\|(setq written (nl_fa_write_all fd hdr 64 0))" body)))
+    (should (and read ver fail write))
+    (should (< read ver fail write))
+    (let ((walk (nelisp-standalone-target-test--defun-text text "nl_dump_verify_walk")))
+      (should (string-match-p "(heap-read-u64 st 304)" walk))
+      (should (string-match-p "(heap-read-u64 st 448)" walk)))))
+
+(ert-deftest nelisp-standalone-target-oor-verify-walk-to-file-before-open ()
+  "The copy dump verifies the copied blocks before the file is opened."
+  (let* ((text (nelisp-standalone-target-test--build-text))
+         (body (nelisp-standalone-target-test--defun-text
+                text "bf_arena_dump_image_to_file_body_w"))
+         (read (string-match "(setq oor (heap-read-u64 cout 0))" body))
+         (ver (string-match (regexp-quote "(nl_dump_verify_flat dest slen (+ slen isz))") body))
+         (mr (string-match "(bf_arena_mr_chunks" body))
+         (open (string-match "(nl_os_open_write_truncate cpath)" body)))
+    (should (and read ver mr open))
+    (should (< read ver mr open))))

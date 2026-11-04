@@ -1,0 +1,19 @@
+#+TITLE: Doc 213 W0 browser runtime feasibility
+#+NOTE: Implementation criteria are separate from the completed design-deliverable ledger. No browser readiness is inferred from a compile-only result.
+
+* S1 General Wasm runtime feasibility
+
+** S1.1 Baseline and the first unsupported runtime dependency are reproducible
+evidence: target/web-runtime-w0/baseline-qualified.json sha256=6e6a9a89264bcd6caf949421d713dce28daad69e1d4b3b51357514d19b959a81
+
+** S1.2 The bounded runtime change passes focused checks and an effective negative control
+#+NOTE: Parent executed shift399 and ERT36, native agreement on384 numeric plus3 order probes, two semantic mutations and four malformed-corpus controls. Prior atomic31, bitwise24, imported/catch5, sexp-tag20 and dedicated buffer21 remain passing. Namespace16 collisions and fatal-warning line241 are baseline-identical and red outside the focused claim.
+evidence: target/wasm-runtime-shift/coordinator-review.json sha256=3c931a19cb9619d32bb752c5cdcd5a1ff9b3cd12071e523f0e130a01f39ebb72
+#+NOTE: Added genuine four-function rootstack execution to the bounded-change evidence: actual Wasm47, ERT8 and a behavioral broken-clear control. The three defined W0 criteria and the separate image-execution failure are unchanged.
+evidence: target/wasm-rootstack/coordinator-review.json sha256=f05038f264ce71bac9a7dbff25254f7b3754eea1db716a1422fa573288328517
+#+NOTE: The imported-operand regression now checks the repaired IR3/61 prepass. The criterion count remains three; genuine application-image execution remains a separate failing criterion.
+cmd: ulimit -v 8388608; ../../bin/heavy-run.sh emacs -Q --batch -L lisp -L src --eval '(setq load-prefer-newer t)' --eval '(progn (require (quote nelisp-aot-compiler)) (nelisp-aot-compile-to-object (quote (defun web-w0-import-tag () (sexp-tag (extern-call web_w0_tag_word)))) "target/wasm-sexp-tag/import-control.wasm" :arch (quote wasm32) :format (quote wasm)))' > target/wasm-sexp-tag/import-control.log 2>&1
+
+** S1.3 A Wasm core evaluates a portable image using cons, strings, and a captured closure
+#+NOTE: The diagnostic fails closed and reports no Wasm application execution. Completing this criterion requires implementing actual image execution and its builtin-provider negative control, not returning success from compile-only diagnostics.
+cmd: ulimit -v 8388608; python3 tools/ai/web-runtime-w0-probe.py --source-first-only

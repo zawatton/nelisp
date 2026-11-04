@@ -1,0 +1,558 @@
+{
+  "condition_definitions": {
+    "callsite-declarations": [
+      "nelisp-standalone--callsite-enabled-p",
+      "nelisp-standalone--callsite-declared-entries"
+    ],
+    "driver-generation": [
+      "nelisp-standalone--driver-source"
+    ],
+    "dynamic-arena-target": [
+      "nelisp-standalone--target-uses-dynamic-arena-base-p"
+    ],
+    "rooted-startup-driver-generation": [
+      "nelisp-standalone--rooted-protocol-preflight",
+      "nelisp-standalone--rooted-protocol-startup-src"
+    ],
+    "runtime-reload": [
+      "nelisp-standalone--runtime-reload-enabled-p"
+    ],
+    "target": [
+      "nelisp-standalone-arena-rewrite-target",
+      "nelisp-standalone--target"
+    ]
+  },
+  "definitions": {
+    "nelisp-standalone--applyfn-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "622d1caab1cee28fe38c4ead6018f0b53831efe5727d35080e48fa1e554a435f",
+      "line": 21365,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--arena-base-slot-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "f1dec6e7d54a417af749e8e25f0718c10b903f3759c11978e8a475cd3637e5ae",
+      "line": 582,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--callsite-declared-entries": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "7f6b6cd6a5fdadb5d97250e7ae28076d0e0379826fa79b85e4f2c06ab8b341ab",
+      "line": 2984,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--callsite-enabled-p": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "757acd5c56549d16daba898217acaa3500a652345ff44dbf9a5b075921fd1063",
+      "line": 2996,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--callsite-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "eceda10fccb7f56675f29af30224adbcb383a7a5cff15e1bd7dc34595dd2ee35",
+      "line": 3138,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--catch-throw-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "01dc3bcaa5194b75c330daaec143f9ed51eceec96a879181678be7519e870118",
+      "line": 23095,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--driver-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "7a135dc8b284e7e986506401811280b4256d327f4172d8a34a0d004b674c7609",
+      "line": 25297,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--eval-bt-extra-unit-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "507f5e7738d69f06fbc91ef157912fd1a359bf14f3c180a1facffe99e53eda9d",
+      "line": 25469,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--fileio-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "a391e69f2c1e56571cf7a9c4f18cd9475110accf01e7703e9751a888ca252b84",
+      "line": 23053,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--float-time-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "5c032760ee12bd5f89a6524ea11651a9b1b3951f1065f614680f209ac543fc9e",
+      "line": 26017,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--inject-epoch-bump": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "fd82f548bce743e69c71cf1ee7fa8f067ff3bf4f3d2d69281195a45bbf673c02",
+      "line": 37687,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-autoload-lookups": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "9fe599194aa86bda6af232bd8b9d14734b55603fcd7efca8ed41962f7314e079",
+      "line": 37609,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-binding-kinds": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "2b40bf4fc6d3d56f4dec8347f2c3436a8adef9d6791259668bf3f933471ac7fe",
+      "line": 36918,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-combiner-apply": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "43ae321f49172890d6812f51b96e6eae44c892e4b87eedcac64a3bd43bca7649",
+      "line": 37460,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-combiner-cons-full": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "b56c779a840afd13202586bff693265864c417fce5dc00946375e3414dc9db61",
+      "line": 24598,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-combiner-cons-mxcache": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "efd3115716fd8ea4b3575a66f9163bb6f154a74e2614137a285ae585d45b469a",
+      "line": 24753,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-env-leaves-bind-rest": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "3e7c17334c2963565f4a8eaae7f260f6a8424b0bcbea2f2b2849e57e4d432d53",
+      "line": 37069,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-eval-inner": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "38f68b1254968c59f183d9182b05030ba82e1e4a561f214d8dcb82cec3bfb0c3",
+      "line": 37209,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-eval-inner-mxcache": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "5f4aa2e9dcfca7248cd15bb4a2027ae0936a0d3835d25b18950b8fdc188e2776",
+      "line": 37256,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--patch-sf-cc": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "d63b7018ef3b98eb102fdcfdffb46cfae32eb8722497a43714b4b0ab6f2036ac",
+      "line": 37648,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-boundary-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "db1fedd6a7df2d95be589356be49325182a3db73377ac08a32dc2db430e0921b",
+      "line": 28132,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-capture-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "dfa49fb2db3e5d9e38be9f561c5761d28b7be84e8e702e6b00f3cb94aba0990a",
+      "line": 36732,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-driver-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "12832e63ed9738dad4146839ea09115b3f6fe59b40f2730b0aeb7e8fd641b539",
+      "line": 34184,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-driver-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "fd368af90aedcf04988ea62f186c4d5493e8dc3407b6a12b5d42acaf3ed40bb5",
+      "line": 25621,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-errstub-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "5f5f664f78a5d49230cce031952367ad2d3a392a6cde676071620796a87f7a17",
+      "line": 36697,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-eval-source-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "8ea6cf3ffac85197752e65f7ecc46a9a3aa46cfd45396f0d2a2441b91371a06f",
+      "line": 28522,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-extra-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "18715356118fa48450a10eef6b8286706098d99ced57aa7c99bc99556fac6848",
+      "line": 36972,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-extra-unit-epoch": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "41714b2685ccdb4f987dae8fc0ed204ffff19c21fd9af03afd0bf69715e3223e",
+      "line": 37708,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-float-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "284f0cc82aefb321a2cbbe180964ead24151b1bc97b7c753ffc1f94167dfee30",
+      "line": 25852,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-neln-demo-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "4066039bf4461e6cbbdb2444c153ce5768f52706afcc1451a1f6e8e409f6863e",
+      "line": 30903,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--reader-units": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "8f9e969fc8b0eaab527d604c27ad974467767b30cdb2f733163a6dfe33a2b3b2",
+      "line": 37720,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--rooted-protocol-preflight": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "d532f5238d0a00068665856f3dc3d3f80b9b3e53e77af72c49c4bd76ecb42b5a",
+      "line": 27681,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--rooted-protocol-startup-src": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "ad6a5d6fb9ab02618f5ab9e70fde85b17e600f52ef231a378922dc188e886b21",
+      "line": 27755,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--runtime-reload-enabled-p": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "7ae85696de119eb14f0b41e87b585512e0c72723f90b42df9e94b59b62698762",
+      "line": 2645,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--target": {
+      "file_sha256": "539e12b598e04258252732b28ce43539010ed1dfaa351a82f3e71698f976448f",
+      "form_sha256": "3ec69fbe420067758ab4f94d826959f237aa859adef23279923607906ebabf1e",
+      "line": 26,
+      "path": "lisp/nelisp-standalone-arena-rewrite.el"
+    },
+    "nelisp-standalone--target-arena-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "632c93c08c9335264315c627c779d9cbabe53fafaac155a44e604b24d43a97f0",
+      "line": 2730,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--target-gc-source": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "5ca6c3c7748be2d9c2dca98bb8b087865c3f9ef8297e64e247b3d53218580e4a",
+      "line": 2835,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--target-start-unit": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "4aae1efe8d576aada980b925070b5a6f0dc611c8c19eb0c6c2188724e2978513",
+      "line": 25271,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--target-uses-dynamic-arena-base-p": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "91953d1b35210a04360a4eab022da69f164ec38d00cec11ed0f522739ec79e86",
+      "line": 1276,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone--unit-for": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "97b78278de86a8c30065fdbf4605bcfbd4507974de9fbb1900c142e5c5beb1d4",
+      "line": 25594,
+      "path": "scripts/nelisp-standalone-build.el"
+    },
+    "nelisp-standalone-arena-rewrite-target": {
+      "file_sha256": "539e12b598e04258252732b28ce43539010ed1dfaa351a82f3e71698f976448f",
+      "form_sha256": "b1e3383a818132bec3d4ca3f4bdfd6656cd8b94795922f0ae09c33b1cc8f02ba",
+      "line": 115,
+      "path": "lisp/nelisp-standalone-arena-rewrite.el"
+    },
+    "nelisp-standalone-build": {
+      "file_sha256": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7",
+      "form_sha256": "fa99a2ace595df231f35592becf468baddb361e2358a6dc2fee91c3cae229d7f",
+      "line": 25665,
+      "path": "scripts/nelisp-standalone-build.el"
+    }
+  },
+  "profiles": {
+    "baked": {
+      "base": "nelisp-standalone--manifest",
+      "exclude_kinds": [],
+      "exclude_units": [],
+      "generated": [
+        {
+          "generators": [
+            "nelisp-standalone--arena-base-slot-unit"
+          ],
+          "output": "arena-base-slot unit",
+          "membership_condition": "dynamic-arena-target"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--eval-bt-extra-unit-source"
+          ],
+          "output": "bt-extra-eval.o"
+        }
+      ],
+      "overlay_transformers": [],
+      "overlays": [
+        "nelisp-standalone--eval-extra-manifest"
+      ],
+      "replacements": {},
+      "selector": "nelisp-standalone-build",
+      "membership_conditions": [
+        "dynamic-arena-target"
+      ],
+      "generation_dependencies": [
+        "target",
+        "runtime-reload",
+        "driver-generation"
+      ]
+    },
+    "reader": {
+      "base": "nelisp-standalone--manifest",
+      "exclude_kinds": [
+        ":start",
+        ":driver",
+        ":raw"
+      ],
+      "exclude_units": [
+        "arena.o",
+        "trap.o",
+        "reader-gc.o",
+        "applyfn.o",
+        "eval-inner.o",
+        "combiner-cons.o",
+        "combiner-apply.o"
+      ],
+      "generated": [
+        {
+          "generators": [
+            "nelisp-standalone--target-start-unit"
+          ],
+          "output": "start.o",
+          "generation_dependencies": [
+            "target"
+          ]
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-driver-unit",
+            "nelisp-standalone--reader-driver-source",
+            "nelisp-standalone--rooted-protocol-startup-src"
+          ],
+          "output": "driver.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-float-unit"
+          ],
+          "output": "reader-float.o",
+          "generation_dependencies": [
+            "target"
+          ]
+        },
+        {
+          "generators": [
+            "nelisp-standalone--float-time-unit"
+          ],
+          "output": "float-time.o",
+          "generation_dependencies": [
+            "target"
+          ]
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-capture-source"
+          ],
+          "output": "reader-capture.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-errstub-source"
+          ],
+          "output": "reader-errstub.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--fileio-source"
+          ],
+          "output": "reader-fileio.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--catch-throw-source"
+          ],
+          "output": "reader-catch-throw.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-boundary-source"
+          ],
+          "output": "reader-boundary.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-eval-source-source"
+          ],
+          "output": "reader-eval-source.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--reader-neln-demo-source"
+          ],
+          "output": "reader-neln-demo.o"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--target-gc-source"
+          ],
+          "output": "reader-gc.o",
+          "generation_dependencies": [
+            "runtime-reload"
+          ]
+        },
+        {
+          "generators": [
+            "nelisp-standalone--target-arena-source"
+          ],
+          "output": "arena.o",
+          "generation_dependencies": [
+            "target"
+          ]
+        },
+        {
+          "generators": [
+            "nelisp-standalone--arena-base-slot-unit"
+          ],
+          "output": "arena-base-slot unit",
+          "membership_condition": "dynamic-arena-target"
+        },
+        {
+          "generators": [
+            "nelisp-standalone--callsite-source"
+          ],
+          "output": "callsite.o",
+          "membership_condition": "callsite-declarations"
+        }
+      ],
+      "overlay_transformers": [
+        "nelisp-standalone--reader-extra-unit",
+        "nelisp-standalone--patch-binding-kinds"
+      ],
+      "overlays": [
+        "nelisp-standalone--reader-extra-manifest",
+        "nelisp-standalone--reader-real-sf-manifest"
+      ],
+      "replacements": {
+        "applyfn.o": {
+          "output": "applyfn-reader.o",
+          "transformers": [
+            "nelisp-standalone--applyfn-source",
+            "nelisp-standalone--patch-autoload-lookups"
+          ]
+        },
+        "combiner-apply.o": {
+          "output": "combiner-apply-fix.o",
+          "transformers": [
+            "nelisp-standalone--patch-combiner-apply",
+            "nelisp-standalone--patch-autoload-lookups"
+          ]
+        },
+        "combiner-cons.o": {
+          "output": "combiner-cons-mxcache.o",
+          "transformers": [
+            "nelisp-standalone--patch-combiner-cons-full",
+            "nelisp-standalone--patch-combiner-cons-mxcache",
+            "nelisp-standalone--patch-autoload-lookups"
+          ]
+        },
+        "eval-inner.o": {
+          "output": "eval-inner-mxcache.o",
+          "transformers": [
+            "nelisp-standalone--patch-eval-inner",
+            "nelisp-standalone--patch-eval-inner-mxcache"
+          ]
+        },
+        "frame-pop.o": {
+          "output": "frame-pop-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        },
+        "frame-push.o": {
+          "output": "frame-push-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        },
+        "mirror-prepend.o": {
+          "output": "mirror-prepend-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        },
+        "mirror-setfn.o": {
+          "output": "mirror-setfn-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        },
+        "sf-cc.o": {
+          "output": "sf-cc-flagclear.o",
+          "transformers": [
+            "nelisp-standalone--patch-sf-cc"
+          ]
+        },
+        "sf-env-set-value.o": {
+          "output": "sf-env-set-value-bind-rest-fix.o",
+          "transformers": [
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--patch-env-leaves-bind-rest"
+          ]
+        },
+        "sf-env-set-value2.o": {
+          "output": "sf-env-set-value2-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        },
+        "sf-frame-ensure-cap.o": {
+          "output": "sf-frame-ensure-cap-epoch.o",
+          "transformers": [
+            "nelisp-standalone--reader-extra-unit-epoch",
+            "nelisp-standalone--patch-binding-kinds",
+            "nelisp-standalone--inject-epoch-bump"
+          ]
+        }
+      },
+      "selector": "nelisp-standalone--reader-units",
+      "membership_conditions": [
+        "dynamic-arena-target",
+        "callsite-declarations"
+      ],
+      "generation_dependencies": [
+        "target",
+        "runtime-reload",
+        "rooted-startup-driver-generation"
+      ]
+    }
+  },
+  "schema": "nelisp-reviewed-native-profile-selectors-v1",
+  "sources": {
+    "lisp/nelisp-standalone-arena-rewrite.el": "539e12b598e04258252732b28ce43539010ed1dfaa351a82f3e71698f976448f",
+    "scripts/nelisp-standalone-build.el": "300bdfcfafd98cecf6fab54082f0129d90d3338458450c655ad031c7c197f5d7"
+  }
+}

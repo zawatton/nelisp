@@ -81,6 +81,38 @@
     (should (equal (nelisp-env--symbol-entry-plist e) '(prop1 a)))
     (should (nelisp-env--symbol-entry-constant-p e))))
 
+(ert-deftest nelisp-env/symbol-entry-alias-slot-is-private-and-independent ()
+  (let* ((target (make-symbol "alias-target"))
+         (entry (nelisp-env--make-symbol-entry 17 'fn '(p v) t target))
+         (copy (copy-sequence entry)))
+    (should (= (length entry) 6))
+    (should (eq (nelisp-env--symbol-entry-alias-target entry) target))
+    (should (eq (nelisp-env--symbol-entry-alias-target copy) target))
+    (should (= (nelisp-env--symbol-entry-value entry) 17))
+    (should (eq (nelisp-env--symbol-entry-function entry) 'fn))
+    (should (equal (nelisp-env--symbol-entry-plist entry) '(p v)))
+    (should (nelisp-env--symbol-entry-constant-p entry))
+    (should (eq (nelisp-env--symbol-entry-set-alias-target entry nil) nil))
+    (should-not (nelisp-env--symbol-entry-alias-target entry))
+    (should (eq (nelisp-env--symbol-entry-alias-target copy) target))))
+
+(ert-deftest nelisp-env/symbol-entry-legacy-alias-access-is-safe ()
+  (let ((legacy (nelisp--make-record 'symbol-entry 1 2 nil nil)))
+    (should-not (nelisp-env--symbol-entry-alias-target legacy))
+    (should-not (nelisp-env--symbol-entry-set-alias-target legacy 'target))
+    (should (= (length legacy) 5))))
+
+(ert-deftest nelisp-env/symbol-entry-alias-access-rejects-wrong-records ()
+  (dolist (bad (list nil (nelisp--make-record 'other 1 2 3 4 5)))
+    (should-error (nelisp-env--symbol-entry-alias-target bad)
+                  :type 'wrong-type-argument)
+    (should-error (nelisp-env--symbol-entry-set-alias-target bad 'target)
+                  :type 'wrong-type-argument))
+  (should-error
+   (nelisp-env--symbol-entry-set-alias-target
+    (nelisp-env--make-symbol-entry) "not-a-symbol")
+   :type 'wrong-type-argument))
+
 ;; ---- value cell ops ----
 
 (ert-deftest nelisp-env/set-value-then-lookup ()

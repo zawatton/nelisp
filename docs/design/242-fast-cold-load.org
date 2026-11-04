@@ -1,0 +1,80 @@
+#+TITLE: Fast cold-load: cut the loader's CPU work, then map the image
+#+DATE: 2026-11-02
+#+STATUS: SHIPPED in the uncommitted worktree (build33); ledger 100% of 5
+#+SCOPE: Make restoring a cold image (bare start and Doc 240 app images) cheaper without changing the restored heap
+#+LEDGER: tools/ai/cold-load-progress.org
+
+* Why this document exists
+
+The user asked for mmap-based cold-load after Doc 241 shrank the image to
+16.1 MB.  Measurement on build31 shows that reading the file is not the main
+cost of a bare start; the loader's own CPU work is.
+
+* Measured (evidence: tools/ai/sbcl-impl-evidence/a242-s0/bare-start-b31.txt)
+
+callgrind of =nelisp-dynamic --load nop.el= (106.8 M Ir in total, 99.6 M in
+the binary; self cost):
+
+| function             | Ir         | share |
+|----------------------+------------+-------|
+| nl_string_read64     | 35,589,639 | 33.3% |
+| nl_cold_load_arena   | 32,368,775 | 30.3% |
+| nl_cold_reloc_intern | 18,960,736 | 17.8% |
+| nl_cold_zero         |  5,162,436 |  4.8% |
+
+- The content is read by one =read()= of 15.1 MB in 2.55 ms (strace).
+- =nl_cold_reloc_intern= walks all 1,048,576 intern slots although 8,635
+  are occupied (the S1 sparse records already say which).
+- The loader's loops use =heap-read-u64=, which lowers to a String-aware
+  =nl_string_read64= call per load; the loader reads image words, never
+  String WORDs, so physical =ptr-read-u64= loads apply.
+
+* Design
+
+** D1 Loader CPU (first)
+- Relocate intern word1 only for the decoded records (fold it into the
+  record copy) and drop the full-table walk.
+- Use physical loads (=ptr-read-u64=) in the cold loader's loops (relocation
+  stream decode, record copy, validation), keeping every bounds check.
+- Zero only what must be zeroed (the table/trailer scratch), not more.
+
+** D2 Fixed arena base, then map instead of copy (user decision 2026-11-02)
+Measured on build32: relocation writes to 3,322 of 3,678 content pages
+(90.3%), so a MAP_PRIVATE mapping of a relocated image would copy almost
+every page on write and lose to the current read() (about 2.85 ms).  After S1,
+64.5% of a bare start (26.9 M Ir) is still relocation decode and apply
+(548,203 entries, about 49 Ir each).  The user chose to remove relocation:
+- Dump and load reserve the arena (and the intern region) at a fixed,
+  recorded base address; when the loader obtains the same base
+  (MAP_FIXED_NOREPLACE), no relocation runs and the content is mapped
+  MAP_PRIVATE from the file (page-aligned content offset; new format
+  version), so pages are copied only when written.
+- When the base is unavailable, the loader falls back to the current
+  read() + relocation path; both paths must restore the same heap.
+- Cost: the heap address is the same in every process (no ASLR for the heap
+  region).  This is recorded as an accepted trade-off of the design.
+
+* Constraints
+- Restored heap identical (the Doc 241 equality probe, verify22 equal to
+  build28, Doc 240 checks).
+- Loader validation is not weakened: every relocation and record is bounds
+  checked; malformed images are rejected loudly.
+- No Rust; generator changes only; no GC algorithm changes.
+- Timing on a quiet machine, paired against build31.
+
+* Results (2026-11-02)
+
+| build | change                                              | bare start Ir | bare start wall |
+|-------+-----------------------------------------------------+---------------+-----------------|
+| 31    | reference (Doc 241)                                 |   106,779,559 | 17.5 ms         |
+| 32    | S1 loader CPU (physical loads, record-only intern)  |    41,679,601 | 12.0 ms         |
+| 33    | S2 fixed base, pre-biased v5 image, mmap, no reloc  |    14,707,433 | 8.0-8.8 ms      |
+
+- Doc 240 launcher (hash-get1024, N=16384): build31 52.3 -> build33 42.8 ms.
+- Fallback (base unavailable or NELISP_COLD_FORCE_RELOCATE=1) reads and
+  relocates; it produces byte-identical semantic-diff and reader-probe output.
+- Integration fixes: link list for the new OS functions, open(2) syscall
+  number, and installing the entry-stack envp before the load so the loader
+  can read its switch.
+- Heap ASLR is lost on the fast path (accepted).  GC page discard cannot hit
+  the mapped range: the image is live-only and its objects are not swept.

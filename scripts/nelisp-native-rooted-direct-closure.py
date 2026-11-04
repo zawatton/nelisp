@@ -1,5 +1,6 @@
 """Bound direct native ownership by decoded unit text, never relocation lists alone."""
 import argparse
+import bisect
 import hashlib
 import json
 import re
@@ -34,6 +35,19 @@ def unit_owners(metadata, directory):
         raise ValueError("Unit metadata bound")
     total_unit_bytes = 0
     for unit in units:
+        dictionary = unit.get("relocation-symbols")
+        if "relocation-symbols" in unit:
+            if unit.get("relocation-symbol-format") != "dictionary-v1":
+                raise ValueError("Unknown relocation symbol format")
+            if not isinstance(dictionary, list) or any(not isinstance(s, str) for s in dictionary):
+                raise ValueError("Invalid relocation symbol dictionary")
+            for relocation in unit["relocations"]:
+                index = relocation["symbol"]
+                if type(index) is not int or not 0 <= index < len(dictionary):
+                    raise ValueError("Invalid relocation symbol index")
+                relocation["symbol"] = dictionary[index]
+        elif "relocation-symbol-format" in unit or any(not isinstance(r["symbol"], str) for r in unit["relocations"]):
+            raise ValueError("Invalid relocation symbol")
         path = directory / Path(unit["path"]).name
         if path.resolve().parent != directory.resolve():
             raise ValueError("Unit source escapes its owner directory")
@@ -53,14 +67,24 @@ def unit_owners(metadata, directory):
         if len(functions) > 20000 or len({f["value"] for f in functions}) != len(functions):
             raise ValueError("Ambiguous unit function boundaries")
         starts = {f["value"]: f["name"] for f in functions}
+        # Each text relocation belongs to the function whose [start, end)
+        # holds its offset; bucket them once, in their original order, rather
+        # than scanning every relocation for every function.
+        values = [f["value"] for f in functions]
+        buckets = [[] for _ in functions]
+        for r in unit["relocations"]:
+            if r["section"] == "text":
+                index = bisect.bisect_right(values, r["offset"]) - 1
+                if index >= 0 and r["offset"] < (values[index + 1] if index + 1 < len(values)
+                                                 else len(text)):
+                    buckets[index].append(r)
         for index, function in enumerate(functions):
             start = function["value"]
             end = functions[index + 1]["value"] if index + 1 < len(functions) else len(text)
             if not 0 <= start < end <= len(text) or function["name"] in owners:
                 raise ValueError("Invalid or duplicate unit function owner: " + function["name"]
                                  + " in " + unit["name"])
-            relocations = [r for r in unit["relocations"]
-                           if r["section"] == "text" and start <= r["offset"] < end]
+            relocations = buckets[index]
             owners[function["name"]] = dict(unit=unit["name"], start=start, end=end,
                                             text=text, starts=starts, relocations=relocations,
                                             unit_sha256=unit["unit-sha256"])

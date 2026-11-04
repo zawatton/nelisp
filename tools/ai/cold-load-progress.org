@@ -1,0 +1,36 @@
+#+TITLE: Doc 242 — fast cold-load
+#+NOTE: Created 2026-11-02 before any implementation (user: mmap cold-load as a new document; S0 showed the loader's CPU work dominates, so D1 comes first). Workers: Sonnet. Primary metrics: callgrind Ir of a bare start (load independent) and quiet paired wall time vs build31. Pending criteria are not done.
+
+* S0 Measurement
+
+** S0.1 A bare start of build31 is broken down by function (callgrind, nm attribution) and by syscall (strace)
+evidence: tools/ai/sbcl-impl-evidence/a242-s0/bare-start-b31.txt sha256=4e0d1ef436d427f80f28b28e8ba89987a04fd98823fb0aae5ade8224b33eafcc
+
+* S1 Loader CPU
+
+** S1.1 Structural: intern relocation only for decoded records; physical loads in the cold loader loops with bounds checks kept; tests fail on the pre-change generator (negative control)
+#+NOTE: test/nelisp-cold-load-fast-test.el has 5 structural tests; all 5 fail on the seed generator (negative control).
+#+TIMEOUT: 600
+cmd: cd "$(git rev-parse --show-toplevel 2>/dev/null || pwd)" && (ulimit -v 8388608; timeout 900 emacs-31.1 --batch -Q -L lisp -L src -L scripts -l ert -l test/nelisp-cold-load-fast-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q "Ran 5 tests, 5 results as expected, 0 unexpected")
+
+** S1.2 E2E: on a rebuilt image a bare start executes at most 50% of build31's 106,779,559 Ir; restored heap equal (equality probe), verify22 equal to build28, Doc 240 checks pass
+#+NOTE: COLD_LOAD_BIN defaults to build32; needs verify22 outputs for that build (see check-s12v4.sh).
+#+NOTE: 2026-11-02 build32 (S1 lane tree): bare start 106,779,559 -> 41,679,601 Ir (-61%); cold image 16,064,904 B; equality probe, verify22 vs build28 and Doc 240 checks pass. Loader reads switched to physical loads; intern word1 relocated per decoded record; the 2^20-slot walk (nl_cold_reloc_intern) removed; nl_cold_zero clears only the bytes the loader wrote (chunk 0 beyond them is fresh zero memory).
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a242-s1/check-s12.sh
+
+* S2 Map instead of copy
+
+** S2.1 E2E: on a rebuilt image the arena is placed at the recorded base, the content is mapped, not read (strace shows no content-sized read) and no relocation runs; with the base made unavailable the fallback (read + relocation) restores the same heap; restored heap equal on both paths; bare start Ir and quiet paired wall median lower than build32
+#+NOTE: 2026-11-02 wording made concrete before S2 work (same denominator): plain mmap would copy 90.3% of pages on relocation, so the user chose a fixed arena base with mmap and a relocation fallback.
+#+NOTE: method: strace + fixed-base probe + callgrind Ir + forced-relocation fallback + heap equality of both paths + dense/v5 decode equality + madvise guard + verify22/Doc 240 gates + quiet paired wall (15 rounds).
+#+NOTE: 2026-11-02 build33 (4th build of lane a242-s2): chunk 0 at 0x200000000000 and intern at 0x200040000000 (MAP_FIXED_NOREPLACE); format v5 pre-biased to those bases; fast path maps 15,060,992 content bytes with MAP_PRIVATE|MAP_FIXED, no relocation; bare start 41,678,921 -> 14,707,433 Ir; quiet paired wall build32 12.0 -> build33 8.0 ms. Coordinator fixes during integration: a stray quote in the loader let*, the new OS functions missing from the arena stub/override list (link error), open(2) called with macOS syscall 5 in nl_cold_bias_file (dump EIO), and the force-relocate switch read before the envp stash existed (now installed from the entry stack before the load on v5). Check changes: strace traces open and /proc/self/fd reopen; (d) compares behaviour (semantic-diff cases, reader probe) instead of dump bytes, because the fallback moves the intern base and startup rehashes address-keyed tables.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a242-s2/check-s21.sh
+
+* S3 Wall time
+
+** S3.1 E2E: quiet paired runs vs build31: bare start and the Doc 240 launcher (hash-get1024) faster by at least 5%, results equal
+#+NOTE: 2026-11-02 build31 -> build33, quiet, 15 alternating rounds: bare start 17.5 -> 8.8 ms (0.503), Doc 240 launcher 52.3 -> 42.8 ms (0.819), results equal (a242-s3/s31-b33.txt). Reuses a241-s4/check-s41.sh with 5% minimum improvement.
+#+TIMEOUT: 600
+cmd: bash tools/ai/sbcl-impl-evidence/a242-s3/check-s31.sh

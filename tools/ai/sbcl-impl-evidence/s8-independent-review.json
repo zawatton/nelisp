@@ -1,0 +1,206 @@
+{
+ "verdict": "PASS",
+ "reviewer": "independent Claude Opus subagent, non-Fable",
+ "checked_at": "2026-10-31T23:42:50+09:00",
+ "findings": [
+  {
+   "severity": "minor",
+   "item": "Cohort runner differs",
+   "detail": "New cohort runs via lane_runner_phased.py (lane-new); old via recorded lane_runner.py (lane-on). Protocol says 'same bwrap lane runner semantics' but the runner file differs; instrumentation overhead on the new side is not ruled out for whole-process columns (kernel inner_ns is measured inside the process and is unaffected in principle). Not disclosed in S3.3/S8.3 notes."
+  },
+  {
+   "severity": "minor",
+   "item": "Method A disclosed",
+   "detail": "Protocol, manifest.txt and S3.1 notes disclose that new is built by method A (entry run directly), not the recorded authenticated adapter route. S8.3 note itself does not repeat it; the comparison is image-vs-image across different build routes, so any difference in image composition beyond the intended changes is confounded."
+  },
+  {
+   "severity": "minor",
+   "item": "Freeze proof is weak",
+   "detail": "Protocol mtime 2026-10-31 21:32:31 precedes the earliest original raw stdout (23:02:19, original dir ~/.cache/tmp/nelisp-sbcl-impl-builds/s8-campaign) by ~1.5 h, and its sha256 matches the ledger. But the evidence copy has all mtimes normalized to 23:39:05 (copy time), file is untracked, and no external timestamp exists; freeze rests on a local mtime. Protocol counts match counts.json (hash e79cf7ac... verified) and campaign.sh."
+  },
+  {
+   "severity": "minor",
+   "item": "Whole-process column is dominated by harness preparation",
+   "detail": "Phase cohort (integer-sum, 3 samples, within-process intervals from one process each, not subtraction of independent medians): first_form_to_ready 6420.8 ms of 6922.3 ms whole; kernel 61 ms. NeLisp whole-process is ~7-10 s vs GNU 0.1-4.4 s, so 'no whole-process regression' says nothing about kernel work and NeLisp remains far slower than GNU end to end. Phase table is for one row and new image only (no old phase comparison). Ledger S8.3 numbers (16.1, 6420.8, 6922.3) reproduce as medians of 3."
+  },
+  {
+   "severity": "minor",
+   "item": "Small effects",
+   "detail": "vector-allocate64 (-3.6%) and hash-get1024 (-8.2%) are below the 10% target (correctly reported as not met); ranges per-rep do not overlap (old 915.5-925.1 vs new 881.1-908.4; hash old 1792.7-1921.2 vs new 1648.9-1680.4) so 'slightly faster' is supportable but not a target pass. S6.3/S7.3 correctly remain failing cmd."
+  },
+  {
+   "severity": "minor",
+   "item": "evaluate.py coverage limits",
+   "detail": "--self-test only mutates a result string; it does not detect timing tampering (I added +1s to one vector-read sample: evaluate --row still passes rc 0 because of the median). evaluate.py does not itself check stdout/stderr/BENCH-CHECK/route or pins; those are covered only by the sha256 manifest (which does catch it) and by my independent checks. evaluate --row verdict also depends on any_kernel_regression across all rows, fine. evaluate.py rewrites summary.json as a side effect."
+  },
+  {
+   "severity": "minor",
+   "item": "S8.1 claim limits",
+   "detail": "check.sh logic (verified, passes; tampering new-b7.fail and injecting an unattributed ns finding both make it fail, though the first fails via 'comm' unsorted-input, i.e. for a side reason) supports only: same 17 failing check names as old r3 image, same 24 compile-error files as merged tree pre-edit, and 20 final-only ns findings each naming at least one file in a 298-line 'shared overlay' list. Limits: baseline is the r3 old image and pre-edit merged tree, not frozen12 itself (compile for frozen12 never run, ledger header admits it); 'ok' is granted if ANY file of a finding is in the overlay list, so a finding naming one overlay file plus one file of this work would pass; failures compared by name only, not by failure reason or count of assertions; overlay list contains non-source entries (AI.md, .anvil-worklog db). Wording 'adds no gate failure' is acceptable only with these caveats; the notes already state the gates are red and not claimed green."
+  },
+  {
+   "severity": "note",
+   "item": "Pins verified",
+   "detail": "new 113c1796...ebdb, old fe7f6b1e...c951e, GNU 7a73e7e5...f5bd7, paired_bench b375e405...1047, protocol 52467442...e6e, s8-campaign.sha256 f39da7d9...e497 all match ledger/manifest; sha256sum -c of all 783-listing entries OK (no failures)."
+  },
+  {
+   "severity": "note",
+   "item": "Protocol vs execution",
+   "detail": "9 rows, low/high, warmups 2, reps 7, cpu 1 match protocol and campaign.sh. Every row has exactly 42 samples (3 engines x 7 reps x 2 counts), 42 stdout and 42 stderr files; all stderr empty; every stdout has BENCH-CHECK with matching n and result, and its elapsed equals raw inner_ns within 2 ns; NeLisp stdouts show route=named-fx-default; GNU stdouts show engine=gnu route=bytecode; one distinct result per (row,n) across engines. Nested-function-call2 uses a different GNU driver/wrapper and fixture module (per campaign.sh), disclosed in code only; new/gnu ratio for that row (1.046) compares across different drivers."
+  },
+  {
+   "severity": "note",
+   "item": "Arithmetic",
+   "detail": "Independent recomputation reproduces every ledger number to the printed precision: kernel medians and percent changes (S3.3 -77.8/-54.5, S4.3 -78.1/-79.4, S5.3 -37.7/-41.5, S6.3 -8.2, S7.3 -3.6), GNU values (71.6, 68.4, 40.6, 38.6, 252.3, 264.4, 70.0, 1357.0), code growth (+49.1, +12.4, +39.1, +40.5, +51.0, +57.5, also +17.4 nc_30000, +18.2 nc_30005, +55.9 nc_30013, +47.3 nc_30014, +11.6 nc_30019; 11 units >10%, matching S8.3). nm -n spot check: nc_30001 3392 old / 5056 new, nc_30011 3136 old / 4736 new, equal to code-sizes.json. Whole-process medians at high count recomputed; none regress >5% (max +0.71% integer-sum). 6/8 target rows meet >=10%."
+  },
+  {
+   "severity": "note",
+   "item": "Claims/threshold verdicts",
+   "detail": "Threshold logic applied correctly (>=10% target, >5% regression, >10% growth flagged). Ledger notes disclose that Doc 231/232/233 growth limits are not met and that nested-row guard controls were not run separately, and that hash/alloc rows fail. S3.3/S4.3/S5.3 cmd pass on time only; their titles ('meets the frozen time threshold') are accurate. integer-sum control shows +0.03% (null), good sanity. No overstated speedup found; note 'vs GNU' only favorable on some rows (nested-function-call2 new is 4.6% slower than GNU, hash-get1024 23.8x slower)."
+  },
+  {
+   "severity": "note",
+   "item": "Negative controls",
+   "detail": "negative-controls/ old/new x vector-read/hash-get1024: empty stdout and 'Wrong checksum 8907265 expected 8907264' error from bench-validate for BENCH_BROKEN on both images. evaluate.py --self-test returns rc 0 (mutation detected). s8-regression-guard/check.sh and s8-final-b7-correctness/check.sh both PASS on the as-is copy; tamper tests on regression-guard fail as expected. I did not tamper s8-final-b7-correctness."
+  },
+  {
+   "severity": "note",
+   "item": "Limits of this review",
+   "detail": "I did not rerun any benchmark or the build; reproducibility of timings is not independently confirmed. S7.2 (alloc 15/15) and S8.1 correctness rest on check.sh scripts over stored outputs only."
+  }
+ ],
+ "recomputed": {
+  "nested-function-call2": {
+   "old": 157.2,
+   "new": 71.488,
+   "gnu": 68.363,
+   "chg": -54.524,
+   "new_gnu": 1.046,
+   "wold": 8.753,
+   "wnew": 7.753,
+   "wgnu": 0.927,
+   "wchg": -11.419
+  },
+  "integer-sum": {
+   "old": 3.959,
+   "new": 3.96,
+   "gnu": 14.762,
+   "chg": 0.025,
+   "new_gnu": 0.268,
+   "wold": 7.052,
+   "wnew": 7.102,
+   "wgnu": 0.749,
+   "wchg": 0.715
+  },
+  "vector-read": {
+   "old": 73.987,
+   "new": 16.212,
+   "gnu": 40.605,
+   "chg": -78.088,
+   "new_gnu": 0.399,
+   "wold": 7.754,
+   "wnew": 7.15,
+   "wgnu": 0.575,
+   "wchg": -7.796
+  },
+  "vector-write": {
+   "old": 76.999,
+   "new": 15.897,
+   "gnu": 38.561,
+   "chg": -79.354,
+   "new_gnu": 0.412,
+   "wold": 7.803,
+   "wnew": 7.103,
+   "wgnu": 0.542,
+   "wchg": -8.97
+  },
+  "vector-allocate64": {
+   "old": 920.628,
+   "new": 887.626,
+   "gnu": 1356.954,
+   "chg": -3.585,
+   "new_gnu": 0.654,
+   "wold": 9.706,
+   "wnew": 9.708,
+   "wgnu": 4.356,
+   "wchg": 0.023
+  },
+  "string-concat16": {
+   "old": 332.715,
+   "new": 194.531,
+   "gnu": 264.377,
+   "chg": -41.532,
+   "new_gnu": 0.736,
+   "wold": 7.803,
+   "wnew": 7.501,
+   "wgnu": 0.889,
+   "wchg": -3.873
+  },
+  "string-slice16": {
+   "old": 277.846,
+   "new": 173.008,
+   "gnu": 252.344,
+   "chg": -37.732,
+   "new_gnu": 0.686,
+   "wold": 7.653,
+   "wnew": 7.401,
+   "wgnu": 0.847,
+   "wchg": -3.299
+  },
+  "hash-get1024": {
+   "old": 1812.625,
+   "new": 1664.812,
+   "gnu": 70.019,
+   "chg": -8.155,
+   "new_gnu": 23.777,
+   "wold": 7.152,
+   "wnew": 7.202,
+   "wgnu": 0.071,
+   "wchg": 0.692
+  },
+  "function-call2": {
+   "old": 259.174,
+   "new": 57.582,
+   "gnu": 71.609,
+   "chg": -77.782,
+   "new_gnu": 0.804,
+   "wold": 9.952,
+   "wnew": 7.65,
+   "wgnu": 0.949,
+   "wchg": -23.131
+  }
+ },
+ "code_growth_pct": {
+  "nc_30000": 17.4,
+  "nc_30001": 49.1,
+  "nc_30002": 0.0,
+  "nc_30003": 12.4,
+  "nc_30004": 0.0,
+  "nc_30005": 18.2,
+  "nc_30006": 4.0,
+  "nc_30007": 0.0,
+  "nc_30008": 0.0,
+  "nc_30009": 39.1,
+  "nc_30010": 40.5,
+  "nc_30011": 51.0,
+  "nc_30012": 57.5,
+  "nc_30013": 55.9,
+  "nc_30014": 47.3,
+  "nc_30015": 0.0,
+  "nc_30016": 0.0,
+  "nc_30017": 0.0,
+  "nc_30018": 0.0,
+  "nc_30019": 11.6,
+  "nc_d_30000": 0.0,
+  "nc_d_30002": 0.0,
+  "nc_d_30004": 0.0
+ },
+ "pins": {
+  "build-on7 new": "113c17963ddf4f9a895c2719afdb4ff992a517ab3836ff101496f4587b19ebdb",
+  "old r3": "fe7f6b1e308725b765b9e32e63f702311182fb5b2e6aafc9df9facd908dc951e",
+  "emacs-31.1": "7a73e7e5db25275f09753fba330b96ecd44c64b3af9c5298fe343a44084bf5d7",
+  "paired_bench.py": "b375e405b3980e833274368170060ed00c53e68ebbef8c2380cab645a1361047",
+  "s8-protocol-frozen.json": "5246744206b2405797432881fd8af7b1479778dac80b6bd770271f67e0671e6f",
+  "s8-campaign.sha256": "f39da7d95387ce331b3a4e986cff90cf51c745bf5de40f3e6252c45ceae49497"
+ }
+}

@@ -7,7 +7,8 @@ A matrix row whose new/old time ratio is >= THRESHOLD may be a real slowdown
 (more instructions) or only code/data layout (same instructions, other cache
 and branch behaviour).  For each such row of INTEG_DIR/matrix/REPORT.md this
 runs callgrind on both engines (the first and the last non-gnu engine of
-INTEG_DIR/matrix/runall.py's ENG list, i.e. old and new), with the row's
+INTEG_DIR/matrix/runall.py's legacy ENG list, or consistent ordered engine
+identities in every available matrix/out/*/report.json), with the row's
 driver INTEG_DIR/matrix/drv/ROW.el (the files of specs.json are loaded by it)
 at two trip counts, BENCH_N=HI and HI/4.  Per engine the instruction count of
 the work is Ir(HI) - Ir(HI/4), which cancels startup and image-load cost.
@@ -32,14 +33,60 @@ LINE = re.compile(r'BENCH-CHECK n=(\d+) result=(.*) elapsed=([0-9.]+)')
 
 
 def engines(runall):
-    tree = ast.parse(open(runall).read())
+    def static(node, env):
+        # Interpret only the legacy literals/f-strings, never runner calls.
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in env:
+            return env[node.id]
+        if isinstance(node, (ast.List, ast.Tuple)):
+            return [static(x, env) for x in node.elts]
+        if isinstance(node, ast.JoinedStr):
+            return ''.join(static(x, env) for x in node.values)
+        if isinstance(node, ast.FormattedValue) and node.conversion == -1 and node.format_spec is None:
+            return str(static(node.value, env))
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return static(node.left, env) + static(node.right, env)
+        raise ValueError('unsupported legacy engine expression')
+
+    with open(runall) as stream:
+        tree = ast.parse(stream.read())
     env = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             if node.targets[0].id in ('B', 'ENG'):
-                env[node.targets[0].id] = eval(compile(ast.Expression(node.value), runall, 'eval'), dict(env))
-    eng = [tuple(e.split('=', 1)) for e in env['ENG']]
-    eng = [e for e in eng if not os.path.basename(e[1]).startswith('emacs')]
+                env[node.targets[0].id] = static(node.value, env)
+    if 'ENG' in env:
+        eng = [tuple(e.split('=', 1)) for e in env['ENG']]
+    else:
+        from pathlib import Path
+        reports = sorted((Path(runall).parent / 'out').glob('*/report.json'))
+        if not reports:
+            raise ValueError(f'{runall}: no matrix engine reports')
+        eng = None
+        def unique(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('duplicate report identity key')
+                result[key] = value
+            return result
+        for report in reports:
+            identities = json.loads(report.read_text(), object_pairs_hook=unique)['engines']
+            if not isinstance(identities, dict) or not identities:
+                raise ValueError(f'{report}: missing engine identities')
+            current = []
+            for label, record in identities.items():
+                path = record['path']
+                if not isinstance(label, str) or not label or not isinstance(path, str) or not os.path.isabs(path):
+                    raise ValueError(f'{report}: invalid engine identity')
+                current.append((label, os.path.realpath(path)))
+            if len({path for _, path in current}) != len(current):
+                raise ValueError(f'{report}: duplicate resolved engine paths')
+            if eng is not None and current != eng:
+                raise ValueError(f'{report}: conflicting or missing engine identities')
+            eng = current
+    eng = [e for e in eng if e[0].lower() != 'gnu' and not os.path.basename(e[1]).startswith('emacs')]
     if len(eng) < 2:
         sys.exit(f'{runall}: need two non-gnu engines in ENG, got {eng}')
     return eng[0], eng[-1]

@@ -1803,8 +1803,16 @@
               (m5_fx_funcall_site 0 fn stk sp argc resw env ws)))
         (let* ((tag (nl_word_tag64 fn)))
           (if (or (= tag 4) (= tag 16))
-              (let* ((def (if (= ws 0) 2
-                            (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0))))
+              ;; applyfn2: GNU Ffuncall -> funcall_general reads the symbol's
+              ;; function cell and calls a SUBR there through funcall_subr
+              ;; (eval.c:3105, 3254): a Subr object in the cell runs on the
+              ;; argument words as the VM's Bcall does (`m5_fx_call_subr_any'),
+              ;; before the name lookup and the primitive-name compares below.
+              (let* ((sst (if (= ws 0) -3 (m5_fx_call_subr_any env fn stk sp argc resw)))
+                     (def (if (/= sst -3) 2
+                            (if (= ws 0) 2
+                              (nelisp_env_lookup_function_w (+ env 0) (+ env 64) fn 0)))))
+                (if (/= sst -3) sst
                 (if (= def 2) -3
                   (seq (ptr-write-u64 ws 0 def)
                        (let* ((st (m5_fx_primitive def stk sp argc resw env ws)))
@@ -1817,7 +1825,7 @@
                            ;; symbol again) keeps the generic apply, which follows
                            ;; the chain and detects a cycle.
                            (if (or (= (nl_word_tag64 def) 4) (= (nl_word_tag64 def) 16)) -3
-                             (m5_fx_funcall_value fn fn def stk sp argc resw env)))))))
+                             (m5_fx_funcall_value fn fn def stk sp argc resw env))))))))
             (let* ((st (m5_fx_primitive fn stk sp argc resw env ws)))
               (if (/= st -3) st
                 (let* ((rec (m5_fx_covered fn argc env 0)))
@@ -1844,6 +1852,12 @@
     (defun m5_fx_apply_run (stk sp argc resw env) -3)
     (defun m5_fx_apply_spread (base argc resw env) -3)
     (defun m5_fx_apply_no_word_subr (fw) 0)
+    ;; applyfn2: GNU Fapply's spread for a builtin (reader definitions generated
+    ;; with the others, `nelisp-standalone--callpath2-m5-defs').
+    (defun m5_fx_apply_word_subr (fw) 0)
+    (defun m5_fx_apply_list_len (w) -1)
+    (defun m5_fx_apply_subr (stk sp argc resw env) -3)
+    (defun m5_fx_apply_words_run (stk sp argc resw env) -3)
     ;; The record before the closure, so a reader that sees the closure
     ;; sees its record (the site kind's order, `m5_fx_site_kind').
     (defun m5_fx_funcall_site_fill (cache fn rec)

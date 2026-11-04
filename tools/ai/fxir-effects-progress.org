@@ -1,0 +1,28 @@
+#+TITLE: Profile-guided FX IR type and effect optimization
+#+NOTE: New priority from the research-side handoff on 2026-10-28. This is a separate eight-criterion objective; the existing nine-criterion integration ledger and all known failures remain unchanged. No speedup forecast is an acceptance result.
+
+* S1 Profile-grounded design
+** S1.1 The requested research direction is preserved with source identity
+evidence: ../../../../../handoff/nelisp-gnu-speed_research-side-conversation_2026-10-28.md sha256=e32aaeb600cfb88cfb464ce97a79c2ca88e3c946fd35478bca0df171be130467
+** S1.2 A current-binary profile and real IR path justify the selected generic optimization
+evidence: target/fxir-effects/transport-design/REPORT.txt sha256=31b2923ba3e297660e45408431c2b8f067b1021c7021f36035c9a4726b36a050
+#+NOTE: Authentic current tag2 source, production lowering/parser output, and frozen native materialization identify a generic IF-to-literal continuation opportunity. The independent opcode20 compare1 witness agrees. This is design evidence, not emitted A/B or a speed result.
+
+* S2 Conservative compiler prototype
+** S2.1 Existing RAW/GP and boundary proofs constrain the local consumer without inferring effects of unknown or recursive callees
+#+TIMEOUT: 600
+cmd: bash -c 'ulimit -v 8388608; cd ../fxeffects-20261028 && taskset -c 0-7,16-23 ../../../../../bin/heavy-run.sh timeout 60 /usr/local/bin/emacs --batch -Q -L lisp -L src -L scripts -L test -l test/nelisp-aot-literal-branch-test.el -f ert-run-tests-batch-and-exit'
+#+NOTE: Criterion wording changed on 2026-10-28 after actual IR showed the callees were already inlined. The initial slice reuses existing proofs and retains unknown calls; no interprocedural summary or convergence framework is required. The denominator remains eight and no known failure was removed.
+#+NOTE: The initial prototype is known RED: the test file has an incomplete form and independent audit found unsigned RAW64 constant folding and result-profit defects. The failing focused command is retained while the separated verification design repairs them; previous failed launch logs and the frozen bad compiler remain immutable.
+** S2.2 Generated behavior preserves redefinition, advice, aliases, GC, exceptions and reentrancy
+pending
+** S2.3 A real generated-code control distinguishes the optimization and rejects unsafe facts
+pending
+
+* S3 Native and GNU validation
+** S3.1 Both target outputs retain the original size, metadata, root and correctness bounds
+pending
+** S3.2 Fixed-input ablations and strict-idle paired GNU comparisons establish actual work and wall effects
+pending
+** S3.3 The complete frozen broad survey meets the original GNU median at or below1.0
+pending

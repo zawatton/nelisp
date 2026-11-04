@@ -1,0 +1,51 @@
+#+TITLE: GNU bottleneck native compilation batch
+#+NOTE: Created before candidate6 implementation, after the user expanded scope to all measured bottlenecks. Nine new criteria cover the eight unchanged comparison rows; candidate5 retains its separate unchanged fifteen-criterion ledger and unexecuted timing campaign. No language-wide native coverage or speed claim follows from this finite scope.
+#+NOTE: Sources are seeded exactly from frozen candidate5. Implementation uses explicitly selected gpt-6-luna; independent review uses explicitly selected gpt-6.1-sol. Complete considered source, test and verifier changes before the final build and timing batch. Existing GNU data guides priority but cannot qualify a new binary. Preserve original build/size caps, live-definition semantics, argument order, errors, logical frames, roots and mutation barriers. No benchmark-specific runtime paths or new native primitive solely for speed.
+
+* S1 Measured GNU gaps and actual baseline routes
+
+** S1.1 Saved matched GNU cohort is reanalysed with exact binary identities
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/saved-gnu-comparison.json"); assert p.is_file(), "S1_1_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="SAVED_GNU_GAP_MAP_ACCEPTED"'
+
+** S1.2 All eight rows have a reviewed provider and nativeization plan
+#+NOTE: Plan-only acceptance is recorded in ../out/gnu-native-batch6/nativeization-plan-independent-review.json (sha256 e64f8897619c8b14042006df76407a8364185ee9659b0fab7dab1360ca00481a). The single private registration probe establishes CODE/FXIR for nine unchanged definitions, not native BODY, callable-provider or route acceptance. All twelve criteria and the separate original fifteen criteria are retained.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/nativeization-plan.json"); assert p.is_file(), "S1_2_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="SOURCE_NATIVEIZATION_PLAN_ACCEPTED"'
+
+** S1.3 Existing baseline executes unchanged kernels with authenticated route evidence
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/baseline-route-acceptance.json"); assert p.is_file(), "S1_3_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="BASELINE_EIGHT_ROW_ROUTES_ACCEPTED"'
+
+* S2 General native compilation and guarded lowering
+
+** S2.1 General guarded native operations preserve live definitions and argument evaluation
+#+NOTE: Source-only acceptance binds independent review c95b77ef13940de1c05731d120dd3573260ddbd90e521e71400be274b322d9f8 and the repaired one-pass M1/M2 lowering. Original failing combined evidence is retained; actual all-eight BODY execution remains S2.3. No criterion was added or removed.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/lowering-source-acceptance.json"); assert p.is_file(), "S2_1_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="GUARDED_NATIVE_LOWERING_SOURCE_ACCEPTED"'
+
+** S2.2 General source intake admits unchanged application and provider forms with rejecting controls
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/intake-source-acceptance.json"); assert p.is_file(), "S2_2_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="GENERAL_NATIVE_INTAKE_SOURCE_ACCEPTED"'
+
+** S2.3 All eight candidate kernels and their hot providers execute authenticated native bodies
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/candidate-route-acceptance.json"); assert p.is_file(), "S2_3_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="CANDIDATE_EIGHT_ROW_NATIVE_ROUTES_ACCEPTED"'
+
+* S3 Frozen combined qualification
+
+** S3.1 Frozen candidate passes original build and resource caps
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/resource-acceptance.json"); assert p.is_file(), "S3_1_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="ORIGINAL_CAPS_ACCEPTED"'
+
+** S3.2 Candidate passes finite GNU, root, observer and inherited regression checks
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/semantic-acceptance.json"); assert p.is_file(), "S3_2_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="FINITE_SEMANTICS_ACCEPTED"'
+
+** S3.3 Final matched GNU and before-after campaigns retain all results and pass declared guards
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/timing-acceptance.json"); assert p.is_file(), "S3_3_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="GNU_NATIVE_BOTTLENECK_QUALIFIED"'
+
+* S4 Compiler-wide semantic facts and representation consumption
+
+** S4.1 Reviewed M2 transfer contract identifies a surviving machine-code check
+#+NOTE: Added before implementation after the SBCL/compiler-wide review. Scope grows from 9 to 12 criteria; candidate5 retains its separate 15 criteria. This criterion accepts the reviewed contract only, not implementation or performance.
+evidence: $HOME/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/m2-boolean-facts-implementation-brief.json sha256=5370f91b99b64979b0883394e399efb265602ab874275ccb11a5ffc2dd9dac10
+
+** S4.2 General M2 proof producer and condition consumer pass independent source controls
+#+NOTE: Independent source-only controls accept the codec, producer and one-pass condition consumer now overlaid into isolated wt6; ../out/gnu-native-batch6/m2-source-acceptance.json binds exact source and review hashes. Combined90, M1+M2ON44 and real option/admission8 controls pass. Native execution, machine-code removal and speed remain unproved. The twelve criteria and separate original fifteen criteria are unchanged.
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/m2-source-acceptance.json"); assert p.is_file(), "S4_2_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="GENERAL_M2_CONDITION_LOWERING_SOURCE_ACCEPTED"'
+
+** S4.3 Nonconstant native programs prove representation-check removal with exact semantics
+cmd: python3 -c 'import json,pathlib; p=pathlib.Path("../out/gnu-native-batch6/m2-native-acceptance.json"); assert p.is_file(), "S4_3_EVIDENCE_MISSING"; d=json.loads(p.read_text()); assert d["status"]=="GENERAL_M2_CONDITION_NATIVE_ACCEPTED"'

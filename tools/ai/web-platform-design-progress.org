@@ -1,0 +1,14 @@
+#+TITLE: NeLisp web application platform design package
+#+NOTE: Design deliverables only. This ledger does not measure implementation or runtime readiness.
+
+* S1 Grounded and reviewable platform design
+
+** S1.1 Existing capabilities and primary-source constraints are recorded
+evidence: tools/ai/web-platform-design-sources.json sha256=66c4eed0991a0d92821cb59a3a866264d9e8b1b5937bbaa258ddec0f357b1b30
+
+** S1.2 Architecture, semantics, public interfaces, and acceptance stages are specified
+evidence: docs/design/213-web-application-platform.org sha256=7ce323474ac473755d231e3915fd94b9876254171f76cf2eac59a1ac8cb67801
+
+** S1.3 End-to-end design walkthrough and failure review are recorded
+#+NOTE: Source-to-browser design walkthrough only; executable W0-W4 acceptance remains future work.
+evidence: docs/design/213-web-application-review.org sha256=22f0d65ad72e1ddc386afb29799823fd99d69b1c4731df067204bccfba67c095

@@ -1,0 +1,4 @@
+;;; -*- lexical-binding: t -*-
+(defun nl243-f (l k) (mapcar (function 1+) l))
+(nl243-f (list 1 2 3) 1)
+(let ((l (number-sequence 1 @N@))) (princ (format "RESULT %S\n" (apply (function +) (nl243-f l 1)))))

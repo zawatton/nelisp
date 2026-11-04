@@ -1,0 +1,33 @@
+;;; standalone-text-mode-syntax.el --- Real syntax copy/mutation controls -*- lexical-binding: t; -*-
+(require 'nelisp-stdlib-text-mode-syntax)
+(let ((before (and (boundp 'text-mode-syntax-table) text-mode-syntax-table))
+      (feature-before (featurep 'text-mode)))
+  (when (eq (nelisp-stdlib-text-mode-syntax-install) 'preserved)
+    (unless (and (eq before text-mode-syntax-table)
+                 (eq feature-before (featurep 'text-mode)))
+      (error "GNU text syntax owner changed"))))
+(let ((original-table (syntax-table))
+      (copy (copy-syntax-table text-mode-syntax-table)))
+  (unwind-protect
+      (progn
+        (set-syntax-table text-mode-syntax-table)
+        (unless (and (= (char-syntax ?\") ?.) (= (char-syntax ?\\) ?.)
+                     (= (char-syntax ?') ?w) (= (char-syntax #x5f3) ?w)
+                     (= (char-syntax #x5f4) ?w) (= (char-syntax #xb7) ?w)
+                     (= (char-syntax #x2027) ?w) (= (char-syntax #xff1a) ?w))
+          (error "Genuine text syntax character classes differ"))
+        (modify-syntax-entry ?' "." copy)
+        (set-syntax-table copy)
+        (unless (= (char-syntax ?') ?.) (error "Info copy apostrophe mutation failed"))
+        (set-syntax-table text-mode-syntax-table)
+        (unless (= (char-syntax ?') ?w) (error "Copy mutation changed original")))
+    (set-syntax-table original-table)))
+(let ((owner (symbol-function 'make-syntax-table)) refused reached)
+  (unwind-protect
+      (progn
+        (fset 'make-syntax-table (lambda (&rest ignored) (setq reached t)))
+        (condition-case nil (nelisp-stdlib-text-mode-syntax-install)
+          (error (setq refused t)))
+        (unless (and refused (not reached)) (error "Mutated syntax constructor accepted")))
+    (fset 'make-syntax-table owner)))
+(princ "GENUINE-TEXT-SYNTAX-PASS\n")

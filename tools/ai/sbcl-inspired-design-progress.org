@@ -1,0 +1,24 @@
+#+TITLE: SBCL-inspired NeLisp design proposals
+
+* S1 Source-grounded design documents
+
+** S1.1 Actual SBCL, NeLisp, and benchmark facts are pinned to source evidence
+evidence: docs/design/source-manifest.json sha256=b653100c7af1e3afa928cb594f0ccd5f1e10c87f353fcd8b070b7a1737b501d6
+
+** S1.2 Five proposed design documents are consistent and source-checked
+evidence: tools/ai/sbcl-design-evidence/sol-design-review.json sha256=a9d02cac8130bb37e57930eebd2a899a73ce4d588dff1cb5b1c2bdb8a8209e02
+
+** S1.3 Independent Sol review and actual new-document integration E2E pass
+evidence: tools/ai/sbcl-design-evidence/sol-integration-e2e.json sha256=44516cb1ae49e343f789774e30fb09a486ae1712f49f28e75007a9c496fe68c1
+
+* S2 Startup cost and initialization design
+#+NOTE: Added after the user's startup-cost steering; the denominator increased from 3 to 6 criteria.
+
+** S2.1 Startup, harness, and SBCL phase evidence is pinned
+evidence: docs/design/235-source-manifest.json sha256=07b6d050e113016bbe2867539341163b21cae59f775abfb3bcc5604cb0bd7f5a
+
+** S2.2 Independent source review of proposed startup design passes
+evidence: tools/ai/sbcl-design-evidence/sol-startup-design-review.json sha256=d9d4a4831a1653d2c1e91965d4a489e893f81477ecbe26010daff31dd6769d6d
+
+** S2.3 Startup document and evidence pass shared-tree integration E2E
+evidence: tools/ai/sbcl-design-evidence/sol-startup-integration-e2e.json sha256=bd7a665cc7102ee864ba4b07ba905add1cc446de9bea6a8c792962d0c56751c2

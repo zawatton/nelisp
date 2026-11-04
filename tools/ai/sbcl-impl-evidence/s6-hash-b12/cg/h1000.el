@@ -1,0 +1,6 @@
+(let ((h (make-hash-table :test 'equal)) (keys (make-vector 64 nil)) (j 0) (s 0))
+  (while (< j 64) (puthash (format "key%04d" j) j h) (aset keys j (format "key%04d" j)) (setq j (1+ j)))
+  (setq j 0)
+  (while (< j 1000) (setq s (+ s (gethash (aref keys (logand j 63)) h)) j (1+ j)))
+  (princ (format "s=%d\n" s)))
+(kill-emacs 0)

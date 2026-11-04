@@ -23,11 +23,22 @@ vendor/emacs-lisp/
   emacs-lisp/easy-mmode.el
   emacs-lisp/backquote.el
   calendar/time-date.el
+  calendar/calendar.el
+  calendar/cal-loaddefs.el
+  calendar/cal-menu.el
 ```
 
 Sub-paths mirror their location in Emacs's own `lisp/` tree, so `rx.el`
 sits under `emacs-lisp/` and `time-date.el` under `calendar/`, matching
 `(locate-library "rx")` on a real Emacs.
+
+The calendar provider files are unmodified GNU Emacs 31.1 sources extracted
+from the installed release's `lisp/calendar/*.el.gz` files. Their
+repository-relative paths and SHA-256 pins are recorded in
+`calendar/gnu-emacs-31.1.sha256` and
+`calendar/cal-menu-gnu-emacs-31.1.sha256`. Source-first `(require 'calendar)`
+advances to the missing `display-color-cells` primitive; this prefix does not
+complete the load.
 
 ## Known gap: `time-date.el` is vendored without the `decoded-time-*` accessors
 

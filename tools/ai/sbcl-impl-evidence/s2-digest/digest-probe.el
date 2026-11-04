@@ -1,0 +1,27 @@
+;; Digest probe: prints timings and sha256 test-vector results.
+(setq print-escape-nonascii t print-gensym t print-quoted t
+      print-length nil print-level nil print-circle nil)
+(defun dp-data (n)
+  (let (l (i 0))
+    (while (< i n)
+      (push (list (intern (format "native-row-%d" (% i 97))) :kw-name i
+                  (format "str%d" (% i 13)) (vector 'a 'b i)) l)
+      (setq i (1+ i)))
+    (nreverse l)))
+(defun dp-time (f)
+  (let ((t0 (float-time))) (funcall f) (- (float-time) t0)))
+(let* ((data (dp-data 3400)) s h
+       (tp (dp-time (lambda () (setq s (prin1-to-string data)))))
+       (th (dp-time (lambda () (setq h (secure-hash 'sha256 s))))))
+  (princ (format "print-bytes=%d print-s=%.4f (%.2f MB/s)\n" (length s) tp (/ (length s) tp 1e6)))
+  (princ (format "sha-s=%.4f (%.2f MB/s) hash=%s\n" th (/ (length s) th 1e6) h)))
+(let ((s (make-string 356000 ?x)) h)
+  (princ (format "sha-356k-x s=%.4f\n" (dp-time (lambda () (setq h (secure-hash 'sha256 s)))))))
+(dolist (c (list (list "" "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+                 (list "abc" "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+                 (list "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq" "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1")
+                 (list (make-string 1000000 ?a) "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0")
+                 (list "caféあ" nil)
+                 (list (string-to-unibyte "\300\301abc") nil)))
+  (princ (format "vec len=%d got=%s %s\n" (length (car c)) (secure-hash 'sha256 (car c))
+                 (if (cadr c) (if (equal (cadr c) (secure-hash 'sha256 (car c))) "OK" "FAIL") "(no ref)"))))

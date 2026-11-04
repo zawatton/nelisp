@@ -1,0 +1,27 @@
+#+TITLE: Doc 239 — exact size classes for the large free lists
+#+NOTE: Created 2026-11-01 before any implementation (user: start the allocator work as a new document). Workers: Sonnet. Primary metric: callgrind Ir per step on the cgrows.sh rows (load independent); wall time once at the end under the frozen S8 protocol. Pending criteria are not done.
+
+* S0 Measurement
+
+** S0.1 The cause of vector-allocate64's scan cost is measured on build27 at the cgrows N (nodes per scan, outcomes, rejected block totals, in_arena attribution)
+evidence: tools/ai/sbcl-impl-evidence/a239-s0/tables3.txt sha256=d663d0c5df31f99a7994393d6d5a38d8f96a16373882528ca24e85eb0051793f
+
+* S1 Exact 8-byte classes for block totals 481..2048
+
+** S1.1 Structural: the class function gives one class per 8 bytes for 481..2048 and the old bins above; sweep, split and free paths all use it; the request path skips the WANT+8 class; tests fail on the pre-change script (negative control)
+#+NOTE: 2026-11-02 merged (Sonnet lane a239-s1): one class per 8 bytes for BT 481..2048 (classes 1..196, BT 480 = class 0), coarse bins above shifted by 147 (351 heads, mask 7 words, BSS +1176); request visits the exact class, then the first class >= WANT+16; nl_freelist_large_first keeps the bump fast path. test/nelisp-alloc-classes-test.el 4/4; all 4 fail on the pre-change script. Existing gc/target/cadence test failures are pre-existing (same counts on the seed).
+cmd: (ulimit -v 8388608; timeout 900 emacs-31.1 --batch -Q -L lisp -L src -L scripts -l ert -l test/nelisp-alloc-classes-test.el -f ert-run-tests-batch < /dev/null 2>&1 | grep -q 'Ran 4 tests, 4 results as expected, 0 unexpected')
+
+** S1.2 E2E: on a built image, correctness equals build27 (rows, kernel-diff, semantic-diff, guard checks, epoch and reader probes); vector-allocate64 Ir/step at least 1200 below build27 (3748.4); no other row above build27; peak arena bytes of the row not above build27 by more than 5%
+#+NOTE: 2026-11-02 build28: vector-allocate64 3748.4 -> 2382.7 Ir/step (-1366, -36%); the other seven rows equal build27; rows, kernel-diff, semantic-diff, guards, epoch and reader probes equal; nelisp--arena-stats after the N=80000 row identical to build27. Negative controls (no Ir drop, another row up, kernel-diff change, arena +21%) each fail the check.
+cmd: bash tools/ai/sbcl-impl-evidence/a239-s1/check-s12.sh
+
+* S2 Wall time
+
+** S2.1 E2E: the frozen S8 campaign (shared with Doc 238) is run once at the end and evaluated with s8-campaign/evaluate.py in a new evidence directory
+#+NOTE: 2026-11-02 build28 campaign (07:08-07:29, CPU 1, after stopping a hung build-on23ac dump). evaluate.py rc=0, no kernel or whole-process regression over 5% vs old r3. vector-allocate64 kernel 533.2 (build18) -> 347.8 ns/step (GNU 1361.5). Versus build18 the string rows are slower in wall time (string-slice16 131.2 -> 169.8, string-concat16 165.9 -> 183.8 ns/step) although Ir/step rose only about 2% (cg18 -> cg28); the old-r3 control is unchanged, so this is not machine state. Explained the same day (string-rows-analysis.txt): a GC cadence artifact of the two-trip-count method (from build21 one collection falls inside the high-N run only); over N=2M..4M callgrind gives b20 1342.3 vs b28 1342.0 Ir/step and paired wall time is string-slice16 +3.0%, string-concat16 -5.5% vs build18.
+evidence: tools/ai/sbcl-impl-evidence/s8-final-b28/summary.json sha256=11d8763238caed332a43bc5fcf7cefad9e6e68208376517cbe1bf6cbe75313f4
+
+** S2.2 E2E: the supplementary long-interval rows (s8-supplement-long.json; frozen protocol unchanged) pass their self-test and evaluate without integrity errors on build28
+#+NOTE: 2026-11-02 added after the build28 campaign showed a GC-cadence artifact in the frozen string rows (denominator 4 -> 5). Run 08:14-08:40 CPU 1. Long-interval kernel ns/step new vs GNU: vector-allocate64 371.1 vs 1447.0, string-slice16 159.5 vs 253.3, string-concat16 175.1 vs 277.5, hash-get1024 69.8 vs 73.5. hash-get1024 is cadence-sensitive for old r3 only (gap 0.223; new 0.006, gnu 0.017).
+cmd: cd tools/ai/sbcl-impl-evidence/s8-supplement-long && python3 -I evaluate_long.py x --self-test > /dev/null && python3 -I evaluate_long.py run-b28 > /dev/null

@@ -1,0 +1,20 @@
+{
+ "changed-image-sha": {
+  "rc": 3,
+  "stdout": "",
+  "stderr": "APPREADY-REFUSED (nelisp-init-ready-stale begin \"608208806567e2e8c19f7ae2a4682b4637bc53baa7b59745fbfe707488bd5b46\" \"47e7c94030505c1e46dbe67f34fe27ba968a1dac43f5f1e9435cd728dbaa830c\")\n",
+  "refused": true
+ },
+ "changed-tree-id": {
+  "rc": 3,
+  "stdout": "",
+  "stderr": "APPREADY-REFUSED (nelisp-init-ready-stale begin \"4ea5cfc9f9c6518ffde2bd259a3957f8fc2de3e4c806e82154ea15e9e0c50f09\" \"47e7c94030505c1e46dbe67f34fe27ba968a1dac43f5f1e9435cd728dbaa830c\")\n",
+  "refused": true
+ },
+ "no-restore": {
+  "rc": 3,
+  "stdout": "",
+  "stderr": "APPREADY-REFUSED no application-ready state in this process (image not restored)\n",
+  "refused": true
+ }
+}

@@ -1,0 +1,12 @@
+#+TITLE: Rooted legacy thread birth context
+#+NOTE: This bounded implementation serves parent typed-save S2.2 and S2.3. The parent ten-criterion objective and known failures remain unchanged; typed production stays disabled.
+
+* S1 Preserve the child birth buffer and launch ownership
+** S1.1 The genuine parent constructor captures the current buffer before migration and builds a rooted ordinary startup LET without rebuilding the original form
+evidence: target/typed-save/thread-birth/model-evidence.json sha256=227045beb2c06c8598bd027ba0046bda82ff99a2040bece5cb15438f405a2b96
+** S1.2 The checked private bootstrap frame is completely initialized before registry publication and retains launch data after parent return through child retirement
+evidence: target/typed-save/thread-birth/model-evidence.json sha256=227045beb2c06c8598bd027ba0046bda82ff99a2040bece5cb15438f405a2b96
+** S1.3 Failure and negative-clone controls preserve registry ownership and existing registered-worker semantics without entering a nonexistent-child ACK wait
+evidence: target/typed-save/thread-birth/model-evidence.json sha256=227045beb2c06c8598bd027ba0046bda82ff99a2040bece5cb15438f405a2b96
+** S1.4 A freshly built native candidate passes all five GNU thread pairs, parent-return and GC schedules, registered-worker checks and unchanged runtime regressions
+pending

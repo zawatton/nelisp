@@ -1,0 +1,11 @@
+#+TITLE: Isolated producer-OFF native P7 diagnosis
+#+NOTE: Three experimental criteria; parent10 unchanged. Preparation only; no effective authority, native acceptance or integration claim.
+* S1 Frozen experimental source
+** S1.1 Current isolated-source and preparation provenance frozen for review
+cmd: python3 -c 'import json,hashlib,pathlib; p=pathlib.Path("../out/isolated-native-p7-preparation"); q=json.load(open(p/"preparation.json")); assert q["status"]=="PREPARATION_ONLY_REQUIRES_ADAPTER_REVIEW"; assert hashlib.sha256((p/"source-manifest.json").read_bytes()).hexdigest()==q["source_manifest_sha256"]; m=json.load(open(p/"source-manifest.json")); assert all(hashlib.sha256(pathlib.Path(k).read_bytes()).hexdigest()==v for k,v in m["files"].items())'
+* S2 Exact bounded build
+** S2.1 Actual dedicated candidate build and unchanged resource caps verified
+pending
+* S3 Fresh genuine P7 diagnosis
+** S3.1 Exact current candidate raw GNU P7 match and independent audit
+pending

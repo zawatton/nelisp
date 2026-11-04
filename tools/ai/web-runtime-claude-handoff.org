@@ -1,0 +1,577 @@
+#+TITLE: Claude handoff — NeLisp browser runtime / JavaScript replacement
+#+DATE: 2026-10-24
+#+STATUS: CHECKPOINT — W0 image execution is not implemented
+
+* Read this first
+
+The user requested designing and implementing a way to write browser
+applications in NeLisp instead of TypeScript/JavaScript, repeatedly asked to
+continue, and then requested this Claude handoff. Continue from the existing
+work; do not restart the design or ask for routine confirmation.
+
+All direct user replies must be concise Japanese. Authored repository prose,
+comments, coordination and worklogs must be English. Read Notes, dev and
+nelisp AGENTS.md and the applicable skills before editing. Preserve the
+existing dirty tree. This session did not stage, commit, reset, stash or push.
+
+* Product decision and acceptance boundary
+
+- Application Lisp executes in the genuine NeLisp runtime compiled to Wasm.
+- A fixed JavaScript adapter may load Wasm and expose browser capabilities.
+- Do not transpile application logic to JavaScript or implement Lisp builtins
+  in a JavaScript dispatcher.
+- This is a new browser target, not an ECMAScript-compatible engine or an npm
+  compatibility promise. TypeScript-equivalent static checking is separate.
+- Do not reduce W0 to a numeric demo or claim runtime readiness from provider
+  compilation, opcode tests, or simulated-browser checks.
+
+W0 exits only when an actual Wasm core evaluates a portable application image
+using cons/car, string concatenation and a captured closure, producing the
+equivalent of =(7 "NeLisp" 9)=. Removing its genuine Wasm builtin provider must
+make the fixture fail. No JavaScript evaluation fallback is allowed.
+
+The design is in =docs/design/213-web-application-platform.org= and its review
+in =docs/design/213-web-application-review.org=. They remain DRAFT. The design
+deliverable ledger reaching 100% is not runtime readiness.
+
+* Workspace, preservation and authoritative checkpoints
+
+Repository: =/home/madblack-21/Cowork/Notes/dev/nelisp=.
+Branch: =feat/eln-jit-2026-09-28=.
+HEAD: =9d6a4a4f2c01952cb03f9333aa7afeb6bdf6d835=.
+
+Main state:
+- =target/ai/web-runtime-checkpoint.json=.
+- =target/ai/web-w0-lane.json=: original 180 dirty/untracked file hashes.
+  All 180 were verified unchanged immediately before the handoff.
+- Main =target/nelisp= remains unchanged:
+  =92796a66a657e49702537236cc4f729de53d2f34eb384e93d82c7568934908d1=.
+- Integrated compiler:
+  =b8b0697a464eb63bfd52f752d0810efe8e4576a6a1cdf2c3d3b43c8419b7630b=.
+- Integrated =lisp/nelisp-asm-wasm.el=:
+  =d87e7e262beef8b18c64cc84de08c780fe1f9953bb823127d6b25aa8d611a7f7=.
+- Integrated =test/nelisp-asm-wasm-test.el=:
+  =33565929309ee6bd1b4133ac7a8529efc8e51bf268c72616a5aabf50859d9509=.
+
+The unintegrated CAS lane is
+=/home/madblack-21/.cache/tmp/nelisp-web-w0-abv7y2u7=.
+Its original seed preservation is
+=/home/madblack-21/.cache/tmp/nelisp-web-w0-preserve-is2qlrue=.
+The separate diagnostic lane is
+=/home/madblack-21/.cache/tmp/nelisp-runtime-provider-5gjad6y3=.
+Never copy either entire lane into main.
+
+A durable CAS overlay and evidence archive are stored under
+=target/ai/claude-handoff/=; consult its manifest for exact final hashes.
+These are snapshots, not integration into the active compiler.
+Snapshot manifest sha256:
+=c569e598772f9ba57f7fa9730b525e54b65137910a495453af8bc660be4c9790=.
+All owned worker builds, tests, extraction jobs and REPLs were reaped before
+handoff. No new implementation is running; shared services were left alone.
+
+* Progress measured before handoff
+
+| Ledger | Meter | Actual remaining failure |
+|--------+-------+--------------------------|
+| web-runtime-w0-progress.org | 66.7% of 3; S1 2 PASS / 1 FAIL | Actual portable-image evaluation |
+| runtime-provider-progress.org | 66.7% of 3; S1 2 PASS / 1 FAIL | Real nl_eval_inner provider admission |
+| runtime-profile-progress.org | 66.7% of 3; S1 2 PASS / 1 FAIL | Real reader/baked selection completeness |
+| wasm-runtime-shift-progress.org | 100% of 3; S1 3 PASS | Bounded shift slice complete |
+| wasm-rootstack-progress.org | 100% of 3; S1 3 PASS | Four-function rootstack slice complete |
+
+Ledgers are under =tools/ai/=. Meter JSON is under =target/progress/=.
+These are separate denominators, not an overall product completion estimate.
+Keep the known-red commands; do not convert them to pending, remove them or
+weaken admission to improve the percentage. CAS is not yet main-qualified.
+
+* Integrated work and evidence
+
+** Source-first W0 probe and sexp-tag lowering
+
+Added =tools/ai/web-runtime-w0-probe.{py,el}=, focused tests, timeout controls,
+and genuine sexp-tag lowering. Immediate Int/Nil/T values and full-width
+boxed-pointer checks are handled before narrowing to a Wasm address.
+
+Parent evidence: actual Wasm20, focused ERT18, old-compiler rejection255 and
+effective corrupted-tag/timeout controls. The timeout control checks process
+groups, not just a parent PID.
+
+Evidence: =target/wasm-sexp-tag/coordinator-review.json=.
+Baseline: =target/web-runtime-w0/baseline-qualified.json=.
+The W0 probe still exits1 because application-image execution is absent.
+
+** Atomic fetch-add, bitwise operations and operand visitors
+
+Added genuine FE1F i64 atomic RMW returning the old value, modulo-i64
+arithmetic, full-width pointer validation after operand effects, and nested
+operand safety. Added i64 and/or/xor. Corrected the parser identity of
+=(logand)= from0 to GNU Emacs's -1. Both imports and handler-local visitors
+cover the operands; neither can silently miss nested calls/catches.
+
+Parent evidence: atomic31, bitwise24, visitor5 and ERT32 with effective
+semantic mutations. Evidence:
+=target/wasm-runtime-ops/coordinator-review.json=.
+
+** Raw shl/sar/shr
+
+Lowered IR67 with the actual native contract: COUNT before VALUE, exactly
+once, low-six-bit shift count, signed/unsigned right shift preserved.
+Both prepasses traverse the operands.
+
+Parent evidence: actual Wasm399, native agreement on384 numeric cases and
+3 order probes, ERT36, two semantic mutations and four malformed-corpus
+controls. The checker requires the complete, unique384-row Cartesian corpus.
+The native object+C driver calls genuine compiled functions; C supplies
+scalar inputs and assertions. It does not implement shift semantics.
+
+Evidence: =target/wasm-runtime-shift/coordinator-review.json=,
+sha256 =3c931a19cb9619d32bb752c5cdcd5a1ff9b3cd12071e523f0e130a01f39ebb72=.
+Earlier raw-serialization/inline-write harness failures were superseded;
+they do not establish a native runtime defect.
+
+** Genuine rootstack BSS composition
+
+Six new =tools/ai/wasm-rootstack-*= tools compose four unchanged genuine
+functions from =nelisp-cc-rootstack--source= with the real owning BSS
+declarations read from =nelisp-standalone--arena-base-slot-unit=.
+The build definition is read as syntax, not evaluated. The genuine Lisp
+provider is loaded normally; do not claim no provider code is ever loaded.
+
+Top slot8 bytes; root region131072*32 bytes; addresses4096/4104; managed
+cursor4198408. Composition checks ownership, uniqueness, size, alignment and
+disjoint static/managed storage. These are source-authoritative values for
+this bounded fixture, not a general runtime layout.
+
+Parent evidence: actual Wasm47 lifecycle/zeroing/reinitialization/overflow/
+canary/separate-instance checks, ERT8 and an effective broken-clear mutation.
+There are no imports in this four-function fixture.
+
+Evidence: =target/wasm-rootstack/coordinator-review.json=,
+sha256 =f05038f264ce71bac9a7dbff25254f7b3754eea1db716a1422fa573288328517=.
+The full61-function source is not closed. Its CAS blocker is implemented in
+the unintegrated lane; its next failure is the owning/generated pin BSS.
+
+** Source-authoritative provider and native-profile diagnostics
+
+Integrated =runtime-provider-{read.el,check.py,test.py,progress.org}=.
+Four genuine manifests produce111 deduplicated rows,97 hashed inputs and
+1056 declarations. GNU read-only extraction never evaluates inspected source.
+Function/data references remain distinct. Generated definitions, effects,
+unqualified syntax and target operations stay unresolved. RAW_PURE is empty:
+guessed pure names must not mask missing providers.
+
+Parent20 tests pass; actual =nl_eval_inner= admission exits1 with260 semantic
+diagnostics:277 reached symbols,797 edges,54 missing,21 duplicate,
+16 unqualified providers,117 target limits,50 syntax/dispatch and2 ownership/
+effect diagnostics. Many are unqualified analyses, not proven missing runtime
+implementations. Reached-symbol ownership is not whole-unit link proof.
+
+Evidence: =target/ai/runtime-provider/coordinator-review.json=.
+
+Also integrated four new =runtime-profile-*= files. They pin42 genuine
+selector/generator/condition definitions, their ASTs and complete source
+hashes. They explain all21 reached trap-provider pairs using the real reader
+versus baked/eval selection. Generated replacements retain input provenance
+but have =output_symbols=null= and unqualified ownership.
+
+Membership conditions are separate from generation dependencies:
+=reader-gc.o=, start and arena membership is unconditional; target/reload can
+change their generated bodies. Diagnostic traversal order is not link order.
+Parent14 tests, diagnostic report0 and real completeness1 were reproduced
+both independently and after integration. Reader retains19 unqualified source
+rows plus2 unresolved membership predicates; baked14 plus1. Body generation
+dependencies remain unresolved separately. CLI contract tampering and reader
+timeout classification are tested. Tooling errors are exit2, semantic
+incompleteness exit1. Old rc sidecars are removed before guarded execution.
+
+Evidence: =target/ai/runtime-profile-parent/coordinator-review.json=,
+sha256 =b431bc906944f3546e4e0049876f13f48bc2cce219e0300cd8a389b49399d5b7=.
+Current report sha256
+=43712b24442fcd811e549d9bb4d7d6de5606e2ee9d7887dba652128d728057f4=.
+
+* Unintegrated CAS slice — resume here first
+
+The isolated lane contains changes to two existing files and five new tools:
+- =lisp/nelisp-aot-compiler.el=.
+- =lisp/nelisp-asm-wasm.el=.
+- =tools/ai/wasm-cas-{fixture.el,check.mjs,controls.el,test.el,progress.org}=.
+
+Compiler hash:
+=f1b382bdc8d139faf758b5cf9df526934784f2db2c381964dbdb1d867b19e5d3=.
+Assembler hash:
+=014f385ee0876caa09299f846ecd42adbf63c2a88c3d7bf57297c6169e5958b9=.
+Final corrected test hash:
+=30f2fbf3ed5c1d4f0f9bcd7e677d9e69c05f4b23376b6ad15c6f89fa620b6be2=.
+Use the archived final freeze for all remaining exact hashes.
+Final =source-freeze.json= sha256:
+=1121156257ddbe9f4ee443352cc4139e99d8638b5cb3fcac2ba46d352559234e=.
+Final =lane-result.json= sha256:
+=3380ceaf84bac1503fed8002c203df2022f5591fae3d50d62183d95490c830e5=.
+Final =focused-evidence.json= sha256:
+=a4b0e717e0224fb8df87f50a3b254e23c07ddaa4edc94ccfbf5e3df24385bf42=.
+The CAS ledger was evidence-bound but deliberately not metered again after
+the user's handoff request. Do not infer a measured CAS completion percentage.
+
+Contract: IR2 evaluates pointer, expected, desired once in that order. Native
+returns i64 Boolean1/0. Wasm FE49 returns the old word; lowering compares it
+against a saved expected word and extends equality to i64. All operands stay
+on the operand stack until evaluation finishes. One extra i64 local is
+allocated only for functions containing CAS; nested operations are safe.
+Negative/high-u32 pointers are rejected after operand effects and before
+wrapping. Natural alignment/bounds traps remain real Wasm traps. Both import
+and handler visitors cover all3 operands.
+
+Worker results:
+- Native oracle0:256 numeric cases,4 nested cases and PED evaluation order.
+- Actual Wasm276 checks, including mismatch preservation, exact Boolean,
+  catches/throws, nested evaluation, pointer effects/traps and boundary slots.
+- Four effective semantic controls: old-word return, mismatch store, reversed
+  operand order and missing high-address guard.
+- Three malformed-corpus controls: empty, duplicate and missing rows.
+- Corrected focused ERT40/40. Earlier0-test success and39/40 failure are
+  superseded. The failure was an absolute-local-count test assumption, not a
+  compiler defect; runtime slots made that absolute count invalid.
+- Required compile0; namespace2 is the same known baseline failure.
+- Dedicated native build0,118 units; dedicated buffer smoke21/21.
+- Existing atomic31, bitwise24, sexp-tag20, shift399 and rootstack47 pass.
+
+A separate =gpt-6-astra= ultra auditor approved the compiler, assembler,
+fixture, checker and mutation evidence. The final test-only relative-local
+assertion was corrected after that approval; record its hash and passing
+nonzero count. The auditor reran no tests. No concurrency or W0 execution
+claim is established by this CAS fixture.
+
+UPDATE 2026-10-24 (Claude): CAS parent replay passed and the seven reviewed
+files are integrated into main; see =target/wasm-cas/parent-review.json=.
+Native standalone build, buffer smoke and make compile were not rerun by the
+parent. The remaining text of this paragraph is historical.
+CAS parent replay and main integration had NOT been performed at handoff. Guard main
+compiler/assembler against the integrated hashes above. Independently execute
+the native oracle, rebuild Wasm to a parent-specific output and run the
+checker and corrected focused tests. Do not overwrite the worker's evidence.
+The fixture accepts =WASM_CAS_OUTPUT=; the checker accepts its Wasm path.
+Use =target/wasm-cas/green-commands.json= and the final result for exact argv.
+Then worklog, copy only the seven reviewed files, verify preservation, update
+the bounded ledger/evidence and retain the failing W0 image criterion.
+
+The next full-rootstack diagnostic is:
+=:wasm-p3-external-data-addr, "nl_root_pin_control"=.
+This is a missing owning/generated BSS declaration, not a remaining CAS
+lowering gap. Pin-region/control offsets depend on genuine layout generators;
+do not invent offsets. Catch future diagnostic conditions into compact output:
+the uncaught Emacs backtrace expands enormous quoted runtime source.
+
+* UPDATE 2026-10-25 (Claude): full-rootstack pin BSS integrated
+
+Integrated into main (untracked tools): =tools/ai/wasm-rootstack-{compose,test,
+full-probe,full-controls,full-test,full-native-oracle}.el= and
+=tools/ai/wasm-rootstack-full-{escapes,authority}.eld=. Ledger
+=tools/ai/wasm-rootstack-full-progress.org= measures 100% of 3. Evidence:
+=target/wasm-rootstack/pin-coordinator-review.json=.
+
+- Pin control (4253824, 64) and region (4253888, 524288) derive from native
+  generator syntax with explicit inputs =(:target wasm32 :runtime-reload nil
+  :callsite nil)=, and are cross-checked by a separate Emacs that loads the
+  build script by name with =load-prefer-newer= and evaluates
+  =nelisp-standalone--arena-base-slot-unit= under target wasm32.
+- Usage guard contract: drift detector with 93 pinned reviewed escapes; not a
+  bounds verifier. Dynamic array accesses are bounds unproved.
+- All 61 genuine definitions compile to valid Wasm (63 exports). Next blocker:
+  function imports nl_alloc_symbol, nelisp_cons_construct, nl_seq2,
+  nl_cons_car_ptr, nl_cons_cdr_ptr, nl_gc_mark_slot, nl_gc_mark_recorded_env.
+- Review: gpt-6-astra ultra rejected four revisions and was stopped three times
+  by the provider cyber filter; by user choice Claude Opus reviewed revisions
+  6-8b and returned APPROVE-WITH-FINDINGS; its Low finding was fixed with a
+  red-green test, not re-audited.
+- The CAS integration changed the compiler hash recorded in the rootstack and
+  shift fixture manifests; both fixtures were rebuilt in main (Wasm
+  byte-identical, 47/0 and 399/0); =target/wasm-runtime-ops= was rebuilt too
+  (all 12 Wasm byte-identical; atomic31, bitwise24, sexp-tag20).
+- Ledger S1.3 of =wasm-rootstack-full-progress.org= was tightened on 2026-10-25
+  to require probe rc0 and the compiled line (negative control verified).
+
+** Re-pinning the full-rootstack guard after a reviewed upstream change
+
+There is no automatic regeneration entry point, by design (compose never
+refreshes pins). When a legitimate edit to =lisp/nelisp-cc-rootstack.el= or to
+one of the pinned build-script definitions makes the full probe report
+"Unreviewed owner escape", "Stale pinned owner escape" or "Unreviewed ownership
+generator change":
+1. Review the edit itself (does it introduce a new owner flow or change layout?).
+2. Escapes: collect =(plist-get (wasm-rootstack--usage SOURCE) :escapes)= for the
+   full composed source, sort with =wasm-rootstack--sorted-escapes=, diff against
+   =tools/ai/wasm-rootstack-full-escapes.eld=, and overwrite it only with the
+   reviewed delta (multiplicity matters).
+3. Generators: recompute =wasm-rootstack--definition-hash= of the newly selected
+   definition and update =tools/ai/wasm-rootstack-full-authority.eld=; the native
+   oracle must still agree.
+4. Re-run the full ERT (99 tests), fixture checker, probe and meter; record the
+   reason in a worklog.
+
+* UPDATE 2026-10-25 (Claude): step 3 first slice, executed init contract
+
+Ledger =tools/ai/wasm-target-init-progress.org=. Files
+=tools/ai/wasm-target-init{.el,-oracle.el,-probe.el,-check.mjs,-controls.el,-test.el}=
+plus one shared change: =wasm-rootstack--oracle-files-current-p= now honours
+=load-prefer-newer= selection (newer or tied =.elc=) and takes explicit helper
+paths. Evidence =target/wasm-target-init/coordinator-review.json=; lane briefs,
+report and six audits under =target/wasm-target-init/lane-review/=.
+
+- Red: the genuine rootstack source embeds raw arena-metadata atoms
+  #x10000000+{16,24,56,88} with no Wasm owner (=target/wasm-target-init/red.log=).
+- Seeds come from the genuine =nelisp-standalone--arena-init-metadata-forms-dynamic=
+  in a child Emacs (target wasm32, explicit =:arena-size 1048576=); 30 words,
+  data-start 1024. The rewrite adapter equals =nelisp-standalone--chunk-arena-rewrite=
+  under linux-x86_64 on the genuine source. =nl_wasm_arena_init= splices the
+  seeds verbatim; =nl_intern_region_init= is excluded (step 4), not stubbed.
+- Node executes init and the genuine =nl_rootstack_init=: every u64 of the whole
+  arena chunk and of all BSS owners is checked (2491240 checks). Coverage is
+  derived from the hashed module (=address-*= exports, =address-end= sentinel,
+  =arena-size= export); manifest sizes/data-start are cross-checks only, and
+  embedded authority texts are matched against the hashed build script with an
+  ASCII-only Lisp lexer.
+- Review: astra REJECTed revs 1-5 on one class (a manifest field bounding a
+  checked range; then a lexer gap); rev 4 redesigned coverage; rev 6 APPROVE.
+- Integration changed the =compose.el= hash pinned by
+  =target/wasm-rootstack/fixture.wasm.json=: rebuilt, Wasm byte-identical, 47/0.
+  Any later edit to a tools file listed in a fixture manifest needs the same rebuild.
+- Limits: Wasm =alloc-bytes= is the compiler bump cursor, not the seeded arena
+  cursor at base+0 (two cursors), and never reclaims. The rewritten 61-definition
+  module is compile-only with 7 imports (nl_alloc_symbol, nelisp_cons_construct,
+  nl_seq2, nl_cons_car_ptr, nl_cons_cdr_ptr, nl_gc_mark_slot,
+  nl_gc_mark_recorded_env). No GC, dispatch, image loading or W0 execution.
+- Open step-3 items: Env (120 bytes; +0 globals, +64 unbound), signal/mutation
+  slot users beyond the four atoms, and whether Wasm =alloc-bytes= should consume
+  the arena cursor.
+
+* UPDATE 2026-10-25 (Claude): step 3 second slice, genuine allocator executed
+
+Ledger =tools/ai/wasm-target-alloc-progress.org=. Files
+=tools/ai/wasm-target-alloc{.el,-oracle.el,-probe.el,-check.mjs,-test.el,-accept.sh,-regression.sh}=
+(new only). Evidence =target/wasm-target-alloc/coordinator-review.json=; briefs,
+report and audits under =target/wasm-target-alloc/lane-review/=.
+
+- The genuine =nl_alloc_bytes= closure (41 definitions, selected by name from
+  =nelisp-standalone--target-arena-source= under an explicit linux-x86_64 binding
+  in a child) runs over the target-init arena. Only two W0 adapters:
+  =nl_os_alloc_chunk= returns 0 (no growth), =nl_os_alloc_fail= stores 88.
+  22 raw arena atoms rewritten. Node checks 7 allocations, exact fill and
+  exhaustion against a whole-linear-memory snapshot (9053947 checks).
+- The checked module is compiled by a clean child Emacs (no =-L=, repo lisp
+  appended, =EMACSLOADPATH=/=EMACSNATIVELOADPATH= cleared, =load-no-native=)
+  from a schema-validated saved input; loaded files are allowlisted
+  (installation lisp root + eight named compiler files, no =.eln=).
+- Trust-boundary ruling: harness sources under tools/ai are trusted by review;
+  attacks needing the harness itself to write files or tamper with process state
+  are out of scope. The checker defends drift, manifest inconsistency and
+  accidental contamination (session definitions, load-path shadowing).
+- Review: astra REJECT x2 (second after a cyber-filter stop and reword), then a
+  further filter stop; user chose Claude Opus for this slice: REJECT x3, final
+  APPROVE-WITH-FINDINGS (whole-memory check, native-code isolation), both fixed
+  in rev 7 and coordinator-verified, not re-audited.
+- Facts found: the genuine allocator ignores its =align= argument (8-byte blocks
+  only; 16-byte payload alignment is not available). Free-list reuse and
+  checked-stamp paths are not exercised. Compiler =alloc-bytes= lowering in Wasm
+  is still the inline bump; switching it to the genuine allocator is a compiler
+  change for a later slice.
+- Open: the oracle launchers (step-2 native oracle, target-init seed oracle,
+  allocator closure oracle) still prepend =-L lisp -L src -L scripts= with no
+  shadow check; no false green was found through them, but reuse the
+  compiler-child shadow check when they are next touched.
+
+* UPDATE 2026-10-25 (Claude): survey and opt-in genuine Wasm allocation
+
+- Survey (=target/wasm-boot-survey/FINDINGS.org=): from the native =driver=,
+  the genuine bootstrap + one builtin closure is 326 of 1000 manifest
+  definitions in 38 units. No block-header readers, but
+  =nelisp_mirror_lookup_entry_valid_key= rejects symbol keys outside the arena
+  and =nl_val_clone_into= branches on =nl_gc_in_arena=. Wasm inline-bump objects
+  are outside the arena, so genuine allocation is a bootstrap prerequisite.
+- Compiler (=lisp/nelisp-aot-compiler.el=, +110/-23):
+  =nelisp-aot-compiler-wasm-genuine-alloc= (default nil; default bytes
+  unchanged) lowers =alloc-bytes= to a call of the module's own two-argument
+  =nl_alloc_bytes=; =nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers=
+  (default nil) names functions keeping exactly one raw site (the harness binds
+  =(nl_wasm_arena_init)=). The allocator's call graph may contain no allocation,
+  indirect call, =extern-call= (even to a local name) or import. Tests:
+  =test/nelisp-aot-wasm-genuine-alloc{,-rev2}-test.el= (22).
+- Harness =tools/ai/wasm-genuine-alloc*=, ledger
+  =tools/ai/wasm-genuine-alloc-progress.org=: default mode puts genuine consbox
+  and vector objects outside the arena (red, 6 consumers); genuine mode puts
+  them inside with headers and allocator effects checked over all memory.
+  =nl_alloc_symbol= is excluded (intern region at arena+832).
+- Integration rebuilt every fixture whose manifest pins the compiler hash
+  (regression driver =wasm-genuine-alloc-regression.sh PHASE= now also runs the
+  native CAS/shift oracles); rebuilt modules are byte-identical.
+- Review: astra APPROVE-WITH-FINDINGS twice; all findings fixed (rev 3 driver
+  fix and the ledger command fix are coordinator-verified, not re-audited).
+- Next: use the mode for genuine bootstrap work (step 4); intern-region
+  initialization is the first missing piece for =nl_alloc_symbol=.
+
+* Read-only bootstrap facts collected at handoff
+
+Archived at =target/ai/claude-handoff/runtime-bootstrap-facts/=. GNU extraction
+returned0, with no inspected build selector evaluation, builds or runtime
+probes. These are source facts, not a closed portable bootstrap.
+
+- =checkpoint.json= sha256:
+  =d6609965845434e62be49c234716f33ec36d72b3b2bf8d0af24df3fe67e78901=.
+- =index.json= has six authoritative source hashes and18 definition ranges;
+  =forms.json= contains the selected GNU-read ASTs/extracts.
+- =nl_bootstrap_make_mirror= constructs scratch type symbols, installs empty
+  globals/frames, constructs the unbound symbol and installs bootstrap builtins.
+- Globals hold a three-slot hash-table record with capacity1024, a1024-element
+  bucket vector and count0. Frames use an eight-element backing vector/count0.
+- =nl_install_one= creates =(builtin NAME)= and an11-slot function scratch
+  vector, including symentry marker5, unbound7 and sentinel8, then uses
+  =nelisp_mirror_set_function_or_insert=. Vector wrappers have tag8 at offset0,
+  box pointer8 and zeros16/24.
+- Reader registration combines base/TLS/extern/optional-callsite names.
+  Registration and dispatch are separate: a dispatch arm alone is insufficient.
+- =nelisp_apply_function(func_ptr,args,env,out)= dispatches by the name in
+  =car(cdr(func_ptr))=. The calln bridge's =frames= argument is the genuine Env
+  pointer. Native address arms expose linked =data-addr= values through fixed
+  indices, not portable callable IDs.
+- Interpreted application distinguishes closure/lambda/builtin lists and
+  symbol lookup; Env+0 is globals, Env+64 is unbound. Captured closure
+  application reaches =nl_apply_lambda_inner= and =nl_env_push_captured=.
+
+Unfinished: exact cons/car/concat helper closures, all120 driver Env bytes,
+cold/prelude branches, target generators and caller-side calln ABI agreement.
+The next bounded executable candidate is genuine bootstrap plus one installed
+builtin through genuine Env/dispatch, after closing allocator/vector/record/
+symbol/mirror/cons dependencies. Full closure evaluation needs its additional
+captured-environment/frame/binding/evaluator dependencies.
+
+* Next implementation sequence
+
+1. Finish parent qualification and guarded integration of the CAS slice.
+2. Resolve genuine full-rootstack pin control/region BSS ownership from the
+   actual generators, with explicit layout inputs and negative ownership/
+   undersize/alignment/overlap controls. Do not mistake compile-only for root
+   lifecycle execution or garbage collection.
+3. Specify and execute the target-state initialization contract: arena,
+   allocator metadata, root regions, Env, signal and mutation slots. Replace
+   native address assumptions through deliberate target adapters, not blanket
+   integer rebasing. Use the real allocator and explicit noncollecting W0
+   limits if needed; prove reclamation separately in W1.
+4. Resolve genuine builtin installation/dispatch agreement. Next source
+   authorities include =nl_bootstrap_make_mirror= and =nl_install_one= in
+   =lisp/nelisp-cc-evalport-bootstrap.el=, script
+   =nelisp-standalone--reader-install-builtins-forms=,
+   =nelisp-standalone--applyfn-source= and =--applyfn-assemble=, and
+   =nelisp_aot_builtin_calln=. Read any additional bootstrap facts archived at
+   handoff before rediscovering them.
+5. Implement a portable object-graph image loader and explicit callable-handle
+   mapping. Initialize builtin bindings and closure environments before entry.
+   Execute W0 image logic through the shared evaluator; remove a genuine
+   provider as the effective negative control.
+6. Only after W0: W1 semantic corpus/conditions/heap reclamation; W2 versioned
+   browser ABI, bounded event pump, DOM handles/events/disposal; W3 Japanese
+   input/IME, tasks/fetch/codecs/diagnostics; W4 reproducible packaging, CSP,
+   declared real Chromium/Firefox/WebKit coverage and lifecycle checks.
+
+The native baked dispatch is a narrow first19-entry path. Do not silently use
+it as a complete reader/browser fallback. The interpreted builtin bridge
+constructs a Lisp =(builtin NAME)= sentinel and calls shared apply; native
+code pointers cannot be replaced with guessed Wasm table indices. Relevant
+closure paths include =nl_env_capture_lexical=,
+=nl_capture_descend_native= and =nl_apply_closure_or_lambda=.
+
+* Operational rules and known pitfalls
+
+- Every REPL/test has =ulimit -v 8388608=. Never raise the cap.
+- Heavy builds/tests use Notes =bin/heavy-run.sh=. Exclusive benchmark work
+  periodically owns all six slots. Do not bypass it, stop unrelated work, or
+  report queue timeout as a semantic failure. Keep bounded queue/execution
+  accounting, reap own processes, and remove stale rc sidecars.
+- Node20.19.2 needs =--disable-wasm-trap-handler= under the8GiB cap.
+- Use dedicated native outputs; never overwrite main =target/nelisp=.
+- Namespace2 (16 collisions,554 files/1805 findings) and fatal-warning line241
+  were byte-identical baseline failures. Do not weaken baselines to hide them.
+- Actual allocator block header is8 bytes, not stale16-byte comments:
+  =8 + max(8, align_up(size,8))=; object pointer is header+8, size mask
+  =4294967288=, mark bits low3. Fixed metadata base+160=1 disables collection;
+  dynamic variant+160=0 enables it. This is not a global GC-disable fact.
+- Current Wasm =alloc-bytes= bump allocation and no-op deallocation do not
+  prove compatibility with native allocator/free-list/GC contracts. Native
+  conservative stack scanning cannot see Wasm locals. W1 reclamation is red.
+- Use focused symbols/callers and short probes before broad builds. Before
+  editing existing functions, run Anvil caller dependency queries. Generated
+  DSL definitions require scoped enclosing-defun extraction, not broad index
+  scans. State syntactic-analysis limits.
+- The progress meter prints a table and a JSON path; read the actual JSON
+  file, not redirected stdout as JSON. =NOTES_ROOT= must be set for ledgers
+  requiring it. Add/modify criteria explicitly; never estimate percentages.
+- Use =apply_patch= for manual edits. DB worklogs go through
+  =anvil-standalone worklog-add= with English org bodies; no generated memory
+  or legacy log-file writes.
+
+* Anvil, models and further context
+
+Standalone Anvil is working for small source and caller queries. The latest
+parent health query returned statusok,1614 chars, scorer-errors0. A large
+build-script code-context query can fail with arrayp on a buffer object; a
+small successful query demonstrates that this is operation-specific. Do not
+restart/re-enable shared services or enqueue expensive health index scans.
+
+Earlier recovery was integrated in the separate Anvil repository:
+explicit source =emacs-char-table.el= preload before =(require 'anvil)= in
+=tools/anvil-standalone-mcp.el=, bounded smoke and documentation. Standalone
+=locate-library= ignored load-suffixes and chose stale .elc; do not preload
+=syntax-table.el= as a workaround. Known full-compiler index limitations
+remain. Read the recovery evidence rather than repeating failed broad scans.
+
+At the next task boundary hash, including uncommitted content:
+- =dev/anvil.el/docs/code-context-workflow.ja.md=:
+  =5622637d17e16ac8a58bbb609cdae3cffc44733e9843f5499788ef3072da6939=.
+- =dev/nelisp-system-one/docs/capabilities.ja.md=:
+  =44acf576810a7a965c8f42b1309d994ea7a19e1c12e1ec158668300ef6a2a9bc=.
+Read only changed sections and verify APIs on the actual connection.
+
+Implementation used =gpt-6.1-sol= high after the OpenRouter wrapper failed
+with exit69/unregistered provider. OpenRouter inference calls were0; exact
+external/coordinator token usage is unavailable. Do not claim zero context
+cost. Follow the current default delegation skill/provider policy on resume;
+do not silently change an explicitly selected implementation model.
+
+For delegated design/completion/recurring-failure audits, the user requires a
+separate highest available Astra-family model at its highest reasoning effort
+(currently =gpt-6-astra=, =ultra=). Do not silently substitute a Sol auditor.
+
+Use the focused evidence paths above instead of replaying this entire
+conversation or dumping large generated sources/backtraces into context.
+
+* UPDATE 2026-10-25 (Claude): genuine symbol interning executed in Wasm
+
+- Ledger =tools/ai/wasm-intern-symbol-progress.org=; evidence
+  =target/wasm-intern-symbol/coordinator-review.json=; review records in
+  =target/wasm-intern-symbol/lane-review/=. New untracked harness
+  =tools/ai/wasm-intern-symbol*= (10 files, hashes in =integrated.sha256=).
+  No compiler or existing-tool change.
+- Closure: =nl_alloc_symbol= is 18 genuine definitions in =alloc-str.o=; arena
+  metadata +832 (table base) and +840 (name cursor). Genuine
+  =nl_intern_region_init= mmaps 64 MiB (1M x 16-byte table + name area); the
+  Wasm compiler lowers unmapped syscall 9 to the constant -38 (ENOSYS), so it
+  compiles, returns 0 and leaves symbols uninterned (S1.1 red).
+- W0 adapter =nl_wasm_intern_region_init=, derived from the genuine init syntax:
+  raw 64 MiB =alloc-bytes= (align 4096) plus the genuine stores. Genuine mode now
+  has two raw reservers, both W0 adapters (arena chunk, intern region). Region
+  size, table extent, masks and the consumer limit are cross-checked from the
+  consumers' own syntax before compilation.
+- Node checks whole linear memory around every call: new/repeated names,
+  n = 0 and copy-loop tail, canonical nil/t and their near misses, equal- and
+  unequal-length collisions (slots from a native oracle running genuine
+  =nl_intern_hash=), uninitialized-region plain path through =nl_alloc_bytes=;
+  the adapter's return value is checked against genuine init executed natively.
+- Untested: table-full and region-full fallback; mmap failure is not modelled
+  (the raw Wasm reservation traps).
+- Review: gpt-6-astra ultra APPROVE-WITH-FINDINGS twice (4 then 2 findings, all
+  fixed red-green); Rev 4 fixes are coordinator-verified, not re-audited.
+- The meter needs =--root= when run inside a lane copy without =.git=.
+- Open item: the oracle launcher in =wasm-intern-symbol-record= appends
+  =lisp src scripts tools/ai= to =load-path= (installation first) but has no
+  shadow check and does not clear =EMACSLOADPATH=; same class as the
+  target-alloc oracle launcher item above.
+- Next step-4 blockers: the remaining bootstrap closure (cons construction,
+  mirror install, eval call) on top of genuine alloc + interning.

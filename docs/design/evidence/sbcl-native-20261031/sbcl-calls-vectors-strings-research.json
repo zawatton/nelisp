@@ -1,0 +1,496 @@
+{
+  "schema": 1,
+  "scope": "Source-grounded design research only; no build/runtime/test/download/source edits",
+  "model": "gpt-6.1-sol",
+  "source": {
+    "origin": "https://github.com/sbcl/sbcl.git",
+    "commit": "80dad386fc3536d0185dc4a2b9627a331c5f256f",
+    "worktree_status": "git status --short returned empty",
+    "hashes": {
+      "src/compiler/locall.lisp": "393fbb15ee363a3c987ebc54a6bc26777fd62354537bd75ff15b5b8570aeae08",
+      "src/compiler/ir2tran.lisp": "635b35595aae2d59a795527bcc8fa3b446db9cdc225f8f8b320cc4e6ae580415",
+      "src/compiler/ir1util.lisp": "d3be128c58cf1b85227945cecec0d6ed0032a97eb43458ead55bfd15e003bcc8",
+      "src/compiler/ir1opt.lisp": "82cd627bf50993150b51214d0bc139015a50bafaf26c78344b8f6ab19fa4c567",
+      "src/compiler/represent.lisp": "14b262f4cacda7a418f2d07deb12cf602480a091729b7c355f1120950feea574",
+      "src/compiler/x86-64/call.lisp": "44d4917f3cf1e5b92dc50575604dfa815a4c4099ca1af3fb0c9330e082a9a90b",
+      "src/compiler/x86-64/array.lisp": "d77b001a695ee56aac03b52c09bc48ded85d71521bee07e0a7467f6c26b64503",
+      "src/compiler/x86-64/cell.lisp": "5ebc72c7bc69d7018a41817aea692ce4a7cdd82582454b10a958ae3172472e44",
+      "src/compiler/x86-64/macros.lisp": "7a084b88c1a15c7495ee3711de0140f3e363c65a013b9564794e349445b5fe46",
+      "src/compiler/generic/vm-array.lisp": "f0cd13ab91ad267e5eea5cf64aa41916df0d617dc1e92d4f7dab38998d665409",
+      "src/compiler/generic/early-vm.lisp": "ea69ba6cecb8faa5c58930c1c2f7b9a0b362b3cb9bedf3fcad06437d89b89cc7",
+      "src/code/fdefinition.lisp": "0311054853fa8c6d56ae5767062d8f2e8953dbdfaec9d743cdfdf2e68a26bded",
+      "src/code/array.lisp": "f84a6f9bcafd5c06249b88f3d11a0d4b13b544217de96c8ddab9825529314e93",
+      "src/code/string.lisp": "e157378e8083cdbe3a25adf3eaabb33e5f05505c98d70fa7c11ca8264544a3a7",
+      "src/code/seq.lisp": "13e574453859fcf5216345ed750f89f3fdf9bbd3be817592bf3f641870dc027c"
+    }
+  },
+  "baseline": {
+    "root": "$HOME/.cache/tmp/nelisp-v8-native-20261029/frozen12/wt6",
+    "qualification": "HOLD; experimental reference measurements only",
+    "doc215_warning": "Shared docs/design/215-v8-inspired-native-optimization.org and frozen12 doc215 word transport are different documents; do not merge their baselines.",
+    "measurements_supplied_by_coordinator": {
+      "unit": "actual HIGH seconds; GNU 31.1 bytecode versus NeLisp native ON",
+      "N4194304": {
+        "nested": [
+          0.340655327,
+          0.700156927
+        ],
+        "ordinary_call2": [
+          0.302276134,
+          1.034378052
+        ],
+        "vector_read": [
+          0.182685614,
+          0.317495823
+        ],
+        "vector_write": [
+          0.165211439,
+          0.325818062
+        ]
+      },
+      "N1048576": {
+        "concat": [
+          0.287072897,
+          0.341924191
+        ],
+        "slice": [
+          0.274148464,
+          0.283679008
+        ]
+      }
+    },
+    "static_audit_supplied": {
+      "path": "$HOME/.cache/tmp/nelisp-v8-native-20261029/out/gnu-native-batch6/experimental-speedup-20261031/primary-static-audit/summary.json",
+      "helper": "nc30002 normalized identical, 382 instructions",
+      "caller_OFF": "642 instructions, 20 static calls, stack 0x150",
+      "caller_ON": "2514 instructions, 67 static calls, stack 0x430",
+      "timing": "primary native ON regressed 5.595% net",
+      "interpretation": "Expansion and timing observed independently; counts alone do not prove dynamic cost cause."
+    }
+  },
+  "claims": [
+    {
+      "id": "CVS-01",
+      "topic": "calls-local",
+      "fact": "Observed: local conversion propagates argument facts, records call/closure relationships, marks dynamic extent, merges tail sets and changes the reference leaf.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/locall.lisp",
+      "symbol": "convert-call",
+      "lines": [
+        145,
+        154
+      ],
+      "sha256": "393fbb15ee363a3c987ebc54a6bc26777fd62354537bd75ff15b5b8570aeae08",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/locall.lisp#L145-L154",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:887-945; nelisp-cc-fxir-inline.el:28-36",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Introduce a general call IR whose target identity, effects, arity and representation are explicit; specialize only certified callees.",
+      "invariants": "Left-to-right argument evaluation; dynamic binding, advice, fset and nonlocal exits remain observable.",
+      "acceptance": "Call effects/order parity with redefinition before and during execution; no benchmark-body recognizer."
+    },
+    {
+      "id": "CVS-02",
+      "topic": "calls-entry",
+      "fact": "Observed: external entry creation documents conditional arity/type checks and optional-argument dispatch before calling the internal function.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/locall.lisp",
+      "symbol": "make-xep-lambda-expression",
+      "lines": [
+        156,
+        193
+      ],
+      "sha256": "393fbb15ee363a3c987ebc54a6bc26777fd62354537bd75ff15b5b8570aeae08",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/locall.lisp#L156-L193",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:287 frame forms",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Separate checked public entry and proven internal entry only under a documented call contract.",
+      "invariants": "Unknown/public calls retain exact Emacs arity/type errors and root/backtrace metadata.",
+      "acceptance": "Wrong arity/type and optional/rest/closure tests use both entries; stale certificates force checked fallback."
+    },
+    {
+      "id": "CVS-03",
+      "topic": "calls-abi",
+      "fact": "Observed: local lowering allocates a frame and selects known/unknown result conventions; fixed and unboxed return-info are separate cases.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/ir2tran.lisp",
+      "symbol": "ir2-convert-local-call-args / ir2-convert-local-call",
+      "lines": [
+        1017,
+        1107
+      ],
+      "sha256": "635b35595aae2d59a795527bcc8fa3b446db9cdc225f8f8b320cc4e6ae580415",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/ir2tran.lisp#L1017-L1107",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:287-305; inline-form activation in nelisp-cc-fxir-inline.el:150+",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Specify NeLisp frame/root/backtrace ABI before shrinking frame setup; use representation-aware argument/result locations.",
+      "invariants": "SBCL register/frame layout is not a portable NeLisp ABI. Every potentially collecting call needs all live roots.",
+      "acceptance": "Forced GC inside callee, nested nonlocal exit, closure capture, backtrace and recursive call tests; inspect emitted frame/root deltas."
+    },
+    {
+      "id": "CVS-04",
+      "topic": "calls-closure",
+      "fact": "Observed: generated full-call variants distinguish named, variable, return shape and directness; closure calls move function into RAX before changing frame pointer.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/call.lisp",
+      "symbol": "define-full-call",
+      "lines": [
+        919,
+        1050
+      ],
+      "sha256": "44d4917f3cf1e5b92dc50575604dfa815a4c4099ca1af3fb0c9330e082a9a90b",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/call.lisp#L919-L1050",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:shared direct wrappers 1479-1593",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Keep direct-entry, closure-environment and generic callable contracts distinct rather than treating every call as raw address.",
+      "invariants": "Retain closure owner/environment across safepoints; dynamic targets require identity/version validation.",
+      "acceptance": "Closure lifetime with forced GC and redefinition/advice plus direct-versus-indirect result/effect parity."
+    },
+    {
+      "id": "CVS-05",
+      "topic": "calls-redefinition",
+      "fact": "Observed: setting the function cell uses a dedicated VM primitive, not an arbitrary compiler-only binding.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/fdefinition.lisp",
+      "symbol": "(setf fdefn-fun)",
+      "lines": [
+        20,
+        28
+      ],
+      "sha256": "0311054853fa8c6d56ae5767062d8f2e8953dbdfaec9d743cdfdf2e68a26bded",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/fdefinition.lisp#L20-L28",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:certificate/inline sites 887-945",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Model mutable function binding generations and invalidate/recheck compiled dependency certificates.",
+      "invariants": "CL treatment of inline definitions does not license stale Emacs fset/advice behavior.",
+      "acceptance": "Compile then fset/defalias/advice/remove advice; live callers must see required semantics or safely deopt."
+    },
+    {
+      "id": "CVS-06",
+      "topic": "calls-undefined",
+      "fact": "Observed: ordinary fdefn load can return NIL for zero; safe-fdefn-fun branches to undefined-fun-error with a retry location.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/cell.lisp",
+      "symbol": "safe-fdefn-fun",
+      "lines": [
+        325,
+        349
+      ],
+      "sha256": "5ebc72c7bc69d7018a41817aea692ce4a7cdd82582454b10a958ae3172472e44",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/cell.lisp#L325-L349",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:direct-call wrappers 1591+",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Represent checked resolution as a distinct operation with explicit error/deopt edge.",
+      "invariants": "Error class, name, side-effect order and retry semantics must follow Emacs rather than SBCL error names.",
+      "acceptance": "Unbound and rebound callable parity with stateful arguments; verify cold error edge remains emitted."
+    },
+    {
+      "id": "CVS-07",
+      "topic": "calls-inlining-policy",
+      "fact": "Observed: NOTINLINE and policy gate expansion; available expansion and inline-expansion-ok are required; some policy cases retain one expansion per component.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/ir1opt.lisp",
+      "symbol": "inline decision branch",
+      "lines": [
+        1680,
+        1738
+      ],
+      "sha256": "82cd627bf50993150b51214d0bc139015a50bafaf26c78344b8f6ab19fa4c567",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/ir1opt.lisp#L1680-L1738",
+      "NeLispanchor": "nelisp-cc-fxir-inline.el:28-36 exact nested-two-addition certificate",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Replace body/benchmark pattern matching by generic certified IR cloning; share cold guards and fallback where legal.",
+      "invariants": "No duplicated effects, root scopes, quit polls or error construction; preserve overflow-to-bignum.",
+      "acceptance": "General unrelated callees pass; negative control breaks a certificate; compare emitted instructions/calls/stack for all candidate sites."
+    },
+    {
+      "id": "CVS-08",
+      "topic": "calls-expansion-limit",
+      "fact": "Observed: expansion ancestry counts recursive occurrences and refuses expansion beyond a configured limit. This is not a post-lowering byte-cost model.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/ir1util.lisp",
+      "symbol": "register-inline-expansion / inline-expansion-ok",
+      "lines": [
+        3309,
+        3336
+      ],
+      "sha256": "d3be128c58cf1b85227945cecec0d6ed0032a97eb43458ead55bfd15e003bcc8",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/ir1util.lisp#L3309-L3336",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:897-944 budget nodes/5",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Use two limits: recursion/IR expansion safety, then lowered cost budget including guards, roots, spill/frame size and cold fallback duplication.",
+      "invariants": "Inference: post-lowering budget is a proposed NeLisp addition, not a claim SBCL already implements it here.",
+      "acceptance": "Before acceptance require candidate estimated and actual bytes/stack/calls; reject growth beyond explicit per-callsite and per-function budgets."
+    },
+    {
+      "id": "CVS-09",
+      "topic": "calls-representation",
+      "fact": "Observed: representation choice sums argument/result reference costs for candidate storage classes and selects a minimum-cost class.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/represent.lisp",
+      "symbol": "select-tn-representation",
+      "lines": [
+        285,
+        310
+      ],
+      "sha256": "14b262f4cacda7a418f2d07deb12cf602480a091729b7c355f1120950feea574",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/represent.lisp#L285-L310",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:boxed inline guards; nelisp-heap-accessors.el:127-141",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Track tagged-word versus unboxed values in IR and price conversion boundaries, not just arithmetic nodes.",
+      "invariants": "Fixnum overflow must reach bignum semantics; floating representation must preserve required numeric results.",
+      "acceptance": "Mixed representations and overflow boundaries differential tests; inspect boxing count and lowered cost before timings."
+    },
+    {
+      "id": "CVS-10",
+      "topic": "calls-safepoint",
+      "fact": "Observed: sb-safepoint feature emits a trapping memory test; comments explicitly discuss redundant consecutive safepoints. Feature-conditional evidence does not describe every SBCL GC configuration.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/macros.lisp",
+      "symbol": "emit-safepoint",
+      "lines": [
+        203,
+        211
+      ],
+      "sha256": "7a084b88c1a15c7495ee3711de0140f3e363c65a013b9564794e349445b5fe46",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/macros.lisp#L203-L211",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:frame/forms and raw memory guards",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Make poll/GC effects explicit in IR and permit poll fusion only with a proven maximum uninterrupted region.",
+      "invariants": "No hidden collecting call in claimed raw region; retain quit responsiveness, live roots and nonlocal-exit unwind.",
+      "acceptance": "Forced GC at each legal boundary; interrupt long optimized loop; poison/remove a required root as negative control."
+    },
+    {
+      "id": "CVS-11",
+      "topic": "vectors-layout",
+      "fact": "Observed: simple-vector uses descriptor/any registers; specialized unsigned/signed 64-bit vectors use unsigned/signed register classes; fixnum arrays use tagged-num.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/array.lisp",
+      "symbol": "def-full-data-vector-frobs",
+      "lines": [
+        351,
+        368
+      ],
+      "sha256": "d77b001a695ee56aac03b52c09bc48ded85d71521bee07e0a7467f6c26b64503",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/array.lisp#L351-L368",
+      "NeLispanchor": "nelisp-cc-nlvector-set-slot.el:60-85 (8-byte tagged WORD slots)",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Lower existing Emacs vector accesses as tagged slots; any specialized internal backing storage needs explicit nonescaping representation contract.",
+      "invariants": "Ordinary Emacs vectors remain heterogeneous and preserve object identity/mutation; no silent unboxing based solely on observed contents.",
+      "acceptance": "Mixed immediate/pointer vector loads/stores including aliases and promotion/GC; specialized candidate escape forces boxing."
+    },
+    {
+      "id": "CVS-12",
+      "topic": "vectors-bounds",
+      "fact": "Observed: checked, fast, fixnum and untagged bound VOP variants are distinct with differing argument types and costs.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/array.lisp",
+      "symbol": "check-bound variants",
+      "lines": [
+        196,
+        234
+      ],
+      "sha256": "d77b001a695ee56aac03b52c09bc48ded85d71521bee07e0a7467f6c26b64503",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/array.lisp#L196-L234",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:998 inline slot load; nelisp-cc-nlvector-set-slot.el:71",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Emit shape/type/bounds guards at a dominating validated point and reuse only while owner/length facts remain valid.",
+      "invariants": "SBCL safety policies cannot authorize unchecked Emacs accesses; negative index and type errors remain exact.",
+      "acceptance": "Indices -1/0/length/huge/bignum/wrong type, alias mutation and zero-length objects; expected error objects and argument order checked."
+    },
+    {
+      "id": "CVS-13",
+      "topic": "vectors-barrier",
+      "fact": "Observed: full setter generator emits emit-gengc-barrier for simple-vector before emit-store; numeric specialized setters are generated separately.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/x86-64/array.lisp",
+      "symbol": "define-full-setter+addend",
+      "lines": [
+        315,
+        350
+      ],
+      "sha256": "d77b001a695ee56aac03b52c09bc48ded85d71521bee07e0a7467f6c26b64503",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/x86-64/array.lisp#L315-L350",
+      "NeLispanchor": "nelisp-cc-nlvector-set-slot.el:60-85 clone-into keystone, not a proven equivalent barrier",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Treat pointer store as GC-visible mutation with explicit barrier effect; derive NeLisp barrier from its collector and ownership semantics.",
+      "invariants": "Do not copy SBCL card protocol blindly or erase NeLisp clone/refcount semantics based on a raw store shortcut.",
+      "acceptance": "Old container to young child survives collection; overwrite/self-reference/shared child identity checks and barrier negative control."
+    },
+    {
+      "id": "CVS-14",
+      "topic": "vectors-header",
+      "fact": "Observed: header arrays resolve to data vector plus adjusted index; helper variants request bounds/fill-pointer checks.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/array.lisp",
+      "symbol": "%with-array-data / %data-vector-and-index",
+      "lines": [
+        48,
+        63
+      ],
+      "sha256": "f84a6f9bcafd5c06249b88f3d11a0d4b13b544217de96c8ddab9825529314e93",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/array.lisp#L48-L63",
+      "NeLispanchor": "nelisp-cc-nlvector-set-slot.el:60-85 raw vector header description",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Introduce checked storage-view operation that retains owner, logical length, offset and representation; simplify only for proven simple vectors.",
+      "invariants": "A view is not permission to retain an interior address across GC or reentrant mutation.",
+      "acceptance": "View guards fail correctly for incompatible kinds; forced GC and owner lifetime tested; no displaced-array semantics imported into Emacs."
+    },
+    {
+      "id": "CVS-15",
+      "topic": "vectors-interior",
+      "fact": "Observed: numeric CAS path pins vector before obtaining vector-sap and performs width-specific SAP access; simple-vector takes separate path.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/array.lisp",
+      "symbol": "(cas aref)",
+      "lines": [
+        1125,
+        1146
+      ],
+      "sha256": "f84a6f9bcafd5c06249b88f3d11a0d4b13b544217de96c8ddab9825529314e93",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/array.lisp#L1125-L1146",
+      "NeLispanchor": "nelisp-cc-fxir-native.el:314 memory checks; nelisp-heap-accessors.el storage guards",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Use owner-rooted scoped views; derive/rederive interior address inside a no-GC region, or pin under a documented collector contract.",
+      "invariants": "Unknown: complete SBCL interior-pointer/rooting ABI not audited here; this example alone proves only the scoped pinning idiom.",
+      "acceptance": "Allocator/GC instrumentation shows no collection inside raw scope; forced collection before/after and nested fallback preserves owner."
+    },
+    {
+      "id": "CVS-16",
+      "topic": "strings-width",
+      "fact": "Observed: Unicode build base-char strings use 8-bit elements, character strings 32-bit; non-Unicode character strings use 8-bit. Base strings include a padding element.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/generic/vm-array.lisp",
+      "symbol": "specialized-array-element-type-properties",
+      "lines": [
+        65,
+        82
+      ],
+      "sha256": "f0cd13ab91ad267e5eea5cf64aa41916df0d617dc1e92d4f7dab38998d665409",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/generic/vm-array.lisp#L65-L82",
+      "NeLispanchor": "nelisp-cc-string-blocks.el:storage subsystem; nelisp-cc-jit-concat-ints.el:88-126 code-point builder",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Specify NeLisp byte length, character length, encoding and width separately; dispatch copy by actual storage representation.",
+      "invariants": "Do not replace Emacs multibyte/unibyte representation with SBCL UCS4 or rely on trailing NUL for logical length.",
+      "acceptance": "NUL, ASCII, Latin-1, combining marks, non-BMP and Emacs raw-byte characters; byte/char lengths and substring parity."
+    },
+    {
+      "id": "CVS-17",
+      "topic": "strings-basechar",
+      "fact": "Observed: base-char-code-limit is 128 with sb-unicode and 256 without it. Unicode SBCL base-char is not Latin-1.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/compiler/generic/early-vm.lisp",
+      "symbol": "base-char-code-limit",
+      "lines": [
+        121,
+        121
+      ],
+      "sha256": "ea69ba6cecb8faa5c58930c1c2f7b9a0b362b3cb9bedf3fcad06437d89b89cc7",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/compiler/generic/early-vm.lisp#L121-L121",
+      "NeLispanchor": "nelisp-cc-jit-concat-ints.el:99-103 rejects out-of-Unicode/surrogate inputs in this helper; general Emacs semantics require separate audit",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Gate ASCII/Latin-1 byte-copy shortcuts with NeLisp encoding proofs rather than a borrowed SBCL base-char name.",
+      "invariants": "Helper-specific Unicode checks are not proof of full Emacs character domain correctness.",
+      "acceptance": "Boundary 127/128/255/256, surrogates/raw bytes/non-BMP differential suite; no unchecked cross-representation byte copy."
+    },
+    {
+      "id": "CVS-18",
+      "topic": "strings-index",
+      "fact": "Observed: public CHAR/SCHAR and setters carry safety 1 declarations; SCHAR requires simple-string by its contract.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/string.lisp",
+      "symbol": "char / schar / %charset / %scharset",
+      "lines": [
+        77,
+        96
+      ],
+      "sha256": "e157378e8083cdbe3a25adf3eaabb33e5f05505c98d70fa7c11ca8264544a3a7",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/string.lisp#L77-L96",
+      "NeLispanchor": "nelisp-heap-accessors.el:validated String WORD guards",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Keep checked string/character access distinct from raw byte access; fast path needs index-unit and encoding proof.",
+      "invariants": "Exact Emacs wrong-type/bounds behavior, character rather than byte indexing, and mutation properties must survive specialization.",
+      "acceptance": "Read/write at valid and invalid character boundaries for unibyte/multibyte strings; compare mutation result and errors."
+    },
+    {
+      "id": "CVS-19",
+      "topic": "strings-subsequence",
+      "fact": "Observed: subsequence resolves checked array data with fill-pointer handling then dispatches by representation; inner dispatch declares safety 0.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/seq.lisp",
+      "symbol": "vector-subseq / vector-subseq-dispatch",
+      "lines": [
+        578,
+        605
+      ],
+      "sha256": "13e574453859fcf5216345ed750f89f3fdf9bbd3be817592bf3f641870dc027c",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/seq.lisp#L578-L605",
+      "NeLispanchor": "nelisp-cc-string-blocks.el; measured slice workload supplied by coordinator",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Validate public substring bounds and normalize character-to-byte offsets before a representation-specific copy kernel.",
+      "invariants": "Unchecked inner kernel is valid only after complete Emacs checks; preserve negative substring indices, properties and fresh-result semantics.",
+      "acceptance": "Empty/full/negative/end-nil/out-of-range and multibyte slices, text properties and aliasing differential tests."
+    },
+    {
+      "id": "CVS-20",
+      "topic": "strings-copy",
+      "fact": "Observed: same-representation data can use a width-specific copier; fallback uses getter/setter dispatch; overlapping shared backing storage copies backward where needed.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/seq.lisp",
+      "symbol": "vector-replace-from-vector",
+      "lines": [
+        836,
+        878
+      ],
+      "sha256": "13e574453859fcf5216345ed750f89f3fdf9bbd3be817592bf3f641870dc027c",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/seq.lisp#L836-L878",
+      "NeLispanchor": "nelisp-cc-string-blocks.el storage; existing general mutation helpers",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Share safe copy kernels selected by width/encoding and explicit overlap contract; generic path retains conversion semantics.",
+      "invariants": "No UTF-8 splitting, lost properties, pointer barrier omission or incorrect overlap; source/destination owners stay rooted.",
+      "acceptance": "Both overlap directions, same/different widths, empty copies and property-bearing strings; GC around all allocation boundaries."
+    },
+    {
+      "id": "CVS-21",
+      "topic": "strings-concat",
+      "fact": "Observed: specialized concatenation first sums lengths, allocates one result, then uses replace per input; generated element types distinguish character/base-char/simple-vector.",
+      "epistemic_status": "Observed SBCL source; proposed transfer and acceptance are design inferences, not implemented or tested",
+      "SBCLfile": "src/code/seq.lisp",
+      "symbol": "%concatenate-to-string generator",
+      "lines": [
+        1380,
+        1450
+      ],
+      "sha256": "13e574453859fcf5216345ed750f89f3fdf9bbd3be817592bf3f641870dc027c",
+      "pinnedpermalink": "https://github.com/sbcl/sbcl/blob/80dad386fc3536d0185dc4a2b9627a331c5f256f/src/code/seq.lisp#L1380-L1450",
+      "NeLispanchor": "nelisp-cc-jit-concat-ints.el:88-126 builder; measured concat workload supplied by coordinator",
+      "currentlimits": "Frozen12 source anchors only; full semantic/ABI audit not performed; generated quoted DSL is not an ordinary top-level Elisp definition.",
+      "proposedtransfer": "Plan result size/representation once with checked arithmetic, allocate once, then fill under rooted views; keep general Elisp concat semantics.",
+      "invariants": "Respect argument evaluation order, list/vector/string inputs, invalid element errors, text properties, unibyte/multibyte coercion and allocation failure.",
+      "acceptance": "Concat mixed supported inputs, overflow/invalid elements, NUL/raw byte/non-BMP/properties; compare same-N GNU/old/new results and allocation counts."
+    }
+  ],
+  "phases": [
+    {
+      "phase": "Contract and observability",
+      "deliverable": "General effect/representation/call/view IR; GC/poll/deopt/frame metadata; explicit lowered code-growth budgets fixed before measurement",
+      "gate": "Machine-checkable unsupported/stale-certificate rejection and generated-code metadata reports; no semantic claims from VOP names alone"
+    },
+    {
+      "phase": "Representation-aware access and copies",
+      "deliverable": "Existing primitive access lowered through checked storage views and general copy/fill kernels; no new hand-written native helper just for speed",
+      "gate": "Differential Emacs semantic suite plus forced-GC/error/interrupt negative controls and end-to-end workloads"
+    },
+    {
+      "phase": "General calls and inlining",
+      "deliverable": "Generic callee certificates, binding version checks, post-lowering guarded cost decisions",
+      "gate": "Non-benchmark callee corpus, code-growth and frame/root budgets, same-N GNU/OLD/NEW alternating fresh-process timing and allocations; reject primary regression"
+    }
+  ],
+  "limitations": [
+    "No speed promise; no timings rerun.",
+    "No complete SBCL backtrace/root-map ABI audit; frame and safepoint anchors constrain design, do not establish binary compatibility.",
+    "SBCL CL undefined behavior or safety 0 cannot authorize unchecked Emacs behavior.",
+    "Anvil first three schema probes rejected parameters; subsequent real path+query request succeeded; no server restart or index scan.",
+    "Source hashes cover selected full files; pinned line ranges support bounded claims."
+  ]
+}

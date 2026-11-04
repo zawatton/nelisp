@@ -253,13 +253,27 @@
   "Return X (1-arg) or X/DIV (2-arg) rounded to the nearest integer.
 A half is rounded to the even neighbour, as in Emacs."
   (nelisp--check-number x)
+  (if (and div (integerp x) (integerp div))
+      ;; Exact integer path: floor quotient, remainder has the sign of DIV.
+      (let* ((q0 (/ x div))
+             (r0 (- x (* q0 div)))
+             (q (if (and (not (= r0 0)) (if (< div 0) (> r0 0) (< r0 0)))
+                    (- q0 1)
+                  q0))
+             (r (- x (* q div)))
+             (r2 (* 2 (if (< r 0) (- r) r)))
+             (ad (if (< div 0) (- div) div)))
+        (cond ((< r2 ad) q)
+              ((> r2 ad) (1+ q))
+              ((= (- q (* 2 (/ q 2))) 0) q)
+              (t (1+ q))))
   (let ((v (if div (/ (float x) (float div)) x)))
     (if (integerp v) v
       (let* ((f (floor v)) (d (- v f)))
         (cond ((< d 0.5) f)
               ((> d 0.5) (1+ f))
               ((= 0 (% f 2)) f)
-              (t (1+ f)))))))
+              (t (1+ f))))))))
 
 ;; Rust-min batch 6q (2026-05-06): `atom' / `arrayp' / `sequencep'
 ;; migrated from Rust to elisp.  Each was a 1-line `bi_predicate'

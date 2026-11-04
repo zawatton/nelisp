@@ -1,0 +1,12 @@
+#+TITLE: AOT static-linker composition for the Windows browser probe
+
+* S1 Compiler and static-linker relocation handoff
+
+** S1.1 Compiler-produced data and external-call relocations reach exact symbols
+cmd: ulimit -v 8388608; ../../bin/heavy-run.sh emacs -Q --batch -l test/nelisp-static-linker-aot-test.el -f ert-run-tests-batch-and-exit
+
+** S1.2 Existing static-linker behavioral tests remain passing
+cmd: ulimit -v 8388608; ../../bin/heavy-run.sh emacs -Q --batch -l test/nelisp-static-linker-test.el -f ert-run-tests-batch-and-exit
+
+** S1.3 The generated Windows loader probe completes its missing-loader and official-loader workflow
+cmd: ulimit -v 8388608; NELISP_REPO_ROOT="$(pwd)" ../../bin/heavy-run.sh python3 ../sumi-browser/tests/windows-probe-test.py --keep-artifacts

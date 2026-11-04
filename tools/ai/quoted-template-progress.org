@@ -1,0 +1,14 @@
+#+TITLE: Bounded quoted-source template context
+#+NOTE: Three separate development-tool criteria. This tool reports literal source templates, never evaluated runtime providers; the runtime typed-save nine-criterion ledger is separate.
+
+* S1 Preserve strict reads and add an explicit template path
+** S1.1 Existing strict behavior and at least six original tests remain, with focused template safety tests and executed adverse controls
+evidence: target/typed-save/template-context/receipt.json sha256=eda5ec42221411bde01b523655697231fa3c3e06de07090b3f23fea384eca3f0
+evidence: target/typed-save/template-context/audit/astra-template-safety.txt sha256=1856b2fb51000ea468bc44994e60e1f8e9fcfc034c8d8205088c7670d522442c
+** S1.2 The unchanged tool refuses the real backquoted owner while the new opt-in path returns only exact literal definitions without evaluation or fabricated providers
+evidence: target/typed-save/template-context/receipt.json sha256=eda5ec42221411bde01b523655697231fa3c3e06de07090b3f23fea384eca3f0
+#+NOTE: Historical builder bytes are independently authenticated; the original receipt is not repinned to subsequent runtime edits.
+evidence: ../binding-state-20261028/scripts/nelisp-standalone-build.el sha256=e170b352dbdd45ceacd1b55ba8250b58613170da71ed286bacbc47e11834045c
+** S1.3 Actual bounded extraction from the 4 MiB builder yields authenticated source templates for the targeted implementation functions and records before/after cost and limits
+evidence: target/typed-save/template-context/root-acceptance.json sha256=1062f8b5b98bf0ab0108732deb99c99abb772fc61c2abc977370e37923adc263
+evidence: target/typed-save/template-context/root-probe.stdout sha256=a6627f685e55596df49b76e20139574ff3a6f24b3744e75bb513d851b97549ca

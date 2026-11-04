@@ -49,6 +49,61 @@
     (should (equal (mapcar #'cdr (plist-get rec :sites)) '(1)))
     (should (>= (plist-get rec :words) (+ 2 (smap-test--hidden))))))
 
+(ert-deftest smap-private-sibling-slot-not-live-before-initialization ()
+  ;; A generic arithmetic sibling owns x. It cannot leak through the
+  ;; enclosing expression's live-in set, including the loop fixed point.
+  (let ((masks (smap-test--masks
+                '(defun f (a) (seq (g a) (+ a (let ((x a)) x)))))))
+    (should (equal masks '(1))))
+  (should (equal (smap-test--masks
+                  '(defun f (a) (while a (seq (g a) (+ a (let ((x a)) x))))))
+                 '(1))))
+
+(ert-deftest smap-private-sibling-retains-active-and-outer-locals ()
+  (let ((both (+ 1 (ash 1 (+ 1 (smap-test--hidden))))))
+    ;; Once x is initialized, both x and the outer parameter survive g.
+    (should (equal (smap-test--masks
+                    '(defun f (a) (+ a (let ((x a)) (seq (g 1) (+ x a))))))
+                   (list both)))
+    ;; Shadowing reuses the source name, not the outer frame slot.
+    (should (equal (smap-test--masks
+                    '(defun f (a) (+ a (let ((a (+ a 3))) (seq (g 1) a)))))
+                   (list both)))
+    ;; A let* initializer reads the earlier binding across the call.
+    (should (equal (smap-test--masks
+                    '(defun f (a) (let* ((x a) (y (g x))) (+ a (+ x y)))))
+                   (list both)))))
+
+(ert-deftest smap-conditional-call-argument-excludes-uninitialized-local ()
+  (should (equal (smap-test--masks
+                  '(defun f (a) (g (if a (let ((x a)) x) 0))))
+                 '(1))))
+
+(ert-deftest smap-zero-trip-call-argument-excludes-uninitialized-local ()
+  (should (equal (smap-test--masks
+                  '(defun f (a)
+                     (g (seq (while a (let ((x a)) (setq a x))) a))))
+                 '(1))))
+
+(ert-deftest smap-call-boundary-keeps-interior-argument-roots-and-code ()
+  (let* ((source '(defun f (a) (g (let ((x a)) (h x)))))
+         (current (smap-test--run source))
+         (old (cl-letf (((symbol-function 'nelisp-aot-compiler--stackmap-note)
+                        (lambda (node after)
+                          (let ((set (logior after (nelisp-aot-compiler--stackmap-uses node)))
+                                (prior (gethash node nelisp-aot-compiler--stackmap-live-table)))
+                            (puthash node (if prior (logior prior set) set)
+                                     nelisp-aot-compiler--stackmap-live-table)))))
+                (smap-test--run source))))
+    ;; h runs inside initialized x's scope; g runs after that scope ends.
+    (should (equal (mapcar #'cdr (plist-get (cadr current) :sites))
+                   (list (+ 1 (ash 1 (+ 1 (smap-test--hidden)))) 1)))
+    (should-not (equal (plist-get (cadr current) :sites)
+                       (plist-get (cadr old) :sites)))
+    ;; Only metadata changes. Argument save-area pushes and call cleanup,
+    ;; which root evaluated arguments outside the fixed-frame map, stay exact.
+    (should (equal (car current) (car old)))))
+
 (ert-deftest smap-loop-keeps-induction-variables-live ()
   (should (equal (smap-test--masks
                   '(defun f (n) (let ((i 0)) (seq (while (< i n) (seq (g i) (setq i (+ i 1)))) i))))

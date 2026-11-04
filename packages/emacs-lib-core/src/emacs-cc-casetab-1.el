@@ -70,9 +70,14 @@ Unlike `set-char-table-range', this never accepts a range or default key."
     (aset table character value)))
 
 (defun nelisp-casetab--get-extra-slot (table slot)
-  (if (nelisp-casetab--sparse-table-p table)
-      (emacs-char-table-extra-slot table slot)
-    (funcall nelisp-casetab--native-extra table slot)))
+  (cond ((nelisp-casetab--sparse-table-p table)
+         (emacs-char-table-extra-slot table slot))
+        ;; Direct call while the symbol still holds the native function;
+        ;; a later redefinition keeps going through the saved original so
+        ;; it cannot recurse into itself.
+        ((eq (symbol-function 'char-table-extra-slot) nelisp-casetab--native-extra)
+         (char-table-extra-slot table slot))
+        (t (funcall nelisp-casetab--native-extra table slot))))
 
 ;; GNU's searches read the buffer's case_canon_table slot, which only
 ;; `set-case-table' and `set-standard-case-table' change.  The regexp

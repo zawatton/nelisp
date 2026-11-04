@@ -449,7 +449,28 @@ Return (FROM . TO).  STR, START, and END are used only for the
         (signal 'args-out-of-range (list str start end)))
       (cons from to))))
 
-(defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+;; The body lives in an ordinary function: `compare-strings' itself carries a
+;; whole-function VM intrinsic that declines IGNORE-CASE and would then run the
+;; body in the interpreter.
+(defun nelisp--compare-strings-1 (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  ;; Early IGNORE-CASE fast path, taken only for plain in-range bounds, so
+  ;; every error case still reaches the validating body below unchanged.
+  (let* ((early (and ignore-case (stringp str1) (stringp str2)
+                     (fboundp 'nelisp--casify-fast) (fboundp 'current-case-table)
+                     (let* ((len1 (length str1)) (len2 (length str2))
+                            (a (or start1 0)) (c (or start2 0))
+                            (b (or end1 len1)) (d (or end2 len2)))
+                       (and (integerp a) (integerp b) (integerp c) (integerp d)
+                            (progn (when (< len1 b) (setq b len1))
+                                   (when (< len2 d) (setq d len2))
+                                   (and (<= 0 a) (<= a b) (<= 0 c) (<= c d)))
+                            (list a b c d)))))
+         (tbl (and early (current-case-table)))
+         (u1 (and tbl (nelisp--casify-fast str1 1 tbl)))
+         (u2 (and (stringp u1) (nelisp--casify-fast str2 1 tbl))))
+    (if (stringp u2)
+        (compare-strings u1 (car early) (car (cdr early)) u2
+                         (car (cdr (cdr early))) (car (cdr (cdr (cdr early)))) nil)
   (nelisp--check-string str1)
   (nelisp--check-string str2)
   (let ((len1 (length str1))
@@ -470,24 +491,46 @@ Return (FROM . TO).  STR, START, and END are used only for the
            (n (if (< n1 n2) n1 n2))
            (raw1 (and (not (multibyte-string-p str1)) (multibyte-string-p str2)))
            (raw2 (and (not (multibyte-string-p str2)) (multibyte-string-p str1)))
+           ;; IGNORE-CASE fast path: upcase both whole strings once.  The
+           ;; native answer is exact only for ASCII-only strings (lengths
+           ;; unchanged, so the indices below stay valid); otherwise nil
+           ;; and the per-character loop runs as before.
+           (fast (and ignore-case
+                      (fboundp 'nelisp--casify-fast)
+                      (fboundp 'current-case-table)
+                      (let* ((tbl (current-case-table))
+                             (u1 (nelisp--casify-fast str1 1 tbl))
+                             (u2 (and (stringp u1)
+                                      (nelisp--casify-fast str2 1 tbl))))
+                        (and (stringp u2) (cons u1 u2)))))
+           (s1 (if fast (car fast) str1))
+           (s2 (if fast (cdr fast) str2))
            (i 0)
            (result t))
-      (while (and (< i n) (eq result t))
-        (let* ((ch1 (aref str1 (+ a i)))
-               (ch2 (aref str2 (+ c i)))
+      (while (and (not fast) (< i n) (eq result t))
+        (let* ((ch1 (aref s1 (+ a i)))
+               (ch2 (aref s2 (+ c i)))
                (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
                (ch2 (if (and raw2 (>= ch2 128)) (+ ch2 4194048) ch2))
-               (k1 (if ignore-case (upcase ch1) ch1))
-               (k2 (if ignore-case (upcase ch2) ch2)))
+               (k1 (if (and ignore-case (not fast)) (upcase ch1) ch1))
+               (k2 (if (and ignore-case (not fast))
+                       (if (eq ch1 ch2) k1 (upcase ch2))
+                     ch2)))
           (cond
            ((< k1 k2) (setq result (- (1+ i))))
            ((> k1 k2) (setq result (1+ i)))
            (t (setq i (1+ i))))))
       (cond
+       ;; Both ranges are validated and the upcased copies have the same
+       ;; lengths, so the case-sensitive native comparison gives the answer.
+       (fast (compare-strings (car fast) a b (cdr fast) c d nil))
        ((not (eq result t)) result)
        ((= n1 n2) t)
        ((< n1 n2) (- (1+ n)))
-       (t (1+ n))))))
+       (t (1+ n))))))))
+
+(defun compare-strings (str1 start1 end1 str2 start2 end2 &optional ignore-case)
+  (nelisp--compare-strings-1 str1 start1 end1 str2 start2 end2 ignore-case))
 
 ;; Rust-min (2026-05-06): regexp-quote — pure char-by-char escape of
 ;; the GNU Emacs regex meta-charset.  Migrated from build-tool/src/
@@ -762,7 +805,14 @@ when CH is not an ASCII letter."
   "Return the current simple case table, deriving invalidated extras."
   (when (fboundp 'current-case-table)
     (let ((table (current-case-table)))
-      (when (and table (null (nelisp-casetab--get-extra-slot table 1)))
+      (when (and table
+                 (null (if (and (not (fboundp 'emacs-char-table-p))
+                                (eq (symbol-function 'char-table-extra-slot)
+                                    nelisp-casetab--native-extra))
+                           ;; No sparse adapter and the native reader is in
+                           ;; place: skip the generic accessor's checks.
+                           (char-table-extra-slot table 1)
+                         (nelisp-casetab--get-extra-slot table 1))))
         (set-case-table table))
       table)))
 
