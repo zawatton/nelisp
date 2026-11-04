@@ -1831,7 +1831,8 @@ resolved to its canonical (obsolete-alias aware) variable first."
 
 ;; Unconditional: an earlier no-op bulk stub may claim `regexp-opt' first
 ;; (closure (&rest _) nil), so always install the real implementation.
-(defun regexp-opt (strings &optional paren)
+(when (fboundp 'nl-ffi-call)
+  (defun regexp-opt (strings &optional paren)
   "Minimal `regexp-opt': alternation of regexp-quoted STRINGS.
 PAREN nil -> shy group; t / string -> capture group; words / symbols add
 word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
@@ -1844,7 +1845,7 @@ word / symbol boundaries (matches the GNU `regexp-opt' grouping contract)."
          (close (cond ((eq paren 'words) "\\)\\>")
                       ((eq paren 'symbols) "\\)\\_>")
                       (t "\\)"))))
-    (concat open body close)))
+    (concat open body close))))
 
 (unless (fboundp 'easy-menu-define)
   (defmacro easy-menu-define (&rest _args)

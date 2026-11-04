@@ -90,7 +90,8 @@ Read by `called-interactively-p'.  This approximates the host's call-stack
 inspection: nested *programmatic* calls inside an interactive command are not
 distinguished without frame-level introspection.")
 
-(defvar noninteractive)
+(when (fboundp 'nl-ffi-call)
+  (defvar noninteractive))
 
 (defvar emacs-command-loop--dispatching-p nil
   "Non-nil while step owns hook ordering and command completion.")

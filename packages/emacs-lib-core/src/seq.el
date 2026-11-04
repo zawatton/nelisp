@@ -145,7 +145,8 @@ TYPE can be `list', `vector', `string', or `sequence'."
 
 ;; Kept unguarded: native `seq-subseq' signals `args-out-of-range' where GNU
 ;; signals a plain `error' (audit 2026-09-29).
-(defun seq-subseq (sequence start &optional end)
+(when (fboundp 'nl-ffi-call)
+  (defun seq-subseq (sequence start &optional end)
   "Return the subsequence of SEQUENCE from START to END."
   (cond
    ((stringp sequence)
@@ -170,7 +171,7 @@ TYPE can be `list', `vector', `string', or `sequence'."
     ;; The runtime's `substring' mishandles vectors, so slice via a list copy
     ;; and convert back; seq-take / seq-drop / seq-rest all delegate here.
     (seq--same-type (seq-subseq (append sequence nil) start end) sequence))
-   (t (signal 'wrong-type-argument (list 'sequencep sequence)))))
+   (t (signal 'wrong-type-argument (list 'sequencep sequence))))))
 
 (when (seq--define-p 'seq-take)
   (defun seq-take (sequence n)
@@ -303,12 +304,13 @@ TYPE can be `list', `vector', `string', or `sequence'."
 
 ;; Kept unguarded: native `seq-sort' sorts a list argument destructively (GNU
 ;; sorts a copy) -- audit 2026-09-29.  Result type follows SEQUENCE like GNU.
-(defun seq-sort (predicate sequence)
+(when (fboundp 'nl-ffi-call)
+  (defun seq-sort (predicate sequence)
   "Return a sorted copy of SEQUENCE, of the same type."
   (let ((sorted (sort (append sequence nil) predicate)))
     (cond ((vectorp sequence) (vconcat sorted))
           ((stringp sequence) (concat sorted))
-          (t sorted))))
+          (t sorted)))))
 
 (unless (fboundp 'seq-sort-by)
   (defun seq-sort-by (function predicate sequence)

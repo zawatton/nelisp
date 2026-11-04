@@ -476,8 +476,9 @@ Resolve keymap-valued function symbols and reject cyclic inheritance."
 ;; `evil-surround') copy this map before the late vendor-preload bridge runs.
 ;; Keep the existing real map when one is present, but turn the standalone
 ;; nil placeholder into the empty keymap that the preloaded runtime promises.
-(defvar minibuffer-local-map nil
-  "Base keymap for active minibuffer input.")
+(when (fboundp 'nl-ffi-call)
+  (defvar minibuffer-local-map nil
+  "Base keymap for active minibuffer input."))
 (unless (emacs-keymap-keymapp minibuffer-local-map)
   (setq minibuffer-local-map (emacs-keymap-make-sparse-keymap)))
 

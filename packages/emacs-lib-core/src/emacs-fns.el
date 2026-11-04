@@ -394,10 +394,11 @@ whole file, then this shim slices the string when offsets are supplied."
 
 ;; Some NeLisp eval paths look up function symbols as values too;
 ;; defvar them as nil so `symbol-value' / bare-symbol-eval succeed.
-(defvar null nil
+(when (fboundp 'nl-ffi-call)
+  (defvar null nil
   "Polyfill alias of nil — works around NeLisp eval paths that fall
 back to `symbol-value' lookup for symbols whose function cell is
-bound but value cell is unbound.")
+bound but value cell is unbound."))
 
 (unless (fboundp 'numberp)
   (defun numberp (obj) (or (integerp obj) (floatp obj))))

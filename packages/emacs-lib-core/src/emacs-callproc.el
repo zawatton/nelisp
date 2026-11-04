@@ -17,8 +17,9 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- getenv/setenv share the process environment with the bridge.
 ;;; Code:
 
-(defvar process-environment nil
-  "List of `KEY=VALUE' strings used as the elisp environment overlay.")
+(when (fboundp 'nl-ffi-call)
+  (defvar process-environment nil
+  "List of `KEY=VALUE' strings used as the elisp environment overlay."))
 
 (declare-function nl-syscall-getenv "nelisp-runtime" (variable))
 (declare-function nelisp-sys-getenv "nelisp-sys" (variable))

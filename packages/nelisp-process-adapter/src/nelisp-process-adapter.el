@@ -289,18 +289,20 @@ at 2e3361b13: `(make-process :name \"e\" :command (list \"echo\" \"hi\")
 
 ;;; Filter / sentinel accessors (Doc 184 P1) ------------------------------
 
-(defun process-filter (process)
+(when (fboundp 'nl-ffi-call)
+  (defun process-filter (process)
   "Return PROCESS's filter function, or nil if none is set."
-  (process-get process :filter))
+  (process-get process :filter)))
 
 (defun set-process-filter (process filter)
   "Set PROCESS's filter function to FILTER (a function of PROC and CHUNK)."
   (process-put process :filter filter)
   filter)
 
-(defun process-sentinel (process)
+(when (fboundp 'nl-ffi-call)
+  (defun process-sentinel (process)
   "Return PROCESS's sentinel function, or nil if none is set."
-  (process-get process :sentinel))
+  (process-get process :sentinel)))
 
 (defun set-process-sentinel (process sentinel)
   "Set PROCESS's sentinel function to SENTINEL (a function of PROC and
@@ -1491,7 +1493,8 @@ build.el')."
     (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
     proc))
 
-(defun make-network-process (&rest plist)
+(when (fboundp 'nl-ffi-call)
+  (defun make-network-process (&rest plist)
   "Doc 194 P0/P4/P5: standard-name `make-network-process'.  The
 synchronous CLIENT path (no `:server', no `:nowait') is built directly
 on `nelisp-socket-connect' plus `nelisp--resolve-host' (S3.1/S3.2).
@@ -1534,7 +1537,7 @@ UNCHANGED from before this phase."
              (proc (nelisp--make-network-process-object name 'open fd)))
         (nelisp--network-process-populate proc plist)
         (setq nelisp-process-adapter--live (cons proc nelisp-process-adapter--live))
-        proc)))))
+        proc))))))
 
 (defun nelisp-process-adapter--subprocess-not-running-error (process)
   "Signal the `error' real Emacs signals from `process-send-string'/
@@ -1649,7 +1652,8 @@ restriction."
     (signal 'wrong-type-argument (list 'nelisp-process-object-p process)))
    (t (signal 'wrong-type-argument (list 'processp process)))))
 
-(defun process-send-region (process start end)
+(when (fboundp 'nl-ffi-call)
+  (defun process-send-region (process start end)
   "Doc 184 subprocess extension (+ `network-process', via the same
 `process-send-string' call below): send the current buffer's text
 between START and END to PROCESS.  Built on `buffer-substring' (Doc 188
@@ -1665,9 +1669,10 @@ real narrowing versus that documented behavior, not hidden here. No
 caller in this codebase depends on chunked delivery, and any future fix
 for a truly large write belongs in `process-send-string' itself, the
 one place both callers of it would then inherit it from."
-  (process-send-string process (buffer-substring start end)))
+  (process-send-string process (buffer-substring start end))))
 
-(defun open-network-stream (name buffer host service &rest parameters)
+(when (fboundp 'nl-ffi-call)
+  (defun open-network-stream (name buffer host service &rest parameters)
   "Doc 194 P0: `open-network-stream', a thin wrapper over
 `make-network-process' with a positional signature (measured against
 real Emacs 30.1, Doc 194 S1.3/S3.1's own documented reduction).  BUFFER
@@ -1675,7 +1680,7 @@ is accepted for signature compatibility but not otherwise used --
 buffer/process association is out of this doc's scope, same as Doc
 184's own precedent for subprocesses."
   (apply #'make-network-process :name name :buffer buffer
-         :host host :service service parameters))
+         :host host :service service parameters)))
 
 (provide 'nelisp-process-adapter)
 ;;; nelisp-process-adapter.el ends here

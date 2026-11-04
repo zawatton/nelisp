@@ -83,8 +83,10 @@ libffi primitive is available).")
 ;; debug / startup-time messages.
 (unless (boundp 'before-init-time)
   (defvar before-init-time '(0 0 0 0)))
-(defvar after-init-time '(0 0 0 0))
-(defvar emacs-pid 0)
+(when (fboundp 'nl-ffi-call)
+  (defvar after-init-time '(0 0 0 0)))
+(when (fboundp 'nl-ffi-call)
+  (defvar emacs-pid 0))
 (unless (boundp 'load-in-progress)
   (defvar load-in-progress t))
 
@@ -96,7 +98,8 @@ libffi primitive is available).")
 ;; on the standalone reader an unbound variable reference hard-aborts
 ;; the whole form (it does not signal through `condition-case'), so
 ;; the defvar is load-bearing for M14 (2026-06-11).
-(defvar locale-coding-system nil)
+(when (fboundp 'nl-ffi-call)
+  (defvar locale-coding-system nil))
 
 ;; Frame / TTY globals — only consulted inside `daemonp' branches we
 ;; never take, but stubbed for safety.

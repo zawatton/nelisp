@@ -444,11 +444,12 @@ KIND is accepted for API parity but not distinguished."
 ;; bookkeeping this skips is genuinely unneeded here (not merely a
 ;; workaround), so unconditionally overriding core's real-but-broken-under-
 ;; replay version with this simpler, replay-safe one is the correct fix.
-(defun define-symbol-prop (symbol prop val)
+(when (fboundp 'nl-ffi-call)
+  (defun define-symbol-prop (symbol prop val)
   "Define the property PROP of SYMBOL to be VAL.
 Minimal subr.el port — matches host Emacs `put' behaviour but
 skips the `current-load-list' bookkeeping (= unused on standalone)."
-  (put symbol prop val))
+  (put symbol prop val)))
 
 ;; ---- byte-compile-only metadata declarations ----
 ;;

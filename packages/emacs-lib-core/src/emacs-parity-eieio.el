@@ -171,19 +171,21 @@ child `eieio--class' as declared in eieio-core.el.")
 ;; matching `nelisp-stdlib-prelude.el:18749') since `:include'-based
 ;; `cl-defstruct' forms (`eieio--class' includes `cl--class') read the
 ;; parent class through it.
-(defun cl--builtin-type-p (name)
+(when (fboundp 'nl-ffi-call)
+  (defun cl--builtin-type-p (name)
   "Verbatim GNU `cl-preloaded.el' early-bootstrap fallback: this substrate
 has no `built-in-class-p'/EIEIO-style built-in-type registry, so every
 name correctly reads as \"not a builtin type\"."
   (if (not (fboundp 'built-in-class-p))
       nil
     (let ((class (and (symbolp name) (get name 'cl--class))))
-      (and class (built-in-class-p class)))))
+      (and class (built-in-class-p class))))))
 
-(defun cl--struct-name-p (name)
+(when (fboundp 'nl-ffi-call)
+  (defun cl--struct-name-p (name)
   "Return t if NAME is a valid structure name for `cl-defstruct'."
   (and name (symbolp name) (not (keywordp name))
-       (not (cl--builtin-type-p name))))
+       (not (cl--builtin-type-p name)))))
 
 (unless (fboundp 'cl-struct-define)
   (defun cl-struct-define (name _docstring _parent _type named slots

@@ -243,10 +243,14 @@ override this to return nil when a key arrives)."
 ;; to return a real, cancellable timer vector, `timerp' must upgrade
 ;; alongside it or a genuine timer object stops being recognized as one.
 
-(defalias 'run-at-time #'nelisp-async-core-run-at-time)
-(defalias 'cancel-timer #'nelisp-async-core-cancel-timer)
-(defalias 'sit-for #'nelisp-async-core-sit-for)
-(defalias 'timerp #'nelisp-async-core-timerp)
+(when (fboundp 'nl-ffi-call)
+  (defalias 'run-at-time #'nelisp-async-core-run-at-time))
+(when (fboundp 'nl-ffi-call)
+  (defalias 'cancel-timer #'nelisp-async-core-cancel-timer))
+(when (fboundp 'nl-ffi-call)
+  (defalias 'sit-for #'nelisp-async-core-sit-for))
+(when (fboundp 'nl-ffi-call)
+  (defalias 'timerp #'nelisp-async-core-timerp))
 
 (provide 'nelisp-async-core)
 ;;; nelisp-async-core.el ends here
