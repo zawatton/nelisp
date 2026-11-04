@@ -1,4 +1,7 @@
 ;;; nelisp-checked-promotion-test.el --- Unused constructor models -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-checked-promotion-test)
 (require 'ert)
 (require 'cl-lib)
 (defconst cp--root (file-name-directory (directory-file-name (file-name-directory load-file-name))))
@@ -176,3 +179,4 @@
   (let ((row (cp--run 'clone-pending 'publish)))
     (should (= (plist-get row :result) 0)) (should (/= (plist-get row :forward) 777))))
 (provide 'nelisp-checked-promotion-test)
+)

@@ -1,4 +1,7 @@
 ;;; nelisp-checked-promotion-env-test.el --- Finite genuine root flow -*- lexical-binding: t; -*-
+;; Guarded so that a `require' from another test plus the Makefile `-l' define
+;; the tests only once.
+(unless (featurep 'nelisp-checked-promotion-env-test)
 (require 'nelisp-checked-promotion-test)
 (defvar ce--catalog nil)
 (defun ce--old-intern ()
@@ -240,3 +243,4 @@
     (should (= (plist-get row :type) (plist-get row :type-relocated)))
     (should-not (= (plist-get row :type) 8128))))
 (provide 'nelisp-checked-promotion-env-test)
+)
