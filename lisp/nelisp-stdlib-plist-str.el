@@ -489,7 +489,7 @@ Return (FROM . TO).  STR, START, and END are used only for the
            (s2 (if fast (cdr fast) str2))
            (i 0)
            (result t))
-      (while (and (< i n) (eq result t))
+      (while (and (not fast) (< i n) (eq result t))
         (let* ((ch1 (aref s1 (+ a i)))
                (ch2 (aref s2 (+ c i)))
                (ch1 (if (and raw1 (>= ch1 128)) (+ ch1 4194048) ch1))
@@ -503,6 +503,9 @@ Return (FROM . TO).  STR, START, and END are used only for the
            ((> k1 k2) (setq result (1+ i)))
            (t (setq i (1+ i))))))
       (cond
+       ;; Both ranges are validated and the upcased copies have the same
+       ;; lengths, so the case-sensitive native comparison gives the answer.
+       (fast (compare-strings (car fast) a b (cdr fast) c d nil))
        ((not (eq result t)) result)
        ((= n1 n2) t)
        ((< n1 n2) (- (1+ n)))
