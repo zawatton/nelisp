@@ -2,9 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'emacs-frame)
 (require 'emacs-window)
-(unless (boundp 'tty-defined-color-alist)
-  (defvar tty-defined-color-alist nil
-    "Terminal palette, initially empty before a terminal driver registers it."))
+(defvar tty-defined-color-alist nil
+  "Terminal palette, initially empty before a terminal driver registers it.")
 
 (defun emacs-frame-pixels-install (frame width height provider)
   "Attach measured cell WIDTH/HEIGHT and a pixel PROVIDER to FRAME.

@@ -8,12 +8,9 @@
 
 ;;; Code:
 
-(unless (boundp 'track-mouse)
-  (defvar track-mouse nil))
-(unless (boundp 'mouse-position-function)
-  (defvar mouse-position-function nil))
-(unless (boundp 'window-configuration-change-hook)
-  (defvar window-configuration-change-hook nil))
+(defvar track-mouse nil)
+(defvar mouse-position-function nil)
+(defvar window-configuration-change-hook nil)
 
 (defun emacs-cc-census-display-w201--arity (name arguments minimum maximum)
   "Check the number of ARGUMENTS to NAME against MINIMUM and MAXIMUM."

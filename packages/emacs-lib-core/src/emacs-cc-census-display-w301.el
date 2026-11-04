@@ -2,12 +2,10 @@
 
 ;;; Code:
 
-(unless (boundp 'executing-kbd-macro)
-  (defvar executing-kbd-macro nil
-    "Non-nil while executing a keyboard macro."))
-(unless (boundp 'ring-bell-function)
-  (defvar ring-bell-function nil
-    "Function called instead of ringing the terminal bell interactively."))
+(defvar executing-kbd-macro nil
+  "Non-nil while executing a keyboard macro.")
+(defvar ring-bell-function nil
+  "Function called instead of ringing the terminal bell interactively.")
 
 (defun emacs-cc-census-display-w301--arity (name arguments maximum)
   "Validate that NAME received at most MAXIMUM ARGUMENTS."

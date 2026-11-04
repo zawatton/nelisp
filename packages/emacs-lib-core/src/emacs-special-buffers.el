@@ -16,15 +16,13 @@
 (defconst emacs-special-buffers-messages-name "*Messages*")
 (defconst emacs-special-buffers-warnings-name "*Warnings*")
 
-(unless (boundp 'messages-buffer-name)
-  (defvar messages-buffer-name emacs-special-buffers-messages-name
-    "Name of the buffer used for `message' history in this substrate."))
+(defvar messages-buffer-name emacs-special-buffers-messages-name
+  "Name of the buffer used for `message' history in this substrate.")
 
-(unless (boundp 'message-log-max)
-  (defvar message-log-max t
-    "Maximum number of lines kept in `messages-buffer-name'.
+(defvar message-log-max t
+  "Maximum number of lines kept in `messages-buffer-name'.
 Nil disables logging; t keeps all lines; an integer keeps that many newest
-lines."))
+lines.")
 
 (defconst emacs-special-buffers-scratch-initial-message
   ";; This buffer is for text that is not saved, and for Lisp evaluation.\n;; To create a file, visit it with C-x C-f and enter text in its buffer.\n\n")

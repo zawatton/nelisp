@@ -4,8 +4,7 @@
 ;; Require this feature to enable GNU's signal hook and the existing .eln
 ;; debugger policy for explicit Lisp signal calls in the standalone reader.
 ;; Primitive errors raised directly by the runtime retain their own behavior.
-(unless (boundp 'signal-hook-function)
-  (defvar signal-hook-function nil))
+(defvar signal-hook-function nil)
 (declare-function nelisp-eln-handler-port--debugger-decision "nelisp-eln-handler-port"
                   (clause conditions failure))
 (when (and (fboundp 'nelisp--eval-source-string) (not (featurep 'nl-signal)))

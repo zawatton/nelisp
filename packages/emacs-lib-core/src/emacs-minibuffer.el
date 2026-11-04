@@ -160,14 +160,12 @@ ERT can prefill this list with `emacs-minibuffer-feed-input'.")
 (defvar emacs-minibuffer-default nil
   "Most recent DEFAULT value passed to a reader.  Diagnostic only.")
 
-(unless (boundp 'minibuffer-completion-table)
-  (defvar minibuffer-completion-table nil
-    "Completion table for the active read, or nil.
-Set by `emacs-minibuffer-completing-read', restored on exit."))
+(defvar minibuffer-completion-table nil
+  "Completion table for the active read, or nil.
+Set by `emacs-minibuffer-completing-read', restored on exit.")
 
-(unless (boundp 'minibuffer-completion-confirm)
-  (defvar minibuffer-completion-confirm nil
-    "When non-nil, `emacs-minibuffer-completing-read' insists on a hit."))
+(defvar minibuffer-completion-confirm nil
+  "When non-nil, `emacs-minibuffer-completing-read' insists on a hit.")
 
 (defvar emacs-minibuffer--functional-exact-input nil
   "Dynamically scoped input being tested by a functional completion table.")

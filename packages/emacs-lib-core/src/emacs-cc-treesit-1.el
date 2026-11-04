@@ -9,10 +9,8 @@
     "libtree-sitter.dylib" "tree-sitter.dll"))
 (defvar emacs-cc-treesit-1--library 'untried)
 (defvar emacs-cc-treesit-1--symbols nil)
-(unless (boundp 'treesit-extra-load-path)
-  (defvar treesit-extra-load-path nil))
-(unless (boundp 'treesit-load-name-override-list)
-  (defvar treesit-load-name-override-list nil))
+(defvar treesit-extra-load-path nil)
+(defvar treesit-load-name-override-list nil)
 (defconst emacs-cc-treesit-1--query-tag (make-symbol "treesit-compiled-query"))
 
 (dolist (entry '((treesit-error "Generic tree-sitter error" error)

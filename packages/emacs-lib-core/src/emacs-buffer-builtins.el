@@ -326,9 +326,8 @@ adjusts those positions before calling this function."
               (setf (nelisp-buffer-pend peer) position)))
           (emacs-buffer-builtins--share-text buffer))))))
 
-(unless (boundp 'combine-after-change-calls)
-  (defvar combine-after-change-calls nil
-    "Non-nil means defer after-change notifications when possible."))
+(defvar combine-after-change-calls nil
+  "Non-nil means defer after-change notifications when possible.")
 (defvar inhibit-modification-hooks nil
   "Non-nil means suppress buffer modification hooks.")
 
@@ -788,9 +787,8 @@ under the live Magit bridge even when the actual current buffer is valid."
   (emacs-buffer-builtins--call-emacs-buffer
    'emacs-buffer-string-text-property (cons operation (cons string args))))
 
-(unless (boundp 'buffer-invisibility-spec)
-  (defvar buffer-invisibility-spec nil
-    "Standalone bridge for Emacs's per-buffer invisibility spec."))
+(defvar buffer-invisibility-spec nil
+  "Standalone bridge for Emacs's per-buffer invisibility spec.")
 
 (when (fboundp 'make-variable-buffer-local)
   (make-variable-buffer-local 'buffer-invisibility-spec))

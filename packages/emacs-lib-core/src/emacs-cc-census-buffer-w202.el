@@ -95,12 +95,9 @@ UNIBYTE is obsolete.  DO-ALLOW-PRINT permits output without PRINTFLAG."
     "Return the end of the field at POS, optionally bounded by LIMIT."
     (emacs-cc-census-buffer-w202--field pos escape-from-edge limit t)))
 
-(unless (boundp 'unread-command-events)
-  (defvar unread-command-events nil))
-(unless (boundp 'unread-post-input-method-events)
-  (defvar unread-post-input-method-events nil))
-(unless (boundp 'unread-input-method-events)
-  (defvar unread-input-method-events nil))
+(defvar unread-command-events nil)
+(defvar unread-post-input-method-events nil)
+(defvar unread-input-method-events nil)
 
 (unless (fboundp 'input-pending-p)
   (defun input-pending-p (&optional check-timers)

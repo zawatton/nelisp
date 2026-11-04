@@ -26,6 +26,10 @@
 ;;                     and a prelude `error-message-string' that dropped the
 ;;                     error symbol.  Each cost hours precisely because
 ;;                     nobody could see which definition was in effect.
+;;                     `defvar'/`defcustom'/`defvar-local' count as deferring
+;;                     with or without a guard: GNU never lets them overwrite
+;;                     an existing value (see
+;;                     `nelisp-emacs-compat--value-preserving-definers').
 ;;   host-only         reported for completeness: the tree references it but
 ;;                     never defines it.  Not computed here (this tool reads
 ;;                     definitions, not call sites).
@@ -62,6 +66,17 @@
   '(defun defmacro defsubst defvar defconst defcustom
     cl-defun cl-defmacro cl-defsubst defalias fset)
   "Heads whose second element names something this tree defines.")
+
+(defconst nelisp-emacs-compat--value-preserving-definers
+  '(defvar defcustom defvar-local)
+  "Variable definers that never overwrite an existing value.
+GNU `defvar'/`defcustom'/`defvar-local' leave a bound variable alone, so
+the definition cannot shadow a stock variable's value and counts as
+shared-deferring whether or not an `(unless (boundp ...))' surrounds it.
+The wrapper is also harmful: a `defvar' that is not at top level of a
+lexical-binding file does not make the variable special, so wrapping one
+silently loses dynamic binding.  `defconst', `defun', `defalias', `fset'
+and the like do overwrite and keep their guard-based classification.")
 
 (defun nelisp-emacs-compat--files ()
   "Return the sources scanned, in a stable order."
@@ -213,6 +228,9 @@ way, a comment I read and then wrote the bug anyway."
       ;; one that made it so -- for a name defined in several places, the
       ;; unguarded definition is the one worth looking at.
       (let* ((prior (gethash name table))
+             (guarded (or guarded
+                          (memq (car form)
+                                nelisp-emacs-compat--value-preserving-definers)))
              (plain-p (or (eq (car-safe prior) 'plain) (not guarded))))
         (puthash name
                  (cons (if plain-p 'plain 'gated)

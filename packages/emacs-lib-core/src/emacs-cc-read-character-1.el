@@ -1,8 +1,7 @@
 ;;; emacs-cc-read-character-1.el --- Exclusive character input -*- lexical-binding: t; -*-
 
 (require 'emacs-command-loop)
-(unless (boundp 'inhibit-interaction)
-  (defvar inhibit-interaction nil))
+(defvar inhibit-interaction nil)
 (unless (get 'inhibited-interaction 'error-conditions)
   (define-error 'inhibited-interaction "User interaction is inhibited"))
 

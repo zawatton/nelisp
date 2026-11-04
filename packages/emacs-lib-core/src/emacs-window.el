@@ -1498,22 +1498,14 @@ help/completion/popup workflow."
 ;; Sizes remain in the shared renderer's canonical cells. Pixel requests are
 ;; converted with the owning frame's realized metrics, never the old 8x16
 ;; pseudo-pixel constants. No app/frontend command owns this behavior.
-(unless (boundp 'window-min-height)
-  (defvar window-min-height 4))
-(unless (boundp 'window-min-width)
-  (defvar window-min-width 10))
-(unless (boundp 'window-safe-min-height)
-  (defvar window-safe-min-height 2))
-(unless (boundp 'window-safe-min-width)
-  (defvar window-safe-min-width 2))
-(unless (boundp 'window-resize-pixelwise)
-  (defvar window-resize-pixelwise nil))
-(unless (boundp 'window-combination-resize)
-  (defvar window-combination-resize nil))
-(unless (boundp 'fit-window-to-buffer-horizontally)
-  (defvar fit-window-to-buffer-horizontally nil))
-(unless (boundp 'fit-frame-to-buffer)
-  (defvar fit-frame-to-buffer nil))
+(defvar window-min-height 4)
+(defvar window-min-width 10)
+(defvar window-safe-min-height 2)
+(defvar window-safe-min-width 2)
+(defvar window-resize-pixelwise nil)
+(defvar window-combination-resize nil)
+(defvar fit-window-to-buffer-horizontally nil)
+(defvar fit-frame-to-buffer nil)
 
 (defun emacs-window--buffer-value (buffer variable)
   "Read VARIABLE in either supported buffer family."
