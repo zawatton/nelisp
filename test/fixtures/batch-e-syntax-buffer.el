@@ -35,7 +35,12 @@ table is set to TABLE, which is what a TABLE default gives a new buffer."
                       (list (eq (syntax-table) (standard-syntax-table))
                             (string (char-syntax ?\;)) (string (char-syntax ?\'))
                             (string (char-syntax ?_))))))
-;; The bare runtime's default (Doc 204 P3): emacs-lisp-mode-syntax-table.
+;; A fresh buffer with no binding at all resolves to the standard table, as
+;; in GNU (buffer_defaults.syntax_table); it is not the Emacs Lisp table.
+(be--row "default-fresh-buffer-is-standard"
+         (lambda () (with-temp-buffer
+                      (cons (eq (syntax-table) (standard-syntax-table)) (be--probe)))))
+;; The Emacs Lisp table installed as the default, bound explicitly.
 (be--row "default-emacs-lisp-table"
          (lambda () (be--with-default emacs-lisp-mode-syntax-table
                       (cons (eq (syntax-table) emacs-lisp-mode-syntax-table) (be--probe)))))

@@ -19220,8 +19220,9 @@ Value is what BODY returns."
 ;;   `nelisp--syntax-buffer-tables': the `nelisp-buffer' struct has no slot
 ;;   for it, and buffer state belongs to the buffer layer.
 ;; - A buffer without `set-syntax-table' resolves to
-;;   `emacs-lisp-mode-syntax-table' (Doc 204 P3's ambient default).  GNU's
-;;   comes from the buffer's major mode, which the bare runtime lacks.
+;;   `nelisp--buffer-defaults-syntax-table', the standard table, as GNU's
+;;   buffer_defaults.syntax_table does.  Code that scans Lisp must install
+;;   `emacs-lisp-mode-syntax-table' itself, as GNU code does.
 ;; - The optional foundation adapter (emacs-char-table.el) replaces the
 ;;   public char-table function cells when it loads.  The table operations
 ;;   here call the native primitives captured below, as the case-table
@@ -19395,16 +19396,35 @@ way `char-syntax' reports it (`-' and space both read back as space)."
   (nelisp--syntax-lookup nelisp--syntax-standard-table ch))
 
 (defun nelisp--syntax-build-emacs-lisp-table ()
-  "Doc 204 P3's Emacs Lisp table: the standard table as parent plus the
-overrides `emacs-lisp-mode' installs that this runtime's consumers need --
-`;' comment start, newline comment end, and the four reader prefixes."
-  (let ((table (nelisp--syntax-make-table nelisp--syntax-standard-table)))
-    (aset table ?\; (aref nelisp--syntax-code-objects 11))
-    (aset table ?\n (aref nelisp--syntax-code-objects 12))
-    (aset table ?\' (aref nelisp--syntax-code-objects 6))
-    (aset table ?\` (aref nelisp--syntax-code-objects 6))
-    (aset table ?\, (aref nelisp--syntax-code-objects 6))
-    (aset table ?# (aref nelisp--syntax-code-objects 6))
+  "The Emacs Lisp syntax table, built as GNU `lisp-data-mode' builds it
+\(lisp-mode.el `lisp-data-mode-syntax-table'): every non-alphanumeric
+ASCII character is a symbol constituent, then the explicit entries are
+installed.  The standard table is the parent, so alphanumerics and
+non-ASCII characters resolve through it."
+  (let ((table (nelisp--syntax-make-table nelisp--syntax-standard-table))
+        (objects nelisp--syntax-code-objects)
+        (c 0))
+    (while (< c 128)
+      (unless (or (and (>= c ?0) (<= c ?9))
+                  (and (>= c ?a) (<= c ?z))
+                  (and (>= c ?A) (<= c ?Z)))
+        (aset table c (aref objects 3)))
+      (setq c (1+ c)))
+    (aset table ?\t (aref objects 0))
+    (aset table ?\n (aref objects 12))
+    (aset table ?\f (aref objects 0))
+    (aset table ?\s (aref objects 0))
+    (aset table ?\; (aref objects 11))
+    (aset table ?\" (aref objects 7))
+    (aset table ?\\ (aref objects 9))
+    (aset table ?# (aref objects 6))
+    (aset table ?\' (aref objects 6))
+    (aset table ?\` (aref objects 6))
+    (aset table ?\, (aref objects 6))
+    (aset table ?\( (cons 4 ?\)))
+    (aset table ?\) (cons 5 ?\())
+    (aset table ?\[ (cons 4 ?\]))
+    (aset table ?\] (cons 5 ?\[))
     table))
 
 (defvar nelisp--syntax-buffer-tables (make-hash-table :test 'eq)
@@ -19424,9 +19444,8 @@ plain `eq' table, so the entry goes here, by `remhash'."
 
 (defvar nelisp--buffer-defaults-syntax-table nil
   "The syntax table of a buffer that has not run `set-syntax-table':
-GNU's buffer_defaults.syntax_table.  The bare runtime's is
-`emacs-lisp-mode-syntax-table' (Doc 204 P3), set where that table is
-seeded; the library sets it to (standard-syntax-table).  GNU copies the
+GNU's buffer_defaults.syntax_table, the standard syntax table.  It is
+set where the standard table is seeded.  GNU copies the
 default into a buffer when the buffer is made; this is read at each
 lookup, so a change also reaches buffers that already exist.")
 
@@ -19441,8 +19460,8 @@ lookup, so a change also reaches buffers that already exist.")
 ;; table seed".  Guarded so host Emacs's own value is never touched.
 (unless (boundp 'emacs-lisp-mode-syntax-table)
   (defvar emacs-lisp-mode-syntax-table nil
-    "Doc 204 P3's Emacs Lisp syntax table: this image's ambient default
-active table."))
+    "The Emacs Lisp syntax table (GNU `lisp-data-mode' layout).  Not the
+default of a fresh buffer: callers that scan Lisp install it."))
 
 (unless (fboundp 'string-to-syntax)
   (defun string-to-syntax (string)
@@ -23494,9 +23513,9 @@ as a likely mistake.")
 (setq nelisp--syntax-standard-table (nelisp--syntax-build-standard-table))
 (when (null emacs-lisp-mode-syntax-table)
   (setq emacs-lisp-mode-syntax-table (nelisp--syntax-build-emacs-lisp-table)))
-;; The bare runtime's buffer default (GNU buffer_defaults.syntax_table).
+;; The buffer default (GNU buffer_defaults.syntax_table): the standard table.
 (unless nelisp--buffer-defaults-syntax-table
-  (setq nelisp--buffer-defaults-syntax-table emacs-lisp-mode-syntax-table))
+  (setq nelisp--buffer-defaults-syntax-table nelisp--syntax-standard-table))
 
 ;; `void-function' on 1 of the ~80 census files
 ;; (../nelisp-agent/lisp/nl-agent-ui.el:309: `(define-derived-mode
