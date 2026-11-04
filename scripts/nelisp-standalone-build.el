@@ -455,6 +455,32 @@ Record an error on any nonlocal exit, then preserve that exit unchanged."
                (nelisp-standalone--build-trace-event ,phase "error" elapsed))
              (nelisp-standalone--build-trace-event ,phase "end" elapsed)))))))
 
+(defun nelisp-standalone--build-trace-fns-install ()
+  "Trace the functions named in NELISP_STANDALONE_BUILD_TRACE_FNS as phases.
+The variable holds function names separated by spaces or commas.  Each
+outermost call of a named function becomes a phase \"fn:NAME\" in the
+build trace (recursive calls are not traced again).  Lets a build be
+profiled at a new granularity without editing this file, which would
+change the toolchain digest and recompile every unit."
+  (when nelisp-standalone--build-trace-path
+    (dolist (name (split-string (or (getenv "NELISP_STANDALONE_BUILD_TRACE_FNS") "")
+                                "[ ,]+" t))
+      (let ((fn (intern name)) (depth 0))
+        ;; Not yet defined is fine: nadvice keeps the advice across a
+        ;; later `defun' (e.g. a linker function loaded by `require').
+        (progn
+          (advice-add
+           fn :around
+           (lambda (orig &rest args)
+             (if (> depth 0)
+                 (apply orig args)
+               (setq depth (1+ depth))
+               (unwind-protect
+                   (nelisp-standalone--build-trace-phase (concat "fn:" name)
+                     (apply orig args))
+                 (setq depth (1- depth)))))
+           '((name . nelisp-standalone--build-trace-fn))))))))
+
 (defun nelisp-standalone--output-path (&optional reader-p)
   "Return the current target's standalone output path."
   (let ((override (and reader-p (getenv "NELISP_STANDALONE_READER_OUTPUT"))))
@@ -47622,45 +47648,82 @@ manifests use.")
          (nelisp-standalone--cached-unit name (symbol-value src)
                                          (locate-library (symbol-name kind))))))))
 
+(defvar nelisp-standalone--driver-lits nil
+  "Literal blobs taken out of the reader driver: a list of (NAME . BYTES).
+Set by `nelisp-standalone--reader-driver-unit'; linked as a raw unit by
+`nelisp-standalone--driver-lits-unit'.")
+
 (defun nelisp-standalone--reader-driver-unit ()
   "Return the cached link-unit for the reader's driver.
 
-The reader driver takes about 15 seconds to compile.  Its content-addressed
-key covers the generated source (and therefore `NELISP_SRC') plus the
-toolchain digest.  The cache is also split by target, dynamic-reader mode,
-and TCO mode, so reusing it is safe across those build variants."
-  (let ((nelisp-standalone--inline-import-sources
-         (nelisp-standalone--unit-inline-imports "driver.o")))
+The content-addressed key covers the generated source plus the toolchain
+digest.  The cache is also split by target, dynamic-reader mode, and TCO
+mode, so reusing it is safe across those build variants.  Large literals
+leave the source first (`nelisp-standalone--hoist-large-str-lits'): they
+embed the build tree's path, so with them inside the key changed on every
+build.  They are linked from `nelisp-standalone--driver-lits-unit'."
+  (let* ((nelisp-standalone--inline-import-sources
+          (nelisp-standalone--unit-inline-imports "driver.o"))
+         (hoisted (nelisp-standalone--hoist-large-str-lits
+                   (nelisp-standalone--reader-driver-source) "nl_driver_lit")))
+    (setq nelisp-standalone--driver-lits (cdr hoisted))
     (nelisp-standalone--cached-unit
-     "driver.o"
-     (nelisp-standalone--hoist-large-str-lits
-      (nelisp-standalone--reader-driver-source) "nl_driver_lit")
-     nelisp-standalone--this-file)))
+     "driver.o" (car hoisted) nelisp-standalone--this-file)))
+
+(defun nelisp-standalone--driver-lits-unit ()
+  "Return a raw link unit holding `nelisp-standalone--driver-lits', or nil.
+Each blob is a GLOBAL object symbol in rodata, 16-byte aligned, so the
+driver's `(data-addr NAME)' resolves across units."
+  (when nelisp-standalone--driver-lits
+    (let ((chunks nil) (symbols nil) (off 0))
+      (dolist (blob nelisp-standalone--driver-lits)
+        (let* ((bytes (cdr blob))
+               (pad (- (* 16 (ceiling off 16)) off)))
+          (when (> pad 0) (push (make-string pad 0) chunks))
+          (setq off (+ off pad))
+          (push (nelisp-link-symbol (symbol-name (car blob)) off
+                                    :size (length bytes) :section 'rodata
+                                    :bind 'global :type 'object)
+                symbols)
+          (push bytes chunks)
+          (setq off (+ off (length bytes)))))
+      (nelisp-link-unit-make
+       (nelisp-standalone--target-object-name "driver-lits.o")
+       (list (cons 'rodata (apply #'concat (nreverse chunks))))
+       (nreverse symbols)
+       nil))))
 
 (defconst nelisp-standalone--str-lit-blob-min 4096
   "Byte length from which `nelisp-standalone--hoist-large-str-lits' moves a
-`sexp-write-str-lit' literal into a rodata blob.")
+literal out of a unit's source.")
 
 (defun nelisp-standalone--hoist-large-str-lits (source prefix)
-  "Return SOURCE with every large `sexp-write-str-lit' literal in rodata.
+  "Move SOURCE's large literals out; return (NEW-SOURCE . BLOBS).
 
 `(sexp-write-str-lit SLOT LIT)' is compiled into one 64-bit immediate move
 and push per 8 bytes of LIT, then a call to `nl_alloc_str' on that stack
 buffer.  The reader driver embeds seven bootstrap sources of 1.7-4.7 MB
 this way: about 67 MB of unit, a 4.7 MB stack buffer at run time, and
-~110 s of compile per build.  For a literal of at least
-`nelisp-standalone--str-lit-blob-min' bytes this rewrites the form to
-`(nl_alloc_str (data-addr BLOB) LEN SLOT)' -- the same helper with the same
-bytes, length and slot -- and adds `(data-blob BLOB BYTES rodata)' to the
-unit.  BLOB is PREFIX plus an index.  Linux x86-64 only (as in
-`nelisp-standalone--copy-lit-u64-defuns'); SOURCE must be a `(seq ...)'
-unit.  Other targets and sources get SOURCE unchanged."
+~110 s of compile per build.  A literal of at least
+`nelisp-standalone--str-lit-blob-min' bytes becomes the blob PREFIX_I =
+8-byte little-endian length + bytes, and the form becomes
+  (nl_alloc_str (+ (data-addr PREFIX_I) 8)
+                (heap-read-u64 (data-addr PREFIX_I) 0) SLOT)
+-- the same helper with the same bytes, length and slot, and neither the
+bytes nor the length left in the source.  A top-level rodata `data-blob'
+of at least that size without relocations moves out under its own name.
+BLOBS is a list of (NAME . UNIBYTE-BYTES) for a unit that defines them as
+global symbols.  Linux x86-64 `(seq ...)' sources only (as in
+`nelisp-standalone--copy-lit-u64-defuns'); otherwise (SOURCE)."
   (if (not (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
                 (eq (car-safe source) 'seq)))
-      source
+      (list source)
     (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
       (cl-labels
-          ((walk (x)
+          ((u64le (v) (apply #'unibyte-string
+                             (mapcar (lambda (i) (logand (ash v (* -8 i)) 255))
+                                     (number-sequence 0 7))))
+           (walk (x)
              (cond
               ((not (consp x)) x)
               ((memq (car x) '(quote function data-blob)) x)
@@ -47671,8 +47734,10 @@ unit.  Other targets and sources get SOURCE unchanged."
                (let* ((bytes (encode-coding-string (nth 2 x) 'utf-8 t))
                       (blob (intern (format "%s_%d" prefix n))))
                  (setq n (1+ n))
-                 (push `(data-blob ,blob ,bytes rodata) blobs)
-                 `(nl_alloc_str (data-addr ,blob) ,(length bytes) ,(walk (nth 1 x)))))
+                 (push (cons blob (concat (u64le (length bytes)) bytes)) blobs)
+                 `(nl_alloc_str (+ (data-addr ,blob) 8)
+                                (heap-read-u64 (data-addr ,blob) 0)
+                                ,(walk (nth 1 x)))))
               (t (let ((out nil) (tail x))
                    (while (consp tail)
                      (push (walk (car tail)) out)
@@ -47680,10 +47745,55 @@ unit.  Other targets and sources get SOURCE unchanged."
                    (let ((res (nreverse out)))
                      (when tail (setcdr (last res) tail))
                      res))))))
-        (let ((body (mapcar #'walk (cdr source))))
-          (if (null blobs)
-              source
-            `(seq ,@(nreverse blobs) ,@body)))))))
+        (let ((body nil))
+          (dolist (form (cdr source))
+            (if-let* ((bytes (nelisp-standalone--copy-lit-defun-bytes form))
+                      ((string-search (directory-file-name
+                                       (expand-file-name nelisp-standalone--repo-root))
+                                      bytes)))
+                ;; A `nelisp-standalone--copy-lit-defun' of a path in the
+                ;; build tree: copy from a blob [LEN u64][BYTES] instead.
+                (let ((blob (intern (format "%s_lit" (nth 1 form)))))
+                  (push (cons blob (concat (u64le (length bytes)) bytes)) blobs)
+                  (push `(defun ,(nth 1 form) (dst off)
+                           (let ((lit-src (+ (data-addr ,blob) 8))
+                                 (lit-len (heap-read-u64 (data-addr ,blob) 0))
+                                 (lit-i 0))
+                             (seq
+                              (while (< lit-i lit-len)
+                                (seq
+                                 (ptr-write-u8 dst (+ off lit-i)
+                                               (heap-read-u8 lit-src lit-i))
+                                 (setq lit-i (+ lit-i 1))))
+                              (+ off lit-len))))
+                        body))
+            (if (and (eq (car-safe form) 'data-blob)
+                     (= (length form) 4)
+                     (eq (nth 3 form) 'rodata)
+                     (stringp (nth 2 form))
+                     (>= (length (nth 2 form)) nelisp-standalone--str-lit-blob-min))
+                (push (cons (nth 1 form)
+                            ;; As `nelisp-aot-compiler--collect-data-blobs'.
+                            (with-no-warnings (string-as-unibyte (nth 2 form))))
+                      blobs)
+              (push (walk form) body))))
+          (cons `(seq ,@(nreverse body)) (nreverse blobs)))))))
+
+(defun nelisp-standalone--copy-lit-defun-bytes (form)
+  "Return the literal bytes of FORM if it is a `nelisp-standalone--copy-lit-defun'.
+That shape is (defun NAME (dst off) (seq (ptr-write-u8 dst (+ off I) B)...
+\(+ off N))) with I = 0, 1, ... N-1.  Otherwise nil."
+  (pcase form
+    (`(defun ,(pred symbolp) (dst off) (seq . ,body))
+     (let ((writes (butlast body)) (tail (car (last body))) (i 0) (acc nil) (ok t))
+       (dolist (w writes)
+         (pcase w
+           (`(ptr-write-u8 dst (+ off ,(and (pred integerp) j)) ,(and (pred integerp) b))
+            (if (and (= j i) (<= 0 b 255)) (push b acc) (setq ok nil)))
+           (_ (setq ok nil)))
+         (setq i (1+ i)))
+       (and ok (> i 0) (equal tail `(+ off ,i))
+            (apply #'unibyte-string (nreverse acc)))))))
 
 ;;;###autoload
 (defun nelisp-standalone-compile-chunk ()
@@ -48732,6 +48842,115 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
 
 (defvar nelisp-standalone--prelude-source-cache nil
   "Cached prelude source variants keyed by source digest and fallback mode.")
+(defconst nelisp-standalone--prelude-cache-root-token "@@NELISP-STANDALONE-REPO-ROOT@@"
+  "Stands for the repository root in a shared prelude cache entry and its key.
+The prelude embeds absolute paths under the root (vendor byte-code
+artifacts), so copies of one tree in different directories share an entry
+only when the root is factored out.")
+
+(defun nelisp-standalone--prelude-cache-root ()
+  "Return the repository root as the prelude embeds it."
+  (directory-file-name (expand-file-name nelisp-standalone--repo-root)))
+
+(defun nelisp-standalone--prelude-disk-cache-file (cache-key combined)
+  "Return the shared-cache file of the compiled prelude, or nil.
+CACHE-KEY is the in-process key and COMBINED the source it digests.  The
+file key covers COMBINED with the repository root factored out, the bytes
+of every src/, lisp/ and scripts/ file plus the embedded vendor subr.el
+\(`nelisp-standalone--native-cache-source-identity'), the parity fixtures and
+the host Emacs version: the GNU byte-code transform reads nothing else.  Only
+used when NELISP_STANDALONE_UNIT_CACHE_DIR names a shared cache and COMBINED
+does not already contain `nelisp-standalone--prelude-cache-root-token'."
+  (let ((dir (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR")))
+    (when (and dir (not (string= dir ""))
+               (not (string-search nelisp-standalone--prelude-cache-root-token
+                                   combined)))
+      (expand-file-name
+       (concat "prelude-src/"
+               (secure-hash
+                'sha256
+                (prin1-to-string
+                 (list (car cache-key)
+                       (secure-hash
+                        'sha256
+                        (string-replace (nelisp-standalone--prelude-cache-root)
+                                        nelisp-standalone--prelude-cache-root-token
+                                        combined))
+                       (nelisp-standalone--native-cache-source-identity)
+                       (with-temp-buffer
+                         (set-buffer-multibyte nil)
+                         (insert-file-contents-literally
+                          (expand-file-name
+                           "test/nelisp-prelude-bytecode-parity-fixtures.tsv"
+                           nelisp-standalone--repo-root))
+                         (secure-hash 'sha256 (current-buffer)))
+                       emacs-version)))
+               ".eld")
+       nelisp-standalone--cache-dir))))
+
+(defun nelisp-standalone--prelude-cache-read (file)
+  "Read the prelude cache entry FILE, with the repository root restored."
+  (let ((text (with-temp-buffer
+                (let ((coding-system-for-read 'utf-8-emacs-unix))
+                  (insert-file-contents file))
+                (buffer-string))))
+    (car (read-from-string
+          (string-replace nelisp-standalone--prelude-cache-root-token
+                          (nelisp-standalone--prelude-cache-root) text)))))
+
+(defun nelisp-standalone--prelude-disk-cached (cache-key combined thunk)
+  "Return THUNK's compiled prelude, reusing the shared cache.
+CACHE-KEY and COMBINED select the entry (see
+`nelisp-standalone--prelude-disk-cache-file').  THUNK adds its defun count to
+`nelisp-standalone--prelude-bytecode-count', sets
+`nelisp-standalone--prelude-bytecode-report' and writes the report file; a
+cache hit replays those three effects.  With
+NELISP_STANDALONE_PRELUDE_CACHE_VERIFY=1 a hit is recomputed and must be
+equal, or the build stops."
+  (let* ((file (nelisp-standalone--prelude-disk-cache-file cache-key combined))
+         (entry (and file (file-readable-p file)
+                     (nelisp-standalone--prelude-cache-read file)))
+         (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
+    (if (and entry (not verify))
+        (let ((report-path (expand-file-name
+                            "target/nelisp-prelude-bytecode-report.tsv"
+                            nelisp-standalone--repo-root)))
+          (setq nelisp-standalone--prelude-bytecode-count
+                (+ nelisp-standalone--prelude-bytecode-count (nth 1 entry)))
+          (setq nelisp-standalone--prelude-bytecode-report (nth 2 entry))
+          (make-directory (file-name-directory report-path) t)
+          (nelisp-prelude-bytecode-write-report
+           report-path nelisp-standalone--prelude-bytecode-report)
+          (message "[standalone-reader] prelude byte-code: shared cache hit %s"
+                   (file-name-nondirectory file))
+          (nth 0 entry))
+      (let* ((before nelisp-standalone--prelude-bytecode-count)
+             (compiled (funcall thunk))
+             (new (list compiled
+                        (- nelisp-standalone--prelude-bytecode-count before)
+                        nelisp-standalone--prelude-bytecode-report)))
+        (when entry
+          (unless (equal entry new)
+            (error "Prelude shared cache entry %s differs from a fresh compile"
+                   file))
+          (message "[standalone-reader] prelude byte-code: shared cache entry verified"))
+        (when (and file (not entry))
+          (make-directory (file-name-directory file) t)
+          (let ((tmp (make-temp-file (concat file ".tmp")))
+                (text (let ((print-length nil) (print-level nil) (print-circle nil)
+                            (print-escape-newlines nil) (print-escape-multibyte nil)
+                            (print-escape-nonascii nil))
+                        (string-replace (nelisp-standalone--prelude-cache-root)
+                                        nelisp-standalone--prelude-cache-root-token
+                                        (prin1-to-string new)))))
+            (let ((coding-system-for-write 'utf-8-emacs-unix))
+              (with-temp-file tmp (insert text)))
+            (rename-file tmp file t))
+          ;; A written entry must read back equal, or it is useless.
+          (unless (equal new (nelisp-standalone--prelude-cache-read file))
+            (delete-file file)
+            (message "[standalone-reader] prelude byte-code: entry does not round-trip; not cached")))
+        compiled))))
 
 (defun nelisp-standalone--bytecode-cleanup-source ()
   "Project the existing restoration factory with GNU's closure compiler.
@@ -48998,7 +49217,9 @@ never on the build host.  Keep the original Lisp factory as the reference."
                       (setq nelisp-standalone--prelude-bytecode-count 0)
                       (setq nelisp-standalone--prelude-bytecode-report nil)
                       combined)
-                  (progn
+                  (nelisp-standalone--prelude-disk-cached
+                   cache-key combined
+                   (lambda ()
                     (require 'bytecomp)
                     (let* ((accessor-source
                             (nelisp-standalone--prelude-bytecode-source list-source))
@@ -49048,7 +49269,7 @@ never on the build host.  Keep the original Lisp factory as the reference."
                               file-attrs-header file-attrs-tail
                               vendor-src
                               (nelisp-standalone--after-load-runtime-src)
-                              metadata-source)))))
+                              metadata-source))))))
                (count nelisp-standalone--prelude-bytecode-count))
           (push (list cache-key compiled count)
                 nelisp-standalone--prelude-source-cache)
@@ -67632,8 +67853,10 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; Compile the driver after its selected helper units, allowing
          ;; protocol data generation before startup forms are embedded.
          ;; The final link order below remains unchanged.
-         (driver (nelisp-standalone--reader-driver-unit)))
-    (append (list start driver applyfn) applyfn-frames helpers
+         (driver (nelisp-standalone--reader-driver-unit))
+         (driver-lits (nelisp-standalone--driver-lits-unit)))
+    (append (list start driver) (and driver-lits (list driver-lits))
+            (list applyfn) applyfn-frames helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub float-time-stub gc-regs-stub) real-sf
             (list sf-cc capture errstub fileio catch-throw boundary
@@ -67900,6 +68123,7 @@ The trace parent directory must exist; tracing never skips a build stage."
         (nelisp-standalone--build-trace-hits 0)
         (nelisp-standalone--build-trace-misses 0))
     (nelisp-standalone--build-trace-phase "overall"
+      (nelisp-standalone--build-trace-fns-install)
       (nelisp-standalone--validate-reader-registrations)
       ;; This identity is already required by the embedded metadata. Reject
       ;; an incompatible build host before baking/compiling the prelude.

@@ -463,15 +463,19 @@ an entry whose OFFSET equals the section's running length at the
 time the unit was visited."
   (let ((result '())
         (sections '(text rodata data bss)))
+    ;; The byte sections are collected as pieces and concatenated once:
+    ;; appending each unit to a growing string copied the whole section
+    ;; per unit (~60 s for a 40 MB reader of ~130 units).
     (dolist (sn sections)
-      (let ((acc (if (eq sn 'bss) 0 ""))
+      (let ((acc 0)                     ; running length (bss: total size)
+            (pieces '())
             (offs '()))
         (dolist (u units)
           (let* ((uname (plist-get u :name))
                  (sec (nelisp-link--unit-section u sn))
                  (len (nelisp-link--section-length sec sn))
                  (align (nelisp-link--unit-section-alignment sn machine))
-                 (off (if (eq sn 'bss) acc (length acc))))
+                 (off acc))
             (when (and (not (eq sn 'bss))
                        sec
                        (> align 1))
@@ -479,13 +483,18 @@ time the unit was visited."
                 (when (> aligned off)
                   ;; Units never fall through into each other.  Zero-fill
                   ;; preserves exact offsets on both target architectures.
-                  (setq acc (nelisp-link--bytes-append
-                             acc (nelisp-link--padding-bytes (- aligned off))))
+                  (push (nelisp-link--padding-bytes (- aligned off)) pieces)
                   (setq off aligned))))
             (push (cons uname off) offs)
-            (setq acc (if (eq sn 'bss) (+ acc len)
-                        (nelisp-link--bytes-append acc sec)))))
-        (push (cons sn (list :bytes acc :offsets (nreverse offs)))
+            (unless (eq sn 'bss)
+              (push (cond ((null sec) "")
+                          ((stringp sec) sec)
+                          (t (nelisp-link--vec->ubstring sec)))
+                    pieces))
+            (setq acc (+ off len))))
+        (push (cons sn (list :bytes (if (eq sn 'bss) acc
+                                      (apply #'concat (nreverse pieces)))
+                             :offsets (nreverse offs)))
               result)))
     (nreverse result)))
 
