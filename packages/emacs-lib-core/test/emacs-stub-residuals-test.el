@@ -633,9 +633,12 @@ Most bridges spell that awareness as `(boundp 'emacs-version)' (host
 Emacs binds it, so its absence means standalone), but the NeLisp reader
 now binds `emacs-version' too (see `emacs-minibuffer-builtins.el''s
 `--install-function-p'), so that particular bridge instead keys on the
-NeLisp-only primitive `nelisp--write-stdout-bytes'.  Accept either: the
-invariant under test is host-vs-standalone awareness, not one exact
-spelling of it."
+NeLisp-only primitive `nelisp--write-stdout-bytes'.  The redisplay
+bridge uses a third spelling: it installs only over an absent function
+or an `emacs-stub-bulk' placeholder, so host C builtins and native
+standalone functions both keep ownership without any version probe.
+Accept any of them: the invariant under test is host-vs-standalone
+awareness, not one exact spelling of it."
   (dolist (library emacs-stub-residuals-test--builtin-bridge-libraries)
     (let* ((gate (format "%s--install-function-p" library))
            (file (emacs-stub-residuals-test--source-file library)))
@@ -648,7 +651,10 @@ spelling of it."
         (should (or (search-forward "(boundp 'emacs-version)" nil t)
                     (progn
                       (goto-char (point-min))
-                      (search-forward "nelisp--write-stdout-bytes" nil t))))))))
+                      (search-forward "nelisp--write-stdout-bytes" nil t))
+                    (progn
+                      (goto-char (point-min))
+                      (search-forward "(get symbol 'emacs-stub-bulk)" nil t))))))))
 
 (defconst emacs-stub-residuals-test--standalone-gate-name-regexp
   (rx (or "standalone-p" "standalone-runtime-p" "host-runtime-p"
@@ -945,8 +951,11 @@ shape whose only signal is the naive test."
    (lambda ()
      (let* ((stub-source (emacs-stub-residuals-test--source-file "emacs-stub"))
             (org-faces-file
-             (expand-file-name "../vendor/emacs-lisp/org/org-faces.el"
-                               (file-name-directory stub-source)))
+             (expand-file-name "vendor/emacs-lisp/org/org-faces.el"
+                               ;; The vendor tree lives at the repository
+                               ;; root, above `packages/emacs-lib-core/src'.
+                               (expand-file-name
+                                "../../.." (file-name-directory stub-source))))
             (captured-spec nil)
             (form (emacs-stub-residuals-test--read-first-form-matching
                    org-faces-file
