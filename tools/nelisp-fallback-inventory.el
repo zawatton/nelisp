@@ -243,7 +243,9 @@ than only naming a file."
 
 (defun nelisp-fallback-inventory--classify (form counts)
   "Add FORM's own contribution to COUNTS, a hash of KIND -> count."
-  (when (consp form)
+  ;; Only proper lists are code forms.  A dotted pair such as
+  ;; `(condition-case . 2)' is data (e.g. an alist entry), not a handler.
+  (when (and (consp form) (proper-list-p form))
     (let ((head (car form)))
       (cond
        ((memq head '(ignore-errors with-demoted-errors))
