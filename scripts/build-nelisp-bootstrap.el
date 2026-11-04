@@ -220,7 +220,6 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; command on top of nelisp-ec-directory-files / -file-attributes) then
     ;; the `dired' feature facade.  Wired once the standalone reader's
     ;; readdir/stat syscalls return real entries (Doc 142 gate-5).
-    "emacs-cl-struct-setf.el"
     "emacs-dired-min.el"
     "dired.el"
     ;; Reusable Emacs parity owners needed by vendor libraries.  Keep the
@@ -472,8 +471,16 @@ bundled source that may evaluate a declaration."
       (error "Cannot place GNU macroexp/gv before bootstrap sources"))
     ;; The declaration may be evaluated before the EIEIO shim itself, so
     ;; prepend these genuine providers ahead of the entire source stream.
-    (setq eager (cons gv (delete gv eager)))
-    (setq eager (cons macroexp (delete macroexp eager)))
+    ;; Genuine `inline.el' (define-inline + compiler-macro) must precede the
+    ;; first define-inline user and `emacs-stub.el', whose stub defers to it
+    ;; when the `inline' feature is already provided.  Order: macroexp, gv,
+    ;; inline.
+    (let ((inline (nelisp-bootstrap--vendor-source-file
+                   "emacs-lisp/emacs-lisp/inline.el")))
+      (when inline
+        (setq eager (cons inline (delete inline eager))))
+      (setq eager (cons gv (delete gv eager)))
+      (setq eager (cons macroexp (delete macroexp eager))))
     eager))
 
 ;; Local files re-appended AFTER the vendor tail.  GNU `dired.el' (vendor tail)
@@ -487,7 +494,6 @@ bundled source that may evaluate a declaration."
     ;; ec-buffer editing shim.  Restore the shared editing owner last;
     ;; its install gates still preserve all unselected native commands.
     "emacs-edit-builtins.el"
-    "emacs-cl-struct-setf.el"
     "emacs-dired-min.el"
     "dired.el")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
