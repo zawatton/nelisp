@@ -192,7 +192,9 @@ Packages moving from nel-lib (dependency order taken from the =-pkg.el= files, 2
 
 *Amendment (2026-11-04): merged packages.* As imported, the nine packages =emacs-lib-{app-gui,buffer-core,core,editing,foundation,io,runtime,tools,textmodes-stub}= required each other in a ring, so =make pkg-graph= reported a cycle that no ordering could break. They are now ONE package, =packages/emacs-lib-core/= (=src/= and =test/= unions, no basename collisions). The table rows 1 and 3-6, 8 and 9 above, plus app-gui and runtime from the next table, are therefore all part of =emacs-lib-core=. The packages that stay separate and depend one way on it are =emacs-lib-bridges=, =emacs-lib-facade=, =emacs-lib-special-buffers= and =emacs-lib-text-core=.
 
-Current emacs-lib packages: =emacs-lib-core=, =emacs-lib-bridges=, =emacs-lib-facade=, =emacs-lib-special-buffers=, =emacs-lib-text-core=.
+Two further edges closed the ring: =emacs-lib-special-buffers= (one file, required by core's GTK frontend while requiring core) moved into =emacs-lib-core=, and =nemacs-main= now loads the GUI frontend named by =nemacs-main-gui-frontend-feature= (default =nelisp-gui-frontend=) instead of requiring the =nelisp-gui-xcb= package, so that dependency runs one way. =make pkg-graph= passes.
+
+Current emacs-lib packages: =emacs-lib-core=, =emacs-lib-bridges=, =emacs-lib-facade=, =emacs-lib-text-core=.
 
 Nothing stays in nel-lib (D7). The app/consumer parts land in nelisp as follows:
 | nel-lib | nelisp destination |
