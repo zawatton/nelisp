@@ -2,40 +2,32 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../scripts/standalone-bootstrap-profile.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "standalone-bootstrap-profile.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-form-standalone-walk.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-form-standalone-walk.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-load-standalone-replay.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-load-standalone-replay.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-repl-standalone-replay.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-repl-standalone-replay.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/build-nelisp-bootstrap.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "build-nelisp-bootstrap.el")
       nil t)
 
 (defconst standalone-diagnostics-test--repo-root
-  (expand-file-name ".."
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun standalone-diagnostics-test--src-file (name)
-  (expand-file-name (concat "src/" name)
-                    standalone-diagnostics-test--repo-root))
+  (nemacs-test-paths-source name))
 
 (defun standalone-diagnostics-test--position (item list)
   (cl-position item list :test #'equal))

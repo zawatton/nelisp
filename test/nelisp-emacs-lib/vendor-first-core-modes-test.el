@@ -2,16 +2,20 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst vendor-first-core-modes-test--repo-root
-  (expand-file-name ".." (file-name-directory
-                          (or load-file-name buffer-file-name)))
+  nemacs-test-paths-repo-root
   "Repository root for vendor-first core mode tests.")
 
 (defun vendor-first-core-modes-test--vendor-load-path ()
   "Return load paths with vendored Emacs Lisp before local shims."
-  (list
+  (append
+   (list
    (expand-file-name "vendor/emacs-lisp" vendor-first-core-modes-test--repo-root)
    (expand-file-name "vendor/emacs-lisp/emacs-lisp"
                      vendor-first-core-modes-test--repo-root)
@@ -32,12 +36,15 @@
    (expand-file-name "vendor/emacs-lisp/gnus"
                      vendor-first-core-modes-test--repo-root)
    (expand-file-name "vendor/emacs-lisp/net"
-                     vendor-first-core-modes-test--repo-root)
-   (expand-file-name "src" vendor-first-core-modes-test--repo-root)))
+                     vendor-first-core-modes-test--repo-root))
+   (nemacs-test-paths-source-dirs)))
 
 (defun vendor-first-core-modes-test--load-source (relative)
   "Load vendored source file RELATIVE and return its absolute path."
-  (let ((file (expand-file-name relative vendor-first-core-modes-test--repo-root))
+  (let ((file (if (string-prefix-p "src/" relative)
+                  (nemacs-test-paths-source (substring relative 4))
+                (expand-file-name relative
+                                  vendor-first-core-modes-test--repo-root)))
         (load-path (append (vendor-first-core-modes-test--vendor-load-path)
                            load-path)))
     (load file nil nil t)

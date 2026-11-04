@@ -37,11 +37,16 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(let ((dir (file-name-directory (or load-file-name buffer-file-name))))
-  (unless (featurep 'custom)
-    (load (expand-file-name "../vendor/emacs-lisp/custom.el" dir) nil t)))
+(unless (featurep 'custom)
+  (let ((file (nemacs-test-paths-vendor "emacs-lisp/custom.el" t)))
+    (when (file-exists-p file)
+      (load file nil t))))
 
 (ert-deftest nemacs-s2-batch4-vendor-test/custom-fboundp ()
   (dolist (sym '(custom-set-default custom-initialize-default

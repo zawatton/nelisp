@@ -33,6 +33,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-stub)
@@ -760,10 +764,9 @@ scanning, not sexp reads, so those are covered by the existing
 `emacs-stub-residuals-test/builtin-bridges-have-standalone-install-gates'
 substring check instead) and flags any recognised host/standalone gate
 shape whose only signal is the naive test."
-  (let* ((src-dir (expand-file-name
-                    "../src"
-                    (file-name-directory emacs-stub-residuals-test--this-file)))
-         (files (directory-files src-dir t "\\.el\\'"))
+  (let* ((files (apply #'append
+                       (mapcar (lambda (dir) (directory-files dir t "\\.el\\'"))
+                               (nemacs-test-paths-source-dirs))))
          violations)
     (should (> (length files) 50))
     (dolist (file files)
@@ -945,8 +948,7 @@ shape whose only signal is the naive test."
    (lambda ()
      (let* ((stub-source (emacs-stub-residuals-test--source-file "emacs-stub"))
             (org-faces-file
-             (expand-file-name "../vendor/emacs-lisp/org/org-faces.el"
-                               (file-name-directory stub-source)))
+             (nemacs-test-paths-vendor "emacs-lisp/org/org-faces.el"))
             (captured-spec nil)
             (form (emacs-stub-residuals-test--read-first-form-matching
                    org-faces-file

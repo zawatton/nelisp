@@ -2,11 +2,13 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../src/rx.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-source "rx.el")
       nil t)
 
 ;; S2 coverage batch (2026-09-28): `rx--normalize-char-pattern' and

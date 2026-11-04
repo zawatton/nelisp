@@ -13,12 +13,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst emacs-os-detect-test--root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (add-to-list 'load-path (expand-file-name "src" emacs-os-detect-test--root))
 (require 'emacs-os-detect)
@@ -156,8 +158,7 @@
 (ert-deftest emacs-os-detect/standalone-uname-coherent ()
   (let ((reader (emacs-os-detect-test--reader)))
     (skip-unless reader)
-    (let* ((module (expand-file-name "src/emacs-os-detect.el"
-                                     emacs-os-detect-test--root))
+    (let* ((module (nemacs-test-paths-source "emacs-os-detect.el"))
            (form (format
                   "(progn (load %S) (prin1 (list :type system-type :name (system-name) :conf system-configuration :sys (plist-get (emacs-uname) :sysname))))"
                   module))

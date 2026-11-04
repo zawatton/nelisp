@@ -2,17 +2,17 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(let ((src-dir (expand-file-name
-                "../src"
-                (file-name-directory (or load-file-name buffer-file-name)))))
-  (load (expand-file-name "package.el" src-dir) nil t))
+(load (nemacs-test-paths-source "package.el") nil t)
 
 (defconst emacs-package-test--fixture-elpa
-  (expand-file-name
-   "../apps/nemacs-next/fixtures/elpa"
-   (file-name-directory (or load-file-name buffer-file-name)))
+  (expand-file-name "apps/nemacs-next/fixtures/elpa"
+                     nemacs-test-paths-repo-root)
   "ELPA-style fixture package-user-dir.")
 
 (defvar nemacs-next-elpa-activation-order nil

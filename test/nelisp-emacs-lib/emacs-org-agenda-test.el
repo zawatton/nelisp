@@ -6,9 +6,12 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (load-file
- (expand-file-name "../src/emacs-org-agenda.el"
-                   (file-name-directory (or load-file-name buffer-file-name))))
+ (nemacs-test-paths-source "emacs-org-agenda.el"))
 
 (require 'ert)
 (require 'cl-lib)

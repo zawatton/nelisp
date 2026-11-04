@@ -9,12 +9,15 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'emacs-pcase)
 
 (defconst emacs-pcase-test--module-file
-  (expand-file-name "../src/emacs-pcase.el"
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-pcase.el"))
 
 (defun emacs-pcase-test--with-reloaded-module (symbols thunk)
   "Reload `emacs-pcase' with SYMBOLS temporarily unbound, then call THUNK."

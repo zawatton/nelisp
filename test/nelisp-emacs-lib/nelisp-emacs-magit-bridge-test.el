@@ -2,10 +2,13 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name "../src/nelisp-emacs-magit-bridge.el"
-                        (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-source "nelisp-emacs-magit-bridge.el")
       nil 'no-message t t)
 
 (ert-deftest nelisp-emacs-magit-bridge-test/symbol-function-accepts-function-form ()

@@ -2,11 +2,13 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../src/case-table.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-source "case-table.el")
       nil t)
 
 (ert-deftest case-table-test/require-loads-standard-feature ()

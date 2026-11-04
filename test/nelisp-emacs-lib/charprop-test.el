@@ -4,11 +4,13 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../src/charprop.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-source "charprop.el")
       nil t)
 
 (ert-deftest charprop-test/feature-loads ()

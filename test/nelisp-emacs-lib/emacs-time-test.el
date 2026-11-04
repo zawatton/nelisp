@@ -9,6 +9,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-time)
@@ -25,8 +29,7 @@
       (should (< (abs (- (emacs-timer-next-delay 1.0) 0.2)) 0.0001)))))
 
 (defconst emacs-time-test--module-file
-  (expand-file-name "../src/emacs-time.el"
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-time.el"))
 
 (defun emacs-time-test--with-reloaded-module (symbols thunk)
   "Reload `emacs-time' with SYMBOLS temporarily unbound, then call THUNK.

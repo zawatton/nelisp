@@ -2,13 +2,15 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
 (defconst emacs-tier3-facades-test--source
-  (expand-file-name
-   "../src/emacs-tier3-facades.el"
-   (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-tier3-facades.el"))
 
 (defconst emacs-tier3-facades-test--src-dir
   (file-name-directory emacs-tier3-facades-test--source))

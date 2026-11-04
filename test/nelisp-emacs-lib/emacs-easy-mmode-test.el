@@ -2,12 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst emacs-easy-mmode-test--source
-  (expand-file-name
-   "../src/emacs-easy-mmode.el"
-   (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-easy-mmode.el"))
 
 (defvar easy-test-count 0)
 (defvar easy-global-turn-on-count 0)

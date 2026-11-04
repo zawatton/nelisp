@@ -15,14 +15,19 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst keybinding-test--repo-root
-  (expand-file-name
-   ".." (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun keybinding-test--path (rel)
-  (expand-file-name rel keybinding-test--repo-root))
+  (if (string-prefix-p "src/" rel)
+      (nemacs-test-paths-source (substring rel 4))
+    (expand-file-name rel keybinding-test--repo-root)))
 
 (defconst keybinding-test--bridge-source
   (keybinding-test--path "src/nemacs-gui-file-bridge-runtime.el"))

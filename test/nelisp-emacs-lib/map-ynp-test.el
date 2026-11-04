@@ -2,12 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name
-       "../src/map-ynp.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-source "map-ynp.el")
       nil t)
 
 (defmacro map-ynp-test--with-keys (keys &rest body)

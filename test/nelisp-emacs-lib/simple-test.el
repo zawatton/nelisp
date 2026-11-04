@@ -7,13 +7,15 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
 (defconst simple-test--root
-  (file-name-directory
-   (directory-file-name
-    (file-name-directory (or load-file-name buffer-file-name default-directory))))
+  (file-name-as-directory nemacs-test-paths-repo-root)
   "Repository root used to load the shim source directly.")
 
 (defmacro simple-test--with-shim-functions (&rest body)
@@ -55,7 +57,7 @@
            (fmakunbound 'filter-buffer-substring)
            (makunbound 'filter-buffer-substring-functions)
            (makunbound 'filter-buffer-substring-function)
-           (load (expand-file-name "src/simple.el" simple-test--root)
+           (load (nemacs-test-paths-source "simple.el")
                  nil t)
            ,@body)
        (if open-line-original

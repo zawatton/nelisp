@@ -13,13 +13,16 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'emacs-numeric)
 (require 'cl-lib)
 
 (defconst emacs-numeric-test--module-file
-  (expand-file-name "../src/emacs-numeric.el"
-                    (file-name-directory (or load-file-name buffer-file-name)))
+  (nemacs-test-paths-source "emacs-numeric.el")
   "Source file for reloading `emacs-numeric' in controlled tests.")
 
 ;;;; A. Load cleanly

@@ -2,6 +2,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'regexp-opt)
 
@@ -31,9 +35,7 @@
         (regexp-opt nil t)))
 
 (defconst regexp-opt-test--repo-root
-  (expand-file-name ".."
-                    (file-name-directory
-                     (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (load (expand-file-name
        "vendor/emacs-lisp/emacs-lisp/regexp-opt.el"

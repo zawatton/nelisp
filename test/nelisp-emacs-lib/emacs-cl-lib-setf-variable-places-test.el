@@ -19,12 +19,14 @@
 ;; `emacs-parity-setf-places-test.el' does: without that, a host run would be
 ;; grading GNU's `setf' against itself.
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ert)
 (require 'cl-lib)
 
 (defconst emacs-cl-lib-setf-variable-places-test--source
-  (expand-file-name "../src/cl-lib.el"
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "cl-lib.el"))
 
 (defvar emacs-cl-lib-setf-variable-places-test--var "original")
 

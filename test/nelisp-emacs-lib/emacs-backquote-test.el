@@ -16,6 +16,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'emacs-backquote)
 
@@ -27,7 +31,7 @@
 (defvar emacs-backquote-test--w nil)
 
 (defconst emacs-backquote-test--repo-root
-  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
+  nemacs-test-paths-repo-root
   "Repository root for locating read-only stdlib mirrors in tests.")
 
 (defconst emacs-backquote-test--vendor-cl-macro-symbols
@@ -65,8 +69,7 @@ the load so host Emacs keeps its own definitions; only used from
         (if (cdr cell)
             (fset (car cell) (cdr cell))
           (fmakunbound (car cell))))))
-  (load (expand-file-name "src/emacs-backquote.el"
-                          emacs-backquote-test--repo-root)
+  (load (nemacs-test-paths-source "emacs-backquote.el")
         nil t))
 
 (defun emacs-backquote-test--runtime-expand (form)
@@ -246,8 +249,7 @@ the load so host Emacs keeps its own definitions; only used from
 
 (ert-deftest emacs-backquote-test/package-mirror-matches-source ()
   "The extracted foundation package keeps the backquote source in sync."
-  (let ((source (expand-file-name "src/emacs-backquote.el"
-                                  emacs-backquote-test--repo-root))
+  (let ((source (nemacs-test-paths-source "emacs-backquote.el"))
         (mirror
          (expand-file-name
           "packages/nelisp-emacs-foundation/lisp/emacs-backquote.el"

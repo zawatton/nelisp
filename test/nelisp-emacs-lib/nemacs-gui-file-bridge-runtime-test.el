@@ -10,18 +10,18 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
 (defconst nemacs-gui-file-bridge-runtime-test--repo-root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defconst nemacs-gui-file-bridge-runtime-test--source
-  (expand-file-name
-   "src/nemacs-gui-file-bridge-runtime.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "nemacs-gui-file-bridge-runtime.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--prelude
   (expand-file-name
@@ -29,34 +29,22 @@
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
 (defconst nemacs-gui-file-bridge-runtime-test--fileio-gui
-  (expand-file-name
-   "src/emacs-fileio-gui.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "emacs-fileio-gui.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--dired-gui
-  (expand-file-name
-   "src/emacs-dired-min-gui.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "emacs-dired-min-gui.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--info-gui
-  (expand-file-name
-   "src/emacs-info.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "emacs-info.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--help-gui
-  (expand-file-name
-   "src/emacs-help-gui.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "emacs-help-gui.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--magit-bridge
-  (expand-file-name
-   "src/nelisp-emacs-magit-bridge.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root))
+  (nemacs-test-paths-source "nelisp-emacs-magit-bridge.el"))
 
 (defconst nemacs-gui-file-bridge-runtime-test--init-transport
-  (expand-file-name
-   "src/nemacs-init-transport.el"
-   nemacs-gui-file-bridge-runtime-test--repo-root)
+  (nemacs-test-paths-source "nemacs-init-transport.el")
   "Loader reconcile Phase 2: shared wrapped-init transport consumer.
 `files--load-user-init' (in the bridge-runtime source below) delegates
 to `nemacs-init-transport-consume', so this must load before it.")
@@ -5014,9 +5002,7 @@ link leaves the buffer untouched."
           (image (nemacs-gui-file-bridge-runtime-test--write-image)))
       (unwind-protect
           (nemacs-gui-file-bridge-runtime-test--with-transport
-            (copy-file (expand-file-name
-                        "src/nemacs-ime-romaji.tsv"
-                        nemacs-gui-file-bridge-runtime-test--repo-root)
+            (copy-file (nemacs-test-paths-source "nemacs-ime-romaji.tsv")
                        "/tmp/nemacs-ime-table" t)
             (write-region "" nil "/tmp/nemacs-ime-pending" nil 'silent)
             (write-region "" nil "/tmp/nemacs-input-method" nil 'silent)
@@ -5112,9 +5098,7 @@ Hermetic via a PATH-injected fake curl (the M11 stub-ssh pattern)."
             (with-temp-file (expand-file-name "curl" fakebin)
               (insert "#!/bin/bash\nprintf '[[\"きょう\",[\"今日\",\"京\"]]]'\n"))
             (set-file-modes (expand-file-name "curl" fakebin) #o755)
-            (copy-file (expand-file-name
-                        "src/nemacs-ime-romaji.tsv"
-                        nemacs-gui-file-bridge-runtime-test--repo-root)
+            (copy-file (nemacs-test-paths-source "nemacs-ime-romaji.tsv")
                        "/tmp/nemacs-ime-table" t)
             (write-region "japanese" nil "/tmp/nemacs-input-method" nil 'silent)
             (dolist (f '("/tmp/nemacs-ime-pending" "/tmp/nemacs-ime-seg"
@@ -13859,9 +13843,7 @@ report real Git state, diff, and log (M2 Project/Git close-gate)."
                  nemacs-gui-file-bridge-runtime-test--prelude)
                 (goto-char (point-max)))
               (insert-file-contents
-               (expand-file-name
-                "src/emacs-command-loop.el"
-                nemacs-gui-file-bridge-runtime-test--repo-root))
+               (nemacs-test-paths-source "emacs-command-loop.el"))
               (goto-char (point-max))
               (insert-file-contents nemacs-gui-file-bridge-runtime-test--source)
               (goto-char (point-max))

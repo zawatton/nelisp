@@ -11,14 +11,19 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst org-mode-test--repo-root
-  (expand-file-name
-   ".." (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun org-mode-test--path (rel)
-  (expand-file-name rel org-mode-test--repo-root))
+  (if (string-prefix-p "src/" rel)
+      (nemacs-test-paths-source (substring rel 4))
+    (expand-file-name rel org-mode-test--repo-root)))
 
 (defconst org-mode-test--bridge-source
   (org-mode-test--path "src/nemacs-gui-file-bridge-runtime.el"))

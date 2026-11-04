@@ -37,6 +37,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-buffer-builtins)
@@ -102,27 +106,27 @@ new code path that could silently swallow a real error."
 ;;;; 2. vendor file additions -----------------------------------------------
 
 (defmacro nemacs-s2-batch5-vendor-test--maybe-load (feature relative-path)
-  "Load RELATIVE-PATH (from this file's directory) unless FEATURE is loaded.
+  "Load RELATIVE-PATH (relative to the repo vendor/ directory) unless FEATURE is loaded.
 Mirrors the `cl-lib-s2-batch3-test.el' / `nemacs-s2-batch4-vendor-test.el'
 pattern: on host Emacs FEATURE is already preloaded, so this guard skips
 straight past the vendored copy and host Emacs serves as the oracle."
   `(unless (featurep ,feature)
-     (load (expand-file-name ,relative-path
-                              (file-name-directory
-                               (or load-file-name buffer-file-name)))
-           nil t)))
+     (let ((file (nemacs-test-paths-vendor ,relative-path t)))
+       ;; Host Emacs 31 signals for a missing absolute path even with NOERROR.
+       (when (file-exists-p file)
+         (load file nil t)))))
 
-(nemacs-s2-batch5-vendor-test--maybe-load 'vc-hooks "../vendor/emacs-lisp/vc/vc-hooks.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'vc "../vendor/emacs-lisp/vc/vc.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'man "../vendor/emacs-lisp/man.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'xref "../vendor/emacs-lisp/progmodes/xref.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'replace "../vendor/emacs-lisp/replace.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'comint "../vendor/emacs-lisp/comint.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'cl-macs "../vendor/emacs-lisp/emacs-lisp/cl-macs.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'vc-hooks "emacs-lisp/vc/vc-hooks.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'vc "emacs-lisp/vc/vc.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'man "emacs-lisp/man.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'xref "emacs-lisp/progmodes/xref.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'replace "emacs-lisp/replace.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'comint "emacs-lisp/comint.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'cl-macs "emacs-lisp/emacs-lisp/cl-macs.el")
 ;; `simple' is always already loaded (it is part of host Emacs's own
 ;; preloaded core), so this guard always skips; listed for symmetry with
 ;; the fboundp assertions below.
-(nemacs-s2-batch5-vendor-test--maybe-load 'simple "../vendor/emacs-lisp/simple.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'simple "emacs-lisp/simple.el")
 
 (ert-deftest nemacs-s2-batch5-vendor-test/vendor-fboundp ()
   (dolist (sym '(vc-registered vc-backend vc-up-to-date-p vc-mode-line

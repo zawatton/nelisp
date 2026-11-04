@@ -22,16 +22,20 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst skk-okuri-conversion-test--repo-root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun skk-okuri-conversion-test--path (rel)
   "Absolute path for REL under the repo root."
-  (expand-file-name rel skk-okuri-conversion-test--repo-root))
+  (if (string-prefix-p "src/" rel)
+      (nemacs-test-paths-source (substring rel 4))
+    (expand-file-name rel skk-okuri-conversion-test--repo-root)))
 
 (defconst skk-okuri-conversion-test--skk-source
   (skk-okuri-conversion-test--path "src/nemacs-runtime-skk.el"))

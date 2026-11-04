@@ -8,6 +8,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 ;; Ensure the standalone buffer shim is loaded before any fixture captures
@@ -20,9 +24,7 @@
 (require 'files-standalone-buffer)
 
 (defconst files-test--root
-  (file-name-directory
-   (directory-file-name
-    (file-name-directory (or load-file-name buffer-file-name default-directory))))
+  (file-name-as-directory nemacs-test-paths-repo-root)
   "Repository root used to load the shim source directly.")
 
 (defconst files-test--shim-functions
@@ -216,7 +218,7 @@
              (makunbound symbol))
            (setq features (remove 'files (remove 'files-standalone-buffer
                                                  features)))
-           (load (expand-file-name "src/files.el" files-test--root)
+           (load (nemacs-test-paths-source "files.el")
                  nil t)
            ,@body)
        (setq features original-features)
@@ -267,7 +269,7 @@
           (let ((emacs-version "30.0"))
             (setq features (remove 'files (remove 'files-standalone-buffer
                                                   features)))
-            (load (expand-file-name "src/files.el" files-test--root)
+            (load (nemacs-test-paths-source "files.el")
                   nil t))
           (should files--standalone-p)
           (should (fboundp 'find-file))
@@ -674,7 +676,7 @@
 
 (ert-deftest files-test/source-does-not-force-full-bootstrap ()
   (with-temp-buffer
-    (insert-file-contents (expand-file-name "src/files.el" files-test--root))
+    (insert-file-contents (nemacs-test-paths-source "files.el"))
     (should-not (search-forward "(require 'emacs-init)" nil t))))
 
 (ert-deftest files-test/standalone-buffer-source-preserves-host-primitives ()
@@ -711,8 +713,7 @@
     (unwind-protect
         (progn
           (setq features (remove 'files-standalone-buffer features))
-          (load (expand-file-name "src/files-standalone-buffer.el"
-                                  files-test--root)
+          (load (nemacs-test-paths-source "files-standalone-buffer.el")
                 nil t)
           (dolist (cell primitive-cells)
             (should (eq (symbol-function (car cell)) (cdr cell)))))
@@ -756,7 +757,8 @@ runaway forms rather than the editing-shim limit."
   (dolist (spec '(("src/files.el" . 650)
                   ("src/simple.el" . 650)
                   ("src/files-standalone-buffer.el" . 2000)))
-    (let* ((file (expand-file-name (car spec) files-test--root))
+    (let* ((file (nemacs-test-paths-source
+                 (string-remove-prefix "src/" (car spec))))
            (oversized (files-test--oversized-top-level-forms file (cdr spec))))
       (should (equal oversized nil)))))
 

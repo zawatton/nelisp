@@ -40,8 +40,8 @@
 
 (ert-deftest emacs-vars-test/package-mirror-matches-source ()
   (let* ((repository-root
-          (expand-file-name ".." emacs-vars-test--directory))
-         (source (expand-file-name "src/emacs-vars.el" repository-root))
+          nemacs-test-paths-repo-root)
+         (source (nemacs-test-paths-source "emacs-vars.el"))
          (mirror (expand-file-name
                   "packages/nelisp-emacs-foundation/lisp/emacs-vars.el"
                   repository-root)))

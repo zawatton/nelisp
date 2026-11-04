@@ -8,12 +8,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst emacs-server-client-test--root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun emacs-server-client-test--reader ()
   "Return an executable standalone reader, or nil."
@@ -54,7 +56,10 @@
              ("scripts/nemacs-server-loop.el"
               "nemacs-server-loop-root"
               "(nemacs-server-start)")))
-    (let* ((file (expand-file-name (car probe) emacs-server-client-test--root))
+    (let* ((file (if (string-prefix-p "src/" (car probe))
+                     (nemacs-test-paths-source (substring (car probe) 4))
+                   (expand-file-name (car probe)
+                                     emacs-server-client-test--root)))
            (source (with-temp-buffer
                      (insert-file-contents file)
                      (buffer-string))))
