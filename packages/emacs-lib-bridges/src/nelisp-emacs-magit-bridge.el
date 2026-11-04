@@ -1,4 +1,4 @@
-;;; nelisp-emacs-magit-bridge.el --- load the real vendor Magit chain into a live session  -*- lexical-binding: t; -*-
+;;; nelisp-emacs-magit-bridge.el --- load the real vendor Magit chain into a live session  -*- lexical-binding: t; byte-compile-warnings: (not free-vars unresolved lexical obsolete ignored-return-value); -*-
 
 ;;; Commentary:
 
@@ -37,8 +37,22 @@
 ;; `require' them here so this bridge keeps working standalone too (e.g. a
 ;; live REPL session that loads this bundle without the full
 ;; `emacs-foundation'/`nemacs-main' boot chain first).
+;; Slots of the vendored Magit/transient EIEIO classes are not known while
+;; this bridge is byte-compiled (the vendor chain is loaded at run time), so
+;; `eieio-oref' & co. would warn "Unknown slot".  Register the names for the
+;; duration of the compilation only.
+(eval-when-compile
+  (require 'eieio-core nil t)
+  (when (boundp 'eieio--known-slot-names)
+    (dolist (slot '(argument content hidden inactive inapt init-value key
+                    keymap parent return scope setup-children shortarg
+                    suffixes transient transient-suffix washer))
+      (add-to-list 'eieio--known-slot-names slot))))
+
 (require 'emacs-button-builtins)
 (require 'emacs-parity-fns2)
+
+(defvar emacs-cl-macros--struct-defs)
 
 (defvar nelisp-emacs-magit-bridge-repo-root nil
   "Repository root used to resolve the generated bundle path.
@@ -752,14 +766,14 @@ so nil/ordinary defaults are the honest baseline."
       "Standalone-safe scope initialization for transient prefix/suffix objects."
       (if (and (boundp 'transient--prefix)
                (ignore-errors (cl-typep obj 'magit--git-variable)))
-          (eieio-oset obj 'scope
+          (with-no-warnings (eieio-oset obj 'scope
                       (cond
                        (transient--prefix
                         (eieio-oref transient--prefix 'scope))
                        ((slot-boundp obj 'scope)
                         (let ((scope (eieio-oref obj 'scope)))
                           (and (functionp scope)
-                               (funcall scope obj))))))
+                               (funcall scope obj)))))))
         nil))))
 
 (defun nelisp-emacs-magit-bridge--ensure-transient-init-value-safe ()
@@ -767,8 +781,9 @@ so nil/ordinary defaults are the honest baseline."
   (when (featurep 'transient)
     (defun transient-init-value (obj)
       "Standalone-safe value initialization for transient objects."
-      (let ((init-value (and (ignore-errors (slot-boundp obj 'init-value))
-                             (ignore-errors (eieio-oref obj 'init-value)))))
+      (let ((init-value (with-no-warnings
+                          (and (ignore-errors (slot-boundp obj 'init-value))
+                               (ignore-errors (eieio-oref obj 'init-value))))))
         (cond
          ((functionp init-value)
           (funcall init-value obj))
@@ -2593,8 +2608,8 @@ already accepted by the current `define-key' substrate, and
            (error nil))))
     (unless (fboundp 'keymapp)
       (fset 'keymapp
-            '(lambda (object)
-               (and (consp object) (eq (car object) 'keymap)))))
+            (cons 'lambda '((object)
+                            (and (consp object) (eq (car object) 'keymap))))))
     (unless (fboundp 'map-keymap)
       (cond
        ((fboundp 'emacs-keymap-map-keymap)
@@ -2602,30 +2617,30 @@ already accepted by the current `define-key' substrate, and
               (symbol-function 'emacs-keymap-map-keymap)))
        (t
         (fset 'map-keymap
-              '(lambda (_function _keymap)
-                 nil)))))
+              (cons 'lambda '((_function _keymap)
+                              nil))))))
     (unless (fboundp 'map-keymap-internal)
       (fset 'map-keymap-internal
             (symbol-function 'map-keymap)))
     (unless (fboundp 'make-composed-keymap)
       (fset 'make-composed-keymap
-            '(lambda (maps &optional parent)
-               (let ((head (cond
-                            ((and (fboundp 'keymapp) (keymapp maps)) maps)
-                            ((and (listp maps) maps) (car maps))
-                            (maps maps)
-                            (t parent))))
-                 (or head parent (list 'keymap))))))
+            (cons 'lambda '((maps &optional parent)
+                            (let ((head (cond
+                                         ((and (fboundp 'keymapp) (keymapp maps)) maps)
+                                         ((and (listp maps) maps) (car maps))
+                                         (maps maps)
+                                         (t parent))))
+                              (or head parent (list 'keymap)))))))
     (unless probe
       (fset 'make-keymap
-            '(lambda (&optional _prompt)
-               (list 'keymap)))
+            (cons 'lambda '((&optional _prompt)
+                            (list 'keymap))))
       (fset 'make-sparse-keymap
-            '(lambda (&optional _prompt)
-               (list 'keymap)))
+            (cons 'lambda '((&optional _prompt)
+                            (list 'keymap))))
       (fset 'suppress-keymap
-            '(lambda (keymap &optional _nodigits)
-               keymap)))))
+            (cons 'lambda '((keymap &optional _nodigits)
+                            keymap))))))
 
 (defun nelisp-emacs-magit-bridge--ensure-save-some-buffers ()
   "Ensure `save-some-buffers' (real Emacs `files.el') exists.
@@ -4957,7 +4972,7 @@ Ignore the exit status of PROGRAM (unlike `process-lines')."
 (defun nelisp-emacs-magit-bridge--ensure-bundled-forward-features ()
   "Pre-provide bundled features that earlier parts `require' forward.
 
-Bundle parts 16-19 carry vendor top-level `(require 'magit)' forms,
+Bundle parts 16-19 carry vendor top-level `(require \='magit)' forms,
 but the `magit' feature itself is provided by part 20: in real Emacs
 the `require' would load magit.el from `load-path' on demand, while
 here it dies with \"Cannot open load file: magit\" (measured on part
@@ -4969,7 +4984,7 @@ bundle's own resume guard tracks
 variable from `features'.
 
 Known risk, accepted deliberately: vendor code that probes
-`(featurep 'magit)' during parts 1-19 to conditionally integrate will
+`(featurep \='magit)' during parts 1-19 to conditionally integrate will
 see t early.  Any resulting reference to a not-yet-loaded definition
 now fails LOUDLY (void-function/void-variable) thanks to the
 substrate's signal fixes, so this cannot regress into a silent stop."
