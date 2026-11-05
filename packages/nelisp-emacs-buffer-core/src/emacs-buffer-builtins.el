@@ -738,9 +738,19 @@ under the live Magit bridge even when the actual current buffer is valid."
 
 (defun emacs-buffer-builtins--property-bounds (object)
   "Return the accessible bounds of buffer or string OBJECT."
-  (if (stringp object)
-      (list 0 (length object))
-    (with-current-buffer object (list (point-min) (point-max)))))
+  (cond
+   ((stringp object) (list 0 (length object)))
+   ;; An ec-buffer that the host `set-buffer' cannot select (no native
+   ;; buffer bridge): read its bounds through the substrate instead.
+   ((and (not (bufferp object))
+         (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)
+         (fboundp 'nelisp-ec-set-buffer))
+    (let ((saved (nelisp-ec-current-buffer)))
+      (unwind-protect
+          (progn (nelisp-ec-set-buffer object)
+                 (list (nelisp-ec-point-min) (nelisp-ec-point-max)))
+        (when saved (nelisp-ec-set-buffer saved)))))
+   (t (with-current-buffer object (list (point-min) (point-max))))))
 
 (defun emacs-buffer-builtins--property-range (start end object)
   "Validate and normalize a text-property range in OBJECT."
@@ -1781,7 +1791,7 @@ clamp + signal semantics."
 ;; insert / erase-buffer / delete-region batched into the dolist near the
 ;; top.
 
-(defun emacs-buffer-builtins-char-after (&optional pos)
+(defun emacs-buffer-builtins--ec-char-after (&optional pos)
   "Return character at POS, or nil at end of accessible buffer."
   (let ((p (or pos (nelisp-ec-point))))
     (if (and (integerp p)
@@ -1790,7 +1800,7 @@ clamp + signal semantics."
         (aref (nelisp-ec-buffer-substring p (1+ p)) 0)
       nil)))
 
-(defun emacs-buffer-builtins-char-before (&optional pos)
+(defun emacs-buffer-builtins--ec-char-before (&optional pos)
   "Return character before POS, or nil at beginning of accessible buffer."
   (let ((p (or pos (nelisp-ec-point))))
     (if (and (integerp p)
@@ -1801,11 +1811,11 @@ clamp + signal semantics."
 
 (defun emacs-buffer-builtins-following-char ()
   "Return character at point, or 0 at end of accessible buffer."
-  (or (emacs-buffer-builtins-char-after) 0))
+  (or (emacs-buffer-builtins--ec-char-after) 0))
 
 (defun emacs-buffer-builtins-preceding-char ()
   "Return character before point, or 0 at beginning of accessible buffer."
-  (or (emacs-buffer-builtins-char-before) 0))
+  (or (emacs-buffer-builtins--ec-char-before) 0))
 
 (dolist (--cell--
          '((char-after     . emacs-buffer-builtins-char-after)
@@ -2332,12 +2342,18 @@ Ignores narrowing (hashes the whole buffer)."
 (defvar emacs-buffer-builtins--native-char-before nil)
 (defun emacs-buffer-builtins-char-after (&optional position)
   "Return the native character at optional integer or marker POSITION."
-  (funcall emacs-buffer-builtins--native-char-after
-           (and position (emacs-buffer-builtins--checked-position position))))
+  (let ((position (and position (emacs-buffer-builtins--checked-position position))))
+    (if emacs-buffer-builtins--native-char-after
+        (funcall emacs-buffer-builtins--native-char-after position)
+      ;; Bridge not installed yet: defer to the earlier `char-after'.
+      (emacs-buffer-builtins--ec-char-after position))))
 (defun emacs-buffer-builtins-char-before (&optional position)
   "Return the native character preceding integer or marker POSITION."
-  (funcall emacs-buffer-builtins--native-char-before
-           (and position (emacs-buffer-builtins--checked-position position))))
+  (let ((position (and position (emacs-buffer-builtins--checked-position position))))
+    (if emacs-buffer-builtins--native-char-before
+        (funcall emacs-buffer-builtins--native-char-before position)
+      ;; Bridge not installed yet: defer to the earlier `char-before'.
+      (emacs-buffer-builtins--ec-char-before position))))
 (defun emacs-buffer-builtins--install-native-marker-position-bridges ()
   "Keep marker validation at the shared buffer boundary after IO loads."
   ;; Capture once: the IO adapter may itself capture this bridge, so capturing

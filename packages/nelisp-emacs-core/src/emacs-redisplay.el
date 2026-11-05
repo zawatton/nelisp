@@ -2690,6 +2690,9 @@ or padding glyphs)."
                               (- (emacs-redisplay-glyph-buf-pos g) start)))))
           (append vec nil)))
 
+(defvar display-line-numbers-mode nil
+  "Non-nil when line numbers are displayed in the current buffer.")
+
 (defun emacs-redisplay-display-line-numbers-mode (&optional arg)
   "Toggle a buffer's line-number gutter, or enable it according to ARG."
   (interactive "P")

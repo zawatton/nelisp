@@ -415,6 +415,17 @@ run a swap-out."
        ((boundp sym) (symbol-value sym))
        (t (signal 'void-variable (list sym)))))))
 
+
+(declare-function nelisp--env-globals-set-value "nelisp-stdlib-env-shim" (sym val))
+
+(defun emacs-buffer--globals-set-value (sym value)
+  "Mirror VALUE into SYM's substrate global cell when that primitive exists.
+Without the substrate there is no separate global-cell world to keep in
+sync, and writing the host global would leak state across buffers, so the
+fallback is a no-op."
+  (when (fboundp 'nelisp--env-globals-set-value)
+    (nelisp--env-globals-set-value sym value)))
+
 ;;;###autoload
 (defun emacs-buffer-set-buffer-local-value (sym buf value)
   "Set the buffer-local binding of SYM in BUF to VALUE.
@@ -461,7 +472,7 @@ this helper (or `make-local-variable' + global `setq')."
              emacs-buffer--default-values))
   (emacs-buffer-set-buffer-local-value symbol buffer value)
   (when (eq buffer (current-buffer))
-    (nelisp--env-globals-set-value symbol value)
+    (emacs-buffer--globals-set-value symbol value)
     (puthash symbol value emacs-buffer--swapped-in))
   nil)
 
@@ -559,7 +570,7 @@ own local binding sees a new default right away) — see
         (when (eq b (emacs-buffer--current))
           (let ((emacs-parity-misc--inhibit-watchers t))
             (if (emacs-buffer-default-boundp sym)
-                (nelisp--env-globals-set-value sym (emacs-buffer-default-value sym))
+                (emacs-buffer--globals-set-value sym (emacs-buffer-default-value sym))
               (makunbound sym)))))
       sym)))
 
