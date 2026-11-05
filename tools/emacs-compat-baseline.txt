@@ -97,7 +97,7 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
-shared-shadowing 269
+shared-shadowing 253
 # 270 -> 269 on 2026-11-05 (cl-gnu P3): the native prelude `pcase' is deleted.
 
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new

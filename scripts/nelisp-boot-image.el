@@ -219,6 +219,185 @@ providers and source-only builds retain their exact source text."
            (t source))
      "\nt\n")))
 
+;; The prelude's own uses of the cl-macs and gv macros run (or are expanded at
+;; first call) before GNU's gv.el and cl-macs.el load, and those files cannot load
+;; earlier.  GNU's preloaded `.elc' files have these uses expanded at compile time;
+;; the prelude gets the same expansion here, on the build host, with GNU's macros.
+(defconst nelisp-boot-image--prelude-expanded-macros
+  '(setf cl-incf cl-decf incf decf cl-callf cl-callf2 cl-psetf cl-psetq
+    cl-block cl-return cl-return-from cl-loop cl-labels cl-flet cl-case
+    cl-macrolet cl-symbol-macrolet cl-defun cl-function cl-dolist cl-dotimes
+    named-let with-memoization push pop cl-defstruct cl-defmethod cl-defgeneric)
+  "Macros whose uses in the prelude are expanded at bake time.")
+
+(defun nelisp-boot-image--cl-target-p (form)
+  "Return non-nil when FORM, a call of an expanded macro, must be expanded.
+`push', `pop', `incf' and `decf' on a plain variable need no gv."
+  (cond ((eq (car form) 'push) (consp (nth 2 form)))
+        ((memq (car form) '(pop incf decf)) (consp (nth 1 form)))
+        (t t)))
+
+(defun nelisp-boot-image--cl-walk (form)
+  "Return FORM with the uses of `nelisp-boot-image--prelude-expanded-macros' expanded."
+  (cond
+   ((not (consp form)) form)
+   ((not (proper-list-p form)) form)
+   ((memq (car form) '(quote declare \`)) form)
+   ((and (symbolp (car form))
+         (memq (car form) nelisp-boot-image--prelude-expanded-macros)
+         (nelisp-boot-image--cl-target-p form))
+    (let ((new (macroexpand-1 form nelisp-boot-image--expansion-environment)))
+      (when (equal new form)
+        (error "Host cannot expand prelude %S use: %S" (car form) form))
+      (nelisp-boot-image--cl-post (nelisp-boot-image--cl-walk new))))
+   ((and (eq (car form) 'function) (eq (car-safe (cadr form)) 'lambda))
+    (list 'function (nelisp-boot-image--cl-walk (cadr form))))
+   (t (mapcar #'nelisp-boot-image--cl-walk form))))
+
+(defun nelisp-boot-image--cl-post (form)
+  "Apply GNU's compiler macros for the calls cl-macs expansions leave behind."
+  (cond ((not (consp form)) form)
+        ((memq (car form) '(quote function)) form)
+        (t (let ((form (if (proper-list-p form)
+                           (mapcar #'nelisp-boot-image--cl-post form)
+                         form)))
+             (cond ((and (eq (car form) 'cl--block-wrapper) (= (length form) 2))
+                    (nth 1 form))
+                   ((eq (car form) 'cl--block-throw) (cons 'throw (cdr form)))
+                   (t form))))))
+
+(defun nelisp-boot-image--tree-uses-p (form names)
+  "Return non-nil when FORM calls one of NAMES outside quoted data."
+  (and (consp form) (not (memq (car form) '(quote declare \`)))
+       (or (and (symbolp (car form)) (memq (car form) names)
+                (nelisp-boot-image--cl-target-p form))
+           (let ((cell form) (found nil))
+             (while (and (consp cell) (not found))
+               (setq found (nelisp-boot-image--tree-uses-p (car cell) names)
+                     cell (cdr cell)))
+             found))))
+
+(defun nelisp-boot-image--place-heads (spans)
+  "Return the symbols that appear as places in the setf-family uses of SPANS."
+  (let ((heads nil))
+    (cl-labels
+        ((walk (f)
+           (when (and (consp f) (not (memq (car f) '(quote \`))))
+             (cond
+              ((memq (car f) '(setf cl-psetf))
+               (let ((a (cdr f)))
+                 (while (consp a)
+                   (when (consp (car a)) (push (car (car a)) heads))
+                   (setq a (cdr-safe (cdr a))))))
+              ((memq (car f) '(push cl-callf cl-callf2))
+               (when (consp (nth 2 f)) (push (car (nth 2 f)) heads)))
+              ((memq (car f) '(pop incf decf cl-incf cl-decf))
+               (when (consp (nth 1 f)) (push (car (nth 1 f)) heads))))
+             (let ((c f)) (while (consp c) (walk (car c)) (setq c (cdr c)))))))
+      (dolist (s spans) (walk (nth 2 s))))
+    heads))
+
+(defun nelisp-boot-image-expand-prelude-cl-macros (text)
+  "Return prelude TEXT with its cl-macs and gv macro uses expanded on the host.
+The place macros and the `nelisp--define-core-record' types the uses refer to
+are defined on the host first, so GNU's gv resolves them as the runtime will."
+  (require 'cl-lib) (require 'gv) (require 'nelisp-prelude-bytecode)
+  (let* ((spans (nelisp-prelude-bytecode--top-level-spans text))
+         (heads (nelisp-boot-image--place-heads spans))
+         (defined nil) (patches nil)
+         (lexical-binding nil))
+    (unwind-protect
+        (progn
+          ;; Host definitions of the places, in file order.
+          (dolist (span spans)
+            (let ((form (nth 2 span)))
+              (when (or (and (eq (car-safe form) 'defmacro)
+                             (memq (cadr form) heads)
+                             (not (fboundp (cadr form))))
+                        (and (eq (car-safe form) 'defmacro)
+                             (eq (cadr form) 'nelisp--define-core-record)))
+                (push (cadr form) defined)
+                (eval form nil))
+              (when (eq (car-safe form) 'nelisp--define-core-record)
+                (when (fboundp (intern (format "%s-p" (cadr form))))
+                  (error "Host already defines %S" (cadr form)))
+                (dolist (def (cdr (macroexpand-1 form)))
+                  (when (memq (car-safe def) '(defun))
+                    (push (cadr def) defined)))
+                (eval form nil))))
+          (dolist (span spans)
+            (let ((form (nth 2 span)))
+              (when (nelisp-boot-image--tree-uses-p
+                     form nelisp-boot-image--prelude-expanded-macros)
+                (let ((new (nelisp-boot-image--cl-walk form))
+                      (print-length nil) (print-level nil) (print-circle t)
+                      (print-gensym t) (print-escape-newlines nil)
+                      (print-escape-nonascii t) (print-escape-multibyte t)
+                      (print-escape-control-characters t))
+                  (let ((printed (prin1-to-string new)))
+                    (when (string-match-p "#\\[" printed)
+                      (error "Host byte-code leaked into %S" (car-safe (cdr-safe form))))
+                    (push (list (nth 0 span) (nth 1 span) printed) patches))))))
+          (dolist (patch patches)
+            (setq text (concat (substring text 0 (nth 0 patch)) (nth 2 patch)
+                               (substring text (nth 1 patch))))))
+      (dolist (name defined) (when (fboundp name) (fmakunbound name))))
+    text))
+
+(defconst nelisp-boot-image--composed-cl-macs-marker
+  "\n;; --- GNU Emacs 31.1 cl-macs.el (nadvice not yet loaded) ---\n"
+  "Line that starts GNU cl-macs in the composed boot source.")
+
+(defconst nelisp-boot-image--deleted-native-macros
+  '(setf cl-defstruct cl-loop cl-case cl-labels cl-incf cl-block cl-return
+    cl-return-from cl-defun cl-macrolet cl-symbol-macrolet cl-psetf cl-psetq
+    cl-defgeneric cl-defmethod cl-callf)
+  "Macros the prelude no longer defines natively; GNU cl-macs and gv own them.")
+
+(defun nelisp-boot-image--expand-staged-defstructs (text)
+  "Return TEXT with each top-level `cl-defstruct' fully expanded on the host.
+These are GNU cl-preloaded.el structs staged before cl-macs and inline.el load;
+GNU's `.elc' has them expanded (through `define-inline') at compile time."
+  (require 'cl-lib) (require 'inline) (require 'nelisp-prelude-bytecode)
+  (let ((patches nil))
+    (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
+      (when (eq (car-safe (nth 2 span)) 'cl-defstruct)
+        (let* ((new (macroexpand-all (nth 2 span)
+                                     nelisp-boot-image--expansion-environment))
+               (printed (let ((print-length nil) (print-level nil)
+                              (print-circle t) (print-gensym t)
+                              (print-escape-newlines nil)
+                              (print-escape-nonascii t) (print-escape-multibyte t)
+                              (print-escape-control-characters t))
+                          (prin1-to-string new))))
+          (when (string-match-p "#\\[" printed)
+            (error "Host byte-code leaked into staged %S" (cadr (nth 2 span))))
+          (push (list (nth 0 span) (nth 1 span) printed) patches))))
+    (dolist (patch patches)
+      (setq text (concat (substring text 0 (nth 0 patch)) (nth 2 patch)
+                         (substring text (nth 1 patch)))))
+    text))
+
+(defun nelisp-boot-image-expand-composed-prelude (text)
+  "Return composed boot source TEXT with its pre-cl-macs part host-expanded.
+Every piece evaluated before GNU cl-macs loads (staged vendor forms included,
+not just the prelude file) must not call a deleted native macro.  Signal an
+error naming the first remaining use."
+  (let ((cut (string-search nelisp-boot-image--composed-cl-macs-marker text)))
+    (unless cut (error "Composed boot source lacks the cl-macs boundary"))
+    (let* ((head (nelisp-boot-image-expand-prelude-cl-macros
+                  (nelisp-boot-image--expand-staged-defstructs
+                   (substring text 0 cut))))
+           (spans (nelisp-prelude-bytecode--top-level-spans head)))
+      (dolist (span spans)
+        (when (nelisp-boot-image--tree-uses-p
+               (nth 2 span) nelisp-boot-image--deleted-native-macros)
+          (error "Deleted native macro still used before cl-macs at byte %d: %.200S"
+                 (nth 0 span) (nth 2 span))))
+      (message "[boot-image] composed pre-cl-macs source: no deleted macro heads (%d forms)"
+               (length spans))
+      (concat head (substring text cut)))))
+
 (defun nelisp-boot-image-prelude (source)
   "Embed backquote at its original bootstrap boundary in SOURCE."
   (let* ((old "(if (boundp 'nelisp-standalone--backquote-file)\n    (load nelisp-standalone--backquote-file)\n  (require 'backquote))")
@@ -228,9 +407,10 @@ providers and source-only builds retain their exact source text."
     (let ((begin (match-beginning 0)) (end (match-end 0)))
       (when (string-match regexp source end)
         (error "Duplicate backquote bootstrap boundary"))
-      (concat (substring source 0 begin)
-              (nelisp-boot-image-provider 'backquote)
-              (substring source end)))))
+      (nelisp-boot-image-expand-prelude-cl-macros
+       (concat (substring source 0 begin)
+               (nelisp-boot-image-provider 'backquote)
+               (substring source end))))))
 
 (defun nelisp-boot-image--autoloads (name source)
   "Collect NAME's definitions, retaining which are guarded fallbacks."

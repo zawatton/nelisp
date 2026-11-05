@@ -49949,9 +49949,6 @@ matcher and the after-load forms, so callers insert this strictly after both."
    "\n;; --- GNU Emacs 31.1 subr.el: def-edebug-elem-spec ---\n"
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'def-edebug-elem-spec)
-   "\n;; --- GNU Emacs 31.1 subr.el: define-symbol-prop ---\n"
-   (nelisp-standalone--vendor-function-source
-    "vendor/staged-emacs-lisp/subr.el" 'define-symbol-prop)
    ;; GNU loadup.el loads pcase right after macroexp (the native prelude
    ;; pcase, if still present, is overridden here).
    (nelisp-boot-image-provider 'pcase)
@@ -50219,6 +50216,11 @@ resolved fine.  Same feature, different answer per entry point."
     "vendor/staged-emacs-lisp/cl-macs.el" 'cl--find-class)
    (nelisp-vendor-source-form
     "vendor/staged-emacs-lisp/cl-macs.el" 'cl-deftype)
+   ;; The host-expanded cl-defstruct below registers `cl-deftype-satisfies'
+   ;; through this exact GNU helper, so it must precede the structs.
+   "\n;; --- GNU Emacs 31.1 subr.el: define-symbol-prop ---\n"
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'define-symbol-prop)
    ;; Preserve GNU's class layout and constructor contracts for derived types.
    "\n;; --- GNU Emacs 31.1 cl-preloaded.el: derived class structs ---\n"
    (nelisp-vendor-source-forms
@@ -50831,7 +50833,7 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
     (insert "\n(nelisp-stdlib-print-quoted-install)\n")
     (when nelisp-standalone--rooted-protocol-startup-source
       (insert nelisp-standalone--rooted-protocol-startup-source))
-    (buffer-string)))
+    (nelisp-boot-image-expand-composed-prelude (buffer-string))))
 
 (defun nelisp-standalone--prelude-subr-arity-metadata ()
   "Register Lisp replacements of GNU subrs after prelude installation.

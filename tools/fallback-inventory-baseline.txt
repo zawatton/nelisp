@@ -338,7 +338,7 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # Merged 2026-09-12: 83 + 1 (--unload-handle) + 3 (the bounded-rebuild work) = 87,
 # taken from the scanner.
 # 2026-09-28: +4 net from the cl-generic class-designator helper (6 new guarded sites, prelude + cl-macros lockstep; 2 removed by the ns-gate cleanup).
-ignore-errors 100
+ignore-errors 91
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--kill	49a1e5c4d66b 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--artifact-produced-p	7f74078abc35 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--cleanup-temp-files	dd8bb1462f63 1
@@ -635,12 +635,6 @@ pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-parents	d33aa6c36385 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-match-p	980a84a85bbb 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--subclass-match-p	91de5398feb0 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-name-equal-p	0a46d3234e65 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	3f46e55694ee 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	877a0858da13 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-parents	d33aa6c36385 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	980a84a85bbb 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--subclass-match-p	91de5398feb0 1
 # 2026-09-11 (Doc 191 strict source reload): the three handlers described
 # above are pinned by exact shape.  The formatter fallback and source-span
 # scanner are diagnostics, while the reload cleanup handler protects
@@ -919,6 +913,3 @@ pinned-site silent-fallback	standalone-overlay-print-smoke.el	defmacro ovly-prin
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	4ca13a5eb97c 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	7ff532434888 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	69df469c9809 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	4ca13a5eb97c 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	7ff532434888 1
-pinned-site ignore-errors	nelisp-stdlib-prelude.el	defun nelisp-cl-generic--class-designator-name	69df469c9809 1
