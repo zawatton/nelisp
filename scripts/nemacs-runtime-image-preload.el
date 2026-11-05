@@ -3228,11 +3228,16 @@ image startup."
 (defun nemacs-runtime-image-preload--install-charscript-core ()
   "Install the lightweight `charscript' table surface without source `load'."
   (unless (featurep 'charscript)
-    (unless (boundp 'char-script-table)
-      (defvar char-script-table
-        (if (fboundp 'make-char-table)
-            (make-char-table 'char-script-table nil)
-          [])))
+    ;; Keep an existing table only when the active `char-table-p' accepts
+    ;; it: a bound value from another char-table implementation (or nil) is
+    ;; unusable here, as in `charscript--ensure-table'.
+    (unless (and (boundp 'char-script-table)
+                 (char-table-p char-script-table))
+      (defvar char-script-table nil)
+      (setq char-script-table
+            (if (fboundp 'make-char-table)
+                (make-char-table 'char-script-table nil)
+              [])))
     (provide 'charscript))
   t)
 
