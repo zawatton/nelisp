@@ -1139,7 +1139,8 @@ process (an earlier file may legitimately load a lazy feature)."
                    (prin1 (nreverse loaded))))))
     (with-temp-buffer
       (let ((status (call-process exe nil t nil "--batch" "-Q"
-                                  "--eval" (prin1-to-string form))))
+                                  "--eval" (let ((print-length nil) (print-level nil))
+                                              (prin1-to-string form)))))
         (unless (eq status 0)
           (error "Fresh facade subprocess failed (%S): %s" status (buffer-string)))
         (goto-char (point-min))
