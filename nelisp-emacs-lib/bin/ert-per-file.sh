@@ -41,7 +41,7 @@ run_one() {
   timeout "$timeout_s" "${cmd[@]}" -l "$f" -f ert-run-tests-batch-and-exit \
     > "$log" 2>&1
   rc=$?
-  summary=$(grep -E '^Ran [0-9]+ tests?' "$log" | tail -1)
+  summary=$(grep -aE '^(Aborted: )?Ran [0-9]+ tests?' "$log" | tail -1)
   # One line per file; a single short printf keeps concurrent appends whole.
   printf '%s\t%s\t%s\t%s\n' "$f" "$rc" "$summary" "$log" >> "$result_file"
 }
@@ -59,7 +59,7 @@ awk -F'\t' -v secs=$(( $(date +%s) - start )) '
   {
     files++
     n_ran = n_exp = n_unexp = n_skip = 0
-    if (match($3, /^Ran [0-9]+/)) n_ran = substr($3, 5, RLENGTH - 4) + 0
+    if (match($3, /Ran [0-9]+/)) n_ran = substr($3, RSTART + 4, RLENGTH - 4) + 0
     if (match($3, /[0-9]+ results? as expected/)) n_exp = substr($3, RSTART) + 0
     if (match($3, /[0-9]+ unexpected/)) n_unexp = substr($3, RSTART) + 0
     if (match($3, /[0-9]+ skipped/)) n_skip = substr($3, RSTART) + 0

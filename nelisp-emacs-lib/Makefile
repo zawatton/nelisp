@@ -180,8 +180,13 @@ NEMACS_LIBRARY_PACKAGE_LOAD_PATH ?= $(shell sh scripts/nemacs-library-package-lo
 NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH ?= -L packages/nelisp-emacs-app-gui/lisp
 NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH ?= $(NEMACS_LIBRARY_PACKAGE_LOAD_PATH) $(NEMACS_LIBRARY_APP_SCAFFOLD_LOAD_PATH)
 NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE ?= --eval '(require (quote ert))'
+# Load comp (compiled) before load-suffixes prefers .el: tests that
+# redefine primitives make native-comp build a subr trampoline, which
+# otherwise loads comp.el.gz from source and fails on an eager
+# macro-expansion cycle.
 NEMACS_HOST_TEST_PRELUDE ?= $(NEMACS_LIBRARY_PACKAGE_HOST_ERT_PRELUDE) \
 	--eval '(require (quote jka-compr))' \
+	--eval '(when (and (fboundp (quote native-comp-available-p)) (native-comp-available-p)) (require (quote comp)))' \
 	--eval '(setq load-prefer-newer nil load-suffixes (cons ".el" (delete ".el" load-suffixes)))'
 NEMACS_LIBRARY_PACKAGE_MANIFEST ?= $(BUILD_DIR)/nemacs-library-package-manifest.tsv
 NEMACS_LIBRARY_PACKAGE_MANIFEST_SUMMARY ?= $(BUILD_DIR)/nemacs-library-package-manifest-summary.org
