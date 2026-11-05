@@ -648,6 +648,16 @@ so an aliased macro is recognised as one."
     ;; dead code.  Signal for the same reason the `defun' arm above does.
     (signal 'nelisp-bc-unimplemented
             (list "macro reached the compiler unexpanded" (car form))))
+   ((and (consp form) (symbolp (car form))
+         (fboundp 'special-form-p)
+         (special-form-p (car form)))
+    ;; A special form none of the arms above lowers (`save-current-buffer',
+    ;; `save-excursion', `save-restriction', ...).  Compiling it as a call
+    ;; evaluates its body eagerly as arguments and fails only at run time
+    ;; with `void-function', so every caller's fallback to source replay
+    ;; was dead code.  Signal like the macro arm above.
+    (signal 'nelisp-bc-unimplemented
+            (list "special form reached the compiler unlowered" (car form))))
    ((and (consp form) (symbolp (car form)))
     (nelisp-bc--compile-call ctx (car form) (cdr form)))
    (t
