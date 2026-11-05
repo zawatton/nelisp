@@ -1087,9 +1087,42 @@
   (dolist (feature (cons 'nelisp-emacs nelisp-emacs-library-features))
     (should (featurep feature))))
 
+(defun nelisp-emacs-test--fresh-loaded-lazy-features (features)
+  "Return the members of FEATURES loaded after a fresh `require' of the facade.
+Runs a clean `emacs --batch -Q' child with this process's `load-path', so
+the result does not depend on which test files ran earlier in the same
+process (an earlier file may legitimately load a lazy feature)."
+  (let ((exe (expand-file-name invocation-name invocation-directory))
+        (form `(progn
+                 (setq load-path ',load-path)
+                 (require 'nelisp-emacs)
+                 (let (loaded)
+                   (dolist (feature ',features)
+                     (when (if (memq feature '(lisp-mode org))
+                               (let (hit)
+                                 (dolist (entry load-history)
+                                   (when (and (stringp (car entry))
+                                              (string= (file-name-nondirectory
+                                                        (car entry))
+                                                       (concat (symbol-name feature)
+                                                               ".el")))
+                                     (setq hit t)))
+                                 hit)
+                             (featurep feature))
+                       (push feature loaded)))
+                   (prin1 (nreverse loaded))))))
+    (with-temp-buffer
+      (let ((status (call-process exe nil t nil "--batch" "-Q"
+                                  "--eval" (prin1-to-string form))))
+        (unless (eq status 0)
+          (error "Fresh facade subprocess failed (%S): %s" status (buffer-string)))
+        (goto-char (point-min))
+        (read (current-buffer))))))
+
 (ert-deftest nelisp-emacs-test/library-package-manifest-is-coherent ()
   (skip-unless nelisp-emacs-test--preload-clean-p)
-  (let ((manifest (nelisp-emacs-library-package-manifest)))
+  (let ((manifest (nelisp-emacs-library-package-manifest))
+        lazy-all)
     (should (equal (mapcar #'car manifest)
                    '(foundation
                      text-core
@@ -1116,8 +1149,11 @@
           (should (featurep member-feature)))
         (dolist (lazy-feature lazy-features)
           (should (symbolp lazy-feature))
-          (should-not
-           (nelisp-emacs-test--lazy-feature-loaded-p lazy-feature)))))))
+          (setq lazy-all (cons lazy-feature lazy-all)))))
+    ;; Check laziness in a fresh process so earlier test files cannot
+    ;; influence the result.
+    (should-not
+     (nelisp-emacs-test--fresh-loaded-lazy-features (nreverse lazy-all)))))
 
 (ert-deftest nelisp-emacs-test/library-package-manifest-returns-copy ()
   (let* ((manifest (nelisp-emacs-library-package-manifest))

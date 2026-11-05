@@ -1100,23 +1100,60 @@
       (nelisp-emacs-consumer-smoke-test--loaded-file-p "lisp-mode.el")
     (featurep feature)))
 
+(defun nelisp-emacs-consumer-smoke-test--fresh-loaded-lazy-features (features)
+  "Return the members of FEATURES loaded after a fresh `require' of the facade.
+Runs a clean `emacs --batch -Q' child with this process's `load-path', so
+the result does not depend on which test files ran earlier in the same
+process (an earlier file may legitimately load a lazy feature)."
+  (let ((exe (expand-file-name invocation-name invocation-directory))
+        (form `(progn
+                 (setq load-path ',load-path)
+                 (require 'nelisp-emacs)
+                 (let (loaded)
+                   (dolist (feature ',features)
+                     (when (if (memq feature '(lisp-mode org))
+                               (let (hit)
+                                 (dolist (entry load-history)
+                                   (when (and (stringp (car entry))
+                                              (string= (file-name-nondirectory
+                                                        (car entry))
+                                                       (concat (symbol-name feature)
+                                                               ".el")))
+                                     (setq hit t)))
+                                 hit)
+                             (featurep feature))
+                       (push feature loaded)))
+                   (prin1 (nreverse loaded))))))
+    (with-temp-buffer
+      (let ((status (call-process exe nil t nil "--batch" "-Q"
+                                  "--eval" (prin1-to-string form))))
+        (unless (eq status 0)
+          (error "Fresh facade subprocess failed (%S): %s" status (buffer-string)))
+        (goto-char (point-min))
+        (read (current-buffer))))))
+
 (ert-deftest nelisp-emacs-consumer-smoke-test/require-facade-from-src-only ()
   (skip-unless nelisp-emacs-consumer-smoke-test--preload-clean-p)
   (should (= nelisp-emacs-library-contract-version 1))
   (should (featurep 'nelisp-emacs))
   (should (equal (nelisp-emacs-library-package-names)
                  nelisp-emacs-consumer-smoke-test--expected-package-names))
-  (dolist (name (nelisp-emacs-library-package-names))
-    (let ((package (nelisp-emacs-library-package name)))
-      (should package)
-      (should (memq (plist-get package :owner) '(FND TXT BUF CORE IO FEAT)))
-      (should (featurep (plist-get package :feature)))
-      (dolist (feature (plist-get package :features))
-        (should (featurep feature)))
-      (dolist (feature (plist-get package :lazy-features))
-        (should (symbolp feature))
-        (should-not
-         (nelisp-emacs-consumer-smoke-test--lazy-feature-loaded-p feature))))))
+  (let (lazy-all)
+    (dolist (name (nelisp-emacs-library-package-names))
+      (let ((package (nelisp-emacs-library-package name)))
+        (should package)
+        (should (memq (plist-get package :owner) '(FND TXT BUF CORE IO FEAT)))
+        (should (featurep (plist-get package :feature)))
+        (dolist (feature (plist-get package :features))
+          (should (featurep feature)))
+        (dolist (feature (plist-get package :lazy-features))
+          (should (symbolp feature))
+          (push feature lazy-all))))
+    ;; Lazy features must stay unloaded after requiring the facade; check in
+    ;; a fresh process so earlier test files cannot influence the result.
+    (should-not
+     (nelisp-emacs-consumer-smoke-test--fresh-loaded-lazy-features
+      (nreverse lazy-all)))))
 
 (ert-deftest nelisp-emacs-consumer-smoke-test/query-results-are-isolated ()
   (let ((features (nelisp-emacs-library-package-features 'core)))
