@@ -268,9 +268,8 @@ vendored copy exists."
                               electric-buffer-list dirtrack-mode icomplete-mode ibuffer
                               comint-mode comint-run comint-send-input shell))
       (should (fboundp symbol)))
-    (dolist (symbol '(ansi-osc-control-seq-regexp
-                                     mail-parse-charset))
-      (should (boundp symbol)))
+    ;; GNU 31.1 `ansi-osc.el' no longer defines `ansi-osc-control-seq-regexp'.
+    (should (boundp 'mail-parse-charset))
     (should (equal (get-char-code-property ?a 'uppercase) ?A))
     (should (equal (get-char-code-property ?A 'lowercase) ?a))
     (should (equal (get-char-code-property ?a 'titlecase) ?A))
