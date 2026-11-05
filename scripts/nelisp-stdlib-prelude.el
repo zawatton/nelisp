@@ -4362,6 +4362,24 @@ TYPE flowing into whatever the caller does next."
                    list
                  (cons item list)))))))
 (unless (fboundp 'cl-mapcan) (defun cl-mapcan (fn &rest lists) (apply #'append (apply #'cl-mapcar fn lists))))
+;; `cl-subst' and `cl--do-subst' are GNU cl-lib.el definitions (not cl-seq.el),
+;; so the cl-seq bootstrap does not supply them; ported verbatim.  The keyword
+;; path goes through the GNU cl-seq.el `cl-sublis'.
+(unless (fboundp 'cl-subst)
+  (defun cl-subst (new old tree &rest keys)
+    "Substitute NEW for OLD everywhere in TREE (non-destructively)."
+    (if (or keys (and (numberp old) (not (integerp old))))
+        (apply 'cl-sublis (list (cons old new)) tree keys)
+      (cl--do-subst new old tree))))
+(unless (fboundp 'cl--do-subst)
+  (defun cl--do-subst (new old tree)
+    (cond ((eq tree old) new)
+          ((consp tree)
+           (let ((a (cl--do-subst new old (car tree)))
+                 (d (cl--do-subst new old (cdr tree))))
+             (if (and (eq a (car tree)) (eq d (cdr tree)))
+                 tree (cons a d))))
+          (t tree))))
 ;; `assq-delete-all' is supplied from pinned GNU subr.el source.
 (unless (fboundp 'cl-digit-char-p)
   (defun cl-digit-char-p (ch &optional radix)
