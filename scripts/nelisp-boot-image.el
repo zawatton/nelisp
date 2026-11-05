@@ -25,10 +25,26 @@
     (help . "vendor/emacs-lisp-api/help.el")
     (cl-macs . "vendor/staged-emacs-lisp/cl-macs.el")
     (cl-preloaded . "vendor/staged-emacs-lisp/cl-preloaded.el")
-    (oclosure . "vendor/emacs-lisp/emacs-lisp/oclosure.el"))
+    (oclosure . "vendor/emacs-lisp/emacs-lisp/oclosure.el")
+    (cl-generic . "vendor/staged-emacs-lisp/cl-generic.el")
+    (nadvice . "vendor/emacs-lisp/emacs-lisp/nadvice.el"))
   "Vendored GNU files embedded at their GNU preload position, not deferred.
 `pcase' follows `macroexp' in GNU's loadup.el, and `gv' follows `pcase'.  Unlike
 `nelisp-boot-image--providers' these get no autoload entries.")
+
+(defconst nelisp-boot-image--source-only-providers
+  '((cl-lib . "vendor/staged-emacs-lisp/cl-lib.el")
+    (cl-loaddefs . "vendor/staged-emacs-lisp/cl-loaddefs.el")
+    (cl-extra . "vendor/staged-emacs-lisp/cl-extra.el")
+    (cl-print . "vendor/staged-emacs-lisp/cl-print.el")
+    (help-mode . "vendor/emacs-lisp/help-mode.el")
+    (mule-util . "vendor/emacs-lisp/international/mule-util.el"))
+  "GNU files that load on demand, as GNU loads them.
+GNU does not preload cl-lib, cl-extra or cl-print: `require' loads cl-lib, and
+the entry points of the others are autoloaded by loaddefs.el and cl-loaddefs.el
+(see `nelisp-boot-image-cl-autoloads-source').  Unlike
+`nelisp-boot-image--providers' these register no autoload for each definition,
+so the natives that exist before the first load are not replaced by stubs.")
 
 (defun nelisp-boot-image--pcase-source (source path &optional name)
   "Bake GNU SOURCE (pcase.el, or the file named NAME) like its `.elc'."
@@ -85,6 +101,7 @@ GNU macroexp functions use the existing reviewed bytecode selector. Other
 providers and source-only builds retain their exact source text."
   (let* ((path (or (cdr (assq name nelisp-boot-image--providers))
                    (cdr (assq name nelisp-boot-image--embedded-providers))
+                   (cdr (assq name nelisp-boot-image--source-only-providers))
                    (error "Unknown boot provider: %S" name)))
          (source (with-temp-buffer
                    (insert-file-contents (expand-file-name path nelisp-boot-image--root))
@@ -93,7 +110,7 @@ providers and source-only builds retain their exact source text."
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
-           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure))
+           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice))
             (nelisp-boot-image--pcase-source source path name))
            (t source))
      "\nt\n")))
@@ -166,13 +183,36 @@ name that is already defined is not replaced."
             (let* ((start (point)) (form (read (current-buffer))))
               (when (and (eq (car-safe form) 'autoload)
                          (stringp (nth 2 form))
-                         (cl-some (lambda (dir)
-                                    (file-exists-p
-                                     (expand-file-name (concat (nth 2 form) ".el") dir)))
-                                  dirs))
+                         (or (member (nth 2 form) '("cl-lib" "cl-print"))
+                             (cl-some (lambda (dir)
+                                        (file-exists-p
+                                         (expand-file-name (concat (nth 2 form) ".el") dir)))
+                                      dirs)))
                 (push (buffer-substring-no-properties start (point)) forms))))
         (end-of-file nil)))
     (concat "\n;; --- GNU Emacs 31.1 loaddefs.el: autoloads of vendored libraries ---\n"
+            (mapconcat #'identity (nreverse forms) "\n")
+            "\nt\n")))
+
+(defun nelisp-boot-image-cl-autoloads-source ()
+  "Return the `autoload' and `function-put' forms of GNU cl-loaddefs.el.
+cl-lib.el loads cl-loaddefs; GNU preloads cl-generic, which makes these
+registrations available before cl-lib is required.  `autoload' leaves an
+existing function cell alone."
+  (let (forms)
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8-unix))
+        (insert-file-contents (expand-file-name "vendor/staged-emacs-lisp/cl-loaddefs.el"
+                                                nelisp-boot-image--root)))
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (forward-comment (point-max))
+            (let* ((start (point)) (form (read (current-buffer))))
+              (when (memq (car-safe form) '(autoload function-put))
+                (push (buffer-substring-no-properties start (point)) forms))))
+        (end-of-file nil)))
+    (concat "\n;; --- GNU Emacs 31.1 cl-loaddefs.el ---\n"
             (mapconcat #'identity (nreverse forms) "\n")
             "\nt\n")))
 
@@ -185,6 +225,12 @@ name that is already defined is not replaced."
                     (expand-file-name (cdr provider) nelisp-boot-image--root) source) sources)
         (unless (memq name '(backquote byte-run macroexp))
           (setq autoloads (append (nelisp-boot-image--autoloads name source) autoloads)))))
+    ;; Demand-loaded GNU files: sources only, no per-definition autoloads.
+    (dolist (provider nelisp-boot-image--source-only-providers)
+      (push (list (symbol-name (car provider))
+                  (expand-file-name (cdr provider) nelisp-boot-image--root)
+                  (nelisp-boot-image-provider (car provider)))
+            sources))
     (concat
      (with-temp-buffer
        (insert-file-contents (expand-file-name "lisp/nelisp-boot-libraries.el" nelisp-boot-image--root))

@@ -20,13 +20,23 @@
                            (equal file (nth 1 entry))))
         entry))))
 
+(defvar nelisp-boot-library-authoritative '("cl-lib" "help-mode")
+  "Providers that win over any same-named file found on `load-path'.
+GNU cl-lib.el is the implementation; a bundle copy of the name (the nelisp-emacs
+foundation shim) must not answer `(require \'cl-lib)'.  An explicit path still
+loads that file.")
+
 (defun nelisp-boot-library-entry (file)
-  "Return FILE's bundled provider only when no ordinary source resolves."
+  "Return FILE's bundled provider when no ordinary source resolves.
+Authoritative providers (see `nelisp-boot-library-authoritative') answer a bare
+name even when `load-path' has a file of that name."
   (let ((entry (nelisp-boot-library-known-entry file))
         (name (if (symbolp file) (symbol-name file) file)))
     (when (and entry (not (file-readable-p name))
-               (not (and (not (file-name-directory name))
-                         (locate-file name load-path '("" ".el")))))
+               (or (and (not (file-name-directory name))
+                        (member name nelisp-boot-library-authoritative))
+                   (not (and (not (file-name-directory name))
+                             (locate-file name load-path '("" ".el"))))))
       entry)))
 
 (defun nelisp-boot-library-load (file &rest arguments)

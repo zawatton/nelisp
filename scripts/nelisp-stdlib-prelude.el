@@ -11549,21 +11549,6 @@ Returns SEQ (= first sequence) like Emacs `cl-mapc'."
           (setq all (nreverse tails)))))
     seq))
 
-(defun cl-subseq (seq start &optional end)
-  "Return the subsequence of SEQ from START up to END (default end of SEQ).
-Supports proper lists only (= what `nelisp-aot-compiler.el' uses)."
-  (let ((tail (nthcdr start seq))
-        (n (if end (- end start) nil))
-        (acc nil))
-    (if (null n)
-        (copy-sequence tail)
-      (let ((i 0))
-        (while (and (< i n) tail)
-          (setq acc (cons (car tail) acc))
-          (setq tail (cdr tail))
-          (setq i (1+ i)))
-        (nreverse acc)))))
-
 (defun nelisp--cl-labels-subst (form alist)
   "Replace every `(function NAME)' in macroexpanded FORM by NAME's variable.
 ALIST maps each `cl-labels' NAME to the lexical variable holding its
@@ -20211,6 +20196,44 @@ events for an unbound prefix.
               (progn (setq result (nelisp--get-keyelt (cdr item))) (setq done t))
             (setq tail (cdr tail)))))
       result)))
+
+;; GNU keymap.c primitives that vendored help-mode.el, keymap.el and
+;; cl-extra.el reach through `tool-bar-local-item-from-menu' and
+;; `key-parse'.  This substrate has no per-buffer local keymap, so
+;; `current-local-map' is nil and the active maps are the global map.
+(unless (fboundp 'current-local-map)
+  (defun current-local-map () nil))
+(unless (fboundp 'current-active-maps)
+  (defun current-active-maps (&optional _olp _position)
+    (delq nil (list (current-local-map) (current-global-map)))))
+(unless (fboundp 'key-binding)
+  (defun key-binding (key &optional _accept-default _no-remap _position)
+    "Return the binding of KEY in the active maps, or nil (GNU keymap.c)."
+    (let ((maps (current-active-maps)) (found nil))
+      (while (and maps (not found))
+        (let ((b (lookup-key (car maps) key)))
+          (when (and b (not (integerp b))) (setq found b)))
+        (setq maps (cdr maps)))
+      found)))
+(unless (fboundp 'where-is-internal)
+  (defun where-is-internal (definition &optional keymap firstonly _noindirect _no-remap)
+    "Return key sequences bound to DEFINITION (GNU keymap.c, flat maps)."
+    (let ((maps (cond ((keymapp keymap) (list keymap (current-global-map)))
+                      ((consp keymap) (append keymap nil))
+                      (t (current-active-maps))))
+          (found nil))
+      (dolist (map maps)
+        (let ((m map))
+          (while (and m (keymapp m))
+            (dolist (item (cdr m))
+              (when (and (consp item) (not (eq (car item) 'keymap))
+                         (eq (nelisp--get-keyelt (cdr item)) definition)
+                         (or (vectorp (car item)) (stringp (car item))))
+                (let ((k (nelisp--keymap-normalize-sequence (car item))))
+                  (unless (member k found) (push k found)))))
+            (setq m (keymap-parent m)))))
+      (setq found (nreverse found))
+      (if firstonly (car found) found))))
 
 ;; ---- Buffer-local bookkeeping (GNU buffer.c local_var_alist) -------------
 ;; The native evaluator resolves a localized variable through its redirect

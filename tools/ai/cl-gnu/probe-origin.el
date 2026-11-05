@@ -56,6 +56,19 @@ cl-preloaded defines the built-in type classes (`fixnum' is one)."
               (built-in-class-p (cl--find-class 'fixnum))))
     "fixnum is not a built-in class")
    (t nil)))
+(defun clgnu-probe-active-cl-generic ()
+  "Return nil when GNU cl-generic and nadvice are preloaded, else a failure string."
+  (cond
+   ((not (fboundp 'cl-generic-define-generalizer)) "GNU cl-generic is not loaded")
+   ((autoloadp (symbol-function 'advice-add)) "advice-add is still an autoload stub")
+   ((not (advice-member-p #'cl--pcase-mutually-exclusive-p 'pcase--mutually-exclusive-p))
+    "cl-macs pcase advice is not installed")
+   (t nil)))
+(defun clgnu-probe-active-cl-lib ()
+  "Return nil when `require' loads GNU cl-lib.el, else a failure string."
+  (cond
+   ((progn (require 'cl-lib) (not (fboundp 'cl-declaim))) "cl-declaim is not defined by cl-lib")
+   (t nil)))
 (let ((ok t))
   (dolist (arg (cdr (member "--" command-line-args)))
     (let* ((i (string-search "=" arg))
@@ -67,6 +80,8 @@ cl-preloaded defines the built-in type classes (`fixnum' is one)."
           (let ((bad (cond ((equal want "pcase") (clgnu-probe-active-pcase))
                            ((equal want "gv") (clgnu-probe-active-gv))
                            ((equal want "cl-macs") (clgnu-probe-active-cl-macs))
+                           ((equal want "cl-generic") (clgnu-probe-active-cl-generic))
+                           ((equal want "cl-lib") (clgnu-probe-active-cl-lib))
                            (t "unknown active target"))))
             (if (not bad)
                 (princ (format "OK active=%s GNU\n" want))

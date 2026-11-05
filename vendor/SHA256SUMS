@@ -794,7 +794,9 @@ fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435  vendor/emacs-l
 80df24d5b0a7e20679c0e98e56c542295236c919618e1d02bba1443a5cdec2dc  vendor/staged-emacs-lisp/cl-generic.el
 4aca78d4d9c161ba688bf0253f0c4445415d5c0fcb9a8f573cc6ab1270583d42  vendor/staged-emacs-lisp/cl-extra.el
 a68d42138ed12555e8618ab12b725daa47a20e89bcb32c6df963c0d2c3e240d6  vendor/staged-emacs-lisp/cl-print.el
+fedb9a1496121bff88513b3f31e531599b11603a87c1faaac78a3abc8b47a7e2  vendor/staged-emacs-lisp/cl-loaddefs.el
 a22a2f94b4e7c65652c234fc94c94a10e4b989857985d5f7edd48490b0a448be  vendor/emacs-lisp/emacs-lisp/rx.el
 2cd5a13b731004603f83ad7a9273e67b78cfa9d64a53c68320cffe2d4b6bc8f2  vendor/emacs-lisp/emacs-lisp/subr-x.el
 d3a2e0a00202efe871e9bd7fb0226161422ba61830e30906ab8a046ae93cbe69  vendor/emacs-lisp/emacs-lisp/cl-seq.el
 95c8567fec0990bc2d1b87e7b7784a918385104ee1e017fdfebe86260c297d61  vendor/emacs-lisp/calendar/time-date.el
+b88e5913e2f400614ba5272198bef446c4bf9efe9daad25b5c68241af3446e0f  vendor/emacs-lisp/international/mule-util.el

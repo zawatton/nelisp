@@ -48642,6 +48642,10 @@ listing it would make the load-path lie about what is reachable."
                                        nelisp-standalone--repo-root)
                      (expand-file-name "vendor/emacs-lisp/calendar"
                                        nelisp-standalone--repo-root)
+                     ;; GNU's load-path holds every lisp/ subdirectory;
+                     ;; url-util requires rfc6068 from mail/.
+                     (expand-file-name "vendor/emacs-lisp/mail"
+                                       nelisp-standalone--repo-root)
                      ;; Staged exact providers follow complete vendor trees.
                      (expand-file-name "vendor/staged-emacs-lisp"
                                        nelisp-standalone--repo-root))
@@ -49983,6 +49987,7 @@ skipped and re-run once cl-preloaded has defined the base types."
      ;; after (require 'help); GNU preloads help.el.  `command-error-function'
      ;; is a keyboard.c variable that help.el tests while loading.
      "\n;; --- GNU Emacs 31.1 help.el (preloaded by loadup.el) ---\n"
+     "(defvar overriding-local-map nil \"Keymap that overrides all others (C variable).\")\n"
      "(defvar command-error-function nil \"Hook for editor command errors (C variable).\")\n"
      (nelisp-boot-image-provider 'help)
      "\n;; --- GNU Emacs 31.1 cl-macs.el (nadvice not yet loaded) ---\n"
@@ -49999,10 +50004,27 @@ skipped and re-run once cl-preloaded has defined the base types."
      "\n;; --- GNU Emacs 31.1 oclosure.el ---\n"
      (nelisp-boot-image-provider 'oclosure)
      ;; cl-print (and cl-generic) call `cl-find-class', which GNU autoloads
-     ;; from cl-extra.el; stage that exact form rather than the whole file.
-     "\n;; --- GNU Emacs 31.1 cl-extra.el: cl-find-class ---\n"
-     (nelisp-vendor-source-form "vendor/staged-emacs-lisp/cl-extra.el" 'cl-find-class)
-     "\n")))
+     ;; from cl-extra.el.  Register GNU's cl-loaddefs.el entries (cl-lib,
+     ;; cl-extra, cl-print) now; cl-extra loads on demand through them.
+     "\n;; --- GNU Emacs 31.1 cl-loaddefs.el ---\n"
+     (nelisp-boot-image-cl-autoloads-source)
+     ;; GNU loadup.el: cl-generic (after oclosure), then nadvice.  `purify-flag'
+     ;; is an alloc.c variable that cl-generic.el tests.
+     "\n(defvar purify-flag nil \"Non-nil while dumping (C variable).\")\n"
+     "\n;; --- GNU Emacs 31.1 cl-generic.el ---\n"
+     (nelisp-boot-image-provider 'cl-generic)
+     "\n;; --- GNU Emacs 31.1 nadvice.el ---\n"
+     (nelisp-boot-image-provider 'nadvice)
+     ;; cl-macs.el l.3508 ran while nadvice was absent; apply its exact form now.
+     "\n;; --- GNU Emacs 31.1 cl-macs.el: pcase advice (needs nadvice) ---\n"
+     (let* ((a (string-search "(when (fboundp 'advice-add)           ;Not available during bootstrap." text))
+            (m "#'cl--pcase-mutually-exclusive-p))")
+            (b (and a (string-search m text a))))
+       (unless b (error "cl-macs.el pcase advice form not found"))
+       (substring text a (+ b (length m))))
+     ;; cl-lib is not preloaded in GNU: forget the feature the prelude
+     ;; provides natively so `require' loads GNU's.
+     "\n(setq features (delq 'cl-lib features))\n")))
 
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
@@ -50825,6 +50847,41 @@ The registry is consulted only after argument binding has failed."
         (push (cons fn name) nelisp--subr-arity-names))))))\n"
      (sort names (lambda (a b) (string< (symbol-name a) (symbol-name b)))))))
 
+;; The stripped prelude text is copied byte-for-byte into the driver's raw
+;; `fbuf' by the generated `nl_repl_prelude_source' (a straight-line store
+;; sequence with no run-time bounds check).  The text grows with every
+;; prelude/provider addition, so `fbuf' is sized from its real length
+;; instead of the fixed 4 MiB file-read cap: with a fixed cap the stores ran
+;; past the block into the next heap block and wrecked its header, which made
+;; every GC index fill fail (mid-form GC thrash, 94 s cold start).
+(defvar nelisp-standalone--prelude-copy-text-cache nil
+  "Memoized (RAW . STRIPPED) pair for `nelisp-standalone--prelude-copy-text'.")
+
+(defun nelisp-standalone--prelude-copy-text ()
+  "Return the stripped prelude text copied into `fbuf' at boot (memoized)."
+  (let ((raw (nelisp-standalone--reader-repl-prelude-source)))
+    (unless (and nelisp-standalone--prelude-copy-text-cache
+                 (equal (car nelisp-standalone--prelude-copy-text-cache) raw))
+      (setq nelisp-standalone--prelude-copy-text-cache
+            (cons raw
+                  (nelisp-standalone--elisp-collapse-whitespace
+                   (nelisp-standalone--elisp-strip-docstrings
+                    (nelisp-standalone--elisp-strip-comments raw))))))
+    (cdr nelisp-standalone--prelude-copy-text-cache)))
+
+(defun nelisp-standalone--reader-fbuf-size ()
+  "Byte size of the driver's raw `fbuf'.
+At least `nelisp-standalone--reader-read-cap' (file reads are bounded by that
+cap) and always large enough for the stripped prelude text plus slack, rounded
+up to 64 KiB.  Signals a build error if the text cannot fit, so a copy can
+never run past the buffer."
+  (let* ((len (string-bytes (nelisp-standalone--prelude-copy-text)))
+         (size (* 65536 (ceiling (+ len 4096) 65536)))
+         (size (max size nelisp-standalone--reader-read-cap)))
+    (when (> len size)
+      (error "Prelude text (%d bytes) does not fit fbuf (%d bytes)" len size))
+    size))
+
 (defun nelisp-standalone--reader-repl-prelude-forms (fbuf src cursor result pool
                                                           out ctx builtin-sym)
   "Return Phase47 forms that prepare the standalone reader REPL environment."
@@ -50908,6 +50965,12 @@ mappings, pending foreign frees and loader TLS state are discarded.")
   (let ((name-buf (make-symbol "cold-name-buf")))
     `((let* ((,name-buf (alloc-bytes 16 1)))
         (seq
+         ;; `nl_empty_vector' lives in driver BSS, which the image does not
+         ;; save.  Heap `[]' literals point at it, so write its header again
+         ;; here (`nl_alloc_vector' only does so on the first zero-size
+         ;; allocation); otherwise the first `vconcat' of such a literal
+         ;; signals (wrong-type-argument sequencep ...).
+         (ptr-write-u64 (data-addr nl_empty_vector) 0 8)
          (ptr-write-u64 268436216 0 0)
          (sexp-write-str-lit ,src
                              ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
@@ -57801,7 +57864,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                                       (+ slen
                                          (+ (+ (* tlen 8) 16)
                                             (+ (nl_chunk_size_for 8388608)
-                                               ,(+ (* 2 nelisp-standalone--reader-read-cap)
+                                               ,(+ (+ nelisp-standalone--reader-read-cap (nelisp-standalone--reader-fbuf-size))
                                                    (* 32768 32))))))
                                    65536))
                           (cursize (heap-read-u64 (+ base0 216) 0))
@@ -58205,10 +58268,7 @@ correctly."
       "(nelisp--repl-idle-pump)")
     ,@(nelisp-standalone--copy-lit-u64-defuns
       'nl_repl_prelude_source
-      (nelisp-standalone--elisp-collapse-whitespace
-       (nelisp-standalone--elisp-strip-docstrings
-        (nelisp-standalone--elisp-strip-comments
-         (nelisp-standalone--reader-repl-prelude-source)))))
+      (nelisp-standalone--prelude-copy-text))
     (defun nl_runtime_image_command_p (ptr)
       (if (= (nl_cstr_eq_dump_runtime_image ptr) 1)
           1
@@ -59464,7 +59524,7 @@ correctly."
                          0
                        (if (= (nl_cstr_eq_no_print arg3) 1) 0 1)))
             ;; raw read buffer (bypasses the Rust UTF-8 layer)
-            (fbuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1))
+            (fbuf (alloc-bytes ,(nelisp-standalone--reader-fbuf-size) 1))
             (linebuf (alloc-bytes ,nelisp-standalone--reader-read-cap 1)))
        (seq
         (nl_bootstrap_make_mirror globals frames unbound)

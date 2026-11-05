@@ -1612,6 +1612,85 @@ candidate `eval-when-compile' form and whether it was folded."
                                      (substring output (nth 1 patch)))))
               (list output (nreverse report)))))))))
 
+;; File-scope bare `(defvar SYM)' (GNU file-level semantics).
+;;
+;; GNU `load' evaluates a source file in one lexical environment, so a bare
+;; `(defvar SYM)' makes SYM special for every later form of that file; the
+;; byte-compiler does the same for the rest of the compiled file.  A vendor
+;; bake keeps some forms as source (every `defmacro', plus defuns the VM
+;; cannot run) and the cold loader evaluates each top-level form on its own,
+;; so a `let' of such a SYM inside a kept form compiled LEXICAL while its
+;; callees read it dynamically (cl-macs' `cl--bind-lets': void-variable).
+;; The pass below restores the declaration inside each kept form that
+;; mentions a SYM declared earlier in the same file.
+
+(defun nelisp-prelude-bytecode--bare-defvars (form)
+  "Return the symbols FORM declares with a bare `(defvar SYM)'.
+Descends the load-time top-level wrappers."
+  (cond
+   ((not (consp form)) nil)
+   ((and (eq (car form) 'defvar) (symbolp (nth 1 form)) (null (nthcdr 2 form)))
+    (list (nth 1 form)))
+   ((memq (car form) '(progn eval-and-compile when unless if))
+    (apply #'append
+           (mapcar #'nelisp-prelude-bytecode--bare-defvars (cdr form))))))
+
+(defun nelisp-prelude-bytecode--mentions-p (form symbols)
+  "Return the members of SYMBOLS that occur in the cons tree FORM."
+  (let ((found nil) (stack (list form)))
+    (while stack
+      (let ((item (pop stack)))
+        (cond
+         ((consp item)
+          (push (cdr item) stack)
+          (push (car item) stack))
+         ((and item (symbolp item) (memq item symbols))
+          (unless (memq item found) (push item found))))))
+    found))
+
+(defun nelisp-prelude-bytecode--redeclare-file-specials (text)
+  "Return TEXT with file-scope bare `defvar's re-declared in kept forms."
+  (let ((declared nil) (patches nil))
+    (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
+      (let* ((form (nth 2 span))
+             (hits (and declared
+                        (consp form)
+                        (not (memq (car form) '(defvar defconst defcustom
+                                                defvar-local require provide)))
+                        ;; A byte-code replacement carries symbols in its
+                        ;; constants vector; it needs no declaration.
+                        (not (and (eq (car form) 'prog1)
+                                  (eq (car-safe (nth 1 form)) 'quote)))
+                        (nelisp-prelude-bytecode--mentions-p form declared))))
+        (when hits
+          (let ((decls (mapcar (lambda (symbol) (list 'defvar symbol))
+                               (reverse hits))))
+            (push (list (nth 0 span) (nth 1 span)
+                        (if (and (memq (car form) '(defun defmacro defsubst
+                                                    cl-defun cl-defmacro))
+                                 (symbolp (nth 1 form)))
+                            (let ((head (list (car form) (nth 1 form)
+                                              (nth 2 form)))
+                                  (rest (nthcdr 3 form)))
+                              (while (and rest (cdr rest)
+                                          (or (stringp (car rest))
+                                              (memq (car-safe (car rest))
+                                                    '(declare interactive))))
+                                (setq head (append head (list (car rest)))
+                                      rest (cdr rest)))
+                              (append head decls rest))
+                          (cons 'progn (append decls (list form)))))
+                  patches)))
+        (setq declared
+              (append (nelisp-prelude-bytecode--bare-defvars form) declared))))
+    (let ((output text)
+          (print-escape-control-characters t))
+      (dolist (patch patches)
+        (setq output (concat (substring output 0 (nth 0 patch))
+                             (prin1-to-string (nth 2 patch))
+                             (substring output (nth 1 patch)))))
+      output)))
+
 (defun nelisp-prelude-bytecode-vendor-transform
     (source provenance dirs &optional gnu-timeout)
   "Bake vendored GNU library SOURCE the way GNU loads its `.elc'.
@@ -1643,7 +1722,8 @@ the child compile in seconds."
          (fold (nelisp-prelude-bytecode--vendor-fold source dirs adopted))
          (result (nelisp-prelude-bytecode-transform
                   (car fold) provenance nil 'vendor whole-file-functions t)))
-    (list (nth 0 result) (nth 1 result)
+    (list (nelisp-prelude-bytecode--redeclare-file-specials (nth 0 result))
+          (nth 1 result)
           (append (mapcar (lambda (row)
                             (list provenance 0
                                   (format "%.60S" (nth 0 row))
