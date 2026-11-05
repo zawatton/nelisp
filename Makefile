@@ -4851,4 +4851,4 @@ doc211-api-inventory:
 	$(MAKE) ns-inventory emacs-compat
 
 doc211-api-consumer-smoke:
-	@bash -c 'set -e; args=(); for d in packages/emacs-lib-*/src; do args+=(-L "$$d"); done; exec emacs --batch -Q "$${args[@]}" --eval "(require (quote nelisp-emacs))"'
+	@bash -c 'set -e; args=(); for d in packages/emacs-lib-*/src packages/nelisp-regex/src; do args+=(-L "$$d"); done; exec emacs --batch -Q "$${args[@]}" --eval "(require (quote nelisp-emacs))"'

@@ -1,4 +1,4 @@
-;;; nelisp-regex-test.el --- ERT tests for nelisp-regex word boundaries -*- lexical-binding: t; -*-
+;;; nelisp-regex-emacs-test.el --- ERT tests for nelisp-regex word boundaries -*- lexical-binding: t; -*-
 
 ;;; Commentary:
 
@@ -351,6 +351,6 @@ land on the standalone `word'."
       (should (nelisp-rx-string-match "\\^foo" "xx^foo"))
       (should (= calls 3)))))
 
-(provide 'nelisp-regex-test)
+(provide 'nelisp-regex-emacs-test)
 
-;;; nelisp-regex-test.el ends here
+;;; nelisp-regex-emacs-test.el ends here

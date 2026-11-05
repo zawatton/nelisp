@@ -73,7 +73,8 @@ final `.el' suffix with `.repl'.")
 
 ;; Feature-to-package-path table (Doc 211 section 4.5).  Logical names keep the
 ;; historical flat `src/<file>.el' spelling; the real files live in
-;; packages/emacs-lib-*/src (plus the FFI memory owner in packages/nl-ffi).
+;; packages/emacs-lib-*/src (plus the FFI memory owner in packages/nl-ffi and
+;; the regex engine owner in packages/nelisp-regex).
 (defvar nelisp-bootstrap--package-table nil
   "Hash table mapping logical `src/<file>.el' names to real package paths.")
 
@@ -81,7 +82,8 @@ final `.el' suffix with `.repl'.")
   "Hash table mapping truenames of package sources to logical names.")
 
 (defconst nelisp-bootstrap--package-source-globs
-  '("packages/emacs-lib-*/src/*.el" "packages/nl-ffi/src/nl-ffi-memory.el")
+  '("packages/emacs-lib-*/src/*.el" "packages/nl-ffi/src/nl-ffi-memory.el"
+    "packages/nelisp-regex/src/nelisp-regex.el")
   "Repository-relative globs naming the bundled package sources.")
 
 (defun nelisp-bootstrap--package-source-dirs ()

@@ -363,11 +363,10 @@ Returns nil if the group did not participate."
   (should-error (nelisp-rx-compile "[abc")
                 :type 'nelisp-rx-syntax-error))
 
-(ert-deftest nelisp-rx-test-backref-rejected-mvp ()
-  ;; Backrefs land in Phase 9c -- MVP must reject them rather than
-  ;; pretend to succeed.
-  (should-error (nelisp-rx-compile "\\(a\\)\\1")
-                :type 'nelisp-rx-syntax-error))
+(ert-deftest nelisp-rx-test-backref-supported ()
+  ;; Backreferences are implemented (Doc 33 item 244); the former MVP
+  ;; rejection test no longer applies.
+  (should (nelisp-rx-compile "\\(a\\)\\1")))
 
 (ert-deftest nelisp-rx-test-leading-quantifier-error ()
   (should-error (nelisp-rx-compile "*abc")
