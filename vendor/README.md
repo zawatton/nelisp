@@ -322,9 +322,8 @@ this segment introduces.
   cell reaches the GNU Lisp definition. Source and standalone probes cover
   function results, including positive and negative bignum literals.
 - The standalone bootstrap stages exact forms from the byte-identical
-  `vendor/emacs-lisp/emacs-lisp/subr-x.el` (commit
-  `cbf4f49d2620c264d39c887d024cd23df9cc9c62`, SHA-256
-  `b1e7797646f6af8c30fe506b4f098e79a9568610ae6d3e8e78dfaa690042456b`):
+  `vendor/emacs-lisp/emacs-lisp/subr-x.el` (GNU Emacs 31.1, SHA-256
+  `2cd5a13b731004603f83ad7a9273e67b78cfa9d64a53c68320cffe2d4b6bc8f2`):
   `internal--thread-argument`, `thread-first`, `thread-last`,
   `hash-table-keys`, `hash-table-values`, `string-join`, `string-blank-p`,
   `string-remove-prefix`, `string-remove-suffix`, `string-pad`, and

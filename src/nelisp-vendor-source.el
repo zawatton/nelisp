@@ -46,7 +46,7 @@
     ("vendor/emacs-lisp/emacs-lisp/regexp-opt.el"
      . "90e9e70c583c3b18036353b593e22bcd5510b32ce017dcb27acd6ce22ec449ae")
     ("vendor/emacs-lisp/emacs-lisp/subr-x.el"
-     . "b1e7797646f6af8c30fe506b4f098e79a9568610ae6d3e8e78dfaa690042456b")
+     . "2cd5a13b731004603f83ad7a9273e67b78cfa9d64a53c68320cffe2d4b6bc8f2")
     ("vendor/emacs-lisp/emacs-lisp/byte-run.el"
      . "cbac268cd6cc2f9ca2fefd28e7888a3dfa72896514d2652c7ef5addb4c5b73f7")
     ("vendor/emacs-lisp/international/mule-conf.el"
