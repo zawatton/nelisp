@@ -61,19 +61,25 @@ capture."
 
 (defun emacs-time-test--with-standalone-time-primitives (thunk)
   "Install the time shim over standalone-shaped primitives, then call THUNK.
-The stand-in `float-time' deliberately ignores its argument, matching the
-NeLisp v1.2.0 builtin that the compatibility shim must replace."
-  (let ((saved-float-time (symbol-function 'float-time))
-        (saved-standalone-float-time
-         (and (fboundp 'emacs-time--standalone-float-time)
-              (symbol-function 'emacs-time--standalone-float-time))))
+The stand-in `float-time' converts its argument like the native NeLisp
+builtin does (the v1.2.0 builtin ignored it; current runtimes, checked on
+the 2026-09-23 and 2026-10-08 builds, do not).  The shim must keep such a
+working native `float-time' instead of shadowing it (617efcc17)."
+  (let* ((saved-float-time (symbol-function 'float-time))
+         (saved-standalone-float-time
+          (and (fboundp 'emacs-time--standalone-float-time)
+               (symbol-function 'emacs-time--standalone-float-time)))
+         (native-float-time
+          (lambda (&optional time-value)
+            (funcall saved-float-time time-value))))
     (unwind-protect
         (progn
           (fmakunbound 'emacs-time--standalone-float-time)
-          (fset 'float-time (lambda (&optional _time-value) 1000000.0))
+          (fset 'float-time native-float-time)
           (cl-letf (((symbol-function 'emacs-time--standalone-runtime-p)
                      (lambda () t)))
             (emacs-time--install-float-time))
+          (should (eq (symbol-function 'float-time) native-float-time))
           (funcall thunk))
       (fset 'float-time saved-float-time)
       (if saved-standalone-float-time
