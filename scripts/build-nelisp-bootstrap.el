@@ -14,6 +14,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'subr-x)
 (require 'standalone-source-normalize)
 
 (defvar nelisp-bootstrap-output-file

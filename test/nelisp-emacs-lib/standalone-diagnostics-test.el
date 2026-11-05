@@ -29,6 +29,36 @@
 (defun standalone-diagnostics-test--src-file (name)
   (nemacs-test-paths-source name))
 
+(defvar standalone-diagnostics-test--bootstrap-root nil
+  "Cached bootstrap source root built by doc211-bootstrap-source-root.sh.")
+
+(defun standalone-diagnostics-test--bootstrap-root ()
+  "Return a bootstrap source root whose src/ links every package source.
+`make build-nelisp-bootstrap' runs the generator against such a root;
+the repository's own src/ holds only the NeLisp core."
+  (or standalone-diagnostics-test--bootstrap-root
+      (let ((dir (make-temp-file "nelisp-bootstrap-root-" t)))
+        ;; The root holds only symlinks; deleting it leaves the sources.
+        (add-hook 'kill-emacs-hook
+                  (lambda () (delete-directory dir t)))
+        (unless (zerop (call-process
+                        "bash" nil nil nil
+                        (expand-file-name "scripts/doc211-bootstrap-source-root.sh"
+                                          standalone-diagnostics-test--repo-root)
+                        dir))
+          (error "doc211-bootstrap-source-root.sh failed for %s" dir))
+        (setq standalone-diagnostics-test--bootstrap-root dir))))
+
+(defmacro standalone-diagnostics-test--with-bootstrap-root (&rest body)
+  "Run BODY with the generator and `--src-file' using the bootstrap root."
+  (declare (indent 0))
+  `(let* ((root (standalone-diagnostics-test--bootstrap-root))
+          (nelisp-bootstrap-repo-root root))
+     (cl-letf (((symbol-function 'standalone-diagnostics-test--src-file)
+                (lambda (name)
+                  (expand-file-name name (expand-file-name "src" root)))))
+       ,@body)))
+
 (defun standalone-diagnostics-test--position (item list)
   (cl-position item list :test #'equal))
 
@@ -270,133 +300,134 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-complete-file-list-orders-providers-before-consumers ()
-  (let* ((files (nelisp-bootstrap--complete-file-list
-                 (list (standalone-diagnostics-test--src-file
-                        "nelisp-emacs-compat.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-parity-core-vars.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-vars.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-keymap-builtins.el")
-                       (standalone-diagnostics-test--src-file
-                        "nelisp-regex.el")
-                       (standalone-diagnostics-test--src-file
-                        "nelisp-text-buffer.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-redisplay-core.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-window.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-fileio.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-fileio-gui.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-mode.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-mode-builtins.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-load.el"))))
-         (core-vars-pos (standalone-diagnostics-test--position
-                         (standalone-diagnostics-test--src-file
-                          "emacs-parity-core-vars.el")
-                         files))
-         (vars-pos (standalone-diagnostics-test--position
-                    (standalone-diagnostics-test--src-file
-                     "emacs-vars.el")
-                    files))
-         (compat-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "nelisp-emacs-compat.el")
-                      files))
-         (regex-pos (standalone-diagnostics-test--position
-                     (standalone-diagnostics-test--src-file
-                      "nelisp-regex.el")
-                     files))
-         (text-buffer-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "nelisp-text-buffer.el")
-                           files))
-         (redisplay-pos (standalone-diagnostics-test--position
-                         (standalone-diagnostics-test--src-file
-                          "emacs-redisplay-core.el")
-                         files))
-         (window-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "emacs-window.el")
-                      files))
-         (fileio-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "emacs-fileio.el")
-                      files))
-         (fileio-gui-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-fileio-gui.el")
-                          files))
-         (mode-pos (standalone-diagnostics-test--position
-                    (standalone-diagnostics-test--src-file
-                     "emacs-mode.el")
-                    files))
-         (keymap-builtins-pos (standalone-diagnostics-test--position
-                               (standalone-diagnostics-test--src-file
-                                "emacs-keymap-builtins.el")
-                               files))
-         (mode-builtins-pos (standalone-diagnostics-test--position
-                             (standalone-diagnostics-test--src-file
-                              "emacs-mode-builtins.el")
-                             files))
-         (parity-org-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-parity-org.el")
-                          files))
-         (parity-shims-pos (standalone-diagnostics-test--position
-                            (standalone-diagnostics-test--src-file
-                             "emacs-parity-shims.el")
-                            files))
-         (parity-misc-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "emacs-parity-misc.el")
-                           files))
-         (parity-fns2-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "emacs-parity-fns2.el")
-                           files))
-         (emacs-load-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-load.el")
-                          files)))
-    (should compat-pos)
-    (should core-vars-pos)
-    (should vars-pos)
-    (should regex-pos)
-    (should text-buffer-pos)
-    (should redisplay-pos)
-    (should window-pos)
-    (should fileio-pos)
-    (should fileio-gui-pos)
-    (should mode-pos)
-    (should keymap-builtins-pos)
-    (should mode-builtins-pos)
-    (should parity-misc-pos)
-    (should parity-fns2-pos)
-    (should parity-org-pos)
-    (should emacs-load-pos)
-    (should (< core-vars-pos vars-pos))
-    (should (< regex-pos compat-pos))
-    (should (< text-buffer-pos compat-pos))
-    (should (< compat-pos window-pos))
-    (should (< window-pos redisplay-pos))
-    (should (< fileio-gui-pos fileio-pos))
-    (should (< mode-pos mode-builtins-pos))
-    (should (< keymap-builtins-pos parity-org-pos))
-    (should (< mode-builtins-pos parity-org-pos))
-    (should parity-shims-pos)
-    (should (< mode-builtins-pos parity-misc-pos))
-    (should (< parity-shims-pos parity-misc-pos))
-    (should (< parity-misc-pos parity-fns2-pos))
-    (should (< parity-fns2-pos parity-org-pos))
-    (should (< parity-org-pos emacs-load-pos))
-    (should (< mode-builtins-pos fileio-pos))))
+(standalone-diagnostics-test--with-bootstrap-root
+(let* ((files (nelisp-bootstrap--complete-file-list
+(list (standalone-diagnostics-test--src-file
+"nelisp-emacs-compat.el")
+(standalone-diagnostics-test--src-file
+"emacs-parity-core-vars.el")
+(standalone-diagnostics-test--src-file
+"emacs-vars.el")
+(standalone-diagnostics-test--src-file
+"emacs-keymap-builtins.el")
+(standalone-diagnostics-test--src-file
+"nelisp-regex.el")
+(standalone-diagnostics-test--src-file
+"nelisp-text-buffer.el")
+(standalone-diagnostics-test--src-file
+"emacs-redisplay-core.el")
+(standalone-diagnostics-test--src-file
+"emacs-window.el")
+(standalone-diagnostics-test--src-file
+"emacs-fileio.el")
+(standalone-diagnostics-test--src-file
+"emacs-fileio-gui.el")
+(standalone-diagnostics-test--src-file
+"emacs-mode.el")
+(standalone-diagnostics-test--src-file
+"emacs-mode-builtins.el")
+(standalone-diagnostics-test--src-file
+"emacs-load.el"))))
+(core-vars-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-core-vars.el")
+files))
+(vars-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-vars.el")
+files))
+(compat-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-emacs-compat.el")
+files))
+(regex-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-regex.el")
+files))
+(text-buffer-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-text-buffer.el")
+files))
+(redisplay-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-redisplay-core.el")
+files))
+(window-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-window.el")
+files))
+(fileio-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-fileio.el")
+files))
+(fileio-gui-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-fileio-gui.el")
+files))
+(mode-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-mode.el")
+files))
+(keymap-builtins-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-keymap-builtins.el")
+files))
+(mode-builtins-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-mode-builtins.el")
+files))
+(parity-org-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-org.el")
+files))
+(parity-shims-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-shims.el")
+files))
+(parity-misc-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-misc.el")
+files))
+(parity-fns2-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-fns2.el")
+files))
+(emacs-load-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-load.el")
+files)))
+(should compat-pos)
+(should core-vars-pos)
+(should vars-pos)
+(should regex-pos)
+(should text-buffer-pos)
+(should redisplay-pos)
+(should window-pos)
+(should fileio-pos)
+(should fileio-gui-pos)
+(should mode-pos)
+(should keymap-builtins-pos)
+(should mode-builtins-pos)
+(should parity-misc-pos)
+(should parity-fns2-pos)
+(should parity-org-pos)
+(should emacs-load-pos)
+(should (< core-vars-pos vars-pos))
+(should (< regex-pos compat-pos))
+(should (< text-buffer-pos compat-pos))
+(should (< compat-pos window-pos))
+(should (< window-pos redisplay-pos))
+(should (< fileio-gui-pos fileio-pos))
+(should (< mode-pos mode-builtins-pos))
+(should (< keymap-builtins-pos parity-org-pos))
+(should (< mode-builtins-pos parity-org-pos))
+(should parity-shims-pos)
+(should (< mode-builtins-pos parity-misc-pos))
+(should (< parity-shims-pos parity-misc-pos))
+(should (< parity-misc-pos parity-fns2-pos))
+(should (< parity-fns2-pos parity-org-pos))
+(should (< parity-org-pos emacs-load-pos))
+(should (< mode-builtins-pos fileio-pos)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-define-skeleton-creates-command ()
   "The bootstrap shim must make sh-script skeleton definitions executable."
