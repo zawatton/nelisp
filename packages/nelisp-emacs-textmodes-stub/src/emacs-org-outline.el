@@ -3025,8 +3025,20 @@ touches it failing.  Distinguish standalone from host Emacs the same way
 `nelisp--write-stdout-bytes', never on the presence/absence of a generic
 Emacs name.  This module must not replace `org-element-parse-buffer' with
 an independent parser.  A failure here identifies missing Emacs
-C-core-compatible substrate that should be fixed in `src/' or the runtime."
-  (unless (featurep 'org-element)
+C-core-compatible substrate that should be fixed in `src/' or the runtime.
+
+On host Emacs the parser is not loaded at all.  The host's own
+`org-element.el' does `(require \='org)', which resolves to this package's
+lightweight `org.el' shim rather than GNU `org.el', so the real parser
+fails on missing Org variables (`org-org-menu', ...).  Host runs keep the
+lightweight API and record why the full parser is absent."
+  (cond
+   ((featurep 'org-element) nil)
+   ((not (fboundp 'nelisp--write-stdout-bytes))
+    (setq emacs-org-outline--vendor-org-element-load-error
+          '(host-skipped "org-element is not loaded on host Emacs"))
+    nil)
+   (t
     (let ((load-path (if (fboundp 'nelisp--write-stdout-bytes)
                          (append (emacs-org-outline--vendor-org-load-paths)
                                  load-path)
@@ -3056,7 +3068,7 @@ C-core-compatible substrate that should be fixed in `src/' or the runtime."
       (dolist (cell saved)
         (if (cdr cell)
             (fset (car cell) (cdr cell))
-          (fmakunbound (car cell)))))))
+          (fmakunbound (car cell))))))))
 
 (emacs-org-outline--try-vendor-org-element)
 

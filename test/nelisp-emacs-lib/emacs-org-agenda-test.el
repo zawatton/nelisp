@@ -90,6 +90,9 @@ Each binding is (VAR SUFFIX CONTENT)."
   (beginning-of-line))
 
 (ert-deftest org-agenda-dispatches-a-shows-scheduled ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((journal "journal.org"
@@ -110,6 +113,9 @@ Each binding is (VAR SUFFIX CONTENT)."
             (should (string-match-p "NEXT Review notes" text))))))))
 
 (ert-deftest org-agenda-dispatches-t-shows-todos ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "todos-a.org"
@@ -126,6 +132,9 @@ Each binding is (VAR SUFFIX CONTENT)."
           (should-not (string-match-p "Plain heading" text)))))))
 
 (ert-deftest org-agenda-dispatches-m-shows-matched-tag ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "tags.org"
@@ -141,6 +150,9 @@ Each binding is (VAR SUFFIX CONTENT)."
           (should-not (string-match-p "Personal item" text)))))))
 
 (ert-deftest org-agenda-RET-jumps-to-source ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "jump.org"
@@ -180,6 +192,9 @@ Each binding is (VAR SUFFIX CONTENT)."
           (nelisp-ec-kill-buffer source))))))
 
 (ert-deftest org-agenda-q-quits ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "quit.org" "* TODO Quit me\n"))
@@ -196,6 +211,9 @@ Each binding is (VAR SUFFIX CONTENT)."
           (should quit-called))))))
 
 (ert-deftest org-agenda-g-reverts ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "revert.org"
@@ -212,6 +230,9 @@ Each binding is (VAR SUFFIX CONTENT)."
         (should (string-match-p "Second item" (emacs-org-agenda-test--agenda-string)))))))
 
 (ert-deftest org-agenda-respects-org-agenda-files ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "one.org" "* TODO One\n")
@@ -226,6 +247,9 @@ Each binding is (VAR SUFFIX CONTENT)."
         (should (string-match-p "Two" (emacs-org-agenda-test--agenda-string)))))))
 
 (ert-deftest org-agenda-capture-todo-fixture-integration ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((todo "todo-fixture.org" "* Inbox\n"))
@@ -279,6 +303,9 @@ Each binding is (VAR SUFFIX CONTENT)."
           (should (string-match-p "TODO Captured task" text)))))))
 
 (ert-deftest org-agenda-a-sorts-same-day-items-by-time ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "times.org"
@@ -299,6 +326,9 @@ Each binding is (VAR SUFFIX CONTENT)."
             (should (< later untimed))))))))
 
 (ert-deftest org-agenda-f-and-b-shift-agenda-window ()
+  ;; Agenda views parse with `org-element', which is loaded only on the
+  ;; standalone runtime (see `emacs-org-outline--try-vendor-org-element').
+  (skip-unless (featurep 'org-element))
   (emacs-org-agenda-test--with-fresh-world
     (emacs-org-agenda-test--with-temp-files
         ((a "days.org"
