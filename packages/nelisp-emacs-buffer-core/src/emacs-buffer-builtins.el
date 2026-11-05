@@ -1832,6 +1832,53 @@ clamp + signal semantics."
   "Replace FROMCHAR with TOCHAR between START and END.
 Preserve point, markers and text properties.  NOUNDO suppresses
 recording replacement undo."
+  (if (emacs-buffer-builtins--ec-current-p)
+      (emacs-buffer-builtins--ec-subst-char-in-region
+       start end fromchar tochar)
+    (emacs-buffer-builtins--host-subst-char-in-region
+     start end fromchar tochar noundo)))
+
+(defun emacs-buffer-builtins--ec-current-p ()
+  "Return non-nil when the current buffer lives on the ec substrate only.
+That is the case when no native buffer bridge exists and the ec current
+buffer is set, so the host `current-buffer' is unrelated to it."
+  (and (not (fboundp 'nelisp--repr))
+       (fboundp 'nelisp-ec-current-buffer)
+       (let ((cur (nelisp-ec-current-buffer)))
+         (and cur (nelisp-ec-buffer-p cur)))))
+
+(defun emacs-buffer-builtins--ec-subst-char-in-region
+    (start end fromchar tochar)
+  "`subst-char-in-region' over the ec current buffer, preserving point."
+  (setq start (emacs-buffer-builtins--position start)
+        end (emacs-buffer-builtins--position end))
+  (unless (characterp fromchar)
+    (signal 'wrong-type-argument (list 'characterp fromchar)))
+  (unless (characterp tochar)
+    (signal 'wrong-type-argument (list 'characterp tochar)))
+  (when (> start end)
+    (let ((saved start)) (setq start end end saved)))
+  (when (or (< start (nelisp-ec-point-min)) (> end (nelisp-ec-point-max)))
+    (signal 'args-out-of-range
+            (list (nelisp-ec-current-buffer) start end)))
+  (let ((text (copy-sequence (nelisp-ec-buffer-substring start end)))
+        (i 0) (changed nil))
+    (while (< i (length text))
+      (when (= (aref text i) fromchar)
+        (aset text i tochar)
+        (setq changed t))
+      (setq i (1+ i)))
+    (when changed
+      (let ((saved-point (nelisp-ec-point)))
+        (nelisp-ec-goto-char start)
+        (nelisp-ec-delete-region start end)
+        (nelisp-ec-insert text)
+        (nelisp-ec-goto-char saved-point))))
+  nil)
+
+(defun emacs-buffer-builtins--host-subst-char-in-region
+    (start end fromchar tochar &optional noundo)
+  "`subst-char-in-region' over the native current buffer."
   (setq start (emacs-buffer-builtins--position start)
         end (emacs-buffer-builtins--position end))
   (unless (characterp fromchar)

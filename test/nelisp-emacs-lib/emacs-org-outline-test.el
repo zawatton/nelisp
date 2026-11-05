@@ -805,7 +805,9 @@
   (emacs-org-outline-test--with-org-buffer
       "* TODO Keep\nbody\n* DONE Old\nold body\n** Note\nnote\n"
     (goto-char (emacs-org-outline-test--line-start "Old"))
-    (should (equal "Archived subtree: DONE Old" (org-archive-subtree)))
+    ;; `org-archive-subtree' reports the heading via `(org-get-heading t t t)',
+    ;; so the TODO keyword is stripped once `emacs-org-todo' is loaded.
+    (should (equal "Archived subtree: Old" (org-archive-subtree)))
     (should (equal
              "* TODO Keep\nbody\n* Archive\n* DONE Old\nold body\n** Note\nnote\n"
              (buffer-string)))

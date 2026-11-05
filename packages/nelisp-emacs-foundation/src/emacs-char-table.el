@@ -376,7 +376,11 @@ RESET removes CATEGORY.  CATEGORY must be defined in TABLE."
     (let ((table (or table (emacs-char-table-category-table))))
       (unless (emacs-char-table-category-table-p table)
         (signal 'wrong-type-argument (list 'category-table-p table)))
-      (unless (category-docstring category table)
+      ;; The host builtin only understands host category tables; a
+      ;; standalone table carries no registered docstrings to validate.
+      (unless (or (not (fboundp 'category-docstring))
+                  (not (category-table-p table))
+                  (category-docstring category table))
         (error "Undefined category: %c" category))
       (while (<= from to)
         ;; Copy the shared default before modifying an individual character.

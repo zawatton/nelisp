@@ -76,8 +76,10 @@
   (should (= (seq-max '(3 1 2)) 3))
   (should (= (seq-min '(3 1 2)) 1))
   (should (equal (seq-group-by #'car '((a . 1) (b . 2) (a . 3)))
-                 '((a (a . 1) (a . 3))
-                   (b (b . 2))))))
+                 ;; GNU 31.1 `seq-group-by' returns groups in reverse
+                 ;; first-seen order.
+                 '((b (b . 2))
+                   (a (a . 1) (a . 3))))))
 
 (ert-deftest seq-test/doc16-round2-set-and-partition ()
   "Doc 16 breadth round 2: seq-partition / seq-mapcat / seq-keep /

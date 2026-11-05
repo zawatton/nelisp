@@ -450,6 +450,15 @@ this helper (or `make-local-variable' + global `setq')."
       (puthash sym cell index)
       (setcar (gethash ext emacs-buffer--local-indexes)
               (emacs-buffer--ext-locals ext)))
+    ;; When BUF is current its live global cell is the swap source of truth;
+    ;; keep it in step so the next swap-out does not overwrite the new cell
+    ;; with the stale live value.
+    (when (and (boundp sym)
+               (eq buf (if (fboundp 'nelisp--repr)
+                           (current-buffer)
+                         (nelisp-ec-current-buffer))))
+      (set sym value)
+      (puthash sym value emacs-buffer--swapped-in))
     value))
 
 (defun emacs-buffer-set-buffer-local-toplevel-value (symbol value &optional buffer)

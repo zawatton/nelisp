@@ -75,14 +75,20 @@
 
 (ert-deftest emacs-process-shell-resolver-test/cache-clear-forces-reresolution ()
   (emacs-process-shell-resolver-test--with-fresh-cache
-    (let ((count 0))
+    (let ((count 0)
+          (host-executable-find (symbol-function 'executable-find)))
       (cl-letf (((symbol-function 'file-executable-p)
                  (lambda (path)
                    (setq count (1+ count))
                    (equal path "/bin/sh")))
+                ;; Only the shell lookup is forbidden: redefining the
+                ;; `file-executable-p' primitive makes native-comp install a
+                ;; trampoline, which may uncompress sources via `gzip'.
                 ((symbol-function 'executable-find)
-                 (lambda (_name)
-                   (error "cache should prevent executable-find"))))
+                 (lambda (name &rest args)
+                   (if (equal name "sh")
+                       (error "cache should prevent executable-find")
+                     (apply host-executable-find name args)))))
         (should (equal "/bin/sh"
                        (emacs-process-resolve-shell-file-name)))
         (should (equal "/bin/sh"

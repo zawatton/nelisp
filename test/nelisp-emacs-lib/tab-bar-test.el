@@ -6,7 +6,12 @@
 
 (require 'ert)
 (require 'emacs-window)
-(require 'tab-bar)
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+;; Load the repo's minimal tab-bar explicitly; `require' would pick up the
+;; host GNU tab-bar.el from `load-path'.
+(load (nemacs-test-paths-source "tab-bar.el") nil t)
 
 (defmacro tab-bar-test--with-fresh-world (&rest body)
   "Run BODY with clean nelisp-ec / emacs-window / tab-bar state."

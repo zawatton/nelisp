@@ -432,7 +432,8 @@ replay it in runtimes with minimal closure support."
 
 (defun nemacs-runtime-image-preload--install-shell-core ()
   "Install minimal shell/eshell daily-driver facades."
-  (require 'emacs-symbol)
+  (unless (featurep 'emacs-symbol)
+    (require 'emacs-symbol))
   (unless (featurep 'shell)
     (unless (boundp 'emacs-shell-buffer-name)
       (defvar emacs-shell-buffer-name "*shell*"))
@@ -3081,7 +3082,8 @@ image startup."
   (nemacs-runtime-image-preload--install-seq-core)
   (nemacs-runtime-image-preload--install-map-core)
   (nemacs-runtime-image-preload--install-lisp-core)
-  (require 'emacs-symbol)
+  (unless (featurep 'emacs-symbol)
+    (require 'emacs-symbol))
   (nemacs-runtime-image-preload--install-case-table-core)
   (nemacs-runtime-image-preload--install-cdl-core)
   (nemacs-runtime-image-preload--install-range-core)

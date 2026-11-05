@@ -415,6 +415,16 @@
 (defvar nemacs-runtime-image-preload-test--seen nil
   "Dynamic scratch list used by direct runtime-image facade tests.")
 
+(defmacro nemacs-runtime-image-preload-test--with-emacs-symbol (&rest body)
+  "Run BODY with `emacs-symbol' provided, as in a baked base image.
+The preload installers only `require' it when it is not yet a feature."
+  (declare (indent 0) (debug (body)))
+  `(let ((had (featurep 'emacs-symbol)))
+     (unwind-protect
+         (progn (provide 'emacs-symbol) ,@body)
+       (unless had
+         (setq features (delq 'emacs-symbol features))))))
+
 (defmacro nemacs-runtime-image-preload-test--with-clean-direct-install (&rest body)
   "Run BODY with direct-install symbols temporarily unbound."
   (declare (indent 0) (debug (body)))
@@ -524,9 +534,16 @@
     (should (equal (symbol-value 'nelisp-emacs-vendor-root)
                    (concat nemacs-runtime-image-preload-test--repo-root
                            "/vendor")))
-    (should-not (member (concat nemacs-runtime-image-preload-test--repo-root
-                                "/src")
-                        load-path))
+    ;; `<root>/src' holds src-only facades; it must come after the
+    ;; package paths and before the vendor paths.
+    (let* ((src (concat nemacs-runtime-image-preload-test--repo-root "/src"))
+           (pkg (concat nemacs-runtime-image-preload-test--repo-root
+                        "/" (car (last nemacs-runtime-image-package-load-paths))))
+           (vendor (concat nemacs-runtime-image-preload-test--repo-root
+                           "/vendor/emacs-lisp")))
+      (should (member src load-path))
+      (should (< (length (member src load-path)) (length (member pkg load-path))))
+      (should (> (length (member src load-path)) (length (member vendor load-path)))))
     (dolist (relative nemacs-runtime-image-package-load-paths)
       (should (member (concat nemacs-runtime-image-preload-test--repo-root
                               "/" relative)
@@ -544,7 +561,10 @@
     (cl-letf (((symbol-function 'load)
                (lambda (&rest _)
                  (setq loaded t))))
-      (should (nemacs-runtime-image-load-bootstrap ""))
+      (cl-letf (((symbol-function
+                  'nemacs-runtime-image--ensure-core-after-bootstrap)
+                 (lambda (_repo-root) t)))
+        (should (nemacs-runtime-image-load-bootstrap "/repo" "")))
       (should-not loaded))))
 
 (ert-deftest nemacs-runtime-image-preload-test/preload-batch-requires-main ()
@@ -557,9 +577,17 @@
                  (setq setup-args (list repo-root))
                  t))
               ((symbol-function 'nemacs-runtime-image-load-bootstrap)
-               (lambda (bootstrap-file)
-                 (setq bootstrap-args (list bootstrap-file))
+               (lambda (repo-root bootstrap-file)
+                 (setq bootstrap-args (list repo-root bootstrap-file))
                  t))
+              ((symbol-function 'nemacs-runtime-image-preload--install-process-core)
+               #'ignore)
+              ((symbol-function
+                'nemacs-runtime-image-preload--install-daily-driver-core)
+               #'ignore)
+              ((symbol-function
+                'nemacs-runtime-image-preload--reassert-process-bridge)
+               #'ignore)
               ((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (push feature required)
@@ -570,7 +598,7 @@
                  t)))
       (should (nemacs-runtime-image-preload-batch "/repo" "/bootstrap.el"))
       (should (equal setup-args '("/repo")))
-      (should (equal bootstrap-args '("/bootstrap.el")))
+      (should (equal bootstrap-args '("/repo" "/bootstrap.el")))
       (should (equal required '(nemacs-main)))
       (should (equal loaded
                      '("/repo/scripts/nemacs-runtime-frame-tab-preload.el"))))))
@@ -591,13 +619,14 @@
       (should extension-called))))
 
 (ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-skips-source-require ()
+  (nemacs-runtime-image-preload-test--with-emacs-symbol
   (let ((required nil))
     (cl-letf (((symbol-function 'require)
                (lambda (feature &optional _filename _noerror)
                  (push feature required)
                  feature)))
       (should (nemacs-runtime-image-preload-vendor-core-extension))
-      (should (equal required nil)))))
+      (should (equal required nil))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/file-command-wrapper-is-data-lambda ()
   (let ((calls nil))
@@ -1079,8 +1108,12 @@
 
 (ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-satisfies-all-smoke-candidates ()
   "The runtime-image vendor-core extension must cover every smoke lane directly."
-  (nemacs-runtime-image-preload-test--with-clean-direct-install
-    (let ((vendor-core-smoke-modules nil)
+
+  (nemacs-runtime-image-preload-test--with-emacs-symbol  (nemacs-runtime-image-preload-test--with-clean-direct-install
+    ;; The harness's own Layer 2 priming `require's app packages such as
+    ;; `emacs-init'; this test only checks what the extension itself provides.
+    (let ((vendor-core-smoke--layer2-ready t)
+          (vendor-core-smoke-modules nil)
           (vendor-core-smoke-module-spec nil)
           (vendor-core-smoke-default-limit 0)
           (vendor-core-smoke-strict t))
@@ -1091,7 +1124,7 @@
                    feature)))
         (should (nemacs-runtime-image-preload-vendor-core-extension))
         (should (equal (mapcar #'car (vendor-core-smoke-batch))
-                       (mapcar #'car vendor-core-smoke-candidates)))))))
+                       (mapcar #'car vendor-core-smoke-candidates))))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/vendor-core-extension-supports-real-file-edit-flow ()
   "Exercise direct preload against an actual read/edit/write path."
@@ -1309,7 +1342,8 @@
 
 (ert-deftest nemacs-runtime-image-preload-test/legacy-vendor-core-installs-daily-core-directly ()
   "Keep the vendor-core lane off slow source `require' calls."
-  (let ((base-args nil)
+
+  (nemacs-runtime-image-preload-test--with-emacs-symbol  (let ((base-args nil)
         (required nil))
     (cl-letf (((symbol-function 'nemacs-runtime-image-preload-batch)
                (lambda (repo-root bootstrap-file)
@@ -1321,7 +1355,7 @@
                  feature)))
       (should (nemacs-runtime-image-preload-vendor-core "/repo" "/bootstrap.el"))
       (should (equal base-args '("/repo" "/bootstrap.el")))
-      (should (equal required nil)))))
+      (should (equal required nil))))))
 
 (ert-deftest nemacs-runtime-image-preload-test/makefile-vendor-core-extends-existing-base-image ()
   "The vendor-core image target should not force a fresh base image bake."
@@ -1332,7 +1366,7 @@
     (should (search-forward "bake-vendor-core-runtime-image:" nil t))
     (goto-char (point-min))
     (should (search-forward
-             "test -r \"$(NEMACS_RUNTIME_IMAGE)\" || $(MAKE) \"$(NEMACS_RUNTIME_IMAGE)\""
+             "test -r \"$(NEMACS_RUNTIME_IMAGE)\" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) \"$(NEMACS_RUNTIME_IMAGE)\""
              nil t))
     (goto-char (point-min))
     (should (search-forward

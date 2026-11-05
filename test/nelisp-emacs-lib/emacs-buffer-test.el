@@ -148,7 +148,13 @@ registration into a later test in the same batch Emacs process."
       (emacs-buffer-make-local-variable 'a)
       (emacs-buffer-make-local-variable 'b)
       (emacs-buffer-kill-all-local-variables)
-      (should (null (emacs-buffer-buffer-local-variables b))))))
+      ;; GNU `buffer-file-name' is a permanent per-buffer C variable, so
+      ;; `buffer-local-variables' always reports it; only user-created
+      ;; locals are cleared.
+      (should (equal (mapcar #'car (emacs-buffer-buffer-local-variables b))
+                     '(buffer-file-name)))
+      (should-not (assq 'a (emacs-buffer-buffer-local-variables b)))
+      (should-not (assq 'b (emacs-buffer-buffer-local-variables b))))))
 
 ;;;; B. text-property/property query (26 tests)
 

@@ -12,13 +12,17 @@
 (require 'emacs-redisplay)
 
 (ert-deftest emacs-redisplay-header-line-test/default-off ()
-  "By default a buffer has no header line and a box cursor (Doc 06 E6)."
+  "By default a buffer has no header line and the default cursor type (Doc 06 E6)."
   (let ((b (nelisp-ec-generate-new-buffer "hl-default")))
     (unwind-protect
         (progn
           (should-not (emacs-redisplay--header-line-format b))
           (should-not (emacs-redisplay--header-line-enabled-p b))
-          (should (eq 'box (emacs-redisplay--cursor-type b))))
+          ;; A buffer without a local value inherits the default cell: GNU's
+          ;; `cursor-type' default is t (frame default, drawn as a box); the
+          ;; `box' fallback applies only when the variable is unbound.
+          (should (eq (if (boundp 'cursor-type) (default-value 'cursor-type) 'box)
+                      (emacs-redisplay--cursor-type b))))
       (when (fboundp 'nelisp-ec-kill-buffer) (nelisp-ec-kill-buffer b)))))
 
 (ert-deftest emacs-redisplay-header-line-test/format-reuses-mode-line-specs ()

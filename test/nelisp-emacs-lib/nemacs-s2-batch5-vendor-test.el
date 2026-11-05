@@ -116,17 +116,17 @@ straight past the vendored copy and host Emacs serves as the oracle."
        (when (file-exists-p file)
          (load file nil t)))))
 
-(nemacs-s2-batch5-vendor-test--maybe-load 'vc-hooks "emacs-lisp/vc/vc-hooks.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'vc "emacs-lisp/vc/vc.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'man "emacs-lisp/man.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'xref "emacs-lisp/progmodes/xref.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'replace "emacs-lisp/replace.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'vc-hooks "emacs-lisp-api/vc/vc-hooks.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'vc "emacs-lisp-api/vc/vc.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'man "emacs-lisp-api/man.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'xref "emacs-lisp-api/progmodes/xref.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'replace "emacs-lisp-api/replace.el")
 (nemacs-s2-batch5-vendor-test--maybe-load 'comint "emacs-lisp/comint.el")
-(nemacs-s2-batch5-vendor-test--maybe-load 'cl-macs "emacs-lisp/emacs-lisp/cl-macs.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'cl-macs "emacs-lisp-api/emacs-lisp/cl-macs.el")
 ;; `simple' is always already loaded (it is part of host Emacs's own
 ;; preloaded core), so this guard always skips; listed for symmetry with
 ;; the fboundp assertions below.
-(nemacs-s2-batch5-vendor-test--maybe-load 'simple "emacs-lisp/simple.el")
+(nemacs-s2-batch5-vendor-test--maybe-load 'simple "emacs-lisp-api/simple.el")
 
 (ert-deftest nemacs-s2-batch5-vendor-test/vendor-fboundp ()
   (dolist (sym '(vc-registered vc-backend vc-up-to-date-p vc-mode-line

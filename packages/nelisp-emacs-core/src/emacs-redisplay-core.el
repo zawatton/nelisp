@@ -504,6 +504,11 @@ Return non-nil when the hint was applied without reading buffer text."
          (width (max 1 (emacs-window-window-width w)))
          (height (max 1 (emacs-window-window-height w)))
          (body-height (if (and emacs-redisplay-paint-mode-line-p (> height 1)) (1- height) height))
+         (_long-line-state
+          (and buffer (not (stringp buffer))
+               (emacs-cc-xdisp-1--update-long-line-state
+                buffer (emacs-redisplay-core--buffer-text-tick buffer)
+                (lambda () (emacs-redisplay-core--buffer-string buffer)))))
          (text (emacs-redisplay-core--buffer-string buffer))
          (point (or (emacs-window-window-point w) 1))
          (window-start (or (emacs-window-window-start w) 1))

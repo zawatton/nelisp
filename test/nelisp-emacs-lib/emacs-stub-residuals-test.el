@@ -910,6 +910,11 @@ shape whose only signal is the naive test."
   (let* ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
          (saved (and (fboundp 'custom-declare-variable)
                      (symbol-function 'custom-declare-variable)))
+         ;; The reload also installs the standalone `defcustom' macro
+         ;; fallback over GNU's; restore it so later reloads in this
+         ;; process do not expand through the fallback.
+         (saved-defcustom (and (fboundp 'defcustom)
+                               (symbol-function 'defcustom)))
          (symbol (make-symbol "nelisp-emacs-custom-type")))
     (unwind-protect
         (progn
@@ -920,6 +925,9 @@ shape whose only signal is the naive test."
                                                    (const alternate)))
           (should (equal '(choice (const default) (const alternate))
                          (get symbol 'custom-type))))
+      (if saved-defcustom
+          (fset 'defcustom saved-defcustom)
+        (fmakunbound 'defcustom))
       (if saved
           (fset 'custom-declare-variable saved)
         (fmakunbound 'custom-declare-variable)))))
