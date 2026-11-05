@@ -3224,6 +3224,36 @@ wider than the one it replaces once the mapping leaves ASCII."
                     ((and (>= ch ?a) (<= ch ?z)) (+ 10 (- ch ?a)))
                     ((and (>= ch ?A) (<= ch ?Z)) (+ 10 (- ch ?A))) (t nil))))
       (if (and v (< v r)) v nil))))
+(unless (fboundp 'cl-parse-integer)
+  ;; GNU cl-extra.el `cl-parse-integer': keyword arguments :start :end
+  ;; :radix :junk-allowed, surrounding whitespace allowed, same errors.
+  (defun cl-parse-integer (string &rest keys)
+    "Parse integer from the substring of STRING from :start to :end."
+    (unless (stringp string) (signal 'wrong-type-argument (list 'stringp string)))
+    (let* ((start (or (plist-get keys :start) 0))
+           (len (length string))
+           (end (or (plist-get keys :end) len))
+           (radix (or (plist-get keys :radix) 10))
+           (junk-allowed (plist-get keys :junk-allowed))
+           (sign 1) digit sum)
+      (or (<= start end len)
+          (error "Bad interval: [%d, %d)" start end))
+      (while (and (< start end) (= 32 (char-syntax (aref string start))))
+        (setq start (1+ start)))
+      (cond ((and (< start end) (eq (aref string start) ?+)) (setq start (1+ start)))
+            ((and (< start end) (eq (aref string start) ?-))
+             (setq sign -1 start (1+ start))))
+      (while (and (< start end)
+                  (setq digit (cl-digit-char-p (aref string start) radix)))
+        (setq sum (+ (* (or sum 0) radix) digit)
+              start (1+ start)))
+      (while (and (< start end) (= 32 (char-syntax (aref string start))))
+        (setq start (1+ start)))
+      (cond ((and junk-allowed (null sum)) sum)
+            (junk-allowed (* sign sum))
+            ((or (/= start end) (null sum))
+             (error "Not an integer string: `%s'" string))
+            (t (* sign sum))))))
 (unless (fboundp 'char-uppercase-p)
   (defun char-uppercase-p (ch)
     (nelisp--check-character ch)
@@ -6062,6 +6092,155 @@ descendant record satisfies the parent predicate."
 
 (defun nelisp-cl-macros--struct-slots (slots)
   (if (stringp (car slots)) (cdr slots) slots))
+(defun nelisp-cl-macros--struct-typed-kind (options)
+  "Return `vector' or `list' when OPTIONS carry `(:type vector|list)', else nil.
+Such structs are plain vectors/lists like GNU `cl-defstruct', not records."
+  (let ((type (car (cdr (assq :type options)))))
+    (and (memq type '(vector list)) type)))
+
+(defun nelisp-cl-macros--defstruct-typed
+    (name options kind parent slot-names slot-defaults conc-name predicate
+          constructors copier)
+  "Expand a `cl-defstruct' with `(:type KIND)' (KIND is `vector' or `list').
+Mirrors GNU cl-macs: the instance is a real vector/list, `:named' stores
+NAME as element 0 and enables the predicate, the copier is `copy-sequence',
+and each accessor gets a `cl-struct-setter' so `setf' works.  The remaining
+arguments are the values `cl-defstruct' already computed."
+  (when (assq :initial-offset options)
+    (error "cl-defstruct :initial-offset is not supported with :type"))
+  (let* ((named (or (memq :named options) (assq :named options)))
+         (maker (if (eq kind 'vector) 'vector 'list))
+         (offset (if named 1 0))
+         (size (+ offset (length slot-names)))
+         (pred (and named predicate))
+         (tag-forms (and named (list (list 'quote name))))
+         (obj (make-symbol "cl-defstruct--obj"))
+         (val (make-symbol "cl-defstruct--val"))
+         (args-sym (make-symbol "cl-defstruct--args"))
+         ;; Named structs check the tag on access like GNU; the identity
+         ;; function CHECK-FN keeps the place form `(aref (CHECK-FN OBJ) I)'
+         ;; single-evaluation for GV.
+         (check-fn (and pred (intern (format "%s--cl-struct-check" name))))
+         (default-alist nil)
+         (forms nil)
+         (i 0))
+    ;; Inherit a typed parent's slot defaults (the caller padded them with nil).
+    (let ((inherited (and parent
+                          (car (cdr (memq :slot-defaults
+                                          (cdr (assq parent
+                                                     nelisp-cl-macros--struct-info))))))))
+      (when inherited
+        (setq slot-defaults
+              (append inherited (nthcdr (length inherited) slot-defaults)))))
+    (let ((names slot-names) (defaults slot-defaults))
+      (while names
+        (setq default-alist (cons (cons (car names) (car defaults))
+                                  default-alist))
+        (setq names (cdr names) defaults (cdr defaults))))
+    (setq default-alist (nreverse default-alist))
+    ;; Expansion-time registry entry (for `:include' and the predicate's
+    ;; ancestry walk); deliberately NOT in `nelisp-cl-macros--accessor-info',
+    ;; which maps accessors to record indices.
+    (setq nelisp-cl-macros--struct-info
+          (cons (cons name (list :slot-names slot-names :parent parent
+                                 :slot-defaults slot-defaults))
+                nelisp-cl-macros--struct-info))
+    (push (list 'setq 'nelisp-cl-macros--struct-info
+                (list 'cons
+                      (list 'cons (list 'quote name)
+                            (list 'quote (list :slot-names slot-names
+                                               :parent parent
+                                               :slot-defaults slot-defaults)))
+                      'nelisp-cl-macros--struct-info))
+          forms)
+    (when pred
+      (push (list 'defun check-fn (list obj)
+                  (list 'if (list pred obj) obj
+                        (list 'signal ''wrong-type-argument
+                              (list 'list (list 'quote name) obj))))
+            forms)
+      (push (list 'defun pred (list obj)
+                  (if (eq kind 'vector)
+                      (list 'and (list 'vectorp obj)
+                            (list '>= (list 'length obj) size)
+                            (list 'nelisp-cl-macros--struct-isa
+                                  (list 'aref obj 0) (list 'quote name))
+                            t)
+                    (list 'and (list 'consp obj)
+                          (list 'nelisp-cl-macros--struct-isa
+                                (list 'car obj) (list 'quote name))
+                          t)))
+            forms))
+    (dolist (ctor constructors)
+      (let ((constructor (car ctor))
+            (arglist (cdr ctor)))
+        (if arglist
+            (let* ((parts (nelisp-cl-macros--defstruct-ctor-parts arglist))
+                   (formals (car parts))
+                   (aux (cadr parts))
+                   (value-syms (caddr parts))
+                   (body (cons maker
+                               (append tag-forms
+                                       (mapcar
+                                        (lambda (slot)
+                                          (if (memq slot value-syms)
+                                              slot
+                                            (cdr (assq slot default-alist))))
+                                        slot-names)))))
+              (push (list 'defun constructor formals
+                          (if aux (list 'let aux body) body))
+                    forms))
+          (let ((arg-forms nil) (j 0))
+            (dolist (s slot-names)
+              (push (list 'nelisp-cl-macros--struct-arg
+                          (list 'quote (intern (format ":%s" s)))
+                          args-sym (nth j slot-defaults))
+                    arg-forms)
+              (setq j (1+ j)))
+            (push (list 'defun constructor (list '&rest args-sym)
+                        (cons maker (append tag-forms (nreverse arg-forms))))
+                  forms)))))
+    (when copier
+      (push (list 'defun copier (list obj) (list 'copy-sequence obj)) forms))
+    (dolist (s slot-names)
+      (let* ((acc (intern (concat conc-name (symbol-name s))))
+             (setter (intern (concat (symbol-name acc) "--cl-struct-set")))
+             (index (+ offset i))
+             (checked (if check-fn (list check-fn obj) obj)))
+        (push (list 'defun acc (list obj)
+                    (if (eq kind 'vector)
+                        (list 'aref checked index)
+                      (list 'nth index checked)))
+              forms)
+        (push (list 'defun setter (list obj val)
+                    (if (eq kind 'vector)
+                        (list 'aset checked index val)
+                      (list 'setcar (list 'nthcdr index checked) val)))
+              forms)
+        (push (list 'put (list 'quote acc) ''cl-struct-setter
+                    (list 'quote setter))
+              forms)
+        ;; Same compiler-macro route as the record accessors, so GNU GV
+        ;; (`setf', `cl-incf', `push') lowers the place to `aref' / `nth'.
+        (push (list 'put (list 'quote acc) ''compiler-macro
+                    (list 'quote
+                          (list 'lambda (list '_form obj)
+                                (if (eq kind 'vector)
+                                    (list 'list ''aref
+                                          (if check-fn
+                                              (list 'list (list 'quote check-fn) obj)
+                                            obj)
+                                          index)
+                                  (list 'list ''nth index
+                                        (if check-fn
+                                            (list 'list (list 'quote check-fn) obj)
+                                          obj))))))
+              forms)
+        (push (list 'put (list 'quote acc) ''document-generalized-variable t)
+              forms))
+      (setq i (1+ i)))
+    (cons 'progn (append (nreverse forms) (list (list 'quote name))))))
+
 (defmacro cl-defstruct (name-or-options &rest slots)
   "Define a record type and its predicate / constructor / accessors.
 
@@ -6091,7 +6270,8 @@ runtime chain walk in `nelisp-cl-macros--struct-isa'.
 
 Accessors publish compiler-macro metadata for their exact record slot,
 so GNU GV can lower generalized places through its ordinary `aref' owner.
-Limitations: no `:type'.  A leading docstring IS
+Limitations: `(:type vector|list)' structs are supported (see
+`nelisp-cl-macros--defstruct-typed'; no `:initial-offset').  A leading docstring IS
 accepted (and discarded), which it previously was not -- it was taken for a
 slot name.  That only worked because `symbol-name' used to answer for a
 string; once it signalled `symbolp', as Emacs does, every `cl-defstruct'
@@ -6177,6 +6357,11 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
     ;; Expansion-time registry update so subsequent (cl-defstruct
     ;; (CHILD (:include NAME)) ...)  macros expanded in this same
     ;; pass can resolve our slot list.
+    (if (nelisp-cl-macros--struct-typed-kind options)
+        ;; `(:type vector|list)': build a real vector/list like GNU, not a record.
+        (nelisp-cl-macros--defstruct-typed
+         name options (nelisp-cl-macros--struct-typed-kind options) parent
+         slot-names slot-defaults conc-name predicate constructors copier)
     (nelisp-cl-macros--struct-record name parent slot-names conc-name)
     (let ((forms nil)
           (args-sym (make-symbol "cl-defstruct--args"))
@@ -6291,7 +6476,7 @@ bodies (= Stage 4 follow-up).  Indent / edebug specs come back when
       ;; Result form: (progn DEFUN ... 'NAME).
       (cons 'progn
             (append (nreverse forms)
-                    (list (list 'quote name)))))))
+                    (list (list 'quote name))))))))
 
 ;;;; --- cl-generic subset (Doc 185) ----------------------------------------
 ;;
@@ -10189,6 +10374,36 @@ headless runtime cannot answer Emacs's own confirmation prompt."
   (position 1)
   (insertion-type nil))
 
+;; In GNU Emacs a marker is a valid argument to the arithmetic and
+;; comparison primitives (`number-or-marker-p').  Here a marker is a
+;; struct and the native operations reject it.  Wrapping the hot natives
+;; globally measured 12x on a 10^6-iteration `<'/`+' loop, so the coercion
+;; is opt-in and scoped: `nelisp-marker-arith-call' wraps only the named
+;; operations for the dynamic extent of a thunk and restores them after.
+(defun nelisp--marker-num (x)
+  "Return X as a number, taking a marker's position (GNU coercion)."
+  (if (nelisp-marker-p x)
+      (or (and (nelisp-marker-buffer x) (nelisp-marker-position x))
+          (signal 'error (list "Marker does not point anywhere")))
+    x))
+
+(defun nelisp-marker-arith-call (ops thunk)
+  "Call THUNK with each operation in OPS accepting markers; restore after."
+  (let ((saved nil))
+    (unwind-protect
+        (progn
+          (dolist (op ops)
+            (let ((native (symbol-function op)))
+              (push (cons op native) saved)
+              (fset op
+                    (lambda (&rest args)
+                      (if (and args (numberp (car args)) (cdr args)
+                               (numberp (car (cdr args))) (null (cdr (cdr args))))
+                          (funcall native (car args) (car (cdr args)))
+                        (apply native (mapcar #'nelisp--marker-num args)))))))
+          (funcall thunk))
+      (dolist (c saved) (fset (car c) (cdr c))))))
+
 (cl-defstruct (nelisp-overlay
                (:constructor nelisp-overlay--make)
                (:copier nil))
@@ -10676,6 +10891,26 @@ point, since it appends TEXT straight onto it."
   (setf (nelisp-buffer-modified (nelisp-buffer--ambient buf))
         (and flag t))
   flag)
+
+;; GNU `buffer-modified-p' / `set-buffer-modified-p' / `restore-buffer-modified-p'
+;; over the modified flag above.  GNU answers t or nil here for an ordinary
+;; buffer, and `set-buffer-modified-p' returns FLAG.
+(unless (fboundp 'buffer-modified-p)
+  (defun buffer-modified-p (&optional buffer)
+    "Return non-nil if BUFFER (default: current) has unsaved modifications."
+    (and (nelisp-buffer-modified-p buffer) t)))
+
+(unless (fboundp 'set-buffer-modified-p)
+  (defun set-buffer-modified-p (flag)
+    "Mark the current buffer as modified if FLAG is non-nil, else unmodified."
+    (nelisp-buffer-set-modified flag)
+    flag))
+
+(unless (fboundp 'restore-buffer-modified-p)
+  (defun restore-buffer-modified-p (flag)
+    "Like `set-buffer-modified-p', but without touching the modification tick."
+    (nelisp-buffer-set-modified flag)
+    flag))
 
 (defun nelisp-markerp (obj)
   "Return non-nil when OBJ is a `nelisp-marker'."
