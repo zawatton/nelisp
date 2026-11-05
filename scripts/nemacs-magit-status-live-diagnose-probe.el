@@ -38,7 +38,7 @@
   (nemacs-magit-status-live-diagnose--run
    "bridge-source-load"
    (lambda ()
-     (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo)
+     (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" repo)
            nil 'no-message t t)))
   (when nemacs-magit-status-live-diagnose--ok
     (nemacs-magit-status-live-diagnose--run

@@ -38,8 +38,8 @@
          repo fixture)
         (if (fboundp 'nemacs-runtime-image-preload--load-source-file)
             (nemacs-runtime-image-preload--load-source-file
-             (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo))
-          (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo)
+             (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" repo))
+          (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" repo)
                 nil 'no-message t t))
         (setq nelisp-emacs-magit-bridge-repo-root repo)
         (nemacs-magit-transient-workflow--print

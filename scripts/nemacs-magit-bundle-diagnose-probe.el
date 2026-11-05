@@ -12,7 +12,7 @@
                        nemacs-magit-probe-repo-root)
                   (getenv "NEMACS_MAGIT_REPO_ROOT")
                   "")))
-       (bridge-source (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo))
+       (bridge-source (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" repo))
        (bundle-dir (expand-file-name "build" repo))
        (part-count (and (boundp 'nemacs-magit-bundle-part-count)
                         nemacs-magit-bundle-part-count))

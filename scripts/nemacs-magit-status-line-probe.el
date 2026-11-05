@@ -2,7 +2,7 @@
 
 (let* ((repo (file-name-as-directory (getenv "NEMACS_MAGIT_REPO_ROOT")))
        (fixture (file-name-as-directory (getenv "NEMACS_MAGIT_FIXTURE_DIR"))))
-  (load (expand-file-name "src/nelisp-emacs-magit-bridge.el" repo)
+  (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" repo)
         nil 'no-message t t)
   (setq nelisp-emacs-magit-bridge-repo-root repo)
   (nelisp-emacs-magit-bridge-load)
