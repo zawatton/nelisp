@@ -1100,6 +1100,19 @@
       (nelisp-emacs-consumer-smoke-test--loaded-file-p "lisp-mode.el")
     (featurep feature)))
 
+(defconst nelisp-emacs-consumer-smoke-test--repo-root
+  (expand-file-name "../../.." (file-name-directory (or load-file-name buffer-file-name)))
+  "Repository root, derived from this test file's location.")
+
+(defun nelisp-emacs-consumer-smoke-test--repo-source-dirs ()
+  "Return the repository's lisp/, src/ and packages/*/src directories.
+The fresh subprocess gets these explicitly: in the combined suite the
+parent's `load-path' may no longer reach every package source directory."
+  (append (list (expand-file-name "lisp" nelisp-emacs-consumer-smoke-test--repo-root)
+                (expand-file-name "src" nelisp-emacs-consumer-smoke-test--repo-root))
+          (file-expand-wildcards
+           (expand-file-name "packages/*/src" nelisp-emacs-consumer-smoke-test--repo-root))))
+
 (defun nelisp-emacs-consumer-smoke-test--fresh-loaded-lazy-features (features)
   "Return the members of FEATURES loaded after a fresh `require' of the facade.
 Runs a clean `emacs --batch -Q' child with this process's `load-path', so
@@ -1107,7 +1120,7 @@ the result does not depend on which test files ran earlier in the same
 process (an earlier file may legitimately load a lazy feature)."
   (let ((exe (expand-file-name invocation-name invocation-directory))
         (form `(progn
-                 (setq load-path (append ',load-path load-path))
+                 (setq load-path (append ',load-path ',(nelisp-emacs-consumer-smoke-test--repo-source-dirs) load-path))
                  (require 'nelisp-emacs)
                  (let (loaded)
                    (dolist (feature ',features)
