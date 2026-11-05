@@ -250,17 +250,19 @@ run_ert_gate() {
             --command "nelisp-ai.sh $gate_name"
         exit 1
     fi
-    loads=""
-    for f in $files; do loads="$loads -l $f"; done
+    # Loaded through nelisp-ert-collection-load-env: each file once, and a
+    # file that fails to load becomes a failing test instead of an abort.
     started=$(date +%s)
     set +e
     # shellcheck disable=SC2046,SC2086
     # Keep GNU's host tooling API before standalone packages shadow json.el.
     NELISP_GATE_NAME="$gate_name" \
     NELISP_GATE_COMMAND="tools/ai/nelisp-ai.sh $gate_name" \
+    NELISP_ERT_FILES="$files" \
         "$EMACS" --batch -Q -l json $(load_path_args) \
             --eval '(setq load-prefer-newer t)' \
-            -l ert -l "$here/nelisp-ert-collection.el" $loads \
+            -l ert -l "$here/nelisp-ert-collection.el" \
+            -f nelisp-ert-collection-load-env \
             --eval '(nelisp-ert-collection-finish)' \
             -l "$here/nelisp-ert-gate.el" -f nelisp-ert-gate-run
     code=$?
