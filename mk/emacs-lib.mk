@@ -1197,6 +1197,7 @@ nemacs-library-package-layout:
 		-f nemacs-library-package-layout-batch
 
 nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
+	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees" >&2; exit 1; fi
 	mkdir -p "$(BUILD_DIR)"
 	@set -eu; scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
 	mkdir -p "$$scaffold_root/scripts"; \
@@ -1209,6 +1210,7 @@ nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-pa
 		-f nemacs-library-package-scaffold-batch
 
 nemacs-library-app-scaffold:
+	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees" >&2; exit 1; fi
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-app-scaffold-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
@@ -2069,7 +2071,7 @@ bake-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
 
 bake-runtime-image: $(NEMACS_RUNTIME_IMAGE)
 
-$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) | nemacs-library-package-scaffold nemacs-library-app-scaffold
+$(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD)
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -2080,7 +2082,7 @@ $(NEMACS_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(
 
 bake-interactive-runtime-image: $(NEMACS_INTERACTIVE_RUNTIME_IMAGE)
 
-$(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD) nemacs-library-package-scaffold nemacs-library-app-scaffold
+$(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME_PRELOAD) $(NEMACS_RUNTIME_PROCESS_PRELOAD) $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD)
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_INTERACTIVE_RUNTIME_IMAGE))"
 	ulimit -s "$(NELISP_STACK_LIMIT)" 2>/dev/null || true; \
@@ -2121,7 +2123,7 @@ $(NEMACS_ORG_BRIDGE_BUNDLE): scripts/build-nelisp-emacs-org-bridge-bundle.el pac
 		-l scripts/build-nelisp-emacs-org-bridge-bundle.el \
 		-f nelisp-emacs-org-bridge-bundle-build-batch
 
-bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE) nemacs-library-package-scaffold nemacs-library-app-scaffold
+bake-magit-runtime-image: $(NEMACS_MAGIT_BRIDGE_BUNDLE)
 	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_MAGIT_RUNTIME_IMAGE))"
