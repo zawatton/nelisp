@@ -1,5 +1,9 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'ert)
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+(require 'emacs-cc-pipe-process-1)
 (ert-deftest b76-default-filter-selects-live-buffer ()
   (let* ((caller (current-buffer))
          (buffer (generate-new-buffer " *b76-filter*"))

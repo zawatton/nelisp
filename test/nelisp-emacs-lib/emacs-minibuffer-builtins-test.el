@@ -194,7 +194,7 @@
     (should (emacs-minibuffer-builtins--install-function-p 'read-string))))
 
 (ert-deftest emacs-minibuffer-builtins-test/minibufferp-live-bridge-smoke ()
-  "The standalone alias routes both arguments to the minibuffer substrate."
+  "The standalone `minibufferp' defun routes both arguments to the minibuffer substrate."
   (let* ((host-function (symbol-function 'minibufferp))
          (old-plist (copy-sequence (symbol-plist 'minibufferp)))
          (file (locate-library "emacs-minibuffer-builtins")))
@@ -204,15 +204,20 @@
           (put 'minibufferp 'emacs-stub-bulk t)
           (fmakunbound 'minibufferp)
           (load file nil t)
-          (should (eq (indirect-function 'minibufferp)
-                      (symbol-function 'emacs-minibuffer-minibufferp)))
+          ;; The bridge installs its own `minibufferp' defun (no longer an
+          ;; alias of `emacs-minibuffer-minibufferp'), replacing the stub.
+          (should (functionp (symbol-function 'minibufferp)))
+          (should-not (eq (symbol-function 'minibufferp) host-function))
           (emacs-minibuffer-builtins-test--with-fresh-world
             (let* ((base (nelisp-ec-generate-new-buffer " *Minibuf-0*"))
                    (active (nelisp-ec-generate-new-buffer " *Minibuf-1*"))
                    (inactive (nelisp-ec-generate-new-buffer " *Minibuf-2*")))
               (let ((emacs-minibuffer--buffers (list active))
                     (emacs-minibuffer--depth 1))
-                (should (minibufferp " *Minibuf-0*"))
+                ;; A merely-named idle minibuffer is not a minibuffer
+                ;; unless active or shown in the minibuffer window.
+                (should-not (minibufferp " *Minibuf-0*"))
+                (should (minibufferp active))
                 (should (minibufferp active t))
                 (should-not (minibufferp inactive t))
                 (should-error (minibufferp 7)

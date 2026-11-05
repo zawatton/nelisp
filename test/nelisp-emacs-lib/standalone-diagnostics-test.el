@@ -199,7 +199,7 @@ the repository's own src/ holds only the NeLisp core."
                       (list :index 2 :pos 8 :end 18 :head 'provide
                             :text "(provide 'sample)")))
           (vendor-form-standalone--write-program
-           bootstrap "/vendor/sample.el" forms 1 output)
+           bootstrap "/vendor/sample.el" forms 1 output "/tmp/sample.marker")
           (let ((program (with-temp-buffer
                            (insert-file-contents output)
                            (buffer-string))))
@@ -227,7 +227,15 @@ the repository's own src/ holds only the NeLisp core."
             (should-not (string-match-p
                          (regexp-quote "(provide 'sample)")
                          program))
-            (should (string-match-p "\n(exit 42)\n\\'" program))))
+            ;; The REPL swallows line errors, so success is signalled by a
+            ;; marker file written last, followed by `,quit'.
+            (should (string-match-p
+                     (concat (regexp-quote
+                              (format "\n(nl-write-file %S %S)\n,quit\n"
+                                      "/tmp/sample.marker"
+                                      vendor-form-standalone--success))
+                             "\\'")
+                     program))))
       (dolist (file (list bootstrap prelude output))
         (when (file-exists-p file)
           (delete-file file))))))
@@ -254,7 +262,7 @@ the repository's own src/ holds only the NeLisp core."
                 (list (list :index 1 :pos 0 :end 15 :head 'provide
                             :text "(provide 'sample)")))
           (vendor-form-standalone--write-program
-           bootstrap "/vendor/sample.el" forms 1 output
+           bootstrap "/vendor/sample.el" forms 1 output "/tmp/sample.marker"
            (list (expand-file-name "vendor/preload-a.el" root)
                  (expand-file-name "vendor/preload-b.el" root)
                  (expand-file-name "vendor/org-footnote.el" root)))

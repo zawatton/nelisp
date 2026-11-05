@@ -84,7 +84,8 @@
           (put 'exp 'emacs-stub-bulk t)
           (load emacs-numeric-test--module-file t t)
           (should-not called)
-          (should (= 0 (atan 1)))
+          (should (< (abs (- (atan 1) (/ float-pi 4))) 1e-9))
+          ;; `exp' is still the load-time polyfill (constant 1), not a real exp.
           (should (= 1 (exp 1)))
           (should-not (get 'atan 'emacs-stub-bulk))
           (should-not (get 'exp 'emacs-stub-bulk)))

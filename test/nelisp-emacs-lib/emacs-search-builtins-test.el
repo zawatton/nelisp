@@ -214,18 +214,33 @@
                  nil t))))))
 
 (ert-deftest emacs-search-builtins-test/install-gate-overrides-stubs-on-reader ()
-  "Doc 15 B4: the install gate force-installs these substrate polyfills over
-emacs-stub-bulk's no-op stubs on the NeLisp reader (`rdf' present), so
-`replace-match' (string form) and string ops like s-trim work after a
-runtime package load.  Pinned at source level since host ERT runs without
-the reader."
+  "The install gate is native-first but still replaces `emacs-stub-bulk'
+no-op stubs (e.g. `replace-match') and absent functions with the
+substrate-backed polyfills, so string ops work after a runtime package
+load.  Behavioural check of the gate function plus a source-level pin
+of its three clauses (host ERT runs without the NeLisp reader)."
+  (let ((stub (make-symbol "emacs-search-builtins-test-stub"))
+        (absent (make-symbol "emacs-search-builtins-test-absent")))
+    (fset stub #'ignore)
+    ;; A native, non-stub function is preserved on a host that binds
+    ;; `emacs-version'.
+    (should-not (emacs-search-builtins--install-function-p 'string-match))
+    ;; Absent functions are filled in.
+    (should (emacs-search-builtins--install-function-p absent))
+    ;; A stub-bulk placeholder is overridden even though it is fbound.
+    (should-not (emacs-search-builtins--install-function-p stub))
+    (put stub 'emacs-stub-bulk t)
+    (should (emacs-search-builtins--install-function-p stub)))
   (let* ((lib (locate-library "emacs-search-builtins"))
          (src (and lib (concat (file-name-sans-extension lib) ".el")))
          (source (and src (file-readable-p src)
                       (with-temp-buffer (insert-file-contents src)
                                         (buffer-string)))))
     (should source)
-    (should (string-match-p (regexp-quote "(fboundp 'rdf)") source))))
+    (dolist (clause '("(not (boundp 'emacs-version))"
+                      "(get symbol 'emacs-stub-bulk)"
+                      "(not (fboundp symbol))"))
+      (should (string-match-p (regexp-quote clause) source)))))
 
 ;;;; J. Synthetic polyfill count loop honors COUNT
 

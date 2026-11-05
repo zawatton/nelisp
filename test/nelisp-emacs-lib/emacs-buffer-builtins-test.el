@@ -75,7 +75,7 @@
                         "(defalias 'copy-marker"
                         "(markerp                    . nelisp-ec-marker-p)"
                         "(move-marker                . nelisp-ec-set-marker)"
-                        "(insert-before-markers      . nelisp-ec-insert)"
+                        "(insert-before-markers      . nelisp-ec-insert-before-markers)"
                         "(remove-overlays    . emacs-buffer-remove-overlays)"
                         "(next-overlay-change . emacs-buffer-next-overlay-change)"
                         "(previous-overlay-change . emacs-buffer-previous-overlay-change)"
@@ -84,12 +84,12 @@
                         "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
                         "(defalias 'add-to-invisibility-spec"
                         "(defalias 'remove-from-invisibility-spec"
-                        "(defalias 'next-single-char-property-change"
-                        "(defalias 'previous-single-char-property-change"
-                        "(insert-and-inherit         . nelisp-ec-insert)"
+                        "(defun next-single-char-property-change"
+                        "(defun previous-single-char-property-change"
+                        "(insert-and-inherit         . emacs-buffer-builtins--insert-and-inherit)"
                         "(defalias 'subst-char-in-region"
                         "(defalias 'buffer-modified-tick"
-                        "(defalias 'buffer-chars-modified-tick"))
+                        "(defun buffer-chars-modified-tick"))
         (goto-char (point-min))
         (should (search-forward needle nil t))))))
 
@@ -798,8 +798,10 @@ shadows our defun."
     (should (string-match-p "(signal 'beginning-of-buffer" s))
     (should (string-match-p "(nelisp-ec-goto-char hi)" s))
     (should (string-match-p "(nelisp-ec-goto-char lo)" s))
-    ;; backward-char delegates to forward-char with negated arg.
-    (should (string-match-p "(forward-char (- (or n 1)))" bs))
+    ;; backward-char computes its own target, clamps, and signals.
+    (should (string-match-p "(- (point) n)" bs))
+    (should (string-match-p "(goto-char lo) (signal 'beginning-of-buffer" bs))
+    (should (string-match-p "(goto-char hi) (signal 'end-of-buffer" bs))
     ;; command-loop-1 catches both signals.
     (should (string-match-p "(end-of-buffer" cl))
     (should (string-match-p "(beginning-of-buffer" cl))

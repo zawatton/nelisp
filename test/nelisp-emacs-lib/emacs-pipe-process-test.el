@@ -12,26 +12,37 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 (require 'emacs-process-events)
 (require 'emacs-pipe-process)
 
 (ert-deftest emacs-pipe-process-test/all-fds-without-maphash ()
   "`--all-fds' enumerates live process fds from the all-list (not via the
 broken-on-standalone `maphash'), and excludes closed processes (Doc 06 C1)."
-  (let ((emacs-process-events--all nil))
-    (let ((live (emacs-process-events--make-vec
-                 "live" 5 'pipe-process 'run nil nil nil nil nil -1 1))
-          (dead (emacs-process-events--make-vec
-                 "dead" 7 'pipe-process 'closed nil nil nil nil nil -1 2))
-          (neg  (emacs-process-events--make-vec
-                 "neg" -1 'pipe-process 'run nil nil nil nil nil -1 3)))
-      (push live emacs-process-events--all)
-      (push dead emacs-process-events--all)
-      (push neg emacs-process-events--all)
-      (let ((fds (emacs-process-events--all-fds)))
-        (should (member 5 fds))         ; live → included
-        (should-not (member 7 fds))     ; closed → excluded
-        (should-not (member -1 fds)))))) ; invalid fd → excluded
+  ;; `process-id-fd' is this provider's own accessor, but under host Emacs
+  ;; `process-filter' is the native one and rejects the provider's vector
+  ;; processes; route it through the provider's slot accessor, as the
+  ;; standalone polyfill does.
+  (cl-letf (((symbol-function 'process-filter)
+             (lambda (proc) (emacs-process-events--get proc 5))))
+    (let ((emacs-process-events--all nil))
+      (let ((live (emacs-process-events--make-vec
+                   "live" 5 'pipe-process 'run nil nil nil nil nil -1 1))
+            (dead (emacs-process-events--make-vec
+                   "dead" 7 'pipe-process 'closed nil nil nil nil nil -1 2))
+            (neg  (emacs-process-events--make-vec
+                   "neg" -1 'pipe-process 'run nil nil nil nil nil -1 3))
+            (muted (emacs-process-events--make-vec
+                    "muted" 9 'pipe-process 'run t nil nil nil nil -1 4)))
+        (push live emacs-process-events--all)
+        (push dead emacs-process-events--all)
+        (push neg emacs-process-events--all)
+        (push muted emacs-process-events--all)
+        (let ((fds (emacs-process-events--all-fds)))
+          (should (member 5 fds))         ; live -> included
+          (should-not (member 7 fds))     ; closed -> excluded
+          (should-not (member -1 fds))    ; invalid fd -> excluded
+          (should-not (member 9 fds)))))))  ; filter t (muted) -> excluded
 
 (ert-deftest emacs-pipe-process-test/create-validates-fd ()
   "`emacs-pipe-process-create' rejects a missing / invalid read fd before it

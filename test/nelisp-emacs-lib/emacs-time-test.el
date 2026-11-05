@@ -211,7 +211,8 @@ explicitly unbound clock cell remains unbound after the same reload."
   (should-not (emacs-time--parse-zone-offset "JST"))
   (should-not (emacs-time--parse-zone-offset "+09")))
 
-(ert-deftest emacs-time-test/current-time-zone-uses-date-and-caches ()
+(ert-deftest emacs-time-test/current-time-zone-queries-date-per-lookup ()
+  "One `env ... date' call per lookup; the result is not stale across times."
   (emacs-time-test--with-reloaded-module
    '(current-time-zone emacs-time--current-time-zone-cache)
    (lambda ()
@@ -219,26 +220,31 @@ explicitly unbound clock cell remains unbound after the same reload."
            (emacs-time--current-time-zone-cache nil))
        (cl-letf (((symbol-function 'call-process)
                   (lambda (program _infile destination _display &rest args)
-                    (should (equal "date" program))
+                    (should (equal "env" program))
                     (should destination)
-                    (let ((format (car args)))
-                      (setq calls (cons format calls))
-                      (insert (if (equal format "+%z")
-                                  "+0900\n"
-                                "JST\n"))
-                      0))))
-         (should (equal '(32400 "JST") (current-time-zone)))
-         (should (equal '(32400 "JST") (current-time-zone)))
-         (should (equal '("+%z" "+%Z") (nreverse calls))))))))
+                    (setq calls (cons args calls))
+                    (insert "+09:00:00\nJST\n")
+                    0)))
+         (should (equal '(32400 "JST") (current-time-zone 0)))
+         (should (equal '(32400 "JST") (current-time-zone 3600)))
+         (setq calls (nreverse calls))
+         (should (= 2 (length calls)))
+         (should (equal '("-u" "TZ" "date" "--date=@0" "+%::z\n%Z")
+                        (car calls)))
+         (should (equal '("-u" "TZ" "date" "--date=@3600" "+%::z\n%Z")
+                        (cadr calls))))))))
 
-(ert-deftest emacs-time-test/current-time-zone-falls-back-to-utc ()
+(ert-deftest emacs-time-test/current-time-zone-signals-when-date-fails ()
+  "A failing zone lookup signals; there is no silent UTC fallback."
   (emacs-time-test--with-reloaded-module
    '(current-time-zone emacs-time--current-time-zone-cache)
    (lambda ()
      (let ((emacs-time--current-time-zone-cache nil))
        (cl-letf (((symbol-function 'call-process)
                   (lambda (&rest _args) 1)))
-         (should (equal '(0 "UTC") (current-time-zone))))))))
+         (let ((err (should-error (current-time-zone 0))))
+           (should (equal '("Specified time is not representable")
+                          (cdr err)))))))))
 
 (ert-deftest emacs-time-test/truncate-integer-and-positive-float ()
   (emacs-time-test--with-reloaded-module
@@ -268,7 +274,7 @@ explicitly unbound clock cell remains unbound after the same reload."
            (emacs-time--time-zone-rule nil)
            (emacs-time--current-time-zone-cache '(1 "X")))
        (should-not (display-time-mode 1))
-       (should (equal "UTC0" (set-time-zone-rule "UTC0")))
+       (should-not (set-time-zone-rule "UTC0"))
        (should (equal "UTC0" emacs-time--time-zone-rule))
        (should-not emacs-time--current-time-zone-cache)))))
 
@@ -305,8 +311,9 @@ explicitly unbound clock cell remains unbound after the same reload."
      (put 'time-convert 'emacs-stub-bulk t)
      (load emacs-time-test--module-file t t)
      (should (= 12 (time-convert 12.9 'integer)))
-     (should (= 12.5 (time-convert 12.5 'float)))
-     (should (equal '(12 0 0 0) (time-convert 12.5 'list)))
+     ;; GNU 31.1 rejects a float tick rate.
+     (should-error (time-convert 12.5 'float))
+     (should (equal '(0 12 500000 0) (time-convert 12.5 'list)))
      (should (equal '(5 . 2) (time-convert 2.5 2)))
      (should (equal '(12000 . 1000) (time-convert 12 1000))))))
 

@@ -652,7 +652,14 @@ spelling of it."
         (should (or (search-forward "(boundp 'emacs-version)" nil t)
                     (progn
                       (goto-char (point-min))
-                      (search-forward "nelisp--write-stdout-bytes" nil t))))))))
+                      (search-forward "nelisp--write-stdout-bytes" nil t))
+                    ;; Native-first gate: install only over an absent
+                    ;; function or an `emacs-stub-bulk' placeholder.
+                    (progn
+                      (goto-char (point-min))
+                      (and (search-forward "(not (fboundp symbol))" nil t)
+                           (search-forward "(get symbol 'emacs-stub-bulk)"
+                                           nil t)))))))))
 
 (defconst emacs-stub-residuals-test--standalone-gate-name-regexp
   (rx (or "standalone-p" "standalone-runtime-p" "host-runtime-p"

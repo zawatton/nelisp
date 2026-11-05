@@ -77,17 +77,29 @@ renamed to a private uninterned symbol.  Returns (RENAMED-SYMBOL . FORM)."
 The range is ASCII 0x21..0x7e, except yen at 0x5c and overline at 0x7e;
 the optional second byte is ignored for this one-byte charset."
   (let* ((extracted (emacs-parity-shims-test--extract-defun "make-char"))
-         (sym (car extracted)))
-    (eval (cdr extracted) t)
-    (dolist (code (number-sequence #x21 #x7e))
-      (let ((expected (cond ((= code #x5c) #xa5)
-                            ((= code #x7e) #x203e)
-                            (t code))))
-        (should (= expected (funcall sym 'latin-jisx0201 code)))))
-    (should (= #x21 (funcall sym 'latin-jisx0201)))
-    (should (= #x21 (funcall sym 'latin-jisx0201 #x21 #x7f)))
-    (dolist (code '(0 #x20 #x7f #x80 -1 "A"))
-      (should-error (funcall sym 'latin-jisx0201 code)))))
+         (sym (car extracted))
+         ;; The shim calls a sibling helper defined in the same guarded
+         ;; block; extract it under its real name so the call resolves.
+         (helper-name 'emacs-parity-shims--position-byte)
+         (helper (emacs-parity-shims-test--extract-defun
+                  (symbol-name helper-name)))
+         (helper-was-bound (fboundp helper-name)))
+    (setcar (cdr (cdr helper)) helper-name)
+    (unwind-protect
+        (progn
+          (eval (cdr helper) t)
+          (eval (cdr extracted) t)
+          (dolist (code (number-sequence #x21 #x7e))
+            (let ((expected (cond ((= code #x5c) #xa5)
+                                  ((= code #x7e) #x203e)
+                                  (t code))))
+              (should (= expected (funcall sym 'latin-jisx0201 code)))))
+          (should (= #x21 (funcall sym 'latin-jisx0201)))
+          (should (= #x21 (funcall sym 'latin-jisx0201 #x21 #x7f)))
+          (dolist (code '(0 #x20 #x7f #x80 -1 "A"))
+            (should-error (funcall sym 'latin-jisx0201 code))))
+      (unless helper-was-bound
+        (fmakunbound helper-name)))))
 
 ;;;; C. `save-selected-window' -- macroexpansion shape parity with host
 
