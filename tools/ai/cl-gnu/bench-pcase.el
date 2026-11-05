@@ -1,0 +1,16 @@
+;;; bench-pcase.el --- pcase-heavy loop: 6 patterns, 10^5 calls  -*- lexical-binding: t; -*-
+(defun clgnu-bench-classify (x)
+  (pcase x
+    ((pred integerp) 1)
+    (`(add ,a ,b) (+ a b))
+    (`(neg ,a) (- a))
+    ((and (pred stringp) s (guard (> (length s) 2))) (length s))
+    ((or 'a 'b 'c) 7)
+    (`[,p ,q] (* p q))
+    (_ 0)))
+(let ((sum 0) (i 0)
+      (inputs (list 5 '(add 1 2) '(neg 4) "abcd" 'b [3 4] 'zz)))
+  (while (< i 100000)
+    (setq sum (+ sum (clgnu-bench-classify (nth (% i 7) inputs))))
+    (setq i (1+ i)))
+  (princ (format "BENCH-PCASE-SUM %d\n" sum)))

@@ -1,0 +1,8 @@
+# Baseline on build-on140/nelisp-dynamic (df31265124fe7b5a...), 2026-11-05T05:31Z, host 32 cores
+# wall-clock ms, median of 7 fresh processes, ulimit -v 8388608; produced by measure.sh
+cold_startup_ms 9
+cold_startup_ms_runs 9 10 10 9 8 9 9
+pcase_loop_ms 261
+pcase_loop_ms_runs 259 262 260 261 261 262 260
+bytecomp_require_ms 177
+bytecomp_require_ms_runs 176 176 178 183 176 180 177

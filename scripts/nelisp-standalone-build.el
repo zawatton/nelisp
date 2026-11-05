@@ -50004,6 +50004,12 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 subr.el: define-symbol-prop ---\n"
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'define-symbol-prop)
+   ;; GNU Emacs 31.1 preloads `static-if' from subr.el.  cl-macs.el uses it
+   ;; (for `cl--define-derived-type') while loading, so stage the exact form
+   ;; before any cl file is evaluated.
+   "\n;; --- GNU Emacs 31.1 subr.el: static-if ---\n"
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'static-if)
    ;; `easy-mmode.el' uses `string-lines' while defining minor-mode helpers.
    ;; Emacs preloads this exact helper from subr.el; stage it before loading
    ;; the genuine provider.

@@ -789,3 +789,8 @@ fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435  vendor/emacs-l
 97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c  vendor/emacs-lisp-api/emacs-lisp/ewoc.el
 786ea48e70a6e1166a82cf4ed4485136ab859c97356c18d3631709258072a6ac  vendor/emacs-lisp/loaddefs.el
 5b2e76dcaeffcfb9d93f8f379932e88cbbc3b1788ec126dde069180e86ae0538  vendor/emacs-lisp/url/url-vars.el
+2a93e05a74f4eb972d77c846df0f5b196e6305407500d46330fc7bfff617b6d6  vendor/staged-emacs-lisp/pcase.el
+43cff37ef2ec238e7668a1d1bce949a25b217d61316a985cb06f457418f46ba4  vendor/staged-emacs-lisp/cl-lib.el
+80df24d5b0a7e20679c0e98e56c542295236c919618e1d02bba1443a5cdec2dc  vendor/staged-emacs-lisp/cl-generic.el
+4aca78d4d9c161ba688bf0253f0c4445415d5c0fcb9a8f573cc6ab1270583d42  vendor/staged-emacs-lisp/cl-extra.el
+a68d42138ed12555e8618ab12b725daa47a20e89bcb32c6df963c0d2c3e240d6  vendor/staged-emacs-lisp/cl-print.el

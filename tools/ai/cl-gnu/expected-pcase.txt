@@ -1,0 +1,31 @@
+01 int
+02 3
+03 small
+04 3
+05 3
+06 (big 7)
+07 small
+08 (1 2)
+09 24
+10 (3 2 1)
+11 matched
+12 kw
+13 integer
+14 (float 1 2)
+15 (integer 3 4)
+16 3
+17 3
+18 ((b 2) (a 1))
+19 (10 20)
+20 one
+21 error
+22 gt3
+23 (2 3)
+24 ab
+25 i
+26 lt
+27 3
+28 not-string
+29 (t nil t t t)
+30 (1 2 3)
+31 "STR"

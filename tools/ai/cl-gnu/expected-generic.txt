@@ -1,0 +1,53 @@
+01 ok
+02 clgnu-g
+03 clgnu-g
+04 clgnu-g
+05 clgnu-g
+06 ((int 1) (str "a") (sym b) (default 1.5))
+07 (sym nil)
+08 clgnu-g
+09 (around (int 3))
+10 clgnu-log
+11 ok
+12 clgnu-h
+13 clgnu-h
+14 clgnu-h
+15 (1 (before primary after))
+16 ok
+17 clgnu-k
+18 clgnu-k
+19 ((int (num 4)) (num 2.5))
+20 clgnu-np
+21 clgnu-np
+22 (int t (num nil))
+23 clgnu-opt
+24 ((1 nil) (1 2))
+25 clgnu-e
+26 clgnu-e
+27 (five other)
+28 clgnu-hd
+29 clgnu-hd
+30 (head-a other)
+31 clgnu-sa
+32 clgnu-sb
+33 clgnu-s
+34 clgnu-s
+35 (sa (sb sa))
+36 ok
+37 clgnu-na
+38 noapp
+39 ok
+40 (dflt 1)
+41 clgnu-n
+42 clgnu-n
+43 (null list)
+44 clgnu-n
+45 null2
+46 \(setf\ clgnu-sv\)
+47 (9)
+48 clgnu-mc
+49 clgnu-mc
+50 ((is 1 "a") (ii 1 2))
+51 clgnu-ar
+52 clgnu-ar
+53 "<z>"

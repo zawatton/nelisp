@@ -1,0 +1,38 @@
+01 clgnu-pt
+02 (1 2)
+03 (t nil)
+04 t
+05 clgnu-pt
+06 9
+07 clgnu-pt3
+08 (1 3 t t)
+09 nil
+10 (t t nil)
+11 clgnu-lst
+12 (1 2)
+13 clgnu-vec
+14 ([clgnu-vec 1 2] t nil)
+15 clgnu-cp
+16 (nil t t)
+17 clgnu-nc
+18 nil
+19 clgnu-ctor
+20 (1 7)
+21 "#s(clgnu-pt 1 2)"
+22 "#s(clgnu-pt3 1 2 3)"
+23 clgnu-def
+24 (5 3)
+25 clgnu-pred
+26 t
+27 clgnu-conc
+28 4
+29 clgnu-doc
+30 1
+31 "#s(clgnu-pt :x 1 :y 2)"
+32 3
+33 (cl-tag-slot x y)
+34 wrong-type-argument
+35 clgnu-kw
+36 (nil 2)
+37 (t nil 1)
+38 11
