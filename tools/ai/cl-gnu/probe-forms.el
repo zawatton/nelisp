@@ -22,7 +22,11 @@
        (pos 0)
        (n 0)
        (fails 0)
-       (done nil))
+       (done nil)
+       ;; File-scope lexical environment: GNU `load' makes a bare
+       ;; `(defvar SYM)' special for the rest of the file, which a plain
+       ;; per-form `eval' would lose.
+       (env (list t)))
   (while (not done)
     (let ((r (condition-case nil (read-from-string text pos) (end-of-file nil))))
       (if (null r)
@@ -30,7 +34,11 @@
         (setq pos (cdr r))
         (setq n (1+ n))
         (condition-case err
-            (eval (car r) t)
+            (progn
+              (when (and (eq (car-safe (car r)) 'defvar) (null (cddr (car r)))
+                         (symbolp (cadr (car r))))
+                (push (cadr (car r)) env))
+              (eval (car r) env))
           (error
            (setq fails (1+ fails))
            (when (<= fails limit)

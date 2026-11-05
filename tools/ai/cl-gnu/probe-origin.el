@@ -44,6 +44,18 @@ fresh `(setf (car X) 1)' must reach it."
             (macroexpand (list 'setf (list 'car (make-symbol "clgnu-probe-x")) 1)))
         (fset 'gv-get orig))
       (if (> calls 0) nil "macroexpanding setf does not reach gv-get")))))
+(defun clgnu-probe-active-cl-macs ()
+  "Return nil when GNU cl-macs/cl-preloaded/oclosure are preloaded, else a failure string.
+GNU loadup.el provides `cl-preloaded' and `oclosure' at startup and
+cl-preloaded defines the built-in type classes (`fixnum' is one)."
+  (cond
+   ((not (featurep 'cl-preloaded)) "cl-preloaded not provided at startup")
+   ((not (featurep 'oclosure)) "oclosure not provided at startup")
+   ((not (featurep 'cl-macs)) "cl-macs not provided at startup")
+   ((not (and (fboundp 'cl--find-class) (fboundp 'built-in-class-p)
+              (built-in-class-p (cl--find-class 'fixnum))))
+    "fixnum is not a built-in class")
+   (t nil)))
 (let ((ok t))
   (dolist (arg (cdr (member "--" command-line-args)))
     (let* ((i (string-search "=" arg))
@@ -54,6 +66,7 @@ fresh `(setf (car X) 1)' must reach it."
       (if (equal feature "active")
           (let ((bad (cond ((equal want "pcase") (clgnu-probe-active-pcase))
                            ((equal want "gv") (clgnu-probe-active-gv))
+                           ((equal want "cl-macs") (clgnu-probe-active-cl-macs))
                            (t "unknown active target"))))
             (if (not bad)
                 (princ (format "OK active=%s GNU\n" want))

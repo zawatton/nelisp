@@ -49961,6 +49961,49 @@ matcher and the after-load forms, so callers insert this strictly after both."
    "\n")
 )
 
+(defun nelisp-standalone--cl-preloaded-src ()
+  "Return GNU help, cl-macs, cl-preloaded and oclosure as boot source.
+GNU loadup.el loads cl-preloaded and oclosure right after gv.  cl-preloaded
+needs a complete cl-macs (the circle GNU breaks by compiling it with cl-macs
+loaded), so cl-macs.el comes first, as in GNU's bootstrap: `advice-add' is not
+yet available while it loads (its l.3508 form is guarded by `fboundp'), and
+`cl--define-derived-type' does not exist yet, so its derived-type block is
+skipped and re-run once cl-preloaded has defined the base types."
+  (let* ((file "vendor/staged-emacs-lisp/cl-macs.el")
+         (text (nelisp-vendor-source-whole-file file))
+         (start (string-search "(static-if (not (fboundp 'cl--define-derived-type))" text))
+         (end-mark "(cl--defnumtype real number)))")
+         (end (and start (string-search end-mark text start))))
+    (unless end (error "cl-macs.el derived-type block not found"))
+    (concat
+     ;; cl-defstruct expands to `define-inline' (inline.el); help.el uses
+     ;; `define-minor-mode'.  Both are GNU-autoloaded entry points here.
+     "(require 'inline)\n(require 'easy-mmode)\n"
+     ;; cl-macs expands complex lambda lists through `help--docstring-quote'
+     ;; after (require 'help); GNU preloads help.el.  `command-error-function'
+     ;; is a keyboard.c variable that help.el tests while loading.
+     "\n;; --- GNU Emacs 31.1 help.el (preloaded by loadup.el) ---\n"
+     "(defvar command-error-function nil \"Hook for editor command errors (C variable).\")\n"
+     (nelisp-boot-image-provider 'help)
+     "\n;; --- GNU Emacs 31.1 cl-macs.el (nadvice not yet loaded) ---\n"
+     "(defvar nelisp--boot-advice-add (symbol-function 'advice-add))\n"
+     "(fmakunbound 'advice-add)\n"
+     "(fmakunbound 'cl--define-derived-type)\n"
+     (nelisp-boot-image-provider 'cl-macs)
+     "(fset 'advice-add nelisp--boot-advice-add)\n"
+     "(makunbound 'nelisp--boot-advice-add)\n"
+     "\n;; --- GNU Emacs 31.1 cl-preloaded.el ---\n"
+     (nelisp-boot-image-provider 'cl-preloaded)
+     "\n;; --- GNU Emacs 31.1 cl-macs.el: derived-type block, now that cl-preloaded is up ---\n"
+     (substring text start (+ end (length end-mark)))
+     "\n;; --- GNU Emacs 31.1 oclosure.el ---\n"
+     (nelisp-boot-image-provider 'oclosure)
+     ;; cl-print (and cl-generic) call `cl-find-class', which GNU autoloads
+     ;; from cl-extra.el; stage that exact form rather than the whole file.
+     "\n;; --- GNU Emacs 31.1 cl-extra.el: cl-find-class ---\n"
+     (nelisp-vendor-source-form "vendor/staged-emacs-lisp/cl-extra.el" 'cl-find-class)
+     "\n")))
+
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
@@ -50689,6 +50732,9 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
     (insert (nelisp-standalone--pcase-src))
     (insert (nelisp-standalone--faces-src))
     (insert (nelisp-boot-image-libraries-source))
+    ;; help.el (defface, define-minor-mode) and the cl-defstruct expansions
+    ;; (define-inline) need faces and the deferred library entry points.
+    (insert (nelisp-standalone--cl-preloaded-src))
     ;; Phase 2A (integration/wave6 audit hardening, Doc 184 P1/P2): wire
     ;; the process-adapter fix into the DEFAULT bootstrap instead of
     ;; leaving it an opt-in `--load'.  Before this, `make-process''s
@@ -51939,7 +51985,8 @@ src', defensively, even though that path never actually loads
    ;; Now that the matcher + string-match family are defined, the deferred
    ;; requires (and `cl-seq''s, matching the reader-repl-prelude's same
    ;; ordering) can run safely.
-   "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n"
+   "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n(require 'inline)\n"
+   (nelisp-standalone--cl-preloaded-src)
    (nelisp-standalone--artifact-runtime-file-src
     "src/nelisp-read.el" inline)
    (nelisp-standalone--artifact-runtime-file-src
@@ -52572,7 +52619,8 @@ artifact before wiring that artifact into the marker command path."
      (nelisp-standalone--pcase-src)
      ;; Safe here (strictly after `string-match'); see `nelisp-standalone--faces-src'.
      (nelisp-standalone--faces-src)
-     "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n"
+     "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n(require 'inline)\n"
+     (nelisp-standalone--cl-preloaded-src)
      (nelisp-standalone--artifact-runtime-file-src
       "src/nelisp-read.el" t)
      (nelisp-standalone--artifact-runtime-file-src

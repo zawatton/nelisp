@@ -21,13 +21,17 @@
 
 (defconst nelisp-boot-image--embedded-providers
   '((pcase . "vendor/staged-emacs-lisp/pcase.el")
-    (gv . "vendor/emacs-lisp/emacs-lisp/gv.el"))
+    (gv . "vendor/emacs-lisp/emacs-lisp/gv.el")
+    (help . "vendor/emacs-lisp-api/help.el")
+    (cl-macs . "vendor/staged-emacs-lisp/cl-macs.el")
+    (cl-preloaded . "vendor/staged-emacs-lisp/cl-preloaded.el")
+    (oclosure . "vendor/emacs-lisp/emacs-lisp/oclosure.el"))
   "Vendored GNU files embedded at their GNU preload position, not deferred.
 `pcase' follows `macroexp' in GNU's loadup.el, and `gv' follows `pcase'.  Unlike
 `nelisp-boot-image--providers' these get no autoload entries.")
 
 (defun nelisp-boot-image--pcase-source (source path &optional name)
-  "Bake GNU SOURCE (pcase.el, or gv.el when NAME is `gv') like its `.elc'."
+  "Bake GNU SOURCE (pcase.el, or the file named NAME) like its `.elc'."
   (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
     (require 'nelisp-prelude-bytecode)
     (let* ((print-escape-nonascii t)
@@ -89,7 +93,8 @@ providers and source-only builds retain their exact source text."
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
-           ((memq name '(pcase gv)) (nelisp-boot-image--pcase-source source path name))
+           ((memq name '(pcase gv help cl-macs cl-preloaded oclosure))
+            (nelisp-boot-image--pcase-source source path name))
            (t source))
      "\nt\n")))
 
