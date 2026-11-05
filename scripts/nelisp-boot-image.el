@@ -4,6 +4,7 @@
 (require 'cl-lib)
 (declare-function nelisp-standalone-arena-rewrite-target "nelisp-standalone-arena-rewrite")
 (declare-function nelisp-standalone--byte-write-forms "nelisp-standalone-build")
+(declare-function nelisp-standalone--reader-tree-load-path "nelisp-standalone-build")
 
 (defconst nelisp-boot-image--root
   (file-name-directory (directory-file-name (file-name-directory load-file-name))))
@@ -14,7 +15,7 @@
     (inline . "vendor/emacs-lisp/emacs-lisp/inline.el")
     (json . "packages/nelisp-emacs-foundation/src/json.el")
     (easy-mmode . "vendor/emacs-lisp/emacs-lisp/easy-mmode.el")
-    (rx . "packages/nelisp-emacs-text-core/src/rx.el")
+    (rx . "vendor/emacs-lisp/emacs-lisp/rx.el")
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")
     (nelisp-process-buffer . "lisp/nelisp-process-buffer.el")))
 
@@ -105,6 +106,41 @@ providers and source-only builds retain their exact source text."
                       (or (nth 2 alias) (nth 3 target))) definitions))))
     definitions))
 
+(defun nelisp-boot-image-gnu-autoloads-source ()
+  "Return GNU Emacs 31.1 startup `autoload' forms of vendored libraries.
+The forms are copied verbatim from the vendored lisp/loaddefs.el.  A form is
+kept when its library has a vendored file in a vendor/ directory of the
+runtime load-path.  `autoload' leaves an existing function cell alone, so a
+name that is already defined is not replaced."
+  (let* ((root nelisp-boot-image--root)
+         (vendor (expand-file-name "vendor/" root))
+         (staged (expand-file-name "vendor/staged-emacs-lisp" root))
+         (dirs (cl-remove-if-not
+                (lambda (dir)
+                  (and (string-prefix-p vendor (file-name-as-directory dir))
+                       (not (string-prefix-p staged dir))))
+                (nelisp-standalone--reader-tree-load-path)))
+         (forms nil))
+    (with-temp-buffer
+      (let ((coding-system-for-read 'utf-8-unix))
+        (insert-file-contents (expand-file-name "vendor/emacs-lisp/loaddefs.el" root)))
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (forward-comment (point-max))
+            (let* ((start (point)) (form (read (current-buffer))))
+              (when (and (eq (car-safe form) 'autoload)
+                         (stringp (nth 2 form))
+                         (cl-some (lambda (dir)
+                                    (file-exists-p
+                                     (expand-file-name (concat (nth 2 form) ".el") dir)))
+                                  dirs))
+                (push (buffer-substring-no-properties start (point)) forms))))
+        (end-of-file nil)))
+    (concat "\n;; --- GNU Emacs 31.1 loaddefs.el: autoloads of vendored libraries ---\n"
+            (mapconcat #'identity (nreverse forms) "\n")
+            "\nt\n")))
+
 (defun nelisp-boot-image-libraries-source ()
   "Return executable-pinned providers and their genuine deferred entry points."
   (let (sources autoloads)
@@ -131,7 +167,8 @@ providers and source-only builds retain their exact source text."
         (nelisp-process-buffer--original-exit . process-exit-status)
         (nelisp-process-buffer--original-markerp . markerp)) "")
      (format "\n(nelisp-boot-library-install '%S '%S)\nt\n"
-             (nreverse sources) (nreverse autoloads)))))
+             (nreverse sources) (nreverse autoloads))
+     (nelisp-boot-image-gnu-autoloads-source))))
 
 (defun nelisp-boot-image-process-source ()
   "Return the process adapter with its buffer provider deferred to first use."

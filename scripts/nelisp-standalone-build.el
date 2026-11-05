@@ -48646,6 +48646,14 @@ listing it would make the load-path lie about what is reachable."
                      (expand-file-name "vendor/staged-emacs-lisp"
                                        nelisp-standalone--repo-root))
                (list (expand-file-name "standalone-compat"
+                                       nelisp-standalone--repo-root))
+               ;; Vendored GNU libraries that no earlier directory may shadow:
+               ;; url/ (S1.1 autoload targets) and the GNU test library dir.
+               ;; Last, so a NeLisp copy of the same name still wins until it
+               ;; is deleted in favour of the vendored file.
+               (list (expand-file-name "vendor/emacs-lisp/url"
+                                       nelisp-standalone--repo-root)
+                     (expand-file-name "vendor/emacs-test/lisp/emacs-lisp"
                                        nelisp-standalone--repo-root)))))
     (seq-filter #'file-directory-p dirs)))
 

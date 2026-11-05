@@ -787,3 +787,5 @@ fe69850a179b459b6c11f9f0641fa8c8ce7421b966546f463b0df818fcc39435  vendor/emacs-l
 4f8735c13c5af0372aac80a6aea1d117e2d77845e60bfba197880fba7bfd0fe1  vendor/emacs-lisp-api/font-core.el
 3da74038b3122069281e65316a638a6f125c48e26625bca1730b24772e40310a  vendor/emacs-lisp-api/vc/vc-dir.el
 97db56f8f33507db0203f6f469b5f435d07cffe8d59e6ab7655b48a85852df5c  vendor/emacs-lisp-api/emacs-lisp/ewoc.el
+786ea48e70a6e1166a82cf4ed4485136ab859c97356c18d3631709258072a6ac  vendor/emacs-lisp/loaddefs.el
+5b2e76dcaeffcfb9d93f8f379932e88cbbc3b1788ec126dde069180e86ae0538  vendor/emacs-lisp/url/url-vars.el

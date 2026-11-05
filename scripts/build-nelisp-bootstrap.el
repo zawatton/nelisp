@@ -36,6 +36,8 @@ final `.el' suffix with `.repl'.")
 (defvar nelisp-bootstrap-extra-files
   '("emacs-parity-core-vars.el"
     "cl-lib.el"
+    ;; GNU 31.1 subr-x.el from vendor/; moved to its early slot below.
+    "emacs-lisp/emacs-lisp/subr-x.el"
     ;; Standalone runtime-speed and abbrev-table repairs.  Their prerequisites
     ;; are available by the `emacs-cl-macros.el' insertion anchor.
     "emacs-parity-addtolist.el"
@@ -64,7 +66,8 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-macros2.el"
     "emacs-parity-flycheck.el"
     "emacs-parity-cc.el"
-    "rx.el"
+    ;; GNU 31.1 rx.el from vendor/, in the slot of the former NeLisp copy.
+    "emacs-lisp/emacs-lisp/rx.el"
     ;; Re-evaluate the corrected pcase-based translator only after rx helpers.
     "emacs-parity-rx.el"
     "emacs-tui-backend.el"
@@ -529,6 +532,15 @@ path recorded in `load-history'."
           (push file out))
         (nreverse out))))))
 
+(defun nelisp-bootstrap--extra-source-file (name src)
+  "Return the file for bootstrap list entry NAME.
+A bare NAME is a local file under SRC.  A NAME with a directory part is a
+vendored GNU file relative to the vendor directory and must exist."
+  (if (string-match-p "/" name)
+      (or (nelisp-bootstrap--vendor-source-file name)
+          (error "Missing readable bootstrap vendor file: %s" name))
+    (expand-file-name name src)))
+
 (defun nelisp-bootstrap--complete-file-list (files)
   "Add standalone-only source files to FILES in a dependency-safe spot."
   (let ((src (nelisp-bootstrap--src-dir))
@@ -536,7 +548,7 @@ path recorded in `load-history'."
         (anchor (expand-file-name "emacs-cl-macros.el"
                                   (nelisp-bootstrap--src-dir))))
     (dolist (name nelisp-bootstrap-extra-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--extra-source-file name src)))
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
@@ -544,7 +556,7 @@ path recorded in `load-history'."
     (unless (member anchor out)
       (setq anchor (expand-file-name "emacs-faces.el" src)))
     (dolist (name nelisp-bootstrap-late-extra-files)
-      (let ((file (expand-file-name name src)))
+      (let ((file (nelisp-bootstrap--extra-source-file name src)))
         (when (file-readable-p file)
           (setq out (nelisp-bootstrap--insert-after file anchor out))
           (setq anchor file))))
@@ -772,7 +784,7 @@ concatenated bootstrap bundle must make the order explicit."
          (numeric (expand-file-name "emacs-numeric.el" src))
          (runtime (expand-file-name "files-runtime.el" src))
          (early-foundation
-          (mapcar (lambda (name) (expand-file-name name src))
+          (mapcar (lambda (name) (nelisp-bootstrap--extra-source-file name src))
                   '("emacs-vars.el"
                     "emacs-fns.el"
                     "emacs-eval.el"
@@ -786,7 +798,7 @@ concatenated bootstrap bundle must make the order explicit."
                     "emacs-string.el"
                     "emacs-pcase.el"
                     "cl-lib.el"
-                    "subr-x.el"
+                    "emacs-lisp/emacs-lisp/subr-x.el"
                     "emacs-cl-macros.el"
                     "emacs-stub.el"
                     "emacs-stub-bulk.el"
