@@ -85,6 +85,10 @@ cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ active
 cmd: CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh && SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load && ! test -e lisp/nelisp-pcase.el
 
 * S4 P4 gv and setf from GNU gv.el
+GNU gv.el is baked as byte-code right after pcase (parallel period, native setf kept).
+Remaining setf corpus misses wait on later steps: form 23 cl-rotatef (cl-macs, P5);
+form 30 setf of cl-subseq (cl-extra gv-define-setter, P6); form 34 setf of cl-first
+(GNU cl-lib aliases cl-first to car, P6).  Native setf is deleted only after those.
 
 ** S4.1 The setf/gv corpus is identical to GNU 31.1
 #+REQUIRES: CLGNU_BIN
@@ -101,7 +105,7 @@ cmd: ! grep -q '^(defmacro setf ' scripts/nelisp-stdlib-prelude.el && CLGNU_ONLY
 ** S4.4 Timing stays within noise of build-on140
 #+REQUIRES: CLGNU_BIN
 #+TIMEOUT: 120
-cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- gv=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- gv=vendor/ active=gv 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
 
 ** S4.5 End to end: setf and pcase corpora match GNU and the selfhost probe passes
 #+REQUIRES: CLGNU_BIN

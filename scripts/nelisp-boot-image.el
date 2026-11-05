@@ -20,13 +20,14 @@
     (nelisp-process-buffer . "lisp/nelisp-process-buffer.el")))
 
 (defconst nelisp-boot-image--embedded-providers
-  '((pcase . "vendor/staged-emacs-lisp/pcase.el"))
+  '((pcase . "vendor/staged-emacs-lisp/pcase.el")
+    (gv . "vendor/emacs-lisp/emacs-lisp/gv.el"))
   "Vendored GNU files embedded at their GNU preload position, not deferred.
-`pcase' follows `macroexp' in GNU's loadup.el.  Unlike
+`pcase' follows `macroexp' in GNU's loadup.el, and `gv' follows `pcase'.  Unlike
 `nelisp-boot-image--providers' these get no autoload entries.")
 
-(defun nelisp-boot-image--pcase-source (source path)
-  "Bake GNU pcase.el SOURCE the way GNU loads its `.elc' (see macroexp)."
+(defun nelisp-boot-image--pcase-source (source path &optional name)
+  "Bake GNU SOURCE (pcase.el, or gv.el when NAME is `gv') like its `.elc'."
   (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
     (require 'nelisp-prelude-bytecode)
     (let* ((print-escape-nonascii t)
@@ -38,7 +39,8 @@
                        (expand-file-name "vendor/emacs-lisp"
                                          nelisp-boot-image--root)))
            (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
-           (report (expand-file-name "target/nelisp-boot-image/pcase-bytecode.tsv"
+           (report (expand-file-name (format "target/nelisp-boot-image/%s-bytecode.tsv"
+                                             (or name 'pcase))
                                      nelisp-boot-image--root)))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
@@ -87,7 +89,7 @@ providers and source-only builds retain their exact source text."
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
-           ((eq name 'pcase) (nelisp-boot-image--pcase-source source path))
+           ((memq name '(pcase gv)) (nelisp-boot-image--pcase-source source path name))
            (t source))
      "\nt\n")))
 

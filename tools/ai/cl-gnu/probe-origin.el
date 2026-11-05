@@ -26,6 +26,24 @@
             (macroexpand form))
         (fset 'pcase--expand orig))
       (if (> calls 0) nil "macroexpanding pcase does not reach pcase--expand")))))
+(defun clgnu-probe-active-gv ()
+  "Return nil when the active `setf' is GNU gv.el's, else a failure string.
+GNU `setf' expands every place through `gv-get'; the native setf does not call
+it for `car'.  `gv-get' must be bound at startup (no on-demand require) and a
+fresh `(setf (car X) 1)' must reach it."
+  (let ((calls 0) (orig nil))
+    (cond
+     ((not (fboundp 'gv-get)) "gv-get unbound at startup")
+     ((not (macrop 'setf)) "setf is not a macro")
+     (t
+      (setq orig (symbol-function 'gv-get))
+      (unwind-protect
+          (progn
+            (fset 'gv-get
+                  (lambda (&rest args) (setq calls (1+ calls)) (apply orig args)))
+            (macroexpand (list 'setf (list 'car (make-symbol "clgnu-probe-x")) 1)))
+        (fset 'gv-get orig))
+      (if (> calls 0) nil "macroexpanding setf does not reach gv-get")))))
 (let ((ok t))
   (dolist (arg (cdr (member "--" command-line-args)))
     (let* ((i (string-search "=" arg))
@@ -34,9 +52,11 @@
            (got (and (not (equal feature "active"))
                      (condition-case nil (locate-library feature) (error nil)))))
       (if (equal feature "active")
-          (let ((bad (and (equal want "pcase") (clgnu-probe-active-pcase))))
-            (if (and (equal want "pcase") (not bad))
-                (princ "OK active=pcase GNU\n")
+          (let ((bad (cond ((equal want "pcase") (clgnu-probe-active-pcase))
+                           ((equal want "gv") (clgnu-probe-active-gv))
+                           (t "unknown active target"))))
+            (if (not bad)
+                (princ (format "OK active=%s GNU\n" want))
               (setq ok nil)
               (princ (format "FAIL active=%s %s\n" want (or bad "unknown")))))
         (if (and got (string-search want got))

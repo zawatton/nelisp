@@ -49955,6 +49955,9 @@ matcher and the after-load forms, so callers insert this strictly after both."
    ;; not preload yet.  Stage that exact pinned form right after pcase.el.
    "\n;; --- GNU Emacs 31.1 cl-macs.el: pcase cl-type pattern ---\n"
    (nelisp-vendor-source-form "vendor/staged-emacs-lisp/cl-macs.el" 'cl-type)
+   ;; GNU loadup.el loads gv.el after pcase and loaddefs; its `setf' and the
+   ;; gv-define-* machinery replace any earlier definition from here on.
+   (nelisp-boot-image-provider 'gv)
    "\n")
 )
 
