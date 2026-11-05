@@ -166,7 +166,7 @@
     },
     {
       "path": "test/standalone-gc-pressure-check.el",
-      "sha256": "7e9a70e10aceaeb3e5e69741edff3c4f20e505c050c63cb60a7ce9cc2baf9d81"
+      "sha256": "9049247ed7d3733f439c9297655a5cdf8377de18f7e3de512c2238ed0be9a38f"
     },
     {
       "path": "test/standalone-handler-bind-t-check.el",

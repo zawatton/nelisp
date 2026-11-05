@@ -64,7 +64,109 @@ so the natives that exist before the first load are not replaced by stubs.")
                                      nelisp-boot-image--root)))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
-      (car result))))
+      (nelisp-boot-image--expand-load-time-macros (car result)))))
+
+(defconst nelisp-boot-image--load-time-macros
+  '(cl-defstruct define-inline define-minor-mode)
+  "Macros whose top-level uses the bake expands, as GNU's compiler would.
+GNU compiles these libraries, so `cl-defstruct' (which generates
+`define-inline'), `define-inline' and `define-minor-mode' are expanded at
+build time and the `.elc' never loads inline.el or easy-mmode.el.  Here the
+baked forms stay source, so the same expansion is done by the build host.")
+
+;; Host `eval-and-compile' evaluates its body at expansion time and returns the
+;; quoted value, which would drop `cl-struct-define'; at load it is `progn'.
+;; The customization macros stay for the runtime's own definitions (the host
+;; `custom-declare-variable' machinery does not exist when these forms load).
+(defconst nelisp-boot-image--expansion-environment
+  '((eval-and-compile . (lambda (&rest body) (cons 'progn body)))
+    (defcustom) (defgroup) (defface))
+  "Macro environment for build-time expansion of load-time forms.")
+
+(defun nelisp-boot-image--expand-rx (form)
+  "Return FORM with each `rx' call expanded, skipping quoted data."
+  (cond ((not (consp form)) form)
+        ((memq (car form) '(quote \`)) form)
+        ((eq (car form) 'rx)
+         (macroexpand-all form nelisp-boot-image--expansion-environment))
+        (t (let ((head (nelisp-boot-image--expand-rx (car form)))
+                 (tail (cdr form)))
+             (cons head
+                   (if (consp tail)
+                       (let ((copy (copy-sequence tail)) (cell nil))
+                         (setq cell copy)
+                         (while (consp cell)
+                           (setcar cell (nelisp-boot-image--expand-rx (car cell)))
+                           (setq cell (if (consp (cdr cell)) (cdr cell) nil)))
+                         copy)
+                     tail))))))
+
+(defun nelisp-boot-image--tree-has-rx-p (form)
+  "Return non-nil when FORM calls `rx' outside quoted data."
+  (and (consp form) (not (memq (car form) '(quote \`)))
+       (or (eq (car form) 'rx)
+           (let ((cell form) (found nil))
+             (while (and (consp cell) (not found))
+               (setq found (nelisp-boot-image--tree-has-rx-p (car cell))
+                     cell (cdr cell)))
+             found))))
+
+(defun nelisp-boot-image--expand-load-time-macros (text)
+  "Return baked TEXT with compile-time-only macro uses expanded on the host.
+Top-level `cl-defstruct', `define-inline' and `define-minor-mode' forms, and
+`rx' calls inside kept forms, are expanded here so that booting the image does
+not load inline.el, easy-mmode.el, rx.el or cl-seq.el (GNU's `.elc' expands
+them at compile time)."
+  (require 'cl-lib) (require 'inline) (require 'easy-mmode) (require 'rx)
+  (require 'nelisp-prelude-bytecode)
+  (let ((patches nil))
+    (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
+      (let* ((form (nth 2 span))
+             (new (cond ((or (memq (car-safe form) nelisp-boot-image--load-time-macros)
+                             ;; cl-lib.el's `cl-defmethod' sits in this guard; its
+                             ;; expansion would load cl-seq.el (GNU's `.elc' has it
+                             ;; expanded).
+                             (equal (nth 1 form) '(fboundp 'cl-generic-define-method)))
+                         (macroexpand-all form nelisp-boot-image--expansion-environment))
+                        ((and (memq (car-safe form) '(defun defalias defvar defconst))
+                              (nelisp-boot-image--tree-has-rx-p form))
+                         (nelisp-boot-image--expand-rx form)))))
+        (when new
+          (push (list (nth 0 span) (nth 1 span)
+                      (let ((print-length nil) (print-level nil)
+                            (print-circle t) (print-gensym t)
+                            (print-escape-newlines nil)
+                            (print-escape-nonascii t) (print-escape-multibyte t)
+                            (print-escape-control-characters t))
+                        (prin1-to-string new)))
+                patches))))
+    (dolist (patch patches)             ; PATCHES is latest-first: offsets stay valid
+      (setq text (concat (substring text 0 (nth 0 patch)) (nth 2 patch)
+                         (substring text (nth 1 patch)))))
+    text))
+
+(defun nelisp-boot-image-expand-block (text)
+  "Return TEXT, cl-macs.el's derived-type block, with `cl--defnumtype' expanded.
+`(cl--defnumtype real number)' is a `cl-deftype' with an argument list; its
+expansion reaches `cl--make-usage-args' and so cl-seq.el.  GNU's `.elc' of
+cl-macs.el has it expanded at compile time, so the build host expands it here
+and booting the image loads no cl-seq.el."
+  (require 'cl-lib) (require 'cl-macs)
+  (let* ((call "(cl--defnumtype real number)")
+         (at (string-search call text))
+         (macro-start (string-search "(defmacro cl--defnumtype" text))
+         (print-length nil) (print-level nil) (print-circle t) (print-gensym t)
+         (print-escape-newlines nil) (print-escape-nonascii t)
+         (print-escape-multibyte t) (print-escape-control-characters t))
+    (unless (and at macro-start (< macro-start at))
+      (error "cl-macs.el cl--defnumtype block not found"))
+    (eval (car (read-from-string text macro-start)) t)
+    (let ((expansion (macroexpand-all (car (read-from-string call))
+                                      nelisp-boot-image--expansion-environment)))
+      (when (string-match-p "#\\[" (prin1-to-string expansion))
+        (error "Host byte-code leaked into the baked derived-type block"))
+      (concat (substring text 0 at) (prin1-to-string expansion)
+              (substring text (+ at (length call)))))))
 
 (defun nelisp-boot-image--macroexp-source (source path)
   "Bake admitted GNU macroexp functions, retaining rejected functions as source."
@@ -112,6 +214,8 @@ providers and source-only builds retain their exact source text."
      (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
            ((memq name '(pcase gv help cl-macs cl-preloaded oclosure cl-generic nadvice))
             (nelisp-boot-image--pcase-source source path name))
+           ;; GNU's cl-lib.elc has `cl-old-struct-compat-mode' already expanded.
+           ((eq name 'cl-lib) (nelisp-boot-image--expand-load-time-macros source))
            (t source))
      "\nt\n")))
 

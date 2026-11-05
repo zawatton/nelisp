@@ -49965,6 +49965,14 @@ matcher and the after-load forms, so callers insert this strictly after both."
    "\n")
 )
 
+(defun nelisp-standalone--boot-trace (label)
+  "Return a form recording which deferred libraries are loaded at LABEL.
+Empty unless NELISP_BOOT_TRACE is set when the image is built; a diagnostic
+for finding what loads inline, easy-mmode, rx or cl-seq during boot."
+  (if (getenv "NELISP_BOOT_TRACE")
+      (format "\n(setq nelisp--boot-feature-trace (cons (cons '%s (delq nil (mapcar (lambda (f) (and (memq f features) f)) '(inline easy-mmode rx cl-seq)))) (and (boundp 'nelisp--boot-feature-trace) nelisp--boot-feature-trace)))\n" label)
+    ""))
+
 (defun nelisp-standalone--cl-preloaded-src ()
   "Return GNU help, cl-macs, cl-preloaded and oclosure as boot source.
 GNU loadup.el loads cl-preloaded and oclosure right after gv.  cl-preloaded
@@ -49982,7 +49990,8 @@ skipped and re-run once cl-preloaded has defined the base types."
     (concat
      ;; cl-defstruct expands to `define-inline' (inline.el); help.el uses
      ;; `define-minor-mode'.  Both are GNU-autoloaded entry points here.
-     "(require 'inline)\n(require 'easy-mmode)\n"
+     (if (getenv "NELISP_BOOT_TRACE") "(defvar nelisp--boot-feature-trace nil)\n" "")
+     (nelisp-standalone--boot-trace 'start)
      ;; cl-macs expands complex lambda lists through `help--docstring-quote'
      ;; after (require 'help); GNU preloads help.el.  `command-error-function'
      ;; is a keyboard.c variable that help.el tests while loading.
@@ -49990,6 +49999,7 @@ skipped and re-run once cl-preloaded has defined the base types."
      "(defvar overriding-local-map nil \"Keymap that overrides all others (C variable).\")\n"
      "(defvar command-error-function nil \"Hook for editor command errors (C variable).\")\n"
      (nelisp-boot-image-provider 'help)
+     (nelisp-standalone--boot-trace 'help)
      "\n;; --- GNU Emacs 31.1 cl-macs.el (nadvice not yet loaded) ---\n"
      "(defvar nelisp--boot-advice-add (symbol-function 'advice-add))\n"
      "(fmakunbound 'advice-add)\n"
@@ -49997,12 +50007,16 @@ skipped and re-run once cl-preloaded has defined the base types."
      (nelisp-boot-image-provider 'cl-macs)
      "(fset 'advice-add nelisp--boot-advice-add)\n"
      "(makunbound 'nelisp--boot-advice-add)\n"
+     (nelisp-standalone--boot-trace 'cl-macs)
      "\n;; --- GNU Emacs 31.1 cl-preloaded.el ---\n"
      (nelisp-boot-image-provider 'cl-preloaded)
+     (nelisp-standalone--boot-trace 'cl-preloaded)
      "\n;; --- GNU Emacs 31.1 cl-macs.el: derived-type block, now that cl-preloaded is up ---\n"
-     (substring text start (+ end (length end-mark)))
+     (nelisp-boot-image-expand-block (substring text start (+ end (length end-mark))))
      "\n;; --- GNU Emacs 31.1 oclosure.el ---\n"
+     (nelisp-standalone--boot-trace 'derived-type)
      (nelisp-boot-image-provider 'oclosure)
+     (nelisp-standalone--boot-trace 'oclosure)
      ;; cl-print (and cl-generic) call `cl-find-class', which GNU autoloads
      ;; from cl-extra.el.  Register GNU's cl-loaddefs.el entries (cl-lib,
      ;; cl-extra, cl-print) now; cl-extra loads on demand through them.
@@ -50013,8 +50027,10 @@ skipped and re-run once cl-preloaded has defined the base types."
      "\n(defvar purify-flag nil \"Non-nil while dumping (C variable).\")\n"
      "\n;; --- GNU Emacs 31.1 cl-generic.el ---\n"
      (nelisp-boot-image-provider 'cl-generic)
+     (nelisp-standalone--boot-trace 'cl-generic)
      "\n;; --- GNU Emacs 31.1 nadvice.el ---\n"
      (nelisp-boot-image-provider 'nadvice)
+     (nelisp-standalone--boot-trace 'nadvice)
      ;; cl-macs.el l.3508 ran while nadvice was absent; apply its exact form now.
      "\n;; --- GNU Emacs 31.1 cl-macs.el: pcase advice (needs nadvice) ---\n"
      (let* ((a (string-search "(when (fboundp 'advice-add)           ;Not available during bootstrap." text))
