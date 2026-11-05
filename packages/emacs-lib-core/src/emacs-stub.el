@@ -3694,29 +3694,37 @@ real Emacs `push' accepts any gv place, and vendor code relies on that
 ;; Common Emacs error symbols that subr / cl-lib / vendor code signals;
 ;; bootstrap eval may not have them pre-installed.
 
+(defun emacs-stub--define-missing-error (name message)
+  "Define error NAME with MESSAGE unless NAME already has error conditions.
+Redefining a built-in error would replace its parent chain: `quit' would
+become a subtype of `error' (so `condition-case ... (error ...)' catches
+it) and `file-missing' would lose `file-error'."
+  (unless (get name 'error-conditions)
+    (define-error name message)))
+
 (when (fboundp 'define-error)
-  (define-error 'end-of-file "End of file during parsing")
-  (define-error 'end-of-buffer "End of buffer")
-  (define-error 'beginning-of-buffer "Beginning of buffer")
-  (define-error 'wrong-number-of-arguments "Wrong number of arguments")
-  (define-error 'invalid-function "Invalid function")
-  (define-error 'no-catch "No catch for tag")
-  (define-error 'arith-error "Arithmetic error")
-  (define-error 'range-error "Arithmetic range error")
-  (define-error 'overflow-error "Arithmetic overflow error")
-  (define-error 'cyclic-list "List contains a loop")
-  (define-error 'circular-list "List contains a loop")
-  (define-error 'permission-denied "Permission denied")
-  (define-error 'file-error "File error")
-  (define-error 'file-missing "File missing")
-  (define-error 'file-already-exists "File already exists")
-  (define-error 'json-error "JSON error")
-  (define-error 'json-readtable-error "JSON readtable error")
-  (define-error 'json-parse-error "JSON parse error")
-  (define-error 'search-failed "Search failed")
-  (define-error 'invalid-read-syntax "Invalid read syntax")
-  (define-error 'user-error "User error")
-  (define-error 'quit "Quit"))
+  (emacs-stub--define-missing-error 'end-of-file "End of file during parsing")
+  (emacs-stub--define-missing-error 'end-of-buffer "End of buffer")
+  (emacs-stub--define-missing-error 'beginning-of-buffer "Beginning of buffer")
+  (emacs-stub--define-missing-error 'wrong-number-of-arguments "Wrong number of arguments")
+  (emacs-stub--define-missing-error 'invalid-function "Invalid function")
+  (emacs-stub--define-missing-error 'no-catch "No catch for tag")
+  (emacs-stub--define-missing-error 'arith-error "Arithmetic error")
+  (emacs-stub--define-missing-error 'range-error "Arithmetic range error")
+  (emacs-stub--define-missing-error 'overflow-error "Arithmetic overflow error")
+  (emacs-stub--define-missing-error 'cyclic-list "List contains a loop")
+  (emacs-stub--define-missing-error 'circular-list "List contains a loop")
+  (emacs-stub--define-missing-error 'permission-denied "Permission denied")
+  (emacs-stub--define-missing-error 'file-error "File error")
+  (emacs-stub--define-missing-error 'file-missing "File missing")
+  (emacs-stub--define-missing-error 'file-already-exists "File already exists")
+  (emacs-stub--define-missing-error 'json-error "JSON error")
+  (emacs-stub--define-missing-error 'json-readtable-error "JSON readtable error")
+  (emacs-stub--define-missing-error 'json-parse-error "JSON parse error")
+  (emacs-stub--define-missing-error 'search-failed "Search failed")
+  (emacs-stub--define-missing-error 'invalid-read-syntax "Invalid read syntax")
+  (emacs-stub--define-missing-error 'user-error "User error")
+  (emacs-stub--define-missing-error 'quit "Quit"))
 
 ;;;; --- rx.el placeholder (= regex DSL not used by anvil dispatch) ---
 
