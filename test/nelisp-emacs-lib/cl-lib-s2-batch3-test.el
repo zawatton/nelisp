@@ -8,11 +8,11 @@
 
 (require 'ert)
 
-(load (nemacs-test-paths-source "cl-lib.el")
-      nil t)
+(require 'cl-lib)
+(require 'cl-extra)
 
 ;; S2 coverage batch 3 (2026-09-28): the pure `cl-lib' accessors/constants
-;; ported verbatim in `src/cl-lib.el' (3/4-deep car/cdr accessors,
+;; provided by GNU cl-lib (3/4-deep car/cdr accessors,
 ;; cl-fourth..cl-tenth, cl-acons, cl-pairlis, cl-constantly, cl--do-subst,
 ;; cl-copy-seq, cl-svref, cl-digit-char-table, the float-limit constants,
 ;; and the multiple-value/block/declaration stand-ins).  On host Emacs

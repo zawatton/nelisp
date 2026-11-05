@@ -67,12 +67,15 @@ so the natives that exist before the first load are not replaced by stubs.")
       (nelisp-boot-image--expand-load-time-macros (car result)))))
 
 (defconst nelisp-boot-image--load-time-macros
-  '(cl-defstruct define-inline define-minor-mode)
+  '(cl-defstruct define-inline define-minor-mode cl-defmethod cl-defgeneric)
   "Macros whose top-level uses the bake expands, as GNU's compiler would.
 GNU compiles these libraries, so `cl-defstruct' (which generates
 `define-inline'), `define-inline' and `define-minor-mode' are expanded at
-build time and the `.elc' never loads inline.el or easy-mmode.el.  Here the
-baked forms stay source, so the same expansion is done by the build host.")
+build time and the `.elc' never loads inline.el or easy-mmode.el.  The same
+holds for `cl-defmethod' and `cl-defgeneric': expanding one reaches
+`cl--transform-lambda', which calls `cl-position' and so loads cl-seq.el.
+Here the baked forms stay source, so the same expansion is done by the
+build host.")
 
 ;; Host `eval-and-compile' evaluates its body at expansion time and returns the
 ;; quoted value, which would drop `cl-struct-define'; at load it is `progn'.

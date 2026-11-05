@@ -497,13 +497,8 @@ The current runtime can load most of `eieio-core.el' while still silently
 dropping the `cl-defstruct' that should create `eieio--class' and its
   constructor/accessors.  Magit's section fallback path only needs that core
 class object shape plus the accessor family, and the local `cl-defstruct'
-shim already expands this form correctly under the standalone reader."
+GNU `cl-defstruct' expands this form correctly under the standalone reader."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
-    (unless (and (fboundp 'cl-defstruct)
-                 (fboundp 'cl--class-p)
-                 (fboundp 'cl--make-slot-descriptor))
-      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-cl-macros.el" root)
-            nil 'no-message t t))
     ;; `src/emacs-parity-eieio.el' registers the eieio accessor -> record
     ;; slot indices that NeLisp's `setf' consults; without it the vendor
     ;; chain's `(setf (eieio--class-parents ...) ...)' places expand to
@@ -513,30 +508,9 @@ shim already expands this form correctly under the standalone reader."
     (unless (featurep 'emacs-parity-eieio)
       (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-parity-eieio.el" root)
             nil 'no-message t t))
-    ;; The shim records `:include' parents only at macro-expansion time and
-    ;; emits `cl-struct-setter' as top-level `put' forms; neither survives a
-    ;; baked runtime image, so record `setf' silently no-ops on cons-backed
-    ;; class objects rather than signalling (measured 2026-08-05).
-    (when (and (boundp 'emacs-cl-macros--struct-defs)
-               (not (assq 'cl--class emacs-cl-macros--struct-defs)))
-      (eval
-       '(cl-defstruct (cl--class
-                       (:constructor nil)
-                       (:copier nil))
-          (name nil)
-          (docstring nil)
-          (parents nil)
-          (slots nil)
-          (index-table nil))
-       t))
     (unless (boundp 'eieio-default-superclass)
       (defvar eieio-default-superclass nil))
-    (unless (and (fboundp 'eieio--class-make)
-                 (or (not (boundp 'emacs-cl-macros--struct-defs))
-                     (memq 'name
-                           (car (cdr (assq
-                                      'eieio--class
-                                      emacs-cl-macros--struct-defs))))))
+    (unless (fboundp 'eieio--class-make)
       (eval
        '(cl-defstruct (eieio--class
                        (:constructor nil)

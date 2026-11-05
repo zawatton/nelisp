@@ -31,14 +31,6 @@
     (error (nelisp--write-stdout-bytes (format "AN2 ERR %S\n" e))))
 
   (condition-case e
-      (nelisp--write-stdout-bytes
-       (format "AN3 defs=%S\n"
-               (and (boundp 'emacs-cl-macros--struct-defs)
-                    (car (cdr (assq 'eieio--class
-                                    emacs-cl-macros--struct-defs))))))
-    (error (nelisp--write-stdout-bytes (format "AN3 ERR %S\n" e))))
-
-  (condition-case e
       (let ((names nil))
         (mapatoms (lambda (s)
                     (let ((n (symbol-name s)))

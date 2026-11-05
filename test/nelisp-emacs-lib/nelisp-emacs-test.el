@@ -1354,9 +1354,7 @@
                    emacs-backquote
                    emacs-error
                    emacs-string
-                   cl-lib
                    subr-x
-                   emacs-cl-macros
                    emacs-stub-bulk
                    emacs-stub
                    emacs-mark-state

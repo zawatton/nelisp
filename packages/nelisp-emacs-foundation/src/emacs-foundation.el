@@ -81,9 +81,7 @@ and every feature is still loaded exactly as before."
     emacs-backquote
     emacs-error
     emacs-string
-    cl-lib
     subr-x
-    emacs-cl-macros
     emacs-stub-bulk
     emacs-stub
     emacs-mark-state
@@ -108,30 +106,10 @@ and every feature is still loaded exactly as before."
                     "\\`emacs-cc-.*\\.el\\'"))
   "Lazy C-core compatibility features owned by the FND package.")
 
+(require 'cl-lib)
+
 (dolist (feature emacs-foundation-features)
   (emacs-foundation--load-feature feature))
-
-;; NeLisp v1.2.0's reader provides the `cl-lib' FEATURE itself (its
-;; prelude carries cl-loop / cl-defstruct / cl-case natively) but not the
-;; whole surface Layer 2 reaches for: `cl-member-if' is absent, and
-;; the keymap binding setter calls it while vendored `pp.el' installs
-;; its keymap at load time.  With the feature already provided, the
-;; `(require 'cl-lib)' above never reaches `src/cl-lib.el', whose
-;; fboundp-gated polyfills close exactly that gap (measured 2026-09-04,
-;; windows-x86_64, anvil's MCP driver: void-function cl-member-if).
-;; Load the shim by path when the gap is visible; every definition in it
-;; is guarded, so on a runtime that has the symbols it is a no-op, and
-;; under host Emacs `cl-member-if' is always fboundp so this never fires.
-;; Only the sibling `src/cl-lib.el' qualifies -- the vendored upstream
-;; copy is the file the shim exists to avoid.
-(unless (fboundp 'cl-member-if)
-  (let ((shim (and (fboundp 'locate-library)
-                   (condition-case nil (locate-library "cl-lib") (error nil)))))
-    (when (and (stringp shim)
-               (let ((n (length shim)))
-                 (and (> n 14)
-                      (string= (substring shim (- n 14)) "/src/cl-lib.el"))))
-      (load shim nil t))))
 
 (provide 'emacs-foundation)
 

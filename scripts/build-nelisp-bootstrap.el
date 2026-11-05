@@ -36,11 +36,10 @@ final `.el' suffix with `.repl'.")
 
 (defvar nelisp-bootstrap-extra-files
   '("emacs-parity-core-vars.el"
-    "cl-lib.el"
     ;; GNU 31.1 subr-x.el from vendor/; moved to its early slot below.
     "emacs-lisp/emacs-lisp/subr-x.el"
     ;; Standalone runtime-speed and abbrev-table repairs.  Their prerequisites
-    ;; are available by the `emacs-cl-macros.el' insertion anchor.
+    ;; are available by the `emacs-string.el' insertion anchor.
     "emacs-parity-addtolist.el"
     "emacs-parity-abbrev.el"
     "seq.el"
@@ -58,10 +57,6 @@ final `.el' suffix with `.repl'.")
     "emacs-parity-setf-places.el"
     ;; General macro expansion must precede the macro consumers below.
     "emacs-parity-macroexpand.el"
-    ;; Preserve the audit-tested clloop -> eieio -> evil sequence: eieio's
-    ;; class bootstrap registrations expect clloop immediately before it,
-    ;; while evil consumes the corrected destructuring helper afterward.
-    "emacs-parity-clloop.el"
     "emacs-parity-eieio.el"
     "emacs-parity-evil.el"
     "emacs-parity-macros2.el"
@@ -546,7 +541,7 @@ vendored GNU file relative to the vendor directory and must exist."
   "Add standalone-only source files to FILES in a dependency-safe spot."
   (let ((src (nelisp-bootstrap--src-dir))
         (out files)
-        (anchor (expand-file-name "emacs-cl-macros.el"
+        (anchor (expand-file-name "emacs-string.el"
                                   (nelisp-bootstrap--src-dir))))
     (dolist (name nelisp-bootstrap-extra-files)
       (let ((file (nelisp-bootstrap--extra-source-file name src)))
@@ -777,8 +772,6 @@ The standalone cold-boot path must install `cl-defmacro' before
 dynamic `load' indirection inside `cl-lib', but the generated
 concatenated bootstrap bundle must make the order explicit."
   (let* ((src (nelisp-bootstrap--src-dir))
-         (macros (expand-file-name "emacs-cl-macros.el" src))
-         (cl-lib (expand-file-name "cl-lib.el" src))
          (seq (expand-file-name "seq.el" src))
          (generator (expand-file-name "generator.el" src))
          (vars (expand-file-name "emacs-vars.el" src))
@@ -797,9 +790,7 @@ concatenated bootstrap bundle must make the order explicit."
                     "emacs-backquote.el"
                     "emacs-error.el"
                     "emacs-string.el"
-                    "cl-lib.el"
                     "emacs-lisp/emacs-lisp/subr-x.el"
-                    "emacs-cl-macros.el"
                     "emacs-stub.el"
                     "emacs-stub-bulk.el"
                     "emacs-os-detect.el"
@@ -849,19 +840,6 @@ concatenated bootstrap bundle must make the order explicit."
     (dolist (file late-loaders)
       (when (member file out)
         (setq out (append (delete file out) (list file)))))
-    (when (member macros out)
-      (setq out (delete macros out))
-      (if (member cl-lib out)
-          (setq out (nelisp-bootstrap--insert-before macros cl-lib out))
-        (setq out (cons macros out))))
-    (when (and (member cl-lib out)
-               (member generator out))
-      (setq out (delete cl-lib out))
-      (setq out (nelisp-bootstrap--insert-before cl-lib generator out)))
-    (when (and (member cl-lib out)
-               (member seq out))
-      (setq out (delete cl-lib out))
-      (setq out (nelisp-bootstrap--insert-before cl-lib seq out)))
     ;; Some standalone vendor-core modules touch user-directory/runtime
     ;; predicates and numeric bit helpers during top-level evaluation.
     ;; Keep those foundational files ahead of heavier facades.
@@ -1505,10 +1483,8 @@ Nested source-string evaluation is reserved for explicit diagnostics."
 
 (defconst nelisp-bootstrap--standalone-definer-files
   '("emacs-eval.el"
-    "emacs-cl-macros.el"
     "emacs-parity-setf-places.el"
     "emacs-parity-macroexpand.el"
-    "emacs-parity-clloop.el"
     "emacs-parity-eieio.el"
     "emacs-parity-evil.el"
     "emacs-parity-macros2.el"
@@ -1530,14 +1506,12 @@ the load dies at the first one.
 Each row is a call line -> definition line in the raw-order bundle, and each
 was a real failure before its file was hoisted:
 
-  emacs-cl-macros.el  cl-defmacro from generator.el     7,649 -> 18,377
   emacs-eval.el       eval-after-load from generator.el  6,613 -> 18,294
   emacs-eval.el       define-obsolete-function-alias from rx.el
                                                          8,367 -> 18,475
 
-The first row is the original measurement that motivated hoisting
-`emacs-cl-macros.el' alone; the rest were measured 2026-09-04, when the
-standalone boot still reported them as four uncaught `void-function' errors.
+The rows were measured 2026-09-04, when the standalone boot still
+reported them as uncaught `void-function' errors.
 
 `generator.el' is the earliest consumer of all three files, so one insertion
 point covers every row; `rx.el' follows it in load-history order.
