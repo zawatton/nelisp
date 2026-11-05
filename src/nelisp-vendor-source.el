@@ -58,7 +58,7 @@
   "Return the static function name defined or aliased by FORM.
 For `defalias' and single-variable `setq', index only a literal symbol name."
   (pcase (car-safe form)
-    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom)
+    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom 'pcase-defmacro)
      (and (symbolp (cadr form)) (cadr form)))
     ('cl-defstruct
      (let ((name (cadr form)))

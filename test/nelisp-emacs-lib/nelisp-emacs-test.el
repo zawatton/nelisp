@@ -1354,7 +1354,6 @@
                    emacs-backquote
                    emacs-error
                    emacs-string
-                   emacs-pcase
                    cl-lib
                    subr-x
                    emacs-cl-macros

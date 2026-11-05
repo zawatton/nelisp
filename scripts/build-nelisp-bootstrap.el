@@ -797,7 +797,6 @@ concatenated bootstrap bundle must make the order explicit."
                     "emacs-backquote.el"
                     "emacs-error.el"
                     "emacs-string.el"
-                    "emacs-pcase.el"
                     "cl-lib.el"
                     "emacs-lisp/emacs-lisp/subr-x.el"
                     "emacs-cl-macros.el"
@@ -1506,7 +1505,6 @@ Nested source-string evaluation is reserved for explicit diagnostics."
 
 (defconst nelisp-bootstrap--standalone-definer-files
   '("emacs-eval.el"
-    "emacs-pcase.el"
     "emacs-cl-macros.el"
     "emacs-parity-setf-places.el"
     "emacs-parity-macroexpand.el"
@@ -1534,7 +1532,6 @@ was a real failure before its file was hoisted:
 
   emacs-cl-macros.el  cl-defmacro from generator.el     7,649 -> 18,377
   emacs-eval.el       eval-after-load from generator.el  6,613 -> 18,294
-  emacs-pcase.el      pcase-defmacro from rx.el          8,310 -> 18,053
   emacs-eval.el       define-obsolete-function-alias from rx.el
                                                          8,367 -> 18,475
 

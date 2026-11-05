@@ -81,7 +81,6 @@ and every feature is still loaded exactly as before."
     emacs-backquote
     emacs-error
     emacs-string
-    emacs-pcase
     cl-lib
     subr-x
     emacs-cl-macros

@@ -556,16 +556,6 @@ shim already expands this form correctly under the standalone reader."
       (defun eieio--object-class-tag (obj)
         (aref obj 0)))))
 
-(defun nelisp-emacs-magit-bridge--ensure-pcase-runtime ()
-  "Ensure the local pcase runtime polyfill is fully installed.
-
-The runtime image can phantom-provide `pcase' while still missing macros such
-as `pcase-exhaustive'.  Magit's buffer setup hits that macro directly."
-  (let ((root (nelisp-emacs-magit-bridge--repo-root)))
-    (unless (fboundp 'pcase-exhaustive)
-      (load (expand-file-name "build/doc211-bootstrap-root/src/emacs-pcase.el" root)
-            nil 'no-message t t))))
-
 (defun nelisp-emacs-magit-bridge--ensure-macroexp-runtime ()
   "Ensure the macroexp runtime Magit/transient macros expand through.
 
@@ -4948,8 +4938,6 @@ substrate's signal fixes, so this cannot regress into a silent stop."
   (nelisp-emacs-magit-bridge--ensure-find-buffer-visiting)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 18 static-if\n")
   (nelisp-emacs-magit-bridge--ensure-static-if)
-  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 19 pcase-runtime\n")
-  (nelisp-emacs-magit-bridge--ensure-pcase-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 20 macroexp-runtime\n")
   (nelisp-emacs-magit-bridge--ensure-macroexp-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 21 advice-runtime\n")

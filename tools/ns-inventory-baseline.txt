@@ -314,7 +314,9 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 354
+ns-collision 344
+# 354 -> 344 on 2026-11-05 (cl-gnu P3): native pcase deleted; GNU pcase.el is the only pcase.
+# Removed only the 10 pinned rows for pcase-defmacro, pcase, pcase--flip and nelisp-pcase--*.
 # 353 -> 354 on 2026-10-20 (prim-alias): the baked explicit-local provider
 # initializes enable-multibyte-characters to t before reporting it local.
 # emacs-parity-core-vars keeps the same guarded t initializer for library boot.
@@ -1117,7 +1119,6 @@ pinned-collision ns-collision	define-obsolete-variable-alias	lisp/nelisp-stdlib-
 pinned-collision ns-collision	fixnump	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	make-obsolete	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	make-obsolete-variable	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	pcase-defmacro	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	unibyte-char-to-multibyte	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 #
 # Doc segI (vendor-emacs-lisp) follow-up (2026-09-21, same day): the nine
@@ -1281,12 +1282,6 @@ pinned-collision ns-collision	nelisp-cl-macros--struct-slot-default	lisp/nelisp-
 pinned-collision ns-collision	nelisp-cl-macros--struct-slot-name	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-cl-macros--symbol-macrolet-walk	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-gc--active-vms	src/nelisp-bytecode.el src/nelisp-gc.el
-pinned-collision ns-collision	nelisp-pcase--and	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--backquote	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--cons	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--distribute-or	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--or	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--test	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-stdlib--digit-value	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	nelisp-stdlib--whitespace-p	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	not	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib.el
@@ -1295,7 +1290,6 @@ pinned-collision ns-collision	nth	lisp/nelisp-stdlib-list.el scripts/nelisp-stdl
 pinned-collision ns-collision	null	lisp/nelisp-jit-substrate.el lisp/nelisp-stdlib.el
 pinned-collision ns-collision	or	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	path-separator	packages/nelisp-process/src/nelisp-process.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	pcase	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	pop	lisp/nelisp-stdlib-eval-special.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	print-length	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	print-level	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el
@@ -1719,10 +1713,8 @@ pinned-collision ns-collision	nelisp-buffer--size-cache	scripts/nelisp-stdlib-pr
 pinned-collision ns-collision	nelisp-buffer--text-cache	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-buffer--tick	scripts/nelisp-stdlib-prelude.el src/nelisp-buffer.el
 pinned-collision ns-collision	nelisp-cl-macros--struct-slots	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	nelisp-pcase--app-call	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	obarray-make	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	obarrayp	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
-pinned-collision ns-collision	pcase--flip	lisp/nelisp-pcase.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	print-escape-control-characters	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	print-escape-multibyte	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	print-escape-newlines	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el

@@ -21,7 +21,7 @@
 ;; (`tools/substrate-presence-accepted.el') so a presence finding never
 ;; conflates with a behavioral one.
 ;;
-;; 1660 names (848 shared, 812 standalone-only).
+;; 1653 names (848 shared, 805 standalone-only).
 
 (defconst nelisp-substrate-presence-corpus
   '(
@@ -1359,13 +1359,6 @@
     (1331 standalone-only (if (fboundp 'nelisp-overlayp) 1 0))
     (1332 standalone-only (if (fboundp 'nelisp-overlays-at) 1 0))
     (1333 standalone-only (if (fboundp 'nelisp-overlays-in) 1 0))
-    (1334 standalone-only (if (fboundp 'nelisp-pcase--and) 1 0))
-    (1335 standalone-only (if (fboundp 'nelisp-pcase--app-call) 1 0))
-    (1336 standalone-only (if (fboundp 'nelisp-pcase--backquote) 1 0))
-    (1337 standalone-only (if (fboundp 'nelisp-pcase--cons) 1 0))
-    (1338 standalone-only (if (fboundp 'nelisp-pcase--distribute-or) 1 0))
-    (1339 standalone-only (if (fboundp 'nelisp-pcase--or) 1 0))
-    (1340 standalone-only (if (fboundp 'nelisp-pcase--test) 1 0))
     (1341 standalone-only (if (fboundp 'nelisp-point) 1 0))
     (1342 standalone-only (if (fboundp 'nelisp-point-max) 1 0))
     (1343 standalone-only (if (fboundp 'nelisp-point-min) 1 0))

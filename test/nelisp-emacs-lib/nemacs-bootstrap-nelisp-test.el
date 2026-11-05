@@ -498,7 +498,7 @@ list below catches it."
                     "emacs-hash" "emacs-symbol" "emacs-vars"
                     "emacs-string" "emacs-error" "emacs-backquote"
                     "emacs-numeric" "emacs-time" "emacs-callproc"
-                    "emacs-pcase" "emacs-cl-macros" "emacs-stub"
+                    "emacs-cl-macros" "emacs-stub"
                     "emacs-sqlite"
                     ;; user-facing APIs (Layer-2 / Layer-3 dispatch)
                     "emacs-buffer" "emacs-buffer-builtins"

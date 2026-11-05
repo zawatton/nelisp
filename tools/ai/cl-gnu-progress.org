@@ -71,14 +71,14 @@ cmd: CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh
 #+REQUIRES: CLGNU_BIN
 cmd: ! test -e lisp/nelisp-pcase.el && ! grep -q '^(defmacro pcase ' scripts/nelisp-stdlib-prelude.el && ! test -e packages/nelisp-emacs-foundation/src/emacs-pcase.el && CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh
 
-** S3.4 The binary serves pcase from a vendored GNU file
+** S3.4 The binary serves pcase from a vendored GNU file and the active pcase macro is GNU's (pcase--expand reached)
 #+REQUIRES: CLGNU_BIN
-cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS'
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ active=pcase 2>&1 | grep -aq '^PROBE-ORIGIN-PASS'
 
 ** S3.5 Timing stays within noise of build-on140 (startup, pcase loop, bytecomp require)
 #+REQUIRES: CLGNU_BIN
 #+TIMEOUT: 120
-cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ active=pcase 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
 
 ** S3.6 End to end: the pcase corpus matches GNU on the final binary and the selfhost probe passes
 #+REQUIRES: CLGNU_BIN

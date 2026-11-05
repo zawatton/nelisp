@@ -19,6 +19,31 @@
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")
     (nelisp-process-buffer . "lisp/nelisp-process-buffer.el")))
 
+(defconst nelisp-boot-image--embedded-providers
+  '((pcase . "vendor/staged-emacs-lisp/pcase.el"))
+  "Vendored GNU files embedded at their GNU preload position, not deferred.
+`pcase' follows `macroexp' in GNU's loadup.el.  Unlike
+`nelisp-boot-image--providers' these get no autoload entries.")
+
+(defun nelisp-boot-image--pcase-source (source path)
+  "Bake GNU pcase.el SOURCE the way GNU loads its `.elc' (see macroexp)."
+  (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
+    (require 'nelisp-prelude-bytecode)
+    (let* ((print-escape-nonascii t)
+           (print-escape-multibyte t)
+           (dirs (list (expand-file-name "vendor/staged-emacs-lisp"
+                                         nelisp-boot-image--root)
+                       (expand-file-name "vendor/emacs-lisp/emacs-lisp"
+                                         nelisp-boot-image--root)
+                       (expand-file-name "vendor/emacs-lisp"
+                                         nelisp-boot-image--root)))
+           (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
+           (report (expand-file-name "target/nelisp-boot-image/pcase-bytecode.tsv"
+                                     nelisp-boot-image--root)))
+      (make-directory (file-name-directory report) t)
+      (nelisp-prelude-bytecode-write-report report (nth 2 result))
+      (car result))))
+
 (defun nelisp-boot-image--macroexp-source (source path)
   "Bake admitted GNU macroexp functions, retaining rejected functions as source."
   ;; GNU's primitive macroexpand follows aliases/environment entries directly.
@@ -53,6 +78,7 @@
 GNU macroexp functions use the existing reviewed bytecode selector. Other
 providers and source-only builds retain their exact source text."
   (let* ((path (or (cdr (assq name nelisp-boot-image--providers))
+                   (cdr (assq name nelisp-boot-image--embedded-providers))
                    (error "Unknown boot provider: %S" name)))
          (source (with-temp-buffer
                    (insert-file-contents (expand-file-name path nelisp-boot-image--root))
@@ -60,7 +86,9 @@ providers and source-only builds retain their exact source text."
     ;; Snapshot exactly the file the former runtime load would have read.
     ;; The executable build digest binds these bytes to its heap companion.
     (concat
-     (if (eq name 'macroexp) (nelisp-boot-image--macroexp-source source path) source)
+     (cond ((eq name 'macroexp) (nelisp-boot-image--macroexp-source source path))
+           ((eq name 'pcase) (nelisp-boot-image--pcase-source source path))
+           (t source))
      "\nt\n")))
 
 (defun nelisp-boot-image-prelude (source)

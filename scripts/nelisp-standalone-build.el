@@ -49331,6 +49331,7 @@ which reach this non-inline prelude variant with INLINE nil)."
             ;; the `(load PATH)' below reaches its own `do-after-load-
             ;; evaluation' call.
             (nelisp-standalone--artifact-match-compat-src nil)
+   (nelisp-standalone--pcase-src)
             (format "(load %S)\n" path)
             "\n;; --- GNU Emacs 31.1 files.el: file attribute accessors ---\n"
             (nelisp-vendor-source-forms
@@ -49933,6 +49934,30 @@ source."
           result)))))
 
 
+(defun nelisp-standalone--pcase-src ()
+  "Return GNU pcase.el and its preload prerequisites as boot source.
+GNU loads pcase.el at loadup, after subr.el (so `string-match' and
+`with-eval-after-load' already exist).  Here those two arrive with the regexp
+matcher and the after-load forms, so callers insert this strictly after both."
+  (concat
+   ;; GNU preloads these subr.el helpers before pcase.el; `pcase-defmacro'
+   ;; expands into both (also used later by gv.el and cl-lib.el).
+   "\n;; --- GNU Emacs 31.1 subr.el: def-edebug-elem-spec ---\n"
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'def-edebug-elem-spec)
+   "\n;; --- GNU Emacs 31.1 subr.el: define-symbol-prop ---\n"
+   (nelisp-standalone--vendor-function-source
+    "vendor/staged-emacs-lisp/subr.el" 'define-symbol-prop)
+   ;; GNU loadup.el loads pcase right after macroexp (the native prelude
+   ;; pcase, if still present, is overridden here).
+   (nelisp-boot-image-provider 'pcase)
+   ;; GNU registers the `cl-type' pattern in cl-macs.el, which this image does
+   ;; not preload yet.  Stage that exact pinned form right after pcase.el.
+   "\n;; --- GNU Emacs 31.1 cl-macs.el: pcase cl-type pattern ---\n"
+   (nelisp-vendor-source-form "vendor/staged-emacs-lisp/cl-macs.el" 'cl-type)
+   "\n")
+)
+
 (defun nelisp-standalone--load-path-src (&optional defer-easy-mmode defer-libraries)
   "Return shared load-path and staged-provider source every bootstrap needs.
 `load-path' shipped empty and nothing filled it, so `require' resolved no
@@ -49992,18 +50017,6 @@ resolved fine.  Same feature, different answer per entry point."
    (nelisp-vendor-source-forms
     "vendor/emacs-lisp/international/mule-conf.el"
     '(password-word-equivalents password-colon-equivalents))
-   ;; `gv.el' calls this helper while loading.  GNU Emacs preloads its
-   ;; definition from subr.el; stage that exact pinned form at the same
-   ;; point, before user code can require `gv'.  This common producer is
-   ;; used by reader, artifact, and runtime-image bootstraps.
-   "\n;; --- GNU Emacs 31.1 subr.el: def-edebug-elem-spec ---\n"
-   (nelisp-standalone--vendor-function-source
-    "vendor/staged-emacs-lisp/subr.el" 'def-edebug-elem-spec)
-   ;; GNU Emacs's cl-lib.el needs this helper while loading.  Stage its exact
-   ;; pinned subr.el form alongside the gv prerequisite above.
-   "\n;; --- GNU Emacs 31.1 subr.el: define-symbol-prop ---\n"
-   (nelisp-standalone--vendor-function-source
-    "vendor/staged-emacs-lisp/subr.el" 'define-symbol-prop)
    ;; GNU Emacs 31.1 preloads `static-if' from subr.el.  cl-macs.el uses it
    ;; (for `cl--define-derived-type') while loading, so stage the exact form
    ;; before any cl file is evaluated.
@@ -50670,6 +50683,7 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
     ;; `do-after-load-evaluation' can safely process rx/cl-seq notifications.
     ;; It is also safe to load genuine faces.el here (strictly after
     ;; `string-match'; see `nelisp-standalone--faces-src').
+    (insert (nelisp-standalone--pcase-src))
     (insert (nelisp-standalone--faces-src))
     (insert (nelisp-boot-image-libraries-source))
     ;; Phase 2A (integration/wave6 audit hardening, Doc 184 P1/P2): wire
@@ -51916,6 +51930,7 @@ src', defensively, even though that path never actually loads
    ;; 'easy-mmode)' used to run before `string-match-p' existed here.
    (nelisp-standalone--load-path-src t)
    (nelisp-standalone--artifact-match-compat-src inline)
+   (nelisp-standalone--pcase-src)
    ;; Safe here (strictly after `string-match'); see `nelisp-standalone--faces-src'.
    (nelisp-standalone--faces-src)
    ;; Now that the matcher + string-match family are defined, the deferred
@@ -52551,6 +52566,7 @@ artifact before wiring that artifact into the marker command path."
      ;; `nelisp-standalone--reader-repl-prelude-source').
      (nelisp-standalone--load-path-src t)
      (nelisp-standalone--artifact-match-compat-src t)
+     (nelisp-standalone--pcase-src)
      ;; Safe here (strictly after `string-match'); see `nelisp-standalone--faces-src'.
      (nelisp-standalone--faces-src)
      "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n"

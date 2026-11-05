@@ -33,8 +33,7 @@
 ;; Internal helpers were renamed `emacs-stub--cl-*' →
 ;; `emacs-cl-macros--*' as part of Phase 10's emacs-stub split.
 ;;
-;; Depends on: `pcase' (= emacs-pcase.el).  Make sure that loads first
-;; if you want full pattern support inside cl-* expansions.
+;; Depends on: GNU `pcase' (preloaded; vendor/staged-emacs-lisp/pcase.el).
 
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- library cl macros; guarded via emacs-cl-macros--define-p.
 ;;; Code:
