@@ -1,0 +1,79 @@
+#+TITLE: Doc 211 emacs-lib import into NeLisp (branch feat/emacs-lib-import)
+
+Objective: nelisp-emacs-lib is imported into NeLisp as packages/emacs-lib-*
+with history, the parallel old copies are retired, each source file has one
+owner, the tree builds and passes on host Emacs and on the standalone
+runtime, and the branch lands on main.  Handoff:
+Notes/handoff/emacs-lib-into-nelisp_doc211-import_2026-11-03.md.  The older
+tools/ai/doc211-progress.org tracks the original Doc 211 plan stages.
+
+Read with:
+  bin/progress-meter.sh --ledger tools/ai/doc211-import-progress.org
+
+Standalone checks need DOC211_IMPORT_BIN, a target/nelisp built in this tree
+(make standalone-reader).
+
+* S1 Import and one owner per file
+
+** S1.1 The history import merge 50860a2c6 is in HEAD and has two parents
+cmd: git merge-base --is-ancestor 50860a2c6 HEAD && test "$(git rev-list --parents -n1 50860a2c6 | wc -w)" = 3
+
+** S1.2 The parallel old copies (packages/nelisp-emacs-*, nelisp-emacs-lib/, test/nelisp-emacs-lib/) are retired
+cmd: sh tools/ai/doc211-import-check.sh retired
+
+** S1.3 No .el basename is owned by two packages, or by a package and lisp/ or src/
+cmd: sh tools/ai/doc211-import-check.sh one-owner
+
+** S1.4 Vendored GNU Lisp matches vendor/SHA256SUMS
+cmd: sha256sum -c --quiet vendor/SHA256SUMS
+
+** S1.5 END-TO-END: the package graph gate passes
+cmd: make -s pkg-graph
+
+* S2 Host Emacs build and tests
+
+** S2.1 make compile has no errors or warnings
+#+TIMEOUT: 120
+cmd: make -s compile
+
+** S2.2 The unified nelisp-regex package ERT passes
+cmd: sh tools/ai/doc211-import-check.sh regex-ert
+
+** S2.3 The API consumer smoke requires the facade from package sources
+cmd: make -s doc211-api-consumer-smoke
+
+** S2.4 END-TO-END: on CI, every host ERT failure on the branch also fails on the aligned control, except the six core-lane items reported to notes-d0
+#+NOTE: recorded once from CI runs 42053763642 (branch) and 41997286058 (control); re-record after the next CI run that changes the result
+evidence: tools/ai/evidence/doc211-import-ci-ert.txt sha256=6b23428a89668907595c8935cea6f4d994dd20ac0d458d0a174c886d9020d96d
+
+* S3 Standalone runtime
+
+** S3.1 The bootstrap bundle rebuilds and carries exactly one nelisp-regex section
+#+TIMEOUT: 120
+cmd: sh tools/ai/doc211-import-check.sh bundle-once
+
+** S3.2 The bundle boots on the in-tree standalone binary (BOOT-OK within 50 s)
+#+REQUIRES: DOC211_IMPORT_BIN
+#+TIMEOUT: 50
+cmd: sh tools/ai/doc211-import-check.sh boot
+
+** S3.3 GNU url.el loads on the booted runtime and url-expand-file-name gives the GNU result
+#+REQUIRES: DOC211_IMPORT_BIN
+#+TIMEOUT: 90
+cmd: sh tools/ai/doc211-import-check.sh url
+
+** S3.4 END-TO-END: the magit status smoke prints MAGIT-STATUS-BUFFER PASS and MAGIT-GIT-EXEC PASS on the in-tree build
+pending
+
+* S4 Landing
+
+** S4.1 The six core-lane tests that fail only on the branch pass with their files loaded
+#+NOTE: owned by notes-d0 (core lane); in the full CI suite all six fail, loaded alone three still fail
+#+TIMEOUT: 120
+cmd: sh tools/ai/doc211-import-check.sh core-lane
+
+** S4.2 feat/emacs-lib-import is merged into origin/main
+cmd: git merge-base --is-ancestor 6f4861213 origin/main
+
+** S4.3 END-TO-END: CI on main after the landing has no host ERT failure that is absent from the pre-landing main run
+pending

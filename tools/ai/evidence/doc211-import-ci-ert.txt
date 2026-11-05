@@ -1,0 +1,12 @@
+# Doc 211 emacs-lib import: CI host ERT attribution
+# branch run: 42053763642 (ci.yml, job 'ert ubuntu-latest / plain'), head 6f4861213
+# control run: 41997286058, branch ctrl/ci-loader-d0-20261105 (notes-d0 tip 8382bf712 + loader e144d7007)
+# method: FAILED test names in the branch log minus FAILED names in the control log
+# Ran 9615 tests, 8279 results as expected, 649 unexpected, 687 skipped (2026-11-0
+# branch-only failures (all core lane, reported to notes-d0):
+nelisp-pcase-or-branch-local-bindings
+nelisp-private-continuation/native-three-frontends-public-collisions
+nelisp-rbx-pad-nonpolicy-complete-bytes-unchanged
+nelisp-rbx-pad-policy-store-follows-rbx-save
+nemacs-artifact-gate5-format-spec-source-equals-artifact
+nemacs-artifact-gate6-format-spec-source-equals-artifact
