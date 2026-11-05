@@ -17,6 +17,7 @@
 ;;                                  with symbol keys (= upstream
 ;;                                  default), int / float / string /
 ;;                                  list / nested object support
+;;   `json-read-file'             — first JSON value in a file (GNU semantics)
 ;;   `json-encoding-pretty-print' — defvar, controls indentation (no-op
 ;;                                  in this minimal port; emit compact)
 ;;   `json-false' / `json-null'   — sentinels (`:json-false' / `:json-null'
@@ -409,6 +410,20 @@ malformed input."
               (t (emacs-json--reshape value json-object-type
                                       (if (eq json-array-type 'list) 'list 'array)
                                       json-null json-false)))))))
+
+;; Needed because the standalone build script reads a JSON fixture on NeLisp.
+(unless (fboundp 'json-read-file)
+  (defun json-read-file (file)
+    "Read the first JSON object contained in FILE and return it."
+    (let ((emacs-json--read-pos 0)
+          (emacs-json--read-src
+           (with-temp-buffer (insert-file-contents file) (buffer-string))))
+      (let ((value (emacs-json--read-value)))
+        (if (and (eq json-object-type 'alist) (eq json-array-type 'list))
+            value
+          (emacs-json--reshape value json-object-type
+                               (if (eq json-array-type 'list) 'list 'array)
+                               json-null json-false))))))
 
 ;; Emacs 27+ native JSON entry points.  The reader has no native json_*
 ;; C functions, so alias them onto the elisp reader/encoder.  anvil and
