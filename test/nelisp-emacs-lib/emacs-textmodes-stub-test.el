@@ -13,6 +13,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'emacs-textmodes-stub)
 
@@ -140,8 +144,11 @@
                 file)))
     (should (and file (file-exists-p file)))
     (with-temp-buffer
-      (should (= 0 (call-process emacs nil t nil "-Q" "--batch" "-L" "src"
-                                 "--eval" expr)))
+      (should (= 0 (apply #'call-process emacs nil t nil "-Q" "--batch"
+                          (append
+                           (mapcan (lambda (dir) (list "-L" dir))
+                                   (nemacs-test-paths-source-dirs))
+                           (list "--eval" expr)))))
       (goto-char (point-min))
       (should (search-forward "((outline-regexp" nil t))
       (backward-char (length "((outline-regexp"))

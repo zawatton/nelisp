@@ -6,6 +6,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'cl-lib)
 (require 'ert)
 (require 'emacs-vars)

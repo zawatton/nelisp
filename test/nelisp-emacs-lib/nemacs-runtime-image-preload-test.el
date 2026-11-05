@@ -16,9 +16,7 @@
       nil t)
 
 (defconst nemacs-runtime-image-preload-test--repo-root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defconst nemacs-runtime-image-preload-test--direct-install-functions
   '(buffer-file-name
@@ -1329,7 +1327,8 @@
   "The vendor-core image target should not force a fresh base image bake."
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name "Makefile" nemacs-runtime-image-preload-test--repo-root))
+     (expand-file-name "nelisp-emacs-lib/Makefile"
+                       nemacs-runtime-image-preload-test--repo-root))
     (should (search-forward "bake-vendor-core-runtime-image:" nil t))
     (goto-char (point-min))
     (should (search-forward
@@ -1348,7 +1347,8 @@
   "The pure standalone gate should include runtime-image through the reader."
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name "Makefile" nemacs-runtime-image-preload-test--repo-root))
+     (expand-file-name "nelisp-emacs-lib/Makefile"
+                       nemacs-runtime-image-preload-test--repo-root))
     (should (search-forward
              "verify-nelisp-standalone: doctor test-nelisp test-nelisp-runtime-image verify-vendor-class-a verify-vendor-core"
              nil t))
@@ -1389,7 +1389,8 @@
   "Bootstrap profiling and vendor form walk should prefer standalone-reader."
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name "Makefile" nemacs-runtime-image-preload-test--repo-root))
+     (expand-file-name "nelisp-emacs-lib/Makefile"
+                       nemacs-runtime-image-preload-test--repo-root))
     (should (search-forward "profile-nelisp-bootstrap: build-nelisp-bootstrap" nil t))
     (goto-char (point-min))
     (should (search-forward "-l standalone-bootstrap-profile" nil t))

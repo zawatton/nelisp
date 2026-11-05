@@ -40,7 +40,7 @@
     cl-mapcar cl-mapc cl-subseq cl-remove-if-not cl-labels cl-incf
     cl-every cl-case cl-position cl-set-difference cl-gensym
     cl-macrolet cl-symbol-macrolet defsubst backquote setf)
-  "Symbols `vendor/nelisp/lisp/nelisp-cl-macros.el' defines unconditionally.
+  "Symbols `lisp/nelisp-cl-macros.el' defines unconditionally.
 That file has no `(unless (fboundp ...))' guard on any of these (every
 top-level `defun'/`defmacro' in it was audited: only `zerop' is gated)
 because it targets the standalone NeLisp runtime, where none of Emacs's
@@ -62,7 +62,7 @@ the load so host Emacs keeps its own definitions; only used from
     (let ((saved (mapcar (lambda (sym)
                             (cons sym (and (fboundp sym) (symbol-function sym))))
                           emacs-backquote-test--vendor-cl-macro-symbols)))
-      (load (expand-file-name "vendor/nelisp/lisp/nelisp-cl-macros.el"
+      (load (expand-file-name "lisp/nelisp-cl-macros.el"
                               emacs-backquote-test--repo-root)
             nil t)
       (dolist (cell saved)

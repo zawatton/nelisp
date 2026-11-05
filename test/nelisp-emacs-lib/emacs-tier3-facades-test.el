@@ -110,8 +110,7 @@ several temp parents and keep only one that the facade reports as no VC."
 (ert-deftest emacs-tier3-facades-test/feature-loaders-resolve-to-src ()
   (let ((load-path (cons emacs-tier3-facades-test--src-dir load-path)))
     (dolist (loader emacs-tier3-facades-test--loaders)
-      (let ((expected (expand-file-name (concat (cdr loader) ".el")
-                                        emacs-tier3-facades-test--src-dir))
+      (let ((expected (nemacs-test-paths-source (concat (cdr loader) ".el")))
             (actual (locate-library (cdr loader))))
         (should actual)
         (should (string= (file-name-sans-extension

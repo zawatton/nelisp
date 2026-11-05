@@ -54,7 +54,7 @@
   "Core mode progress is measured by vendored Emacs Lisp loading first."
   (let ((loaded-files
          (mapcar #'vendor-first-core-modes-test--load-source
-	                 '("vendor/emacs-lisp/textmodes/text-mode.el"
+	                 '("vendor/emacs-lisp-api/textmodes/text-mode.el"
 	                   "vendor/emacs-lisp/outline.el"
 	                   "vendor/emacs-lisp/dired.el"
 	                   "vendor/emacs-lisp/dired-x.el"
@@ -79,7 +79,7 @@
          (mapcar #'vendor-first-core-modes-test--load-source
                  '("vendor/emacs-lisp/button.el"
                    "vendor/emacs-lisp/thingatpt.el"
-                   "vendor/emacs-lisp/case-table.el"
+                   "src/case-table.el"
                    "vendor/emacs-lisp/help-macro.el"
                    "vendor/emacs-lisp/emacs-lisp/subr-x.el"
                    "vendor/emacs-lisp/cdl.el"
@@ -633,7 +633,7 @@
   (let ((load-path (append (vendor-first-core-modes-test--vendor-load-path)
                            load-path)))
     (vendor-first-core-modes-test--load-source
-     "vendor/emacs-lisp/textmodes/text-mode.el")
+     "vendor/emacs-lisp-api/textmodes/text-mode.el")
     (vendor-first-core-modes-test--load-source
      "vendor/emacs-lisp/outline.el")
     (with-temp-buffer
