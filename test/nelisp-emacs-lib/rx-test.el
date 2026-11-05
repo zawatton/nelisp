@@ -8,7 +8,8 @@
 
 (require 'ert)
 
-(load (nemacs-test-paths-source "rx.el")
+;; rx is served from the vendored GNU Emacs 31.1 file.
+(load (nemacs-test-paths-vendor "emacs-lisp/emacs-lisp/rx.el")
       nil t)
 
 ;; S2 coverage batch (2026-09-28): `rx--normalize-char-pattern' and
