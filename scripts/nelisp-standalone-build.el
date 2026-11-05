@@ -38529,7 +38529,12 @@ bytes are written into a fresh 8-byte buffer instead."
     (seq
      (bf_load_file_name_symbol sym)
      (ptr-write-u64 old-root 0 (bf_read_load_file_name_w env 0))
-     (nl_env_set_value env sym (wf_arg_ptr args 0))
+     ;; Pass the symbol and the value as canonical WORDs, exactly as `setq'
+     ;; does.  A legacy symbol view is not the identity a dynamic `let' of
+     ;; `load-file-name' (e.g. nelisp--core-bytecode-load) is keyed on once
+     ;; the symbol has an object, so after a mid-form GC the view-keyed write
+     ;; missed that binding and a nested load kept its caller's name.
+     (nl_env_set_value env (nl_word_canon sym) (wf_arg_word args 0))
      (let* ((out (alloc-bytes 32 8)))
        (seq
         (wf_write_nil out)
@@ -38537,7 +38542,7 @@ bytes are written into a fresh 8-byte buffer instead."
           (let* ((restore-name (alloc-bytes 32 8)))
             (seq
              (bf_load_file_name_symbol restore-name)
-             (nl_env_set_value env restore-name (wf_word_view (heap-read-u64 old-root 0)))
+             (nl_env_set_value env (nl_word_canon restore-name) (heap-read-u64 old-root 0))
              word))))))))
     (defun bf_load_inner_rooted_w (args env old-root)
   (if (= (bf_require_file_readable_p (wf_arg_ptr args 0)) 1)
