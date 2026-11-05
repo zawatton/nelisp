@@ -34,41 +34,40 @@
   nemacs-test-paths-repo-root
   "Repository root for locating read-only stdlib mirrors in tests.")
 
-(defconst emacs-backquote-test--vendor-cl-macro-symbols
-  '(cl-block cl-return-from cl-return cl-loop cl-defstruct
-    cl-call-next-method cl-next-method-p cl-defgeneric cl-defmethod
-    cl-mapcar cl-mapc cl-subseq cl-remove-if-not cl-labels cl-incf
-    cl-every cl-case cl-position cl-set-difference cl-gensym
-    cl-macrolet cl-symbol-macrolet defsubst backquote setf)
-  "Symbols `lisp/nelisp-cl-macros.el' defines unconditionally.
-That file has no `(unless (fboundp ...))' guard on any of these (every
-top-level `defun'/`defmacro' in it was audited: only `zerop' is gated)
-because it targets the standalone NeLisp runtime, where none of Emacs's
-real `cl-lib'/`subr.el' machinery exists yet.  Loading it into host Emacs
--- as this test does, to reach `nelisp--bq-expand' -- would otherwise
-silently replace the host's real, byte-compiled CL and generalized-variable
-machinery with NeLisp's minimal reimplementations (e.g. its `cl-position'
-is list-only and signals `wrong-type-argument' on a string or vector; its
-`setf' and `defsubst' are narrower than the real `gv.el'/`cl-macs.el'
-ones and break unrelated stdlib files such as `iso8601.el' the moment
-anything later in the same process `require's them), corrupting every
-later test in the same host Emacs process.  Save and restore these around
-the load so host Emacs keeps its own definitions; only used from
-`emacs-backquote-test--ensure-runtime-backquote'.")
+(defun emacs-backquote-test--bq-provider-defuns (forms)
+  "Return the `nelisp--bq-*' defuns found anywhere in FORMS."
+  (let (found)
+    (dolist (form forms)
+      (when (consp form)
+        (if (and (eq (car form) 'defun)
+                 (symbolp (cadr form))
+                 (string-prefix-p "nelisp--bq-" (symbol-name (cadr form))))
+            (push form found)
+          (when (memq (car form) '(progn when unless if))
+            (setq found (append (reverse (emacs-backquote-test--bq-provider-defuns
+                                          (cdr form)))
+                                found))))))
+    (nreverse found)))
 
 (defun emacs-backquote-test--ensure-runtime-backquote ()
-  "Load stdlib backquote support, then replay the local override."
+  "Install the runtime `nelisp--bq-expand', then replay the local override.
+The runtime expander lives in `emacs-parity-macros2.el', which defines it
+only under its standalone guard.  Evaluate just its `nelisp--bq-*'
+defuns, so host Emacs keeps its own backquote, CL and gv machinery."
   (unless (fboundp 'nelisp--bq-expand)
-    (let ((saved (mapcar (lambda (sym)
-                            (cons sym (and (fboundp sym) (symbol-function sym))))
-                          emacs-backquote-test--vendor-cl-macro-symbols)))
-      (load (expand-file-name "lisp/nelisp-cl-macros.el"
-                              emacs-backquote-test--repo-root)
-            nil t)
-      (dolist (cell saved)
-        (if (cdr cell)
-            (fset (car cell) (cdr cell))
-          (fmakunbound (car cell))))))
+    (let ((forms nil))
+      (with-temp-buffer
+        (insert-file-contents
+         (nemacs-test-paths-source "emacs-parity-macros2.el"))
+        (condition-case nil
+            (while t (push (read (current-buffer)) forms))
+          (end-of-file nil)))
+      (let ((defuns (emacs-backquote-test--bq-provider-defuns
+                     (nreverse forms))))
+        (unless (memq 'nelisp--bq-expand (mapcar #'cadr defuns))
+          (error "emacs-parity-macros2.el no longer defines nelisp--bq-expand"))
+        (dolist (defun-form defuns)
+          (eval defun-form t)))))
   (load (nemacs-test-paths-source "emacs-backquote.el")
         nil t))
 
