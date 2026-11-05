@@ -1107,7 +1107,7 @@ the result does not depend on which test files ran earlier in the same
 process (an earlier file may legitimately load a lazy feature)."
   (let ((exe (expand-file-name invocation-name invocation-directory))
         (form `(progn
-                 (setq load-path ',load-path)
+                 (setq load-path (append ',load-path load-path))
                  (require 'nelisp-emacs)
                  (let (loaded)
                    (dolist (feature ',features)
