@@ -2,7 +2,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib)
-(setq backtrace-line-length 200 print-length 20 print-level 8)
+(setq backtrace-line-length 200)
 (require 'nelisp-native-cache)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
