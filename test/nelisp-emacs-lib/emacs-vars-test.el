@@ -42,20 +42,15 @@
           (append '(completion inout signals) menu-bar-final-items))
     (should (equal menu-bar-final-items '(completion inout signals)))))
 
-(ert-deftest emacs-vars-test/package-mirror-matches-source ()
-  (let* ((repository-root
-          nemacs-test-paths-repo-root)
-         (source (nemacs-test-paths-source "emacs-vars.el"))
-         (mirror (expand-file-name
-                  "packages/nelisp-emacs-foundation/lisp/emacs-vars.el"
-                  repository-root)))
-    (should (string=
-             (with-temp-buffer
-               (insert-file-contents-literally source)
-               (buffer-string))
-             (with-temp-buffer
-               (insert-file-contents-literally mirror)
-               (buffer-string))))))
+(ert-deftest emacs-vars-test/package-owns-source ()
+  "The nelisp-emacs-foundation package is the only owner of emacs-vars.el.
+A second copy under another packages/*/src would be resolved arbitrarily."
+  (should (equal (mapcar #'file-truename
+                         (nemacs-test-paths-source-owners "emacs-vars.el"))
+                 (list (file-truename
+                        (expand-file-name
+                         "packages/nelisp-emacs-foundation/src/emacs-vars.el"
+                         nemacs-test-paths-repo-root))))))
 
 (provide 'emacs-vars-test)
 

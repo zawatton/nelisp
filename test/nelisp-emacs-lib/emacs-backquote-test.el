@@ -246,19 +246,15 @@ defuns, so host Emacs keeps its own backquote, CL and gv machinery."
     (should (equal (nelisp--bq-expand inner)
                    (list 'quote inner)))))
 
-(ert-deftest emacs-backquote-test/package-mirror-matches-source ()
-  "The extracted foundation package keeps the backquote source in sync."
-  (let ((source (nemacs-test-paths-source "emacs-backquote.el"))
-        (mirror
-         (expand-file-name
-          "packages/nelisp-emacs-foundation/lisp/emacs-backquote.el"
-          emacs-backquote-test--repo-root)))
-    (should (equal (with-temp-buffer
-                     (insert-file-contents source)
-                     (buffer-string))
-                   (with-temp-buffer
-                     (insert-file-contents mirror)
-                     (buffer-string))))))
+(ert-deftest emacs-backquote-test/package-owns-source ()
+  "The nelisp-emacs-foundation package is the only owner of emacs-backquote.el.
+A second copy under another packages/*/src would be resolved arbitrarily."
+  (should (equal (mapcar #'file-truename
+                         (nemacs-test-paths-source-owners "emacs-backquote.el"))
+                 (list (file-truename
+                        (expand-file-name
+                         "packages/nelisp-emacs-foundation/src/emacs-backquote.el"
+                         nemacs-test-paths-repo-root))))))
 
 
 ;;;; --- S2 coverage batch: GNU backquote.el helper API --------------------

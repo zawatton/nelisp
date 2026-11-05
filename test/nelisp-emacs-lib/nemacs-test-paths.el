@@ -39,6 +39,18 @@ NAME is not found."
       (error "nemacs-test-paths: source file not found under packages/*/src/: %s"
              name)))
 
+(defun nemacs-test-paths-source-owners (name)
+  "Return every packages/*/src/NAME path under the repo root, in order.
+A library source has exactly one owner package; more than one entry means a
+stale duplicate that `nemacs-test-paths-source' and the doc211 bootstrap root
+would resolve arbitrarily."
+  (let (found)
+    (dolist (dir (nemacs-test-paths-source-dirs))
+      (let ((candidate (expand-file-name name dir)))
+        (when (file-exists-p candidate)
+          (push candidate found))))
+    (nreverse found)))
+
 (defun nemacs-test-paths-script (name)
   "Return the absolute path of repo-root scripts/NAME, or signal an error."
   (let ((path (expand-file-name name

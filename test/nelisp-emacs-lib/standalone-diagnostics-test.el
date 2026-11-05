@@ -585,21 +585,15 @@ files)))
       (should (< context global))
       (should (< global vendor-load)))))
 
-(ert-deftest standalone-diagnostics-test/calendar-package-mirror-matches-source ()
-  "The foundation package keeps the calendar wrapper byte-identical."
-  (let ((source (standalone-diagnostics-test--src-file "calendar.el"))
-        (mirror
-         (expand-file-name
-          "packages/nelisp-emacs-foundation/lisp/calendar.el"
-          standalone-diagnostics-test--repo-root)))
-    (should
-     (equal
-      (with-temp-buffer
-        (insert-file-contents source)
-        (buffer-string))
-      (with-temp-buffer
-        (insert-file-contents mirror)
-        (buffer-string))))))
+(ert-deftest standalone-diagnostics-test/calendar-package-owns-source ()
+  "The nelisp-emacs-foundation package is the only owner of the calendar wrapper.
+A second copy under another packages/*/src would be resolved arbitrarily."
+  (should (equal (mapcar #'file-truename
+                         (nemacs-test-paths-source-owners "calendar.el"))
+                 (list (file-truename
+                        (expand-file-name
+                         "packages/nelisp-emacs-foundation/src/calendar.el"
+                         nemacs-test-paths-repo-root))))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-cl-defstruct-directly ()
   (let ((nelisp-bootstrap-repl-nested-eval-source t))
