@@ -64,10 +64,11 @@ Use it when available, otherwise fall back to `expand-file-name'."
   "Packages whose `src/' directories hold the imported library sources.")
 
 (defun nelisp-emacs-org-bridge--source-file (relative)
-  "Return the library source RELATIVE, named \"src/FILE\" as before Doc 211.
+  "Return the library source RELATIVE, a pre-Doc 211 \"src/FILE\" name.
 A FILE still under ROOT/src/ is used as is.  The Doc 211 import moved the
-library files to ROOT/packages/PKG/src/; search those packages.  Signal an error naming FILE when no package has it, so a
-missing source fails here rather than as a bare `file-error'."
+library files to ROOT/packages/PKG/src/; search those packages.  Signal
+an error naming FILE when no package has it, so a missing source fails
+here rather than as a bare `file-error'."
   (let ((root (nelisp-emacs-org-bridge--repo-root)))
     (if (or (not (string-prefix-p "src/" relative))
             ;; The core's own src/ (e.g. nelisp-text-buffer.el) stays put.
