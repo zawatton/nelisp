@@ -645,14 +645,19 @@ Reset the local keymap, syntax and case tables, and mode-line display.
          (set-default               . emacs-buffer-setq-default-1)
          (kill-local-variable       . emacs-buffer-kill-local-variable)
          (kill-all-local-variables  . emacs-buffer-builtins--kill-all-local-variables))))
-  (if (emacs-buffer-builtins--standalone-p)
-      (dolist (--cell-- --local-aliases--)
-        (fset (car --cell--) (cdr --cell--)))
+  (cond
+   ;; The core's own buffer-local primitives are correct; see
+   ;; `emacs-buffer--core-locals-p'.
+   ((emacs-buffer--core-locals-p) nil)
+   ((emacs-buffer-builtins--standalone-p)
+    (dolist (--cell-- --local-aliases--)
+      (fset (car --cell--) (cdr --cell--))))
+   (t
     (dolist (--cell-- --local-aliases--)
       (let ((--name-- (car --cell--))
             (--target-- (cdr --cell--)))
         (when (emacs-buffer-builtins--install-function-p --name--)
-          (defalias --name-- --target--))))))
+          (defalias --name-- --target--)))))))
 
 (defun emacs-buffer-builtins-buffer-narrowed-p ()
   "Return non-nil if the current `nelisp-ec' buffer is narrowed."

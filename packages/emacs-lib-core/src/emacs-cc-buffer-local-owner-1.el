@@ -84,7 +84,7 @@
                 (list 'kill-buffer temporary)
                 (list 'emacs-buffer--forget temporary)))))
 
-(when (fboundp 'nelisp--repr)
+(when (and (fboundp 'nelisp--repr) (not (emacs-buffer--core-locals-p)))
   (unless (fboundp 'emacs-buffer-owner--original-set-buffer)
     (fset 'emacs-buffer-owner--original-set-buffer (symbol-function 'set-buffer)))
   (unless (fboundp 'emacs-buffer-owner--original-kill-buffer)

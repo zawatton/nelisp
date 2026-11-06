@@ -60,6 +60,17 @@
 (require 'cl-lib)
 (require 'nelisp-emacs-compat)
 
+(defun emacs-buffer--core-locals-p ()
+  "Return non-nil when the runtime itself implements buffer-local variables.
+The NeLisp core then binds, unwinds and reads buffer-local values the GNU
+way, and this file's swap engine must stay out of the way.  The engine
+keeps one global cell per variable and swaps it on every buffer switch,
+so it cannot tell a `let' of the default value from one of a local
+value: a `let' around code that makes the variable local in another
+buffer was unwound into that buffer's local value."
+  (and (fboundp 'nelisp--repr)
+       (fboundp 'nelisp-buffer-local-make)))
+
 ;;; Errors
 
 (define-error 'emacs-buffer-error "emacs-buffer error")
@@ -2630,6 +2641,15 @@ The copy receives a fresh insertion stamp."
                             (emacs-buffer--overlay-rec-properties ov)))))
     (emacs-buffer--overlay-insert-sorted buf rec)
     rec))
+
+;; With core buffer-locals the public entry points other files call
+;; directly read the core's bindings, and buffer switches swap nothing.
+(when (emacs-buffer--core-locals-p)
+  (fset 'emacs-buffer-buffer-local-value (symbol-function 'buffer-local-value))
+  (fset 'emacs-buffer-default-value (symbol-function 'default-value))
+  (fset 'emacs-buffer-local-variable-p (symbol-function 'local-variable-p))
+  (fset 'emacs-buffer-setq-default-1 (symbol-function 'set-default))
+  (fset 'emacs-buffer-switch-current-buffer (lambda (_old new) new)))
 
 (provide 'emacs-buffer)
 ;;; emacs-buffer.el ends here
