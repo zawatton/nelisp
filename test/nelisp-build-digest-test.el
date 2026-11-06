@@ -38,7 +38,10 @@ The previous recursive form exceeds max-lisp-eval-depth before copying 1 MiB."
          (copy (eval (cons 'lambda (cddr form)) t))
          (bytes (make-string 1048576 ?a))
          (written 0) (max-lisp-eval-depth 200))
-    (cl-letf (((symbol-function 'm5_byte_at) (lambda (string index) (aref string index)))
+    ;; The copy takes one data pointer for the whole loop (Doc 238 A1); the
+    ;; host double models the pointer as the string itself.
+    (cl-letf (((symbol-function 'nl_bi_strptr) (lambda (string) string))
+              ((symbol-function 'heap-read-u8) (lambda (data index) (aref data index)))
               ((symbol-function 'ptr-write-u8)
                (lambda (_address index value)
                  (unless (and (= index written) (= value ?a)) (error "Copy mismatch"))
@@ -52,17 +55,24 @@ The previous recursive form exceeds max-lisp-eval-depth before copying 1 MiB."
 
 (ert-deftest nelisp-build-digest-windows-buffer-hash-uses-bounded-native-input ()
   "Windows file-buffer hashes must not need a /tmp subprocess."
-  (let* ((form (with-temp-buffer
-                 (insert-file-contents (or (getenv "NELISP_HASH_PRELUDE")
-                                           "scripts/nelisp-stdlib-prelude.el"))
-                 (goto-char (point-min))
-                 (search-forward "(defun secure-hash ")
-                 (goto-char (match-beginning 0))
-                 (read (current-buffer))))
+  (let* ((prelude-form
+          (lambda (name)
+            (with-temp-buffer
+              (insert-file-contents (or (getenv "NELISP_HASH_PRELUDE")
+                                        "scripts/nelisp-stdlib-prelude.el"))
+              (goto-char (point-min))
+              (search-forward (concat "(defun " name " "))
+              (goto-char (match-beginning 0))
+              (read (current-buffer)))))
+         (form (funcall prelude-form "secure-hash"))
+         ;; `secure-hash' validates and slices its object through this helper.
+         (hash-text (let ((helper (funcall prelude-form "nelisp--hash-text")))
+                      (eval (cons 'lambda (cddr helper)) t)))
          (hash (eval (cons 'lambda (cddr form)) t))
          (host-hash (symbol-function 'secure-hash))
          (system-type 'windows-nt) (calls 0))
-    (cl-letf (((symbol-function 'nelisp--target-os-code) (lambda () 2))
+    (cl-letf (((symbol-function 'nelisp--hash-text) hash-text)
+              ((symbol-function 'nelisp--target-os-code) (lambda () 2))
               ((symbol-function 'nelisp--sha256)
                (lambda (bytes)
                  (should (stringp bytes))

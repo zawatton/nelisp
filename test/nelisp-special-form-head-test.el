@@ -39,8 +39,13 @@
 (byte-compile 'nelisp--fx-compile)
 
 (ert-deftest special-head/fx-declines-unlowered-syntax ()
-  (dolist (form '((throw 'tag 42) (lambda () 42) (defalias 'x 'car)))
+  (dolist (form '((lambda () 42) (defalias 'x 'car)))
     (should-not (nelisp--fx-compile form))))
+
+(ert-deftest special-head/fx-lowers-throw ()
+  ;; `throw' stopped being declined when f7f36a453 lowered every valid
+  ;; GNU 31.1 opcode (the result carries the throw opcode, 27).
+  (should (nelisp--fx-compile '(throw 'tag 42))))
 
 (ert-deftest special-head/fx-shields-native-macros ()
   (dolist (form '((when t 42) (unless nil 42) (prog2 1 42 3)
@@ -78,8 +83,9 @@
       (setq nelisp--fx-native-macro-environment saved))))
 
 (ert-deftest special-head/short-prog2-has-no-effects ()
-  (should (equal (nelisp--fx-compile '(prog2 (error "not evaluated")))
-                 (nelisp--fx-compile nil)))
+  ;; The short form is still declined (as `nil' once was, before the
+  ;; compiler began lowering a bare `nil'), so the error form never runs.
+  (should-not (nelisp--fx-compile '(prog2 (error "not evaluated"))))
   (should (equal 0 (nelisp-aot-compiler--preprocess-source '(prog2 (error "not evaluated")))))
   (should-not (nelisp-bc-run (nelisp-bc-compile '(prog2 (error "not evaluated"))))))
 

@@ -30,6 +30,13 @@
               (lambda (w &rest _) (cl-incf ,finished) w))
              ((symbol-function 'nl_directcall_fast_run)
               (lambda (_id _b _n _out) (cl-incf ,runs) -4))
+             ;; Ids 101-104 reach `nl_directcall_hash_run' rather than
+             ;; `nl_directcall_run'; both answer with the same modelled status.
+             ((symbol-function 'nl_directcall_hash_run)
+              (lambda (_id _b _n out _e)
+                (cl-incf ,runs)
+                (when (= ,run-status 0) (puthash out 4242 ,mem))
+                ,run-status))
              ((symbol-function 'nl_directcall_run)
               (lambda (_id _b _n out _e)
                 (cl-incf ,runs)

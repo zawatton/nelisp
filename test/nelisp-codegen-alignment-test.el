@@ -26,8 +26,11 @@
                       (nelisp-link-unit-make "b" '((text . "def")) nil nil)))
          (combined (nelisp-link-combine-sections units 'x86_64))
          (text (cdr (assq 'text combined))))
-    (should (= 16 (cdr (assoc "b" (plist-get text :offsets)))))
-    (should (equal "def" (substring (plist-get text :bytes) 16)))))
+    ;; 44ad119ec: x86-64 text units start on `nelisp-link-x86-text-alignment'.
+    (should (= nelisp-link-x86-text-alignment
+               (cdr (assoc "b" (plist-get text :offsets)))))
+    (should (equal "def" (substring (plist-get text :bytes)
+                                    nelisp-link-x86-text-alignment)))))
 (ert-deftest nelisp-codegen-alignment/pe-import-entries ()
   (let* ((imports '(("KERNEL32.dll" "ExitProcess" "GetTickCount")))
          (info '(:iat-rva-alist (("ExitProcess" . 8192)

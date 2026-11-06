@@ -19,7 +19,7 @@
     (cl-labels ((rewrite (form)
                   (cond
                    ((and (eq mutation 'ignore-workers)
-                         (equal form '(ptr-read-u64 (data-addr nl_thread_registry) 0))) 0)
+                         (equal form '(heap-read-u64 (data-addr nl_thread_registry) 0))) 0) ; b51fe66f4
                    ((eq (car-safe form) 'data-addr)
                     (or (cdr (assq (cadr form) addresses))
                         (error "Unexpected BSS dependency %S" form)))
@@ -109,6 +109,18 @@
            0))
         (exit (rr_run))))))
 
+(defconst nelisp-native-runtime-dispatch-test--string-read-stub
+  '(defun nl_string_read64 (p off)
+     (if (= off -1) (ptr-read-u8 p 0) (ptr-read-u64 p off)))
+  "Stand-in for the runtime string-block reader that heap reads call for a
+String WORD.  The runtime owns the real helper outside this closed unit; the
+probe never passes a String WORD, so the legacy-address arm is exact.")
+
+(defun nelisp-native-runtime-dispatch-test--with-string-read-stub (sexp)
+  "Return SEXP, a (seq ...) program, with the string reader stand-in prepended."
+  (cl-assert (eq (car sexp) 'seq))
+  (cons 'seq (cons nelisp-native-runtime-dispatch-test--string-read-stub (cdr sexp))))
+
 (defun nelisp-native-runtime-dispatch-test--run (&optional mutation)
   "Compile and execute the production native probe with MUTATION."
   (unless (and (eq system-type 'gnu/linux)
@@ -118,7 +130,9 @@
     (unwind-protect
         (progn
           (nelisp-aot-compile-sexp
-           (nelisp-native-runtime-dispatch-test--source mutation) path)
+           (nelisp-native-runtime-dispatch-test--with-string-read-stub
+            (nelisp-native-runtime-dispatch-test--source mutation))
+           path)
           (call-process path nil nil nil))
       (delete-file path))))
 

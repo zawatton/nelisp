@@ -363,11 +363,14 @@ Returns nil if the group did not participate."
   (should-error (nelisp-rx-compile "[abc")
                 :type 'nelisp-rx-syntax-error))
 
-(ert-deftest nelisp-rx-test-backref-rejected-mvp ()
-  ;; Backrefs land in Phase 9c -- MVP must reject them rather than
-  ;; pretend to succeed.
-  (should-error (nelisp-rx-compile "\\(a\\)\\1")
-                :type 'nelisp-rx-syntax-error))
+(ert-deftest nelisp-rx-test-backref-matches-like-gnu ()
+  ;; The `nelisp-regex' that resolves first on the batch load path is the
+  ;; text-core one (packages/nelisp-emacs-text-core/src/nelisp-regex.el),
+  ;; which has implemented \\1..\\9 since Doc 33 item 244.  Expectations
+  ;; are GNU Emacs 31.1 `string-match' results: 1 / nil / 0.
+  (should (equal (plist-get (nelisp-rx-string-match "\\(a\\)\\1" "xaay") :start) 1))
+  (should-not (nelisp-rx-string-match "\\(a\\)\\1" "xaby"))
+  (should (equal (plist-get (nelisp-rx-string-match "\\(ab\\)\\1" "abab") :start) 0)))
 
 (ert-deftest nelisp-rx-test-leading-quantifier-error ()
   (should-error (nelisp-rx-compile "*abc")

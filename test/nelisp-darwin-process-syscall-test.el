@@ -44,7 +44,7 @@
       '(syscall-direct-store-x1 2 0 0 0 0 0 0 childp 0) fork))
     (should
      (nelisp-darwin-process-syscall-test--contains
-      '(if (> (ptr-read-u64 childp 0) 0) 0 pid) fork))
+      '(if (> (heap-read-u64 childp 0) 0) 0 pid) fork))
     (should
      (nelisp-darwin-process-syscall-test--contains
       '(syscall-direct-store-x1 42 0 0 0 0 0 0 x1buf 0) pipe))
@@ -96,6 +96,9 @@
               ((symbol-function 'seq)
                (lambda (&rest forms) (car (last forms))))
               ((symbol-function 'ptr-read-u64)
+               (lambda (ptr offset) (read-word ptr offset 8)))
+              ;; Heap reads go through the Doc 216 S1 accessor (b51fe66f4).
+              ((symbol-function 'heap-read-u64)
                (lambda (ptr offset) (read-word ptr offset 8)))
               ((symbol-function 'ptr-write-u32)
                (lambda (ptr offset value)

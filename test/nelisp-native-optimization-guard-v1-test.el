@@ -21,7 +21,7 @@
   (if (atom form) form
     (cond
      ((and (equal (getenv "NELISP_GUARD_MUTANT") "type")
-           (equal form '(and (= (ptr-read-u64 left 0) 2) (= (ptr-read-u64 right 0) 2)))) t)
+           (equal form '(and (= (heap-read-u64 left 0) 2) (= (heap-read-u64 right 0) 2)))) t)
      ((and (equal (getenv "NELISP_GUARD_MUTANT") "range")
            (eq (car form) 'and) (consp (cadr form))
            (eq (caadr form) '>=) (memq (cadadr form) '(a b sum))) t)
@@ -44,7 +44,16 @@
                  (lambda (pointer offset)
                    (setq reads (1+ reads))
                    (if (= offset 0) (if (integerp (aref roots pointer)) 2 5) 42)))
+                ;; Heap reads go through the Doc 216 S1 accessor (b51fe66f4).
+                ((symbol-function 'heap-read-u64)
+                 (lambda (pointer offset)
+                   (setq reads (1+ reads))
+                   (if (= offset 0) (if (integerp (aref roots pointer)) 2 5) 42)))
                 ((symbol-function 'ptr-read-s64)
+                 (lambda (pointer _offset)
+                   (setq reads (1+ reads))
+                   (if (integerp (aref roots pointer)) (signed (aref roots pointer)) 42)))
+                ((symbol-function 'heap-read-s64)
                  (lambda (pointer _offset)
                    (setq reads (1+ reads))
                    (if (integerp (aref roots pointer)) (signed (aref roots pointer)) 42)))

@@ -57,7 +57,13 @@
 (ert-deftest nelisp-dump-write-error-success-path-unchanged ()
   (let ((body (nelisp-dump-write-error-test--body)))
     (should (string-match-p
-             "(wf_write_int_w 0 (\\+ 64 (\\+ (\\* tlen 8) (\\+ ctotal (\\+ isz 48)))))" body))
+             ;; The source text: header size (64, or the cold-image dense/sparse
+             ;; choice), table bytes RW, payload, trailer ESZ and the 48 bytes.
+             (regexp-quote
+              (concat "(wf_write_int_w 0 (+ ,(if (nelisp-standalone--cold-v5-p) "
+                      "'(if (= dense 1) 64 5120) 64) "
+                      "(+ rw (+ ctotal (+ esz 48)))))"))
+             body))
     (should (string-match-p "(nl_dump_oor_error_w oor)" body))))
 
 (provide 'nelisp-dump-write-error-test)

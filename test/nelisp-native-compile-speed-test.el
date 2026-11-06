@@ -173,7 +173,9 @@
             (condition-case nil
                 (while t
                   (let ((form (read (current-buffer))))
-                    (when (and (eq (car-safe form) 'defun) (memq (cadr form) names))
+                    (when (or (and (eq (car-safe form) 'defun) (memq (cadr form) names))
+                              (and (eq (car-safe form) 'defconst)
+                                   (eq (cadr form) 'nelisp--prn-symbol-escape-table)))
                       (eval form t))))
               (end-of-file nil)))
           (funcall callback))
@@ -237,6 +239,14 @@
       (with-temp-buffer
         (insert-file-contents "scripts/nelisp-stdlib-prelude.el")
         (goto-char (point-min))
+        ;; The standalone encoder `nelisp--base64-encode' is a native
+        ;; primitive; the host runs its Lisp reference, which has the same
+        ;; contract (STRING LINE-BREAK PAD URL), under that name.
+        (search-forward "(defun nelisp--base64-encode-ref ")
+        (goto-char (match-beginning 0))
+        (eval (read (current-buffer)) t)
+        (fset 'nelisp--base64-encode (symbol-function 'nelisp--base64-encode-ref))
+        (goto-char (point-min))
         (search-forward "(defun base64-encode-string")
         (goto-char (match-beginning 0))
         (eval (read (current-buffer)) t))
@@ -260,11 +270,18 @@
                                 collect (apply #'unibyte-string
                                                (cl-loop for i below n collect (mod (* i 73) 256))))))
        (let* ((bytes (if (multibyte-string-p s) (encode-coding-string s 'utf-8) s))
-              (expected (funcall reference bytes t)))
+              (expected nil))
          (dolist (flag '(nil t))
-           (let ((actual (base64-encode-string s flag)))
-             (should (equal actual expected))
-             (should (eq (multibyte-string-p actual) (multibyte-string-p expected)))))))
+           ;; The encoder now wraps at 76 columns like GNU unless NO-LINE-BREAK
+           ;; is set, so the host reference is asked for the same policy.
+           (setq expected (funcall reference bytes flag))
+           (if (and (multibyte-string-p s) (string-match-p "[^[:ascii:]]" s))
+               ;; GNU refuses non-ASCII multibyte data rather than encoding
+               ;; its UTF-8 bytes, and the encoder follows it.
+               (should-error (base64-encode-string s flag))
+             (let ((actual (base64-encode-string s flag)))
+               (should (equal actual expected))
+               (should (eq (multibyte-string-p actual) (multibyte-string-p expected))))))))
      (should-error (base64-encode-string 7) :type 'wrong-type-argument))))
 
 (declare-function nelisp--equal-recursive "nelisp-stdlib-prelude")

@@ -134,13 +134,17 @@ unchecked shape, for all sizes including the sub-minimum ones."
       (should (nelisp-alloc-check-test--defun 'nl_alloc_check_stamp arena))
       (should (nelisp-alloc-check-test--defun 'nl_alloc_check_verify arena))
       (should (nelisp-alloc-check-test--defun 'nl_alloc_check_env_enable arena))
-      ;; The wrapper composes pad -> raw alloc -> stamp.
+      ;; `nl_alloc_bytes' is now a fast path (f007769f7, 80c2c2c53) whose
+      ;; checked fallback is `nl_alloc_bytes_slow'; that slow path still
+      ;; composes pad -> raw alloc -> stamp.
       (should (nelisp-alloc-check-test--calls-p
-               'nl_alloc_bytes 'nl_alloc_bytes_uncheck arena))
+               'nl_alloc_bytes 'nl_alloc_bytes_slow arena))
       (should (nelisp-alloc-check-test--calls-p
-               'nl_alloc_bytes 'nl_alloc_check_stamp arena))
+               'nl_alloc_bytes_slow 'nl_alloc_bytes_uncheck arena))
       (should (nelisp-alloc-check-test--calls-p
-               'nl_alloc_bytes 'nl_alloc_check_size arena))
+               'nl_alloc_bytes_slow 'nl_alloc_check_stamp arena))
+      (should (nelisp-alloc-check-test--calls-p
+               'nl_alloc_bytes_slow 'nl_alloc_check_size arena))
       ;; Exactly one defun per name (the rename really removed the
       ;; original `nl_alloc_bytes' definition).
       (should (= 1 (cl-count-if
@@ -184,7 +188,7 @@ redzone verify comes first, before the free mark and the poison fill."
   (let* ((forms (cdr nelisp-standalone--gc-source))
          (def (nelisp-alloc-check-test--defun 'nl_gc_sweep_free_dead forms))
          (body (car (cl-cdddr def)))
-         (walk (nelisp-alloc-check-test--defun 'nl_gc_sweep_merge_chunk forms)))
+         (walk (nelisp-alloc-check-test--defun 'nl_gc_sweep_merge_range forms)))
     (should def)
     (should (eq (car body) 'seq))
     (should (equal (cadr body) '(nl_alloc_check_verify hdr)))
@@ -194,7 +198,7 @@ redzone verify comes first, before the free mark and the poison fill."
     (should (nelisp-alloc-check-test--tree-member-p
              '(nl_gc_sweep_free_dead hdr bt) walk))
     (should (nelisp-alloc-check-test--tree-member-p
-             '(ptr-read-u64 (data-addr nl_alloc_check) 8) walk))))
+             '(heap-read-u64 (data-addr nl_alloc_check) 8) walk))))
 
 ;;; Builtin dispatch / surface -------------------------------------------
 
@@ -205,7 +209,7 @@ helper, and stays out of the baked-eval dispatch subset."
                 (lambda (e) (equal (car e) '(:lit "nelisp--alloc-check-report")))
                 nelisp-standalone--applyfn-dispatch-table)))
     (should entry)
-    (should (equal (cdr entry) '(bf_alloc_check_report out)))
+    (should (equal (cdr entry) '(:word bf_alloc_check_report_w 0)))
     (should-not (cl-find-if
                  (lambda (e)
                    (equal (car e) '(:lit "nelisp--alloc-check-report")))
@@ -218,7 +222,7 @@ helper, and stays out of the baked-eval dispatch subset."
     (should (nelisp-alloc-check-test--defun 'bf_ac_scan_chunk forms))
     (should (nelisp-alloc-check-test--defun 'bf_ac_scan_chunks forms))
     (should (nelisp-alloc-check-test--calls-p
-             'bf_alloc_check_report 'bf_ac_scan_chunks forms))
+             'bf_alloc_check_report_w 'bf_ac_scan_chunks forms))
     ;; The leak scan skips boot blocks and free blocks.
     (should (nelisp-alloc-check-test--calls-p
              'bf_ac_scan_chunk 'nl_gc_is_boot forms))))
@@ -240,7 +244,7 @@ renamed, and still handles enable (19) / disable (20) / site id (21)."
     (should (nelisp-alloc-check-test--defun 'bf_debug_switch_ext forms))
     (should (nelisp-alloc-check-test--defun 'bf_debug_switch_ext2 forms))
     (should (nelisp-alloc-check-test--calls-p
-             'bf_debug_switch 'bf_debug_switch_ext forms))
+             'bf_debug_switch_w 'bf_debug_switch_ext forms))
     (should (nelisp-alloc-check-test--calls-p
              'bf_debug_switch_ext 'bf_debug_switch_ext2 forms))
     (let ((ext (nelisp-alloc-check-test--defun 'bf_debug_switch_ext2 forms)))
@@ -302,7 +306,7 @@ so this expectation is written against that constant rather than a literal."
       (should (nelisp-alloc-check-test--tree-member-p
                '(nl_alloc_check_env_enable) probe))
       (should (nelisp-alloc-check-test--tree-member-p
-               '(= (ptr-read-u16 block (* (+ eqpos 1) 2)) 49) probe))
+               '(= (heap-read-u16 block (* (+ eqpos 1) 2)) 49) probe))
       (pcase-let ((`(,w0 ,_w1 ,_w2 ,_w3 ,w4)
                    (nelisp-standalone--alloc-check-env-name-words)))
         (should (nelisp-alloc-check-test--tree-member-p w0 probe))

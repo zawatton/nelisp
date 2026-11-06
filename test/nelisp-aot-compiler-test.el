@@ -2730,7 +2730,7 @@ sum is 36."
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access ops ----
 
 (ert-deftest nelisp-aot-compiler/sexp-tag-parse-shape ()
-  "Doc 100 §100.B: (sexp-tag PTR) parses to (:kind sexp-tag :ptr REF)."
+  "Doc 100 §100.B: (sexp-tag PTR) parses to an `nl_val_tag' extern-call (c552d6bbb)."
   (let* ((sexp '(defun probe (p) (sexp-tag p)))
          (program (nelisp-aot-compiler--parse (list 'seq sexp))))
     ;; Top-level program is a seq containing one defun.
@@ -2738,9 +2738,12 @@ sum is 36."
     (let* ((forms (nelisp-aot-compiler--ir-get program :forms))
            (defun-node (car forms))
            (body (nelisp-aot-compiler--ir-get defun-node :body)))
-      (should (eq (nelisp-aot-compiler--ir-kind body) 'sexp-tag))
+      ;; c552d6bbb: sexp-tag lowers to an extern call of `nl_val_tag'.
+      (should (eq (nelisp-aot-compiler--ir-kind body) 'extern-call))
+      (should (equal (format "%s" (nelisp-aot-compiler--ir-get body :name))
+                     "nl_val_tag"))
       (should (eq (nelisp-aot-compiler--ir-kind
-                   (nelisp-aot-compiler--ir-get body :ptr))
+                   (car (nelisp-aot-compiler--ir-get body :args)))
                   'ref)))))
 
 (ert-deftest nelisp-aot-compiler/sexp-int-unwrap-parse-shape ()
@@ -2785,12 +2788,10 @@ sum is 36."
          (should (eq (car (cdr err)) expected-tag)))))))
 
 (ert-deftest nelisp-aot-compiler/sexp-tag-emit-bytes ()
-  "Doc 146 §3.0: (sexp-tag PTR) emits an immediate-aware tag read.
-emit-sexp-tag now dispatches on the value word's low bit, so the
-slot-path `mov rdi, rax' (48 89 C7) and `movzx rax, byte ptr [rdi]'
-(48 0F B6 07) are both still emitted but are no longer adjacent (the
-low-bit immediate dispatch sits between them).  Verify both byte groups
-are present rather than the old contiguous 7-byte tail."
+  "(sexp-tag PTR) lowers to an extern call of the runtime helper `nl_val_tag'.
+Since c552d6bbb the tag read is no longer inlined (`movzx rax, byte [rdi]');
+the object loads the argument into RDI (`mov rdi, [rbp-8]', 48 8B 7D F8)
+and records an undefined `nl_val_tag' symbol for the call relocation."
   (let* ((sexp '(seq (defun probe (p) (sexp-tag p))))
          (path (make-temp-file "nelisp-doc100-sexp-tag-" nil ".o")))
     (unwind-protect
@@ -2800,13 +2801,9 @@ are present rather than the old contiguous 7-byte tail."
                           (set-buffer-multibyte nil)
                           (insert-file-contents-literally path)
                           (buffer-string)))
-                 ;; Doc 146 §3.0: immediate-aware emit keeps both the
-                 ;; `mov rdi, rax' (48 89 C7) and the slot-path `movzx rax,
-                 ;; byte [rdi]' (48 0F B6 07), just no longer adjacent.
-                 (mov-rdi (unibyte-string #x48 #x89 #xC7))
-                 (movzx   (unibyte-string #x48 #x0F #xB6 #x07)))
-            (should (string-search mov-rdi bytes))
-            (should (string-search movzx bytes))))
+                 (load-rdi (unibyte-string #x48 #x8B #x7D #xF8)))
+            (should (string-search load-rdi bytes))
+            (should (string-search "nl_val_tag" bytes))))
       (ignore-errors (delete-file path)))))
 
 (ert-deftest nelisp-aot-compiler/sexp-int-unwrap-emit-bytes ()
@@ -4746,20 +4743,27 @@ grammar rather than comments alone."
                  (eq (car form) 'defun)
                  (eq (cadr form) name)))
           (cdr (or source nelisp-cc-frame-stack-find--source)))))
-    (let ((walk (defun-form 'nelisp_frame_stack_find_walk_bucket))
-          (in-frame (defun-form 'nelisp_frame_stack_find_in_frame))
+    (let ((walk-entry (defun-form 'nelisp_frame_stack_find_walk_bucket))
+          (walk (defun-form 'nelisp_frame_stack_find_walk_bucket_m))
+          ;; The public in-frame entry is now a thin wrapper that forwards to
+          ;; the `_m' worker, so the borrowed-word contract is checked on both.
+          (in-frame-entry (defun-form 'nelisp_frame_stack_find_in_frame))
+          (in-frame (defun-form 'nelisp_frame_stack_find_in_frame_m))
           (flags (defun-form 'nl_frame_set_flags))
           (share (defun-form 'nelisp_frame_try_share_chain))
           (key-equal (defun-form 'nelisp_symbol_key_equal nelisp-cc-fnv1a--source))
           (object (make-temp-file "nelisp-frame-stack-find-" nil ".o")))
       (unwind-protect
           (progn
+            (should walk-entry)
             (should walk)
+            (should in-frame-entry)
+            (should (contains-p in-frame-entry 'nelisp_frame_stack_find_in_frame_m))
             (should in-frame)
             (should flags)
             (should share)
             (should key-equal)
-            (dolist (form (list walk in-frame key-equal))
+            (dolist (form (list walk-entry walk in-frame-entry in-frame key-equal))
               (dolist (forbidden
                        '(record-slot-ref-ptr vector-ref-ptr
                          nl_cons_car_ptr nl_cons_cdr_ptr alloc-bytes
@@ -4783,7 +4787,9 @@ grammar rather than comments alone."
             (should (contains-p flags 128))
             (should (contains-p walk 'nelisp_symbol_key_equal))
             (should (contains-p key-equal 'str-eq))
-            (dolist (accessor '(heap-sexp-payload heap-sexp-data heap-sexp-length))
+            ;; Doc 226 D9 stage 3 (62c12b0d9, e1db7afa0): key equality compares
+            ;; symbol WORDs and the shared name buffer directly.
+            (dolist (accessor '(nl_word_payload nl_symbol_word_eq heap-read-u64))
               (should (contains-p key-equal accessor)))
             (should-not (contains-p key-equal 'ptr-read-u64))
             (nelisp-aot-compile-to-object

@@ -124,7 +124,11 @@
 
 (ert-deftest nelisp-transport-split-n5-once-and-flat-control ()
   (let ((original (symbol-function 'nelisp-standalone--n5-syscall-dispatch)) (calls 0)
-        (table '(((:lit "car") :word wf_arg_word args 0)))
+        ;; c552d6bbb: assembly refuses a table lacking the canonical
+        ;; intrinsic WORD arms, so the control table carries all of them.
+        (table (append '(((:lit "car") :word wf_arg_word args 0))
+                       (mapcar (lambda (n) `((:lit ,n) :word wf_arg_word args 0))
+                               '("+" "-" "<" "=" ">" "1+" "1-"))))
         (process-environment (copy-sequence process-environment)))
     (setenv "NELISP_T104_FLAT_DISPATCH" nil)
     (cl-letf (((symbol-function 'nelisp-standalone--n5-syscall-dispatch)
@@ -132,7 +136,7 @@
       (let ((source (nelisp-standalone--applyfn-assemble nil table)))
         (should (= calls 1))
         (let ((names (nelisp-standalone--builtin-leaf-names source)))
-          (should (= 2 (length names)))
+          (should (= (* 2 (length table)) (length names)))
           (dolist (name names)
             (should (= 1 (cl-count name (cdr source) :key #'cadr)))))))
     (setenv "NELISP_T104_FLAT_DISPATCH" "1")

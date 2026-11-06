@@ -3,6 +3,7 @@
 
 (require 'ert)
 (require 'nelisp-native-application-producer)
+(require 'nelisp-cc-fxir-admission)
 (require 'nelisp-cc-fxir-analysis)
 
 (defun nnap-ca--closure (form)
@@ -32,7 +33,8 @@
                     (while state (setq state (+ state -1)))
                     state)))
          (code (vector 16 (vector '+ nil nil nil nil) 1))
-         (ir '(:while (:slot 0) (:setslot 0 (:call 1 1 (:slot 0)))))
+         ;; The producer analyses the compiler's (:fn BODY) result directly.
+         (ir '(:fn (:while (:slot 0) (:setslot 0 (:call 1 1 (:slot 0))))))
          candidates)
     (cl-letf (((symbol-function 'nelisp--fx-macros-used) (lambda (_) nil))
               ((symbol-function 'nelisp-fxir-recompile)

@@ -36,8 +36,8 @@
                               nelisp-standalone--applyfn-bf-arms)))
         (aset-arm (cdr (assoc '(:lit "aset")
                               nelisp-standalone--applyfn-bf-arms))))
-    (should (equal aref-arm '(bf_aref_nemacs_bridge args env out)))
-    (should (equal aset-arm '(bf_aset_nemacs_bridge args env out)))
+    (should (equal aref-arm '(:word bf_aref_nemacs_bridge_w args env 0)))
+    (should (equal aset-arm '(:word bf_aset_nemacs_bridge_w args env 0)))
     (should (nelisp-char-table-vector-bridge-test--tree-member-p
              'bf_aref_checked nelisp-standalone--applyfn-bf-helpers))
     (should (nelisp-char-table-vector-bridge-test--tree-member-p

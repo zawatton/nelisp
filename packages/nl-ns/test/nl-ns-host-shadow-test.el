@@ -13,6 +13,14 @@
 
 (require 'ert)
 (require 'nl-ns)
+;; Run on its own (tools/run-tests-parallel.sh loads one file), the
+;; sibling helpers are absent.  Autoload them from `nl-ns-test' so they
+;; resolve lazily when a body first calls them; when the batch runner has
+;; already loaded the sibling, its real `defun's replace these stubs.
+(dolist (helper '(nl-ns-test--baseline-file nl-ns-test--check-files
+                  nl-ns-test--fixture nl-ns-test--finding))
+  (unless (fboundp helper)
+    (autoload helper "nl-ns-test")))
 ;; No `(require 'nl-ns-test)': the batch runner loads every *-test.el by
 ;; name, this file sorts first, and requiring the sibling here made it
 ;; load twice -- which ERT reports as "Test ... redefined (or loaded

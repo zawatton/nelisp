@@ -39,6 +39,7 @@
                   nelisp-standalone--builtin-leaf-names
                   nelisp-standalone--hoist-large-str-lits
                   nelisp-standalone--census-instrument
+                  nelisp-standalone--copy-lit-defun-bytes
                   nelisp-standalone--inline-pure-ops
                   nelisp-standalone--inline-boundaries
                   nelisp-standalone--inline-max-nodes
