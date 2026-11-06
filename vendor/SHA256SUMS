@@ -800,3 +800,6 @@ a22a2f94b4e7c65652c234fc94c94a10e4b989857985d5f7edd48490b0a448be  vendor/emacs-l
 d3a2e0a00202efe871e9bd7fb0226161422ba61830e30906ab8a046ae93cbe69  vendor/emacs-lisp/emacs-lisp/cl-seq.el
 95c8567fec0990bc2d1b87e7b7784a918385104ee1e017fdfebe86260c297d61  vendor/emacs-lisp/calendar/time-date.el
 b88e5913e2f400614ba5272198bef446c4bf9efe9daad25b5c68241af3446e0f  vendor/emacs-lisp/international/mule-util.el
+32ae90fc419b534dbcde596342ed263476c47f5a72ad0409f1edd2d42c0a07e2  vendor/emacs-lisp/obarray.el
+cb49cd0e2b52ecefaa8b15cb4d0dd70a3b0dc858a92314d0782fa44320929969  vendor/emacs-lisp/abbrev.el
+6ead13b4f329273d12d86b761defa66629ea284cb175315a5a248b920b4388a6  vendor/emacs-lisp/emacs-lisp/lisp-mode.el

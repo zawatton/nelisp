@@ -83,7 +83,6 @@ features remain behind `emacs-init' and its explicit loader functions.")
                      emacs-elisp-mode
                      emacs-font-lock
                      emacs-ielm
-                     lisp-mode
                      emacs-redisplay-core
                      emacs-syntax-table
                      emacs-tui-backend

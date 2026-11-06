@@ -41,7 +41,7 @@
 ;; FEATURE, never as missing functionality -- `(provide 'seq)' is
 ;; therefore the whole file.  If a future test corpus calls a real `seq'
 ;; name this probe found absent, add it here the same way
-;; `standalone-compat/json.el' adds JSON names: `(unless (fboundp 'NAME)
+;; a compat file adds names: `(unless (fboundp 'NAME)
 ;; (defun NAME (...) ...))', with a differential against host Emacs 31.1.
 
 ;;; Code:

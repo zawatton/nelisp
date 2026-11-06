@@ -793,3 +793,6 @@ emacs-lisp/emacs-lisp/subr-x.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/
 emacs-lisp/emacs-lisp/cl-seq.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cl-seq.el	sha256=d3a2e0a00202efe871e9bd7fb0226161422ba61830e30906ab8a046ae93cbe69
 emacs-lisp/calendar/time-date.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/time-date.el	sha256=95c8567fec0990bc2d1b87e7b7784a918385104ee1e017fdfebe86260c297d61
 emacs-lisp/international/mule-util.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/international/mule-util.el.gz	sha256=b88e5913e2f400614ba5272198bef446c4bf9efe9daad25b5c68241af3446e0f
+emacs-lisp/obarray.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/obarray.el.gz	sha256=32ae90fc419b534dbcde596342ed263476c47f5a72ad0409f1edd2d42c0a07e2
+emacs-lisp/abbrev.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/abbrev.el.gz	sha256=cb49cd0e2b52ecefaa8b15cb4d0dd70a3b0dc858a92314d0782fa44320929969
+emacs-lisp/emacs-lisp/lisp-mode.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/lisp-mode.el.gz	sha256=6ead13b4f329273d12d86b761defa66629ea284cb175315a5a248b920b4388a6

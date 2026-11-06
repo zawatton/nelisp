@@ -49,7 +49,15 @@ cmd: bash tools/ai/vendor-replace/run.sh ert ert ert-run-tests-batch
 cmd: bash tools/ai/vendor-replace/run.sh widget widget define-widget
 
 ** S2.5 vendored json-encode and json-read-from-string agree with GNU 31.1 on a fixed corpus
-pending
+#+REQUIRES: VENDOR_BIN
+# Expected output generated 2026-11-06 with GNU 31.1:
+#   CLGNU_CORPUS=tools/ai/vendor-replace/corpus-json.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$VENDOR_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/vendor-replace/corpus-json.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/vendor-replace/expected-json.txt
+
+** S2.6 vendored ert runs a batch of real tests on the binary with GNU's verdicts
+#+REQUIRES: VENDOR_BIN
+# GNU 31.1 prints "ERT-SMOKE 3/4 unexpected=1" (criterion added 2026-11-06).
+cmd: (ulimit -v 8388608; timeout 120 "$VENDOR_BIN" --load tools/ai/vendor-replace/ert-smoke.el 2>/dev/null) | grep -aqx 'ERT-SMOKE 3/4 unexpected=1'
 
 * S3 simple, files, calendar, help-mode
 

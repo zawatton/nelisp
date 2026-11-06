@@ -48658,6 +48658,12 @@ listing it would make the load-path lie about what is reachable."
                (list (expand-file-name "vendor/emacs-lisp/url"
                                        nelisp-standalone--repo-root)
                      (expand-file-name "vendor/emacs-test/lisp/emacs-lisp"
+                                       nelisp-standalone--repo-root)
+                     ;; GNU json.el and widget.el live only here; last, so it
+                     ;; fills in names no earlier directory provides.
+                     (expand-file-name "vendor/emacs-lisp-api"
+                                       nelisp-standalone--repo-root)
+                     (expand-file-name "vendor/emacs-lisp-api/progmodes"
                                        nelisp-standalone--repo-root)))))
     (seq-filter #'file-directory-p dirs)))
 
@@ -48681,7 +48687,10 @@ listing it would make the load-path lie about what is reachable."
    "\n;; --- GNU Emacs 31.1 subr.el: sequence and tree helpers ---\n"
    (nelisp-vendor-source-forms
     "vendor/staged-emacs-lisp/subr.el"
-    '(number-sequence ensure-list flatten-tree))))
+    '(number-sequence ensure-list flatten-tree))
+   "\n;; --- GNU Emacs 31.1 subr.el: apropos-internal (GNU ert.el) ---\n"
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el" '(apropos-internal))))
 
 (defun nelisp-standalone--prelude-source-boundary (source)
   "Return SOURCE position after its four function-cell bootstrap forms."

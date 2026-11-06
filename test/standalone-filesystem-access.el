@@ -1,20 +1,30 @@
 ;;; standalone-filesystem-access.el --- Actual directory search parity -*- lexical-binding: t; -*-
 (require 'nelisp-stdlib-filesystem-access)
-(unless (fboundp 'file-accessible-directory-p)
+(defvar nelisp-filesystem-test-prelude-provider nil)
+(unless (and (fboundp 'file-accessible-directory-p)
+             (not (eq (symbol-function 'file-accessible-directory-p)
+                      (get 'file-accessible-directory-p 'nelisp-prelude-provider))))
   (unwind-protect
       (progn
+        (setq nelisp-filesystem-test-prelude-provider
+              (and (fboundp 'file-accessible-directory-p)
+                   (symbol-function 'file-accessible-directory-p)))
         (fset 'file-accessible-directory-p (lambda (&rest _) t))
         (unless (condition-case nil
                     (progn (nelisp-stdlib-filesystem-access-install
                             (getenv "NELISP_GNU_BUILD_SOURCE_ROOT")) nil) (error t))
           (error "Foreign filesystem provider accepted")))
-    (fmakunbound 'file-accessible-directory-p)))
+    (if nelisp-filesystem-test-prelude-provider
+        (fset 'file-accessible-directory-p nelisp-filesystem-test-prelude-provider)
+      (fmakunbound 'file-accessible-directory-p))))
 (let* ((existing (and (fboundp 'file-accessible-directory-p)
                       (symbol-function 'file-accessible-directory-p)))
        (installation (nelisp-stdlib-filesystem-access-install
                       (getenv "NELISP_GNU_BUILD_SOURCE_ROOT")))
        (root (getenv "NELISP_FILESYSTEM_ACCESS_FIXTURE")))
-  (when existing
+  (when (and existing
+             (not (eq existing (get 'file-accessible-directory-p
+                                    'nelisp-prelude-provider))))
     (unless (and (eq installation 'preserved)
                  (eq existing (symbol-function 'file-accessible-directory-p)))
       (error "GNU filesystem provider was not preserved")))

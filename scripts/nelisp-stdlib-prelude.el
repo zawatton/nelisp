@@ -13326,6 +13326,16 @@ this file was committed).")
     (cond ((= nelisp--os-code 1) 'darwin)
           ((= nelisp--os-code 2) 'windows-nt)
           (t 'gnu/linux))))
+;; GNU's lread.c binds `source-directory' to the build tree of the binary, and
+;; GNU find-func.el (required by GNU ert.el) reads it at load time.  This
+;; binary has no GNU build tree, so it holds the root directory: "src" under it
+;; is no directory, which leaves `find-function-C-source-directory' nil, as for
+;; a GNU Emacs whose sources are gone.  `nelisp-stdlib-source-directory-install'
+;; replaces it when a real GNU source tree is configured.
+(unless (boundp 'source-directory)
+  (defvar source-directory "/"
+    "Directory in which Emacs sources were found when Emacs was built.
+You cannot count on them to still be there!"))
 ;; Byte-identical to the packages/nelisp-process copy so `make ns-gate'
 ;; polices the two.  It has to be here as well: the standalone does not load
 ;; that package, so the variable was void.
@@ -24100,6 +24110,22 @@ Windows drive path keeps `C:', and a relative path stays relative."
     ;; enter is executable -- testing the empty name itself answered nil.
     (nelisp--check-string filename)
     (= 0 (nelisp--syscall-path-int 21 (expand-file-name filename) 1))))  ; X_OK
+;; GNU fileio.c `file-accessible-directory-p': a directory one may enter.  GNU
+;; find-func.el (required by GNU ert.el) calls it while loading.
+(unless (fboundp 'file-accessible-directory-p)
+  (defun file-accessible-directory-p (filename)
+    "Return non-nil if file FILENAME is the name of an accessible directory."
+    (nelisp--check-string filename)
+    (let* ((absolute (expand-file-name filename))
+           (handler (find-file-name-handler absolute 'file-accessible-directory-p)))
+      (if handler
+          (funcall handler 'file-accessible-directory-p absolute)
+        (and (file-directory-p absolute) (file-executable-p absolute)))))
+  ;; Marks this definition as the prelude's own, so that
+  ;; `nelisp-stdlib-filesystem-access-install' may replace it with the
+  ;; authenticated POSIX search semantics.
+  (put 'file-accessible-directory-p 'nelisp-prelude-provider
+       (symbol-function 'file-accessible-directory-p)))
 ;; A bare PREFIX (no directory component -- every caller in this tree passes
 ;; one) hardcoded "/tmp/" and ignored both `temporary-file-directory' (never
 ;; bound here; see `nelisp-artifact--temp-directory' for the same defensive
@@ -27022,17 +27048,22 @@ already had this check and it never ran.  ENSURE is accepted, unused."
         (nelisp--emit-to-stream (char-to-string character) s)))
     character))
 
+;; GNU 31.1 subr.el `with-output-to-string' (verbatim): `standard-output' is a
+;; buffer, so code such as GNU json.el's `json--with-output-to-string' can run
+;; `with-current-buffer' on it.  An accumulator lambda there signalled
+;; wrong-type-argument in `json-encode'.
 (unless (fboundp 'with-output-to-string)
   (defmacro with-output-to-string (&rest body)
-    "Execute BODY with `standard-output' bound to a string accumulator and
-return the accumulated output (Doc 22 A9)."
-    `(let ((nelisp--wos-acc ""))
-       (let ((standard-output
-              (lambda (nelisp--wos-ch)
-                (setq nelisp--wos-acc
-                      (concat nelisp--wos-acc (char-to-string nelisp--wos-ch))))))
-         ,@body)
-       nelisp--wos-acc)))
+    "Execute BODY, return the text it sent to `standard-output', as a string."
+    (declare (indent 0) (debug t))
+    `(let ((standard-output (generate-new-buffer " *string-output*" t)))
+       (unwind-protect
+           (progn
+             (let ((standard-output standard-output))
+               ,@body)
+             (with-current-buffer standard-output
+               (buffer-string)))
+         (kill-buffer standard-output)))))
 
 ;; ---- Doc 22 reader-core gap fix A8 partial: `dlet' ----
 ;;

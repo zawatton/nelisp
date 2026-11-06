@@ -39,8 +39,19 @@ name even when `load-path' has a file of that name."
                              (locate-file name load-path '("" ".el"))))))
       entry)))
 
+(defvar nelisp-boot-library-gnu-preloaded '(("lisp-mode" abbrev prog-mode))
+  "Alist (LIBRARY . FEATURES): FEATURES GNU's loadup.el preloads before LIBRARY.
+GNU lisp-mode.el does not `require' abbrev or prog-mode (it uses
+`define-abbrev-table' and `prog-mode-map' directly) because they are dumped
+into every Emacs.  This image defers them, so they load before LIBRARY does.")
+
 (defun nelisp-boot-library-load (file &rest arguments)
   "Load FILE normally, or restore its executable-pinned provider on demand."
+  (when (stringp file)
+    (let* ((base (file-name-nondirectory file))
+           (name (if (string-suffix-p ".el" base) (substring base 0 -3) base)))
+      (dolist (feature (cdr (assoc name nelisp-boot-library-gnu-preloaded)))
+        (require feature))))
   (let ((known (nelisp-boot-library-known-entry file))
         (entry (nelisp-boot-library-entry file))
         restore)

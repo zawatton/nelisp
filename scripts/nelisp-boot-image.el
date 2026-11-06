@@ -13,7 +13,7 @@
     (byte-run . "vendor/emacs-lisp/emacs-lisp/byte-run.el")
     (macroexp . "vendor/emacs-lisp/emacs-lisp/macroexp.el")
     (inline . "vendor/emacs-lisp/emacs-lisp/inline.el")
-    (json . "packages/nelisp-emacs-foundation/src/json.el")
+    (json . "vendor/emacs-lisp-api/json.el")
     (easy-mmode . "vendor/emacs-lisp/emacs-lisp/easy-mmode.el")
     (rx . "vendor/emacs-lisp/emacs-lisp/rx.el")
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")

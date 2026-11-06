@@ -47,6 +47,7 @@ The C initializer's PATH_DUMPLOADSEARCH build path is not synthesized."
                               (nth 2 entry)))
             (error "Compatibility source pin differs: %s" (car entry)))))
       (when (and (boundp 'source-directory)
+                 (not (equal (symbol-value 'source-directory) "/"))
                  (not (equal (symbol-value 'source-directory) root)))
         (error "Existing compatibility source root differs"))
       (set 'source-directory root)

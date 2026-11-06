@@ -22,19 +22,19 @@ def write_executable(path, text):
 
 
 class CapsuleCalibration(unittest.TestCase):
-    def test_snapshot_includes_real_standalone_compat_json_input(self):
+    def test_snapshot_includes_real_standalone_compat_input(self):
         source = Path(__file__).resolve().parents[1]
-        relative = "standalone-compat/json.el"
-        source_json = source / relative
-        self.assertTrue(source_json.is_file())
+        relative = "standalone-compat/seq.el"
+        source_compat = source / relative
+        self.assertTrue(source_compat.is_file())
         self.assertIn(relative, CAPSULE.source_manifest(source))
         with tempfile.TemporaryDirectory(prefix="nelisp-p5-json-snapshot-") as temp:
             snapshot = Path(temp) / "snapshot"
             CAPSULE.copy_source(source, snapshot)
-            copied_json = snapshot / relative
-            self.assertTrue(copied_json.is_file())
-            self.assertEqual(CAPSULE.sha256(copied_json),
-                             CAPSULE.sha256(source_json))
+            copied_compat = snapshot / relative
+            self.assertTrue(copied_compat.is_file())
+            self.assertEqual(CAPSULE.sha256(copied_compat),
+                             CAPSULE.sha256(source_compat))
 
     def test_binary_and_source_mutations_fail_then_patch_passes(self):
         with tempfile.TemporaryDirectory(prefix="nelisp-p5-capsule-test-") as temp:
