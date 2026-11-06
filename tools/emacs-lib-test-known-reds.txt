@@ -7,6 +7,7 @@ json-read-array-empty
 json-read-malformed-trailing-garbage
 json-read-null
 list-buffers-renders-four-columns
+org-agenda-RET-jumps-to-source
 org-agenda-a-sorts-same-day-items-by-time
 org-agenda-capture-todo-fixture-integration
 org-agenda-dispatches-a-shows-scheduled
@@ -16,7 +17,6 @@ org-agenda-f-and-b-shift-agenda-window
 org-agenda-g-reverts
 org-agenda-q-quits
 org-agenda-respects-org-agenda-files
-org-agenda-RET-jumps-to-source
 org-archive-subtree-moves-current-subtree-to-archive-heading
 seq-test/combine-sort-group
 tab-bar-close-keeps-last-tab

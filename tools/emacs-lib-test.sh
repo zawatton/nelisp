@@ -14,6 +14,9 @@
 # from the file.  EMACS (default emacs) selects the host Emacs; logs go to
 # EMACS_LIB_TEST_LOGS (default build/emacs-lib-test).
 set -u
+# Byte order for sort/comm, whatever the caller's locale.
+LC_ALL=C
+export LC_ALL
 root=$(cd "$(dirname "$0")/.." && pwd) || exit 2
 cd "$root" || exit 2
 known=tools/emacs-lib-test-known-reds.txt
@@ -55,8 +58,8 @@ fi
 new=$(comm -13 "$known" "$actual")
 fixed=$(comm -23 "$known" "$actual")
 status=0
-[ -n "$new" ] && { printf 'NEW FAILURE %s\n' $new >&2; status=1; }
-[ -n "$fixed" ] && { printf 'NOW PASSES (remove from %s) %s\n' "$known" $fixed >&2; status=1; }
+for t in $new; do echo "NEW FAILURE $t" >&2; status=1; done
+for t in $fixed; do echo "NOW PASSES (remove from $known) $t" >&2; status=1; done
 [ "$broken" -gt 0 ] && status=1
 echo "emacs-lib-test: files=$files failing=$(wc -l < "$actual") known=$(wc -l < "$known") broken=$broken"
 exit $status

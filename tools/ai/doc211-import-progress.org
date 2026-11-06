@@ -43,7 +43,7 @@ cmd: sh tools/ai/doc211-import-check.sh regex-ert
 cmd: make -s doc211-api-consumer-smoke
 
 ** S2.4 The 165 emacs-lib test files outside CI's glob fail exactly on the recorded known reds (host Emacs, one file per process)
-#+TIMEOUT: 1500
+#+TIMEOUT: 600
 cmd: tools/emacs-lib-test.sh
 
 ** S2.5 No emacs-lib known reds remain
