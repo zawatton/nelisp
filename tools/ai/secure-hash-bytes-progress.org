@@ -1,0 +1,23 @@
+#+TITLE: secure-hash and md5 hash the bytes GNU hashes
+
+# Reported 2026-11-06 by the notes-9b session: secure-hash over a buffer
+# filled by insert-file-contents-literally with non-ASCII bytes differs from
+# GNU and sha256sum (raw-byte chars hashed by character code), so the
+# vendor-source sha256 pins fail when NeLisp computes them.  md5 is also void.
+# SHB_BIN is a binary built from this tree.  Build 195 differs on 9 of 15 lines.
+
+* S1 hash input bytes match GNU 31.1
+
+** S1.1 secure-hash/md5 differential corpus matches GNU 31.1
+#+REQUIRES: SHB_BIN
+# Expected output generated 2026-11-06 with GNU 31.1 from the repository root:
+#   CLGNU_CORPUS=tools/ai/secure-hash/corpus-hash-bytes.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$SHB_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/secure-hash/corpus-hash-bytes.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/secure-hash/expected-hash-bytes.txt
+
+** S1.2 the binary's sha256 of every vendored file equals vendor/SHA256SUMS
+#+REQUIRES: SHB_BIN
+cmd: bash tools/ai/secure-hash/vendor-sums.sh
+
+** S1.3 cl-gnu corpora and timing still pass
+#+REQUIRES: SHB_BIN
+cmd: CLGNU_BIN="$SHB_BIN" bash tools/ai/cl-gnu/compare.sh && CLGNU_BIN="$SHB_BIN" bash tools/ai/cl-gnu/timing-check.sh

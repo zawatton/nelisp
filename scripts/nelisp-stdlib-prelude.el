@@ -27672,15 +27672,17 @@ START and END select the text.  BINARY requests a unibyte digest."
     (unless (memq algorithm '(md5 sha1 sha224 sha256 sha384 sha512
                              sha3-224 sha3-256 sha3-384 sha3-512))
       (error "Invalid algorithm arg: %s" algorithm))
+    ;; GNU hashes a multibyte text's encoded bytes; eight-bit raw-byte
+    ;; chars (#x3FFF80..#x3FFFFF) encode back to their single bytes.
+    (when (multibyte-string-p text)
+      (setq text (encode-coding-string text 'utf-8-unix)))
     (let ((digest
            (if (and (eq algorithm 'sha256) (fboundp 'nelisp--sha256))
                (nelisp--sha256 text)
              (let ((spec (nelisp--hash-program algorithm)))
                (unless spec (error "Hash helper unavailable: %s" algorithm))
                (let* ((command (car spec)) (width (cdr spec))
-                      (bytes (if (multibyte-string-p text)
-                                 (encode-coding-string text 'utf-8-unix)
-                               text))
+                      (bytes text)
                       (tmp (make-temp-file "nelisp-secure-hash-")) result)
                  (unwind-protect
                      (progn
@@ -27700,6 +27702,11 @@ START and END select the text.  BINARY requests a unibyte digest."
                    (when (file-exists-p tmp) (delete-file tmp)))
                  result)))))
       (if binary (nelisp--secure-hash-hex-to-bytes digest) digest)))))
+
+(unless (fboundp 'md5)
+  (defun md5 (object &optional start end _coding-system _noerror)
+    "Return the MD5 hex digest of OBJECT (string or buffer) between START and END."
+    (secure-hash 'md5 object start end)))
 
 ;; Reserve the native function-mirror identity before EvalCtx creation.  The
 ;; optional JIT module replaces this source-only fallback when required.
