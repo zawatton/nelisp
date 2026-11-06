@@ -1214,7 +1214,6 @@ process (an earlier file may legitimately load a lazy feature)."
                    emacs-elisp-mode
                    emacs-font-lock
                    emacs-ielm
-                   lisp-mode
                    emacs-redisplay-core
                    emacs-syntax-table
                    emacs-tui-backend
