@@ -668,7 +668,7 @@ VENDOR_FAST_DETAIL_FORM_ELISP = $(subst ",\",$(VENDOR_FAST_DETAIL_FORM))
 NEMACS_RESOLVED_DIRS := $(shell DOC211_SOURCE_ROOTS_PRINT=1 $(EMACS) -Q -L $(NELISP_ROOT)/packages/nelisp-pkg/src -l $(NELISP_ROOT)/scripts/doc211-source-roots.el)
 NEMACS_SRC_DIRS := $(filter packages/%/src,$(NEMACS_RESOLVED_DIRS))
 NEMACS_TEST_DIR := $(lastword $(NEMACS_RESOLVED_DIRS))
-NEMACS_PACKAGE_SRC_LOAD_PATH = $(foreach d,$(NEMACS_SRC_DIRS),-L $(NELISP_ROOT)/$(d))
+NEMACS_PACKAGE_SRC_LOAD_PATH = $(foreach d,$(NEMACS_SRC_DIRS),-L $(NELISP_ROOT)/$(d)) -L $(NELISP_ROOT)/src
 NELISP_LOAD_PATH = $(NEMACS_PACKAGE_SRC_LOAD_PATH) -L $(NELISP_ROOT)/src
 # Colon-separated absolute package source dirs (no staged flat source root).
 empty :=
