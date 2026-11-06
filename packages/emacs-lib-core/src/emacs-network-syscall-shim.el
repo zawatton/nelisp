@@ -427,12 +427,17 @@ carries a declare form aborts at call time."
     "Reader polyfill: the macro is absent and vendor server.el
 relies on it (`condition-case' itself works)."
     `(condition-case nil (progn ,@body) (error nil)))
+  (defalias 'emacs-network-syscall-shim--raw-functionp
+    (symbol-function 'functionp))
   (defun functionp (f)
-    "Reader polyfill: the builtin returns nil for closures/lambdas,
-which silently skips every process filter/sentinel dispatch.  Accept
-symbols with function bindings and (closure ...) / (lambda ...) forms."
+    "Reader polyfill: older readers returned nil for closures/lambdas,
+which silently skips every process filter/sentinel dispatch.  Ask the
+builtin first, so closure objects (heap kind 23) and subrs keep their
+answer, then accept symbols with function bindings and (closure ...) /
+(lambda ...) forms."
     (cond
      ((null f) nil)
+     ((emacs-network-syscall-shim--raw-functionp f) t)
      ((symbolp f) (fboundp f))
      ((consp f) (if (memq (car f) '(lambda closure builtin)) t nil))
      (t nil)))
