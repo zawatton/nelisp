@@ -118,8 +118,9 @@
    ((consp time)
     (let ((high (car time)) (low (cdr time)))
       (if (consp low)
-          (let ((hz 1) (usec 0) (psec 0) (tail (cdr low)))
-            (setq low (car low))
+          ;; LOW is rebound (not `setq'd) to its car, so the type checker does
+          ;; not keep the cons type from the `consp' test above.
+          (let ((hz 1) (usec 0) (psec 0) (tail (cdr low)) (low (car low)))
             (cond
              ((consp tail)
               (setq usec (car tail) tail (cdr tail))
