@@ -51,6 +51,9 @@
                  ((symbol-function 'nl_ht_meta_slot) #'identity)
                  ((symbol-function 'nl_ht_marker_word_set)
                   (lambda (m i w) (push (list m i w) npx--markers) 0))
+                 ;; Production `nl_ht_set_int' stores a fixnum WORD through the marker setter.
+                 ((symbol-function 'nl_ht_set_int)
+                  (lambda (m i n) (push (list m i (+ (* n 4) 1)) npx--markers) 0))
                  ((symbol-function 'nl_ht_reserve) (lambda (tb n) (push (list tb n) npx--reserved) 0)))
          (funcall thunk))))))
 

@@ -79,7 +79,16 @@ existing varset arm for the same input, with the same helper adapters."
                 ((symbol-function 'wf_bytecode_w_view) (lambda (w _) w))
                 ((symbol-function 'bf_set_dynamic_value)
                  (lambda (e s v) (should (= e env))
-                   (push (list s v) sets) (if (plist-get options :signal) 1 0))))
+                   (push (list s v) sets) (if (plist-get options :signal) 1 0)))
+                ;; Placeholders so the installs below are undone on exit.
+                ((symbol-function 'wf_bytecode_w_symobj_p) nil)
+                ((symbol-function 'wf_bytecode_w_canon_p) nil)
+                ((symbol-function 'wf_bytecode_w_memq_fast) nil)
+                ((symbol-function 'wf_bytecode_w_nth_fast) nil)
+                ((symbol-function 'wf_bytecode_w_length_fast) nil)
+                ((symbol-function 'wf_bytecode_w_local_read) nil)
+                ((symbol-function 'wf_bytecode_w_local_set) nil))
+        (sst--install-fast-helpers)
         (let ((state
                (if outer
                    (eval (sst--host-form

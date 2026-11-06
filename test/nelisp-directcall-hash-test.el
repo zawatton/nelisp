@@ -48,6 +48,8 @@
                   (lambda (k h) (push (list 'remove k h) events) 3))
                  ((symbol-function 'nl_ht_meta_count) (lambda (h) (push (list 'count h) events) count))
                  ((symbol-function 'wf_dirty) (lambda () (push 'dirty events) 0))
+                 ;; hashtab fast path: 0 declines to the general path under test.
+                 ((symbol-function 'nl_ht_fast_hdr) (lambda (_) 0))
                  ((symbol-function 'm5_fx_primitive_run) (lambda (&rest _) -3)))
          (funcall thunk mem (lambda () events)
                   (lambda (field v) (pcase field ('custom (setq custom v)) ('valid (setq valid v))
@@ -120,10 +122,12 @@
   ;; dcproto: the argv and the result slot belong to the caller's rooted frame,
   ;; so the body writes its value straight into OUT (which roots a partial
   ;; result) between the backtrace record and its finish; no root frame is taken.
+  ;; Id 112 is the first allocating id: ids below it are leaves (w1leaf) that
+  ;; take neither the record nor its finish.
   (ndc--with-definitions
    (lambda (_)
      (let ((mem (make-hash-table :test #'eql)) (live nil) (lazy nil) (finished nil))
-       (cl-letf (((symbol-function 'nl_directcall_id) (lambda (&rest _) 102))
+       (cl-letf (((symbol-function 'nl_directcall_id) (lambda (&rest _) 112))
                  ((symbol-function 'heap-read-u64) (lambda (p i) (gethash (+ p i) mem 0)))
                  ((symbol-function 'ptr-write-u64) (lambda (p i v) (puthash (+ p i) v mem)))
                  ((symbol-function 'nl_root_mark) (lambda (&rest _) (ert-fail "root mark")))
@@ -134,7 +138,7 @@
                  ((symbol-function 'nl_directcall_run)
                   (lambda (id p n out _)
                     (should live) (should (equal lazy '(100 3)))
-                    (should (equal (list id p n out) '(102 100 3 200)))
+                    (should (equal (list id p n out) '(112 100 3 200)))
                     (puthash out 45 mem) 0))
                  ((symbol-function 'nl_n4_finish_w)
                   (lambda (w _env _pad frame) (should live) (should (= frame 55))

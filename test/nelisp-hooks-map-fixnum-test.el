@@ -72,7 +72,7 @@ dynamic extent.")
 
 (defvar nelisp-hmf-test--helper-names
   '(nelisp--hook-depths nelisp--hook-list-p nelisp--run-hook-call
-    nelisp--run-hook-value nelisp--plist-p)
+    nelisp--run-hook-value nelisp--plist-p nelisp--hook-alist-set)
   "Internal (`nelisp--'-prefixed) helper names the public functions
 above call by their real names.  These never collide with anything
 Emacs's own machinery calls internally, so they are installed once,
@@ -102,6 +102,10 @@ for its own (non-hook, non-buffer-touching) targets."
              ((and (consp form) (eq (car form) 'unless)
                    (equal (cadr form) '(get 'map-not-inplace 'error-conditions)))
               (eval (caddr form) t))
+             ;; Unguarded top-level helper (defun NAME ...), e.g. `nelisp--hook-alist-set'.
+             ((and (consp form) (eq (car form) 'defun)
+                   (memq (cadr form) nelisp-hmf-test--helper-names))
+              (eval form t))
              ;; (unless (fboundp 'NAME) (defun/defvar NAME ...))
              ((and (consp form) (eq (car form) 'unless)
                    (consp (cadr form))

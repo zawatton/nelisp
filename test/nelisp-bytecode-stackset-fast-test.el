@@ -61,6 +61,28 @@ the actual generated definition, including its dispatch and state packing."
 
 (defun sst--sar (value shift) (ash value (- shift)))
 
+(defconst sst--fast-helper-names
+  '(wf_bytecode_w_symobj_p wf_bytecode_w_canon_p wf_bytecode_w_memq_fast
+    wf_bytecode_w_nth_fast wf_bytecode_w_length_fast wf_bytecode_w_local_read
+    wf_bytecode_w_local_set)
+  "Production fast-path leaves that `wf_bytecode_w_fast_run' calls.")
+
+(defun sst--install-fast-helpers ()
+  "Install the production fast-path leaves; callers rebind them with `cl-letf'."
+  (dolist (n sst--fast-helper-names)
+    (fset n (eval (cons 'lambda (cddr (sst--host-form (sst--function n)))) t))))
+
+(defun sst--call-with-fast-helpers (thunk)
+  "Call THUNK with the production fast-path leaves installed from the IR."
+  (let ((saved (mapcar (lambda (n) (cons n (and (fboundp n) (symbol-function n))))
+                       sst--fast-helper-names)))
+    (unwind-protect
+        (progn
+          (dolist (n sst--fast-helper-names)
+            (fset n (eval (cons 'lambda (cddr (sst--host-form (sst--function n)))) t)))
+          (funcall thunk))
+      (dolist (s saved) (if (cdr s) (fset (car s) (cdr s)) (fmakunbound (car s)))))))
+
 (defun sst--run (code sp depth &optional outer)
   "Run the full fast-loop source IR, or the existing OUTER stack-set arm.
 The address space checks byte fetches and word accesses, with canaries on
@@ -93,6 +115,8 @@ both sides of the stack. Return packed state, memory and stack accesses."
                 ((symbol-function 'heap-read-u64) #'read-word)
                 ((symbol-function 'ptr-read-u64) #'read-word)
                 ((symbol-function 'ptr-write-u64) #'write-word))
+       (sst--call-with-fast-helpers
+        (lambda ()
         (let ((state
                (if outer
                    (let ((arm (sst--find (sst--function 'wf_bytecode_execute_frame)
@@ -110,7 +134,7 @@ both sides of the stack. Return packed state, memory and stack accesses."
                         (list data (length code) mem depth 2048 0 pc sp 0 cell)))))
           (list :state state :before before :after words
                 :stack-reads (cl-remove-if (lambda (at) (>= at cell)) reads)
-                :stack-writes (cl-remove-if (lambda (pair) (>= (car pair) cell)) writes)))))))
+                :stack-writes (cl-remove-if (lambda (pair) (>= (car pair) cell)) writes)))))))))
 
 (defun sst--same-memory-p (left right)
   (and (= (hash-table-count left) (hash-table-count right))

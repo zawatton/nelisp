@@ -10,6 +10,7 @@
 (defvar p9--equal-def nil)
 (defvar nelisp-standalone--target)
 (defvar nl_empty_vector 'nl_empty_vector)
+(defvar nl_alloc_check 'nl_alloc_check)
 
 (defun p9--definitions ()
   "Extract the production DSL once per process, including a seed override."
@@ -21,7 +22,7 @@
                 (expand-file-name "scripts/nelisp-standalone-build.el" root)
                 '(nl_w_vector_make bf_make_vector_w bf_vector_w bf_vec_count bf_vec_fill
                   nl_eic_prim_make_vector nl_directcall_alloc_run bf_equal2 bf_equal_words
-                  bf_aset_checked_w))
+                  bf_aset_checked_w nl_alloc_check_enabled))
                (nelisp-fx-vector--extract
                 (expand-file-name "lisp/nelisp-cc-nlvector-alloc.el" root)
                 '(nl_alloc_vector nl_alloc_vector_fill)))))))
@@ -82,21 +83,23 @@
               ((symbol-function 'bf_wrong_type_arrayp) (lambda (w) (setq p9--error (list 'arrayp w)) 1))
               ((symbol-function 'nl_abi_fail) (lambda (_rc _pad) 0)))
       ;; DATA-ADDR takes a DSL symbol, not a Lisp variable.
-      (let ((nl_empty_vector 'nl_empty_vector)) (funcall thunk)))))
+      (let ((nl_empty_vector 'nl_empty_vector) (nl_alloc_check 'nl_alloc_check))
+        (funcall thunk)))))
 
 (defun p9--with-equal-reference (thunk)
   "Run the production Lisp comparison with the native leaf's record contract."
   (unless p9--equal-def
     (setq p9--equal-def
-          (car (nelisp-fx-vector--extract
+          (nelisp-fx-vector--extract
                 (expand-file-name "scripts/nelisp-stdlib-prelude.el"
                                   (or (getenv "PARITY9_SOURCE") fxvm--root))
-                '(nelisp--equal-reference)))))
-  (eval p9--equal-def t)
+                '(nelisp--equal-reference nelisp--equal-1 nelisp--equal-slots))))
+  (mapc (lambda (def) (eval def t)) p9--equal-def)
   (cl-letf (((symbol-function 'nelisp--native-eq) #'eq)
             ((symbol-function 'nelisp--native-equal)
              (lambda (a b) (if (recordp a) (eq a b) (equal a b))))
-            ((symbol-function 'nelisp-marker-p) (lambda (_x) nil)))
+            ((symbol-function 'nelisp-marker-p) (lambda (_x) nil))
+            ((symbol-function 'nelisp-overlay-p) (lambda (_x) nil)))
     (funcall thunk)))
 
 (ert-deftest p9-empty-vector-constructors-share-one-object ()

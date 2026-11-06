@@ -218,6 +218,13 @@
                ((symbol-function 'nl_frame_stack_promote_env) (lambda (&rest _) 0))
                ((symbol-function 'nl_thread_unshallow_names) (lambda (&rest _) 0))
                ((symbol-function 'nl_thread_registry_find) (lambda (&rest _) 0))
+               ;; Root-stack intrinsics (lisp/nelisp-cc-rootstack.el) that the
+               ;; generated body now uses to root its frame; model a bump stack.
+               ((symbol-function 'nl_thread_parent_unshallow_rooted)
+                (fxlet-test--generated 'nl_thread_parent_unshallow_rooted))
+               ((symbol-function 'nl_root_mark) (lambda (_env) 0))
+               ((symbol-function 'nl_root_frame) (lambda (_env n) (cl-incf next (* 8 n)) next))
+               ((symbol-function 'nl_root_release) (lambda (&rest _) 0))
                ((symbol-function 'nl_thread_unshallow_lean_one)
                 (lambda (_env event depth) (push (list (nl_cons_car_word event) depth) converted) 0)))
        (funcall (fxlet-test--generated 'nl_thread_parent_unshallow) 0))

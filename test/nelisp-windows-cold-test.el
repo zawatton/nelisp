@@ -3,6 +3,7 @@
 (require 'ert)
 (require 'cl-lib)
 (defvar nelisp-windows-cold-test--file-helpers nil)
+(defvar nelisp-windows-cold-test--root nil)
 (let* ((root (expand-file-name ".." (file-name-directory load-file-name)))
        (source (if (getenv "COLD_TEST_BUILD_SOURCE")
                    (expand-file-name (getenv "COLD_TEST_BUILD_SOURCE"))
@@ -13,6 +14,7 @@
   ;; Loading this test in a larger ERT process must not change its target's
   ;; constants. Keep the Windows file helpers privately for these controls.
   (load source nil t)
+  (setq nelisp-windows-cold-test--root root)
   (setq nelisp-standalone--repo-root root))
 
 (defun nelisp-windows-cold-test--definition (forms name)
@@ -32,6 +34,11 @@
       ('extern-call `(nelisp-windows-cold-test--extern ',(cadr form)
                        ,@(mapcar #'nelisp-windows-cold-test--host-form (cddr form))))
       ((or 'seq 'nl_seq2) `(progn ,@(mapcar #'nelisp-windows-cold-test--host-form (cdr form))))
+      ;; Doc 216 S1: storage reads go through the heap accessor layer, whose
+      ;; physical lowering is the same-width `ptr-read-*' primitive.
+      ((or 'heap-read-u8 'heap-read-u16 'heap-read-u32 'heap-read-u64)
+       (cons (intern (replace-regexp-in-string "\\`heap-" "ptr-" (symbol-name (car form))))
+             (mapcar #'nelisp-windows-cold-test--host-form (cdr form))))
       (_ (mapcar #'nelisp-windows-cold-test--host-form form)))))
 
 (defun nelisp-windows-cold-test--function (forms name)
@@ -145,12 +152,14 @@ Label only the stream calls so COFF relocation offsets identify each section."
               (cond
                ((eq (car form) 'nl_fa_write_all)
                 (cons (intern (format "cold_test_write_%s" (nth 2 form))) (cdr form)))
-               ((eq (car form) 'nl_mc_write_chunks)
+               ;; `nl_dump_compact_write' replaced the plain chunk writer.
+               ((memq (car form) '(nl_mc_write_chunks nl_dump_compact_write))
                 (cons 'cold_test_write_chunks (cdr form)))
                (t (mapcar label form))))))
     (let* ((source (funcall label (nelisp-windows-cold-test--definition
                                   nelisp-windows-cold-test--file-helpers
-                                  'bf_arena_dump_image_stream)))
+                                  ;; The (rc, OUT) entry only adapts the WORD body.
+                                  'bf_arena_dump_image_stream_body_w)))
            (unit (nelisp-aot-compile-to-link-unit source :arch 'x86_64 :format 'coff))
            (relocs (sort (copy-sequence (plist-get unit :relocs))
                          (lambda (a b) (< (plist-get a :offset) (plist-get b :offset)))))
@@ -329,7 +338,9 @@ Feed the header through the actual writer/read loops and both loader entries."
 (ert-deftest nelisp-windows-cold-dump-commit-failure ()
   "A refused scratch commit releases the mapping before any write or open."
   (let ((function (nelisp-windows-cold-test--function
-                   nelisp-windows-cold-test--file-helpers 'bf_arena_dump_image_stream))
+                   ;; The (rc, OUT) entry is a thin ABI wrapper; the commit logic
+                   ;; lives in the WORD body, which reports through `wf_write_int_w'.
+                   nelisp-windows-cold-test--file-helpers 'bf_arena_dump_image_stream_body_w))
         (events nil) (result nil))
     (cl-letf (((symbol-function 'wf_arg_ptr) (lambda (&rest _) 100))
               ((symbol-function 'nl_bi_make_cpath) (lambda (&rest _) 100))
@@ -345,8 +356,11 @@ Feed the header through the actual writer/read loops and both loader entries."
               ((symbol-function 'nl_os_free_chunk) (lambda (&rest _) (push 'free events) 1))
               ((symbol-function 'ptr-write-u64) (lambda (&rest _) (error "write before commit")))
               ((symbol-function 'nl_os_open_write_truncate) (lambda (&rest _) (error "open before commit")))
-              ((symbol-function 'wf_write_int) (lambda (_out value) (setq result value))))
-      (funcall function 100 200)
+              ((symbol-function 'nl_frame_stack_export_all) (lambda (&rest _) 0))
+              ((symbol-function 'nl_dump_string_slots) (lambda () 0))
+              ((symbol-function 'nl_cold_fmt_dense_p) (lambda () 0))
+              ((symbol-function 'wf_write_int_w) (lambda (_pad value) (setq result value))))
+      (funcall function 100 0)
       (should (= result -1))
       (should (equal (reverse events) '(reserve commit free))))))
 
@@ -365,6 +379,7 @@ Feed the header through the actual writer/read loops and both loader entries."
 (ert-deftest nelisp-windows-cold-process-reinit ()
   "Evaluate the real Windows reinit source against stale process-owned values."
   (let* ((process-environment '("NELISP_STANDALONE_TARGET=windows-x86_64"))
+         (root-dir nelisp-windows-cold-test--root)
          (forms (nelisp-standalone--reader-cold-reinit-forms 'src 'cursor 'result 'pool 'out 'ctx 'builtin-sym))
          (find-call nil)
          (_finder (setq find-call (lambda (form)
@@ -376,7 +391,18 @@ Feed the header through the actual writer/read loops and both loader entries."
                 nelisp-native-windows-directory-handles nelisp-native-cache--addresses nelisp-native-cache--gccjit-handles)
         '((("TEMP" . "C:/FreshTemp") ("APPDATA" . "C:/FreshApp")) ("stale=1") "stale" "stale"
           (1234) (5678) (9012))
-      (eval (read (concat "(progn " source ")")))
+      ;; Doc 243: the environment reinit is a compiled prelude function; the
+      ;; reinit source only calls it, so define it from the prelude here.
+      (let ((prelude (expand-file-name "scripts/nelisp-stdlib-prelude.el" root-dir)))
+        (with-temp-buffer
+          (insert-file-contents prelude)
+          (goto-char (point-min))
+          (re-search-forward "^(defun nelisp--cold-boot-reinit-environment\\_>")
+          (goto-char (match-beginning 0))
+          (eval (read (current-buffer)) t)))
+      (unwind-protect
+          (eval (read (concat "(progn " source ")")))
+        (fmakunbound 'nelisp--cold-boot-reinit-environment))
       (should (member "TEMP=C:/FreshTemp" (symbol-value 'process-environment)))
       (should (equal (symbol-value 'temporary-file-directory) "C:/FreshTemp"))
       (should (equal (symbol-value 'user-emacs-directory) "C:/FreshApp/.emacs.d/"))

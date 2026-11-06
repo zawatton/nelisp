@@ -12,7 +12,8 @@
 (let ((load-path (cons (expand-file-name "../lisp"
                                         (file-name-directory (or load-file-name buffer-file-name)))
                        load-path)))
-  (require 'nelisp-heap-accessors))
+  (require 'nelisp-heap-accessors)
+  (require 'nelisp-standalone-arena-rewrite))
 
 (defconst nelisp-inline-import-test--source
   (or (getenv "NELISP_INLINE_TEST_SOURCE")
@@ -22,7 +23,23 @@
 ;; Exercise the real orchestration functions without starting a native build.
 (with-temp-buffer
   (insert-file-contents nelisp-inline-import-test--source)
-  (dolist (name '(nelisp-standalone--inline-pure-ops
+  (dolist (name '(nelisp-standalone--cold-inline-boundaries
+                  nelisp-standalone--builtin-leaf-name-p
+                  nelisp-standalone--census-p
+                  nelisp-standalone--target-arch
+                  nelisp-standalone--prewarm-unit
+                  nelisp-standalone--prewarm-wait
+                  nelisp-standalone--prewarm-children
+                  nelisp-standalone--prewarm-jobs
+                  nelisp-standalone--prewarm-log-tail
+                  nelisp-standalone--prewarm-units
+                  nelisp-standalone--inline-parallel-mode-p
+                  nelisp-standalone--target-abi
+                  nelisp-standalone--no-inline-p
+                  nelisp-standalone--builtin-leaf-names
+                  nelisp-standalone--hoist-large-str-lits
+                  nelisp-standalone--census-instrument
+                  nelisp-standalone--inline-pure-ops
                   nelisp-standalone--inline-boundaries
                   nelisp-standalone--inline-max-nodes
                   nelisp-standalone--inline-counter
@@ -68,6 +85,15 @@
 (defvar nelisp-standalone--strings-source nil)
 ;; Compiler policy variables the unit cache key records (the compiler is not loaded here).
 (defvar nelisp-aot-compiler--x86-jump-tables-enabled nil)
+(defvar nelisp-aot-compiler--runtime-entry-params nil)
+(unless (fboundp 'nelisp-aot-compiler--lisp-values-p)
+  (defun nelisp-aot-compiler--lisp-values-p ()
+    nelisp-aot-compiler--runtime-entry-params))
+(defvar nelisp-aot-compiler--abi 'sysv)
+(defvar nelisp-aot-compiler--checked-arith nil)
+(defvar nelisp-aot-compiler--lisp-internal-entry-names nil)
+(defvar nelisp-aot-compiler--native-emit-enabled nil)
+(defvar nelisp-aot-compiler--arch 'x86_64)
 (defvar nelisp-aot-compiler--x86-direct-only-defuns nil)
 (defvar nelisp-aot-compiler--x86-call-free-regions nil)
 (defvar nelisp-aot-compiler--x86-affine-addresses nil)

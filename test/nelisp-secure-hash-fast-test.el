@@ -112,6 +112,17 @@ host Emacs defines, so only the public name is renamed."
     (eval (nelisp-sh-fast-test--guarded-defvar
            forms 'nelisp--secure-hash-helper-cache)
           t)
+    ;; `secure-hash' validates and slices its input, and maps its algorithm
+    ;; to a program, through these helpers; the prelude defines them
+    ;; unconditionally at top level.
+    (dolist (name '(nelisp--hash-text nelisp--hash-program))
+      (eval (or (cl-find-if (lambda (form)
+                              (and (consp form) (eq (car form) 'defun)
+                                   (eq (nth 1 form) name)))
+                            forms)
+                (error "nelisp-sh-fast-test: no (defun %S ...) in %s"
+                       name nelisp-sh-fast-test--prelude-file))
+            t))
     (eval (nelisp-sh-fast-test--guarded-defun
            forms 'nelisp--secure-hash-helper)
           t)

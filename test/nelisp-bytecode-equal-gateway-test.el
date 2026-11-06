@@ -17,7 +17,7 @@
 (defconst bce-test-expected-arm
   '((= base 154)
     (if (= (wf_bytecode_call_named env mem sp 2
-                                  (data-addr wf_bytecode_name_equal_bytes) 5) 0)
+                                  (wf_bytecode_name_equal_addr) 5) 0)
         (setq sp (- sp 1))
       (setq done 4))))
 
@@ -50,7 +50,7 @@
                                 (wf_bytecode_call_named env mem sp 2
                                   (data-addr wf_bytecode_name_equal_bytes) 5)))
              ((= base 154) (if (= (wf_bytecode_call_named env mem sp 2
-                                   (data-addr wf_bytecode_name_equal_bytes) 5) 0)
+                                   (wf_bytecode_name_equal_addr) 5) 0)
                                (setq sp (- sp 1)) (setq sp (- sp 1))))
              ((= base 154) (if (= (wf_bytecode_call_named_value env mem sp 2
                                    (data-addr wf_bytecode_name_equal_bytes) 5 1) 0)

@@ -63,6 +63,8 @@
                 ((symbol-function 'nelisp_symbol_key_equal) (lambda (a b) (if (= a b) 1 0)))
                 ((symbol-function 'bf_eq2) (lambda (a b) (if (or mutant (= a b)) 1 0)))
                 ((symbol-function 'heap-read-u64) #'rd)
+                ;; No suspended N4 cuts are modeled here, so every binding is visible.
+                ((symbol-function 'nl_n4_binding_visible) (lambda (&rest _) 1))
                 ((symbol-function 'wf_bytecode_w_int) (lambda (w) (ash w -2))))
         (unwind-protect
             (progn

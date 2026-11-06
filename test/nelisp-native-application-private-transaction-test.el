@@ -3,6 +3,7 @@
 
 (require 'ert)
 (require 'nelisp-native-application-producer)
+(require 'nelisp-cc-fxir-admission)
 (defvar nelisp-version)
 (defvar nnap-tx--callee nil)
 (defvar nnap-tx--observer nil)

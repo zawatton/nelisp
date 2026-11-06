@@ -29,6 +29,9 @@
     (cl-letf (((symbol-function 'wf_arg_ptr) (lambda (args i) (nth i args)))
               ((symbol-function 'wf_argval) (lambda (args i) (nth i args)))
               ((symbol-function 'sexp-name-eq) (lambda (a b) (if (equal a b) 1 0)))
+              ;; The dispatch counts its WORD argument list with m5_list_len;
+              ;; here the arguments are a host list.
+              ((symbol-function 'm5_list_len) (lambda (args acc) (+ acc (length args))))
               ((symbol-function 'wf_write_int_w) (lambda (_pad value) value)))
       ;; WORD dispatch returns its result; OUT is deliberately absent so a
       ;; legacy write cannot be hidden by a fixture-only output slot.
