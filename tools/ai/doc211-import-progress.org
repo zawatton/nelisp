@@ -86,8 +86,8 @@ cmd: sh tools/ai/doc211-import-check.sh magit
 
 * S4 Landing
 
-** S4.1 The six core-lane tests that fail only on the branch pass with their files loaded
-#+NOTE: owned by notes-d0 (core lane); in the full CI suite all six fail, loaded alone three still fail
+** S4.1 The core-lane tests that failed only on the branch pass with their files loaded
+#+NOTE: owned by notes-d0 (core lane). Six at definition; 2026-11-06 the two rbx-pad tests left with the core lane's deletion of the fresh-frame policy (74661ebdf), so four remain
 #+TIMEOUT: 120
 cmd: sh tools/ai/doc211-import-check.sh core-lane
 

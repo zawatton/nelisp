@@ -74,10 +74,9 @@ case "${1:-}" in
         emacs --batch -Q -l json $(load_path) -l ert \
               -l test/nelisp-pcase-app-test.el \
               -l test/nelisp-aot-private-continuation-test.el \
-              -l test/nelisp-fresh-frame-rbx-pad-test.el \
               -l packages/emacs-lib-facade/test/nelisp-emacs-artifact-gate5-test.el \
               -l packages/emacs-lib-facade/test/nelisp-emacs-artifact-gate6-test.el \
-              --eval '(ert-run-tests-batch-and-exit (quote (member nelisp-pcase-or-branch-local-bindings nelisp-private-continuation/native-three-frontends-public-collisions nelisp-rbx-pad-nonpolicy-complete-bytes-unchanged nelisp-rbx-pad-policy-store-follows-rbx-save nemacs-artifact-gate5-format-spec-source-equals-artifact nemacs-artifact-gate6-format-spec-source-equals-artifact)))'
+              --eval '(ert-run-tests-batch-and-exit (quote (member nelisp-pcase-or-branch-local-bindings nelisp-private-continuation/native-three-frontends-public-collisions nemacs-artifact-gate5-format-spec-source-equals-artifact nemacs-artifact-gate6-format-spec-source-equals-artifact)))'
         ;;
     *)
         echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane" >&2
