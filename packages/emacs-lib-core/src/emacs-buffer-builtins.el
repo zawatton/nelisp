@@ -82,6 +82,11 @@ installed as one family rather than mixed with unrelated partial fallbacks."
   (and (emacs-buffer-builtins--standalone-p)
        (not (fboundp 'current-buffer))))
 
+(defun emacs-buffer-builtins--ec-buffer-p (object)
+  "Return non-nil when OBJECT is a nelisp-ec buffer."
+  (and (fboundp 'nelisp-ec-buffer-p)
+       (nelisp-ec-buffer-p object)))
+
 (defun emacs-buffer-builtins--call-emacs-buffer (function args)
   "Lazy-load `emacs-buffer' and call FUNCTION with ARGS."
   (unless (fboundp function)
@@ -200,6 +205,13 @@ installed as one family rather than mixed with unrelated partial fallbacks."
 ;; paying the per-form interpreter overhead only once.  Under host Emacs
 ;; the C subr wins fboundp so this is a no-op either way.
 
+(defvar emacs-buffer-builtins--ec-owns-buffers
+  (emacs-buffer-builtins--replace-buffer-family-p)
+  "Non-nil when the nelisp-ec buffer family owns buffers in this session.
+Captured once at load time, before this file installs its own
+`current-buffer'.  When nil, the host or the prelude already provides a
+native buffer family and this bridge must not replace it.")
+
 (let ((--aliases--
        '((generate-new-buffer        . nelisp-ec-generate-new-buffer)
          (kill-buffer                . nelisp-ec-kill-buffer)
@@ -233,7 +245,7 @@ installed as one family rather than mixed with unrelated partial fallbacks."
          (set-marker-insertion-type  . nelisp-ec-set-marker-insertion-type)
          (point-marker               . nelisp-ec-point-marker)
          (insert-before-markers      . nelisp-ec-insert-before-markers))))
-  (if (emacs-buffer-builtins--replace-buffer-family-p)
+  (if emacs-buffer-builtins--ec-owns-buffers
       (dolist (--cell-- --aliases--)
         (fset (car --cell--) (cdr --cell--)))
     (dolist (--cell-- --aliases--)
@@ -485,10 +497,12 @@ The aggregate itself is stored in that buffer's event side table.")
     (setq buffer (or buffer (current-buffer)))
     (unless (bufferp buffer)
       (signal 'wrong-type-argument (list 'bufferp buffer)))
-    (let ((ext (gethash buffer emacs-buffer--state)))
-      (or (and ext (emacs-buffer--ext-base-buffer ext))
-          (gethash (buffer-name buffer)
-                   emacs-buffer--indirect-base-by-name))))
+    ;; Native buffers have no indirect clones.
+    (and (emacs-buffer-builtins--ec-buffer-p buffer)
+         (let ((ext (gethash buffer emacs-buffer--state)))
+           (or (and ext (emacs-buffer--ext-base-buffer ext))
+               (gethash (buffer-name buffer)
+                        emacs-buffer--indirect-base-by-name)))))
 
   (defun make-indirect-buffer (base-buffer name &optional clone inhibit-buffer-hooks)
     "Create an indirect buffer named NAME sharing BASE-BUFFER's text.
@@ -649,7 +663,7 @@ Reset the local keymap, syntax and case tables, and mode-line display.
    ;; The core's own buffer-local primitives are correct; see
    ;; `emacs-buffer--core-locals-p'.
    ((emacs-buffer--core-locals-p) nil)
-   ((emacs-buffer-builtins--standalone-p)
+   (emacs-buffer-builtins--ec-owns-buffers
     (dolist (--cell-- --local-aliases--)
       (fset (car --cell--) (cdr --cell--))))
    (t
@@ -1327,6 +1341,7 @@ select it, and return it."
     buf))
 
 (when (and (emacs-buffer-builtins--standalone-p)
+           emacs-buffer-builtins--ec-owns-buffers
            (not (nelisp-ec-current-buffer)))
   (emacs-buffer-builtins-ensure-initial-buffer))
 
@@ -1728,9 +1743,30 @@ buffers are returned regardless."
    'emacs-buffer-buffer-chars-modified-tick
    (list buffer)))
 
+;; Previous (possibly native) definition, captured once.  `defvar' keeps the
+;; first capture on reload; the bridge function itself is never captured.
+(defvar emacs-buffer-builtins--native-buffer-modified-tick
+  (and (fboundp 'buffer-modified-tick)
+       (not (eq (symbol-function 'buffer-modified-tick)
+                'emacs-buffer-builtins-bridge-buffer-modified-tick))
+       (symbol-function 'buffer-modified-tick))
+  "Definition of `buffer-modified-tick' preceding this bridge, or nil.")
+
+(defun emacs-buffer-builtins--tick-dispatch (native buffer)
+  "Return the tick of BUFFER via NATIVE for non-ec buffers, else the ec path."
+  (if (or (null native)
+          (emacs-buffer-builtins--ec-buffer-p (or buffer (current-buffer))))
+      (emacs-buffer-builtins-buffer-modified-tick buffer)
+    (funcall native buffer)))
+
+(defun emacs-buffer-builtins-bridge-buffer-modified-tick (&optional buffer)
+  "Return BUFFER's modified tick, deferring to the native one for native buffers."
+  (emacs-buffer-builtins--tick-dispatch
+   emacs-buffer-builtins--native-buffer-modified-tick buffer))
+
 (when (emacs-buffer-builtins--install-function-p 'buffer-modified-tick)
   (defalias 'buffer-modified-tick
-    #'emacs-buffer-builtins-buffer-modified-tick))
+    #'emacs-buffer-builtins-bridge-buffer-modified-tick))
 
 (when (emacs-buffer-builtins--install-function-p 'buffer-chars-modified-tick)
   (defun buffer-chars-modified-tick (&optional buffer)
