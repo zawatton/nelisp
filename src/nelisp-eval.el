@@ -721,6 +721,25 @@ the first match wins.  Unmatched errors propagate to the caller."
 
 ;;; Apply --------------------------------------------------------------
 
+;; Host-layer `apply'.  When this file is evaluated by NeLisp itself,
+;; the symbol `apply' resolves to the self-hosted `nelisp--builtin-apply',
+;; which calls the self-hosted `nelisp--apply', whose primitive branch
+;; calls `apply' again -- an endless cycle for any host subr (e.g. the
+;; captured `provide').  `nelisp--host-apply' is bridged from the host
+;; into `nelisp--functions' by `nelisp--install-primitives' and is never
+;; redefined by source evaluation (the `fboundp' guard sees the bridge),
+;; so a primitive reached from self-hosted code is invoked by the host.
+;; On the plain host it is simply GNU `apply'.
+(unless (fboundp 'nelisp--host-apply)
+  (defalias 'nelisp--host-apply (symbol-function 'apply)))
+
+;; Host-layer `fboundp', bridged the same way.  The NeLisp `fboundp'
+;; only sees `nelisp--functions', which is empty in a self-hosted copy of
+;; this file, so the guard in `nelisp--install-primitives' would skip
+;; every primitive there.
+(unless (fboundp 'nelisp--host-fboundp)
+  (defalias 'nelisp--host-fboundp (symbol-function 'fboundp)))
+
 (defun nelisp--apply (fn args)
   "Apply FN to the already-evaluated ARGS list.
 A symbol FN looks in `nelisp--functions' first so NeLisp-only defuns
@@ -755,11 +774,11 @@ dispatches straight into the VM."
     (let ((nfn (gethash fn nelisp--functions nelisp--unbound)))
       (if (eq nfn nelisp--unbound)
           (if (functionp fn)
-              (apply fn args)
+              (nelisp--host-apply fn args)
             (signal 'nelisp-void-function (list fn)))
         (nelisp--apply nfn args))))
    ((functionp fn)
-    (apply fn args))
+    (nelisp--host-apply fn args))
    (t
     (signal 'nelisp-eval-error (list "not a function" fn)))))
 
@@ -1205,8 +1224,12 @@ Skipping an unbound entry here defers that same `void-function' to
 the point some artifact actually calls it (now a real, catchable
 signal per FINDINGS.md recommendation 1(a)), instead of taking down
 primitive installation for entries nothing in a given run needs."
+  (puthash 'nelisp--host-apply (symbol-function 'nelisp--host-apply)
+           nelisp--functions)
+  (puthash 'nelisp--host-fboundp (symbol-function 'nelisp--host-fboundp)
+           nelisp--functions)
   (dolist (sym nelisp--primitive-symbols)
-    (when (fboundp sym)
+    (when (nelisp--host-fboundp sym)
       (puthash sym (symbol-function sym) nelisp--functions)))
   (puthash 'funcall      #'nelisp--builtin-funcall      nelisp--functions)
   (puthash 'apply        #'nelisp--builtin-apply        nelisp--functions)
