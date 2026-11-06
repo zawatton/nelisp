@@ -1,0 +1,62 @@
+# tools/ai/intscan-bench.sh, 2026-11-03, base=target/nelisp-base (origin/main 015f39515 tree), intscan=base + int-pin-scan-experiment-20261103.patch
+# sha256 base=1002d1898f4e3380 intscan=434b816f82bb080d
+## round 1 base
+case=empty gc-ms=94.3
+case=10k-x-400B-zero gc-ms=126.3
+case=10k-x-400B-addr gc-ms=130.2
+case=1-x-16MiB-text gc-ms=104.7
+case=64-x-64KiB-text gc-ms=106.1
+case=stale-1000 kept=0/1000
+done
+rc=0
+## round 1 intscan
+case=empty gc-ms=94.3
+case=10k-x-400B-zero gc-ms=114.4
+case=10k-x-400B-addr gc-ms=141.4
+case=1-x-16MiB-text gc-ms=105.8
+case=64-x-64KiB-text gc-ms=97.3
+case=stale-1000 kept=1000/1000
+done
+rc=0
+## round 2 base
+case=empty gc-ms=94.2
+case=10k-x-400B-zero gc-ms=107.0
+case=10k-x-400B-addr gc-ms=109.5
+case=1-x-16MiB-text gc-ms=103.2
+case=64-x-64KiB-text gc-ms=96.1
+case=stale-1000 kept=0/1000
+done
+rc=0
+## round 2 intscan
+case=empty gc-ms=92.1
+case=10k-x-400B-zero gc-ms=104.9
+case=10k-x-400B-addr gc-ms=146.1
+case=1-x-16MiB-text gc-ms=111.3
+case=64-x-64KiB-text gc-ms=99.6
+case=stale-1000 kept=1000/1000
+done
+rc=0
+## chain 1000 base
+chain n=1000 ok gc-ms=184.2
+rc=0
+## chain 1000 intscan
+chain n=1000 ok gc-ms=191.7
+rc=0
+## chain 10000 base
+chain n=10000 ok gc-ms=270.4
+rc=0
+## chain 10000 intscan
+chain n=10000 ok gc-ms=275.1
+rc=0
+## chain 100000 base
+chain n=100000 ok gc-ms=104.5
+rc=0
+## chain 100000 intscan
+chain n=100000 ok gc-ms=152.5
+rc=0
+## chain 1000000 base
+chain n=1000000 ok gc-ms=104.6
+rc=0
+## chain 1000000 intscan
+chain n=1000000 ok gc-ms=496.5
+rc=0

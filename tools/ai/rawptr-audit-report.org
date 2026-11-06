@@ -1,0 +1,142 @@
+#+TITLE: Raw-pointer audit: addresses stored inside alloc-bytes buffers
+
+* Header
+
+Method: read every runtime Lisp use of alloc-bytes, checked whether an arena address or runtime object pointer is stored into raw memory (ptr-write-u64 and similar) with no Lisp variable holding it across a GC point (while back-edge, allocating call, garbage-collect). Files whose alloc-bytes occurrences are inside quoted AOT DSL, compiler code or comments are out-of-scope. A top-level awk scan confirmed no lisp/nelisp-cc-* file has a runtime defun calling alloc-bytes.
+
+Scope command: grep -rl 'alloc-bytes' scripts/nelisp-stdlib-prelude.el packages lisp --include='*.el' | grep -v '/test/'  (87 files)
+
+Counts (rows): safe=7, at-risk=2, out-of-scope=80; total rows=89
+
+Limits: no build or runtime probe was run; whether nl_alloc_str / nl_alloc_vector memory is GC-managed arena storage was not verified, so the two at-risk rows carry that uncertainty.
+
+* Findings
+
+| site | function | verdict | reason |
+|-
+| packages/nl-check/src/nl-check.el:376 | nl-check (comment only) | out-of-scope | alloc-bytes appears only in a comment about the checker's escape analysis; no runtime call |
+| packages/nl-ffi/src/nl-ffi.el:225 | nl-ffi--string-to-cstring | safe | buf held in let* var until returned; returned integer is pinned by 0a304e554 and never freed; no address stored in raw memory |
+| packages/nl-ffi/src/nl-ffi-loader.el:819 | nl-ffi-loader--cstring (also fstat-size 863, tls 1127) | safe | every buffer is held in a let var through its syscall and only integers or mmap addresses are written into raw memory (relocs target mmap pages, not arena) |
+| packages/nl-safe/src/nl-safe.el:31 | nl-safe (docs and primitive name list) | out-of-scope | alloc-bytes is a name in a primitive list and commentary; never called at runtime |
+| packages/nelisp-sys/src/nelisp-sys-backend.el:128 | nelisp-sys-backend lowering | out-of-scope | emits (alloc-bytes ...) as a DSL list for the AOT compiler; compile-time only |
+| packages/nelisp-x11/src/nelisp-x11.el:84 | nelisp-x11 request builders and reply readers | safe | each request/reply buffer is a let var used in the same function; writes are bytes and fds, no buffer address stored in another buffer |
+| packages/nelisp-eventloop/src/nelisp-async.el:95 | nelisp-async poll/read/termios helpers | safe | pfd/buf/saved are let vars used across loops; raw buffers hold only ints (fd, termios bytes), no addresses |
+| packages/nelisp-eventloop/src/nelisp-async-core.el:47 | nelisp-async-core sleep | safe | timespec ts held in let* var across the syscall; holds only integers |
+| packages/nl-typecheck/src/nl-typecheck-prims-data.el:301 | nl-typecheck--prims (data table) | out-of-scope | string entry in a primitive-name table; no runtime call |
+| packages/nelisp-dired/src/nelisp-dired.el:25 | nelisp-dired path/stat/getdents helpers | safe | pb/st/buf are let vars live through while loops; buffers contain only bytes and ints read back immediately |
+| lisp/nelisp-cc-evalport-combiner-entry.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlrecord-drop.el:39 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-alloc-dealloc.el:17 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-env-set-value.el:107 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-env-leaves-simple.el:37 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlvector-alloc.el:72 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-secure-hash-ext.el:449 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-type-of.el:35 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-env-leaves-logic.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-nl-write-file.el:28 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-frame-push.el:134 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlvector-drop.el:30 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-cstr-helpers.el:32 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-cons-car-ptr.el:55 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el:43 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-secure-hash.el:438 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-reader-parser.el:121 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-symbol-name.el:49 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-aot-builtin-calln.el:108 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-emit-value.el:102 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-tty-raw.el:77 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlconsbox-alloc.el:14 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlboolvector-alloc.el:54 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-getenv.el:19 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-native-load.el:320 | nelisp-native-load--digest-bytes | safe | buf held in let* var through poke and sha256 with mid-form GC disarmed; freed by munmap or left as pinned int |
+| lisp/nelisp-native-load.el:773 | nelisp-native-load-box | at-risk | buf is local but the nl_alloc_str result (runtime string) ends up only in raw slot ADDR; GC does not scan ADDR contents |
+| lisp/nelisp-native-load.el:857 | nelisp-native-load--make-scratch-vector | at-risk | vector box pointer stored via ptr-write-u64 into raw ADDR and set-slot cells dropped; box reachable only through raw memory |
+| lisp/nelisp-cc-bi-meta-walk.el:69 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-sf-lambda.el:70 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-frame-ensure-capacity.el:164 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlboolvector-drop.el:39 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-cons.el:55 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-env-leaves-frame.el:35 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlstr-direct-ops.el:43 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-set-value-or-insert.el:94 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlrecord-alloc.el:118 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-env-bind-local.el:124 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-set-function-or-insert.el:38 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-combiner-cons.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-sf-let-star.el:135 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-aot-compiler.el:979 | nelisp-aot-compiler--* (IR/emit) | out-of-scope | compiler front/back end; alloc-bytes is an IR kind or emitted DSL, never called at runtime |
+| lisp/nelisp-cc-jit-split-by-non-alnum.el:27 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-alias.el:47 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-capture-lexical.el:17 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-env-install-empty.el:97 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-rootstack.el:102 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-syscall-stat.el:32 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-syscall-canonicalize.el:36 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-alloc-mem.el:21 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-jit-cons-cdr-ptr.el:55 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-combiner-apply.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-bootstrap.el:7 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-set-constant-or-insert.el:44 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-meta-driver.el:76 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlstr-drop.el:42 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-lookup-entry.el:122 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-nonenv-char-table.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlchartable-drop.el:45 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-syscall-stat-mtime.el:15 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlcell-drop.el:35 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-nl-make-directory.el:26 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-syscall-read-file.el:32 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlrecord-slot-ptr.el:59 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-eval-inner.el:87 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-env-leaves-bind.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-frame-stack-find.el:411 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-bucket-prepend.el:166 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlconsbox-drop.el:22 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlcell-alloc.el:14 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-sf-unwind-protect.el:131 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-mirror-is-constant.el:45 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-combiner-arglist.el:61 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-aot-builtin-call1.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-evalport-str-to-float.el:4 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-eval-is-truthy.el:61 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-bi-meta-dispatch-loop.el:92 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-tty-read-byte.el:28 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-nlvector-slot-ptr.el:69 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+| lisp/nelisp-cc-val-load.el:101 | emitted DSL source constant | out-of-scope | alloc-bytes is a symbol inside a quoted AOT DSL source (defconst); no runtime Lisp call |
+
+* At-risk details
+
+** lisp/nelisp-native-load.el:773 nelisp-native-load-box (string case)
+
+Path: the caller passes a Sexp slot ADDR (typically alloc-bytes 32 8). The string branch copies bytes to a temporary buf, then ptr-call nl_alloc_str writes a runtime string object whose pointer lives only in the slot at ADDR. If ADDR is later reachable only from another raw buffer (for example an argument table) and a GC runs, the string payload is not reached. The slot buffer itself is pinned only while a Lisp integer holds ADDR.
+
+Fixture sketch: A = (alloc-bytes 32 8); (nelisp-native-load-box A "hello"); B = (alloc-bytes 32 8); (ptr-write-u64 B 0 A); setq A nil; run a while loop with allocation plus (garbage-collect); then read through (ptr-read-u64 B 0) with nelisp-native-load-unbox. Expect corrupted or stale bytes if the slot or string was swept.
+
+** lisp/nelisp-native-load.el:857 nelisp-native-load--make-scratch-vector
+
+Path: nl_alloc_vector returns BOX, held in let var box only until the function returns; it is then stored with ptr-write-u64 into raw ADDR slot (offset 8). Each element cell (alloc-bytes 32 8) holds a boxed string and is dropped after nl_vector_set_slot copies it, so the element strings and the vector box are reachable only through raw memory. A GC after return frees the box while ADDR still points at it.
+
+Fixture sketch: A = (alloc-bytes 32 8); (nelisp-native-load--make-scratch-vector A); drop every Lisp reference except the raw slot A (store A only in a second raw buffer C); run allocation churn plus (garbage-collect); then call the nl_vector_slot_ptr stub on ADDR or read (ptr-read-u64 A 8) and dereference it; expect use-after-free if the box is arena-managed.
+
+* Decision (coordinator, 2026-11-03)
+
+** lisp/nelisp-native-load.el:773 nelisp-native-load-box (string arm): REPRODUCED, FIXED
+- Probe: tools/ai/rawptr-gc-probe.sh.
+- On origin/main ee06ee849, 184 of 200 strings boxed into raw cells come back wrong with no explicit GC (mid-form GC at while back-edges), and 200 of 200 after garbage-collect.
+- With (nelisp--debug-switch 6), which turns off mid-form GC, the first count drops to 0. So the probe reads the strings correctly, and the loss comes from the GC. Evidence: tools/ai/evidence/rawptr-probe-negative-control-20261103.txt.
+- Fix: nelisp-native-load--slot-pins maps a slot address to its payload address, held as a Lisp integer. The GC pins integer-held arena blocks (0a304e554).
+- The pin is dropped whenever the slot is rewritten (nelisp-native-load--zero-slot), and for each scratch cell once nl_vector_set_slot has copied it.
+- Gate: standalone-reader-native-load-slot-pin-smoke, with a gate-mutation row.
+
+** lisp/nelisp-native-load.el:857 nelisp-native-load--make-scratch-vector: REPRODUCED IN MMAP SLOTS, FIXED
+- Corrected on 2026-11-03, after a3f79db87. The first probe put the scratch vectors in alloc-bytes memory and nothing changed. That was the wrong condition.
+- In alloc-bytes memory, a plainly stored address keeps a block alive. In the same run, the same blocks stored XOR-masked were reclaimed 50 of 50.
+- The loader's slots, however, come from mmap (nelisp-native-load--mmap), outside the arena, and the GC does not scan them.
+- With the vectors in an mmap page, the a3f79db87 loader lost 49 of 50 boxes after garbage-collect, and 47 of 50 with no explicit GC (mid-form GC).
+- Fix: the box goes into nelisp-native-load--slot-pins, keyed by the slot. nelisp-native-load-unload drops the pins inside the unmapped slots.
+- Evidence: tools/ai/evidence/scratchvec-negative-control-20261103.txt. Ledger: tools/ai/scratchvec-pin-progress.org.
+
+** Open question (not needed for either fix)
+- The XOR-masked control shows that alloc-bytes blocks referenced plainly from a live alloc-bytes buffer survive GC.
+- The case-A strings stored in live alloc-bytes cells were nevertheless reclaimed, until they were pinned.
+- So nl_alloc_str payloads are not retained by whatever mechanism keeps those blocks alive. Which mechanism that is was not established.

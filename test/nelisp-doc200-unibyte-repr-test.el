@@ -422,7 +422,10 @@ inside BASE's mapped page."
             (defun nl_gc_mark_cons (_ptr) 0)
             (defun nl_gc_mark_vec_slots (_ptr _i _n) 0)
             (defun nl_gc_mark_char_table_box (_ptr) 0)
-            (defun nl_gc_mark_bool_vector_box (_ptr) 0)))
+            (defun nl_gc_mark_bool_vector_box (_ptr) 0)
+            ;; Int arms of `nl_gc_mark_slot' (integer-held buffers).
+            (defun nl_gc_pin_imm_word (_w) 0)
+            (defun nl_gc_pin_int_addr (_v) 0)))
          (clone-stubs
           (cons
            '(defun nelisp_nlstr_clone (box)
@@ -451,7 +454,14 @@ inside BASE's mapped page."
             (defun nl_cli_put_vector_loop (_buf off _vec _i _n) off)
             (defun nl_cli_put_object (_buf off) off)))
          (other-stubs
-          '((defun nl_alloc_str (_src _len dst) dst)
+          '(;; Linux allocation primitives for the real WORD string
+            ;; constructor (the generic stand-ins return 0).
+            (defun nl_os_alloc_chunk (size)
+              (let ((p (syscall-direct 9 0 size 3 34 -1 0)))
+                (if (< p 4096) 0 p)))
+            (defun nl_os_commit_range (_base _old _new) 1)
+            (defun nl_os_free_chunk (_base _size) 0)
+            (defun nl_alloc_str (_src _len dst) dst)
             (defun nl_alloc_symbol (_src _len dst) dst)))
          (probe-defs
           `((defun doc200_stringp (p)
@@ -472,10 +482,17 @@ inside BASE's mapped page."
                (if (= (nl_jit_type_of_tag 14 0) 77) 0 64)
                (if (= (nl_jit_type_of_tag 15 0) 77) 0 128)))
             (defun doc200_gc_probe ()
+              ;; Tag 14 is a caller-owned view of a canonical WORD string
+              ;; (built by `nl_string_new' in `doc200_setup'): marking the
+              ;; slot must set the mark bit of the canonical header.  Tag 15
+              ;; keeps the boxed layout and marks its byte buffer.
               (seq
                (ptr-write-u64 ,base 0 0)
                (nl_gc_mark_slot ,slot14)
-               (if (= (ptr-read-u64 ,base 0) ,buf14)
+               (if (< (ptr-read-u64
+                       (logand (ptr-read-u64 ,slot14 8) 2305843009213693951)
+                       0)
+                      0)
                    (seq
                     (ptr-write-u64 ,base 0 0)
                     (nl_gc_mark_slot ,slot15)
@@ -487,7 +504,7 @@ inside BASE's mapped page."
                (nl_sci_dispatch ,slot15 ,dst15 15)
                (+
                 (if (= (ptr-read-u8 ,dst14 0) 14) 0 1)
-                (if (= (ptr-read-u64 ,dst14 16) ,buf14) 0 2)
+                (if (= (ptr-read-u64 ,dst14 16) (ptr-read-u64 ,slot14 16)) 0 2)
                 (if (= (ptr-read-u64 ,dst14 24) 3) 0 4)
                 (if (= (ptr-read-u8 (ptr-read-u64 ,dst14 16) 1) 200) 0 8)
                 (if (= (ptr-read-u8 ,dst15 0) 15) 0 16)
@@ -546,14 +563,12 @@ inside BASE's mapped page."
               (seq
                ;; mmap(BASE, 4096, PROT_RW, MAP_FIXED|PRIVATE|ANON, -1, 0)
                (syscall-direct 9 ,base 4096 3 50 -1 0)
-               ;; UnibyteStr: tag@0, cap@8, ptr@16, byte-len@24.
-               (ptr-write-u64 ,slot14 0 14)
-               (ptr-write-u64 ,slot14 8 3)
-               (ptr-write-u64 ,slot14 16 ,buf14)
-               (ptr-write-u64 ,slot14 24 3)
+               ;; UnibyteStr: a view of a real canonical WORD string, built
+               ;; by the production constructor from raw bytes A 200 B.
                (ptr-write-u8 ,buf14 0 65)
                (ptr-write-u8 ,buf14 1 200)
                (ptr-write-u8 ,buf14 2 66)
+               (nl_alloc_str_write_tag ,buf14 3 3 ,slot14 0 14)
                ;; UnibyteMutStr: tag@0, NlStr*@8; box cap/ptr/len/rc.
                (ptr-write-u64 ,slot15 0 15)
                (ptr-write-u64 ,slot15 8 ,box15)
@@ -599,7 +614,7 @@ inside BASE's mapped page."
   (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-doc200-unibyte-repr-test--probe-source) path)
           (should (file-executable-p path))
           (let ((rc (call-process path nil nil nil)))
@@ -649,7 +664,7 @@ inside BASE's mapped page."
   (let ((path (make-temp-file "nelisp-doc200-aset-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-doc200-unibyte-repr-test--mutation-probe-source) path)
           (should (file-executable-p path))
           (should (= (call-process path nil nil nil) 0)))

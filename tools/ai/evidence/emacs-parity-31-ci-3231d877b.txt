@@ -1,0 +1,10 @@
+# CI run 41310269412 (commit 3231d877b), job 124858988265 smoke (ubuntu-latest, 31.1)
+# https://github.com/zawatton/nelisp/actions/runs/41310269412/job/124858988265
+2026-11-01T13:16:57.5954263Z ##[group]Run bash tools/ai/nelisp-ai.sh gate emacs-parity -- make emacs-parity
+2026-11-01T13:16:57.5985888Z env:
+2026-11-01T13:16:57.5986105Z   NIX_PATH: nixpkgs=channel:nixos-unstable
+2026-11-01T13:16:57.5986407Z   TMPDIR: /home/runner/work/_temp
+2026-11-01T13:16:57.5986655Z ##[endgroup]
+2026-11-01T13:17:12.3414324Z GATE-COUNT checked=22500 findings=0
+2026-11-01T13:17:12.3415044Z [emacs-parity] PASS: 22500 bytes identical to stock Emacs
+2026-11-01T13:17:12.3875474Z gate report: target/gates/emacs-parity.json (pass, ran 22500, failed 0)

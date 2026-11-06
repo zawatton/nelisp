@@ -1,0 +1,112 @@
+#+TITLE: nelisp-service Package
+
+* Summary
+
+=nelisp-service= gives NeLisp programs two process shapes so products
+stop managing NeLisp processes by hand (Doc 213):
+
+- a *worker pool*: at most N reusable worker processes, with queueing,
+  recycling after N requests, crash replacement and version-driven
+  replacement;
+- a *daemon*: one resident server per user and name on loopback TCP,
+  started on demand by its first client, shared by later clients, exiting
+  when idle or when a client of another version arrives.
+
+Everything uses standard Emacs process primitives, so the same code runs on
+host Emacs and on the standalone reader.
+
+* Stability
+
+=:stability "experimental"= (packages/README.org "Stability").  The API is
+new and has no product caller yet; anvil-standalone and the IME test
+harness are the first planned adopters (Doc 213 §4.4).
+
+* Layout
+
+#+begin_src text
+packages/nelisp-service/
+├── README.org
+├── manifest.el
+├── bin/
+│   ├── nelisp-service-worker-main.el   worker entry script
+│   └── nelisp-service-echo-daemon.el   example daemon used by the smokes
+├── src/
+│   ├── nelisp-service.el               framing, stdin, state files, bootstrap
+│   ├── nelisp-service-worker-child.el  worker side of the protocol
+│   ├── nelisp-service-worker.el        the pool
+│   ├── nelisp-service-daemon.el        the daemon
+│   └── nelisp-service-client.el        client, auto-start, MCP stdio proxy
+└── test/
+    ├── nelisp-service-test.el          host ERT
+    ├── nelisp-service-pool-smoke.el    end-to-end, either substrate
+    └── nelisp-service-daemon-smoke.el  end-to-end, either substrate
+#+end_src
+
+* Worker pool
+
+#+begin_src elisp
+(require 'nelisp-service-worker)
+(let ((pool (nelisp-service-pool-create :max-workers 2 :recycle-after 100
+                                        :init-forms '((require 'my-lib)))))
+  (nelisp-service-pool-call pool '(my-lib-heavy-thing 42) 60)   ; sync
+  (nelisp-service-pool-submit pool '(+ 1 2)                     ; async
+                              (lambda (status value) ...))
+  (nelisp-service-pool-shutdown pool))
+#+end_src
+
+Workers are the running executable by default: NeLisp children on the
+standalone reader, Emacs children on host Emacs.  A worker exits when its
+stdin closes, so a crashed pool leaves nothing behind.
+
+* Daemon and client
+
+A daemon script:
+
+#+begin_src elisp
+(require 'nelisp-service-daemon)
+(let ((d (nelisp-service-daemon-start
+          "my-service" :version "1.4"
+          :handler (lambda (_conn payload reply) (funcall reply (handle payload))))))
+  (if d (nelisp-service-daemon-run d) 'already-running))
+#+end_src
+
+A client:
+
+#+begin_src elisp
+(require 'nelisp-service-client)
+(let ((c (nelisp-service-client-connect
+          "my-service" :version "1.4"
+          :start-command (nelisp-service-script-command "/path/to/daemon.el"))))
+  (nelisp-service-client-request c '(do-something)))
+#+end_src
+
+An MCP stdio server backed by a shared daemon is one call:
+=(nelisp-service-client-stdio-proxy "my-service" :version ... :start-command ...)=.
+The daemon's handler receives each JSON-RPC message as a string and replies
+with the response string, or =""= for a notification.
+
+* Substrate facts this package works around
+
+Measured on the Windows standalone reader, 2026-10-10:
+
+- =setenv= values and =command-line-args= do not reach a script the reader
+  starts, so settings go through a generated bootstrap file
+  (=nelisp-service-script-command=).
+- =print-escape-newlines= is ignored, so framing escapes line breaks itself.
+- =secure-hash= returns the empty-string digest and =(random t)= does not
+  reseed, so tokens come from the clock and a counter; they guard against
+  accidents, not against a hostile local user.
+- =make-network-process :service 0= does not report the chosen port, and a
+  second listener on a busy port succeeds, so the daemon chooses its port
+  and relies on its exclusive lock file for single instance.
+- A child started with =make-process= outlives its parent, which is what
+  lets a client-started daemon keep running.
+
+* Testing
+
+#+begin_src sh
+emacs --batch -Q -l cl-lib -L packages/nelisp-service/src \
+  -l packages/nelisp-service/test/nelisp-service-test.el \
+  -f ert-run-tests-batch-and-exit
+sh tools/nelisp-service-smoke.sh target/nelisp.exe   # standalone, end to end
+#+end_src

@@ -1,0 +1,63 @@
+#+TITLE: Integer-held alloc-bytes buffers survive garbage collection
+
+# Run from the repository root with a standalone binary built from this tree:
+#   NELISP_BIN=target/nelisp BASE_BIN=<binary built from e05068412> \
+#     bin/progress-meter.sh --ledger tools/ai/gc-int-pin-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)
+#
+# Defect (2026-11-02): `alloc-bytes' returns a buffer as a plain integer
+# address, and the collector never treated an integer as a reference.  A
+# collection that ran while the integer was still in use (mid-form at a
+# `while' back-edge, or `garbage-collect') freed the block and wrote the
+# free-list link into its first word.  `nl-ffi-loader--cstring's path
+# buffer lost "/home/ma" before openat, so a real file read as ENOENT; CI's
+# smoke job hit it in ffi-loader after caf7477e7 moved the layout.
+# Mid-form GC off: no failures; on: failures (stress probe, measured).
+
+* S1 The defect is reproduced by permanent checks
+
+** S1.1 The int-root fixture fails on the pre-fix binary (negative control)
+#+REQUIRES: BASE_BIN
+cmd: ! "$BASE_BIN" --load test/standalone-alloc-bytes-int-root-smoke.el 2>&1 | grep -q 'alloc-bytes-int-root: PASS'
+
+** S1.2 The ffi-loader stress probe fails on the pre-fix binary (negative control)
+#+REQUIRES: BASE_BIN
+#+TIMEOUT: 600
+cmd: ! sh tools/ai/gc-int-pin-ffi-stress.sh "$BASE_BIN" 1 >/dev/null 2>&1
+
+* S2 The collector keeps integer-held buffers alive
+
+** S2.1 The int-root fixture passes
+#+REQUIRES: NELISP_BIN
+cmd: "$NELISP_BIN" --load test/standalone-alloc-bytes-int-root-smoke.el 2>&1 | grep -q 'alloc-bytes-int-root: PASS'
+
+** S2.2 The ffi-loader stress probe passes three times in a row
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/gc-int-pin-ffi-stress.sh "$NELISP_BIN" 3 >/dev/null 2>&1
+
+** S2.3 The ffi-loader gate passes
+#+TIMEOUT: 600
+cmd: make ffi-loader >target/gc-int-pin-ffi-loader.log 2>&1
+
+* S3 No regression elsewhere
+
+** S3.1 standalone-reader-test passes (includes the weak-reference fixtures)
+#+TIMEOUT: 600
+cmd: make standalone-reader-test >target/gc-int-pin-reader-test.log 2>&1
+
+** S3.2 The checked-allocator smoke passes
+#+TIMEOUT: 600
+cmd: make standalone-reader-checked >target/gc-int-pin-checked.log 2>&1
+
+** S3.3 The bounded mid-form GC smoke passes
+#+TIMEOUT: 600
+cmd: make standalone-midform-gc-bounded >target/gc-int-pin-midform.log 2>&1
+
+** S3.4 emacs-parity and the shadow differential still pass
+#+TIMEOUT: 600
+cmd: make emacs-parity >target/gc-int-pin-parity.log 2>&1 && make standalone-reader-shadow-smoke >target/gc-int-pin-shadow.log 2>&1
+
+** S3.5 End to end: make test-fast passes
+#+TIMEOUT: 600
+cmd: make test-fast >target/gc-int-pin-test-fast.log 2>&1

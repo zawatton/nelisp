@@ -17,7 +17,7 @@
 (defconst nelisp-native-application-producer--helper-sha256
   "55e2524b8a4ca339a54508c8e5c6f80bfd50b14c5229e937d04ac62effa2b791")
 (defconst nelisp-native-application-producer--prelude-sha256
-  "f4ff2bc6df6434983f557c3bec4b52ea8bd0ff2373f282359c8dfe964050d6a3")
+  "513939a16fcbf83deb340db5ab2b84ae84f1ae5b998eeca409f957f0ae0928f9")
 
 ;; Baseline admission shortcut.  `nelisp-cc-fxir-native-all-rows' is a pure
 ;; function of (a) the bytes of the data files named by
@@ -357,14 +357,23 @@ treated as omitted, so the compiler refuses any kept definition that calls one."
 (defun nelisp-native-application-producer--closure-authentic-p
     (closure form &optional constructor)
   "Check CLOSURE's lexical marker, arguments, body and structural reconstruction."
+  ;; The standalone runtime wraps the (closure ENV ARGS . BODY) list in a
+  ;; heap-kind-23 object; inspect the list.  `equal' still compares the
+  ;; objects, which the runtime does by their wrapped lists.
+  (let ((closure (or (and (fboundp 'nelisp--closure-cons)
+                          (nelisp--closure-cons closure))
+                     closure)))
   (and (consp closure) (eq (car closure) 'closure)
        (equal (cadr closure) '(t))
        (equal (nth 2 closure) (nth 2 form))
        (equal (nthcdr 3 closure) (nthcdr 3 form))
        (equal closure
-              (funcall (or constructor
-                           #'nelisp-native-application-producer--construct)
-                       form))))
+              (let ((c (funcall (or constructor
+                                    #'nelisp-native-application-producer--construct)
+                                form)))
+                (or (and (fboundp 'nelisp--closure-cons)
+                         (nelisp--closure-cons c))
+                    c))))))
 
 (defun nelisp-native-application-producer--construct (form)
   "Construct, but never invoke, the lexical closure described by FORM."
@@ -572,7 +581,13 @@ LOOKUP belongs to the transaction adapter; no closure is reconstructed for compi
                      (fboundp 'nelisp--fx-macros-used)
                      (null (nelisp--fx-macros-used (plist-get candidate :body))))
           (error "Unsupported arity, macro or unknown compiler context: %S" name))
-        (let* ((compiled (nelisp-fxir-recompile (plist-get candidate :closure)))
+        (let* ((compiled (nelisp-fxir-recompile
+                          ;; The pinned helper reads the (closure ...) list;
+                          ;; the runtime wraps it in a heap-kind-23 object.
+                          (let ((c (plist-get candidate :closure)))
+                            (or (and (fboundp 'nelisp--closure-cons)
+                                     (nelisp--closure-cons c))
+                                c))))
                (admission (and compiled
                                (nelisp-native-application-producer--compiler-admission
                                 name (plist-get candidate :args) names compiled

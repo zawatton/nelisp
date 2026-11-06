@@ -1,0 +1,59 @@
+# tools/ai/gc-visibility-matrix.sh and the E1 container sweep, 2026-11-03
+# base    = target/nelisp built from origin/main bcb1a7186
+# patched = the same plus an experimental nl_gc_pin_int_scan: an int-pinned block's words are run through nl_gc_pin_int_addr
+## matrix, nelisp-base
+ab32a8  buf     reclaimed=0/50
+ab32a8  cell16  reclaimed=50/50
+ab32a8  xor     reclaimed=50/50
+ab44a1  buf     reclaimed=0/50
+ab44a1  cell16  reclaimed=50/50
+ab44a1  xor     reclaimed=50/50
+str     buf     reclaimed=0/50
+str     cell16  reclaimed=50/50
+str     xor     reclaimed=50/50
+positive-control reclaimed=150
+plain-rows kept=150
+## E1 (one target per container, containers held only in a Lisp list), nelisp-base
+container=16 off=8 reclaimed=40/40
+container=24 off=8 reclaimed=40/40
+container=32 off=8 reclaimed=40/40
+container=48 off=8 reclaimed=40/40
+container=64 off=8 reclaimed=40/40
+container=128 off=8 reclaimed=40/40
+container=256 off=8 reclaimed=40/40
+container=400 off=8 reclaimed=40/40
+container=32 off=0 reclaimed=40/40
+container=32 off=16 reclaimed=40/40
+container=32 off=24 reclaimed=40/40
+container=400 off=0 reclaimed=40/40
+container=400 off=16 reclaimed=40/40
+container=400 off=200 reclaimed=40/40
+container=400 off=392 reclaimed=40/40
+## matrix, nelisp
+ab32a8  buf     reclaimed=0/50
+ab32a8  cell16  reclaimed=0/50
+ab32a8  xor     reclaimed=50/50
+ab44a1  buf     reclaimed=0/50
+ab44a1  cell16  reclaimed=0/50
+ab44a1  xor     reclaimed=50/50
+str     buf     reclaimed=0/50
+str     cell16  reclaimed=0/50
+str     xor     reclaimed=50/50
+positive-control reclaimed=150
+plain-rows kept=300
+## E1 (one target per container, containers held only in a Lisp list), nelisp
+container=16 off=8 reclaimed=0/40
+container=24 off=8 reclaimed=0/40
+container=32 off=8 reclaimed=0/40
+container=48 off=8 reclaimed=0/40
+container=64 off=8 reclaimed=0/40
+container=128 off=8 reclaimed=0/40
+container=256 off=8 reclaimed=0/40
+container=400 off=8 reclaimed=0/40
+container=32 off=0 reclaimed=0/40
+container=32 off=16 reclaimed=0/40
+container=32 off=24 reclaimed=0/40
+container=400 off=0 reclaimed=0/40
+container=400 off=16 reclaimed=0/40
+container=400 off=200 reclaimed=0/40
+container=400 off=392 reclaimed=0/40

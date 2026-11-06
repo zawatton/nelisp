@@ -1,0 +1,8 @@
+01 (nil nil t t t subr)
+02 (1 . 1)
+03 "car"
+04 nil
+05 wrong-type-argument
+06 t
+07 nil
+08 (atom atom list)

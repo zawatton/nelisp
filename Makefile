@@ -1,4 +1,4 @@
-.PHONY: lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile compile-keep compile-parallel gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
+.PHONY: typecheck-test typecheck-gate typecheck-vendor typecheck-baseline-update typecheck-test-prims typecheck-prims-crosscheck typecheck-prims-gen lisp-byte-compile version-consistency actor-bench all aot-differential bench bench-aot-checked-arith bench-aot-tco clean compile compile-keep compile-parallel gc-bench jit-unverified neln-loader-test nl-check-gate nl-dev-loop nl-safe-bench nl-safe-native-bench nl-violation-corpus ns-gate ns-inventory parens-check soak soak-1h soak-full soak-worker standalone-reader-recursion-guard-smoke test test-fast test-jit test-nojit test-one test-parallel unsafe-inventory wasm-dtw-compile wasm-dtw-site wasm-dtw-site-smoke wasm-dtw-skeleton-smoke wasm-dtw-smoke wasm-dtw-transpile wasm-runtime-image-smoke wasm-smoke \
         sqlite-module sqlite-module-clean \
         release-artifact release-checksum soak-blocker soak-post-ship \
         bench-actual bench-allocator bench-allocator-heavy \
@@ -301,6 +301,42 @@ wasm-dtw-site-smoke: wasm-dtw-site
 	  echo "GATE-COUNT checked=1 findings=1"; exit 1; \
 	fi
 
+# Doc 236 Stage 1: primitive signature table.  Not wired into `compile'.
+TYPECHECK_TEST_SELECTOR ?= t
+TYPECHECK_LOAD = -L lisp -L packages/nl-prelude/src -L packages/nl-safe/src \
+  -L packages/nl-static/src -L packages/nl-typecheck/src
+
+typecheck-test-prims:
+	TYPECHECK_TEST_FILES='prims-test\.el$$' TYPECHECK_TEST_SELECTOR='$(TYPECHECK_TEST_SELECTOR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l packages/nl-typecheck/test/run-tests.el
+
+# Doc 236 Stages 2-3: every nl-typecheck test, the build gate, the baseline
+# writer (the only target that writes tools/typecheck-baseline.eld) and the
+# vendored-GNU check.  TYPECHECK_FILES (space separated) overrides the
+# default file set; NELISP_TYPECHECK_STRICT=1 makes notes fail typed modules.
+typecheck-test:
+	TYPECHECK_TEST_SELECTOR='$(TYPECHECK_TEST_SELECTOR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l packages/nl-typecheck/test/run-tests.el
+
+typecheck-gate:
+	TYPECHECK_MODE=gate TYPECHECK_FILES='$(TYPECHECK_FILES)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-baseline-update:
+	TYPECHECK_MODE=baseline TYPECHECK_FILES='$(TYPECHECK_FILES)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-vendor:
+	TYPECHECK_MODE=vendor GNU_LISP_DIR='$(GNU_LISP_DIR)' $(EMACS) --batch -Q $(TYPECHECK_LOAD) \
+	  -l scripts/nl-typecheck-gate.el
+
+typecheck-prims-crosscheck:
+	$(EMACS) --batch -Q $(TYPECHECK_LOAD) -l packages/nl-typecheck/tools/crosscheck.el
+
+typecheck-prims-gen:
+	$(EMACS) --batch -Q -L lisp -L src -L scripts \
+	  -l packages/nl-typecheck/tools/gen-prims.el
+
 # nl-check owns the expansion-time checks (`nl-must-use', resource
 # tracking).  Until now nothing ran them as a gate: `unsafe-inventory'
 # counted one of the five kinds and the other four were reported by no
@@ -389,7 +425,7 @@ test-nojit:
 # `compile-keep' leaves them for the targets that run compiled code (bench).
 COMPILE_ELCS = $(addsuffix c,$(SRCS) $(PACKAGE_SRCS))
 
-compile: nl-check-gate
+compile: nl-check-gate typecheck-gate
 	@rm -f $(COMPILE_ELCS)
 	@status=0; \
 	$(EMACS) --batch -Q -L src -L lisp \
@@ -1424,6 +1460,8 @@ reader-surface-audit:
 # keep current is a ledger nobody reads.  The count is the signal -- 29 checked
 # is the claim, and a target that stops existing shows up as a smaller number.
 STANDALONE_READER_SMOKES = \
+  standalone-reader-alloc-bytes-int-root-smoke \
+  standalone-reader-native-load-slot-pin-smoke \
   standalone-reader-async-core-smoke \
   standalone-reader-bignum-smoke \
   standalone-reader-catch-throw-tag-smoke \
@@ -2092,6 +2130,37 @@ standalone-reader-defvar-local-scope-smoke: $(if $(wildcard target/nelisp target
 	  echo "[standalone-reader-defvar-local-scope-smoke] FAIL: --load -> $$o1 ; load -> $$o2 (expected $$want)"; \
 	  exit 1; \
 	fi
+# 2026-11-02: an `alloc-bytes' buffer reaches Lisp only as an integer
+# address.  The collector used to ignore integers, so a collection that ran
+# while the address was in use freed the buffer and the free-list link
+# overwrote its first word (200 of 200 corrupted; in the wild,
+# `nl-ffi-loader--cstring' lost "/home/ma" and openat said ENOENT).  The
+# fixture holds 200 buffers only by their addresses across
+# `garbage-collect' and checks every marker.  See `nl_gc_pin_int_addr'.
+.PHONY: standalone-reader-alloc-bytes-int-root-smoke
+standalone-reader-alloc-bytes-int-root-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); \
+	out="$$($$bin --load test/standalone-alloc-bytes-int-root-smoke.el 2>&1)"; \
+	case "$$out" in \
+	  *"alloc-bytes-int-root: PASS"*) echo "[alloc-bytes-int-root-smoke] PASS: $$(printf '%s\n' "$$out" | head -n 1)";; \
+	  *) echo "[alloc-bytes-int-root-smoke] FAIL: $$(printf '%s\n' "$$out" | head -n 3) (integer-held alloc-bytes buffers were freed while in use)"; exit 1;; \
+	esac
+
+.PHONY: standalone-reader-native-load-slot-pin-smoke
+## Strings `nelisp-native-load-box' writes into raw Sexp slots must
+## survive mid-form GC and `garbage-collect' (the GC does not scan raw
+## buffers; `nelisp-native-load--slot-pins' holds them).
+standalone-reader-native-load-slot-pin-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); mkdir -p target/native-load-slot-pin; \
+	prelude=target/native-load-slot-pin/prelude.el; \
+	{ echo '(load "$(CURDIR)/lisp/nelisp-native-load.el")'; \
+	  echo '(load "$(CURDIR)/test/standalone-native-load-slot-pin-smoke.el")'; \
+	} > "$$prelude"; \
+	out="$$($$bin --load "$$prelude" 2>&1)"; \
+	case "$$out" in \
+	  *"native-load-slot-pin: PASS"*) echo "[native-load-slot-pin-smoke] PASS: $$(printf '%s\n' "$$out" | head -n 1)";; \
+	  *) echo "[native-load-slot-pin-smoke] FAIL: $$(printf '%s\n' "$$out" | head -n 3) (strings boxed into raw slots were freed while in use)"; exit 1;; \
+	esac
 
 .PHONY: standalone-reader-defvar-alloc-smoke
 standalone-reader-defvar-alloc-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
@@ -2292,9 +2361,9 @@ emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reade
 	@mkdir -p target; \
 	host_version="$${NELISP_EMACS_PARITY_HOST_VERSION:-$$($(EMACS) --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)}"; \
 	case "$$host_version" in \
-	  30.*) : ;; \
-	  *) echo "GATE-SKIP emacs-parity requires stock Emacs 30.x (host has $$host_version); the reference answers are version-pinned"; \
-	     echo "[emacs-parity] SKIP: host Emacs $$host_version is outside the pinned 30.x range"; \
+	  31.*) : ;; \
+	  *) echo "GATE-SKIP emacs-parity requires stock Emacs 31.x (host has $$host_version); the reference answers are version-pinned"; \
+	     echo "[emacs-parity] SKIP: host Emacs $$host_version is outside the pinned 31.x range"; \
 	     exit 0;; \
 	esac; \
 	$(EMACS) --batch -Q --eval '(with-temp-buffer (insert "(princ (format \"%S\" (progn\n") (goto-char (point-max)) (insert-file-contents "test/nelisp-shadow-differential-cases.el") (goto-char (point-max)) (insert ")))\n") (write-region (point-min) (point-max) "target/emacs-parity.el" nil (quote silent)))'; \

@@ -220,6 +220,16 @@ for constructs the MVP does not handle."
    (t
     (signal 'nelisp-jit-unsupported (list form)))))
 
+(defun nelisp-jit--binds-special-p (bindings)
+  "Non-nil if a `let' BINDINGS list binds a NeLisp special variable."
+  (and (boundp 'nelisp--specials)
+       (let ((hit nil))
+         (dolist (b bindings)
+           (let ((v (if (consp b) (car b) b)))
+             (when (and (symbolp v) (gethash v nelisp--specials))
+               (setq hit t))))
+         hit)))
+
 (defun nelisp-jit--translate-compound (head rest env)
   "Translate (HEAD . REST) given lexical ENV."
   (cond
@@ -254,6 +264,12 @@ for constructs the MVP does not handle."
    ((eq head 'while)
     `(while ,(nelisp-jit--translate (car rest) env)
        ,@(nelisp-jit--translate-body (cdr rest) env)))
+   ((and (memq head '(let let*))
+         (nelisp-jit--binds-special-p (car rest)))
+    ;; A special (defvar'd) variable is bound dynamically by the
+    ;; interpreter; a host lexical `let' would hide the binding from
+    ;; callees that read it through `nelisp--globals'.  Decline.
+    (signal 'nelisp-jit-unsupported (list (cons head rest))))
    ((eq head 'let)
     (let* ((bindings (car rest))
            (new-syms (mapcar (lambda (b) (if (consp b) (car b) b)) bindings))
@@ -306,6 +322,17 @@ for constructs the MVP does not handle."
    ;; handle these correctly.
    ((and (symbolp head) (memq head nelisp-jit-untranslated-special-forms))
     (signal 'nelisp-jit-unsupported (list (cons head rest))))
+   ;; ----- NeLisp macros --------------------------------------------------
+   ;; The interpreter expands a macro call before evaluating it.  Routing
+   ;; one to the call arms below would evaluate its arguments as forms
+   ;; (`(dolist (sym list) ...)' became a call of `sym'), so expand it
+   ;; here and translate the result, as the interpreter does.
+   ((and (symbolp head) (boundp 'nelisp--macros)
+         (not (eq (gethash head nelisp--macros nelisp--unbound)
+                  nelisp--unbound)))
+    (unless (fboundp 'nelisp-macroexpand)
+      (signal 'nelisp-jit-unsupported (list (cons head rest))))
+    (nelisp-jit--translate (nelisp-macroexpand (cons head rest)) env))
    ;; ----- call dispatch -------------------------------------------------
    ((and (symbolp head) (nelisp-jit--primitive-p head))
     ;; Direct host call on an assumed-stable primitive.

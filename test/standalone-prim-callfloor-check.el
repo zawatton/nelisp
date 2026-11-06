@@ -5,7 +5,7 @@
 (defun pcfc-constant (a &optional b &rest rest) 17)
 (when (and (fboundp 'nelisp--fx-register) (not (getenv "NELISP_FX_DISABLE")))
   (nelisp--fx-register 'pcfc-constant)
-  (unless (vectorp (gethash (nthcdr 3 (symbol-function 'pcfc-constant)) nelisp--fx-table))
+  (unless (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function 'pcfc-constant))) nelisp--fx-table))
     (error "Missing VM coverage of unused optional/rest parameters")))
 (let ((failures 0) (checks 0))
   (dolist

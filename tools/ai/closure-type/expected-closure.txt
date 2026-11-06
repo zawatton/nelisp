@@ -1,0 +1,17 @@
+01 (nil nil t t t t)
+02 (nil nil t 3)
+03 interpreted-function
+04 nil
+05 nil
+06 nil
+07 wrong-type-argument
+08 3
+09 fn
+10 ((1 . 2) (1 nil) (1 2))
+11 t
+12 t
+13 t
+14 t
+15 8
+16 t
+17 1

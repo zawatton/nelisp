@@ -59,7 +59,7 @@
                    (= (nth 1 native-row) (cdr pair)))
         (error "Installed function/native mapping mismatch: %S" name))
       (nelisp--fx-register name)
-      (let ((record (gethash (nthcdr 3 function) nelisp--fx-table)))
+      (let ((record (gethash (nthcdr 3 (or (and (fboundp 'nelisp--closure-cons) (nelisp--closure-cons function)) function)) nelisp--fx-table)))
         (unless (and (eq function (symbol-function name)) (vectorp record)
                      (= (aref record 1) (- -16 (cdr pair))))
           (error "Native FX registration check failed: %S" name))))))

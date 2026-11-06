@@ -339,7 +339,7 @@ those cases at runtime."
       (and known all)))
    (t nil)))
 
-(defun nl-static--types-disjoint-p (left right)
+(defun nl-static-types-disjoint-p (left right)
   "Return non-nil only when declared LEFT and RIGHT are provably disjoint."
   (let ((a (nl-static--type-categories left))
         (b (nl-static--type-categories right))
@@ -398,7 +398,7 @@ those cases at runtime."
              (list :callee (car form) :argument argument
                    :expected expected)))
            ((and declared
-                 (nl-static--types-disjoint-p (cdr declared) expected))
+                 (nl-static-types-disjoint-p (cdr declared) expected))
             (nl-static--fail
              'nl-typed-error 'declared-binding-shape-mismatch form
              (list :callee (car form) :argument argument

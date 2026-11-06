@@ -13,7 +13,7 @@
 (prin1 (list 'nested (vsp-nested))) (terpri)
 (when (boundp 'nelisp--fx-table)
   (dolist (name '(vsp-side-effects vsp-nil-first vsp-nested))
-    (unless (vectorp (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table))
+    (unless (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function name))) nelisp--fx-table))
       (error "prog1 function was not compiled: %S" name))))
 (princ "PROG1-VM-PASS\n")
 (kill-emacs 0)

@@ -15,16 +15,17 @@
 ;; those stay in that file, gated on generator exactly as before.
 ;;
 ;; Loading THIS file alone upgrades `run-at-time' / `cancel-timer' /
-;; `sit-for' from the prelude's synchronous immediate-fire stubs
-;; (`scripts/nelisp-stdlib-prelude.el') to real deferred/repeating ones,
+;; `sit-for' / `timerp' from the prelude's synchronous immediate-fire
+;; fallbacks (`scripts/nelisp-stdlib-prelude.el') to real deferred/repeating
+;; ones.  The standalone binary loads this file by default, so this is the
+;; path the binary actually runs; the prelude versions are only a fallback,
 ;; with no actor or generator dependency at all -- this is what
 ;; `packages/nelisp-process-adapter/src/nelisp-process-adapter.el' (Doc
 ;; 184 P1-P3) requires to get REPEAT-honouring timers sharing the same
 ;; poll loop as process I/O.
 ;;
-;; This is a cut, not a rewrite: the vector shape and every function body
-;; below are byte-for-byte what `nelisp-async.el' already had, modulo the
-;; name prefix (`nelisp-async-' -> `nelisp-async-core-').
+;; Timers are GNU Emacs's 10-slot vectors (see the layout below), so
+;; `timerp' and the `timer--*' accessors agree with stock Emacs.
 ;;
 ;;; Code:
 
@@ -50,18 +51,42 @@ Sub-second precision is honoured; a non-positive SECS is a no-op."
       (nl-nanosleep ts))))
 
 ;;; Timer queue -------------------------------------------------------
-;; A timer is a vector [DEADLINE REPEAT FN ARGS LIVE]:
-;;   0 DEADLINE  float-time at/after which FN runs
-;;   1 REPEAT    nil = one-shot; a number = re-arm REPEAT seconds later
-;;   2 FN        function to call
-;;   3 ARGS      argument list applied to FN
-;;   4 LIVE      t until fired (one-shot) or cancelled
+;; A timer is GNU Emacs's 10-slot vector
+;;   [TRIGGERED HIGH LOW USECS REPEAT FN ARGS IDLE PSECS INTEGRAL]:
+;;   0 TRIGGERED nil while armed; t once fired (one-shot) or cancelled
+;;   1 HIGH, 2 LOW, 3 USECS, 8 PSECS
+;;             the deadline in GNU time form: HIGH = secs / 65536,
+;;             LOW = secs mod 65536, USECS = microseconds, PSECS = 0
+;;             (see `nelisp-async-core--set-deadline' / `--deadline')
+;;   4 REPEAT    nil = one-shot; a number = re-arm REPEAT seconds later
+;;   5 FN        function to call
+;;   6 ARGS      argument list applied to FN
+;;   7 IDLE, 9 INTEGRAL  always nil here
+(defconst nelisp-async-core--t-triggered 0)
+(defconst nelisp-async-core--t-high 1)
+(defconst nelisp-async-core--t-low 2)
+(defconst nelisp-async-core--t-usecs 3)
+(defconst nelisp-async-core--t-repeat 4)
+(defconst nelisp-async-core--t-fn 5)
+(defconst nelisp-async-core--t-args 6)
+(defconst nelisp-async-core--t-psecs 8)
+(defconst nelisp-async-core--t-length 10)
 
-(defconst nelisp-async-core--t-deadline 0)
-(defconst nelisp-async-core--t-repeat 1)
-(defconst nelisp-async-core--t-fn 2)
-(defconst nelisp-async-core--t-args 3)
-(defconst nelisp-async-core--t-live 4)
+(defun nelisp-async-core--set-deadline (tm d)
+  "Store the float-time deadline D into timer vector TM in GNU time slots."
+  (let* ((whole (floor d))
+         (us (floor (* (- d whole) 1000000.0))))
+    (aset tm nelisp-async-core--t-high (/ whole 65536))
+    (aset tm nelisp-async-core--t-low (% whole 65536))
+    (aset tm nelisp-async-core--t-usecs us)
+    (aset tm nelisp-async-core--t-psecs 0)
+    tm))
+
+(defun nelisp-async-core--deadline (tm)
+  "Return the deadline of timer vector TM as a float-time."
+  (+ (* (aref tm nelisp-async-core--t-high) 65536.0)
+     (aref tm nelisp-async-core--t-low)
+     (/ (aref tm nelisp-async-core--t-usecs) 1000000.0)))
 
 (defvar nelisp-async-core--timers nil
   "List of live timer vectors, unordered.")
@@ -91,6 +116,9 @@ e.g. `(run-at-time \"ABC\" nil (function ignore))' returned a timer
 object where real Emacs signals `(error \"Invalid time specification\")'):
 a bad TIME is a time error, not `invalid-function' about FN, since
 real Emacs never reaches FN either."
+  ;; Emacs 31 validates REPEAT before TIME.
+  (unless (or (null repeat) (and (numberp repeat) (>= repeat 0)))
+    (error "Invalid repetition interval: %s" repeat))
   (unless (or (null time) (numberp time)
               (and (stringp time) (string-match-p "[0-9]" time))
               ;; A time VALUE is (HIGH LOW ...) -- at least two integers.
@@ -99,9 +127,12 @@ real Emacs never reaches FN either."
               (and (consp time) (integerp (car time))
                    (consp (cdr time)) (integerp (car (cdr time)))))
     (signal 'error (list "Invalid time specification")))
-  (let ((tm (vector (+ (nelisp-async-core--now) (nelisp-async-core--secs time))
-                    (and (numberp repeat) repeat)
-                    fn args t)))
+  (let ((tm (make-vector nelisp-async-core--t-length nil)))
+    (nelisp-async-core--set-deadline
+     tm (+ (nelisp-async-core--now) (nelisp-async-core--secs time)))
+    (aset tm nelisp-async-core--t-repeat (and (numberp repeat) repeat))
+    (aset tm nelisp-async-core--t-fn fn)
+    (aset tm nelisp-async-core--t-args args)
     (setq nelisp-async-core--timers (cons tm nelisp-async-core--timers))
     tm))
 
@@ -131,26 +162,18 @@ real Emacs never reaches FN either."
   "The `cancel-timer' bound before this file's own `defalias', or nil.")
 
 (defun nelisp-async-core-timerp (x)
-  "Return non-nil when X is a timer vector this module created, OR a
-real host timer object recognized by whatever `timerp' was bound
-before this file's own `defalias' (see
-`nelisp-async-core--host-timerp').
-Shape check only for this module's own timers (length 5, numeric
-deadline slot) -- a cancelled timer is still a timer (real Emacs's own
-`timerp' agrees: cancelling changes a timer's enabled state, not its
-type), so this deliberately does not look at the LIVE slot."
-  (or (and (vectorp x) (= (length x) 5)
-           (numberp (aref x nelisp-async-core--t-deadline)))
-      (and nelisp-async-core--host-timerp
-           (funcall nelisp-async-core--host-timerp x))))
+  "Return non-nil when X is a timer: GNU Emacs's own predicate, a vector
+of length 9 or 10 (measured on Emacs 31.1; the last slot is optional).
+Real host timers have the same shape, so no separate host check is
+needed.  A cancelled timer is still a timer."
+  (and (vectorp x) (memq (length x) '(9 10)) t))
 
 (defun nelisp-async-core-cancel-timer (tm)
   "Cancel timer TM so it never fires again.
-Delegates to whatever `cancel-timer' was bound before this file's own
-`defalias' (see `nelisp-async-core--host-cancel-timer') for anything
-that is not one of this module's own timer vectors AND is recognized
-by the captured host `timerp' -- notably a real host-Emacs timer, so
-this never `aset's into a slot from a layout that is not its own.
+A 10-slot vector that is not one of this module's own timers (a real
+host-Emacs timer) is delegated to whatever `cancel-timer' was bound before
+this file's own `defalias' (see `nelisp-async-core--host-cancel-timer');
+without one it is a no-op returning nil.
 Signals `wrong-type-argument' for anything neither recognizes,
 matching real Emacs's own `cancel-timer' (measured: `(cancel-timer
 \"x\")' -> `(wrong-type-argument timerp \"x\")' on host Emacs 30.1) and
@@ -161,22 +184,22 @@ instead, a real emacs-parity regression Phase 2A's process-adapter
 wiring exposed by making this the default `cancel-timer' on every
 standalone build instead of an opt-in `--load'."
   (cond
-   ((and (vectorp tm) (= (length tm) 5)
-         (numberp (aref tm nelisp-async-core--t-deadline)))
-    (aset tm nelisp-async-core--t-live nil)
+   ((memq tm nelisp-async-core--timers)
+    (aset tm nelisp-async-core--t-triggered t)
     nil)
-   ((and nelisp-async-core--host-timerp
-         (funcall nelisp-async-core--host-timerp tm)
-         nelisp-async-core--host-cancel-timer)
-    (funcall nelisp-async-core--host-cancel-timer tm))
+   ((nelisp-async-core-timerp tm)
+    ;; Not one of ours: a real host-Emacs timer has the same shape, so hand
+    ;; it to the host `cancel-timer' captured before our `defalias'.
+    (and nelisp-async-core--host-cancel-timer
+         (funcall nelisp-async-core--host-cancel-timer tm)))
    (t (signal 'wrong-type-argument (list 'timerp tm)))))
 
 (defun nelisp-async-core--next-deadline ()
   "Return the earliest live-timer deadline, or nil when none are armed."
   (let ((best nil))
     (dolist (tm nelisp-async-core--timers)
-      (when (aref tm nelisp-async-core--t-live)
-        (let ((d (aref tm nelisp-async-core--t-deadline)))
+      (unless (aref tm nelisp-async-core--t-triggered)
+        (let ((d (nelisp-async-core--deadline tm)))
           (when (or (null best) (< d best))
             (setq best d)))))
     best))
@@ -187,21 +210,21 @@ Re-arm repeating timers; drop one-shot timers; prune dead entries.
 Returns the number of timers fired."
   (let ((fired 0))
     (dolist (tm nelisp-async-core--timers)
-      (when (and (aref tm nelisp-async-core--t-live)
-                 (<= (aref tm nelisp-async-core--t-deadline) now))
+      (when (and (not (aref tm nelisp-async-core--t-triggered))
+                 (<= (nelisp-async-core--deadline tm) now))
         (setq fired (1+ fired))
         (let ((repeat (aref tm nelisp-async-core--t-repeat)))
           ;; Re-arm BEFORE running so a callback that cancels wins.
           (if repeat
-              (aset tm nelisp-async-core--t-deadline (+ now repeat))
-            (aset tm nelisp-async-core--t-live nil))
+              (nelisp-async-core--set-deadline tm (+ now repeat))
+            (aset tm nelisp-async-core--t-triggered t))
           (apply (aref tm nelisp-async-core--t-fn) (aref tm nelisp-async-core--t-args)))))
     ;; Prune dead timers to bound the list.
     (when (> fired 0)
       (setq nelisp-async-core--timers
             (let (keep)
               (dolist (tm nelisp-async-core--timers)
-                (when (aref tm nelisp-async-core--t-live) (setq keep (cons tm keep))))
+                (unless (aref tm nelisp-async-core--t-triggered) (setq keep (cons tm keep))))
               keep)))
     fired))
 
@@ -235,13 +258,8 @@ override this to return nil when a key arrives)."
 ;; own synchronous stubs step aside for a real implementation once one is
 ;; loaded, matching how the prelude's own `run-at-time' stub documents
 ;; itself: "REPEAT ignored" only until something upgrades it).  `timerp'
-;; joins the other three as of 2026-08-24 (integration/wave6 battery
-;; run): the prelude's own `timerp' is an unconditional "there are no
-;; timers in this runtime" `nil' stub (correct for ITS OWN synchronous
-;; `run-at-time', which returns a `(nelisp--sync-timer FUNCTION)' list,
-;; not a real timer object at all), but once `run-at-time' is upgraded
-;; to return a real, cancellable timer vector, `timerp' must upgrade
-;; alongside it or a genuine timer object stops being recognized as one.
+;; is upgraded alongside them so the predicate matches the timer vectors
+;; `run-at-time' returns.
 
 (when (fboundp 'nl-ffi-call)
   (defalias 'run-at-time #'nelisp-async-core-run-at-time))

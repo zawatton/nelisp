@@ -3436,8 +3436,6 @@ Keywords supported:  :test :test-not :key
   (defun string-split (s &optional sep omit trim)
     ;; Emacs checks SEPARATORS before STRING, so a call with both wrong
     ;; names the separator.
-    (when sep (nelisp--check-string sep))
-    (nelisp--check-string s)
     (split-string s sep omit trim)))
 ;; `isnan' was absent, so a caller got `void-function' --
 ;; which reads as "NeLisp cannot do this" rather than "nobody wrote it yet".
@@ -4423,6 +4421,15 @@ trailing newline) that `message' would otherwise do.")
   (defun nelisp--hash-make (meta index) (cons meta index)))
 (unless (fboundp 'hash-table-p)
   (defun hash-table-p (x) (nelisp--hash-table-p x)))
+;; Interpreted closures are kind-23 heap objects in the standalone runtime and
+;; the builtins `nelisp--closure-p' / `-cons' / `-make' convert between the
+;; object and the internal (closure ENV ARGS . BODY) list.  An older image (the
+;; pinned producer image that loads this file) still represents a closure as
+;; that list, so define the same names over it when the builtins are absent.
+(unless (fboundp 'nelisp--closure-p)
+  (defun nelisp--closure-p (x) (eq (car-safe x) 'closure))
+  (defun nelisp--closure-cons (x) (and (eq (car-safe x) 'closure) x))
+  (defun nelisp--closure-make (x) x))
 (defun nelisp--maphash-reference (fn table)
   (nelisp--hash-capacity table)
   ;; GNU Fmaphash reads slots in increasing index order, including reuse.
@@ -5428,9 +5435,19 @@ A string LIMIT reseeds the generator from its contents."
 ;; ignored).  This suits code that drives its own scheduler from the timer
 ;; callback -- e.g. nelisp-eventloop's `schedule-timer' only *enqueues* an event
 ;; from the callback, which is later processed when the actor loop is run.
+;; NOTE: the standalone binary loads packages/nelisp-eventloop's
+;; nelisp-async-core.el by default, whose deferred `run-at-time',
+;; `cancel-timer' and `timerp' replace these; the definitions here are the
+;; fallback for builds without it.
+;; The returned object has GNU Emacs's timer shape (a 10-slot vector, see
+;; timer.el's `timer' struct) so `timerp', `cancel-timer' and the accessors
+;; work on it; it is already triggered because the function has run.
 ;; `sit-for' has nothing to redisplay or block on, so it is a no-op returning t.
 (unless (fboundp 'run-at-time)
-  (defun run-at-time (time _repeat function &rest args)
+  (defun run-at-time (time repeat function &rest args)
+    ;; Emacs 31 validates REPEAT before TIME.
+    (unless (or (null repeat) (and (numberp repeat) (>= repeat 0)))
+      (error "Invalid repetition interval: %s" repeat))
          ;; TIME is validated before FUNCTION is touched, so a bad time is a
          ;; time error -- not `invalid-function' about an argument Emacs never
          ;; reached.
@@ -5443,15 +5460,28 @@ A string LIMIT reseeds the generator from its contents."
                      (consp (cdr time)) (integerp (car (cdr time)))))
       (signal 'error (list "Invalid time specification")))
     (apply function args)
-    (list 'nelisp--sync-timer function)))
-;; There are no timers in this runtime, so nothing can BE one -- which makes
-;; the type check the only honest thing this can do: accepting a string and
-;; answering nil reads as "cancelled", and it cancelled nothing.
-(unless (fboundp 'timerp) (defun timerp (_x) nil))
+    (let ((now (if (fboundp 'current-time) (current-time) '(0 0 0 0))))
+      ;; [triggered-p high low usecs repeat-delay function args idle-delay
+      ;;  psecs integral-multiple]
+      (vector t (nth 0 now) (nth 1 now) (nth 2 now) repeat function args
+              nil (nth 3 now) nil))))
+(unless (fboundp 'run-with-timer)
+  (defun run-with-timer (secs repeat function &rest args)
+    (apply #'run-at-time secs repeat function args)))
+;; GNU Emacs 31.1's `timerp' accepts any vector of length 9 or 10, so this is
+;; a shape test and not an identity test.
+(unless (fboundp 'timerp)
+  (defun timerp (object) (and (vectorp object) (memq (length object) '(9 10)) t)))
+;; Nothing is ever pending (timers fire at creation), so cancelling a real
+;; timer has nothing to undo; the type check still rejects non-timers.
 (unless (fboundp 'cancel-timer)
   (defun cancel-timer (timer)
     (unless (timerp timer) (signal 'wrong-type-argument (list 'timerp timer)))
     nil))
+(unless (fboundp 'timer--triggered) (defun timer--triggered (timer) (aref timer 0)))
+(unless (fboundp 'timer--repeat-delay) (defun timer--repeat-delay (timer) (aref timer 4)))
+(unless (fboundp 'timer--function) (defun timer--function (timer) (aref timer 5)))
+(unless (fboundp 'timer--args) (defun timer--args (timer) (aref timer 6)))
 (unless (fboundp 'sit-for) (defun sit-for (&rest _) t))
 (unless (fboundp 'cl-dolist) (defmacro cl-dolist (spec &rest body) `(cl-block nil (dolist ,spec ,@body))))
 (unless (fboundp 'cl-dotimes) (defmacro cl-dotimes (spec &rest body) `(cl-block nil (dotimes ,spec ,@body))))
@@ -8485,14 +8515,13 @@ FN returns non-nil to stop.  COLLECTION is a list, a hash table or an obarray."
     ;; not a list or vector, so it names `list-or-vector-p'; anything that
     ;; is not a sequence at all names `sequencep'.  Measured -- one name for
     ;; both would be wrong half the time.
-    (unless (or (listp strings) (vectorp strings))
-      (signal 'wrong-type-argument
-              (list (if (sequencep strings) 'list-or-vector-p 'sequencep)
-                    strings)))
     (let* ((open (cond ((stringp paren) paren) (paren "\\(")))
            (re (if strings
                    (regexp-opt-group
-                    (delete-dups (sort (copy-sequence strings) (function string-lessp)))
+                    (let ((sorted (sort (if (or (listp strings) (vectorp strings)) (copy-sequence strings) strings))))
+                      ;; `delete-dups' of a vector is `listp' in Emacs 31.
+                      (unless (listp sorted) (signal 'wrong-type-argument (list 'listp sorted)))
+                      (delete-dups sorted))
                     (or open t) (not open))
                  (concat (or open "\\(?:") regexp-unmatchable "\\)"))))
       (cond ((eq paren (quote words)) (concat "\\<" re "\\>"))
@@ -9156,7 +9185,7 @@ See that variable's own docstring."
   ;; closures and byte-code functions (verified on host:
   ;; `(closurep (byte-compile (lambda (x) x)))' => t).
   (defun closurep (object)
-    (if (or (eq (car-safe object) 'closure)
+    (if (or (nelisp--closure-p object)
             (and (fboundp 'byte-code-function-p)
                  (byte-code-function-p object)))
         t
@@ -9247,7 +9276,7 @@ replacing the elements in the beginning of the constant-vector."
 ;; Full cl-generic dispatch needs the reader to gain compiled functions
 ;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
-  (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
+  (defun interpreted-function-p (object) (nelisp--closure-p object)))
 ;; GNU eval.c `Ffunction' consumes a lambda's leading `(:documentation FORM)'
 ;; when the closure is created (it becomes slot 4: the OClosure type).  This
 ;; runtime keeps the form in the body, where the native slot view reads it,
@@ -9287,7 +9316,7 @@ replacing the elements in the beginning of the constant-vector."
                        (and iform (list iform)) body)))
     (if env
         (eval (list 'function (cons 'lambda (cons args forms))) env)
-      (cons 'closure (cons nil (cons args forms)))))))
+      (nelisp--closure-make (cons 'closure (cons nil (cons args forms))))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
@@ -12130,7 +12159,9 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
          (ovt (nelisp-buffer-overlays b)))
     (when (or (< s 1) (> e (1+ len)))
       (signal 'args-out-of-range (list start end)))
-    (when (and ovt (< s e))
+    ;; GNU del_range_1: an empty range changes nothing (no modified flag, tick, or point move).
+    (when (< s e)
+    (when ovt
       (nelisp-ov--before-change b s e))
     (let* ((delta (- e s))
            (old-min (nelisp-buffer-narrow-start b))
@@ -12159,8 +12190,8 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
       (when (nelisp-buffer-text-properties b)
         (nelisp-buffer--shift-text-properties-on-delete b s e))
       (nelisp-goto-char new-point b)
-      (when (and ovt (< s e))
-        (nelisp-ov--after-change b s delta 0))))
+      (when ovt
+        (nelisp-ov--after-change b s delta 0)))))
   nil)
 
 (defun nelisp-erase-buffer (&optional buf)
@@ -12216,6 +12247,13 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
     (nelisp-buffer-set-modified flag (current-buffer))
     nil)
   (put 'set-buffer-modified-p 'emacs-stub-bulk t))
+
+(unless (fboundp 'restore-buffer-modified-p)
+  (defun restore-buffer-modified-p (flag)
+    "Like `set-buffer-modified-p', but without touching the modification tick."
+    (nelisp-buffer-set-modified flag (current-buffer))
+    flag)
+  (put 'restore-buffer-modified-p 'emacs-stub-bulk t))
 
 (unless (fboundp 'buffer-modified-tick)
   (defun buffer-modified-tick (&optional buffer)
@@ -19028,6 +19066,29 @@ filter it already wrote."
 ;; wait.
 (unless (fboundp 'nelisp--repl-idle-pump)
   (defun nelisp--repl-idle-pump () nil))
+;; Doc 236 layer 1: opt-in REPL input check.  The REPL wraps every typed
+;; line in `nelisp--repl-input'; with the variable nil the macro runs the
+;; form inline, exactly as before.  The function receives the one wrapped
+;; form and returns non-nil to evaluate it (or signals to refuse it).
+(defvar nelisp-repl-input-check-function nil)
+;; A function receiving the wrapped form that evaluates it and does its own
+;; checking; nil means the default check-then-eval below.
+(defvar nelisp-repl-input-eval-function nil)
+(defmacro nelisp--repl-input (form)
+  (list 'if (list 'or 'nelisp-repl-input-check-function
+                  'nelisp-repl-input-eval-function)
+        (list 'nelisp--repl-input-run (list 'quote form))
+        form))
+(defun nelisp--repl-input-run (form)
+  (cond
+   ((equal form '(progn (nelisp--repl-idle-pump)))
+    (eval form t))
+   (nelisp-repl-input-eval-function
+    (funcall nelisp-repl-input-eval-function form))
+   ((or (null nelisp-repl-input-check-function)
+        (funcall nelisp-repl-input-check-function form))
+    (eval form t))
+   (t nil)))
 ;; feat/agent-json-cluster: `void-function' on the last of the 4
 ;; nelisp-agent host-only tests in this cluster (after the
 ;; `insert-file-contents' and `file-in-directory-p'/`file-equal-p' fixes
@@ -19319,7 +19380,7 @@ No-ops on substrates without `nelisp--syscall-path-int' (the historic stub)."
       (dolist (p parent)
         (unless (symbolp p) (signal 'wrong-type-argument (list 'symbolp p)))
         (unless (get p 'error-conditions)
-          (signal 'error (list (format "Unknown signal ‘%s’" p))))))
+          (signal 'error (list (format-message "Unknown signal `%s'" p))))))
     (let* ((parent (or parent 'error))
            (conditions
             (if (consp parent)
@@ -20463,8 +20524,7 @@ claimed to match, only the shape."
 (defvar nelisp--prn-slot-table nil)
 (defvar nelisp--prn-env-table nil)
 (defun nelisp--prn-interpreted-p (obj)
-  (and (consp obj) (eq (car obj) 'closure)
-       (consp (cdr obj)) (consp (cddr obj))))
+  (nelisp--closure-p obj))
 (defun nelisp--prn-function-slots (obj)
   "Snapshot exactly the slots printed, retaining captured binding identity.
 The runtime's `aref' projects lexical cells into fresh pairs.  Reuse one
@@ -20475,7 +20535,7 @@ projection per cell and one slot vector per function for this print call."
           (aset slots i (aref obj i))
           (setq i (1+ i)))
         (when (and nelisp--prn-env-table (nelisp--prn-interpreted-p obj))
-          (let ((env (aref slots 2)) (raw (nth 1 obj)))
+          (let ((env (aref slots 2)) (raw (nth 1 (nelisp--closure-cons obj))))
             (while (consp env)
               (let ((pair (car env)) (binding nil) (tail raw))
                 ;; Native capture order is outer-first; the last binding wins.
@@ -20497,7 +20557,7 @@ projection per cell and one slot vector per function for this print call."
         (when nelisp--prn-slot-table (puthash obj slots nelisp--prn-slot-table))
         slots)))
 (defun nelisp--prn-graph-p (obj)
-  (and (or (consp obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
+  (and (or (consp obj) (nelisp--closure-p obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
            (byte-code-function-p obj) (and (stringp obj) (> (length obj) 0)))
        ;; Match the opaque branches of the print pass, including its buffer
        ;; adapter. Their hidden implementation graphs must never be walked.
@@ -20650,8 +20710,7 @@ without the `charset' property, `plain' to print the string without intervals."
    ((nelisp--prn-hash-table-p obj) (nelisp--prn-hash-table obj escape cache))
    ((and (consp obj) (eq (car obj) 'builtin) (consp (cdr obj)))
     (concat "#<subr " (symbol-name (car (cdr obj))) ">"))
-   ((and (consp obj) (eq (car obj) 'closure)
-         (consp (cdr obj)) (consp (cdr (cdr obj))))
+   ((nelisp--closure-p obj)
     ;; GNU Emacs 31.1 prints an interpreted-function object as its slots,
     ;; #[ARGS BODY ENV] or #[ARGS BODY ENV nil DOC [IFORM]]; `length'/`aref'
     ;; recover exactly that slot view (docstring and interactive form split
@@ -20761,11 +20820,11 @@ without the `charset' property, `plain' to print the string without intervals."
   (cond
    ((null overrides) nil)
    ((eq overrides t) nil)
-   ((not (consp overrides)) (signal 'wrong-type-argument 'consp))
+   ((not (consp overrides)) (signal 'wrong-type-argument (list 'consp overrides)))
    (t (let ((l overrides))
         (while (consp l)
           (let ((e (car l)))
-            (unless (consp e) (signal 'wrong-type-argument 'consp))
+            (unless (consp e) (signal 'wrong-type-argument (list 'consp e)))
             (unless (memq (car e) nelisp--print-override-keys)
               (signal 'wrong-type-argument (list 'symbolp nil))))
           (setq l (cdr l)))))))
@@ -23781,6 +23840,7 @@ See the Doc-comment above for the dropped file-name-handler dispatch."
     (nreverse parts)))
 (unless (fboundp 'split-string)
   (defun split-string (string &optional separators omit-nulls _trim)
+    (length string)
     (when separators (nelisp--check-string separators))
     (nelisp--check-string string)
     (nelisp--split-on-char
@@ -25591,12 +25651,24 @@ A half is rounded to the even neighbour, as in Emacs."
 ;;     0.0e+NaN (as opposed to the all-integer branch, which still
 ;;     signals `arith-error' on a zero divisor, also matching host
 ;;     Emacs).
+(defun nelisp--marker-num (x)
+  "Return marker X's position, as GNU coerces a marker in arithmetic."
+  (if (nelisp-marker-buffer x)
+      (nelisp-marker-position x)
+    (signal 'error (list "Marker does not point anywhere"))))
 (defun mod (a b)
   ;; Types before arithmetic: (mod :key 0) is a TYPE error in Emacs, not an
   ;; arithmetic one -- checking the divisor first reported "Arithmetic
   ;; error" for a call whose problem was the dividend.
-  (unless (numberp a) (signal 'wrong-type-argument (list 'number-or-marker-p a)))
-  (unless (numberp b) (signal 'wrong-type-argument (list 'number-or-marker-p b)))
+  ;; Markers (`number-or-marker-p') are coerced on the error path only.
+  (unless (numberp a)
+    (if (nelisp-marker-p a)
+        (setq a (nelisp--marker-num a))
+      (signal 'wrong-type-argument (list 'number-or-marker-p a))))
+  (unless (numberp b)
+    (if (nelisp-marker-p b)
+        (setq b (nelisp--marker-num b))
+      (signal 'wrong-type-argument (list 'number-or-marker-p b))))
   (if (or (floatp a) (floatp b))
       (if (= b 0)
           (/ 0.0 0.0)
@@ -25891,7 +25963,7 @@ NUL.  Emacs signals for every one of those."
         (= conv 101) (= conv 69) (= conv 102) (= conv 70)
         (= conv 103) (= conv 71) (= conv 97) (= conv 65))
     (unless (numberp arg)
-      (signal 'error (list "Format specifier doesn’t match argument type"))))
+      (signal 'error (list (format-message "Format specifier doesn't match argument type")))))
    ;; c -- an integer, and then a valid character code.  Emacs draws the line
    ;; in two places: a float is a specifier mismatch, a negative integer is
    ;; `(wrong-type-argument characterp -1)'.
@@ -26719,7 +26791,7 @@ argument end extends over right padding (textprop.c:2123)."
 (unless (fboundp 'nelisp--native-functionp) (fset 'nelisp--native-functionp (symbol-function 'functionp)))
 (defun functionp (x)
   "Return t if X is callable (lambda / closure / builtin cons, or native)."
-  (if (and (consp x) (memq (car x) '(lambda closure builtin)))
+  (if (or (nelisp--closure-p x) (and (consp x) (memq (car x) '(lambda closure builtin))))
       t
     (if (or (and (fboundp 'byte-code-function-p)
                  (byte-code-function-p x))
@@ -26770,7 +26842,7 @@ nil), so there is nothing else to update for that name."
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.
-     ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
+     ((nelisp--closure-p x) 'interpreted-function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
      ((and (fboundp 'subrp) (subrp x)) 'subr)
      ((consp x) 'cons)
@@ -26949,6 +27021,8 @@ unlisted OS-specific entry point."
           (func-arity inner)))
        ((and (consp fn) (eq (car fn) 'builtin))
         (nelisp--func-arity-builtin (car (cdr fn))))
+       ((nelisp--closure-p fn)
+        (nelisp--func-arity-formals (car (cdr (cdr (nelisp--closure-cons fn))))))
        ((and (consp fn) (eq (car fn) 'closure))
         (nelisp--func-arity-formals (car (cdr (cdr fn)))))
        ((and (consp fn) (eq (car fn) 'lambda))
@@ -26997,6 +27071,8 @@ strings and vectors are not accepted."
       (cond
        ((null fun) nil)
        ((or (stringp fun) (vectorp fun)) (and (not for-call-interactively) t))
+       ((nelisp--closure-p fun)
+        (and (assq 'interactive (cdr (cdr (cdr (nelisp--closure-cons fun))))) t))
        ((not (consp fun)) nil)
        ((eq (car fun) 'lambda) (and (assq 'interactive (cdr (cdr fun))) t))
        ((eq (car fun) 'closure) (and (assq 'interactive (cdr (cdr (cdr fun)))) t))
@@ -30806,7 +30882,7 @@ Never signals: a failure leaves NAME to the interpreter."
     (error nil))
   (condition-case nil
       (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
-        (let ((fn (symbol-function name)))
+        (let ((fn (nelisp--closure-cons (symbol-function name))))
           (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
             (let ((body (nthcdr 3 fn)))
               (unless (gethash body nelisp--fx-table)
@@ -30864,7 +30940,7 @@ compiled behind their definition's back.")
 
 (defun nelisp--fx-note-named (fn)
   "Record FN's body (a closure, or a macro whose cdr is one) as named."
-  (let ((f (if (eq (car-safe fn) 'macro) (cdr fn) fn)))
+  (let ((f (nelisp--closure-cons (if (eq (car-safe fn) 'macro) (cdr fn) fn))))
     (when (eq (car-safe f) 'closure)
       (puthash (nthcdr 3 f) t nelisp--fx-named))))
 
@@ -30919,8 +30995,8 @@ and `nelisp--fx-register-fn' repeats the check."
               (nelisp--fx-register-fn
                nil (cons 'closure (cons captured (cons formals body)))))))
         (when (and name (fboundp name)
-                   (eq (car-safe (symbol-function name)) 'closure)
-                   (eq (nthcdr 3 (symbol-function name)) body))
+                   (eq (car-safe (nelisp--closure-cons (symbol-function name))) 'closure)
+                   (eq (nthcdr 3 (nelisp--closure-cons (symbol-function name))) body))
           (let ((trace (nelisp--fx-trace-file)) (t0 (float-time)))
             (nelisp--fx-register name)
             (nelisp--fx-retry-errored)
@@ -30954,7 +31030,7 @@ compiled again after the next compilation that succeeds.")
     (let ((queue nelisp--fx-errored))
       (setq nelisp--fx-errored nil)
       (dolist (e queue)
-        (let ((fn (and (fboundp (car e)) (symbol-function (car e)))))
+        (let ((fn (and (fboundp (car e)) (nelisp--closure-cons (symbol-function (car e))))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -30978,7 +31054,7 @@ Defining it as a function compiles them again.")
       ;; A macro too: compiling now expands it, as GNU's `load' expands
       ;; macros eagerly when it reads a definition.
       (dolist (w waiters)
-        (let ((fn (and (fboundp w) (symbol-function w))))
+        (let ((fn (and (fboundp w) (nelisp--closure-cons (symbol-function w)))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -30994,6 +31070,8 @@ NAME is the function it is defined as, or nil for an anonymous lambda; only
 a named function takes part in the retry queues.  FORCE replaces an
 existing `none' record in place (never removing it first: a call made
 meanwhile would otherwise record `none' again behind the compilation)."
+  (when (and (nelisp--closure-p fn) (not (consp fn)))
+    (setq fn (nelisp--closure-cons fn)))
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
     (progn
       (when (and (consp fn) (eq (car fn) 'closure)
@@ -31179,7 +31257,7 @@ boot starts with the prelude already on the VM."
     ;; A first call early in the boot may have found the VM unable to take a
     ;; body only because `macroexpand-all' was not loaded yet: try again.
     (dolist (n names)
-      (let ((fn (and (fboundp n) (symbol-function n))))
+      (let ((fn (and (fboundp n) (nelisp--closure-cons (symbol-function n)))))
         (when (and (eq (car-safe fn) 'closure)
                    (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
           (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -31191,7 +31269,7 @@ boot starts with the prelude already on the VM."
     ;; applied while it was absent from the table, and so recorded `none'
     ;; behind its own registration.  Replace those records in place.
     (dolist (n names)
-      (let ((fn (and (fboundp n) (symbol-function n))))
+      (let ((fn (and (fboundp n) (nelisp--closure-cons (symbol-function n)))))
         (when (and (eq (car-safe fn) 'closure)
                    (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
           (condition-case nil (nelisp--fx-register-fn n fn t) (error nil)))))
@@ -31464,7 +31542,7 @@ are skipped.")
     (if (equal (getenv "NELISP_FX_DUMP") "all")
         (nelisp--fx-register-prelude)
       (dolist (n (nelisp--fx-profile-names))
-        (let ((fn (and (symbolp n) (fboundp n) (symbol-function n))))
+        (let ((fn (and (symbolp n) (fboundp n) (nelisp--closure-cons (symbol-function n)))))
           (when (and (eq (car-safe fn) 'closure)
                      (null (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-pending)
@@ -31508,7 +31586,7 @@ are skipped.")
       (remhash name nelisp--fx-callees)
       ;; Compiled again, the macro expands, as `load' would have done.
       (dolist (w callers)
-        (let ((fn (and (fboundp w) (symbol-function w))))
+        (let ((fn (and (fboundp w) (nelisp--closure-cons (symbol-function w)))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (nelisp--fx-retire (nthcdr 3 fn))
@@ -32986,3 +33064,138 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
   (dolist (var '(tab-width indent-tabs-mode case-fold-search major-mode mode-name
                  left-margin truncate-lines word-wrap fill-prefix comment-column))
     (make-variable-buffer-local var)))
+
+;; Error symbols GNU Emacs 31.1 registers at startup (`emacs -Q', read off
+;; with `mapatoms' on 2026-11-02), as (SYMBOL CONDITIONS MESSAGE).  The
+;; strict `signal' below rejects any symbol without `error-conditions', so
+;; every standard one has to carry them -- several (`invalid-read-syntax',
+;; `end-of-buffer', `json-parse-error', ...) are raised natively or by
+;; ported code without ever going through `define-error'.  Only symbols
+;; that have no conditions yet are touched, so a definition made earlier in
+;; the prelude wins.
+(dolist (e '(
+       (args-out-of-range (args-out-of-range error) "Args out of range")
+       (arith-error (arith-error error) "Arithmetic error")
+       (beginning-of-buffer (beginning-of-buffer error) "Beginning of buffer")
+       (buffer-read-only (buffer-read-only error) "Buffer is read-only")
+       (circular-list (circular-list error) "List contains a loop")
+       (cl-assertion-failed (cl-assertion-failed error) "Assertion failed")
+       (cl-no-applicable-method (cl-no-applicable-method cl-no-method error) "No applicable method")
+       (cl-no-method (cl-no-method error) "No method")
+       (cl-no-next-method (cl-no-next-method cl-no-method error) "No next method")
+       (cl-no-primary-method (cl-no-primary-method cl-no-method error) "No primary method")
+       (coding-system-error (coding-system-error error) "Invalid coding system")
+       (comp-sanitizer-error (comp-sanitizer-error error) "Native code sanitizer runtime error")
+       (cyclic-function-indirection (cyclic-function-indirection error) "Symbol's chain of function indirections contains a loop")
+       (cyclic-variable-indirection (cyclic-variable-indirection error) "Symbol's chain of variable indirections contains a loop")
+       (dbus-error (dbus-error error) "D-Bus error")
+       (domain-error (domain-error arith-error error) "Arithmetic domain error")
+       (end-of-buffer (end-of-buffer error) "End of buffer")
+       (end-of-file (end-of-file error) "End of file during parsing")
+       (error (error) "error")
+       (excessive-lisp-nesting (excessive-lisp-nesting recursion-error error) "Lisp nesting exceeds `max-lisp-eval-depth'")
+       (excessive-variable-binding (excessive-variable-binding recursion-error error) "Variable binding depth exceeds max-specpdl-size")
+       (file-already-exists (file-already-exists file-error error) "File already exists")
+       (file-date-error (file-date-error file-error error) "Cannot set file date")
+       (file-error (file-error error) "File error")
+       (file-missing (file-missing file-error error) "File is missing")
+       (file-notify-error (file-notify-error file-error error) "File notification error")
+       (inhibited-interaction (inhibited-interaction error) "User interaction while inhibited")
+       (invalid-arity (invalid-arity error) "Invalid function arity")
+       (invalid-function (invalid-function error) "Invalid function")
+       (invalid-read-syntax (invalid-read-syntax error) "Invalid read syntax")
+       (invalid-regexp (invalid-regexp error) "Invalid regexp")
+       (json-end-of-file (json-end-of-file json-parse-error json-error error) "end of JSON stream")
+       (json-error (json-error error) "generic JSON error")
+       (json-escape-sequence-error (json-escape-sequence-error json-parse-error json-error error) "invalid escape sequence")
+       (json-invalid-surrogate-error (json-invalid-surrogate-error json-error error) "invalid surrogate pair")
+       (json-number-out-of-range-error (json-number-out-of-range-error json-error error) "number out of range")
+       (json-object-too-deep (json-object-too-deep json-error error) "object cyclic or Lisp evaluation too deep")
+       (json-out-of-memory (json-out-of-memory json-error error) "not enough memory for creating JSON object")
+       (json-parse-error (json-parse-error json-error error) "could not parse JSON stream")
+       (json-trailing-content (json-trailing-content json-parse-error json-error error) "trailing content after JSON stream")
+       (json-utf8-decode-error (json-utf8-decode-error json-error error) "invalid utf-8 encoding")
+       (malformed-keyword-arg-list (malformed-keyword-arg-list error) "Keyword lacks a corresponding value")
+       (mark-inactive (mark-inactive error) "The mark is not active now")
+       (memory-buffer-too-small (memory-buffer-too-small error) "Memory buffer too small")
+       (minibuffer-quit (minibuffer-quit quit) "Quit")
+       (missing-module-init-function (missing-module-init-function module-load-failed error) "Module does not export an initialization function")
+       (module-init-failed (module-init-failed module-load-failed error) "Module initialization failed")
+       (module-load-failed (module-load-failed error) "Module load failed")
+       (module-not-gpl-compatible (module-not-gpl-compatible module-load-failed error) "Module is not GPL compatible")
+       (module-open-failed (module-open-failed module-load-failed error) "Module could not be opened")
+       (module-out-of-memory (module-out-of-memory error) "Module out of memory")
+       (native-compiler-error (native-compiler-error error) "Native compiler error")
+       (native-ice (native-ice native-compiler-error error) "Internal native compiler error")
+       (native-lisp-file-inconsistent (native-lisp-file-inconsistent native-lisp-load-failed error) "eln file inconsistent with current runtime configuration, please recompile")
+       (native-lisp-load-failed (native-lisp-load-failed error) "Native elisp load failed")
+       (native-lisp-wrong-reloc (native-lisp-wrong-reloc native-lisp-load-failed error) "Primitive redefined or wrong relocation")
+       (no-catch (no-catch error) "No catch for tag")
+       (overflow-error (overflow-error range-error arith-error error) "Arithmetic overflow error")
+       (permission-denied (permission-denied file-error error) "Cannot access file or directory")
+       (protected-field (protected-field error) "Attempt to modify a protected field")
+       (quit (quit) "Quit")
+       (range-error (range-error arith-error error) "Arithmetic range error")
+       (recursion-error (recursion-error error) "Excessive recursive calling error")
+       (remote-file-error (remote-file-error file-error error) "Remote file error")
+       (scan-error (scan-error error) "Scan error")
+       (search-failed (search-failed error) "Search failed")
+       (setting-constant (setting-constant error) "Attempt to set a constant symbol")
+       (singularity-error (singularity-error domain-error arith-error error) "Arithmetic singularity error")
+       (sqlite-error (sqlite-error error) "Database error")
+       (sqlite-locked-error (sqlite-locked-error sqlite-error error) "Database locked")
+       (text-read-only (text-read-only buffer-read-only error) "Text is read-only")
+       (thread-buffer-killed (thread-buffer-killed error) "Thread's current buffer killed")
+       (trapping-constant (trapping-constant error) "Attempt to trap writes to a constant symbol")
+       (treesit-buffer-too-large (treesit-buffer-too-large treesit-error error) "Buffer too large (> 4GiB)")
+       (treesit-buffer_changed (treesit-buffer_changed treesit-error error) "Buffer content changed, please don't edit buffer in predicate function, etc")
+       (treesit-error (treesit-error error) "Generic tree-sitter error")
+       (treesit-invalid-predicate (treesit-invalid-predicate treesit-error error) "Invalid predicate, see `treesit-thing-settings' for valid forms for a predicate")
+       (treesit-load-language-error (treesit-load-language-error treesit-error error) "Cannot load language definition")
+       (treesit-node-buffer-killed (treesit-node-buffer-killed treesit-error error) "The buffer associated with this node is killed")
+       (treesit-node-outdated (treesit-node-outdated treesit-error error) "This node is outdated, please retrieve a new one")
+       (treesit-parse-error (treesit-parse-error treesit-error error) "Parse failed")
+       (treesit-parser-deleted (treesit-parser-deleted treesit-error error) "This parser is deleted and cannot be used")
+       (treesit-query-error (treesit-query-error treesit-error error) "Query pattern is malformed")
+       (treesit-range-invalid (treesit-range-invalid treesit-error error) "RANGES are invalid: they have to be ordered and should not overlap")
+       (type-mismatch (type-mismatch error) "Types do not match")
+       (underflow-error (underflow-error range-error arith-error error) "Arithmetic underflow error")
+       (unknown-image-type (unknown-image-type error) "Unknown image type")
+       (user-error (user-error error) "")
+       (user-search-failed (user-search-failed user-error search-failed error) "Search failed")
+       (vc-not-supported (vc-not-supported error) "VC method not implemented for backend")
+       (void-function (void-function error) "Symbol's function definition is void")
+       (void-variable (void-variable error) "Symbol's value as variable is void")
+       (wrong-length-argument (wrong-length-argument error) "Wrong length argument")
+       (wrong-number-of-arguments (wrong-number-of-arguments error) "Wrong number of arguments")
+       (wrong-register-subr-call (wrong-register-subr-call native-lisp-load-failed error) "comp--register-subr can only be called during native lisp load phase.")
+       (wrong-type-argument (wrong-type-argument error) "Wrong type argument")
+       ;; NeLisp-specific symbols raised natively or by the runtime.
+       (char-table-range-too-large (char-table-range-too-large error)
+                                   "Char-table range too large")
+       (nelisp-diag-runaway-append-collect (nelisp-diag-runaway-append-collect error)
+                                           "Runaway append collection")))
+  (unless (get (car e) 'error-conditions)
+    (put (car e) 'error-conditions (nth 1 e))
+    (when (nth 2 e) (put (car e) 'error-message (nth 2 e)))))
+
+;; Emacs 31.1 `signal' refuses a symbol that carries no `error-conditions':
+;; it raises (error "Invalid error symbol" SYM) instead, so a handler for SYM
+;; itself does not catch it and a non-symbol is a type error.  The native
+;; `signal' trusts its caller, hence this wrapper.  It sits at the very end
+;; of the prelude, after every built-in error symbol has its conditions, and
+;; the native subr stays reachable as `nelisp--native-signal'.
+(unless (fboundp 'nelisp--native-signal)
+  (defalias 'nelisp--native-signal (symbol-function 'signal)))
+(defun signal (error-symbol data)
+  "Signal an error of type ERROR-SYMBOL with DATA.
+ERROR-SYMBOL must have an `error-conditions' property; otherwise
+\(error \"Invalid error symbol\" ERROR-SYMBOL) is signaled.  A nil
+ERROR-SYMBOL re-signals DATA, whose car is the real symbol."
+  (when (and (null error-symbol) (consp data))
+    (setq error-symbol (car data) data (cdr data)))
+  (unless (symbolp error-symbol)
+    (nelisp--native-signal 'wrong-type-argument (list 'symbolp error-symbol)))
+  (if (and error-symbol (get error-symbol 'error-conditions))
+      (nelisp--native-signal error-symbol data)
+    (nelisp--native-signal 'error (list "Invalid error symbol" error-symbol))))

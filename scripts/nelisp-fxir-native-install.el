@@ -17,8 +17,15 @@
 ;; :mutant row (the negative control: a deliberately wrong `<') is never
 ;; installed here; `nelisp-nc-select' switches a record to it on request.
 
+;; The standalone runtime wraps a closure's (closure ENV ARGS . BODY) list
+;; in a heap-kind-23 object; the code below reads the list.
+(defun nelisp-nc--closure-list (fn)
+  "FN's (closure ENV ARGS . BODY) list, or FN itself."
+  (or (and (fboundp 'nelisp--closure-cons) (nelisp--closure-cons fn)) fn))
+
 (defun nelisp-nc--recompile (fn)
   "(CODE NLOCALS IR) of closure FN compiled as `nelisp--fx-register-fn' does."
+  (setq fn (nelisp-nc--closure-list fn))
   (when (and (eq (car-safe fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
     (let* ((args (nth 2 fn)) (body (nthcdr 3 fn))
            (nelisp--fx-declared (remq t (nth 1 fn)))
@@ -83,7 +90,8 @@
 
 (defun nelisp-nc--convert (name fn &optional mutant)
   "Switch NAME's fx record (closure FN) to its native function when the fxir matches."
-  (let ((row (nelisp-nc--row name mutant)))
+  (let ((row (nelisp-nc--row name mutant))
+        (fn (nelisp-nc--closure-list fn)))
     (when (and row (eq (car-safe fn) 'closure))
       (let ((rec (gethash (nthcdr 3 fn) nelisp--fx-table)))
         (when (and (vectorp rec) (> (length rec) 7) (integerp (aref rec 1))
@@ -102,7 +110,7 @@
   "Run NAME's record on MODE: `native', `vm' or `mutant'.  Answers non-nil on success.
 For transcripts (tools/ai/nc1-native-check.sh): `vm' gives the record back
 its compiled NLOCALS."
-  (let* ((fn (symbol-function name))
+  (let* ((fn (nelisp-nc--closure-list (symbol-function name)))
          (rec (and (eq (car-safe fn) 'closure) (gethash (nthcdr 3 fn) nelisp--fx-table))))
     (when (vectorp rec)
       (if (eq mode 'vm)

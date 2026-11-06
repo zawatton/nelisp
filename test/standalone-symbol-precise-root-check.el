@@ -69,6 +69,8 @@
   (let ((k 10)) (funcall (lambda (x) (spr-gc) (+ x k)) 5)))
 (spr-case closure-set 3
   (let ((c 0)) (let ((f (lambda () (spr-gc) (setq c (1+ c))))) (funcall f) (funcall f) (funcall f))))
+;; GNU 31.1 `signal' rejects a symbol without `error-conditions'.
+(put 'spr-error 'error-conditions '(spr-error error))
 (spr-case condition-case 'caught
   (condition-case e (progn (spr-gc) (signal 'spr-error '(1))) (spr-error (spr-gc) 'caught)))
 (spr-case condition-case-var 'wrong-type-argument
