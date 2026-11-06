@@ -551,8 +551,10 @@
                                      'emacs-load-test--incremental-target)
                            (defun emacs-load-test--incremental-target ()
                              'late-bound))))
+          ;; The rewriter emits the public name; it aliases the private
+          ;; `nelisp--defalias-late' mocked above.
           (should (eq (caar (nreverse rewrite-outputs))
-                      'nelisp--defalias-late))
+                      'nelisp-defalias-late))
           (should (= late-calls 1))
           (should (fboundp target))
           (should (eq (funcall alias) 'late-bound)))
@@ -1873,7 +1875,7 @@ pathology itself, which host Emacs cannot reproduce."
          (rewrite-calls 0)
          (gc-calls 0)
          (original-rewriter (symbol-function 'nelisp--load-rewrite-defalias-form))
-         (expected ";;; nelisp-private-nelc-v2\n(nelisp--defalias-late 'emacs-load-test--stream-alias 'emacs-load-test--stream-target)\n(defun emacs-load-test--stream-target nil 'late-bound)\n(nelisp--defalias-late 'emacs-load-test--stream-alias-2 'emacs-load-test--stream-target)\n"))
+         (expected ";;; nelisp-private-nelc-v2\n(nelisp-defalias-late 'emacs-load-test--stream-alias 'emacs-load-test--stream-target)\n(defun emacs-load-test--stream-target nil 'late-bound)\n(nelisp-defalias-late 'emacs-load-test--stream-alias-2 'emacs-load-test--stream-target)\n"))
     (unwind-protect
         (cl-letf (((symbol-function 'garbage-collect)
                    (lambda ()
@@ -3206,7 +3208,7 @@ pathology itself, which host Emacs cannot reproduce."
   (skip-unless (emacs-load-test--standalone-active-p))
   (let* ((source "(d\\efalias 'emacs-load-test--alias 'ignore)\n")
          (normalized
-          "(nelisp--defalias-late 'emacs-load-test--alias 'ignore)")
+          "(nelisp-defalias-late 'emacs-load-test--alias 'ignore)")
          (normalize-calls 0)
          (one-shot
           (cl-letf (((symbol-function 'nelisp--load-normalize-source-rewriting)
