@@ -55,7 +55,7 @@
 ;; `nl-agent-ui.el's actual UI functions work when a test later CALLS them
 ;; (`yes-or-no-p' foremost) is a pass/fail-inside-ERT question, explicitly
 ;; out of scope here; add real bodies the same way
-;; `standalone-compat/json.el' adds JSON names when that becomes the
+;; a compat file adds names when that becomes the
 ;; task, each `(unless (fboundp 'NAME) (defun NAME (...) ...))' with a
 ;; differential against host Emacs 31.1.
 

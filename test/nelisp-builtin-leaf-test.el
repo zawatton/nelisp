@@ -2,6 +2,14 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-standalone-build)
+;; Provides `nelisp-name-split-test--leaf', the original-tree leaf oracle.
+(require 'nelisp-applyfn-name-split-test)
+
+(defconst nelisp-builtin-leaf-test--word-arms
+  '(((:lit "+") :word . 101) ((:lit "-") :word . 102) ((:lit "<") :word . 103)
+    ((:lit "=") :word . 104) ((:lit ">") :word . 105) ((:lit "1+") :word . 106)
+    ((:lit "1-") :word . 107))
+  "Canonical WORD arms `nelisp-standalone--applyfn-assemble' refuses to assemble without.")
 
 (defun nelisp-builtin-leaf-test--split (form &optional frame admitted)
   "Use the old grouping as the negative-control baseline before the change."
@@ -42,7 +50,8 @@
          (parts (nelisp-builtin-leaf-test--split `(let* () ,tree) t '(1))))
     (should (= (length (car parts)) 1))
     (should (equal (nth 2 (caar parts)) '(nl_dk func_ptr args env name_ptr argc)))
-    (cl-letf (((symbol-function 'heap-read-u64) (lambda (base offset) (aref base (/ offset 8)))))
+    (cl-letf (((symbol-function 'heap-read-u64) (lambda (base offset) (aref base (/ offset 8))))
+              ((symbol-function 'ptr-read-u64) (lambda (base offset) (aref base (/ offset 8)))))
       (nelisp-builtin-leaf-test--with-definitions
        (car parts)
        (lambda ()
@@ -113,9 +122,12 @@
                (lambda (&rest _) (error "Production still uses grouping"))))
       (dolist (default '(nil 1))
         (let* ((source (nelisp-standalone--applyfn-assemble
-                        nil '(((:lit "car") :word . 11) ((:lit "cdr") :word . 22)) default))
+                        nil (append '(((:lit "car") :word . 11) ((:lit "cdr") :word . 22))
+                                    nelisp-builtin-leaf-test--word-arms)
+                        default))
                (names (nelisp-standalone--builtin-leaf-names source)))
-          (should (= (length names) (if default 2 4)))
+          (should (= (length names)
+                     (* (+ 2 (length nelisp-builtin-leaf-test--word-arms)) (if default 1 2))))
           (should-not (cl-find-if
                        (lambda (f) (memq (cadr f) '(nl_apply_builtin_group_0_w nl_apply_builtin_group_1_w)))
                        (cdr source))))))))

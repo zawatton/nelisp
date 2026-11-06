@@ -562,6 +562,15 @@ that walks down into the guarded definition."
          (null
           (standalone-source-normalize-top-level-forms form)))))))
 
+(ert-deftest standalone-source-normalize-test/keeps-url-vars-forms ()
+  "`url-vars.el' is bundled from vendor/emacs-lisp-31.1, so it is not dropped."
+  (should-not (member "url-vars.el"
+                      standalone-source-normalize-dropped-source-files))
+  (let ((standalone-source-normalize-current-file "url-vars.el")
+        (form '(defvar url-current-object nil)))
+    (should (equal (standalone-source-normalize-top-level-forms form)
+                   (list form)))))
+
 (ert-deftest standalone-source-normalize-test/drops-small-ui-utility-load-only-forms ()
   (dolist (entry '(("tabify.el"
                    ((defvar tabify-regexp " [ \t]+")
@@ -1155,11 +1164,6 @@ that walks down into the guarded definition."
                     (defun rng-dt-builtin-compile (name params)
                       (list name params))
                     (provide 'rng-dt)))
-                  ("url-vars.el"
-                   ((defgroup url nil "URL." :group 'comm)
-                    (defvar-local url-current-object nil)
-                    (defcustom url-honor-refresh-requests t
-                      "Honor refresh." :type 'boolean)))
                   ("url-privacy.el"
                    ((require 'url-vars)
                     (defun url-device-type (&optional _device) nil)

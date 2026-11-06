@@ -26,7 +26,12 @@
                    (lambda (path)
                      (if (string-suffix-p "bytecomp.el.gz" path)
                          "mutated-source" (funcall original path)))))
-          (should (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'unsupported)))))))
+          ;; A mutated gzip file alone is accepted when the decompressed
+          ;; content still matches the pinned hash (74ae3143d).
+          (should (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'pinned))
+          (cl-letf (((symbol-function 'nelisp-bytecode-compiler-input--gnu-source-content-sha256)
+                     (lambda (_dir _name) "mutated-source")))
+            (should (eq (plist-get (nelisp-bytecode-compiler-input-dialect) :status) 'unsupported))))))))
 
 (nelisp-bytecode-compiler-input-attestation-test--deftest dialect-metadata-native-helper-mocks-and-aliases-refused ()
   (let ((nelisp-bytecode-runtime-dialect-id

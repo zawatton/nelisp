@@ -435,6 +435,17 @@ run a swap-out."
        ((boundp sym) (symbol-value sym))
        (t (signal 'void-variable (list sym)))))))
 
+
+(declare-function nelisp--env-globals-set-value "nelisp-stdlib-env-shim" (sym val))
+
+(defun emacs-buffer--globals-set-value (sym value)
+  "Mirror VALUE into SYM's substrate global cell when that primitive exists.
+Without the substrate there is no separate global-cell world to keep in
+sync, and writing the host global would leak state across buffers, so the
+fallback is a no-op."
+  (when (fboundp 'nelisp--env-globals-set-value)
+    (nelisp--env-globals-set-value sym value)))
+
 ;;;###autoload
 (defun emacs-buffer-set-buffer-local-value (sym buf value)
   "Set the buffer-local binding of SYM in BUF to VALUE.
@@ -459,14 +470,15 @@ this helper (or `make-local-variable' + global `setq')."
       (puthash sym cell index)
       (setcar (gethash ext emacs-buffer--local-indexes)
               (emacs-buffer--ext-locals ext)))
-    ;; When BUF is the current buffer its live value sits in the global
-    ;; cell (see `emacs-buffer-buffer-local-value'); keep that cell in step,
-    ;; otherwise the next swap-out would overwrite the cell written above.
-    (when (and (eq buf (if (fboundp 'nelisp--repr)
+    ;; When BUF is current its live global cell is the swap source of truth;
+    ;; keep it in step so the next swap-out does not overwrite the new cell
+    ;; with the stale live value.
+    (when (and (boundp sym)
+               (eq buf (if (fboundp 'nelisp--repr)
                            (current-buffer)
-                         (nelisp-ec-current-buffer)))
-               (boundp sym))
-      (set sym value))
+                         (nelisp-ec-current-buffer))))
+      (set sym value)
+      (puthash sym value emacs-buffer--swapped-in))
     value))
 
 (defun emacs-buffer-set-buffer-local-toplevel-value (symbol value &optional buffer)

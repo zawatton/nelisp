@@ -17,7 +17,7 @@
 (defconst nelisp-native-application-producer--helper-sha256
   "55e2524b8a4ca339a54508c8e5c6f80bfd50b14c5229e937d04ac62effa2b791")
 (defconst nelisp-native-application-producer--prelude-sha256
-  "66c748f729bad8e577527c515982e3db8d44effdabb13f89bbd919b49f0ef7d7")
+  "f4ff2bc6df6434983f557c3bec4b52ea8bd0ff2373f282359c8dfe964050d6a3")
 
 ;; Baseline admission shortcut.  `nelisp-cc-fxir-native-all-rows' is a pure
 ;; function of (a) the bytes of the data files named by
@@ -667,6 +667,13 @@ LOOKUP belongs to the transaction adapter; no closure is reconstructed for compi
             (dolist (candidate admitted)
               (nelisp-native-application-producer--check-providers
                (plist-get candidate :provider-witnesses)))
+            ;; The receipt assembly is a safepoint too: every published cell
+            ;; must still be the exact closure that was bound.
+            (dolist (candidate candidates)
+              (unless (eq (funcall lookup (plist-get candidate :name))
+                          (plist-get candidate :closure))
+                (error "Selected definition changed before publication: %S"
+                       (plist-get candidate :name))))
             receipt))
       ((error quit) (nelisp-native-application-producer--rollback owned adapter failure)))))
 

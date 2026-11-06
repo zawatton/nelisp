@@ -32,8 +32,11 @@ during the build, where `format' made encoding the units cost ~8.5 s.")
   ;; of equal bytes (keys compared by content, so a changed string misses).
   (or (gethash bytes nelisp-native-rooted-build-evidence--hex-cache)
       (puthash bytes
-               (let ((table nelisp-native-rooted-build-evidence--hex-digits))
-                 (mapconcat (lambda (byte) (aref table byte)) bytes ""))
+               ;; `apply-partially' builds a compiled closure; this file runs
+               ;; interpreted in the build, where a lambda costs more per byte.
+               (mapconcat (apply-partially #'aref
+                                           nelisp-native-rooted-build-evidence--hex-digits)
+                          bytes "")
                nelisp-native-rooted-build-evidence--hex-cache)))
 
 (defun nelisp-native-rooted-build-evidence--relocations (relocations)
@@ -106,12 +109,32 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
                                    (list (car section) :nelisp-cache-bytes-hex
                                          (nelisp-native-rooted-build-evidence--hex (cdr section)))
                                  section)) sections))
-          (with-temp-file path
-            (let ((print-circle t) (print-length nil) (print-level nil))
-              (prin1 encoded (current-buffer))))
-          (setq encoded-total (+ encoded-total (file-attribute-size (file-attributes path))))
-          (unless (<= encoded-total 33554432) (error "Encoded active unit aggregate bound"))
-          (let ((hash (nelisp-native-rooted-build-evidence-source-hash path 16777216)))
+          ;; `print-circle' stays off: a freshly compiled unit shares one
+          ;; name string between :symbols and :stackmap, the same unit read
+          ;; back from the unit cache does not, and `#1=' labels made the
+          ;; file (and so the driver's key) differ between the two, so the
+          ;; build after any recompile recompiled driver.o (~12 s).  Units
+          ;; are acyclic; a cycle would signal here, not loop.
+          ;; Printed text is ASCII (hex sections, plain names), so its bytes
+          ;; are known before writing: write them unconverted and hash them
+          ;; directly instead of `with-temp-file' plus reading the file back
+          ;; (~1 s over a build).  Anything else keeps the original path.
+          (let* ((printed (let ((print-circle nil) (print-length nil) (print-level nil))
+                            (prin1-to-string encoded)))
+                 (ascii (not (string-match-p "[^\0-\177]" printed)))
+                 (hash nil))
+            (if ascii
+                (let ((coding-system-for-write 'no-conversion)
+                      (write-region-inhibit-fsync t))
+                  (write-region printed nil path nil 'silent))
+              (with-temp-file path (insert printed)))
+            (setq encoded-total (+ encoded-total (file-attribute-size (file-attributes path))))
+            (unless (<= encoded-total 33554432) (error "Encoded active unit aggregate bound"))
+            (setq hash (if (and ascii (= (length printed)
+                                         (file-attribute-size (file-attributes path)))
+                                (<= (length printed) 16777216))
+                           (secure-hash 'sha256 printed)
+                         (nelisp-native-rooted-build-evidence-source-hash path 16777216)))
             (push (list :name name :path (file-name-nondirectory path) :unit-sha256 hash) records)
             (when (and (stringp text) (> (length text) 0))
               (let ((relocations (nelisp-native-rooted-build-evidence--relocations

@@ -1,0 +1,166 @@
+#+TITLE: NeLisp cl layer on the vendored GNU 31.1 files (pcase, gv, cl-macs, cl-generic)
+
+# Design and user decisions: tools/ai/cl-gnu-layer-design.md (sections 4 and 6).
+# Policy: never reimplement or shim what a vendored GNU file provides; stage the
+# GNU sources verbatim.  The native versions stay until the GNU ones pass the
+# differential corpus and the timing check, then they are deleted.
+# Stage SN corresponds to design step PN.  P0 (ledger, corpus, baselines) is
+# folded into S1.  CLGNU_BIN is a binary built from this tree.  Criteria that
+# need the binary are SKIP without it.  A criterion that currently fails on the
+# latest binary stays a failing cmd.
+# Deletion gates require the FULL GNU match of the relevant corpus (user: match GNU; never accept a partial count).
+# Corpus: tools/ai/cl-gnu/corpus-*.el, expected from GNU Emacs 31.1 in
+# expected-*.txt, compared by tools/ai/cl-gnu/compare.sh.  Baseline timings:
+# tools/ai/cl-gnu/baseline-build140.txt, checked by timing-check.sh.
+
+* S1 P0/P1 baselines, differential corpus and verbatim GNU sources
+
+** S1.1 The GNU 31.1 expected files exist for all four corpora with no error rows
+cmd: test "$(cat tools/ai/cl-gnu/expected-*.txt | wc -l)" -ge 60 && ! grep -q ERR tools/ai/cl-gnu/expected-*.txt && ls tools/ai/cl-gnu/corpus-pcase.el tools/ai/cl-gnu/corpus-defstruct.el tools/ai/cl-gnu/corpus-generic.el tools/ai/cl-gnu/corpus-setf.el >/dev/null
+
+** S1.2 The expected files are reproducible on host GNU Emacs 31.1
+#+TIMEOUT: 120
+cmd: d=$(mktemp -d) && for c in pcase defstruct generic setf; do (ulimit -v 8388608; CLGNU_CORPUS=tools/ai/cl-gnu/corpus-$c.el timeout 100 emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el 2>/dev/null) | grep -E '^[0-9][0-9] ' | cmp - tools/ai/cl-gnu/expected-$c.txt || exit 1; done
+
+** S1.3 Performance baseline for build-on140 is recorded (cold start, pcase loop, bytecomp require)
+evidence: tools/ai/cl-gnu/baseline-build140.txt sha256=6c3ccb30d5d6b1d056b97d8f4b92ed470ab50e8ae37dd9b50e87ac4b98bb1fb9
+
+** S1.4 The five GNU sources are vendored byte-for-byte under vendor/staged-emacs-lisp
+cmd: for f in pcase cl-lib cl-generic cl-extra cl-print; do zcat /usr/local/share/emacs/31.1/lisp/emacs-lisp/$f.el.gz | cmp - vendor/staged-emacs-lisp/$f.el && grep -q "^staged-emacs-lisp/$f.el	GNU Emacs 31.1" vendor/ORIGIN && grep -q "vendor/staged-emacs-lisp/$f.el\$" vendor/SHA256SUMS || exit 1; done; grep -E 'staged-emacs-lisp/(pcase|cl-lib|cl-generic|cl-extra|cl-print)\.el$' vendor/SHA256SUMS | sha256sum -c --quiet
+
+** S1.5 All four corpora are identical to GNU 31.1 (pcase 31/31, defstruct 38/38, generic 53/53, setf 36/36)
+#+REQUIRES: CLGNU_BIN
+cmd: bash tools/ai/cl-gnu/compare.sh
+
+** S1.6 End to end: the binary still loads its own build dependencies (selfhost probe-load)
+#+REQUIRES: CLGNU_BIN
+cmd: SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load
+
+* S2 P2 stage static-if
+
+** S2.1 static-if is staged from vendor/staged-emacs-lisp/subr.el in the build script
+cmd: grep -q "vendor/staged-emacs-lisp/subr.el\" 'static-if)" scripts/nelisp-standalone-build.el
+
+** S2.2 The binary provides static-if with GNU semantics
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-static-if.el 2>&1 | grep -aq '^PROBE-STATIC-IF-PASS'
+
+** S2.3 cl-macs.el loads form by form with at most 2 failures (3 before static-if)
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/cl-macs.el 2>&1 | grep -a '^PROBE-FORMS' | grep -aq 'failures=[0-2]$'
+
+** S2.4 The static-if form no longer appears among the cl-macs failures
+#+REQUIRES: CLGNU_BIN
+cmd: ! "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/cl-macs.el 2>&1 | grep -aq 'void-function (static-if\|(void-function static-if)'
+
+** S2.5 End to end: static-if is available, all corpora match GNU in full and the selfhost probe passes
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-static-if.el 2>&1 | grep -aq '^PROBE-STATIC-IF-PASS' && bash tools/ai/cl-gnu/compare.sh && SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load
+
+* S3 P3 pcase from GNU pcase.el
+
+** S3.1 GNU pcase.el loads form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/pcase.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$'
+
+** S3.2 The pcase corpus is identical to GNU 31.1
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh
+
+** S3.3 The native pcase files are deleted (only with the full GNU corpus match)
+#+REQUIRES: CLGNU_BIN
+cmd: ! test -e lisp/nelisp-pcase.el && ! grep -q '^(defmacro pcase ' scripts/nelisp-stdlib-prelude.el && ! test -e packages/nelisp-emacs-foundation/src/emacs-pcase.el && CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh
+
+** S3.4 The binary serves pcase from a vendored GNU file and the active pcase macro is GNU's (pcase--expand reached)
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ active=pcase 2>&1 | grep -aq '^PROBE-ORIGIN-PASS'
+
+** S3.5 Timing stays within noise of build-on140 (startup, pcase loop, bytecomp require)
+#+REQUIRES: CLGNU_BIN
+#+TIMEOUT: 120
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- pcase=vendor/ active=pcase 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+
+** S3.6 End to end: the pcase corpus matches GNU on the final binary and the selfhost probe passes
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY=pcase bash tools/ai/cl-gnu/compare.sh && SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load && ! test -e lisp/nelisp-pcase.el
+
+* S4 P4 gv and setf from GNU gv.el
+GNU gv.el is baked as byte-code right after pcase (parallel period, native setf kept).
+Remaining setf corpus misses wait on later steps: form 23 cl-rotatef (cl-macs, P5);
+form 30 setf of cl-subseq (cl-extra gv-define-setter, P6); form 34 setf of cl-first
+(GNU cl-lib aliases cl-first to car, P6).  Native setf is deleted only after those.
+
+** S4.1 The setf/gv corpus is identical to GNU 31.1
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY=setf bash tools/ai/cl-gnu/compare.sh
+
+** S4.2 GNU gv.el loads form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/emacs-lisp/emacs-lisp/gv.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$'
+
+** S4.3 The native setf definition is deleted from the prelude (only with the full GNU corpus match)
+#+REQUIRES: CLGNU_BIN
+cmd: ! grep -q '^(defmacro setf ' scripts/nelisp-stdlib-prelude.el && CLGNU_ONLY=setf bash tools/ai/cl-gnu/compare.sh
+
+** S4.4 Timing stays within noise of build-on140
+#+REQUIRES: CLGNU_BIN
+#+TIMEOUT: 120
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- gv=vendor/ active=gv 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+
+** S4.5 End to end: setf and pcase corpora match GNU and the selfhost probe passes
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY="pcase setf" bash tools/ai/cl-gnu/compare.sh && SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load && ! grep -q '^(defmacro setf ' scripts/nelisp-stdlib-prelude.el
+
+* S5 P5 cl-macs, cl-preloaded, oclosure and cl-defstruct in GNU order
+
+** S5.1 cl-macs.el loads form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/cl-macs.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$'
+
+** S5.2 cl-preloaded.el loads form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/cl-preloaded.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$'
+
+** S5.3 The defstruct corpus is identical to GNU 31.1
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY=defstruct bash tools/ai/cl-gnu/compare.sh
+
+** S5.4 The native cl-defstruct definition is deleted from the prelude (only with the full GNU corpus match)
+#+REQUIRES: CLGNU_BIN
+cmd: ! grep -q '^(defmacro cl-defstruct ' scripts/nelisp-stdlib-prelude.el && CLGNU_ONLY=defstruct bash tools/ai/cl-gnu/compare.sh
+
+** S5.5 Timing stays within noise of build-on140
+#+REQUIRES: CLGNU_BIN
+#+TIMEOUT: 120
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- cl-macs=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+
+** S5.6 End to end: oclosure loads, the defstruct corpus matches GNU and selfhost passes
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY="pcase setf defstruct" bash tools/ai/cl-gnu/compare.sh && "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- oclosure=vendor/ cl-macs=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && SELFHOST_BIN="$CLGNU_BIN" bash tools/ai/selfhost-build/run.sh probe-load
+
+* S6 P6 cl-generic, cl-lib, cl-extra and cl-print; url-parse green
+
+** S6.1 GNU cl-generic.el loads form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/cl-generic.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$'
+
+** S6.2 GNU cl-lib.el and cl-extra.el load form by form without failure
+#+REQUIRES: CLGNU_BIN
+cmd: for f in cl-lib cl-extra; do "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-forms.el -- vendor/staged-emacs-lisp/$f.el 2>&1 | grep -aq '^PROBE-FORMS.*failures=0$' || exit 1; done
+
+** S6.3 The generic-function corpus is identical to GNU 31.1
+#+REQUIRES: CLGNU_BIN
+cmd: CLGNU_ONLY=generic bash tools/ai/cl-gnu/compare.sh
+
+** S6.4 The native cl-defgeneric/cl-defmethod and the foundation cl shims are deleted (only with the full GNU corpus match)
+#+REQUIRES: CLGNU_BIN
+cmd: ! grep -q '^(defmacro cl-defgeneric ' scripts/nelisp-stdlib-prelude.el && ! grep -q '^(defmacro cl-defmethod ' scripts/nelisp-stdlib-prelude.el && ! test -e packages/nelisp-emacs-foundation/src/cl-lib.el && ! test -e packages/nelisp-emacs-foundation/src/emacs-cl-macros.el && CLGNU_ONLY=generic bash tools/ai/cl-gnu/compare.sh
+
+** S6.5 Timing stays within noise of build-on140
+#+REQUIRES: CLGNU_BIN
+#+TIMEOUT: 120
+cmd: "$CLGNU_BIN" --load tools/ai/cl-gnu/probe-origin.el -- cl-generic=vendor/ 2>&1 | grep -aq '^PROBE-ORIGIN-PASS' && bash tools/ai/cl-gnu/timing-check.sh
+
+** S6.6 End to end: url-parse is served by its vendored GNU file and all four corpora match GNU
+#+REQUIRES: CLGNU_BIN
+cmd: bash tools/ai/cl-gnu/compare.sh && VENDOR_BIN="$CLGNU_BIN" bash tools/ai/vendor-replace/run.sh url-parse url-parse url-recreate-url && bash tools/ai/cl-gnu/timing-check.sh

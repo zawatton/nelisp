@@ -91,14 +91,11 @@ PACKAGE_TEST_LOADS := $(addprefix -L ,$(PACKAGE_TEST_DIRS))
 # environment with stale or depth-sensitive .elc files.
 all: test
 
+# Each test file runs in its own `emacs --batch' process (see
+# tools/run-tests-parallel.sh); loading every file into one process made
+# results depend on load order and on earlier files' redefinitions.
 test: clean
-	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
-	  $(PACKAGE_SRC_LOADS) \
-	  $(PACKAGE_TEST_LOADS) \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l ert \
-	  $(TEST_LOADS) \
-	  -f ert-run-tests-batch-and-exit
+	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh $(TESTS)
 
 # Fast TDD loop: same test load graph as `test' but skips `clean';
 # use `test' as the clean verification gate before trusting results.
@@ -114,18 +111,15 @@ test-fast:
 	$(EMACS) $(EMACS_PRELOAD) --batch -Q -L lisp -L src -L test -L bench \
 	  $(PACKAGE_SRC_LOADS) \
 	  $(PACKAGE_TEST_LOADS) \
+	  -L scripts -L tools \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
 	  $(TEST_LOADS) \
 	  -f ert-run-tests-batch-and-exit
 
-# Super-parallel host ERT runner.  Same file set + `-L' load paths as
-# `test', but the ~160 test files are sharded (balanced by size) across
-# JOBS worker `emacs --batch' processes and run concurrently, then the
-# per-shard ert summaries are aggregated into one verdict.  The total
-# `Ran N tests' count is invariant vs serial `test' — that is the
-# runner's correctness gate.  On a 32-core box this turns a multi-minute
-# serial suite into a sub-30s loop.
+# Parallel per-file host ERT runner (the `test' recipe without `clean').
+# Every test file runs in its own `emacs --batch' process, JOBS at a
+# time, and the per-file ert summaries are aggregated into one verdict.
 #   make test-parallel              # JOBS = nproc
 #   make test-parallel JOBS=8
 test-parallel:
@@ -140,6 +134,7 @@ test-one:
 	$(EMACS) --batch -Q -L lisp -L src -L test -L bench \
 	  $(PACKAGE_SRC_LOADS) \
 	  $(PACKAGE_TEST_LOADS) \
+	  -L scripts -L tools \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l ert \
 	  $(addprefix -l ,$(FILE)) \

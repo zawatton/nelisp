@@ -91,16 +91,20 @@
                              (list pattern text fold expected data))))))))))
 
 (ert-deftest nelisp-regexp-portable-prefilter-follows-canonical-table ()
-  "Installing a table after compilation must disable default-fold proofs."
-  (let ((case-fold-search t)
-        (pattern "\\`/:\\'")
-        (table (make-vector 128 nil)) active-table)
-    (cl-letf (((symbol-function 'nlre--current-translate-table) (lambda () active-table)))
+  "Installing a table after compilation must disable default-fold proofs.
+The translate table is a descriptor derived from the buffer canon, so the
+test installs a real case table rather than a hand-built vector."
+  (with-temp-buffer
+    (let ((case-fold-search t)
+          (pattern "\\`/:\\'"))
       (nlre--compiled-cache-clear)
+      (should-not (string-match pattern "/x"))
       (should-not (nlre-string-match pattern "/x"))
-      (aset table ?x ?:)
-      (setq active-table table)
-      (should (eq (nlre-string-match pattern "/x") 0)))))
+      (let ((table (copy-case-table (current-case-table))))
+        (set-case-syntax-pair ?: ?x table)
+        (set-case-table table)
+        (should (eq (string-match pattern "/x") 0))
+        (should (eq (nlre-string-match pattern "/x") 0))))))
 
 (ert-deftest nelisp-regexp-invalid-pattern-error-data-matches-host ()
   "Malformed patterns signal GNU's complete condition rather than matching."

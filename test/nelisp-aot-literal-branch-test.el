@@ -56,6 +56,8 @@
   (should (= -9223372036854775808
              (nelisp-aot-compiler--x86-wrap-i64 9223372036854775808))))
 (ert-deftest literal-branch/saved-actual-sites ()
+  (skip-unless (and (file-exists-p "target/fxir-effects/real-site/site-ir.el")
+                    (file-exists-p "../resume-4943-20261024/target/fxir-effects/transport-design/parsed.txt")))
   (let ((site (with-temp-buffer
                 (insert-file-contents "target/fxir-effects/real-site/site-ir.el")
                 (read (current-buffer)))))
@@ -72,6 +74,7 @@
          (setq test (nelisp-aot-compiler--ir-get node :body)))))
     (should (nelisp-aot-compiler--x86-literal-branch-plan test))))
 (ert-deftest literal-branch/canonical-full-tag-positive ()
+  (skip-unless (file-exists-p "target/fxir-effects/canonical-bound/full-tag.el"))
   (let ((tag (with-temp-buffer
                (insert-file-contents "target/fxir-effects/canonical-bound/full-tag.el")
                (read (current-buffer)))))

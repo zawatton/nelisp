@@ -14,11 +14,64 @@
 (require 'nelisp-aot-compiler)
 (require 'nelisp-static-linker)
 (require 'nelisp-standalone-arena-rewrite)
+(require 'nelisp-version)
+(require 'nelisp-runtime-reload-abi)
+(require 'nelisp-cc-fxir-native)
 
 ;; Load only these orchestration definitions: no compiler or native build.
-(with-temp-buffer
-  (insert-file-contents nelisp-build-trace-test--source)
-  (dolist (name '(nelisp-standalone--build-trace-path
+;; Load only the orchestration definitions these tests exercise.  The roots below
+;; pull in the top-level helpers they call (for example the inline and ABI-box
+;; passes `nelisp-standalone--compile-to-unit' now runs), found by walking the
+;; symbols each definition mentions.  No compiler or native build is run.
+(defun nelisp-build-trace-test--load-closure (roots)
+  "Evaluate the top-level definitions of the build script reachable from ROOTS."
+  (let ((table (make-hash-table :test #'eq)) (order nil) (seen (make-hash-table :test #'eq))
+        (todo (copy-sequence roots)) (wanted nil))
+    (with-temp-buffer
+      (insert-file-contents nelisp-build-trace-test--source)
+      (goto-char (point-min))
+      (condition-case nil
+          (while t
+            (let ((form (read (current-buffer))))
+              (when (and (consp form)
+                         (memq (car form) '(defun defmacro defvar defconst))
+                         (symbolp (cadr form)))
+                ;; A name may have both a variable and a function definition.
+                (unless (gethash (cadr form) table) (push (cadr form) order))
+                (puthash (cadr form) (append (gethash (cadr form) table) (list form))
+                         table))))
+        (end-of-file nil)))
+    (setq order (nreverse order))
+    (while todo
+      (let ((name (pop todo)))
+        (unless (gethash name seen)
+          (puthash name t seen)
+          (let ((forms (gethash name table)))
+            (when forms
+              (push name wanted)
+              (let ((stack (list forms)))
+                (while stack
+                  (let ((x (pop stack)))
+                    (cond ((and x (symbolp x)) (when (gethash x table) (push x todo)))
+                          ((consp x) (push (car x) stack)
+                                     (when (cdr x) (push (cdr x) stack))))))))))))
+    (dolist (name order)
+      (when (memq name wanted)
+        (dolist (form (gethash name table))
+          ;; A transitively reached constant may need a library this test does
+          ;; not load; it is only needed if a test then touches it directly.
+          (if (or (memq name roots) (memq (car form) '(defun defmacro)))
+              (eval form t)
+            (condition-case nil (eval form t) (error nil))))))))
+
+;; The bytecode dialect constant reads a fixture under the repository root and
+;; needs `bytecomp' loaded when the build script defines it.
+(require 'bytecomp)
+(defvar nelisp-standalone--repo-root
+  (expand-file-name ".." (file-name-directory nelisp-build-trace-test--source)))
+
+(nelisp-build-trace-test--load-closure
+ '(nelisp-standalone--build-trace-path
                   nelisp-standalone--build-trace-unit
                   nelisp-standalone--build-trace-hits
                   nelisp-standalone--build-trace-misses
@@ -29,6 +82,22 @@
                   nelisp-standalone--cached-unit
                   nelisp-standalone--core-bytecode-build-cache
                   nelisp-standalone--core-bytecode-src
+                  nelisp-standalone--core-bytecode-disk-cached
+                  nelisp-standalone--prelude-cache-root
+                  nelisp-standalone--prelude-cache-root-token
+                  nelisp-standalone--abi-box-split
+                  nelisp-standalone--abi-out-param-p
+                  nelisp-standalone--abi-definer-word
+                  nelisp-standalone--abi-box-split-defun
+                  nelisp-standalone--abi-box-split-source
+                  nelisp-standalone--census-instrument
+                  nelisp-standalone--census-p
+                  nelisp-standalone--box-census-record
+                  nelisp-standalone--box-dump-record
+                  nelisp-standalone--box-dump-json
+                  nelisp-standalone--box-census-idioms
+                  nelisp-standalone--census-instrumented-p
+                  nelisp-standalone--copy-lit-defun-bytes
                   nelisp-standalone--target-arch
                   nelisp-standalone--target-abi
                   nelisp-standalone--target-os
@@ -37,12 +106,6 @@
                   nelisp-standalone--compile-to-unit
                   nelisp-standalone--copy-lit-u64-defuns
                   nelisp-standalone-build-reader))
-    (goto-char (point-min))
-    (while (re-search-forward
-           (format "^(\\(?:defun\\|defmacro\\|defvar\\) %s\\_>"
-                   (regexp-quote (symbol-name name))) nil t)
-      (goto-char (match-beginning 0))
-      (eval (read (current-buffer)) t))))
 
 (defvar nelisp-standalone--recompiled nil)
 (defvar nelisp-standalone--this-file)
@@ -73,14 +136,19 @@
 (ert-deftest nelisp-build-trace-no-data-unit-preserves-original-fields ()
   ;; These complete-unit hashes were measured against the original standalone
   ;; function, including text bytes, exported symbols and external call relocs.
+  ;; The (+ n 1) pin was re-measured after 0b92c0fc1 (literal operands load
+  ;; straight into the operand register): the only text change is
+  ;; `mov rax,imm; push rax; ...; pop; add' -> `mov rax,[rbp-8]; add rax,imm'.
+  ;; The extern-call pin changed only by the unit's new :stackmap entry
+  ;; (086bdce62, v14): text bytes and relocs are identical.
   (let ((nelisp-standalone--target 'linux-x86_64)
         (process-environment (copy-sequence process-environment)))
     (setenv "NELISP_TCO" nil)
     (dolist (fixture
              '(((seq (defun fixture (n) (+ n 1)))
-                "7bde3afa5d0d7902fa6f0ef231835f85951c9637f805274b24a8fa89dd31d282")
+                "284cd80d6b0ca15cac8a66e08bd6f8721ad8d52962e459342b0b113e5aa88280")
                ((seq (defun fixture (n) (extern-call external_callback n)))
-                "014173b2c76ff5240a89f8f4c1be3d5eeeaef4c93dea8d785126d363c94e684e")))
+                "9f20c3acaeee75482f740fec7fc2139b550d6635a772e70ee7aba5dd8cccac3e")))
       (should (equal (cadr fixture)
                      (secure-hash 'sha256
                                   (prin1-to-string
@@ -105,9 +173,9 @@
         ('+ (apply #'+ (mapcar #'run (cdr form))))
         ('< (if (< (run (nth 1 form)) (run (nth 2 form))) 1 0))
         ('data-addr (gethash (nth 1 form) blobs))
-        ((or 'ptr-read-u8 'ptr-read-u64)
+        ((or 'ptr-read-u8 'ptr-read-u64 'heap-read-u8 'heap-read-u64)
          (let ((source (run (nth 1 form))) (offset (run (nth 2 form))) (word 0))
-           (dotimes (index (if (eq (car form) 'ptr-read-u64) 8 1))
+           (dotimes (index (if (memq (car form) '(ptr-read-u64 heap-read-u64)) 8 1))
              (setq word (logior word (ash (aref source (+ offset index)) (* index 8)))))
            word))
         ((or 'ptr-write-u8 'ptr-write-u64)

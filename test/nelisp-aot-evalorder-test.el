@@ -95,15 +95,28 @@
                           #'nelisp-asm-arm64-buffer-bytes
                         #'nelisp-asm-x86_64-buffer-bytes))
                (old (funcall make-buffer)) (new (funcall make-buffer)))
-          (nelisp-aot-compiler--emit-value b old)
-          (if (eq arch 'aarch64)
-              (progn
-                (nelisp-asm-arm64-str-pre-sp-16 old 'x0)
-                (nelisp-aot-compiler--emit-value a old)
-                (nelisp-asm-arm64-ldr-post-sp-16 old 'x9))
-            (nelisp-aot-compiler--emit-temp-push old 'rax)
+          (cond
+           ;; 0b92c0fc1: x86-64 loads an integer immediate straight into its
+           ;; operand register instead of spilling it through the stack.
+           ((and (eq arch 'x86_64) (eq (nelisp-aot-compiler--ir-kind b) 'imm))
             (nelisp-aot-compiler--emit-value a old)
-            (nelisp-aot-compiler--emit-temp-pop old 'r10))
+            (nelisp-asm-x86_64-mov-imm32
+             old 'r10 (nelisp-aot-compiler--ir-get b :value)))
+           ((and (eq arch 'x86_64) (eq (nelisp-aot-compiler--ir-kind a) 'imm))
+            (nelisp-aot-compiler--emit-value b old)
+            (nelisp-asm-x86_64-mov-reg-reg old 'r10 'rax)
+            (nelisp-asm-x86_64-mov-imm32
+             old 'rax (nelisp-aot-compiler--ir-get a :value)))
+           (t
+            (nelisp-aot-compiler--emit-value b old)
+            (if (eq arch 'aarch64)
+                (progn
+                  (nelisp-asm-arm64-str-pre-sp-16 old 'x0)
+                  (nelisp-aot-compiler--emit-value a old)
+                  (nelisp-asm-arm64-ldr-post-sp-16 old 'x9))
+              (nelisp-aot-compiler--emit-temp-push old 'rax)
+              (nelisp-aot-compiler--emit-value a old)
+              (nelisp-aot-compiler--emit-temp-pop old 'r10))))
           (nelisp-aot-compiler--emit-binary-operands a b new)
           (should (equal (funcall bytes old) (funcall bytes new)))
           (should (= nelisp-aot-compiler--rsp-temp-depth 0)))))))

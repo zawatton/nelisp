@@ -344,8 +344,10 @@
       (should (= (plist-get set-instruction :constant-index) 42)))))
 
 (ert-deftest nelisp-bytecode-frame-ir/rejects-known-but-unimplemented-primitive ()
+  ;; Opcode 107 (scan-buffer, obsolete) stays unsupported after f7f36a453
+  ;; lowered list1 (67) and the other valid GNU 31.1 opcodes.
   (let ((result (nelisp-bytecode-frame-ir-build
-                 (unibyte-string 192 67 135) [a])))
+                 (unibyte-string 192 107 135) [a])))
     (should (eq (plist-get result :status) 'unsupported))
     (should-not (plist-get result :blocks))))
 

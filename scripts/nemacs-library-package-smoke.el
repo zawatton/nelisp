@@ -49,7 +49,6 @@
     "nemacs-loaddefs.el"
     "emacs-elisp-eval.el"
     "emacs-ielm.el"
-    "lisp-mode.el"
     "emacs-redisplay-core.el"
     "files-standalone-buffer.el"
     "emacs-redisplay.el"

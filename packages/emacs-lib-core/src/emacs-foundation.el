@@ -60,7 +60,11 @@ and every feature is still loaded exactly as before."
                                   emacs-foundation--load-directory)))
       ;; GNU libraries (cl-lib, subr-x, ...) have no sibling file here; they
       ;; come from the genuine GNU tree through the normal `require' path.
-      (unless (and (file-exists-p file) (load file nil t))
+      ;; GNU `load' signals `file-missing' for an absent absolute FILE even
+      ;; with NOERROR, so test existence first.
+      (unless (and (or (not (fboundp 'file-exists-p))
+                       (file-exists-p file))
+                   (load file nil t))
         (require feature)))))
 
 ;; Order matters: emacs-eval (defalias) before emacs-list (uses defalias);
@@ -78,10 +82,7 @@ and every feature is still loaded exactly as before."
     emacs-backquote
     emacs-error
     emacs-string
-    emacs-pcase
-    cl-lib
     subr-x
-    emacs-cl-macros
     emacs-stub-bulk
     emacs-stub
     emacs-mark-state
@@ -105,6 +106,8 @@ and every feature is still loaded exactly as before."
    (directory-files emacs-foundation--load-directory t
                     "\\`emacs-cc-.*\\.el\\'"))
   "Lazy C-core compatibility features owned by the FND package.")
+
+(require 'cl-lib)
 
 (dolist (feature emacs-foundation-features)
   (emacs-foundation--load-feature feature))

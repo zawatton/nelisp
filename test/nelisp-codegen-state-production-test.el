@@ -18,7 +18,9 @@ not runnable runtime closures and do not replace final linked validation."
          local external)
     (funcall original owner buf)
     (dolist (fix (aref buf 3))
-      (if (assq (cdr fix) (nelisp-asm-x86_64-buffer-labels buf))
+      ;; A jump-table entry fixup is (SLOT LABEL . ADDEND) (c002f6db6).
+      (if (assq (if (consp (cdr fix)) (cadr fix) (cdr fix))
+                (nelisp-asm-x86_64-buffer-labels buf))
           (push fix local)
         ;; Never turn an unresolved private branch into a relocation.
         (should (member (symbol-name (cdr fix))
@@ -74,11 +76,15 @@ not runnable runtime closures and do not replace final linked validation."
              nil))
           (let ((on (cdr (assq t nelisp-state-production--objects)))
                 (off (cdr (assq nil nelisp-state-production--objects)))
-                ;; mov rax,r8; cmp r8,93: the first opcode dispatch guard.
-                (pattern (regexp-quote (unibyte-string #x49 #x89 #xc0 #x49 #x83 #xf8 #x5d))))
+                ;; cmp r14,93: the first opcode dispatch guard.  The opcode is
+                ;; register-resident via the VM register plan (28c60a8c1,
+                ;; v35), not the assignment prefix cache (the old
+                ;; `mov rax,r8; cmp r8,93' form), so both modes emit it.
+                (pattern (regexp-quote (unibyte-string #x49 #x83 #xfe #x5d))))
             (should on) (should off)
             (should (string-match-p pattern on))
-            (should-not (string-match-p pattern off))))
+            (should (string-match-p pattern off))
+            (should (equal on off))))
       (advice-remove 'nelisp-aot-compiler--emit-defun #'nelisp-state-production--emit)
       (unless retained (delete-directory nelisp-state-production--out t)))))
 (provide 'nelisp-codegen-state-production-test)

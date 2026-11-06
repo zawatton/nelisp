@@ -1,7 +1,8 @@
 ;;; nelisp-aot-literal-word-test.el --- Static WORD discriminators -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 
 (defun nelisp-aot-literal-word-test--cmp (word tag &optional op swapped)
   (let ((x (nelisp-aot-compiler--make-ir
@@ -109,6 +110,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-masked-c)
             (insert "#define _GNU_SOURCE\n#include <stdint.h>\n#include <sys/mman.h>\n#include <signal.h>\n#include <setjmp.h>\n#include <stdlib.h>\n#include <stdio.h>\n")
             (dotimes (wi 5) (dotimes (mode 4)
                               (insert (format "extern uint64_t pw_%d_%d(uint64_t);\n" wi mode))))
@@ -130,7 +132,16 @@
               (advice-add 'nelisp-aot-compiler--emit-literal-word-tag-test-x86
                           :around #'nelisp-aot-literal-word-test--record)
               (unwind-protect
-                  (nelisp-aot-compile-to-object (nelisp-aot-literal-word-test--source) object)
+                  ;; Since c552d6bbb the heap-accessor pass lowers `sexp-tag' to
+                  ;; the canonical `nl_val_tag' extern (it must also classify GNU
+                  ;; strings), so the literal-WORD fold below never sees a
+                  ;; literal.  The fold is the unit under test, so keep the
+                  ;; classic `sexp-tag' IR here; the masked-header C stub gives
+                  ;; it the pre-c552d6bbb runtime semantics.
+                  (cl-letf (((symbol-function 'nelisp-heap-accessors--lower-string-tag)
+                             (lambda (operand)
+                               (list 'sexp-tag (nelisp-heap-accessors-lower operand)))))
+                    (nelisp-aot-compile-to-object (nelisp-aot-literal-word-test--source) object))
                 (advice-remove 'nelisp-aot-compiler--emit-literal-word-tag-test-x86
                                #'nelisp-aot-literal-word-test--record))
               (push nelisp-aot-literal-word-test--selected counts)

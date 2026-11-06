@@ -60,6 +60,7 @@
 
 (ert-deftest nelisp-locate-library-standalone-regression ()
   "Exercise directory rejection, .elc lookup order, and source require."
+  (skip-unless (file-executable-p (expand-file-name "target/nelisp" default-directory)))
   (should (= 0 (call-process "bash" nil nil nil
                              "test/standalone-locate-library-smoke.sh"))))
 

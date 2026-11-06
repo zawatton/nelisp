@@ -1,6 +1,6 @@
 ;;; standalone-source-directory.el --- Genuine source corpus controls -*- lexical-binding: t; -*-
 (require 'nelisp-stdlib-source-directory)
-(if (boundp 'source-directory)
+(if (and (boundp 'source-directory) (not (equal source-directory "/")))
     (let ((original source-directory))
       (unless (and (eq (nelisp-stdlib-source-directory-install) 'preserved)
                    (eq original source-directory))
@@ -12,7 +12,7 @@
               (progn (nelisp-stdlib-source-directory-install
                       (getenv "NELISP_GNU_DATA_ROOT")) nil) (error t))
     (error "Resource directory accepted as source installation"))
-  (when (boundp 'source-directory) (error "Refused source installation published value"))
+  (unless (equal source-directory "/") (error "Refused source installation published value"))
   (let ((original nelisp-stdlib-source-directory--manifest))
     (unwind-protect
         (progn

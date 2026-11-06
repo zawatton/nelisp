@@ -545,13 +545,8 @@ The current runtime can load most of `eieio-core.el' while still silently
 dropping the `cl-defstruct' that should create `eieio--class' and its
   constructor/accessors.  Magit's section fallback path only needs that core
 class object shape plus the accessor family, and the local `cl-defstruct'
-shim already expands this form correctly under the standalone reader."
+GNU `cl-defstruct' expands this form correctly under the standalone reader."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
-    (unless (and (fboundp 'cl-defstruct)
-                 (fboundp 'cl--class-p)
-                 (fboundp 'cl--make-slot-descriptor))
-      (load (nelisp-emacs-magit-bridge--package-source "emacs-cl-macros.el" root)
-            nil 'no-message t t))
     ;; `src/emacs-parity-eieio.el' registers the eieio accessor -> record
     ;; slot indices that NeLisp's `setf' consults; without it the vendor
     ;; chain's `(setf (eieio--class-parents ...) ...)' places expand to
@@ -561,30 +556,9 @@ shim already expands this form correctly under the standalone reader."
     (unless (featurep 'emacs-parity-eieio)
       (load (nelisp-emacs-magit-bridge--package-source "emacs-parity-eieio.el" root)
             nil 'no-message t t))
-    ;; The shim records `:include' parents only at macro-expansion time and
-    ;; emits `cl-struct-setter' as top-level `put' forms; neither survives a
-    ;; baked runtime image, so record `setf' silently no-ops on cons-backed
-    ;; class objects rather than signalling (measured 2026-08-05).
-    (when (and (boundp 'emacs-cl-macros--struct-defs)
-               (not (assq 'cl--class emacs-cl-macros--struct-defs)))
-      (eval
-       '(cl-defstruct (cl--class
-                       (:constructor nil)
-                       (:copier nil))
-          (name nil)
-          (docstring nil)
-          (parents nil)
-          (slots nil)
-          (index-table nil))
-       t))
     (unless (boundp 'eieio-default-superclass)
       (defvar eieio-default-superclass nil))
-    (unless (and (fboundp 'eieio--class-make)
-                 (or (not (boundp 'emacs-cl-macros--struct-defs))
-                     (memq 'name
-                           (car (cdr (assq
-                                      'eieio--class
-                                      emacs-cl-macros--struct-defs))))))
+    (unless (fboundp 'eieio--class-make)
       (eval
        '(cl-defstruct (eieio--class
                        (:constructor nil)
@@ -603,16 +577,6 @@ shim already expands this form correctly under the standalone reader."
     (unless (fboundp 'eieio--object-class-tag)
       (defun eieio--object-class-tag (obj)
         (aref obj 0)))))
-
-(defun nelisp-emacs-magit-bridge--ensure-pcase-runtime ()
-  "Ensure the local pcase runtime polyfill is fully installed.
-
-The runtime image can phantom-provide `pcase' while still missing macros such
-as `pcase-exhaustive'.  Magit's buffer setup hits that macro directly."
-  (let ((root (nelisp-emacs-magit-bridge--repo-root)))
-    (unless (fboundp 'pcase-exhaustive)
-      (load (nelisp-emacs-magit-bridge--package-source "emacs-pcase.el" root)
-            nil 'no-message t t))))
 
 (defun nelisp-emacs-magit-bridge--ensure-macroexp-runtime ()
   "Ensure the macroexp runtime Magit/transient macros expand through.
@@ -5072,8 +5036,6 @@ substrate's signal fixes, so this cannot regress into a silent stop."
   (nelisp-emacs-magit-bridge--ensure-find-buffer-visiting)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 18 static-if\n")
   (nelisp-emacs-magit-bridge--ensure-static-if)
-  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 19 pcase-runtime\n")
-  (nelisp-emacs-magit-bridge--ensure-pcase-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 20 macroexp-runtime\n")
   (nelisp-emacs-magit-bridge--ensure-macroexp-runtime)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 21 advice-runtime\n")

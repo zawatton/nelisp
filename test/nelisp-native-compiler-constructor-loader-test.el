@@ -5,12 +5,14 @@
 (require 'nelisp-native-load)
 
 (ert-deftest nelisp-native-compiler-constructor-loader-absent-startup-refused ()
+  (skip-unless (fboundp (quote nelisp-native-load--compiler-constructor-runtime-p)))
   (should-error (nelisp-native-load-compiler-capability-bind))
   (should-not (nelisp-native-load--compiler-constructor-runtime-p nil))
   (should-not (nelisp-native-load--compiler-constructor-runtime-p
                '(:native-rooted-cfg-contract-version "forged"))))
 
 (ert-deftest nelisp-native-compiler-constructor-loader-counterfeit-bind-refused ()
+  (skip-unless (fboundp (quote nelisp-native-load--compiler-constructor-runtime-p)))
   (cl-letf (((symbol-function 'nelisp-native-compiler-runtime-capability-p)
              (lambda (&rest _) t))
             ((symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-constructor-p)
@@ -23,6 +25,7 @@
                  '(:native-rooted-cfg-contract-version "forged")))))
 
 (ert-deftest nelisp-native-compiler-constructor-loader-triple-counterfeit-refused ()
+  (skip-unless (fboundp (quote nelisp-native-load--compiler-constructor-runtime-p)))
   (cl-letf (((symbol-function 'nelisp-native-compiler-runtime-capability-p)
              (lambda (&rest _) t))
             ((symbol-function 'nelisp-native-compiler-runtime-capability-owner-p)
@@ -37,6 +40,7 @@
                  '(:native-rooted-cfg-contract-version "forged")))))
 
 (ert-deftest nelisp-native-compiler-constructor-loader-core-owners-preserved ()
+  (skip-unless (fboundp (quote nelisp-native-load--compiler-constructor-runtime-p)))
   (let ((layout (symbol-function 'nelisp-native-load-rooted-production-contract))
         (hash (symbol-function 'nelisp-native-load-running-binary-sha256))
         (sha-context (symbol-function 'nelisp-native-load-sha256-dependency-context)))

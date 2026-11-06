@@ -36,7 +36,7 @@ for f in packages/emacs-lib-*/test/*-test.el; do
     files=$((files + 1))
     log="$logs/${f##*/}.log"
     # shellcheck disable=SC2086
-    "$emacs" --batch -Q -L lisp -L src -L test $lp -l ert -l "$f" \
+    "$emacs" --batch -Q -L lisp -L src -L test -L test/emacs-lib $lp -l ert -l "$f" \
         -f ert-run-tests-batch-and-exit </dev/null >"$log" 2>&1
     rc=$?
     if ! grep -aq '^Ran ' "$log"; then

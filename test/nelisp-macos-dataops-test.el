@@ -25,6 +25,7 @@
 ;;; Code:
 
 (require 'ert)
+(require 'cl-lib)
 
 (let ((here (file-name-directory (or load-file-name buffer-file-name))))
   (dolist (d '("../lisp" "../src" "../scripts"))
@@ -37,8 +38,16 @@
 
 (defun nelisp-macos-dataops-test--emit (sexp)
   "Compile program SEXP through the aarch64 / Darwin emit path.
-Returns the __text unibyte string; propagates any compile error."
-  (nelisp-macos-build--emit-text sexp))
+Returns the __text unibyte string; propagates any compile error.
+Runtime helpers (`nl_val_tag', `nl_alloc_*' ...) live in the standalone
+runtime, so dangling helper BLs are externalized as link-unit relocs
+(as `compile-to-link-unit' does) before fixups are resolved."
+  (let ((resolve (symbol-function 'nelisp-asm-arm64-resolve-fixups)))
+    (cl-letf (((symbol-function 'nelisp-asm-arm64-resolve-fixups)
+               (lambda (buf)
+                 (nelisp-asm-arm64-externalize-dangling-bl26 buf)
+                 (funcall resolve buf))))
+      (nelisp-macos-build--emit-text sexp))))
 
 (defun nelisp-macos-dataops-test--words (bytes)
   "Return the list of 32-bit little-endian words in BYTES."
@@ -60,15 +69,21 @@ The program writes a u32/u16/u8 and reads each width back; the emit
 must contain STR{B,H,}/LDR{B,H,} `[X1, X2]' words (val→x3, result→x0)."
   (let* ((bytes (nelisp-macos-dataops-test--emit
                  '(seq
+                   ;; The base is a runtime parameter: constant addresses and
+                   ;; offsets are folded into immediate-offset forms (e10e09884), which
+                   ;; would bypass the register-offset words asserted below.
+                   (defun widths (base o0 o1 o2 o3 o4 o5)
+                     (seq
+                      (ptr-write-u32 base o0 197121)
+                      (ptr-write-u16 base o1 40)
+                      (ptr-write-u8  base o2 5)
+                      (ptr-read-u8 base o3)
+                      (ptr-read-u16 base o4)
+                      (ptr-read-u32 base o5)))
                    (defun run ()
                      (seq
                       (syscall-direct 197 8589934592 1048576 3 4114 -1 0)
-                      (ptr-write-u32 8589934592 256 197121)
-                      (ptr-write-u16 8589934592 260 40)
-                      (ptr-write-u8  8589934592 262 5)
-                      (ptr-read-u8 8589934592 256)
-                      (ptr-read-u16 8589934592 260)
-                      (ptr-read-u32 8589934592 264)))
+                      (widths 8589934592 256 260 262 256 260 264)))
                    (exit (run)))))
          (words (nelisp-macos-dataops-test--words bytes)))
     (should (> (length bytes) 0))
@@ -407,6 +422,10 @@ CASAL X2, X3, [X1] = 0xC8E2FC23."
   "string/symbol name ops and sexp-write-nil/t compile on aarch64."
   (let ((bytes (nelisp-macos-dataops-test--emit
                 '(seq
+                  ;; `str-bytes' lowers to a call to the runtime helper
+                  ;; `nl_word_data', which lives outside this unit; supply a
+                  ;; stand-in provider so the unit is closed.
+                  (defun nl_word_data (w) w)
                   (defun nl_str_bytes_ptr (ptr) (str-bytes ptr))
                   (defun run ()
                     (seq

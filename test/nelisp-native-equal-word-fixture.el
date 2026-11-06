@@ -1,5 +1,6 @@
 ;;; Extracted production tagged-word equality audit. -*- lexical-binding: t; -*-
 (require 'cl-lib)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-standalone-build)
 (require 'nelisp-cc-val-load)
@@ -143,7 +144,7 @@
           (let ((p (ptr-read-u64 ,audit-eq-base 40)))
             (seq (ptr-write-u64 ,audit-eq-base 32 (+ (ptr-read-u64 ,audit-eq-base 32) 1))
                  (ptr-write-u64 ,audit-eq-base 40 (+ p 32)) p)))
-        ,decoder ,loader
+        ,decoder ,loader ,@nelisp-aot-test-runtime-link-defuns
         ,nelisp-cc-jit-cons-car-ptr--source ,nelisp-cc-jit-cons-cdr-ptr--source
         ,@leaves ,old ,word-slot ,words ,candidate
         (defun audit_run ()

@@ -3,6 +3,7 @@
 
 (require 'ert)
 (require 'nelisp-native-application-producer)
+(require 'nelisp-native-application-build)
 
 (defvar nnap-selection-sentinel nil)
 

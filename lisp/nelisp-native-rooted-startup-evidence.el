@@ -94,9 +94,13 @@ NELISP_ROOT_EVIDENCE_REPORT logs the size of accepted evidence too."
       (set-buffer-multibyte nil)
       (insert-file-contents-literally path)
       (unless (= (buffer-size) size) (error "Generated JSON size changed"))
-      (let ((bytes (buffer-string))
-            (json-array-type 'list) (json-object-type 'alist) (json-key-type 'symbol))
-        (cons (json-read-from-string (decode-coding-string bytes 'utf-8))
+      ;; The native parser gives what json.el's `json-read-from-string'
+      ;; gave with list arrays and symbol-keyed alists (equal on all
+      ;; generated inputs), ten times faster on the 3.5 MB unit metadata.
+      (let ((bytes (buffer-string)))
+        (cons (json-parse-string (decode-coding-string bytes 'utf-8)
+                                 :object-type 'alist :array-type 'list
+                                 :null-object nil :false-object :json-false)
               (secure-hash 'sha256 bytes))))))
 
 (defun nelisp-native-rooted-startup-evidence--relocation-symbol (unit relocation)
@@ -218,6 +222,11 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
                  (= (plist-get layout :sexp-bytes) 32)
                  (= (length (plist-get layout :exports)) 17))
       (error "Unauthenticated protocol generation inputs"))
+    ;; A unit's relocations sorted by offset (OFFSET POSITION RELOCATION),
+    ;; built once per unit: each record takes its range by bisection instead
+    ;; of scanning every relocation of its unit (842,818 scans for F1's 363
+    ;; records), then visits it in the unit's original order.
+    (let ((by-offset (make-hash-table :test #'eq)))
     (dolist (record (alist-get 'records closure))
       (let* ((name (alist-get 'name record))
              (unit-name (alist-get 'unit record))
@@ -225,23 +234,51 @@ Return startup source and its manifest; constructor/numeric/call remain refused.
              (start (alist-get 'unit_offset record)) (size (alist-get 'size record)) relocations)
         (unless (and unit (not (alist-get 'indirect record)) (<= 1 size 65536))
           (error "Unknown protocol helper ownership"))
-        (dolist (relocation (alist-get 'relocations unit))
-          (let ((offset (alist-get 'offset relocation)))
-            (when (and (<= start offset) (< offset (+ start size)))
-              (push (list :offset (- offset start) :width 4
-                          :type (intern (alist-get 'type relocation))
-                          :symbol (nelisp-native-rooted-startup-evidence--relocation-symbol
-                                   unit relocation)
-                          :addend (alist-get 'addend relocation)) relocations))))
+        (let* ((sorted (or (gethash unit by-offset)
+                           (puthash unit
+                                    (let ((position -1))
+                                      (vconcat
+                                       (sort (mapcar (lambda (relocation)
+                                                       (list (alist-get 'offset relocation)
+                                                             (setq position (1+ position))
+                                                             relocation))
+                                                     (alist-get 'relocations unit))
+                                             (lambda (a b) (< (car a) (car b))))))
+                                    by-offset)))
+               (low 0) (high (length sorted)) hits)
+          (while (< low high)
+            (let ((middle (/ (+ low high) 2)))
+              (if (< (car (aref sorted middle)) start)
+                  (setq low (1+ middle))
+                (setq high middle))))
+          (while (and (< low (length sorted)) (< (car (aref sorted low)) (+ start size)))
+            (push (aref sorted low) hits)
+            (setq low (1+ low)))
+          (dolist (hit (sort hits (lambda (a b) (< (cadr a) (cadr b)))))
+            (let ((relocation (nth 2 hit)) (offset (car hit)))
+              (when (and (<= start offset) (< offset (+ start size)))
+                (push (list :offset (- offset start) :width 4
+                            :type (intern (alist-get 'type relocation))
+                            :symbol (nelisp-native-rooted-startup-evidence--relocation-symbol
+                                     unit relocation)
+                            :addend (alist-get 'addend relocation)) relocations)))))
         (push (list :name name :size size :sha256 (alist-get 'normalized_sha256 record)
                     :relocations (nreverse relocations) :direct (alist-get 'direct record) :indirect nil) records)
-        (cl-pushnew (list :name unit-name :sha256 (alist-get 'unit-sha256 unit)) units :test #'equal)))
+        (cl-pushnew (list :name unit-name :sha256 (alist-get 'unit-sha256 unit)) units :test #'equal))))
+    ;; The test below depends only on the relocation's symbol, and
+    ;; DATA-TARGETS is a set sorted afterwards, so each symbol is tested
+    ;; once.  The `unless' form itself is kept verbatim: the F1 derivation
+    ;; (nelisp-native-funcall-startup-evidence.el) replaces it by exact match
+    ;; with one that also scans every unit's symbols.
+    (let ((tested (make-hash-table :test #'equal)))
     (dolist (record records)
       (dolist (relocation (plist-get record :relocations))
+        (unless (gethash (plist-get relocation :symbol) tested)
+          (puthash (plist-get relocation :symbol) t tested)
         (unless (or (member (plist-get relocation :symbol) (alist-get 'os_imports closure))
                     (cl-find (plist-get relocation :symbol) records
                          :key (lambda (item) (plist-get item :name)) :test #'equal))
-          (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))
+          (cl-pushnew (plist-get relocation :symbol) data-targets :test #'equal))))))
     (dolist (name (sort data-targets #'string<))
       (let ((symbol (cl-find name (alist-get 'symbols data)
                             :key (lambda (item) (alist-get 'name item)) :test #'equal)))
@@ -369,11 +406,10 @@ dependencies, subprocess result and source owners are checked before return."
          (context-owner (symbol-function 'nelisp-native-load-rooted-runtime-dependency-context))
          (context (funcall context-owner))
          (layout (car (funcall layout-owner)))
-         (script (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.py" root))
+         (script (expand-file-name "scripts/nelisp-native-rooted-prelink-closure.el" root))
          (owner-script (expand-file-name "scripts/nelisp-native-rooted-direct-closure.py" root))
          (template (expand-file-name "templates/nelisp-native-rooted-abi-proof.el.in" root))
          (loader (expand-file-name "lisp/nelisp-native-load.el" root))
-         (python (executable-find (if (eq system-type 'windows-nt) "python" "python3")))
          (source-paths (list (expand-file-name "lisp/nelisp-native-windows.el" root)
                              (expand-file-name "lisp/nelisp-native-pe-symbols.el" root)
                              script owner-script template loader
@@ -383,9 +419,8 @@ dependencies, subprocess result and source owners are checked before return."
          (sources (mapcar (lambda (path)
                             (cons path (nelisp-native-rooted-build-evidence-source-hash path 4194304)))
                           source-paths)))
-    (unless (and python
-                 (equal (file-truename (or (symbol-file 'nelisp-native-load-rooted-production-contract 'defun) ""))
-                        (file-truename loader)))
+    (unless (equal (file-truename (or (symbol-file 'nelisp-native-load-rooted-production-contract 'defun) ""))
+                   (file-truename loader))
       (error "Unknown rooted build tool or loader source owner"))
     (let* ((capture (nelisp-native-rooted-build-evidence-write units builder root directory))
            (closure (expand-file-name "prelink-closure.json" directory))
@@ -399,8 +434,14 @@ dependencies, subprocess result and source owners are checked before return."
                       "nl_gc_mark_thread_roots" "nl_gc_mark_recorded_env" "nl_cold_grow_chunk0" "nl_gc_conserv_owner_slow"))
         (setq arguments (append arguments (list "--root" name))))
       (with-temp-buffer
-        (unless (and (eq (apply #'call-process python nil (list (current-buffer) t) nil arguments) 0)
-                     (string-match-p "\\`[0-9a-f]\\{64\\}\n\\'" (buffer-string)))
+        ;; The proof runs in process: load the script and call its `-main'
+        ;; with the CLI-style arguments, capturing the digest line it returns.
+        (insert (condition-case err
+                    (progn (load script nil t t)
+                           (funcall (intern (concat (file-name-base script) "-main"))
+                                    (cdr arguments)))
+                  (error (format "%s\n" (error-message-string err)))))
+        (unless (string-match-p "\\`[0-9a-f]\\{64\\}\n\\'" (buffer-string))
           (error "Authenticated prelink closure generation failed: %s"
                  (substring (buffer-string) 0 (min 2000 (buffer-size)))))
         (setq result (nelisp-native-rooted-startup-evidence-render
@@ -481,7 +522,7 @@ dependencies, subprocess result and source owners are checked before return."
                   nelisp-native-load-rooted-runtime-dependency-context
                   symbol-function eq equal functionp secure-hash error
                   = <= < + - 1+ setcar fboundp buffer-size set-buffer-multibyte null append
-                  json-read-from-string decode-coding-string
+                  json-parse-string decode-coding-string
                   insert-file-contents-literally file-attributes file-attribute-size
                   call-process cl-every mapcar plist-get alist-get
                   car cdr caar cdar cadr cddr nth car-safe consp vectorp assoc

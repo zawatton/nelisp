@@ -137,13 +137,20 @@
              (emacs-char-table-subtype (emacs-char-table-make 'my-subtype)))))
 
 (ert-deftest emacs-char-table-test/extra-slots ()
-  (let ((ct (emacs-char-table-make 'test)))
-    (should (null (emacs-char-table-extra-slot ct 0)))
-    (emacs-char-table-set-extra-slot ct 0 'meta)
-    (emacs-char-table-set-extra-slot ct 2 'meta2)
-    (should (eq 'meta (emacs-char-table-extra-slot ct 0)))
-    (should (eq 'meta2 (emacs-char-table-extra-slot ct 2)))
-    (should (null (emacs-char-table-extra-slot ct 1)))))
+  ;; The slot count comes from the subtype's `char-table-extra-slots'
+  ;; property (0 when absent), as in GNU.
+  (unwind-protect
+      (progn
+        (put 'emacs-char-table-test-extra-subtype 'char-table-extra-slots 3)
+        (let ((ct (emacs-char-table-make 'emacs-char-table-test-extra-subtype)))
+          (should (null (emacs-char-table-extra-slot ct 0)))
+          (emacs-char-table-set-extra-slot ct 0 'meta)
+          (emacs-char-table-set-extra-slot ct 2 'meta2)
+          (should (eq 'meta (emacs-char-table-extra-slot ct 0)))
+          (should (eq 'meta2 (emacs-char-table-extra-slot ct 2)))
+          (should (null (emacs-char-table-extra-slot ct 1)))
+          (should-error (emacs-char-table-extra-slot ct 3))))
+    (put 'emacs-char-table-test-extra-subtype 'char-table-extra-slots nil)))
 
 ;;;; --- category table integration ------------------------------------
 

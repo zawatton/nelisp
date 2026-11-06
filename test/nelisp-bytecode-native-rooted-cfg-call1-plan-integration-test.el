@@ -114,6 +114,8 @@
   (skip-unless (equal emacs-version "31.1"))
   (let ((baseline "target/progress/r9-call1-plan-integration/before/nelisp-bytecode-native-rooted-cfg-plan.el")
         (candidate "lisp/nelisp-bytecode-native-rooted-cfg-plan.el"))
+    ;; The pristine baseline is a generated progress artifact (target/ is not tracked).
+    (skip-unless (file-exists-p baseline))
     (dolist (form '("(lambda (x) (car x))" "(lambda (x) (1+ x))"))
       (let ((body (format "(let* ((input (nelisp-bytecode-compiler-input-build (byte-compile %s))) (plan (nelisp-bytecode-native-rooted-cfg-plan input))) (plist-put plan :input :elided) (princ (prin1-to-string plan)))" form)))
         (let ((old (nelisp-bytecode-native-rooted-cfg-call1-plan-test--child baseline body))

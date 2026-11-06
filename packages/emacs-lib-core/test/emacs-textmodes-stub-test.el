@@ -13,6 +13,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'emacs-textmodes-stub)
 

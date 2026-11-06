@@ -30,6 +30,7 @@
 
 (ert-deftest nelisp-t91-independent-python-oracle-corpus ()
   "Run the standalone parser and compare every result with Python struct bits."
+  :tags '(:expensive-test)
   (let* ((script (expand-file-name "test/nelisp-t91-float-oracle.py"
                                   nelisp-t91--root))
          (output (generate-new-buffer " *nelisp-t91-oracle*"))

@@ -2,6 +2,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (require 'cl-lib)
@@ -11,8 +15,7 @@
 ;; predicate, mapping, property-list, integer-parsing, and random-number
 ;; helpers -- ported verbatim from GNU Emacs 31.1's
 ;; lisp/emacs-lisp/cl-extra.el.  See the commentary at their definitions
-;; in `src/cl-lib.el' for why `cl--random-state''s default is created
-;; lazily here rather than eagerly like upstream.  Values pinned against
+;; in GNU cl-extra.el.  Values pinned against
 ;; real GNU Emacs 31.1.
 
 (ert-deftest cl-extra-test/s2-batch-fboundp ()

@@ -13,11 +13,19 @@
          (forms (mapcar (lambda (name)
                           (copy-tree (cl-find name (cdr nelisp-standalone--gc-source)
                                               :key #'cadr)))
+                        ;; `nl_gc_debt_refresh_limit' ends in `nl_gc_budget_refill'
+                        ;; (deb703a17), which reads `nl_gc_debt_now'; both must be
+                        ;; compiled in, or the call is not a value expression.
                         '(nl_gc_debt_pct nl_gc_debt_floor nl_gc_debt_limit_for
+                          nl_gc_debt_now nl_gc_budget_refill
                           nl_gc_debt_refresh_limit nl_gc_debt_rearm_for)))
          (path (make-temp-file "nelisp-cadence-native-")))
     (setq forms (cl-subst stats '(data-addr nl_gc_stats) forms :test #'equal))
     (setq forms (cl-subst pins '(data-addr nl_gc_conserv_state) forms :test #'equal))
+    (setq forms (cl-subst #x32002000 '(data-addr nl_gc_until_base) forms :test #'equal))
+    (setq forms (cl-subst #x32002100 '(data-addr nl_gc_until) forms :test #'equal))
+    (setq forms (cl-subst #x32002200 '(data-addr nl_vm_poll_force) forms :test #'equal))
+    (setq forms (cl-subst #x32002300 '(data-addr nl_gc_loop_ctx) forms :test #'equal))
     (when old-policy
       (setcdr (cddr (cl-find 'nl_gc_debt_limit_for forms :key #'cadr))
               '((let* ((fl (nl_gc_debt_floor))
@@ -45,6 +53,7 @@
              (defun cadence_main ()
                (syscall-direct 9 ,stats 4096 3 50 -1 0)
                (syscall-direct 9 ,pins 4096 3 50 -1 0)
+               (syscall-direct 9 #x32002000 4096 3 50 -1 0)
                (syscall-direct 9 268435456 4096 3 50 -1 0)
                (+ (+ (cadence_case 200000000 100000000 0 0 0 600000000)
                      (cadence_case 200000000 1000000000 0 0 0 900000000))
@@ -263,18 +272,24 @@
 (defun nelisp-gc-cadence-test--fresh (&optional broken)
   "Check both sweep completion and skipped-collection release routing."
   (let* ((state #x33000000)
-         (form (copy-tree (cl-find 'nl_gc_midform_collect
-                                  (cdr nelisp-standalone--gc-source) :key #'cadr))))
+         ;; The collection itself moved to `nl_gc_midform_collect_now'; the
+         ;; entry point only gates on it.
+         (form (mapcar (lambda (name)
+                         (copy-tree (cl-find name (cdr nelisp-standalone--gc-source)
+                                             :key #'cadr)))
+                       '(nl_gc_midform_collect_now nl_gc_midform_collect))))
     (setq form (cl-subst state '(data-addr nl_gc_loop_ctx) form :test #'equal)
           form (cl-subst (+ state 128) '(data-addr nl_gc_stats) form :test #'equal))
     (when broken
-      ;; Production storage loads use the Doc 216 accessor spelling.
-      (setq form (cl-subst '(>= (heap-read-u64 855638144 24) before)
-                          '(> (heap-read-u64 855638144 24) before)
+      ;; `nl_gc_midform_collect_now' reads the sweep counter with `ptr-read-u64'.
+      (setq form (cl-subst `(>= (ptr-read-u64 ,(+ state 128) 24) before)
+                          `(> (ptr-read-u64 ,(+ state 128) 24) before)
                           form :test #'equal)))
     (nelisp-gc-cadence-test--native
      `(seq
        (defun nl_gc_debt_due () 1)
+       ;; `nl_gc_midform_collect' asks the gate, which wraps the debt check.
+       (defun nl_gc_debt_gate_due () 1)
        (defun nl_gc_collect_from_recorded_roots (_mode)
          (ptr-write-u64 ,(+ state 128) 24
                         (+ (ptr-read-u64 ,(+ state 128) 24)
@@ -285,7 +300,7 @@
        (defun nl_gc_reclaim_empty_chunks (_prev _cur)
          (ptr-write-u64 ,state 80 (+ (ptr-read-u64 ,state 80) 1)))
        (defun nl_gc_growth_rearm () 0)
-       ,form
+       ,@form
        (defun fresh_main ()
          (syscall-direct 9 268435456 4096 3 50 -1 0)
          (syscall-direct 9 ,state 4096 3 50 -1 0)

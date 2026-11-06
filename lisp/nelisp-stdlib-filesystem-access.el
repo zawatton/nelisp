@@ -75,7 +75,11 @@ Authenticate SOURCE-ROOT's fileio.c provenance.  Preserve genuine GNU hosts."
       (nelisp-stdlib-filesystem-access--live)
       (when (and (fboundp 'file-accessible-directory-p)
                  (not (eq (symbol-function 'file-accessible-directory-p)
-                          nelisp-stdlib-filesystem-access--installed-owner)))
+                          nelisp-stdlib-filesystem-access--installed-owner))
+                 ;; The prelude's own stand-in is replaceable.
+                 (not (eq (symbol-function 'file-accessible-directory-p)
+                          (get 'file-accessible-directory-p
+                               'nelisp-prelude-provider))))
         (error "Foreign standalone filesystem search provider is prebound"))
       (unless (and (stringp source-root) (> (length source-root) 0))
         (error "Filesystem source root is unconfigured"))

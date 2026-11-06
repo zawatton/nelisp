@@ -134,7 +134,7 @@
              (* (run-form (cadr node) env-bindings) (run-form (nth 2 node) env-bindings)))
             ((eq (car node) 'or)
              (cl-some (lambda (child) (run-form child env-bindings)) (cdr node)))
-            ((eq (car node) 'ptr-read-u64)
+            ((memq (car node) '(ptr-read-u64 heap-read-u64))
              (let ((value (aref roots (cadr (run-form (cadr node) env-bindings)))))
                (pcase (nth 2 node) (0 (if value 1 0)) (8 value) (_ 0))))
             ((eq (car node) 'ptr-write-u64)

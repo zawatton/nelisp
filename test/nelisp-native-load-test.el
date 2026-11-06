@@ -459,14 +459,34 @@ rather than anywhere near the cause.  `(c1 0)' now answers 222."
                '(:extern-symbols ("nelisp_aot_builtin_calln")))
               'boxed))
   (skip-unless (nelisp-native-load-test--linux-x86_64-p))
-  (nelisp-native-load-test--with-artifact path "(defun nlt-add (a b) (+ a b))"
+  ;; Real artifacts: every unit lists the funcall dispatchers since
+  ;; 7ed89f0a9, and values cross the boundary as canonical words, so even
+  ;; the extern-light `(+ a b)' records `:param-repr word' and is boxed.
+  ;; The integer ABI is covered by the recorded-representation test below.
+  (dolist (spec '(("nlt-add" . "(defun nlt-add (a b) (+ a b))")
+                  ("nlt-inc" . "(defun nlt-inc (x) (1+ x))")))
+    (nelisp-native-load-test--with-artifact path (cdr spec)
+      (let* ((native (plist-get (nelisp-native-load-manifest path) :native))
+             (meta (nelisp-native-load--defun native (car spec))))
+        (should (eq (plist-get meta :param-repr) 'word))
+        (should (eq (nelisp-native-load-abi native meta) 'boxed))))))
+
+(ert-deftest nelisp-native-load/abi-prefers-recorded-representation ()
+  "Recorded :param-repr/:return-repr decide the ABI; externs are a fallback."
+  (let ((all-dispatchers
+         '(:extern-symbols ("nelisp_aot_funcall1" "nelisp_aot_funcalln"))))
     (should (eq (nelisp-native-load-abi
-                 (plist-get (nelisp-native-load-manifest path) :native))
-                'integer)))
-  (nelisp-native-load-test--with-artifact path "(defun nlt-inc (x) (1+ x))"
+                 all-dispatchers '(:param-repr raw-i64 :return-repr raw-i64))
+                'integer))
     (should (eq (nelisp-native-load-abi
-                 (plist-get (nelisp-native-load-manifest path) :native))
-                'boxed))))
+                 all-dispatchers '(:param-repr sexp-ptr :return-repr sexp-ptr))
+                'boxed))
+    (should (eq (nelisp-native-load-abi
+                 all-dispatchers '(:param-repr word :return-repr word))
+                'boxed))
+    ;; No recorded representation: the dispatcher externs decide.
+    (should (eq (nelisp-native-load-abi all-dispatchers nil) 'boxed))
+    (should (eq (nelisp-native-load-abi '(:extern-symbols nil) nil) 'integer))))
 
 (ert-deftest nelisp-native-load/raw-i64-call-needs-no-runtime-env ()
   "Raw integer handles keep the loader's env-free call path."

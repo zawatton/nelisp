@@ -234,6 +234,7 @@
          (dolist (entry saved-migration)
            (if (cdr entry) (fset (car entry) (cdr entry)) (fmakunbound (car entry)))))))))
 (ert-deftest n4-cut-suspended-shallow-record-still-migrates ()
+  (skip-unless (file-directory-p (or (getenv "N4_CUT_SEED") (expand-file-name "../../seed/" (file-name-directory n4-cut-test--source)))))
   (should (equal '(1 11 1 5) (n4-cut-test--migration 'seed)))
   (should (equal '(5 4 1 nil) (n4-cut-test--migration 'bad)))
   (should-error (should (equal '(1 11 1 5) (n4-cut-test--migration 'bad))) :type 'ert-test-failed)
@@ -242,6 +243,7 @@
     (should-not (sst--find (n4-cut-test--definition n)
                           (lambda (node) (eq (car-safe node) 'nl_n4_binding_visible))))))
 (ert-deftest n4-cut-image-root-copy-strips-only-private-export-metadata ()
+  (skip-unless (file-readable-p (expand-file-name (or (getenv "N4_CUT_BAD_SOURCE") (expand-file-name "../../out/before-migration-correction/builder177683.el" (file-name-directory n4-cut-test--source))))))
   (n4-cut-test--model
    (let* ((backing 62006) (view 42006) (raw-cut (+ (* (+ aux 120) 4) 1))
           (snapshot (eval (cons 'lambda (cddr (sst--host-form (n4-cut-test--definition 'nl_frame_stack_snapshot_w)))) t))
@@ -310,6 +312,7 @@
        (should (sst--find (n4-cut-test--definition name)
                          (lambda (x) (equal x '(fbox (if (= image-root 0) 0 (nl_word_payload (heap-read-u64 image-root 0))))))))))))
 (ert-deftest n4-cut-old-source-equal-depth-red-and-current-green ()
+  (skip-unless (file-directory-p (or (getenv "N4_CUT_SEED") (expand-file-name "../../seed/" (file-name-directory n4-cut-test--source)))))
   (n4-cut-test--model
    (puthash (+ aux 96) 9 mem)
    (puthash (+ aux 104) 13 mem) (puthash (+ aux 112) 41006 mem)

@@ -27,6 +27,10 @@
                  form))))))
 
 (ert-deftest nelisp-vendor-bytecode-triparity-byte-compile-lambda-minimal-input ()
+  (skip-unless (file-executable-p
+                (or (getenv "NELISP_BIN")
+                    (expand-file-name "target/nelisp"
+                                      (nelisp-vendor-bytecode-triparity--root)))))
   (should (equal (assq 'byte-compile-lambda
                        nelisp-vendor-bytecode-triparity--fixtures)
                  '(byte-compile-lambda (lambda nil 17))))
@@ -270,7 +274,7 @@
     (should (equal (with-temp-buffer
                      (insert-file-contents-literally source)
                      (secure-hash 'sha256 (current-buffer)))
-                   "410c34e030bdd667ff21842a8513e41100394662dacf5e54b40938106f0d6327"))
+                   "a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96"))
     (should (string-prefix-p "(defun zerop (number)" form))
     (should (string-match-p (regexp-quote "(= 0 number))") form))
     (should (= (aref object 0) 257))

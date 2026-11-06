@@ -65,6 +65,12 @@ roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
        (plist-get (plist-get contract :plan) :funcall-version)
        (equal (plist-get contract :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
        (equal (plist-get contract :funcall-hash) (nelisp-native-funcall-v2-hash))
-       (equal (plist-get contract :imports) '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))))
+       ;; Cyclic (banked) plans additionally import the machine-code poll gate
+       ;; (9d6a4a4f2); acyclic ones do not.
+       (member (plist-get contract :imports)
+               '(("nl_native_funcall_v2" "nl_root_pin_slot_v2")
+                 ("nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2")
+                 ;; A closed loop with no call keeps only the poll gate.
+                 ("nl_native_poll_v2" "nl_root_pin_slot_v2"))))))
 (provide 'nelisp-bytecode-native-rooted-cfg-constructor-contract)
 ;;; nelisp-bytecode-native-rooted-cfg-constructor-contract.el ends here

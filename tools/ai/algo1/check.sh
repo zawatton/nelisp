@@ -1,7 +1,7 @@
 #!/bin/sh
 # usage: check.sh BINARY MODE   (run from the repo root)
 # MODE: seqcl | json | float | prn | jsonel  (corpus equals GNU except the known pre-existing cases;
-#       jsonel loads the repo's packages/emacs-lib-core/src/json.el over the binary first)
+#       jsonel loads the repo's vendor/emacs-lisp/json.el over the binary first)
 #       scaling-seqcl | scaling-json | scaling-prn | speed
 BIN=$1; MODE=$2; D=tools/ai/algo1
 ulimit -v 8388608; export LC_ALL=C.UTF-8
@@ -19,7 +19,7 @@ case $MODE in
   *) echo "unknown mode"; exit 2 ;;
 esac
 LOADF=$D/$F
-if [ "$MODE" = jsonel ]; then LOADF=$T/wrap.el; printf '(load "%s" nil t)\n(load "%s" nil t)\n' "$PWD/packages/emacs-lib-core/src/json.el" "$PWD/$D/$F" > $LOADF; fi
+if [ "$MODE" = jsonel ]; then LOADF=$T/wrap.el; printf '(load "%s" nil t)\n(load "%s" nil t)\n' "$PWD/vendor/emacs-lisp/json.el" "$PWD/$D/$F" > $LOADF; fi
 timeout 250 "$BIN" --load $LOADF -- 2>&1 | grep -a -E '^[0-9]+:' | grep -a -v -E "$X" > $T/nl
 timeout 250 /usr/local/bin/emacs -Q --batch -l $D/$F 2>&1 | grep -a -E '^[0-9]+:' | grep -a -v -E "$X" > $T/gnu
 test -s $T/nl && diff $T/nl $T/gnu > $T/d; rc=$?

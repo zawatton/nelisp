@@ -2,6 +2,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
+(require 'nelisp-aot-test-runtime)
 (require 'nelisp-standalone-build)
 (require 'nelisp-aot-cleanup-branch-test)
 (require 'nelisp-aot-trace-loop-test)
@@ -60,6 +61,7 @@
           (if (= (if (seq (ptr-write-u64 p 32 (+ (ptr-read-u64 p 32) 1))
                              (ptr-read-u64 p 0)) 7 -9) 0) 17 -19))
         '(defun pc_word (w) (if (= (sexp-tag w) 7) 2 (if (= (sexp-tag w) 63) 6 0)))))
+    ,nelisp-aot-test-runtime-nl-val-tag-defun
     (defun pc_public () 73)
     (defun pc_main () ,body)
     ,@(if (eq frontend 'pass) '((exit (pc_main)))

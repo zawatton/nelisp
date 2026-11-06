@@ -71,7 +71,8 @@
     (should (eq (aref (aref rd-constants 1) 2) (aref rd-constants 0)))))
 
 (ert-deftest nelisp-r9-reader-bytecode-label-self-and-enclosing-pending-reference ()
-  "Leave pending proxies for the enclosing label finalizer."
+  "Self and enclosing labels inside a byte-code constants vector resolve like GNU.
+The reader finalizes them itself now, so no pending proxy is left behind."
   (let* ((self-source "#1=#[nil \"x\" [#1#] 1]")
          (gnu-self (car (read-from-string self-source)))
          (rd-self (nelisp-r9-reader-bytecode-label-test--read self-source))
@@ -79,15 +80,11 @@
          (gnu-outer (car (read-from-string outer-source)))
          (rd-outer (nelisp-r9-reader-bytecode-label-test--read outer-source)))
     (should (eq gnu-self (aref (aref gnu-self 2) 0)))
-    (let ((pending (aref (aref rd-self 2) 0)))
-      (should (eq (car pending) 'nelisp--rd-label-reference))
-      (should (= (cdr pending) 1)))
+    (should (eq rd-self (aref (aref rd-self 2) 0)))
     (let ((gnu-function (aref gnu-outer 0))
           (rd-function (aref rd-outer 0)))
       (should (eq gnu-outer (aref (aref gnu-function 2) 0)))
-      (let ((pending (aref (aref rd-function 2) 0)))
-        (should (eq (car pending) 'nelisp--rd-label-reference))
-        (should (= (cdr pending) 1))))))
+      (should (eq rd-outer (aref (aref rd-function 2) 0))))))
 
 (ert-deftest nelisp-r9-reader-bytecode-label-shallow-helper-leaves-pending-vector-item ()
   "Do not descend into a constants vector to resolve its pending element."

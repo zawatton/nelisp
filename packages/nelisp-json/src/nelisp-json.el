@@ -51,7 +51,7 @@
 ;; `((a . 1))', not `((\"a\" . 1))'), `plist' keys are keywords.  This
 ;; was a documented divergence from segment C1 through segment D2
 ;; (`:object-type \='alist' used to return string keys here; the
-;; standalone compat layer in `standalone-compat/json.el' papered over
+;; former standalone compat layer papered over
 ;; it by interning the keys itself); segment D2 fixed it in the parser
 ;; so the compat layer no longer has to.
 

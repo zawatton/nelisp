@@ -25,10 +25,13 @@
                   (goto-char (match-beginning 0))
                   (eval (nth 2 (read (current-buffer))) t))))
     (should (equal (caar table) '(:u8 "+")))
-    (should (equal (cdar table) nelisp-arithmetic-direct-test--body))
-    (should (= (length table) 107))
+    ;; 4bd8c139a: the "+" arm is now a WORD body (fixnum fast path, marker
+    ;; normalisation, then the former shared float/sum body); the table grew
+    ;; from 107 to 168 rows through later builtin work.  Re-pinned.
+    (should (eq (cadar table) :word))
+    (should (= (length table) 168))
     (should (equal (secure-hash 'sha256 (prin1-to-string (cdr table)))
-                   "b2f600e4dcb8ea4d8f313923d363c4cba73462d8986d43f2ddf84f8e6cabdd04"))))
+                   "6738d4eef3933d104093a3e32d576c6212732ce6e71e153a8255d3d0cef7c0c7"))))
 (defun nelisp-arithmetic-direct-test--contains (tree node)
   (or (equal tree node)
       (and (consp tree)

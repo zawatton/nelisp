@@ -82,7 +82,16 @@ Return (:state :sp :pc :mem :words :dirty :entry)."
                 ((symbol-function 'bf_keyword_raw)
                  (lambda (w) (cl-incf kwcalls) (if (memq w keywords) 1 0)))
                 ((symbol-function 'wf_bytecode_w_fast_entry)
-                 (lambda (&rest _) (cl-incf entry) 0)))
+                 (lambda (&rest _) (cl-incf entry) 0))
+                ;; Placeholders so the installs below are undone on exit.
+                ((symbol-function 'wf_bytecode_w_symobj_p) nil)
+                ((symbol-function 'wf_bytecode_w_canon_p) nil)
+                ((symbol-function 'wf_bytecode_w_memq_fast) nil)
+                ((symbol-function 'wf_bytecode_w_nth_fast) nil)
+                ((symbol-function 'wf_bytecode_w_length_fast) nil)
+                ((symbol-function 'wf_bytecode_w_local_read) nil)
+                ((symbol-function 'wf_bytecode_w_local_set) nil))
+        (sst--install-fast-helpers)
         (let* ((fn (eval (cons 'lambda (cddr (sst--host-form
                                               (sst--function 'wf_bytecode_w_fast_run))))
                          t))

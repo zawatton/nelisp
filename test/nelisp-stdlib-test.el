@@ -1663,6 +1663,10 @@ Prior bug (= `(if (consp tail) (car tail) tail)') collapsed nested
 alist values into their `car', corrupting the MCP request shape
 `((params . ((name . \"X\") (arguments)))' into `(name . \"X\")' and
 tripping the JIT trampoline on the downstream `alist-get' walk."
+  ;; Reset like the sibling tests: the load-time evaluator state cannot run
+  ;; the vendored `ignore' (its body holds `(interactive)') until a reset
+  ;; installs the core macros, so this test must not depend on test order.
+  (nelisp--reset)
   (let* ((req '((jsonrpc . "2.0")
                 (method  . "tools/call")
                 (params  . ((name . "X") (arguments)))

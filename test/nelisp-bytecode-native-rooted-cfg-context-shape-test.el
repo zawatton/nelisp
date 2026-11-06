@@ -16,7 +16,13 @@
                      (setq value (read (current-buffer)))) value)))
          (labels (caddr form)))
     (eval `(let ,(cadr form)
-             (cl-labels ,(cadr labels) ,(car (last (cddr labels))) ,body)) t)))
+             (cl-labels ,(cadr labels)
+               ;; Seal the owners and run the initial source-context check; the
+               ;; sealing SETQ is no longer the last form (688eda347 added the
+               ;; UNLESS check), and the public DEFUNs stay unevaluated.
+               ,@(cl-remove-if-not (lambda (f) (memq (car-safe f) '(setq unless)))
+                                   (cddr labels))
+               ,body)) t)))
 
 (ert-deftest nelisp-context-shape/exact-source-slots ()
   (nelisp-context-shape-test--prefix

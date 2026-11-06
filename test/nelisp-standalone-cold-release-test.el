@@ -2,6 +2,11 @@
 (require 'ert)
 (require 'cl-lib)
 
+(defvar nelisp-cold-release-test--output "output"
+  "Output path the stage doubles hand to the builder.
+The builder writes `OUT.version.json' (201a731b6) and hashes OUT, so the
+test points it at a real file in a scratch directory.")
+
 (defun nelisp-cold-release-test--run (owner)
   "Run OWNER with host-only stage doubles and a weak unit graph witness."
   (let ((witness (make-hash-table :test #'eq :weakness 'key)) events retained)
@@ -9,7 +14,7 @@
               ((symbol-function 'nelisp-standalone--reader-units)
                (lambda () (let ((unit (list :sentinel 'unit)))
                             (puthash unit t witness) (list unit))))
-              ((symbol-function 'nelisp-standalone--output-path) (lambda (_) "output"))
+              ((symbol-function 'nelisp-standalone--output-path) (lambda (_) nelisp-cold-release-test--output))
               ((symbol-function 'nelisp-standalone-arena-rewrite-target) (lambda () 'linux-x86_64))
               ((symbol-function 'nelisp-link-units)
                (lambda (out units &rest _)
@@ -54,7 +59,11 @@
         (let* ((old (eval (cons 'lambda (cons (nth 2 definition)
                                             (baseline (nthcdr 3 definition)))) t))
                (process-environment (copy-sequence process-environment))
+               (scratch (make-temp-file "nelisp-cold-release-" t))
+               (nelisp-cold-release-test--output
+                (expand-file-name "output" scratch))
                (old-result nil) (new-result nil))
+          (with-temp-file nelisp-cold-release-test--output (insert "stub"))
           (setenv "NELISP_READER_DYNAMIC" nil)
           (setenv "NELISP_STANDALONE_BUILD_TRACE" nil)
           (should (= removed 2))
@@ -62,6 +71,7 @@
                 new-result (nelisp-cold-release-test--run #'nelisp-standalone-build-reader))
           (should (equal (butlast old-result) (butlast new-result)))
           (should (= (nth 2 old-result) 1))
-          (should (= (nth 2 new-result) 0)))))))
+          (should (= (nth 2 new-result) 0))
+          (delete-directory scratch t))))))
 
 (provide 'nelisp-standalone-cold-release-test)

@@ -22,8 +22,6 @@
                      emacs-stub
                      emacs-os-detect
                      emacs-easy-mmode
-                     emacs-pcase
-                     emacs-cl-macros
                      emacs-time
                      emacs-numeric
                      emacs-subr-extras

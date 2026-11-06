@@ -47,6 +47,10 @@ contract used by `nelisp-locate-file'."
     (or load-file-name buffer-file-name)))
   "Absolute path of the toy package shipped with the repo.")
 
+(defun nelisp-examples-hello-test--forget-host-features ()
+  "Remove the toy package features from the host `features' list."
+  (setq features (delq 'hello (delq 'hello-utils features))))
+
 (defmacro nelisp-examples-hello-test--with-env (&rest body)
   "Reset NeLisp state, point `nelisp-load-path' at the toy package.
 Host `load-path' is disabled for the duration of BODY so the
@@ -54,8 +58,16 @@ assertions truly exercise NeLisp's own resolution pipeline."
   (declare (indent 0))
   `(let ((nelisp-load-path (list nelisp-examples-hello-test--dir))
          (nelisp-load-path-include-host nil))
-     (nelisp--reset)
-     ,@body))
+     ;; `nelisp-require' mirrors `provide' onto the host `features', and
+     ;; `nelisp--builtin-require' then short-circuits any host-provided
+     ;; feature without loading its file.  Drop the toy features on entry
+     ;; and exit so tests do not depend on run order.
+     (nelisp-examples-hello-test--forget-host-features)
+     (unwind-protect
+         (progn
+           (nelisp--reset)
+           ,@body)
+       (nelisp-examples-hello-test--forget-host-features))))
 
 (ert-deftest nelisp-examples-hello-require-registers-both ()
   "`nelisp-require' on the toy entry point pulls its helper too."

@@ -86,8 +86,12 @@ TYPE can be `list', `vector', `string', or `sequence'."
      ((eq type 'string) (apply #'string (seq--list sequence)))
      (t (signal 'wrong-type-argument (list 'type-specifier-p type))))))
 
-(unless (fboundp 'seq-into-sequence)
-  (defalias 'seq-into-sequence #'seq-into))
+(when (seq--define-p 'seq-into-sequence)
+  (defun seq-into-sequence (sequence)
+    "Convert SEQUENCE into a sequence (GNU one-argument signature)."
+    (unless (sequencep sequence)
+      (error "Cannot convert %S into a sequence" sequence))
+    sequence))
 
 (when (seq--define-p 'seq-do)
   (defun seq-do (function sequence)

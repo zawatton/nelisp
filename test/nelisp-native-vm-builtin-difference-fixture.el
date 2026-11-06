@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib) (require 'nelisp-standalone-build)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (defun ad-def (n pools) (or (cl-find-if (lambda (f) (eq (cadr f) n)) pools) (error "Missing %S" n)))
 (let* ((variant (or (getenv "AD_VARIANT") "positive")) (output (getenv "AD_OUTPUT"))
        (pools (append nelisp-standalone--applyfn-bytecode-helpers nelisp-standalone--applyfn-core-helpers))
@@ -79,7 +80,7 @@
     (defun nl_alloc_bytes (size align) (seq (ptr-write-u64 ,base 0 (+ (ptr-read-u64 ,base 0) 1)) ,(+ base 4096)))
     (defun audit_run () (let ((failure 0)) (seq (syscall-direct 9 ,base 65536 3 50 -1 0) ,@(nreverse calls) (ptr-write-u64 ,base 24 failure) (syscall-direct 1 1 ,base 32 0 0 0) failure)))
     (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-  (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "call-diff-audit.o" source)) "_start")
+  (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "call-diff-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
   (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
   (with-temp-file (concat output ".original.el") (prin1 original (current-buffer)))
   (princ (format "CALL-DIFF-UNIT-COMPILED variant=%s cases=%d\n" variant serial))))

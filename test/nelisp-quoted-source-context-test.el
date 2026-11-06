@@ -1,6 +1,12 @@
 ;;; nelisp-quoted-source-context-test.el --- Syntax-only controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
+(eval-and-compile
+  ;; The module lives under tools/ai (c552d6bbb), outside the default -L set.
+  (add-to-list 'load-path
+               (expand-file-name "../tools/ai"
+                                 (file-name-directory
+                                  (or load-file-name buffer-file-name)))))
 (require 'nelisp-quoted-source-context)
 (defvar quoted-context-test--sentinel 0)
 

@@ -33,6 +33,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 (require 'emacs-stub)
@@ -652,9 +656,13 @@ awareness, not one exact spelling of it."
                     (progn
                       (goto-char (point-min))
                       (search-forward "nelisp--write-stdout-bytes" nil t))
+                    ;; Native-first gate: install only over an absent
+                    ;; function or an `emacs-stub-bulk' placeholder.
                     (progn
                       (goto-char (point-min))
-                      (search-forward "(get symbol 'emacs-stub-bulk)" nil t))))))))
+                      (and (search-forward "(not (fboundp symbol))" nil t)
+                           (search-forward "(get symbol 'emacs-stub-bulk)"
+                                           nil t)))))))))
 
 (defconst emacs-stub-residuals-test--standalone-gate-name-regexp
   (rx (or "standalone-p" "standalone-runtime-p" "host-runtime-p"
@@ -766,10 +774,9 @@ scanning, not sexp reads, so those are covered by the existing
 `emacs-stub-residuals-test/builtin-bridges-have-standalone-install-gates'
 substring check instead) and flags any recognised host/standalone gate
 shape whose only signal is the naive test."
-  (let* ((src-dir (expand-file-name
-                    "../src"
-                    (file-name-directory emacs-stub-residuals-test--this-file)))
-         (files (directory-files src-dir t "\\.el\\'"))
+  (let* ((files (apply #'append
+                       (mapcar (lambda (dir) (directory-files dir t "\\.el\\'"))
+                               (nemacs-test-paths-source-dirs))))
          violations)
     (should (> (length files) 50))
     (dolist (file files)
@@ -906,6 +913,11 @@ shape whose only signal is the naive test."
   (let* ((source (emacs-stub-residuals-test--source-file "emacs-stub"))
          (saved (and (fboundp 'custom-declare-variable)
                      (symbol-function 'custom-declare-variable)))
+         ;; The reload also installs the standalone `defcustom' macro
+         ;; fallback over GNU's; restore it so later reloads in this
+         ;; process do not expand through the fallback.
+         (saved-defcustom (and (fboundp 'defcustom)
+                               (symbol-function 'defcustom)))
          (symbol (make-symbol "nelisp-emacs-custom-type")))
     (unwind-protect
         (progn
@@ -916,6 +928,9 @@ shape whose only signal is the naive test."
                                                    (const alternate)))
           (should (equal '(choice (const default) (const alternate))
                          (get symbol 'custom-type))))
+      (if saved-defcustom
+          (fset 'defcustom saved-defcustom)
+        (fmakunbound 'defcustom))
       (if saved
           (fset 'custom-declare-variable saved)
         (fmakunbound 'custom-declare-variable)))))
@@ -951,11 +966,7 @@ shape whose only signal is the naive test."
    (lambda ()
      (let* ((stub-source (emacs-stub-residuals-test--source-file "emacs-stub"))
             (org-faces-file
-             (expand-file-name "vendor/emacs-lisp/org/org-faces.el"
-                               ;; The vendor tree lives at the repository
-                               ;; root, above `packages/emacs-lib-core/src'.
-                               (expand-file-name
-                                "../../.." (file-name-directory stub-source))))
+             (nemacs-test-paths-vendor "emacs-lisp/org/org-faces.el"))
             (captured-spec nil)
             (form (emacs-stub-residuals-test--read-first-form-matching
                    org-faces-file

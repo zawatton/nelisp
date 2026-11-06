@@ -67,7 +67,7 @@
       (should form)
       (should
        (nelisp-t95-test--member
-        '(ptr-read-u64 (data-addr nl_thread_parallel_ctx) 16)
+        '(heap-read-u64 (data-addr nl_thread_parallel_ctx) 16)
         form)))))
 
 (ert-deftest nelisp-t95-string-index-cache-bypasses-unpackable-byte-offsets ()

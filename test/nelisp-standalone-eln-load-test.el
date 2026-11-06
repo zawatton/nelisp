@@ -3,6 +3,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (require 'ert)
+(require 'cl-lib)
 
 (defconst nelisp-standalone-eln-load-test--root
   (expand-file-name ".." (file-name-directory load-file-name)))
@@ -21,8 +22,13 @@
       (goto-char (match-beginning 0))
       (setq form (read (current-buffer))))
     (eval form)
+    ;; The compiled core byte-code block is unrelated to load routing and needs
+    ;; the whole build tree; only the bridge text after it is under test.
     (with-temp-buffer
-      (insert (nelisp-standalone--after-load-runtime-src))
+      (insert (cl-letf (((symbol-function 'nelisp-standalone--core-bytecode-src)
+                         (lambda ()
+                           "(defvar nelisp--core-bytecode-source-map nil)\n")))
+                (nelisp-standalone--after-load-runtime-src)))
       (goto-char (point-min))
       (condition-case nil
           (while t (eval (read (current-buffer))))

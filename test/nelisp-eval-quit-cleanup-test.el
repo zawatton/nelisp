@@ -2,6 +2,7 @@
 (require 'ert)
 
 (ert-deftest nelisp-eval-quit-cleanup-chain-and-handler-parity ()
+  (skip-unless (fboundp 'nelisp-eval))
   (let ((form '(let ((trace nil))
                  (condition-case data
                      (unwind-protect
@@ -15,6 +16,7 @@
                    (eval form)))))
 
 (ert-deftest nelisp-eval-quit-unmatched-propagates-and-t-catches ()
+  (skip-unless (fboundp 'nelisp-eval))
   (let ((quit-form '(condition-case data (signal 'quit '(payload))
                      (error 'wrong-handler)))
         (all-form '(condition-case data (signal 'quit '(payload))
@@ -27,6 +29,7 @@
                    (eval all-form)))))
 
 (ert-deftest nelisp-eval-quit-cleanup-throw-replaces-quit ()
+  (skip-unless (fboundp 'nelisp-eval))
   (let ((form '(catch 'cleanup-tag
                  (condition-case data
                      (unwind-protect (signal 'quit nil)

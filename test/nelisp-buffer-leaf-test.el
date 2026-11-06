@@ -4,7 +4,8 @@
 ;; (41), point-max (42), goto-char (43), buffer-size (45), bobp (46) and eobp (47) from the
 ;; current buffer's `nelisp-buffer' record.  Slot K of the record is the word at payload
 ;; + 16 + 8K; the Lisp references are the prelude's nelisp--NAME-reference defuns.  The
-;; host model below is a memory table: the record at 40006 has the 16 slots of the struct.
+;; host model below is a memory table: the record at 40006 has the 20 slots of the struct
+;; (`nl_buf_current' requires nl_record_length >= 20).
 
 (require 'ert)
 (require 'cl-lib)
@@ -20,10 +21,10 @@
   '((narrow-start . 6) (narrow-end . 7) (tick . 10) (pend . 11) (blen . 12) (len . 13) (ins . 15)))
 
 (defun nbl--model (&rest plist)
-  "A memory with a 16-slot buffer record; PLIST sets slots by name to fixnum values or `nil'."
+  "A memory with a 20-slot buffer record; PLIST sets slots by name to fixnum values or `nil'."
   (let ((m (make-hash-table :test #'eql)))
-    (puthash 40000 (+ 12 (ash 16 8)) m) (puthash 40008 1111 m)
-    (dotimes (i 16) (puthash (+ 40016 (* 8 i)) 3 m))
+    (puthash 40000 (+ 12 (ash 20 8)) m) (puthash 40008 1111 m)
+    (dotimes (i 20) (puthash (+ 40016 (* 8 i)) 3 m))
     (puthash (+ 40016 (* 8 12)) (nbl--fix 4) m) ; blen 4: gap at position 5
     (puthash (+ 40016 (* 8 13)) (nbl--fix 9) m) ; len 9
     (while plist
@@ -210,7 +211,7 @@
         (dolist (id '(40 41 42 45 46 47))
           (should (equal (nbl--run id m) (list -3 12345)))))))
   (let ((m (nbl--model)))
-    (puthash 40000 (+ 12 (ash 15 8)) m)
+    (puthash 40000 (+ 12 (ash 19 8)) m)
     (nbl--with m (should (equal (nbl--run 40 m) (list -3 12345)))))
   ;; a non-fixnum BLEN / LEN slot declines
   (let ((m (nbl--model)))

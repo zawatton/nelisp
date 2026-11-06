@@ -1520,8 +1520,15 @@ expects -- it derefs payload+8 to reach the box."
       (error "nelisp-native-load: scratch vector allocation returned %S" box))
     addr))
 
-(defun nelisp-native-load-abi (native)
+(defun nelisp-native-load-abi (native &optional meta)
   "Return `boxed' or `integer' for the unit NATIVE's calling convention.
+
+When META (the defun's artifact metadata) records `:param-repr' or
+`:return-repr', that is authoritative: `raw-i64' on both sides is the
+integer ABI, and `sexp-ptr' / `word' on either side is the boxed one.
+Since 7ed89f0a9 every unit lists the funcall dispatchers among its
+externs, so the extern set can no longer tell the two apart; it is only
+the fallback for artifacts that record no representation.
 
 The artifact metadata does not record this -- the CLI decides by trying
 the integer call and falling back when it fails, which is not available
@@ -1547,14 +1554,22 @@ that have one), and this matches it on every artifact to hand.
 The consequence of the derivation being wrong is a wrong value or a
 fault, so a caller that knows better should override :abi in the handle
 rather than trust this."
-  (let* ((externs (plist-get native :extern-symbols))
-         (list (and (listp externs) externs))
-         (dispatches
-          (seq-find (lambda (name)
-                      (and (stringp name)
-                           (string-match-p "aot_builtin_call" name)))
-                    list)))
-    (if dispatches 'boxed 'integer)))
+  (let* ((param (plist-get meta :param-repr))
+         (ret (plist-get meta :return-repr))
+         (boxed-repr '(sexp-ptr word)))
+    (cond
+     ((or (memq param boxed-repr) (memq ret boxed-repr)) 'boxed)
+     ((and (eq param 'raw-i64) (memq ret '(raw-i64 raw-bool u64))) 'integer)
+     (t
+      (let* ((externs (plist-get native :extern-symbols))
+             (list (and (listp externs) externs))
+             (dispatches
+              (seq-find (lambda (name)
+                          (and (stringp name)
+                               (string-match-p
+                                "aot_\\(builtin_call\\|funcall\\)" name)))
+                        list)))
+        (if dispatches 'boxed 'integer))))))
 
 (defun nelisp-native-load--symbol-addr (name)
   "Return the runtime address of NAME."
@@ -2484,7 +2499,10 @@ The enclosing CFG admission must still authenticate the complete contract."
                       (eq (aref (cdr b) 0) 'guarded-provider-v1))
                  (nelisp-native-load--rooted-cfg-provider-context-data-equal-p
                   (aref (cdr a) 1) (aref (cdr b) 1))
-             (and (= (length (cdr a)) 10) (= (length (cdr b)) 10)
+             ;; Layout of `nelisp-native-arithmetic-v2-dependency-context':
+             ;; owners 0-5, owner list 6, snapshots 7-9, plus-body owner 10,
+             ;; its snapshot 11, direct owners 12-13, direct snapshots 14-15.
+             (and (= (length (cdr a)) 16) (= (length (cdr b)) 16)
              (let ((index 0) (valid t))
                (while (and valid (< index 6))
                  (setq valid (eq (aref (cdr a) index) (aref (cdr b) index))
@@ -2494,7 +2512,13 @@ The enclosing CFG admission must still authenticate the complete contract."
                      (aref (cdr a) 6) (aref (cdr b) 6))
                     (equal (aref (cdr a) 7) (aref (cdr b) 7))
                     (equal (aref (cdr a) 8) (aref (cdr b) 8))
-                    (equal (aref (cdr a) 9) (aref (cdr b) 9))))))))
+                    (equal (aref (cdr a) 9) (aref (cdr b) 9))
+                    (eq (aref (cdr a) 10) (aref (cdr b) 10))
+                    (equal (aref (cdr a) 11) (aref (cdr b) 11))
+                    (eq (aref (cdr a) 12) (aref (cdr b) 12))
+                    (eq (aref (cdr a) 13) (aref (cdr b) 13))
+                    (equal (aref (cdr a) 14) (aref (cdr b) 14))
+                    (equal (aref (cdr a) 15) (aref (cdr b) 15))))))))
     (error nil)))
 
 (defun nelisp-native-load--rooted-cfg-import-names-valid-p (names &optional contract)
@@ -5879,7 +5903,7 @@ what a cache wants and what the demo did."
             :slots slots
             :out slots
             :arity arity
-            :abi (nelisp-native-load-abi native)
+            :abi (nelisp-native-load-abi native meta)
             ;; How to hand the arguments over is recorded per defun, so it
             ;; no longer has to be inferred from the extern set -- a
             ;; different question, and one that got `(if (< n 1) 5 (aref v

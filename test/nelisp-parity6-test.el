@@ -158,6 +158,11 @@
   (let ((f (p6-source-function "scripts/nelisp-stdlib-prelude.el" 'unintern)))
     (dolist (args '(nil ("absent") ("absent" nil nil)))
       (should (equal (condition-case e (apply f args) (error e))
-                     (list 'wrong-number-of-arguments 'unintern (length args)))))))
+                     ;; The prelude `unintern' is now a plain two-required-argument
+                     ;; lambda (0c7099cc3; GNU 31.1 also requires OBARRAY), so the
+                     ;; arity error carries the function object itself, exactly as
+                     ;; GNU reports it for a Lisp closure (host: `(apply (lambda
+                     ;; (a b) 1) nil)' signals with `eq' closure as data).
+                     (list 'wrong-number-of-arguments f (length args)))))))
 
 (provide 'nelisp-parity6-test)

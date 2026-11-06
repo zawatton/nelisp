@@ -68,7 +68,6 @@
     (vendor-core lazy-feature files-standalone-buffer "src/files-standalone-buffer.el")
     (vendor-core lazy-feature emacs-dired-min "src/emacs-dired-min.el")
     (vendor-core lazy-feature emacs-help "src/emacs-help.el")
-    (vendor-core lazy-feature lisp-mode "src/lisp-mode.el")
     (vendor-core lazy-feature emacs-elisp-eval "src/emacs-elisp-eval.el")
     (vendor-core lazy-feature emacs-ielm "src/emacs-ielm.el")
     (vendor-core lazy-feature emacs-isearch "src/emacs-isearch.el")

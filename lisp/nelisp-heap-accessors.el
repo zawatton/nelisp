@@ -300,7 +300,8 @@ Every operand is retained exactly once; dotted data is preserved."
           (let ((nelisp-heap-accessors--string-guarded t))
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
-         ((eq (car source) 'sexp-tag)
+         ((and (eq (car source) 'sexp-tag) (= (length source) 2))
+          ;; Wrong-arity forms stay for the parser's :sexp-tag-arity error.
           (nelisp-heap-accessors--lower-string-tag (cadr source)))
          ((memq (car source) '(nl_val_tag nl_word_tag64))
           (nelisp-heap-accessors--lower-string-tag (cadr source)))

@@ -2,7 +2,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (require 'bytecomp)
-(require 'emacs-load-test)
+(require 'emacs-load-test-support)
 
 (defvar emacs-load-elc-test--value nil)
 

@@ -30,8 +30,8 @@
 ;; or/and/let/cons/cl-type/plain `app') so this change does not regress it.
 ;;
 ;; Runs under `make test-one FILE=test/nelisp-pcase-app-test.el' (host
-;; Emacs interprets `nelisp-pcase.el' directly, via the explicit `load'
-;; below, rather than falling back to Emacs's own built-in `pcase') and
+;; Emacs loads the vendored GNU pcase.el via the explicit `load' below)
+;; and
 ;; loads cleanly on the standalone NeLisp binary via `standalone-compat/
 ;; ert.el' (`ert-deftest' / `should' / `should-not' / `should-error' /
 ;; `ert-run-tests-batch-and-exit' only -- no `:tags', no explanations).
@@ -39,12 +39,13 @@
 ;;; Code:
 
 (require 'ert)
-;; Exercise NeLisp's OWN pcase re-implementation, not host Emacs's built-in
-;; one: `load' (not `require', no `provide' in this file) redefines the
-;; global `pcase' macro from lisp/nelisp-pcase.el for the rest of this
-;; process, which is deliberate -- see nelisp-pcase.el's "Kept in step
-;; with the copy in scripts/nelisp-stdlib-prelude.el" header.
-(load "nelisp-pcase")
+;; NeLisp's only pcase is the vendored GNU pcase.el.  Load that exact file
+;; (not host Emacs's built-in copy) so the test exercises the staged source.
+(require (quote cl-macs)) ; GNU registers the `cl-type' pattern there
+(load (expand-file-name "../vendor/staged-emacs-lisp/pcase.el"
+                        (file-name-directory
+                         (or load-file-name buffer-file-name)))
+      nil t)
 
 ;;; -----------------------------------------------------------------
 ;;; Pre-existing patterns, unchanged by this feature (regression pin)
@@ -68,7 +69,7 @@
   (should (equal (pcase 5 ((or (and (pred integerp) n) n) n)) 5))
   (should (equal (pcase 3 ((or 1 2 n) n)) 3))
   (should (equal (pcase 5 ((let n 5) n)) 5))
-  (should (equal (pcase (cons 1 2) ((cons a b) (list a b))) '(1 2)))
+  (should (equal (pcase (cons 1 2) (`(,a . ,b) (list a b))) '(1 2)))
   (should (eq (pcase 5 ((cl-type integer) 'int) (_ 'other)) 'int))
   (should (eq (pcase "s" ((cl-type integer) 'int) (_ 'other)) 'other)))
 

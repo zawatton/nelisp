@@ -81,6 +81,10 @@
                (lambda (address offset)
                  (if (and (= address 8192) (= offset 0)) 8192
                    (if (= offset 16) stash (gethash offset words 0)))))
+              ((symbol-function 'heap-read-u64)
+               (lambda (address offset)
+                 (if (and (= address 8192) (= offset 0)) 8192
+                   (if (= offset 16) stash (gethash offset words 0)))))
               ((symbol-function 'ptr-write-u64) (lambda (_ offset value) (when (= offset 16) (setq stash value))))
               ((symbol-function 'seq) (lambda (&rest values) (car (last values))))
               ((symbol-function 'wf_bytecode_call_gateway)
@@ -185,6 +189,8 @@
                      (if (eq name 'continue) (progn (setq continued (1+ continued)) 77)
                        (push root pins) (if (equal root bad) 0 root))))
                   ((symbol-function 'ptr-read-u64)
+                   (lambda (root offset) (aref (aref slots root) (/ offset 8))))
+                  ((symbol-function 'heap-read-u64)
                    (lambda (root offset) (aref (aref slots root) (/ offset 8))))
                   ((symbol-function 'ptr-write-u64)
                    (lambda (root offset value)

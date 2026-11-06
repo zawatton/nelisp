@@ -34,7 +34,7 @@
                  nl_ht_custom_function_w nl_ht_identity_sync nl_ht_find_index
                  nl_ht_find_in nl_ht_entry_value nl_ht_get_default_w
                  nl_ht_get_synced_w nl_ht_get_w nl_ht_put_values_synced_w
-                 nl_ht_put_values_w nl_ht_put_w nl_ht_remove_index
+                 nl_ht_put_values_w nl_ht_put_w nl_ht_remove_index nl_ht_remove_index_slow
                  nl_ht_rem_synced_w nl_ht_rem_w))
     (eval (hw--host (hf--definition name)) t))
   (dolist (pair '((nl_cons_car_ptr . "lisp/nelisp-cc-jit-cons-car-ptr.el")

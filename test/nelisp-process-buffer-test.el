@@ -2,6 +2,7 @@
 (require 'ert)
 
 (ert-deftest nelisp-process-buffer-marker-follows-edits ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (with-temp-buffer
     (insert "abc")
     (let* ((channel (make-pipe-process :name "marker" :buffer (current-buffer)))
@@ -23,6 +24,7 @@
         (delete-process channel)))))
 
 (ert-deftest nelisp-process-buffer-metadata-and-eof ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (with-temp-buffer
     (let ((channel (make-pipe-process :name "pipe" :buffer (current-buffer))))
       (unwind-protect
@@ -39,6 +41,7 @@
         (delete-process channel)))))
 
 (ert-deftest nelisp-process-buffer-marker-current-buffer-and-clamp ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (let ((first (generate-new-buffer " *marker-first*"))
         (second (generate-new-buffer " *marker-second*"))
         (marker (nelisp-marker--make)))
@@ -54,6 +57,7 @@
       (kill-buffer first) (kill-buffer second))))
 
 (ert-deftest nelisp-process-buffer-native-streams-are-separated ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (let ((out (generate-new-buffer " *process-out*"))
         (err (generate-new-buffer " *process-err*")) proc spool delivered)
     (unwind-protect
@@ -74,6 +78,7 @@
       (kill-buffer out) (kill-buffer err))))
 
 (ert-deftest nelisp-process-buffer-filter-owning-insertion ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (with-temp-buffer
     (let ((seen nil)
           (channel (make-pipe-process :name "filter" :buffer (current-buffer))))
@@ -92,6 +97,7 @@
   (should-error (process-put 42 'key 'value) :type 'wrong-type-argument))
 
 (ert-deftest nelisp-process-buffer-spawn-error-cleans-spool ()
+  (skip-unless (fboundp (quote nelisp-marker--make)))
   (let ((before nelisp-process-buffer--channels) spool)
     (cl-letf (((symbol-function 'nelisp-process-start)
                (lambda (&rest command)

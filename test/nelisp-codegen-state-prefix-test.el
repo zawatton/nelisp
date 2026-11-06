@@ -175,12 +175,21 @@
     (advice-add 'nelisp-aot-compiler--emit-local-prefix-let-body :around
                 #'nelisp-state-prefix-test--raw)
     (unwind-protect
-        (dolist (enabled '(nil t))
+        (progn
+         (dolist (enabled '(nil t))
           (setq nelisp-state-prefix-test--raw-count 0)
           (nelisp-state-prefix-test--compile
            (expand-file-name (if enabled "real-fast-on.o" "real-fast-off.o") dir) enabled)
-          (if enabled (should (> nelisp-state-prefix-test--raw-count 0))
-            (should (= 0 nelisp-state-prefix-test--raw-count))))
+          ;; VM state lives in registers (the vm-reg-plan, 28c60a8c1 / d23607b95;
+          ;; `raw' -> r14), so the assignment-prefix selector no longer fires
+          ;; for this function in either mode.
+          (should (= 0 nelisp-state-prefix-test--raw-count)))
+        (should (equal (with-temp-buffer (set-buffer-multibyte nil)
+                         (insert-file-contents-literally (expand-file-name "real-fast-on.o" dir))
+                         (buffer-string))
+                       (with-temp-buffer (set-buffer-multibyte nil)
+                         (insert-file-contents-literally (expand-file-name "real-fast-off.o" dir))
+                         (buffer-string)))))
       (advice-remove 'nelisp-aot-compiler--emit-local-prefix-let-body
                      #'nelisp-state-prefix-test--raw)
       (unless retained (delete-directory dir t)))))

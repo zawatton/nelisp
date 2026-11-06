@@ -52,8 +52,8 @@ as `ne'.  Both are killed on exit."
         (b (nelisp-generate-new-buffer "X"))
         (c (nelisp-generate-new-buffer "X")))
     (should (equal (nelisp-buffer-name a) "X"))
-    (should (equal (nelisp-buffer-name b) "X<1>"))
-    (should (equal (nelisp-buffer-name c) "X<2>"))))
+    (should (equal (nelisp-buffer-name b) "X<2>"))
+    (should (equal (nelisp-buffer-name c) "X<3>"))))
 
 (ert-deftest nelisp-buffer-get-create-idempotent ()
   (nelisp-buffer--reset-registry)

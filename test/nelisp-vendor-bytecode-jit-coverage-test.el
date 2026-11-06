@@ -6,7 +6,9 @@
 (require 'nelisp-vendor-bytecode-jit-coverage)
 
 (ert-deftest nelisp-vendor-bytecode-jit-coverage/optional-arguments-seed-max-entry-depth ()
-  (let* ((function (byte-compile '(lambda (x &optional y) (list x y))))
+  ;; The generic IR accepts `list' now, so the probe uses `vector', which is
+  ;; still unsupported.
+  (let* ((function (byte-compile '(lambda (x &optional y) (vector x y))))
          (descriptor (aref function 0))
          (minimum-arity (logand descriptor 255))
          (maximum-arity (ash descriptor -8))
@@ -15,7 +17,7 @@
          (blocker (nelisp-vendor-bytecode-jit-coverage--blocker function)))
     (should (= minimum-arity 1))
     (should (= maximum-arity 2))
-    (should (equal (funcall function 42) '(42 nil)))
+    (should (equal (funcall function 42) [42 nil]))
     (should (eq (plist-get validation :status) 'unsupported))
     (should (eq (plist-get (plist-get validation :stack-analysis) :status)
                 'complete))

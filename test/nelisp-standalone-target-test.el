@@ -49,6 +49,7 @@
 
 (ert-deftest nelisp-standalone-target-reader-driver-uses-cache ()
   "The reader driver goes through the content-addressed unit cache."
+  :tags '(:expensive-test)
   (let ((source '(reader-driver-source-sentinel))
         captured)
     (cl-letf (((symbol-function 'nelisp-standalone--reader-driver-source)
@@ -130,23 +131,24 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                              nelisp-cc-rootstack--source)))
       (should (tree-member-p '(data-addr nl_root_pin_control) begin))
       (should (tree-member-p '(data-addr nl_root_pin_region) reserve))
-      (should (tree-member-p '(ptr-read-u64 control 8) reserve))
-      (should (tree-member-p '(ptr-read-u64 control 16) reserve))
+      (should (tree-member-p '(heap-read-u64 control 8) reserve))
+      (should (tree-member-p '(heap-read-u64 control 16) reserve))
       (should (tree-member-p '(atomic-compare-exchange control 1 0) end))
       (should (tree-member-p '(nl_gc_mark_rootstack_walk base top) mark)))
 
     ;; The public diagnostic tuple keeps the live registry count at index 16,
     ;; followed by current/last parked, missed, and successful-collect counts.
-    (let ((diag (defun-form 'bf_debug_switch
+    ;; Doc 215: `bf_debug_switch' is only the rc adapter of the WORD body.
+    (let ((diag (defun-form 'bf_debug_switch_w
                             nelisp-standalone--applyfn-core-helpers)))
       (should
        (tree-member-p
-        '(wf_cons_int (ptr-read-u64 (data-addr nl_thread_registry) 0)
+        '(wf_cons_int (heap-read-u64 (data-addr nl_thread_registry) 0)
                       s17 s16)
         diag))
       (should (tree-symbol-p 'atomic-fetch-add diag))
       (should (tree-member-p
-               '(ptr-read-u64 (data-addr nl_thread_parallel_ctx) 48)
+               '(heap-read-u64 (data-addr nl_thread_parallel_ctx) 48)
                diag)))
 
     ;; Doc 199 Tier 3b: the bounded registry stores {env, published-top}
@@ -247,36 +249,30 @@ non-local-exit behaviour are covered by the standalone reader smoke."
           (+ (tree-count needle (car tree))
              (tree-count needle (cdr tree))))
          (t 0))))
-    ;; Argument WORD evaluation remains a host loop with checked roots for
-    ;; the cursor, value, head payload and tail payload.  A copied cons view
-    ;; does not keep its original header alive on parked workers: the final
-    ;; result must be a durable box, and list links never use a root address.
-    (let* ((walk (defun-form 'nl_eval_arg_list_walk_w
-                            nelisp-standalone--arglist-source))
-           (drive (defun-form 'nl_eval_arg_list_drive_w
+    ;; Since ffe720578 (S6.3 step 9) argument lists are evaluated into a
+    ;; rooted WORD frame (`nl_root_frame' of n+1 slots) by the fx evaluator;
+    ;; the former drive/walk host loop (`nl_eval_arg_list_drive_w') is gone.
+    ;; The frame mark must be released on both the exhausted and the normal
+    ;; path, the result must be a WORD, and no sexp clone or boxed eval call
+    ;; may be involved.
+    (let* ((arg-list (defun-form 'nl_eval_arg_list_w
+                                 nelisp-standalone--arglist-source))
+           (walk (defun-form 'nl_eval_arg_list_walk_w
                              nelisp-standalone--arglist-source))
-           (body (cdddr walk))
-           (drive-body (cdddr drive)))
+           (body (cdddr arg-list)))
+      (should arg-list)
       (should walk)
-      (should drive)
-      (should (equal (caddr drive)
-                     '(cur env root-mark state-slot value-slot head-slot tail-slot)))
-      (should (= (tree-count 'nl_root_reserve_checked body) 4))
-      (should (tree-member-p
-               '(if (= tail-slot 0)
-                    (seq (nl_root_release env mark) 0)
-                  (nl_eval_arg_list_drive_w cur env mark state-slot value-slot
-                                            head-slot tail-slot)) body))
-      (should (= (tree-count 'nl_eval_arg_list_drive_w body) 1))
-      (should (tree-symbol-p 'while drive-body))
-      (should (tree-symbol-p 'nl_root_release drive-body))
-      (should (tree-member-p '(wf_word_store_out state-slot cursor) drive-body))
-      (should (tree-member-p '(wf_word_store_out value-slot value) drive-body))
-      (should (tree-member-p '(wf_copy32 tail-slot node) drive-body))
-      (should (tree-member-p '(wf_copy32 result head-slot) drive-body))
-      (should-not (tree-symbol-p 'nl_sexp_clone_into drive-body))
-      (should-not (tree-symbol-p 'nelisp_eval_call drive-body))
-      (should-not (tree-symbol-p 'nl_eval_arg_list_walk_w drive-body)))))
+      (should-not (defun-form 'nl_eval_arg_list_drive_w
+                              nelisp-standalone--arglist-source))
+      (should (equal (caddr arg-list) '(args env _pad)))
+      (should (tree-member-p '(nl_root_mark env) body))
+      (should (tree-member-p '(nl_root_frame env (+ n 1)) body))
+      (should (= (tree-count '(nl_root_release env mark) body) 2))
+      (should (tree-symbol-p 'm5_fx_eval_forms body))
+      (should (tree-symbol-p 'm5_fx_slot_list body))
+      (should-not (tree-symbol-p 'nl_sexp_clone_into body))
+      (should-not (tree-symbol-p 'nelisp_eval_call body))
+      (should (tree-member-p '(nl_eval_arg_list_w args env 0) (cdddr walk))))))
 
 (ert-deftest nelisp-standalone-target-thread-mirror-mutation-guard-shape ()
   "Doc 199 workers read the shared mirror but cannot mutate it."
@@ -310,7 +306,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                '(nl_thread_private_frames_init
                  penv region type_slot backing_slot depth_slot 0)
                thread-forms))
-      (should (tree-member-p '(record-make type_slot 2 (+ env 32))
+      (should (tree-member-p '(record-make type_slot 3 (+ env 32))
                              thread-forms))
       (should (tree-member-p '(nl_thread_registry_add region) thread-forms)))
 
@@ -392,15 +388,19 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                   nelisp-cc-env-set-value--source)))
     (should (tree-member-p '(nl_thread_registry_find env)
                            nelisp-standalone--reader-errstub-source))
-    (should (tree-member-p '(ptr-read-u64 268435472 0)
+    (should (tree-member-p '(heap-read-u64 268435472 0)
                            (nelisp-standalone--thread-forms)))
+    ;; Variable aliases are native since 3feab7e35: the defvaralias entry
+    ;; guards the alias symbol in `nelisp-cc-variable-alias-public--source'
+    ;; (the old raw record-sharing body was removed from the live set).
     (should (tree-member-p
-             '(extern-call nl_thread_mirror_mutation_guard
-                           mirror-ptr alias-sym-ptr)
-             nelisp-standalone--sf-defvaralias))
+             '(= (nl_thread_mirror_mutation_guard env alias) 1)
+             nelisp-cc-variable-alias-public--source))
+    ;; The `intern' entry now lives in the fast-list helper set and names its
+    ;; argument STRING (Doc 215 WORD bodies).
     (should (tree-member-p
-             '(extern-call nl_thread_mirror_mutation_guard (+ env 0) a)
-             nelisp-standalone--applyfn-bf-arms))
+             '(extern-call nl_thread_mirror_mutation_guard (+ env 0) string)
+             nelisp-standalone--applyfn-fast-list-helpers))
 
     ;; The read entry point is source-identical in shape: no guard symbol at
     ;; all.  Only mutation sources above depend on the new guard.
@@ -436,8 +436,11 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-cache-is-target-qualified ()
   "Unit cache paths include the target name to avoid ABI mixing."
+  ;; Raw standalone units enable TCO by default (75de53470) and then use a
+  ;; "-tco" cache directory; NELISP_TCO=0 selects the plain target name.
   (let ((base (file-name-as-directory nelisp-standalone--cache-dir))
-        (nelisp-standalone--windows-arena-base #x70000000))
+        (nelisp-standalone--windows-arena-base #x70000000)
+        (process-environment (cons "NELISP_TCO=0" process-environment)))
     (should (string-prefix-p
              base
              (nelisp-standalone--target-cache-dir 'linux-x86_64)))
@@ -453,6 +456,20 @@ non-local-exit behaviour are covered by the standalone reader smoke."
              "macos-aarch64"
              (directory-file-name
               (nelisp-standalone--target-cache-dir 'macos-aarch64))))))
+
+(ert-deftest nelisp-standalone-target-cache-tco-default-is-separate ()
+  "The default (TCO) unit cache is a separate directory from NELISP_TCO=0."
+  (let ((nelisp-standalone--windows-arena-base #x70000000))
+    (let ((process-environment (cons "NELISP_TCO=0" process-environment)))
+      (should-not (string-suffix-p
+                   "-tco"
+                   (directory-file-name
+                    (nelisp-standalone--target-cache-dir 'linux-x86_64)))))
+    (let ((process-environment (cons "NELISP_TCO" process-environment)))
+      (should (string-suffix-p
+               "linux-x86_64-tco"
+               (directory-file-name
+                (nelisp-standalone--target-cache-dir 'linux-x86_64)))))))
 
 (ert-deftest nelisp-standalone-target-cache-preserves-section-bytes ()
   "Standalone unit cache stores raw section bytes independent of host coding."
@@ -494,6 +511,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-midform-gc-default-boot-state ()
   "Doc 152 Stage 5 arms mid-form GC only after the boot watermark is valid."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (let* ((forms (nelisp-standalone--reader-driver-source))
          (driver (cl-find-if (lambda (form)
@@ -531,6 +549,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (let* ((forms (nelisp-standalone--reader-driver-source))
          (flat (flatten-tree forms)))
@@ -559,6 +578,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-cli-dispatches-neln-selftest ()
   "The standalone reader dispatch table includes `--neln-selftest'."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
     (should (string-match-p "nl_cstr_eq_neln_selftest" source))
@@ -566,6 +586,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
 
 (ert-deftest nelisp-standalone-target-reader-neln-demo-addresses-real-helpers ()
   "The embedded native demo points each stub at the real runtime symbol.
+(The dispatchers are `nelisp_aot_funcall1'/`funcalln' since 7ed89f0a9.)
 
 It used to route through one bridge defun per extern because `addr-of'
 only resolves an intra-object label.  `data-addr' records a cross-unit
@@ -578,13 +599,14 @@ stack argument."
   (let* ((nelisp-standalone--target 'linux-x86_64)
          (source (prin1-to-string
                   (nelisp-standalone--reader-neln-demo-source))))
-    (should (string-match-p "(data-addr nelisp_aot_builtin_call1)" source))
+    (should (string-match-p "(data-addr nelisp_aot_funcall1)" source))
     (should (string-match-p "(data-addr nl_alloc_symbol)" source))
     ;; No forwarders, and above all no local definition of a runtime
     ;; symbol -- that would shadow the one the reader links.
     (should-not (string-match-p "nl_neln_demo_alloc_symbol_bridge" source))
     (should-not (string-match-p "nl_neln_demo_call1_bridge" source))
-    (should-not (string-match-p "(defun nelisp_aot_builtin_call1" source))
+    (should-not (string-match-p "(defun nelisp_aot_funcall1" source))
+    (should-not (string-match-p "(defun nelisp_aot_funcalln" source))
     (should-not (string-match-p "(defun nl_alloc_symbol" source))))
 
 (ert-deftest nelisp-standalone-target-reader-neln-demo-stubs-clear-the-text ()
@@ -662,8 +684,10 @@ A dispatch arm nothing installs is dead code that still links."
     (let* ((arms (nelisp-standalone--reader-native-addr-arms))
            (arm (assoc '(:u8 "nelisp--native-runtime-contract-word") arms))
            (digest (nelisp-runtime-reload-contract-hash))
-           (chain (nth 2 (cdr arm))))
+           ;; The accessor returns a WORD: (:word wf_write_int_w 0 CHAIN).
+           (chain (nth 3 (cdr arm))))
       (should arm)
+      (should (eq (car (cdr arm)) :word))
       (should (member "nelisp--native-runtime-contract-word"
                       nelisp-standalone--reader-builtins))
       (should-not (assoc '(:u8 "nelisp--native-runtime-symbol-addr") arms))
@@ -833,9 +857,27 @@ Without the check a failed mmap became rsp = -errno + SIZE - 16 and the
                         (syscall-direct ,nr 127 0 0 0 0 0))))
       (should (equal (funcall find 'nl_os_syscall_nr_exit)
                      `(defun nl_os_syscall_nr_exit () ,nr)))
-      (should (equal (cl-find 'nl_os_alloc_fail allocation :key #'cadr)
-                     `(defun nl_os_alloc_fail ()
-                        (syscall-direct ,nr 88 0 0 0 0 0))))))
+      (let ((fail (cl-find 'nl_os_alloc_fail allocation :key #'cadr)))
+        (if (eq (car pair) 'linux-aarch64)
+            (should (equal fail
+                           `(defun nl_os_alloc_fail ()
+                              (syscall-direct ,nr 88 0 0 0 0 0))))
+          ;; x86-64 first reports "memory exhausted" on stderr (one write of
+          ;; the 39-byte message from a fresh chunk) and then exits 88 via
+          ;; the process-terminating syscall.
+          (let* ((let-form (nth 3 fail))
+                 (body (nth 2 let-form))
+                 (msg-seq (nth 3 (nth 1 body)))
+                 (bytes (cl-loop for f in msg-seq
+                                 when (eq (car-safe f) 'ptr-write-u8)
+                                 collect (nth 3 f))))
+            (should (eq (car body) 'seq))
+            (should (equal (car (last body))
+                           `(syscall-direct ,nr 88 0 0 0 0 0)))
+            (should (equal (car (last msg-seq))
+                           '(syscall-direct 1 2 buf 39 0 0 0)))
+            (should (equal (apply #'unibyte-string bytes)
+                           "nelisp: memory exhausted (memory-full)\n")))))))
   (dolist (target '(windows-x86_64 windows-aarch64))
     (let ((nelisp-standalone--target target))
       (should (member '(defun nl_os_exit_process (code)
@@ -850,13 +892,20 @@ Without the check a failed mmap became rsp = -errno + SIZE - 16 and the
     (should worker)
     (should (equal (car (last (car (last worker))))
                    '(syscall-direct 60 0 0 0 0 0 0)))
-    (should (equal (car (last (car (last
-                                   (cl-find 'nl_thread_run
-                                            (cdr nelisp-standalone--applyfn-bf-helpers)
-                                            :key #'cadr)))))
-                   '(let ((out_slot (alloc-bytes 32 8)))
-                      (seq (extern-call nelisp_eval_call (ptr-read-u64 box 0)
-                                        (ptr-read-u64 box 8) out_slot)
+    ;; The pthread-less run helper evaluates through the WORD entry
+    ;; `nelisp_eval_call_w', retires its private frame stack, publishes the
+    ;; result and still ends with SYS_exit (the form grew in the S4.2
+    ;; activation-record work, fd8e91589, and the Doc 215 WORD entry).
+    (should (equal (car (last (cdddr
+                               (cl-find 'nl_thread_run
+                                        (cdr nelisp-standalone--applyfn-bf-helpers)
+                                        :key #'cadr))))
+                   '(let* ((env (sar (ptr-read-u64 box 8) 2)))
+                      (seq (ptr-write-u64 268435688 0 0)
+                           (nelisp_eval_call_w (ptr-read-u64 box 0) env 0)
+                           (nl_frame_stack_retire_env env 0)
+                           (ptr-write-u64 box 0 3)
+                           (atomic-fetch-add (+ box 16) 4)
                            (syscall-direct 60 0 0 0 0 0 0)))))))
 
 (ert-deftest nelisp-standalone-target-fatal-frame-guard-exits-process ()
@@ -1035,6 +1084,7 @@ walker is the parser used by both argv and environment paths, and the driver
 must leave the established envp ABI slot untouched after the Darwin init
 function fills it.  This catches the old skip-all-NULs/empty-environment
 implementation before a cross-host binary is available."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels
@@ -1243,10 +1293,10 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                        forms))))
       (should xlat)
       ;; Darwin reads: size@96, mtime@48, mode@4 (u16), nlink@6 (u16).
-      (should (tree-member-p '(ptr-read-u64 buf 96) xlat))
-      (should (tree-member-p '(ptr-read-u64 buf 48) xlat))
-      (should (tree-member-p '(ptr-read-u16 buf 4) xlat))
-      (should (tree-member-p '(ptr-read-u16 buf 6) xlat))
+      (should (tree-member-p '(heap-read-u64 buf 96) xlat))
+      (should (tree-member-p '(heap-read-u64 buf 48) xlat))
+      (should (tree-member-p '(heap-read-u16 buf 4) xlat))
+      (should (tree-member-p '(heap-read-u16 buf 6) xlat))
       ;; Linux writes: size@48, mtime@88, mode@24 (u32), nlink@16 (u64).
       (should (tree-member-p '(ptr-write-u64 buf 48 size) xlat))
       (should (tree-member-p '(ptr-write-u64 buf 88 mtime) xlat))
@@ -1291,41 +1341,46 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
     (should (member "nelisp-process-async-ready-p"
                     nelisp-standalone--applyfn-bf-builtins))
     (should (tree-member-p
-             '((:lit "nelisp-process-call-process") .
-               (nl_bi_process_call_process args out))
+             '((:lit "nelisp-process-call-process")
+               :word nl_bi_process_call_process_w args 0)
              (nelisp-standalone--process-dispatch-arms)))
     (should (tree-member-p
-             '((:lit "nelisp-process-start") .
-               (nl_bi_process_start_process args out))
+             '((:lit "nelisp-process-start")
+               :word nl_bi_process_start_process_w args 0)
              (nelisp-standalone--process-dispatch-arms)))
     (should (tree-member-p
-             '((:lit "nelisp-portable-syscall") .
-               (wf_write_int out (nl_bi_portable_syscall args)))
+             '((:lit "nelisp-portable-syscall")
+               :word wf_write_int_w 0 (nl_bi_portable_syscall args))
              nelisp-standalone--applyfn-bf-arms))
     ;; Stale-literal note (2026-06-10): assert the load-bearing SHAPES of
     ;; nl_bi_process_call_process instead of the full defun literal — the
     ;; exact-form assertion went stale when 41ea76d7 added the M11
     ;; env-inherit branch and broke CI for every later commit.
     (should (tree-member-p
-             '(setq envp (ptr-read-u64 268435600 0))
+             '(setq envp (heap-read-u64 268435600 0))
              (nelisp-standalone--fileio-source)))
     (should (tree-member-p
              '(nl_os_process_execve path argv envp)
              (nelisp-standalone--fileio-source)))
     (should (tree-member-p
-             '(wf_write_int out (nl_bi_process_wait_exit_code pid))
+             '(wf_write_int_w 0 (nl_bi_process_wait_exit_code pid))
              (nelisp-standalone--fileio-source)))
     (should (tree-member-p
+             '(seq (vector-make 6 out)
+                  (nl_bi_process_set_int out 0 1886547811)
+                  (nl_bi_process_set_int out 1 pid)
+                  (nl_bi_process_set_int out 2 outfd)
+                  (nl_bi_process_set_int out 3 0)
+                  (nl_bi_process_set_int out 4 -1)
+                  (nl_bi_process_set_int out 5 infd)
+                  0)
+             (nelisp-standalone--fileio-source)))
+    ;; Doc 215: the object is built by the WORD producer; the rc adapter
+    ;; only forwards to it.
+    (should (tree-member-p
              '(defun nl_bi_process_make_object (pid outfd infd out)
-                (seq
-                 (vector-make 6 out)
-                 (nl_bi_process_set_int out 0 1886547811)
-                 (nl_bi_process_set_int out 1 pid)
-                 (nl_bi_process_set_int out 2 outfd)
-                 (nl_bi_process_set_int out 3 0)
-                 (nl_bi_process_set_int out 4 -1)
-                 (nl_bi_process_set_int out 5 infd)
-                 0))
+                (nl_abi_word_to_rc
+                 (nl_bi_process_make_object_w pid outfd infd 0) out))
              (nelisp-standalone--fileio-source)))
     ;; Same stale-literal note as call-process above: assert the
     ;; load-bearing shapes, not the full defun (the 41ea76d7 env-inherit
@@ -1337,7 +1392,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
              '(nl_os_process_set_nonblock readfd)
              (nelisp-standalone--fileio-source)))
     (should (tree-member-p
-             '(nl_bi_process_make_object pid readfd stdin_writefd out)
+             '(nl_bi_process_make_object_w pid readfd stdin_writefd 0)
              (nelisp-standalone--fileio-source)))))
 
 (ert-deftest nelisp-standalone-target-windows-process-lifecycle-is-per-name ()
@@ -1349,16 +1404,16 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
     (should (equal (cdr (funcall arm "nelisp-process-call-process"))
                    '(:word nl_bi_process_call_process_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-start"))
-                   '(nl_bi_process_windows_start args out)))
+                   '(:word nl_bi_process_windows_start_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-poll"))
-                   '(nl_bi_process_windows_poll args out)))
+                   '(:word nl_bi_process_windows_poll_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-status"))
                    '(:word wf_write_int_w 0
                      (nl_bi_process_windows_status_code (wf_arg_ptr args 0)))))
     (should (equal (cdr (funcall arm "nelisp-process-write"))
-                   '(nl_bi_process_windows_write args out)))
+                   '(:word nl_bi_process_windows_write_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-close-stdin"))
-                   '(nl_bi_process_windows_close_stdin args out)))
+                   '(:word nl_bi_process_windows_close_stdin_w args 0)))
     (should (equal (cdr (funcall arm "nelisp-process-delete"))
                    '(:word seq
                      (nl_bi_process_windows_delete_object (wf_arg_ptr args 0))
@@ -1371,8 +1426,8 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
   (let* ((nelisp-standalone--target 'windows-aarch64)
          (arms (nelisp-standalone--process-dispatch-arms))
          (start (assoc '(:lit "nelisp-process-start") arms)))
-    (should-not (equal (cdr start) '(nl_bi_process_start_process args out)))
-    (should-not (equal (cdr start) '(nl_bi_process_windows_start args out)))
+    (should-not (equal (cdr start) '(:word nl_bi_process_start_process_w args 0)))
+    (should-not (equal (cdr start) '(:word nl_bi_process_windows_start_w args 0)))
     ;; Slice 2 remains catchably unsupported on the unfinished aarch64 arm.
     ;; Every unsupported entry in this one dispatch build shares the exact
     ;; same signal form object; compare to START rather than constructing a
@@ -1442,6 +1497,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
 
 (ert-deftest nelisp-standalone-target-reader-detects-shifted-argv ()
   "The reader driver can detect and normalize macOS LC_MAIN argv+1."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (let ((nelisp-standalone--target 'macos-aarch64))
     (cl-labels ((tree-member-p
@@ -1485,13 +1541,24 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
     (should-not (memq 'sexp-write-str-lit flat))
     (should (memq 'ptr-write-u64 copy-flat))
     (should (memq 'ptr-write-u8 copy-flat))
+    ;; A long literal is no longer split into per-chunk defuns: it becomes a
+    ;; rodata blob copied by a word loop plus a byte tail (16 bytes by u64,
+    ;; the remaining 2 by u8), so no stack literal is materialised.
     (should (memq 'big-probe chunk-flat))
-    (should (memq 'big-probe_chunk_000 chunk-flat))
-    (should (memq 'big-probe_chunk_001 chunk-flat))
-    (should (memq 'big-probe_chunk_002 chunk-flat))))
+    (should (equal (car chunk-defs)
+                   '(data-blob big-probe_literal_data "abcdefghijklmnopqr"
+                               rodata)))
+    (should (memq 'big-probe_literal_data chunk-flat))
+    (should (memq 'data-addr chunk-flat))
+    (should (memq 'ptr-write-u64 chunk-flat))
+    (should (memq 'ptr-write-u8 chunk-flat))
+    (let ((printed (prin1-to-string chunk-defs)))
+      (should (string-match-p (regexp-quote "(< literal-offset 16)") printed))
+      (should (string-match-p (regexp-quote "(< literal-offset 18)") printed)))))
 
 (ert-deftest nelisp-standalone-target-reader-load-uses-direct-source-printer ()
   "`--load' evaluates raw file source and prints the resulting value."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (cl-labels ((tree-member-p
                (needle tree)
@@ -1592,6 +1659,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
 
 (ert-deftest nelisp-standalone-target-reader-boundary-reclaim-is-conservative ()
   "Doc 140 Stage 5 reclaims only safe immediate non-mutating boundaries."
+  :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
   (cl-labels ((tree-member-p
                (needle tree)
@@ -1722,11 +1790,11 @@ rebase -> SIGSEGV in the REPL print path's quit-flag check."
                      (ptr-write-u64 4096 0 268435456))))
              '(seq
                (ptr-write-u64
-                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
+                (+ (heap-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
                (atomic-fetch-add
-                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 88) 1)
+                (+ (heap-read-u64 (data-addr nl_arena_base) 0) 88) 1)
                (ptr-write-u64
-                4096 0 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)))))))
+                4096 0 (+ (heap-read-u64 (data-addr nl_arena_base) 0) 0)))))))
 
 (ert-deftest nelisp-standalone-target-linux-arena-uses-anonymous-mmap ()
   "Doc 140 Stage 8: linux reserves chunk 0 with mmap(NULL) — no fixed base.
@@ -1742,8 +1810,18 @@ reservation at 0x10000000 left in the normal runtime path."
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
       (let ((arena (nelisp-standalone--target-arena-source)))
-        ;; chunk 0 is reserved through the anonymous chunk allocator.
-        (should (tree-member-p '(nl_os_alloc_chunk #x10000000) arena))
+        ;; chunk 0 is reserved through `nl_os_alloc_first' (c552d6bbb, Doc
+        ;; 241 cold image): a MAP_FIXED_NOREPLACE attempt at the cold base
+        ;; that falls back to the anonymous chunk allocator.
+        (should (tree-member-p '(nl_os_alloc_first 35184372088832 #x10000000)
+                               arena))
+        (should (tree-member-p
+                 '(defun nl_os_alloc_first (addr size)
+                    (let ((q (nl_os_alloc_fixed addr size)))
+                      (if (= q 0) (nl_os_alloc_chunk size) q)))
+                 arena))
+        (should (tree-member-p
+                 '(syscall-direct 9 addr size 3 #x100022 -1 0) arena))
         ;; its kernel-chosen base is stored in the driver-owned bss slot.
         (should (tree-member-p
                  '(ptr-write-u64 (data-addr nl_arena_base) 0 base) arena))
@@ -1751,10 +1829,13 @@ reservation at 0x10000000 left in the normal runtime path."
         (should (tree-member-p '(syscall-direct 9 0 size 3 34 -1 0) arena))
         ;; the OOM path still exits cleanly.
         (should (tree-member-p '(syscall-direct 231 88 0 0 0 0 0) arena))
-        ;; NO fixed-base reservation remains in the normal runtime path.
+        ;; The old fixed 0x10000000 reservation is still gone, and no
+        ;; clobbering MAP_FIXED (0x32) mapping is ever issued.
         (should-not (tree-member-p
                      '(syscall-direct 9 #x10000000 #x10000000 3 #x100022 -1 0)
-                     arena))))))
+                     arena))
+        (should-not (tree-member-p
+                     '(syscall-direct 9 addr size 3 #x32 -1 0) arena))))))
 
 (ert-deftest nelisp-standalone-target-linux-arena-size-stays-pressure-visible ()
   "Linux must not hide arena pressure by growing the fixed virtual reservation.
@@ -1894,8 +1975,15 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
         ;; and an 8-byte small-bucket occupancy mask, followed by the external
         ;; conservative collector's 64-byte work queue/cache record.  The
         ;; pin control and aligned 16K-slot root region follow this legacy BSS.
-        (should (equal (nelisp-standalone--driver-bss-size)
-                       (cdr (assq 'bss (plist-get u :sections)))))))))
+        ;; 20b1ee832 appends the 256-byte `nl_strings_state' symbol after the
+        ;; legacy driver BSS (`nelisp-standalone--strings-extend-bss').
+        (let ((strings (cdr (assoc "nl_strings_state" by-name)))
+              (legacy (logand (+ (nelisp-standalone--driver-bss-size) 7) -8)))
+          (should strings)
+          (should (equal legacy (plist-get strings :value)))
+          (should (eq 'bss (plist-get strings :section)))
+          (should (equal (+ legacy 256)
+                         (cdr (assq 'bss (plist-get u :sections))))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
   "Doc 140 Stage 8: standalone link units append the `nl_arena_base' slot unit."
@@ -1968,7 +2056,7 @@ rebased fixed metadata immediates to `nl_arena_base' loads + offsets."
               '(defun f () (ptr-read-u64 268435552 0)))
              '(defun f ()
                 (ptr-read-u64
-                 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 96) 0))))
+                 (+ (heap-read-u64 (data-addr nl_arena_base) 0) 96) 0))))
     (should (equal
              (nelisp-standalone--chunk-arena-rewrite
               '(defun nl_arena_init () (nl_os_alloc_chunk 268435456)))
@@ -1987,9 +2075,9 @@ rebased fixed metadata immediates to `nl_arena_base' loads + offsets."
                  '(defun f ()
                     (seq
                      (ptr-read-u64
-                      (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 96) 0)
+                      (+ (heap-read-u64 (data-addr nl_arena_base) 0) 96) 0)
                      (ptr-read-u64
-                      (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0) 0)))))
+                      (+ (heap-read-u64 (data-addr nl_arena_base) 0) 0) 0)))))
         (should (equal
                  (nelisp-standalone--rebase-arena-source
                   '(defun f () (ptr-read-u64 268435552 0)))
@@ -2030,7 +2118,12 @@ Typed unibyte string handling remains part of the separate precise marker."
              (string-prefix-p "nl_gc_conserv_" (symbol-name (cadr form))))
            forms))
          (flat (flatten-tree conservative))
-         (precise (cl-find 'nl_gc_mark_slot forms :key #'cadr)))
+         ;; Since c94267651 the typed slot tags (including the unibyte string
+         ;; tags 14/15) are handled in `nl_gc_mark_legacy_slot', reached from
+         ;; the precise `nl_gc_mark_slot'.
+         (precise (list (cl-find 'nl_gc_mark_slot forms :key #'cadr)
+                        (cl-find 'nl_gc_mark_legacy_slot forms :key #'cadr))))
+    (should (cl-every #'identity precise))
     (should conservative)
     (should-not (memq 'nl_gc_mark_slot flat))
     (should-not (memq 'sexp-tag flat))
@@ -2054,37 +2147,43 @@ Typed unibyte string handling remains part of the separate precise marker."
       (should (member 268436160 flat))
       ;; `nl_gc_in_arena' probes the current chunk before walking the list.
       ;; This superseded the old recursive helper-only implementation.
-      (should (tree-member-p '(ptr-read-u64 268436168 0)
+      (should (tree-member-p '(heap-read-u64 268436168 0)
                              nelisp-standalone--gc-source))
-      (should (tree-member-p '(setq chunk (ptr-read-u64 (+ chunk 48) 0))
+      (should (tree-member-p '(setq chunk (heap-read-u64 (+ chunk 48) 0))
                              nelisp-standalone--gc-source))
       ;; Doc 152 Stage 5 made tag-9 reader char tables reachable by mid-form
       ;; collection.  Pin the complete owned-edge walk: two inline Sexps,
       ;; 40-byte entry rows, the parent box, 32-byte extra slots, and the
       ;; analogous raw data buffer owned by tag-10 bool vectors.
+      ;; Since c94267651 (compact vectorlike backing) char tables are
+      ;; vectorlikes: the two inline Sexps are marked as words, entry rows
+      ;; are 48 bytes, and the parent is marked as a vectorlike.
       (should (tree-member-p
-               '(nl_gc_mark_char_table_box (ptr-read-u64 sp 8))
+               '(defun nl_gc_mark_char_table_box (box)
+                  (nl_gc_mark_vectorlike box))
                nelisp-standalone--gc-source))
-      (should (tree-member-p '(nl_gc_mark_slot (+ box 32))
+      (should (tree-member-p '(nl_gc_mark_word (heap-read-u64 box 8))
+                             nelisp-standalone--gc-source))
+      (should (tree-member-p '(nl_gc_mark_word (heap-read-u64 box 16))
                              nelisp-standalone--gc-source))
       (should (tree-member-p
-               '(nl_gc_mark_char_table_slots entries 0 entries_len 40 8)
+               '(nl_gc_mark_char_table_slots entries 0 entries_len 48 8)
                nelisp-standalone--gc-source))
       (should (tree-member-p
-               '(if (= parent 0) 0 (nl_gc_mark_char_table_box parent))
+               '(if (= parent 0) 0 (nl_gc_mark_vectorlike parent))
                nelisp-standalone--gc-source))
       (should (tree-member-p
                '(nl_gc_mark_char_table_slots extra 0 extra_len 32 0)
                nelisp-standalone--gc-source))
       (should (tree-member-p
-               '(nl_gc_mark_bool_vector_box (ptr-read-u64 sp 8))
+               '(nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
                nelisp-standalone--gc-source))
       (should-not
        (tree-member-p
         '(defun nl_gc_sweep
              nil
-           (let ((hdr (ptr-read-u64 268435568 0))
-                 (end (+ 268435456 (ptr-read-u64 268435456 0))))
+           (let ((hdr (heap-read-u64 268435568 0))
+                 (end (+ 268435456 (heap-read-u64 268435456 0))))
              (while (and (> hdr 0) (< hdr end))
                (setq hdr (nl_gc_sweep_step hdr end)))
              0))
@@ -2110,12 +2209,16 @@ has len > cap, so clamping to it cannot truncate a real object."
                      (tree-member-p needle (cdr tree)))))))
     ;; The shared capacity helper: payload bytes / STRIDE, refusing a block
     ;; whose claimed end is not itself in the arena.
+    ;; Since 58ff1015a the division is strength-reduced to shifts for the
+    ;; two hot strides (8 and 32); the generic stride keeps the division.
     (should (tree-member-p
              '(defun nl_gc_block_elem_cap (ptr stride)
                 (let ((bt (nl_hdr_bt (- ptr 8))))
                   (if (< bt 16) 0
                     (if (= (nl_gc_in_arena (+ ptr (- bt 9))) 0) 0
-                      (/ (- bt 8) stride)))))
+                      (if (= stride 8) (sar (- bt 8) 3)
+                        (if (= stride 32) (sar (- bt 8) 5)
+                          (/ (- bt 8) stride)))))))
              nelisp-standalone--gc-source))
     ;; Both slot walkers take the clamp.
     (should (tree-member-p '(cap (nl_gc_block_elem_cap base stride))
@@ -2124,10 +2227,14 @@ has len > cap, so clamping to it cannot truncate a real object."
                            nelisp-standalone--gc-source))
     (should (tree-member-p '(n (if (< len cap) len cap))
                            nelisp-standalone--gc-source))
-    ;; A tag-9 box is only read at char-table offsets when the block is
-    ;; actually big enough to be one (`nl_char_table_alloc' takes 128 bytes,
-    ;; so BLOCK_TOTAL is 136).
-    (should (tree-member-p '(< (nl_hdr_bt (- box 8)) 136)
+    ;; A char-table box is only read at char-table offsets when the block is
+    ;; actually big enough to be one.  Since c94267651 the box is a
+    ;; vectorlike and the guard lives in `nl_gc_mark_char_table_children'
+    ;; (BLOCK_TOTAL below 88 is not a char-table).
+    (should (tree-member-p '(defun nl_gc_mark_char_table_box (box)
+                              (nl_gc_mark_vectorlike box))
+                           nelisp-standalone--gc-source))
+    (should (tree-member-p '(< (nl_hdr_bt (- box 8)) 88)
                            nelisp-standalone--gc-source))
     ;; And the unbounded shapes are gone.  These two `should-not's fail if
     ;; either walker goes back to trusting LEN.
@@ -2145,12 +2252,9 @@ has len > cap, so clamping to it cannot truncate a real object."
                     (if (= (nl_gc_in_arena data_ptr) 0) 0
                       (let ((k i))
                         (while (< k len)
-                          (nl_seq2
-                           (let ((vw (ptr-read-u64 (+ data_ptr (* k 8)) 0)))
-                             (if (= (logand vw 1) 1) 0
-                               (if (= (nl_gc_mark_block vw) 0) 0
-                                 (nl_gc_mark_slot vw))))
-                           (setq k (+ k 1))))
+                          (seq (nl_gc_mark_word
+                                (heap-read-u64 (+ data_ptr (* k 8)) 0))
+                               (setq k (+ k 1))))
                         0)))
                  nelisp-standalone--gc-source))))
 
@@ -2185,12 +2289,12 @@ standalone MCP fast handshake completed before this change, 20/20 after."
              '(defun nl_gc_mark_recorded_pool (pool)
                 (if (= pool 0) 0
                   (nl_seq2 (nl_gc_mark_block pool)
-                           (if (= (ptr-read-u64 (data-addr nl_gc_diag) 56) 1) 0
+                           (if (= (heap-read-u64 (data-addr nl_gc_diag) 56) 1) 0
                              (if (= (nl_gc_pool_cap) 0) 0
                                (nl_gc_mark_pool pool (nl_gc_pool_cap_of pool)))))))
              nelisp-standalone--gc-source))
     ;; The rewriting arm takes the same per-frame cap.
-    (should (tree-member-p '(nl_gc_pool_cap_of (ptr-read-u64 base 24))
+    (should (tree-member-p '(nl_gc_pool_cap_of (heap-read-u64 base 24))
                            nelisp-standalone--applyfn-fa-file-helpers))
     (should-not (tree-member-p
                  '(defun nl_gc_mark_recorded_pool (pool)
@@ -2283,7 +2387,7 @@ standalone MCP fast handshake completed before this change, 20/20 after."
           (nl_seq2
            (ptr-write-u64
             (data-addr nl_mxcache_epoch) 0
-            (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+            (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
            (nl_gc_reclaim_empty_unlink prev chunk next base size))))))
     ;; The macro-expansion and function-value caches reject a row on an epoch
     ;; mismatch before comparing or returning either stored arena pointer.
@@ -2292,7 +2396,7 @@ standalone MCP fast handshake completed before this change, 20/20 after."
         (should lookup)
         (should
          (tree-member-p
-          '(ptr-read-u64 (data-addr nl_mxcache_epoch) 0)
+          '(heap-read-u64 (data-addr nl_mxcache_epoch) 0)
           lookup))))
     ;; nl_gc_loop_ctx is the other BSS owner of live arena pointers.  A full
     ;; boundary collection may run inside a nested load, so it must retain the
@@ -2324,10 +2428,7 @@ standalone MCP fast handshake completed before this change, 20/20 after."
           (eval-inner (defun-form 'nelisp_eval_call_inner
                                   nelisp-standalone--shim-source))
           (eval-done (defun-form 'nelisp_eval_call_done
-                                 nelisp-standalone--shim-source))
-          (eval-recorded-done
-           (defun-form 'nelisp_eval_call_recorded_done
-                       nelisp-standalone--shim-source)))
+                                 nelisp-standalone--shim-source)))
       (should recorded)
       (should (tree-member-p '(nl_gc_collect_recorded_parked mode) recorded))
       (should (tree-member-p '(nl_thread_park_request_begin) recorded-parked))
@@ -2347,8 +2448,10 @@ standalone MCP fast handshake completed before this change, 20/20 after."
       (should (tree-member-p '(nl_thread_park_safepoint env) eval-inner))
       (should (tree-member-p '(nl_rootstack_init) eval-inner))
       (should (tree-member-p '(nl_thread_park_safepoint env) eval-done))
-      (should (tree-member-p '(nl_thread_park_safepoint env)
-                             eval-recorded-done))
+      ;; `nelisp_eval_call_recorded_done' was removed by 499e0f1ae: no GC
+      ;; context is pushed per evaluation any more.
+      (should-not (defun-form 'nelisp_eval_call_recorded_done
+                              nelisp-standalone--shim-source))
       ;; Doc 201's debt policy exposes explicit diagnostic overrides so the
       ;; gate can exercise both the normal reuse path and the legacy growth /
       ;; empty-chunk reclaim path without changing production defaults.
@@ -2358,8 +2461,16 @@ standalone MCP fast handshake completed before this change, 20/20 after."
                                      nelisp-standalone--applyfn-core-helpers)))
         (should debt-refresh)
         (should switch-ext2)
-        (should (tree-member-p 'nl_gc_debt_floor debt-refresh))
-        (should (tree-member-p 'nl_gc_debt_pct debt-refresh))
+        ;; The floor/percentage policy lives in `nl_gc_debt_limit_for'
+        ;; since 9d5f4a515; the refresh entry point only applies it.
+        (let ((limit-for (defun-form 'nl_gc_debt_limit_for
+                                     nelisp-standalone--gc-source)))
+          (should limit-for)
+          (should (tree-member-p 'nl_gc_debt_floor limit-for))
+          (should (tree-member-p 'nl_gc_debt_pct limit-for))
+          (should (tree-member-p '(nl_gc_debt_limit_for
+                                   (heap-read-u64 (data-addr nl_gc_stats) 16))
+                                 debt-refresh)))
         (should (tree-member-p
                  '(ptr-write-u64 (data-addr nl_gc_stats) 40
                                  (if (< value 0) 0 value))
@@ -2423,33 +2534,39 @@ deterministic against-the-bug gate for both emitted cache implementations."
                    `(atomic-compare-exchange slot ,key 1) lookup-claim))
           (should (tree-member-p
                    `(,lookup-release-name
-                     (ptr-read-u64 (+ slot 8) 0) slot ,key 0)
+                     (heap-read-u64 (+ slot 8) 0) slot ,key 0)
                    lookup-claim))
           (should (tree-member-p
                    `(atomic-compare-exchange slot 1 ,key) lookup-release))
           (should (tree-member-p
-                   '(ptr-read-u64 (data-addr nl_mxcache_epoch) 0)
+                   '(heap-read-u64 (data-addr nl_mxcache_epoch) 0)
                    lookup-claim))
           ;; Writers first CAS any published key to the impossible pointer 1,
           ;; fill value+epoch while owned, and atomically publish the key last.
           (should (tree-member-p
                    `(,store-claim-name
-                     (ptr-read-u64 slot 0) slot ,key ,value)
+                     (heap-read-u64 slot 0) slot ,key ,value)
                    store))
           (should (tree-member-p
                    '(atomic-compare-exchange slot observed_key 1)
                    store-claim))
+          ;; Since the hash-bitmap byte was added to the claimed section the
+          ;; owned fill is a longer `seq'; assert its ordered tail: value, then
+          ;; epoch, then the key-publishing CAS last.
+          (should (tree-member-p `(ptr-write-u64 (+ slot 8) 0 ,value)
+                                 store-claim))
           (should
            (tree-member-p
             `(seq
               (ptr-write-u64 (+ slot 8) 0 ,value)
               (ptr-write-u64 (+ slot 16) 0
-                             (ptr-read-u64
+                             (heap-read-u64
                               (data-addr nl_mxcache_epoch) 0))
               (if (= (atomic-compare-exchange slot 1 ,key) 1)
                   (seq (atomic-fetch-add 268435544 1) 0)
                 0))
-            store-claim))
+            (let ((claim-seq (nth 2 (nth 3 (nth 3 store-claim)))))
+              (cons 'seq (nthcdr (- (length claim-seq) 3) claim-seq)))))
           ;; All across-call runtime state is carried by helper parameters.
           (dolist (form (list lookup-claim lookup-release store-claim))
             (should-not (tree-symbol-p 'let form))
@@ -2530,11 +2647,11 @@ deterministic against-the-bug gate for both emitted cache implementations."
                      (ptr-write-u64 4096 0 268435456))))
              '(seq
                (ptr-write-u64
-                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
+                (+ (heap-read-u64 (data-addr nl_arena_base) 0) 16) 0 1)
                (atomic-fetch-add
-                (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 88) 1)
+                (+ (heap-read-u64 (data-addr nl_arena_base) 0) 88) 1)
                (ptr-write-u64
-                4096 0 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)))))))
+                4096 0 (+ (heap-read-u64 (data-addr nl_arena_base) 0) 0)))))))
 
 (ert-deftest nelisp-standalone-target-macos-arena-init-uses-null-mmap ()
   "macOS chunk-0 init uses mmap(NULL, ...) and stores `nl_arena_base'."
@@ -2699,11 +2816,11 @@ real) native call\"."
                     DecryptMessage nl_tls_registry_add nl_tls_registry_remove
                     nl_tls_require_live))
       (should (memq name forms)))
-    (should (equal (cdr (nth 0 arms)) '(nl_tls_connect_impl args out)))
-    (should (equal (cdr (nth 1 arms)) '(nl_tls_send_impl args out)))
-    (should (equal (cdr (nth 2 arms)) '(nl_tls_recv_impl args out)))
-    (should (equal (cdr (nth 3 arms)) '(nl_tls_close_impl args out)))
-    (should (equal (cdr (nth 4 arms)) '(nl_tls_protocol_impl args out)))))
+    (should (equal (cdr (nth 0 arms)) '(:word nl_tls_connect_impl_w args 0)))
+    (should (equal (cdr (nth 1 arms)) '(:word nl_tls_send_impl_w args 0)))
+    (should (equal (cdr (nth 2 arms)) '(:word nl_tls_recv_impl_w args 0)))
+    (should (equal (cdr (nth 3 arms)) '(:word nl_tls_close_impl_w args 0)))
+    (should (equal (cdr (nth 4 arms)) '(:word nl_tls_protocol_impl_w args 0)))))
 
 (ert-deftest nelisp-standalone-target-tls-non-win64-is-unsupported ()
   "No non-Win64 target receives Schannel forms or dispatch changes."
@@ -2768,7 +2885,7 @@ real) native call\"."
       (should (tree-member-p '(nelisp_eval_call form env out) forms))
       (should (tree-member-p
                '(syscall-direct 9 0 1052672 3 34 (- 0 1) 0) forms))
-      (should (tree-member-p '(record-make type_slot 2 (+ env 32)) forms))
+      (should (tree-member-p '(record-make type_slot 3 (+ env 32)) forms))
       (should (tree-member-p '(nl_thread_registry_add region) forms))
       (should (tree-member-p '(nl_thread_registry_clear) forms))
       (should (tree-member-p '(nl_thread_park_safepoint env) forms))
@@ -2854,7 +2971,7 @@ pinning; a payload neighbor is never used to establish header ownership."
                      (tree-member-p needle (cdr tree)))))))
     (should (tree-member-p '(= (nl_gc_object_start_p w) 0)
                            nelisp-standalone--gc-source))
-    (should (tree-member-p '(= (sar (ptr-read-u64 (- w 8) 0) 32) 0)
+    (should (tree-member-p '(= (sar (heap-read-u64 (- w 8) 0) 32) 0)
                            nelisp-standalone--gc-source))
     ;; The pin itself is still there: this guard narrows, it does not remove.
     (should (tree-member-p '(nl_hdr_set_mark hdr 4)
@@ -2943,14 +3060,16 @@ event-loop/process-adapter upgrade, exactly as shipped) and its
 stripped form, both form by form, and require the two lists of forms
 to be `equal'.  Also requires every newline to survive (so a
 `nl_eval_source_all' line number stays meaningful across the strip)
-and a real byte reduction (this corpus is know to be ~26-27% comments
-and blank lines; guard loosely at 15% so unrelated future prelude
-growth cannot make this test flaky)."
+and a real byte reduction.  Measured 2026-11-06 at 101bfa4bd: raw
+5,998,167 bytes -> stripped 5,419,872 (ratio 0.9036), because the staged
+GNU Lisp files (da0f4fc8e et al.) carry far fewer full-line comments than
+the original hand-written prelude (~26%); guard at 8% so unrelated prelude
+growth cannot make this test flaky."
   (skip-unless (equal emacs-version "31.1"))
   (let* ((raw (nelisp-standalone--reader-repl-prelude-source))
          (stripped (nelisp-standalone--elisp-strip-comments raw)))
     (should (= (cl-count ?\n raw) (cl-count ?\n stripped)))
-    (should (< (string-bytes stripped) (* 0.85 (string-bytes raw))))
+    (should (< (string-bytes stripped) (* 0.92 (string-bytes raw))))
     (should (equal (nelisp-standalone-target-test--read-all-forms raw)
                    (nelisp-standalone-target-test--read-all-forms stripped)))))
 
@@ -2966,13 +3085,14 @@ unstripped size again."
          (chunk-defs (nelisp-standalone--copy-lit-u64-defuns
                       'nl_repl_prelude_source
                       (nelisp-standalone--elisp-strip-comments raw)))
-         (flat (flatten-tree chunk-defs))
-         ;; Every embedded byte becomes exactly one `ptr-write-u64' (8
-         ;; bytes) or one `ptr-write-u8' (1 byte) call; summing them
-         ;; recovers the total byte count actually embedded without
-         ;; depending on the chunk defuns' exact shape.
-         (embedded-bytes (+ (* 8 (cl-count 'ptr-write-u64 flat))
-                            (cl-count 'ptr-write-u8 flat))))
+         ;; The literal is embedded as one rodata `data-blob' (see the
+         ;; stack-literal test); its payload string is exactly the bytes
+         ;; that end up in the binary.
+         (blobs (cl-remove-if-not
+                 (lambda (f) (eq (car-safe f) 'data-blob)) chunk-defs))
+         (embedded-bytes (apply #'+ (mapcar (lambda (b) (string-bytes (nth 2 b)))
+                                            blobs))))
+    (should (= (length blobs) 1))
     (should (= embedded-bytes (string-bytes
                                 (nelisp-standalone--elisp-strip-comments raw))))
     (should (< embedded-bytes (string-bytes raw)))))
@@ -3074,29 +3194,35 @@ without the async core and process adapter that define the standard names."
         (should-not compiled)))))
 
 (ert-deftest nelisp-standalone-fixed-arities-match-host-contracts ()
-  (dolist (contract (nelisp-standalone--builtin-fixed-arities))
-    (if (member (car contract)
-                '("nelisp--declare-local-special"
-                  "nelisp--native-pin-copy" "nelisp--native-pin-copy-v2"
-                  "nelisp--native-pin-eq-slots"
-                  "nelisp--native-unbox-reference" "ptr-call" "nelisp--pow"))
-        ;; These private reader bridges have no Emacs subr counterpart.  Their
-        ;; accepted/rejected calls are exercised by native runtime suites.
-        (should (= (cdr contract)
-                   (cond ((equal (car contract) "ptr-call") 7)
-                         ((member (car contract)
-                                  '("nelisp--native-pin-eq-slots" "nelisp--pow"))
-                          2)
-                         ((member (car contract)
-                                  '("nelisp--native-pin-copy"
-                                    "nelisp--native-unbox-reference"))
-                          3)
-                         ((equal (car contract) "nelisp--native-pin-copy-v2")
-                          4)
-                         (t 1))))
-      ;; Unknown names still fail instead of silently dropping host coverage.
-      (should (equal (func-arity (intern (car contract)))
-                     (cons (cdr contract) (cdr contract)))))))
+  (let ((bridge-arities
+         ;; Private reader bridges have no Emacs subr counterpart.  Their
+         ;; accepted/rejected calls are exercised by native runtime suites.
+         ;; The gap-buffer, string-interval and equality bridges were added
+         ;; after this test was written.
+         '(("nelisp--declare-local-special" . 1)
+           ("nelisp--clear-string-bytes" . 1)
+           ("nelisp--equal-leaf" . 2)
+           ("nelisp--string-mark-intervals" . 2)
+           ("nelisp--symbol-position-op" . 3)
+           ("nelisp--native-pin-copy" . 3)
+           ("nelisp--native-pin-copy-v2" . 4)
+           ("nelisp--native-pin-eq-slots" . 2)
+           ("nelisp--native-unbox-reference" . 3)
+           ("nelisp--pow" . 2)
+           ("ptr-call" . 7)
+           ("nelisp--gb-char" . 2) ("nelisp--gb-move" . 2)
+           ("nelisp--gb-reserve" . 2) ("nelisp--gb-insert" . 2)
+           ("nelisp--gb-column" . 2) ("nelisp--gb-delete" . 3)
+           ("nelisp--gb-substring" . 3) ("nelisp--gb-count-nl" . 3)
+           ("nelisp--gb-overwrite" . 3) ("nelisp--gb-count-lines" . 3)
+           ("nelisp--gb-find-char" . 5) ("nelisp--gb-insert-file" . 5))))
+    (dolist (contract (nelisp-standalone--builtin-fixed-arities))
+      (if (assoc (car contract) bridge-arities)
+          (should (= (cdr contract)
+                     (cdr (assoc (car contract) bridge-arities))))
+        ;; Unknown names still fail instead of silently dropping host coverage.
+        (should (equal (func-arity (intern (car contract)))
+                       (cons (cdr contract) (cdr contract))))))))
 
 (ert-deftest nelisp-standalone-fixed-arity-registers-ptr-call-contract ()
   "The reader's indirect call validates address plus six native arguments."
@@ -3641,7 +3767,7 @@ Two-argument `round' is defined in the prelude and is not yet dispatched to it."
   "make-bool-vector bounds the bit count before nl_alloc_bool_vector_w."
   (let* ((text (nelisp-standalone-target-test--build-text))
          (b (nelisp-standalone-target-test--defun-text text "bf_make_bool_vector_w"))
-         (ex (string-match "(> (nl_word_payload len_ptr) 34359738368)" b))
+         (ex (string-match (regexp-quote "(> (- (nl_word_payload len_ptr) 1) 34359738367)") b))
          (sig (string-match "bf_signal_alloc_exhausted" b))
          (al (string-match "(nl_alloc_bool_vector_w" b)))
     (should (and ex sig al))

@@ -738,14 +738,19 @@ under the live Magit bridge even when the actual current buffer is valid."
 
 (defun emacs-buffer-builtins--property-bounds (object)
   "Return the accessible bounds of buffer or string OBJECT."
-  (if (stringp object)
-      (list 0 (length object))
-    (if (and (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)
-             (not (bufferp object)))
-        ;; A bare substrate buffer is not a host buffer object.
-        (nelisp-ec-with-current-buffer object
-          (list (nelisp-ec-point-min) (nelisp-ec-point-max)))
-      (with-current-buffer object (list (point-min) (point-max))))))
+  (cond
+   ((stringp object) (list 0 (length object)))
+   ;; An ec-buffer that the host `set-buffer' cannot select (no native
+   ;; buffer bridge): read its bounds through the substrate instead.
+   ((and (not (bufferp object))
+         (fboundp 'nelisp-ec-buffer-p) (nelisp-ec-buffer-p object)
+         (fboundp 'nelisp-ec-set-buffer))
+    (let ((saved (nelisp-ec-current-buffer)))
+      (unwind-protect
+          (progn (nelisp-ec-set-buffer object)
+                 (list (nelisp-ec-point-min) (nelisp-ec-point-max)))
+        (when saved (nelisp-ec-set-buffer saved)))))
+   (t (with-current-buffer object (list (point-min) (point-max))))))
 
 (defun emacs-buffer-builtins--property-range (start end object)
   "Validate and normalize a text-property range in OBJECT."
@@ -1788,7 +1793,7 @@ clamp + signal semantics."
 ;; insert / erase-buffer / delete-region batched into the dolist near the
 ;; top.
 
-(defun emacs-buffer-builtins-char-after (&optional pos)
+(defun emacs-buffer-builtins--ec-char-after (&optional pos)
   "Return character at POS, or nil at end of accessible buffer."
   (let ((p (or pos (nelisp-ec-point))))
     (if (and (integerp p)
@@ -1797,7 +1802,7 @@ clamp + signal semantics."
         (aref (nelisp-ec-buffer-substring p (1+ p)) 0)
       nil)))
 
-(defun emacs-buffer-builtins-char-before (&optional pos)
+(defun emacs-buffer-builtins--ec-char-before (&optional pos)
   "Return character before POS, or nil at beginning of accessible buffer."
   (let ((p (or pos (nelisp-ec-point))))
     (if (and (integerp p)
@@ -1808,11 +1813,11 @@ clamp + signal semantics."
 
 (defun emacs-buffer-builtins-following-char ()
   "Return character at point, or 0 at end of accessible buffer."
-  (or (emacs-buffer-builtins-char-after) 0))
+  (or (emacs-buffer-builtins--ec-char-after) 0))
 
 (defun emacs-buffer-builtins-preceding-char ()
   "Return character before point, or 0 at beginning of accessible buffer."
-  (or (emacs-buffer-builtins-char-before) 0))
+  (or (emacs-buffer-builtins--ec-char-before) 0))
 
 (dolist (--cell--
          '((char-after     . emacs-buffer-builtins-char-after)
@@ -1846,19 +1851,54 @@ clamp + signal semantics."
     (start end fromchar tochar &optional noundo)
   "Replace FROMCHAR with TOCHAR between START and END.
 Preserve point, markers and text properties.  NOUNDO suppresses
-recording replacement undo.  Under a host Emacs whose nelisp-ec substrate
-has a current buffer, operate on that substrate buffer."
-  (if (and (not (emacs-buffer-builtins--standalone-p))
-           (boundp 'nelisp-ec--current-buffer)
-           nelisp-ec--current-buffer)
-      (emacs-buffer-builtins--substrate-subst-char-in-region
+recording replacement undo."
+  (if (emacs-buffer-builtins--ec-current-p)
+      (emacs-buffer-builtins--ec-subst-char-in-region
        start end fromchar tochar)
-    (emacs-buffer-builtins--native-subst-char-in-region
+    (emacs-buffer-builtins--host-subst-char-in-region
      start end fromchar tochar noundo)))
 
-(defun emacs-buffer-builtins--native-subst-char-in-region
+(defun emacs-buffer-builtins--ec-current-p ()
+  "Return non-nil when the current buffer lives on the ec substrate only.
+That is the case when no native buffer bridge exists and the ec current
+buffer is set, so the host `current-buffer' is unrelated to it."
+  (and (not (fboundp 'nelisp--repr))
+       (fboundp 'nelisp-ec-current-buffer)
+       (let ((cur (nelisp-ec-current-buffer)))
+         (and cur (nelisp-ec-buffer-p cur)))))
+
+(defun emacs-buffer-builtins--ec-subst-char-in-region
+    (start end fromchar tochar)
+  "`subst-char-in-region' over the ec current buffer, preserving point."
+  (setq start (emacs-buffer-builtins--position start)
+        end (emacs-buffer-builtins--position end))
+  (unless (characterp fromchar)
+    (signal 'wrong-type-argument (list 'characterp fromchar)))
+  (unless (characterp tochar)
+    (signal 'wrong-type-argument (list 'characterp tochar)))
+  (when (> start end)
+    (let ((saved start)) (setq start end end saved)))
+  (when (or (< start (nelisp-ec-point-min)) (> end (nelisp-ec-point-max)))
+    (signal 'args-out-of-range
+            (list (nelisp-ec-current-buffer) start end)))
+  (let ((text (copy-sequence (nelisp-ec-buffer-substring start end)))
+        (i 0) (changed nil))
+    (while (< i (length text))
+      (when (= (aref text i) fromchar)
+        (aset text i tochar)
+        (setq changed t))
+      (setq i (1+ i)))
+    (when changed
+      (let ((saved-point (nelisp-ec-point)))
+        (nelisp-ec-goto-char start)
+        (nelisp-ec-delete-region start end)
+        (nelisp-ec-insert text)
+        (nelisp-ec-goto-char saved-point))))
+  nil)
+
+(defun emacs-buffer-builtins--host-subst-char-in-region
     (start end fromchar tochar &optional noundo)
-  "Native-buffer implementation of `subst-char-in-region'."
+  "`subst-char-in-region' over the native current buffer."
   (setq start (emacs-buffer-builtins--position start)
         end (emacs-buffer-builtins--position end))
   (unless (characterp fromchar)
@@ -2377,16 +2417,18 @@ Ignores narrowing (hashes the whole buffer)."
        (symbol-function 'emacs-buffer-builtins-char-before)))
 (defun emacs-buffer-builtins-char-after (&optional position)
   "Return the native character at optional integer or marker POSITION."
-  (if emacs-buffer-builtins--native-char-after
-      (funcall emacs-buffer-builtins--native-char-after
-               (and position (emacs-buffer-builtins--checked-position position)))
-    (funcall emacs-buffer-builtins--substrate-char-after position)))
+  (let ((position (and position (emacs-buffer-builtins--checked-position position))))
+    (if emacs-buffer-builtins--native-char-after
+        (funcall emacs-buffer-builtins--native-char-after position)
+      ;; Bridge not installed yet: defer to the earlier `char-after'.
+      (emacs-buffer-builtins--ec-char-after position))))
 (defun emacs-buffer-builtins-char-before (&optional position)
   "Return the native character preceding integer or marker POSITION."
-  (if emacs-buffer-builtins--native-char-before
-      (funcall emacs-buffer-builtins--native-char-before
-               (and position (emacs-buffer-builtins--checked-position position)))
-    (funcall emacs-buffer-builtins--substrate-char-before position)))
+  (let ((position (and position (emacs-buffer-builtins--checked-position position))))
+    (if emacs-buffer-builtins--native-char-before
+        (funcall emacs-buffer-builtins--native-char-before position)
+      ;; Bridge not installed yet: defer to the earlier `char-before'.
+      (emacs-buffer-builtins--ec-char-before position))))
 (defun emacs-buffer-builtins--install-native-marker-position-bridges ()
   "Keep marker validation at the shared buffer boundary after IO loads."
   ;; Capture once: the IO adapter may itself capture this bridge, so capturing

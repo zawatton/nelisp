@@ -5,7 +5,18 @@
 (defconst nelisp-consumer-test--directory
   (file-name-directory (or load-file-name buffer-file-name)))
 (defun nelisp-consumer-test--fixture ()
-  (expand-file-name "fixtures/nelisp-consumer-fixture.elc" nelisp-consumer-test--directory))
+  "Return the fixture .elc, byte-compiling the committed source when absent.
+The .elc is generated and not committed, so build it once into a temp dir."
+  (let ((committed (expand-file-name "fixtures/nelisp-consumer-fixture.elc"
+                                     nelisp-consumer-test--directory)))
+    (if (file-exists-p committed) committed
+      (let* ((dir (make-temp-file "nelisp-consumer-fixture-" t))
+             (source (expand-file-name "fixtures/nelisp-consumer-fixture.el"
+                                       nelisp-consumer-test--directory))
+             (copy (expand-file-name "nelisp-consumer-fixture.el" dir)))
+        (copy-file source copy)
+        (byte-compile-file copy)
+        (expand-file-name "nelisp-consumer-fixture.elc" dir)))))
 (defun nelisp-consumer-test--fresh-no-producer-p (module)
   "Load MODULE in a fresh GNU process, independent of suite load order."
   (with-temp-buffer

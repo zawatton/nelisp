@@ -1,0 +1,156 @@
+#+TITLE: Replace NeLisp copies of vendored GNU files with the vendored files
+
+# User request 2026-11-05: replace every NeLisp file that shadows a vendored
+# GNU Emacs 31.1 file of the same name (26 found) with the vendored file, in
+# stages, fixing the NeLisp gaps that stop each vendored file from loading
+# instead of reimplementing GNU code.  A criterion passes when no NeLisp copy
+# of the file remains, the binary's `locate-library' resolves it under
+# vendor/, `require' succeeds and a public GNU function of it is defined.
+# VENDOR_BIN is a binary built from this tree.
+
+* S1 GNU autoloads, rx, subr-x, url-parse
+
+** S1.1 GNU autoload cookies of the vendored files are declared at startup
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run-autoload.sh
+
+** S1.2 rx.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh rx rx rx-to-string
+
+** S1.3 subr-x.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh subr-x subr-x string-pad
+
+** S1.4 url-parse.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh url-parse url-parse url-recreate-url
+
+** S1.5 GNU bytecomp on NeLisp byte-compiles a lambda (uses rx via autoload)
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run-bytecomp.sh
+
+* S2 json, pp, ert, widget
+
+** S2.1 json.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh json json json-read-file
+
+** S2.2 pp.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh pp pp pp-to-string
+
+** S2.3 ert.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh ert ert ert-run-tests-batch
+
+** S2.4 widget.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh widget widget define-widget
+
+** S2.5 vendored json-encode and json-read-from-string agree with GNU 31.1 on a fixed corpus
+#+REQUIRES: VENDOR_BIN
+# Expected output generated 2026-11-06 with GNU 31.1:
+#   CLGNU_CORPUS=tools/ai/vendor-replace/corpus-json.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$VENDOR_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/vendor-replace/corpus-json.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/vendor-replace/expected-json.txt
+
+** S2.6 vendored ert runs a batch of real tests on the binary with GNU's verdicts
+#+REQUIRES: VENDOR_BIN
+# GNU 31.1 prints "ERT-SMOKE 3/4 unexpected=1" (criterion added 2026-11-06).
+cmd: (ulimit -v 8388608; timeout 120 "$VENDOR_BIN" --load tools/ai/vendor-replace/ert-smoke.el 2>/dev/null) | grep -aqx 'ERT-SMOKE 3/4 unexpected=1'
+
+* S3 simple, files, calendar, help-mode
+
+** S3.1 simple.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh simple simple count-words
+
+** S3.2 files.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh files files file-name-sans-versions
+
+** S3.3 calendar.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh calendar calendar calendar-absolute-from-gregorian
+
+** S3.4 help-mode.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh help-mode help-mode help-mode
+
+** S3.5 end-to-end check for S3 (to be defined when S3 starts)
+pending
+
+* S4 comint, compile, shell, isearch, replace, imenu
+
+** S4.1 comint.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh comint comint comint-mode
+
+** S4.2 compile.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh compile compile compilation-mode
+
+** S4.3 shell.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh shell shell shell-mode
+
+** S4.4 isearch.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh isearch isearch isearch-forward
+
+** S4.5 replace.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh replace replace query-replace
+
+** S4.6 imenu.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh imenu imenu imenu-default-create-index-function
+
+** S4.7 end-to-end check for S4 (to be defined when S4 starts)
+pending
+
+* S5 info, man, woman, vc, xref, project
+
+** S5.1 info.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh info info Info-mode
+
+** S5.2 man.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh man man Man-mode
+
+** S5.3 woman.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh woman woman woman-mode
+
+** S5.4 vc.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh vc vc vc-next-action
+
+** S5.5 xref.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh xref xref xref-find-definitions
+
+** S5.6 project.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh project project project-current
+
+** S5.7 end-to-end check for S5 (to be defined when S5 starts)
+pending
+
+* S6 dired, ielm, org
+
+** S6.1 dired.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh dired dired dired-mode
+
+** S6.2 ielm.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh ielm ielm ielm
+
+** S6.3 org.el is served by its vendored GNU file
+#+REQUIRES: VENDOR_BIN
+cmd: bash tools/ai/vendor-replace/run.sh org org org-mode
+
+** S6.4 end-to-end check for S6 (to be defined when S6 starts)
+pending

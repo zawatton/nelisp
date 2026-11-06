@@ -1,0 +1,20 @@
+;;; corpus-let-local.el --- let of buffer-local variables vs GNU 31.1  -*- lexical-binding: t; -*-
+;; Run with tools/ai/cl-gnu/run-corpus.el.  Each form builds fresh buffers.
+(progn (defvar sl-v "G") (defvar sl-w 0) (setq sl-v "G") t)
+(progn (defun sl-a (b) (let ((sl-v "/IN/")) (with-current-buffer b (set (make-local-variable 'sl-v) "/LOCAL/")) (set-buffer b))) t)
+(let ((b (generate-new-buffer "sl1"))) (save-current-buffer (sl-a b)) (prog1 (list (buffer-local-value 'sl-v b) (default-value 'sl-v)) (kill-buffer b)))
+(let ((b (generate-new-buffer "sl2"))) (save-current-buffer (funcall (byte-compile 'sl-a) b)) (prog1 (list (buffer-local-value 'sl-v b) (default-value 'sl-v)) (kill-buffer b)))
+(let ((b (generate-new-buffer "sl3")) (c (generate-new-buffer "sl3c"))) (with-current-buffer b (setq-local sl-v "B")) (save-current-buffer (set-buffer b) (let ((sl-v "T")) (set-buffer c))) (prog1 (list (buffer-local-value 'sl-v b) (default-value 'sl-v)) (kill-buffer b) (kill-buffer c)))
+(progn (defun sl-b (b c) (set-buffer b) (let ((sl-v "T")) (set-buffer c) sl-v)) t)
+(let ((b (generate-new-buffer "sl4")) (c (generate-new-buffer "sl4c"))) (with-current-buffer b (setq-local sl-v "B")) (list (save-current-buffer (sl-b b c)) (buffer-local-value 'sl-v b) (default-value 'sl-v) (progn (kill-buffer b) (kill-buffer c) t)))
+(let ((b (generate-new-buffer "sl5")) (c (generate-new-buffer "sl5c"))) (with-current-buffer b (setq-local sl-v "B")) (list (save-current-buffer (funcall (byte-compile 'sl-b) b c)) (buffer-local-value 'sl-v b) (default-value 'sl-v) (progn (kill-buffer b) (kill-buffer c) t)))
+(progn (defun sl-c (b) (let ((sl-v "/IN/")) (with-current-buffer b (set (make-local-variable 'sl-v) "/LOCAL/")) sl-v)) t)
+(let ((b (generate-new-buffer "sl6"))) (list (sl-c b) (buffer-local-value 'sl-v b) (default-value 'sl-v) (progn (kill-buffer b) t)))
+(progn (defun sl-d (b) (let ((sl-v "/IN/")) (with-current-buffer b (set (make-local-variable 'sl-v) "/LOCAL/") (kill-local-variable 'sl-v)) sl-v)) t)
+(let ((b (generate-new-buffer "sl7"))) (list (sl-d b) (local-variable-p 'sl-v b) (default-value 'sl-v) (progn (kill-buffer b) t)))
+(progn (defun sl-e (b) (let ((sl-v "/IN/")) (with-current-buffer b (set (make-local-variable 'sl-v) "/LOCAL/")) (kill-buffer b) sl-v)) t)
+(let ((b (generate-new-buffer "sl8"))) (list (sl-e b) (default-value 'sl-v) (buffer-live-p b)))
+(let ((n 0) (ok 0)) (dotimes (i 300) (let ((b (generate-new-buffer "sl9"))) (save-current-buffer (sl-a b)) (when (equal (buffer-local-value 'sl-v b) "/LOCAL/") (setq ok (1+ ok))) (kill-buffer b) (when (zerop (% i 50)) (garbage-collect)) (setq n (1+ n)))) (list n ok (default-value 'sl-v)))
+(let ((b (generate-new-buffer "sl10"))) (with-current-buffer b (setq-local sl-w 5)) (let ((sl-w 7)) (with-current-buffer b (list sl-w (let ((sl-w 9)) (list sl-w (default-value 'sl-w))) sl-w))))
+(progn (defun sl-f () (let ((default-directory "/y/")) (with-current-buffer (get-buffer-create "sl-dd") (setq-local default-directory "/loc/")) default-directory)) (list (sl-f) (buffer-local-value 'default-directory (get-buffer "sl-dd"))))
+;;; corpus-let-local.el ends here

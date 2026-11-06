@@ -13,8 +13,10 @@
   (expand-file-name ".." (file-name-directory load-file-name)))
 
 (defconst nelisp-vendor-source--pins
-  '(("vendor/staged-emacs-lisp/subr.el"
-     . "410c34e030bdd667ff21842a8513e41100394662dacf5e54b40938106f0d6327")
+  '(("vendor/emacs-lisp/help-fns.el"
+     . "013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5")
+    ("vendor/staged-emacs-lisp/subr.el"
+     . "a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96")
     ("vendor/staged-emacs-lisp/simple.el"
      . "c19d208e61100fc9ff692cef0c95d895e54e17fc1f9031500ac8474c9c2e48f2")
     ("vendor/staged-emacs-lisp/files.el"
@@ -27,6 +29,8 @@
      . "f58f3f9b88755549a7713b59045059affda99c2e22251e22e5c40fbe017f2394")
     ("vendor/staged-emacs-lisp/cl-preloaded.el"
      . "73c114b7a8899ae278fdd1eae29c902703f20bc0662f99c3edb391362a35514c")
+    ("vendor/staged-emacs-lisp/cl-extra.el"
+     . "4aca78d4d9c161ba688bf0253f0c4445415d5c0fcb9a8f573cc6ab1270583d42")
     ("vendor/staged-emacs-lisp/custom.el"
      . "363b7f408c88c1788aa53f35a15ef46c07ad86fb20a9d110f381b0cd0e85a5c0")
     ("vendor/staged-emacs-lisp/cus-face.el"
@@ -44,7 +48,7 @@
     ("vendor/emacs-lisp/emacs-lisp/regexp-opt.el"
      . "90e9e70c583c3b18036353b593e22bcd5510b32ce017dcb27acd6ce22ec449ae")
     ("vendor/emacs-lisp/emacs-lisp/subr-x.el"
-     . "b1e7797646f6af8c30fe506b4f098e79a9568610ae6d3e8e78dfaa690042456b")
+     . "2cd5a13b731004603f83ad7a9273e67b78cfa9d64a53c68320cffe2d4b6bc8f2")
     ("vendor/emacs-lisp/emacs-lisp/byte-run.el"
      . "cbac268cd6cc2f9ca2fefd28e7888a3dfa72896514d2652c7ef5addb4c5b73f7")
     ("vendor/emacs-lisp/international/mule-conf.el"
@@ -58,7 +62,8 @@
   "Return the static function name defined or aliased by FORM.
 For `defalias' and single-variable `setq', index only a literal symbol name."
   (pcase (car-safe form)
-    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom)
+    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom 'pcase-defmacro
+         'define-derived-mode)
      (and (symbolp (cadr form)) (cadr form)))
     ('cl-defstruct
      (let ((name (cadr form)))

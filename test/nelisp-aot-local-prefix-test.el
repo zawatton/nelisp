@@ -1,7 +1,8 @@
 ;;; nelisp-aot-local-prefix-test.el --- write-through local prefix -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-prefix-test--at nil)
 (defvar nelisp-prefix-test--selected 0)
 (defvar nelisp-prefix-test--forced-off (getenv "NELISP_PREFIX_TEST_DISABLE"))
@@ -166,7 +167,7 @@ printf(\"PREFIX full64/320/forward/cold-home-mutation/operand/loop/pressure/WORD
     (make-directory dir t)
     (unwind-protect
         (progn
-          (with-temp-file c (insert nelisp-prefix-test--driver))
+          (with-temp-file c (insert nelisp-aot-test-runtime-nl-val-tag-c nelisp-prefix-test--driver))
           (with-temp-file as (insert nelisp-prefix-test--assembly))
           (dolist (enabled '(nil t))
             (let* ((mode (if enabled "on" "off"))

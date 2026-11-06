@@ -2,14 +2,18 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'cl-lib)
 (require 'ert)
 
 (defconst emacs-load-artifact-compiler-test--root
-  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defconst emacs-load-artifact-compiler-test--source-file
-  (expand-file-name "src/emacs-load.el" emacs-load-artifact-compiler-test--root))
+  (nemacs-test-paths-source "emacs-load.el"))
 
 ;; Load the source implementation directly so the tests do not depend on a
 ;; potentially stale compiled .elc.

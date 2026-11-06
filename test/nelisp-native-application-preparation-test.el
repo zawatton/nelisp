@@ -3,6 +3,7 @@
 
 (require 'ert)
 (require 'nelisp-native-application-producer)
+(require 'nelisp-cc-fxir-admission)
 
 (defun nnap-prep-test--native-shaped-constructor (form)
   "Return a host-only fixture matching the authenticated NeLisp closure shape.

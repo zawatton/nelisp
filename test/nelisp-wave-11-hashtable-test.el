@@ -242,11 +242,11 @@
 ;; ---- §T.3 full compile pipeline ----
 
 (ert-deftest wave-11-hashtable/compile-all-ops-produces-binary ()
-  "Full compile pipeline of all 4 primitives succeeds (= no error)."
-  (let ((tmp (wave-11-hashtable-test--tmp-binary "compile")))
-    (unwind-protect
-        (progn
-          (nelisp-aot-compile-sexp
+  "Full compile pipeline of all 4 primitives succeeds (= no error).
+Since c552d6bbb an executable that still references runtime helpers is refused
+(no later linker), so the program is compiled to a relocatable link unit."
+  (let ((unit
+          (nelisp-aot-compile-to-link-unit
            '(seq
              (defun nelisp_fnv1a (k) (sexp-int-unwrap k))
              (defun nelisp_ht_walk (b k s) 0)
@@ -258,27 +258,20 @@
                (hash-table-get ht key slot))
              (defun do-has (ht key slot)
                (hash-table-contains-p ht key slot))
-             (exit 0))
-           tmp)
-          (should (file-exists-p tmp))
-          (should (> (file-attribute-size (file-attributes tmp)) 1000)))
-      (when (file-exists-p tmp) (delete-file tmp)))))
+             (exit 0)))))
+    (should (> (length (plist-get unit :text)) 1000))))
 
 (ert-deftest wave-11-hashtable/compile-just-make-program ()
   "Minimal program with only `hash-table-make' produces an executable."
-  (let ((tmp (wave-11-hashtable-test--tmp-binary "mk-only")))
-    (unwind-protect
-        (progn
-          (nelisp-aot-compile-sexp
-           '(seq
-             (defun do-mk (tag cap slot)
-               (hash-table-make tag cap slot))
-             (exit 0))
-           tmp)
-          (should (file-exists-p tmp))
-          (when (wave-11-hashtable-test--linux-p)
-            (should (file-executable-p tmp))))
-      (when (file-exists-p tmp) (delete-file tmp)))))
+  ;; Compiled to a link unit: an executable referencing `nl_alloc_record' is
+  ;; refused since c552d6bbb (no later linker).
+  (let ((unit (nelisp-aot-compile-to-link-unit
+               '(seq
+                 (defun do-mk (tag cap slot)
+                   (hash-table-make tag cap slot))
+                 (exit 0)))))
+    (should (> (length (plist-get unit :text)) 0))
+    (should (member "nl_alloc_record" (plist-get unit :extern-symbols)))))
 
 ;; ---- §T.4 byte-invariance ----
 
@@ -289,9 +282,7 @@ desugared IR composition only uses existing primitives, each of
 which already enforces pass-1 / pass-2 byte invariance, so the
 top-level invariant transitively holds.  This test just compiles
 the same program twice and checks the output file sizes match."
-  (let ((tmp-a (wave-11-hashtable-test--tmp-binary "inv-a"))
-        (tmp-b (wave-11-hashtable-test--tmp-binary "inv-b"))
-        (prog '(seq
+  (let ((prog '(seq
                 (defun nelisp_fnv1a (k) (sexp-int-unwrap k))
                 (defun nelisp_ht_walk (b k s) 0)
                 (defun do-put (ht key val cs ps)
@@ -299,14 +290,10 @@ the same program twice and checks the output file sizes match."
                 (defun do-get (ht key slot)
                   (hash-table-get ht key slot))
                 (exit 0))))
-    (unwind-protect
-        (progn
-          (nelisp-aot-compile-sexp prog tmp-a)
-          (nelisp-aot-compile-sexp prog tmp-b)
-          (should (= (file-attribute-size (file-attributes tmp-a))
-                     (file-attribute-size (file-attributes tmp-b)))))
-      (when (file-exists-p tmp-a) (delete-file tmp-a))
-      (when (file-exists-p tmp-b) (delete-file tmp-b)))))
+    ;; Link units (c552d6bbb refuses executables with unresolved helpers);
+    ;; comparing the text bytes is stronger than comparing file sizes.
+    (should (equal (plist-get (nelisp-aot-compile-to-link-unit prog) :text)
+                   (plist-get (nelisp-aot-compile-to-link-unit prog) :text)))))
 
 ;; ---- §T.5 helpers source sanity ----
 

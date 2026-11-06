@@ -35,6 +35,7 @@
       (buffer-string))))
 
 (ert-deftest nelisp-scratch-buffer-parity-with-gnu-311 ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" nelisp-scratch-test--root))))
   (let* ((binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
          (expr "(princ (prin1-to-string (let ((b (get-buffer-create \" *s3b-parity*\"))) (set-buffer b) (erase-buffer) (insert \"ab\" \"cd\") (goto-char 3) (let ((middle (point)) (whole (buffer-string)) (lo (point-min)) (hi (point-max))) (goto-char (point-max)) (list (buffer-name (current-buffer)) middle whole lo hi (point) (with-current-buffer b (buffer-string)))))))")
@@ -44,6 +45,7 @@
     (should (string-match-p (regexp-quote host) standalone))))
 
 (ert-deftest nelisp-scratch-buffer-write-region-parity-with-gnu-311 ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" nelisp-scratch-test--root))))
   (let* ((binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
          (expr "(princ (let ((file \"/tmp/nelisp-s3b-write-region\")) (unwind-protect (progn (write-region \"scratch\" nil file) (with-temp-buffer (insert-file-contents file) (buffer-string))) (when (file-exists-p file) (delete-file file)))))")
@@ -52,6 +54,7 @@
     (should (string-match-p (regexp-quote host) standalone))))
 
 (ert-deftest nelisp-scratch-buffer-forward-char-parity-with-gnu-311 ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" nelisp-scratch-test--root))))
   (let* ((binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
          (expr "(princ (prin1-to-string (with-temp-buffer (insert \"abcd\") (goto-char 2) (forward-char 2) (list (point) (condition-case err (forward-char 9) (error (car err)))))))")
@@ -60,6 +63,7 @@
     (should (string-match-p (regexp-quote (string-trim host)) standalone))))
 
 (ert-deftest nelisp-scratch-buffer-buffer-substring-parity-with-gnu-311 ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" nelisp-scratch-test--root))))
   (let* ((binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
          (expr "(princ (with-temp-buffer (insert \"abcd\") (buffer-substring 2 4)))")
@@ -68,6 +72,7 @@
     (should (string-match-p (regexp-quote (string-trim host)) standalone))))
 
 (ert-deftest nelisp-scratch-buffer-bytecomp-corpus-runs-without-api-buffer-functions ()
+  (skip-unless (file-executable-p (or (getenv "NELISP_BIN") (expand-file-name "target/nelisp" nelisp-scratch-test--root))))
   (let* ((binary (or (getenv "NELISP_BIN")
                      (expand-file-name "target/nelisp" nelisp-scratch-test--root)))
          (expr "(progn (require 'bytecomp) (load \"test/fixtures/s6-corpus/byte-compile-form.wrapper.el\" nil t) (let ((forms (with-temp-buffer (insert-file-contents \"test/fixtures/s6-corpus/byte-compile-form.el\") (read (current-buffer))))) (princ (prin1-to-string (mapcar (lambda (args) (s6-corpus--byte-compile-form (car args) (cadr args))) forms)))))"))

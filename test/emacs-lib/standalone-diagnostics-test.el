@@ -2,40 +2,62 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../scripts/standalone-bootstrap-profile.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "standalone-bootstrap-profile.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-form-standalone-walk.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-form-standalone-walk.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-load-standalone-replay.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-load-standalone-replay.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/vendor-repl-standalone-replay.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-repl-standalone-replay.el")
       nil t)
 
-(load (expand-file-name
-       "../scripts/build-nelisp-bootstrap.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "build-nelisp-bootstrap.el")
       nil t)
 
 (defconst standalone-diagnostics-test--repo-root
-  (expand-file-name ".."
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun standalone-diagnostics-test--src-file (name)
-  (expand-file-name (concat "src/" name)
-                    standalone-diagnostics-test--repo-root))
+  (nemacs-test-paths-source name))
+
+(defvar standalone-diagnostics-test--bootstrap-root nil
+  "Cached bootstrap source root built by doc211-bootstrap-source-root.sh.")
+
+(defun standalone-diagnostics-test--bootstrap-root ()
+  "Return a bootstrap source root whose src/ links every package source.
+`make build-nelisp-bootstrap' runs the generator against such a root;
+the repository's own src/ holds only the NeLisp core."
+  (or standalone-diagnostics-test--bootstrap-root
+      (let ((dir (make-temp-file "nelisp-bootstrap-root-" t)))
+        ;; The root holds only symlinks; deleting it leaves the sources.
+        (add-hook 'kill-emacs-hook
+                  (lambda () (delete-directory dir t)))
+        (unless (zerop (call-process
+                        "bash" nil nil nil
+                        (expand-file-name "scripts/doc211-bootstrap-source-root.sh"
+                                          standalone-diagnostics-test--repo-root)
+                        dir))
+          (error "doc211-bootstrap-source-root.sh failed for %s" dir))
+        (setq standalone-diagnostics-test--bootstrap-root dir))))
+
+(defmacro standalone-diagnostics-test--with-bootstrap-root (&rest body)
+  "Run BODY with the generator and `--src-file' using the bootstrap root."
+  (declare (indent 0))
+  `(let* ((root (standalone-diagnostics-test--bootstrap-root))
+          (nelisp-bootstrap-repo-root root))
+     (cl-letf (((symbol-function 'standalone-diagnostics-test--src-file)
+                (lambda (name)
+                  (expand-file-name name (expand-file-name "src" root)))))
+       ,@body)))
 
 (defun standalone-diagnostics-test--position (item list)
   (cl-position item list :test #'equal))
@@ -177,7 +199,7 @@
                       (list :index 2 :pos 8 :end 18 :head 'provide
                             :text "(provide 'sample)")))
           (vendor-form-standalone--write-program
-           bootstrap "/vendor/sample.el" forms 1 output)
+           bootstrap "/vendor/sample.el" forms 1 output "/tmp/sample.marker")
           (let ((program (with-temp-buffer
                            (insert-file-contents output)
                            (buffer-string))))
@@ -205,7 +227,15 @@
             (should-not (string-match-p
                          (regexp-quote "(provide 'sample)")
                          program))
-            (should (string-match-p "\n(exit 42)\n\\'" program))))
+            ;; The REPL swallows line errors, so success is signalled by a
+            ;; marker file written last, followed by `,quit'.
+            (should (string-match-p
+                     (concat (regexp-quote
+                              (format "\n(nl-write-file %S %S)\n,quit\n"
+                                      "/tmp/sample.marker"
+                                      vendor-form-standalone--success))
+                             "\\'")
+                     program))))
       (dolist (file (list bootstrap prelude output))
         (when (file-exists-p file)
           (delete-file file))))))
@@ -232,7 +262,7 @@
                 (list (list :index 1 :pos 0 :end 15 :head 'provide
                             :text "(provide 'sample)")))
           (vendor-form-standalone--write-program
-           bootstrap "/vendor/sample.el" forms 1 output
+           bootstrap "/vendor/sample.el" forms 1 output "/tmp/sample.marker"
            (list (expand-file-name "vendor/preload-a.el" root)
                  (expand-file-name "vendor/preload-b.el" root)
                  (expand-file-name "vendor/org-footnote.el" root)))
@@ -278,133 +308,134 @@
         (delete-directory root t)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-complete-file-list-orders-providers-before-consumers ()
-  (let* ((files (nelisp-bootstrap--complete-file-list
-                 (list (standalone-diagnostics-test--src-file
-                        "nelisp-emacs-compat.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-parity-core-vars.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-vars.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-keymap-builtins.el")
-                       (standalone-diagnostics-test--src-file
-                        "nelisp-regex.el")
-                       (standalone-diagnostics-test--src-file
-                        "nelisp-text-buffer.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-redisplay-core.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-window.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-fileio.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-fileio-gui.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-mode.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-mode-builtins.el")
-                       (standalone-diagnostics-test--src-file
-                        "emacs-load.el"))))
-         (core-vars-pos (standalone-diagnostics-test--position
-                         (standalone-diagnostics-test--src-file
-                          "emacs-parity-core-vars.el")
-                         files))
-         (vars-pos (standalone-diagnostics-test--position
-                    (standalone-diagnostics-test--src-file
-                     "emacs-vars.el")
-                    files))
-         (compat-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "nelisp-emacs-compat.el")
-                      files))
-         (regex-pos (standalone-diagnostics-test--position
-                     (standalone-diagnostics-test--src-file
-                      "nelisp-regex.el")
-                     files))
-         (text-buffer-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "nelisp-text-buffer.el")
-                           files))
-         (redisplay-pos (standalone-diagnostics-test--position
-                         (standalone-diagnostics-test--src-file
-                          "emacs-redisplay-core.el")
-                         files))
-         (window-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "emacs-window.el")
-                      files))
-         (fileio-pos (standalone-diagnostics-test--position
-                      (standalone-diagnostics-test--src-file
-                       "emacs-fileio.el")
-                      files))
-         (fileio-gui-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-fileio-gui.el")
-                          files))
-         (mode-pos (standalone-diagnostics-test--position
-                    (standalone-diagnostics-test--src-file
-                     "emacs-mode.el")
-                    files))
-         (keymap-builtins-pos (standalone-diagnostics-test--position
-                               (standalone-diagnostics-test--src-file
-                                "emacs-keymap-builtins.el")
-                               files))
-         (mode-builtins-pos (standalone-diagnostics-test--position
-                             (standalone-diagnostics-test--src-file
-                              "emacs-mode-builtins.el")
-                             files))
-         (parity-org-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-parity-org.el")
-                          files))
-         (parity-shims-pos (standalone-diagnostics-test--position
-                            (standalone-diagnostics-test--src-file
-                             "emacs-parity-shims.el")
-                            files))
-         (parity-misc-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "emacs-parity-misc.el")
-                           files))
-         (parity-fns2-pos (standalone-diagnostics-test--position
-                           (standalone-diagnostics-test--src-file
-                            "emacs-parity-fns2.el")
-                           files))
-         (emacs-load-pos (standalone-diagnostics-test--position
-                          (standalone-diagnostics-test--src-file
-                           "emacs-load.el")
-                          files)))
-    (should compat-pos)
-    (should core-vars-pos)
-    (should vars-pos)
-    (should regex-pos)
-    (should text-buffer-pos)
-    (should redisplay-pos)
-    (should window-pos)
-    (should fileio-pos)
-    (should fileio-gui-pos)
-    (should mode-pos)
-    (should keymap-builtins-pos)
-    (should mode-builtins-pos)
-    (should parity-misc-pos)
-    (should parity-fns2-pos)
-    (should parity-org-pos)
-    (should emacs-load-pos)
-    (should (< core-vars-pos vars-pos))
-    (should (< regex-pos compat-pos))
-    (should (< text-buffer-pos compat-pos))
-    (should (< compat-pos window-pos))
-    (should (< window-pos redisplay-pos))
-    (should (< fileio-gui-pos fileio-pos))
-    (should (< mode-pos mode-builtins-pos))
-    (should (< keymap-builtins-pos parity-org-pos))
-    (should (< mode-builtins-pos parity-org-pos))
-    (should parity-shims-pos)
-    (should (< mode-builtins-pos parity-misc-pos))
-    (should (< parity-shims-pos parity-misc-pos))
-    (should (< parity-misc-pos parity-fns2-pos))
-    (should (< parity-fns2-pos parity-org-pos))
-    (should (< parity-org-pos emacs-load-pos))
-    (should (< mode-builtins-pos fileio-pos))))
+(standalone-diagnostics-test--with-bootstrap-root
+(let* ((files (nelisp-bootstrap--complete-file-list
+(list (standalone-diagnostics-test--src-file
+"nelisp-emacs-compat.el")
+(standalone-diagnostics-test--src-file
+"emacs-parity-core-vars.el")
+(standalone-diagnostics-test--src-file
+"emacs-vars.el")
+(standalone-diagnostics-test--src-file
+"emacs-keymap-builtins.el")
+(standalone-diagnostics-test--src-file
+"nelisp-regex.el")
+(standalone-diagnostics-test--src-file
+"nelisp-text-buffer.el")
+(standalone-diagnostics-test--src-file
+"emacs-redisplay-core.el")
+(standalone-diagnostics-test--src-file
+"emacs-window.el")
+(standalone-diagnostics-test--src-file
+"emacs-fileio.el")
+(standalone-diagnostics-test--src-file
+"emacs-fileio-gui.el")
+(standalone-diagnostics-test--src-file
+"emacs-mode.el")
+(standalone-diagnostics-test--src-file
+"emacs-mode-builtins.el")
+(standalone-diagnostics-test--src-file
+"emacs-load.el"))))
+(core-vars-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-core-vars.el")
+files))
+(vars-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-vars.el")
+files))
+(compat-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-emacs-compat.el")
+files))
+(regex-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-regex.el")
+files))
+(text-buffer-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"nelisp-text-buffer.el")
+files))
+(redisplay-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-redisplay-core.el")
+files))
+(window-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-window.el")
+files))
+(fileio-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-fileio.el")
+files))
+(fileio-gui-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-fileio-gui.el")
+files))
+(mode-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-mode.el")
+files))
+(keymap-builtins-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-keymap-builtins.el")
+files))
+(mode-builtins-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-mode-builtins.el")
+files))
+(parity-org-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-org.el")
+files))
+(parity-shims-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-shims.el")
+files))
+(parity-misc-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-misc.el")
+files))
+(parity-fns2-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-parity-fns2.el")
+files))
+(emacs-load-pos (standalone-diagnostics-test--position
+(standalone-diagnostics-test--src-file
+"emacs-load.el")
+files)))
+(should compat-pos)
+(should core-vars-pos)
+(should vars-pos)
+(should regex-pos)
+(should text-buffer-pos)
+(should redisplay-pos)
+(should window-pos)
+(should fileio-pos)
+(should fileio-gui-pos)
+(should mode-pos)
+(should keymap-builtins-pos)
+(should mode-builtins-pos)
+(should parity-misc-pos)
+(should parity-fns2-pos)
+(should parity-org-pos)
+(should emacs-load-pos)
+(should (< core-vars-pos vars-pos))
+(should (< regex-pos compat-pos))
+(should (< text-buffer-pos compat-pos))
+(should (< compat-pos window-pos))
+(should (< window-pos redisplay-pos))
+(should (< fileio-gui-pos fileio-pos))
+(should (< mode-pos mode-builtins-pos))
+(should (< keymap-builtins-pos parity-org-pos))
+(should (< mode-builtins-pos parity-org-pos))
+(should parity-shims-pos)
+(should (< mode-builtins-pos parity-misc-pos))
+(should (< parity-shims-pos parity-misc-pos))
+(should (< parity-misc-pos parity-fns2-pos))
+(should (< parity-fns2-pos parity-org-pos))
+(should (< parity-org-pos emacs-load-pos))
+(should (< mode-builtins-pos fileio-pos)))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-define-skeleton-creates-command ()
   "The bootstrap shim must make sh-script skeleton definitions executable."
@@ -562,21 +593,15 @@
       (should (< context global))
       (should (< global vendor-load)))))
 
-(ert-deftest standalone-diagnostics-test/calendar-package-mirror-matches-source ()
-  "The foundation package keeps the calendar wrapper byte-identical."
-  (let ((source (standalone-diagnostics-test--src-file "calendar.el"))
-        (mirror
-         (expand-file-name
-          "packages/emacs-lib-core/src/calendar.el"
-          standalone-diagnostics-test--repo-root)))
-    (should
-     (equal
-      (with-temp-buffer
-        (insert-file-contents source)
-        (buffer-string))
-      (with-temp-buffer
-        (insert-file-contents mirror)
-        (buffer-string))))))
+(ert-deftest standalone-diagnostics-test/calendar-package-owns-source ()
+  "The nelisp-emacs-foundation package is the only owner of the calendar wrapper.
+A second copy under another packages/*/src would be resolved arbitrarily."
+  (should (equal (mapcar #'file-truename
+                         (nemacs-test-paths-source-owners "calendar.el"))
+                 (list (file-truename
+                        (expand-file-name
+                         "packages/emacs-lib-core/src/calendar.el"
+                         nemacs-test-paths-repo-root))))))
 
 (ert-deftest standalone-diagnostics-test/bootstrap-repl-emits-cl-defstruct-directly ()
   (let ((nelisp-bootstrap-repl-nested-eval-source t))

@@ -1,0 +1,37 @@
+01 (nil nil t t t hash-table)
+02 (nil nil t)
+03 (ERR wrong-type-argument)
+04 (ERR wrong-type-argument)
+05 nil
+06 nil
+07 (ERR wrong-type-argument)
+08 nil
+09 nil
+10 nil
+11 (1 2 none 2)
+12 (100 49 9801)
+13 ((x . 1) (y . 2))
+14 (0 nil)
+15 0
+16 (v w nil)
+17 equal
+18 key
+19 (a)
+20 (1)
+21 (nil t t)
+22 (nil nil nil nil nil)
+23 t
+24 ht
+25 ht
+26 wrong-type-argument
+27 wrong-type-argument
+28 wrong-type-argument
+29 wrong-type-argument
+30 v
+31 v
+32 1
+33 (50 42)
+34 1
+35 (#[(a b) ((string= (downcase a) (downcase b))) (t)] #[(k) ((sxhash-equal (downcase k))) (t)])
+36 1
+37 t

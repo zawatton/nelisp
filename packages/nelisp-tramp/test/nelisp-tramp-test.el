@@ -223,6 +223,12 @@ Return the count of forms processed.  Errors propagate."
       (insert-file-contents path))
     (let ((forms (nelisp-read-all (buffer-string)))
           (count 0))
+      ;; Since da0f4fc8e `nelisp-eval.el' installs GNU helpers through the
+      ;; host-only `nelisp-vendor-source-forms' (file I/O); bridge it into
+      ;; the source evaluator instead of trampolining the whole module.
+      (dolist (name '(nelisp-vendor-source-forms nelisp-vendor-source-form
+                      nelisp-vendor-source-whole-file))
+        (puthash name (symbol-function name) nelisp--functions))
       (dolist (form forms)
         (setq count (1+ count))
         (nelisp-tramp-eval form))

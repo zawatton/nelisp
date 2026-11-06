@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """unitfn.py UNIT-FILE OUT-PREFIX NAME... : disassemble NAMEs from a build cache .unit file
-(text hex in :nelisp-cache-bytes-hex, symbols as (:name "N" :value OFF ...)); prints size,
+(text base64 in :nelisp-cache-bytes-base64, or hex in older entries; symbols as (:name "N" :value OFF ...)); prints size,
 instruction count, callee-saved pushes and frame-slot instructions per function."""
-import re, sys, subprocess
+import base64, re, sys, subprocess
 u, pre = sys.argv[1], sys.argv[2]
 s = open(u, encoding='latin-1').read()
-hexs = re.search(r'\(text :nelisp-cache-bytes-hex "([0-9a-f]+)"', s).group(1)
-text = bytes.fromhex(hexs)
+m = re.search(r'\(text :nelisp-cache-bytes-base64 "([A-Za-z0-9+/=]+)"', s)
+if m:
+    text = base64.b64decode(m.group(1))
+else:
+    text = bytes.fromhex(re.search(r'\(text :nelisp-cache-bytes-hex "([0-9a-f]+)"', s).group(1))
 syms = sorted((int(v), n) for n, v in re.findall(r'\(:name "([^"]+)" :value (\d+) :size \d+ :section text', s))
 for name in sys.argv[3:]:
     st = [v for v, n in syms if n == name][0]

@@ -2,12 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst calc-ext-test--src-dir
-  (expand-file-name
-   "../src"
-   (file-name-directory (or load-file-name buffer-file-name))))
+  (file-name-directory (nemacs-test-paths-source "calc-ext.el")))
 
 (defconst calc-ext-test--tier3-features
   '(emacs-tier3-facades calc gnus info treesit nxml nxml-mode vc)

@@ -2,8 +2,8 @@
 
 ;; One line per case, NAME => VALUE, compared byte for byte with
 ;; syntax-rt-semantics.gnu-31.1.expected.  Every case names its syntax
-;; table explicitly: the bare runtime's ambient default (the Emacs Lisp
-;; table) intentionally differs from a GNU buffer's mode-chosen table.
+;; table explicitly, so a GNU buffer's mode-chosen table cannot differ from
+;; the fresh-buffer default (the standard table) used here.
 ;; Run: emacs -Q --batch -l FILE, or BIN --load FILE.
 
 (defun srt-show (name thunk)

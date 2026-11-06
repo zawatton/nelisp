@@ -166,9 +166,16 @@
     (unwind-protect
         (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-extern-destination-x86)
                    #'nelisp-aot-local-extern-test--old-destination))
-          ;; The first controlled RAX=0 call cannot fake either the full-word
-          ;; return or the store.  This checks native behavior, not a counter.
-          (should (= 10 (nelisp-aot-local-extern-test--native-probe dir))))
+          ;; Since c552d6bbb the executable frontend refuses PLT32 calls to
+          ;; same-unit functions at link time, so the old destination emitter
+          ;; no longer reaches the native driver (it used to exit 10 on the
+          ;; first controlled RAX=0 call).  The refusal must name the
+          ;; local functions.
+          (let ((err (should-error (nelisp-aot-local-extern-test--native-probe dir)
+                                   :type 'nelisp-aot-compiler-error)))
+            (should (eq (cadr err) :unresolved-executable-relocations))
+            (should (equal (mapcar (lambda (r) (plist-get r :symbol)) (caddr err))
+                           '("effect0" "effect6")))))
       (delete-directory dir t))))
 
 (provide 'nelisp-aot-local-extern-test)

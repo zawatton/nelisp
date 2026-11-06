@@ -2,11 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(load (expand-file-name
-       "../src/rx.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+;; rx is served from the vendored GNU Emacs 31.1 file.
+(load (nemacs-test-paths-vendor "emacs-lisp/emacs-lisp/rx.el")
       nil t)
 
 ;; S2 coverage batch (2026-09-28): `rx--normalize-char-pattern' and

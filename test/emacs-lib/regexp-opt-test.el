@@ -2,6 +2,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'regexp-opt)
 
@@ -31,9 +35,7 @@
         (regexp-opt nil t)))
 
 (defconst regexp-opt-test--repo-root
-  (expand-file-name ".."
-                    (file-name-directory
-                     (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (load (expand-file-name
        "vendor/emacs-lisp/emacs-lisp/regexp-opt.el"
@@ -60,16 +62,19 @@
       (should-not (string-match-p regexp
                                   (concat (car strings) "-extra"))))))
 
-(ert-deftest regexp-opt-test/workhorse-has-no-completion-core-dependency ()
-  "The recursive optimizer uses only its pure prefix and partition helpers."
-  (let ((source (prin1-to-string (symbol-function 'regexp-opt-group))))
-    (should-not (string-match-p "try-completion" source))
-    (should-not (string-match-p "all-completions" source)))
-  (should (equal (regexp-opt--common-prefix '("enter" "entry" "ent"))
-                 "ent"))
-  (should (equal (regexp-opt--split-first-char
-                  '("alpha" "atom" "beta" "charlie"))
-                 '(("alpha" "atom") "beta" "charlie"))))
+(ert-deftest regexp-opt-test/vendored-regexp-matches-exactly-the-input-words ()
+  "The vendored GNU `regexp-opt' (which uses `try-completion') matches
+exactly the input words: every member, no truncation, no extension."
+  (let* ((case-fold-search nil)
+         (words '("enter" "entry" "ent" "alpha" "atom" "beta" "charlie"))
+         (regexp (concat "\\`" (regexp-opt words) "\\'")))
+    (dolist (w words)
+      (should (string-match-p regexp w)))
+    (dolist (non '("" "en" "ente" "entryx" "alph" "betas" "xcharlie" "ENTER"))
+      (should-not (string-match-p regexp non)))
+    ;; The PAREN argument still selects the grouping style.
+    (should (string-prefix-p "\\(" (regexp-opt words t)))
+    (should (string-prefix-p "\\(?:" (regexp-opt words)))))
 
 (provide 'regexp-opt-test)
 

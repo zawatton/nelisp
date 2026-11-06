@@ -213,6 +213,9 @@
          safe-pcs admitted-pcs unsupported-pcs frame-instructions)
     (when (and (nelisp-bytecode-native-rooted-cfg--canonical-input-p input)
                (eq (plist-get input :status) 'unsupported)
+               ;; Variable-arity argument descriptors carry no fixed
+               ;; argument count; safe-primitives v3 stays fixed-arity.
+               (integerp (plist-get input :argument-count))
                (eq (plist-get ir :status) 'unsupported)
                (eq (plist-get frame :status) 'complete)
                (consp unsupported)
@@ -344,7 +347,9 @@ phis at joins.  It refuses before any backend or artifact side effect."
          (ir-rows-by-pc
           (let ((table (make-hash-table :test 'eql)))
             (dolist (row (append (plist-get (plist-get input :ir-result) :instructions) nil))
-              (puthash (aref row 0) (cons row (gethash (aref row 0) table)) table))
+              ;; A malformed row is left unindexed; admission then refuses it.
+              (when (and (vectorp row) (> (length row) 0))
+                (puthash (aref row 0) (cons row (gethash (aref row 0) table)) table)))
             table))
          (primitive-roots nil) (scratch-root nil)
          (guard-mode (or arithmetic-guard-mode 'off)))

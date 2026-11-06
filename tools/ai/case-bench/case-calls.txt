@@ -1,0 +1,16 @@
+compare-strings	"abc def" 0 nil "ABC DEF" 0 nil t
+compare-strings	"abc def" 0 nil "abc def" 0 nil nil
+string-equal-ignore-case	"abc def" "ABC DEF"
+string-equal	"abc def" "abc def"
+downcase	?A
+downcase	"ABC DEF"
+capitalize	?a
+capitalize	"abc def"
+upcase	"abc def"
+nelisp--case-object	?a (quote capitalize)
+string-prefix-p	"C-" "C-x"
+capitalize	"Hello World foo"
+upcase-initials	"abc def"
+upcase	?a
+compare-strings	"abc def" 0 nil "abc dez" 0 nil t
+compare-strings	"été" 0 nil "ÉTÉ" 0 nil t

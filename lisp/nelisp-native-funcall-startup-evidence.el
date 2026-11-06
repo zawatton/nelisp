@@ -33,7 +33,7 @@ policies remain unchanged. All boundary bytes and relocations are verified."
             ((equal node "nelisp-compiler-constructor-prelink-v1") "nelisp-compiler-f1-prelink-v1")
             ((equal node "lisp/nelisp-native-compiler-runtime-capability.el") node)
             ((equal node "PRELINK_DIRECT_CLOSURE_PASS") "PRELINK_F1_BOUNDARY_PASS")
-            ((equal node "scripts/nelisp-native-compiler-constructor-prelink.py") "scripts/nelisp-native-compiler-f1-prelink.py")
+            ((equal node "scripts/nelisp-native-compiler-constructor-prelink.el") "scripts/nelisp-native-compiler-f1-prelink.el")
             ((equal node '(= (length offsets) 14))
              '(and (= (length offsets) (length (plist-get nelisp-native-compiler-f1-runtime-proof--expected :bss-offsets)))
                    (< (length offsets) 128)))
@@ -55,7 +55,7 @@ policies remain unchanged. All boundary bytes and relocations are verified."
                        :frame-hash (nelisp-native-frame-v2-hash))))
             ((and (consp node) (eq (car node) 'quote)
                   (listp (cadr node))
-                  (member "scripts/nelisp-native-compiler-constructor-prelink.py" (cadr node)))
+                  (member "scripts/nelisp-native-compiler-constructor-prelink.el" (cadr node)))
              (list 'quote (append (mapcar (lambda (item) (specialize item generator)) (cadr node))
                                   '("lisp/nelisp-native-funcall-startup-evidence.el"
                                     "lisp/nelisp-native-funcall-v2.el" "lisp/nelisp-native-frame-v2.el"))))

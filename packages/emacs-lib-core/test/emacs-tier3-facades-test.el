@@ -2,13 +2,15 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
 (defconst emacs-tier3-facades-test--source
-  (expand-file-name
-   "../src/emacs-tier3-facades.el"
-   (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-tier3-facades.el"))
 
 (defconst emacs-tier3-facades-test--src-dir
   (file-name-directory emacs-tier3-facades-test--source))
@@ -108,8 +110,7 @@ several temp parents and keep only one that the facade reports as no VC."
 (ert-deftest emacs-tier3-facades-test/feature-loaders-resolve-to-src ()
   (let ((load-path (cons emacs-tier3-facades-test--src-dir load-path)))
     (dolist (loader emacs-tier3-facades-test--loaders)
-      (let ((expected (expand-file-name (concat (cdr loader) ".el")
-                                        emacs-tier3-facades-test--src-dir))
+      (let ((expected (nemacs-test-paths-source (concat (cdr loader) ".el")))
             (actual (locate-library (cdr loader))))
         (should actual)
         (should (string= (file-name-sans-extension

@@ -72,7 +72,7 @@ dynamic extent.")
 
 (defvar nelisp-hmf-test--helper-names
   '(nelisp--hook-depths nelisp--hook-list-p nelisp--run-hook-call
-    nelisp--run-hook-value nelisp--plist-p)
+    nelisp--run-hook-value nelisp--plist-p nelisp--hook-alist-set)
   "Internal (`nelisp--'-prefixed) helper names the public functions
 above call by their real names.  These never collide with anything
 Emacs's own machinery calls internally, so they are installed once,
@@ -102,6 +102,10 @@ for its own (non-hook, non-buffer-touching) targets."
              ((and (consp form) (eq (car form) 'unless)
                    (equal (cadr form) '(get 'map-not-inplace 'error-conditions)))
               (eval (caddr form) t))
+             ;; Unguarded top-level helper (defun NAME ...), e.g. `nelisp--hook-alist-set'.
+             ((and (consp form) (eq (car form) 'defun)
+                   (memq (cadr form) nelisp-hmf-test--helper-names))
+              (eval form t))
              ;; (unless (fboundp 'NAME) (defun/defvar NAME ...))
              ((and (consp form) (eq (car form) 'unless)
                    (consp (cadr form))
@@ -228,15 +232,21 @@ terminate) -- measured against Emacs 30.1; see the block comment above
      (run-hooks 'nelisp-hmf-h2)
      (should (equal (reverse calls) '(fn1 fn1 fn2 fn2 fn1 fn2))))))
 
-(ert-deftest nelisp-hmf-add-hook-remove-hook-local-arg-ignored ()
-  "LOCAL is accepted and silently ignored (documented divergence: this
-runtime has no buffers, so it cannot have a distinct local value)."
+(ert-deftest nelisp-hmf-add-hook-remove-hook-local-arg-follows-gnu ()
+  "With LOCAL, `add-hook' makes HOOK buffer-local and the local value is
+(FUNCTION t); `remove-hook' with LOCAL drops the then-empty local value.
+Measured against GNU Emacs 31.1 (`emacs --batch -Q': after the add the
+local value has length 2 and ends in t; after the remove the hook is no
+longer local and its global value is nil).  The old \"LOCAL is ignored\"
+expectation predates the GNU subr.el adoption in lisp/nelisp-stdlib-misc.el."
   (nelisp-hmf-test--with-nelisp-defs
    (setq nelisp-hmf-h1 nil)
-   (should (progn (add-hook 'nelisp-hmf-h1 (lambda () 1) nil t) t))
-   (should (= 1 (length nelisp-hmf-h1)))
-   (should (progn (remove-hook 'nelisp-hmf-h1 (car nelisp-hmf-h1) t) t))
-   (should (null nelisp-hmf-h1))))
+   (add-hook 'nelisp-hmf-h1 (lambda () 1) nil t)
+   (should (= 2 (length nelisp-hmf-h1)))
+   (should (eq t (car (last nelisp-hmf-h1))))
+   (remove-hook 'nelisp-hmf-h1 (car nelisp-hmf-h1) t)
+   (should (null nelisp-hmf-h1))
+   (should-not (local-variable-p 'nelisp-hmf-h1))))
 
 
 ;;; map.el --------------------------------------------------------------

@@ -63,12 +63,10 @@
 (require 'cl-lib)
 ;; Optional, same reading as `subr-x' (cd64c0bd7), `macroexp' and `seq': this
 ;; file is loaded by the standalone runtime, which has no Emacs underneath it
-;; to load `pcase' from -- and does not need one.  The stdlib prelude defines
-;; the `pcase' macro (and `pcase-let' / `pcase-let*'), kept in sync with
-;; lisp/nelisp-pcase.el; measured 2026-08-19, `(fboundp 'pcase)' is t in the
-;; built reader while `(featurep 'pcase)' is nil, because nothing in this tree
-;; provides the FEATURE.  The require asks for the file; the code needs the
-;; macro.
+;; to load `pcase' from -- and does not need one.  The standalone build bakes
+;; the vendored GNU pcase.el (vendor/staged-emacs-lisp/pcase.el) into the
+;; prelude, so `pcase' is both fbound and a provided feature there
+;; (measured 2026-11-05 on build 153: both t).
 (require 'pcase nil t)
 (require 'nelisp-cc)
 

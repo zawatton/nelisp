@@ -432,7 +432,8 @@ replay it in runtimes with minimal closure support."
 
 (defun nemacs-runtime-image-preload--install-shell-core ()
   "Install minimal shell/eshell daily-driver facades."
-  (require 'emacs-symbol)
+  (unless (featurep 'emacs-symbol)
+    (require 'emacs-symbol))
   (unless (featurep 'shell)
     (unless (boundp 'emacs-shell-buffer-name)
       (defvar emacs-shell-buffer-name "*shell*"))
@@ -3081,7 +3082,8 @@ image startup."
   (nemacs-runtime-image-preload--install-seq-core)
   (nemacs-runtime-image-preload--install-map-core)
   (nemacs-runtime-image-preload--install-lisp-core)
-  (require 'emacs-symbol)
+  (unless (featurep 'emacs-symbol)
+    (require 'emacs-symbol))
   (nemacs-runtime-image-preload--install-case-table-core)
   (nemacs-runtime-image-preload--install-cdl-core)
   (nemacs-runtime-image-preload--install-range-core)
@@ -3226,11 +3228,16 @@ image startup."
 (defun nemacs-runtime-image-preload--install-charscript-core ()
   "Install the lightweight `charscript' table surface without source `load'."
   (unless (featurep 'charscript)
-    (unless (boundp 'char-script-table)
-      (defvar char-script-table
-        (if (fboundp 'make-char-table)
-            (make-char-table 'char-script-table nil)
-          [])))
+    ;; Keep an existing table only when the active `char-table-p' accepts
+    ;; it: a bound value from another char-table implementation (or nil) is
+    ;; unusable here, as in `charscript--ensure-table'.
+    (unless (and (boundp 'char-script-table)
+                 (char-table-p char-script-table))
+      (defvar char-script-table nil)
+      (setq char-script-table
+            (if (fboundp 'make-char-table)
+                (make-char-table 'char-script-table nil)
+              [])))
     (provide 'charscript))
   t)
 

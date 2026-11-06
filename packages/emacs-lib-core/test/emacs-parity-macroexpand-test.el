@@ -10,12 +10,15 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
 (defconst emacs-parity-macroexpand-test--source-path
-  (expand-file-name "../src/emacs-parity-macroexpand.el"
-                     (file-name-directory (or load-file-name buffer-file-name)))
+  (nemacs-test-paths-source "emacs-parity-macroexpand.el")
   "Path to src/emacs-parity-macroexpand.el, captured at load time.
 `load-file-name' is only bound while this file itself is being loaded, so it
 cannot be read lazily from inside a test body.")

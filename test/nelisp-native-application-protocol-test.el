@@ -47,6 +47,9 @@
                      (and (nelisp-native-application-protocol-lexical-header-p (cdr entry)) t))))))
 
 (ert-deftest nnap-protocol-real-source-canonical-parity ()
+  (skip-unless (and (getenv "LOADER_E")
+                    (file-exists-p (expand-file-name "../final-inputs/package/source-package.el"
+                                                     (getenv "LOADER_E")))))
   (let ((root (getenv "LOADER_E")))
     (dolist (relative '("../final-inputs/package/source-package.el"
                         "../final-inputs/host-source-inputs/application-manifest.sexp"

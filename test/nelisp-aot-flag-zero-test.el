@@ -1,7 +1,8 @@
 ;;; nelisp-aot-flag-zero-test.el --- Completed AND zero flags -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-flag-zero-test--enabled t)
 (defvar nelisp-flag-zero-test--changes 0)
 (defun nelisp-flag-zero-test--record (fn &rest args)
@@ -126,6 +127,7 @@
     (when (getenv "Z_GNU_OUT")
       (with-temp-file (getenv "Z_GNU_OUT") (prin1 rows (current-buffer))))
     (with-temp-file c
+     (insert nelisp-aot-test-runtime-nl-val-tag-c)
      (insert "#include <stdint.h>\n#include <stdio.h>\n#include <sys/mman.h>\n#include <sys/wait.h>\n#include <unistd.h>\n#include <signal.h>\ntypedef uint64_t U;extern U zwrapper(U,U,U,U,U,U),zeffects(U,U,U,U,U,U),zword(U,U);\nstatic const U rows[][10]={\n")
      (dolist (r rows) (insert "{" (mapconcat (lambda(n)(format "0x%xULL" n)) r ",") "},\n"))
      (insert "};\nint main(void){volatile U*p=mmap((void*)0x30000000,4096,3,0x22|0x100000,-1,0);if(p!=(void*)0x30000000)return 90;for(unsigned i=0;i<sizeof(rows)/sizeof(rows[0]);i++){const U*r=rows[i];p[0]=r[6];p[1]=r[0];p[2]=p[3]=0xdeadbeef;p[5]=p[7]=0;U before,after;asm volatile(\"mov %%rsp,%0\":\"=r\"(before));U got=zeffects((U)p,r[2],r[1],r[3],r[4],r[5]);asm volatile(\"mov %%rsp,%0\":\"=r\"(after));if(got!=r[7]||p[5]!=12||p[7]!=r[6]||before!=after)return 1;if(!r[6]){if(p[1]!=r[5]||p[2]!=r[8]||p[3]!=r[9])return 2;}else if(p[1]!=r[0]||p[2]!=0xdeadbeef||p[3]!=0xdeadbeef)return 3;}p[0]=0;((volatile unsigned char*)p)[256]=191;((volatile unsigned char*)p)[320]=4;U words[]={2,(U)p+262,(U)p+320};for(unsigned i=0;i<3;i++){p[1]=words[i];p[7]=0;if(zword((U)p,words[i])!=(i==2?73:words[i]+8))return 4;}register U a asm(\"rbx\")=0xabcdef1234567801ULL,b asm(\"r12\")=0x123456789abcdef0ULL,d asm(\"r13\")=0xfeedfacecafebeefULL,e asm(\"r14\")=0x76543210abcdef09ULL,f asm(\"r15\")=0xfedcba9876543210ULL;asm volatile(\"\":\"+r\"(a),\"+r\"(b),\"+r\"(d),\"+r\"(e),\"+r\"(f));p[1]=31;zwrapper((U)p,1,31,0,1,8);asm volatile(\"\":\"+r\"(a),\"+r\"(b),\"+r\"(d),\"+r\"(e),\"+r\"(f));if(a!=0xabcdef1234567801ULL||b!=0x123456789abcdef0ULL||d!=0xfeedfacecafebeefULL||e!=0x76543210abcdef09ULL||f!=0xfedcba9876543210ULL)return 5;U*pages=mmap(0,8192,3,0x22,-1,0);if(pages==(void*)-1||mprotect((char*)pages+4096,4096,0))return 91;U*edge=(U*)((char*)pages+4088);*edge=0;pid_t child=fork();if(child==0){zwrapper((U)edge,1,31,0,1,8);_exit(99);}int status;if(waitpid(child,&status,0)!=child||!WIFSIGNALED(status)||WTERMSIG(status)!=SIGSEGV)return 6;printf(\"NATIVE %zu WORD3 fault1 ABI1\\n\",sizeof(rows)/sizeof(rows[0]));return 0;}\n"))

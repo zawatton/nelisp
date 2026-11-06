@@ -141,7 +141,9 @@
 
 (ert-deftest closurevm-unsupported-before-effects ()
   (closurevm-isolated
-   (let ((body '((unwind-protect cv-x nil))))
+   ;; `unwind-protect' compiles to handler frames now (c552d6bbb); `defvar'
+   ;; is still a special form the compiler refuses.
+   (let ((body '((defvar cv-x))))
      (nelisp--fx-first-call body '(t) nil)
      (nelisp--fx-first-call body '(t) nil)
      (should (eq 'none (gethash body nelisp--fx-table))))))

@@ -9,12 +9,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst external-packages-test--root
-  (expand-file-name
-   ".."
-   (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defun external-packages-test--reader ()
   (let ((c (or (getenv "NEMACS_NELISP")
@@ -35,14 +37,11 @@
             (with-temp-file driver
               (insert
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-stub.el"
-                                         external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-stub.el"))
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-stub-bulk.el"
-                                         external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-stub-bulk.el"))
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-network-syscall-shim.el"
-                                         external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-network-syscall-shim.el"))
                (format "(load %S nil t)\n" dash)
                (format "(load %S nil t)\n" s)
                ;; the server's eval path: read-from-string + eval
@@ -72,7 +71,7 @@
                         (expand-file-name "build/nemacs-bootstrap.repl" root)))
          (eat (expand-file-name "~/.emacs.d/external-packages/emacs-eat/eat.el"))
          (compat (expand-file-name "~/.emacs.d/external-packages/compat/compat.el"))
-         (core-vars (expand-file-name "src/emacs-parity-core-vars.el" root)))
+         (core-vars (nemacs-test-paths-source "emacs-parity-core-vars.el")))
     (unless (and reader (file-executable-p launcher) (file-readable-p bootstrap)
                  (file-readable-p eat) (file-readable-p compat))
       (ert-skip "standalone launcher/bootstrap or Eat/compat unavailable"))
@@ -122,11 +121,11 @@
             (with-temp-file driver
               (insert
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-stub.el" external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-stub.el"))
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-stub-bulk.el" external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-stub-bulk.el"))
                (format "(load %S nil t)\n"
-                       (expand-file-name "src/emacs-network-syscall-shim.el" external-packages-test--root))
+                       (nemacs-test-paths-source "emacs-network-syscall-shim.el"))
                "(nelisp--write-stderr-line (format \"NUM=%S\" (list (floor 7 2) (floor -7 2) (ceiling 3.2) (float 3) (floor 3.7))))\n"))
             (with-temp-buffer
               (let ((status (call-process reader nil t nil "--eval"

@@ -172,6 +172,8 @@ standalone runtime where host `file-readable-p' is unavailable."
 layer cooperate end-to-end (= the pure-NeLisp self-host I/O cycle)."
   (skip-unless (and (featurep 'nelisp-emacs-compat)
                     (featurep 'nelisp-emacs-compat-fileio)))
+  ;; The compat write path encodes through the standalone `string-byte'.
+  (skip-unless (fboundp 'string-byte))
   (nelisp--reset)
   (let* ((tmp (make-temp-file "nelisp-load-selfhost-roundtrip" nil ".el"))
          (buf (nelisp-ec-generate-new-buffer "rt-write")))

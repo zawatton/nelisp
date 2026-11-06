@@ -1308,7 +1308,7 @@ is nil, and the evaluator keeps installing its pinned GNU copy."
           (nelisp-vendor-source-forms
            "vendor/staged-emacs-lisp/subr.el"
            '(gensym-counter gensym frame-configuration-p apply-partially
-             booleanp fixnump bignump zerop ignore always)))))
+             booleanp fixnump bignump zerop plusp minusp ignore always)))))
     (while forms
       (nelisp-eval-form (car forms) nil)
       (setq forms (cdr forms)))))

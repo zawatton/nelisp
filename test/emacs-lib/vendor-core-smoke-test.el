@@ -2,12 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 (require 'cl-lib)
 
-(load (expand-file-name
-       "../scripts/vendor-core-smoke.el"
-       (file-name-directory (or load-file-name buffer-file-name)))
+(load (nemacs-test-paths-script "vendor-core-smoke.el")
       nil t)
 
 (defun vendor-core-smoke-test--featurep-for (enabled)

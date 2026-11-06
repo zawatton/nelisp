@@ -253,23 +253,26 @@ needs no table.  GNU likewise trusts a translate table's identity
             (when lookup
               (let* ((native (and (nlre--native-case-table-p canon) canon))
                      (entry (vector canon lookup nil t public-lookup native t)))
-                ;; GNU's CHAR_TABLE_REF has a direct ASCII page.  Materialize
-                ;; that page once for a library representation whose public
-                ;; dispatch is expensive; actual native tables retain their
-                ;; live native lookup.
-                (let ((ascii (make-vector 256 nil)) (character 0))
-                  (while (< character 256)
-                    (let ((value (or (funcall lookup canon character) character)))
-                      (aset ascii character value)
-                      (when (and (< character 128)
-                                 (or (not (integerp value))
-                                     (/= value (if (and (>= character 65) (<= character 90))
-                                                   (+ character 32) character))))
-                        (aset entry 3 nil)))
-                    (setq character (1+ character)))
-                  (unless (nlre--unibyte-fold-agrees-p canon lookup ascii)
-                    (aset entry 6 nil))
-                  (unless native (aset entry 2 ascii)))
+                ;; A library char-table canon can be edited in place through
+                ;; the public API (GNU reads it live at match time), and such
+                ;; an edit is not observable here.  Keep no snapshot of it:
+                ;; slots 2, 3 and 6 stay nil/nil/nil so every lookup goes
+                ;; through LOOKUP.  An actual native table retains its live
+                ;; native lookup and is summarized once.
+                (if (not native)
+                    (progn (aset entry 3 nil) (aset entry 6 nil))
+                  (let ((ascii (make-vector 256 nil)) (character 0))
+                    (while (< character 256)
+                      (let ((value (or (funcall lookup canon character) character)))
+                        (aset ascii character value)
+                        (when (and (< character 128)
+                                   (or (not (integerp value))
+                                       (/= value (if (and (>= character 65) (<= character 90))
+                                                     (+ character 32) character))))
+                          (aset entry 3 nil)))
+                      (setq character (1+ character)))
+                    (unless (nlre--unibyte-fold-agrees-p canon lookup ascii)
+                      (aset entry 6 nil))))
                 (puthash canon entry nlre--translate-cache)
                 entry))))))))
 

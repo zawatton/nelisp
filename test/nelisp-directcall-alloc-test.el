@@ -213,6 +213,10 @@
                  ((symbol-function 'nl_val_tag) (lambda (_) 4))
                  ((symbol-function 'nl_directcall_fast_run)
                   (lambda (id _b _n out) (push id fast) (puthash out 9 mem) 0))
+                 ;; Hash ids 101-104 take `nl_directcall_hash_run' instead of
+                 ;; `nl_directcall_run'; both are the non-fast body here.
+                 ((symbol-function 'nl_directcall_hash_run)
+                  (lambda (id _b _n out _e) (push id run) (puthash out 11 mem) 0))
                  ((symbol-function 'nl_directcall_run)
                   (lambda (id _b _n out _e) (push id run) (puthash out 11 mem) 0)))
          (dolist (c '((1 1 9 t) (110 1 9 t) (101 3 11 nil) (112 0 11 nil) (1 0 11 nil)))

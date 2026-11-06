@@ -185,6 +185,8 @@
 (ert-deftest checked-owner-shape-current ()
   (should (co--shape (ce--form 'nl_frame_stack_promote_owner_checked))))
 (ert-deftest checked-owner-shape-authentic-bad ()
+  ;; Needs the untracked out/ attempt artifact next to the checkout.
+  (skip-unless (file-exists-p (expand-file-name "../out/checked-owner/attempt1/failed-helper.sexp" cp--root)))
   (co--expect-structure (co--bad-form) 'authenticated-attempt1))
 (ert-deftest checked-owner-shape-moved-advance ()
   (let* ((bad (copy-tree (ce--form 'nl_frame_stack_promote_owner_checked)))
@@ -194,6 +196,8 @@
     (setcdr body (list (append state-if (list advance))))
     (co--expect-structure bad 'moved-actual-advance)))
 (ert-deftest checked-owner-loop-authentic-budget ()
+  ;; Needs the untracked out/ attempt artifact next to the checkout.
+  (skip-unless (file-exists-p (expand-file-name "../out/checked-owner/attempt1/failed-helper.sexp" cp--root)))
   (let (caught)
     (condition-case e (co--run 0 'success 'authentic-bad)
       (co-loop-budget (setq caught e)))

@@ -8,7 +8,7 @@
 
 (defconst spd--aux 20000)
 (defconst spd--env 16384)
-(defconst spd--cap 5)
+(defconst spd--cap 24 "In-place record capacity of an AUX block (`wf_bytecode_frame_aux').")
 
 (defvar spd--words nil)
 (defvar spd--cells nil)
@@ -29,7 +29,7 @@
   (setq spd--words (make-hash-table :test #'eql) spd--cells (make-hash-table)
         spd--next 200000 spd--dirty 0 spd--calls nil spd--kwcalls 0
         spd--keywords (plist-get opts :keywords))
-  (cl-loop for off from 0 to 184 by 8 do (puthash (+ spd--aux off) 3 spd--words))
+  (cl-loop for off from 0 to 488 by 8 do (puthash (+ spd--aux off) 3 spd--words))
   (puthash (+ spd--aux 24) 1 spd--words)
   (puthash (+ spd--aux 96) 1 spd--words)
   (puthash (+ spd--env 112) (or (plist-get opts :flags) 0) spd--words)
@@ -63,6 +63,8 @@
              ((symbol-function 'data-addr)
               (cons 'macro (lambda (n) (if (eq n 'nl_thread_registry) 50000 50100))))
              ((symbol-function 'wf_dirty) (lambda () (cl-incf spd--dirty) 1))
+             ;; A spill rebases N4 cut captures; this model has no N4 state.
+             ((symbol-function 'nl_n4_cut_rebase) (lambda (&rest _) 0))
              ((symbol-function 'nl_word_canon) #'identity)
              ((symbol-function 'bf_keyword_raw)
               (lambda (w) (cl-incf spd--kwcalls) (if (memq w spd--keywords) 1 0)))
@@ -144,15 +146,15 @@
 (ert-deftest spd-sixth-bind-spills-in-order ()
   (spd--fresh)
   (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_lean_bind)
-    (dotimes (i 5) (should (= (spd--bind i (+ 5 (* 4 i))) 0)))
+    (dotimes (i spd--cap) (should (= (spd--bind i (+ 5 (* 4 i))) 0)))
     (should (= (spd--count) spd--cap))
-    (should (= (spd--bind 5 9) 0))
+    (should (= (spd--bind spd--cap 9) 0))
     (should (= (spd--count) 1))
-    (should (equal (spd--rec 0) (list (spd--sym 5) (+ 21 20))))
+    (should (equal (spd--rec 0) (list (spd--sym spd--cap) (+ 21 (* 4 spd--cap)))))
     (should (equal (spd--rec 1) '(3 3)))
     ;; Newest first on the list: record 4 on top, record 0 deepest.
     (should (equal (spd--list-names)
-                   (cl-loop for i from 4 downto 0 collect (list (spd--sym i) (+ 21 (* 4 i))))))))
+                   (cl-loop for i from (1- spd--cap) downto 0 collect (list (spd--sym i) (+ 21 (* 4 i))))))))
 
 (ert-deftest spd-fast-unbind-pops-records-innermost-first ()
   (spd--fresh)
@@ -202,7 +204,7 @@
   (spd--fresh)
   (spd--with-model spd--chain
     (spd--bind 1 5) (spd--bind 2 9)
-    (let ((head (wf_bytecode_w_aux_unwinds spd--aux)))
+    (let ((head (wf_bytecode_w_aux_unwinds spd--env spd--aux)))
       (should (gethash head spd--cells))
       (should (= (spd--count) 0))
       (should (equal (spd--list-names)
@@ -210,14 +212,14 @@
       (should (equal (spd--rec 0) '(3 3))))
     ;; A second call changes nothing.
     (let ((n spd--next))
-      (wf_bytecode_w_aux_unwinds spd--aux)
+      (wf_bytecode_w_aux_unwinds spd--env spd--aux)
       (should (= n spd--next)))))
 
 (ert-deftest spd-unwind-step-pops-records-before-the-list ()
   (spd--fresh)
   (let ((seen nil))
     (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_pop_lean wf_bytecode_w_lean_bind
-                      wf_bytecode_unwind_step)
+                      m5_fx_pop_event wf_bytecode_unwind_step)
       (cl-letf (((symbol-function 'wf_bytecode_handlers_cross_unwind) (lambda (&rest _) 0))
                 ((symbol-function 'wf_bytecode_w_lean_event_p)
                  (lambda (ev) (if (integerp (car (gethash ev spd--cells))) 1 0)))
@@ -239,13 +241,18 @@
     (dolist (fn '(wf_bytecode_unwind_push wf_bytecode_handlers_push))
       (should (funcall has fn 'wf_bytecode_w_aux_spill)))
     (should (funcall has 'wf_bytecode_execute_frame 'wf_bytecode_w_aux_unwinds))
-    (should (funcall has 'wf_bytecode_unwind_step 'wf_bytecode_w_pop_lean))
+    ;; The record pop moved into `m5_fx_pop_event', which unwind_step calls.
+    (should (funcall has 'wf_bytecode_unwind_step 'm5_fx_pop_event))
+    (should (funcall has 'm5_fx_pop_event 'wf_bytecode_unbind))
     ;; nl_ps_outer_saved and nl_thread_unshallow_lean_at live in another constant.
     (with-temp-buffer
       (insert-file-contents (locate-library "nelisp-standalone-build.el"))
-      (should (= 2 (how-many "(wf_bytecode_w_link_events link)" (point-min)))))
-    (should (sst--find (sst--function 'wf_bytecode_frame_aux)
-                       (lambda (f) (equal f '(nl_root_frame env 23)))))
+      (should (= 2 (how-many "(wf_bytecode_w_link_events env link)" (point-min)))))
+    ;; The aux block (61 WORD slots) is allocated by `wf_bytecode_aux_new',
+    ;; which `wf_bytecode_frame_aux' calls on first need.
+    (should (funcall has 'wf_bytecode_frame_aux 'wf_bytecode_aux_new))
+    (should (sst--find (sst--function 'wf_bytecode_aux_new)
+                       (lambda (f) (equal f '(nl_root_frame env 61)))))
     ;; The lean binder neither conses nor looks anything up.
     (dolist (sym '(wf_bytecode_w_cons2 nelisp_mirror_lookup_entry nl_sb_plain_entry_p nl_cons_alloc))
       (should-not (funcall has 'wf_bytecode_w_lean_bind sym)))

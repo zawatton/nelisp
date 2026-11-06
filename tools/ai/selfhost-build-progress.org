@@ -1,0 +1,76 @@
+#+TITLE: Standalone build hosted on NeLisp (option a: GNU byte-code stays the reference)
+
+# Goal (user, 2026-11-05): build NeLisp with NeLisp alone, without host GNU
+# Emacs.  Option (a): GNU's vendored bytecomp.el runs on NeLisp and must
+# reproduce the byte-code GNU Emacs 31.1 produces; Doc 206's reference stays.
+# cmd checks need SELFHOST_BIN = a built nelisp binary (e.g. build-onK/nelisp-dynamic).
+
+* S1 The build script loads on NeLisp
+
+** S1.1 A literal (require (quote nelisp-native-arithmetic-v2)) in a loaded file succeeds
+#+REQUIRES: SELFHOST_BIN
+#+NOTE: 2026-11-05 build115: literal form fails with "Root evidence node/depth bound exceeded"; a run-time (require VAR) loads
+cmd: bash tools/ai/selfhost-build/run.sh probe-arith
+
+** S1.2 Every top-level require of the build script loads in order
+#+REQUIRES: SELFHOST_BIN
+cmd: bash tools/ai/selfhost-build/run.sh probe-require
+
+** S1.3 scripts/nelisp-standalone-build.el loads and defines its entry point
+#+REQUIRES: SELFHOST_BIN
+cmd: bash tools/ai/selfhost-build/run.sh probe-load
+
+* S2 GNU bytecomp on NeLisp reproduces GNU 31.1 byte-code
+
+** S2.1 byte-compile of a fixed lambda corpus on NeLisp equals GNU 31.1 output
+pending
+
+** S2.2 The prelude byte-code transform on NeLisp equals the GNU-hosted result
+pending
+
+** S2.3 The core byte-code source on NeLisp equals the GNU-hosted result
+pending
+
+* S3 The toolchain gate accepts a reproducing NeLisp host
+
+** S3.1 Doc 206 amendment defines acceptance of a NeLisp host by reproduction
+pending
+
+** S3.2 The gate passes on NeLisp and refuses a NeLisp whose bytecomp output differs
+pending
+
+** S3.3 The gate on GNU Emacs 31.1 is unchanged
+pending
+
+* S4 Build subprocesses run NeLisp
+
+** S4.1 Prewarm unit children spawn the NeLisp binary and write identical units
+pending
+
+** S4.2 The whole-file prelude compile child runs on NeLisp with identical output
+pending
+
+** S4.3 No GNU Emacs process is started during a NeLisp-hosted build
+pending
+
+* S5 End to end
+
+** S5.1 nelisp-standalone-build-reader completes on the NeLisp binary
+pending
+
+** S5.2 The NeLisp-hosted binary equals the GNU-hosted one except the build digest
+pending
+
+** S5.3 verify22 on the NeLisp-hosted binary equals the GNU-hosted reference
+pending
+
+* S6 Performance
+
+** S6.1 NeLisp secure-hash sha256 reaches 300 MB/s (2026-11-05: 26 MB/s)
+pending
+
+** S6.2 Warm NeLisp-hosted build within 2x of the GNU-hosted warm build
+pending
+
+** S6.3 Full NeLisp-hosted build within 2x of the GNU-hosted full build
+pending

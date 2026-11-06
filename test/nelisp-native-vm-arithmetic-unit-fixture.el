@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib) (require 'nelisp-aot-compiler) (require 'nelisp-standalone-build)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (defun aa-def (n p) (or (cl-find-if (lambda (f) (eq (cadr f) n)) p) (error "Missing %S" n)))
 (let* ((variant (or (getenv "AA_VARIANT") "positive")) (output (getenv "AA_OUTPUT"))
        (base #x38000000) (slots (+ base 256)) (table (+ base 4096))
@@ -75,7 +76,7 @@
     (ptr-write-u64 ,base 8 i) (ptr-write-u64 ,base 16 failure)
     (syscall-direct 1 1 ,base 24 0 0 0) failure)))
    (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-  (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "arithmetic-audit.o" source)) "_start")
+  (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "arithmetic-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
   (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
   (with-temp-file (concat output ".original.el") (prin1 original (current-buffer)))
   (with-temp-file (concat output ".cases.el") (prin1 rows (current-buffer)))

@@ -18,6 +18,8 @@
 (require 'emacs-cc-xdisp-1)
 (require 'emacs-tui-backend)
 
+(declare-function emacs-redisplay-mode-line-spans "emacs-redisplay" (window width end))
+
 (defvar emacs-redisplay-core--handle-counter 0
   "Monotonic counter for lightweight redisplay handles.")
 
@@ -502,6 +504,11 @@ Return non-nil when the hint was applied without reading buffer text."
          (width (max 1 (emacs-window-window-width w)))
          (height (max 1 (emacs-window-window-height w)))
          (body-height (if (and emacs-redisplay-paint-mode-line-p (> height 1)) (1- height) height))
+         (_long-line-state
+          (and buffer (not (stringp buffer))
+               (emacs-cc-xdisp-1--update-long-line-state
+                buffer (emacs-redisplay-core--buffer-text-tick buffer)
+                (lambda () (emacs-redisplay-core--buffer-string buffer)))))
          (text (emacs-redisplay-core--buffer-string buffer))
          (point (or (emacs-window-window-point w) 1))
          (window-start (or (emacs-window-window-start w) 1))
@@ -529,6 +536,7 @@ Return non-nil when the hint was applied without reading buffer text."
       (setq i (1+ i)))
     (let* ((end (or (nth (+ start-line body-height) starts) (length text)))
            (spans (and (< body-height height)
+                       (fboundp 'emacs-redisplay-mode-line-spans)
                        (emacs-redisplay-mode-line-spans w width (1+ end))))
            (mode (mapconcat #'car spans ""))
            (state (list spans (emacs-window-window-edges w)))

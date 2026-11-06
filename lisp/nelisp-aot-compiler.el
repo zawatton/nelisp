@@ -23736,7 +23736,7 @@ LOAD-FN is one of the width-specific register-offset loaders
 (`nelisp-asm-arm64-ldrb-reg-reg' / `-ldrh-reg-reg' / `-ldrw-reg-reg');
 the Wt destination zero-extends to x0, matching the i64 contract of the
 u64 path.  ptr → x1, offset → x2; result *(uN*)(ptr+offset) lands in x0."
-  (unless (nelisp-aot-compiler--emit-affine-memory-arm64 node buf (pcase load-fn ('nelisp-asm-arm64-ldrb-reg-reg 1) ('nelisp-asm-arm64-ldrh-reg-reg 2) ('nelisp-asm-arm64-ldrw-reg-reg 4)) nil)
+  (unless (nelisp-aot-compiler--emit-affine-memory-arm64 node buf (pcase load-fn ('nelisp-asm-arm64-ldrb-reg-reg 1) ('nelisp-asm-arm64-ldrh-reg-reg 2) ((or 'nelisp-asm-arm64-ldrw-reg-reg 'nelisp-heap-accessors-arm64-ldrw-reg-reg) 4)) nil)
   (nelisp-aot-compiler--emit-value
    (nelisp-aot-compiler--ir-get node :ptr) buf)
   (nelisp-asm-arm64-str-pre-sp-16 buf 'x0)           ; push ptr

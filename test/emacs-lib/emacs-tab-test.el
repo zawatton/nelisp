@@ -2,13 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
-(let ((src-dir (expand-file-name
-                "../src"
-                (file-name-directory (or load-file-name buffer-file-name)))))
-  (load (expand-file-name "tab-bar.el" src-dir) nil t)
-  (load (expand-file-name "tab-line.el" src-dir) nil t))
+(load (nemacs-test-paths-source "tab-bar.el") nil t)
+(load (nemacs-test-paths-source "tab-line.el") nil t)
 
 (ert-deftest emacs-tab-test/tab-bar-basic-state ()
   (let ((tab-bar--tabs nil)

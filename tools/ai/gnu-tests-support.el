@@ -11,11 +11,9 @@
   (file-name-directory (or load-file-name buffer-file-name))
   "tools/ai/ of this tree.")
 
-;; The bundle (nelisp-emacs-lib emacs-parity-clloop.el) replaces the
-;; runtime's `cl-loop' with a minimal builder that expands any clause it
-;; does not know, such as `finally', to nil; GNU ert.el's `ert-run-tests'
-;; then runs no test at all.  This lane measures the runtime's Lisp, so put
-;; back the definitions the runner recorded before loading the bundle.
+;; This lane measures the runtime's Lisp, so put back the definitions the
+;; runner recorded before loading the bundle (the bundle no longer carries a
+;; cl-loop of its own; the list is normally inert).
 (defvar gnu-tests--runtime-definitions nil
   "Alist (NAME . DEFINITION) saved before the bundle loaded.")
 (dolist (cell gnu-tests--runtime-definitions)

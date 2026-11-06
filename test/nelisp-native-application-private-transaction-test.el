@@ -3,6 +3,7 @@
 
 (require 'ert)
 (require 'nelisp-native-application-producer)
+(require 'nelisp-cc-fxir-admission)
 (defvar nelisp-version)
 (defvar nnap-tx--callee nil)
 (defvar nnap-tx--observer nil)
@@ -24,6 +25,10 @@
 (defun nnap-tx--plan (forms)
   (let ((names (mapcar #'cadr forms)))
     (list :status :validated-inputs :names names
+          :manifest-file "manifest" :names-file "names"
+          :manifest (list :modules nil
+                          :baseline-sha256
+                          nelisp-native-application-producer--row-baseline-pin)
           :forms (mapcar (lambda (form) (cons (cadr form) form)) forms)
           :form-hashes
           (mapcar (lambda (form)
@@ -99,7 +104,9 @@
                      (error "Injected receipt assembly failure"))
                    receipt))))
       (nelisp-native-application-producer-install
-       "manifest" "names" "manifest-hash" "names-hash" (make-string 64 ?a) mode))))
+       "manifest" "names"
+       (secure-hash 'sha256 "manifest") (secure-hash 'sha256 "names")
+       (make-string 64 ?a) mode))))
 
 (defun nnap-tx--assert-unbound (names)
   (dolist (name names) (should-not (fboundp name))))
@@ -214,7 +221,9 @@
       (unwind-protect
           (let ((receipt (nnap-tx--run plan (nnap-tx--adapter) :selected-definitions)))
             (should (eq (plist-get receipt :status) :installed))
-            (should (equal nnap-tx--preflight-modes '(:selected-definitions :selected-definitions)))
+            ;; Install now preflights once and re-verifies the pinned inputs with
+            ;; `--recheck-inputs' instead of running a second preflight.
+            (should (equal nnap-tx--preflight-modes '(:selected-definitions)))
             (should (= nnap-tx--body-call-count 0)))
         (mapc #'fmakunbound (plist-get plan :names))))))
 

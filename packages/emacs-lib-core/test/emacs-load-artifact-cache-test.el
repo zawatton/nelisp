@@ -4,20 +4,22 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'cl-lib)
 (require 'ert)
 
 (defconst emacs-load-artifact-cache-test--root
-  (expand-file-name ".." (file-name-directory
-                          (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (let ((host-load (symbol-function 'load))
       (host-load-file (symbol-function 'load-file)))
   (let ((emacs-version 1)
         (native-comp-enable-subr-trampolines nil))
     (funcall host-load-file
-             (expand-file-name "src/emacs-load.el"
-                               emacs-load-artifact-cache-test--root)))
+             (nemacs-test-paths-source "emacs-load.el")))
   (fset 'load host-load)
   (fset 'load-file host-load-file))
 

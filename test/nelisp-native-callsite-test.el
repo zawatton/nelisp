@@ -421,11 +421,24 @@ and the caller must keep observing the original."
          0))
       (exit (rr_run)))))
 
+(defconst nelisp-native-callsite-test--string-read-stub
+  '(defun nl_string_read64 (p off)
+     (if (= off -1) (ptr-read-u8 p 0) (ptr-read-u64 p off)))
+  "Stand-in for the runtime string-block reader that heap reads call for a
+String WORD.  The runtime owns the real helper outside this closed unit; the
+probe never passes a String WORD, so the legacy-address arm is exact.")
+
+(defun nelisp-native-callsite-test--with-string-read-stub (sexp)
+  "Return SEXP, a (seq ...) program, with the string reader stand-in prepended."
+  (cl-assert (eq (car sexp) 'seq))
+  (cons 'seq (cons nelisp-native-callsite-test--string-read-stub (cdr sexp))))
+
 (defun nelisp-native-callsite-test--run (source-fn)
   (let ((path (make-temp-file "nelisp-native-callsite-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp (funcall source-fn) path)
+          (nelisp-aot-compile-sexp
+           (nelisp-native-callsite-test--with-string-read-stub (funcall source-fn)) path)
           (call-process path nil nil nil))
       (delete-file path))))
 

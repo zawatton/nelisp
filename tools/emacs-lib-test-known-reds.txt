@@ -1,14 +1,3 @@
 emacs-easy-mmode-test/define-globalized-minor-mode-materializes-surfaces
 emacs-easy-mmode-test/define-minor-mode-honours-variable-setter
 emacs-easy-mmode-test/define-minor-mode-materializes-surfaces
-org-agenda-RET-jumps-to-source
-org-agenda-a-sorts-same-day-items-by-time
-org-agenda-capture-todo-fixture-integration
-org-agenda-dispatches-a-shows-scheduled
-org-agenda-dispatches-m-shows-matched-tag
-org-agenda-dispatches-t-shows-todos
-org-agenda-f-and-b-shift-agenda-window
-org-agenda-g-reverts
-org-agenda-q-quits
-org-agenda-respects-org-agenda-files
-org-archive-subtree-moves-current-subtree-to-archive-heading

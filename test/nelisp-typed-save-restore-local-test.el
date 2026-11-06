@@ -49,6 +49,8 @@
       (setq before (copy-hash-table mem))
       (cl-letf (((symbol-function 'ptr-read-u64) #'rd) ((symbol-function 'heap-read-u64) #'rd)
                 ((symbol-function 'ptr-write-u64) #'wr) ((symbol-function 'nl_val_tag) #'tag) ((symbol-function 'sexp-tag) #'tag)
+                ;; No suspended-continuation views exist in this model: every binding is visible.
+                ((symbol-function 'nl_n4_binding_visible) (lambda (&rest _) 1))
                 ((symbol-function 'nl_word_payload) #'payload) ((symbol-function 'nl_vector_slot_word) #'slotword)
                 ((symbol-function 'vector-ref-ptr) #'slotword)
                 ((symbol-function 'vector-len) (lambda (w) (ash (rd (payload w) 0) -8)))

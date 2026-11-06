@@ -290,7 +290,7 @@
         (should (= object (bf_identity_hash 8198)))))))
 
 (ert-deftest hf-string-word-loads-and-boundaries ()
-  (hf--install '(nl_ht_str_hash nl_ht_str_hash_loop nl_ht_str_hash_bytes))
+  (hf--install '(nl_ht_str_hash nl_ht_str_hash_raw nl_ht_fold_tail nl_ht_str_hash_loop nl_ht_str_hash_bytes))
   (condition-case nil (hf--install '(nl_ht_hash_words)) (error nil))
   (let ((bytes nil) (words 0) (singles 0))
     (cl-labels ((read-byte (_ i)
@@ -306,7 +306,18 @@
                 ((symbol-function 'nl_bi_strptr) (lambda (_) 4096))
                 ((symbol-function 'm5_byte_at) #'read-byte)
                 ((symbol-function 'heap-read-u8) #'read-byte)
-                ((symbol-function 'heap-read-u64) #'read-word))
+                ((symbol-function 'heap-read-u64) #'read-word)
+                ;; The production tail path loads with ptr-read-u64, which may
+                ;; read past the end of the string within a page (the guard in
+                ;; nl_ht_hash_words keeps it from crossing one); pad with zeros.
+                ((symbol-function 'ptr-read-u64)
+                 (lambda (_ i)
+                   (should (>= i 0))
+                   (let ((word 0))
+                     (dotimes (j 8)
+                       (when (< (+ i j) (length bytes))
+                         (setq word (+ word (ash (aref bytes (+ i j)) (* j 8))))))
+                     word))))
         (dolist (n '(0 1 7 8 9 15 16 31 32 127 128 129 4096))
           (setq bytes (make-string n ?x) words 0 singles 0)
           (let ((h (nl_ht_str_hash 8192)))

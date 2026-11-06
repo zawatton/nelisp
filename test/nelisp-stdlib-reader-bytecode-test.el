@@ -65,12 +65,15 @@
                     "#[nil \"x\" nil 1]"))
     (should-error (nelisp--read-from-string-impl source)))
   ;; GNU accepts this as an interpreted closure, not a byte-code function.
-  ;; No matching interpreted-function object exists in the current runtime.
-  (let ((host (car (read-from-string "#[nil (abc . 1) nil]"))))
+  ;; The reader now builds the matching interpreted-function object too.
+  (let ((host (car (read-from-string "#[nil (abc . 1) nil]")))
+        (ours (car (nelisp--read-from-string-impl "#[nil (abc . 1) nil]"))))
     (should (functionp host))
-    (should-not (byte-code-function-p host)))
-  (should-error (nelisp--read-from-string-impl "#[nil (abc . 1) nil]")
-                :type 'unsupported-feature))
+    (should-not (byte-code-function-p host))
+    (should (functionp ours))
+    (should-not (byte-code-function-p ours))
+    (should (eq (interpreted-function-p ours) (interpreted-function-p host)))
+    (should (equal (prin1-to-string ours) (prin1-to-string host)))))
 
 (provide 'nelisp-stdlib-reader-bytecode-test)
 

@@ -10,6 +10,10 @@
   (cond ((atom form) form)
         ((eq (car form) 'seq) (cons 'progn (mapcar #'nelisp-call-test--lower (cdr form))))
         ((eq (car form) 'data-addr) 900)
+        ;; Doc 216 S1: heap reads go through the accessor layer; lower them
+        ;; to the exact physical prefix recorded in its read-op table.
+        ((eq (car form) 'heap-read-u64)
+         (cons 'ptr-read-u64 (mapcar #'nelisp-call-test--lower (cdr form))))
         (t (mapcar #'nelisp-call-test--lower form))))
 (eval (nelisp-call-test--lower (nelisp-native-call-v2-source)) t)
 

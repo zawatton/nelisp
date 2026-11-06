@@ -431,8 +431,9 @@ needs their install/init paths to have run before vendor files are required."
   'ok)
 
 (defun vendor-core-smoke--check-lisp-mode ()
-  "Load the daily-driver lisp-mode feature and verify Elisp editing modes."
+  "Load GNU lisp-mode and the nemacs eval commands; verify Elisp editing modes."
   (require 'lisp-mode)
+  (require 'emacs-elisp-eval)
   (vendor-core-smoke--assert (featurep 'lisp-mode)
                              "lisp-mode feature was not provided")
   (vendor-core-smoke--check-fbound

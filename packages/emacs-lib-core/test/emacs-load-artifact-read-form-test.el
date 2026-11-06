@@ -4,15 +4,18 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'cl-lib)
 (require 'ert)
 
 (defconst emacs-load-artifact-read-form-test--root
-  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name))))
+  nemacs-test-paths-repo-root)
 
 (defconst emacs-load-artifact-read-form-test--source-file
-  (expand-file-name "src/emacs-load.el"
-                    emacs-load-artifact-read-form-test--root))
+  (nemacs-test-paths-source "emacs-load.el"))
 
 ;; `src/emacs-load.el' only installs its standalone `load'/`load-file'
 ;; override while its own top-level gate reads standalone (see its

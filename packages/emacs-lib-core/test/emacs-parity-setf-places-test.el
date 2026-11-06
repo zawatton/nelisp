@@ -1,11 +1,13 @@
 ;;; emacs-parity-setf-places-test.el --- generalized place regression tests -*- lexical-binding: t; -*-
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
 (require 'ert)
 (require 'cl-lib)
 
 (defconst emacs-parity-setf-places-test--source
-  (expand-file-name "../src/emacs-parity-setf-places.el"
-                    (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-parity-setf-places.el"))
 
 (ert-deftest emacs-parity-setf-places/standalone-if-places-and-host-guard ()
   "Install the shim only with the standalone marker and preserve host `setf'."

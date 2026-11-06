@@ -929,7 +929,6 @@ $BOOT_LOAD_PATH_FORM
 $BOOTSTRAP_BUNDLE_LOAD
 $BOOT_NELISP_SOURCE_REFRESH
 (setq emacs-load-auto-native-compile t)
-  (require 'emacs-cl-macros)
   (require 'nemacs-main)
   (setq nemacs-main-options
         (list :batch $([ "$BATCH" = "1" ] && echo t || echo nil)
@@ -1166,7 +1165,6 @@ case "$NEMACS_DRIVER" in
         cat "$NEMACS_BOOTSTRAP_REPL" >> "$tmp"
         printf '%s\n' "(setq nelisp-emacs-vendor-root \"$(shell_quote "$NEMACS_HOME/vendor")\")" >> "$tmp"
         printf '%s\n' "$(one_line_form "$BOOT_LOAD_PATH_FORM")" >> "$tmp"
-        printf '%s\n' "(require 'emacs-cl-macros)" >> "$tmp"
         printf '%s\n' "(require 'nemacs-main)" >> "$tmp"
         printf '%s\n' "(setq emacs-load-auto-native-compile t)" >> "$tmp"
         REPL_OPTIONS_FORM="$(cat <<EOF

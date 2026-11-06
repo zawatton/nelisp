@@ -4,7 +4,8 @@
 (unless (featurep 'nelisp-aot-cleanup-branch-test)
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defun nelisp-cleanup-test--ir (kind &rest args)
   (apply #'nelisp-aot-compiler--make-ir kind args))
 (ert-deftest nelisp-cleanup-branch/original-owner-and-fallbacks ()
@@ -94,6 +95,7 @@
     (let ((nelisp-aot-compiler--object-hidden-boundary-symbols nil))
      (nelisp-aot-compile-to-object (cons 'seq defs) target))
     (with-temp-file c
+     (insert nelisp-aot-test-runtime-nl-val-tag-c)
      (insert "#include <stdint.h>\ntypedef uint64_t U;typedef U(*F)(U,U,U,U);static volatile U*const m=(void*)268435456;static U e[2][4],want[2],cursor,bad;\n")
      (dolist (d defs) (insert (format "extern U %s(U,U,U,U);\n" (cadr d))))
      (insert "U V_observe(U v){U*f=__builtin_frame_address(1);U j=cursor++;if(j>=2)return 99;if(f[-1]!=e[j][0]||f[-7]!=e[j][1]||f[-8]!=e[j][2]||f[-9]!=e[j][3]||v!=want[j]||m[4]!=7||((U)__builtin_frame_address(0)&15))bad=1;f[-1]^=UINT64_C(0x8000000000000000);f[-7]=UINT64_C(0xdead000000000001);f[-8]=UINT64_C(0xdead000000000002);f[-9]=UINT64_C(0xdead000000000003);m[0]+=11;m[1]^=UINT64_C(0x123456789abcdef0);m[2]-=13;m[4]=0;return v;}\n")

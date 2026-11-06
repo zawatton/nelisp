@@ -293,8 +293,10 @@
                                      (nelisp-native-gccjit--array (make-list 6 int)) 0)))
                      (freeze (call "gcc_jit_context_new_call_through_ptr" ctx 0
                                    (call "gcc_jit_context_new_bitcast" ctx 0 (rv (cdr cell)) type) 6 (nelisp-native-gccjit--array values))))))
-                ((eq (car node) 'ptr-read-u64)
-                 (unless (= (length node) 3) (error "gccjit: malformed ptr-read-u64"))
+                ;; `heap-read-u64' is the Doc 216 S1 accessor spelling (b51fe66f4)
+                ;; of the same raw 64-bit load; the producer trees use it.
+                ((memq (car node) '(ptr-read-u64 heap-read-u64))
+                 (unless (= (length node) 3) (error "gccjit: malformed %s" (car node)))
                  (cast (rv (memory-slot (nth 1 node) (nth 2 node) scope)) int))
                 ((eq (car node) 'ptr-write-u64)
                  (unless (= (length node) 4) (error "gccjit: malformed ptr-write-u64"))

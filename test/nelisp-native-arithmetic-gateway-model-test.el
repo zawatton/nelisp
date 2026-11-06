@@ -50,6 +50,9 @@
       (puthash 900 20000 memory)
       (cl-letf (((symbol-function 'ptr-read-u64)
                  (lambda (address offset) (gethash (+ address offset) memory 0)))
+                ;; Heap reads go through the Doc 216 S1 accessor (b51fe66f4).
+                ((symbol-function 'heap-read-u64)
+                 (lambda (address offset) (gethash (+ address offset) memory 0)))
                 ((symbol-function 'ptr-write-u64)
                  (lambda (address offset value) (puthash (+ address offset) value memory)))
                 ((symbol-function 'wf_write_int) #'write-object)

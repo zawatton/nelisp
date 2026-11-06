@@ -66,7 +66,10 @@
 (ert-deftest nelisp-name-split-assembly-preserves-n5-order-and-one-boundary ()
   (let* ((process-environment (copy-sequence process-environment))
          (nelisp-standalone--target 'linux-x86_64)
-         (table (list (cons '(:lit "alpha") '(:word . 11)))))
+         ;; The assembler refuses to build without the canonical intrinsic WORD arms.
+         (table (append (list (cons '(:lit "alpha") '(:word . 11)))
+                        (mapcar (lambda (name) (cons (list :lit name) '(:word . 1)))
+                                '("+" "-" "<" "=" ">" "1+" "1-")))))
     (setenv "NELISP_T104_FLAT_DISPATCH" nil)
     (let ((source (nelisp-standalone--applyfn-assemble nil table))
           seen)
@@ -84,7 +87,7 @@
       (should-not (nelisp-standalone--sid "alpha"))
       (should (equal seen
                      (nelisp-standalone--applyfn-build-dispatch
-                      '(((:lit "alpha") :word . 11))
+                      table
                       '(:word nl_applyfn_default_w func_ptr args env name_ptr)
                       t))))
     (setenv "NELISP_T104_FLAT_DISPATCH" "1")

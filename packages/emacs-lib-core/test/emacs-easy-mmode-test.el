@@ -2,12 +2,14 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 (defconst emacs-easy-mmode-test--source
-  (expand-file-name
-   "../src/emacs-easy-mmode.el"
-   (file-name-directory (or load-file-name buffer-file-name))))
+  (nemacs-test-paths-source "emacs-easy-mmode.el"))
 
 (defvar easy-test-count 0)
 (defvar easy-global-turn-on-count 0)
@@ -17,9 +19,9 @@
 (defmacro emacs-easy-mmode-test--with-standalone-fallback (&rest body)
   "Load `emacs-easy-mmode' as if running under standalone NeLisp."
   (declare (indent 0) (debug (body)))
-  `(let ((--emacs-version-bound-- (boundp 'emacs-version))
-         (--emacs-version-value-- (and (boundp 'emacs-version)
-                                       emacs-version))
+  `(let ((--marker-bound-- (fboundp 'nelisp--write-stdout-bytes))
+         (--marker-def-- (and (fboundp 'nelisp--write-stdout-bytes)
+                              (symbol-function 'nelisp--write-stdout-bytes)))
          (--standalone-bound-- (boundp 'emacs-easy-mmode--standalone-p))
          (--standalone-value-- (and (boundp 'emacs-easy-mmode--standalone-p)
                                     emacs-easy-mmode--standalone-p))
@@ -33,15 +35,17 @@
                (symbol-function 'define-global-minor-mode))))
      (unwind-protect
          (progn
-           (when --emacs-version-bound--
-             (makunbound 'emacs-version))
+           ;; Fake the standalone runtime probe without unbinding the
+           ;; builtin `emacs-version' (GNU 31.1 rejects that).
+           (unless --marker-bound--
+             (fset 'nelisp--write-stdout-bytes #'ignore))
            (when --standalone-bound--
              (makunbound 'emacs-easy-mmode--standalone-p))
            (load emacs-easy-mmode-test--source nil t)
            ,@body)
-       (if --emacs-version-bound--
-           (setq emacs-version --emacs-version-value--)
-         (makunbound 'emacs-version))
+       (if --marker-bound--
+           (fset 'nelisp--write-stdout-bytes --marker-def--)
+         (fmakunbound 'nelisp--write-stdout-bytes))
        (if --standalone-bound--
            (setq emacs-easy-mmode--standalone-p --standalone-value--)
          (makunbound 'emacs-easy-mmode--standalone-p))

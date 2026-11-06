@@ -35,8 +35,11 @@
             (file-attribute-inode-number a)
             (file-attribute-device-number a)))))
 
-(let* ((dir (or (getenv "NELISP_FILE_ATTRS_FIXTURE_DIR")
-                 (error "NELISP_FILE_ATTRS_FIXTURE_DIR is unset")))
+;; This file is a driver script for the companion differential run, not an
+;; ERT suite: without the fixture directory it prints nothing and exits
+;; cleanly instead of aborting the batch.
+(when (getenv "NELISP_FILE_ATTRS_FIXTURE_DIR")
+ (let* ((dir (getenv "NELISP_FILE_ATTRS_FIXTURE_DIR"))
        (reg (expand-file-name "regular.txt" dir))
        (subdir (expand-file-name "subdir" dir))
        (link (expand-file-name "link.txt" dir))
@@ -55,6 +58,6 @@
                        :missing (nelisp-fa-test--shape missing)
                        :time-less (time-less-p mt later)
                        :time-less-rev (time-less-p later mt)
-                       :time-equal (time-equal-p mt mt)))))
+                       :time-equal (time-equal-p mt mt))))))
 
 ;;; nelisp-file-attributes-parity-test.el ends here

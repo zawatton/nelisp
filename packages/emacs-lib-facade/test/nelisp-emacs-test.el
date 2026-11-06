@@ -1404,10 +1404,7 @@ process (an earlier file may legitimately load a lazy feature)."
                    emacs-backquote
                    emacs-error
                    emacs-string
-                   emacs-pcase
-                   cl-lib
                    subr-x
-                   emacs-cl-macros
                    emacs-stub-bulk
                    emacs-stub
                    emacs-mark-state

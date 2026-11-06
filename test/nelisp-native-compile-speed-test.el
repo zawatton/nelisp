@@ -173,7 +173,9 @@
             (condition-case nil
                 (while t
                   (let ((form (read (current-buffer))))
-                    (when (and (eq (car-safe form) 'defun) (memq (cadr form) names))
+                    (when (or (and (eq (car-safe form) 'defun) (memq (cadr form) names))
+                              (and (eq (car-safe form) 'defconst)
+                                   (eq (cadr form) 'nelisp--prn-symbol-escape-table)))
                       (eval form t))))
               (end-of-file nil)))
           (funcall callback))
@@ -237,6 +239,14 @@
       (with-temp-buffer
         (insert-file-contents "scripts/nelisp-stdlib-prelude.el")
         (goto-char (point-min))
+        ;; The standalone encoder `nelisp--base64-encode' is a native
+        ;; primitive; the host runs its Lisp reference, which has the same
+        ;; contract (STRING LINE-BREAK PAD URL), under that name.
+        (search-forward "(defun nelisp--base64-encode-ref ")
+        (goto-char (match-beginning 0))
+        (eval (read (current-buffer)) t)
+        (fset 'nelisp--base64-encode (symbol-function 'nelisp--base64-encode-ref))
+        (goto-char (point-min))
         (search-forward "(defun base64-encode-string")
         (goto-char (match-beginning 0))
         (eval (read (current-buffer)) t))
@@ -260,32 +270,57 @@
                                 collect (apply #'unibyte-string
                                                (cl-loop for i below n collect (mod (* i 73) 256))))))
        (let* ((bytes (if (multibyte-string-p s) (encode-coding-string s 'utf-8) s))
-              (expected (funcall reference bytes t)))
+              (expected nil))
          (dolist (flag '(nil t))
-           (let ((actual (base64-encode-string s flag)))
-             (should (equal actual expected))
-             (should (eq (multibyte-string-p actual) (multibyte-string-p expected)))))))
+           ;; The encoder now wraps at 76 columns like GNU unless NO-LINE-BREAK
+           ;; is set, so the host reference is asked for the same policy.
+           (setq expected (funcall reference bytes flag))
+           (if (and (multibyte-string-p s) (string-match-p "[^[:ascii:]]" s))
+               ;; GNU refuses non-ASCII multibyte data rather than encoding
+               ;; its UTF-8 bytes, and the encoder follows it.
+               (should-error (base64-encode-string s flag))
+             (let ((actual (base64-encode-string s flag)))
+               (should (equal actual expected))
+               (should (eq (multibyte-string-p actual) (multibyte-string-p expected))))))))
      (should-error (base64-encode-string 7) :type 'wrong-type-argument))))
 
-(declare-function nelisp--equal-recursive "nelisp-stdlib-prelude")
+(declare-function nelisp--equal-reference "nelisp-stdlib-prelude")
 (ert-deftest p35/equal-shared-subtrees-do-not-repeat-the-native-walk ()
+  ;; c552d6bbb replaced `nelisp--equal-recursive' by the GNU internal_equal
+  ;; family (`nelisp--equal-1' / `nelisp--equal-reference'); from depth 11 an
+  ;; eq table remembers visited pairs, so shared subtrees are not re-walked.
   (let ((native (symbol-function 'equal)) (calls 0))
-    (cl-letf (((symbol-function 'nelisp--equal-recursive) nil)
+    (cl-letf (((symbol-function 'nelisp--native-eq) #'eq)
               ((symbol-function 'nelisp--native-equal)
                (lambda (a b) (setq calls (1+ calls)) (funcall native a b))))
       (with-temp-buffer
         (insert-file-contents "scripts/nelisp-stdlib-prelude.el")
         (goto-char (point-min))
-        (search-forward "(defun nelisp--equal-recursive")
+        (re-search-forward "^(defun nelisp--equal-container-p ")
         (goto-char (match-beginning 0))
-        (eval (read (current-buffer)) t))
+        (let ((end (save-excursion
+                     (re-search-forward "^(defun nelisp--equal-reference ")
+                     (goto-char (match-beginning 0))
+                     (forward-sexp 1)
+                     (point))))
+          (while (< (point) end)
+            (eval (read (current-buffer)) t)
+            (skip-chars-forward " \t\n"))))
       (let* ((tree (cl-loop for i below 100 collect (list i (vector "text" i))))
              (snapshot (copy-tree tree t)))
-        (should (nelisp--equal-recursive tree tree))
+        (should (nelisp--equal-reference tree tree))
         (should (= calls 0))
-        (should (nelisp--equal-recursive tree snapshot))
+        (should (nelisp--equal-reference tree snapshot))
         (aset (cadar snapshot) 1 -1)
-        (should-not (nelisp--equal-recursive tree snapshot))))))
+        (should-not (nelisp--equal-reference tree snapshot)))
+      ;; A DAG with 2^24 paths but 24 distinct nodes is compared once per pair.
+      (let ((mk (lambda ()
+                  (let ((x (list "text")))
+                    (dotimes (_ 24) (setq x (cons x x)))
+                    x))))
+        (setq calls 0)
+        (should (nelisp--equal-reference (funcall mk) (funcall mk)))
+        (should (< calls 100000))))))
 
 (provide 'nelisp-native-compile-speed-test)
 ;;; nelisp-native-compile-speed-test.el ends here

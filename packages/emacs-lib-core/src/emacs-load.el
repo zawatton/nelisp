@@ -16,6 +16,11 @@
 ;; Shim audit 2026-09-29: intentionally shadows native NeLisp definitions -- load/load-file implement the library artifact-cache load layer.
 ;;; Code:
 
+;; The load-time rewriter turns `defalias' into `nelisp-defalias-late',
+;; which `emacs-eval' defines.
+(unless (fboundp 'nelisp-defalias-late)
+  (require 'emacs-eval nil t))
+
 (declare-function nelisp--syscall-stat-field "nelisp-runtime" (path offset))
 (declare-function nelisp--syscall-path-int "nelisp-runtime"
                   (number path integer))

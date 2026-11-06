@@ -2,6 +2,10 @@
 
 ;;; Code:
 
+(require 'nemacs-test-paths
+         (expand-file-name "../../../test/emacs-lib/nemacs-test-paths"
+                           (file-name-directory (or load-file-name buffer-file-name))))
+
 (require 'ert)
 
 ;; The shim defers to native definitions, and a host Emacs defines
@@ -79,6 +83,8 @@
   (should (= (seq-max '(3 1 2)) 3))
   (should (= (seq-min '(3 1 2)) 1))
   (should (equal (seq-group-by #'car '((a . 1) (b . 2) (a . 3)))
+                 ;; The package's own `seq-group-by' (host definition dropped
+                 ;; above) returns groups in first-seen order.
                  '((a (a . 1) (a . 3))
                    (b (b . 2))))))
 
