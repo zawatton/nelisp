@@ -1,0 +1,14 @@
+01 (t t subr nil nil t t)
+02 (1 . 2)
+03 "get-buffer-create"
+04 two
+05 (t t t t t t t t t t)
+06 (1 . many)
+07 (1 . 2)
+08 "#<subr buffer-name>"
+09 primitive-function
+10 (nil nil nil)
+11 (nil t)
+12 wrong-type-argument
+13 (" s3" 1)
+14 t
