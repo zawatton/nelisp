@@ -1036,7 +1036,7 @@ nemacs-library-gate:
 	+$(MAKE) --no-print-directory -j4 -f $(firstword $(MAKEFILE_LIST)) nemacs-library-gate-checks
 
 .PHONY: nemacs-library-gate-checks
-nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-package-release-key-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
+nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-package-layout nemacs-library-package-release-key-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
 	$(EMACS) -Q $(NEMACS_PACKAGE_SRC_LOAD_PATH) -l $(NELISP_ROOT)/packages/emacs-lib-facade/test/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
 	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
@@ -1189,7 +1189,10 @@ nemacs-library-compat-api-policy:
 		-l scripts/nemacs-library-compat-api-policy.el \
 		-f nemacs-library-compat-api-policy-batch
 
+# Retired after the Doc 211 import (2026-11-06, user decision): it builds the promotion queue from the
+# retired nelisp-emacs-* package IDs, so the queue is always empty.
 nemacs-library-api-promotion-queue:
+	@echo "$@: retired after the Doc 211 import: built on the retired nelisp-emacs-* package model (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-api-promotion-queue-output "$(abspath $(NEMACS_LIBRARY_API_PROMOTION_QUEUE))")' \
@@ -1444,7 +1447,10 @@ nemacs-library-package-signature-release-verify:
 
 nemacs-library-package-signature-release: nemacs-library-package-signature-release-sign nemacs-library-package-signature-release-verify
 
+# Retired after the Doc 211 import (2026-11-06, user decision): it reads the retired signature-policy
+# TSV of the old per-package release model.
 nemacs-library-package-release-bundle-manifest:
+	@echo "$@: retired after the Doc 211 import: built on the retired nelisp-emacs-* package model (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
 		--eval '(setq nemacs-library-package-release-bundle-manifest-release-key-policy "$(abspath $(NEMACS_LIBRARY_PACKAGE_RELEASE_KEY_POLICY))")' \
@@ -1471,7 +1477,10 @@ nemacs-library-package-release-bundle-manifest:
 		-l scripts/nemacs-library-package-release-bundle-manifest.el \
 		-f nemacs-library-package-release-bundle-manifest-batch
 
-nemacs-library-package-release-bundle-smoke: nemacs-library-package-release-bundle-manifest
+# Retired after the Doc 211 import (2026-11-06, user decision): it only consumes the retired
+# release-bundle-manifest output.
+nemacs-library-package-release-bundle-smoke:
+	@echo "$@: retired after the Doc 211 import: built on the retired nelisp-emacs-* package model (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(dir $(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE))"
 	@printf 'package_id\tstatus\tloader_feature\tdeclared_dependencies\tinstalled_dependencies\tbundle_archive_location\tpackage_user_dir\tmember_features\tmanifest_retained\tmanifest_pending\tmanifest_archive_artifacts\tsource_leaks\n' > "$(NEMACS_LIBRARY_PACKAGE_RELEASE_BUNDLE_SMOKE)"
 	@set -e; \
@@ -1496,8 +1505,10 @@ nemacs-library-package-release-bundle-smoke: nemacs-library-package-release-bund
 		-l scripts/nemacs-library-package-release-bundle-smoke.el \
 		-f nemacs-library-package-release-bundle-smoke-summary-batch
 
-nemacs-library-package-release-publication-policy: nemacs-library-package-release-bundle-smoke
-	$(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) nemacs-library-package-release-publication-policy-run
+# Retired after the Doc 211 import (2026-11-06, user decision): it only
+# consumes the retired release-bundle-manifest and bundle-smoke outputs.
+nemacs-library-package-release-publication-policy:
+	@echo "$@: retired after the Doc 211 import: built on the retired nelisp-emacs-* package model (see the comment above this target)" >&2; exit 1
 
 nemacs-library-package-release-publication-policy-run:
 	mkdir -p "$(BUILD_DIR)"
@@ -1681,7 +1692,10 @@ nemacs-library-package-vendor-release-verify:
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK)" \
 		NEMACS_LIBRARY_PACKAGE_VENDOR_LOCK_SUMMARY="$(NEMACS_LIBRARY_PACKAGE_VENDOR_RELEASE_LOCK_SUMMARY)"
 
+# Retired after the Doc 211 import (2026-11-06, user decision): its checks are keyed on the retired
+# nelisp-emacs-* package IDs (9/48 pass after the import).
 nemacs-library-package-verify:
+	@echo "$@: retired after the Doc 211 import: built on the retired nelisp-emacs-* package model (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(BUILD_DIR)"
 	DOC211_SOURCE_ROOTS_SNAPSHOT=1 $(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-package-verify-output "$(abspath $(NEMACS_LIBRARY_PACKAGE_VERIFY))")' \
