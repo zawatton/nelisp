@@ -12228,6 +12228,13 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
     nil)
   (put 'set-buffer-modified-p 'emacs-stub-bulk t))
 
+(unless (fboundp 'restore-buffer-modified-p)
+  (defun restore-buffer-modified-p (flag)
+    "Like `set-buffer-modified-p', but without touching the modification tick."
+    (nelisp-buffer-set-modified flag (current-buffer))
+    flag)
+  (put 'restore-buffer-modified-p 'emacs-stub-bulk t))
+
 (unless (fboundp 'buffer-modified-tick)
   (defun buffer-modified-tick (&optional buffer)
     "Return BUFFER's text-change counter; nil means the current buffer."
@@ -25600,12 +25607,24 @@ A half is rounded to the even neighbour, as in Emacs."
 ;;     0.0e+NaN (as opposed to the all-integer branch, which still
 ;;     signals `arith-error' on a zero divisor, also matching host
 ;;     Emacs).
+(defun nelisp--marker-num (x)
+  "Return marker X's position, as GNU coerces a marker in arithmetic."
+  (if (nelisp-marker-buffer x)
+      (nelisp-marker-position x)
+    (signal 'error (list "Marker does not point anywhere"))))
 (defun mod (a b)
   ;; Types before arithmetic: (mod :key 0) is a TYPE error in Emacs, not an
   ;; arithmetic one -- checking the divisor first reported "Arithmetic
   ;; error" for a call whose problem was the dividend.
-  (unless (numberp a) (signal 'wrong-type-argument (list 'number-or-marker-p a)))
-  (unless (numberp b) (signal 'wrong-type-argument (list 'number-or-marker-p b)))
+  ;; Markers (`number-or-marker-p') are coerced on the error path only.
+  (unless (numberp a)
+    (if (nelisp-marker-p a)
+        (setq a (nelisp--marker-num a))
+      (signal 'wrong-type-argument (list 'number-or-marker-p a))))
+  (unless (numberp b)
+    (if (nelisp-marker-p b)
+        (setq b (nelisp--marker-num b))
+      (signal 'wrong-type-argument (list 'number-or-marker-p b))))
   (if (or (floatp a) (floatp b))
       (if (= b 0)
           (/ 0.0 0.0)

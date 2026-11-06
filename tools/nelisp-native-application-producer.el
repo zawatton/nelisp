@@ -17,7 +17,7 @@
 (defconst nelisp-native-application-producer--helper-sha256
   "55e2524b8a4ca339a54508c8e5c6f80bfd50b14c5229e937d04ac62effa2b791")
 (defconst nelisp-native-application-producer--prelude-sha256
-  "acd74638279dcca773b480d965cbcb9394f3ff084d14231076679a61550695de")
+  "1224f125649d1eb4e7ab7bdaad26ad4dda4d7782132d88ac822075fbcfba7874")
 
 ;; Baseline admission shortcut.  `nelisp-cc-fxir-native-all-rows' is a pure
 ;; function of (a) the bytes of the data files named by
