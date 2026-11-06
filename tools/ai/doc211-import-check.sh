@@ -54,6 +54,18 @@ case "${1:-}" in
         "$DOC211_IMPORT_BIN" --eval "(progn $boot_form (require 'url) (princ (format \"URL-EXPAND=%s\" (url-expand-file-name \"../c\" \"http://h/x/y/z\"))))" \
             2>&1 | grep -q 'URL-EXPAND=http://h/x/c'
         ;;
+    magit)
+        # Stale images are reused by existence, so rebuild them.  Needs the
+        # gitignored vendor clones (magit, transient, compat, ...; see the
+        # Doc 211 handoff for their commits).
+        : "${DOC211_IMPORT_BIN:?set DOC211_IMPORT_BIN}"
+        rm -f build/nemacs-bootstrap.el build/nemacs-runtime.nlri \
+              build/nemacs-magit-runtime.nlri build/nelisp-emacs-magit-bridge-bundle*.el
+        out=$(make -f mk/emacs-lib.mk magit-status-smoke NELISP_ROOT=. \
+                   NELISP_BIN="$DOC211_IMPORT_BIN" </dev/null 2>&1)
+        printf '%s\n' "$out" | grep -q '^MAGIT-STATUS-BUFFER PASS$' || { echo "status buffer: not PASS"; exit 1; }
+        printf '%s\n' "$out" | grep -q '^MAGIT-GIT-EXEC PASS$' || { echo "git exec: not PASS"; exit 1; }
+        ;;
     core-lane)
         # The six branch-only CI failures (core lane, owned by notes-d0)
         # pass with their files loaded.
@@ -67,7 +79,7 @@ case "${1:-}" in
               --eval '(ert-run-tests-batch-and-exit (quote (member nelisp-pcase-or-branch-local-bindings nelisp-private-continuation/native-three-frontends-public-collisions nelisp-rbx-pad-nonpolicy-complete-bytes-unchanged nelisp-rbx-pad-policy-store-follows-rbx-save nemacs-artifact-gate5-format-spec-source-equals-artifact nemacs-artifact-gate6-format-spec-source-equals-artifact)))'
         ;;
     *)
-        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|core-lane" >&2
+        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane" >&2
         exit 2
         ;;
 esac

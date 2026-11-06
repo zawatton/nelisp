@@ -63,7 +63,11 @@ cmd: sh tools/ai/doc211-import-check.sh boot
 cmd: sh tools/ai/doc211-import-check.sh url
 
 ** S3.4 END-TO-END: the magit status smoke prints MAGIT-STATUS-BUFFER PASS and MAGIT-GIT-EXEC PASS on the in-tree build
-pending
+# Known red since 2026-11-06: status buffer PASS, git exec FAIL (the status
+# buffer's default-directory is clobbered by a let unwind; handoff part 14).
+#+REQUIRES: DOC211_IMPORT_BIN
+#+TIMEOUT: 600
+cmd: sh tools/ai/doc211-import-check.sh magit
 
 * S4 Landing
 
