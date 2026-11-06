@@ -97,7 +97,56 @@
 # name, and are offset by the three that left (`eql', `sxhash-eq',
 # `sxhash-eql').  Measured emacs-gtk 30.1, 8819 names: shared-shadowing
 # 276 -> 268, shared-deferring 256 -> 264, PASS.
-shared-shadowing 253
+# 872 + 253 -> 854 on 2026-11-06, merging the core lane (cd93bb7a0) into the
+# Doc 211 import.  The core lane's own allowance is 253 (270 -> 253 by the
+# cl-gnu notes above); the emacs-lib allowance is the 602 below minus the
+# ert shim's 1 (packages/emacs-lib-core/src/ert.el is deleted; GNU ert is
+# vendored): 253 + 601 = 854.  Measured emacs 31.1, 26126 names: 930 =
+# 601 emacs-lib (packages/emacs-lib-*) + 329 core.  The 76 over are exactly
+# scripts/nemacs-runtime-frame-tab-preload.el 47, -process-preload.el 28 and
+# -image-preload.el 1 -- the same pre-doc211 core names the 872 note below
+# declines to absorb.  The gate stays red by 76, owned by the core lane.
+# 270 -> 872 on 2026-11-04 (Doc 211 import, recomputed after the defvar fix).
+# 872 = the 270 core names this file allowed on 2026-09-20 + the 602
+# emacs-lib package names below, each kept on purpose.
+# Re-measured 2026-11-04 on emacs 31.1 after merging notes-d0's
+# feat/sbcl-native-impl-f12-20261031: 932 = 602 emacs-lib + 330 core
+# (lisp/ 107, scripts/ 222, src/ 1).  The 60 core names over the 270 are NOT
+# accepted here; they were already present before the Doc 211 import
+# (e.g. scripts/nemacs-runtime-frame-tab-preload.el 47 and
+# -process-preload.el 28 exist at pre-doc211 = 0e250a877) and belong to the
+# core lane, so the gate stays red by that amount until they are guarded or
+# justified one by one.
+# `defvar'/`defcustom'/`defvar-local' are always shared-deferring (GNU never
+# lets them overwrite a bound variable), so no variable counts against
+# emacs-lib; the `(unless (boundp ...))' wrappers that tried to appease the
+# gate are gone because a non-top-level defvar in a lexical-binding file is
+# not special.  emacs-faces.el's 17 theme functions are plain again (the
+# host-side theme tests exercise this tree's implementation) and are counted
+# below.
+#   emacs-lib, kept on purpose                                                          602
+#     nemacs-gui-file-bridge-runtime.el  471  fset replay baked into the runtime image
+#     emacs-faces.el 17  theme machinery; host tests exercise this tree's
+#       implementation, so deferring to GNU custom.el breaks them
+#     fontset.el 21, emacs-completion-ui 6, map-ynp 2, emacs-elisp-eval 3,
+#       emacs-info 2, emacs-eshell 2, let-alist 1, emacs-undo-ui 1,
+#       emacs-project 1, emacs-ielm 1, emacs-dired-min 1, emacs-capf 1   (42)
+#       host tests exercise this tree's implementation, so deferring to the
+#       host breaks them
+#     emacs-time 11, emacs-load 3, files 3, emacs-numeric 4, emacs-fns 3, ert 1  (25;
+#       ert's 1 left with the core-lane merge, see the 854 note)
+#       host tests of standalone behaviour / this tree's ert shim fail when the
+#       definition is wrapped (nl-ffi-call is absent on a host)
+#     emacs-fileio-builtins.el 14  one host test broke when wrapped
+#     nelisp-emacs-magit-bridge.el 18  *--ensure-* preconditions install overrides of
+#       natives (window-*, bufferp, symbol-function, defalias, ...) on purpose, inside
+#       function bodies
+#     emacs-compile 3, emacs-replace 3, emacs-man 2, emacs-calc 2, emacs-shell 1,
+#       emacs-xref 1, emacs-comint 1  (13)  inside explicit *-install functions that
+#       are never run on load; opt-in by design
+#     emacs-cc-fns-1 make-hash-table 1, nelisp-emacs-org-bridge org-agenda-list 1
+#       deliberate wrappers around the existing native/definition
+shared-shadowing 854
 # 270 -> 269 on 2026-11-05 (cl-gnu P3): the native prelude `pcase' is deleted.
 
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
