@@ -1,0 +1,44 @@
+#+TITLE: Large-buffer regexp/search speed (NeLisp standalone)
+
+Run: NELISP_ORG_EL=<org.el> NELISP_BIN=target/nelisp bin/progress-meter.sh --ledger tools/ai/large-buffer-regex-progress.org
+Baseline binary for A8: target/nelisp.base (override NELISP_BASE_BIN).
+
+* S1 Speed on large strings and buffers
+
+** S1.1 160K-char `^`-anchored miss string-match <= 1.0s
+#+REQUIRES: NELISP_ORG_EL
+cmd: sh tools/ai/large-buffer-regex-bench.sh A1
+
+** S1.2 160K-char string-search miss <= 0.3s
+#+REQUIRES: NELISP_ORG_EL
+cmd: sh tools/ai/large-buffer-regex-bench.sh A2
+
+** S1.3 full org.el re-search-forward "^(defun org-agenda-files " <= 3s, same position as GNU
+#+REQUIRES: NELISP_ORG_EL
+#+TIMEOUT: 300
+cmd: sh tools/ai/large-buffer-regex-bench.sh A3
+
+** S1.4 full org.el loop count of "^(defun " <= 15s, same count as GNU
+#+REQUIRES: NELISP_ORG_EL
+#+TIMEOUT: 300
+cmd: sh tools/ai/large-buffer-regex-bench.sh A4
+
+* S2 Correctness and no regression
+
+** S2.1 differential corpus (>= 40 cases) identical to GNU Emacs
+#+TIMEOUT: 300
+cmd: sh tools/ai/large-buffer-regex-corpus.sh
+
+** S2.2 existing regex tests pass
+#+NOTE: Known pre-existing failures (identical on the pre-port tree): ERT nelisp-rx-test-backref-matches-like-gnu in packages/nelisp-regex, and standalone-reader-regexp-lead-filter-smoke (lead/no-lead timing ratio ~1.4, pass=nil). Kept red on purpose; do not weaken the check.
+#+TIMEOUT: 600
+cmd: sh tools/ai/large-buffer-regex-tests.sh
+
+** S2.3 ratchets all rc 0 (evidence file written by script)
+#+NOTE: Red until `sh tools/ai/large-buffer-regex-ratchets.sh --run` has been executed on this line; the evidence file is regenerated only by that script.
+cmd: sh tools/ai/large-buffer-regex-ratchets.sh --check
+
+** S2.4 small-string regex loop median new/base <= 1.05
+#+REQUIRES: NELISP_ORG_EL
+#+TIMEOUT: 600
+cmd: sh tools/ai/large-buffer-regex-bench.sh A8
