@@ -1,0 +1,35 @@
+#+TITLE: Two open GC questions from the 2026-11-03 audits, answered
+
+Ledger: tools/ai/gc-open-questions-progress.org. Binary: origin/main bcb1a7186.
+
+* Cause
+The question was why boxed string payloads were reclaimed from live alloc-bytes cells while plain blocks were not. Strings were never special. What decides survival is how the *container* is reached:
+
+- A container found by the native-stack conservative scan (for example an alloc-bytes buffer whose address sits in a let variable) is pushed on the conservative queue. nl_gc_conserv_drain then scans every word of it and pins whatever those words point into. Its referents survive.
+- A container reached only through the precise path is not scanned. Example: an alloc-bytes address held as a Lisp integer in a list, hash table or vector. Since 0a304e554, nl_gc_pin_int_addr marks such a container 0 -> 4 so the container itself survives, but it never queues it and nothing scans its words. Its referents are reclaimed.
+- nl_gc_pin_int_addr also breaks the conservative scan's stated invariant ("Every transition 0->4 is paired with one queue entry"). The queue is drained and freed (nl_gc_conserv_maybe / nl_gc_conserv_finish) before the precise phase, where the int pins happen.
+
+The original observation paired two different setups. In case A, string cells were held in a list; in the plain-block control, one buffer was held by a let variable. Two probe bugs also confused the picture on the first runs. A bignum marker could not be written as the same word, and string rows were compared with the marker instead of their own first word. Both are fixed in tools/ai/gc-visibility-matrix.el, with comments.
+
+* Distinguishing experiment
+The experimental patch is tools/ai/evidence/int-pin-scan-experiment-20261103.patch. It is not applied; the source is reverted. When nl_gc_pin_int_addr pins a block, the patch runs each of the block's words back through nl_gc_pin_int_addr. Evidence: tools/ai/evidence/gc-visibility-matrix-20261103.txt.
+
+| Row | base | patched |
+|---|---|---|
+| E1, one target per container, containers only in a Lisp list (15 sizes and offsets) | 40/40 reclaimed every row | 0/40 every row |
+| matrix cell16 (list-held 32-byte cells), ab32a8 / ab44a1 / str | 50/50 reclaimed | 0/50 |
+| matrix buf (let-held 400-byte buffer), all kinds including str | 0/50 | 0/50 |
+| matrix xor (positive control) | 50/50 | 50/50 |
+
+Only the precise-path row moves, and the positive control is unchanged, so the cause is as stated above.
+
+* Consequences
+- The slot-pins in nelisp-native-load (a3f79db87, 5a61f834a) stay necessary. The loader's slots are mmap'd, and no GC scan reaches mmap memory.
+- Any alloc-bytes buffer held only through Lisp data (not a live let or stack word) that stores addresses of other arena blocks loses those blocks at the next GC. The 2026-11-03 rawptr audit found no such store outside nelisp-native-load. Its premise ("the GC never scans raw buffers") was only half right: buffers on the stack are scanned conservatively, and buffers reached only through Lisp data are not.
+- Making int-held buffers scanned, as the experiment does, would close the class generally. It is a GC policy change: it costs a scan per int-held buffer per collection and adds conservative false retention. The experimental patch also recurses once per chain link. That is a design decision, not done here.
+
+* Out-slot verdict: SAFE
+- tools/ai/gc-outslot-probe.sh simulates nelisp-native-load-call's return gap. A fresh string Sexp sits unpinned in an mmap slot and is unboxed at once.
+- Result on 3 runs: 0/2000 bad with mid-form GC armed. Positive control (garbage-collect plus churn in the gap): 50/50 bad. Evidence: tools/ai/evidence/gc-outslot-probe-20261103.txt.
+- nelisp-native-load-unbox reads the payload pointer into a Lisp integer, which pins it (0a304e554), before its first while loop. The forms between ptr-call and unbox contain no while loop.
+- Limit: the probe calls unbox directly rather than through a loaded artifact. A GC inside the native code itself is still covered only by the generated code's rootstack discipline.

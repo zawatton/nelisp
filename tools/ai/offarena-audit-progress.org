@@ -1,0 +1,24 @@
+#+TITLE: Audit: GC-managed addresses stored in memory outside the arena (mmap, malloc), which the GC never scans
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/offarena-audit-progress.org
+# Follows tools/ai/scratchvec-pin-progress.org (5a61f834a): the native
+# loader's mmap'd slots held a vector box the GC could not see.  Scope:
+# runtime Lisp code that maps or mallocs memory and may write an arena
+# address (alloc-bytes buffer, runtime Sexp/string/vector) into it.
+
+* S1 Inventory
+
+** S1.1 The report exists and has a findings table
+cmd: test -f tools/ai/offarena-audit-report.org && grep -q '^| *site *| *function *| *verdict *| *reason *|' tools/ai/offarena-audit-report.org
+
+** S1.2 Every in-scope file appears in the report
+cmd: for f in $(grep -rlE 'syscall-direct 9 |native-load--mmap|\bmmap\b|"malloc"|"calloc"|"realloc"' scripts/nelisp-stdlib-prelude.el packages lisp --include='*.el' | grep -v '/test/'); do grep -qF "$f" tools/ai/offarena-audit-report.org || { echo "missing $f"; exit 1; }; done
+
+** S1.3 Every row has a final verdict (safe, at-risk or out-of-scope)
+cmd: rows=$(grep -E '^\| *[a-z].*:[0-9]+ *\|' tools/ai/offarena-audit-report.org) && test -n "$rows" && ! echo "$rows" | grep -vqE '\| *(safe|at-risk|out-of-scope) *\|'
+
+* S2 Decision
+
+** S2.1 The report records a decision: no at-risk site, with the spot check and the unprobed watch item stated
+cmd: grep -q '^\* Decision' tools/ai/offarena-audit-report.org && grep -q 'No at-risk site' tools/ai/offarena-audit-report.org && grep -q 'Watch item, not probed' tools/ai/offarena-audit-report.org && ! grep -qE '^\| .*\| *at-risk *\|' tools/ai/offarena-audit-report.org

@@ -1,0 +1,54 @@
+#+TITLE: Standalone timers have GNU 31.1's shape: run-at-time returns a 10-slot timer vector that timerp accepts and cancel-timer takes
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/timer-shape-progress.org
+# The standalone binary's run-at-time / timerp / cancel-timer come from
+# packages/nelisp-eventloop/src/nelisp-async-core.el (it overrides the
+# prelude fallback), whose timer is a 5-slot [DEADLINE REPEAT FN ARGS LIVE]
+# vector: timerp rejects GNU-shaped vectors, and timer--function and
+# run-with-timer are void.  GNU 31.1:
+# a timer is a 10-slot vector (cl-defstruct :type vector), timerp is
+# (and (vectorp x) (= (length x) 10)), cancel-timer returns nil.
+
+* S1 Behaviour matches GNU 31.1
+
+** S1.1 Shape: type, length, timerp, accessors
+cmd: tools/ai/timer-shape-check.sh shape
+
+** S1.2 cancel-timer accepts a timer and returns nil; still rejects a non-timer
+cmd: tools/ai/timer-shape-check.sh cancel
+
+** S1.3 timerp on arbitrary vectors (10-slot vector t, other vectors nil)
+cmd: tools/ai/timer-shape-check.sh timerp-vectors
+
+** S1.4 run-with-timer exists and returns a timer
+cmd: tools/ai/timer-shape-check.sh run-with-timer
+
+** S1.5 FUNCTION is deferred as in GNU: not run by run-at-time, run once with ARGS by a later sit-for
+# Corrected 2026-11-03: the first version required synchronous firing,
+# from the prelude comment.  The binary actually uses
+# packages/nelisp-eventloop/src/nelisp-async-core.el, which queues timers
+# and fires them from sit-for -- GNU's behaviour.  So this compares with GNU.
+cmd: tools/ai/timer-shape-check.sh deferred
+
+** S1.6 Negative control: the check fails on the origin/main prelude
+evidence: tools/ai/evidence/timer-shape-negative-control-20261103.txt sha256=0410f318286b8cde232d206c7eaa94e1d361f812bfacfa8a8917b96568b2950d
+
+* S2 Gates and ratchets
+
+** S2.1 emacs-parity has cases for the timer shape
+cmd: grep -q 'timer-shape' test/nelisp-shadow-differential-cases.el
+
+** S2.2 Prelude ratchets pass (emacs-compat, ns-gate, ns-inventory, substrate-presence corpus)
+#+TIMEOUT: 600
+cmd: make emacs-compat >target/ts-compat.log 2>&1 && make ns-gate >target/ts-nsgate.log 2>&1 && make ns-inventory >target/ts-nsinv.log 2>&1 && make substrate-presence-corpus-check >target/ts-subst.log 2>&1
+
+* S3 End to end
+
+** S3.1 emacs-parity passes against stock Emacs
+#+TIMEOUT: 600
+cmd: make emacs-parity >target/ts-parity.log 2>&1
+
+** S3.2 standalone-reader-shadow-smoke passes
+#+TIMEOUT: 600
+cmd: make standalone-reader-shadow-smoke >target/ts-shadow.log 2>&1

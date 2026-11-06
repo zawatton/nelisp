@@ -892,7 +892,8 @@ the heap and all mark decisions remain native production code."
                   nl_gc_conserv_begin nl_gc_conserv_valid_p nl_gc_conserv_pin
                   nl_gc_conserv_owner_slow nl_gc_conserv_owner_indexed
                   nl_gc_conserv_resolve nl_gc_mark_recorded_slot
-                  nl_gc_conserv_owner nl_gc_conserv_word nl_gc_conserv_scan
+                  nl_gc_conserv_owner nl_gc_pin_imm_word nl_gc_pin_int_addr
+                  nl_gc_conserv_word nl_gc_conserv_scan
                   nl_gc_conserv_drain nl_gc_conserv_rollback_chunk
                   nl_gc_conserv_rollback nl_gc_conserv_finish
                   nl_gc_conserv_maybe))

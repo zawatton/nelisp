@@ -904,8 +904,34 @@ short write here reaches the code page as a truncated function."
           (ptr-write-u8 addr (+ offset i) (nelisp-native-load--byte string i))
           (setq i (1+ i)))))))
 
+(defvar nelisp-native-load--slot-pins (make-hash-table :test 'eql)
+  "Map a Sexp slot address to the runtime object its payload points at.
+
+The value is a string's payload address (`nelisp-native-load-box') or
+a scratch vector's box (`nelisp-native-load--make-scratch-vector').
+The loader's slots live in an mmap region outside the arena, which the
+GC never scans, so an object whose only reference is a slot's payload
+word is garbage: a mid-form collection at any `while' back-edge, or
+`garbage-collect', frees it while the slot still points at it.  The GC
+does pin an arena block whose address a Lisp integer holds, so this
+table keeps that integer for as long as the slot holds the object.
+Rewriting the slot (`nelisp-native-load--zero-slot', which every
+`nelisp-native-load-box' arm goes through) drops the pin, and
+`nelisp-native-load-unload' drops every pin inside the unmapped slots.")
+
+(defun nelisp-native-load--drop-pins (start size)
+  "Drop the slot pins for addresses in [START, START+SIZE)."
+  (let ((dead nil))
+    (maphash (lambda (k _v)
+               (when (and (>= k start) (< k (+ start size)))
+                 (setq dead (cons k dead))))
+             nelisp-native-load--slot-pins)
+    (dolist (k dead)
+      (remhash k nelisp-native-load--slot-pins))))
+
 (defun nelisp-native-load--zero-slot (addr)
   "Write nil (four zero words) into the Sexp slot at ADDR."
+  (remhash addr nelisp-native-load--slot-pins)
   (ptr-write-u64 addr 0 0)
   (ptr-write-u64 addr 8 0)
   (ptr-write-u64 addr 16 0)
@@ -992,7 +1018,13 @@ evaluator root markers do not."
       (nelisp-native-load--poke-bytes buf 0 bytes)
       (nelisp-native-load--zero-slot addr)
       (ptr-call (nelisp-native-load--symbol-addr "nl_alloc_str")
-                buf len addr 0 0 0)))
+                buf len addr 0 0 0)
+      ;; The slot is a legacy string view: payload+16 points at string data,
+      ;; which names no object, but the word at +8 carries the string
+      ;; header's address under flag bits 61/62.  Pin that header address:
+      ;; the collector keeps the string whose header an integer names.
+      (puthash addr (logand (ptr-read-u64 addr 8) 281474976710655)
+               nelisp-native-load--slot-pins)))
    ((symbolp value)
     (let* ((name (symbol-name value))
            (interned (intern-soft name)))
@@ -1518,6 +1550,9 @@ expects -- it derefs payload+8 to reach the box."
     (ptr-write-u64 addr 24 0)
     (when (or (not (integerp box)) (= box 0))
       (error "nelisp-native-load: scratch vector allocation returned %S" box))
+    ;; ADDR is in the mmap'd slots, which the GC does not scan; without
+    ;; this pin the box is freed by the next collection.
+    (puthash addr box nelisp-native-load--slot-pins)
     addr))
 
 (defun nelisp-native-load-abi (native &optional meta)
@@ -6189,6 +6224,8 @@ active call causes an error before any mapping or handle field is changed."
         (let ((addr (plist-get handle (car pair)))
               (size (plist-get handle (cdr pair))))
           (when (and (integerp addr) (> addr 0) (integerp size) (> size 0))
+            (when (eq (car pair) :slots)
+              (nelisp-native-load--drop-pins addr size))
             (push (cons addr size) regions))))
       (plist-put handle :entry 0)
       (plist-put handle :codepage 0)

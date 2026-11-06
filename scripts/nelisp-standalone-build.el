@@ -9229,7 +9229,7 @@ REPL-facing module it feeds."
       (let* ((i offset) (end (+ offset n)))
         (seq (while (< i end)
                (seq (let* ((w (heap-read-u64 owner (* i 8))))
-                      (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
+                      (if (= (logand w 1) 1) (nl_gc_pin_imm_word w) (nl_gc_mark_word w)))
                     (setq i (+ i 1))))
              0)))
     (defun nl_gc_mark_vl (box)
@@ -9253,7 +9253,7 @@ REPL-facing module it feeds."
                  (if (/= (heap-read-u64 s 16) 0)
                      (nl_gc_mark_word (heap-read-u64 s 16)) 0) 1)))))
     (defun nl_gc_mark_word (word)
-      (if (= (logand word 1) 1) 0
+      (if (= (logand word 1) 1) (nl_gc_pin_imm_word word)
         (if (= (logand word 7) 6)
             ;; GNU mark_object: pdumper_marked_p, then break.  An image symbol or vectorlike whose mark
             ;; bit is set needs neither the header read nor a call.
@@ -9280,7 +9280,7 @@ REPL-facing module it feeds."
         (if (> end cap) 0
           (while (< i end)
             (seq (let* ((w (heap-read-u64 owner (* i 8))))
-                   (if (= (logand w 1) 1) 0 (nl_gc_mark_word w)))
+                   (if (= (logand w 1) 1) (nl_gc_pin_imm_word w) (nl_gc_mark_word w)))
                  (setq i (+ i 1))))) 0))
     (defun nl_gc_mark_vectorlike (box)
       (if (= (if (< box (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
@@ -9693,7 +9693,7 @@ REPL-facing module it feeds."
                              (seq
                               (nl_gc_mark_word (heap-read-u64 box 0))
                               (let* ((dw (heap-read-u64 box 8)))
-                                (if (= (logand dw 1) 1) 0
+                                (if (= (logand dw 1) 1) (nl_gc_pin_imm_word dw)
                                   (if (= (logand dw 7) 2)
                                       (seq (setq sp dw) (setq go 1))
                                     ;; a String WORD (the strings line) is marked like a vectorlike one
@@ -9748,7 +9748,7 @@ REPL-facing module it feeds."
                            (extern-call nl_gc_mark_block (nl_word_payload index)) 0))
                 (seq (nl_gc_mark_word (heap-read-u64 box 0))
                   (let ((dw (heap-read-u64 box 8)))
-                    (if (= (logand dw 1) 1) 0
+                    (if (= (logand dw 1) 1) (nl_gc_pin_imm_word dw)
                       (if (= (logand dw 7) 4) (nl_gc_mark_word dw)
                       (if (= (logand dw 7) 2)
                           (seq (setq sp dw) (setq go 1))
@@ -10075,7 +10075,11 @@ REPL-facing module it feeds."
                       (if (= tag 13) (nl_gc_mark_block (- (heap-read-u64 sp 16) 8))
                       (if (= tag 9) (nl_gc_mark_char_table_box (heap-read-u64 sp 8))
                         (if (= tag 10) (nl_gc_mark_bool_vector_box (heap-read-u64 sp 8))
-                          0)))))))))))))
+                          ;; Int (tag 2): an `alloc-bytes' buffer reaches Lisp only as its address, so an
+                          ;; integer inside a live arena block keeps that block -- see `nl_gc_pin_int_addr'.
+                          (if (= tag 2)
+                              (nl_gc_pin_int_addr (heap-read-u64 sp 8))
+                            0))))))))))))))
     (defun nl_gc_mark_slot (sp)
       (if (= (logand sp 7) 4) (nl_gc_mark_word sp)
       (if (= (logand sp 7) 6) (if (or (= (logand (heap-read-u64 (- sp 6) 0) 63) 4) (= (logand (heap-read-u64 (- sp 6) 0) 63) 16)) (nl_gc_mark_symbol (- sp 6)) (nl_gc_mark_vectorlike (- sp 6)))
@@ -11143,6 +11147,42 @@ REPL-facing module it feeds."
             (if (if (= kind 4) 1 (= kind 5))
                 (seq (ptr-write-u64 st 56 1) 1)
               (nl_dump_in_string_image w))))))
+    ;; An integer whose value lies inside a live arena block pins that block
+    ;; (mark 0 -> 4: alive, payload not declared typed, so a later precise
+    ;; edge can still upgrade it to 1 and recurse).  `alloc-bytes' returns
+    ;; its buffer to Lisp as a plain integer address, and nothing else roots
+    ;; it: without this a collection that ran while the address was still in
+    ;; use -- mid-form at a `while' back-edge, or `garbage-collect' -- swept
+    ;; the block and wrote the free-list link over its first word.
+    ;; `nl-ffi-loader--cstring's path buffer lost "/home/ma" that way before
+    ;; openat and a real file read as ENOENT (2026-11-02,
+    ;; test/standalone-alloc-bytes-int-root-smoke.el).  Only runs while the
+    ;; exact-start index is live (both collectors build it before marking),
+    ;; so the owner lookup never interprets payload as a header.  Sets the
+    ;; same pinned flag as the conservative scan, so the debug compaction
+    ;; path cannot move a block an integer still names.
+    ;; Immediate value word W: an Int ((n<<2)|1) goes through
+    ;; `nl_gc_pin_int_addr'; Nil/T and the rest are not references.
+    (defun nl_gc_pin_imm_word (w)
+      (if (= (logand w 3) 1)
+          (nl_gc_pin_int_addr (sar w 2))
+        0))
+    (defun nl_gc_pin_int_addr (v)
+      (if (< v 65536) 0
+        (if (= (nl_gc_conserv_string_area v) 1) 0
+        (if (= (ptr-read-u64 (data-addr nl_gc_start_index) 16) 1)
+            (if (= (nl_gc_in_arena v) 0) 0
+              (let ((owner (nl_gc_conserv_owner_indexed v)))
+                (if (= owner 0) 0
+                  (if (= (nl_gc_conserv_valid_p owner) 0) 0
+                    (if (= (nl_hdr_mark (- owner 8)) 0)
+                        (seq
+                         (nl_hdr_set_mark (- owner 8) 4)
+                         (ptr-write-u64 (data-addr nl_gc_conserv_state) 32
+                                        (logior (ptr-read-u64 (data-addr nl_gc_conserv_state) 32) 4))
+                         1)
+                      0)))))
+          0))))
     (defun nl_gc_conserv_word (w)
       (if (= (nl_gc_conserv_string_area w) 1) 0
         (if (= (nl_gc_conserv_typed w) 1) 0
@@ -48542,7 +48582,12 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; created nothing (v1.2.0 parity gap 4).
                     "CreateDirectoryW" "RemoveDirectoryW" "DeleteFileW"
                     ;; Same-volume rename(82), including atomic replacement.
-                    "MoveFileExW"))
+                    "MoveFileExW"
+                    ;; Doc 213: `nl_os_nanosleep' (windows os-base-forms).
+                    ;; Without it the target answered -ENOSYS, so every
+                    ;; `accept-process-output'/`sit-for' wait spun a full
+                    ;; core instead of sleeping.
+                    "Sleep"))
         (cons "SHELL32.dll" (list "CommandLineToArgvW"))
         ;; Doc 138 socket slices 1-2: Winsock startup plus the connected-client,
         ;; listening, readiness and connect-status operations implemented by
@@ -49056,7 +49101,9 @@ never on the build host.  Keep the original Lisp factory as the reference."
                                                (nth 2 compiled))) #'string<)
                                 '("defvaralias" "indirect-variable"
                                   "internal-delete-indirect-variable"
-                                  "nelisp--native-variable-alias-pairs"))
+                                  "nelisp--native-variable-alias-pairs"
+                                  ;; The strict GNU 31.1 `signal' wrapper closes the prelude.
+                                  "signal"))
                          (error "Native variable-alias bytecode selection drift"))
                        (nelisp-prelude-bytecode-write-report
                         (concat (nelisp-standalone--output-path t)
@@ -50756,6 +50803,7 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             "    (unless (and omit (= pos (length s))) (setq out (cons (substring s pos) out)))\n"
             "    (nreverse out)))\n"
             "(defun split-string (s &optional sep omit trim)\n"
+            "  (length s)\n"
             "  (when sep (unless (stringp sep) (signal 'wrong-type-argument (list 'stringp sep))))\n"
             "  (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))\n"
             ;; A separator with no regexp operator in it is a literal; split on
@@ -51050,7 +51098,7 @@ pre-Stage-8 fixed immediate (`nelisp-standalone--windows-arena-base' #x70000000
 + 8 = #x70000008), which after the rebase points at unmapped VA -> SIGSEGV in
 the REPL print path's quit-flag check (the `--eval' command never runs this
 suffix, which is why only `--repl' crashed)."
-  "))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
+  ")))) (if (= (ptr-read-u64 (+ (car (nelisp--arena-stats)) 8) 0) 0) (progn (nelisp--write-stdout-bytes (nelisp--repr v)) (nelisp--write-stdout-bytes (unibyte-string 10)) v) 0))\n")
 
 (defconst nelisp-standalone--reader-boundary-source
   '(seq
@@ -54343,7 +54391,13 @@ boundary (Doc 151 Phase B):
          (if (< st 0) 0 (nl_seq2 (extern-call FindClose (heap-read-u64 st 0)) 0)))
        (defun nl_os_utimes_path (_cpath _buf) (- 0 38))
        (defun nl_os_statx_path (_cpath _flags _buf) (- 0 38))
-       (defun nl_os_nanosleep (_ts) (- 0 38))))
+       ;; Doc 213: kernel32 Sleep takes milliseconds.  A positive request
+       ;; below 1 ms sleeps 1 ms rather than Sleep(0), which only yields
+       ;; and would let a short poll gap spin.
+       (defun nl_os_nanosleep (ts)
+         (let* ((ms (+ (* (ptr-read-u64 ts 0) 1000)
+                       (/ (ptr-read-u64 ts 8) 1000000))))
+           (seq (extern-call Sleep (if (< ms 1) 1 ms)) 0)))))
     ('macos-aarch64
      ;; Darwin path/stat/dir layer.  The portable fileio layer above this
      ;; addresses syscalls by the LINUX x86_64 vocabulary number and reads
@@ -58299,13 +58353,13 @@ correctly."
 	      "Usage: nelisp [-L DIR]... [-Q|-q|--batch|--no-site-file|--no-init-file|--no-splash]... [--help|--version] [--repl [--no-prompt] [--no-print]] [(--eval EXPR|--load FILE|-l FILE|-f FUNCTION)... [-- ARG...]] [--neln-selftest] [FILE]\nArguments:\n  -L DIR, --directory DIR        Prepend DIR to load-path (repeatable); must precede any action\n  -Q -q --batch --no-site-file --no-init-file --no-splash\n                                 Accepted and ignored (always batch, no init files)\n  --help                         Show this argument list\n  --version                      Print runtime version and exit\n  --eval EXPR                    Evaluate EXPR; prints the value only when it is the sole action\n  --load FILE, -l FILE           Load FILE; prints the last value only when it is the sole action\n  -f FUNCTION                    Call (funcall (intern FUNCTION)); no value printed\n                                 --eval/--load/-l/-f may repeat and run in argv order (no auto-print once more than one action is given); -- ends actions, rest is command-line-args-left\n  --neln-selftest                Run the embedded native exec self-test\n  --repl [--no-prompt] [--no-print]\n                                 Start the REPL\n  FILE                           Load FILE as a source file\nCommands:\n  dump-runtime-image FILE [--load SRC]... FORM...\n  extend-runtime-image IMAGE OUT [--load SRC]... FORM...\n  eval-runtime-image IMAGE FORM...\n  exec-runtime-image IMAGE FORM...\n  compile-runtime-image --kind nelc|neln|auto --input FILE.nlri --output FILE\n  compile-elisp-artifact --kind nelc|neln|elc --input FILE.el --output FILE\n  compile-elisp-artifacts --kind nelc|neln|auto FILE.el|DIR...\n  audit-elisp-artifacts [--required] FILE.el|FILE.neln|DIR...\n  exec-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  eval-elisp-artifact FILE.nelc|FILE.neln|FILE.elc FORM...\n  load-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el\n  eval-elisp-source [--auto-compile] [--kind nelc|neln] FILE.el FORM...\n  native-exec-elisp-artifact FILE.neln SYMBOL ARG...\n  inspect-elisp-artifact FILE.nelc|FILE.neln|FILE.elc\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_prefix
-      "(let ((v (progn\n")
+      "(let ((v (nelisp--repl-input (progn\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_suffix
       (nelisp-standalone--reader-repl-eval-suffix))
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_eval_no_print_suffix
-      "))) v)\n")
+      ")))) v)\n")
     ,(nelisp-standalone--copy-lit-defun
       'nl_repl_prompt
       "nelisp> ")

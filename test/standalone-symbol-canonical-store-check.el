@@ -133,6 +133,8 @@
 (defun scsc-read-dyn () scsc-dyn)
 (scsc-check (eql (let ((scsc-dyn 11)) (scsc-read-dyn)) 11) "a dynamic let binds the variable")
 (scsc-check (eql scsc-dyn 10) "and restores it")
+;; GNU 31.1 `signal' rejects a symbol without `error-conditions'.
+(put 'scsc-err 'error-conditions '(scsc-err error))
 (scsc-check (equal (condition-case e (signal 'scsc-err '(1)) (scsc-err (cdr e))) '(1))
             "signal and condition-case by name")
 (scsc-check (eql (catch 'scsc-tag (throw 'scsc-tag 5)) 5) "catch and throw by object")

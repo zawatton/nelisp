@@ -1,0 +1,61 @@
+#+TITLE: Standalone matches GNU Emacs 31.1 on four known divergences
+
+# Run from the repository root with a standalone binary built from this tree:
+#   NELISP_BIN=target/nelisp bin/progress-meter.sh \
+#     --ledger tools/ai/gnu31-divergences-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)
+# tools/ai/gnu31-div-check.sh evaluates one probe on stock Emacs and on
+# NELISP_BIN and passes only when the printed answers are identical.  All
+# four probes failed on a21d3e08e (negative control, 2026-11-02).
+# Out of scope: the shape of the `run-at-time' timer object.
+# 2026-11-02: S2.5 and S3.4 added (9 -> 11 criteria) once the strict
+# `signal' turned out to need the standard error symbols registered.
+
+* S1 Each divergence has a permanent parity case
+
+** S1.1 The emacs-parity cases file covers all four divergences
+cmd: f=test/nelisp-shadow-differential-cases.el; grep -q '"%#B"' $f && grep -q ':in-place' $f && grep -q 'undefined-error-symbol' $f && grep -q 'gnu31-sort-copy' $f
+
+* S2 The standalone answers match GNU Emacs 31.1
+
+** S2.1 format: %#B prints an uppercase 0B prefix
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/ai/gnu31-div-check.sh format-hash-B "$NELISP_BIN"
+
+** S2.2 sort with one argument copies vectors as well as lists
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/ai/gnu31-div-check.sh sort-one-arg-copy "$NELISP_BIN"
+
+** S2.3 sort accepts the 31.1 keyword arguments (:key :lessp :reverse :in-place)
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/ai/gnu31-div-check.sh sort-keywords "$NELISP_BIN"
+
+** S2.4 signal with a non-error symbol raises (error "Invalid error symbol" SYM)
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/ai/gnu31-div-check.sh signal-invalid "$NELISP_BIN"
+
+** S2.5 Standard GNU error symbols carry their error-conditions and messages (the strict signal needs them)
+#+REQUIRES: NELISP_BIN
+cmd: sh tools/ai/gnu31-div-check.sh error-symbols-registered "$NELISP_BIN"
+
+* S3 End to end
+
+** S3.1 emacs-parity passes against stock Emacs 31.1 with the new cases
+#+TIMEOUT: 600
+cmd: mkdir -p target && make emacs-parity >target/emacs-parity-gnu31-div.log 2>&1 && grep -q 'PASS' target/emacs-parity-gnu31-div.log && ! grep -q 'SKIP' target/emacs-parity-gnu31-div.log
+
+** S3.2 The native-vs-prelude shadow differential still agrees
+#+TIMEOUT: 600
+cmd: mkdir -p target && make standalone-reader-shadow-smoke >target/shadow-smoke-gnu31-div.log 2>&1
+
+** S3.3 ns-gate passes (collision digests reviewed, not loosened)
+#+TIMEOUT: 600
+cmd: make ns-gate >target/ns-gate-gnu31-div.log 2>&1
+
+** S3.4 The prelude ratchets pass (emacs-compat, ns-inventory, substrate-presence corpus)
+#+TIMEOUT: 600
+cmd: make emacs-compat >/dev/null 2>&1 && make ns-inventory >/dev/null 2>&1 && make substrate-presence-corpus-check >/dev/null 2>&1
+
+** S3.5 make test-fast passes on the changed tree
+#+TIMEOUT: 600
+cmd: mkdir -p target && make test-fast >target/test-fast-gnu31-div.log 2>&1

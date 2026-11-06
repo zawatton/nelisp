@@ -113,6 +113,8 @@
 (seoc-check (eql (funcall '+ 1 2) 3) "funcall")
 (seoc-check (eql (apply '+ '(1 2)) 3) "apply")
 (seoc-check (progn (fset 'seoc-fn-alias 'car) (eq (symbol-function 'seoc-fn-alias) 'car)) "fset and symbol-function")
+;; GNU 31.1 `signal' rejects a symbol without `error-conditions'.
+(put 'seoc-sig 'error-conditions '(seoc-sig error))
 (seoc-check (equal (condition-case e (signal 'seoc-sig '(1)) (seoc-sig (cdr e))) '(1)) "signal")
 (seoc-check (equal (condition-case e (signal 'error '("seoc")) (error (cdr e))) '("seoc")) "signal of error")
 (seoc-check (eql (funcall (intern "car") '(7 8)) 7) "a builtin named by intern")

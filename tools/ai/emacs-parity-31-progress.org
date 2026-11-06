@@ -1,0 +1,30 @@
+#+TITLE: emacs-parity follows GNU Emacs 31.1
+
+# Run from the repository root:
+#   EMACS31=/usr/local/bin/emacs-31.1 bin/progress-meter.sh --ledger tools/ai/emacs-parity-31-progress.org
+# (bin/progress-meter.sh lives in the Notes workspace.)  EMACS31 points at a
+# stock GNU Emacs 31.x; target/nelisp must be built from this tree.
+
+* S1 Standalone answers match Emacs 31.1 on every parity case
+
+** S1.1 The gate's accepted host range is 31.x (the 30.x pin is gone)
+cmd: sed -n '/^emacs-parity:/,/^$/p' Makefile | grep -q '31\.\*)' && ! sed -n '/^emacs-parity:/,/^$/p' Makefile | grep -q '30\.\*) : ;;'
+
+** S1.2 End to end: emacs-parity runs (no SKIP) and passes against stock Emacs 31.1
+#+REQUIRES: EMACS31
+#+TIMEOUT: 600
+cmd: mkdir -p target && EMACS="$EMACS31" make emacs-parity >target/emacs-parity-31.log 2>&1 && grep -q 'PASS' target/emacs-parity-31.log && ! grep -q 'SKIP' target/emacs-parity-31.log
+
+** S1.3 Negative control: the emacs-parity gate-mutation row goes red as it should on 31.1
+#+REQUIRES: EMACS31
+#+TIMEOUT: 600
+cmd: EMACS="$EMACS31" NELISP_GATE_MUTATION_ONLY=emacs-parity make gate-mutation >target/gm-parity-31.log 2>&1 && grep -q 'emacs-parity: went red as it should' target/gm-parity-31.log
+
+** S1.4 make test-fast passes on the changed tree
+#+TIMEOUT: 600
+cmd: make test-fast >target/test-fast-parity31.log 2>&1
+
+* S2 CI runs the gate
+
+** S2.1 CI's emacs-parity step reports pass, not skip, on main (CI gate report recorded)
+evidence: tools/ai/evidence/emacs-parity-31-ci-3231d877b.txt sha256=70c85469519b887e0dbdc9da77c7ac7e663705a99acbd512ea95960329b12d5e

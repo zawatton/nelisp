@@ -1,6 +1,8 @@
 #+TITLE: Gradual static type checking for NeLisp
 #+DATE: 2026-11-01
-#+STATUS: PROPOSED — design only; no implementation or qualification
+#+STATUS: PARTIAL — Stages 1-2, build gate, REPL layers 1-4 and Stage 3a
+#+STATUS: implemented (2026-11-01; ledger tools/ai/gradual-typecheck-progress.org,
+#+STATUS: 27/27); Stages 3b, 4, 5 remain design only
 #+SCOPE: Optional type annotations, a static checker, type-directed native lowering, and typed module boundaries
 
 * Decision boundary
@@ -69,6 +71,76 @@ runs bidirectional local inference per top-level form:
 
 The checker has no soundness claim for code that redefines functions at run
 time; that is handled by guards, not by the checker.
+
+* Build-time strictness (decided 2026-11-01)
+
+The checker never changes what NeLisp evaluates at run time. Strictness lives
+in the build: a build gate fails on diagnostics, in the TypeScript =tsc=
+sense, scoped by who owns the code.
+
+| scope                                   | =error=     | =warning=                  | =note=                         |
+|-----------------------------------------+-------------+----------------------------+--------------------------------|
+| module with =nelisp-typed: t=           | build fails | build fails                | fails only under =nelisp-typecheck-strict= |
+| NeLisp's own =lisp/= (untyped)          | build fails | ratchet: count must not grow | reported only                |
+| vendored GNU sources                    | reported    | reported                   | not emitted                    |
+
+The =lisp/= warning ratchet uses a checked-in baseline in the same style as
+the existing baseline gates, so current findings do not turn the build red
+but new ones do. Unknown callees, non-constant =funcall=, =eval=, and
+special variables are type =t= and never fail the build.
+
+* Relation to Doc 197 (=nl-typed=)
+
+Doc 197 already ships =nl-typed= in =packages/nl-static=: per-definition
+argument declarations checked at macroexpansion time, with literal-argument
+and disjoint-category checks. The checker reuses that work rather than
+replacing it:
+
+- =nl-static='s type-category and disjointness functions are the seed of the
+  checker's subtype/consistency relation; signatures declared through
+  =nl-typed= are read as an annotation source alongside =declare ftype=.
+- The checker lives in its own package, =packages/nl-typecheck= (feature
+  =nl-typecheck=, the =nelisp-typecheck= of this document), and follows
+  Doc 168's dependency direction: it may depend on =nl-static=; nothing in
+  the runtime depends on it.
+- Like =nl-check-gate=, it is a separate reading pass run from the build,
+  never inside the byte-compiler, so it cannot change emitted code.
+
+* REPL and dynamic development (decided 2026-11-01)
+
+The checker works per top-level form with an accumulated environment, so the
+same machinery serves interactive development. Four layers, from earliest to
+latest; none of them changes what an unannotated program does.
+
+1. *Input check.* =nelisp-typecheck-repl-mode= runs each REPL input through
+   the checker before evaluation, with the environment accumulated from
+   earlier inputs and loaded files. Diagnostics are printed in the gate
+   format. Under =nelisp-typecheck-strict= an input with an =error=
+   diagnostic is not evaluated; it signals =nl-typecheck-rejected= instead.
+   The REPL loop gains one opt-in hook (=nelisp-repl-input-check-function=,
+   nil by default); with the hook nil the loop is unchanged.
+2. *Caller re-check on redefinition.* The checker keeps a callee-to-callers
+   map from the per-function summaries. When a definition is evaluated whose
+   signature differs from its summary, every recorded caller is re-checked
+   against the new signature and the broken call sites are reported. Callers
+   whose calls stay consistent are not reported.
+3. *Typed-boundary entry checks.* This is Stage 3a below: in a module with the
+   =nelisp-typed= cookie, when enforcement is on (NeLisp default for typed
+   modules; =nelisp-typecheck-enforce=), each annotated function checks its
+   typed arguments on entry and signals =(wrong-type-argument PREDICATE
+   VALUE)=. This is the defence for values the static checker cannot see:
+   =eval=, computed =funcall=, special variables, and external data. The
+   check is ordinary code at the head of the body, so redefinition, =fset=,
+   and advice replace or wrap it like any other code.
+4. *Recovery.* Rejected inputs and boundary failures are recorded through
+   =nelisp-repl-session= with blame (callee, parameter, expected type,
+   actual value's type), and an explicit retry after a fix re-runs the
+   recorded call.
+
+Stage split: Stage 3 is now 3a (entry checks, implemented with the REPL
+work) and 3b (check-free internal entries and guard-based trust in native
+lowering, deferred together with Stage 4 until the native-optimization work
+in progress elsewhere settles).
 
 * Type-directed optimization
 

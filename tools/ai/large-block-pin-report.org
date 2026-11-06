@@ -1,0 +1,33 @@
+#+TITLE: Large alloc-bytes blocks held only as a Lisp integer: probe and verdict
+
+Ledger: tools/ai/large-block-pin-progress.org.  Question from
+tools/ai/intscan-perf-report.org: scanning a 16 MiB int-held block cost
+almost nothing, so maybe such blocks are not resolved by
+nl_gc_pin_int_addr at all.
+
+* Probe
+
+tools/ai/large-block-pin-probe.sh runs tools/ai/large-block-pin-probe.el.
+For each size, 4 blocks are held only as integers in a list and 4 only as
+XOR-masked integers (positive control).  Each block has a fixnum marker in
+its first and last word.  Then GC, same-size churn, GC, churn, and reread.
+
+Evidence: tools/ai/evidence/large-block-pin-probe-20261103.txt.
+
+| Size     | int-held intact | XOR control intact |
+|----------+-----------------+--------------------|
+| 400 B    | 4/4             | 0/4                |
+| 4 KiB    | 4/4             | 0/4                |
+| 64 KiB   | 4/4             | 0/4                |
+| 1 MiB    | 4/4             | 0/4                |
+| 16 MiB   | 4/4             | 0/4                |
+| 64 MiB   | 4/4             | 0/4                |
+
+The control is reclaimed at every size, so the probe sees frees there.
+
+* Verdict: SAFE
+
+Large blocks held only as a Lisp integer stay alive up to 64 MiB.  So the low
+scan cost in the benchmark was not a missing pin; 2M non-address words
+were scanned cheaply (why so cheap was not measured).  The caveat in
+tools/ai/intscan-perf-report.org is answered; no fix is needed.

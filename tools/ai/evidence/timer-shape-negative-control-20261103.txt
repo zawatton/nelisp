@@ -1,0 +1,17 @@
+# timer-shape-check.sh against target/nelisp-base (origin/main 5a61f834a build); date 2026-11-03
+shape: DIFF
+ gnu: (vector 10 t ignore (1 2) nil)
+ nl:  (ERR (void-function timer--function))
+exit=1
+cancel: PASS
+exit=0
+timerp-vectors: DIFF
+ gnu: (t nil t nil nil nil nil)
+ nl:  (nil nil nil nil nil nil nil)
+exit=1
+run-with-timer: DIFF
+ gnu: (t t 10 ignore (3))
+ nl:  (ERR (void-function run-with-timer))
+exit=1
+deferred: PASS
+exit=0

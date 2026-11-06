@@ -45,7 +45,7 @@ FIXED_VALUES = {
     'assq': ("(assq 'b '((a . 1) (b . 2)))", '(b . 2)'),
     'string=': ('(string= "a" "a")', 't'), 'string<': ('(string< "a" "b")', 't'),
     'make-vector': ('(make-vector 2 nil)', '[nil nil]'), 'aset': ('(aset (vector 1) 0 7)', '7'),
-    'nth': ("(nth 1 '(3 7))", '7'), 'nthcdr': ("(nthcdr 1 '(3 7))", '(7)'),
+    'nth': ("(nth 1 '(7 9))", '9'), 'nthcdr': ("(nthcdr 1 '(7 9))", '(9)'),
     'ash': ('(ash 3 2)', '12'),
     # The native target is AMD64. A private executable page returns 42 and
     # ignores its six SysV arguments, exercising ptr-call's real success path.

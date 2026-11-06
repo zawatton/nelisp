@@ -1,0 +1,26 @@
+#+TITLE: Two open GC questions: why boxed string payloads were reclaimed from live alloc-bytes cells, and whether a native call's out-slot result is exposed
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/gc-open-questions-progress.org
+# Follows tools/ai/rawptr-audit-report.org "Open question" and
+# tools/ai/offarena-audit-report.org "Watch item" (2026-11-03).
+# Criteria may be added if either question turns into a defect to fix.
+
+* S1 String payloads versus plain blocks
+
+** S1.1 The visibility-matrix probe exists; XOR rows see frees and some plain row sees survival
+cmd: test -x tools/ai/gc-visibility-matrix.sh && tools/ai/gc-visibility-matrix.sh >target/gc-matrix.log 2>&1 && grep -q '^positive-control reclaimed=[1-9]' target/gc-matrix.log && grep -q '^plain-rows kept=[1-9]' target/gc-matrix.log
+
+** S1.2 Matrix result recorded as evidence
+evidence: tools/ai/evidence/gc-visibility-matrix-20261103.txt sha256=a6ffe5c7285d6a090361488029ad47fbf44305cc5a19449b23655518e197e797
+
+** S1.3 The report states the cause, backed by a distinguishing experiment
+cmd: grep -q '^\* Cause' tools/ai/gc-open-questions-report.org && grep -q 'Distinguishing experiment' tools/ai/gc-open-questions-report.org
+
+* S2 Native call out-slot result
+
+** S2.1 Out-slot probe result recorded as evidence (with a positive control)
+evidence: tools/ai/evidence/gc-outslot-probe-20261103.txt sha256=3f7dd9fe29db3ac9679293423ab23095a1e90f65b52cbb4428d113ca2b62835f
+
+** S2.2 The report records the out-slot verdict
+cmd: grep -qE '^\* Out-slot verdict: (SAFE|REPRODUCED)' tools/ai/gc-open-questions-report.org
