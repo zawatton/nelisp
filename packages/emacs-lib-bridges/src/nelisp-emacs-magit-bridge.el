@@ -2150,6 +2150,14 @@ when it local-binds or reads these names."
 
 (defun nelisp-emacs-magit-bridge--ensure-window-display-helpers ()
   "Ensure lightweight window display helpers transient expects are available."
+  ;; With the core buffer model the bootstrap's window builtins already
+  ;; display native buffers; `emacs-window' only knows `nelisp-ec' buffers.
+  (unless (nelisp-emacs-magit-bridge--core-buffer-model-p)
+    (nelisp-emacs-magit-bridge--install-ec-window-helpers))
+  (nelisp-emacs-magit-bridge--ensure-window-fallbacks))
+
+(defun nelisp-emacs-magit-bridge--install-ec-window-helpers ()
+  "Install the `emacs-window' (`nelisp-ec' buffer) window functions."
   (fset 'selected-window
         (symbol-function 'emacs-window-selected-window))
   (fset 'frame-selected-window
@@ -2168,6 +2176,15 @@ when it local-binds or reads these names."
         (symbol-function 'emacs-window-window-height))
   (fset 'window-width
         (symbol-function 'emacs-window-window-width))
+  (fset 'display-buffer
+        (symbol-function 'nelisp-emacs-magit-bridge--display-buffer))
+  (fset 'pop-to-buffer
+        (symbol-function 'nelisp-emacs-magit-bridge--pop-to-buffer))
+  (fset 'quit-window
+        (symbol-function 'emacs-window-quit-window)))
+
+(defun nelisp-emacs-magit-bridge--ensure-window-fallbacks ()
+  "Define the window helpers the runtime may still lack."
   (unless (fboundp 'window-body-height)
     (defun window-body-height (&optional window _pixelwise)
       "Return WINDOW body height for the standalone bridge."
@@ -2176,12 +2193,6 @@ when it local-binds or reads these names."
     (defun window-body-width (&optional window _pixelwise)
       "Return WINDOW body width for the standalone bridge."
       (window-width window)))
-  (fset 'display-buffer
-        (symbol-function 'nelisp-emacs-magit-bridge--display-buffer))
-  (fset 'pop-to-buffer
-        (symbol-function 'nelisp-emacs-magit-bridge--pop-to-buffer))
-  (fset 'quit-window
-        (symbol-function 'emacs-window-quit-window))
   (unless (fboundp 'fit-frame-to-buffer)
     (defun fit-frame-to-buffer (&rest args)
       "Standalone bridge no-op for frame sizing."
@@ -2449,16 +2460,35 @@ mirroring the real Emacs startup invariant, not a vendor patch."
 
 (defun nelisp-emacs-magit-bridge--bufferp (object)
   "Return non-nil when OBJECT is any supported runtime buffer object."
-  (or (and (consp object)
+  (or (nelisp-emacs-magit-bridge--native-buffer-p object)
+      (and (consp object)
            (memq (car object) '(buffer nelisp-ec-buffer)))
       (and (fboundp 'nelisp-ec-buffer-p)
            (ignore-errors (nelisp-ec-buffer-p object)))))
 
+(defun nelisp-emacs-magit-bridge--core-buffer-model-p ()
+  "Return non-nil when the runtime's buffers are native `nelisp-buffer' records.
+The core then owns the whole buffer model (`buffer-list', `get-buffer-create',
+text, markers), and the bridge must not install the `nelisp-ec' buffer
+functions over it: a buffer made by one model is invisible to the other,
+so `magit-get-mode-buffer' could never find the status buffer.
+`get-buffer-create' is never replaced by the bridge, so it is a stable probe."
+  (and (fboundp 'get-buffer-create)
+       (nelisp-emacs-magit-bridge--native-buffer-p
+        (ignore-errors (get-buffer-create "*scratch*")))))
+
+(defun nelisp-emacs-magit-bridge--point ()
+  "Return point in the current buffer of whichever buffer model owns it."
+  (if (nelisp-emacs-magit-bridge--core-buffer-model-p)
+      (point)
+    (nelisp-ec-point)))
+
 (defun nelisp-emacs-magit-bridge--ensure-buffer-predicate ()
   "Ensure `bufferp' accepts standalone `nelisp-ec-buffer' objects."
-  (fset 'bufferp
-        (symbol-function
-         'nelisp-emacs-magit-bridge--bufferp)))
+  (unless (nelisp-emacs-magit-bridge--core-buffer-model-p)
+    (fset 'bufferp
+          (symbol-function
+           'nelisp-emacs-magit-bridge--bufferp))))
 
 (defvar nelisp-emacs-magit-bridge--native-set-buffer nil
   "The runtime's own `set-buffer', captured before the bridge replaces it.")
@@ -2495,6 +2525,11 @@ goes to `nelisp-ec-set-buffer'."
 
 (defun nelisp-emacs-magit-bridge--ensure-buffer-builtins ()
   "Ensure unprefixed buffer-editing functions use the standalone runtime."
+  (unless (nelisp-emacs-magit-bridge--core-buffer-model-p)
+    (nelisp-emacs-magit-bridge--install-ec-buffer-builtins)))
+
+(defun nelisp-emacs-magit-bridge--install-ec-buffer-builtins ()
+  "Install the `nelisp-ec' buffer model over the unprefixed buffer functions."
   (let ((root (nelisp-emacs-magit-bridge--repo-root)))
     (unless (fboundp 'emacs-buffer-set-buffer-modified-p)
       (load (nelisp-emacs-magit-bridge--package-source "emacs-buffer.el" root)
@@ -2576,12 +2611,13 @@ Keep this narrower than `nelisp-emacs-magit-bridge--ensure-buffer-builtins':
 the vendor load path only needs the session-level current-buffer invariant
 before Magit's bundle is loaded, while the broader point/marker/editing
 surface is safer to reassert after bundle load."
-  (nelisp-emacs-magit-bridge--capture-native-set-buffer)
-  (dolist (cell '((bufferp . nelisp-ec-buffer-p)
-                  (current-buffer . nelisp-ec-current-buffer)
-                  (set-buffer . nelisp-emacs-magit-bridge--set-buffer)))
-    (when (fboundp (cdr cell))
-      (fset (car cell) (symbol-function (cdr cell))))))
+  (unless (nelisp-emacs-magit-bridge--core-buffer-model-p)
+    (nelisp-emacs-magit-bridge--capture-native-set-buffer)
+    (dolist (cell '((bufferp . nelisp-ec-buffer-p)
+                    (current-buffer . nelisp-ec-current-buffer)
+                    (set-buffer . nelisp-emacs-magit-bridge--set-buffer)))
+      (when (fboundp (cdr cell))
+        (fset (car cell) (symbol-function (cdr cell)))))))
 
 (defun nelisp-emacs-magit-bridge--ensure-keymap-constructors ()
   "Ensure unprefixed keymap constructors return usable keymap objects.
@@ -3436,9 +3472,9 @@ destination semantics."
           (setq magit-root-section section))
         (ignore-errors
           (oset section parent parent))
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'start (nelisp-ec-point)))
+           section 'start (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--trace
          "file-entry create PASS file=%S section=%S" file section)
         (oset section type 'file)
@@ -3451,9 +3487,9 @@ destination semantics."
         (nelisp-emacs-magit-bridge--trace
          "file-entry insert-nl PASS file=%S point=%S" file (point))
         (magit-insert-section--finish section)
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'end (nelisp-ec-point)))
+           section 'end (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--link-section-child section)
         (nelisp-emacs-magit-bridge--trace
          "file-entry finish PASS file=%S" file)
@@ -3489,11 +3525,11 @@ destination semantics."
     (nelisp-emacs-magit-bridge--trace "status-refresh root-parent PASS")
     (oset section type 'status)
     (nelisp-emacs-magit-bridge--trace "status-refresh root-type PASS")
-    (when (fboundp 'nelisp-ec-point)
+    (when (fboundp 'point)
       (nelisp-emacs-magit-bridge--section-slot-put
-       section 'start (nelisp-ec-point))
+       section 'start (nelisp-emacs-magit-bridge--point))
       (nelisp-emacs-magit-bridge--section-slot-put
-       section 'content (nelisp-ec-point)))
+       section 'content (nelisp-emacs-magit-bridge--point)))
     (nelisp-emacs-magit-bridge--trace "status-refresh root-slots PASS")
     (nelisp-emacs-magit-bridge--trace "status-refresh section-hook BEGIN")
     (nelisp-emacs-magit-bridge--run-section-hook
@@ -3501,9 +3537,9 @@ destination semantics."
     (nelisp-emacs-magit-bridge--trace "status-refresh section-hook PASS")
     (magit-insert-section--finish section)
     (nelisp-emacs-magit-bridge--trace "status-refresh root-finish PASS")
-    (when (fboundp 'nelisp-ec-point)
+    (when (fboundp 'point)
       (nelisp-emacs-magit-bridge--section-slot-put
-       section 'end (nelisp-ec-point))))
+       section 'end (nelisp-emacs-magit-bridge--point))))
   (nelisp-emacs-magit-bridge--trace "status-refresh sections PASS"))
 
 (defun nelisp-emacs-magit-bridge--magit-insert-status-headers ()
@@ -3594,23 +3630,23 @@ destination semantics."
         (ignore-errors
           (oset section parent parent))
         (oset section type 'unstaged)
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'start (nelisp-ec-point)))
+           section 'start (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--trace "unstaged section PASS")
         (insert (propertize "Unstaged changes\n"
                             'font-lock-face
                             'magit-section-heading))
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'content (nelisp-ec-point)))
+           section 'content (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--trace "unstaged heading PASS")
         (dolist (file files)
           (nelisp-emacs-magit-bridge--insert-file-entry-section file))
         (magit-insert-section--finish section)
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'end (nelisp-ec-point)))
+           section 'end (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--link-section-child section))))
   (nelisp-emacs-magit-bridge--trace "unstaged PASS"))
 
@@ -3639,22 +3675,22 @@ destination semantics."
         (ignore-errors
           (oset section parent parent))
         (oset section type 'staged)
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'start (nelisp-ec-point)))
+           section 'start (nelisp-emacs-magit-bridge--point)))
         (insert (propertize "Staged changes\n"
                             'font-lock-face
                             'magit-section-heading))
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'content (nelisp-ec-point)))
+           section 'content (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--trace "staged heading PASS")
         (dolist (file files)
           (nelisp-emacs-magit-bridge--insert-file-entry-section file))
         (magit-insert-section--finish section)
-        (when (fboundp 'nelisp-ec-point)
+        (when (fboundp 'point)
           (nelisp-emacs-magit-bridge--section-slot-put
-           section 'end (nelisp-ec-point)))
+           section 'end (nelisp-emacs-magit-bridge--point)))
         (nelisp-emacs-magit-bridge--link-section-child section))))
   (nelisp-emacs-magit-bridge--trace "staged PASS"))
 
@@ -3973,8 +4009,8 @@ destination semantics."
 (defun nelisp-emacs-magit-bridge--magit-section-at (&optional position)
   "NeLisp-safe replacement for `magit-section-at'."
   (let ((pos (or position
-                 (and (fboundp 'nelisp-ec-point)
-                      (ignore-errors (nelisp-ec-point)))
+                 (and (fboundp 'point)
+                      (ignore-errors (nelisp-emacs-magit-bridge--point)))
                  (point))))
     (if (fboundp 'emacs-buffer-get-text-property)
         (ignore-errors
@@ -4014,8 +4050,8 @@ builtin otherwise."
 (defun nelisp-emacs-magit-bridge--magit-current-section ()
   "NeLisp-safe replacement for `magit-current-section'."
   (or magit--context-menu-section
-      (let ((position (or (and (fboundp 'nelisp-ec-point)
-                               (ignore-errors (nelisp-ec-point)))
+      (let ((position (or (and (fboundp 'point)
+                               (ignore-errors (nelisp-emacs-magit-bridge--point)))
                           (ignore-errors (point)))))
         (or (and position
                  (boundp 'magit-root-section)

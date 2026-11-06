@@ -107,7 +107,16 @@
                       (and ok-mode ok-size ok-prop ok-children ok-forward))
                 (let ((top (ignore-errors (magit-toplevel)))
                       (head (ignore-errors
-                              (magit-git-string "rev-parse" "HEAD"))))
+                              (magit-git-string "rev-parse" "HEAD")))
+                      ;; `magit-toplevel' alone can be answered from the
+                      ;; bridge's repo-root variable; this asks git itself
+                      ;; where it ran, so git running in the wrong
+                      ;; directory (whose HEAD is also 40 hex digits)
+                      ;; cannot pass.
+                      (git-top (ignore-errors
+                                 (magit-git-string "rev-parse" "--show-toplevel"))))
+                  (nemacs-magit-status-live-smoke--print
+                   "MAGIT-SMOKE STEP S7i git-top=%S" git-top)
                   (nemacs-magit-status-live-smoke--print
                    "MAGIT-SMOKE STEP S7g top=%S" top)
                   (nemacs-magit-status-live-smoke--print
@@ -117,7 +126,10 @@
                              (equal (file-name-as-directory top)
                                     fixture)
                              (stringp head)
-                             (= (length head) 40))))))))
+                             (= (length head) 40)
+                             (stringp git-top)
+                             (equal (file-name-as-directory git-top)
+                                    fixture))))))))
         (nemacs-magit-status-live-smoke--print "MAGIT-SMOKE STEP S8")
         (nemacs-magit-status-live-smoke--print
          "MAGIT-STATUS-BUFFER %s"
