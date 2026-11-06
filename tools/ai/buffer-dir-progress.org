@@ -1,0 +1,24 @@
+#+TITLE: default-directory is per-buffer and inherited at buffer creation, as in GNU
+
+# Reported 2026-11-06 by the notes-9b session (MAGIT-GIT-EXEC: git ran in the
+# wrong directory from temp buffers).  GNU's default-directory is a per-buffer
+# C variable: always local in every buffer, and get-buffer-create /
+# generate-new-buffer copy the current buffer's value.  On this line it is a
+# plain global, even under plain --load (build 196 differs on 7 of 10 lines).
+# BD_BIN is a binary built from this tree.
+
+* S1 per-buffer default-directory
+
+** S1.1 buffer-dir differential corpus matches GNU 31.1
+#+REQUIRES: BD_BIN
+# Expected output generated 2026-11-06 with GNU 31.1:
+#   CLGNU_CORPUS=tools/ai/buffer-dir/corpus-buffer-dir.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$BD_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/buffer-dir/corpus-buffer-dir.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/buffer-dir/expected-buffer-dir.txt
+
+** S1.2 specbind-local corpus (let of buffer-local default-directory) still matches GNU
+#+REQUIRES: BD_BIN
+cmd: (ulimit -v 8388608; timeout 120 "$BD_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/specbind-local/corpus-let-local.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/specbind-local/expected-let-local.txt
+
+** S1.3 cl-gnu corpora and timing still pass
+#+REQUIRES: BD_BIN
+cmd: CLGNU_BIN="$BD_BIN" bash tools/ai/cl-gnu/compare.sh && CLGNU_BIN="$BD_BIN" bash tools/ai/cl-gnu/timing-check.sh

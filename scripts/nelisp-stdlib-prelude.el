@@ -17748,6 +17748,7 @@ that carry that property.  Run `change-major-mode-hook' first.
     (dolist (entry (copy-sequence (gethash (current-buffer) nelisp-buffer-local--owned)))
       (let* ((var (car entry)) (prop (get var 'permanent-local)))
         (cond
+         ((eq var 'default-directory) nil) ; GNU: always-local, never reset
          ((or (null prop) kill-permanent) (kill-local-variable var))
          ((eq prop 'permanent-local-hook)
           (let ((val (symbol-value var)) (keep nil))
@@ -17855,6 +17856,38 @@ nil, matching the honest answer for every variable here.
   (defun kill-local-variable (variable)
     "No-op (there are no buffer-local values here); return VARIABLE."
     variable))
+
+;; GNU DEFVAR_PER_BUFFER `default-directory' (buffer.c: BVAR directory): local in
+;; every buffer, copied from the current buffer by `get-buffer-create' and
+;; `generate-new-buffer', and kept by `kill-all-local-variables'.  Without
+;; this, a `setq' in any buffer changed the global and temp buffers lost the
+;; creating buffer's directory.
+(when (fboundp 'nelisp--native-env)
+  (make-variable-buffer-local 'default-directory)
+  (put 'default-directory 'permanent-local t)
+  (defun nelisp-buffer--inherit-dir (buf dir)
+    "Give BUF its own `default-directory' DIR without changing the current buffer."
+    (let ((cur (current-buffer)))
+      ;; Bootstrap can run with no current buffer yet; nothing to inherit then.
+      (when (and cur buf (stringp dir))
+        (set-buffer buf)
+        (set (make-local-variable 'default-directory) dir)
+        (set-buffer cur))
+      buf))
+  (let ((old (symbol-function 'nelisp-generate-new-buffer)))
+    (fset 'nelisp-generate-new-buffer
+          (lambda (name)
+            (nelisp-buffer--inherit-dir (funcall old name) default-directory))))
+  (let ((old (symbol-function 'nelisp-get-buffer-create)))
+    (fset 'nelisp-get-buffer-create
+          (lambda (name)
+            (if (gethash name nelisp-buffer--registry)
+                (funcall old name)
+              (nelisp-buffer--inherit-dir (funcall old name) default-directory)))))
+  ;; Buffers that already exist (*scratch*, ...) are local too.
+  (dolist (buf (copy-sequence nelisp-buffer--order))
+    (when (buffer-live-p buf)
+      (nelisp-buffer--inherit-dir buf default-directory))))
 
 ;; GNU DEFVAR_PER_BUFFER gives fill-column an automatic local on assignment.
 ;; A plain global here made default-value follow setq in a temporary buffer.
