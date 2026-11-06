@@ -215,7 +215,7 @@
 
 (ert-deftest emacs-search-builtins-test/install-gate-overrides-stubs-on-reader ()
   "Doc 15 B4: the install gate force-installs these substrate polyfills over
-emacs-stub-bulk's no-op stubs on the NeLisp reader (`rdf' present), so
+emacs-stub-bulk's no-op stubs (symbols tagged `emacs-stub-bulk'), so
 `replace-match' (string form) and string ops like s-trim work after a
 runtime package load.  Pinned at source level since host ERT runs without
 the reader."
@@ -225,7 +225,7 @@ the reader."
                       (with-temp-buffer (insert-file-contents src)
                                         (buffer-string)))))
     (should source)
-    (should (string-match-p (regexp-quote "(fboundp 'rdf)") source))))
+    (should (string-match-p (regexp-quote "(get symbol 'emacs-stub-bulk)") source))))
 
 ;;;; J. Synthetic polyfill count loop honors COUNT
 

@@ -38,24 +38,8 @@
           (append '(completion inout signals) menu-bar-final-items))
     (should (equal menu-bar-final-items '(completion inout signals)))))
 
-(ert-deftest emacs-vars-test/package-mirror-matches-source ()
-  (let* ((repository-root
-          (expand-file-name ".." emacs-vars-test--directory))
-         (source (expand-file-name "src/emacs-vars.el" repository-root))
-         (mirror (expand-file-name
-                  "packages/emacs-lib-core/src/emacs-vars.el"
-                  repository-root)))
-    (should (string=
-             (with-temp-buffer
-               (insert-file-contents-literally source)
-               (buffer-string))
-             (with-temp-buffer
-               (insert-file-contents-literally mirror)
-               (buffer-string))))))
-
-(provide 'emacs-vars-test)
-
-;;; emacs-vars-test.el ends here
+;; Removed `package-mirror-matches-source': it compared the retired
+;; packages/ mirror with src/, which no longer exists.
 
 (ert-deftest emacs-vars-test/gc-cons-vars-present-and-settable ()
   "gc-cons-threshold / gc-cons-percentage exist with numeric defaults and are

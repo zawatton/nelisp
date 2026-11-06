@@ -140,8 +140,13 @@
                 file)))
     (should (and file (file-exists-p file)))
     (with-temp-buffer
-      (should (= 0 (call-process emacs nil t nil "-Q" "--batch" "-L" "src"
-                                 "--eval" expr)))
+      (should (= 0 (apply #'call-process emacs nil t nil "-Q" "--batch"
+                          ;; Reuse this process's package load path; the
+                          ;; stub requires modules from several packages.
+                          (append (apply #'append
+                                         (mapcar (lambda (dir) (list "-L" dir))
+                                                 (delq nil (copy-sequence load-path))))
+                                  (list "--eval" expr)))))
       (goto-char (point-min))
       (should (search-forward "((outline-regexp" nil t))
       (backward-char (length "((outline-regexp"))

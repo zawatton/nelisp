@@ -27,8 +27,8 @@
 (defvar emacs-backquote-test--w nil)
 
 (defconst emacs-backquote-test--repo-root
-  (expand-file-name ".." (file-name-directory (or load-file-name buffer-file-name)))
-  "Repository root for locating read-only stdlib mirrors in tests.")
+  (expand-file-name "../../.." (file-name-directory (or load-file-name buffer-file-name)))
+  "Repository root for locating `lisp/' stdlib files in tests.")
 
 (defconst emacs-backquote-test--vendor-cl-macro-symbols
   '(cl-block cl-return-from cl-return cl-loop cl-defstruct
@@ -65,9 +65,13 @@ the load so host Emacs keeps its own definitions; only used from
         (if (cdr cell)
             (fset (car cell) (cdr cell))
           (fmakunbound (car cell))))))
-  (load (expand-file-name "src/emacs-backquote.el"
+  (load (expand-file-name "packages/emacs-lib-core/src/emacs-backquote.el"
                           emacs-backquote-test--repo-root)
-        nil t))
+        nil t)
+  ;; `nelisp--bq-expand' comes from the standalone NeLisp prelude; host Emacs
+  ;; has no runtime expander, so these runtime-path tests cannot run there.
+  (unless (fboundp 'nelisp--bq-expand)
+    (ert-skip "nelisp--bq-expand is only available on the standalone runtime")))
 
 (defun emacs-backquote-test--runtime-expand (form)
   "Evaluate FORM through the runtime `nelisp--bq-expand' path."
@@ -244,20 +248,8 @@ the load so host Emacs keeps its own definitions; only used from
     (should (equal (nelisp--bq-expand inner)
                    (list 'quote inner)))))
 
-(ert-deftest emacs-backquote-test/package-mirror-matches-source ()
-  "The extracted foundation package keeps the backquote source in sync."
-  (let ((source (expand-file-name "src/emacs-backquote.el"
-                                  emacs-backquote-test--repo-root))
-        (mirror
-         (expand-file-name
-          "packages/emacs-lib-core/src/emacs-backquote.el"
-          emacs-backquote-test--repo-root)))
-    (should (equal (with-temp-buffer
-                     (insert-file-contents source)
-                     (buffer-string))
-                   (with-temp-buffer
-                     (insert-file-contents mirror)
-                     (buffer-string))))))
+;; Removed `package-mirror-matches-source': it compared the retired
+;; packages/emacs-lib-core mirror with src/, which no longer exists.
 
 
 ;;;; --- S2 coverage batch: GNU backquote.el helper API --------------------

@@ -50,7 +50,7 @@
 
 (defconst nemacs-gui-file-bridge-runtime-test--magit-bridge
   (expand-file-name
-   "src/nelisp-emacs-magit-bridge.el"
+   "../emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el"
    nemacs-gui-file-bridge-runtime-test--repo-root))
 
 (defconst nemacs-gui-file-bridge-runtime-test--init-transport

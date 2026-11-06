@@ -75,7 +75,7 @@
                         "(defalias 'copy-marker"
                         "(markerp                    . nelisp-ec-marker-p)"
                         "(move-marker                . nelisp-ec-set-marker)"
-                        "(insert-before-markers      . nelisp-ec-insert)"
+                        "(insert-before-markers      . nelisp-ec-insert-before-markers)"
                         "(remove-overlays    . emacs-buffer-remove-overlays)"
                         "(next-overlay-change . emacs-buffer-next-overlay-change)"
                         "(previous-overlay-change . emacs-buffer-previous-overlay-change)"
@@ -84,12 +84,12 @@
                         "(defalias 'invisible-p #'emacs-buffer-builtins-invisible-p"
                         "(defalias 'add-to-invisibility-spec"
                         "(defalias 'remove-from-invisibility-spec"
-                        "(defalias 'next-single-char-property-change"
-                        "(defalias 'previous-single-char-property-change"
-                        "(insert-and-inherit         . nelisp-ec-insert)"
+                        "(defun next-single-char-property-change"
+                        "(defun previous-single-char-property-change"
+                        "(insert-and-inherit         . emacs-buffer-builtins--insert-and-inherit)"
                         "(defalias 'subst-char-in-region"
                         "(defalias 'buffer-modified-tick"
-                        "(defalias 'buffer-chars-modified-tick"))
+                        "(defun buffer-chars-modified-tick"))
         (goto-char (point-min))
         (should (search-forward needle nil t))))))
 
