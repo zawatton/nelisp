@@ -1,0 +1,35 @@
+#+TITLE: Hash tables (then closures and subrs) become their own heap type, not conses
+
+# User decision 2026-11-06: in the standalone runtime a hash table is a real
+# cons (META-VECTOR . INDEX-VECTOR) built by nl_ht_make_w in
+# scripts/nelisp-standalone-build.el, so consp/listp return t, car/cdr succeed
+# and GNU code that tests listp before hash-table-p (json.el's json--print)
+# misbehaves.  Interpreted closures and subrs have the same defect.  Move hash
+# tables to a dedicated heap kind so every predicate, accessor, the printer,
+# equal, sxhash and GC see them as GNU does.  HT_BIN is a binary built from
+# this tree; HT_BASE_BIN is the binary built from the commit before the change.
+
+* S1 hash tables are a distinct heap type
+
+** S1.1 hash-table differential corpus matches GNU 31.1
+#+REQUIRES: HT_BIN
+# Expected output generated 2026-11-06 with GNU 31.1:
+#   CLGNU_CORPUS=tools/ai/hash-table-type/corpus-hash.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+# Build 179 differs on 11 of 37 lines (consp/listp t, car/cdr succeed, pcase/typep see a cons).
+cmd: (ulimit -v 8388608; timeout 120 "$HT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/hash-table-type/corpus-hash.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/hash-table-type/expected-hash.txt
+
+** S1.2 vendored json.el encodes hash tables as GNU does (vendor-replace S2.5 corpus)
+#+REQUIRES: HT_BIN
+cmd: (ulimit -v 8388608; timeout 120 "$HT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/vendor-replace/corpus-json.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/vendor-replace/expected-json.txt
+
+** S1.3 cl-gnu corpora still match GNU on the new binary
+#+REQUIRES: HT_BIN
+cmd: CLGNU_BIN="$HT_BIN" bash tools/ai/cl-gnu/compare.sh
+
+** S1.4 hash-table and cons hot paths are not slower than the base binary
+#+REQUIRES: HT_BIN HT_BASE_BIN
+cmd: bash tools/ai/hash-table-type/perf-check.sh
+
+* S2 interpreted closures and subrs are not conses
+** S2.1 closure/subr differential corpus matches GNU 31.1 (to be defined when S2 starts)
+pending
