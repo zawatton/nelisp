@@ -1031,7 +1031,7 @@ nemacs-library-gate:
 	+$(MAKE) --no-print-directory -j4 -f $(firstword $(MAKEFILE_LIST)) nemacs-library-gate-checks
 
 .PHONY: nemacs-library-gate-checks
-nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-package-release-key-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
+nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-package-release-key-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
 	$(EMACS) -Q $(NEMACS_PACKAGE_SRC_LOAD_PATH) -l $(NELISP_ROOT)/packages/emacs-lib-facade/test/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
 	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
@@ -1044,7 +1044,7 @@ nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventor
 	@echo "nemacs-library-gate: ok"
 
 nemacs-library-consumer-smoke:
-	$(EMACS) -Q $(NELISP_LOAD_PATH) -l $(NELISP_ROOT)/$(NEMACS_TEST_DIR)/nelisp-emacs-consumer-smoke-test.el \
+	$(EMACS) -Q $(NELISP_LOAD_PATH) -l $(NELISP_ROOT)/packages/emacs-lib-facade/test/nelisp-emacs-consumer-smoke-test.el \
 		-f ert-run-tests-batch-and-exit
 
 nemacs-library-contract:
@@ -1172,7 +1172,11 @@ nemacs-library-package-catalog:
 		-l scripts/nemacs-library-package-catalog.el \
 		-f nemacs-library-package-catalog-batch
 
+# Retired after the Doc 211 import (2026-11-06, user decision): it
+# classifies stable API by the retired nelisp-emacs-* package IDs, so
+# every row fails (966/966) now that the files live in emacs-lib-core.
 nemacs-library-compat-api-policy:
+	@echo "$@: retired after the Doc 211 import: it checks the retired nelisp-emacs-* package IDs (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-compat-api-policy-output "$(abspath $(NEMACS_LIBRARY_COMPAT_API_POLICY))")' \
@@ -1206,6 +1210,7 @@ nemacs-library-package-layout:
 #   the package path/load/lazy/consumer/frontend/gui-bridge smokes);
 # - verify-production-runtime-path and nemacs-runtime-image-input-inventory,
 #   which tracked the src/ -> package migration that Doc 211 completed.
+# nemacs-library-compat-api-policy is retired too (see its comment).
 # bake-image, bake-vendor-core-runtime-image, verify-nemacs-daily-driver,
 # gate-nemacs-complete and nemacs-library-gate-checks no longer depend on
 # any of them.  Packaging for emacs-lib-* needs a new design if it is wanted.
