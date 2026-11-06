@@ -27,9 +27,38 @@ cmd: (ulimit -v 8388608; timeout 120 "$HT_BIN" --load tools/ai/cl-gnu/run-corpus
 cmd: CLGNU_BIN="$HT_BIN" bash tools/ai/cl-gnu/compare.sh
 
 ** S1.4 hash-table and cons hot paths are not slower than the base binary
-#+REQUIRES: HT_BIN HT_BASE_BIN
+#+REQUIRES: HT_BIN,HT_BASE_BIN
 cmd: bash tools/ai/hash-table-type/perf-check.sh
 
-* S2 interpreted closures and subrs are not conses
-** S2.1 closure/subr differential corpus matches GNU 31.1 (to be defined when S2 starts)
-pending
+* S2 interpreted closures are not conses
+# Criteria defined 2026-11-06.  CT_BIN is a binary built from this tree,
+# CT_BASE_BIN the binary built before S2 started (build 198).  Build 198
+# differs from GNU on 7 of 17 closure lines and 7 of 8 subr lines.
+
+** S2.1 closure differential corpus matches GNU 31.1
+#+REQUIRES: CT_BIN
+# Expected: CLGNU_CORPUS=tools/ai/closure-type/corpus-closure.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/closure-type/corpus-closure.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/closure-type/expected-closure.txt
+
+** S2.2 hash-table and cl-gnu corpora still match GNU on the new binary
+#+REQUIRES: CT_BIN
+cmd: (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/hash-table-type/corpus-hash.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/hash-table-type/expected-hash.txt && CLGNU_BIN="$CT_BIN" bash tools/ai/cl-gnu/compare.sh
+
+** S2.3 vendored ert (closure-heavy) still gives GNU's verdicts
+#+REQUIRES: CT_BIN
+cmd: (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/vendor-replace/ert-smoke.el 2>/dev/null) | grep -aqx 'ERT-SMOKE 3/4 unexpected=1'
+
+** S2.4 closure and subr call hot paths are not slower than the base binary
+#+REQUIRES: CT_BIN,CT_BASE_BIN
+cmd: bash tools/ai/closure-type/perf-check.sh
+
+* S3 subrs are not conses
+
+** S3.1 subr differential corpus matches GNU 31.1
+#+REQUIRES: CT_BIN
+# Expected: CLGNU_CORPUS=tools/ai/closure-type/corpus-subr.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/closure-type/corpus-subr.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/closure-type/expected-subr.txt
+
+** S3.2 closure corpus, hash corpus, cl-gnu and ert smoke all still pass
+#+REQUIRES: CT_BIN
+cmd: (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/closure-type/corpus-closure.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/closure-type/expected-closure.txt && (ulimit -v 8388608; timeout 120 "$CT_BIN" --load tools/ai/vendor-replace/ert-smoke.el 2>/dev/null) | grep -aqx 'ERT-SMOKE 3/4 unexpected=1' && CLGNU_BIN="$CT_BIN" bash tools/ai/cl-gnu/compare.sh
