@@ -64,7 +64,15 @@
     ;; failed the gate, which said "this dependency has not been thought
     ;; about" when it had been.
     (org-element . "vendor-package")
-    (org-element-ast . "vendor-package"))
+    (org-element-ast . "vendor-package")
+    ;; GNU cl-lib is vendored (vendor/emacs-lisp/emacs-lisp/cl-lib.el)
+    ;; since the core lane moved the cl layer to GNU.
+    (cl-lib . "vendor-package")
+    ;; The repository nl-ffi package, like `nl-ffi-memory' above.
+    (nl-ffi . "vendor-package")
+    ;; Lives in emacs-lib-core itself, but postdates the retired Doc 18
+    ;; ownership inventory, so no owner group resolves for it.
+    (emacs-network-ffi . "same-package"))
   "Known non-repository dependency relation by required feature.")
 
 (defun nemacs-library-package-deps--external-feature-relation (feature)
