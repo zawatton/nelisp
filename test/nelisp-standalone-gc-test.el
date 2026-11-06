@@ -975,12 +975,13 @@ the heap and all mark decisions remain native production code."
          (ptr-write-u64 (+ ,base 352) 8 (+ ,base 392))
          (ptr-write-u64 (+ ,base 352) 16 0)
          (ptr-write-u64 (+ ,base 352) 24 0)
-         ;; E NlVector -> vector data -> T.
-         (ptr-write-u64 (+ ,base 392) 0 1)
-         (ptr-write-u64 (+ ,base 392) 8 (+ ,base 432))
-         (ptr-write-u64 (+ ,base 392) 16 1)
-         (ptr-write-u64 (+ ,base 392) 24 1)
-         (ptr-write-u64 (+ ,base 432) 0 (+ ,base 448))
+         ;; E is a header-first vectorlike (compact backing, c94267651):
+         ;; header = kind 8 | (1 << 8), one inline element word -> T.
+         (ptr-write-u64 (+ ,base 392) 0 264)
+         (ptr-write-u64 (+ ,base 392) 8 (+ ,base 448))
+         (ptr-write-u64 (+ ,base 392) 16 0)
+         (ptr-write-u64 (+ ,base 392) 24 0)
+         (ptr-write-u64 (+ ,base 432) 0 0)
          ;; T String -> byte buffer.
          (ptr-write-u64 (+ ,base 448) 0 5)
          (ptr-write-u64 (+ ,base 448) 8 1)
@@ -1610,7 +1611,8 @@ stub count matches the Elisp oracle."
          (plain (memq mode '(plain markonly desync)))
          (end (plist-get oracle :end))
          (forms nil) (setup nil) (checks nil) (code 0))
-    (dolist (name '(nl_gc_sweep_merge_chunk nl_gc_sweep_link_run
+    (dolist (name '(nl_gc_sweep_merge_chunk nl_gc_sweep_merge_range
+                    nl_gc_sweep_link_run
                     nl_gc_sweep_free_dead nl_gc_relink_free_one
                     nl_gc_discard_free_block nl_gc_bt_ok nl_hdr_bt nl_hdr_mark
                     nl_freelist_small_mask_bit nl_freelist_small_mask_set
@@ -1786,8 +1788,12 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
       (let ((form (or (nelisp-standalone-gc-test--find-defun checked name)
                       (nelisp-standalone-gc-test--find-defun
                        nelisp-standalone--arena-source name))))
-        (dolist (pair `((,meta . nl_gc_diag) (,(+ meta 64) . nl_gc_stats)
-                       (,(+ meta 128) . nl_freelist_small_mask)))
+        (dolist (pair `((,meta . nl_gc_diag)
+                        ;; The allocation accounting is the nl_gc_until
+                        ;; countdown (decremented by the block total).
+                        (,(+ meta 64) . nl_gc_until)
+                        (,(+ meta 192) . nl_gc_stats)
+                        (,(+ meta 128) . nl_freelist_small_mask)))
           (setq form (cl-subst (car pair) `(data-addr ,(cdr pair)) form :test #'equal)))
         (when (eq name broken)
           (let* ((store (if (eq name 'nl_alloc_pop_fast)
@@ -1841,7 +1847,7 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
               (setq obj (nl_alloc_bytes_run (- want 8) 8 want))))
            (nl_probe_zero_reference ,(+ q 8) 0 (- want 8))
            (if (= obj ,(+ p 8))
-               (if (= (ptr-read-u64 ,(+ meta 64) 0) want)
+               (if (= (ptr-read-u64 ,(+ meta 64) 0) (- 0 want))
                    (if (= (ptr-read-u64 ,(+ meta 128) 0) 0)
                        (if (= run 0)
                            (if (= (ptr-read-u64 head 0) 0) (nl_probe_zero_compare) 4)

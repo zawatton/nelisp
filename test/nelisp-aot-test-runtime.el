@@ -323,6 +323,10 @@ retried."
            (when (and (member 'nl_alloc_bytes names) (not lower))
              (setq lower t fresh t))
            (setq defs (cl-remove 'nl_alloc_bytes defs :key #'cadr))
+           ;; Never re-add a helper the unit already defines.
+           (let ((own (make-hash-table :test 'eq)))
+             (nelisp-aot-test-runtime--collect-defuns (cdr unit) own)
+             (setq defs (cl-remove-if (lambda (d) (gethash (cadr d) own)) defs)))
            (if (and (or defs (prog1 fresh (setq fresh nil)))
                     (< (setq tries (1+ tries)) 40))
                (setq unit (nelisp-aot-test-runtime-complete-unit
