@@ -812,10 +812,12 @@
     ;; The deletion itself (GNU del_range_2) of the 1-based range [S, E) inside the accessible
     ;; portion of a buffer without markers, overlays or properties: the gap moves to its end and
     ;; grows over it; the point and the narrowing follow `nelisp-delete-region'.  TICK is the
-    ;; record's fixnum tick word.
+    ;; record's fixnum tick word.  An empty range changes nothing (GNU del_range_1).
     (defun nl_gb_delete_core (resw r h blen len pt s e tick)
       (let* ((delta (- e s)) (ns (ptr-read-u64 r 64)) (ne (ptr-read-u64 r 72))
              (np (if (<= pt s) pt (if (>= pt e) (- pt delta) s))))
+        (seq
+         (if (= s e) 0
         (seq
          (wf_dirty)
          (nl_gb_delete_text r h (- s 1) (- e 1))
@@ -827,7 +829,7 @@
              (ptr-write-u64 r 72 (+ (shl (if (<= om s) om (if (>= om e) (- om delta) s)) 2) 1))))
          (ptr-write-u64 r 40 7)
          (ptr-write-u64 r 96 (+ tick 4))
-         (ptr-write-u64 r 104 (if (= np s) 3 (+ (shl np 2) 1)))
+         (ptr-write-u64 r 104 (if (= np s) 3 (+ (shl np 2) 1)))))
          (ptr-write-u64 resw 0 3)
          0)))
     ;; Delete the characters at indexes [S, E) of the valid store H of record R: the gap moves to
