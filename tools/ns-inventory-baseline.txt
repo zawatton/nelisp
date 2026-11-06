@@ -1357,7 +1357,7 @@ pinned-collision ns-collision-divergent	maphash	lisp/nelisp-stdlib-misc.el scrip
 pinned-collision ns-collision-divergent	max	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	7fb414c7a03c
 pinned-collision ns-collision-divergent	message	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	f12370c67efe
 pinned-collision ns-collision-divergent	min	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	85ae9b2d57bc
-pinned-collision ns-collision-divergent	mod	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	8d95bc941de0
+pinned-collision ns-collision-divergent	mod	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	d4c0e58afa31
 pinned-collision ns-collision-divergent	nelisp--apply-closure	lisp/nelisp-stdlib-eval-core.el src/nelisp-eval.el	9be45664bd35
 pinned-collision ns-collision-divergent	nelisp--builtin-provide	src/nelisp-eval.el src/nelisp-load.el	d4a789e533a1
 pinned-collision ns-collision-divergent	nelisp--builtin-require	src/nelisp-eval.el src/nelisp-load.el	319625570d48
@@ -1401,6 +1401,7 @@ pinned-collision ns-collision-divergent	read	lisp/nelisp-stdlib-reader.el script
 pinned-collision ns-collision-divergent	read-from-string	lisp/nelisp-stdlib-reader.el scripts/nelisp-stdlib-prelude.el	04c2095a877e
 pinned-collision ns-collision-divergent	recordp	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	20096afadd80
 pinned-collision ns-collision-divergent	regexp-quote	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	e92681fb0b02
+pinned-collision ns-collision-divergent	restore-buffer-modified-p	packages/nelisp-emacs-io/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	ebbe1c38be6b
 pinned-collision ns-collision-divergent	round	lisp/nelisp-stdlib.el scripts/nelisp-stdlib-prelude.el	b6b8448a8348
 pinned-collision ns-collision-divergent	run-at-time	packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	2e272350c8bb
 pinned-collision ns-collision-divergent	set-file-modes	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	eb7d7aadd4db
