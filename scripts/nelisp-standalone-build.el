@@ -26749,6 +26749,18 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; The events list of the activation behind binding-link LINK (readers
       ;; that walk or rewrite events), in-place records folded in first.
       (wf_bytecode_w_aux_unwinds env (- (heap-read-u64 link 16) 8)))
+    ;; Restore a lean-bound symbol's cell.  The bind declined LOCALIZED
+    ;; symbols, but the body may have made SYM buffer-local since; a raw
+    ;; store at +16 would then overwrite the blv pointer with the plain
+    ;; saved value.  GNU's unbind of a plain SPECPDL_LET falls through to
+    ;; set_default_internal, which is what `nl_ent_set' slot 0 does for a
+    ;; LOCALIZED symbol (it writes the blv default).
+    (defun wf_bytecode_w_lean_store (sym saved)
+      (if (= (logand sym 7) 6)
+          (if (= (logand (ptr-read-u64 (- sym 6) 0) 768) 0)
+              (ptr-write-u64 (- sym 6) 16 saved)
+            (nl_ent_set sym 0 saved))
+        (ptr-write-u64 (+ (nl_word_payload sym) 16) 0 saved)))
     (defun wf_bytecode_w_pop_lean (aux)
       ;; w3spec: undo the newest in-place record (the caller checked the count
       ;; is at least 1): free its two slots, restore the symbol cell.
@@ -26761,7 +26773,7 @@ bytes are written into a fresh 8-byte buffer instead."
          (ptr-write-u64 slot 8 3)
          (ptr-write-u64 aux 96 (+ (shl (- cnt 1) 2) 1))
          (if (= (logand saved 1) 0) (wf_dirty) 0)
-         (ptr-write-u64 (- name 6) 16 saved)
+         (wf_bytecode_w_lean_store name saved)
          0)))
     (defun m5_fx_general_event (env aux)
       ;; A successful general binder owns its saved value in the environment
@@ -26852,7 +26864,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (seq (wf_dirty)
              (if (= entry 0)
                  (nl_sb_set env name (wf_bytecode_w_view saved (alloc-bytes 32 8)))
-               (ptr-write-u64 (+ (nl_word_payload entry) 16) 0 saved))
+               (wf_bytecode_w_lean_store entry saved))
              0))))
     ;; In-loop unbind of N lean events (dynfast).  Answers 0 when the N innermost
     ;; events of AUX's unwinds were undone, 1 when nothing was changed and the outer
@@ -26909,8 +26921,7 @@ bytes are written into a fresh 8-byte buffer instead."
                (if (= n 1)
                    (if (= (nl_val_tag (nl_cons_car_word ev)) 4)
                        (seq (wf_dirty)
-                            (ptr-write-u64 (+ (nl_word_payload e1) 16) 0
-                                           (nl_cons_cdr_word ev)))
+                            (wf_bytecode_w_lean_store e1 (nl_cons_cdr_word ev)))
                      0)
                  (wf_bytecode_w_lean_unbind env ev))
                (setq k (+ k 1))))

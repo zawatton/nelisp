@@ -1,0 +1,8 @@
+(defvar zz-v "G")
+(defun zz-body (b)
+  (let ((zz-v "/IN/"))
+    (with-current-buffer b (set (make-local-variable 'zz-v) "/LOCAL/"))
+    (set-buffer b)))
+(let ((b (get-buffer-create "zz")))
+  (zz-body b)
+  (princ (format "RES %S %S\n" (buffer-local-value 'zz-v b) (default-value 'zz-v))))

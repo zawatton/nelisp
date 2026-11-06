@@ -1,0 +1,24 @@
+#+TITLE: let of buffer-local variables follows GNU specbind (no SIGSEGV)
+
+# Reported 2026-11-06 by the notes-9b session (magit on the Doc 211 import
+# branch): a dynamic let entered where a variable is not local, whose body
+# makes it local in another buffer and unwinds there, crashes in
+# nl_sb_bind_plain / default-value (LOCALIZED symbol with an invalid blv).
+# GNU's specbind distinguishes SPECPDL_LET_LOCAL / LET_DEFAULT.  SB_BIN is a
+# binary built from this tree.  Builds 187 and 193 crash on corpus form 3.
+
+* S1 specbind of buffer-local variables
+
+** S1.1 the reported 8-line repro prints GNU's result three times in a row
+#+REQUIRES: SB_BIN
+cmd: for i in 1 2 3; do (ulimit -v 8388608; timeout 60 "$SB_BIN" --load tools/ai/specbind-local/repro-defun-let-local.el -- 2>/dev/null) | grep -aqx 'RES "/LOCAL/" "G"' || exit 1; done
+
+** S1.2 let-local differential corpus matches GNU 31.1
+#+REQUIRES: SB_BIN
+# Expected output generated 2026-11-06 with GNU 31.1:
+#   CLGNU_CORPUS=tools/ai/specbind-local/corpus-let-local.el emacs --batch -Q -l tools/ai/cl-gnu/run-corpus.el
+cmd: (ulimit -v 8388608; timeout 120 "$SB_BIN" --load tools/ai/cl-gnu/run-corpus.el -- tools/ai/specbind-local/corpus-let-local.el 2>/dev/null) | grep -aE '^[0-9][0-9] ' | cmp -s - tools/ai/specbind-local/expected-let-local.txt
+
+** S1.3 cl-gnu corpora and timing still pass
+#+REQUIRES: SB_BIN
+cmd: CLGNU_BIN="$SB_BIN" bash tools/ai/cl-gnu/compare.sh && CLGNU_BIN="$SB_BIN" bash tools/ai/cl-gnu/timing-check.sh
