@@ -1,0 +1,21 @@
+#+TITLE: Are large alloc-bytes blocks held only as a Lisp integer kept alive by nl_gc_pin_int_addr?
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/large-block-pin-progress.org
+# Follows tools/ai/intscan-perf-report.org "Caveat, not verified" (2026-11-03):
+# scanning a 16 MiB int-held block cost almost nothing.
+# If a size is reclaimed while held, criteria for a fix will be added.
+
+* S1 Probe
+
+** S1.1 The probe exists and is not blind: XOR-held blocks are reclaimed at every size
+#+TIMEOUT: 600
+cmd: test -x tools/ai/large-block-pin-probe.sh && tools/ai/large-block-pin-probe.sh target/nelisp-base >target/large-pin.log 2>&1; grep -q '^control-blind-sizes=none' target/large-pin.log
+
+** S1.2 Probe result recorded as evidence
+evidence: tools/ai/evidence/large-block-pin-probe-20261103.txt sha256=aee41c175b87ff8df5f6af7da16e15f84e828d07671fc375c329c6094b404177
+
+* S2 Verdict
+
+** S2.1 The report states a verdict per size
+cmd: grep -qE '^\* Verdict: (SAFE|REPRODUCED)' tools/ai/large-block-pin-report.org

@@ -1,0 +1,9 @@
+# tools/ai/large-block-pin-probe.sh target/nelisp-base, 2026-11-03, base sha256 1002d1898f4e3380 (origin/main tree)
+size=400 int-held intact=4/4 xor-control intact=0/4
+size=4096 int-held intact=4/4 xor-control intact=0/4
+size=65536 int-held intact=4/4 xor-control intact=0/4
+size=1048576 int-held intact=4/4 xor-control intact=0/4
+size=16777216 int-held intact=4/4 xor-control intact=0/4
+size=67108864 int-held intact=4/4 xor-control intact=0/4
+control-blind-sizes=none
+int-held-lost-sizes=none

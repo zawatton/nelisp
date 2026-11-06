@@ -687,6 +687,27 @@ standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat (or d
 #   [defvar-alloc-smoke] PASS: per-form=108 budget=200 keep-ok=t
 #     const-ok=t pass=t
 standalone-reader-defvar-alloc-smoke|scripts/nelisp-standalone-build.el|s/(bf_defconst_install env name_ptr val_slot out)/(if (= (nelisp_mirror_is_bound (+ env 0) name_ptr (+ env 64)) 1) (seq (nl_sexp_clone_into name_ptr out) 0) (bf_defconst_install env name_ptr val_slot out))/|defconst adopts defvar's boundp gate and stops overwriting an already-bound value
+# 2026-11-02: `standalone-reader-alloc-bytes-int-root-smoke' polices
+# `nl_gc_pin_int_addr'.  The injection makes the helper's first guard true
+# for every address, so no integer pins its block -- the defect as it was
+# before 0a304e554.  RED: "200 of 200 int-held buffers corrupted";
+# restored: "alloc-bytes-int-root: PASS (200 buffers)".  Structural, not
+# timing-dependent: `garbage-collect' always sweeps an unpinned block.
+standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|s/^      (if (< v 65536) 0$/      (if (> v -1) 0/|integers stop pinning the arena blocks they name
+# 2026-11-03: `standalone-reader-native-load-slot-pin-smoke' polices
+# `nelisp-native-load--slot-pins'.  The injection turns the pin into a
+# no-op, so a string boxed into a raw slot is held only by raw memory --
+# the loader as it was on origin/main before this row.  RED: "FAIL
+# 184/200 wrong under mid-form GC, 200/200 after garbage-collect";
+# restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
+# loaded from source, so no rebuild is needed.
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
+# 2026-11-03 (second row): the same gate polices the scratch-vector pin.
+# The injection drops the box pin, so a scratch vector in the mmap'd slots
+# is held only by memory the GC does not scan.  RED: "... 49/50 scratch
+# vectors freed"; restored: "native-load-slot-pin: PASS (200 strings, 50
+# scratch vectors)".
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^    (puthash addr box nelisp-native-load--slot-pins)$/    (ignore addr box nelisp-native-load--slot-pins)/|scratch vector boxes stop being pinned while the mmap'd slot holds them
 # Doc 201 §4 item 2.  `standalone-reader-fileattrs-smoke' polices the
 # windows-native `stat'/`readdir' shims and the `nelisp--syscall-stat'
 # classification that moved onto st_mode with them.  The injection changes

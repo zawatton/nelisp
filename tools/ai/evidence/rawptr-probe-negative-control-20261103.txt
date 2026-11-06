@@ -1,0 +1,13 @@
+# Negative control for tools/ai/rawptr-gc-probe.sh, 2026-11-03.
+# target/nelisp built from origin/main ee06ee849; NATIVE_LOAD = lisp/nelisp-native-load.el from origin/main (no slot pins).
+## base loader
+case-A no explicit GC: 184/200 bad
+case-A string-in-raw-cell after GC: 200/200 bad
+case-B no explicit GC: 0/50 bad
+case-B scratch-vector after GC: 0/50 bad
+exit=1
+## same, mid-form GC disabled with (nelisp--debug-switch 6) before the probe
+case-A no explicit GC: 0/200 bad
+case-A string-in-raw-cell after GC: 200/200 bad
+case-B no explicit GC: 0/50 bad
+case-B scratch-vector after GC: 0/50 bad

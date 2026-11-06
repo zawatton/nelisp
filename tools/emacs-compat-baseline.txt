@@ -100,6 +100,22 @@
 shared-shadowing 253
 # 270 -> 269 on 2026-11-05 (cl-gnu P3): the native prelude `pcase' is deleted.
 
+# 269 -> 270 on 2026-11-02: `signal' in scripts/nelisp-stdlib-prelude.el.
+# GNU Emacs 31.1 raises (error "Invalid error symbol" SYM) when SYM has no
+# `error-conditions' and (wrong-type-argument symbolp X) for a non-symbol;
+# the native `signal' raises SYM as given.  The check needs the plist that
+# only the prelude maintains, so it wraps the native subr (kept reachable as
+# `nelisp--native-signal'), and it must be unconditional: `signal' is always
+# fboundp, so an (unless (fboundp ...)) guard would never install it.
+# Covered by the `signal' case in test/nelisp-shadow-differential-cases.el
+# (emacs-parity) and tools/ai/gnu31-div-check.sh signal-invalid.
+
+# 270 -> 269 on 2026-11-01: the measured count had drifted to 269 (one below
+# the baseline), so the gate-mutation row for emacs-compat, which injects
+# exactly one new unconditional shadow, landed on 270 == baseline and stayed
+# green.  Tightened to the measured value so +1 is red again (same count on
+# emacs-gtk 30.1 and 31.1).
+
 # 268 -> 270 on 2026-09-20: `process-send-eof'/`process-send-region', new
 # entries in `packages/nelisp-process-adapter/src/nelisp-process-adapter.el'
 # alongside the process/network adapter surface the 268 note above already

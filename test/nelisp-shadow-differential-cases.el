@@ -1735,6 +1735,10 @@
        (condition-case e (seq-concatenate '(1 2 3) 'foo) (error e))
        (condition-case e (mapc t '(1 2 . 3)) (error e))
        (condition-case e (mapcar 7 '(1 . 2)) (error e))
+       (condition-case e (mapcar 'nelisp-no-such-fn '(1 . 2)) (error e))
+       (condition-case e (mapcan 7 '(1 . 2)) (error e))
+       (condition-case e (mapc 7 '(1 . 2)) (error e))
+       (condition-case e (mapconcat 7 '(1 . 2) "") (error e))
        (condition-case e (assoc-string "" '(1) '(1)) (error e))
        (condition-case e (error-message-string nil) (error e))
        (condition-case e (error-message-string "") (error e))
@@ -2751,6 +2755,55 @@
               (condition-case e (% 13.0 4) (error e))
               (condition-case e (aref [a b] 2) (error e))) t)
 
+ ;; GNU Emacs 31.1 `format': `#' with %B writes an uppercase "0B" prefix, and
+ ;; %b keeps the lowercase one.
+ (list (format "%#B" 5) (format "%#b" 5) (format "%B" 5) (format "%#B" -5)
+       (format "%#8B" 5) (format "%#-8B|" 5) (format "%#08B" 5)
+       (format "%#+B" 5))
+ ;; gnu31-sort-copy: a one-argument `sort' returns a sorted COPY for a vector
+ ;; as well as for a list, and leaves the original untouched.
+ (let* ((v (vector 3 1 2)) (l (list 3 1 2)) (rv (sort v)) (rl (sort l)))
+   (list v rv (eq v rv) l rl (eq l rl)))
+ ;; Emacs 31.1 `sort' keywords; the (sort SEQ PRED) form stays in place.
+ (list (let ((l (list 3 1 2))) (let ((r (sort l :in-place t))) (list r (eq r l))))
+       (sort (list "b" "A" "c") :key (function downcase))
+       (sort (list 1 3 2) :reverse t)
+       (sort (list 1 3 2) :lessp (function >))
+       (let ((v (vector 3 1 2))) (list (sort v (function <)) v))
+       (let ((v (vector 3 1 2))) (list (sort v :in-place t) v))
+       ;; stable, also with :reverse
+       (sort (list (cons 1 'a) (cons 0 'b) (cons 1 'c) (cons 0 'd))
+             :key (function car))
+       (sort (list (cons 1 'a) (cons 0 'b) (cons 1 'c) (cons 0 'd))
+             :key (function car) :reverse t)
+       (sort (list '(1 2) '(1 1) '(0 9) nil) :lessp (function value<))
+       (condition-case e (sort (list 1 2) :bogus 1) (error (car e))))
+ ;; `value<', the default `sort' order: nil is the empty list, and vectors
+;; compare element-wise with a proper prefix first.
+(list (value< nil '(0 9)) (value< '(1) nil) (value< nil 'a)
+      (value< [1 2] [1 3]) (value< [1] [1 0]) (value< [1 0] [1]))
+;; `signal' with a symbol that has no `error-conditions' raises
+ ;; (error "Invalid error symbol" SYM); a non-symbol is a type error.
+ (list (condition-case e (signal 'undefined-error-symbol nil) (error e))
+       (condition-case e (signal 'undefined-error-symbol (list 1 2)) (error e))
+       (condition-case e (signal 'undefined-error-symbol nil)
+         (undefined-error-symbol 'own) (error (car e)))
+       (condition-case e (signal 'arith-error nil) (error e))
+       (condition-case e (signal 'wrong-type-argument (list 'stringp 1))
+         (wrong-type-argument e))
+       (condition-case e (signal 42 nil) (error (car e))))
+ ;; Headless timers return GNU's 10-slot timer vector (timer-shape).  Time
+ ;; slots differ per run, so only shape, accessors and errors are compared.
+ (let ((timer-shape-tm (run-at-time 100 nil (function ignore) 1 2)))
+   (list (type-of timer-shape-tm) (length timer-shape-tm) (timerp timer-shape-tm)
+         (timer--function timer-shape-tm) (timer--args timer-shape-tm)
+         (timer--repeat-delay timer-shape-tm) (cancel-timer timer-shape-tm)))
+ ;; timer-shape: FUNCTION is deferred and runs from a later `sit-for'.
+ (let ((hit nil)) (run-at-time 0 nil (lambda (a b) (setq hit (list a b))) 1 2)
+   (list hit (progn (sit-for 0.05) hit)))
+ (list (timerp (make-vector 10 nil)) (timerp (make-vector 9 nil)) (timerp [1 2]) (timerp nil) (timerp "x")
+       (condition-case e (cancel-timer [1 2]) (error e))
+       (timerp (run-with-timer 100 nil (function ignore))))
 )
 
 ;;; nelisp-shadow-differential-cases.el ends here

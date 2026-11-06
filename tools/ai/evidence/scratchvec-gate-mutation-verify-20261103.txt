@@ -1,0 +1,9 @@
+# make gate-mutation-verify GATE=standalone-reader-native-load-slot-pin-smoke
+# 2026-11-03, worktree on origin/main a3f79db87 plus the scratch-vector pin; both rows of the gate.
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-reader-native-load-slot-pin-smoke'
+  standalone-reader-native-load-slot-pin-smoke: went red as it should (boxed strings stop being pinned while a raw slot holds them)
+  standalone-reader-native-load-slot-pin-smoke: went red as it should (scratch vector boxes stop being pinned while the mmap'd slot holds them)
+GATE-COUNT checked=2 findings=0 passed=2 failed=0 skipped=0
+gate-mutation: PASS (2 passed, 0 skipped)
+exit=0

@@ -422,7 +422,10 @@ inside BASE's mapped page."
             (defun nl_gc_mark_cons (_ptr) 0)
             (defun nl_gc_mark_vec_slots (_ptr _i _n) 0)
             (defun nl_gc_mark_char_table_box (_ptr) 0)
-            (defun nl_gc_mark_bool_vector_box (_ptr) 0)))
+            (defun nl_gc_mark_bool_vector_box (_ptr) 0)
+            ;; Int arms of `nl_gc_mark_slot' (integer-held buffers).
+            (defun nl_gc_pin_imm_word (_w) 0)
+            (defun nl_gc_pin_int_addr (_v) 0)))
          (clone-stubs
           (cons
            '(defun nelisp_nlstr_clone (box)

@@ -1,0 +1,54 @@
+#+TITLE: Cost of scanning int-pinned alloc-bytes blocks: measurements and decision
+
+Ledger: tools/ai/intscan-perf-progress.org.  Candidate change:
+tools/ai/evidence/int-pin-scan-experiment-20261103.patch (when
+nl_gc_pin_int_addr first marks a block, scan its words recursively).
+Cause it would close: tools/ai/gc-open-questions-report.org.
+
+* Measurements (2026-11-03)
+
+Evidence: tools/ai/evidence/intscan-bench-20261103.txt (base and patched
+alternated, 2 rounds; GC ms = minimum of 3 collections) and
+tools/ai/evidence/intscan-reader-smokes-20261103.txt.
+
+| Case                                   | base ms     | patched ms  |
+|----------------------------------------+-------------+-------------|
+| empty heap                             | 94.3 / 94.2 | 94.3 / 92.1 |
+| 10k x 400 B int-held, zero words       | 126 / 107   | 114 / 105   |
+| 10k x 400 B int-held, 500k addr words  | 130 / 110   | 141 / 146   |
+| 1 x 16 MiB int-held, text words        | 105 / 103   | 106 / 111   |
+| 64 x 64 KiB int-held, text words       | 106 / 96    | 97 / 100    |
+| chain of 1e5 16 B blocks, head int-held | 104.5      | 152.5       |
+| chain of 1e6 16 B blocks, head int-held | 104.6      | 496.5       |
+
+- Scanning words that are not addresses costs within noise.
+- Words that are addresses cost about 10-35% (+11 to +37 ms per GC at
+  500k address words), and a 1e6-link chain adds about 390 ms per GC
+  (about 0.4 us per link).  No crash at 1e6 links, so recursion depth was
+  not a problem at that size.
+- Stale retention: an int-held buffer still holding the addresses of 1000
+  otherwise dead blocks keeps 1000/1000 alive on the patched binary,
+  0/1000 on base.  Any reused I/O or scratch buffer would keep whatever its
+  old words point at until they are overwritten.
+- Correctness: make standalone-reader-smokes on the patched tree passes
+  53/53.  The patched binary is not blind (S1.2, XOR control reclaimed).
+
+Caveat, not verified: the 16 MiB case costs almost nothing for 2M scanned
+words, which suggests that block may not be an arena block that
+nl_gc_pin_int_addr resolves at all.  Whether large alloc-bytes blocks are
+covered by the int pin is an open question.
+Answered: they are, up to 64 MiB (tools/ai/large-block-pin-report.org).
+
+* Decision: DO NOT ADOPT
+
+- No current defect needs it: the raw-pointer and off-arena audits found
+  no site that writes a live address into an int-held block.
+- It turns every reused buffer into a root for its stale contents
+  (1000/1000 retained), a leak class NeLisp does not have today.
+- It makes pointer-dense int-held data cost per GC with no upper bound
+  (0.4 us per link).
+
+Keep the site-level pins (nelisp-native-load--slot-pins pattern).  New
+code that writes an address into an alloc-bytes block held as an integer
+must pin the target itself; nelisp-gc-root-fix (Notes skill) documents
+this.  Revisit if a second such site appears.

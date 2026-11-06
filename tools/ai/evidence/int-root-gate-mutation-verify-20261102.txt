@@ -1,0 +1,6 @@
+# make gate-mutation-verify GATE=standalone-reader-alloc-bytes-int-root-smoke
+# branch ci/int-root-gate-20261102 based on 0a304e554, 2026-11-02
+gate-mutation: target linux-x86_64
+gate-mutation: restricted to gate 'standalone-reader-alloc-bytes-int-root-smoke'
+  standalone-reader-alloc-bytes-int-root-smoke: went red as it should (integers stop pinning the arena blocks they name)
+gate-mutation: PASS (1 passed, 0 skipped)

@@ -1,0 +1,36 @@
+#+TITLE: Cost of scanning int-pinned alloc-bytes blocks (decision input for adopting the int-pin scan)
+
+# Run from the repository root:
+#   bin/progress-meter.sh --ledger tools/ai/intscan-perf-progress.org
+# Follows tools/ai/gc-open-questions-report.org "Consequences" (2026-11-03).
+# target/nelisp-base is built from origin/main; target/nelisp-intscan is the
+# same tree with tools/ai/evidence/int-pin-scan-experiment-20261103.patch.
+# This objective measures; it does not change runtime code.
+
+* S1 Binaries
+
+** S1.1 Base and patched binaries both exist and differ
+cmd: test -x target/nelisp-base && test -x target/nelisp-intscan && ! cmp -s target/nelisp-base target/nelisp-intscan
+
+** S1.2 The patched binary is not blind: the visibility matrix still reclaims the XOR control
+#+TIMEOUT: 400
+cmd: tools/ai/gc-visibility-matrix.sh "$PWD/target/nelisp-intscan" >target/intscan-matrix.log 2>&1 && grep -q '^positive-control reclaimed=[1-9]' target/intscan-matrix.log
+
+* S2 Cost
+
+** S2.1 The benchmark runs to completion on the base binary
+#+TIMEOUT: 600
+cmd: tools/ai/intscan-bench.sh target/nelisp-base >target/intscan-bench-base.log 2>&1 && grep -q '^done' target/intscan-bench-base.log
+
+** S2.2 GC pause, stale retention and chain depth for both binaries recorded as evidence
+evidence: tools/ai/evidence/intscan-bench-20261103.txt sha256=0f818ed45080d81a90c514c946377c439bea85c1dba87213dcafe7416628500a
+
+* S3 Correctness of the patched binary
+
+** S3.1 Reader smokes on the patched tree recorded as evidence
+evidence: tools/ai/evidence/intscan-reader-smokes-20261103.txt sha256=6fcab1371d165e0c71e4bbb0def61d21ef5ae20d97f1eb46ccdace440d705bb7
+
+* S4 Decision
+
+** S4.1 The report states a decision backed by the numbers
+cmd: grep -qE '^\* Decision: (ADOPT|DO NOT ADOPT|ADOPT WITH CHANGES)' tools/ai/intscan-perf-report.org
