@@ -28,7 +28,7 @@
   "Install the exact generator readers and the real view materializers."
   (dolist (name '(nl_val_tag nl_word_tag64 nl_word_payload
                  nl_cons_car_word nl_cons_cdr_word nl_vector_slot_word
-                 nl_ht_data_slot nl_ht_meta_slot nl_ht_alist_slot
+                 nl_ht_obj nl_ht_data_slot nl_ht_meta_slot nl_ht_alist_slot
                  nl_ht_marker_word nl_ht_marker_word_set nl_ht_int nl_ht_set_int
                  nl_ht_meta_count nl_ht_meta_set_count nl_ht_test_mode
                  nl_ht_custom_function_w nl_ht_identity_sync nl_ht_find_index
@@ -37,7 +37,8 @@
                  nl_ht_put_values_w nl_ht_put_w nl_ht_remove_index nl_ht_remove_index_slow
                  nl_ht_rem_synced_w nl_ht_rem_w))
     (eval (hw--host (hf--definition name)) t))
-  (dolist (pair '((nl_cons_car_ptr . "lisp/nelisp-cc-jit-cons-car-ptr.el")
+  (dolist (pair '((nl_cl_unwrap . "lisp/nelisp-cc-sf-lambda.el")
+                  (nl_cons_car_ptr . "lisp/nelisp-cc-jit-cons-car-ptr.el")
                   (nl_cons_cdr_ptr . "lisp/nelisp-cc-jit-cons-cdr-ptr.el")))
     (eval (hw--host (hf--definition (car pair)
                                    (expand-file-name (cdr pair) hf--root))) t)))
@@ -71,13 +72,18 @@
          (base hw--next))
     (setq hw--next (+ base 32))
     (nl_ht_set_int meta 7 (nl_word_payload meta))
-    (hw--write base 0 meta)
-    (hw--write base 8 index)
+    ;; A hash table is a kind-22 heap object (7d7ba0c02): header
+    ;; (1<<8)|22, meta vector WORD at +8, index vector WORD at +16.  The
+    ;; table WORD is the object address plus 6; the legacy container is a
+    ;; tag-22 view whose payload is the object address.
+    (hw--write base 0 (logior 22 (ash 1 8)))
+    (hw--write base 8 meta)
+    (hw--write base 16 index)
     (if legacy
         (let ((view hw--next))
           (setq hw--next (+ view 32))
-          (hw--write view 0 7) (hw--write view 8 base) view)
-      (+ base 2))))
+          (hw--write view 0 22) (hw--write view 8 base) view)
+      (+ base 6))))
 
 (defmacro hw--with-runtime (&rest body)
   "Model raw memory only; execute production accessors and hit-path logic."
@@ -90,6 +96,7 @@
      (cl-letf (((symbol-function 'heap-read-u64) #'hw--read)
                ((symbol-function 'ptr-read-u64) #'hw--read)
                ((symbol-function 'heap-read-u8) #'hw--read)
+               ((symbol-function 'ptr-read-u8) #'hw--read)
                ((symbol-function 'ptr-write-u64) #'hw--write)
                ((symbol-function 'heap-sexp-tag-word) #'nl_val_tag)
                ((symbol-function 'heap-sexp-payload) #'nl_word_payload)
@@ -118,10 +125,15 @@
 (ert-deftest hw-adapter-and-view-allocation-control ()
   (should (= (eval (hw--host '(if 0 1 2)) t) 2))
   (hw--with-runtime
-    (let* ((table (hw--table 1 nil)) (word (nl_cons_car_word table)))
+    (let* ((table (hw--table 1 nil)) (word (nl_ht_meta_slot table)))
       (should (= hw--allocations 0))
       (should (= (nl_val_tag word) 8))
-      (should (= (nl_val_tag (nl_cons_car_ptr table)) 8))
+      ;; The view-materializing control now needs a real cons cell: tables are
+      ;; heap objects, no longer conses (7d7ba0c02).
+      (let ((cell hw--next))
+        (setq hw--next (+ cell 32))
+        (hw--write cell 0 word)
+        (should (= (nl_val_tag (nl_cons_car_ptr (+ cell 2))) 8)))
       (should (= hw--allocations 1)))))
 
 (ert-deftest hw-gethash-hits-allocate-zero ()

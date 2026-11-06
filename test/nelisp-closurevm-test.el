@@ -20,6 +20,11 @@
     (condition-case nil
         (while t
           (let ((form (read (current-buffer))))
+            ;; The closure-object accessors (`nelisp--closure-cons' & co) are
+            ;; defined by the prelude's `(unless (fboundp 'nelisp--closure-p) ...)'
+            ;; fallback for an older image; host Emacs takes that branch.
+            (when (equal (cadr form) '(fboundp 'nelisp--closure-p))
+              (eval form t))
             (when (and (memq (car-safe form) '(defun defvar defconst))
                        (symbolp (cadr form))
                        (or (string-prefix-p "nelisp--fx-" (symbol-name (cadr form)))

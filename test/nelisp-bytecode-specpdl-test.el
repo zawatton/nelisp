@@ -87,8 +87,8 @@
       (dolist (s saved) (if (cdr s) (fset (car s) (cdr s)) (fmakunbound (car s)))))))
 
 (defconst spd--chain
-  '(wf_bytecode_w_aux_spill wf_bytecode_w_aux_unwinds wf_bytecode_w_pop_lean
-    wf_bytecode_w_lean_bind wf_bytecode_w_fast_unbind))
+  '(wf_bytecode_w_aux_spill wf_bytecode_w_aux_unwinds wf_bytecode_w_lean_store
+    wf_bytecode_w_pop_lean wf_bytecode_w_lean_bind wf_bytecode_w_fast_unbind))
 
 (defun spd--count () (ash (gethash (+ spd--aux 96) spd--words) -2))
 (defun spd--rec (i) (list (gethash (+ spd--aux 104 (* i 16)) spd--words)
@@ -218,7 +218,7 @@
 (ert-deftest spd-unwind-step-pops-records-before-the-list ()
   (spd--fresh)
   (let ((seen nil))
-    (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_pop_lean wf_bytecode_w_lean_bind
+    (spd--with-model '(wf_bytecode_w_aux_spill wf_bytecode_w_lean_store wf_bytecode_w_pop_lean wf_bytecode_w_lean_bind
                       m5_fx_pop_event wf_bytecode_unwind_step)
       (cl-letf (((symbol-function 'wf_bytecode_handlers_cross_unwind) (lambda (&rest _) 0))
                 ((symbol-function 'wf_bytecode_w_lean_event_p)

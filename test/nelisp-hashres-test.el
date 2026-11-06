@@ -54,6 +54,12 @@
     (+ a 6)))
 (defun hr--vset (v i w) (hr--w (+ (- v 6) 8 (* 8 i)) w))
 (defun hr--vget (v i) (hr--r64 (- v 6) (+ 8 (* 8 i))))
+;; 7d7ba0c02: a hash table is a kind-22 heap object (header (1<<8)|22, meta
+;; WORD at +8, index WORD at +16); the table WORD is the address plus 6.
+(defun hr--htobj (meta index)
+  (let ((a (hr--alloc 24)))
+    (hr--w a (logior 22 (ash 1 8))) (hr--w (+ a 8) meta) (hr--w (+ a 16) index)
+    (+ a 6)))
 (defun hr--cons (car cdr)
   (let ((a (hr--alloc 16))) (hr--w a car) (hr--w (+ a 8) cdr) (+ a 2)))
 (defun hr--str (s)
@@ -99,7 +105,7 @@
 (defconst hr--defs
   '(nl_val_tag nl_word_payload nl_word_data nl_word_length nl_word_tag64
     nl_cons_car_word nl_cons_cdr_word nl_vector_slot_word nl_ht_marker_word
-    nl_ht_marker_word_set nl_ht_int nl_ht_set_int nl_ht_meta_slot nl_ht_data_slot
+    nl_ht_marker_word_set nl_ht_int nl_ht_set_int nl_ht_obj nl_ht_meta_slot nl_ht_data_slot
     nl_ht_hash_index nl_ht_hash nl_ht_identity_key_hash nl_so_p bf_hash_table_p_raw
     nl_ht_test_mode nl_ht_identity_sync nl_ht_custom_function_w nl_ht_entry_value
     nl_ht_find_index nl_ht_find_in wf_bytecode_switch_find bf_identity_hash))
@@ -143,7 +149,7 @@
 KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
   (let* ((meta (hr--vec 15)) (cap 6) (isz 8)
          (pairs (hr--vec (* cap 2))) (hashes (hr--vec cap)) (next (hr--vec cap))
-         (index (hr--vec isz)) (table (hr--cons meta index)) (count 0))
+         (index (hr--vec isz)) (table (hr--htobj meta index)) (count 0))
     (hr--vset meta 0 (hr--mark-sym)) (hr--vset meta 1 (hr--fix 0))
     (hr--vset meta 2 (hr--symview test)) (hr--vset meta 3 (hr--fix cap))
     (hr--vset meta 5 (hr--fix (or cache 0)))
@@ -167,6 +173,13 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (hr--vset meta 1 (hr--fix count))
     (list table meta index)))
 
+;; 7d7ba0c02 dropped the inline cons fast path of `nl_ht_find_index': the
+;; table is a heap object now, so the lookup reads meta and index through
+;; exactly one `nl_ht_meta_slot' and one `nl_ht_data_slot' call (each a plain
+;; physical read) and no other generic accessor.
+(defun hr--helper-calls ()
+  (sort (cl-remove-if-not (lambda (x) (memq x hr--helpers)) hr--calls)
+        (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
 (defun hr--n () (cl-count-if (lambda (x) (memq x hr--helpers)) hr--calls))
 (defmacro hr--measure (&rest body)
   `(progn (setq hr--calls nil) (prog1 (progn ,@body) nil)))
@@ -179,13 +192,15 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
       (should (= (bf_hash_table_p_raw tb) 1))
       ;; every shape, including the flagged-length one, takes the fast path
       (should (= (hr--n) 0))
-      ;; the same table through a legacy cons view (tag byte 7, payload at +8)
+      ;; 7d7ba0c02: a legacy view (tag byte 7 over the old cons container)
+      ;; is no longer a table; recognition is one header-kind read.
       (let ((v (hr--alloc 32)))
-        (hr--w v 7) (hr--w (+ v 8) (- tb 2))
+        (hr--w v 7) (hr--w (+ v 8) (- tb 6))
         (setq hr--calls nil)
-        (should (= (bf_hash_table_p_raw v) 1))
+        (should (= (bf_hash_table_p_raw v) 0))
         (should (= (hr--n) 0)))))
   (let* ((tb (car (hr--build "eq" -102)))
+         ;; Cons cells whose car looks like table metadata: not tables now.
          (bad-name (let ((m (hr--vec 15)))
                      (hr--vset m 0 (hr--sym "hash-tablx")) (hr--cons m (hr--vec 1))))
          (bad-view (let ((m (hr--vec 15)))
@@ -273,7 +288,7 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
       (setq hr--calls nil)
       (let ((i (nl_ht_find_index tb (hr--fix k) (bf_identity_hash (hr--fix k)) 1)))
         (should (= i (cl-position k keys)))
-        (should (= (hr--n) 0)))
+        (should (equal (hr--helper-calls) '(nl_ht_data_slot nl_ht_meta_slot))))
       (should (= (nl_ht_find_in tb (hr--fix k)) (1+ (cl-position k keys)))))
     (should (= (nl_ht_find_in tb (hr--fix 99)) 0))
     (should (= (nl_ht_find_index tb (hr--fix 99) (bf_identity_hash (hr--fix 99)) 1) -1))
@@ -285,7 +300,7 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (dolist (k keys)
       (setq hr--calls nil)
       (should (= (wf_bytecode_switch_find tb (hr--fix k) 1) (1+ (cl-position k keys))))
-      (should (<= (hr--n) 0)))
+      (should (equal (hr--helper-calls) '(nl_ht_data_slot nl_ht_meta_slot))))
     (should (= (wf_bytecode_switch_find tb (hr--fix 42) 1) 0))
     ;; a symbol object key, hashed by the stubbed symbol hash
     (let* ((s (hr--sym "foo")) (meta (cadr b)) (pairs (hr--vget meta 11)))
