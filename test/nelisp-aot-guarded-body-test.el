@@ -1,7 +1,8 @@
 ;;; nelisp-aot-guarded-body-test.el --- Closed staged arms -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-aot-guarded-body-test--enabled t)
 (defvar nelisp-aot-guarded-body-test--count 0)
 (defun nelisp-aot-guarded-body-test--record (&rest _) (cl-incf nelisp-aot-guarded-body-test--count))
@@ -65,6 +66,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-c)
             (insert "#include <stdint.h>\n#include <sys/mman.h>\n#include <stdio.h>\ntypedef uint64_t U; extern U wrapper(U,U,U,U,U,U),effects(U,U,U,U,U,U),spwrapper(void),wordwrapper(U);\nint main(void){ volatile U *p=mmap((void*)0x30000000,4096,3,0x22|0x100000,-1,0); if(p!=(void*)0x30000000)return 99;\nU v[]={0,1,2,6,~0ULL,0xffffffffULL,0x100000001ULL,0x8000000000000000ULL,0x7fffffffffffffffULL,0x4000000000000002ULL,0xabcdef0123456786ULL};\nunsigned n=0; for(unsigned i=0;i<11;i++)for(unsigned j=0;j<11;j++)for(unsigned cold=0;cold<2;cold++){U a=v[i],b=v[j],c=0x8000000000000007ULL,d=0x123456789abcdef6ULL,e=~a,f=b^0xfedcba9876543210ULL; p[0]=cold;p[5]=0;p[7]=0;for(int k=1;k<=4;k++)p[k]=0xdeadbeef; U r=effects(a,b,c,d,e,f),s=a+b,w=((int64_t)s<0?c:d);U want=cold?a+b+c+d+e+f+1+f:s+w+(e^f);if(r!=want||p[5]!=12||p[7]!=cold)return 1;if(!cold&&(p[1]!=s||p[2]!=w||p[3]!=(e^f)||p[4]!=s+7))return 2;if(cold&&(p[1]!=0xdeadbeef||p[2]!=0xdeadbeef||p[3]!=0xdeadbeef||p[4]!=0xdeadbeef))return 3;n++;}p[0]=0;if(spwrapper()!=8||p[9]-p[10]!=8)return 4; n++; U buf[4] __attribute__((aligned(8)))={9,0,0,0};U words[]={2,(U)(uintptr_t)buf+2,(U)(uintptr_t)buf+6};for(unsigned k=0;k<3;k++){if(wordwrapper(words[k])!=0||p[9]!=words[k]||p[10]!=words[k])return 5;n++;}register U q1 asm(\"rbx\")=0xabcdef1234567801ULL,q2 asm(\"r12\")=0x123456789abcdef0ULL,q3 asm(\"r13\")=0xfeedfacecafebeefULL,q4 asm(\"r14\")=0x76543210abcdef09ULL,q5 asm(\"r15\")=0xfedcba9876543210ULL;asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));wrapper(1,2,3,4,5,6);asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));if(q1!=0xabcdef1234567801ULL||q2!=0x123456789abcdef0ULL||q3!=0xfeedfacecafebeefULL||q4!=0x76543210abcdef09ULL||q5!=0xfedcba9876543210ULL)return 6;n++;printf(\"NATIVE %u\\n\",n);return 0;}\n"))
           (dolist (disabled '(nil t))
             (push (nelisp-aot-guarded-body-test--object source o disabled) counts)
@@ -153,6 +155,7 @@
                               (defun wrapper (a b c d e f) (guarded a b c d e f))) o nil)))
           (should-not nelisp-aot-compiler--x86-guarded-body-facts)
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-c)
             (insert "#include <stdint.h>\nextern uint64_t wrapper(uint64_t,uint64_t,uint64_t,uint64_t,uint64_t,uint64_t);int main(void){return wrapper(1,2,3,4,5,6)!=7;}\n"))
           (should (= 0 (call-process "gcc-14" nil nil nil "-O2" "-no-pie" c o "-o" exe)))
           (should (= 0 (call-process exe nil nil nil))))

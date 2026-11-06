@@ -57,7 +57,10 @@
   (dolist (case '(((atomic-fetch-add (extern-call operand_ptr)
                                     (extern-call operand_delta))
                    "operand_ptr" "operand_delta")
-                  ((sexp-tag (extern-call operand_word)) "operand_word")))
+                  ;; Since c552d6bbb `sexp-tag' lowers to an extern call of
+                  ;; `nl_val_tag', which is imported ahead of the operand.
+                  ((sexp-tag (extern-call operand_word))
+                   "nl_val_tag" "operand_word")))
     (let* ((unit (nelisp-aot-compile-to-link-unit
                   `(defun f () ,(car case)) :arch 'wasm32 :format 'wasm))
            (names (mapcar (lambda (entry) (plist-get entry :field))

@@ -667,6 +667,13 @@ LOOKUP belongs to the transaction adapter; no closure is reconstructed for compi
             (dolist (candidate admitted)
               (nelisp-native-application-producer--check-providers
                (plist-get candidate :provider-witnesses)))
+            ;; The receipt assembly is a safepoint too: every published cell
+            ;; must still be the exact closure that was bound.
+            (dolist (candidate candidates)
+              (unless (eq (funcall lookup (plist-get candidate :name))
+                          (plist-get candidate :closure))
+                (error "Selected definition changed before publication: %S"
+                       (plist-get candidate :name))))
             receipt))
       ((error quit) (nelisp-native-application-producer--rollback owned adapter failure)))))
 

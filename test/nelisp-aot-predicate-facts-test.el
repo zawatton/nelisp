@@ -1,7 +1,8 @@
 ;;; nelisp-aot-predicate-facts-test.el --- Completed-plan must facts -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-aot-predicate-facts-test--changes 0)
 (defvar nelisp-aot-predicate-facts-test--enabled t)
 (defun nelisp-aot-predicate-facts-test--record (old plan)
@@ -125,6 +126,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-c)
             (insert "#include <stdint.h>\n#include <sys/mman.h>\n#include <stdio.h>\ntypedef uint64_t U;extern U wrapper(U,U,U,U,U,U),effects(U,U,U,U,U,U),fresh_wrapper(U,U,U,U,U,U),spwrapper(void),wordwrapper(U);\nint main(void){volatile U*p=mmap((void*)0x30000000,4096,3,0x22|0x100000,-1,0);if(p!=(void*)0x30000000)return 99;U v[]={0,1,2,6,~0ULL,0xffffffffULL,0x100000001ULL,0x8000000000000000ULL,0x7fffffffffffffffULL,0x4000000000000002ULL,0xabcdef0123456786ULL};unsigned n=0;for(unsigned i=0;i<11;i++)for(unsigned j=0;j<11;j++)for(unsigned cold=0;cold<2;cold++){U a=v[i],b=v[j],c=0x8000000000000007ULL,d=0x123456789abcdef6ULL,e=~a,f=b^0xfedcba9876543210ULL;U sum=a+b+c+d+e+f,expected=cold?(sum|1):((int64_t)(a+32)>(int64_t)b?0:a-b);p[0]=cold;p[1]=a;p[2]=p[3]=0xdeadbeef;p[5]=p[7]=0;U got=effects(a,b,c,d,e,f);if(got!=expected||p[5]!=12||p[7]!=cold)return 1;if(!cold&&(int64_t)(a+32)<=(int64_t)b){if(p[2]!=c||p[3]!=d||p[4]!=e||p[6]!=f)return 2;}else if(p[2]!=0xdeadbeef||p[3]!=0xdeadbeef)return 3;n++;p[1]=a;p[7]=0;expected=cold?(sum|1):((int64_t)(a+32)>(int64_t)b?0:((int64_t)(c+32)>(int64_t)b?1:2));if(fresh_wrapper(a,b,c,d,e,f)!=expected||p[7]!=cold)return 4;if(p[1]!=((!cold&&(int64_t)(a+32)<=(int64_t)b)?c:a))return 5;n++;}p[0]=p[1]=0;if(spwrapper()!=8)return 6;n++;U buf[4] __attribute__((aligned(8)))={9,0,0,0};U words[]={2,(U)(uintptr_t)buf+2,(U)(uintptr_t)buf+6};for(unsigned k=0;k<3;k++){p[1]=0;if(wordwrapper(words[k])!=words[k]-4096||p[2]!=words[k])return 7;n++;}register U q1 asm(\"rbx\")=0xabcdef1234567801ULL,q2 asm(\"r12\")=0x123456789abcdef0ULL,q3 asm(\"r13\")=0xfeedfacecafebeefULL,q4 asm(\"r14\")=0x76543210abcdef09ULL,q5 asm(\"r15\")=0xfedcba9876543210ULL;asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));p[1]=0;wrapper(1,40,3,4,5,6);asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));if(q1!=0xabcdef1234567801ULL||q2!=0x123456789abcdef0ULL||q3!=0xfeedfacecafebeefULL||q4!=0x76543210abcdef09ULL||q5!=0xfedcba9876543210ULL)return 8;n++;printf(\"NATIVE %u\\n\",n);return 0;}\n"))
           (dolist (enabled '(t nil))
             (let ((nelisp-aot-compiler--object-hidden-boundary-symbols nil)

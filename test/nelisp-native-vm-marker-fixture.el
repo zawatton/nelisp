@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib) (require 'nelisp-standalone-build) (require 'nelisp-cc-evalport-combiner-apply)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (defun am-def (n p) (or (cl-find-if (lambda (f) (eq (cadr f) n)) p) (error "Missing %S" n)))
 (let* ((variant (or (getenv "AM_VARIANT") "positive")) (output (getenv "AM_OUTPUT"))
        (base #x39000000) (slot (+ base 128)) (text (+ base 256))
@@ -36,6 +37,6 @@
      (ptr-write-u64 ,base 16 ,(+ base 4096)) ,@(nreverse forms)
      (ptr-write-u64 ,base 8 failure) (syscall-direct 1 1 ,base 16 0 0 0) failure)))
     (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "marker-audit.o" source)) "_start")
+   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "marker-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "MARKER-UNIT-COMPILED variant=%s checks=%d\n" variant count)))))

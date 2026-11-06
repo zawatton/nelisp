@@ -1,7 +1,8 @@
 ;;; nelisp-aot-address-fold-test.el --- Whole x86 addresses -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-address-test--enabled t)
 (defun nelisp-address-test--ref (slot)
   (nelisp-aot-compiler--make-ir 'ref :slot slot :var (intern (format "a%d" slot)) :class 'gp))
@@ -145,7 +146,7 @@
           (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)
                      (lambda (plan buf) (when (eq (caar plan) :rip) (cl-incf selected)) (funcall emit plan buf))))
             (nelisp-aot-compile-to-object (nelisp-address-test--source) obj))
-          (with-temp-file c (insert (nelisp-address-test--driver)))
+          (with-temp-file c (insert nelisp-aot-test-runtime-nl-val-tag-c (nelisp-address-test--driver)))
           (should (= 0 (call-process "cc" nil nil nil "-O2" c obj "-o" exe)))
           (should (= 0 (call-process exe nil nil nil)))
           (message "AU native:1600 width/value checks + global/live-V/WORD/order/refdup PASS; symbolic selections=%d" selected)

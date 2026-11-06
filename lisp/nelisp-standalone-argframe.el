@@ -67,7 +67,14 @@
     "nelisp-socket-recv" "nelisp-socket-close" "nelisp-socket-poll"
     "nelisp-socket-connect-error" "nelisp-thread-shared-alloc" "nelisp-thread-atomic-add"
     "nelisp-thread-atomic-read" "nelisp-thread-spawn" "nelisp-thread-join"
-    "nelisp-thread-gc-inhibit" "nelisp--native-unbox-reference")
+    "nelisp-thread-gc-inhibit" "nelisp--native-unbox-reference"
+    ;; Handlers admitted by the guarded reader table after the list above was
+    ;; frozen (append-only).
+    "nelisp--monotonic-ns" "nelisp--boot-phase-ns" "nelisp--region-open"
+    "nelisp--region-close" "nelisp--region-move" "nelisp--region-live-p"
+    "nelisp--region-size" "nelisp--region-u8-ref" "nelisp--region-u8-set"
+    "nelisp--region-i64-ref" "nelisp--region-i64-set" "nelisp--region-stats"
+    "nelisp--function-epoch")
   "Frozen append-only IDs needed before the first dispatch is generated.
 The full reader table later ratchets this suffix against structural admission;
 no old symbol ID is moved and no late mutation changes a generated dispatch.")

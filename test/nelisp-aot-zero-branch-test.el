@@ -1,7 +1,8 @@
 ;;; nelisp-aot-zero-branch-test.el --- RAW condition projection -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defun nelisp-zero-test--ir (kind &rest args) (apply #'nelisp-aot-compiler--make-ir kind args))
 (defun nelisp-zero-test--subject ()
   (nelisp-zero-test--ir 'if :test (nelisp-zero-test--ir 'ref :slot 0)
@@ -116,6 +117,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-c)
             (insert "#include <stdint.h>\ntypedef uint64_t U;typedef U(*F)(U,U,U,U);static U mem[5],bad,calls,observed;extern U uz_let(U,U,U,U),uz_same(U,U,U,U),uz_cleanup(U,U,U,U),uz_call(U,U,U,U),uz_same_call(U,U,U,U),uz_fault(U),uz_word(U);\n")
             (dolist (d defs) (when (string-prefix-p "uz_case_" (symbol-name (cadr d)))
                               (insert (format "extern U %s(U,U,U,U);\n" (cadr d)))))

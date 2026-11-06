@@ -208,6 +208,8 @@
               :payload (rd 70000 0) :exhausted exhausted :forward (rd 1000 48) :backing (rd 4000 0)
               :type (and result (/= result 0) (rd (- result 6) 8)) :type-relocated type-relocated)))))
 (ert-deftest checked-promotion-env-real-root-lifetime ()
+  ;; Needs the untracked out/ source snapshot next to the checkout.
+  (skip-unless (file-exists-p (expand-file-name "../out/checked-promotion/raw-while/source-snapshot/lisp/nelisp-cc-nlstr-direct-ops.el" cp--root)))
   (let ((miss (ce--run 0 'legacy-miss)) (old (ce--run 0 'old-miss)) (hit (ce--run 0 'legacy-hit)))
     (should (equal (plist-get miss :result) (plist-get old :result)))
     (should (equal (plist-get miss :requests) (plist-get old :requests)))

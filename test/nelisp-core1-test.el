@@ -69,8 +69,12 @@
   (let ((f (core1-test--defun 'wf_testfn_mode)))
     (should f)
     (should (core1-test--mentions 'nl_sym_sid f))
-    (should (= (nelisp-standalone--sid "eq") 66))
-    (should (= (nelisp-standalone--sid "equal") 182)))
+    ;; Ids are positions in the generated static symbol table, which grows
+    ;; (equal moved 182 -> 230); production reads them through the generated
+    ;; nl_sid_eq / nl_sid_equal, so only require distinct static ids.
+    (should (integerp (nelisp-standalone--sid "eq")))
+    (should (integerp (nelisp-standalone--sid "equal")))
+    (should-not (= (nelisp-standalone--sid "eq") (nelisp-standalone--sid "equal"))))
   (should-not (core1-test--defun 'wf_symbol_is_equal)))
 
 (ert-deftest core1-native-arms-registered ()

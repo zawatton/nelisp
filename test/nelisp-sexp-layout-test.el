@@ -35,8 +35,12 @@
     (should makefile)
     (with-temp-buffer
       (insert-file-contents makefile)
-      (should (string-match-p "^test: clean\n\t\\$(EMACS) --batch -Q -L lisp "
-                              (buffer-string))))))
+      ;; b3ff38622 moved the emacs invocation into the per-file runner.
+      (should (string-match-p "^test: clean\n\t@JOBS=\\$(JOBS) EMACS=\"\\$(EMACS)\" ./tools/run-tests-parallel.sh "
+                              (buffer-string))))
+    (with-temp-buffer
+      (insert-file-contents (expand-file-name "tools/run-tests-parallel.sh" root))
+      (should (string-match-p "LOAD_DIRS=(-L lisp " (buffer-string))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Variant tag bytes

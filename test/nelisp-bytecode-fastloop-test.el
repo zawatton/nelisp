@@ -278,8 +278,14 @@
       (let ((r (fcl--run (vector raw 138)
                          (if (= raw 71) '(16386) (list (if (= raw 56) 401 17) 16386))
                          nil nil cells)))
-        (should (= (plist-get r :pc) 0))
-        (should-not (plist-get r :writes))))))
+        (if (and (= raw 56) (equal cells '((16384 . 5) (16392 . 16386))))
+            ;; Bnth with N=401 on a one-cell circular list: GNU Fnth returns
+            ;; the car (5) instead of signalling; the vmfast nth fast path
+            ;; (wf_bytecode_w_nth_fast, 8d25b511d) walks N <= 4096 cdrs.
+            (progn (should (= (plist-get r :pc) 1))
+                   (should (equal (plist-get r :writes) '((4096 . 5)))))
+          (should (= (plist-get r :pc) 0))
+          (should-not (plist-get r :writes)))))))
 
 (defun fcl--table (target)
   `((24576 . 32774) (32768 . 15) (32784 . 9) (32792 . 50000)

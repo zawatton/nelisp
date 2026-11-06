@@ -23,9 +23,10 @@
   "Commit that integrated the vector scope (aref/aset/length kinds).")
 (defconst nelisp-fx-vector--landed-sha256 "2f76d6b46f0f4051dbf722d9b8e8e55a0ffff0258ea0f53b2b3d5f4905412056"
   "SHA-256 of lisp/nelisp-cc-fx-call-primitives.el at the landed commit.")
-(defconst nelisp-fx-vector--later-changes '(m5_fx_cached_function)
+(defconst nelisp-fx-vector--later-changes '(m5_fx_cached_function m5_fx_funcall_site)
   "Definitions legitimately changed after the vector scope landed (v12 w2subr:
-a Subr object answers its legacy list); every other definition must still equal
+a Subr object answers its legacy list; m5_fx_funcall_site: 4bd8c139a direct Subr
+calls, b098c248d word-level calls, c552d6bbb fx VM work); every other definition must still equal
 the landed one.")
 
 (defun nelisp-fx-vector--source-at (commit sha256)
@@ -66,7 +67,8 @@ the landed one.")
          (new nelisp-cc-fx-call-primitives--source)
          (names '(m5_fx_primitive_id m5_fx_primitive_run)))
     (should (= (length seed) (length landed)))
-    (should (= (length seed) (length new)))
+    ;; Later commits (b098c248d, c552d6bbb, ...) only added definitions.
+    (should (<= (length seed) (length new)))
     ;; Scope at landing: only the two named definitions differ from the base.
     (dolist (form (cdr seed))
       (unless (memq (cadr form) names)

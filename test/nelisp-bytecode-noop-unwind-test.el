@@ -21,29 +21,36 @@
                     (cddr (nelisp-bytecode-noop-unwind-test--host
                            (read (current-buffer))))) t)))
 
-(ert-deftest nelisp-bytecode-noop-unwind-needs-no-scratch-roots ()
-  (let (written)
-    (cl-letf (((symbol-function 'wf_bytecode_w_eqw)
-               (lambda (a b) (if (and (= a 100) (= b 3)) 1 0)))
+(defun nelisp-bytecode-noop-unwind-test--call (target stack-head remaining)
+  "Run the step on AUX=100 with the unwinds cell holding STACK-HEAD.
+Return (RC . WRITES) where WRITES lists (ADDRESS . VALUE) stores in order."
+  (let (writes rc)
+    (cl-letf (((symbol-function 'sar) (lambda (x n) (ash x (- n))))
+              ((symbol-function 'shl) (lambda (x n) (ash x n)))
               ((symbol-function 'nl_root_mark)
-               (lambda (&rest _) (error "No-op unwind requested scratch roots")))
-              ((symbol-function 'wf_write_int)
-               (lambda (slot value) (setq written (list slot value)))))
-      (should (= (funcall nelisp-bytecode-noop-unwind-test--function 1 100 3 7 42 0 0) 0))
-      (should (equal written '(42 7))))))
+               (lambda (&rest _) (error "Unwind step requested scratch roots")))
+              ((symbol-function 'wf_bytecode_w_consp) (lambda (_) 0))
+              ((symbol-function 'ptr-read-u64)
+               (lambda (addr off)
+                 ;; aux+96 holds fixnum 0 (no in-place records); aux+8 the unwinds cell.
+                 (cond ((and (= addr 100) (= off 96)) 1)
+                       ((and (= addr 108) (= off 0)) stack-head)
+                       (t (error "Unexpected read %S %S" addr off)))))
+              ((symbol-function 'ptr-write-u64)
+               (lambda (addr off value) (push (cons (+ addr off) value) writes))))
+      (setq rc (funcall nelisp-bytecode-noop-unwind-test--function 1 100 target remaining)))
+    (cons rc (nreverse writes))))
+
+;; wf_bytecode_unwind_step is now (env aux target remaining) and walks AUX's
+;; event stack (0ebb84eb0); the earlier seven-argument scratch-root form is gone.
+(ert-deftest nelisp-bytecode-noop-unwind-needs-no-scratch-roots ()
+  (let ((r (nelisp-bytecode-noop-unwind-test--call 3 3 7)))
+    (should (= (car r) 0))
+    ;; Event cell cleared, remaining count (7 -> fixnum word 29) stored back.
+    (should (equal (cdr r) '((172 . 3) (124 . 29))))))
 
 (ert-deftest nelisp-bytecode-unmatched-unwind-retains-rooted-error-path ()
-  (let ((roots 0) released copied written)
-    (cl-letf (((symbol-function 'wf_bytecode_w_eqw) (lambda (&rest _) 0))
-              ((symbol-function 'bf_eq2) (lambda (&rest _) 0))
-              ((symbol-function 'nl_root_mark) (lambda (_) 9))
-              ((symbol-function 'nl_root_reserve) (lambda (_) (cl-incf roots)))
-              ((symbol-function 'ptr-read-u64) (lambda (&rest _) 0))
-              ((symbol-function 'wf_bytecode_copy) (lambda (a b) (setq copied (list a b))))
-              ((symbol-function 'wf_write_int) (lambda (a b) (setq written (list a b))))
-              ((symbol-function 'nl_root_release) (lambda (a b) (setq released (list a b)))))
-      (should (= (funcall nelisp-bytecode-noop-unwind-test--function 1 200 3 7 42 0 0) 1))
-      (should (= roots 3))
-      (should (equal copied '(200 3)))
-      (should (equal written '(42 7)))
-      (should (equal released '(1 9))))))
+  (let ((r (nelisp-bytecode-noop-unwind-test--call 3 0 7)))
+    ;; The stack ends before TARGET: it is left at TARGET and the step fails.
+    (should (= (car r) 1))
+    (should (equal (cdr r) '((108 . 3) (172 . 3) (124 . 29))))))

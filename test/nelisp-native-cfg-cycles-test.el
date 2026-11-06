@@ -64,6 +64,9 @@
                  (nelisp-native-funcall-v2-copy-form '(1 2) '(2 1) 0))))
     (cl-letf (((symbol-function 'extern-call) (lambda (_name _env _ticket root &rest _) root))
               ((symbol-function 'ptr-read-u64) (lambda (root offset) (aref (aref slots root) (/ offset 8))))
+              ;; The copy form reads through the Doc 216 accessor layer
+              ;; (b51fe66f4), not `ptr-read-u64'.
+              ((symbol-function 'heap-read-u64) (lambda (root offset) (aref (aref slots root) (/ offset 8))))
               ((symbol-function 'ptr-write-u64)
                (lambda (root offset value) (aset (aref slots root) (/ offset 8) value))))
       (eval `(let ((env 0) (ticket 1) (nl_root_pin_slot_v2 nil)) ,body) t))

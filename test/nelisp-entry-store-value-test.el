@@ -201,6 +201,8 @@
   (cl-assert (= (plist-get row :rc) 0) nil "signal-status")
   (cl-assert (= (plist-get row :stored) 41) nil "signal-destination"))
 (ert-deftest entry-store-genuine-old-new-finite-differential ()
+  ;; Needs the legacy migration seed (LEGACY_MIGRATION_SEED or ../seed).
+  (skip-unless (file-exists-p (expand-file-name "scripts/nelisp-standalone-build.el" (or (getenv "LEGACY_MIGRATION_SEED") (expand-file-name "../seed" esv--root)))))
   (dolist (old '(t nil))
     (let* ((row (esv--run old '(missing 0 0 0 9)))
            (mirror (plist-get row :mirror-call)) (scratch (nth 2 mirror)))
@@ -224,6 +226,8 @@
           (should (= (plist-get new :helper-calls) 0)))
         (should (= (plist-get new :descriptor) (plist-get new :descriptor-before)))))))
 (ert-deftest entry-store-pure-helper-exact-old-normalization ()
+  ;; Needs the legacy migration seed (LEGACY_MIGRATION_SEED or ../seed).
+  (skip-unless (file-exists-p (expand-file-name "scripts/nelisp-standalone-build.el" (or (getenv "LEGACY_MIGRATION_SEED") (expand-file-name "../seed" esv--root)))))
   (should (equal (cadr (cadddr (esv--form 'nl_ent_set_slow t)))
                  (cadr (cadddr (esv--form 'nl_ent_store_value nil)))))
   (dolist (spec esv--cases)
@@ -232,6 +236,8 @@
       (should (equal (plist-get new :memory) (plist-get new :before)))
       (should (= (plist-get new :pending) 0)) (should (= (plist-get new :allocations) 0)))))
 (ert-deftest entry-store-purposeful-mutants-have-specific-result-witnesses ()
+  ;; Needs the legacy migration seed (LEGACY_MIGRATION_SEED or ../seed).
+  (skip-unless (file-exists-p (expand-file-name "scripts/nelisp-standalone-build.el" (or (getenv "LEGACY_MIGRATION_SEED") (expand-file-name "../seed" esv--root)))))
   (let ((writes 0) (entries 0) reason)
     (let ((provider (esv--finite-provider 'nl_sexp_clone_into
                      (lambda (&rest _) (cl-incf writes))

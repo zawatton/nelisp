@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib) (require 'nelisp-aot-compiler) (if (getenv "OD_SOURCE") (load (getenv "OD_SOURCE") nil t t) (require 'nelisp-standalone-build))
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (dolist (f '(val-load sexp-clone-into cons-construct nlconsbox-alloc nlconsbox-set-car nlconsbox-set-cdr nlconsbox-clone nlvector-clone nlstr-clone nlchartable-clone nlboolvector-clone nlcell-clone nlrecord-clone nlrecord-slot-ptr jit-cons-car-ptr jit-cons-cdr-ptr)) (require (intern (format "nelisp-cc-%s" f))))
 (defun od-def (name) (with-temp-buffer (insert-file-contents (or (getenv "OD_SOURCE") "scripts/nelisp-standalone-build.el")) (goto-char (point-min)) (search-forward (format "(defun %s " name)) (goto-char (match-beginning 0)) (read (current-buffer))))
 (let* ((variant (or (getenv "OD_VARIANT") "positive")) (output (getenv "OD_OUTPUT")) (base #x3d000000)
@@ -110,6 +111,6 @@
            (defun nl_alloc_bytes (size align) (let ((p (ptr-read-u64 ,base 16))) (seq (ptr-write-u64 ,base 16 (+ p size)) p)))
            (defun audit_run () (let ((cursor 0)) (seq (syscall-direct 9 ,base 16777216 3 50 -1 0) (ptr-write-u64 (data-addr nl_arena_base) 0 ,base) (ptr-write-u64 ,base 192 1) (ptr-write-u64 ,base 16 ,(+ base 1048576)) ,@(nreverse checks) (ptr-write-u64 ,base 24 0) (syscall-direct 1 1 ,base 32 0 0 0) 0)))
            (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "dynamic-frame-audit.o" source) (nelisp-standalone--arena-base-slot-unit)) "_start")
+   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "dynamic-frame-audit.o" (append source nelisp-aot-test-runtime-link-defuns)) (nelisp-standalone--arena-base-slot-unit)) "_start")
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "DYNAMIC-NATIVE-COMPILED variant=%s checks=%d\n" variant count)))))

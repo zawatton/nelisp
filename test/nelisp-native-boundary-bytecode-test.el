@@ -2,11 +2,17 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib)
+(require 'ert)
 (setq backtrace-line-length 200 print-length 20 print-level 8)
 (require 'nelisp-native-cache)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-bytecode-native-rooted-cfg-shared-emit)
 (require 'nelisp-bytecode-native-consumer)
+(ert-deftest nelisp-native-boundary-bytecode/complete-link-units ()
+  ;; The qualified input .elc files come from the P3.4 qualification run.
+  (skip-unless (file-exists-p
+                (expand-file-name "input-p34-arith3.elc"
+                                  (or (getenv "FP_OUT") "target/p34/qualified"))))
 (let ((names '(p34-arith3 file-name-directory expand-file-name directory-files locate-file emacs-redisplay--ml-spans))
       (before nil) (forms nil) (plans nil) (emissions nil))
  (dolist (name names)
@@ -67,4 +73,4 @@
     (princ "P35-AOT-BROKEN-UNIT-DETECTED\n")
     (error "Bytecode compiler changed a complete link unit"))
    (setq count (1+ count))) forms before)
-  (princ (format "P35-AOT-UNIT-PARITY-PASS cases=%d\n" count))))
+  (princ (format "P35-AOT-UNIT-PARITY-PASS cases=%d\n" count)))))

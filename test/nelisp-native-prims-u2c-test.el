@@ -14,6 +14,9 @@
                (lambda (_name _env _ticket index &rest _) (+ 4096 (* 32 index))))
               ((symbol-function 'ptr-read-u64)
                (lambda (_address offset) (if (= offset 0) 4 0)))
+              ;; The generated form reads through heap-read-u64 (b51fe66f4).
+              ((symbol-function 'heap-read-u64)
+               (lambda (_address offset) (if (= offset 0) 4 0)))
               ((symbol-function 'ptr-write-u64)
                (lambda (&rest _) (setq writes (1+ writes))))
               ((symbol-function 'u2c-test-runtime-eq)

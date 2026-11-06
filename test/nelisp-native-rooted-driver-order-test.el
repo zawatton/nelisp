@@ -17,6 +17,10 @@
       (or found (error "Reader unit owner is missing")))))
 
 (ert-deftest nelisp-root-driver-compiles-last-with-exactly-unchanged-link-list ()
+  (skip-unless (and (getenv "NELISP_ROOT_DRIVER_ORDER_BEFORE")
+                    (file-exists-p (getenv "NELISP_ROOT_DRIVER_ORDER_BEFORE"))
+                    (getenv "NELISP_ROOT_DRIVER_ORDER_AFTER")
+                    (file-exists-p (getenv "NELISP_ROOT_DRIVER_ORDER_AFTER"))))
   (let* ((before (nelisp-native-rooted-driver-order-test--read
                   (getenv "NELISP_ROOT_DRIVER_ORDER_BEFORE")))
          (after (nelisp-native-rooted-driver-order-test--read

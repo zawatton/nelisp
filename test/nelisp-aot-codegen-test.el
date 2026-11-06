@@ -21,13 +21,19 @@
 
 (require 'ert)
 (require 'nelisp-aot-compiler)
+(require 'nelisp-aot-test-runtime)
 
 (defun nelisp-aot-codegen-test--run (program)
   "Compile PROGRAM to a temporary ELF, run it and return its exit status."
   (let ((path (make-temp-file "nelisp-aot-codegen-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp program path)
+          (nelisp-aot-compile-sexp
+           ;; c552d6bbb: `sexp-tag' calls the runtime helper `nl_val_tag'.
+           (if (eq (car-safe program) 'seq)
+               (append program (list nelisp-aot-test-runtime-nl-val-tag-defun))
+             program)
+           path)
           (call-process path nil nil nil))
       (delete-file path))))
 
@@ -707,7 +713,8 @@
          (sum (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
          (odd-saves 0) (strings 0)
          (leaf (symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86))
-         (ext (symbol-function 'nelisp-aot-compiler--emit-extern-call)))
+         (ext (symbol-function 'nelisp-aot-compiler--emit-extern-call))
+         (str-eq (symbol-function 'nelisp-aot-compiler--emit-str-eq)))
     (unwind-protect
         (progn
           (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-leaf-body-x86)
@@ -720,14 +727,20 @@
                                                   (lambda (p) (memq (cdr p) '(r12 r13 r14 r15)))
                                                   (plist-get state :promotions)))))
                            (setq odd-saves (1+ odd-saves)))
-                         (when (memq 'str-eq kinds) (setq strings (1+ strings))))
+                         )
                        (funcall leaf ir buf)))
+                    ;; Since c552d6bbb `late_equal' calls `nl_val_tag' and is
+                    ;; no longer a leaf, so count its string fallback at the
+                    ;; emitter instead of in the leaf barrier list.
+                    ((symbol-function 'nelisp-aot-compiler--emit-str-eq)
+                     (lambda (ir buf) (setq strings (1+ strings)) (funcall str-eq ir buf)))
                     ((symbol-function 'nelisp-aot-compiler--emit-extern-call)
                      (lambda (ir buf)
                        (should-not nelisp-aot-compiler--promoted-slots) (funcall ext ir buf))))
             (nelisp-aot-compile-to-object
              `(seq (defun route (a b c d e f)
                      (if (> ,sum 0) (extern-call sink (setq a (+ a 1)) (+ b a) c d e f) (- 0 ,sum)))
+                   ,nelisp-aot-test-runtime-nl-val-tag-defun
                    ,(nelisp-aot-codegen-test--terminal-string-form)) object))
           (should (> odd-saves 0)) (should (> strings 0))
           (with-temp-file source

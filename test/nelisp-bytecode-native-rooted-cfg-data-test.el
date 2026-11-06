@@ -75,7 +75,7 @@
          (source (list node node))
          (before (copy-tree source))
          (rewritten (nelisp-standalone-arena-rewrite-source source))
-         (expected '(ptr-read-u64 (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 32) 0)))
+         (expected '(ptr-read-u64 (+ (heap-read-u64 (data-addr nl_arena_base) 0) 32) 0)))
     (should (equal source before))
     (should (equal rewritten (list expected expected)))
     (should (eq (car rewritten) (cadr rewritten)))

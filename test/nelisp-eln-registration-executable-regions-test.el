@@ -137,6 +137,17 @@ read."
               (lambda (_handle) (list :bias nelisp-eln-exec-regions-test--base)))
              ((symbol-function 'nelisp-eln-registration--elf-section)
               (nelisp-eln-exec-regions-test--sections ,sections))
+             ;; The validator now asks the on-file bytes (not HANDLE) whether
+             ;; the artifact has `.got.plt' (S6.7 layout shift).  The mocked
+             ;; layouts carry no file bytes; answer from the same SECTIONS
+             ;; alist, as the handle-based lookup did before.
+             ((symbol-function 'nelisp-eln-registration--elf-section-in-bytes)
+              (let ((lookup (nelisp-eln-exec-regions-test--sections ,sections)))
+                (lambda (_bytes name) (funcall lookup 'handle name))))
+             ;; The mocked layouts are the unshifted one, so the on-file layout
+             ;; authentication is the identity shift.
+             ((symbol-function 'nelisp-eln-registration--layout-shift-in-bytes)
+              (lambda (_bytes) 0))
              ((symbol-function 'nelisp-eln-registration--raw-read-bytes)
               (lambda (_handle address length)
                 (let ((entry (assoc (cons address length) ,raw-bytes-alist)))

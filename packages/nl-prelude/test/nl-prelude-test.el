@@ -644,6 +644,11 @@ silent registry/defun clobber."
 Skipped (trivially true) on standalone, which has no byte compiler."
   (if (not (fboundp 'byte-compile))
       (should t)
+    ;; Load the compiler first so `byte-compile-error-on-warn' is special
+    ;; before the `let' below (otherwise Emacs 31 binds it lexically and
+    ;; the lazy bytecomp load signals "Defining as dynamic an already
+    ;; lexical var").
+    (require 'bytecomp)
     (let ((byte-compile-error-on-warn t))
       ;; byte-compile logs the error and returns nil (it does not
       ;; signal); batch-byte-compile turns that into a non-zero exit.

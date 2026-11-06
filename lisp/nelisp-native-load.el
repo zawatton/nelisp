@@ -2484,7 +2484,10 @@ The enclosing CFG admission must still authenticate the complete contract."
                       (eq (aref (cdr b) 0) 'guarded-provider-v1))
                  (nelisp-native-load--rooted-cfg-provider-context-data-equal-p
                   (aref (cdr a) 1) (aref (cdr b) 1))
-             (and (= (length (cdr a)) 10) (= (length (cdr b)) 10)
+             ;; Layout of `nelisp-native-arithmetic-v2-dependency-context':
+             ;; owners 0-5, owner list 6, snapshots 7-9, plus-body owner 10,
+             ;; its snapshot 11, direct owners 12-13, direct snapshots 14-15.
+             (and (= (length (cdr a)) 16) (= (length (cdr b)) 16)
              (let ((index 0) (valid t))
                (while (and valid (< index 6))
                  (setq valid (eq (aref (cdr a) index) (aref (cdr b) index))
@@ -2494,7 +2497,13 @@ The enclosing CFG admission must still authenticate the complete contract."
                      (aref (cdr a) 6) (aref (cdr b) 6))
                     (equal (aref (cdr a) 7) (aref (cdr b) 7))
                     (equal (aref (cdr a) 8) (aref (cdr b) 8))
-                    (equal (aref (cdr a) 9) (aref (cdr b) 9))))))))
+                    (equal (aref (cdr a) 9) (aref (cdr b) 9))
+                    (eq (aref (cdr a) 10) (aref (cdr b) 10))
+                    (equal (aref (cdr a) 11) (aref (cdr b) 11))
+                    (eq (aref (cdr a) 12) (aref (cdr b) 12))
+                    (eq (aref (cdr a) 13) (aref (cdr b) 13))
+                    (equal (aref (cdr a) 14) (aref (cdr b) 14))
+                    (equal (aref (cdr a) 15) (aref (cdr b) 15))))))))
     (error nil)))
 
 (defun nelisp-native-load--rooted-cfg-import-names-valid-p (names &optional contract)

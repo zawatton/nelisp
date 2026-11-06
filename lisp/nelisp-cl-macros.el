@@ -159,7 +159,11 @@ together, which is what CL does."
             (setq by (car (cdr tail)) tail (cdr (cdr tail))))
           (cons (list :kind 'in :ref t :pat pat :seq seq :by by) tail)))
        ((eq kw 'on)
-        (cons (list :kind 'on :pat pat :seq (car rest)) (cdr rest)))
+        ;; GNU accepts `by STEPFN' on `on' as on `in'.
+        (let ((seq (car rest)) (by nil) (tail (cdr rest)))
+          (when (eq (car tail) 'by)
+            (setq by (car (cdr tail)) tail (cdr (cdr tail))))
+          (cons (list :kind 'on :pat pat :seq seq :by by) tail)))
        ((eq kw 'across)
         (cons (list :kind 'across :pat pat :seq (car rest)) (cdr rest)))
        ((memq kw '(from downfrom upfrom to below downto above by))
@@ -302,6 +306,7 @@ that runs out.  `when' / `unless' guard the clause that follows.  A shape
 this subset does not model expands to nil, as it always has."
   (let ((iters nil) (with-bindings nil) (do-forms nil)
         (acc-kind nil) (acc-form nil)
+        (acc-sym (make-symbol "--loop-acc--"))
         (guard nil) (guard-negate nil)
         (extra-tests nil) (bodyless-forms nil)
         (repeat-count nil)
@@ -310,7 +315,7 @@ this subset does not model expands to nil, as it always has."
         (cur clauses) (recognised t))
     (when (and clauses
                (not (memq (car clauses)
-                          '(for with do collect append sum count when unless
+                          '(for with do collect append nconc sum count when unless
                                 while until repeat finally return named
                                 always))))
       (setq bodyless-forms clauses cur nil))
@@ -342,9 +347,9 @@ this subset does not model expands to nil, as it always has."
           (let ((forms nil))
             (while (and cur
                         (not (memq (car cur)
-                                   '(for with do collect append sum count
+                                   '(for with do collect append nconc sum count
                                          when unless while until repeat
-                                         finally return named always and))))
+                                         finally return named always thereis and))))
               (setq forms (append forms (list (car cur))) cur (cdr cur)))
             ;; `and do' / `and return' continue the same guarded clause, so
             ;; `when C do X and return Y' returns Y rather than dropping it.
@@ -358,19 +363,48 @@ this subset does not model expands to nil, as it always has."
                 (setq cur (cdr (cdr cur)))
                 (while (and cur
                             (not (memq (car cur)
-                                       '(for with do collect append sum count
+                                       '(for with do collect append nconc sum count
                                              when unless while until repeat
-                                             finally return named always and))))
+                                             finally return named always thereis and))))
                   (setq forms (append forms (list (car cur))) cur (cdr cur)))))
             (setq do-forms
                   (append do-forms
                           (list (nelisp-cl-macros--loop-guard
                                  guard guard-negate (cons 'progn forms)))))
-            (setq guard nil guard-negate nil)))
-         ((memq kw '(collect append sum count))
+            ;; `when C do X and collect Y': the guard still covers Y.
+            (if (and (eq (car cur) 'and)
+                     (memq (car (cdr cur)) '(collect append nconc sum count)))
+                (setq cur (cdr cur))
+              (setq guard nil guard-negate nil))))
+         ((memq kw '(collect append nconc sum count))
+          ;; `nconc' is modelled as the non-destructive `append': the result
+          ;; is the same list, and nothing here aliases the clause's value.
+          (when (eq kw 'nconc) (setq kw 'append))
+          ;; Each accumulation clause appends its own (guarded) update to
+          ;; the body, in clause order, so several may share one loop as in
+          ;; GNU (`collect X when C do Y and collect Z').
           (if (and acc-kind (not (eq acc-kind kw)))
               (setq recognised nil)
-            (setq acc-kind kw acc-form (car (cdr cur)) cur (cdr (cdr cur)))))
+            (let* ((form (car (cdr cur)))
+                   (update (cond
+                            ((memq kw '(collect append))
+                             (list 'setq acc-sym
+                                   (list 'cons (if (eq kw 'append)
+                                                   (list 'append form nil)
+                                                 form)
+                                         acc-sym)))
+                            ((eq kw 'sum) (list 'setq acc-sym (list '+ acc-sym form)))
+                            (t (list 'when form
+                                     (list 'setq acc-sym (list '+ acc-sym 1)))))))
+              (setq acc-kind kw
+                    do-forms (append do-forms
+                                     (list (nelisp-cl-macros--loop-guard
+                                            guard guard-negate update)))
+                    cur (cdr (cdr cur)))
+              (if (and (eq (car cur) 'and)
+                       (memq (car (cdr cur)) '(collect append nconc sum count)))
+                  (setq cur (cdr cur))
+                (setq guard nil guard-negate nil)))))
          ((eq kw 'always)
           (setq acc-kind 'always acc-form (car (cdr cur)) cur (cdr (cdr cur))))
          ((eq kw 'return)
@@ -379,6 +413,16 @@ this subset does not model expands to nil, as it always has."
                         (list (nelisp-cl-macros--loop-guard
                                guard guard-negate
                                (list 'cl-return (car (cdr cur)))))))
+          (setq guard nil guard-negate nil cur (cdr (cdr cur))))
+         ((eq kw 'thereis)
+          ;; Return the first non-nil value of FORM; nil when none.
+          (let ((tmp (make-symbol "--loop-thereis--")))
+            (setq do-forms
+                  (append do-forms
+                          (list (nelisp-cl-macros--loop-guard
+                                 guard guard-negate
+                                 (list 'let (list (list tmp (car (cdr cur))))
+                                       (list 'when tmp (list 'cl-return tmp))))))))
           (setq guard nil guard-negate nil cur (cdr (cdr cur))))
          ((eq kw 'finally)
           ;; `finally return FORM' sets the loop's value; `finally do FORMS'
@@ -428,18 +472,12 @@ this subset does not model expands to nil, as it always has."
              (steps (nth 3 plan))
              (symmacs (nth 4 plan))
              (going (and extra-tests (make-symbol "--loop-going--")))
-             (acc (and acc-kind (make-symbol "--loop-acc--")))
+             (acc (and acc-kind acc-sym))
              (acc-init (cond ((memq acc-kind '(sum count)) 0)
                              ((eq acc-kind 'always) t)
                              (t nil)))
              (acc-body
               (cond
-               ((eq acc-kind 'collect) (list 'setq acc (list 'cons acc-form acc)))
-               ((eq acc-kind 'append)
-                (list 'setq acc (list 'cons (list 'append acc-form nil) acc)))
-               ((eq acc-kind 'sum) (list 'setq acc (list '+ acc acc-form)))
-               ((eq acc-kind 'count)
-                (list 'when acc-form (list 'setq acc (list '+ acc 1))))
                ((eq acc-kind 'always)
                 (list 'unless acc-form (list 'cl-return nil)))))
              (body (append (if acc-body

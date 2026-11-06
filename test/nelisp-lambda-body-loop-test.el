@@ -20,7 +20,7 @@
       ;; both pieces rather than requiring the loop in the setup wrapper.
       (should (string-match-p "(nl_ali_body_mark" body))
       (should-not (string-match-p "(nl_ali_body " body))
-      (should (string-match-p "(if (= (sexp-tag state-slot) 0)" drive))
+      (should (string-match-p "(if (= (sexp-tag (heap-read-u64 state-slot 0)) 0)" drive))
       (should (string-match-p "(nl_ali_body_eval" drive))
       (should-not (string-match-p "(nl_ali_body " drive)))))
 (ert-deftest nelisp-lambda-body-loop/2500-forms ()

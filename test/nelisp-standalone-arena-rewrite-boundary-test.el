@@ -78,8 +78,8 @@
     (should (= (nelisp-standalone-arena-rewrite-target-base) #x71000000))
     (should
      (equal (nelisp-standalone-arena-rewrite-source '(seq #x71000000 #x7100000f #x71000010))
-            '(seq (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)
-                  (+ (ptr-read-u64 (data-addr nl_arena_base) 0) 15) #x71000010)))
+            '(seq (+ (heap-read-u64 (data-addr nl_arena_base) 0) 0)
+                  (+ (heap-read-u64 (data-addr nl_arena_base) 0) 15) #x71000010)))
     (let ((nelisp-standalone--target 'linux-aarch64))
       (should (= (nelisp-standalone-arena-rewrite-target-base) #x20000000)))
     (should (= (nelisp-standalone-arena-rewrite-target-base) #x71000000))))

@@ -22,7 +22,10 @@
 (ert-deftest nelisp-web-runtime-w0/first-source-operation-is-owned ()
   (require 'nelisp-cc-eval-inner)
   (let ((source (symbol-value 'nelisp-cc-eval-inner--source)))
-    (should (equal (web-runtime-w0-probe--operation-owners source 'atomic-fetch-add)
+    ;; `atomic-fetch-add' left this source in f94089d5d (raise sites record
+    ;; the exit through nl_exit_signal_w); `ptr-write-u64' keeps exercising
+    ;; the owner lookup against the one defun that still holds it.
+    (should (equal (web-runtime-w0-probe--operation-owners source 'ptr-write-u64)
                    '(nl_stash_void_variable)))
     (should-not (web-runtime-w0-probe--operation-owners source 'absent-operation))))
 

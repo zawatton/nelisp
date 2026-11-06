@@ -1748,6 +1748,7 @@ and signals `file-locked' with \"Cannot resolve lock conflict in batch
 mode\", aborting the whole caller with a plain exit 1.  Binding
 `create-lockfiles' to nil for this write removes that lock attempt
 entirely without changing what gets written."
+  (make-directory (file-name-directory (expand-file-name path)) t)
   (let ((create-lockfiles nil))
     (with-temp-file path
       (insert (format "# compiler\t%s\n" emacs-version))

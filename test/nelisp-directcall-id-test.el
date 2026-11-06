@@ -115,14 +115,19 @@
          (cl-letf (((symbol-function 'ptr-read-u64) (lambda (p i) (gethash (+ p i) mem)))
                    ((symbol-function 'nl_val_tag) (lambda (_) (ert-fail "tag read of a non-symbol name")))
                    ((symbol-function 'nl_sym_sid)
-                    (lambda (w) (if (= w 20006) (nelisp-standalone--sid "builtin")
-                                  (ert-fail "name word read through"))))
+                    ;; The ORIGINAL symbol (20022) is classified first; no
+                    ;; cell NAME word may be read through.
+                    (lambda (w) (cond ((= w 20006) (nelisp-standalone--sid "builtin"))
+                                      ((= w 20022) 0)
+                                      (t (ert-fail "name word read through")))))
                    ((symbol-function 'sexp-name-eq) (lambda (&rest _) (ert-fail "name compared"))))
            (should (= (nl_directcall_id 10002 20022 1) 0))))))))
 
 (ert-deftest ndcid-name-without-a-static-id-checks-only-the-id-less-names ()
-  ;; `logand' has no static id: the cold check names it from the descriptor
-  ;; and compares ORIGINAL with that one name, not with every directcall name.
+  ;; `identity' is the only directcall name without a static id (`logand' got
+  ;; one when the static symbol table grew): the cold check names it from the
+  ;; descriptor and compares ORIGINAL with that one name, not with every
+  ;; directcall name.
   (ndc--with-definitions
    (lambda (_)
      (let ((mem (make-hash-table :test #'eql)) (seen nil))
@@ -132,14 +137,14 @@
                  ((symbol-function 'nl_sym_sid)
                   (lambda (w) (if (= w 20006) (nelisp-standalone--sid "builtin") 0)))
                  ((symbol-function 'sexp-name-eq)
-                  (lambda (w s) (push s seen) (if (memq w '(20022 20030)) (if (equal s "logand") 1 0) 0))))
-         (should (= (nl_directcall_id 10002 20022 2) 27))   ; ORIGINAL is the name's word
+                  (lambda (w s) (push s seen) (if (memq w '(20022 20030)) (if (equal s "identity") 1 0) 0))))
+         (should (= (nl_directcall_id 10002 20022 1) 110))   ; ORIGINAL is the name's word
          (setq seen nil)
-         (should (= (nl_directcall_id 10002 20030 2) 27))   ; another spelling of it
-         ;; Only names that lack a static id are ever compared (`identity' is the
-         ;; other one), never the dozen with ids.
-         (should (equal (cl-remove "identity" seen :test #'equal) '("logand" "logand")))
-         (should (= (nl_directcall_id 10002 20040 2) 0))    ; another symbol
-         (should (cl-subsetp seen '("logand" "identity") :test #'equal)))))))
+         (should (= (nl_directcall_id 10002 20030 1) 110))   ; another spelling of it
+         ;; Only names that lack a static id are ever compared, never the
+         ;; dozen with ids.
+         (should (cl-subsetp seen '("identity") :test #'equal))
+         (should (= (nl_directcall_id 10002 20040 1) 0))    ; another symbol
+         (should (cl-subsetp seen '("identity") :test #'equal)))))))
 
 (provide 'nelisp-directcall-id-test)

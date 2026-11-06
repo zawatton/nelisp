@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-standalone-build)
 (require 'nelisp-cc-val-load)
@@ -86,7 +87,7 @@
        (ptr-write-u64 ,base 24 failure)
        (syscall-direct 1 1 ,base 32 0 0 0) failure)))
     (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "array-audit.o" source)) "_start")
+   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "array-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "ARRAY-UNIT-COMPILED variant=%s checks=%d\n" variant count)))))
 

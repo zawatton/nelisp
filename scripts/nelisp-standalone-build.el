@@ -50003,8 +50003,8 @@ loaded), so cl-macs.el comes first, as in GNU's bootstrap: `advice-add' is not
 yet available while it loads (its l.3508 form is guarded by `fboundp'), and
 `cl--define-derived-type' does not exist yet, so its derived-type block is
 skipped and re-run once cl-preloaded has defined the base types."
-  (let* ((file "vendor/staged-emacs-lisp/cl-macs.el")
-         (text (nelisp-vendor-source-whole-file file))
+  ;; A literal path: the staged-handler guard resolves the file statically.
+  (let* ((text (nelisp-vendor-source-whole-file "vendor/staged-emacs-lisp/cl-macs.el"))
          (start (string-search "(static-if (not (fboundp 'cl--define-derived-type))" text))
          (end-mark "(cl--defnumtype real number)))")
          (end (and start (string-search end-mark text start))))
@@ -56531,10 +56531,10 @@ clause 4 (must run before the first Lisp form, including image startup).
 SIG_IGN is kernel process state, never a heap-image flag.  Forked Lisp
 workers keep it; only exec children restore SIG_DFL.  Failed exec restores
 SIG_IGN so a caller that handles the failure can continue safely."
-  (let* ((windows (memq nelisp-standalone--target
-                        '(windows-x86_64 windows-aarch64)))
-         (darwin (eq nelisp-standalone--target 'macos-aarch64))
-         (arm (eq nelisp-standalone--target 'linux-aarch64))
+  (let* ((target (nelisp-standalone-arena-rewrite-target))
+         (windows (memq target '(windows-x86_64 windows-aarch64)))
+         (darwin (eq target 'macos-aarch64))
+         (arm (eq target 'linux-aarch64))
          (exec-nr (if arm 221 59))
          (sigaction-nr (cond (darwin 46) (arm 134) (t 13))))
     (if windows

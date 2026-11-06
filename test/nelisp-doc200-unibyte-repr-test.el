@@ -20,6 +20,7 @@
 (setq load-prefer-newer t)
 
 (require 'ert)
+(require 'nelisp-aot-test-runtime)
 (require 'cl-lib)
 
 (let* ((this (or load-file-name buffer-file-name))
@@ -209,6 +210,12 @@ inside BASE's mapped page."
       (defun nl_word_payload (word) (ptr-read-u64 word 8))
       (defun bf_aset_fixed_width_rejected_w (kind)
         (seq (ptr-write-u64 ,signal-code 0 (if (= kind 0) 4 5)) 0))
+      ;; `sexp-tag' lowers to an extern `nl_val_tag' call (c552d6bbb), and the
+      ;; builtin helpers resolve string views through `nl_str_target'.
+      ,nelisp-aot-test-runtime-nl-val-tag-defun
+      (defun nl_string_read64 (ptr offset) (ptr-read-u64 ptr offset))
+      ,(nelisp-doc200-unibyte-repr-test--defun
+        'nl_str_target nelisp-standalone--arena-source)
       ,@bf-layout-forms
       (defun m5_strlen (src) (bf_str_len src))
       (defun m5_byte_at (src i) (ptr-read-u8 (bf_str_ptr src) i))
@@ -624,14 +631,15 @@ inside BASE's mapped page."
          (nelisp-doc200-unibyte-repr-test--defun
           'nl_mut_str_finalize
           nelisp-cc-nlstr-direct-ops--mut-str-finalize-source)))
+    ;; The WORD string constructor takes a unibyte flag instead of an
+    ;; explicit tag-14 header write.
     (should
      (nelisp-doc200-unibyte-repr-test--contains-p
-      str '(alloc-bytes (if (= n 0) 1 n) 1)))
-    (should (nelisp-doc200-unibyte-repr-test--contains-p str 14))
+      str '(nl_string_new bytes-ptr n 1)))
     (should (nelisp-doc200-unibyte-repr-test--contains-p mut 15))
     (should
      (nelisp-doc200-unibyte-repr-test--contains-p
-      finalize '(if (= (ptr-read-u8 ptr 0) 15) 14 5)))))
+      finalize '(if (= (heap-read-u8 ptr 0) 15) 14 5)))))
 
 (ert-deftest nelisp-doc200-unibyte-repr/aset-preserves-exact-tag-and-byte-length ()
   "Fixed-width mutation preserves tags 5/6/14/15 and their byte lengths."

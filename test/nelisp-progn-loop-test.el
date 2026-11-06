@@ -7,18 +7,19 @@
                         (file-name-directory (or load-file-name buffer-file-name)))))
 
 (ert-deftest nelisp-progn-loop/no-public-recursion ()
-  "The public progn driver must use state iteration, not self recursion."
+  "The progn WORD driver (nl_sf_progn_w, 4bc6a481d) must use state iteration, not self recursion."
   (let* ((file (expand-file-name "lisp/nelisp-cc-sf-progn.el"
                                 nelisp-progn-loop-test--root))
          (text (with-temp-buffer
                  (insert-file-contents file)
                  (buffer-string)))
-         (start (string-match "(defun nl_sf_progn (args env out _pad)" text))
-         (end (and start (string-match "\n  \"AOT source" text start))))
+         (start (string-match "(defun nl_sf_progn_w (args env _pad _pad1)" text))
+         (end (and start (string-match "\n    ;; (rc, OUT) adapter" text start))))
     (should start)
     (should end)
     (let ((body (substring text start end)))
       (should (string-match-p "(while (> state 0)" body))
+      (should-not (string-match-p "(nl_sf_progn_w " body))
       (should-not (string-match-p "(nl_sf_progn " body)))))
 
 (ert-deftest nelisp-progn-loop/2500-forms-returns-last ()

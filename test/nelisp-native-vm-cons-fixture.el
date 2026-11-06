@@ -1,5 +1,6 @@
 ;;; -*- lexical-binding: t; -*-
 (require 'cl-lib) (require 'nelisp-aot-compiler) (require 'nelisp-standalone-build)
+(load (expand-file-name "nelisp-aot-test-runtime.el" (file-name-directory load-file-name)) nil t t)
 (dolist (f '(val-load sexp-clone-into cons-construct nlconsbox-alloc nlconsbox-set-car nlconsbox-set-cdr nlconsbox-clone nlvector-clone nlstr-clone nlchartable-clone nlboolvector-clone nlcell-clone nlrecord-clone)) (require (intern (format "nelisp-cc-%s" f))))
 (defun al-find-def (name forms) (or (cl-find-if (lambda (x) (eq (cadr x) name)) forms) (error "Missing %S" name)))
 (defun al-read-def (name file) (with-temp-buffer (insert-file-contents file) (goto-char (point-min)) (search-forward (format "(defun %s " name)) (goto-char (match-beginning 0)) (read (current-buffer))))
@@ -110,6 +111,6 @@
        ,@(nreverse checks)
        (ptr-write-u64 ,base 24 failure) (syscall-direct 1 1 ,base 32 0 0 0) (if (= failure 0) 0 2))))
      (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "list-audit.o" source) (nelisp-standalone--arena-base-slot-unit)) "_start")
+   (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "list-audit.o" (append source nelisp-aot-test-runtime-link-defuns)) (nelisp-standalone--arena-base-slot-unit)) "_start")
    (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
    (princ (format "CONS-NATIVE-COMPILED variant=%s checks=%d\n" variant check-count)))))

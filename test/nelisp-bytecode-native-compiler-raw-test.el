@@ -182,9 +182,11 @@
           (should (= (funcall function 1) 10))
           (should (= (funcall function 2) 20))
           (should (= (funcall function 7) 30))
-          (should (eq (plist-get result :status) 'complete))
-          (should (eq (plist-get result :return-repr) 'raw-i64))
-          (should (file-readable-p artifact)))
+          ;; Bswitch moved to the rooted shared lane (8397100d1, U6); the raw-i64
+          ;; lane refuses it without writing an artifact.
+          (should (eq (plist-get result :status) 'unsupported))
+          (should (string-match-p "runtime table lookup" (plist-get result :reason)))
+          (should-not (file-exists-p artifact)))
       (when (file-exists-p artifact) (delete-file artifact)))))
 
 (ert-deftest nelisp-bytecode-native-compiler-raw/rejects-invalid-bswitch-table-and-selector ()
@@ -202,7 +204,7 @@
                  (result (nelisp-bytecode-native-compiler-raw-test--build
                           function artifact "nl_raw_bswitch_bad_table" '(raw-i64))))
             (should (eq (plist-get result :status) 'unsupported))
-            (should (string-match-p "eq/eql table" (plist-get result :reason)))
+            (should (string-match-p "runtime table lookup" (plist-get result :reason)))
             (should-not (file-exists-p artifact)))
           ;; A nil selector is valid for the GNU VM's default arm but is not
           ;; an admissible raw-i64 dispatch operand.
@@ -219,7 +221,7 @@
                             function artifact "nl_raw_bswitch_bad_selector" nil)))
               (should (= (funcall function) 30))
               (should (eq (plist-get result :status) 'unsupported))
-              (should (string-match-p "proven raw integer"
+              (should (string-match-p "runtime table lookup"
                                       (plist-get result :reason)))
               (should-not (file-exists-p artifact)))))
       (when (file-exists-p artifact) (delete-file artifact)))))

@@ -9,6 +9,14 @@
 (defun nelisp-native-windows-test--contains (text bytes)
   (string-match-p (regexp-quote (apply #'unibyte-string bytes)) text))
 
+(defun nelisp-native-windows-test--code-end (text)
+  "Return TEXT without its trailing alignment padding (multi-byte NOPs and zeros)."
+  (let ((end (length text)))
+    (while (and (> end 0)
+                (memq (aref text (1- end)) '(#x00 #x0f #x1f #x66 #x84 #x90)))
+      (setq end (1- end)))
+    (substring text 0 end)))
+
 (defun nelisp-native-windows-test--bridge (format)
   (nelisp-aot-compile-to-link-unit
    '(defun probe (a b c d e f)
@@ -26,7 +34,7 @@
     ;; Six GP words need 32 shadow bytes plus two stack words.
     (should (nelisp-native-windows-test--contains text '(#x48 #x81 #xec #x30 0 0 0)))
     (should (nelisp-native-windows-test--contains text '(#x48 #x81 #xc4 #x30 0 0 0)))
-    (should (equal (substring text -5) (unibyte-string #x48 #x89 #xec #x5d #xc3)))))
+    (should (equal (substring (nelisp-native-windows-test--code-end text) -5) (unibyte-string #x48 #x89 #xec #x5d #xc3)))))
 
 (ert-deftest nelisp-native-windows-abi-negative-control ()
   "The same reference check must reject a SysV unit and corrupted bytes."
@@ -61,7 +69,7 @@
     (should (member "nl_root_pin_slot_v2" (plist-get unit :extern-symbols)))
     (should (nelisp-native-windows-test--contains text '(#x48 #x89 #x4d #xf8)))
     (should (nelisp-native-windows-test--contains text '(#x48 #x81 #xec #x30 0 0 0)))
-    (should (equal (substring text -5) (unibyte-string #x48 #x89 #xec #x5d #xc3)))))
+    (should (equal (substring (nelisp-native-windows-test--code-end text) -5) (unibyte-string #x48 #x89 #xec #x5d #xc3)))))
 
 (provide 'nelisp-native-windows-test)
 ;;; nelisp-native-windows-test.el ends here
@@ -206,7 +214,7 @@
   (let* ((unit (nelisp-native-windows-test--bridge 'elf))
          (text (plist-get unit :text)))
     (should (equal (secure-hash 'sha256 text)
-                   "927a197339366790e6a8d14339bb7d170fbe8be988a42cd1eb89720a94e13c4b"))))
+                   "26da12fb609737baac0c43e5f8be8d0603189f4c06a832ef53bf69e168de1008"))))
 
 (ert-deftest nelisp-native-windows-stale-binary-and-ticket-before-map ()
   "Exercise public loader/root boundaries under simulated windows-nt."
@@ -319,12 +327,14 @@ and re-pinned at fec44b49f, whose scalar raw-CFG root copies changed F1 code."
            (linux (nelisp-aot-compile-to-link-unit form :arch 'x86_64 :format 'elf))
            (text (plist-get windows :text)))
       (should (equal (plist-get windows :extern-symbols)
-                     '("nl_native_funcall_v2" "nl_root_pin_slot_v2")))
+                     ;; heap-read lowering (b51fe66f4) adds the string-aware
+                     ;; read extern.
+                     '("nl_native_funcall_v2" "nl_root_pin_slot_v2" "nl_string_read64")))
       (should (nelisp-native-windows-test--contains text '(#x48 #x89 #x4d #xf8)))
       (should (nelisp-native-windows-test--contains text '(#x48 #x89 #x44 #x24 #x20)))
       (should-not (equal text (plist-get linux :text)))
       (should (equal (secure-hash 'sha256 (plist-get linux :text))
-                     "aa4775904d98a3bba04359fc8ab1b76c4d58571913291f8b662abc36a47b5455")))))
+                     "d25f73c38163b165a71ee28e857e2dce4f25a9944b46e727f7be1c98bae0b04a")))))
 
 (ert-deftest nelisp-native-windows-worker-refuses-before-whole-file-hash ()
   "The unsupported async worker cannot fall back to hashing another PE."

@@ -1,7 +1,8 @@
 ;;; nelisp-aot-deferred-loop-test.el --- Map-ending guarded loops -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 (defvar nelisp-aot-deferred-loop-test--enabled t)
 (defvar nelisp-aot-deferred-loop-test--count 0)
 (defvar nelisp-aot-deferred-loop-test--last-id nil)
@@ -165,6 +166,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-c)
             (insert (format "#include <stdint.h>\n#include <stdio.h>\n#include <sys/mman.h>\ntypedef uint64_t U;static volatile U *p;static unsigned calls;static intptr_t delta;static int error;\nextern U loop13(U,U,U,U,U,U,U,U,U,U,U,U,U),wordloop(U,U);\n__attribute__((noinline)) U native_slow(U x){void **f=__builtin_frame_address(0);U *s=f[0],*g=(void*)(uintptr_t)s[0],*o=(void*)(uintptr_t)g[0];intptr_t d=(char*)o-(char*)f;if(!calls)delta=d;else if(delta!=d)error=1;if(((uintptr_t)f&15)!=0)error=2;if(o[-%d]!=x)error=3;o[-%d]^=0x8000000000000007ULL;o[-%d]+=1;p[0]=0;p[7]++;calls++;return x+3;}\nstatic U run(U x,U n){return loop13(x,n,2,3,4,5,6,7,8,9,10,11,12);}\nstatic U model(U x,U n,U ctrl,U *hot,U *cold,U *last){U i=0,acc=x;*hot=*cold=0;*last=0;while((int64_t)i<(int64_t)n){U old=acc,r;if(ctrl){(*cold)++;ctrl=0;acc^=0x8000000000000007ULL;i++;r=old+3;}else r=0;if(r==0){ctrl=1;(*hot)++;*last=old;r=old+1;}i++;acc=r+acc;}return acc^i;}\nint main(void){p=mmap((void*)0x30000000,4096,3,0x22|0x100000,-1,0);if(p!=(void*)0x30000000)return 99;U v[]={0,1,2,6,~0ULL,~2ULL,0xffffffffULL,0x100000001ULL,0x8000000000000000ULL,0x7fffffffffffffffULL,0x4000000000000002ULL,0xabcdef0123456786ULL};U ns[]={0,1,2,3,7,12};unsigned cases=0;for(unsigned a=0;a<12;a++)for(unsigned b=0;b<6;b++)for(U ctrl=0;ctrl<2;ctrl++){U hot,cold,last,want=model(v[a],ns[b],ctrl,&hot,&cold,&last);p[0]=ctrl;p[1]=p[2]=p[7]=0;calls=0;error=0;U got=run(v[a],ns[b]);if(got!=want||p[1]!=hot||p[7]!=cold||(hot&&p[2]!=last)||error||calls!=cold)return 1;cases++;}if(mprotect((void*)p,4096,PROT_NONE))return 2;if(run(0x8000000000000007ULL,0)!=0x8000000000000007ULL)return 3;if(mprotect((void*)p,4096,3))return 4;cases++;U buf[4] __attribute__((aligned(8)))={9,0,0,0};U words[]={2,(U)(uintptr_t)buf+2,(U)(uintptr_t)buf+6};for(unsigned a=0;a<3;a++){U h,co,l,w=model(words[a],3,0,&h,&co,&l);p[0]=p[1]=p[2]=p[7]=0;calls=error=0;if(wordloop(words[a],3)!=w||error)return 5;cases++;}register U q1 asm(\"rbx\")=0xabcdef1234567801ULL,q2 asm(\"r12\")=0x123456789abcdef0ULL,q3 asm(\"r13\")=0xfeedfacecafebeefULL,q4 asm(\"r14\")=0x76543210abcdef09ULL,q5 asm(\"r15\")=0xfedcba9876543210ULL;asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));p[0]=0;run(1,12);asm volatile(\"\":\"+r\"(q1),\"+r\"(q2),\"+r\"(q3),\"+r\"(q4),\"+r\"(q5));if(q1!=0xabcdef1234567801ULL||q2!=0x123456789abcdef0ULL||q3!=0xfeedfacecafebeefULL||q4!=0x76543210abcdef09ULL||q5!=0xfedcba9876543210ULL)return 6;cases++;printf(\"NATIVE %%u %%ld\\n\",cases,(long)delta);return 0;}\n" (1+ (cdr (assq 'acc slots))) (1+ (cdr (assq 'acc slots))) (1+ (cdr (assq 'i slots))))))
           (dolist (disabled '(nil t))
             (let ((nelisp-aot-compiler--object-hidden-boundary-symbols nil)
@@ -201,7 +203,8 @@
          (nelisp-aot-deferred-loop-test--last-id nil))
     (setcar (cdddr slow) '(+ x 3))
     (setq source (append source
-                         (list `(defun ,public (x) (+ x 73))
+                         (list nelisp-aot-test-runtime-nl-val-tag-defun
+                               `(defun ,public (x) (+ x 73))
                                `(defun ,cold-public (x) (+ x 74))
                                `(defun _start ()
                                   (seq (syscall-direct 9 805306368 4096 3 50 -1 0)

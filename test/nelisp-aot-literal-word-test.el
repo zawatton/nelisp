@@ -1,7 +1,8 @@
 ;;; nelisp-aot-literal-word-test.el --- Static WORD discriminators -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(require 'nelisp-aot-compiler)
+(require (quote nelisp-aot-compiler))
+(require (quote nelisp-aot-test-runtime))
 
 (defun nelisp-aot-literal-word-test--cmp (word tag &optional op swapped)
   (let ((x (nelisp-aot-compiler--make-ir
@@ -109,6 +110,7 @@
     (unwind-protect
         (progn
           (with-temp-file c
+            (insert nelisp-aot-test-runtime-nl-val-tag-masked-c)
             (insert "#define _GNU_SOURCE\n#include <stdint.h>\n#include <sys/mman.h>\n#include <signal.h>\n#include <setjmp.h>\n#include <stdlib.h>\n#include <stdio.h>\n")
             (dotimes (wi 5) (dotimes (mode 4)
                               (insert (format "extern uint64_t pw_%d_%d(uint64_t);\n" wi mode))))

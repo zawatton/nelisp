@@ -37,7 +37,7 @@ confused with a fixed base immediate."
           ((rewrite-int
             (n)
             (if (and (integerp n) (<= base n) (< n (+ base span)))
-                `(+ (ptr-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
+                `(+ (heap-read-u64 (data-addr nl_arena_base) 0) ,(- n base))
               n))
            (walk
             (form)
@@ -69,7 +69,7 @@ confused with a fixed base immediate."
       (should (eq (nth 6 actual) vector))
       (should (eq (nth 7 actual) init))
       (should (equal (nth 2 actual)
-                     '(+ (ptr-read-u64 (data-addr nl_arena_base) 0) 0)))
+                     '(+ (heap-read-u64 (data-addr nl_arena_base) 0) 0)))
       (should (= (nth 4 actual) (+ base #x1000))))))
 
 (ert-deftest nelisp-standalone-arena-rewrite/unsupported-and-init-identity ()

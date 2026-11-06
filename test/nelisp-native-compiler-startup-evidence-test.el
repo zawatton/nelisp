@@ -126,7 +126,7 @@
 (ert-deftest nelisp-native-compiler-startup-evidence-serializer-refusals ()
   (nelisp-native-compiler-startup-evidence-test--serializers)
   (let* ((shared (list 'x)) (cycle (list 'x))
-         (deep 'leaf) (long (make-list 40960 nil)))
+         (deep 'leaf) (long (make-list 49152 nil)))
     (setcdr cycle cycle)
     (dotimes (_ 65) (setq deep (list deep)))
     (dolist (value (list (list shared shared) cycle deep long
@@ -134,8 +134,8 @@
                          (make-list 257 (make-string 4096 ?x)) [1] 1.5))
       (should (equal (should-error (nelisp-serializer-test-original value))
                      (should-error (nelisp-serializer-test-fast value)))))
-  (should (equal (nelisp-serializer-test-original (make-list 40959 nil))
-                 (nelisp-serializer-test-fast (make-list 40959 nil))))))
+  (should (equal (nelisp-serializer-test-original (make-list 49151 nil))
+                 (nelisp-serializer-test-fast (make-list 49151 nil))))))
 
 (defvar nelisp-serializer-test-ascii-calls 0)
 

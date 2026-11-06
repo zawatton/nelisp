@@ -56,8 +56,15 @@
       (aset nelisp-bytecode-native-joined-add-test--roots index (vector 0 nil 91 92)))
     (cl-loop for value in arguments for root from 1 do
              (aset nelisp-bytecode-native-joined-add-test--roots root
-                   (vector (if value 2 0) value (+ 100 root) (+ 200 root))))
+                   (vector (cond ((null value) 0) ((integerp value) 2) (t 3))
+                           value (+ 100 root) (+ 200 root))))
     (cl-letf (((symbol-function 'ptr-read-u64)
+               (lambda (pointer offset)
+                 (aref (aref nelisp-bytecode-native-joined-add-test--roots (1- pointer))
+                       (/ offset 8))))
+              ;; Emitted heap reads go through the Doc 216 S1 accessor (b51fe66f4);
+              ;; on this fake root table it reads exactly like ptr-read-u64.
+              ((symbol-function 'heap-read-u64)
                (lambda (pointer offset)
                  (aref (aref nelisp-bytecode-native-joined-add-test--roots (1- pointer))
                        (/ offset 8))))
@@ -79,17 +86,25 @@
          (form (nelisp-bytecode-native-joined-add-test--rewrite (plist-get emitted :form)))
          (root-count (plist-get plan :required-root-count)))
     (should (eq (plist-get emitted :status) 'complete))
-    (dolist (arguments '((t 10 20 3) (nil 10 20 3) (t 1.5 9.5 2.25)))
+    ;; The emitter now adds in-range fixnums inline (no gateway call); only
+    ;; other numbers take the materialized nl_native_add_v2 path.
+    (dolist (arguments '((t 10 20 3) (nil 10 20 3)))
       (let* ((result (nelisp-bytecode-native-joined-add-test--run form arguments root-count))
-             (roots (nth 1 result)) (calls (nth 2 result)))
+             (roots (nth 1 result)))
         (should (= (car result) (+ 512 5)))
-        (should (equal calls '((6 7 5))))
-        (should (= (aref (aref roots 5) 1) (apply fixture arguments)))
-        ;; All four words survive the selected live-root copy.
-        (should (equal (aref roots 6) (aref roots (if (car arguments) 2 3))))
-        (should (equal (aref roots 7) (aref roots 4)))))
+        (should-not (nth 2 result))
+        (should (= (aref (aref roots 5) 1) (apply fixture arguments)))))
+    (let* ((arguments '(t 1.5 9.5 2.25))
+           (result (nelisp-bytecode-native-joined-add-test--run form arguments root-count))
+           (roots (nth 1 result)) (calls (nth 2 result)))
+      (should (= (car result) (+ 512 5)))
+      (should (equal calls '((6 7 5))))
+      (should (= (aref (aref roots 5) 1) (apply fixture arguments)))
+      ;; All four words survive the selected live-root copy.
+      (should (equal (aref roots 6) (aref roots (if (car arguments) 2 3))))
+      (should (equal (aref roots 7) (aref roots 4))))
     (let ((result (nelisp-bytecode-native-joined-add-test--run
-                   form '(t 10 20 3) root-count 7)))
+                   form '(t 1.5 9.5 2.25) root-count 7)))
       (should (= (car result) 2))
       (should-not (nth 2 result)))))
 

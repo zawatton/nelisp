@@ -92,7 +92,13 @@
           (progn
             ;; Same returned data, distinct function owner: EQUAL is insufficient.
             (fset 'nelisp-native-arithmetic-v2-source (lambda () (copy-tree source)))
-            (should (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
-            (should (= slow 2))
+            ;; The arithmetic provider's owner checker (27a4991a9) refuses a
+            ;; replaced owner before the memo can be consulted, so the stale
+            ;; memo is never reused and the slow validator is not re-run.
+            (should (string-match-p
+                     "source owner changed"
+                     (cadr (should-error
+                            (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)))))
+            (should (= slow 1))
             (should (= nelisp-native-load--raw-v2-rooted-cfg-cache-hits 1)))
         (fset 'nelisp-native-arithmetic-v2-source owner)))))

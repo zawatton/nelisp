@@ -18,7 +18,9 @@ not runnable runtime closures and do not replace final linked validation."
          local external)
     (funcall original owner buf)
     (dolist (fix (aref buf 3))
-      (if (assq (cdr fix) (nelisp-asm-x86_64-buffer-labels buf))
+      ;; A jump-table entry fixup is (SLOT LABEL . ADDEND) (c002f6db6).
+      (if (assq (if (consp (cdr fix)) (cadr fix) (cdr fix))
+                (nelisp-asm-x86_64-buffer-labels buf))
           (push fix local)
         ;; Never turn an unresolved private branch into a relocation.
         (should (member (symbol-name (cdr fix))
