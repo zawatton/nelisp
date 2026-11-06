@@ -6,7 +6,12 @@
 
 (require 'ert)
 (require 'emacs-window)
-(require 'tab-bar)
+;; Load the package's tab-bar.el explicitly: on a host Emacs the preloaded
+;; tab-bar feature would make `(require 'tab-bar)' a no-op.
+(load (expand-file-name
+       "../src/tab-bar.el"
+       (file-name-directory (or load-file-name buffer-file-name)))
+      nil t)
 
 (defmacro tab-bar-test--with-fresh-world (&rest body)
   "Run BODY with clean nelisp-ec / emacs-window / tab-bar state."

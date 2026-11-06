@@ -4,6 +4,11 @@
 
 (require 'ert)
 
+;; The shim defers to native definitions, and a host Emacs defines
+;; `seq-group-by' (with a different group order) before this file loads.
+;; Drop it so this test exercises the package's own definition.
+(when (fboundp 'seq-group-by) (fmakunbound 'seq-group-by))
+
 (load (expand-file-name
        "../src/seq.el"
        (file-name-directory (or load-file-name buffer-file-name)))

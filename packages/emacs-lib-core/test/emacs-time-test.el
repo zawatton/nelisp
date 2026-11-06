@@ -58,8 +58,9 @@ capture."
 
 (defun emacs-time-test--with-standalone-time-primitives (thunk)
   "Install the time shim over standalone-shaped primitives, then call THUNK.
-The stand-in `float-time' deliberately ignores its argument, matching the
-NeLisp v1.2.0 builtin that the compatibility shim must replace."
+`float-time' is made unbound first: the shim installs its wrapper only when
+`float-time' is unbound (current NeLisp's native one is GNU-correct), so
+this is the state in which the wrapper under test is what callers see."
   (let ((saved-float-time (symbol-function 'float-time))
         (saved-standalone-float-time
          (and (fboundp 'emacs-time--standalone-float-time)
@@ -67,7 +68,7 @@ NeLisp v1.2.0 builtin that the compatibility shim must replace."
     (unwind-protect
         (progn
           (fmakunbound 'emacs-time--standalone-float-time)
-          (fset 'float-time (lambda (&optional _time-value) 1000000.0))
+          (fmakunbound 'float-time)
           (cl-letf (((symbol-function 'emacs-time--standalone-runtime-p)
                      (lambda () t)))
             (emacs-time--install-float-time))
