@@ -793,3 +793,11 @@ emacs-lisp/gnus/smime.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/gnus/sm
 emacs-lisp/gnus/mml-smime.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/gnus/mml-smime.el	sha256=93b08067062a5bb20d7f5422fca3ba6812bf03adfbbeb046f7acb56dbc5f53c0
 emacs-lisp/net/dig.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/net/dig.el	sha256=50dd6b8f4248fb835a54278dcc6d8be473256476fce88096983364964a4393dd
 emacs-lisp/net/gnutls.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/net/gnutls.el	sha256=2e6db1b361e1e6f6734d61641e98a15ae35dba6ca7c09b3327048d9e39d3f111
+emacs-lisp/vc/ediff.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff.el	sha256=aa9fac59d8a4a396819d66e759afed326b7951fb2a5fdaa6720dadc207ddf2d3
+emacs-lisp/vc/ediff-diff.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-diff.el	sha256=8c809d61efe710f0800e20924f73089b666a591176128cf82554955615071508
+emacs-lisp/vc/ediff-help.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-help.el	sha256=12c9a1a672a9ef47491856b15b73c983ed3d8189a73c23ca994acc2576eaba16
+emacs-lisp/vc/ediff-init.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-init.el	sha256=5ab3ac3b0082699d7448c57bd6b9ba4ba0377681076def2126e9d9d50117699b
+emacs-lisp/vc/ediff-merg.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-merg.el	sha256=0adfe23612216c8c686493140797ae23f2d85fb10b5fa4991deb5734a23b59ed
+emacs-lisp/vc/ediff-mult.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-mult.el	sha256=7d88bd79849d6cfc0ba35b1bf4c8ef0876b699f6f2c96aa7cb78d91d1dbd725c
+emacs-lisp/vc/ediff-util.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-util.el	sha256=86d728cfdea5f7c05f29c425c897aebd14e1b2a9e3179398832a77fd5c4df464
+emacs-lisp/vc/ediff-wind.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/ediff-wind.el	sha256=47b77ec6b37b94f2dc21ccdda8749d42bec42cb433dc99c2e32ce175aca175a4

@@ -800,3 +800,11 @@ efc00cf0760d7ad663c738b4d70fc66f4ae1ae6c81a806290bcd3fb1d452bc3b  vendor/emacs-l
 93b08067062a5bb20d7f5422fca3ba6812bf03adfbbeb046f7acb56dbc5f53c0  vendor/emacs-lisp/gnus/mml-smime.el
 50dd6b8f4248fb835a54278dcc6d8be473256476fce88096983364964a4393dd  vendor/emacs-lisp/net/dig.el
 2e6db1b361e1e6f6734d61641e98a15ae35dba6ca7c09b3327048d9e39d3f111  vendor/emacs-lisp/net/gnutls.el
+aa9fac59d8a4a396819d66e759afed326b7951fb2a5fdaa6720dadc207ddf2d3  vendor/emacs-lisp/vc/ediff.el
+8c809d61efe710f0800e20924f73089b666a591176128cf82554955615071508  vendor/emacs-lisp/vc/ediff-diff.el
+12c9a1a672a9ef47491856b15b73c983ed3d8189a73c23ca994acc2576eaba16  vendor/emacs-lisp/vc/ediff-help.el
+5ab3ac3b0082699d7448c57bd6b9ba4ba0377681076def2126e9d9d50117699b  vendor/emacs-lisp/vc/ediff-init.el
+0adfe23612216c8c686493140797ae23f2d85fb10b5fa4991deb5734a23b59ed  vendor/emacs-lisp/vc/ediff-merg.el
+7d88bd79849d6cfc0ba35b1bf4c8ef0876b699f6f2c96aa7cb78d91d1dbd725c  vendor/emacs-lisp/vc/ediff-mult.el
+86d728cfdea5f7c05f29c425c897aebd14e1b2a9e3179398832a77fd5c4df464  vendor/emacs-lisp/vc/ediff-util.el
+47b77ec6b37b94f2dc21ccdda8749d42bec42cb433dc99c2e32ce175aca175a4  vendor/emacs-lisp/vc/ediff-wind.el

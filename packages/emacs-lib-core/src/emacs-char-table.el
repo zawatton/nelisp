@@ -98,6 +98,9 @@ the shared table still gives vendor libraries real mutation semantics.")
   (and (fboundp 'char-table-parent) (symbol-function 'char-table-parent)))
 (defvar emacs-char-table--native-extra-slot-fn
   (and (fboundp 'char-table-extra-slot) (symbol-function 'char-table-extra-slot)))
+(defvar emacs-char-table--native-set-extra-slot-fn
+  (and (fboundp 'set-char-table-extra-slot)
+       (symbol-function 'set-char-table-extra-slot)))
 
 (defun emacs-char-table--native-vector-bridge-p ()
   "Return non-nil when NeLisp dispatches tagged vectors natively."
@@ -577,13 +580,17 @@ rather than materialised."
   (emacs-char-table--check-table ct)
   (unless (integerp n)
     (signal 'wrong-type-argument (list 'fixnump n)))
-  (when (emacs-char-table--native-p ct)
-    (signal 'args-out-of-range (list ct n)))
-  (let ((slots (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
-    (unless (and (<= 0 n) (< n (length slots)))
-      (signal 'args-out-of-range (list ct n))))
-  (emacs-char-table--raw-set
-   (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n value))
+  (if (emacs-char-table--native-p ct)
+      ;; Mirror `emacs-char-table-extra-slot': the runtime owns a native
+      ;; table's slots and checks the index itself.
+      (if emacs-char-table--native-set-extra-slot-fn
+          (funcall emacs-char-table--native-set-extra-slot-fn ct n value)
+        (signal 'args-out-of-range (list ct n)))
+    (let ((slots (emacs-char-table--raw-ref ct emacs-char-table--i-extra)))
+      (unless (and (<= 0 n) (< n (length slots)))
+        (signal 'args-out-of-range (list ct n))))
+    (emacs-char-table--raw-set
+     (emacs-char-table--raw-ref ct emacs-char-table--i-extra) n value)))
 
 ;;;; --- iteration ------------------------------------------------------
 

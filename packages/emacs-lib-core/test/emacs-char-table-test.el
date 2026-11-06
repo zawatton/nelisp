@@ -336,3 +336,17 @@ source table independent."
 (provide 'emacs-char-table-test)
 
 ;;; emacs-char-table-test.el ends here
+
+(ert-deftest emacs-char-table-test/native-extra-slot-write ()
+  ;; Reading an extra slot of a native char-table already delegates to
+  ;; the runtime; writing one must too.  The case-table code
+  ;; (`set-case-table', `fundamental-mode') writes slot 2 of the
+  ;; standard table, which is native in the standalone runtime.
+  (put 'emacs-char-table-test--native 'char-table-extra-slots 3)
+  (let ((ct (funcall (symbol-function 'make-char-table)
+                     'emacs-char-table-test--native)))
+    (skip-unless (emacs-char-table--native-p ct))
+    (should (eq (emacs-char-table-set-extra-slot ct 2 'eqv) 'eqv))
+    (should (eq (emacs-char-table-extra-slot ct 2) 'eqv))
+    (should-error (emacs-char-table-set-extra-slot ct 3 'x)
+                  :type 'args-out-of-range)))
