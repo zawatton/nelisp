@@ -1036,10 +1036,9 @@ nemacs-library-gate:
 	+$(MAKE) --no-print-directory -j4 -f $(firstword $(MAKEFILE_LIST)) nemacs-library-gate-checks
 
 .PHONY: nemacs-library-gate-checks
-nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-package-layout nemacs-library-package-release-key-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
+nemacs-library-gate-checks: nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-package-layout nemacs-library-package-release-key-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
 	$(EMACS) -Q $(NEMACS_PACKAGE_SRC_LOAD_PATH) -l $(NELISP_ROOT)/packages/emacs-lib-facade/test/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
-	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
 	@awk -F '\t' 'NR > 1 && $$1 == "UNOWNED" { count++ } END { if (count != 0) { printf "nemacs-library-gate: public API UNOWNED rows=%d\n", count; exit 1 } }' "$(NEMACS_PUBLIC_API_INVENTORY)"
 	@awk -F '\t' 'NR > 1 && $$8 == "app-or-frontend" { count++ } END { if (count != 0) { printf "nemacs-library-gate: package app/frontend dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
 	@awk -F '\t' 'NR > 1 && $$8 == "unmanifested-reusable" { count++ } END { if (count != 0) { printf "nemacs-library-gate: unmanifested reusable dependency rows=%d\n", count; exit 1 } }' "$(NEMACS_LIBRARY_PACKAGE_DEPS)"
@@ -1875,7 +1874,11 @@ nemacs-public-api-inventory:
 		-l scripts/nemacs-public-api-inventory.el \
 		-f nemacs-public-api-inventory-batch
 
+# Retired after the Doc 211 import (2026-11-06, user decision): it maps
+# ownership by the pre-import src/ paths (626 unowned/stale rows); the
+# packages/ layout and pkg-graph now carry ownership.
 nemacs-ownership-coverage:
+	@echo "$@: retired after the Doc 211 import: maps ownership by pre-import src/ paths (see the comment above this target)" >&2; exit 1
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q -L scripts \
 		--eval '(setq nemacs-ownership-coverage-output "$(abspath $(NEMACS_OWNERSHIP_COVERAGE))")' \
