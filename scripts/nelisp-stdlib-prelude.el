@@ -12139,7 +12139,9 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
          (ovt (nelisp-buffer-overlays b)))
     (when (or (< s 1) (> e (1+ len)))
       (signal 'args-out-of-range (list start end)))
-    (when (and ovt (< s e))
+    ;; GNU del_range_1: an empty range changes nothing (no modified flag, tick, or point move).
+    (when (< s e)
+    (when ovt
       (nelisp-ov--before-change b s e))
     (let* ((delta (- e s))
            (old-min (nelisp-buffer-narrow-start b))
@@ -12168,8 +12170,8 @@ properties to maintain (`nelisp-insert' with a string does those).  The bookkeep
       (when (nelisp-buffer-text-properties b)
         (nelisp-buffer--shift-text-properties-on-delete b s e))
       (nelisp-goto-char new-point b)
-      (when (and ovt (< s e))
-        (nelisp-ov--after-change b s delta 0))))
+      (when ovt
+        (nelisp-ov--after-change b s delta 0)))))
   nil)
 
 (defun nelisp-erase-buffer (&optional buf)
