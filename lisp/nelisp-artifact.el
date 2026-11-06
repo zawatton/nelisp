@@ -4430,6 +4430,10 @@ implementation."
                         ;; string in it now carries the symbol.  The harness
                         ;; provides it the same way it provides the others.
                         "nl_alloc_bytes"
+                        ;; Lowered `str-len'/`str-byte-at' (c552d6bbb) read a
+                        ;; string's bytes through this; the harness maps its
+                        ;; String slot to the data pointer.
+                        "nl_word_data"
                         ;; S4.5: the evaluator's existing non-local-exit arena.
                         "nl_arena_base"
                         ;; A dispatcher result aliases the shared OUT
@@ -4850,6 +4854,14 @@ harness builds the string ones in the scratch elements the code reads."
      ;; A dispatcher writes its result into the shared OUT slot, so a
      ;; local that keeps one has to own a copy before the next call
      ;; reuses OUT.  The compiler emits this for every such assignment.
+     "const unsigned char *nl_word_data(const NelnSexp *s) {\n"
+     "  if (neln_is_registered_slot(s) && (s->tag == NELN_TAG_STR || s->tag == NELN_TAG_MUT_STR || s->tag == NELN_TAG_SYMBOL)) {\n"
+     "    return (const unsigned char *)(uintptr_t)s->b;\n"
+     "  }\n"
+     "  neln_fail(\"nl_word_data expects a String/Symbol slot\");\n"
+     "  return NULL;\n"
+     "}\n"
+     "\n"
      "void nl_sexp_clone_into(NelnSexp *src, NelnSexp *dst) {\n"
      "  if (!src || !dst) {\n"
      "    return;\n"
@@ -4997,6 +5009,14 @@ harness builds the string ones in the scratch elements the code reads."
      "     * remain decodable without the full boxed-boolean runtime lane.\n"
      "     */\n"
      "    neln_write_int(out, neln_eq_sexp_p(a, b) ? 1 : 0);\n"
+     "    return out;\n"
+     "  }\n"
+     "  if (strcmp(builtin, \"logand\") == 0) {\n"
+     "    /* Raw bit test on a slot address, as the lowered `str-len' does. */\n"
+     "    if (argc != 2) {\n"
+     "      neln_fail(\"logand expects argc=2\");\n"
+     "    }\n"
+     "    neln_write_int(out, (int64_t)((uint64_t)a0 & (uint64_t)a1));\n"
      "    return out;\n"
      "  }\n"
      "  neln_fail(\"unsupported builtinn in host proof\");\n"

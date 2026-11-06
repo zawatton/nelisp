@@ -57,6 +57,7 @@ surface has become reachable in the standalone-reader build and Doc
 147 Phase 2 (container shrink) would corrupt heap neighbours through
 it -- migrate the native scratch to a raw alloc-bytes(N*32) buffer
 before flipping the Vector/Record layout."
+  :tags '(:expensive-test)
   (skip-unless (nelisp-aot-doc147-groupA-test--load-standalone-build))
   (let ((scratch-calls 0)
         (materializer-calls 0)

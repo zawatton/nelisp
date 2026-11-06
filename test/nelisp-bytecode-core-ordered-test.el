@@ -287,18 +287,18 @@
                     nil))
           (let* ((on (assq t nelisp-ordered-test--production-results))
                  (off (assq nil nelisp-ordered-test--production-results))
-                 ;; `nelisp-asm-x86_64-cmp-imm32' always emits REX.W 81 /7 imm32.
-                 (bounds (regexp-quote (unibyte-string #x48 #x81 #xf8 6 0 0 0 #x0f #x8c))))
+                 ;; lea r10,[rip+9]; movsxd rax,[r10+r14*4]; add rax,r10; jmp rax.
+                 ;; The opcode is register-resident in r14 (vm-reg-plan, 28c60a8c1)
+                 ;; and is a byte, so the table covers all 256 entries (1024 bytes,
+                 ;; was 744) and the old `cmp rax,6; jl' bounds guard is gone.
+                 (indexed (regexp-quote (unibyte-string #x4c #x8d #x15 9 0 0 0
+                                                        #x4b #x63 #x04 #xb2
+                                                        #x4c #x01 #xd0 #xff #xe0))))
             (should on) (should off)
-            (should (cl-find 744 (nth 2 on) :key #'cdr))
-            (should-not (cl-find 744 (nth 2 off) :key #'cdr))
-            (should (string-match-p bounds (nth 1 on)))
-            ;; The table consumes the SAFE R8 cache of the first raw home.
-            (should (string-match-p
-                     (regexp-quote (unibyte-string #x49 #x89 #xc0 #x4c #x89 #xc0
-                                                   #x48 #x81 #xf8 6 0 0 0))
-                     (nth 1 on)))
-            (should-not (string-match-p bounds (nth 1 off)))
+            (should (cl-find 1024 (nth 2 on) :key #'cdr))
+            (should-not (cl-find 1024 (nth 2 off) :key #'cdr))
+            (should (string-match-p indexed (nth 1 on)))
+            (should-not (string-match-p indexed (nth 1 off)))
             (dolist (object (list on off))
               (should (string-match-p
                        (regexp-quote (unibyte-string #x48 #x89 #x85 #xc0 #xfe #xff #xff))

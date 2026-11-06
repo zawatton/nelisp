@@ -1520,8 +1520,15 @@ expects -- it derefs payload+8 to reach the box."
       (error "nelisp-native-load: scratch vector allocation returned %S" box))
     addr))
 
-(defun nelisp-native-load-abi (native)
+(defun nelisp-native-load-abi (native &optional meta)
   "Return `boxed' or `integer' for the unit NATIVE's calling convention.
+
+When META (the defun's artifact metadata) records `:param-repr' or
+`:return-repr', that is authoritative: `raw-i64' on both sides is the
+integer ABI, and `sexp-ptr' / `word' on either side is the boxed one.
+Since 7ed89f0a9 every unit lists the funcall dispatchers among its
+externs, so the extern set can no longer tell the two apart; it is only
+the fallback for artifacts that record no representation.
 
 The artifact metadata does not record this -- the CLI decides by trying
 the integer call and falling back when it fails, which is not available
@@ -1547,14 +1554,22 @@ that have one), and this matches it on every artifact to hand.
 The consequence of the derivation being wrong is a wrong value or a
 fault, so a caller that knows better should override :abi in the handle
 rather than trust this."
-  (let* ((externs (plist-get native :extern-symbols))
-         (list (and (listp externs) externs))
-         (dispatches
-          (seq-find (lambda (name)
-                      (and (stringp name)
-                           (string-match-p "aot_builtin_call" name)))
-                    list)))
-    (if dispatches 'boxed 'integer)))
+  (let* ((param (plist-get meta :param-repr))
+         (ret (plist-get meta :return-repr))
+         (boxed-repr '(sexp-ptr word)))
+    (cond
+     ((or (memq param boxed-repr) (memq ret boxed-repr)) 'boxed)
+     ((and (eq param 'raw-i64) (memq ret '(raw-i64 raw-bool u64))) 'integer)
+     (t
+      (let* ((externs (plist-get native :extern-symbols))
+             (list (and (listp externs) externs))
+             (dispatches
+              (seq-find (lambda (name)
+                          (and (stringp name)
+                               (string-match-p
+                                "aot_\\(builtin_call\\|funcall\\)" name)))
+                        list)))
+        (if dispatches 'boxed 'integer))))))
 
 (defun nelisp-native-load--symbol-addr (name)
   "Return the runtime address of NAME."
@@ -5888,7 +5903,7 @@ what a cache wants and what the demo did."
             :slots slots
             :out slots
             :arity arity
-            :abi (nelisp-native-load-abi native)
+            :abi (nelisp-native-load-abi native meta)
             ;; How to hand the arguments over is recorded per defun, so it
             ;; no longer has to be inferred from the extern set -- a
             ;; different question, and one that got `(if (< n 1) 5 (aref v

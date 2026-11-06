@@ -15,6 +15,31 @@
 (defun nelisp-transport-split--contains (tree form)
   (or (equal tree form) (and (consp tree) (or (nelisp-transport-split--contains (car tree) form)
                                            (nelisp-transport-split--contains (cdr tree) form)))))
+(defun nelisp-transport-split--reads-args (tree op)
+  "Non-nil when TREE contains a form (OP args ...)."
+  (and (consp tree)
+       (or (and (eq (car tree) op) (eq (cadr tree) 'args))
+           (nelisp-transport-split--reads-args (car tree) op)
+           (nelisp-transport-split--reads-args (cdr tree) op))))
+;; The walk lowering numbers its `nl_afw_*' temporaries from a counter that
+;; later whole-unit passes renumber; compare modulo that numbering.
+(defun nelisp-transport-split--canon (tree)
+  (let ((table nil) (n 0))
+    (cl-labels ((walk (x)
+                  (cond ((consp x)
+                         (let (out)
+                           (while (consp x) (push (walk (car x)) out) (setq x (cdr x)))
+                           (nconc (nreverse out) (walk x))))
+                        ((and x (symbolp x)
+                              (string-match "\\`nl_afw_\\([a-z]+\\)_[0-9]+\\'" (symbol-name x)))
+                         (or (cdr (assq x table))
+                             (let ((new (intern (format "nl_afw_%s_c%d"
+                                                        (match-string 1 (symbol-name x))
+                                                        (setq n (1+ n))))))
+                               (push (cons x new) table)
+                               new)))
+                        (t x))))
+      (walk tree))))
 (defun nelisp-transport-split--leaves (tree)
   (pcase tree
     (`(if (= nl_dk ,key) ,body ,_) (list (cons key body)))
@@ -59,9 +84,13 @@
     (let ((bad (copy-tree (car frame-parts))))
       (setcar (cdr (nth 3 (car bad))) '(= _pad 0))
       (should-error (nelisp-transport-split--check-groups bad original t)))
-    (should-error (nelisp-standalone--applyfn-split-handler-groups
-                   '(let* ((nl_dk func_ptr)) (if (= nl_dk 1) (identity args) 0)) t '(1))
-                  :type 'nelisp-argframe-ineligible))
+    ;; The build script sets `nelisp-argframe-materialize-env' globally (28c60a8c1
+    ;; and earlier), which lets an escaping `args' run on a fresh rooted list.
+    ;; Ineligibility is only signalled when no evaluator env is available.
+    (let ((nelisp-argframe-materialize-env nil))
+      (should-error (nelisp-standalone--applyfn-split-handler-groups
+                     '(let* ((nl_dk func_ptr)) (if (= nl_dk 1) (identity args) 0)) t '(1))
+                    :type 'nelisp-argframe-ineligible)))
   ;; Inspect every production leaf with the real assembly/SID/N5 context.
   (let ((process-environment (copy-sequence process-environment))
         (split (symbol-function 'nelisp-standalone--applyfn-split-handler-leaves))
@@ -72,7 +101,10 @@
                  (if frame (setq keys admitted)
                    (setq original (nelisp-transport-split--leaves (nth 2 dispatch))))
                  (funcall split dispatch frame admitted))))
-      (let* ((source (nelisp-standalone--patch-autoload-lookups (nelisp-standalone--applyfn-source)))
+      ;; Production lowers every frame leaf against one shared helper memo
+      ;; (wordroute), so the expected lowering must share one too.
+      (let* ((nelisp-argframe-generated (cons nil (make-hash-table :test #'equal)))
+             (source (nelisp-standalone--patch-autoload-lookups (nelisp-standalone--applyfn-source)))
              (seen nil) (frame-seen nil)
              (names (nelisp-standalone--builtin-leaf-names source)))
         (should names)
@@ -86,16 +118,23 @@
                            `(nl_dk func_ptr args env name_ptr ,(if frame 'argc '_pad))))
             (when frame
               (should-not (memq '_pad (flatten-tree (nth 3 group))))
+              ;; No walk may remain on the caller's `args'.  Since the walk
+              ;; lowering can materialize a fresh rooted list (28c60a8c1,
+              ;; `nelisp-argframe-materialize-env'), a leaf may still walk
+              ;; that private list, so only reads of `args' are forbidden.
               (dolist (op '(wf_arg_word wf_argval m5_list_len))
-                (should-not (memq op (flatten-tree (nth 3 group))))))
+                (should-not (nelisp-transport-split--reads-args (nth 3 group) op))))
             (should-not (memq key (if frame frame-seen seen)))
             (if frame (push key frame-seen) (push key seen))
-            (should (equal (nth 3 group)
-                           (if frame
-                               (nelisp-argframe-lower (cdr (assq key original)) 'args 'argc nil)
-                             (cdr (assq key original)))))))
+            (should (equal (nelisp-transport-split--canon (nth 3 group))
+                           (nelisp-transport-split--canon
+                            (if frame
+                                (nelisp-argframe-lower (cdr (assq key original)) 'args 'argc nil)
+                              (cdr (assq key original))))))))
         (should (equal (sort seen #'<) (sort (mapcar #'car original) #'<)))
-        (should (equal (sort frame-seen #'<) (sort (copy-sequence keys) #'<)))))))
+        ;; The admitted-key list may name a key twice; each key still gets
+        ;; exactly one frame leaf (checked by the `frame-seen' test above).
+        (should (equal (sort frame-seen #'<) (sort (delete-dups (copy-sequence keys)) #'<)))))))
 
 (defun nelisp-transport-split-raw-counts ()
   "Record raw AOT counts only; never label these final owner frame sizes."

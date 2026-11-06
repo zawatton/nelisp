@@ -23,6 +23,11 @@
 #                                          # ert string/regexp selector per file
 #   TEST_TIMEOUT=900 tools/run-tests-parallel.sh
 #                                          # per-file timeout in seconds (default 600)
+#   NELISP_TEST_EXPENSIVE=1 tools/run-tests-parallel.sh
+#                                          # also run tests tagged :expensive-test
+#
+# Like GNU Emacs `make check', the default selector skips tests tagged
+# :expensive-test (cold standalone-reader builds that take many minutes).
 #
 # Per-file logs go to OUT_DIR (default target/test-parallel).
 # Exit 0 iff every file exits 0 with an ert summary and 0 unexpected results.
@@ -35,7 +40,11 @@ cd "$REPO_ROOT"
 EMACS="${EMACS:-emacs}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 OUT_DIR="${OUT_DIR:-target/test-parallel}"
-SELECTOR="${SELECTOR:-t}"
+if [ "${NELISP_TEST_EXPENSIVE:-0}" = 1 ]; then
+  SELECTOR="${SELECTOR:-t}"
+else
+  SELECTOR="${SELECTOR:-(not (tag :expensive-test))}"
+fi
 TEST_TIMEOUT="${TEST_TIMEOUT:-600}"
 
 # Remove stale untracked .elc once up front (mirrors `make clean') so none

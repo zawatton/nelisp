@@ -132,7 +132,16 @@
               (advice-add 'nelisp-aot-compiler--emit-literal-word-tag-test-x86
                           :around #'nelisp-aot-literal-word-test--record)
               (unwind-protect
-                  (nelisp-aot-compile-to-object (nelisp-aot-literal-word-test--source) object)
+                  ;; Since c552d6bbb the heap-accessor pass lowers `sexp-tag' to
+                  ;; the canonical `nl_val_tag' extern (it must also classify GNU
+                  ;; strings), so the literal-WORD fold below never sees a
+                  ;; literal.  The fold is the unit under test, so keep the
+                  ;; classic `sexp-tag' IR here; the masked-header C stub gives
+                  ;; it the pre-c552d6bbb runtime semantics.
+                  (cl-letf (((symbol-function 'nelisp-heap-accessors--lower-string-tag)
+                             (lambda (operand)
+                               (list 'sexp-tag (nelisp-heap-accessors-lower operand)))))
+                    (nelisp-aot-compile-to-object (nelisp-aot-literal-word-test--source) object))
                 (advice-remove 'nelisp-aot-compiler--emit-literal-word-tag-test-x86
                                #'nelisp-aot-literal-word-test--record))
               (push nelisp-aot-literal-word-test--selected counts)

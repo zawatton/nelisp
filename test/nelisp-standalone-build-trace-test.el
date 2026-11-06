@@ -136,14 +136,19 @@
 (ert-deftest nelisp-build-trace-no-data-unit-preserves-original-fields ()
   ;; These complete-unit hashes were measured against the original standalone
   ;; function, including text bytes, exported symbols and external call relocs.
+  ;; The (+ n 1) pin was re-measured after 0b92c0fc1 (literal operands load
+  ;; straight into the operand register): the only text change is
+  ;; `mov rax,imm; push rax; ...; pop; add' -> `mov rax,[rbp-8]; add rax,imm'.
+  ;; The extern-call pin changed only by the unit's new :stackmap entry
+  ;; (086bdce62, v14): text bytes and relocs are identical.
   (let ((nelisp-standalone--target 'linux-x86_64)
         (process-environment (copy-sequence process-environment)))
     (setenv "NELISP_TCO" nil)
     (dolist (fixture
              '(((seq (defun fixture (n) (+ n 1)))
-                "7bde3afa5d0d7902fa6f0ef231835f85951c9637f805274b24a8fa89dd31d282")
+                "284cd80d6b0ca15cac8a66e08bd6f8721ad8d52962e459342b0b113e5aa88280")
                ((seq (defun fixture (n) (extern-call external_callback n)))
-                "014173b2c76ff5240a89f8f4c1be3d5eeeaef4c93dea8d785126d363c94e684e")))
+                "9f20c3acaeee75482f740fec7fc2139b550d6635a772e70ee7aba5dd8cccac3e")))
       (should (equal (cadr fixture)
                      (secure-hash 'sha256
                                   (prin1-to-string
