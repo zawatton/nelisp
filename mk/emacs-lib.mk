@@ -2170,6 +2170,13 @@ magit-load-smoke: bake-magit-runtime-image
 # between invocations; still a separate target so both smokes share one
 # build instead of duplicating the shell recipe inline.
 .PHONY: nemacs-magit-fixture
+# Host-Emacs ERT for the emacs-lib test files that CI's nelisp*-test.el glob
+# skips, one file per process, ratcheted against
+# tools/emacs-lib-test-known-reds.txt.
+.PHONY: emacs-lib-test
+emacs-lib-test:
+	./tools/emacs-lib-test.sh
+
 # Upstream package clones (magit, transient, compat, ...) pinned in
 # vendor/CLONES.  VENDOR_CLONE_SOURCE=DIR clones from a local mirror.
 .PHONY: vendor-clones vendor-clones-check

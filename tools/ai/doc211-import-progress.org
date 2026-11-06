@@ -42,7 +42,18 @@ cmd: sh tools/ai/doc211-import-check.sh regex-ert
 ** S2.3 The API consumer smoke requires the facade from package sources
 cmd: make -s doc211-api-consumer-smoke
 
-** S2.4 END-TO-END: on CI, every host ERT failure on the branch also fails on the aligned control, except the six core-lane items reported to notes-d0
+** S2.4 The 165 emacs-lib test files outside CI's glob fail exactly on the recorded known reds (host Emacs, one file per process)
+#+TIMEOUT: 1500
+cmd: tools/emacs-lib-test.sh
+
+** S2.5 No emacs-lib known reds remain
+# Known red since 2026-11-06: 24 tests (host Org shadowing 11, runner host
+# json/seq/tab-bar 7, Emacs 31.1 emacs-version unbind 3, suspected source
+# defects 3).  See handoff part 16.
+#+TIMEOUT: 10
+cmd: test ! -s tools/emacs-lib-test-known-reds.txt
+
+** S2.6 END-TO-END: on CI, every host ERT failure on the branch also fails on the aligned control, except the six core-lane items reported to notes-d0
 #+NOTE: recorded once from CI runs 42053763642 (branch) and 41997286058 (control); re-record after the next CI run that changes the result
 evidence: tools/ai/evidence/doc211-import-ci-ert.txt sha256=6b23428a89668907595c8935cea6f4d994dd20ac0d458d0a174c886d9020d96d
 
