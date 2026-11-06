@@ -1,3 +1,0 @@
-emacs-easy-mmode-test/define-globalized-minor-mode-materializes-surfaces
-emacs-easy-mmode-test/define-minor-mode-honours-variable-setter
-emacs-easy-mmode-test/define-minor-mode-materializes-surfaces

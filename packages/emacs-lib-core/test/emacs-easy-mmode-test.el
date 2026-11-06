@@ -22,6 +22,9 @@
   `(let ((--marker-bound-- (fboundp 'nelisp--write-stdout-bytes))
          (--marker-def-- (and (fboundp 'nelisp--write-stdout-bytes)
                               (symbol-function 'nelisp--write-stdout-bytes)))
+         (--ffi-bound-- (fboundp 'nl-ffi-call))
+         (--ffi-def-- (and (fboundp 'nl-ffi-call)
+                           (symbol-function 'nl-ffi-call)))
          (--standalone-bound-- (boundp 'emacs-easy-mmode--standalone-p))
          (--standalone-value-- (and (boundp 'emacs-easy-mmode--standalone-p)
                                     emacs-easy-mmode--standalone-p))
@@ -39,6 +42,10 @@
            ;; builtin `emacs-version' (GNU 31.1 rejects that).
            (unless --marker-bound--
              (fset 'nelisp--write-stdout-bytes #'ignore))
+           ;; The fallback installs only `(when (fboundp 'nl-ffi-call))'
+           ;; (6ad9586c2), so fake that probe too.
+           (unless --ffi-bound--
+             (fset 'nl-ffi-call #'ignore))
            (when --standalone-bound--
              (makunbound 'emacs-easy-mmode--standalone-p))
            (load emacs-easy-mmode-test--source nil t)
@@ -46,6 +53,9 @@
        (if --marker-bound--
            (fset 'nelisp--write-stdout-bytes --marker-def--)
          (fmakunbound 'nelisp--write-stdout-bytes))
+       (if --ffi-bound--
+           (fset 'nl-ffi-call --ffi-def--)
+         (fmakunbound 'nl-ffi-call))
        (if --standalone-bound--
            (setq emacs-easy-mmode--standalone-p --standalone-value--)
          (makunbound 'emacs-easy-mmode--standalone-p))
