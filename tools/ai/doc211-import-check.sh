@@ -56,9 +56,10 @@ case "${1:-}" in
         ;;
     magit)
         # Stale images are reused by existence, so rebuild them.  Needs the
-        # gitignored vendor clones (magit, transient, compat, ...; see the
-        # Doc 211 handoff for their commits).
+        # gitignored vendor clones pinned in vendor/CLONES.
         : "${DOC211_IMPORT_BIN:?set DOC211_IMPORT_BIN}"
+        tools/fetch-vendor-clones.sh --check >/dev/null ||
+            { echo "vendor clones: run tools/fetch-vendor-clones.sh"; exit 1; }
         rm -f build/nemacs-bootstrap.el build/nemacs-runtime.nlri \
               build/nemacs-magit-runtime.nlri build/nelisp-emacs-magit-bridge-bundle*.el
         out=$(make -f mk/emacs-lib.mk magit-status-smoke NELISP_ROOT=. \

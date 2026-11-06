@@ -2157,6 +2157,15 @@ magit-load-smoke: bake-magit-runtime-image
 # between invocations; still a separate target so both smokes share one
 # build instead of duplicating the shell recipe inline.
 .PHONY: nemacs-magit-fixture
+# Upstream package clones (magit, transient, compat, ...) pinned in
+# vendor/CLONES.  VENDOR_CLONE_SOURCE=DIR clones from a local mirror.
+.PHONY: vendor-clones vendor-clones-check
+vendor-clones:
+	./tools/fetch-vendor-clones.sh
+
+vendor-clones-check:
+	./tools/fetch-vendor-clones.sh --check
+
 nemacs-magit-fixture: scripts/nemacs-magit-fixture.sh
 	mkdir -p "$(BUILD_DIR)"
 	./scripts/nemacs-magit-fixture.sh "$(abspath $(NEMACS_MAGIT_FIXTURE_DIR))" $(NEMACS_MAGIT_FIXTURE_COMMITS)

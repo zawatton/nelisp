@@ -62,7 +62,11 @@ cmd: sh tools/ai/doc211-import-check.sh boot
 #+TIMEOUT: 90
 cmd: sh tools/ai/doc211-import-check.sh url
 
-** S3.4 END-TO-END: the magit status smoke prints MAGIT-STATUS-BUFFER PASS and MAGIT-GIT-EXEC PASS on the in-tree build
+** S3.4 The gitignored upstream clones (magit, transient, compat, ...) match their pins in vendor/CLONES
+#+TIMEOUT: 30
+cmd: tools/fetch-vendor-clones.sh --check
+
+** S3.5 END-TO-END: the magit status smoke prints MAGIT-STATUS-BUFFER PASS and MAGIT-GIT-EXEC PASS on the in-tree build
 # Known red since 2026-11-06: status buffer PASS, git exec FAIL (the status
 # buffer's default-directory is clobbered by a let unwind; handoff part 14).
 #+REQUIRES: DOC211_IMPORT_BIN

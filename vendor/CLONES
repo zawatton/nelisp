@@ -1,0 +1,11 @@
+# Upstream package clones used by the Magit bridge and its smokes.
+# They are not committed (see .gitignore); tools/fetch-vendor-clones.sh
+# clones each one into vendor/NAME at the pinned commit.
+# NAME	URL	COMMIT
+compat	https://github.com/emacs-compat/compat.git	a0d646554730471579de8b33b0194077fd05abe1
+cond-let	https://github.com/tarsius/cond-let.git	21b9e9835756ff5cd1acb971cf9eb56fff671c8b
+dash.el	https://github.com/magnars/dash.el.git	d3a84021dbe48dba63b52ef7665651e0cf02e915
+llama	https://github.com/tarsius/llama.git	4d4024048053b898a01521046e0f063ee47615b0
+magit	https://github.com/magit/magit.git	55bbdde3fec0fcd486cc42a48c634e91b571ef45
+transient	https://github.com/magit/transient.git	9d103f338fb9fd4506a0f1651c483209ab838f49
+with-editor	https://github.com/magit/with-editor.git	36c34610b6b700b4d1f39ccabd2b8b8c9642292d
