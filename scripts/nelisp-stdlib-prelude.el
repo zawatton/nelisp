@@ -4408,16 +4408,27 @@ trailing newline) that `message' would otherwise do.")
   (signal 'error (cons msg (if (proper-list-p arg) arg (list arg)))))
 ;; These representation helpers must precede the capacity policy below.
 ;; Prelude buffer creation calls puthash before the later buffer/printer code.
-(defun hash-table-p (x)
-  (and (consp x)
-       (let ((m (car x)))
-         (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
+;; Hash tables are kind-22 heap objects in the standalone runtime and the native
+;; builtins below read/write them.  An older image (the pinned producer image
+;; that loads this file) still has the cons representation (META . INDEX), so
+;; define the same-named accessors over it when the builtins are absent.
+(unless (fboundp 'nelisp--hash-meta)
+  (defun nelisp--hash-table-p (x)
+    (and (consp x)
+         (let ((m (car x)))
+           (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
+  (defun nelisp--hash-meta (table) (car table))
+  (defun nelisp--hash-index (table) (cdr table))
+  (defun nelisp--hash-set-index (table index) (setcdr table index))
+  (defun nelisp--hash-make (meta index) (cons meta index)))
+(unless (fboundp 'hash-table-p)
+  (defun hash-table-p (x) (nelisp--hash-table-p x)))
 (defun nelisp--maphash-reference (fn table)
   (nelisp--hash-capacity table)
   ;; GNU Fmaphash reads slots in increasing index order, including reuse.
   (let ((i 0))
-    (while (< i (aref (car table) 3))
-      (let ((m (car table)))
+    (while (< i (aref (nelisp--hash-meta table) 3))
+      (let ((m (nelisp--hash-meta table)))
         (when (>= (aref (aref m 12) i) 0)
           (funcall fn (aref (aref m 11) (* i 2))
                    (aref (aref m 11) (1+ (* i 2))))))
@@ -4435,7 +4446,7 @@ trailing newline) that `message' would otherwise do.")
     ;; compares keys with `eq' / `eql' / `equal' accordingly.
     (unless (hash-table-p table)
       (signal 'wrong-type-argument (list 'hash-table-p table)))
-    (or (and (> (length (car table)) 2) (aref (car table) 2)) 'eql)))
+    (or (and (> (length (nelisp--hash-meta table)) 2) (aref (nelisp--hash-meta table) 2)) 'eql)))
 
 ;; Ordinary storage, capacity growth and counts are native. User-test
 ;; callbacks retain a Lisp reference using the same four vectors. Slot 5
@@ -4457,17 +4468,18 @@ trailing newline) that `message' would otherwise do.")
   ;; GNU Lisp_Hash_Table: vectors share indices; no entry conses.
   (let ((next (make-vector capacity -1)) (i 0))
     (while (< (1+ i) capacity) (aset next i (1+ i)) (setq i (1+ i)))
-    (cons (vector 'hash-table 0 test capacity weakness 0 0 0
-                  (and (not (memq test '(eq eql equal)))
-                       (nelisp--hash-custom-descriptor test capacity descriptor))
-                  nil 0 (make-vector (* capacity 2) nil)
-                  (make-vector capacity -1) (if (> capacity 0) 0 -1) next)
-          (make-vector (nelisp--hash-index-size capacity) -1))))
+    (nelisp--hash-make
+     (vector 'hash-table 0 test capacity weakness 0 0 0
+             (and (not (memq test '(eq eql equal)))
+                  (nelisp--hash-custom-descriptor test capacity descriptor))
+             nil 0 (make-vector (* capacity 2) nil)
+             (make-vector capacity -1) (if (> capacity 0) 0 -1) next)
+     (make-vector (nelisp--hash-index-size capacity) -1))))
 
 
 (defun nelisp--hash-resize (table capacity)
   "Lisp reference for native reserve; also used by user-test callbacks."
-  (let* ((m (car table)) (old (aref m 3))
+  (let* ((m (nelisp--hash-meta table)) (old (aref m 3))
          (pairs (make-vector (* capacity 2) nil))
          (hashes (make-vector capacity -1)) (next (make-vector capacity -1))
          (index (make-vector (nelisp--hash-index-size capacity) -1)) (i 0))
@@ -4487,14 +4499,14 @@ trailing newline) that `message' would otherwise do.")
           (aset next i (aref index bucket)) (aset index bucket i)))
       (setq i (1+ i)))
     (aset m 11 pairs) (aset m 12 hashes) (aset m 14 next)
-    (aset m 3 capacity) (aset m 13 old) (setcdr table index))
+    (aset m 3 capacity) (aset m 13 old) (nelisp--hash-set-index table index))
   table)
 
 
 (defun nelisp--hash-capacity (table)
   (unless (hash-table-p table)
     (signal 'wrong-type-argument (list 'hash-table-p table)))
-  (aref (car table) 3))
+  (aref (nelisp--hash-meta table) 3))
 
 
 (defun hash-table-size (table)
@@ -4502,7 +4514,7 @@ trailing newline) that `message' would otherwise do.")
 
 (defun internal--hash-table-index-size (table)
   (nelisp--hash-capacity table)
-  (length (cdr table)))
+  (length (nelisp--hash-index table)))
 
 (defun nelisp--make-hash-table-reference (&rest keys)
   "GNU 31.1 constructor reference and cold path for user-defined tests."
@@ -4543,31 +4555,31 @@ trailing newline) that `message' would otherwise do.")
 (defun clrhash (table)
   (nelisp--hash-capacity table)
   (nelisp--hash-check-mutable table)
-  (let* ((m (car table)) (n (aref m 3)) (next (aref m 14)) (i 0))
+  (let* ((m (nelisp--hash-meta table)) (n (aref m 3)) (next (aref m 14)) (i 0))
     (when (> (aref m 1) 0)
     (while (< i n)
       (aset (aref m 11) (* i 2) nil) (aset (aref m 11) (1+ (* i 2)) nil)
       (aset (aref m 12) i -1) (aset next i (if (< (1+ i) n) (1+ i) -1))
       (setq i (1+ i)))
     (setq i 0)
-    (while (< i (length (cdr table))) (aset (cdr table) i -1) (setq i (1+ i)))
+    (while (< i (length (nelisp--hash-index table))) (aset (nelisp--hash-index table) i -1) (setq i (1+ i)))
     (aset m 1 0) (aset m 13 (if (> n 0) 0 -1))))
   table)
 
 
 (defun hash-table-weakness (table)
   (nelisp--hash-capacity table)
-  (and (> (length (car table)) 4) (aref (car table) 4)))
+  (and (> (length (nelisp--hash-meta table)) 4) (aref (nelisp--hash-meta table) 4)))
 
 (defun copy-hash-table (table)
   (nelisp--hash-capacity table)
-  (let* ((m (car table)) (copy (copy-sequence m)))
+  (let* ((m (nelisp--hash-meta table)) (copy (copy-sequence m)))
     (aset copy 11 (copy-sequence (aref m 11)))
     (aset copy 12 (copy-sequence (aref m 12)))
     (aset copy 14 (copy-sequence (aref m 14)))
     (aset copy 6 0) (aset copy 7 0) (aset copy 9 nil) (aset copy 10 0)
     (when (aref m 8) (aset copy 8 (copy-sequence (aref m 8))))
-    (cons copy (copy-sequence (cdr table)))))
+    (nelisp--hash-make copy (copy-sequence (nelisp--hash-index table)))))
 
 
 (defun define-hash-table-test (name test hash)
@@ -4586,18 +4598,18 @@ trailing newline) that `message' would otherwise do.")
 (defun nelisp--hash-custom-call (table function &rest arguments)
   ;; GNU fns.c:4725: callbacks may read the table recursively, but their
   ;; attempts to mutate it signal. Restore the guard even when they signal.
-  (let* ((marker (car table)) (previous (aref marker 9)))
+  (let* ((marker (nelisp--hash-meta table)) (previous (aref marker 9)))
     (unwind-protect
         (progn (aset marker 9 t) (apply function arguments))
       (aset marker 9 previous))))
 
 (defun nelisp--hash-check-mutable (table)
-  (when (aref (car table) 9)
+  (when (aref (nelisp--hash-meta table) 9)
     (signal 'error (list "hash table test modifies table" table))))
 
 (defun nelisp--hash-custom-hash (key table)
   ;; GNU fns.c:4805 and lisp.h:reduce_emacs_uint_to_hash_hash.
-  (let ((hash (nelisp--hash-custom-call table (aref (aref (car table) 8) 1) key)))
+  (let ((hash (nelisp--hash-custom-call table (aref (aref (nelisp--hash-meta table) 8) 1) key)))
     (unless (fixnump hash) (setq hash (sxhash hash)))
     (setq hash (logand hash 18446744073709551615))
     (logand (logxor hash (lsh hash -32)) 4294967295)))
@@ -4606,9 +4618,9 @@ trailing newline) that `message' would otherwise do.")
   (/ (* (logand (* hash 2654435769) 4294967295) (length buckets)) 4294967296))
 
 (defun nelisp--hash-custom-find (key hash table)
-  (let* ((m (car table)) (d (aref m 8)) (pairs (aref m 11))
+  (let* ((m (nelisp--hash-meta table)) (d (aref m 8)) (pairs (aref m 11))
          (hashes (aref m 12)) (next (aref m 14))
-         (i (aref (cdr table) (nelisp--hash-custom-index hash (cdr table)))) found)
+         (i (aref (nelisp--hash-index table) (nelisp--hash-custom-index hash (nelisp--hash-index table)))) found)
     (while (and (>= i 0) (null found))
       (let ((other (aref pairs (* i 2))))
         (if (or (eq key other)
@@ -4620,23 +4632,23 @@ trailing newline) that `message' would otherwise do.")
 
 (defun nelisp--hash-custom-place (key value hash table)
   ;; Lisp reference for GNU hash_put, sharing the native vector layout.
-  (let* ((m (car table)) (i (aref m 13)) (next (aref m 14))
-         (bucket (nelisp--hash-custom-index hash (cdr table))))
+  (let* ((m (nelisp--hash-meta table)) (i (aref m 13)) (next (aref m 14))
+         (bucket (nelisp--hash-custom-index hash (nelisp--hash-index table))))
     (aset m 13 (aref next i))
     (aset (aref m 11) (* i 2) key) (aset (aref m 11) (1+ (* i 2)) value)
-    (aset (aref m 12) i hash) (aset next i (aref (cdr table) bucket))
-    (aset (cdr table) bucket i) (aset m 1 (1+ (aref m 1)))))
+    (aset (aref m 12) i hash) (aset next i (aref (nelisp--hash-index table) bucket))
+    (aset (nelisp--hash-index table) bucket i) (aset m 1 (1+ (aref m 1)))))
 
 
 (defun nelisp--hash-custom-get (key table &optional default)
   (let ((i (nelisp--hash-custom-find key (nelisp--hash-custom-hash key table) table)))
-    (if i (aref (aref (car table) 11) (1+ (* i 2))) default)))
+    (if i (aref (aref (nelisp--hash-meta table) 11) (1+ (* i 2))) default)))
 
 
 (defun nelisp--hash-custom-put (key value table)
   (nelisp--hash-check-mutable table)
   (let* ((hash (nelisp--hash-custom-hash key table))
-         (i (nelisp--hash-custom-find key hash table)) (m (car table)) (n (aref m 3)))
+         (i (nelisp--hash-custom-find key hash table)) (m (nelisp--hash-meta table)) (n (aref m 3)))
     (if i (aset (aref m 11) (1+ (* i 2)) value)
       (when (< (aref m 13) 0)
         (nelisp--hash-resize table (if (= n 0) 6 (* (max n 6) (if (<= n 64) 4 2)))))
@@ -4647,13 +4659,13 @@ trailing newline) that `message' would otherwise do.")
 (defun nelisp--hash-custom-rem (key table)
   (nelisp--hash-check-mutable table)
   (let* ((hash (nelisp--hash-custom-hash key table))
-         (i (nelisp--hash-custom-find key hash table)) (m (car table)))
+         (i (nelisp--hash-custom-find key hash table)) (m (nelisp--hash-meta table)))
     (when i
-      (let* ((bucket (nelisp--hash-custom-index hash (cdr table)))
-             (j (aref (cdr table) bucket)) (prev nil) (next (aref m 14)))
+      (let* ((bucket (nelisp--hash-custom-index hash (nelisp--hash-index table)))
+             (j (aref (nelisp--hash-index table) bucket)) (prev nil) (next (aref m 14)))
         (while (/= j i) (setq prev j j (aref next j)))
         (if prev (aset next prev (aref next i))
-          (aset (cdr table) bucket (aref next i)))
+          (aset (nelisp--hash-index table) bucket (aref next i)))
         (aset (aref m 11) (* i 2) nil) (aset (aref m 11) (1+ (* i 2)) nil)
         (aset (aref m 12) i -1) (aset next i (aref m 13))
         (aset m 13 i) (aset m 1 (1- (aref m 1))))))
@@ -11326,7 +11338,7 @@ new text.  Point ends after TEXT."
   ;; Its bucket layout no longer matters: `nelisp-buffer-list' follows
   ;; `nelisp-buffer--order', not the buckets.
   (let ((table (nelisp--hash-table-make-raw)))
-    (aset (car table) 2 'equal)
+    (aset (nelisp--hash-meta table) 2 'equal)
     table)
   "Name -> `nelisp-buffer' map.  Ported from src/nelisp-buffer.el.")
 
@@ -20375,9 +20387,7 @@ printer to write (a 1) rather than (a . (1))."
         (setq l (cdr l)))
       (nreverse out))))
 (defun nelisp--prn-hash-table-p (x)
-  (and (consp x)
-       (let ((m (car x)))
-         (and (vectorp m) (> (length m) 1) (eq (aref m 0) 'hash-table)))))
+  (nelisp--hash-table-p x))
 (defun nelisp--prn-hash-table (obj escape &optional memo)
   "Print OBJ as Emacs prints a hash table.
 The entries come out in bucket order rather than insertion order -- this
@@ -20390,7 +20400,7 @@ claimed to match, only the shape."
                                    (nelisp--prn-to-string v escape 0))
                            parts)))
              obj)
-    (let* ((m (car obj))
+    (let* ((m (nelisp--hash-meta obj))
            (tst (and (> (length m) 2) (aref m 2)))
            (head (if (and tst (not (eq tst 'eql)))
                      (concat "#s(hash-table test " (symbol-name tst))

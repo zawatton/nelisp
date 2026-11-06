@@ -1415,7 +1415,7 @@
              (test (nelisp_reader_p_hash_plist_find_test (nl_cons_cdr_word body)))
              (object (extern-call nl_ht_make_w 0)))
         (if (= data 0) (setq data (nelisp_reader_p_list_nth_ptr body 4)) 0)
-        (if (= test 0) 0 (vector-slot-set (nl_cons_car_word object) 2 test))
+        (if (= test 0) 0 (vector-slot-set (ptr-read-u64 (- object 6) 8) 2 test))
         (if (= data 0) 0
           (nelisp_reader_p_hash_fill_table data object
             (nelisp_reader_p_slot slot-pool (nelisp_reader_p_cdr_idx depth))

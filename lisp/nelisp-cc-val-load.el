@@ -278,7 +278,7 @@
                 ;; Lisp_Cons tag), never as another 32-byte header alias.
                 (let ((word (+ (heap-read-u64 src_slot 8) 2)))
                   (nl_vl_prog2 (ptr-write-u64 dst_word_ptr 0 word) word))
-            (if (or (= tag 8) (= tag 9) (= tag 12) (= tag 17) (= tag 18))
+            (if (or (= tag 8) (= tag 9) (= tag 12) (= tag 17) (= tag 18) (= tag 22))
                 (let* ((box (heap-read-u64 src_slot 8)) (word (+ box 6)))
                   (nl_vl_prog2
                    (and (ptr-write-u64 box 0

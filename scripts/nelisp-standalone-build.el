@@ -5746,7 +5746,7 @@ it shares with cons and symbol blocks.")
                (tag (logand w0 255))
                (n (sar w0 8))
                (cnt (if (= tag 8) n
-                      (if (if (= tag 12) 1 (if (= tag 17) 1 (if (= tag 18) 1 0)))
+                      (if (if (= tag 12) 1 (if (= tag 17) 1 (if (= tag 18) 1 (if (= tag 22) 1 0))))
                           (+ n 1) 0)))
                (k 0) (bad 0))
           (if (< cnt 1) 0
@@ -6902,6 +6902,7 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u8 w 0) 7)
                 ;; Only the special-form marker (13108) is metadata.
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
+              (if (= (heap-read-u8 w 0) 22) (+ (heap-read-u64 w 8) 6)
               (if (= (heap-read-u8 w 0) 8)
                   (if (= (logand (heap-read-u8 (heap-read-u64 w 8) 0) 63) 8)
                       (+ (heap-read-u64 w 8) 6)
@@ -6910,7 +6911,7 @@ it shares with cons and symbol blocks.")
                 (if (if (= (heap-read-u8 w 0) 16) (> (heap-read-u64 w 8) 65535) 0)
                     (+ (heap-read-u64 w 8) 6)
                   ;; Stage 3.2: so does an interned symbol's, once it has one.
-                  (if (= (heap-read-u8 w 0) 4) (nl_symview_canon w) w)))))
+                  (if (= (heap-read-u8 w 0) 4) (nl_symview_canon w) w))))))
         w))
     ;; Doc 216 S6.2: the WORD a view slot V denotes, without allocating --
     ;; for nil, t and a cons (a list).  Any other view comes back as V;
@@ -8746,13 +8747,13 @@ REPL-facing module it feeds."
                   (if (= (nl_gc_object_start_p box) 0) 0
                     (if (< (nl_hdr_bt (- box 8)) 40) 0
                       (nl_gc_typed_add 4 box (heap-read-u64 box 16) 48 1))))))
-               ((or (= tag 8) (= tag 12) (= tag 17) (= tag 18)
+               ((or (= tag 8) (= tag 12) (= tag 17) (= tag 18) (= tag 22)
                     (= tag 19) (= tag 9) (= tag 10))
                 (let* ((box (heap-read-u64 sp 8)))
                   (if (= (nl_gc_is_boot box) 1) 0
                   (if (= (nl_gc_object_start_p box) 0) 0
                     (let* ((len (if (= tag 8) (sar (heap-read-u64 box 0) 8)
-                              (if (or (= tag 12) (= tag 17) (= tag 18))
+                              (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
                                   (+ (sar (heap-read-u64 box 0) 8) 1) 0)))
                        (before (heap-read-u64 st 64)))
                   (seq (nl_gc_typed_add 5 box 0 64 1)
@@ -9222,7 +9223,7 @@ REPL-facing module it feeds."
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
             (if (or (= kind 11) (= kind 20)) (nl_gc_mark_slots box 1 1)
-              (if (or (= kind 12) (= kind 17) (= kind 18)) (nl_gc_mark_slots box 1 (+ n 1))
+              (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (nl_gc_mark_slots box 1 (+ n 1))
                 (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_mark_slots (owner offset n)
       (let* ((i offset) (end (+ offset n)))
@@ -9295,9 +9296,15 @@ REPL-facing module it feeds."
               0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
             (if (or (= kind 11) (= kind 20)) (nl_gc_mark_inline_words box 1 1)
+            (if (= kind 22)
+                ;; Hash table object: a weak table is chained at BOX+8 (meta, index
+                ;; read as a cons's car and cdr) for the end-of-mark weak pass.
+                (if (> (nl_gc_weak_table_mode (+ box 8)) 0)
+                    (nl_gc_weak_note_table (+ box 8))
+                  (nl_gc_mark_inline_words box 1 2))
             (if (or (= kind 12) (= kind 17) (= kind 18))
                 (nl_gc_mark_inline_words box 1 (+ n 1))
-              (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))))
+              (if (= kind 9) (nl_gc_mark_char_table_children box) 0))))))))))
     (defun nl_gc_typed_vectorlike (box kind n mr)
       (let* ((state (data-addr nl_gc_typed_state))
              (mode (heap-read-u64 state 0))
@@ -9310,7 +9317,7 @@ REPL-facing module it feeds."
                          (ptr-write-u64 state 72
                            (+ (heap-read-u64 state 72)
                               (if (= kind 8) n
-                                (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))))
+                                (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (+ n 1) 0)))))
                   0)
               (if (= mode 1)
                   (if (= (nl_gc_is_boot box) 0)
@@ -9319,7 +9326,7 @@ REPL-facing module it feeds."
                                (ptr-write-u64 state 72
                                  (+ (heap-read-u64 state 72)
                                     (if (= kind 8) n
-                                      (if (or (= kind 12) (= kind 17) (= kind 18)) (+ n 1) 0)))) 0))
+                                      (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (+ n 1) 0)))) 0))
                     0)
                 0))
           0)))
@@ -9987,7 +9994,7 @@ REPL-facing module it feeds."
             (nl_gc_mark_cons sp)
           (if (= tag 8)
               (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
-            (if (or (= tag 12) (= tag 17) (= tag 18))
+            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
                 (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
               (if (= tag 11)
                   ;; Cell (Doc 216 S5): header @ box+0, value WORD @ box+8,
@@ -12235,7 +12242,7 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
             (if (or (= kind 11) (= kind 20)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
-            (if (or (= kind 12) (= kind 17) (= kind 18))
+            (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
               (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
     (defun nl_compact_rw_char_table (box)
@@ -12302,7 +12309,7 @@ REPL-facing module it feeds."
         (if (= tag 7) (nl_compact_rw_cons sp)
           (if (= tag 8)
               (nl_compact_rw_vectorlike (nl_compact_rw_edge (+ sp 8)))
-            (if (or (= tag 12) (= tag 17) (= tag 18))
+            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
                 (nl_compact_rw_vectorlike (nl_compact_rw_edge (+ sp 8)))
               (if (= tag 11)
                   ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged).
@@ -13744,6 +13751,24 @@ argument (reachability + in-arena bounds checks).")
     ;; representation. The public constructor parses GNU keyword arguments.
     ((:lit "make-hash-table")  :word . (nl_ht_make_args_w args env))
     ((:lit "nelisp--hash-table-make-raw") :word . (nl_ht_make_w 0))
+    ;; Hash-table object accessors for the prelude's reference code (kind-22 object:
+    ;; meta vector at +8, index vector at +16).  Non-tables answer nil / do nothing.
+    ((:lit "hash-table-p") :word . (if (= (bf_hash_table_p_raw (wf_arg_word args 0)) 1) 7 3))
+    ((:lit "nelisp--hash-table-p") :word . (if (= (bf_hash_table_p_raw (wf_arg_word args 0)) 1) 7 3))
+    ((:lit "nelisp--hash-meta") :word . (let* ((tb (nl_word_canon (wf_arg_word args 0))))
+                                    (if (= (bf_hash_table_p_raw tb) 1) (ptr-read-u64 (- tb 6) 8) 3)))
+    ((:lit "nelisp--hash-index") :word . (let* ((tb (nl_word_canon (wf_arg_word args 0))))
+                                     (if (= (bf_hash_table_p_raw tb) 1) (ptr-read-u64 (- tb 6) 16) 3)))
+    ((:lit "nelisp--hash-set-index") :word . (let* ((tb (nl_word_canon (wf_arg_word args 0)))
+                                                    (ix (nl_word_canon (wf_arg_word args 1))))
+                                         (if (= (bf_hash_table_p_raw tb) 1)
+                                             (seq (ptr-write-u64 (- tb 6) 16 ix) ix)
+                                           3)))
+    ((:lit "nelisp--hash-make") :word . (let* ((obj (nl_alloc_vector 2)))
+                                    (seq (ptr-write-u64 obj 0 (+ 256 22))
+                                         (ptr-write-u64 obj 8 (nl_word_canon (wf_arg_word args 0)))
+                                         (ptr-write-u64 obj 16 (nl_word_canon (wf_arg_word args 1)))
+                                         (+ obj 6))))
     ;; The equal-only `assoc' under a private name, so the prelude can add
     ;; the TESTFN argument -- which the native arm ignored, silently using
     ;; `equal' for a caller who asked for something else.
@@ -13815,26 +13840,26 @@ argument (reachability + in-arena bounds checks).")
     ((:lit "puthash")          :word . (let* ((argc (m5_list_len args 0)))
                                   (if (/= argc 3)
                                       (nl_abi_fail (bf_wrong_number_of_args name_ptr argc) 0)
-                                    (let* ((h (wf_arg_ptr args 2)))
+                                    (let* ((h (wf_arg_word args 2)))
                                       (if (= (bf_hash_table_p_raw h) 1)
                                           (seq (wf_dirty) (nl_ht_put_w args env))
-                                        (nl_abi_fail (bf_wrong_type_hash_table h) 0))))))
-    ((:lit "gethash")          :word . (if (= (bf_hash_table_p_raw (wf_arg_ptr args 1)) 1)
+                                        (nl_abi_fail (bf_wrong_type_hash_table (wf_arg_ptr args 2)) 0))))))
+    ((:lit "gethash")          :word . (if (= (bf_hash_table_p_raw (wf_arg_word args 1)) 1)
                             (nl_ht_get_w args env)
                           (nl_abi_fail (bf_wrong_type_hash_table (wf_arg_ptr args 1)) 0)))
     ((:lit "remhash")          :word . (let* ((argc (m5_list_len args 0)))
                                   (if (/= argc 2)
                                       (nl_abi_fail (bf_wrong_number_of_args name_ptr argc) 0)
-                                    (let* ((h (wf_arg_ptr args 1)))
+                                    (let* ((h (wf_arg_word args 1)))
                                       (if (= (bf_hash_table_p_raw h) 1)
                                           (seq (wf_dirty) (nl_ht_rem_w args env))
-                                        (nl_abi_fail (bf_wrong_type_hash_table h) 0))))))
+                                        (nl_abi_fail (bf_wrong_type_hash_table (wf_arg_ptr args 1)) 0))))))
     ;; This read a count out of whatever it was handed: (hash-table-count 0)
     ;; answered 0, which is also what an empty table answers.
-    ((:lit "hash-table-count") :word . (let* ((h (wf_arg_ptr args 0)))
+    ((:lit "hash-table-count") :word . (let* ((h (wf_arg_word args 0)))
                                    (if (= (bf_hash_table_p_raw h) 1)
                                        (wf_write_int_w 0 (nl_ht_meta_count h))
-                                     (nl_abi_fail (bf_wrong_type_hash_table h) 0))))
+                                     (nl_abi_fail (bf_wrong_type_hash_table (wf_arg_ptr args 0)) 0))))
     ((:lit "maphash")          :word . (wf_maphash_w args env))
     ;; --- M5 strings + format ---
     ((:lit "length")           :word . (bf_length_checked_w (wf_arg_ptr args 0) 0))
@@ -19473,7 +19498,7 @@ list groups retain the original leaves/default exactly."
                            ds span dest cin cout dir)
         (if (or (= tag 11) (= tag 20))
             (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
-        (if (or (= tag 12) (= tag 17) (= tag 18))
+        (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
                              ds span dest cin cout dir)
           (if (= tag 9)
@@ -19490,7 +19515,7 @@ list groups retain the original leaves/default exactly."
                     (nl_fa_slot box ds span dest cin cout dir))))
             (if (= tag 7)
                 (nl_fa_cons sp ds span dest cin cout dir)
-              (if (or (= tag 8) (= tag 12) (= tag 17) (= tag 18))
+              (if (or (= tag 8) (= tag 12) (= tag 17) (= tag 18) (= tag 22))
                   (let ((box (heap-read-u64 sp 8)))
                     (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                       (if (= (nl_gc_mark_block box) 0) 0
@@ -20594,9 +20619,24 @@ eval applyfn.")
           (bf_eql2 ka kb))))
     ;; Return the stored vector WORD, not an allocated view. All consumers
     ;; use WORD-aware vector/tag/payload accessors (including old-image views).
-    (defun nl_ht_data_slot (table_ptr) (nl_cons_cdr_word table_ptr))
+    ;; A hash table is a kind-22 heap object (header (1<<8)|22): meta vector
+    ;; WORD at +8, index vector WORD at +16.  `nl_ht_obj' answers the object's
+    ;; header address for a table WORD, else 0.
+    (defun nl_ht_obj (table)
+      (if (= (logand table 7) 6)
+          (if (= (logand (ptr-read-u8 (- table 6) 0) 63) 22) (- table 6) 0)
+        0))
+    (defun nl_ht_raw_meta (table)
+      (let* ((o (nl_ht_obj table))) (if (= o 0) 0 (ptr-read-u64 o 8))))
+    (defun nl_ht_raw_index (table)
+      (let* ((o (nl_ht_obj table))) (if (= o 0) 0 (ptr-read-u64 o 16))))
+    (defun nl_ht_data_slot (table_ptr)
+      (if (= (logand table_ptr 7) 6) (ptr-read-u64 (- table_ptr 6) 16)
+        (if (= (nl_val_tag table_ptr) 22) (ptr-read-u64 (nl_word_payload table_ptr) 16) 0)))
     (defun nl_ht_alist_slot (table_ptr) (nl_ht_data_slot table_ptr))
-    (defun nl_ht_meta_slot (table_ptr) (nl_cons_car_word table_ptr))
+    (defun nl_ht_meta_slot (table_ptr)
+      (if (= (logand table_ptr 7) 6) (ptr-read-u64 (- table_ptr 6) 8)
+        (if (= (nl_val_tag table_ptr) 22) (ptr-read-u64 (nl_word_payload table_ptr) 8) 0)))
     ;; The count lives in marker slot 1 as an immediate Int word (n << 2 | 1)
     ;; since Doc 147 stores fixnums in vector slots as words.  Reading it
     ;; through `vector-ref-ptr' boxed a fresh copy, so the setter wrote into
@@ -20623,8 +20663,8 @@ eval applyfn.")
       ;; Fast read of the cached code (slot 5, header+48) on a direct cons whose
       ;; car is a direct vectorlike of at least 15 slots; every other shape, and
       ;; an uncached table, takes the decoding body below.
-      (let* ((fm (if (= (logand table_ptr 7) 2)
-                     (let* ((fmeta (ptr-read-u64 (- table_ptr 2) 0)))
+      (let* ((fm (if (/= (nl_ht_obj table_ptr) 0)
+                     (let* ((fmeta (if (= (logand table_ptr 7) 6) (ptr-read-u64 (- table_ptr 6) 8) 0)))
                        (if (= (logand fmeta 7) 6)
                            (if (>= (sar (ptr-read-u64 (- fmeta 6) 0) 8) 15)
                                (let* ((fc (sar (ptr-read-u64 (- fmeta 6) 48) 2)))
@@ -20633,7 +20673,7 @@ eval applyfn.")
                          -1))
                    -1)))
       (if (>= fm 0) fm
-      (let* ((meta_ptr (nl_cons_car_word table_ptr))
+      (let* ((meta_ptr (nl_ht_meta_slot table_ptr))
              (cache (if (>= (vector-len meta_ptr) 15) (nl_ht_int meta_ptr 5) 0)))
         ;; Slot 5 was an unused nonnegative insertion budget. Negative schema
         ;; -101..-103 caches equal/eq/eql and distinguishes old image tables.
@@ -21026,7 +21066,7 @@ eval applyfn.")
     (defun nl_ht_custom_function_w (table index)
       ;; Slot 8 (header+72) is nil for eq/eql/equal tables: one raw read on a
       ;; direct cons/direct vectorlike pair; anything else takes the seed read.
-      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0))
+      (let* ((fm (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 8) 0))
              (fd (if (= (logand fm 7) 6) (ptr-read-u64 (- fm 6) 72) 0)))
         (if (= fd 3) 3
           (let ((descriptor (nl_ht_marker_word (nl_ht_meta_slot table) 8)))
@@ -21080,7 +21120,7 @@ eval applyfn.")
          (nl_ht_marker_word_set meta 14 next)
          (nl_ht_set_int meta 3 capacity)
          (nl_ht_set_int meta 13 old_n)
-         (cons-set-cdr table index)
+         (ptr-write-u64 (nl_word_payload table) 16 index)
          (nl_ht_reindex table 0))))
     (defun nl_ht_maybe_resize (table)
       (let* ((meta (nl_ht_meta_slot table)) (n (nl_ht_int meta 3)))
@@ -21089,7 +21129,7 @@ eval applyfn.")
     (defun nl_ht_identity_sync (table)
       ;; Slots 6 and 7 sit at header+56 and header+64; the payload of a direct
       ;; vectorlike WORD is the WORD minus 6.
-      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0)))
+      (let* ((fm (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 8) 0)))
         (if (if (= (logand fm 7) 6)
                 (if (= (sar (ptr-read-u64 (- fm 6) 56) 2) (ptr-read-u64 268436376 0))
                     (= (sar (ptr-read-u64 (- fm 6) 64) 2) (- fm 6))
@@ -21103,12 +21143,10 @@ eval applyfn.")
     (defun nl_ht_find_index (table key hash mode)
       ;; The four backing vectors are addressed once: PB/HB/NB/IB are the
       ;; addresses of slot 0 (payload + 8; a direct vectorlike WORD + 2).
-      (let* ((meta (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0)
-                     (nl_ht_meta_slot table)))
+      (let* ((meta (nl_ht_meta_slot table))
              (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
              (pairs (ptr-read-u64 mb 88))
-             (index (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 8)
-                      (nl_ht_data_slot table)))
+             (index (nl_ht_data_slot table))
              (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
              (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
              (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
@@ -21137,7 +21175,7 @@ eval applyfn.")
     (defun nl_ht_entry_value (table entry)
       ;; Value of pair ENTRY-1: slot 2*(ENTRY-1)+1 of the pairs vector (meta
       ;; slot 11 at header+96).
-      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0))
+      (let* ((fm (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 8) 0))
              (fp (if (= (logand fm 7) 6) (ptr-read-u64 (- fm 6) 96) 0)))
         (if (= (logand fp 7) 6)
             (ptr-read-u64 (- fp 6) (+ 8 (* (+ (* (- entry 1) 2) 1) 8)))
@@ -21146,13 +21184,13 @@ eval applyfn.")
       ;; hashtab (GNU hash_put): take next_free, fill the pair and its hash,
       ;; link it at the head of its bucket, on the table's own arrays.  A
       ;; table that is not an ordinary direct shape takes the accessor body.
-      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0)))
+      (let* ((fm (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 8) 0)))
         (if (/= (logand fm 7) 6) (nl_ht_hash_put_slow table key value hash)
           (let* ((h (- fm 6)))
             (seq
              (if (< (ptr-read-u64 h 112) 0) (nl_ht_maybe_resize table) 0)
              (let* ((pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
-                    (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8))
+                    (next (ptr-read-u64 h 120)) (index (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 16) 0))
                     (cnt (ptr-read-u64 h 16)) (fw (ptr-read-u64 h 112)))
                (if (/= (logand pairs 7) 6) (nl_ht_hash_put_slow table key value hash)
                  (if (/= (logand hashes 7) 6) (nl_ht_hash_put_slow table key value hash)
@@ -21221,8 +21259,8 @@ eval applyfn.")
     ;; test mode, no custom test, identity stamps current), or 0 -- and every
     ;; 0 sends the caller to the general path unchanged.
     (defun nl_ht_fast_hdr (table)
-      (if (/= (logand table 7) 2) 0
-        (let* ((meta (ptr-read-u64 (- table 2) 0)))
+      (if (= (if (= (logand table 7) 6) (if (= (logand (ptr-read-u8 (- table 6) 0) 63) 22) 1 0) 0) 0) 0
+        (let* ((meta (ptr-read-u64 (- table 6) 8)))
           (if (/= (logand meta 7) 6) 0
             (let* ((h (- meta 6)) (hd (ptr-read-u64 h 0)))
               (if (/= (logand hd 63) 8) 0
@@ -21245,7 +21283,7 @@ eval applyfn.")
     (defun nl_ht_fast_find (h table key mode)
       ;; Index of KEY, -1 absent, -2 a vector is not a direct one (decline).
       (let* ((pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
-             (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8)))
+             (next (ptr-read-u64 h 120)) (index (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 16) 0)))
         (if (/= (logand pairs 7) 6) -2
           (if (/= (logand hashes 7) 6) -2
             (if (/= (logand next 7) 6) -2
@@ -21280,7 +21318,7 @@ eval applyfn.")
     (defun nl_ht_fast_rem (h table key mode)
       ;; 0 key removed or absent, -2 a vector is not a direct one (decline).
       (let* ((pairs (ptr-read-u64 h 96)) (next (ptr-read-u64 h 120))
-             (index (ptr-read-u64 (- table 2) 8)))
+             (index (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 16) 0)))
         (if (/= (logand pairs 7) 6) -2
           (if (/= (logand next 7) 6) -2
             (if (/= (logand index 7) 6) -2
@@ -21297,10 +21335,10 @@ eval applyfn.")
     (defun nl_ht_remove_index (table bucket prev i)
       ;; Raw-offset unlink for the ordinary shape; any other shape takes the
       ;; accessor body (`nl_ht_remove_index_slow') unchanged.
-      (let* ((fm (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0) 0)))
+      (let* ((fm (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 8) 0)))
         (if (/= (logand fm 7) 6) (nl_ht_remove_index_slow table bucket prev i)
           (let* ((h (- fm 6)) (pairs (ptr-read-u64 h 96)) (hashes (ptr-read-u64 h 104))
-                 (next (ptr-read-u64 h 120)) (index (ptr-read-u64 (- table 2) 8))
+                 (next (ptr-read-u64 h 120)) (index (if (= (logand table 7) 6) (ptr-read-u64 (- table 6) 16) 0))
                  (cnt (ptr-read-u64 h 16)))
             (if (/= (logand pairs 7) 6) (nl_ht_remove_index_slow table bucket prev i)
               (if (/= (logand hashes 7) 6) (nl_ht_remove_index_slow table bucket prev i)
@@ -21345,7 +21383,7 @@ eval applyfn.")
     (defun nl_ht_rem (args out) (nl_abi_word_to_rc (nl_ht_rem_w args 0) out))
     (defun nl_ht_make_w (_pad)
       (let* ((meta (+ (nl_alloc_vector 15) 6)) (index (+ (nl_alloc_vector 1) 6))
-             (out (alloc-bytes 32 8)))
+             (obj (nl_alloc_vector 2)))
         (seq (nl_ht_marker_word_set meta 0 (nl_ht_marker_sym_w 0))
              (nl_ht_set_int meta 1 0) (nl_ht_marker_word_set meta 2 (nl_ht_eql_sym_w 0))
              (nl_ht_set_int meta 3 0) (nl_ht_set_int meta 5 0)
@@ -21355,7 +21393,11 @@ eval applyfn.")
              (nl_ht_marker_word_set meta 12 (+ (nl_alloc_vector 0) 6))
              (nl_ht_set_int meta 13 -1)
              (nl_ht_marker_word_set meta 14 (+ (nl_alloc_vector 0) 6))
-             (nl_ht_set_int index 0 -1) (nelisp_cons_construct meta index out) out)))
+             (nl_ht_set_int index 0 -1)
+             ;; Hash-table object: header kind 22, n = 1 (n+1 = 2 inline words).
+             (ptr-write-u64 obj 0 (+ 256 22))
+             (ptr-write-u64 obj 8 meta) (ptr-write-u64 obj 16 index)
+             (+ obj 6))))
     (defun nl_ht_make (out) (nl_abi_word_to_rc (nl_ht_make_w 0) out))
     (defun nl_ht_maphash_w (args _pad) 3)
 
@@ -22318,7 +22360,7 @@ eval applyfn.")
              (setq kind (wf_cb_kind env roots 16 2))
              (while (= go 1)
                (let* ((tw (heap-read-u64 roots 8))
-                      (m (if (= (logand tw 7) 2) (ptr-read-u64 (- tw 2) 0) 0))
+                      (m (if (= (logand tw 7) 6) (ptr-read-u64 (- tw 6) 8) 0))
                       (v12 (if (= (logand m 7) 6) (ptr-read-u64 (- m 6) 104) 0))
                       (v11 (if (= (logand m 7) 6) (ptr-read-u64 (- m 6) 96) 0)))
                  (seq
@@ -24839,12 +24881,10 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (or (= mode 1) (= mode 2))
           (seq
            (nl_ht_identity_sync table)
-           (let* ((meta (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 0)
-                          (nl_ht_meta_slot table)))
+           (let* ((meta (nl_ht_meta_slot table))
                   (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
                   (pairs (ptr-read-u64 mb 88))
-                  (index (if (= (logand table 7) 2) (ptr-read-u64 (- table 2) 8)
-                           (nl_ht_data_slot table)))
+                  (index (nl_ht_data_slot table))
                   (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
                   (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
                   (hb 0) (nb 0)
@@ -31628,7 +31668,7 @@ bytes are written into a fresh 8-byte buffer instead."
       (seq (mut-str-push-byte ms 40) (m5_prin1_list_tail ms vptr 1)))
     (defun m5_prin1_cons (ms vptr)
       (let* ((h (nl_cons_car_ptr vptr)))
-        (if (= (bf_marker_vec_is h 7089075026832613736 25964 10) 1)
+        (if (= 1 0)
             (m5_prin1_hashtable ms vptr)
           (if (= (heap-sexp-tag-word h) 4)
               (let* ((d1 (nl_cons_cdr_word vptr)))
@@ -31683,6 +31723,7 @@ bytes are written into a fresh 8-byte buffer instead."
          ((= tag 14) (m5_prin1_unibyte_string ms vptr))
          ((= tag 15) (m5_prin1_unibyte_string ms vptr))
          ((= tag 7) (m5_prin1_cons ms vptr))
+         ((= tag 22) (m5_prin1_hashtable ms vptr))
          ((= tag 8) (if (= (m5_prin1_vec_buffer_p vptr) 1)
                         (m5_prin1_buffer ms vptr)
                       (seq (mut-str-push-byte ms 91)
@@ -33095,7 +33136,7 @@ bytes are written into a fresh 8-byte buffer instead."
                (if (= (nl_fx_tbl_entry) 0) 0 (nl_fx_table_entry_word (nl_fx_tbl_entry) 0))))))
     (defun nl_fx_table_entry_word (entry _pad)
       (let* ((w (nl_record_slot_word entry 0)))
-        (if (= (logand w 1) 1) 0 (if (= (sexp-tag w) 7) w 0))))
+        (if (= (logand w 1) 1) 0 (if (= (bf_hash_table_p_raw w) 1) w 0))))
     ;; SYM and VAL are rooted slots.
     (defun nl_fx_table_refind (env sym val _pad)
       (let* ((buf (alloc-bytes 16 1)))
@@ -33115,8 +33156,7 @@ bytes are written into a fresh 8-byte buffer instead."
          ;; The bucket vector's own WORD, which the lookup reads through
          ;; WORD-aware accessors: `nl_ht_data_slot' materialised a fresh
          ;; view box of it on every VM call of a covered closure.
-         (let* ((data (nl_cons_cdr_word tbl))
-                (mode (nl_ht_test_mode tbl))
+         (let* ((mode (nl_ht_test_mode tbl))
                 (entry (nl_ht_find_in tbl body)))
            ;; 1: BODY is not in the table yet (`m5_fx_rec_or_first').
            (if (= entry 0) 1
@@ -36866,68 +36906,13 @@ bytes are written into a fresh 8-byte buffer instead."
                 0)))
         0))
     (defun bf_hash_table_p_raw (h)
-      ;; GNU CHECK_HASH_TABLE allocates nothing. Our cons-backed table needs
-      ;; its marker, but not bf_marker_vec_is's temporary name buffer.
-      ;; FAST reads the common shapes with raw loads: a direct cons (or a cons
-      ;; view) whose car is a direct vectorlike vector of at least two slots and
-      ;; whose slot 0 is the symbol "hash-table", as a legacy symbol view
-      ;; (what nl_ht_make_w writes) or an interned symbol object whose name is a
-      ;; legacy view or a GNU string with a non-negative byte count.  Any other
-      ;; shape, and any mismatch, is decided by the general body below, unchanged.
-      (let* ((fmeta (if (= (logand h 7) 2) (ptr-read-u64 (- h 2) 0)
-                      (if (= (logand h 7) 0)
-                          (if (= (ptr-read-u8 h 0) 7) (ptr-read-u64 (ptr-read-u64 h 8) 0) 0)
-                        0)))
-             (fname (if (= (logand fmeta 7) 6)
-                        (let* ((fhd (ptr-read-u64 (- fmeta 6) 0)))
-                          (if (= (logand fhd 63) 8)
-                              (if (>= (sar fhd 8) 2)
-                                  (let* ((fsy (ptr-read-u64 (- fmeta 6) 8)))
-                                    (if (= (logand fsy 7) 0)
-                                        (if (= (ptr-read-u8 fsy 0) 4)
-                                            (if (= (ptr-read-u64 fsy 24) 10) (ptr-read-u64 fsy 16) 0)
-                                          0)
-                                      (if (= (logand fsy 7) 6)
-                                          (if (= (logand (ptr-read-u64 (- fsy 6) 0) 63) 4)
-                                              (let* ((fnm (ptr-read-u64 (- fsy 6) 8)))
-                                                (if (= (logand fnm 7) 4)
-                                                    ;; nl_string_nbytes: a negative +8 means the byte count is in the header word
-                                                    (let* ((fnb (ptr-read-u64 (- fnm 4) 8)))
-                                                      (if (= (if (< fnb 0) (logand (ptr-read-u64 (- fnm 4) 0) 9223372036854775807) fnb) 10)
-                                                          (ptr-read-u64 (- fnm 4) 24)
-                                                        0))
-                                                  (if (= (logand fnm 7) 0)
-                                                      (if (= (ptr-read-u64 fnm 24) 10)
-                                                          (ptr-read-u64 fnm 16)
-                                                        0)
-                                                    0)))
-                                            0)
-                                        0)))
-                                0)
-                            0))
-                      0))
-             (fast (if (= fname 0) 0
-                     (if (= (ptr-read-u64 fname 0) 7089075026832613736)
-                         (if (= (ptr-read-u16 (+ fname 8) 0) 25964) 1 0)
-                       0))))
-        (if (= fast 1) 1
-      (if (= (heap-sexp-tag-word h) 7)
-          (let ((meta (nl_cons_car_word h)))
-            (if (and (= (logand meta 1) 0)
-                     (= (nl_val_tag meta) 8)
-                     (>= (vector-len meta) 2))
-                (let ((sy (nl_ht_marker_word meta 0)))
-                  ;; The marker symbol is a legacy view or (Doc 226 D9) a symbol
-                  ;; object's WORD: tag, length and data go through the accessors.
-                  (if (and (= (logand sy 1) 0)
-                           (= (sexp-tag sy) 4)
-                           (= (heap-sexp-length sy) 10))
-                      (let ((name (heap-sexp-data sy)))
-                        (if (and (= (ptr-read-u64 name 0) 7089075026832613736)
-                                 (= (ptr-read-u16 (+ name 8) 0) 25964)) 1 0))
-                    0))
-              0))
-        0))))
+      ;; A hash table is a kind-22 heap object (GNU PVEC_HASH_TABLE): no
+      ;; allocation, one header read.  A legacy view of one is not produced.
+      (if (= (logand h 7) 6)
+          (if (= (logand (ptr-read-u8 (- h 6) 0) 63) 22) 1 0)
+        (if (= (logand h 7) 0)
+            (if (< h 4096) 0 (if (= (ptr-read-u8 h 0) 22) 1 0))
+          0)))
     ;; `string<' accepts a string OR a symbol (nil and t included, they carry
     ;; their own tags).  A vector is neither, and comparing one read whatever
     ;; sat at offset 8 as if it were text: (string< t ["a"]) answered t, so an
@@ -42190,6 +42175,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
+      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index
       obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
       symbol-plist
       goto-char
@@ -42237,6 +42223,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
+      nelisp--hash-set-index nelisp--hash-make
       nelisp--region-u8-ref nelisp--region-i64-ref
       narrow-to-region nelisp--gb-column delete-region buffer-substring buffer-substring-no-properties nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert
       nelisp--pow unintern
@@ -48354,7 +48341,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
-    "nelisp--hash-table-make-raw" "nelisp--cell-value" "nelisp--assoc-raw"
+    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
     ;; bufnative: buffer read path
