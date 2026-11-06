@@ -1031,7 +1031,7 @@ nemacs-library-gate:
 	+$(MAKE) --no-print-directory -j4 -f $(firstword $(MAKEFILE_LIST)) nemacs-library-gate-checks
 
 .PHONY: nemacs-library-gate-checks
-nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-app-boundary nemacs-library-package-app-require-guard nemacs-library-package-metadata nemacs-library-package-install-smoke nemacs-library-package-archive nemacs-library-package-archive-checksum nemacs-library-package-archive-smoke nemacs-library-package-archive-index nemacs-library-package-index-smoke nemacs-library-package-publication-policy nemacs-library-package-release-key-policy nemacs-library-package-signature-policy nemacs-library-package-dependency-publication-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-package-lazy-metadata nemacs-library-package-vendor-lock nemacs-runtime-image-input-inventory nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke verify-production-runtime-path
+nemacs-library-gate-checks: nemacs-ownership-coverage nemacs-public-api-inventory nemacs-library-contract nemacs-library-package-manifest nemacs-library-package-deps nemacs-library-package-descriptors nemacs-library-package-guide nemacs-library-package-api nemacs-library-package-catalog nemacs-library-compat-api-policy nemacs-library-api-promotion-queue nemacs-library-package-layout nemacs-library-package-verify nemacs-library-package-release-key-policy nemacs-library-package-release-bundle-manifest nemacs-library-package-release-bundle-smoke nemacs-library-package-release-publication-policy nemacs-library-boundary-report nemacs-dirty-review-units nemacs-library-package-smoke nemacs-library-consumer-smoke
 	$(EMACS) -Q $(NEMACS_PACKAGE_SRC_LOAD_PATH) -l $(NELISP_ROOT)/packages/emacs-lib-facade/test/nelisp-emacs-test.el \
 		-f ert-run-tests-batch-and-exit
 	@awk -F '\t' 'NR > 1 && ($$1 == "unowned" || $$1 == "stale") { count++ } END { if (count != 0) { printf "nemacs-library-gate: ownership coverage failures=%d\n", count; exit 1 } }' "$(NEMACS_OWNERSHIP_COVERAGE)"
@@ -1196,8 +1196,21 @@ nemacs-library-package-layout:
 		-l scripts/nemacs-library-package-layout.el \
 		-f nemacs-library-package-layout-batch
 
+# Retired after the Doc 211 import (2026-11-06).  The two scaffold
+# generators built packages/nelisp-emacs-* from src/; packages/emacs-lib-*
+# are now the hand-maintained sources, so the generators stop with an error.
+# Retired with them, and still failing loudly through that guard:
+# - the publishing pipeline for the retired nelisp-emacs-* packages
+#   (metadata, archive, index, install, signature, release bundle,
+#   publication and vendor-lock policies, app boundary/require guard, and
+#   the package path/load/lazy/consumer/frontend/gui-bridge smokes);
+# - verify-production-runtime-path and nemacs-runtime-image-input-inventory,
+#   which tracked the src/ -> package migration that Doc 211 completed.
+# bake-image, bake-vendor-core-runtime-image, verify-nemacs-daily-driver,
+# gate-nemacs-complete and nemacs-library-gate-checks no longer depend on
+# any of them.  Packaging for emacs-lib-* needs a new design if it is wanted.
 nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-package-guide
-	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees" >&2; exit 1; fi
+	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees.  Every target that needs it (the nelisp-emacs-* package publishing pipeline, verify-production-runtime-path, nemacs-runtime-image-input-inventory) is retired with it; see the comment above nemacs-library-package-scaffold" >&2; exit 1; fi
 	mkdir -p "$(BUILD_DIR)"
 	@set -eu; scaffold_root="$(abspath $(BUILD_DIR)/doc211-scaffold-root)"; \
 	mkdir -p "$$scaffold_root/scripts"; \
@@ -1210,7 +1223,7 @@ nemacs-library-package-scaffold: nemacs-library-package-layout nemacs-library-pa
 		-f nemacs-library-package-scaffold-batch
 
 nemacs-library-app-scaffold:
-	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees" >&2; exit 1; fi
+	@if [ -d packages/emacs-lib-core ]; then echo "$@: obsolete after the Doc 211 import: packages/emacs-lib-* are the sources, and this generator would copy over them, delete tracked files and recreate the retired packages/nelisp-emacs-* trees.  Every target that needs it (the nelisp-emacs-* package publishing pipeline, verify-production-runtime-path, nemacs-runtime-image-input-inventory) is retired with it; see the comment above nemacs-library-package-scaffold" >&2; exit 1; fi
 	mkdir -p "$(BUILD_DIR)"
 	$(EMACS) -Q $(NELISP_LOAD_PATH) -L scripts \
 		--eval '(setq nemacs-library-app-scaffold-output "$(abspath $(NEMACS_LIBRARY_APP_SCAFFOLD))")' \
@@ -1770,7 +1783,7 @@ verify-production-runtime-path: build-nelisp-bootstrap nemacs-library-package-sc
 		-l scripts/verify-production-runtime-path.el \
 		-f verify-production-runtime-path-batch
 
-verify-nemacs-daily-driver: verify-production-runtime-path
+verify-nemacs-daily-driver:
 	scripts/verify-nemacs-tui.sh
 
 SOAK_ITER ?= 20
@@ -2063,7 +2076,7 @@ prepare-nelisp-bootstrap-cold-cache: compile-nelisp-bootstrap-artifact
 		--input "$(abspath $(NEMACS_BOOTSTRAP_ARTIFACT))" \
 		--output "$(abspath $(NEMACS_BOOTSTRAP_COLD_IMAGE))"
 
-bake-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
+bake-image:
 	$(EMACS) -Q $(NEMACS_LIBRARY_PACKAGE_APP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq image-baker-output-file "$(abspath $(NEMACS_IMAGE))")' \
 		-l image-baker \
@@ -2091,7 +2104,7 @@ $(NEMACS_INTERACTIVE_RUNTIME_IMAGE): $(NEMACS_BOOTSTRAP_BUNDLE) $(NEMACS_RUNTIME
 		'(progn (load "$(abspath $(NEMACS_RUNTIME_PROCESS_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_FRAME_TAB_PRELOAD))" nil (quote no-message) t t) (load "$(abspath $(NEMACS_RUNTIME_PRELOAD))" nil (quote no-message) t t) (nemacs-runtime-image-preload-interactive "$(abspath .)" "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))"))'
 	mv "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE).tmp" "$(NEMACS_INTERACTIVE_RUNTIME_IMAGE)"
 
-bake-vendor-core-runtime-image: nemacs-library-package-scaffold nemacs-library-app-scaffold
+bake-vendor-core-runtime-image:
 	test -r "$(NEMACS_RUNTIME_IMAGE)" || $(MAKE) --no-print-directory -f $(firstword $(MAKEFILE_LIST)) "$(NEMACS_RUNTIME_IMAGE)"
 	test -x "$(NELISP_BIN)"
 	mkdir -p "$(dir $(NEMACS_VENDOR_CORE_RUNTIME_IMAGE))"
