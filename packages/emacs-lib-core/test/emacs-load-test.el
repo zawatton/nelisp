@@ -3404,3 +3404,10 @@ cost-ratio policy."
         (should (funcall predicate 'value))
         (should-not (funcall predicate 'other)))
     (fmakunbound 'emacs-load-test--make-closure)))
+
+(ert-deftest emacs-load-test/macro-alias-walk-accepts-dotted-function-data ()
+  ;; GNU pp.el's `pp--quoting-syntaxes' is a backquote template holding
+  ;; (function . "#'"); the per-form loader walks it before evaluation.
+  (should-not (emacs-load--macro-alias-form-p
+               '(defvar zz (\` ((quote . "'") (function . "#'"))))))
+  (should-not (emacs-load--macro-alias-form-p '(function . "#'"))))

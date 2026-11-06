@@ -890,8 +890,11 @@ Quoted data and bare function references are not executable subforms."
          (not (eq (car form) 'quote))
          (or (and (symbolp (car form))
                   (emacs-load--symbolic-macro-alias-p (car form)))
+             ;; `car-safe'/`cdr-safe': backquote data such as GNU pp.el's
+             ;; (function . "#'") is walked too and is not a proper list.
              (and (not (and (eq (car form) 'function)
-                            (not (eq (car-safe (cadr form)) 'lambda))))
+                            (not (eq (car-safe (car-safe (cdr-safe form)))
+                                     'lambda))))
                   (let ((tail form) found)
                     (while (and (consp tail) (not found))
                       (setq found (emacs-load--macro-alias-form-p (car tail))
