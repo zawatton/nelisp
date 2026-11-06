@@ -2977,6 +2977,23 @@ pinning; a payload neighbor is never used to establish header ownership."
     (should (tree-member-p '(nl_hdr_set_mark hdr 4)
                            nelisp-standalone--gc-source))))
 
+(defun nelisp-standalone-target-test--intern-gensyms (form)
+  "Return FORM with every uninterned symbol replaced by an interned twin.
+Two host reads of the same `#:name' text yield distinct uninterned
+symbols that are never `equal'; the staged GNU Lisp in the prelude
+carries such macro-expansion gensyms.  Mapping each to the interned
+symbol \"#:name\" makes the comparison depend on the text only."
+  (cond
+   ((consp form)
+    (cons (nelisp-standalone-target-test--intern-gensyms (car form))
+          (nelisp-standalone-target-test--intern-gensyms (cdr form))))
+   ((vectorp form)
+    (apply #'vector (mapcar #'nelisp-standalone-target-test--intern-gensyms
+                            form)))
+   ((and form (symbolp form) (not (eq (intern-soft (symbol-name form)) form)))
+    (intern (concat "#:" (symbol-name form))))
+   (t form)))
+
 (defun nelisp-standalone-target-test--read-all-forms (text)
   "Read every top-level form out of TEXT via the host reader.
 Mirrors `nelisp-generated-source-parse--leftover': read forms front to
@@ -2989,7 +3006,7 @@ that TEXT is not well-formed, whichever comes first."
                   (string-match-p "\\`[ \t\n\f]*\\'" (substring text pos)))
               (setq done t)
             (let ((r (read-from-string text pos)))
-              (push (car r) out)
+              (push (nelisp-standalone-target-test--intern-gensyms (car r)) out)
               (setq pos (cdr r))))
         (error (setq done t))))
     (nreverse out)))

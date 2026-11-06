@@ -599,7 +599,7 @@ inside BASE's mapped page."
   (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-doc200-unibyte-repr-test--probe-source) path)
           (should (file-executable-p path))
           (let ((rc (call-process path nil nil nil)))
@@ -649,7 +649,7 @@ inside BASE's mapped page."
   (let ((path (make-temp-file "nelisp-doc200-aset-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-doc200-unibyte-repr-test--mutation-probe-source) path)
           (should (file-executable-p path))
           (should (= (call-process path nil nil nil) 0)))

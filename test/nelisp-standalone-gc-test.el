@@ -21,6 +21,7 @@
 (require 'cl-lib)
 (require 'nelisp-aot-compiler)
 (require 'nelisp-standalone-build)
+(require 'nelisp-aot-test-runtime)
 
 (defconst nelisp-standalone-gc-test--page #x32000000
   "Fixed scratch page used only by the freestanding GC probe.
@@ -57,7 +58,7 @@ standalone reader's arena.")
          ;; mmap(BASE, 4096, PROT_READ|PROT_WRITE, MAP_FIXED|PRIVATE|ANON,
          ;;      -1, 0)
          (syscall-direct 9 ,nelisp-standalone-gc-test--page 4096 3 50 -1 0)
-         ;; A normal 40-byte block header must still be marked.
+         ;; A normal 40-byte block header must still be marked (newly marked answers 2).
          (ptr-write-u64 ,nelisp-standalone-gc-test--page 0 40)
          (let ((live (nl_gc_mark_block
                       (+ ,nelisp-standalone-gc-test--page 8)))
@@ -71,7 +72,7 @@ standalone reader's arena.")
                             (+ ,nelisp-standalone-gc-test--page 48)))
                  (guard (ptr-read-u64
                          (+ ,nelisp-standalone-gc-test--page 40) 0)))
-             (if (and (= live 1)
+             (if (and (= live 2)
                       (= marked 41)
                       (= interior 0)
                       (= guard ,guard-word))
@@ -279,7 +280,7 @@ same native probe returns a nonzero status there."
   (let ((path (make-temp-file "nelisp-standalone-gc-freelist-probe-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--freelist-clear-source mode) path)
           (should (file-executable-p path))
           (call-process path nil nil nil))
@@ -592,7 +593,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-standalone-large-mask-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp (nelisp-standalone-gc-test--large-mask-source) path)
+          (nelisp-aot-test-runtime-compile-sexp (nelisp-standalone-gc-test--large-mask-source) path)
           (should (= (call-process path nil nil nil) 0)))
       (when (file-exists-p path) (delete-file path)))))
 
@@ -604,7 +605,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-standalone-large-clear-red-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (cons 'seq
                  (mapcar (lambda (form)
                            (if (memq (cadr form) '(nl_boundary_clear_large_fl
@@ -623,7 +624,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-standalone-gc-small-mask-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--mask-source) path)
           (should (file-executable-p path))
           (should (= (call-process path nil nil nil) 0)))
@@ -681,7 +682,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-standalone-gc-small-mask-red-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--strip-mask-reset
             (nelisp-standalone-gc-test--freelist-clear-source 0)) path)
           (should (file-executable-p path))
@@ -697,7 +698,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-standalone-gc-probe-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--source) path)
           (should (file-executable-p path))
           (should (= (call-process path nil nil nil) 0)))
@@ -776,12 +777,12 @@ can use a scratch page while still observing the real mask transitions."
               (= (nl_gc_mark_block ,base) 0)
               (= (nl_gc_mark_block ,(+ base 9)) 0)
               (= (nl_gc_mark_block ,(+ base 96)) 0)
-              (= (nl_gc_mark_block ,(+ base 8)) 1)
+              (= (nl_gc_mark_block ,(+ base 8)) 2)
               (= (ptr-read-u64 ,base 0) 41)
               (= (nl_gc_mark_block ,(+ base 8)) 0)
               (= (nl_gc_object_start_p ,(+ base 48)) 1)
               (= (ptr-read-u64 ,base 40) 56)
-              (= (nl_gc_mark_block ,(+ base 48)) 1)
+              (= (nl_gc_mark_block ,(+ base 48)) 2)
               (= (ptr-read-u64 ,base 40) 57)) 1 0))
        (defun gc_probe_run ()
          (seq
@@ -849,7 +850,7 @@ can use a scratch page while still observing the real mask transitions."
   (let ((path (make-temp-file "nelisp-gc-exact-start-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--exact-source) path)
           (should (= (call-process path nil nil nil) 0)))
       (delete-file path))))
@@ -1137,7 +1138,7 @@ the heap and all mark decisions remain native production code."
           ;; already received every possible precise traversal.
           (if (and (= (nl_hdr_mark (+ ,base 256)) 4)
                    (= (nl_hdr_mark (+ ,base 296)) 1)
-                   (= (nl_gc_mark_block (+ ,base 264)) 1)) 0 54)))
+                   (= (nl_gc_mark_block (+ ,base 264)) 2)) 0 54)))
       (defun probe-large-interior ()
         (probe-seed)
         (syscall-direct 9 #x37000000 16781312 3 50 -1 0)
@@ -1190,7 +1191,7 @@ the heap and all mark decisions remain native production code."
   (let ((path (make-temp-file "nelisp-gc-conserv-pin-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--conserv-pin-source) path)
           (should (= (call-process path nil nil nil) 0)))
       (when (file-exists-p path) (delete-file path)))))
@@ -1228,7 +1229,7 @@ the heap and all mark decisions remain native production code."
                    (cdr source))))
       (unwind-protect
           (progn
-            (nelisp-aot-compile-sexp source path)
+            (nelisp-aot-test-runtime-compile-sexp source path)
             (should (= (call-process path nil nil nil) (cdr case))))
         (delete-file path)))))
 
@@ -1296,7 +1297,7 @@ the heap and all mark decisions remain native production code."
     (let ((path (make-temp-file "nelisp-gc-membership-")))
       (unwind-protect
           (progn
-            (nelisp-aot-compile-sexp
+            (nelisp-aot-test-runtime-compile-sexp
              (nelisp-standalone-gc-test--membership-source broken) path)
             (if broken (should-not (= (call-process path nil nil nil) 0))
               (should (= (call-process path nil nil nil) 0))))
@@ -1380,7 +1381,7 @@ the heap and all mark decisions remain native production code."
   (let ((path (make-temp-file "nelisp-gc-predecessor-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--predecessor-source) path)
           (with-temp-buffer
             (set-buffer-multibyte nil)
@@ -1485,7 +1486,7 @@ the heap and all mark decisions remain native production code."
   (let ((path (make-temp-file "nelisp-gc-envelope-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--envelope-source) path)
           (with-temp-buffer
             (set-buffer-multibyte nil)
@@ -1737,7 +1738,7 @@ stub count matches the Elisp oracle."
   (let ((path (make-temp-file "nelisp-standalone-gc-sweep-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--sweep-source
             (nelisp-standalone-gc-test--sweep-blocks) mode)
            path)
@@ -1764,7 +1765,7 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
   (let ((path (make-temp-file "nelisp-standalone-gc-sweep-red-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (cl-subst '(ptr-write-u64 run 0 (+ bt 2))
                      '(ptr-write-u64 run 0 (+ runbt 2))
                      (nelisp-standalone-gc-test--sweep-source
@@ -1871,7 +1872,7 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
   (let ((path (make-temp-file "nelisp-zero-payload-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp (nelisp-standalone-gc-test--zero-source broken) path)
+          (nelisp-aot-test-runtime-compile-sexp (nelisp-standalone-gc-test--zero-source broken) path)
           (call-process path nil nil nil))
       (when (file-exists-p path) (delete-file path)))))
 
@@ -1934,7 +1935,7 @@ checked-allocator paths, the mark-only debug mode and a malformed header."
   (let ((path (make-temp-file "nelisp-hole-bits-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp
+          (nelisp-aot-test-runtime-compile-sexp
            (nelisp-standalone-gc-test--hole-bits-source short-range) path)
           (call-process path nil nil nil))
       (when (file-exists-p path) (delete-file path)))))
@@ -2111,7 +2112,7 @@ function applied to the production forms (for red checks)."
   (let ((path (make-temp-file "nelisp-standalone-gc-run-")))
     (unwind-protect
         (progn
-          (nelisp-aot-compile-sexp (nelisp-standalone-gc-test--run-source mutate) path)
+          (nelisp-aot-test-runtime-compile-sexp (nelisp-standalone-gc-test--run-source mutate) path)
           (call-process path nil nil nil))
       (when (file-exists-p path) (delete-file path)))))
 

@@ -1729,7 +1729,8 @@ instruction byte is included in the digest rather than silently truncated."
     "nl_gc_stats" "nl_mxcache_disable_lookup" "nl_mxcache_epoch"
     "nl_mxcache_table_base" "nl_thread_parallel_ctx"
     "nl_gc_conserv_state" "nl_runtime_reload_state"
-    "nl_freelist_large_mask" "nl_symbol_name_t" "nl_symbol_name_nil" "nl_symbol_name_state" "nl_fx_tbl_cache" "nl_boot_hole_map" "nl_native_subr_state" "nl_gc_typed_state" "nl_cold_chunk0_domain")
+    "nl_freelist_large_mask" "nl_symbol_name_t" "nl_symbol_name_nil" "nl_symbol_name_state" "nl_fx_tbl_cache" "nl_boot_hole_map" "nl_native_subr_state" "nl_gc_typed_state" "nl_cold_chunk0_domain"
+    "nl_float_state" "nl_typed_alloc" "nl_vm_poll_force" "nl_symcells_root" "nl_gc_regs_calls" "nl_gc_weak_head" "nl_stackmap_state" "nl_gc_regs_trace" "nl_gc_conserv_seen" "nl_strings_state" "nl_gc_until" "nl_gc_until_base" "nl_oor_diag" "nl_empty_vector" "nl_thread_registry" "nl_function_epoch")
   "Known shared writable exports used by a full GC/arena unit.
 
 The final import list still comes from the compiled unit.  This list only
