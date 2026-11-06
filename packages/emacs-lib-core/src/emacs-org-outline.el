@@ -1465,22 +1465,6 @@ backward.  Folded-away headings are skipped."
       (user-error "No next visible heading")))
   (point))
 
-;;;###autoload
-(defun outline-next-visible-heading (&optional arg)
-  "Move to the next visible heading.
-In Org buffers this delegates to `org-next-visible-heading'.  In plain
-outline buffers it uses `outline-regexp' and treats all headings as visible."
-  (interactive "p")
-  (if (derived-mode-p 'org-mode)
-      (org-next-visible-heading arg)
-    (let ((count (or arg 1))
-          (ok t))
-      (while (and ok (> count 0))
-        (setq ok (emacs-outline--next-heading))
-        (setq count (1- count)))
-      (unless ok
-        (user-error "No next visible heading"))
-      (point))))
 
 ;;;###autoload
 (defun org-previous-visible-heading (&optional arg)
@@ -1518,23 +1502,6 @@ moves forward."
       (user-error "No same-level heading")))
   (point))
 
-;;;###autoload
-(defun outline-up-heading (&optional arg _invisible-ok)
-  "Move to the visible parent heading.
-With numeric ARG, move up ARG parent headings.  `_INVISIBLE-OK' is accepted
-for compatibility and currently ignored because folded headings stay
-hidden in this subset."
-  (interactive "p")
-  (let ((remaining (or arg 1)))
-    (when (< remaining 0)
-      (user-error "Negative parent heading movement is not supported"))
-    (while (> remaining 0)
-      (unless (if (derived-mode-p 'org-mode)
-                  (org-outline--goto-parent-heading)
-                (emacs-outline--goto-parent-heading))
-        (user-error "No parent heading"))
-      (setq remaining (1- remaining))))
-  (point))
 
 ;;;###autoload
 (defun org-entry-get (pom property &optional _inherit literal-nil)
@@ -2896,48 +2863,19 @@ CONTENTS, matching the non-mutating fallback shape."
 (unless (featurep 'ob-eval)
   (provide 'ob-eval))
 
+;; GNU outline.el is vendored (vendor/emacs-lisp/outline.el); the
+;; outline-* navigation stubs that used to live here are gone.
+(require 'outline)
+
 ;;;; --- void-function polyfills surfaced by the org runtime probes ------
 ;; These were void on the standalone image; real org navigation/parse
 ;; callers reach for them.  Built on the existing `org-outline--' helpers.
 
-(unless (fboundp 'outline-next-heading)
-  (defun outline-next-heading ()
-    "Move to the next heading line; return point, or nil if none."
-    (emacs-outline--next-heading)))
 
-(unless (fboundp 'outline-previous-heading)
-  (defun outline-previous-heading ()
-    "Move to the previous heading line; return point, or nil if none."
-    (emacs-outline--previous-heading)))
 
-(unless (fboundp 'outline-on-heading-p)
-  (defun outline-on-heading-p (&optional _invisible-ok)
-    "Return non-nil when point is on a generic outline heading line."
-    (emacs-outline--heading-at-point-p)))
 
-(unless (fboundp 'outline-level)
-  (defun outline-level ()
-    "Return the current generic outline heading level."
-    (or (emacs-outline--heading-level-at-point)
-        (user-error "Not on an outline heading"))))
 
-(unless (fboundp 'outline-back-to-heading)
-  (defun outline-back-to-heading (&optional _invisible-ok)
-    "Move to current or preceding generic outline heading."
-    (or (emacs-outline--back-to-heading)
-        (user-error "Before first outline heading"))))
 
-(unless (fboundp 'outline-end-of-subtree)
-  (defun outline-end-of-subtree ()
-    "Move to the end of the generic outline subtree at point."
-    (outline-back-to-heading)
-    (let* ((level (funcall outline-level))
-           (end (save-excursion
-                  (or (and (emacs-outline--find-next-heading-at-or-above level)
-                           (line-beginning-position))
-                      (point-max)))))
-      (goto-char end)
-      (point))))
 
 (unless (fboundp 'org-get-todo-state)
   (defun org-get-todo-state ()

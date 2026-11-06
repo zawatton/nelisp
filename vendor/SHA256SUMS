@@ -825,3 +825,4 @@ cb49cd0e2b52ecefaa8b15cb4d0dd70a3b0dc858a92314d0782fa44320929969  vendor/emacs-l
 6ead13b4f329273d12d86b761defa66629ea284cb175315a5a248b920b4388a6  vendor/emacs-lisp/emacs-lisp/lisp-mode.el
 a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96  vendor/staged-emacs-lisp/subr.el
 013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5  vendor/emacs-lisp/help-fns.el
+9832fa2107419949dc8b5cd3b16cb5855e16d2293f72c70d88e06778c344ff1b  vendor/emacs-lisp/outline.el

@@ -957,7 +957,7 @@
     (org-backward-heading-same-level)
     (should (looking-at "\\*\\* Child A"))
     (goto-char (emacs-org-outline-test--line-start "body"))
-    (outline-up-heading)
+    (outline-up-heading 1)
     (should (looking-at "\\* Parent"))))
 
 (ert-deftest org-heading-navigation-restores-point-on-failure ()

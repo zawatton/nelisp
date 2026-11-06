@@ -818,3 +818,4 @@ emacs-lisp/abbrev.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/abbrev.el.g
 emacs-lisp/emacs-lisp/lisp-mode.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/lisp-mode.el.gz	sha256=6ead13b4f329273d12d86b761defa66629ea284cb175315a5a248b920b4388a6
 staged-emacs-lisp/subr.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/subr.el.gz	sha256=a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96
 emacs-lisp/help-fns.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/help-fns.el.gz	sha256=013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5
+emacs-lisp/outline.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/outline.el	sha256=9832fa2107419949dc8b5cd3b16cb5855e16d2293f72c70d88e06778c344ff1b

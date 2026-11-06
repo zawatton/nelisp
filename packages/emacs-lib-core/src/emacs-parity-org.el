@@ -204,30 +204,8 @@ The function takes care of setting `:parent' property for NEW."
 
 ;;;; ================= outline.el ========================================
 
-(unless (fboundp 'outline-up-heading)
-  (defun outline-up-heading (arg &optional invisible-ok)
-    "Move to the visible heading line of which the present line is a subheading.
-With argument, move up ARG levels.
-If INVISIBLE-OK is non-nil, also consider invisible lines."
-    (interactive "p")
-    (and (eq this-command 'outline-up-heading)
-         (or (eq last-command 'outline-up-heading) (push-mark)))
-    (outline-back-to-heading invisible-ok)
-    (let ((start-level (funcall outline-level)))
-      (when (<= start-level 1)
-        (error "Already at top level of the outline"))
-      (while (and (> start-level 1) (> arg 0) (not (bobp)))
-        (let ((level start-level))
-	  (while (not (or (< level start-level) (bobp)))
-	    (if invisible-ok
-	        (outline-previous-heading)
-	      (outline-previous-visible-heading 1))
-	    (setq level (funcall outline-level)))
-	  (setq start-level level))
-        (setq arg (- arg 1))))
-    (if (and (boundp 'outline-search-function) outline-search-function)
-        (funcall outline-search-function nil nil nil t)
-      (looking-at outline-regexp))))
+;; outline-up-heading comes from the vendored GNU outline.el.
+
 
 ;;;; ================= org-fold visibility save/restore ==================
 ;; `org-fold-save-outline-visibility' is, in stock Org, a defalias to the
