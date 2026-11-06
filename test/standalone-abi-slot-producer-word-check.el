@@ -68,7 +68,7 @@
     (setq checked (1+ checked)))
   (when (boundp 'nelisp--fx-table)
     (dolist (fn '(abi-slot-gc-value abi-slot-arguments abi-slot-callout))
-      (unless (vectorp (gethash (nthcdr 3 (symbol-function fn)) nelisp--fx-table))
+      (unless (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function fn))) nelisp--fx-table))
         (error "slot producer fixture was not compiled: %S" fn))))
   (princ (format "ABI-SLOT-PRODUCER checked=%d PASS\n" checked)))
 nil

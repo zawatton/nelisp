@@ -64,7 +64,7 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
                (file-directory-p root))
     (error "Rooted active unit input bound"))
   (let* ((relative (file-relative-name (file-truename builder) (file-truename root)))
-         (builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 4194304))
+         (builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 8388608))
          (names (make-hash-table :test #'equal))
          (symbols (make-hash-table :test #'equal))
          (total 0) (encoded-total 0) records metadata generated-data)
@@ -156,7 +156,7 @@ evidence before compiling the driver. Unknown or ambiguous inputs are refused."
             (setq generated-data (append generated-data
                                    (list :target "windows-x86_64" :initial-chunk-bytes 67108864)))))))
     (unless generated-data (error "Missing generated arena owner"))
-    (unless (equal builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 4194304))
+    (unless (equal builder-hash (nelisp-native-rooted-build-evidence-source-hash builder 8388608))
       (error "Builder source changed during rooted generation"))
     (let ((manifest (expand-file-name "active-build.json" directory))
           (meta (expand-file-name "active-unit-metadata.json" directory))

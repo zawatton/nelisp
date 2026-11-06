@@ -12,7 +12,7 @@
       (setq checked (1+ checked))))
   (when (boundp 'nelisp--fx-table)
     (dolist (fn '(abi-fx-result-gc abi-fx-result-caller))
-      (unless (vectorp (gethash (nthcdr 3 (symbol-function fn)) nelisp--fx-table))
+      (unless (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function fn))) nelisp--fx-table))
         (error "VM result fixture was not compiled: %S" fn))))
   (princ (format "ABI-FX-RESULT checked=%d PASS\n" checked)))
 nil

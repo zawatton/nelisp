@@ -31,7 +31,7 @@
 (defun fx-fwd-check-d (x) (* x 3))
 (defun fx-fwd-check-vm-p (name)
   (if (boundp 'nelisp--fx-table)
-      (vectorp (gethash (nthcdr 3 (symbol-function name)) nelisp--fx-table))
+      (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function name))) nelisp--fx-table))
     t))
 
 (let* ((fails 0)

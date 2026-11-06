@@ -162,7 +162,7 @@ cost ~0.2 s per proof over the unit files)."
           (error "Builder source owner escapes root"))
         (unless (equal (nelisp-native-rooted-prelink-closure--sha
                         (nelisp-native-rooted-prelink-closure--bounded-read
-                         builder (* 4 1024 1024)))
+                         builder (* 8 1024 1024)))
                        (funcall ref document "builder-sha256"))
           (error "Missing or changed builder source"))))
     (let* ((metadata-bytes (nelisp-native-rooted-prelink-closure--bounded-read

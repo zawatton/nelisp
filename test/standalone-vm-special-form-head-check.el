@@ -36,13 +36,13 @@
           (dotimes (i 6) (vsh-check (list head 'function i) caller 42))
           ;; A fresh body forces compilation after installing a macro cell.
           (fset head '(macro lambda (&rest _args) '(quote wrong)))
-          (let ((body (copy-tree (symbol-function caller))))
+          (let ((body (nelisp--closure-make (copy-tree (nelisp--closure-cons (symbol-function caller))))))
             (defalias caller body))
           (dotimes (i 6) (vsh-check (list head 'macro i) caller 42))
           (when (memq head '(when unless prog2))
             (vsh-check (list head 'compiled)
                        (lambda ()
-                         (vectorp (gethash (nthcdr 3 (symbol-function caller)) nelisp--fx-table)))
+                         (vectorp (gethash (nthcdr 3 (nelisp--closure-cons (symbol-function caller))) nelisp--fx-table)))
                        t)))
       (fset head saved))))
 

@@ -4423,6 +4423,15 @@ trailing newline) that `message' would otherwise do.")
   (defun nelisp--hash-make (meta index) (cons meta index)))
 (unless (fboundp 'hash-table-p)
   (defun hash-table-p (x) (nelisp--hash-table-p x)))
+;; Interpreted closures are kind-23 heap objects in the standalone runtime and
+;; the builtins `nelisp--closure-p' / `-cons' / `-make' convert between the
+;; object and the internal (closure ENV ARGS . BODY) list.  An older image (the
+;; pinned producer image that loads this file) still represents a closure as
+;; that list, so define the same names over it when the builtins are absent.
+(unless (fboundp 'nelisp--closure-p)
+  (defun nelisp--closure-p (x) (eq (car-safe x) 'closure))
+  (defun nelisp--closure-cons (x) (and (eq (car-safe x) 'closure) x))
+  (defun nelisp--closure-make (x) x))
 (defun nelisp--maphash-reference (fn table)
   (nelisp--hash-capacity table)
   ;; GNU Fmaphash reads slots in increasing index order, including reuse.
@@ -9156,7 +9165,7 @@ See that variable's own docstring."
   ;; closures and byte-code functions (verified on host:
   ;; `(closurep (byte-compile (lambda (x) x)))' => t).
   (defun closurep (object)
-    (if (or (eq (car-safe object) 'closure)
+    (if (or (nelisp--closure-p object)
             (and (fboundp 'byte-code-function-p)
                  (byte-code-function-p object)))
         t
@@ -9247,7 +9256,7 @@ replacing the elements in the beginning of the constant-vector."
 ;; Full cl-generic dispatch needs the reader to gain compiled functions
 ;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
-  (defun interpreted-function-p (object) (eq (car-safe object) 'closure)))
+  (defun interpreted-function-p (object) (nelisp--closure-p object)))
 ;; GNU eval.c `Ffunction' consumes a lambda's leading `(:documentation FORM)'
 ;; when the closure is created (it becomes slot 4: the OClosure type).  This
 ;; runtime keeps the form in the body, where the native slot view reads it,
@@ -9287,7 +9296,7 @@ replacing the elements in the beginning of the constant-vector."
                        (and iform (list iform)) body)))
     (if env
         (eval (list 'function (cons 'lambda (cons args forms))) env)
-      (cons 'closure (cons nil (cons args forms)))))))
+      (nelisp--closure-make (cons 'closure (cons nil (cons args forms))))))))
 ;; GNU Emacs 31.1 data.c `Finteractive_form', translated: the
 ;; `interactive-form' property along a symbol chain first, then the
 ;; function object itself.  An interpreted closure's slot 5 (see
@@ -20463,8 +20472,7 @@ claimed to match, only the shape."
 (defvar nelisp--prn-slot-table nil)
 (defvar nelisp--prn-env-table nil)
 (defun nelisp--prn-interpreted-p (obj)
-  (and (consp obj) (eq (car obj) 'closure)
-       (consp (cdr obj)) (consp (cddr obj))))
+  (nelisp--closure-p obj))
 (defun nelisp--prn-function-slots (obj)
   "Snapshot exactly the slots printed, retaining captured binding identity.
 The runtime's `aref' projects lexical cells into fresh pairs.  Reuse one
@@ -20475,7 +20483,7 @@ projection per cell and one slot vector per function for this print call."
           (aset slots i (aref obj i))
           (setq i (1+ i)))
         (when (and nelisp--prn-env-table (nelisp--prn-interpreted-p obj))
-          (let ((env (aref slots 2)) (raw (nth 1 obj)))
+          (let ((env (aref slots 2)) (raw (nth 1 (nelisp--closure-cons obj))))
             (while (consp env)
               (let ((pair (car env)) (binding nil) (tail raw))
                 ;; Native capture order is outer-first; the last binding wins.
@@ -20497,7 +20505,7 @@ projection per cell and one slot vector per function for this print call."
         (when nelisp--prn-slot-table (puthash obj slots nelisp--prn-slot-table))
         slots)))
 (defun nelisp--prn-graph-p (obj)
-  (and (or (consp obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
+  (and (or (consp obj) (nelisp--closure-p obj) (and (vectorp obj) (> (length obj) 0)) (recordp obj)
            (byte-code-function-p obj) (and (stringp obj) (> (length obj) 0)))
        ;; Match the opaque branches of the print pass, including its buffer
        ;; adapter. Their hidden implementation graphs must never be walked.
@@ -20650,8 +20658,7 @@ without the `charset' property, `plain' to print the string without intervals."
    ((nelisp--prn-hash-table-p obj) (nelisp--prn-hash-table obj escape cache))
    ((and (consp obj) (eq (car obj) 'builtin) (consp (cdr obj)))
     (concat "#<subr " (symbol-name (car (cdr obj))) ">"))
-   ((and (consp obj) (eq (car obj) 'closure)
-         (consp (cdr obj)) (consp (cdr (cdr obj))))
+   ((nelisp--closure-p obj)
     ;; GNU Emacs 31.1 prints an interpreted-function object as its slots,
     ;; #[ARGS BODY ENV] or #[ARGS BODY ENV nil DOC [IFORM]]; `length'/`aref'
     ;; recover exactly that slot view (docstring and interactive form split
@@ -26719,7 +26726,7 @@ argument end extends over right padding (textprop.c:2123)."
 (unless (fboundp 'nelisp--native-functionp) (fset 'nelisp--native-functionp (symbol-function 'functionp)))
 (defun functionp (x)
   "Return t if X is callable (lambda / closure / builtin cons, or native)."
-  (if (and (consp x) (memq (car x) '(lambda closure builtin)))
+  (if (or (nelisp--closure-p x) (and (consp x) (memq (car x) '(lambda closure builtin))))
       t
     (if (or (and (fboundp 'byte-code-function-p)
                  (byte-code-function-p x))
@@ -26770,7 +26777,7 @@ nil), so there is nothing else to update for that name."
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.
-     ((and (consp x) (eq (car x) 'closure)) 'interpreted-function)
+     ((nelisp--closure-p x) 'interpreted-function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
      ((and (fboundp 'subrp) (subrp x)) 'subr)
      ((consp x) 'cons)
@@ -26949,6 +26956,8 @@ unlisted OS-specific entry point."
           (func-arity inner)))
        ((and (consp fn) (eq (car fn) 'builtin))
         (nelisp--func-arity-builtin (car (cdr fn))))
+       ((nelisp--closure-p fn)
+        (nelisp--func-arity-formals (car (cdr (cdr (nelisp--closure-cons fn))))))
        ((and (consp fn) (eq (car fn) 'closure))
         (nelisp--func-arity-formals (car (cdr (cdr fn)))))
        ((and (consp fn) (eq (car fn) 'lambda))
@@ -26997,6 +27006,8 @@ strings and vectors are not accepted."
       (cond
        ((null fun) nil)
        ((or (stringp fun) (vectorp fun)) (and (not for-call-interactively) t))
+       ((nelisp--closure-p fun)
+        (and (assq 'interactive (cdr (cdr (cdr (nelisp--closure-cons fun))))) t))
        ((not (consp fun)) nil)
        ((eq (car fun) 'lambda) (and (assq 'interactive (cdr (cdr fun))) t))
        ((eq (car fun) 'closure) (and (assq 'interactive (cdr (cdr (cdr fun)))) t))
@@ -30806,7 +30817,7 @@ Never signals: a failure leaves NAME to the interpreter."
     (error nil))
   (condition-case nil
       (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run) (fboundp name))
-        (let ((fn (symbol-function name)))
+        (let ((fn (nelisp--closure-cons (symbol-function name))))
           (when (and (consp fn) (eq (car fn) 'closure) (nelisp--fx-env-ok-p (nth 1 fn)))
             (let ((body (nthcdr 3 fn)))
               (unless (gethash body nelisp--fx-table)
@@ -30864,7 +30875,7 @@ compiled behind their definition's back.")
 
 (defun nelisp--fx-note-named (fn)
   "Record FN's body (a closure, or a macro whose cdr is one) as named."
-  (let ((f (if (eq (car-safe fn) 'macro) (cdr fn) fn)))
+  (let ((f (nelisp--closure-cons (if (eq (car-safe fn) 'macro) (cdr fn) fn))))
     (when (eq (car-safe f) 'closure)
       (puthash (nthcdr 3 f) t nelisp--fx-named))))
 
@@ -30919,8 +30930,8 @@ and `nelisp--fx-register-fn' repeats the check."
               (nelisp--fx-register-fn
                nil (cons 'closure (cons captured (cons formals body)))))))
         (when (and name (fboundp name)
-                   (eq (car-safe (symbol-function name)) 'closure)
-                   (eq (nthcdr 3 (symbol-function name)) body))
+                   (eq (car-safe (nelisp--closure-cons (symbol-function name))) 'closure)
+                   (eq (nthcdr 3 (nelisp--closure-cons (symbol-function name))) body))
           (let ((trace (nelisp--fx-trace-file)) (t0 (float-time)))
             (nelisp--fx-register name)
             (nelisp--fx-retry-errored)
@@ -30954,7 +30965,7 @@ compiled again after the next compilation that succeeds.")
     (let ((queue nelisp--fx-errored))
       (setq nelisp--fx-errored nil)
       (dolist (e queue)
-        (let ((fn (and (fboundp (car e)) (symbol-function (car e)))))
+        (let ((fn (and (fboundp (car e)) (nelisp--closure-cons (symbol-function (car e))))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -30978,7 +30989,7 @@ Defining it as a function compiles them again.")
       ;; A macro too: compiling now expands it, as GNU's `load' expands
       ;; macros eagerly when it reads a definition.
       (dolist (w waiters)
-        (let ((fn (and (fboundp w) (symbol-function w))))
+        (let ((fn (and (fboundp w) (nelisp--closure-cons (symbol-function w)))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
             (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -30994,6 +31005,8 @@ NAME is the function it is defined as, or nil for an anonymous lambda; only
 a named function takes part in the retry queues.  FORCE replaces an
 existing `none' record in place (never removing it first: a call made
 meanwhile would otherwise record `none' again behind the compilation)."
+  (when (and (nelisp--closure-p fn) (not (consp fn)))
+    (setq fn (nelisp--closure-cons fn)))
   (when (and (nelisp--fx-active-p) (fboundp 'nelisp--fx-run))
     (progn
       (when (and (consp fn) (eq (car fn) 'closure)
@@ -31179,7 +31192,7 @@ boot starts with the prelude already on the VM."
     ;; A first call early in the boot may have found the VM unable to take a
     ;; body only because `macroexpand-all' was not loaded yet: try again.
     (dolist (n names)
-      (let ((fn (and (fboundp n) (symbol-function n))))
+      (let ((fn (and (fboundp n) (nelisp--closure-cons (symbol-function n)))))
         (when (and (eq (car-safe fn) 'closure)
                    (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
           (remhash (nthcdr 3 fn) nelisp--fx-table)
@@ -31191,7 +31204,7 @@ boot starts with the prelude already on the VM."
     ;; applied while it was absent from the table, and so recorded `none'
     ;; behind its own registration.  Replace those records in place.
     (dolist (n names)
-      (let ((fn (and (fboundp n) (symbol-function n))))
+      (let ((fn (and (fboundp n) (nelisp--closure-cons (symbol-function n)))))
         (when (and (eq (car-safe fn) 'closure)
                    (eq (gethash (nthcdr 3 fn) nelisp--fx-table) 'none))
           (condition-case nil (nelisp--fx-register-fn n fn t) (error nil)))))
@@ -31464,7 +31477,7 @@ are skipped.")
     (if (equal (getenv "NELISP_FX_DUMP") "all")
         (nelisp--fx-register-prelude)
       (dolist (n (nelisp--fx-profile-names))
-        (let ((fn (and (symbolp n) (fboundp n) (symbol-function n))))
+        (let ((fn (and (symbolp n) (fboundp n) (nelisp--closure-cons (symbol-function n)))))
           (when (and (eq (car-safe fn) 'closure)
                      (null (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (remhash (nthcdr 3 fn) nelisp--fx-pending)
@@ -31508,7 +31521,7 @@ are skipped.")
       (remhash name nelisp--fx-callees)
       ;; Compiled again, the macro expands, as `load' would have done.
       (dolist (w callers)
-        (let ((fn (and (fboundp w) (symbol-function w))))
+        (let ((fn (and (fboundp w) (nelisp--closure-cons (symbol-function w)))))
           (when (and (consp fn) (eq (car fn) 'closure)
                      (vectorp (gethash (nthcdr 3 fn) nelisp--fx-table)))
             (nelisp--fx-retire (nthcdr 3 fn))

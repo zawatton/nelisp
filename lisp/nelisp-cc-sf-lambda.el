@@ -12,6 +12,21 @@
 
 (defconst nelisp-cc-sf-lambda--source
   '(seq
+    ;; Closure objects (heap kind 23): one slot holding the
+    ;; (closure ENV ARGS . BODY) cons WORD.
+    (defun nl_cl_unwrap (w)
+      (if (= (logand w 7) 6)
+          (if (< w 4096) w
+            (if (= (logand (ptr-read-u8 (- w 6) 0) 63) 23) (ptr-read-u64 (- w 6) 8) w))
+        (if (= (logand w 7) 0)
+            (if (< w 4096) w
+              (if (= (ptr-read-u8 w 0) 23) (ptr-read-u64 (ptr-read-u64 w 8) 8) w))
+          w)))
+    (defun nl_cl_wrap (c)
+      (let* ((obj (nl_alloc_vector 1)))
+        (seq (ptr-write-u64 obj 0 23)
+             (ptr-write-u64 obj 8 c)
+             (+ obj 6))))
     (defun nl_sf_lambda_fill (buf s1)
       (and (ptr-write-u8 buf 0 99)
            (ptr-write-u8 buf 1 108)
@@ -55,7 +70,8 @@
                (let* ((word (nl_sf_lambda_captured_w
                              (nl_env_capture_lexical_filtered_w env args 0 0) args roots)))
                  (nl_root_release env mark)
-                 word))))
+                 ;; The closure is a heap-kind-23 object around the cons.
+                 (if (= word 0) 0 (nl_cl_wrap word))))))
         (nl_abi_fail 1 0)))
 
     (defun nl_sf_lambda (args env out s1)

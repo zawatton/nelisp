@@ -6902,7 +6902,7 @@ it shares with cons and symbol blocks.")
             (if (= (heap-read-u8 w 0) 7)
                 ;; Only the special-form marker (13108) is metadata.
                 (if (= (heap-read-u64 w 16) 13108) w (+ (heap-read-u64 w 8) 2))
-              (if (= (heap-read-u8 w 0) 22) (+ (heap-read-u64 w 8) 6)
+              (if (if (= (heap-read-u8 w 0) 22) 1 (= (heap-read-u8 w 0) 23)) (+ (heap-read-u64 w 8) 6)
               (if (= (heap-read-u8 w 0) 8)
                   (if (= (logand (heap-read-u8 (heap-read-u64 w 8) 0) 63) 8)
                       (+ (heap-read-u64 w 8) 6)
@@ -9222,7 +9222,7 @@ REPL-facing module it feeds."
       (let ((header (heap-read-u64 box 0)))
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
-            (if (or (= kind 11) (= kind 20)) (nl_gc_mark_slots box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 1)
               (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (nl_gc_mark_slots box 1 (+ n 1))
                 (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_mark_slots (owner offset n)
@@ -9295,7 +9295,7 @@ REPL-facing module it feeds."
                 (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
               0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
-            (if (or (= kind 11) (= kind 20)) (nl_gc_mark_inline_words box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_inline_words box 1 1)
             (if (= kind 22)
                 ;; Hash table object: a weak table is chained at BOX+8 (meta, index
                 ;; read as a cons's car and cdr) for the end-of-mark weak pass.
@@ -9994,7 +9994,7 @@ REPL-facing module it feeds."
             (nl_gc_mark_cons sp)
           (if (= tag 8)
               (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
-            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
+            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22) (= tag 23))
                 (nl_gc_mark_vectorlike (heap-read-u64 sp 8))
               (if (= tag 11)
                   ;; Cell (Doc 216 S5): header @ box+0, value WORD @ box+8,
@@ -12241,7 +12241,7 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
-            (if (or (= kind 11) (= kind 20)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
             (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
               (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
@@ -12309,7 +12309,7 @@ REPL-facing module it feeds."
         (if (= tag 7) (nl_compact_rw_cons sp)
           (if (= tag 8)
               (nl_compact_rw_vectorlike (nl_compact_rw_edge (+ sp 8)))
-            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
+            (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22) (= tag 23))
                 (nl_compact_rw_vectorlike (nl_compact_rw_edge (+ sp 8)))
               (if (= tag 11)
                   ;; Cell (Doc 147 P1): value WORD @ box+0 (8B tagged).
@@ -13764,6 +13764,9 @@ argument (reachability + in-arena bounds checks).")
                                          (if (= (bf_hash_table_p_raw tb) 1)
                                              (seq (ptr-write-u64 (- tb 6) 16 ix) ix)
                                            3)))
+    ((:lit "nelisp--closure-p") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (nl_cl_unwrap w) w) 3 7)))
+    ((:lit "nelisp--closure-cons") :word . (let* ((w (nl_word_canon (wf_arg_word args 0))) (u (nl_cl_unwrap w))) (if (= u w) 3 u)))
+    ((:lit "nelisp--closure-make") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (logand w 7) 2) (nl_cl_wrap w) w)))
     ((:lit "nelisp--hash-make") :word . (let* ((obj (nl_alloc_vector 2)))
                                     (seq (ptr-write-u64 obj 0 (+ 256 22))
                                          (ptr-write-u64 obj 8 (nl_word_canon (wf_arg_word args 0)))
@@ -19496,7 +19499,7 @@ list groups retain the original leaves/default exactly."
       (if (= tag 8)
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
-        (if (or (= tag 11) (= tag 20))
+        (if (or (= tag 11) (= tag 20) (= tag 23))
             (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
@@ -19515,7 +19518,7 @@ list groups retain the original leaves/default exactly."
                     (nl_fa_slot box ds span dest cin cout dir))))
             (if (= tag 7)
                 (nl_fa_cons sp ds span dest cin cout dir)
-              (if (or (= tag 8) (= tag 12) (= tag 17) (= tag 18) (= tag 22))
+              (if (or (= tag 8) (= tag 12) (= tag 17) (= tag 18) (= tag 22) (= tag 23))
                   (let ((box (heap-read-u64 sp 8)))
                     (nl_seq2 (nl_fa_field (+ sp 8) box ds span dest cin cout dir)
                       (if (= (nl_gc_mark_block box) 0) 0
@@ -20524,13 +20527,14 @@ eval applyfn.")
               (m5_streq a b)
             (if (= ta tb)
                 (if (= ta 7) (wf_eqd_cons a b depth)
+                  (if (= ta 23) (wf_eqd (nl_cl_unwrap a) (nl_cl_unwrap b) (+ depth 1))
                   (if (= ta 8) (wf_eqd_vec a b depth)
                     (if (= ta 10) (wf_key_eq_bv a b)
                       (if (= ta 13) (if (= (nl_bignum_cmp_bignum a b) 0) 1 0)
                         (if (= ta 9) 2
                           (if (= ta 12) 2
                             (if (= ta 19) 2
-                              (bf_eq2 a b))))))))
+                              (bf_eq2 a b)))))))))
               (if (= ta 19) 2 (if (= tb 19) 2 0)))))))
     ;; `wf_key_eq' (hash tables, reachable from the prelink root closure through
     ;; `nl_ht_find_index') is unchanged; the list walkers use `wf_key_eqn'.
@@ -22355,7 +22359,7 @@ eval applyfn.")
           (let* ((mark (nl_root_mark env)) (roots (nl_root_words env 9))
                  (i 0) (go 1) (ent 0) (result 3) (kind 0) (rc 0))
             (seq
-             (ptr-write-u64 roots 0 (nl_word_canon (wf_arg_word args 0)))
+             (ptr-write-u64 roots 0 (nl_cl_unwrap (nl_word_canon (wf_arg_word args 0))))
              (ptr-write-u64 roots 8 (nl_word_canon table))
              (setq kind (wf_cb_kind env roots 16 2))
              (while (= go 1)
@@ -22443,7 +22447,7 @@ eval applyfn.")
                  (tag (nl_val_tag sq))
                  (mark (nl_root_mark env)) (roots (nl_root_words env 9)))
             (seq
-             (ptr-write-u64 roots 0 (nl_word_canon (wf_arg_word args 0)))
+             (ptr-write-u64 roots 0 (nl_cl_unwrap (nl_word_canon (wf_arg_word args 0))))
              (ptr-write-u64 roots 8 (nl_word_canon sq))
              (ptr-write-u64 roots 16 (nl_word_canon sq))
              (setq kind (wf_cb_kind env roots 40 1))
@@ -22534,7 +22538,7 @@ eval applyfn.")
     ;; The cap cache for the walk's closure: its word, 0 (not compiled yet:
     ;; leave this element and the cache to the general route) or 5 (never).
     (defun wf_mapcar_cap_setup (roots env)
-      (let* ((fw (heap-read-u64 roots 0)) (c1 (nl_cons_cdr_word fw)) (head (nl_cons_car_word fw)))
+      (let* ((fw (nl_cl_unwrap (heap-read-u64 roots 0))) (c1 (nl_cons_cdr_word fw)) (head (nl_cons_car_word fw)))
         (if (/= (m5_fx_word_cons_p c1 0) 1) 5
           (if (if (= (logand head 1) 1) 1
                 (if (/= (sexp-tag head) 4) 1 (/= (nl_apply_name_eq_closure head) 1)))
@@ -22726,7 +22730,7 @@ eval applyfn.")
                              (callable (wf_mapcar_resolve_fn_w fnw env)))
                         (if (/= callable 0)
                             (seq
-                             (ptr-write-u64 roots 0 (nl_word_canon fnw))
+                             (ptr-write-u64 roots 0 (nl_cl_unwrap (nl_word_canon fnw)))
                              (ptr-write-u64 roots 8 sqw)
                              (let* ((rc (wf_mapcar_step roots env (nl_word_payload lenw))))
                                (if (= rc 0)
@@ -25033,7 +25037,7 @@ bytes are written into a fresh 8-byte buffer instead."
         (if (= saved 0)
             (seq (nl_root_release env mark) (wf_bytecode_root_exhausted))
           (seq
-           (if (= tag 17)
+           (if (if (= tag 17) 1 (= tag 23))
                (seq (setq is-function 1) (setq func cleanup))
              (if (= tag 4)
                  ;; A symbol is applied through its function cell, if bound.
@@ -31735,6 +31739,7 @@ bytes are written into a fresh 8-byte buffer instead."
          ((= tag 15) (m5_prin1_unibyte_string ms vptr))
          ((= tag 7) (m5_prin1_cons ms vptr))
          ((= tag 22) (m5_prin1_hashtable ms vptr))
+         ((= tag 23) (m5_prin1_closure ms (nl_cl_unwrap vptr)))
          ((= tag 8) (if (= (m5_prin1_vec_buffer_p vptr) 1)
                         (m5_prin1_buffer ms vptr)
                       (seq (mut-str-push-byte ms 91)
@@ -32221,11 +32226,12 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; With the VM switched off (NELISP_FX_DISABLE, `nl_fx_disabled') no
     ;; closure is covered: answer before the shape and name checks, which
     ;; `nl_fx_lookup' would only discard.
-    (defun m5_fx_covered_rec (fn env scratch _pad)
+    (defun m5_fx_covered_rec (fn0 env scratch _pad)
+      (let* ((fn (nl_cl_unwrap fn0)))
       (if (/= (heap-sexp-tag-word fn) 7) 0
-        (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
-          (if (= (nl_fx_disabled) 1) 0
-            (m5_fx_closure_rec (nl_cons_car_word fn) (nl_cons_cdr_word fn) env scratch)))))
+      (if (/= (logand (heap-read-u64 (+ env 112) 0) 2097152) 0) 0
+      (if (= (nl_fx_disabled) 1) 0
+      (m5_fx_closure_rec (nl_cons_car_word fn) (nl_cons_cdr_word fn) env scratch))))))
     ;; FN = (HEAD . C1) read as WORDs (Doc 215): the cells' own child
     ;; pointers, durable, so nothing is materialised and no later lookup can
     ;; clobber them.  A closure is (closure (t) ARGS . BODY).
@@ -35530,8 +35536,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                 (nl_abi_fail (bf_args_out_of_range arr (wf_arg_word args 1)) 0)
                               (if (= (nl_bv_bit_get (heap-read-u64 box 8) idx) 0) 3 7)))
                         ;; Not an array; an interpreted closure indexes as its slots (GNU Emacs 31).
-                        (if (= (nl_closure_shape_p arr) 1)
-                            (bf_aref_closure_w arr (wf_arg_ptr args 1) 0)
+                        (if (= (nl_closure_shape_p (nl_cl_unwrap arr)) 1)
+                            (bf_aref_closure_w (nl_cl_unwrap arr) (wf_arg_ptr args 1) 0)
                           (nl_abi_fail (bf_wrong_type_arrayp arr) 0))))))))))))
     (defun bf_aref_checked (args out)
       (nl_abi_word_to_rc (bf_aref_checked_w args 0) out))
@@ -37082,6 +37088,7 @@ bytes are written into a fresh 8-byte buffer instead."
           (if (= (nl_closure_shape_p p) 1)
               (nl_imm_int (nl_closure_length p))
             (bf_length_list_w p 0 0)))
+         ((= tag 23) (nl_imm_int (nl_closure_length (nl_cl_unwrap p))))
          ((= tag 8) (nl_imm_int (vector-len p)))
          ((= tag 5) (nl_imm_int (nl_str_charlen_c p)))
          ((= tag 6) (nl_imm_int (nl_str_charlen p)))
@@ -39527,6 +39534,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                     (heap-read-u64 (heap-sexp-payload b) 8)))
                 0))
              ((= ta 13) (if (= (nl_bignum_cmp_bignum a b) 0) 1 0))
+             ((= ta 23) (bf_equal2 (nl_cl_unwrap a) (nl_cl_unwrap b)))
              (t (bf_eq2 a b)))
             0)))))
     (defun bf_equal_w (args _pad)
@@ -39602,8 +39610,12 @@ bytes are written into a fresh 8-byte buffer instead."
                                (if (or (= kind 4) (= kind 16))
                                    (nelisp_env_lookup_function_w env (+ env 64) op 0)
                                  op)))
+                         ;; A closure is a kind-23 object (wrapping the
+                         ;; (closure ...) cons); older paths may still hold
+                         ;; the bare cons.
                          (if (and (> function 4096) (= (logand function 1) 0)
-                                  (= (nl_val_tag function) 7))
+                                  (or (= (nl_val_tag function) 7)
+                                      (/= (nl_cl_unwrap function) function)))
                              (cons-set-car (nl_exit_val_w) function) 0))
                      0))))
            0)
@@ -42186,7 +42198,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
-      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index
+      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index nelisp--closure-p nelisp--closure-cons nelisp--closure-make
       obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
       symbol-plist
       goto-char
@@ -48352,7 +48364,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
-    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--cell-value" "nelisp--assoc-raw"
+    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--closure-p" "nelisp--closure-cons" "nelisp--closure-make" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
     ;; bufnative: buffer read path
@@ -65212,6 +65224,8 @@ tails run against a private box), and the (rc, OUT) adapter F."
                   (error "apply word ABI: expected one symbol lookup, got %s" matches))
                 (when (= stashes 0)
                   (error "apply word ABI: no void/invalid-function stash to keep ORIG"))))
+            (when (eq name 'nl_n4_apply_raw)
+              (setq word-body `(let* ((func_ptr_u (nl_cl_unwrap func_ptr))) ,(cl-subst 'func_ptr_u 'func_ptr word-body))))
             (push `(defun ,wname ,wparams ,word-body) result)
             (push `(defun ,name ,params
                      (nl_abi_word_to_rc (,wname ,@(butlast params) 0) ,out))
@@ -65458,9 +65472,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_funcall_words (base n env)
       (let* ((fw (heap-read-u64 base 0))
              (tag (nl_val_tag fw))
-             (def (if (or (= tag 4) (= tag 16))
+             (def (nl_cl_unwrap (if (or (= tag 4) (= tag 16))
                       (nl_lookup_fn_autoload_w env (+ env 64) fw 0)
-                    fw))
+                    fw)))
              (argp (+ base 8))
              (resw (+ base (* (+ n 2) 8))))
         (if (or (= def 0) (= def 2) (= def 3)) 2
@@ -65548,9 +65562,9 @@ tails run against a private box), and the (rc, OUT) adapter F."
     (defun nl_eic_apply_words_1 (base argc env last)
       (let* ((fw (heap-read-u64 base 0))
              (tag (nl_val_tag fw))
-             (def (if (or (= tag 4) (= tag 16))
+             (def (nl_cl_unwrap (if (or (= tag 4) (= tag 16))
                       (nl_lookup_fn_autoload_w env (+ env 64) fw 0)
-                    fw))
+                    fw)))
              (dslot (+ base (* argc 8)))
              (lslot (+ base (* (+ argc 1) 8))))
         (if (or (= def 0) (= def 2) (= def 3)) 2
@@ -66900,9 +66914,9 @@ two flag bits 20 and 21."
                 (setq i (+ i 1)))))
            ok)))
       (defun nl_fl_call_w (d tail env av fr fw call_name)
-        (if (/= (logand d 7) 2) 2
-          (if (/= (nl_sym_sid (ptr-read-u64 (- d 2) 0)) ,sid-closure) 2
-            (let* ((r1 (ptr-read-u64 (- d 2) 8)))
+        (if (/= (logand (nl_cl_unwrap d) 7) 2) 2
+          (if (/= (nl_sym_sid (ptr-read-u64 (- (nl_cl_unwrap d) 2) 0)) ,sid-closure) 2
+            (let* ((r1 (ptr-read-u64 (- (nl_cl_unwrap d) 2) 8)))
               (if (/= (logand r1 7) 2) 2
                 (let* ((cap (ptr-read-u64 (- r1 2) 0)) (r2 (ptr-read-u64 (- r1 2) 8)))
                   (if (if (= cap 3) 1 (/= (logand r2 7) 2)) 2
@@ -67260,7 +67274,7 @@ two flag bits 20 and 21."
               (nl_eic_builtin_call_w w nm tail_ptr env 0 head_ptr)
             ;; A closure in the cell is no alias, autoload, macro or special form:
             ;; GNU goes from the function cell to apply_lambda (eval.c:2693).
-            (if (if (= (logand w 7) 2) (= (nl_sym_sid (ptr-read-u64 (- w 2) 0)) ,sid-closure) 0)
+            (if (let* ((u (nl_cl_unwrap w))) (if (= (logand u 7) 2) (= (nl_sym_sid (ptr-read-u64 (- u 2) 0)) ,sid-closure) 0))
                 (nl_eic_closure_call_w w tail_ptr env head_ptr)
               (let* ((root_mark (nl_root_mark env)) (fw (nl_root_frame env 2)))
                 (if (= fw 0)
