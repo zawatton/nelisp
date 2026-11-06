@@ -29962,7 +29962,7 @@ drift (= a Doc 92 emitter invariant violation)."
     ;; Unlike relocatable objects/units, this frontend has no later linker.
     ;; Eligible local externs already became label fixups during emission.
     ;; Every remaining call or data relocation would otherwise ship as zero.
-    (when-let ((unresolved (nelisp-asm-x86_64-extract-relocs pass2)))
+    (when-let* ((unresolved (nelisp-asm-x86_64-extract-relocs pass2)))
       (signal 'nelisp-aot-compiler-error
               (list :unresolved-executable-relocations unresolved)))
     ;; Pass-1's fixups remain unresolved (= we never inspect them);
