@@ -95,4 +95,4 @@ cmd: sh tools/ai/doc211-import-check.sh core-lane
 cmd: git merge-base --is-ancestor 6f4861213 origin/main
 
 ** S4.3 END-TO-END: CI on main after the landing has no host ERT failure that is absent from the pre-landing main run
-pending
+cmd: sh tools/ai/doc211-import-check.sh ci-main

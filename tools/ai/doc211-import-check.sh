@@ -78,8 +78,32 @@ case "${1:-}" in
               -l packages/emacs-lib-facade/test/nelisp-emacs-artifact-gate6-test.el \
               --eval '(ert-run-tests-batch-and-exit (quote (member nelisp-pcase-or-branch-local-bindings nelisp-private-continuation/native-three-frontends-public-collisions nemacs-artifact-gate5-format-spec-source-equals-artifact nemacs-artifact-gate6-format-spec-source-equals-artifact)))'
         ;;
+    ci-main)
+        # S4.3.  The pre-landing main run (41612351997, 1404ced83) had
+        # zero host ERT failures, so "no failure absent from it" means
+        # every Linux host ERT job of the newest completed CI run on
+        # main that contains the landing (6f4861213) succeeded.
+        gh run list --repo zawatton/nelisp --branch main --workflow CI \
+           --status completed --limit 20 --json databaseId,headSha </dev/null |
+        python3 -I -c '
+import json, subprocess, sys
+for r in json.load(sys.stdin):
+    if subprocess.run(["git", "merge-base", "--is-ancestor", "6f4861213",
+                       r["headSha"]], stdin=subprocess.DEVNULL).returncode:
+        continue
+    jobs = json.loads(subprocess.run(
+        ["gh", "run", "view", str(r["databaseId"]), "--repo",
+         "zawatton/nelisp", "--json", "jobs"], stdin=subprocess.DEVNULL,
+        capture_output=True, text=True, check=True).stdout)["jobs"]
+    ert = [j for j in jobs if j["name"].startswith("ert ubuntu-latest")]
+    bad = [j["name"] for j in ert if j["conclusion"] != "success"]
+    print("run", r["databaseId"], r["headSha"][:9], "bad:", bad)
+    sys.exit(1 if bad or not ert else 0)
+print("no completed main CI run contains the landing yet")
+sys.exit(1)'
+        ;;
     *)
-        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane" >&2
+        echo "usage: $0 retired|one-owner|regex-ert|bundle-once|boot|url|magit|core-lane|ci-main" >&2
         exit 2
         ;;
 esac
