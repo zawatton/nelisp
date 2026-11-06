@@ -14,6 +14,7 @@
     (macroexp . "vendor/emacs-lisp/emacs-lisp/macroexp.el")
     (inline . "vendor/emacs-lisp/emacs-lisp/inline.el")
     (json . "vendor/emacs-lisp-api/json.el")
+    (button . "vendor/emacs-lisp/button.el")
     (easy-mmode . "vendor/emacs-lisp/emacs-lisp/easy-mmode.el")
     (rx . "vendor/emacs-lisp/emacs-lisp/rx.el")
     (cl-seq . "vendor/emacs-lisp/emacs-lisp/cl-seq.el")

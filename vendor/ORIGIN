@@ -796,3 +796,5 @@ emacs-lisp/international/mule-util.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1
 emacs-lisp/obarray.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/obarray.el.gz	sha256=32ae90fc419b534dbcde596342ed263476c47f5a72ad0409f1edd2d42c0a07e2
 emacs-lisp/abbrev.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/abbrev.el.gz	sha256=cb49cd0e2b52ecefaa8b15cb4d0dd70a3b0dc858a92314d0782fa44320929969
 emacs-lisp/emacs-lisp/lisp-mode.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/lisp-mode.el.gz	sha256=6ead13b4f329273d12d86b761defa66629ea284cb175315a5a248b920b4388a6
+staged-emacs-lisp/subr.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/subr.el.gz	sha256=a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96
+emacs-lisp-api/help-fns.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/help-fns.el.gz	sha256=013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5

@@ -24126,6 +24126,29 @@ Windows drive path keeps `C:', and a relative path stays relative."
   ;; authenticated POSIX search semantics.
   (put 'file-accessible-directory-p 'nelisp-prelude-provider
        (symbol-function 'file-accessible-directory-p)))
+;; GNU window.c window configurations.  A batch GNU Emacs has no real windows,
+;; so a configuration is an opaque object: `window-configuration-p' recognizes
+;; it and `set-window-configuration' succeeds without changing anything.  GNU
+;; `save-window-excursion' (subr.el), used by GNU ert.el, needs all three.
+(unless (fboundp 'current-window-configuration)
+  (defun current-window-configuration (&optional _frame)
+    "Return an opaque window configuration (no windows exist here)."
+    (record 'window-configuration nil)))
+(unless (fboundp 'window-configuration-p)
+  (defun window-configuration-p (object)
+    "Return non-nil if OBJECT is a window configuration."
+    (and (recordp object) (eq (aref object 0) 'window-configuration))))
+(unless (fboundp 'set-window-configuration)
+  (defun set-window-configuration (configuration &optional _dont-set-frame
+                                                 _dont-set-miniwindow)
+    "Restore CONFIGURATION; with no windows this only validates it and returns t."
+    (unless (window-configuration-p configuration)
+      (signal 'wrong-type-argument (list 'window-configuration-p configuration)))
+    t))
+;; xdisp.c `message-log-max': GNU's default is 1000 lines of *Messages*.
+(unless (boundp 'message-log-max)
+  (defvar message-log-max 1000
+    "Maximum number of lines to keep in the message log buffer."))
 ;; A bare PREFIX (no directory component -- every caller in this tree passes
 ;; one) hardcoded "/tmp/" and ignored both `temporary-file-directory' (never
 ;; bound here; see `nelisp-artifact--temp-directory' for the same defensive

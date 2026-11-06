@@ -48690,7 +48690,14 @@ listing it would make the load-path lie about what is reachable."
     '(number-sequence ensure-list flatten-tree))
    "\n;; --- GNU Emacs 31.1 subr.el: apropos-internal (GNU ert.el) ---\n"
    (nelisp-vendor-source-forms
-    "vendor/staged-emacs-lisp/subr.el" '(apropos-internal))))
+    "vendor/staged-emacs-lisp/subr.el" '(apropos-internal))
+   "\n;; --- GNU Emacs 31.1 subr.el: save-window-excursion, plusp et al. (GNU ert.el) ---\n"
+   (nelisp-vendor-source-forms
+    "vendor/staged-emacs-lisp/subr.el"
+    '(save-window-excursion plusp minusp oddp evenp))
+   "\n;; --- GNU Emacs 31.1 help-fns.el: find-lisp-object-file-name (backtrace.el) ---\n"
+   (nelisp-vendor-source-forms
+    "vendor/emacs-lisp-api/help-fns.el" '(find-lisp-object-file-name))))
 
 (defun nelisp-standalone--prelude-source-boundary (source)
   "Return SOURCE position after its four function-cell bootstrap forms."
@@ -49227,8 +49234,16 @@ never on the build host.  Keep the original Lisp factory as the reference."
              "vendor/staged-emacs-lisp/files.el"
              '(file-attribute-size file-attribute-modification-time
                file-attribute-file-identifier)))
+           ;; `define-derived-mode' is a prelude macro defined late, so GNU's
+           ;; messages-buffer forms must come after the prelude body, here.
+           (messages-buffer-text
+            (concat "\n;; --- GNU Emacs 31.1 simple.el: *Messages* buffer (GNU ert.el) ---\n"
+                    (nelisp-vendor-source-forms
+                     "vendor/staged-emacs-lisp/simple.el"
+                     '(buffer-disable-undo messages-buffer-mode-map
+                       messages-buffer-mode messages-buffer))))
            (files-source
-           (concat file-attrs-header file-attrs-forms-text
+           (concat file-attrs-header file-attrs-forms-text messages-buffer-text
                    vendor-src
                    (nelisp-standalone--after-load-runtime-src)))
            (metadata-source
@@ -49304,6 +49319,7 @@ never on the build host.  Keep the original Lisp factory as the reference."
                       (concat (substring source 0 position)
                               accessor-source tail
                               file-attrs-header file-attrs-tail
+                              messages-buffer-text
                               vendor-src
                               (nelisp-standalone--after-load-runtime-src)
                               metadata-source))))))

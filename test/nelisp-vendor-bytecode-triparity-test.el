@@ -270,7 +270,7 @@
     (should (equal (with-temp-buffer
                      (insert-file-contents-literally source)
                      (secure-hash 'sha256 (current-buffer)))
-                   "410c34e030bdd667ff21842a8513e41100394662dacf5e54b40938106f0d6327"))
+                   "a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96"))
     (should (string-prefix-p "(defun zerop (number)" form))
     (should (string-match-p (regexp-quote "(= 0 number))") form))
     (should (= (aref object 0) 257))

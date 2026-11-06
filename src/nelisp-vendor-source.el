@@ -13,8 +13,10 @@
   (expand-file-name ".." (file-name-directory load-file-name)))
 
 (defconst nelisp-vendor-source--pins
-  '(("vendor/staged-emacs-lisp/subr.el"
-     . "410c34e030bdd667ff21842a8513e41100394662dacf5e54b40938106f0d6327")
+  '(("vendor/emacs-lisp-api/help-fns.el"
+     . "013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5")
+    ("vendor/staged-emacs-lisp/subr.el"
+     . "a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96")
     ("vendor/staged-emacs-lisp/simple.el"
      . "c19d208e61100fc9ff692cef0c95d895e54e17fc1f9031500ac8474c9c2e48f2")
     ("vendor/staged-emacs-lisp/files.el"
@@ -60,7 +62,8 @@
   "Return the static function name defined or aliased by FORM.
 For `defalias' and single-variable `setq', index only a literal symbol name."
   (pcase (car-safe form)
-    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom 'pcase-defmacro)
+    ((or 'defun 'defsubst 'defmacro 'defvar 'defconst 'defcustom 'pcase-defmacro
+         'define-derived-mode)
      (and (symbolp (cadr form)) (cadr form)))
     ('cl-defstruct
      (let ((name (cadr form)))
