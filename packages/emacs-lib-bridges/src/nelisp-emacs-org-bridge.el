@@ -58,9 +58,33 @@ Use it when available, otherwise fall back to `expand-file-name'."
   "Return RELATIVE resolved under the repository root."
   (expand-file-name relative (nelisp-emacs-org-bridge--repo-root)))
 
+(defconst nelisp-emacs-org-bridge--source-packages
+  '("emacs-lib-bridges" "emacs-lib-core" "emacs-lib-facade"
+    "emacs-lib-text-core" "nelisp-regex")
+  "Packages whose `src/' directories hold the imported library sources.")
+
 (defun nelisp-emacs-org-bridge--source-file (relative)
-  "Return RELATIVE under the repository root's source tree."
-  (expand-file-name relative (nelisp-emacs-org-bridge--repo-root)))
+  "Return the library source RELATIVE, named \"src/FILE\" as before Doc 211.
+A FILE still under ROOT/src/ is used as is.  The Doc 211 import moved the
+library files to ROOT/packages/PKG/src/; search those packages.  Signal an error naming FILE when no package has it, so a
+missing source fails here rather than as a bare `file-error'."
+  (let ((root (nelisp-emacs-org-bridge--repo-root)))
+    (if (or (not (string-prefix-p "src/" relative))
+            ;; The core's own src/ (e.g. nelisp-text-buffer.el) stays put.
+            (file-readable-p (expand-file-name relative root)))
+        (expand-file-name relative root)
+      (let ((name (substring relative (length "src/")))
+            (pkgs nelisp-emacs-org-bridge--source-packages)
+            (found nil))
+        (while (and pkgs (not found))
+          (let ((path (expand-file-name
+                       (concat "packages/" (car pkgs) "/src/" name) root)))
+            (when (file-readable-p path)
+              (setq found path)))
+          (setq pkgs (cdr pkgs)))
+        (or found
+            (error "Missing imported library source %s under %s"
+                   name root))))))
 
 (defun nelisp-emacs-org-bridge--ensure-var (symbol value)
   "Set SYMBOL to VALUE when it is missing or carries the NeLisp unbound marker."

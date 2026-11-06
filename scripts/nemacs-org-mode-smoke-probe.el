@@ -19,7 +19,7 @@
   (condition-case err
       (progn
         (unless (fboundp 'nelisp-emacs-org-bridge-load)
-          (load (expand-file-name "src/nelisp-emacs-org-bridge.el" repo)
+          (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-org-bridge.el" repo)
                 nil 'no-message t t))
         (unless (fboundp 'nelisp-emacs-org-bridge-load)
           (error "org bridge entrypoint missing after load: %S"

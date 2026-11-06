@@ -65,7 +65,7 @@
       (agenda-buffer nil))
   (condition-case err
       (progn
-        (load (expand-file-name "src/nelisp-emacs-org-bridge.el" repo)
+        (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-org-bridge.el" repo)
               nil 'no-message t t)
         (setq nelisp-emacs-org-bridge-repo-root repo)
         (nelisp-emacs-org-bridge-load)

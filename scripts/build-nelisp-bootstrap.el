@@ -1152,7 +1152,7 @@ concatenated bootstrap bundle must make the order explicit."
 
 (defun nelisp-bootstrap--runtime-anchor-file ()
   "Return the absolute runtime anchor file for standalone REPL bootstrap."
-  (expand-file-name "src/nemacs-main.el" nelisp-bootstrap-repo-root))
+  (expand-file-name "packages/emacs-lib-core/src/nemacs-main.el" nelisp-bootstrap-repo-root))
 
 (defun nelisp-bootstrap--runtime-anchor-directory ()
   "Return the absolute runtime anchor directory for standalone REPL bootstrap."

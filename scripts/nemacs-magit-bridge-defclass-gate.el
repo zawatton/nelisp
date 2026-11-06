@@ -41,7 +41,7 @@
         (or (getenv "NEMACS_LIB_REPO")
             "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib"))
   (nemacs-runtime-image-preload--load-source-file
-   (expand-file-name "src/nelisp-emacs-magit-bridge.el" zz-gate-root))
+   (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el" zz-gate-root))
   (setq nelisp-emacs-magit-bridge-repo-root zz-gate-root)
   (nelisp-emacs-magit-bridge--ensure-preconditions)
   (defvar nelisp-emacs-magit-bridge-bundle--loaded-features nil)

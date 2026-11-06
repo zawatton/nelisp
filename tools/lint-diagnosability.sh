@@ -35,11 +35,11 @@ count_bare_timeout() {
 }
 
 # `guard-mismatch': a probe that tests one name but gates the definition of
-# several.  src/nelisp-emacs-magit-bridge.el tests `make-sparse-keymap' and on
+# several.  packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el tests `make-sparse-keymap' and on
 # that evidence skips defining `make-keymap', `make-sparse-keymap' AND
 # `suppress-keymap'.  A guard must test what it gates.
 count_guard_mismatch() {
-  { grep -cE '\(unless probe$' src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
+  { grep -cE '\(unless probe$' packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
 }
 
 # `alloc-in-diagnostic': a diagnostic that allocates changes the thing it is
@@ -51,11 +51,11 @@ count_guard_mismatch() {
 # fault may.  Counted as bridge-level tracers that call an allocating builtin.
 count_alloc_in_diagnostic() {
   { grep -cE 'nelisp--write-stdout-bytes.*\((make-keymap|make-vector|make-list|make-hash-table)' \
-      src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
+      packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el 2>/dev/null || true; } | head -1
 }
 
 # `name-keyed-load': `load' changes what it evaluates based on the file's NAME,
-# not just its bytes.  src/emacs-load.el keys three behaviours on the basename:
+# not just its bytes.  packages/emacs-lib-core/src/emacs-load.el keys three behaviours on the basename:
 # a `cc-' prefix skips the artifact/native-compile path entirely, a `cc-defs.el'
 # suffix rewrites the source text, and a `cc-' prefix injects a function and
 # wraps the source in a push/pop pair.  So renaming a file changes both whether
@@ -74,7 +74,7 @@ count_alloc_in_diagnostic() {
 # name inherits the risk.
 count_name_keyed_load() {
   { grep -cE '\((string-prefix-p|string-suffix-p) "[^"]+" (base|\(file-name)|\(string= \(substring resolved' \
-      src/emacs-load.el 2>/dev/null || true; } | head -1
+      packages/emacs-lib-core/src/emacs-load.el 2>/dev/null || true; } | head -1
 }
 
 # `basename-routing': a shell path chosen by the basename of a binary.

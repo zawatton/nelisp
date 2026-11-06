@@ -9,10 +9,10 @@
   (when root
     ;; Exercise repeated source loads; the private helper captures must not
     ;; wrap themselves on the second load.
-    (load (expand-file-name "src/emacs-buffer-builtins.el" root) nil t t)
-    (load (expand-file-name "src/emacs-buffer-builtins.el" root) nil t t)
-    (load (expand-file-name "src/nelisp-emacs-compat-fileio.el" root) nil t t)
-    (load (expand-file-name "src/files-standalone-buffer.el" root) nil t t)))
+    (load (expand-file-name "packages/emacs-lib-core/src/emacs-buffer-builtins.el" root) nil t t)
+    (load (expand-file-name "packages/emacs-lib-core/src/emacs-buffer-builtins.el" root) nil t t)
+    (load (expand-file-name "packages/emacs-lib-core/src/nelisp-emacs-compat-fileio.el" root) nil t t)
+    (load (expand-file-name "packages/emacs-lib-core/src/files-standalone-buffer.el" root) nil t t)))
 
 (defvar t107-probe--passed 0)
 

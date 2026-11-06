@@ -11,7 +11,7 @@
   (unless (and (stringp repo) (> (length repo) 0))
     (error "nemacs-org-step-probe--repo-root is required"))
   (nemacs-org-step-probe--print "ORG-STEP S0 repo=%S" repo)
-  (load (expand-file-name "src/nelisp-emacs-org-bridge.el" repo)
+  (load (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-org-bridge.el" repo)
         nil 'no-message t t)
   (setq nelisp-emacs-org-bridge-repo-root repo)
   (nemacs-org-step-probe--print "ORG-STEP S1 bridge-load=%S" (fboundp 'nelisp-emacs-org-bridge-load))

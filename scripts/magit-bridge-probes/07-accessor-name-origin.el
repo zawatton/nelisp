@@ -8,7 +8,7 @@
 ;; the correct one is fbound, the mangling happens at the CALL site.
 (progn
   (nemacs-runtime-image-preload--load-source-file
-   (expand-file-name "src/nelisp-emacs-magit-bridge.el"
+   (expand-file-name "packages/emacs-lib-bridges/src/nelisp-emacs-magit-bridge.el"
                      "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib"))
   (setq nelisp-emacs-magit-bridge-repo-root
         "/home/madblack-21/Cowork/Notes/dev/nelisp-emacs-lib")
