@@ -286,34 +286,6 @@ may change buffer contents while preserving the folding state."
 (unless (fboundp 'org-fold-save-outline-visibility)
   (defalias 'org-fold-save-outline-visibility 'org-fold-core-save-visibility))
 
-;;;; ================= org cycle link previews (Org 9.8 name) ============
-;; `org-cycle-display-link-previews' is the Org 9.8 successor of
-;; `org-cycle-display-inline-images'.  On this Org (9.7) the equivalent
-;; substrate is inline-image display; delegate to it for REAL behavior.
-
-(unless (fboundp 'org-cycle-display-link-previews)
-  (defun org-cycle-display-link-previews (state)
-    "Auto display/hide link previews under a subtree when cycling.
-STATE is the current outline visibility state, one of the symbols
-`content', `all', `folded', `children', or `subtree'.  This maps the
-Org 9.8 link-preview cycle hook onto the inline-image machinery
-available in this Org."
-    (cond
-     ((fboundp 'org-cycle-display-inline-images)
-      (org-cycle-display-inline-images state))
-     ((and (fboundp 'org-display-inline-images)
-           (fboundp 'org-remove-inline-images))
-      (pcase state
-        ((or 'children 'subtree)
-         (save-restriction
-           (when (fboundp 'org-narrow-to-subtree) (org-narrow-to-subtree))
-           (org-display-inline-images nil nil (point-min) (point-max))))
-        ('folded
-         (save-restriction
-           (when (fboundp 'org-narrow-to-subtree) (org-narrow-to-subtree))
-           (org-remove-inline-images (point-min) (point-max))))))
-     ;; No preview substrate present: nothing to preview (genuine no-op).
-     (t nil))))
 
 ;;;; ================= org-babel language loader (org.el) ================
 

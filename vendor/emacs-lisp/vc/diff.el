@@ -1,6 +1,6 @@
 ;;; diff.el --- run `diff'  -*- lexical-binding: t -*-
 
-;; Copyright (C) 1992, 1994, 1996, 2001-2025 Free Software Foundation,
+;; Copyright (C) 1992, 1994, 1996, 2001-2026 Free Software Foundation,
 ;; Inc.
 
 ;; Author: Frank Bresz
@@ -38,7 +38,7 @@
   :group 'tools)
 
 ;;;###autoload
-(defcustom diff-switches (purecopy "-u")
+(defcustom diff-switches "-u"
   "A string or list of strings specifying switches to be passed to diff.
 
 This variable is also used in the `vc-diff' command (and related
@@ -48,7 +48,7 @@ set (`vc-git-diff-switches' for git, for instance), and
   :type '(choice string (repeat string)))
 
 ;;;###autoload
-(defcustom diff-command (purecopy "diff")
+(defcustom diff-command "diff"
   "The command to use to run diff."
   :type 'string)
 
@@ -118,13 +118,18 @@ Non-interactively, OLD and NEW may each be a file or a buffer."
   (display-buffer
    (diff-no-select old new switches no-async)))
 
+(defvar diff--coding-system-for-buffer nil
+  "Used to pass buffer text encoding from `multi-file-diff-no-select'.")
+
 (defun diff-file-local-copy (file-or-buf)
   "Like `file-local-copy' but also supports a buffer as the argument.
 When FILE-OR-BUF is a buffer, return the filename of a local
 temporary file with the buffer's contents."
   (if (bufferp file-or-buf)
       (with-current-buffer file-or-buf
-        (let ((tempfile (make-temp-file "buffer-content-")))
+        (let ((tempfile (make-temp-file "buffer-content-"))
+              (coding-system-for-write (or diff--coding-system-for-buffer
+                                           coding-system-for-write)))
           (if diff-entire-buffers
               (write-region nil nil tempfile nil 'nomessage)
             (write-region (point-min) (point-max) tempfile nil 'nomessage))
@@ -149,6 +154,7 @@ Possible values are:
 		    (call-process diff-command nil t nil "--help"))
 	      (if (search-backward "--label" nil t) t))))))
 
+;;;###autoload
 (defun diff-no-select (old new &optional switches no-async buf)
   ;; Noninteractive helper for creating and reverting diff buffers
   "Compare the OLD and NEW file/buffer.
@@ -203,21 +209,24 @@ returns the buffer used."
       (setq diff-default-directory default-directory)
       (let ((inhibit-read-only t))
 	(insert command "\n"))
-      (if (and (not no-async) (fboundp 'make-process))
-	  (let ((proc (start-process "Diff" buf shell-file-name
-                                     shell-command-switch command)))
-	    (set-process-filter proc #'diff-process-filter)
-            (set-process-sentinel
-             proc (lambda (proc _msg)
-                    (with-current-buffer (process-buffer proc)
-                      (diff-sentinel (process-exit-status proc)
-                                     old-alt new-alt)))))
-	;; Async processes aren't available.
-	(let ((inhibit-read-only t))
-	  (diff-sentinel
-	   (call-process shell-file-name nil buf nil
-			 shell-command-switch command)
-           old-alt new-alt))))
+      (with-file-modes #o600
+        (if (and (not no-async) (fboundp 'make-process))
+	    (let* ((default-directory temporary-file-directory)
+                   (proc (start-process "Diff" buf shell-file-name
+                                        shell-command-switch command)))
+	      (set-process-filter proc #'diff-process-filter)
+              (set-process-sentinel
+               proc (lambda (proc _msg)
+                      (with-current-buffer (process-buffer proc)
+                        (diff-sentinel (process-exit-status proc)
+                                       old-alt new-alt)))))
+	  ;; Async processes aren't available.
+	  (let* ((default-directory temporary-file-directory)
+                 (inhibit-read-only t))
+	    (diff-sentinel
+	     (call-process shell-file-name nil buf nil
+			   shell-command-switch command)
+             old-alt new-alt)))))
     buf))
 
 (defun diff-process-filter (proc string)

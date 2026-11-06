@@ -9,8 +9,8 @@
 
 ;;; Generated autoloads from dired-aux.el
 
-(autoload 'dired-diff "dired-aux" "\
-Compare file at point with FILE using `diff'.
+(autoload 'dired-diff "dired-aux"
+"Compare file at point with FILE using `diff'.
 If called interactively, prompt for FILE.
 If the mark is active in Transient Mark mode, use the file at the mark
 as the default for FILE.  (That's the mark set by \\[set-mark-command],
@@ -29,16 +29,16 @@ With prefix arg, prompt for second argument SWITCHES, which is
 the string of command switches used as the third argument of `diff'.
 
 (fn FILE &optional SWITCHES)" '(dired-mode))
-(autoload 'dired-backup-diff "dired-aux" "\
-Diff this file with its backup file or vice versa.
+(autoload 'dired-backup-diff "dired-aux"
+"Diff this file with its backup file or vice versa.
 Uses the latest backup, if there are several numerical backups.
 If this file is a backup, diff it with its original.
 The backup file is the first file given to `diff'.
 With prefix arg, prompt for argument SWITCHES which is options for `diff'.
 
 (fn &optional SWITCHES)" '(dired-mode))
-(autoload 'dired-compare-directories "dired-aux" "\
-Mark files with different file attributes in two Dired buffers.
+(autoload 'dired-compare-directories "dired-aux"
+"Mark files with different file attributes in two Dired buffers.
 Compare file attributes of files in the current directory
 with file attributes in directory DIR2 using PREDICATE on pairs of files
 with the same name.  Mark files for which PREDICATE returns non-nil.
@@ -70,11 +70,12 @@ If the region is active in Transient Mark mode, mark files
 only in the active region if `dired-mark-region' is non-nil.
 
 (fn DIR2 PREDICATE)" '(dired-mode))
-(autoload 'dired-do-chmod "dired-aux" "\
-Change the mode of the marked (or next ARG) files.
+(autoload 'dired-do-chmod "dired-aux"
+"Change the mode of the marked (or next ARG) files.
 Both octal numeric modes like `644' and symbolic modes like `g+w'
-are supported.  Type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes of the file
-at point into the minibuffer.
+are supported.
+After invoking the command, type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes
+of the file at point into the minibuffer.
 
 See Info node `(coreutils)File permissions' for more information.
 Alternatively, see the man page for \"chmod(1)\".
@@ -84,33 +85,33 @@ resetting it makes the file read-only.  Changing any other bit
 has no effect on MS-Windows.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-chgrp "dired-aux" "\
-Change the group of the marked (or next ARG) files.
-Type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes of the file at point
-into the minibuffer.
+(autoload 'dired-do-chgrp "dired-aux"
+"Change the group of the marked (or next ARG) files.
+After invoking the command, type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes
+of the file at point into the minibuffer.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-chown "dired-aux" "\
-Change the owner of the marked (or next ARG) files.
-Type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes of the file at point
-into the minibuffer.
+(autoload 'dired-do-chown "dired-aux"
+"Change the owner of the marked (or next ARG) files.
+After invoking the command, type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes
+of the file at point into the minibuffer.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-touch "dired-aux" "\
-Change the timestamp of the marked (or next ARG) files.
+(autoload 'dired-do-touch "dired-aux"
+"Change the timestamp of the marked (or next ARG) files.
 This calls touch.
-Type Type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes of the file at point
-into the minibuffer.
+After invoking the command, type \\<minibuffer-local-completion-map>\\[next-history-element] to pull the file attributes
+of the file at point into the minibuffer.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-print "dired-aux" "\
-Print the marked (or next ARG) files.
+(autoload 'dired-do-print "dired-aux"
+"Print the marked (or next ARG) files.
 Uses the shell command coming from variables `lpr-command' and
 `lpr-switches' as default.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-clean-directory "dired-aux" "\
-Flag numerical backups for deletion.
+(autoload 'dired-clean-directory "dired-aux"
+"Flag numerical backups for deletion.
 Spares `dired-kept-versions' latest versions, and `kept-old-versions' oldest.
 Positive prefix arg KEEP overrides `dired-kept-versions';
 Negative prefix arg KEEP overrides `kept-old-versions' with KEEP made positive.
@@ -119,14 +120,14 @@ To clear the flags on these files, you can use \\[dired-flag-backup-files]
 with a prefix argument.
 
 (fn KEEP)" '(dired-mode))
-(defvar dired-confirm-shell-command t "\
-Whether `dired-do-shell-command' should prompt for confirmation.
+(defvar dired-confirm-shell-command t
+"Whether `dired-do-shell-command' should prompt for confirmation.
 If non-nil, prompt for confirmation if the shell command contains
 potentially unsafe wildcard characters.  If nil, never prompt for
 confirmation.")
 (custom-autoload 'dired-confirm-shell-command "dired-aux" t)
-(autoload 'dired-do-async-shell-command "dired-aux" "\
-Run a shell command COMMAND on the marked files asynchronously.
+(autoload 'dired-do-async-shell-command "dired-aux"
+"Run a shell command COMMAND on the marked files asynchronously.
 
 Like `dired-do-shell-command', but adds `&' at the end of COMMAND
 to execute it asynchronously.
@@ -134,7 +135,7 @@ to execute it asynchronously.
 When operating on multiple files, asynchronous commands
 are executed in the background on each file in parallel.
 In shell syntax this means separating the individual commands
-with `&'.  However, when COMMAND ends in `;' or `;&' then commands
+with `&'.  However, when COMMAND ends in `;&' then commands
 are executed in the background on each file sequentially waiting
 for each command to terminate before running the next command.
 In shell syntax this means separating the individual commands with `;'.
@@ -144,8 +145,8 @@ The output appears in the buffer named by `shell-command-buffer-name-async'.
 Commands that are run asynchronously do not accept user input.
 
 (fn COMMAND &optional ARG FILE-LIST)" '(dired-mode))
-(autoload 'dired-do-shell-command "dired-aux" "\
-Run a shell command COMMAND on the marked files.
+(autoload 'dired-do-shell-command "dired-aux"
+"Run a shell command COMMAND on the marked files.
 If no files are marked or a numeric prefix arg is given,
 the next ARG files are used.  Just \\[universal-argument] means the current file.
 The prompt mentions the file(s) or the marker, as appropriate.
@@ -199,16 +200,22 @@ prompted for the shell command to use interactively.
 Also see the `dired-confirm-shell-command' variable.
 
 (fn COMMAND &optional ARG FILE-LIST)" '(dired-mode))
-(autoload 'dired-run-shell-command "dired-aux" "\
-
+(autoload 'dired-run-shell-command "dired-aux"
+"
 
 (fn COMMAND)")
-(autoload 'dired-guess-shell-command "dired-aux" "\
-Ask user with PROMPT for a shell command, guessing a default from FILES.
+(autoload 'dired-guess-shell-command "dired-aux"
+"Ask user with PROMPT for a shell command, guessing a default from FILES.
 
 (fn PROMPT FILES)")
-(autoload 'dired-do-open "dired-aux" "\
-Open all marked (or next ARG) files using an external program.
+(autoload 'shell-command-do-open "dired-aux"
+"Open each of FILES using an external program.
+This \"opens\" the file(s) using the external command that is most
+appropriate for the file(s) according to the system conventions.
+
+(fn FILES)")
+(autoload 'dired-do-open "dired-aux"
+"Open all marked (or next ARG) files using an external program.
 This \"opens\" the file(s) using the external command that is most
 appropriate for the file(s) according to the system conventions.
 If files are marked, run the command on each marked file.  Otherwise,
@@ -217,8 +224,8 @@ file at point.  The appropriate command to \"open\" a file on each
 system is determined by `shell-command-guess-open'.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-kill-lines "dired-aux" "\
-Remove all marked lines, or the next ARG lines.
+(autoload 'dired-do-kill-lines "dired-aux"
+"Remove all marked lines, or the next ARG lines.
 The files or directories on those lines are _not_ deleted.  Only the
 Dired listing is affected.  To restore the removals, use \\[revert-buffer].
 
@@ -240,19 +247,19 @@ lines removed by this invocation, for the reporting message.
 A FMT of \"\" will suppress the messaging.
 
 (fn &optional ARG FMT INIT-COUNT)" '(dired-mode))
-(autoload 'dired-do-compress-to "dired-aux" "\
-Compress selected files and directories to an archive.
+(autoload 'dired-do-compress-to "dired-aux"
+"Compress selected files and directories to an archive.
 Prompt for the archive file name.
 Choose the archiving command based on the archive file-name extension
 and `dired-compress-files-alist'." '(dired-mode))
-(autoload 'dired-compress-file "dired-aux" "\
-Compress or uncompress FILE.
+(autoload 'dired-compress-file "dired-aux"
+"Compress or uncompress FILE.
 Return the name of the compressed or uncompressed file.
 Return nil if no change in files.
 
 (fn FILE)")
-(autoload 'dired-query "dired-aux" "\
-Format PROMPT with ARGS, query user, and store the result in SYM.
+(autoload 'dired-query "dired-aux"
+"Format PROMPT with ARGS, query user, and store the result in SYM.
 The return value is either nil or t.
 
 The user may type y or SPC to accept once; n or DEL to skip once;
@@ -264,25 +271,34 @@ return automatically without querying the user.  If SYM is !,
 return t; if SYM is q or ESC, return nil.
 
 (fn SYM PROMPT &rest ARGS)")
-(autoload 'dired-do-compress "dired-aux" "\
-Compress or uncompress marked (or next ARG) files.
+(autoload 'dired-do-compress "dired-aux"
+"Compress or uncompress marked (or next ARG) files.
 If invoked on a directory, compress all of the files in
 the directory and all of its subdirectories, recursively,
 into a .tar.gz archive.
 If invoked on a .tar.gz or a .tgz or a .zip or a .7z archive,
 uncompress and unpack all the files in the archive.
 
-(fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-byte-compile "dired-aux" "\
-Byte compile marked (or next ARG) Emacs Lisp files.
+When called from Lisp, if ARG is the symbol `marked', compress
+only the marked files, or none if no files are marked.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-load "dired-aux" "\
-Load the marked (or next ARG) Emacs Lisp files.
+(autoload 'dired-do-byte-compile "dired-aux"
+"Byte compile marked (or next ARG) Emacs Lisp files.
+
+When called from Lisp, if ARG is the symbol `marked', byte-compile
+only the marked files, or none if no files are marked.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-redisplay "dired-aux" "\
-Redisplay all marked (or next ARG) files.
+(autoload 'dired-do-load "dired-aux"
+"Load the marked (or next ARG) Emacs Lisp files.
+
+When called from Lisp, if ARG is the symbol `marked', load
+only the marked files, or none if no files are marked.
+
+(fn &optional ARG)" '(dired-mode))
+(autoload 'dired-do-redisplay "dired-aux"
+"Redisplay all marked (or next ARG) files.
 If on a subdir line, redisplay that subdirectory.  In that case,
 a prefix arg lets you edit the `ls' switches used for the new listing.
 
@@ -294,46 +310,53 @@ You can reset all subdirectory switches to the default using
 \\<dired-mode-map>\\[dired-reset-subdir-switches].
 See Info node `(emacs)Subdir switches' for more details.
 
-(fn &optional ARG TEST-FOR-SUBDIR)" '(dired-mode))
-(autoload 'dired-add-file "dired-aux" "\
+When called from Lisp, if ARG is the symbol `marked', redisplay
+only the marked files, or none if no files are marked.
 
+(fn &optional ARG TEST-FOR-SUBDIR)" '(dired-mode))
+(autoload 'dired-add-file "dired-aux"
+"
 
 (fn FILENAME &optional MARKER-CHAR)")
-(autoload 'dired-remove-file "dired-aux" "\
-Remove entry FILE on each Dired buffer.
+(autoload 'dired-remove-file "dired-aux"
+"Remove entry FILE on each Dired buffer.
 Note this doesn't delete FILE in the file system.
 See `dired-delete-file' in case you wish that.
 
 (fn FILE)")
-(autoload 'dired-relist-file "dired-aux" "\
-Create or update the line for FILE in all Dired buffers it would belong in.
+(autoload 'dired-relist-file "dired-aux"
+"Create or update the line for FILE in all Dired buffers it would belong in.
 
 (fn FILE)")
-(autoload 'dired-copy-file "dired-aux" "\
-
+(autoload 'dired-copy-file "dired-aux"
+"
 
 (fn FROM TO OK-FLAG)")
-(autoload 'dired-rename-file "dired-aux" "\
-Rename FILE to NEWNAME.
+(autoload 'dired-rename-file "dired-aux"
+"Rename FILE to NEWNAME.
 Signal a `file-already-exists' error if a file NEWNAME already exists
 unless OK-IF-ALREADY-EXISTS is non-nil.
 
 (fn FILE NEWNAME OK-IF-ALREADY-EXISTS)")
-(autoload 'dired-create-directory "dired-aux" "\
-Create a directory called DIRECTORY.
+(autoload 'dired-create-directory "dired-aux"
+"Create a directory called DIRECTORY.
 Parent directories of DIRECTORY are created as needed.
 If DIRECTORY already exists, signal an error.
 
 (fn DIRECTORY)" '(dired-mode))
-(autoload 'dired-create-empty-file "dired-aux" "\
-Create an empty file called FILE.
-Add a new entry for the new file in the Dired buffer.
+(autoload 'dired-create-empty-file "dired-aux"
+"Create an empty file called FILE.
 Parent directories of FILE are created as needed.
+Add an entry in the Dired buffer for the topmost new parent
+directory of FILE, if created, otherwise for the new file.
+If user option `dired-create-empty-file-in-current-directory' is
+non-nil, act on the current subdirectory by default, otherwise act on
+the default directory by default.
 If FILE already exists, signal an error.
 
 (fn FILE)" '(dired-mode))
-(autoload 'dired-do-copy "dired-aux" "\
-Copy all marked (or next ARG) files, or copy the current file.
+(autoload 'dired-do-copy "dired-aux"
+"Copy all marked (or next ARG) files, or copy the current file.
 ARG has to be numeric for above functionality.  See
 `dired-get-marked-files' for more details.
 
@@ -365,8 +388,8 @@ element 4 (\\[universal-argument]), the inverted value of
 Also see `dired-do-revert-buffer'.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-symlink "dired-aux" "\
-Make symbolic links to current file or all marked (or next ARG) files.
+(autoload 'dired-do-symlink "dired-aux"
+"Make symbolic links to current file or all marked (or next ARG) files.
 When operating on just the current file, you specify the new name.
 When operating on multiple or marked files, you specify a directory
 and new symbolic links are made in that directory
@@ -379,8 +402,8 @@ For relative symlinks, use \\[dired-do-relsymlink].
 Also see `dired-do-revert-buffer'.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-relsymlink "dired-aux" "\
-Relative symlink all marked (or next ARG) files into a directory.
+(autoload 'dired-do-relsymlink "dired-aux"
+"Relative symlink all marked (or next ARG) files into a directory.
 Otherwise make a relative symbolic link to the current file.
 This creates relative symbolic links like
 
@@ -393,8 +416,8 @@ not absolute ones like
 For absolute symlinks, use \\[dired-do-symlink].
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-hardlink "dired-aux" "\
-Add names (hard links) current file or all marked (or next ARG) files.
+(autoload 'dired-do-hardlink "dired-aux"
+"Add names (hard links) current file or all marked (or next ARG) files.
 When operating on just the current file, you specify the new name.
 When operating on multiple or marked files, you specify a directory
 and new hard links are made in that directory
@@ -405,8 +428,8 @@ suggested for the target directory depends on the value of
 Also see `dired-do-revert-buffer'.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-rename "dired-aux" "\
-Rename current file or all marked (or next ARG) files.
+(autoload 'dired-do-rename "dired-aux"
+"Rename current file or all marked (or next ARG) files.
 When renaming just the current file, you specify the new name.
 When renaming multiple or marked files, you specify a directory.
 This command also renames any buffers that are visiting the files.
@@ -416,8 +439,8 @@ of `dired-dwim-target', which see.
 Also see `dired-do-revert-buffer'.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-do-rename-regexp "dired-aux" "\
-Rename selected files whose names match REGEXP to NEWNAME.
+(autoload 'dired-do-rename-regexp "dired-aux"
+"Rename selected files whose names match REGEXP to NEWNAME.
 
 With non-zero prefix argument ARG, the command operates on the next ARG
 files.  Otherwise, it operates on all the marked files, or the current
@@ -432,37 +455,37 @@ With a zero prefix arg, renaming by regexp affects the absolute file name.
 Normally, only the non-directory part of the file name is used and changed.
 
 (fn REGEXP NEWNAME &optional ARG WHOLE-NAME)" '(dired-mode))
-(autoload 'dired-do-copy-regexp "dired-aux" "\
-Copy selected files whose names match REGEXP to NEWNAME.
+(autoload 'dired-do-copy-regexp "dired-aux"
+"Copy selected files whose names match REGEXP to NEWNAME.
 See function `dired-do-rename-regexp' for more info.
 
 (fn REGEXP NEWNAME &optional ARG WHOLE-NAME)" '(dired-mode))
-(autoload 'dired-do-hardlink-regexp "dired-aux" "\
-Hardlink selected files whose names match REGEXP to NEWNAME.
+(autoload 'dired-do-hardlink-regexp "dired-aux"
+"Hardlink selected files whose names match REGEXP to NEWNAME.
 See function `dired-do-rename-regexp' for more info.
 
 (fn REGEXP NEWNAME &optional ARG WHOLE-NAME)" '(dired-mode))
-(autoload 'dired-do-symlink-regexp "dired-aux" "\
-Symlink selected files whose names match REGEXP to NEWNAME.
+(autoload 'dired-do-symlink-regexp "dired-aux"
+"Symlink selected files whose names match REGEXP to NEWNAME.
 See function `dired-do-rename-regexp' for more info.
 
 (fn REGEXP NEWNAME &optional ARG WHOLE-NAME)" '(dired-mode))
-(autoload 'dired-do-relsymlink-regexp "dired-aux" "\
-RelSymlink all marked files containing REGEXP to NEWNAME.
+(autoload 'dired-do-relsymlink-regexp "dired-aux"
+"RelSymlink all marked files containing REGEXP to NEWNAME.
 See functions `dired-do-rename-regexp' and `dired-do-relsymlink'
 for more info.
 
 (fn REGEXP NEWNAME &optional ARG WHOLE-NAME)" '(dired-mode))
-(autoload 'dired-upcase "dired-aux" "\
-Rename all marked (or next ARG) files to upper case.
+(autoload 'dired-upcase "dired-aux"
+"Rename all marked (or next ARG) files to upper case.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-downcase "dired-aux" "\
-Rename all marked (or next ARG) files to lower case.
+(autoload 'dired-downcase "dired-aux"
+"Rename all marked (or next ARG) files to lower case.
 
 (fn &optional ARG)" '(dired-mode))
-(autoload 'dired-maybe-insert-subdir "dired-aux" "\
-Insert this subdirectory into the same Dired buffer.
+(autoload 'dired-maybe-insert-subdir "dired-aux"
+"Insert this subdirectory into the same Dired buffer.
 If it is already present, just move to it (type \\[dired-do-redisplay] to refresh),
   else inserts it at its natural place (as `ls -lR' would have done).
 With a prefix arg, you may edit the ls switches used for this listing.
@@ -479,8 +502,8 @@ You can reset all subdirectory switches to the default using
 See Info node `(emacs)Subdir switches' for more details.
 
 (fn DIRNAME &optional SWITCHES NO-ERROR-IF-NOT-DIR-P)" '(dired-mode))
-(autoload 'dired-insert-subdir "dired-aux" "\
-Insert this subdirectory into the same Dired buffer.
+(autoload 'dired-insert-subdir "dired-aux"
+"Insert this subdirectory into the same Dired buffer.
 If it is already present, overwrite the previous entry;
   otherwise, insert it at its natural place (as `ls -lR' would
   have done).
@@ -490,13 +513,13 @@ With a prefix arg, you may edit the `ls' switches used for this listing.
 This function takes some pains to conform to `ls -lR' output.
 
 (fn DIRNAME &optional SWITCHES NO-ERROR-IF-NOT-DIR-P)" '(dired-mode))
-(autoload 'dired-prev-subdir "dired-aux" "\
-Go to previous subdirectory, regardless of level.
+(autoload 'dired-prev-subdir "dired-aux"
+"Go to previous subdirectory, regardless of level.
 When called interactively and not on a subdir line, go to this subdir's line.
 
 (fn ARG &optional NO-ERROR-IF-NOT-FOUND NO-SKIP)" '(dired-mode))
-(autoload 'dired-goto-subdir "dired-aux" "\
-Go to end of header line of inserted directory DIR in this Dired buffer.
+(autoload 'dired-goto-subdir "dired-aux"
+"Go to end of header line of inserted directory DIR in this Dired buffer.
 When called interactively, prompt for the inserted subdirectory
 to go to.
 
@@ -504,46 +527,46 @@ Return value of point on success, otherwise return nil.
 The next char is \\n.
 
 (fn DIR)" '(dired-mode))
-(autoload 'dired-mark-subdir-files "dired-aux" "\
-Mark all files except `.' and `..' in current subdirectory.
+(autoload 'dired-mark-subdir-files "dired-aux"
+"Mark all files except `.' and `..' in current subdirectory.
 If the Dired buffer shows multiple directories, this command
 marks the files listed in the subdirectory that point is in." '(dired-mode))
-(autoload 'dired-kill-subdir "dired-aux" "\
-Remove all lines of current subdirectory.
+(autoload 'dired-kill-subdir "dired-aux"
+"Remove all lines of current subdirectory.
 Lower levels are unaffected.
 
 (fn &optional REMEMBER-MARKS)" '(dired-mode))
-(autoload 'dired-tree-up "dired-aux" "\
-Go up ARG levels in the Dired tree.
+(autoload 'dired-tree-up "dired-aux"
+"Go up ARG levels in the Dired tree.
 
 (fn ARG)" '(dired-mode))
-(autoload 'dired-tree-down "dired-aux" "\
-Go down in the Dired tree." '(dired-mode))
-(autoload 'dired-hide-subdir "dired-aux" "\
-Hide or unhide the current subdirectory and move to next directory.
+(autoload 'dired-tree-down "dired-aux"
+"Go down in the Dired tree." '(dired-mode))
+(autoload 'dired-hide-subdir "dired-aux"
+"Hide or unhide the current subdirectory and move to next directory.
 Optional prefix arg is a repeat factor.
 Use \\[dired-hide-all] to (un)hide all directories.
 
 (fn ARG)" '(dired-mode))
-(autoload 'dired-hide-all "dired-aux" "\
-Hide all subdirectories, leaving only their header lines.
+(autoload 'dired-hide-all "dired-aux"
+"Hide all subdirectories, leaving only their header lines.
 If there is already something hidden, make everything visible again.
 Use \\[dired-hide-subdir] to (un)hide a particular subdirectory.
 
 (fn &optional IGNORED)" '(dired-mode))
-(autoload 'dired-isearch-filenames-setup "dired-aux" "\
-Set up isearch to search in Dired file names.
+(autoload 'dired-isearch-filenames-setup "dired-aux"
+"Set up isearch to search in Dired file names.
 Intended to be added to `isearch-mode-hook'.")
-(autoload 'dired-isearch-filenames "dired-aux" "\
-Search for a string using Isearch only in file names in the Dired buffer." '(dired-mode))
-(autoload 'dired-isearch-filenames-regexp "dired-aux" "\
-Search for a regexp using Isearch only in file names in the Dired buffer." '(dired-mode))
-(autoload 'dired-do-isearch "dired-aux" "\
-Search for a string through all marked files using Isearch." '(dired-mode))
-(autoload 'dired-do-isearch-regexp "dired-aux" "\
-Search for a regexp through all marked files using Isearch." '(dired-mode))
-(autoload 'dired-do-search "dired-aux" "\
-Search through all marked files for a match for REGEXP.
+(autoload 'dired-isearch-filenames "dired-aux"
+"Search for a string using Isearch only in file names in the Dired buffer." '(dired-mode))
+(autoload 'dired-isearch-filenames-regexp "dired-aux"
+"Search for a regexp using Isearch only in file names in the Dired buffer." '(dired-mode))
+(autoload 'dired-do-isearch "dired-aux"
+"Search for a string through all marked files using Isearch." '(dired-mode))
+(autoload 'dired-do-isearch-regexp "dired-aux"
+"Search for a regexp through all marked files using Isearch." '(dired-mode))
+(autoload 'dired-do-search "dired-aux"
+"Search through all marked files for a match for REGEXP.
 If no files are marked, search through the file under point.
 
 Stops when a match is found.
@@ -551,8 +574,8 @@ Stops when a match is found.
 To continue searching for next match, use command \\[fileloop-continue].
 
 (fn REGEXP)" '(dired-mode))
-(autoload 'dired-do-query-replace-regexp "dired-aux" "\
-Do `query-replace-regexp' of FROM with TO, on all marked files.
+(autoload 'dired-do-query-replace-regexp "dired-aux"
+"Do `query-replace-regexp' of FROM with TO, on all marked files.
 As each match is found, the user must type a character saying
 what to do with it.  Type SPC or `y' to replace the match,
 DEL or `n' to skip and go to the next match.  For more directions,
@@ -563,15 +586,15 @@ If you exit the query-replace loop (\\[keyboard-quit], RET or q), you can
 resume the query replace with the command \\[fileloop-continue].
 
 (fn FROM TO &optional DELIMITED)" '(dired-mode))
-(autoload 'dired-do-replace-regexp-as-diff "dired-aux" "\
-Do `replace-regexp' of FROM with TO as diff, on all marked files.
+(autoload 'dired-do-replace-regexp-as-diff "dired-aux"
+"Do `replace-regexp' of FROM with TO as diff, on all marked files.
 Third arg DELIMITED (prefix arg) means replace only word-delimited matches.
 The replacements are displayed in the buffer *replace-diff* that
 you can later apply as a patch after reviewing the changes.
 
 (fn FROM TO &optional DELIMITED)" t)
-(autoload 'dired-do-find-regexp "dired-aux" "\
-Find all matches for REGEXP in all marked files.
+(autoload 'dired-do-find-regexp "dired-aux"
+"Find all matches for REGEXP in all marked files.
 
 If no files are marked, use the file under point.
 
@@ -583,8 +606,8 @@ directories.
 REGEXP should use constructs supported by your local `grep' command.
 
 (fn REGEXP)" '(dired-mode))
-(autoload 'dired-do-find-regexp-and-replace "dired-aux" "\
-Replace matches of FROM with TO, in all marked files.
+(autoload 'dired-do-find-regexp-and-replace "dired-aux"
+"Replace matches of FROM with TO, in all marked files.
 
 As each match is found, the user must type a character saying
 what to do with it.  Type SPC or `y' to replace the match,
@@ -604,15 +627,15 @@ Also see `query-replace' for user options that affect how this
 function works.
 
 (fn FROM TO)" '(dired-mode))
-(autoload 'dired-show-file-type "dired-aux" "\
-Print the type of FILE, according to the `file' command.
+(autoload 'dired-show-file-type "dired-aux"
+"Print the type of FILE, according to the `file' command.
 If you give a prefix argument \\[universal-argument] to this command, and
 FILE is a symbolic link, then the command will print the type
 of the target of the link instead.
 
 (fn FILE &optional DEREF-SYMLINKS)" '(dired-mode))
-(autoload 'dired-vc-next-action "dired-aux" "\
-Do the next logical version control operation on marked files/directories.
+(autoload 'dired-vc-next-action "dired-aux"
+"Do the next logical version control operation on marked files/directories.
 The VC control operation will operate on a fileset which includes
 the marked files/directories.  If no files/directories are marked, the
 fileset will include the single file/directory shown on the current line.
@@ -621,24 +644,24 @@ If only regular files are in the fileset, call `vc-next-action' with
 the same value of the VERBOSE argument (interactively, the prefix
 argument).
 
-If one or more directories are in the fileset, start `vc-dir' in the root
-directory of the repository that includes the current directory, with
-the same files/directories marked in the VC-Directory buffer that were
-marked in the original Dired buffer.  If the current directory doesn't
-belong to a VCS repository, prompt for a repository directory.  In this
-case, the VERBOSE argument is ignored.
+If one or more directories are in the fileset, start `vc-dir' in the
+root directory of the repository that includes the current directory,
+with all directories in the fileset marked in the VC-Directory buffer
+that were marked in the original Dired buffer.  If the current directory
+doesn't belong to a VCS repository, prompt for a repository directory.
+In this case, the VERBOSE argument is ignored.
 
 (fn VERBOSE)" '(dired-mode))
-(autoload 'dired-vc-deduce-fileset "dired-aux" "\
-
+(autoload 'dired-vc-deduce-fileset "dired-aux"
+"
 
 (fn &optional STATE-MODEL-ONLY-FILES NOT-STATE-CHANGING)")
 
 
 ;;; Generated autoloads from dired-x.el
 
-(autoload 'dired-omit-mode "dired-x" "\
-Toggle omission of uninteresting files in Dired (Dired-Omit mode).
+(autoload 'dired-omit-mode "dired-x"
+"Toggle omission of uninteresting files in Dired (Dired-Omit mode).
 With prefix argument ARG, enable Dired-Omit mode if ARG is positive,
 and disable it otherwise.
 

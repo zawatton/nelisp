@@ -1,6 +1,6 @@
 ;;; pp.el --- pretty printer for Emacs Lisp  -*- lexical-binding: t -*-
 
-;; Copyright (C) 1989, 1993, 2001-2025 Free Software Foundation, Inc.
+;; Copyright (C) 1989, 1993, 2001-2026 Free Software Foundation, Inc.
 
 ;; Author: Randal Schwartz <merlyn@stonehenge.com>
 ;; Keywords: lisp
@@ -71,9 +71,9 @@ Lisp syntax."
           (const :tag "Emacs<29 algorithm, fast and good enough" pp-28)
           (const :tag "Work hard for code (slow on large inputs)"
                  pp-emacs-lisp-code)
-          (const :tag "`pp-emacs-lisp-code' if `pp-use-max-width' else `pp-28'"
+          (const :tag "Work hard for code if `pp-use-max-width' non-nil, else as in Emacs<29"
                  pp-29)
-          function)
+          (function :tag "Custom function"))
   :version "30.1")
 
 (defvar pp--inhibit-function-formatting nil)
@@ -123,7 +123,7 @@ and should pretty print it at point into the current buffer."
 
 (defun pp-29 (beg-or-sexp &optional end) ;FIXME: Better name?
   "Prettify the current region with printed representation of a Lisp object.
-Uses the pretty-printing algorithm that was standard in Emacs-29,
+Uses the pretty-printing algorithm that was standard in Emacs 29,
 which, depending on `pp-use-max-width', will either use `pp-28'
 or `pp-emacs-lisp-code'."
   (if pp-use-max-width
@@ -208,7 +208,14 @@ it inserts and pretty-prints that arg at point."
                       (while
                           (progn
                             (funcall avoid-unbreakable)
-                            (not (zerop (skip-chars-backward " \t({[',.")))))
+                            (let ((pos (point)))
+                              (skip-chars-backward " \t({[',.")
+                              (while (and (memq (char-after) '(?\. ?\{))
+                                          (not (memq (char-before)
+                                                     '(nil ?\n ?\) \" ?\]))))
+                                ;; `.' and `{' within symbols?  (Bug#76715)
+                                (forward-char 1))
+                              (not (eql pos (point))))))
                       (if (bolp)
                           ;; The sexp already starts on its own line.
                           (progn (goto-char beg) nil)
@@ -271,7 +278,7 @@ it inserts and pretty-prints that arg at point."
 
 (defun pp-28 (beg &optional end)        ;FIXME: Better name?
   "Prettify the current region with printed representation of a Lisp object.
-Uses the pretty-printing algorithm that was standard before Emacs-30.
+Uses the pretty-printing algorithm that was standard before Emacs 30.
 Non-interactively can also be called with a single argument, in which
 case that argument will be inserted pretty-printed at point."
   (interactive "r")
@@ -308,17 +315,24 @@ can handle, whenever this is possible.
 Uses the pretty-printing code specified in `pp-default-function'.
 
 Output stream is STREAM, or value of `standard-output' (which see)."
-  (cond
-   ((and (eq (or stream standard-output) (current-buffer))
-         ;; Make sure the current buffer is setup sanely.
-         (eq (syntax-table) emacs-lisp-mode-syntax-table)
-         (eq indent-line-function #'lisp-indent-line))
-    ;; Skip the buffer->string->buffer middle man.
-    (funcall pp-default-function object)
-    ;; Preserve old behavior of (usually) finishing with a newline.
-    (unless (bolp) (insert "\n")))
-   (t
-    (princ (pp-to-string object) (or stream standard-output)))))
+  (let ((stream (or stream standard-output)))
+    (cond
+     ((and (eq stream (current-buffer))
+           ;; Make sure the current buffer is setup sanely.
+           (eq (syntax-table) emacs-lisp-mode-syntax-table)
+           (eq indent-line-function #'lisp-indent-line))
+      ;; Skip the buffer->string->buffer middle man.
+      (funcall pp-default-function object)
+      ;; Preserve old behavior of (usually) finishing with a newline.
+      (unless (bolp) (insert "\n")))
+     (t
+      (save-current-buffer
+        (when (bufferp stream) (set-buffer stream))
+        (let ((begin (point))
+              (cols (current-column)))
+          (princ (pp-to-string object) (or stream standard-output))
+          (when (and (> cols 0) (bufferp stream))
+            (indent-rigidly begin (point) cols))))))))
 
 ;;;###autoload
 (defun pp-display-expression (expression out-buffer-name &optional lisp)
@@ -380,15 +394,22 @@ space available between point and the window margin."
        'help-echo "mouse-2, RET: pretty print value in another buffer"))))
 
 ;;;###autoload
-(defun pp-eval-expression (expression)
+(defun pp-eval-expression (expression &optional insert-value)
   "Evaluate EXPRESSION and pretty-print its value.
-Also add the value to the front of the list in the variable `values'."
+Also add the value to the front of the list in the variable `values'.
+When called interactively, read an Emacs Lisp expression.
+With a prefix argument (when called from Lisp, with optional argument
+INSERT-VALUE non-nil), insert the value into the current buffer instead
+of displaying it in the echo area or a temporary buffer."
   (interactive
-   (list (read--expression "Eval: ")))
+   (list (read--expression "Eval: ") current-prefix-arg))
   (message "Evaluating...")
   (let ((result (eval expression lexical-binding)))
     (values--store-value result)
-    (pp-display-expression result "*Pp Eval Output*" pp-use-max-width)))
+    (if insert-value
+        (let (deactivate-mark)
+          (insert (pp-to-string result)))
+      (pp-display-expression result "*Pp Eval Output*" pp-use-max-width))))
 
 ;;;###autoload
 (defun pp-macroexpand-expression (expression)
@@ -484,8 +505,8 @@ the bounds of a region containing Lisp code to pretty-print."
     (cons (cond
            ((consp (cdr sexp))
             (let ((head (car sexp)))
-              (if-let (((null (cddr sexp)))
-                       (syntax-entry (assq head pp--quoting-syntaxes)))
+              (if-let* (((null (cddr sexp)))
+                        (syntax-entry (assq head pp--quoting-syntaxes)))
                   (progn
                     (insert (cdr syntax-entry))
                     (pp--insert-lisp (cadr sexp)))
@@ -570,7 +591,7 @@ the bounds of a region containing Lisp code to pretty-print."
     (insert ")")))
 
 (defun pp--format-definition (sexp indent edebug)
-  (while (and (cl-plusp indent)
+  (while (and (plusp indent)
               sexp)
     (insert " ")
     ;; We don't understand all the edebug specs.
@@ -585,7 +606,7 @@ the bounds of a region containing Lisp code to pretty-print."
         (pp--insert-lisp (car sexp)))
       (pop sexp))
     (pop edebug)
-    (cl-decf indent))
+    (decf indent))
   (when (stringp (car sexp))
     (insert "\n")
     (prin1 (pop sexp) (current-buffer)))
