@@ -79,9 +79,10 @@ before flipping the Vector/Record layout."
                   'nelisp-aot-compiler--top-level-literal-write-forms)
                  (lambda (&rest args)
                    (cl-incf materializer-calls)
-                   ;; Only aggregate literals (cons/string/vector) reach
-                   ;; the scratch vector; atoms are written directly.
-                   (unless (or (symbolp (nth 1 args)) (integerp (nth 1 args)))
+                   ;; Only cons and vector literals are built through a
+                   ;; scratch slot; nil, symbols, integers and strings
+                   ;; are written directly.
+                   (when (or (consp (nth 1 args)) (vectorp (nth 1 args)))
                      (push (nth 1 args) aggregate-literals))
                    (apply orig-mat args)))
                 ((symbol-function
