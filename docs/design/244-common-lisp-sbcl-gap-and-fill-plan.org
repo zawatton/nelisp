@@ -1,0 +1,398 @@
+#+TITLE: Common Lisp (SBCL) features missing from NeLisp, and how to fill them
+#+DATE: 2026-11-07
+#+STATUS: PROPOSED — survey and fill plan only; nothing here is implemented
+#+SCOPE: What SBCL offers that NeLisp lacks, which gaps are worth filling, at which layer, and in what order
+#+EVIDENCE: docs/design/evidence/cl-gap-20261107/
+
+* Summary
+
+NeLisp's goal is a practical Emacs-compatible runtime, not ANSI Common Lisp
+conformance.  This document therefore does not propose making NeLisp a Common
+Lisp.  It records the gaps and picks a fill for each one: a library, a runtime
+change, a third-party package, or an explicit decision not to fill it.
+
+Three findings matter most:
+
+1. =emacs-lib-core='s threads and finalizers are stubs.  =make-thread= runs its
+   function synchronously, =condition-wait= always signals, and =make-finalizer=
+   only builds a record.  Real =clone(2)= threads exist underneath (Doc 199), but
+   they have no blocking primitives and no CAS callable from ordinary Lisp.
+2. Restarts in =nl-condition= miss primitive errors, because =nl-handler-bind=
+   only sees =nl-signal=.  The built-in =handler-bind= does see them, so this
+   looks fixable in pure Lisp.
+3. Heap exhaustion aborts the process with exit code 88.  SBCL signals a
+   catchable condition.  Of the gaps here, this is the one most likely to
+   matter to a long-running editor or server regardless of any CL goal.
+
+* Evidence base
+
+| Item          | Value                                                     |
+|---------------+-----------------------------------------------------------|
+| NeLisp        | =origin/main= =ca0a70fd4= (2026-11-07), v1.5.0, fresh =make standalone-reader= |
+| SBCL          | 2.5.2.debian, x86-64                                      |
+| Name probe    | All 978 =COMMON-LISP= external symbols, bare and =cl-= prefixed |
+| Feature probe | One process per test, executed on the built binary        |
+| Source search | =lisp=, =src=, =packages=, =standalone-compat=, =vendor/emacs-lisp= |
+| Archives      | GNU ELPA (514), NonGNU ELPA (293), MELPA (6344), by name and one-line description |
+
+The raw name count (586 of 978 absent) is not a measure of missing features.
+It includes renames such as =rplaca= / =setcar= and syntax keywords, and classes
+and types were only tested as function or variable names.  =throw= is a false
+negative: it works but is not =fboundp=.
+
+Known limits of this evidence:
+
+- =bin/emacs-lib/nemacs --batch= failed with rc=255, so =emacs-lib-*= behavior
+  below comes from reading source, not from running it.
+- =compile-elisp-artifact= failed on the probe file with
+  =void-function: declare-function=, so native tail-call behavior comes from
+  Doc 171, not from a measurement.  That failure deserves its own look.
+- The source search matches definition lines only and can miss names generated
+  by macros.
+- No third-party package has been run on NeLisp.
+
+* Governing constraints
+
+These come from existing rules, and this document does not relax them.
+
+- *Stock Elisp stays stock.*  Fills are opt-in, and unannotated code behaves as
+  GNU Emacs does (Doc 196, Doc 198).  =(/ 1 3)= stays =0=.
+- *L1 first* (Doc 168).  L1 is macros and functions in a package, L2 is a compiler
+  pass, L3 is evaluator or reader extension.  L2 or L3 work starts only after an
+  equivalent L1 version has shipped and produced real usage data, and a feature
+  judged to need L3 at design time goes to Doc 90.
+- *Minimal native surface* (=AGENTS.md=).  A new native needs a named clause, a
+  measurement, a Lisp reference, and an inventory entry.  "Faster" does not
+  qualify.  Rust stays at zero.
+- *Naming.*  New CL-like API uses the =nl-= prefix.  It must not claim =cl-= names
+  or bare CL names, which belong to GNU Emacs and vendored =cl-lib=.
+- *Progress.*  Each work package adopted below needs a ledger under =tools/ai/=
+  before implementation, ending in an end-to-end criterion.
+
+* Gap inventory and chosen fill
+
+"Probe" means executed on the binary, "source" means read but not run.
+
+** Decided: do not fill
+
+| Gap                                       | Reason                                                          |
+|-------------------------------------------+-----------------------------------------------------------------|
+| Distinct character type                   | =?a= being an integer is Elisp semantics that packages rely on  |
+| Upcasing reader, =readtable-case=         | Would break Elisp symbol identity                               |
+| single/short/long floats                  | Elisp has one float type; no consumer needs others              |
+| Rationals or complex in stock arithmetic  | Forbidden by Doc 196; =nl-num= is the answer                    |
+| =defconstant= write protection            | GNU =defconst= allows =setq=; parity wins                       |
+| CL =defpackage= with multiple symbol homes | =nl-ns= deliberately chose checkable boundaries (Doc 189)      |
+| Logical pathnames, file versions          | No consumer                                                     |
+| =sb-sequence=, package locks, =defglobal= | No consumer; revisit only on demand                             |
+| ASDF, UIOP, =sb-rt=                       | =nelisp-pkg=, the project CLI and ERT already cover these roles |
+
+** To fill
+
+| WP | Gap                                                       | Evidence       | Fill                                        | Layer  | Cost   |
+|----+-----------------------------------------------------------+----------------+---------------------------------------------+--------+--------|
+|  1 | Restarts miss primitive errors; no standard restart API   | probe          | Complete =nl-condition=                     | L1     | Small  |
+|  2 | =ldb=, =dpb=, =boole=, =integer-length=, hyperbolics      | probe + source | Extend =nl-num=                             | L1     | Small  |
+|  3 | =format= =~= directives                                   | probe + source | Evaluate MELPA =cl-format=                  | L1     | Small  |
+|  4 | Multidimensional and fill-pointer arrays                  | probe          | New =nl-array=                              | L1     | Medium |
+|  5 | Stream objects, Gray-style extension                      | probe + source | New =nl-stream=                             | L1     | Medium |
+|  6 | Pathname objects                                          | probe + source | Thin struct in =nl-stream= or skip          | L1     | Small  |
+|  7 | Method combination, MOP introspection, =change-class=     | probe + source | CLOS extension package                      | L1, L3 | Medium |
+|  8 | Real mutex, condition variable, CAS, semaphore            | source         | Callable CAS, futex-based Lisp              | native | Large  |
+|  9 | Heap exhaustion aborts                                    | probe          | Signal =memory-full= from a reserve         | native | Large  |
+| 10 | Weak pointers, real finalizers, GC tuning                 | probe + source | Weak hash wrapper first, GC work later      | L1, native | Medium |
+| 11 | Developer tools                                           | probe + source | Reuse, then build                           | L1     | Medium |
+| 12 | Reader syntax                                             | probe          | Doc 90 route only                           | L3     | Large  |
+| 13 | FFI callbacks and varargs                                 | source         | Separate design when a consumer appears     | L2     | Large  |
+
+Owned elsewhere, not duplicated here:
+
+- *Tail calls:* Doc 171 (blocked at gate G4) and =nl-recur= / =nl-trampoline=.
+  Interpreted and byte-compiled deep tail recursion fails today (probe).
+- *Type-directed optimization:* Doc 236 Stages 3b-5.
+- *Generational or moving GC:* Doc 234 Stage 4 requires a new collector design.
+- *Image saving:* =dump-runtime-image= and Doc 240 cover the use case.  An
+  in-process =save-lisp-and-die= is not proposed.
+
+* Work packages
+
+** WP1: complete nl-condition
+
+The defect: =nl-handler-bind= keeps its own =nl--handler-stack=, so =(car 1)= under
+=nl-handler-bind= never reaches the handler (probe).  The built-in =handler-bind=
+ran its handler on the same error before unwinding (probe).
+
+Plan:
+
+- Reimplement =nl-handler-bind= on the built-in =handler-bind=, or have it install
+  both, so that primitive errors can invoke restarts.  Keep working on host Emacs
+  versions that have =handler-bind=, and state the behavior on those that do not.
+- Add =nl-with-simple-restart=, =nl-restart-bind=, =nl-cerror=, and the standard
+  restarts =abort=, =continue=, =muffle-warning=, =use-value=, =store-value=, all
+  =nl-= prefixed.
+- Add correctable =nl-check-type= and =nl-assert=.
+- Add =nl-signal-condition=, which returns nil when unhandled.  Today a non-error
+  symbol passed to =signal= fails with "Invalid error symbol" (probe).
+- Keep conditions as =(SYMBOL . DATA)= with =define-error= hierarchies.  Do not add
+  =define-condition= slot objects until a consumer needs them.
+
+Open point: an interactive debugger that offers restarts is a separate REPL
+feature.  It belongs with =nelisp-repl-development= and depends on this package.
+
+Acceptance: a restart chosen by a handler recovers from a real primitive error on
+=target/nelisp= and on host Emacs, with a negative control where no restart exists.
+
+** WP2: integer and float functions in nl-num
+
+Add =nl-ldb=, =nl-dpb=, =nl-byte=, =nl-boole=, =nl-integer-length=, =nl-logtest= and
+hyperbolics with their inverses, working with tag-13 bignums.  Provide =float-pi=
+compatibility only where GNU does, which is a parity matter rather than a CL one.
+
+=logcount=, =frexp=, =ldexp= exist only in =emacs-lib-core=.  Whether they should
+move down to the core is a Doc 141 boundary question, and is not decided here.
+
+Acceptance: differential test against SBCL over generated fixnum and bignum inputs.
+
+** WP3: format directives, by evaluating an existing package
+
+MELPA =cl-format= (=gitlab.com/akater/elisp-cl-format=, GPL-3.0-or-later, no
+dependencies beyond Emacs) defines 28 directives in =cl-format-builtins.el=,
+including =~R ~D ~F ~A ~S ~{ ~[ ~< ~/ ~?=.  The code dates from 2012.
+
+Plan: run it on =target/nelisp= with its =cl-format.ert= from the upstream repository
+(the MELPA tarball omits it).  Then decide, in this order of preference:
+
+1. Works, or nearly so: depend on it as an optional package and fix NeLisp defects
+   exposed along the way, following =nelisp-defect-peel=.
+2. Needs substantial changes: vendor it with attribution under GPL-3.0-or-later.
+3. Unsuitable: write =nl-format= with the same directive set.
+
+Pretty printing (=pprint-logical-block=, =pprint-dispatch=) is deferred; =pp= and
+=cl-print-object= cover current needs.  MELPA =ppp= is formatting only and does not
+fill this gap.
+
+Acceptance: differential test against SBCL =format= over a directive corpus.
+
+** WP4: nl-array
+
+Records holding a dimension list and a flat row-major vector.
+
+- =nl-make-array=, =nl-aref=, =gv= setter, =nl-array-dimensions=, =nl-array-rank=,
+  =nl-array-row-major-aref=.
+- Fill pointers and adjustment for rank-1 arrays: =nl-vector-push=,
+  =nl-vector-push-extend=.
+- Displacement through an offset and shared backing vector.
+- =:element-type= recorded and checked, with no specialized storage initially.
+
+Stock =aref= stays untouched.  Specialized storage belongs to the native compiler
+after usage data exists (L2), and to the off-heap regions of Doc 237 for large
+numeric data.  No archive package fills this gap (=vector-utils= is not arrays).
+
+Acceptance: differential test against SBCL, plus a native-compiled numeric workload
+measured against nested vectors.
+
+** WP5: nl-stream
+
+Elisp's stream convention (buffers, markers, functions, =t=) is kept for stock code.
+=nl-stream= adds objects: =cl-defstruct= classes with =cl-defgeneric= operations
+=nl-stream-read-char=, =-unread-char=, =-write-char=, =-read-byte=, =-write-byte=,
+=-file-position=, =-close=, in the spirit of Gray streams.
+
+Concrete classes: string input and output, file, broadcast, two-way, echo,
+concatenated.  Also bridge to function-valued =standard-output= so that stock
+=princ= can write to an =nl-stream=.
+
+File backend: start with =insert-file-contents-literally= and =write-region=.
+Unbuffered descriptor access needs a callable path to the OS; =nelisp-sys= is a typed
+AOT subset, not ordinary dynamic Elisp, so it needs a thin adapter or
+=syscall-direct=.
+
+GNU ELPA =stream= is lazy lists, not I/O, and does not apply.
+
+** WP6: pathnames
+
+Probably skip.  =expand-file-name= and friends serve Elisp code, and MELPA =f= covers
+convenience (it pulls in =s= and =dash=, so it should stay a user choice rather than
+a dependency).  Add a small =nl-pathname= struct only if =nl-stream= needs one.
+
+** WP7: CLOS extensions
+
+=cl-generic= and EIEIO already handle multiple inheritance, multiple dispatch, =eql=
+specializers and =:before= / =:after= / =:around= (probe).
+
+- *Method combination.*  Define =nl-define-method-combination= over =cl-generic='s
+  own extension points.  Doc 185's fast subset covers primary methods and
+  =cl-call-next-method= only, so check that such a generic reliably takes the full
+  path.
+- *MOP introspection.*  A read-only =nl-mop= over =eieio-class-slots=,
+  =eieio-class-parents=, =cl-find-method=: class slots, precedence list, applicable
+  methods.  Writable MOP is out of scope.
+- *=change-class=.*  Records have fixed length, so in-place change cannot be written
+  in L1 when the slot count grows.  An L1 =nl-change-class= returning a new object
+  loses identity and must be named accordingly.  True identity-preserving change
+  needs a native "become" primitive (clause 1) or forwarding, which conflicts with
+  the non-moving collector's assumptions and needs its own justification.  Defer.
+- *=&whole= in =cl-defmacro=*: this is a limit of the vendored =cl-macs=.  Do not patch
+  the vendor copy.
+- *=define-symbol-macro=*: global symbol macros require =macroexpand-all= to treat free
+  variables specially, which is outside stock semantics.  Defer until requested.
+
+** WP8: real synchronization
+
+Current state (source):
+
+| Name                       | State                                                        |
+|----------------------------+--------------------------------------------------------------|
+| =thread-spawn=, =nelisp-thread-join= | Real =clone(2)= threads (Doc 199 Tier 3b)          |
+| =atomic-fetch-add=         | Callable                                                     |
+| =atomic-compare-exchange=  | AOT DSL form only, not =fboundp= in ordinary Lisp            |
+| =make-thread=              | =emacs-lib-core= stub: =funcall= runs synchronously          |
+| =make-mutex=               | =emacs-lib-core= stub: a record with no locking              |
+| =condition-wait=           | =emacs-lib-core= stub: always signals                        |
+| Semaphore, thread interrupt | Absent                                                      |
+
+The stubs are guarded by =(unless (fboundp ...))= and give GNU type shapes.  They are
+reasonable as parity placeholders, but they are hazardous if anyone reads them as
+threading: code using =make-thread= for background work silently runs in the
+foreground and can hang on =condition-wait= semantics.  They should be documented as
+such whatever else is decided.
+
+Plan:
+
+1. Expose =atomic-compare-exchange= as a callable.  Clause 3 of the minimal native
+   surface already names atomics.
+2. Write =nl-mutex=, =nl-condvar= and =nl-semaphore= in Lisp over CAS and the futex
+   syscall through =syscall-direct=.  This has to park cooperatively with the GC
+   barrier from Doc 152 Stage 5: a thread blocked in a raw futex wait must not stall
+   collection.  That interaction is the main design risk and needs its own section
+   of the ledger before any code.
+3. Only then consider real =make-thread= semantics in =emacs-lib-core=.  GNU threads
+   are cooperative with a global lock, so a parallel implementation is not a drop-in
+   replacement.  This is a separate decision.
+
+=nelisp-actor= and =nl-clj-async= remain the high-level models.  MELPA =semaphore=
+needs condition variables and =aio= / =futur= do not provide parallelism, so none of
+them fill this gap.  =interrupt-thread= is deferred: it needs safepoint delivery.
+
+Acceptance: contended stress run on =target/nelisp= with GC forced throughout, plus a
+mutation check that removing the lock produces a detectable failure.
+
+** WP9: catchable heap exhaustion
+
+Under a 3 GiB address-space cap, an allocation loop inside =condition-case= ends with
+=nelisp: memory exhausted (memory-full)= and rc=88, while SBCL under a similar test
+reported =HEAP-EXHAUSTED-ERROR= to its handler (probe).
+
+Plan: keep a reserve region released on first failure, signal =memory-full= from the
+allocation slow path at a safe point, and re-arm the reserve after a successful GC.
+GNU Emacs has the same concept, which makes this a parity improvement as well.  The
+hard part is making the slow path safe to signal from every allocation site,
+including native code and worker threads.  Those sites should be enumerated first.
+If only the evaluator path can be made safe, ship that and keep aborting elsewhere.
+
+** WP10: weak references, finalizers, GC controls
+
+- =weak-ref= (MELPA, =github.com/skeeto/elisp-weak-ref=) is a one-entry weak hash
+  table with =:weakness t=.  NeLisp's weak tables work with =:weakness 'key= (probe).
+  Test the =t= case, then either use this package or write a four-line =nl-weak-ref=.
+- =make-finalizer= in =emacs-lib-core= never runs its function (source).  Real
+  finalizers need a post-mark hook: a native change under clause 2.
+- =gc-cons-threshold= is not bound in the core (probe).  Whether allocation pacing
+  should be user-tunable depends on Doc 234 and is not decided here.
+
+** WP11: developer tools
+
+| SBCL                  | Fill                                                           | Package source |
+|-----------------------+----------------------------------------------------------------+----------------|
+| =inspect=             | Try =inspector=, =tree-inspector=                              | GNU ELPA       |
+| =sb-cover=            | Vendor GNU =edebug.el= first, then try =undercover=, =testcover-audit= | MELPA  |
+| =who-calls=           | Existing =defs-*= index and development protocol; =elisp-refs= | MELPA          |
+| =trace=               | Vendor GNU =trace.el=, which builds on advice                  | GNU Emacs      |
+| =sb-sprof=            | Build: =SIGPROF= via =nl-signal= plus =backtrace-frames=       | new            |
+| =disassemble=         | Bytecode: vendor GNU =disass.el= if it fits NeLisp bytecode.  Native: map to =objdump= on artifacts | new |
+| =step=                | Edebug route, after =edebug.el= is vendored and shown to work  | GNU Emacs      |
+
+=trace.el=, =disass.el= and =edebug.el= are not in the tree at =ca0a70fd4=.  Only
+autoload entries such as =trace-function= in =vendor/emacs-lisp/loaddefs.el= exist, so
+those names can look defined while the implementation is missing.
+
+=flamegraph= (NonGNU) expects the GNU native profiler, which is absent, so it only
+becomes useful after the =sb-sprof= fill if that exposes a compatible interface.
+
+** WP12: reader syntax
+
+Probe results: =#.=, =#+=, =#-=, =#2A=, =#*= are invalid syntax; =1/3=, =1.5f0= read as
+symbols.  There is no readtable.  =?\N{...}= also failed on the probe, which is a GNU
+parity defect rather than a CL gap and should be fixed on its own.
+
+This is L3, so Doc 168 sends it to Doc 90.  Requirements if it proceeds:
+
+- Opt-in per =read= call or per file, using the Doc 189 reader-hook precedent
+  (=nelisp-read-namespace-resolve=, default nil).
+- Stock =read= output remains byte-identical.
+- =#.= defaults to off because it evaluates during =read=.
+
+The L1 versions come first: =nl-rational=, =nl-make-array= and =featurep= cover the
+semantics without new syntax.  Doc 196 Phase 5 remains deferred.
+
+** WP13: FFI callbacks
+
+=nl-libffi= states no callback or varargs support.  Callbacks need libffi closures,
+rooting for the Lisp function, and a rule for calls arriving on foreign threads.
+=emacs-ffi= is a GNU dynamic module and will not help.  Write a separate design when a
+consumer appears.
+
+** Not pursued for now
+
+=sb-simd= and =sb-rotate-byte=: =sb-simd= needs a vector IR in the native compiler, and
+no consumer asks for either.  =sb-unicode= normalization: =charprop.el= is present in
+=emacs-lib-core=; revisit if the Emacs-parity work needs =ucs-normalize=.
+
+* Archive search results with no usable candidate
+
+The archives returned nothing usable for restarts, rationals, complex numbers,
+multidimensional arrays, readtables, method combination, MOP, FFI, or thread pools.
+Names that look close but do not apply: =stream= (lazy lists), =multi= (Clojure-style
+multimethods), =yaxception= (Java-style exceptions), =bitpack= (binary packing).  The
+search covered names and one-line descriptions only, so absence is not proof.
+
+License check before any reuse: NeLisp is GPL-3.0.  GPL-2.0-only code cannot be
+combined, and repositories GitHub reports as unlicensed need their file headers read.
+
+* Recommended order
+
+Ordered by value for cost and by independence from each other.
+
+| Order | WP                  | Why now                                                    |
+|-------+---------------------+------------------------------------------------------------|
+|     1 | Stub documentation in WP8 | No code risk; prevents silent misuse                 |
+|     2 | WP1                 | Small, pure Lisp, repairs a real defect in a shipped package |
+|     3 | WP3 evaluation      | One test run decides reuse or rewrite                      |
+|     4 | WP2, WP10 weak refs | Small and independent                                      |
+|     5 | WP11 reuse trials   | Each trial also exposes substrate defects                  |
+|     6 | WP9                 | High value, but needs site enumeration first               |
+|     7 | WP8 synchronization | High value, highest design risk                            |
+|     8 | WP4, WP5, WP7       | Only when a consumer exists                                |
+|     - | WP12, WP13          | Doc 90 route or separate design                            |
+
+* Decisions needed from the owner
+
+1. *Is CL-style capability a goal at all, or only where an Emacs-compatible consumer
+   needs it?*  This document assumes the latter, which is why WP4, WP5 and WP7 wait
+   for a consumer.
+2. *Should real parallel =make-thread= ever replace the stub?*  It would differ from
+   GNU's cooperative threads, so parity and capability pull in different directions.
+3. *May optional third-party dependencies enter the tree?*  WP3 and WP11 assume they
+   may be used as optional packages, not as required ones.
+
+* Reproducing the probes
+
+=docs/design/evidence/cl-gap-20261107/= holds the name probe output
+(=name-probe.out=, columns: name, SBCL kind, then =F= / =V= for bare function or variable
+and =f= / =v= for the =cl-= prefixed form), the feature probe driver
+(=feature-probe.py=, run from a source checkout with =target/nelisp= built; it requires
+one unused positional argument and prints to stdout), and its output
+(=feature-probe.out=).  In that output values
+appear twice, because =--eval= also prints the value when it is the sole action.  The
+follow-up probes for EIEIO details, heap exhaustion and =nl-handler-bind= are not in
+that driver; the results are quoted in this document.
