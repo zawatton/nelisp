@@ -29,6 +29,16 @@
               (eval form t))))
       (end-of-file nil))))
 
+;; The FX code calls the closure-kind builtins `nelisp--closure-p' and
+;; `nelisp--closure-cons' (02a1dccef).  Host Emacs lacks them and the load
+;; filter above skips the prelude's `unless fboundp' fallback, so define the
+;; cons-shaped fallback here; otherwise results depend on which earlier test
+;; file happened to define them.
+(unless (fboundp 'nelisp--closure-p)
+  (defun nelisp--closure-p (x) (eq (car-safe x) 'closure)))
+(unless (fboundp 'nelisp--closure-cons)
+  (defun nelisp--closure-cons (x) (and (eq (car-safe x) 'closure) x)))
+
 (defmacro closurevm-isolated (&rest body)
   `(let ((nelisp--fx-table (make-hash-table :test 'eq))
          (nelisp--fx-pending (make-hash-table :test 'eq))
