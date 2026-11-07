@@ -20,17 +20,8 @@
 
 (defun calendar--vendor-file ()
   "Return the vendored `calendar.el' path for standalone loads, or nil."
-  (let* ((root (or (and (boundp 'nelisp-emacs-vendor-root)
-                        nelisp-emacs-vendor-root)
-                   (let ((here (or (and (boundp 'load-file-name) load-file-name)
-                                   (and (boundp 'buffer-file-name) buffer-file-name))))
-                     (and here
-                          (expand-file-name "../vendor"
-                                            (file-name-directory here))))))
-         (file (and root
-                    (expand-file-name "emacs-lisp/calendar/calendar.el"
-                                      root))))
-    (and file (file-readable-p file) file)))
+  (require 'nelisp-emacs-vendor)
+  (ignore-errors (nelisp-emacs-vendor-file "calendar/calendar.el")))
 
 (defun calendar--host-load-standard ()
   "Load the vendored `calendar' library on host Emacs when available.

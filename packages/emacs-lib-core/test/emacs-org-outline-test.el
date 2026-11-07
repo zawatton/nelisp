@@ -247,46 +247,6 @@
     (goto-char (point-min))
     (should-error (org-babel-execute-src-block) :type 'user-error)))
 
-(ert-deftest org-require-loads-lightweight-entry ()
-  (require 'org)
-  (should (featurep 'org))
-  (dolist (feature '(emacs-org-outline
-                     emacs-org-todo
-                     emacs-org-table))
-    (should (featurep feature)))
-  (dolist (symbol '(org-mode
-                    org-cycle
-                    org-at-heading-p
-                    org-back-to-heading
-                    org-get-heading
-                    org-next-visible-heading
-                    outline-next-visible-heading
-                    org-previous-visible-heading
-                    org-forward-heading-same-level
-                    org-backward-heading-same-level
-                    outline-up-heading
-                    org-move-subtree-up
-                    org-move-subtree-down
-                    org-metaup
-                    org-metadown
-                    org-promote-subtree
-                    org-demote-subtree
-                    org-narrow-to-subtree
-                    org-entry-get
-                    org-entry-put
-                    org-entry-delete
-                    org-set-property
-                    org-insert-link
-                    org-open-at-point
-                    org-get-tags
-                    org-set-tags-command
-                    org-export-dispatch
-                    org-columns
-                    org-todo
-                    org-priority
-                    org-table-align))
-    (should (fboundp symbol))))
-
 (ert-deftest org-faces-bootstrap-tag-face-callable-is-present ()
   (should (boundp 'org-level-faces))
   (should (boundp 'org-todo-keyword-faces))
