@@ -22,8 +22,9 @@ Three findings matter most:
    and =make-finalizer= are stubs.  The thread gap is an integration task, not a
    design task.
 2. Restarts in =nl-condition= miss primitive errors, because =nl-handler-bind=
-   only sees =nl-signal=.  The built-in =handler-bind= does see them, so this
-   looks fixable in pure Lisp.
+   only sees =nl-signal=.  Bridging to the built-in =handler-bind= reaches them, but on
+   the binary that handler runs after unwinding (Doc 245 D8), so the fix is only
+   partial until the core changes.
 3. Heap exhaustion aborts the process with exit code 88.  SBCL signals a
    catchable condition.  Of the gaps here, this is the one most likely to
    matter to a long-running editor or server regardless of any CL goal.
@@ -128,8 +129,10 @@ Owned elsewhere, not duplicated here:
 ** WP1: complete nl-condition
 
 The defect: =nl-handler-bind= keeps its own =nl--handler-stack=, so =(car 1)= under
-=nl-handler-bind= never reaches the handler (probe).  The built-in =handler-bind=
-ran its handler on the same error before unwinding (probe).
+=nl-handler-bind= never reaches the handler (probe).  The built-in =handler-bind= ran its
+handler on the same error, but a later probe showed that on the binary it runs after
+unwinding, unlike GNU Emacs (Doc 245 D8).  The original wording here said "before
+unwinding"; the first probe did not test that.
 
 Plan:
 

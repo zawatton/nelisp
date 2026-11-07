@@ -16,12 +16,22 @@
 
 ;;; Code:
 
-;; Installs the shim, loads nl-prelude + its tests, runs them (errors
-;; on failure), and leaves `nl-smoke--tests' populated.
-(load "packages/nl-prelude/test/nl-prelude-standalone-smoke.el")
-
-;; Reset the registry and run only this package's tests.
-(setq nl-smoke--tests nil)
+;; Two harness modes.  When the binary provides a real `ert'
+;; (`ert-run-tests-batch' is bound; the standalone compat layer does),
+;; load nl-prelude's sources directly and run this package's tests
+;; through ert.  Otherwise fall back to the mini shim from the
+;; nl-prelude smoke, which also runs the nl-prelude suite and leaves
+;; `nl-smoke--tests' populated.
+(require 'ert)
+(defvar nl-condition-smoke--real-ert (fboundp 'ert-run-tests-batch)
+  "Non-nil when tests run through the binary's own `ert'.")
+(if nl-condition-smoke--real-ert
+    (progn
+      (load "packages/nl-prelude/src/nl-prelude-trampoline.el")
+      (load "packages/nl-prelude/src/nl-prelude.el"))
+  (load "packages/nl-prelude/test/nl-prelude-standalone-smoke.el")
+  ;; Reset the registry and run only this package's tests.
+  (setq nl-smoke--tests nil))
 
 (load "packages/nl-condition/src/nl-condition.el")
 (load "packages/nl-condition/test/nl-condition-test.el")
@@ -30,33 +40,76 @@
 ;; keeps the demo honest on the substrate its README claims to support.
 (load "packages/nl-condition/test/nl-condition-example-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
-      (ran 0)
-      (failures nil))
-  (while tests
-    (let ((test (car tests)))
-      (condition-case err
-          (progn
-            (funcall (cdr test))
-            (setq ran (1+ ran)))
-        (error
-         (setq failures
-               (cons (format "%s: %S" (car test) err) failures)))))
-    (setq tests (cdr tests)))
-  ;; `tools/ai/nelisp-ai.sh gate NAME -- ...' requires this exact line to
-  ;; report what the gate checked; its absence is itself a hard failure
-  ;; there (see tools/ai/nelisp-ai.sh's `cmd_gate').
-  (princ (format "GATE-COUNT checked=%d findings=%d\n" ran (length failures)))
-  (when failures
-    (let ((all failures))
-      (while all
-        (princ (format "FAIL %s\n" (car all)))
-        (setq all (cdr all))))
-    (error "nl-condition-standalone-smoke: %d failure(s), %d passed"
-           (length failures) ran))
-  (when (< ran 33)
-    (error "nl-condition-standalone-smoke: only %d tests ran (expected >= 33)"
-           ran))
-  (princ (format "nl-condition-standalone-smoke: PASS (%d tests)\n" ran)))
+(if nl-condition-smoke--real-ert
+    (let* ((stats (ert-run-tests-batch "^nl-condition-"))
+           (ran (ert-stats-completed stats))
+           (bad (ert-stats-completed-unexpected stats)))
+      (princ (format "GATE-COUNT checked=%d findings=%d\n" ran bad))
+      (when (> bad 0)
+        (error "nl-condition-standalone-smoke: %d failure(s), %d ran" bad ran))
+      (when (< ran 33)
+        (error "nl-condition-standalone-smoke: only %d tests ran (expected >= 33)"
+               ran))
+      (princ (format "nl-condition-standalone-smoke: PASS (%d tests)\n" ran)))
+  (let ((tests (reverse nl-smoke--tests))
+        (ran 0)
+        (failures nil))
+    (while tests
+      (let ((test (car tests)))
+        (condition-case err
+            (progn
+              (funcall (cdr test))
+              (setq ran (1+ ran)))
+          (error
+           (setq failures
+                 (cons (format "%s: %S" (car test) err) failures)))))
+      (setq tests (cdr tests)))
+    ;; `tools/ai/nelisp-ai.sh gate NAME -- ...' requires this exact line to
+    ;; report what the gate checked; its absence is itself a hard failure
+    ;; there (see tools/ai/nelisp-ai.sh's `cmd_gate').
+    (princ (format "GATE-COUNT checked=%d findings=%d\n" ran (length failures)))
+    (when failures
+      (let ((all failures))
+        (while all
+          (princ (format "FAIL %s\n" (car all)))
+          (setq all (cdr all))))
+      (error "nl-condition-standalone-smoke: %d failure(s), %d passed"
+             (length failures) ran))
+    (when (< ran 33)
+      (error "nl-condition-standalone-smoke: only %d tests ran (expected >= 33)"
+             ran))
+    (princ (format "nl-condition-standalone-smoke: PASS (%d tests)\n" ran))))
+
+;; Doc 244 WP1 end-to-end: a restart chosen by an `nl-handler-bind'
+;; handler recovers from a REAL primitive error, (car 1), and the
+;; negative control (no restart established) still reaches
+;; `condition-case'.  The marker below is printed only if both held.
+(let* ((seen-restart 'unset)
+       (recovered
+        (condition-case err
+            (nl-restart-case
+                (nl-handler-bind ((error
+                                   (lambda (_c)
+                                     (nl-invoke-restart 'recover 'ok))))
+                  (car 1)
+                  'not-reached)
+              (recover (v) (list 'recovered v)))
+          (error (list 'escaped err))))
+       (control
+        (condition-case err
+            (nl-handler-bind ((error
+                               (lambda (_c)
+                                 (setq seen-restart
+                                       (nl-find-restart 'recover)))))
+              (car 1)
+              'not-reached)
+          (wrong-type-argument (list 'propagated (car err))))))
+  (if (and (equal recovered '(recovered ok))
+           (equal control '(propagated wrong-type-argument))
+           (null seen-restart))
+      (princ "WP1-PRIMITIVE-RESTART-PASS\n")
+    (princ (format "WP1-PRIMITIVE-RESTART-FAIL recovered=%S control=%S seen=%S\n"
+                   recovered control seen-restart))
+    (error "nl-condition-standalone-smoke: WP1 primitive restart failed")))
 
 ;;; nl-condition-standalone-smoke.el ends here
