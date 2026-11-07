@@ -49402,46 +49402,6 @@ never on the build host.  Keep the original Lisp factory as the reference."
                        nelisp-standalone--repo-root))
     (buffer-string)))
 
-(defun nelisp-standalone--prelude-bootstrap-with-list-accessors ()
-  "Return function-cell setup, staged selectors, then a normal prelude load.
-Unlike `nelisp-standalone--prelude-source-with-list-accessors' (which
-inlines `scripts/nelisp-stdlib-prelude.el''s text directly into the
-caller's blob, so the prelude's own content never goes through the real
-`load' primitive), this variant re-loads the WHOLE prelude file via a
-genuine `(load PATH)' call.  `load' unconditionally calls `do-after-load-
-evaluation' on completion (\"called directly from the C code\", see
-`vendor/staged-emacs-lisp/subr.el') and THAT unconditionally calls
-`string-match-p' -- not merely for a matching `after-load-alist' entry,
-but every single time, to check the file name against the `/obsolete/'
-regexp.  So this `(load PATH)' call for `scripts/nelisp-stdlib-prelude.el'
-itself needs `string-match-p' already fbound, regardless of what any
-caller's own bootstrap does before or after this function returns -- see
-`nelisp-standalone--artifact-match-compat-src''s docstring for the
-artifact-family incident this caused (`compile-elisp-artifact' et al.,
-which reach this non-inline prelude variant with INLINE nil)."
-  (let* ((path (expand-file-name "scripts/nelisp-stdlib-prelude.el"
-                                 nelisp-standalone--repo-root))
-         (source (with-temp-buffer (insert-file-contents path) (buffer-string)))
-         (position (nelisp-standalone--prelude-source-boundary source)))
-    (concat (substring source 0 position)
-            (nelisp-standalone--vendor-list-accessors-src)
-            ;; `defun'/`fboundp'/`unless' are usable here (the function-cell
-            ;; setup up through POSITION, just inlined above, already
-            ;; established them), so the match-compat block can run before
-            ;; the `(load PATH)' below reaches its own `do-after-load-
-            ;; evaluation' call.
-            (nelisp-standalone--artifact-match-compat-src nil)
-   (nelisp-standalone--pcase-src)
-            (nelisp-standalone--prelude-kernel-src)
-            "\n"
-            (format "(load %S)\n" path)
-            "\n;; --- GNU Emacs 31.1 files.el: file attribute accessors ---\n"
-            (nelisp-vendor-source-forms
-             "vendor/staged-emacs-lisp/files.el"
-             '(file-attribute-size file-attribute-modification-time
-               file-attribute-file-identifier))
-            (nelisp-standalone--after-load-runtime-src))))
-
 (defun nelisp-standalone--after-load-runtime-src ()
   "Return standalone bridges that preserve GNU after-load callback context."
   (let ((core-bytecode (nelisp-standalone--core-bytecode-src)))
@@ -50799,48 +50759,7 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
             "  `(let ((nlre--smd-saved nlre--last-caps) (nlre--smd-buffer nlre--last-buffer))\n"
             "     (unwind-protect (progn ,@body)\n"
             "       (setq nlre--last-caps nlre--smd-saved nlre--last-buffer nlre--smd-buffer))))\n"
-            ;; TRIM was accepted and dropped: (split-string " a , b " ","
-            ;; nil " +") kept the spaces.  Emacs trims each piece with TRIM
-            ;; as a regexp anchored at both ends, and drops a piece that
-            ;; becomes empty when OMIT-NULLS is set.
-            ;; Emacs checks SEPARATORS before STRING, so a call with both
-            ;; wrong names the separator.
-            "(defun nelisp--literal-separator-p (sep)\n"
-            "  (let* ((i 0) (n (length sep)) (ok (> n 0)))\n"
-            "    (while (and ok (< i n))\n"
-            "      (when (memq (aref sep i) '(?. ?* ?+ ?? ?[ ?] ?^ ?$ ?\\\\)) (setq ok nil))\n"
-            "      (setq i (1+ i)))\n"
-            "    ok))\n"
-            "(defun nelisp--split-string-literal (s sep omit)\n"
-            "  (let ((pos 0) (n (length sep)) (out nil) (i nil))\n"
-            "    (while (setq i (string-search sep s pos))\n"
-            "      (unless (and omit (= i pos)) (setq out (cons (substring s pos i) out)))\n"
-            "      (setq pos (+ i n)))\n"
-            "    (unless (and omit (= pos (length s))) (setq out (cons (substring s pos) out)))\n"
-            "    (nreverse out)))\n"
-            "(defun split-string (s &optional sep omit trim)\n"
-            "  (length s)\n"
-            "  (when sep (unless (stringp sep) (signal 'wrong-type-argument (list 'stringp sep))))\n"
-            "  (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))\n"
-            ;; A separator with no regexp operator in it is a literal; split on
-            ;; it with the native `string-search' instead of the interpreted
-            ;; matcher (13 s -> under 1 s for the lines of a 709 KB SVG).
-            "  (let ((parts (if (and sep (nelisp--literal-separator-p sep))\n"
-            "                   (nelisp--split-string-literal s sep omit)\n"
-            "                 (nlre-split-string s sep omit))))\n"
-            "    (if (null trim) parts\n"
-            "      (let ((out nil))\n"
-            "        (dolist (p parts)\n"
-            "          (let ((q (string-trim-left (string-trim-right p trim) trim)))\n"
-            "            (unless (and omit (equal q \"\"))\n"
-            "              (setq out (cons q out)))))\n"
-            "        (nreverse out)))))\n"
-            ;; LIT/SUBEXP/START were accepted and dropped on the floor, so a
-            ;; caller asking for a literal replacement got backreference
-            ;; expansion and a caller passing SUBEXP had the whole match
-            ;; replaced.  The engine takes all three now.
-            "(defun replace-regexp-in-string (re rep s &optional fc lit subexp start)\n"
-            "  (nelisp--rris re rep s fc lit subexp start))\n"
+            (nelisp-standalone--regexp-split-replace-src)
             ;; fix/small-primitives-parity: `current-time' derived from the
             ;; already-working `float-time' (a plain IEEE double of epoch
             ;; seconds).  Minimal polyfill: decomposes into the host Emacs
@@ -52066,9 +51985,10 @@ When INLINE is non-nil, embed the file contents directly so a compiled command
 runtime cache does not replay source file loads on every command invocation."
   (let ((path (expand-file-name relative-path nelisp-standalone--repo-root)))
     (if (equal relative-path "scripts/nelisp-stdlib-prelude.el")
-        (if inline
-            (nelisp-standalone--prelude-source-with-list-accessors)
-          (nelisp-standalone--prelude-bootstrap-with-list-accessors))
+        ;; Always the inline prelude: only it carries the providers spliced
+        ;; into the prelude body (native buffer-local, the buffer bridge, the
+        ;; kernel), so a bootstrap that `load's the bare file cannot finish.
+        (nelisp-standalone--prelude-source-with-list-accessors)
       (if inline
           (with-temp-buffer
             (insert-file-contents path)
@@ -52076,6 +51996,53 @@ runtime cache does not replay source file loads on every command invocation."
             (unless (bolp) (insert "\n"))
             (buffer-string))
         (format "(load %S)\n" path)))))
+
+(defun nelisp-standalone--regexp-split-replace-src ()
+  "Return `split-string' and `replace-regexp-in-string' over the Doc 143 matcher.
+Shared by the reader prelude and the artifact command bootstraps."
+  (concat
+            ;; TRIM was accepted and dropped: (split-string " a , b " ","
+            ;; nil " +") kept the spaces.  Emacs trims each piece with TRIM
+            ;; as a regexp anchored at both ends, and drops a piece that
+            ;; becomes empty when OMIT-NULLS is set.
+            ;; Emacs checks SEPARATORS before STRING, so a call with both
+            ;; wrong names the separator.
+            "(defun nelisp--literal-separator-p (sep)\n"
+            "  (let* ((i 0) (n (length sep)) (ok (> n 0)))\n"
+            "    (while (and ok (< i n))\n"
+            "      (when (memq (aref sep i) '(?. ?* ?+ ?? ?[ ?] ?^ ?$ ?\\\\)) (setq ok nil))\n"
+            "      (setq i (1+ i)))\n"
+            "    ok))\n"
+            "(defun nelisp--split-string-literal (s sep omit)\n"
+            "  (let ((pos 0) (n (length sep)) (out nil) (i nil))\n"
+            "    (while (setq i (string-search sep s pos))\n"
+            "      (unless (and omit (= i pos)) (setq out (cons (substring s pos i) out)))\n"
+            "      (setq pos (+ i n)))\n"
+            "    (unless (and omit (= pos (length s))) (setq out (cons (substring s pos) out)))\n"
+            "    (nreverse out)))\n"
+            "(defun split-string (s &optional sep omit trim)\n"
+            "  (length s)\n"
+            "  (when sep (unless (stringp sep) (signal 'wrong-type-argument (list 'stringp sep))))\n"
+            "  (unless (stringp s) (signal 'wrong-type-argument (list 'stringp s)))\n"
+            ;; A separator with no regexp operator in it is a literal; split on
+            ;; it with the native `string-search' instead of the interpreted
+            ;; matcher (13 s -> under 1 s for the lines of a 709 KB SVG).
+            "  (let ((parts (if (and sep (nelisp--literal-separator-p sep))\n"
+            "                   (nelisp--split-string-literal s sep omit)\n"
+            "                 (nlre-split-string s sep omit))))\n"
+            "    (if (null trim) parts\n"
+            "      (let ((out nil))\n"
+            "        (dolist (p parts)\n"
+            "          (let ((q (string-trim-left (string-trim-right p trim) trim)))\n"
+            "            (unless (and omit (equal q \"\"))\n"
+            "              (setq out (cons q out)))))\n"
+            "        (nreverse out)))))\n"
+            ;; LIT/SUBEXP/START were accepted and dropped on the floor, so a
+            ;; caller asking for a literal replacement got backreference
+            ;; expansion and a caller passing SUBEXP had the whole match
+            ;; replaced.  The engine takes all three now.
+            "(defun replace-regexp-in-string (re rep s &optional fc lit subexp start)\n"
+            "  (nelisp--rris re rep s fc lit subexp start))\n"))
 
 (defun nelisp-standalone--artifact-match-compat-src (inline)
   "Return source defining the regexp engine plus the `string-match' family.
@@ -52126,6 +52093,8 @@ src', defensively, even though that path never actually loads
    "  (fset 'string-match (symbol-function 'nlre--string-match-entry)))\n"
    "(unless (fboundp 'string-match-p)\n"
    "  (fset 'string-match-p (symbol-function 'nlre--string-match-p-entry)))\n"
+   ;; Same split/replace definitions as the reader prelude.
+   (nelisp-standalone--regexp-split-replace-src)
    "(unless (fboundp 'match-beginning)\n"
    "  (fset 'match-beginning (symbol-function 'nlre-match-beginning)))\n"
    "(unless (fboundp 'match-end)\n"
@@ -52146,7 +52115,14 @@ src', defensively, even though that path never actually loads
    "           (usec (floor (* (- ft secs) 1000000))))\n"
    "      (list (floor secs 65536) (mod secs 65536) usec 0))))\n"))
 
-(defun nelisp-standalone--artifact-command-runtime-src (&optional inline)
+(defun nelisp-standalone--expand-artifact-bootstrap (source)
+  "Return bootstrap SOURCE host-expanded the way the reader's prelude is.
+The native cl-macs layer is gone, so `cl-defstruct' and friends do not exist
+at runtime until GNU cl-macs loads.  SOURCE must contain the cl-preloaded
+boundary; `nelisp-boot-image-expand-composed-prelude' signals otherwise."
+  (nelisp-boot-image-expand-composed-prelude source))
+
+(defun nelisp-standalone--artifact-command-runtime-src-raw (&optional inline)
   "Return source that defines standalone-reader artifact command runtime."
   (concat
    (format "(setq nelisp-standalone--backquote-file %S)\n"
@@ -52157,16 +52133,18 @@ src', defensively, even though that path never actually loads
    ;; DEFER-EASY-MMODE=t: see `nelisp-standalone--artifact-match-compat-
    ;; src''s docstring -- `load-path-src''s un-deferred `(require
    ;; 'easy-mmode)' used to run before `string-match-p' existed here.
-   (nelisp-standalone--load-path-src t)
    (nelisp-standalone--artifact-match-compat-src inline)
+   (nelisp-standalone--load-path-src t t)
    (nelisp-standalone--pcase-src)
    ;; Safe here (strictly after `string-match'); see `nelisp-standalone--faces-src'.
    (nelisp-standalone--faces-src)
+   (nelisp-boot-image-libraries-source)
    ;; Now that the matcher + string-match family are defined, the deferred
    ;; requires (and `cl-seq''s, matching the reader-repl-prelude's same
    ;; ordering) can run safely.
    "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n(require 'inline)\n"
    (nelisp-standalone--cl-preloaded-src)
+   "(require 'json)\n"
    (nelisp-standalone--artifact-runtime-file-src
     "src/nelisp-read.el" inline)
    (nelisp-standalone--artifact-runtime-file-src
@@ -52355,6 +52333,11 @@ src', defensively, even though that path never actually loads
    "      (symbol-function 'nelisp-standalone-artifact--read-all-from-string))\n"
    ""))
 
+(defun nelisp-standalone--artifact-command-runtime-src (&optional inline)
+  "Return `nelisp-standalone--artifact-command-runtime-src-raw' with its pre-cl-macs part host-expanded."
+  (nelisp-standalone--expand-artifact-bootstrap
+   (nelisp-standalone--artifact-command-runtime-src-raw inline)))
+
 (defun nelisp-standalone--artifact-command-src ()
   "Return embedded source implementing standalone-reader artifact commands."
   (concat
@@ -52382,8 +52365,8 @@ needs `string-match-p' fbound before it can complete -- see
                              nelisp-standalone--repo-root))
    (nelisp-standalone--artifact-runtime-file-src
     "scripts/nelisp-stdlib-prelude.el" nil)
-   (nelisp-standalone--load-path-src t)
    (nelisp-standalone--artifact-match-compat-src nil)
+   (nelisp-standalone--load-path-src t t)
    "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n"
    (format "(load %S)\n"
            (expand-file-name "src/nelisp-read.el"
@@ -52746,7 +52729,7 @@ needs `string-match-p' fbound before it can complete -- see
    (nelisp-standalone--artifact-command-cache-dispatch-src
     nelisp-standalone--artifact-runtime-cache-path)))
 
-(defun nelisp-standalone--artifact-source-command-cache-src (&optional substrate-only)
+(defun nelisp-standalone--artifact-source-command-cache-src-raw (&optional substrate-only)
   "Return a compact marker path for source load/eval artifact commands.
 This path exists for Nelix hot startup: `load-elisp-source' and
 `eval-elisp-source' only need adjacent `.neln' / `.nelc' loading plus form
@@ -52794,13 +52777,15 @@ artifact before wiring that artifact into the marker command path."
      ;; `nelisp-standalone--artifact-match-compat-src''s docstring for the
      ;; full writeup and the exact ordering this now reproduces (matching
      ;; `nelisp-standalone--reader-repl-prelude-source').
-     (nelisp-standalone--load-path-src t)
      (nelisp-standalone--artifact-match-compat-src t)
+     (nelisp-standalone--load-path-src t t)
      (nelisp-standalone--pcase-src)
      ;; Safe here (strictly after `string-match'); see `nelisp-standalone--faces-src'.
      (nelisp-standalone--faces-src)
+     (nelisp-boot-image-libraries-source)
      "(require 'easy-mmode)\n(require 'rx)\n(require 'cl-seq)\n(require 'inline)\n"
      (nelisp-standalone--cl-preloaded-src)
+     "(require 'json)\n"
      (nelisp-standalone--artifact-runtime-file-src
       "src/nelisp-read.el" t)
      (nelisp-standalone--artifact-runtime-file-src
@@ -53174,6 +53159,11 @@ artifact before wiring that artifact into the marker command path."
        "      (nelisp-standalone-source-cache-eval-source-command nelisp-standalone-argv)\n"
        "    2))\n")))
   ))
+
+(defun nelisp-standalone--artifact-source-command-cache-src (&optional substrate-only)
+  "Return `nelisp-standalone--artifact-source-command-cache-src-raw' with its pre-cl-macs part host-expanded."
+  (nelisp-standalone--expand-artifact-bootstrap
+   (nelisp-standalone--artifact-source-command-cache-src-raw substrate-only)))
 
 (defun nelisp-standalone--artifact-source-command-substrate-src ()
   "Return the source-command evaluator substrate without command dispatch."
