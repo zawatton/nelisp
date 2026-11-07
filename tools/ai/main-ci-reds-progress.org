@@ -1,0 +1,105 @@
+#+TITLE: main CI is green again after the Doc 211 emacs-lib import merge
+
+# Defined 2026-11-07.  Last green CI on main: 1404ced83 (2026-11-03).
+# 3a2862816 (feat/emacs-lib-import, 3565 commits) and every later main
+# commit fail.  Triage of CI runs 42314087248 (CI) and 42314087265
+# (standalone parity) on ca0a70fd4; job logs are kept outside the repo.
+# Every cmd runs from the repository root.  F12_TREE is the
+# sbcl-impl f12 worktree, which is due to merge into main next.
+
+* S1 host ERT failures on Linux (ert ubuntu-latest jobs, 19 unexpected)
+
+** S1.1 dynfast unbind tests
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-dynfast-test.el >/dev/null 2>&1)
+
+** S1.2 all-completions obarray boundary
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-all-completions-test.el >/dev/null 2>&1)
+
+** S1.3 backtrace handled snapshot
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-backtrace-handled-snapshot-test.el >/dev/null 2>&1)
+
+** S1.4 bool-vector malformed literals
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bool-vector-test.el >/dev/null 2>&1)
+
+** S1.5 bytecode compiler input closure template
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-compiler-input-test.el >/dev/null 2>&1)
+
+** S1.6 eventloop async timers
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nelisp-eventloop/test/nelisp-async-test.el >/dev/null 2>&1)
+
+** S1.7 nl-ns host shadow report
+cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nl-ns/test/nl-ns-host-shadow-test.el >/dev/null 2>&1)
+
+** S1.8 closurevm, core1 and native-funcall-v2 (gates-job ERT run)
+cmd: (ulimit -v 8388608; for f in test/nelisp-closurevm-test.el test/nelisp-core1-test.el test/nelisp-native-funcall-v2-test.el; do timeout 600 bash tools/ai/nelisp-ai.sh test-one $f >/dev/null 2>&1 || exit 1; done)
+
+** S1.9 the CI ert job command passes end to end
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh ert-full
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-full
+
+* S2 static gates of the smoke job
+
+** S2.1 unsafe-inventory (29 non-kernel files)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make unsafe-inventory >/dev/null 2>&1)
+
+** S2.2 ns-inventory
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make ns-inventory >/dev/null 2>&1)
+
+** S2.3 parens-check
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make parens-check >/dev/null 2>&1)
+
+** S2.4 reader-surface-audit
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make reader-surface-audit >/dev/null 2>&1)
+
+** S2.5 pkg-graph and pkg-load-lists
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make pkg-graph >/dev/null 2>&1 && timeout 590 make pkg-load-lists >/dev/null 2>&1)
+
+** S2.6 emacs-compat on main (930 against baseline 854)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make emacs-compat >/dev/null 2>&1)
+
+** S2.7 emacs-compat on the f12 tree (1594 against baseline 253)
+#+REQUIRES: F12_TREE
+#+TIMEOUT: 600
+cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make emacs-compat >/dev/null 2>&1)
+
+** S2.8 parens-check on the f12 tree (39 findings)
+#+REQUIRES: F12_TREE
+#+TIMEOUT: 600
+cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make parens-check >/dev/null 2>&1)
+
+* S3 standalone tiers
+
+** S3.1 reader smokes (malformed-input, realrt segfault and 10 more)
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh smokes
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh smokes
+
+** S3.2 extras (declare-function, nl-smoke--tests, walk void)
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh extras
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh extras
+
+** S3.3 perf gate (GATE-COUNT findings=1)
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh perf
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh perf
+
+** S3.4 Linux self-host smoke (fact driver returned 1, expected 88)
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh selfhost
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh selfhost
+
+* S4 real CI on the fixed commit
+# Needs a push, which only the user authorises; these stay red until then.
+# They also cover what cannot run here: macOS AOT ERT (84 unexpected),
+# macOS standalone build errors, Windows setup-emacs 404 for 31.1 and the
+# Windows standalone parallel worker.
+
+** S4.1 CI workflow succeeds on HEAD
+cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow CI --json conclusion --jq '.[0].conclusion')" = success
+
+** S4.2 standalone parity workflow succeeds on HEAD
+cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow 'stage-d-v3.0 standalone parity' --json conclusion --jq '.[0].conclusion')" = success
+
