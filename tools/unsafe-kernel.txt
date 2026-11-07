@@ -49,6 +49,9 @@ lisp/nelisp-repl-gc.el
 # counters into the dispatch record's reserved telemetry tail before cleanup.
 scripts/nelisp-runtime-reload-telemetry.el
 lisp/nelisp-stdlib-os-int-helpers.el
+# Raw stat-buffer and sigaction helpers spliced in before the prelude body
+# (the prelude itself is not a kernel file); 2026-11-07.
+scripts/nelisp-prelude-kernel.el
 scripts/nelisp-standalone-build.el
 scripts/nelisp-flat-arena-probe.el
 scripts/nelisp-macho-acceptance.el
@@ -57,9 +60,10 @@ scripts/nelisp-macos-build.el
 # Files inside the kernel that actually contain an unsafe call.  Raise it in
 # the commit that adds one, and say there what the new file does with raw
 # memory.  Lower it whenever the ratchet notice says you can.
+# 100 -> 101 on 2026-11-07: scripts/nelisp-prelude-kernel.el (prelude helpers).
 # 99 -> 100 on 2026-09-12: lisp/nelisp-native-callsite.el, Doc 202's
 # build-declared replacement table, added to the kernel above.
-kernel-files 100
+kernel-files 101
 
 # `pinned-kernel-touch NAME' pins the 96 kernel files that actually touch
 # raw memory today (`unsafe-call' or a quoted form) -- one line per file,
@@ -180,6 +184,7 @@ pinned-kernel-touch lisp/nelisp-cc-evalport-aot-builtin-calln.el
 # raw memory on the frame-miss path.
 pinned-kernel-touch lisp/nelisp-cc-env-set-value.el
 pinned-kernel-touch lisp/nelisp-stdlib-os-int-helpers.el
+pinned-kernel-touch scripts/nelisp-prelude-kernel.el
 pinned-kernel-touch scripts/nelisp-flat-arena-probe.el
 # GC pause-growth workload reads allocator counters and arena metadata through
 # raw pointers solely to report collection timing and fragmentation; it does
@@ -378,7 +383,9 @@ scripts/nelisp-startup-trace.el
 # direct/alloc-bytes/ptr-* live in quoted source-v1 bodies replayed at image
 # build.
 scripts/nemacs-runtime-process-preload.el
-kernel-files 130
+# 2026-11-07: +1, scripts/nelisp-prelude-kernel.el (raw stat-buffer and sigaction
+# helpers moved out of the prelude).
+kernel-files 131
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
 pinned-kernel-touch lisp/nelisp-eln-abi.el

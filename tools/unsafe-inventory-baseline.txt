@@ -343,6 +343,9 @@ unsafe-call 2529
 # its first call, fails and names the file with its old and new counts.
 # Regenerate from a clean tree; do not hand-edit into drift from the scan.
 pinned-kernel-call lisp/nelisp-stdlib-os-int-helpers.el 18
+# 2026-11-07: the prelude's stat-buffer and SIGPIPE sigaction code moved here
+# (19 calls) so the prelude itself holds none; total unchanged.
+pinned-kernel-call scripts/nelisp-prelude-kernel.el 19
 # Doc 142 section 6.4's in-process `.neln' loader, pinned per-file the same
 # way the three kernel files above are.  48 unquoted calls: the mmap, the
 # per-byte writes that place machine code and patch relocations, the

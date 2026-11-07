@@ -49265,6 +49265,12 @@ never on the build host.  Keep the original Lisp factory as the reference."
                                               nelisp-standalone--repo-root))
                            (buffer-string))
                          "\n"
+                         ;; Raw-memory halves of `file-attributes' and the
+                         ;; SIGPIPE policy live in this unsafe-kernel file;
+                         ;; the prelude only calls them, so they must exist
+                         ;; before its body.
+                         (nelisp-standalone--prelude-kernel-src)
+                         "\n"
                          ;; Compile the ordinary lexical factory with GNU, so
                          ;; its captured buffer cells become closure constants.
                          ;; Keep the source-only debugging configuration pure.
@@ -49388,6 +49394,14 @@ never on the build host.  Keep the original Lisp factory as the reference."
                      count))
           compiled)))))
 
+(defun nelisp-standalone--prelude-kernel-src ()
+  "Return the text of scripts/nelisp-prelude-kernel.el."
+  (with-temp-buffer
+    (insert-file-contents
+     (expand-file-name "scripts/nelisp-prelude-kernel.el"
+                       nelisp-standalone--repo-root))
+    (buffer-string)))
+
 (defun nelisp-standalone--prelude-bootstrap-with-list-accessors ()
   "Return function-cell setup, staged selectors, then a normal prelude load.
 Unlike `nelisp-standalone--prelude-source-with-list-accessors' (which
@@ -49418,6 +49432,8 @@ which reach this non-inline prelude variant with INLINE nil)."
             ;; evaluation' call.
             (nelisp-standalone--artifact-match-compat-src nil)
    (nelisp-standalone--pcase-src)
+            (nelisp-standalone--prelude-kernel-src)
+            "\n"
             (format "(load %S)\n" path)
             "\n;; --- GNU Emacs 31.1 files.el: file attribute accessors ---\n"
             (nelisp-vendor-source-forms

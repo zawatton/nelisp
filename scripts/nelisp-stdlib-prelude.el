@@ -23637,24 +23637,25 @@ processors not available."
     (let ((buf (nelisp--syscall-lstat-buf filename)))
       (if (< buf 0)
           nil
-        (let* ((mode (ptr-read-u32 buf 24))
+        (let* ((f (nelisp-stat-buf-fields buf))
+               (mode (nth 0 f))
                (ifmt (logand mode 61440))
                (type (cond ((= ifmt 16384) t)                 ; S_IFDIR
                            ((= ifmt 40960)                    ; S_IFLNK
                             (nelisp--syscall-readlink filename))
                            (t nil))))
           (list type
-                (ptr-read-u64 buf 16)
-                (ptr-read-u32 buf 28)
-                (ptr-read-u32 buf 32)
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 72) (ptr-read-u64 buf 80))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 88) (ptr-read-u64 buf 96))
-                (nelisp--stat-lisp-time (ptr-read-u64 buf 104) (ptr-read-u64 buf 112))
-                (ptr-read-u64 buf 48)
+                (nth 1 f)
+                (nth 2 f)
+                (nth 3 f)
+                (nelisp--stat-lisp-time (nth 4 f) (nth 5 f))
+                (nelisp--stat-lisp-time (nth 6 f) (nth 7 f))
+                (nelisp--stat-lisp-time (nth 8 f) (nth 9 f))
+                (nth 10 f)
                 (nelisp--stat-mode-string mode)
                 t
-                (ptr-read-u64 buf 8)
-                (ptr-read-u64 buf 0)))))))
+                (nth 11 f)
+                (nth 12 f)))))))
 ;; The accessors below are the standard public interface to the list
 ;; `file-attributes' returns (real Emacs's `files.el' defines them as
 ;; `defsubst', ported verbatim here as plain field lookups); without
@@ -29837,16 +29838,11 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
 (defun nelisp--n5-sigpipe-disposition (handler)
   "Set SIGPIPE to HANDLER (0 default, 1 ignore) through the existing OS bridge."
   (if (eq system-type 'windows-nt) 0
-    (let ((action (alloc-bytes 32 8)))
-      (ptr-write-u64 action 0 handler)
-      (ptr-write-u64 action 8 0)
-      (ptr-write-u64 action 16 0)
-      (ptr-write-u64 action 24 0)
-      (syscall-direct
-       (cond ((eq system-type 'darwin) #x200002e)
-             ((= (nelisp--target-arch-code) 1) 134)
-             (t 13))
-       13 action 0 (if (eq system-type 'darwin) 0 8) 0 0))))
+    (nelisp-sigaction-set
+     (cond ((eq system-type 'darwin) #x200002e)
+           ((= (nelisp--target-arch-code) 1) 134)
+           (t 13))
+     13 handler)))
 (defun nelisp--n5-execve-with-default-sigpipe (function &rest arguments)
   "Restore child SIG_DFL before libc exec, and SIG_IGN if exec returns."
   (let ((rc (nelisp--n5-sigpipe-disposition 0)))

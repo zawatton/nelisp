@@ -2312,7 +2312,8 @@ pinned-collision ns-collision-divergent	file-attribute-link-number	packages/emac
 pinned-collision ns-collision-divergent	file-attribute-modes	packages/emacs-lib-core/src/emacs-server-polyfills.el scripts/nelisp-stdlib-prelude.el	9be997289eb0
 pinned-collision ns-collision-divergent	file-attribute-type	packages/emacs-lib-core/src/emacs-server-polyfills.el scripts/nelisp-stdlib-prelude.el	5f4ab30cf0c6
 pinned-collision ns-collision-divergent	file-attribute-user-id	packages/emacs-lib-core/src/emacs-server-polyfills.el scripts/nelisp-stdlib-prelude.el	06b2a3b689ee
-pinned-collision ns-collision-divergent	file-attributes	packages/emacs-lib-core/src/emacs-server-polyfills.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	0ff2ef2dd0c8
+# 2026-11-07: file-attributes body hash refreshed (prelude copy now calls nelisp-stat-buf-fields); same collision, counts unchanged.
+pinned-collision ns-collision-divergent	file-attributes	packages/emacs-lib-core/src/emacs-server-polyfills.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	f26b77773ce5
 pinned-collision ns-collision-divergent	file-directory-p	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-server-client-polyfills.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	8dc38b413dae
 pinned-collision ns-collision-divergent	file-executable-p	packages/emacs-lib-core/src/emacs-fileio-builtins.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	8f01304f5f2d
 pinned-collision ns-collision-divergent	file-exists-p	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-fileio-builtins.el packages/emacs-lib-core/src/emacs-server-polyfills.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	035122eb67ee
