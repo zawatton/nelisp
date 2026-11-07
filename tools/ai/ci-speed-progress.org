@@ -39,10 +39,11 @@ pending
 * S3 CI runs less on feature branches and shows what it spent
 
 ** S3.1 ci.yml: main keeps the full sweep and manual dispatch can still request gate-mutation on any branch
-pending
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-trigger-test.py MainAndDispatch)
 
 ** S3.2 ci.yml: the feature-branch trigger rule for gate-mutation is implemented as decided by the user
-pending
+#+NOTE: User decision 2026-11-07: PRs into main keep the narrowed sweep; other PRs run it only with the `gate-mutation' label; manual dispatch runs it only when its input asks; push to main stays full. verify must still pass when the job is skipped by this rule.
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-trigger-test.py)
 
 ** S3.3 E2E: a real CI run on this lane's branch shows measured durations per job, compared with the kickoff table (needs a push, which only the user decides)
 pending
