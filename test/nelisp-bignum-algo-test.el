@@ -23,16 +23,16 @@
 (defvar nbat--mem (make-string (* 16 1024 1024) 0))
 (defvar nbat--brk 64)
 (defun nbat--reset () (setq nbat--brk 64))
-(defun alloc-bytes (n _align)
+(defun nbat-shim/alloc-bytes (n _align)
   (let ((p (* 8 (/ (+ nbat--brk 7) 8))))
     (dotimes (i n) (aset nbat--mem (+ p i) #xA5))
     (setq nbat--brk (+ p n)) p))
-(defun heap-read-u8 (p off) (aref nbat--mem (+ p off)))
-(defun heap-read-u32 (p off) (let ((a (+ p off))) (logior (aref nbat--mem a) (ash (aref nbat--mem (+ a 1)) 8) (ash (aref nbat--mem (+ a 2)) 16) (ash (aref nbat--mem (+ a 3)) 24))))
-(defun ptr-write-u32 (p off v) (let ((a (+ p off)) (v (logand v #xFFFFFFFF))) (dotimes (i 4) (aset nbat--mem (+ a i) (logand (ash v (* -8 i)) 255))) 0))
-(defun heap-read-u64 (p off) (nbat--w (logior (heap-read-u32 p off) (ash (heap-read-u32 p (+ off 4)) 32))))
-(defun ptr-write-u64 (p off v) (let ((v (logand v nbat--mask))) (ptr-write-u32 p off (logand v #xFFFFFFFF)) (ptr-write-u32 p (+ off 4) (ash v -32)) 0))
-(defun sexp-tag (p) (heap-read-u64 p 0))
+(defun nbat-shim/heap-read-u8 (p off) (aref nbat--mem (+ p off)))
+(defun nbat-shim/heap-read-u32 (p off) (let ((a (+ p off))) (logior (aref nbat--mem a) (ash (aref nbat--mem (+ a 1)) 8) (ash (aref nbat--mem (+ a 2)) 16) (ash (aref nbat--mem (+ a 3)) 24))))
+(defun nbat-shim/ptr-write-u32 (p off v) (let ((a (+ p off)) (v (logand v #xFFFFFFFF))) (dotimes (i 4) (aset nbat--mem (+ a i) (logand (ash v (* -8 i)) 255))) 0))
+(defun nbat-shim/heap-read-u64 (p off) (nbat--w (logior (heap-read-u32 p off) (ash (heap-read-u32 p (+ off 4)) 32))))
+(defun nbat-shim/ptr-write-u64 (p off v) (let ((v (logand v nbat--mask))) (ptr-write-u32 p off (logand v #xFFFFFFFF)) (ptr-write-u32 p (+ off 4) (ash v -32)) 0))
+(defun nbat-shim/sexp-tag (p) (heap-read-u64 p 0))
 
 ;; Shims for the parts that box results or signal.
 (defun nl_abi_fail (_rc _pad) 0)
@@ -40,6 +40,19 @@
 (defun bf_signal_overflow_error () (signal 'overflow-error nil))
 (defun bf_wrong_type_int_or_marker (_p) (signal 'wrong-type-argument '(integer-or-marker-p)))
 (defun bf_wrong_type_number_or_marker (_p) (signal 'wrong-type-argument '(number-or-marker-p)))
+;; The standalone primitives above are bound only while a test runs.  Defining
+;; them globally made host Emacs look like the standalone to every later test
+;; guarded by `(fboundp 'alloc-bytes)' (the nelisp-async tests then ran on
+;; the host timers and failed).
+(defmacro nbat-deftest (name &rest body)
+  "Like `ert-deftest' NAME, with the simulated heap primitives bound."
+  (declare (indent 1))
+  `(ert-deftest ,name ()
+     (cl-letf ,(mapcar (lambda (n) `((symbol-function ',n)
+                                     (symbol-function ',(intern (format "nbat-shim/%s" n)))))
+                       '(alloc-bytes heap-read-u8 heap-read-u32 ptr-write-u32 heap-read-u64 ptr-write-u64 sexp-tag))
+       ,@body)))
+
 (defun nbat--limbs->int (sign p count)
   (let ((v 0)) (dotimes (i count) (setq v (logior v (ash (heap-read-u32 p (* i 4)) (* 32 i))))) (if (= sign 1) (- v) v)))
 (defun nl_bignum_finish_w (sign p count _pad) (nbat--limbs->int sign p count))
@@ -139,12 +152,12 @@ function (NAME FORM) -> FORM used by negative controls."
           (unless (equal got (cons (/ a b) (% a b))) (push (list a b got) bad)))))
     bad))
 
-(ert-deftest nelisp-bignum-algo-knuth-d-random ()
+(nbat-deftest nelisp-bignum-algo-knuth-d-random
   (unless nbat--loaded (nbat--install))
   (random "nelisp-bignum-d")
   (should (null (nbat--check-divrem-cases 3000))))
 
-(ert-deftest nelisp-bignum-algo-knuth-d-edges ()
+(nbat-deftest nelisp-bignum-algo-knuth-d-edges
   (unless nbat--loaded (nbat--install))
   (dolist (c (list (cons 0 1) (cons 5 7) (cons 7 7) (cons (ash 1 64) (ash 1 32)) (cons (ash 1 96) (1+ (ash 1 63)))
                    (cons (1- (ash 1 128)) (1- (ash 1 64))) (cons (ash 1 127) (ash 1 63))
@@ -161,7 +174,7 @@ function (NAME FORM) -> FORM used by negative controls."
 (defun nbat--oracle (mode a b)
   (pcase mode (0 (/ a b)) (1 (% a b)) (2 (mod a b)) (3 (floor a b)) (4 (ceiling a b)) (5 (round a b))))
 
-(ert-deftest nelisp-bignum-algo-signed-modes ()
+(nbat-deftest nelisp-bignum-algo-signed-modes
   (unless nbat--loaded (nbat--install))
   (random "nelisp-bignum-s")
   (let ((bad nil))
@@ -178,7 +191,7 @@ function (NAME FORM) -> FORM used by negative controls."
       (should (equal (condition-case e (nbat--ints mode (ash 1 80) 0) (arith-error 'arith)) 'arith))
       (should (equal (condition-case e (nbat--ints mode 0 0) (arith-error 'arith)) 'arith)))))
 
-(ert-deftest nelisp-bignum-algo-chunk-print ()
+(nbat-deftest nelisp-bignum-algo-chunk-print
   (unless nbat--loaded (nbat--install))
   (random "nelisp-bignum-p")
   (dotimes (_ 300)
@@ -192,7 +205,7 @@ function (NAME FORM) -> FORM used by negative controls."
                    (should (equal (apply #'string (reverse nbat--out)) (number-to-string v))))
           (should t))))))
 
-(ert-deftest nelisp-bignum-algo-chunk-read ()
+(nbat-deftest nelisp-bignum-algo-chunk-read
   (unless nbat--loaded (nbat--install))
   (random "nelisp-bignum-r")
   (dotimes (_ 200)
@@ -203,7 +216,7 @@ function (NAME FORM) -> FORM used by negative controls."
       (should (equal (nl_read_int_or_bignum_w s 0) v)))))
 
 (setq integer-width 200000)
-(ert-deftest nelisp-bignum-algo-integer-width ()
+(nbat-deftest nelisp-bignum-algo-integer-width
   (unless nbat--loaded (nbat--install))
   (nbat--reset)
   (let ((ok (nbat--put (1- (ash 1 65536)))) (big (nbat--put (ash 1 65536))))
@@ -220,7 +233,7 @@ function (NAME FORM) -> FORM used by negative controls."
           (read new))
       f)))
 
-(ert-deftest nelisp-bignum-algo-negative-controls ()
+(nbat-deftest nelisp-bignum-algo-negative-controls
   (unwind-protect
       (progn
         ;; 1. Algorithm D without the add-back step.
