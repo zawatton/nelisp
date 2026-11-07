@@ -854,3 +854,4 @@ ba25307190b2b645b5b9caf272774ede2927560313ffccdb7c55a78f11595ceb  vendor/emacs-l
 d223d03f31531a632ef7a7f28a83bade96eb64ecffe24c65a3549f9dd0ea81bf  vendor/emacs-lisp/org/org-habit.el
 806a068229d2ed488dde6dedfbf3fd7fdf07f550a0fea011c18aa031d1852ffa  vendor/emacs-lisp/org/org-loaddefs.el
 7076339f83efe6d58ad7eee4305b9d620df1124a8286363b4b19097bb46082a7  vendor/emacs-lisp/tabify.el
+d940d046611d855bcda229f1b8b7f1ba93900e30cfd7610d3462e0a532533f37  vendor/emacs-lisp/indent.el
