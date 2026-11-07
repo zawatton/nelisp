@@ -288,3 +288,155 @@ pinned-kernel-touch lisp/nelisp-standalone-arena-rewrite.el
 # excess kernel files and every out-of-kernel failure.
 kernel-files 119
 pinned-kernel-touch lisp/nelisp-cc-variable-alias-public.el
+
+# Core-lane files registered 2026-11-07 (after the 3a2862816 merge: eln
+# loader, native windows, heap accessors, ...).  Each comment says what the
+# file does with raw memory.  Quoted-only files hold the primitives in
+# generated-source data and make no call themselves.
+# Rooted-CFG source-AST generator; emits ptr-write-u64 stores of tagged join
+# slots into generated raw-v2 source. Runs no native code itself.
+lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+# Shared-continuation variant of the rooted-CFG generator; emits one ptr-
+# write-u64 join-slot store into generated source.
+lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+# GNU 31.1 x86_64 profile checker; writes and reads u32 words in a scratch
+# mapping to verify the producer layout.
+lisp/nelisp-eln-abi.el
+# Projects out-of-fixnum integers into externally owned read-only GNU bignum
+# bytes via ptr-write-u32; never handed to a GNU allocator.
+lisp/nelisp-eln-bignum.el
+# Transports raw GNU words through a rooted callback: ptr-write-u64/ptr-
+# read-u64 on an owned frame and ptr-call into the admitted leaf.
+lisp/nelisp-eln-callable-import.el
+# Temporary GNU Lisp_Float view over an owned 8-byte mapping; copies the
+# payload as raw IEEE-754 bits with ptr-write-u32.
+lisp/nelisp-eln-float.el
+# Doc 210 S9: GNU-native condition-case handler port; reads and writes u64
+# handler-block and shadow-thread words.
+lisp/nelisp-eln-handler-port.el
+# Doc 210 S8: shadow thread and handler-block memory read by GNU-native
+# code; u64/u8 accessors plus one syscall-direct.
+lisp/nelisp-eln-handler-substrate.el
+# Admits scalar0 integers and unary leaves; reads u64 result words returned
+# through a raw-word trampoline.
+lisp/nelisp-eln-native-subr.el
+# GNU-layout object codec over leased views; one ptr-read-u8 and one ptr-
+# write-u8 on owned view bytes.
+lisp/nelisp-eln-objects.el
+# Captures a native function's full RAX value in external memory (ptr-call,
+# syscall-direct, u8/u32 accesses) before integer narrowing.
+lisp/nelisp-eln-raw-call.el
+# Builds GNU pseudovector views for registration callbacks with ptr-write-u8
+# into owned mappings.
+lisp/nelisp-eln-registration-objects.el
+# Runs the pinned emitter's one-call registration path: u64 reads/writes on
+# registration frames, ptr-call, ptr-read-bytes.
+lisp/nelisp-eln-registration.el
+# Temporary GNU Lisp_String view over an owned external mapping; u64/u8
+# reads and writes only inside that mapping.
+lisp/nelisp-eln-string.el
+# Metadata backend for .eln files already loaded by the system linker; reads
+# symbol tables with ptr-read-u64/bytes, one ptr-call.
+lisp/nelisp-eln-system-loader.el
+# WORD-aware logical Sexp field accessors: signed/unsigned ptr-read-* loads
+# on heap cells, one alloc-bytes; no retained pointers.
+lisp/nelisp-heap-accessors.el
+# Quoted-only: v2 arithmetic native-source bodies (alloc-bytes, ptr-
+# write-u64) compiled into generated code, never executed here.
+lisp/nelisp-native-arithmetic-v2.el
+# Quoted-only: v2 call-bridge native-source bodies with ptr-write-u64 frame
+# stores, compiled into generated code.
+lisp/nelisp-native-call-v2.el
+# Quoted-only: guard defuns with ptr-write-u64 output-slot stores, compiled
+# into generated native code.
+lisp/nelisp-native-optimization-guard-v1.el
+# Bounded raw file read: syscall-direct open/pread/close into a buffer
+# filled via ptr-write-u8 and read back with ptr-read-bytes.
+lisp/nelisp-native-raw-file.el
+# Quoted-only: startup-evidence check mentions ptr-read-u8/ptr-read-bytes as
+# names it verifies; makes no call.
+lisp/nelisp-native-rooted-startup-evidence.el
+# Template stencil library check; one syscall-direct getuid (102) fallback
+# when `user-uid' is unavailable, to compare file ownership.
+lisp/nelisp-native-template-stencils.el
+# Windows native layer: u8/u32/u64 reads and writes on FFI argument/result
+# buffers around the reader's fixed nl-ffi-call entries.
+lisp/nelisp-native-windows.el
+# Argument-frame admission; emits ptr-read-u64 loads of the call frame into
+# generated forms (other primitives appear only as names in its proof).
+lisp/nelisp-standalone-argframe.el
+# Filesystem stdlib native ops: syscall-direct mmap scratch, statx and munmap
+# with ptr-write-u8 path bytes.
+lisp/nelisp-stdlib-filesystem-access.el
+# Boot-image writer: ptr-write-u8/u16/u64 and syscall-direct to emit the
+# image into a mapping and file.
+scripts/nelisp-boot-image.el
+# Startup trace instrumentation: alloc-bytes record buffer and ptr-write-u64
+# event stores; trace binaries only, never acceptance timing.
+scripts/nelisp-startup-trace.el
+# Quoted-only: runtime-image provider of process primitives; syscall-
+# direct/alloc-bytes/ptr-* live in quoted source-v1 bodies replayed at image
+# build.
+scripts/nemacs-runtime-process-preload.el
+kernel-files 130
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
+pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
+pinned-kernel-touch lisp/nelisp-eln-abi.el
+pinned-kernel-touch lisp/nelisp-eln-bignum.el
+pinned-kernel-touch lisp/nelisp-eln-callable-import.el
+pinned-kernel-touch lisp/nelisp-eln-float.el
+pinned-kernel-touch lisp/nelisp-eln-handler-port.el
+pinned-kernel-touch lisp/nelisp-eln-handler-substrate.el
+pinned-kernel-touch lisp/nelisp-eln-native-subr.el
+pinned-kernel-touch lisp/nelisp-eln-objects.el
+pinned-kernel-touch lisp/nelisp-eln-raw-call.el
+pinned-kernel-touch lisp/nelisp-eln-registration-objects.el
+pinned-kernel-touch lisp/nelisp-eln-registration.el
+pinned-kernel-touch lisp/nelisp-eln-string.el
+pinned-kernel-touch lisp/nelisp-eln-system-loader.el
+pinned-kernel-touch lisp/nelisp-heap-accessors.el
+pinned-kernel-touch lisp/nelisp-native-arithmetic-v2.el
+pinned-kernel-touch lisp/nelisp-native-call-v2.el
+pinned-kernel-touch lisp/nelisp-native-optimization-guard-v1.el
+pinned-kernel-touch lisp/nelisp-native-raw-file.el
+pinned-kernel-touch lisp/nelisp-native-rooted-startup-evidence.el
+pinned-kernel-touch lisp/nelisp-native-template-stencils.el
+pinned-kernel-touch lisp/nelisp-native-windows.el
+pinned-kernel-touch lisp/nelisp-standalone-argframe.el
+pinned-kernel-touch lisp/nelisp-stdlib-filesystem-access.el
+pinned-kernel-touch scripts/nelisp-boot-image.el
+pinned-kernel-touch scripts/nelisp-startup-trace.el
+pinned-kernel-touch scripts/nemacs-runtime-process-preload.el
+
+# Generator units matched by `lisp/nelisp-cc-*.el' that were never pinned as
+# touching raw memory (2026-11-07).  Each emits or contains native-source
+# bodies; the primitives write tagged slots or allocate scratch records, and
+# none of them retains a pointer outside the generated unit.
+# apply-lambda-inner: ptr-write-u64 frame-slot stores in apply-lambda bodies.
+pinned-kernel-touch lisp/nelisp-cc-apply-lambda-inner.el
+# cons-prepend-clone: one alloc-bytes scratch cell for the cloned cons.
+pinned-kernel-touch lisp/nelisp-cc-cons-prepend-clone.el
+# eln-callback / eln-callback7: AOT callback probes; ptr-write-u64/u32 into
+# BSS descriptor records of caller-owned pinned slots, plus syscall-direct.
+pinned-kernel-touch lisp/nelisp-cc-eln-callback.el
+pinned-kernel-touch lisp/nelisp-cc-eln-callback7.el
+# evalport-aot-apply: alloc-bytes scratch frames for AOT funcall/apply entries.
+pinned-kernel-touch lisp/nelisp-cc-evalport-aot-apply.el
+# evalport-env-leaves-bind-trace: alloc-bytes records and ptr-write-u64 stores
+# for the traced environment-binding leaves.
+pinned-kernel-touch lisp/nelisp-cc-evalport-env-leaves-bind-trace.el
+# fx-call-primitives: evaluator transport; u64/u8 loads and stores on call frames.
+pinned-kernel-touch lisp/nelisp-cc-fx-call-primitives.el
+# fxir-inline / fxir-native: lower fxir to native source; u64/u8 reads and
+# writes of wrapper, activation and tagged-slot memory.
+pinned-kernel-touch lisp/nelisp-cc-fxir-inline.el
+pinned-kernel-touch lisp/nelisp-cc-fxir-native.el
+# mirror-alloc-entry: ptr-write-u64 stores publishing mirror allocation entries.
+pinned-kernel-touch lisp/nelisp-cc-mirror-alloc-entry.el
+# sf-condition-case: alloc-bytes handler record and ptr-write-u64 stores.
+pinned-kernel-touch lisp/nelisp-cc-sf-condition-case.el
+# sort: native sort exception; alloc-bytes scratch and ptr-write-u64 traced state.
+pinned-kernel-touch lisp/nelisp-cc-sort.el
+# string-blocks: builds GNU-layout string headers (size, size_byte, data) with
+# ptr-write-u64/u8.
+pinned-kernel-touch lisp/nelisp-cc-string-blocks.el
