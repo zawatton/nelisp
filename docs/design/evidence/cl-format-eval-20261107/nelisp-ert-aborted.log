@@ -1,0 +1,236 @@
+../cf-src/mirror/cl-format.el: Warning: Use keywords rather than deprecated positional arguments to ‘define-minor-mode’
+Running 202 tests (2026-11-07 18:26:23+0900, selector ‘t’)
+   passed    1/202  format-000 (0.017889 sec)
+   passed    2/202  format-001 (0.012759 sec)
+   passed    3/202  format-002 (0.004639 sec)
+   passed    4/202  format-003 (0.002084 sec)
+   passed    5/202  format-004 (0.001903 sec)
+   passed    6/202  format-005 (0.001567 sec)
+   passed    7/202  format-006 (0.001886 sec)
+   passed    8/202  format-007 (0.001507 sec)
+   passed    9/202  format-008 (0.001499 sec)
+   passed   10/202  format-009 (0.001974 sec)
+   passed   11/202  format-010 (0.002207 sec)
+   passed   12/202  format-011 (0.002619 sec)
+   passed   13/202  format-012 (0.002233 sec)
+   passed   14/202  format-013 (0.002539 sec)
+   passed   15/202  format-014 (0.002748 sec)
+   passed   16/202  format-015 (0.002632 sec)
+   passed   17/202  format-016 (0.016895 sec)
+   passed   18/202  format-017 (0.014232 sec)
+   passed   19/202  format-018 (0.024436 sec)
+   passed   20/202  format-019 (0.026980 sec)
+   passed   21/202  format-020 (0.018784 sec)
+   passed   22/202  format-021 (0.037938 sec)
+   passed   23/202  format-022 (0.001611 sec)
+   passed   24/202  format-023 (0.001543 sec)
+   passed   25/202  format-024 (0.003332 sec)
+   passed   26/202  format-025 (0.001246 sec)
+   passed   27/202  format-027 (0.001610 sec)
+   passed   28/202  format-028 (0.001411 sec)
+   passed   29/202  format-029 (0.001374 sec)
+   passed   30/202  format-030 (0.001368 sec)
+   passed   31/202  format-031 (0.001354 sec)
+   passed   32/202  format-032 (0.076579 sec)
+   passed   33/202  format-033 (0.004880 sec)
+   passed   34/202  format-034 (0.004889 sec)
+   passed   35/202  format-035 (0.005057 sec)
+   passed   36/202  format-036 (0.005035 sec)
+   passed   37/202  format-037 (0.019406 sec)
+   passed   38/202  format-038 (0.065963 sec)
+   passed   39/202  format-039 (0.005428 sec)
+Test format-040 backtrace:
+cl-prin1: (void-function documentation)
+  funcall(#f(lambda (err) [(debugfun #1) (test-execution-info #s(ert--
+  handler-bind-1(#f(lambda () [(test-execution-info #s(ert--test-execu
+  (let (debugfun) (setq debugfun #'(lambda (err) (ert--run-test-debugg
+  (let ((lexical-binding t) (ert--infos 'nil)) (let (debugfun) (setq d
+  (progn (let ((lexical-binding t) (ert--infos 'nil)) (let (debugfun) 
+  (unwind-protect (progn (let ((lexical-binding t) (ert--infos 'nil)) 
+  (let ((wconfig (current-window-configuration))) (unwind-protect (pro
+  (progn (let ((wconfig (current-window-configuration))) (unwind-prote
+  (unwind-protect (progn (let ((wconfig (current-window-configuration)
+  (let* ((buf (nelisp-generate-new-buffer " *temp*")) (nelisp--current
+  (catch 'ert--pass (let* ((buf (nelisp-generate-new-buffer " *temp*")
+  ert--run-test-internal(#s(ert--test-execution-info :test #s(ert-test
+  (let ((ert--should-execution-observer #'(lambda (form-description) (
+  (unwind-protect (let ((ert--should-execution-observer #'(lambda (for
+  (let ((info (make-ert--test-execution-info :test ert-test :result (l
+  (unwind-protect (let ((info (make-ert--test-execution-info :test ert
+  (let ((begin-marker (let ((buf (nelisp--live-buffer-arg (messages-bu
+  (catch --cl-block-error-- (let ((begin-marker (let ((buf (nelisp--li
+  (let ((--cl-block-error-- (cons '--cl-block-error-- nil))) (catch --
+  ert-run-test(#s(ert-test :name format-040 :documentation nil :body #
+  ert-run-or-rerun-test(#s(ert--stats :selector t :tests [#s(ert-test 
+  ert-run-tests(t #f(lambda (event-type &rest event-args) [(selector t
+  ert-run-tests-batch(nil)
+  ert-run-tests-batch-and-exit()
+  funcall(ert-run-tests-batch-and-exit)
+
+Aborted: Ran 202 tests, 39 results as expected, 1 unexpected (2026-11-07 18:26:24+0900, 0.835964 sec)
+1 unexpected results:
+   FAILED  format-040
+  UNKNOWN  format-041
+  UNKNOWN  format-042
+  UNKNOWN  format-043
+  UNKNOWN  format-044
+  UNKNOWN  format-045
+  UNKNOWN  format-046
+  UNKNOWN  format-047
+  UNKNOWN  format-048
+  UNKNOWN  format-049
+  UNKNOWN  format-050
+  UNKNOWN  format-051
+  UNKNOWN  format-052
+  UNKNOWN  format-053
+  UNKNOWN  format-054
+  UNKNOWN  format-055
+  UNKNOWN  format-056
+  UNKNOWN  format-057
+  UNKNOWN  format-058
+  UNKNOWN  format-059
+  UNKNOWN  format-060
+  UNKNOWN  format-061
+  UNKNOWN  format-062
+  UNKNOWN  format-063
+  UNKNOWN  format-064
+  UNKNOWN  format-065
+  UNKNOWN  format-066
+  UNKNOWN  format-067
+  UNKNOWN  format-068
+  UNKNOWN  format-069
+  UNKNOWN  format-070
+  UNKNOWN  format-071
+  UNKNOWN  format-072
+  UNKNOWN  format-073
+  UNKNOWN  format-074
+  UNKNOWN  format-075
+  UNKNOWN  format-076
+  UNKNOWN  format-077
+  UNKNOWN  format-078
+  UNKNOWN  format-079
+  UNKNOWN  format-080
+  UNKNOWN  format-081
+  UNKNOWN  format-082
+  UNKNOWN  format-083
+  UNKNOWN  format-084
+  UNKNOWN  format-085
+  UNKNOWN  format-086
+  UNKNOWN  format-087
+  UNKNOWN  format-088
+  UNKNOWN  format-089
+  UNKNOWN  format-090
+  UNKNOWN  format-091
+  UNKNOWN  format-092
+  UNKNOWN  format-093
+  UNKNOWN  format-094
+  UNKNOWN  format-095
+  UNKNOWN  format-096
+  UNKNOWN  format-097
+  UNKNOWN  format-098
+  UNKNOWN  format-099
+  UNKNOWN  format-100
+  UNKNOWN  format-101
+  UNKNOWN  format-102
+  UNKNOWN  format-103
+  UNKNOWN  format-104
+  UNKNOWN  format-105
+  UNKNOWN  format-106
+  UNKNOWN  format-107
+  UNKNOWN  format-108
+  UNKNOWN  format-109
+  UNKNOWN  format-110
+  UNKNOWN  format-111
+  UNKNOWN  format-112
+  UNKNOWN  format-113
+  UNKNOWN  format-114
+  UNKNOWN  format-115
+  UNKNOWN  format-116
+  UNKNOWN  format-117
+  UNKNOWN  format-118
+  UNKNOWN  format-119
+  UNKNOWN  format-120
+  UNKNOWN  format-121
+  UNKNOWN  format-122
+  UNKNOWN  format-123
+  UNKNOWN  format-124
+  UNKNOWN  format-125
+  UNKNOWN  format-126
+  UNKNOWN  format-127
+  UNKNOWN  format-128
+  UNKNOWN  format-129
+  UNKNOWN  format-130
+  UNKNOWN  format-131
+  UNKNOWN  format-132
+  UNKNOWN  format-133
+  UNKNOWN  format-134
+  UNKNOWN  format-135
+  UNKNOWN  format-136
+  UNKNOWN  format-137
+  UNKNOWN  format-138
+  UNKNOWN  format-139
+  UNKNOWN  format-140
+  UNKNOWN  format-141
+  UNKNOWN  format-142
+  UNKNOWN  format-143
+  UNKNOWN  format-144
+  UNKNOWN  format-145
+  UNKNOWN  format-146
+  UNKNOWN  format-147
+  UNKNOWN  format-148
+  UNKNOWN  format-149
+  UNKNOWN  format-150
+  UNKNOWN  format-151
+  UNKNOWN  format-152
+  UNKNOWN  format-153
+  UNKNOWN  format-154
+  UNKNOWN  format-155
+  UNKNOWN  format-156
+  UNKNOWN  format-157
+  UNKNOWN  format-158
+  UNKNOWN  format-159
+  UNKNOWN  format-160
+  UNKNOWN  format-161
+  UNKNOWN  format-162
+  UNKNOWN  format-163
+  UNKNOWN  format-164
+  UNKNOWN  format-165
+  UNKNOWN  format-166
+  UNKNOWN  format-167
+  UNKNOWN  format-168
+  UNKNOWN  format-169
+  UNKNOWN  format-170
+  UNKNOWN  format-171
+  UNKNOWN  format-172
+  UNKNOWN  format-173
+  UNKNOWN  format-174
+  UNKNOWN  format-175
+  UNKNOWN  format-176
+  UNKNOWN  format-177
+  UNKNOWN  format-178
+  UNKNOWN  format-179
+  UNKNOWN  format-180
+  UNKNOWN  format-181
+  UNKNOWN  format-182
+  UNKNOWN  format-183
+  UNKNOWN  format-184
+  UNKNOWN  format-185
+  UNKNOWN  format-186
+  UNKNOWN  format-187
+  UNKNOWN  format-188
+  UNKNOWN  format-189
+  UNKNOWN  format-190
+  UNKNOWN  format-191
+  UNKNOWN  format-192
+  UNKNOWN  format-193
+  UNKNOWN  format-alist-iterator
+  UNKNOWN  format-define-default-value
+  UNKNOWN  format-hash-iterator
+  UNKNOWN  format-list-iterator
+  UNKNOWN  format-output-buffer
+  UNKNOWN  format-output-buffer-marker
+  UNKNOWN  format-pcl-empty
+  UNKNOWN  format-rounding
+  UNKNOWN  format-vector-iterator
+Error running tests
+  backtrace()

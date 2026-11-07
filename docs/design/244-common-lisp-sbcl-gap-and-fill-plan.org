@@ -72,7 +72,9 @@ These come from existing rules, and this document does not relax them.
   measurement, a Lisp reference, and an inventory entry.  "Faster" does not
   qualify.  Rust stays at zero.
 - *Naming.*  New CL-like API uses the =nl-= prefix.  It must not claim =cl-= names
-  or bare CL names, which belong to GNU Emacs and vendored =cl-lib=.
+  or bare CL names, which belong to GNU Emacs and vendored =cl-lib=.  A reused or
+  forked third-party package keeps its upstream public names.  Check that those names
+  do not collide with GNU Emacs or vendored =cl-lib=.
 - *Progress.*  Each work package adopted below needs a ledger under =tools/ai/=
   before implementation, ending in an end-to-end criterion.
 
@@ -152,7 +154,8 @@ Acceptance: a restart chosen by a handler recovers from a real primitive error o
 ** WP2: integer and float functions in nl-num
 
 Add =nl-ldb=, =nl-dpb=, =nl-byte=, =nl-boole=, =nl-integer-length=, =nl-logtest= and
-hyperbolics with their inverses, working with tag-13 bignums.  Provide =float-pi=
+hyperbolics with their inverses, working with tag-13 bignums.  The core binary also lacks
+the six trigonometric functions (Doc 245 D2), which is a parity defect rather than part of this package.  Provide =float-pi=
 compatibility only where GNU does, which is a parity matter rather than a CL one.
 
 =logcount=, =frexp=, =ldexp= exist only in =emacs-lib-core=.  Whether they should
@@ -165,6 +168,9 @@ Acceptance: differential test against SBCL over generated fixnum and bignum inpu
 MELPA =cl-format= (=gitlab.com/akater/elisp-cl-format=, GPL-3.0-or-later, no
 dependencies beyond Emacs) defines 28 directives in =cl-format-builtins.el=,
 including =~R ~D ~F ~A ~S ~{ ~[ ~< ~/ ~?=.  The code dates from 2012.
+
+Result (2026-11-07): Doc 245 records the evaluation and its verdict, which is to fork.  It
+also found NeLisp defects to fix first, including =lexical-binding= handling.
 
 Plan: run it on =target/nelisp= with its =cl-format.ert= from the upstream repository
 (the MELPA tarball omits it).  Then decide, in this order of preference:
@@ -219,9 +225,9 @@ GNU ELPA =stream= is lazy lists, not I/O, and does not apply.
 
 ** WP6: pathnames
 
-Probably skip.  =expand-file-name= and friends serve Elisp code, and MELPA =f= covers
-convenience (it pulls in =s= and =dash=, so it should stay a user choice rather than
-a dependency).  Add a small =nl-pathname= struct only if =nl-stream= needs one.
+Write a small =nl-pathname= struct after =nl-stream=.  =expand-file-name= and friends
+keep serving ordinary Elisp code.  MELPA =f= covers convenience, but it pulls in =s= and
+=dash=, so it stays a user choice rather than a dependency.
 
 ** WP7: CLOS extensions
 
@@ -349,8 +355,8 @@ If only the evaluator path can be made safe, ship that and keep aborting elsewhe
 | =disassemble=         | Bytecode: vendor GNU =disass.el= if it fits NeLisp bytecode.  Native: map to =objdump= on artifacts | new |
 | =step=                | Edebug route, after =edebug.el= is vendored and shown to work  | GNU Emacs      |
 
-Under the owner decision on third-party packages, the GNU Emacs files come first and
-the ELPA and MELPA rows wait for a consumer.
+The GNU Emacs files come first.  The ELPA and MELPA rows then go through the reuse rule
+in "Owner decisions".
 
 =trace.el=, =disass.el= and =edebug.el= are not in the tree at =ca0a70fd4=.  Only
 autoload entries such as =trace-function= in =vendor/emacs-lisp/loaddefs.el= exist, so
@@ -412,27 +418,42 @@ Ordered by value for cost and by independence from each other.
 |     5 | WP11 GNU tools      | Vendoring GNU files also exposes substrate defects         |
 |     6 | WP9                 | High value, but needs site enumeration first               |
 |     7 | WP8 Doc 214 port    | After current work lands on =origin/main=; see WP8         |
-|     - | WP4, WP5, WP6, WP7  | Only when a consumer exists                                |
-|     - | WP12, WP13          | Only when a consumer exists; then Doc 90 or separate design |
+|     8 | WP4, WP5, WP6, WP7  | Library family; a consumer moves an item forward           |
+|     - | WP12, WP13          | Runtime work, outside the library family; Doc 90 or separate design |
 
 * Owner decisions (2026-11-07)
 
 1. *Threads: port, do not merge into a speedup HEAD.*  =feat/cl-threads= goes through
    =port/214-cl-threads= from =origin/main= after the current work lands, as set out
    in WP8.  It is not scheduled for a fixed date.
-2. *CL scope: split by kind.*
+2. *CL scope: build a library family (revised the same day).*
    - Runtime capability that SBCL exemplifies (threads, GC, images, startup, native
-     calls) is a goal, as Docs 199, 214 and 230-243 already show.
-   - Repairs and parity proceed without a consumer: WP1, WP2, WP9.
-   - Language-surface features wait for a consumer: WP4, WP5, WP6, WP7, WP12, WP13.
-3. *Third-party packages: allowed as optional, one at a time.*  Start with =cl-format=
-   only (WP3).  =f=, =names=, =undercover= and the other candidates wait for a consumer.
-   An import must meet all of these:
+     calls) is a goal, as Docs 199, 214 and 230-243 already show.  Work that needs the
+     runtime stays outside the family: threads, heap exhaustion, finalizers, reader
+     syntax, FFI callbacks.
+   - The library-shaped gaps are built as extractable packages: WP1 to WP7, weak
+     references, and the developer tools.
+   - The consumer rule no longer gates starting.  It orders the work: an item with a
+     consumer moves forward.
+3. *Third-party packages: reuse or fork by rule (revised the same day).*  Run the
+   candidate's own test suite on =target/nelisp= and decide from the result:
+   - Passes unchanged, or fails only on NeLisp defects: reuse a pinned commit and fix
+     NeLisp.
+   - Needs package changes and upstream is active: send the change upstream and pin the
+     fixed commit.
+   - Needs package changes and upstream has been dormant for 24 months or more: fork
+     into =packages/=, keeping the public names and license.
+   - No candidate: write an =nl-*= package.
+
+   Any import must meet all of these:
    - Not required by the core or the cold image, and loaded only by an explicit
-     =require=.  No =nl-*= package hard-depends on it.
+     =require=.  =nl-*= packages may depend on it only through a declared manifest entry.
    - Commit and SHA-256 pinned, with origin and license recorded, as =vendor/= does.
    - A standalone smoke that loads and exercises it.
    - A GPL-3.0-compatible license confirmed in the file headers.
+
+The library family's structure and extraction criteria are to be set in Doc 245, after
+the =cl-format= evaluation.
 
 These decisions followed a review by the advisor, requested by the owner.
 
