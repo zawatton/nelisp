@@ -27,6 +27,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-buffer)
+(require 'nelisp-host-arith-restore)
 (require 'nelisp-redisplay)
 
 (defmacro nelisp-redisplay-test--capture (sink &rest body)
