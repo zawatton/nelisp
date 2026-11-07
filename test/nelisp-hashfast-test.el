@@ -22,6 +22,8 @@
         ((memq (car form) '(if while))
          (cons (car form) (cons `(hf--truth ,(hf--host (cadr form)))
                                 (mapcar #'hf--host (cddr form)))))
+        ;; A binding list: its first binding is the car and needs adapting too.
+        ((consp (car form)) (mapcar #'hf--host form))
         (t (cons (pcase (car form) ('seq 'progn) ('shr 'hf--shr)
                         ('sar 'hf--sar) ('shl 'ash) (_ (car form)))
                  (mapcar #'hf--host (cdr form))))))
@@ -265,6 +267,48 @@
       (dotimes (_ 10) (should (= (nl_ht_test_mode 1000) 1)))
       (should (= reads 2))
       (should (= reindexes 1)))))
+
+;; 7d7ba0c02 made a table a kind-22 heap object; the test above stubs
+;; `nl_ht_obj' to 0 and so covers only the decoding path.  This one runs the
+;; real `nl_ht_obj' and the real heap-object fast path of `nl_ht_test_mode'.
+(defun hf--ht-mode-mem (header-kind meta-slots cache)
+  "Fake memory: table object at 4096 (kind HEADER-KIND), meta vector at 8192
+with META-SLOTS slots whose slot 5 holds fixnum CACHE.  Returns (MEM . WORD)."
+  (let ((mem (make-hash-table :test 'eql)))
+    (puthash 4096 (logior header-kind (ash 1 8)) mem)
+    (puthash 4104 8198 mem)
+    (puthash 8192 (logior 11 (ash meta-slots 8)) mem)
+    (puthash (+ 8192 48) (+ (* cache 4) 1) mem)
+    (cons mem 4102)))
+
+(defun hf--ht-mode-run (mm decode-calls)
+  "Run the real `nl_ht_test_mode' on MM; count decoding helpers in DECODE-CALLS."
+  (let ((mem (car mm)))
+    (cl-letf (((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem 0)))
+              ((symbol-function 'ptr-read-u8)
+               (lambda (p off) (logand (gethash (+ p off) mem 0) 255)))
+              ((symbol-function 'nl_ht_meta_slot)
+               (lambda (_) (cl-incf (car decode-calls)) (vector 0 0 0 0 0 -103 0 0 0 0 0 0 0 0 0)))
+              ((symbol-function 'vector-len) #'length)
+              ((symbol-function 'nl_ht_int) #'aref))
+      (nl_ht_test_mode (cdr mm)))))
+
+(ert-deftest hf-test-mode-heap-object-fast-path ()
+  (hf--install '(nl_ht_obj nl_ht_test_mode))
+  ;; Cached codes -101/-102/-103 (equal/eq/eql) answer 0/1/2 straight from the
+  ;; kind-22 object's meta vector, never reaching the decoding helpers.
+  (dolist (c '((-101 . 0) (-102 . 1) (-103 . 2)))
+    (let ((calls (list 0)))
+      (should (= (hf--ht-mode-run (hf--ht-mode-mem 22 15 (car c)) calls) (cdr c)))
+      (should (= (car calls) 0))))
+  ;; Uncached (slot 5 = 0), too-short meta, or a non-table header kind all
+  ;; fall through to the decoding body (here answering eql = 2 from -103).
+  (dolist (mm (list (hf--ht-mode-mem 22 15 0)
+                    (hf--ht-mode-mem 22 14 -102)
+                    (hf--ht-mode-mem 20 15 -102)))
+    (let ((calls (list 0)))
+      (should (= (hf--ht-mode-run mm calls) 2))
+      (should (= (car calls) 1)))))
 
 (ert-deftest hf-symbol-stable-arena-id ()
   (hf--install '(bf_identity_hash nl_ht_key_hash))

@@ -32,10 +32,13 @@
     ;; nelisp--hash-{table-p,meta,index,set-index,make} rows and rewrote the
     ;; puthash/gethash/remhash/hash-table-count bodies; 02a1dccef (closures
     ;; are heap kind 23) added nelisp--closure-{p,cons,make}: 168 -> 177 rows.
+    ;; 48342b978 (Lisp-defined GNU primitives report as subrs) added the
+    ;; nelisp--make-lisp-primitive, nelisp--lisp-primitive-p and
+    ;; nelisp--lisp-primitive-name rows: 177 -> 180.  No other row changed.
     (should (eq (cadar table) :word))
-    (should (= (length table) 177))
+    (should (= (length table) 180))
     (should (equal (secure-hash 'sha256 (prin1-to-string (cdr table)))
-                   "7a455df73ebb0eaed6942674fd36eacdb1e064c391807f4d2f253bf762400949"))))
+                   "9f1cd283dfd91bfd0e82a662e3be23f4582b72defffcf51d8b131c633d54eb1e"))))
 (defun nelisp-arithmetic-direct-test--contains (tree node)
   (or (equal tree node)
       (and (consp tree)

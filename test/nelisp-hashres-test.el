@@ -184,21 +184,35 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
 (defmacro hr--measure (&rest body)
   `(progn (setq hr--calls nil) (prog1 (progn ,@body) nil)))
 
+(defun hr--hdr-obj (header)
+  "A 24-byte vectorlike object whose first word is HEADER; returns its WORD."
+  (let ((a (hr--alloc 24))) (hr--w a header) (+ a 6)))
+
 (ert-deftest hr-table-p ()
   (hr--setup)
-  (dolist (kind '(view object object-view-name object-flagged))
-    (let* ((hr--marker-kind kind) (tb (car (hr--build "eq" -102))))
-      (setq hr--calls nil)
-      (should (= (bf_hash_table_p_raw tb) 1))
-      ;; every shape, including the flagged-length one, takes the fast path
-      (should (= (hr--n) 0))
-      ;; 7d7ba0c02: a legacy view (tag byte 7 over the old cons container)
-      ;; is no longer a table; recognition is one header-kind read.
-      (let ((v (hr--alloc 32)))
-        (hr--w v 7) (hr--w (+ v 8) (- tb 6))
-        (setq hr--calls nil)
-        (should (= (bf_hash_table_p_raw v) 0))
-        (should (= (hr--n) 0)))))
+  (let ((tb (car (hr--build "eq" -102))))
+    (setq hr--calls nil)
+    (should (= (bf_hash_table_p_raw tb) 1))
+    (should (= (hr--n) 0)))
+  ;; 7d7ba0c02: recognition is one header-kind read (masked with 63).
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 (ash 1 8)))) 1))
+  ;; high bits above the 6-bit kind do not change the class
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 (ash 5 8) (ash 1 62)))) 1))
+  ;; bit 6 is outside the 63 mask, so 86 = 22 + 64 is still kind 22
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 #x40 (ash 1 8)))) 1))
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 86 (ash 1 8)))) 1))
+  ;; but a changed low kind bit is not
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior #x17 (ash 1 8)))) 0))
+  ;; non-vectorlike words: fixnum, cons-tagged
+  (should (= (bf_hash_table_p_raw (hr--fix 22)) 0))
+  (should (= (bf_hash_table_p_raw (hr--cons (hr--fix 22) 3)) 0))
+  ;; other vectorlike kinds, including the neighbours of 22
+  (dolist (k '(0 8 11 20 21 23 38 54))
+    (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior k (ash 1 8)))) 0)))
+  ;; a legacy view (tag byte 7 over the old cons container) is not a table
+  (let ((tb (car (hr--build "eq" -102))) (v (hr--alloc 32)))
+    (hr--w v 7) (hr--w (+ v 8) (- tb 6))
+    (should (= (bf_hash_table_p_raw v) 0)))
   (let* ((tb (car (hr--build "eq" -102)))
          ;; Cons cells whose car looks like table metadata: not tables now.
          (bad-name (let ((m (hr--vec 15)))

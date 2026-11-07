@@ -524,28 +524,31 @@ non-local-exit behaviour are covered by the standalone reader smoke."
          (body (cdr driver-seq))
          (watermark
           '(ptr-write-u64 268435664 0
-                          (+ 268435456 (ptr-read-u64 268435456 0))))
+                          (+ 268435456 (heap-read-u64 268435456 0))))
          (watermark-pos (cl-position watermark body :test #'equal)))
     (should driver)
     (should (eq (car driver-let) 'let*))
     (should (eq (car driver-seq) 'seq))
     (should watermark-pos)
-    ;; The debt counters are reset after the watermark and before arming
-    ;; mid-form collection.  These writes must stay in this order: enabling
-    ;; earlier permits a while backedge to collect boot objects before the
-    ;; permanent generation is frozen, while a zero trigger would collect on
-    ;; every backedge.
-    (should (equal (nth (+ watermark-pos 1) body)
-                   '(ptr-write-u64 (data-addr nl_gc_stats) 0 0)))
-    (should (equal (nth (+ watermark-pos 2) body)
-                   '(ptr-write-u64 (data-addr nl_gc_stats) 8 0)))
-    (should (equal (nth (+ watermark-pos 3) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)))
-    (should (equal (nth (+ watermark-pos 4) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
-                                   (+ (ptr-read-u64 268436184 0) 16777216))))
-    (should (equal (nth (+ watermark-pos 5) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)))))
+    ;; The debt counters and the allocation budget are reset after the
+    ;; watermark and before arming mid-form collection.  These writes must
+    ;; stay in this order: enabling earlier permits a while backedge to
+    ;; collect boot objects before the permanent generation is frozen, while
+    ;; a zero trigger would collect on every backedge.  b51fe66f4 moved the
+    ;; heap reads to `heap-read-u64'; deb703a17 added the nl_gc_until budget
+    ;; reset and the reserved-bytes base at loop-ctx slot 56.
+    (should (equal (cl-subseq body (1+ watermark-pos) (+ watermark-pos 10))
+                   '((ptr-write-u64 268435624 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+                     (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56
+                                    (heap-read-u64 268436184 0))
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
+                                    (+ (heap-read-u64 268436184 0) 16777216))
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))))))
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
