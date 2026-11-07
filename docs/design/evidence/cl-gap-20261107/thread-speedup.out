@@ -1,0 +1,3 @@
+spin total=400000 1T=8.094/7.733 4T=2.698/2.944 speedup=3.00/2.63
+cons total=200000 1T=3.588/3.651 4T=1.395/1.446 speedup=2.57/2.53
+locked counter=20000 expected=20000

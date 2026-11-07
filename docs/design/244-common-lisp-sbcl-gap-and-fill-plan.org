@@ -1,6 +1,6 @@
 #+TITLE: Common Lisp (SBCL) features missing from NeLisp, and how to fill them
 #+DATE: 2026-11-07
-#+STATUS: PROPOSED — survey and fill plan only; nothing here is implemented
+#+STATUS: ACCEPTED (2026-11-07) — owner confirmed the decisions below; nothing here is implemented
 #+SCOPE: What SBCL offers that NeLisp lacks, which gaps are worth filling, at which layer, and in what order
 #+EVIDENCE: docs/design/evidence/cl-gap-20261107/
 
@@ -9,7 +9,8 @@
 NeLisp's goal is a practical Emacs-compatible runtime, not ANSI Common Lisp
 conformance.  This document therefore does not propose making NeLisp a Common
 Lisp.  It records the gaps and picks a fill for each one: a library, a runtime
-change, a third-party package, or an explicit decision not to fill it.
+change, a third-party package, or an explicit decision not to fill it.  The owner
+decisions that govern the scope are in "Owner decisions".
 
 Three findings matter most:
 
@@ -168,8 +169,9 @@ including =~R ~D ~F ~A ~S ~{ ~[ ~< ~/ ~?=.  The code dates from 2012.
 Plan: run it on =target/nelisp= with its =cl-format.ert= from the upstream repository
 (the MELPA tarball omits it).  Then decide, in this order of preference:
 
-1. Works, or nearly so: depend on it as an optional package and fix NeLisp defects
-   exposed along the way, following =nelisp-defect-peel=.
+1. Works, or nearly so: import it as an optional package under the conditions in
+   "Owner decisions", and fix NeLisp defects exposed along the way, following
+   =nelisp-defect-peel=.
 2. Needs substantial changes: vendor it with attribution under GPL-3.0-or-later.
 3. Unsuitable: write =nl-format= with the same directive set.
 
@@ -287,13 +289,26 @@ The stubs still matter on =origin/main=.  Code using =make-thread= for backgroun
 silently runs in the foreground.  They are defensible as parity placeholders, but they
 should be documented as such, and the documentation should point at =nl-bt-*=.
 
-Remaining work:
+Integration plan (owner decision, 2026-11-07):
 
-1. Document the stubs.
-2. Port the 18 commits onto current =origin/main=.  They touch the AOT compiler and
-   the standalone build, both of which moved by thousands of commits, so expect a
-   port rather than a clean merge.
-3. Finish the ledger on the port, including a Windows run.
+1. Document the stubs now.  This does not depend on the port.
+2. Do not merge into a speedup branch, and do not start while the overlapping work
+   is active.  A dry-run =git merge-tree= conflicts in the same seven files against
+   =origin/main=, =feat/sbcl-native-impl-f12-20261031= and =fix/f12-gates-20261107=:
+   =nelisp-aot-compiler.el=, =nelisp-cc-env-lookup-function.el=,
+   =nelisp-cc-nlstr-direct-ops.el=, =nelisp-cc-rootstack.el=, =nelisp-cc-sf-while.el=,
+   =nelisp-static-linker.el= and =nelisp-standalone-build.el=.  The cause is the growth
+   of =origin/main= since 2026-10-17, not any one speedup branch.
+3. After the =fix/main-ci-reds-*= and f12 work lands on =origin/main=, create
+   =port/214-cl-threads= from =origin/main=.  It is the only writer of the overlapping
+   files for its duration.
+4. Treat it as a port, not a conflict resolution.  Doc 214's audit found about 210
+   literal sites of per-process state.  Code added since the fork, including native
+   fast paths, must be audited against the same per-thread rules, because a clean
+   text merge does not show that it is thread-safe.
+5. Done means =tools/ai/214-cl-threads-progress.org= measured on the port branch with
+   both the Linux and Windows binaries, the eight smokes passing, and a paired
+   single-thread regression check against the =origin/main= merge base.
 
 =nelisp-actor= and =nl-clj-async= remain the higher-level models.  MELPA =semaphore=,
 =aio= and =futur= are not needed for this gap.
@@ -315,7 +330,8 @@ If only the evaluator path can be made safe, ship that and keep aborting elsewhe
 
 - =weak-ref= (MELPA, =github.com/skeeto/elisp-weak-ref=) is a one-entry weak hash
   table with =:weakness t=.  NeLisp's weak tables work with =:weakness 'key= (probe).
-  Test the =t= case, then either use this package or write a four-line =nl-weak-ref=.
+  Test the =t= case, then write a small =nl-weak-ref= with the same technique, since no
+  consumer justifies an import yet.
 - =make-finalizer= in =emacs-lib-core= never runs its function (source).  Real
   finalizers need a post-mark hook: a native change under clause 2.
 - =gc-cons-threshold= is not bound in the core (probe).  Whether allocation pacing
@@ -332,6 +348,9 @@ If only the evaluator path can be made safe, ship that and keep aborting elsewhe
 | =sb-sprof=            | Build: =SIGPROF= via =nl-signal= plus =backtrace-frames=       | new            |
 | =disassemble=         | Bytecode: vendor GNU =disass.el= if it fits NeLisp bytecode.  Native: map to =objdump= on artifacts | new |
 | =step=                | Edebug route, after =edebug.el= is vendored and shown to work  | GNU Emacs      |
+
+Under the owner decision on third-party packages, the GNU Emacs files come first and
+the ELPA and MELPA rows wait for a consumer.
 
 =trace.el=, =disass.el= and =edebug.el= are not in the tree at =ca0a70fd4=.  Only
 autoload entries such as =trace-function= in =vendor/emacs-lisp/loaddefs.el= exist, so
@@ -390,21 +409,32 @@ Ordered by value for cost and by independence from each other.
 |     2 | WP1                 | Small, pure Lisp, repairs a real defect in a shipped package |
 |     3 | WP3 evaluation      | One test run decides reuse or rewrite                      |
 |     4 | WP2, WP10 weak refs | Small and independent                                      |
-|     5 | WP11 reuse trials   | Each trial also exposes substrate defects                  |
+|     5 | WP11 GNU tools      | Vendoring GNU files also exposes substrate defects         |
 |     6 | WP9                 | High value, but needs site enumeration first               |
-|     7 | WP8 Doc 214 port    | High value; the design is done, but the port is large      |
-|     8 | WP4, WP5, WP7       | Only when a consumer exists                                |
-|     - | WP12, WP13          | Doc 90 route or separate design                            |
+|     7 | WP8 Doc 214 port    | After current work lands on =origin/main=; see WP8         |
+|     - | WP4, WP5, WP6, WP7  | Only when a consumer exists                                |
+|     - | WP12, WP13          | Only when a consumer exists; then Doc 90 or separate design |
 
-* Decisions needed from the owner
+* Owner decisions (2026-11-07)
 
-1. *Is CL-style capability a goal at all, or only where an Emacs-compatible consumer
-   needs it?*  This document assumes the latter, which is why WP4, WP5 and WP7 wait
-   for a consumer.
-2. *When should =feat/cl-threads= be ported to =origin/main=?*  This decides when the
-   largest gap in this document closes.
-3. *May optional third-party dependencies enter the tree?*  WP3 and WP11 assume they
-   may be used as optional packages, not as required ones.
+1. *Threads: port, do not merge into a speedup HEAD.*  =feat/cl-threads= goes through
+   =port/214-cl-threads= from =origin/main= after the current work lands, as set out
+   in WP8.  It is not scheduled for a fixed date.
+2. *CL scope: split by kind.*
+   - Runtime capability that SBCL exemplifies (threads, GC, images, startup, native
+     calls) is a goal, as Docs 199, 214 and 230-243 already show.
+   - Repairs and parity proceed without a consumer: WP1, WP2, WP9.
+   - Language-surface features wait for a consumer: WP4, WP5, WP6, WP7, WP12, WP13.
+3. *Third-party packages: allowed as optional, one at a time.*  Start with =cl-format=
+   only (WP3).  =f=, =names=, =undercover= and the other candidates wait for a consumer.
+   An import must meet all of these:
+   - Not required by the core or the cold image, and loaded only by an explicit
+     =require=.  No =nl-*= package hard-depends on it.
+   - Commit and SHA-256 pinned, with origin and license recorded, as =vendor/= does.
+   - A standalone smoke that loads and exercises it.
+   - A GPL-3.0-compatible license confirmed in the file headers.
+
+These decisions followed a review by the advisor, requested by the owner.
 
 * Reproducing the probes
 
@@ -417,3 +447,6 @@ one unused positional argument and prints to stdout), and its output
 appear twice, because =--eval= also prints the value when it is the sole action.  The
 follow-up probes for EIEIO details, heap exhaustion and =nl-handler-bind= are not in
 that driver; the results are quoted in this document.
+
+The WP8 timings come from =thread-speedup.el=, run on the =feat/cl-threads= binary with
+=-L packages/nelisp-bt/src --load=.  Its output is =thread-speedup.out=.
