@@ -13,10 +13,13 @@ change, a third-party package, or an explicit decision not to fill it.
 
 Three findings matter most:
 
-1. =emacs-lib-core='s threads and finalizers are stubs.  =make-thread= runs its
-   function synchronously, =condition-wait= always signals, and =make-finalizer=
-   only builds a record.  Real =clone(2)= threads exist underneath (Doc 199), but
-   they have no blocking primitives and no CAS callable from ordinary Lisp.
+1. Common-Lisp-equivalent threads already exist, but not on =origin/main=.
+   Doc 214 on =origin/feat/cl-threads= provides closures on real OS threads,
+   locks, condition variables, semaphores, atomic integers, interrupt and destroy
+   as =nl-bt-*=.  On =origin/main= only the Doc 199 =clone(2)= primitives are
+   available, and =emacs-lib-core='s =make-thread=, =make-mutex=, =condition-wait=
+   and =make-finalizer= are stubs.  The thread gap is an integration task, not a
+   design task.
 2. Restarts in =nl-condition= miss primitive errors, because =nl-handler-bind=
    only sees =nl-signal=.  The built-in =handler-bind= does see them, so this
    looks fixable in pure Lisp.
@@ -34,6 +37,7 @@ Three findings matter most:
 | Feature probe | One process per test, executed on the built binary        |
 | Source search | =lisp=, =src=, =packages=, =standalone-compat=, =vendor/emacs-lisp= |
 | Archives      | GNU ELPA (514), NonGNU ELPA (293), MELPA (6344), by name and one-line description |
+| Thread branch | =origin/feat/cl-threads= =eccec35d3= (2026-10-18), built and run separately |
 
 The raw name count (586 of 978 absent) is not a measure of missing features.
 It includes renames such as =rplaca= / =setcar= and syntax keywords, and classes
@@ -50,6 +54,8 @@ Known limits of this evidence:
 - The source search matches definition lines only and can miss names generated
   by macros.
 - No third-party package has been run on NeLisp.
+- Apart from the thread branch audit in WP8, the survey covers =origin/main= only.
+  Other unmerged branches may hold further fills.
 
 * Governing constraints
 
@@ -98,7 +104,6 @@ These come from existing rules, and this document does not relax them.
 |  5 | Stream objects, Gray-style extension                      | probe + source | New =nl-stream=                             | L1     | Medium |
 |  6 | Pathname objects                                          | probe + source | Thin struct in =nl-stream= or skip          | L1     | Small  |
 |  7 | Method combination, MOP introspection, =change-class=     | probe + source | CLOS extension package                      | L1, L3 | Medium |
-|  8 | Real mutex, condition variable, CAS, semaphore            | source         | Callable CAS, futex-based Lisp              | native | Large  |
 |  9 | Heap exhaustion aborts                                    | probe          | Signal =memory-full= from a reserve         | native | Large  |
 | 10 | Weak pointers, real finalizers, GC tuning                 | probe + source | Weak hash wrapper first, GC work later      | L1, native | Medium |
 | 11 | Developer tools                                           | probe + source | Reuse, then build                           | L1     | Medium |
@@ -107,6 +112,7 @@ These come from existing rules, and this document does not relax them.
 
 Owned elsewhere, not duplicated here:
 
+- *Threads and synchronization:* Doc 214 on =origin/feat/cl-threads=.  See WP8.
 - *Tail calls:* Doc 171 (blocked at gate G4) and =nl-recur= / =nl-trampoline=.
   Interpreted and byte-compiled deep tail recursion fails today (probe).
 - *Type-directed optimization:* Doc 236 Stages 3b-5.
@@ -237,9 +243,33 @@ specializers and =:before= / =:after= / =:around= (probe).
 - *=define-symbol-macro=*: global symbol macros require =macroexpand-all= to treat free
   variables specially, which is outside stock semantics.  Defer until requested.
 
-** WP8: real synchronization
+** WP8: threads are owned by Doc 214; integrate them
 
-Current state (source):
+This package does not design threads.  Doc 214 already does.
+
+Doc 214 is on =origin/feat/cl-threads= (tip =eccec35d3=, 2026-10-18).  It holds 18
+commits absent from =origin/main=, while =origin/main= holds 3596 commits absent from
+it (merge base 2026-10-17).  Its document file is not on =origin/main=, whose two
+Doc 214 files cover other subjects.
+
+=nl-bt-*= API on the branch: thread make, join, yield, interrupt, destroy; plain and
+recursive locks; condition variables; semaphores; atomic integers with CAS.
+
+Measured on Linux x86-64 at =eccec35d3= on 2026-11-07:
+
+| Check                                    | Result                                  |
+|------------------------------------------+-----------------------------------------|
+| All eight =tools/nelisp-bt-*-smoke.el=   | Pass                                    |
+| Ledger with =NELISP_BT_LINUX_BIN= set    | 48.4% of 31 criteria; 0 FAIL, 16 SKIP   |
+| Fixed work, loop only, 1 vs 4 threads    | 2.63x and 3.00x faster on 4 threads     |
+| Fixed work, consing, 1 vs 4 threads      | 2.53x and 2.57x faster on 4 threads     |
+| Four threads, locked counter             | 20000 of 20000                          |
+
+SKIP counts as not done.  Windows was not run here, so the Windows stages remain
+unverified by this document.  The timings are single runs of two rounds on a machine
+with other load, so they show real parallelism rather than a performance figure.
+
+State of =origin/main= (source):
 
 | Name                       | State                                                        |
 |----------------------------+--------------------------------------------------------------|
@@ -249,33 +279,24 @@ Current state (source):
 | =make-thread=              | =emacs-lib-core= stub: =funcall= runs synchronously          |
 | =make-mutex=               | =emacs-lib-core= stub: a record with no locking              |
 | =condition-wait=           | =emacs-lib-core= stub: always signals                        |
-| Semaphore, thread interrupt | Absent                                                      |
 
-The stubs are guarded by =(unless (fboundp ...))= and give GNU type shapes.  They are
-reasonable as parity placeholders, but they are hazardous if anyone reads them as
-threading: code using =make-thread= for background work silently runs in the
-foreground and can hang on =condition-wait= semantics.  They should be documented as
-such whatever else is decided.
+Doc 214 section 0 settles the API question: =nl-bt-*= is a separate opt-in namespace
+and the =make-thread= family keeps Emacs semantics.  This document follows that.
 
-Plan:
+The stubs still matter on =origin/main=.  Code using =make-thread= for background work
+silently runs in the foreground.  They are defensible as parity placeholders, but they
+should be documented as such, and the documentation should point at =nl-bt-*=.
 
-1. Expose =atomic-compare-exchange= as a callable.  Clause 3 of the minimal native
-   surface already names atomics.
-2. Write =nl-mutex=, =nl-condvar= and =nl-semaphore= in Lisp over CAS and the futex
-   syscall through =syscall-direct=.  This has to park cooperatively with the GC
-   barrier from Doc 152 Stage 5: a thread blocked in a raw futex wait must not stall
-   collection.  That interaction is the main design risk and needs its own section
-   of the ledger before any code.
-3. Only then consider real =make-thread= semantics in =emacs-lib-core=.  GNU threads
-   are cooperative with a global lock, so a parallel implementation is not a drop-in
-   replacement.  This is a separate decision.
+Remaining work:
 
-=nelisp-actor= and =nl-clj-async= remain the high-level models.  MELPA =semaphore=
-needs condition variables and =aio= / =futur= do not provide parallelism, so none of
-them fill this gap.  =interrupt-thread= is deferred: it needs safepoint delivery.
+1. Document the stubs.
+2. Port the 18 commits onto current =origin/main=.  They touch the AOT compiler and
+   the standalone build, both of which moved by thousands of commits, so expect a
+   port rather than a clean merge.
+3. Finish the ledger on the port, including a Windows run.
 
-Acceptance: contended stress run on =target/nelisp= with GC forced throughout, plus a
-mutation check that removing the lock produces a detectable failure.
+=nelisp-actor= and =nl-clj-async= remain the higher-level models.  MELPA =semaphore=,
+=aio= and =futur= are not needed for this gap.
 
 ** WP9: catchable heap exhaustion
 
@@ -365,13 +386,13 @@ Ordered by value for cost and by independence from each other.
 
 | Order | WP                  | Why now                                                    |
 |-------+---------------------+------------------------------------------------------------|
-|     1 | Stub documentation in WP8 | No code risk; prevents silent misuse                 |
+|     1 | WP8 stub documentation | No code risk; prevents silent misuse                    |
 |     2 | WP1                 | Small, pure Lisp, repairs a real defect in a shipped package |
 |     3 | WP3 evaluation      | One test run decides reuse or rewrite                      |
 |     4 | WP2, WP10 weak refs | Small and independent                                      |
 |     5 | WP11 reuse trials   | Each trial also exposes substrate defects                  |
 |     6 | WP9                 | High value, but needs site enumeration first               |
-|     7 | WP8 synchronization | High value, highest design risk                            |
+|     7 | WP8 Doc 214 port    | High value; the design is done, but the port is large      |
 |     8 | WP4, WP5, WP7       | Only when a consumer exists                                |
 |     - | WP12, WP13          | Doc 90 route or separate design                            |
 
@@ -380,8 +401,8 @@ Ordered by value for cost and by independence from each other.
 1. *Is CL-style capability a goal at all, or only where an Emacs-compatible consumer
    needs it?*  This document assumes the latter, which is why WP4, WP5 and WP7 wait
    for a consumer.
-2. *Should real parallel =make-thread= ever replace the stub?*  It would differ from
-   GNU's cooperative threads, so parity and capability pull in different directions.
+2. *When should =feat/cl-threads= be ported to =origin/main=?*  This decides when the
+   largest gap in this document closes.
 3. *May optional third-party dependencies enter the tree?*  WP3 and WP11 assume they
    may be used as optional packages, not as required ones.
 
