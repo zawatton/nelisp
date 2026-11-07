@@ -38,105 +38,105 @@ precede output writes, so output/input aliasing preserves addition semantics.")
       (head (symbol-function 'car)) (tail (symbol-function 'cdr))
       (reject (symbol-function 'error))
       (provider-checker (symbol-function 'nelisp-native-arithmetic-v2-owner-valid-p)))
-(defun nelisp-native-optimization-guard-v1-owner-valid-p ()
-  "Check module-load original identities without invoking snapshot helpers."
-  (let ((remaining owners))
-    (while remaining
-      (let ((entry (funcall head remaining)))
-        (if (funcall same (funcall tail entry) (funcall lookup (funcall head entry)))
-            nil (funcall reject "optimization-guard: source owner changed")))
-      (setq remaining (funcall tail remaining)))
-    (funcall provider-checker)))
+  (defun nelisp-native-optimization-guard-v1-owner-valid-p ()
+    "Check module-load original identities without invoking snapshot helpers."
+    (let ((remaining owners))
+      (while remaining
+        (let ((entry (funcall head remaining)))
+          (if (funcall same (funcall tail entry) (funcall lookup (funcall head entry)))
+              nil (funcall reject "optimization-guard: source owner changed")))
+        (setq remaining (funcall tail remaining)))
+      (funcall provider-checker)))
 
-(defun nelisp-native-optimization-guard-v1--copy (value active budget depth)
-  "Copy bounded symbol/integer DSL data without exposing mutable source conses."
-  (setcar budget (1- (car budget)))
-  (if (or (< (car budget) 0) (> depth 64)) (error "optimization-guard: source bound exceeded"))
-  (cond ((consp value)
-         (if (memq value active) (error "optimization-guard: cyclic source"))
-         (let ((next (cons value active)))
-           (cons (nelisp-native-optimization-guard-v1--copy (car value) next budget (1+ depth))
-                 (nelisp-native-optimization-guard-v1--copy (cdr value) next budget depth))))
-        ((or (symbolp value) (integerp value)) value)
-        (t (error "optimization-guard: unsupported source atom"))))
+  (defun nelisp-native-optimization-guard-v1--copy (value active budget depth)
+    "Copy bounded symbol/integer DSL data without exposing mutable source conses."
+    (setcar budget (1- (car budget)))
+    (if (or (< (car budget) 0) (> depth 64)) (error "optimization-guard: source bound exceeded"))
+    (cond ((consp value)
+           (if (memq value active) (error "optimization-guard: cyclic source"))
+           (let ((next (cons value active)))
+             (cons (nelisp-native-optimization-guard-v1--copy (car value) next budget (1+ depth))
+                   (nelisp-native-optimization-guard-v1--copy (cdr value) next budget depth))))
+          ((or (symbolp value) (integerp value)) value)
+          (t (error "optimization-guard: unsupported source atom"))))
 
-(defun nelisp-native-optimization-guard-v1-source (mode)
-  "Return the genuine slow provider, adding the fixed arithmetic guard for ON.
+  (defun nelisp-native-optimization-guard-v1-source (mode)
+    "Return the genuine slow provider, adding the fixed arithmetic guard for ON.
 The compiler must authenticate root origins and the complete returned source
 and dependency context before publishing an executable artifact."
-  (funcall owner-checker)
-  (unless (memq mode '(on off)) (error "optimization-guard: unknown mode"))
-  (let ((source (nelisp-native-arithmetic-v2-source)))
-    (if (eq mode 'off) source
-      (append source
-              (list (nelisp-native-optimization-guard-v1--copy
-                     nelisp-native-optimization-guard-v1--arithmetic nil (list 2048) 0))))))
+    (funcall owner-checker)
+    (unless (memq mode '(on off)) (error "optimization-guard: unknown mode"))
+    (let ((source (nelisp-native-arithmetic-v2-source)))
+      (if (eq mode 'off) source
+        (append source
+                (list (nelisp-native-optimization-guard-v1--copy
+                       nelisp-native-optimization-guard-v1--arithmetic nil (list 2048) 0))))))
 
-(defun nelisp-native-optimization-guard-v1-descriptor (mode)
-  "Describe the fixed six-root gateway ABI and its guard facts."
-  (funcall owner-checker)
-  (unless (memq mode '(on off)) (error "optimization-guard: unknown mode"))
-  (list :name (if (eq mode 'on) "nl_native_add_guard_v1" "nl_native_add_v2")
-        :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64
-        :status '(0 1 2) :root-authentication 'nl_root_pin_slot_v2
-        :sexp-size 32 :integer-tag 2 :payload-offset 8
-        :fixnum-min -2305843009213693952 :fixnum-max 2305843009213693951
-        :native-call-guard 'pending-owner-proof))
+  (defun nelisp-native-optimization-guard-v1-descriptor (mode)
+    "Describe the fixed six-root gateway ABI and its guard facts."
+    (funcall owner-checker)
+    (unless (memq mode '(on off)) (error "optimization-guard: unknown mode"))
+    (list :name (if (eq mode 'on) "nl_native_add_guard_v1" "nl_native_add_v2")
+          :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64
+          :status '(0 1 2) :root-authentication 'nl_root_pin_slot_v2
+          :sexp-size 32 :integer-tag 2 :payload-offset 8
+          :fixnum-min -2305843009213693952 :fixnum-max 2305843009213693951
+          :native-call-guard 'pending-owner-proof))
 
-(defun nelisp-native-optimization-guard-v1-call-select (symbol expected)
-  "Resolve SYMBOL once and describe an identity guard decision.
+  (defun nelisp-native-optimization-guard-v1-call-select (symbol expected)
+    "Resolve SYMBOL once and describe an identity guard decision.
 This is a decision component, not an authenticated native call capability.
 An executable caller must additionally bind EXPECTED to its genuine compiled
 artifact proof and retain the resolved function as a live root."
-  (funcall owner-checker)
-  (if (not (and (symbolp symbol) symbol (not (eq symbol t))
-                (not (keywordp symbol)) (functionp expected)))
-      (list :route 'refused)
-    (let ((observed (symbol-function symbol)))
-      (list :route (if (eq observed expected) 'fast 'slow) :callee observed
-            :requires-artifact-owner-proof t))))
+    (funcall owner-checker)
+    (if (not (and (symbolp symbol) symbol (not (eq symbol t))
+                  (not (keywordp symbol)) (functionp expected)))
+        (list :route 'refused)
+      (let ((observed (symbol-function symbol)))
+        (list :route (if (eq observed expected) 'fast 'slow) :callee observed
+              :requires-artifact-owner-proof t))))
 
-(defun nelisp-native-optimization-guard-v1-dependency-context ()
-  "Return copied provider, source and numeric facts for compiler sealing."
-  (funcall owner-checker)
-  (nelisp-native-optimization-guard-v1--dependency-context
-   (nelisp-native-arithmetic-v2-dependency-context)))
+  (defun nelisp-native-optimization-guard-v1-dependency-context ()
+    "Return copied provider, source and numeric facts for compiler sealing."
+    (funcall owner-checker)
+    (nelisp-native-optimization-guard-v1--dependency-context
+     (nelisp-native-arithmetic-v2-dependency-context)))
 
-(defun nelisp-native-optimization-guard-v1--dependency-context (provider)
-  "Bind module helpers, interpreted macro owners, source and numeric facts."
-  (funcall owner-checker)
-  (vector
-   (mapcar #'symbol-function
-           '(nelisp-native-optimization-guard-v1--copy
-             nelisp-native-optimization-guard-v1-source
-             nelisp-native-optimization-guard-v1-descriptor
-             nelisp-native-optimization-guard-v1-call-select
-             nelisp-native-optimization-guard-v1-dependency-context
-             nelisp-native-optimization-guard-v1-owner-valid-p
-             setcar 1- car cdr cons memq symbolp integerp error 1+ < >
-             eq append list symbol-function functionp keywordp not and unless cond mapcar vector))
-   provider
-   ;; PROVIDER is an owned copy. Reuse its slow source rather than asking
-   ;; the provider to validate and copy that identical source again.
-   (append (aref provider 7)
-           (list (nelisp-native-optimization-guard-v1--copy
-                  nelisp-native-optimization-guard-v1--arithmetic nil (list 2048) 0)))
-   (nelisp-native-optimization-guard-v1-descriptor 'on)))
+  (defun nelisp-native-optimization-guard-v1--dependency-context (provider)
+    "Bind module helpers, interpreted macro owners, source and numeric facts."
+    (funcall owner-checker)
+    (vector
+     (mapcar #'symbol-function
+             '(nelisp-native-optimization-guard-v1--copy
+               nelisp-native-optimization-guard-v1-source
+               nelisp-native-optimization-guard-v1-descriptor
+               nelisp-native-optimization-guard-v1-call-select
+               nelisp-native-optimization-guard-v1-dependency-context
+               nelisp-native-optimization-guard-v1-owner-valid-p
+               setcar 1- car cdr cons memq symbolp integerp error 1+ < >
+               eq append list symbol-function functionp keywordp not and unless cond mapcar vector))
+     provider
+     ;; PROVIDER is an owned copy. Reuse its slow source rather than asking
+     ;; the provider to validate and copy that identical source again.
+     (append (aref provider 7)
+             (list (nelisp-native-optimization-guard-v1--copy
+                    nelisp-native-optimization-guard-v1--arithmetic nil (list 2048) 0)))
+     (nelisp-native-optimization-guard-v1-descriptor 'on)))
 
-(setq owner-checker (funcall lookup 'nelisp-native-optimization-guard-v1-owner-valid-p)
-      owners
-      (mapcar (lambda (name) (cons name (funcall lookup name)))
-              '(nelisp-native-optimization-guard-v1-owner-valid-p
-                nelisp-native-optimization-guard-v1--copy
-                nelisp-native-optimization-guard-v1-source
-                nelisp-native-optimization-guard-v1-descriptor
-                nelisp-native-optimization-guard-v1-call-select
-                nelisp-native-optimization-guard-v1-dependency-context
-                nelisp-native-optimization-guard-v1--dependency-context
-                nelisp-native-arithmetic-v2-owner-valid-p
-                symbol-function eq car cdr cons setcar list 1- 1+ memq
-                symbolp integerp error < > and or cond unless not
-                append mapcar vector functionp keywordp aref)))
-)
+  (setq owner-checker (funcall lookup 'nelisp-native-optimization-guard-v1-owner-valid-p)
+        owners
+        (mapcar (lambda (name) (cons name (funcall lookup name)))
+                '(nelisp-native-optimization-guard-v1-owner-valid-p
+                  nelisp-native-optimization-guard-v1--copy
+                  nelisp-native-optimization-guard-v1-source
+                  nelisp-native-optimization-guard-v1-descriptor
+                  nelisp-native-optimization-guard-v1-call-select
+                  nelisp-native-optimization-guard-v1-dependency-context
+                  nelisp-native-optimization-guard-v1--dependency-context
+                  nelisp-native-arithmetic-v2-owner-valid-p
+                  symbol-function eq car cdr cons setcar list 1- 1+ memq
+                  symbolp integerp error < > and or cond unless not
+                  append mapcar vector functionp keywordp aref)))
+  )
 
 (provide 'nelisp-native-optimization-guard-v1)

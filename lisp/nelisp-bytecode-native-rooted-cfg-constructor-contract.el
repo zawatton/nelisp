@@ -17,60 +17,60 @@
       (lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq)))
 ;;;###autoload
-(defun nelisp-bytecode-native-rooted-cfg-contract-constructor-p (contract)
-  "Authenticate CONTRACT and its exact straight-line constructor domain.
+  (defun nelisp-bytecode-native-rooted-cfg-contract-constructor-p (contract)
+    "Authenticate CONTRACT and its exact straight-line constructor domain.
 The normal compiler capability currently certifies protected argument/constant
 roots and CONS. Arithmetic, calls, accessors and branches remain outside it."
-  (and valid-owner
-       (funcall same valid-owner
-                (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-       (let* ((reconstruction (funcall valid-owner contract :reconstruction))
-              (plan (plist-get reconstruction :plan))
-              (blocks (plist-get plan :blocks))
-              (operations (and (consp blocks)
-                               (cl-loop for block in blocks append
-                                        (plist-get block :operations))))
-              (has-cons (cl-some (lambda (operation)
-                                   (eq (plist-get operation :opcode) 'cons))
-                                 operations))
-              (imports (and has-cons '("nl_native_cons_v2"))))
-         (and reconstruction
-              (funcall same valid-owner
-                       (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-              (eq (plist-get plan :status) 'complete)
-              (= (length blocks) 1)
-              (null (plist-get (car blocks) :successors))
-              (null (plist-get plan :phis))
-              (eq (plist-get (car (last operations)) :opcode) 'return)
-              (not (plist-get plan :exit-root-base))
-              (consp operations)
-              (cl-every (lambda (operation)
-                          (memq (plist-get operation :opcode)
-                                '(const stack-ref dup discard cons return)))
-                        operations)
-              (equal (plist-get plan :gateway-imports) imports)
-              (equal (plist-get contract :imports) imports))))))
+    (and valid-owner
+         (funcall same valid-owner
+                  (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+         (let* ((reconstruction (funcall valid-owner contract :reconstruction))
+                (plan (plist-get reconstruction :plan))
+                (blocks (plist-get plan :blocks))
+                (operations (and (consp blocks)
+                                 (cl-loop for block in blocks append
+                                          (plist-get block :operations))))
+                (has-cons (cl-some (lambda (operation)
+                                     (eq (plist-get operation :opcode) 'cons))
+                                   operations))
+                (imports (and has-cons '("nl_native_cons_v2"))))
+           (and reconstruction
+                (funcall same valid-owner
+                         (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+                (eq (plist-get plan :status) 'complete)
+                (= (length blocks) 1)
+                (null (plist-get (car blocks) :successors))
+                (null (plist-get plan :phis))
+                (eq (plist-get (car (last operations)) :opcode) 'return)
+                (not (plist-get plan :exit-root-base))
+                (consp operations)
+                (cl-every (lambda (operation)
+                            (memq (plist-get operation :opcode)
+                                  '(const stack-ref dup discard cons return)))
+                          operations)
+                (equal (plist-get plan :gateway-imports) imports)
+                (equal (plist-get contract :imports) imports))))))
 
 (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (let ((validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
       (safe-validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p))
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq)))
-(defun nelisp-bytecode-native-rooted-cfg-contract-f1-p (contract)
-  "Authenticate the separate generic evaluator domain without widening CONS."
-  (and (funcall same validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-       (funcall same safe-validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p))
-       (if (equal (plist-get contract :version) nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version)
-           (funcall safe-validator contract)
-         (funcall validator contract))
-       (plist-get (plist-get contract :plan) :funcall-version)
-       (equal (plist-get contract :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
-       (equal (plist-get contract :funcall-hash) (nelisp-native-funcall-v2-hash))
-       ;; Cyclic (banked) plans additionally import the machine-code poll gate
-       ;; (9d6a4a4f2); acyclic ones do not.
-       (member (plist-get contract :imports)
-               '(("nl_native_funcall_v2" "nl_root_pin_slot_v2")
-                 ("nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2")
-                 ;; A closed loop with no call keeps only the poll gate.
-                 ("nl_native_poll_v2" "nl_root_pin_slot_v2"))))))
+  (defun nelisp-bytecode-native-rooted-cfg-contract-f1-p (contract)
+    "Authenticate the separate generic evaluator domain without widening CONS."
+    (and (funcall same validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+         (funcall same safe-validator (funcall lookup 'nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p))
+         (if (equal (plist-get contract :version) nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version)
+             (funcall safe-validator contract)
+           (funcall validator contract))
+         (plist-get (plist-get contract :plan) :funcall-version)
+         (equal (plist-get contract :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
+         (equal (plist-get contract :funcall-hash) (nelisp-native-funcall-v2-hash))
+         ;; Cyclic (banked) plans additionally import the machine-code poll gate
+         ;; (9d6a4a4f2); acyclic ones do not.
+         (member (plist-get contract :imports)
+                 '(("nl_native_funcall_v2" "nl_root_pin_slot_v2")
+                   ("nl_native_funcall_v2" "nl_native_poll_v2" "nl_root_pin_slot_v2")
+                   ;; A closed loop with no call keeps only the poll gate.
+                   ("nl_native_poll_v2" "nl_root_pin_slot_v2"))))))
 (provide 'nelisp-bytecode-native-rooted-cfg-constructor-contract)
 ;;; nelisp-bytecode-native-rooted-cfg-constructor-contract.el ends here

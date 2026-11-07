@@ -37,45 +37,45 @@
 
 (let ((expected-exports
        (copy-tree nelisp-native-compiler-runtime-capability--constructor-exports)))
-(defun nelisp-native-compiler-runtime-capability--metadata-p (metadata)
-  "Validate the bounded constructor proof metadata schema.
+  (defun nelisp-native-compiler-runtime-capability--metadata-p (metadata)
+    "Validate the bounded constructor proof metadata schema.
 This shape check cannot issue or install a runtime capability."
-  (let* ((exports (plist-get metadata :exports))
-         (f1 (eq (plist-get metadata :domain) 'compiler-f1-runtime-v1))
-         (frame (and f1 (plist-get metadata :frame-descriptor)))
-         (expected-exports (if f1
-                               (append expected-exports '(("nl_native_funcall_v2" func 6))
-                                       (and frame '(("nl_native_frame_v2" func 6))))
-                             expected-exports)))
-    (and (eq (plist-get metadata :version) (if f1 2 1))
-         (or (not f1)
-             (and (equal (plist-get metadata :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
-                  (equal (plist-get metadata :funcall-hash) (nelisp-native-funcall-v2-hash))))
-         (or (not frame)
-             (and (equal frame (nelisp-native-frame-v2-descriptor))
-                  (equal (plist-get metadata :frame-hash) (nelisp-native-frame-v2-hash))))
-         (memq (plist-get metadata :domain) '(compiler-runtime-v1 compiler-f1-runtime-v1))
-         (equal (plist-get metadata :operation-eligibility) (if f1 '(f1) '(constructor)))
-         (cl-every #'nelisp-native-compiler-runtime-capability--digest-p
-                   (mapcar (lambda (key) (plist-get metadata key))
-                           '(:abi-sha256 :binary-sha256 :active-manifest-sha256)))
-         (listp exports) (= (length exports) (if frame 10 (if f1 9 8)))
-         (cl-every
-          (lambda (expected)
-            (let ((matches (cl-remove-if-not
-                            (lambda (entry)
-                              (equal (plist-get entry :name) (car expected))) exports)))
-              (and (= (length matches) 1)
-                   (let ((entry (car matches)))
-                     (and (eq (plist-get entry :kind) (nth 1 expected))
-                          (if (eq (nth 1 expected) 'data)
-                              (= (or (plist-get entry :size) -1) (nth 2 expected))
-                            (= (or (plist-get entry :arity) -1) (nth 2 expected)))
-                          (integerp (plist-get entry :address))
-                          (> (plist-get entry :address) 0)
-                          (integerp (plist-get entry :size))
-                          (<= 1 (plist-get entry :size) 65536))))))
-          expected-exports)))))
+    (let* ((exports (plist-get metadata :exports))
+           (f1 (eq (plist-get metadata :domain) 'compiler-f1-runtime-v1))
+           (frame (and f1 (plist-get metadata :frame-descriptor)))
+           (expected-exports (if f1
+                                 (append expected-exports '(("nl_native_funcall_v2" func 6))
+                                         (and frame '(("nl_native_frame_v2" func 6))))
+                               expected-exports)))
+      (and (eq (plist-get metadata :version) (if f1 2 1))
+           (or (not f1)
+               (and (equal (plist-get metadata :funcall-descriptor) (nelisp-native-funcall-v2-descriptor))
+                    (equal (plist-get metadata :funcall-hash) (nelisp-native-funcall-v2-hash))))
+           (or (not frame)
+               (and (equal frame (nelisp-native-frame-v2-descriptor))
+                    (equal (plist-get metadata :frame-hash) (nelisp-native-frame-v2-hash))))
+           (memq (plist-get metadata :domain) '(compiler-runtime-v1 compiler-f1-runtime-v1))
+           (equal (plist-get metadata :operation-eligibility) (if f1 '(f1) '(constructor)))
+           (cl-every #'nelisp-native-compiler-runtime-capability--digest-p
+                     (mapcar (lambda (key) (plist-get metadata key))
+                             '(:abi-sha256 :binary-sha256 :active-manifest-sha256)))
+           (listp exports) (= (length exports) (if frame 10 (if f1 9 8)))
+           (cl-every
+            (lambda (expected)
+              (let ((matches (cl-remove-if-not
+                              (lambda (entry)
+                                (equal (plist-get entry :name) (car expected))) exports)))
+                (and (= (length matches) 1)
+                     (let ((entry (car matches)))
+                       (and (eq (plist-get entry :kind) (nth 1 expected))
+                            (if (eq (nth 1 expected) 'data)
+                                (= (or (plist-get entry :size) -1) (nth 2 expected))
+                              (= (or (plist-get entry :arity) -1) (nth 2 expected)))
+                            (integerp (plist-get entry :address))
+                            (> (plist-get entry :address) 0)
+                            (integerp (plist-get entry :size))
+                            (<= 1 (plist-get entry :size) 65536))))))
+            expected-exports)))))
 
 (let* ((names '(nelisp-native-compiler-runtime-proof-create
                 nelisp-native-compiler-runtime-proof-valid-p
@@ -98,44 +98,44 @@ This shape check cannot issue or install a runtime capability."
        (same (symbol-function 'eq))
        (owners nil) (proof nil) (capability-owner nil) (owner-predicate nil))
 
-(defun nelisp-native-compiler-runtime-capability-owner-p (candidate)
-  "Recognize the original boot-loaded capability CANDIDATE, refusing copies."
-  (and available (funcall same candidate capability-owner)
-       (funcall same capability-owner
-                (funcall lookup 'nelisp-native-compiler-runtime-capability-p))
-       (funcall same owner-predicate
-                (funcall lookup 'nelisp-native-compiler-runtime-capability-owner-p))
-       (cl-every (lambda (entry)
-                   (funcall same (cdr entry) (funcall lookup (car entry)))) owners)
-       (funcall provider-owners-valid)
-       (or (not f1-available) (funcall f1-owners-valid))))
+  (defun nelisp-native-compiler-runtime-capability-owner-p (candidate)
+    "Recognize the original boot-loaded capability CANDIDATE, refusing copies."
+    (and available (funcall same candidate capability-owner)
+         (funcall same capability-owner
+                  (funcall lookup 'nelisp-native-compiler-runtime-capability-p))
+         (funcall same owner-predicate
+                  (funcall lookup 'nelisp-native-compiler-runtime-capability-owner-p))
+         (cl-every (lambda (entry)
+                     (funcall same (cdr entry) (funcall lookup (car entry)))) owners)
+         (funcall provider-owners-valid)
+         (or (not f1-available) (funcall f1-owners-valid))))
 
 ;;;###autoload
-(defun nelisp-native-compiler-runtime-capability-p (&optional operations)
-  "Check source-owned immutable eligibility for OPERATIONS.
+  (defun nelisp-native-compiler-runtime-capability-p (&optional operations)
+    "Check source-owned immutable eligibility for OPERATIONS.
 Omitted OPERATIONS requests all compiler operations and therefore refuses a
 constructor-only proof. No caller-supplied certificate is accepted."
-  (condition-case nil
-      (and available
-           (cl-every (lambda (entry)
-                       (funcall same (cdr entry) (funcall lookup (car entry)))) owners)
-           ;; The generated proof authenticates actual units, mapped code,
-           ;; bridge owners and the running binary before registry issuance.
-           (let* ((requested (or operations '(numeric call constructor)))
-                  (f1 (equal requested '(f1)))
-                  (record (if f1
-                              (and f1-available (or f1-proof (setq f1-proof (funcall f1-create)))
-                                   (funcall f1-valid f1-proof nil :metadata))
-                            (and (or proof (setq proof (funcall create)))
-                                 (funcall valid proof nil :metadata)))))
-             (and (nelisp-native-compiler-runtime-capability--metadata-p record)
-                  (equal (plist-get record :abi-sha256)
-                         (nelisp-runtime-reload-contract-hash))
-                  (fboundp 'nelisp-native-load-running-binary-sha256)
-                  (equal (plist-get record :binary-sha256)
-                         (nelisp-native-load-running-binary-sha256))
-                  (member requested '((constructor) (f1))))))
-    (error nil)))
+    (condition-case nil
+        (and available
+             (cl-every (lambda (entry)
+                         (funcall same (cdr entry) (funcall lookup (car entry)))) owners)
+             ;; The generated proof authenticates actual units, mapped code,
+             ;; bridge owners and the running binary before registry issuance.
+             (let* ((requested (or operations '(numeric call constructor)))
+                    (f1 (equal requested '(f1)))
+                    (record (if f1
+                                (and f1-available (or f1-proof (setq f1-proof (funcall f1-create)))
+                                     (funcall f1-valid f1-proof nil :metadata))
+                              (and (or proof (setq proof (funcall create)))
+                                   (funcall valid proof nil :metadata)))))
+               (and (nelisp-native-compiler-runtime-capability--metadata-p record)
+                    (equal (plist-get record :abi-sha256)
+                           (nelisp-runtime-reload-contract-hash))
+                    (fboundp 'nelisp-native-load-running-binary-sha256)
+                    (equal (plist-get record :binary-sha256)
+                           (nelisp-native-load-running-binary-sha256))
+                    (member requested '((constructor) (f1))))))
+      (error nil)))
 
   (setq capability-owner (funcall lookup 'nelisp-native-compiler-runtime-capability-p)
         owner-predicate (funcall lookup 'nelisp-native-compiler-runtime-capability-owner-p)

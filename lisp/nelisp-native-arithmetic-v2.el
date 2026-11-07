@@ -164,126 +164,126 @@ status 2 refuses malformed root requests. All slots remain GC-visible.")
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq))
       (head (symbol-function 'car)) (tail (symbol-function 'cdr))
       (reject (symbol-function 'error)))
-(defun nelisp-native-arithmetic-v2-owner-valid-p ()
-  "Check original provider owners without executing any snapshot helper."
-  (let ((remaining owners))
-    (while remaining
-      (let ((entry (funcall head remaining)))
-        (if (funcall same (funcall tail entry) (funcall lookup (funcall head entry)))
-            nil (funcall reject "native-arithmetic: source owner changed")))
-      (setq remaining (funcall tail remaining)))
-    t))
-(defun nelisp-native-arithmetic-v2--copy-node (item ancestors depth budget)
-  "Copy one source node using an explicit bounded traversal state."
-  (setcar budget (1- (car budget)))
-  (if (or (< (car budget) 0) (> depth 64))
-      (error "native-arithmetic: source bound exceeded"))
-  (cond ((consp item)
-         (if (memq item ancestors) (error "native-arithmetic: cyclic source"))
-         (let ((next (cons item ancestors)))
-           (cons (nelisp-native-arithmetic-v2--copy-node (car item) next (1+ depth) budget)
-                 (nelisp-native-arithmetic-v2--copy-node (cdr item) next (1+ depth) budget))))
-        ((stringp item)
-         (if (or (> (length item) 256)
-                 (text-properties-at 0 item)
-                 (< (or (next-property-change 0 item) (length item)) (length item)))
-             (error "native-arithmetic: noncanonical source string"))
-         (copy-sequence item))
-        ((or (symbolp item) (integerp item)) item)
-        (t (error "native-arithmetic: malformed source atom"))))
-(defun nelisp-native-arithmetic-v2--snapshot (value)
-  "Copy bounded source data without runtime macro expansion."
-  (nelisp-native-arithmetic-v2--copy-node value nil 0 (list 4096)))
-(defun nelisp-native-arithmetic-v2-source ()
-  "Return an independent copy of the canonical native slow gateway source."
-  (funcall owner-checker)
-  (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--source))
-(defun nelisp-native-arithmetic-v2-direct-source ()
-  "Return bounded direct numeric compilation data, without runtime admission."
-  (funcall owner-checker)
-  (let ((source (nelisp-native-arithmetic-v2--snapshot canonical-direct)))
-    (if (and (consp source) (eq (car source) 'seq))
-        (cons 'seq (cons (list 'defun 'nl_native_add_v2_plus (list 'args 'out)
-                              (nelisp-native-arithmetic-v2-plus-body)) (cdr source)))
-      source)))
-(defun nelisp-native-arithmetic-v2-plus-body ()
-  "Return a bounded independent copy of the genuine builtin addition body."
-  (funcall owner-checker)
-  (nelisp-native-arithmetic-v2--snapshot canonical-plus))
-(defun nelisp-native-arithmetic-v2-descriptor ()
-  "Return the planner/emitter boundary for rooted generic numeric addition."
-  (funcall owner-checker)
-  (nelisp-native-arithmetic-v2--snapshot
-   '(:name "nl_native_add_v2" :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64)
-    :return u64 :calling-convention sysv-amd64
-    :status-success 0 :status-exit 1 :status-refused 2 :exit-root-count 3
-    :signal-kind 1 :throw-kind 2 :operation add :byte-opcode 92
-    :exit-kind-layout (:bytes 32 :tag 2 :tag-offset 0 :payload-offset 8 :zero-offsets (16 24)))))
-(defun nelisp-native-arithmetic-v2-runtime-imports ()
-  "Return source-owned runtime imports, excluding all artifact-local functions."
-  (funcall owner-checker)
-  (nelisp-native-arithmetic-v2--snapshot
-   '((:name "nl_arena_base" :kind data :size 8)
-     (:name "nl_alloc_symbol" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "nelisp_cons_construct" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "nl_root_pin_begin_v2" :kind func :arity 1 :params (u64) :return u64)
-     (:name "nl_root_pin_end_v2" :kind func :arity 2 :params (u64 u64) :return u64)
-     (:name "nl_root_pin_reserve_v2" :kind func :arity 2 :params (u64 u64) :return u64)
-     (:name "nl_root_pin_slot_v2" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "wf_bytecode_call_gateway" :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64))))
-(defun nelisp-native-arithmetic-v2-direct-runtime-imports ()
-  "Return direct compilation imports requiring separately certified admission."
-  (funcall owner-checker)
-  (nelisp-native-arithmetic-v2--snapshot
-   '((:name "nl_arena_base" :kind data :size 8)
-     (:name "nelisp_cons_construct" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "nl_root_pin_begin_v2" :kind func :arity 1 :params (u64) :return u64)
-     (:name "nl_root_pin_end_v2" :kind func :arity 2 :params (u64 u64) :return u64)
-     (:name "nl_root_pin_reserve_v2" :kind func :arity 2 :params (u64 u64) :return u64)
-     (:name "nl_root_pin_slot_v2" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "wf_any_float_arith" :kind func :arity 1 :params (u64) :return u64)
-     (:name "wf_first_non_number_or_bignum" :kind func :arity 1 :params (u64) :return u64)
-     (:name "wf_fsum" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "wf_copy32" :kind func :arity 2 :params (u64 u64) :return u64)
-     (:name "wf_sum" :kind func :arity 3 :params (u64 u64 u64) :return u64)
-     (:name "bf_wrong_type_number_or_marker" :kind func :arity 1 :params (u64) :return u64))))
-(defun nelisp-native-arithmetic-v2-dependency-context ()
-  "Return opaque owner identities and a copied canonical source snapshot."
-  (funcall owner-checker)
-  (vector (symbol-function 'nelisp-native-arithmetic-v2-source)
-          (symbol-function 'nelisp-native-arithmetic-v2-descriptor)
-          (symbol-function 'nelisp-native-arithmetic-v2-runtime-imports)
-          (symbol-function 'nelisp-native-arithmetic-v2-dependency-context)
-          (symbol-function 'nelisp-native-arithmetic-v2--snapshot)
-          (symbol-function 'nelisp-native-arithmetic-v2--copy-node)
-          (mapcar #'symbol-function
-                  '(car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
-                    1- < > consp 1+ stringp length symbolp integerp error
-                    vector mapcar symbol-function))
-          (nelisp-native-arithmetic-v2-source)
-          (nelisp-native-arithmetic-v2-descriptor)
-          (nelisp-native-arithmetic-v2-runtime-imports)
-          (symbol-function 'nelisp-native-arithmetic-v2-plus-body)
-          (nelisp-native-arithmetic-v2-plus-body)
-          (symbol-function 'nelisp-native-arithmetic-v2-direct-source)
-          (symbol-function 'nelisp-native-arithmetic-v2-direct-runtime-imports)
-          (nelisp-native-arithmetic-v2-direct-source)
-          (nelisp-native-arithmetic-v2-direct-runtime-imports)))
-;; Capture independent bounded data before exposing the new accessors.  Public
-;; constant rebinding or mutation must never alter their compilation snapshots.
-(setq canonical-plus (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--plus-body)
-      canonical-direct (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--direct-source))
-(setq owner-checker (funcall lookup 'nelisp-native-arithmetic-v2-owner-valid-p)
-      owners (mapcar (lambda (name) (cons name (funcall lookup name)))
-                    '(nelisp-native-arithmetic-v2-owner-valid-p
-                      nelisp-native-arithmetic-v2-source nelisp-native-arithmetic-v2-descriptor
-                      nelisp-native-arithmetic-v2-runtime-imports nelisp-native-arithmetic-v2-dependency-context
-                      nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--copy-node
-                      nelisp-native-arithmetic-v2-plus-body
-                      nelisp-native-arithmetic-v2-direct-source
-                      nelisp-native-arithmetic-v2-direct-runtime-imports
-                      car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
-                      1- < > consp 1+ stringp length symbolp integerp error vector mapcar
-                      symbol-function eq and or cond)))
-)
+  (defun nelisp-native-arithmetic-v2-owner-valid-p ()
+    "Check original provider owners without executing any snapshot helper."
+    (let ((remaining owners))
+      (while remaining
+        (let ((entry (funcall head remaining)))
+          (if (funcall same (funcall tail entry) (funcall lookup (funcall head entry)))
+              nil (funcall reject "native-arithmetic: source owner changed")))
+        (setq remaining (funcall tail remaining)))
+      t))
+  (defun nelisp-native-arithmetic-v2--copy-node (item ancestors depth budget)
+    "Copy one source node using an explicit bounded traversal state."
+    (setcar budget (1- (car budget)))
+    (if (or (< (car budget) 0) (> depth 64))
+        (error "native-arithmetic: source bound exceeded"))
+    (cond ((consp item)
+           (if (memq item ancestors) (error "native-arithmetic: cyclic source"))
+           (let ((next (cons item ancestors)))
+             (cons (nelisp-native-arithmetic-v2--copy-node (car item) next (1+ depth) budget)
+                   (nelisp-native-arithmetic-v2--copy-node (cdr item) next (1+ depth) budget))))
+          ((stringp item)
+           (if (or (> (length item) 256)
+                   (text-properties-at 0 item)
+                   (< (or (next-property-change 0 item) (length item)) (length item)))
+               (error "native-arithmetic: noncanonical source string"))
+           (copy-sequence item))
+          ((or (symbolp item) (integerp item)) item)
+          (t (error "native-arithmetic: malformed source atom"))))
+  (defun nelisp-native-arithmetic-v2--snapshot (value)
+    "Copy bounded source data without runtime macro expansion."
+    (nelisp-native-arithmetic-v2--copy-node value nil 0 (list 4096)))
+  (defun nelisp-native-arithmetic-v2-source ()
+    "Return an independent copy of the canonical native slow gateway source."
+    (funcall owner-checker)
+    (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--source))
+  (defun nelisp-native-arithmetic-v2-direct-source ()
+    "Return bounded direct numeric compilation data, without runtime admission."
+    (funcall owner-checker)
+    (let ((source (nelisp-native-arithmetic-v2--snapshot canonical-direct)))
+      (if (and (consp source) (eq (car source) 'seq))
+          (cons 'seq (cons (list 'defun 'nl_native_add_v2_plus (list 'args 'out)
+                                 (nelisp-native-arithmetic-v2-plus-body)) (cdr source)))
+        source)))
+  (defun nelisp-native-arithmetic-v2-plus-body ()
+    "Return a bounded independent copy of the genuine builtin addition body."
+    (funcall owner-checker)
+    (nelisp-native-arithmetic-v2--snapshot canonical-plus))
+  (defun nelisp-native-arithmetic-v2-descriptor ()
+    "Return the planner/emitter boundary for rooted generic numeric addition."
+    (funcall owner-checker)
+    (nelisp-native-arithmetic-v2--snapshot
+     '(:name "nl_native_add_v2" :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64)
+             :return u64 :calling-convention sysv-amd64
+             :status-success 0 :status-exit 1 :status-refused 2 :exit-root-count 3
+             :signal-kind 1 :throw-kind 2 :operation add :byte-opcode 92
+             :exit-kind-layout (:bytes 32 :tag 2 :tag-offset 0 :payload-offset 8 :zero-offsets (16 24)))))
+  (defun nelisp-native-arithmetic-v2-runtime-imports ()
+    "Return source-owned runtime imports, excluding all artifact-local functions."
+    (funcall owner-checker)
+    (nelisp-native-arithmetic-v2--snapshot
+     '((:name "nl_arena_base" :kind data :size 8)
+       (:name "nl_alloc_symbol" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "nelisp_cons_construct" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "nl_root_pin_begin_v2" :kind func :arity 1 :params (u64) :return u64)
+       (:name "nl_root_pin_end_v2" :kind func :arity 2 :params (u64 u64) :return u64)
+       (:name "nl_root_pin_reserve_v2" :kind func :arity 2 :params (u64 u64) :return u64)
+       (:name "nl_root_pin_slot_v2" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "wf_bytecode_call_gateway" :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64))))
+  (defun nelisp-native-arithmetic-v2-direct-runtime-imports ()
+    "Return direct compilation imports requiring separately certified admission."
+    (funcall owner-checker)
+    (nelisp-native-arithmetic-v2--snapshot
+     '((:name "nl_arena_base" :kind data :size 8)
+       (:name "nelisp_cons_construct" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "nl_root_pin_begin_v2" :kind func :arity 1 :params (u64) :return u64)
+       (:name "nl_root_pin_end_v2" :kind func :arity 2 :params (u64 u64) :return u64)
+       (:name "nl_root_pin_reserve_v2" :kind func :arity 2 :params (u64 u64) :return u64)
+       (:name "nl_root_pin_slot_v2" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "wf_any_float_arith" :kind func :arity 1 :params (u64) :return u64)
+       (:name "wf_first_non_number_or_bignum" :kind func :arity 1 :params (u64) :return u64)
+       (:name "wf_fsum" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "wf_copy32" :kind func :arity 2 :params (u64 u64) :return u64)
+       (:name "wf_sum" :kind func :arity 3 :params (u64 u64 u64) :return u64)
+       (:name "bf_wrong_type_number_or_marker" :kind func :arity 1 :params (u64) :return u64))))
+  (defun nelisp-native-arithmetic-v2-dependency-context ()
+    "Return opaque owner identities and a copied canonical source snapshot."
+    (funcall owner-checker)
+    (vector (symbol-function 'nelisp-native-arithmetic-v2-source)
+            (symbol-function 'nelisp-native-arithmetic-v2-descriptor)
+            (symbol-function 'nelisp-native-arithmetic-v2-runtime-imports)
+            (symbol-function 'nelisp-native-arithmetic-v2-dependency-context)
+            (symbol-function 'nelisp-native-arithmetic-v2--snapshot)
+            (symbol-function 'nelisp-native-arithmetic-v2--copy-node)
+            (mapcar #'symbol-function
+                    '(car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
+                          1- < > consp 1+ stringp length symbolp integerp error
+                          vector mapcar symbol-function))
+            (nelisp-native-arithmetic-v2-source)
+            (nelisp-native-arithmetic-v2-descriptor)
+            (nelisp-native-arithmetic-v2-runtime-imports)
+            (symbol-function 'nelisp-native-arithmetic-v2-plus-body)
+            (nelisp-native-arithmetic-v2-plus-body)
+            (symbol-function 'nelisp-native-arithmetic-v2-direct-source)
+            (symbol-function 'nelisp-native-arithmetic-v2-direct-runtime-imports)
+            (nelisp-native-arithmetic-v2-direct-source)
+            (nelisp-native-arithmetic-v2-direct-runtime-imports)))
+  ;; Capture independent bounded data before exposing the new accessors.  Public
+  ;; constant rebinding or mutation must never alter their compilation snapshots.
+  (setq canonical-plus (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--plus-body)
+        canonical-direct (nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--direct-source))
+  (setq owner-checker (funcall lookup 'nelisp-native-arithmetic-v2-owner-valid-p)
+        owners (mapcar (lambda (name) (cons name (funcall lookup name)))
+                       '(nelisp-native-arithmetic-v2-owner-valid-p
+                         nelisp-native-arithmetic-v2-source nelisp-native-arithmetic-v2-descriptor
+                         nelisp-native-arithmetic-v2-runtime-imports nelisp-native-arithmetic-v2-dependency-context
+                         nelisp-native-arithmetic-v2--snapshot nelisp-native-arithmetic-v2--copy-node
+                         nelisp-native-arithmetic-v2-plus-body
+                         nelisp-native-arithmetic-v2-direct-source
+                         nelisp-native-arithmetic-v2-direct-runtime-imports
+                         car cdr cons list setcar memq copy-sequence text-properties-at next-property-change
+                         1- < > consp 1+ stringp length symbolp integerp error vector mapcar
+                         symbol-function eq and or cond)))
+  )
 (provide 'nelisp-native-arithmetic-v2)

@@ -8,45 +8,45 @@
             secure-hash file-attributes)))
 (defconst nelisp-stdlib-completion-ignored--form
   '
-(setq completion-ignored-extensions
-      (append
-       (cond ((memq system-type '(ms-dos windows-nt))
-              '(".o" "~" ".bin" ".bak" ".obj" ".map" ".ico" ".pif" ".lnk"
-                ".a" ".ln" ".blg" ".bbl" ".dll" ".drv" ".vxd" ".386"))
-	     (t
-              '(".o" "~" ".bin" ".lbin" ".so"
-                ".a" ".ln" ".blg" ".bbl")))
-       '(".elc" ".lof"
-	 ".glo" ".idx" ".lot"
-	 ;; VCS metadata directories
-	 ".svn/" ".hg/" ".git/" ".bzr/" "CVS/" "_darcs/" "_MTN/"
-	 ;; TeX-related
-	 ".fmt" ".tfm"
-	 ;; Java compiled
-	 ".class"
-	 ;; CLISP
-	 ".fas" ".lib" ".mem"
-	 ;; CMUCL
-	 ".x86f" ".sparcf"
-	 ;; OpenMCL / Clozure CL
-	 ".dfsl" ".pfsl" ".d64fsl" ".p64fsl" ".lx64fsl" ".lx32fsl"
-	 ".dx64fsl" ".dx32fsl" ".fx64fsl" ".fx32fsl" ".sx64fsl"
-	 ".sx32fsl" ".wx64fsl" ".wx32fsl"
-         ;; Other CL implementations (Allegro, LispWorks)
-         ".fasl" ".ufsl" ".fsl" ".dxl"
-	 ;; Libtool
-	 ".lo" ".la"
-	 ;; Gettext
-	 ".gmo" ".mo"
-	 ;; Texinfo-related
-	 ;; This used to contain .log, but that's commonly used for log
-	 ;; files you do want to see, not just TeX stuff.  -- fx
-	 ".toc" ".aux"
-	 ".cp" ".fn" ".ky" ".pg" ".tp" ".vr"
-	 ".cps" ".fns" ".kys" ".pgs" ".tps" ".vrs"
-	 ;; Python byte-compiled
-         ".pyc" ".pyo")))
-)
+  (setq completion-ignored-extensions
+        (append
+         (cond ((memq system-type '(ms-dos windows-nt))
+                '(".o" "~" ".bin" ".bak" ".obj" ".map" ".ico" ".pif" ".lnk"
+                  ".a" ".ln" ".blg" ".bbl" ".dll" ".drv" ".vxd" ".386"))
+	       (t
+                '(".o" "~" ".bin" ".lbin" ".so"
+                  ".a" ".ln" ".blg" ".bbl")))
+         '(".elc" ".lof"
+	   ".glo" ".idx" ".lot"
+	   ;; VCS metadata directories
+	   ".svn/" ".hg/" ".git/" ".bzr/" "CVS/" "_darcs/" "_MTN/"
+	   ;; TeX-related
+	   ".fmt" ".tfm"
+	   ;; Java compiled
+	   ".class"
+	   ;; CLISP
+	   ".fas" ".lib" ".mem"
+	   ;; CMUCL
+	   ".x86f" ".sparcf"
+	   ;; OpenMCL / Clozure CL
+	   ".dfsl" ".pfsl" ".d64fsl" ".p64fsl" ".lx64fsl" ".lx32fsl"
+	   ".dx64fsl" ".dx32fsl" ".fx64fsl" ".fx32fsl" ".sx64fsl"
+	   ".sx32fsl" ".wx64fsl" ".wx32fsl"
+           ;; Other CL implementations (Allegro, LispWorks)
+           ".fasl" ".ufsl" ".fsl" ".dxl"
+	   ;; Libtool
+	   ".lo" ".la"
+	   ;; Gettext
+	   ".gmo" ".mo"
+	   ;; Texinfo-related
+	   ;; This used to contain .log, but that's commonly used for log
+	   ;; files you do want to see, not just TeX stuff.  -- fx
+	   ".toc" ".aux"
+	   ".cp" ".fn" ".ky" ".pg" ".tp" ".vr"
+	   ".cps" ".fns" ".kys" ".pgs" ".tps" ".vrs"
+	   ;; Python byte-compiled
+           ".pyc" ".pyo")))
+  )
 (defvar nelisp-stdlib-completion-ignored--sealed-form
   (copy-tree nelisp-stdlib-completion-ignored--form))
 ;;;###autoload

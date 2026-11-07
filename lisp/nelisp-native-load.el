@@ -2622,39 +2622,39 @@ The enclosing CFG admission must still authenticate the complete contract."
        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
       (input-reuse-owner
        (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
-(defun nelisp-native-load--raw-v2-resolve-local-calls (unit)
-  "Resolve emitted near CALL relocations to functions owned by UNIT.
+  (defun nelisp-native-load--raw-v2-resolve-local-calls (unit)
+    "Resolve emitted near CALL relocations to functions owned by UNIT.
 Runtime intrinsics can emit PLT32 relocations even when the allocator is
 part of the same complete runtime unit. Those calls belong to the artifact,
 not its import table. Reject every other local relocation encoding."
-  (let* ((text (plist-get unit :text)) (symbols (plist-get unit :symbols))
-         (definitions (plist-get unit :defuns)) (remaining nil) (patched nil))
-    (dolist (reloc (plist-get unit :relocs))
-      (let* ((name (plist-get reloc :symbol))
-             (definition (cl-find name definitions :key (lambda (x) (plist-get x :name)) :test #'equal))
-             (symbol (and definition (cl-find name symbols :key (lambda (x) (plist-get x :name)) :test #'equal))))
-        (if (null symbol) (push reloc remaining)
-          (let* ((offset (plist-get reloc :offset)) (target (plist-get symbol :value))
-                 (addend (plist-get reloc :addend)))
-            (unless (and (eq (plist-get reloc :type) 'plt32) (equal addend -4)
-                         (integerp offset) (> offset 0) (<= (+ offset 4) (length text))
-                         (= (aref text (1- offset)) #xe8)
-                         (eq (plist-get symbol :section) 'text)
-                         (integerp target) (<= 0 target) (< target (length text)))
-              (error "nelisp-native-load: unsupported local call relocation: %S" name))
-            (let ((delta (- (+ target addend) offset)))
-              (unless (<= -2147483648 delta 2147483647)
-                (error "nelisp-native-load: local call displacement overflow"))
-              (unless patched (setq patched (copy-sequence text)))
-              (dotimes (i 4) (aset patched (+ offset i) (logand (ash delta (* -8 i)) 255))))))))
-    (if (null patched) unit
-      (let ((result (copy-sequence unit)))
-        (setq result (plist-put result :text patched))
-        (plist-put result :relocs (nreverse remaining))))))
+    (let* ((text (plist-get unit :text)) (symbols (plist-get unit :symbols))
+           (definitions (plist-get unit :defuns)) (remaining nil) (patched nil))
+      (dolist (reloc (plist-get unit :relocs))
+        (let* ((name (plist-get reloc :symbol))
+               (definition (cl-find name definitions :key (lambda (x) (plist-get x :name)) :test #'equal))
+               (symbol (and definition (cl-find name symbols :key (lambda (x) (plist-get x :name)) :test #'equal))))
+          (if (null symbol) (push reloc remaining)
+            (let* ((offset (plist-get reloc :offset)) (target (plist-get symbol :value))
+                   (addend (plist-get reloc :addend)))
+              (unless (and (eq (plist-get reloc :type) 'plt32) (equal addend -4)
+                           (integerp offset) (> offset 0) (<= (+ offset 4) (length text))
+                           (= (aref text (1- offset)) #xe8)
+                           (eq (plist-get symbol :section) 'text)
+                           (integerp target) (<= 0 target) (< target (length text)))
+                (error "nelisp-native-load: unsupported local call relocation: %S" name))
+              (let ((delta (- (+ target addend) offset)))
+                (unless (<= -2147483648 delta 2147483647)
+                  (error "nelisp-native-load: local call displacement overflow"))
+                (unless patched (setq patched (copy-sequence text)))
+                (dotimes (i 4) (aset patched (+ offset i) (logand (ash delta (* -8 i)) 255))))))))
+      (if (null patched) unit
+        (let ((result (copy-sequence unit)))
+          (setq result (plist-put result :text patched))
+          (plist-put result :relocs (nreverse remaining))))))
 
-(defun nelisp-native-load-raw-v2-compile-file
-    (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot cache-only)
-  "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
+  (defun nelisp-native-load-raw-v2-compile-file
+      (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec validation-receiver source-snapshot cache-only)
+    "Compile a complete GC/arena SOURCE-PATH to v2 ARTIFACT-PATH.
 
 The source is a snapshot of ordinary raw `defun' forms.  The canonical
 chunk-arena rewrite runs before emission, then every `(data-addr NAME)' is
@@ -2674,717 +2674,717 @@ SOURCE-SNAPSHOT is internal: (FORMS . SOURCE-BYTES) from the emitter, avoiding
 file reading and parsing while retaining identical source provenance.
 CACHE-ONLY is internal to the private rooted-CFG cache: return the manifest
 without publishing an intermediate artifact.  The cache owns publication."
-  ;; The complete collector is deeper than the host's default evaluation
-  ;; budget. Match the ordinary standalone compiler locally; source/spec,
-  ;; import, size and relocation validation below retain their own bounds.
-  (let ((max-lisp-eval-depth (max max-lisp-eval-depth 40000)))
-  (when (and cache-only
-             (not (and rooted-cfg-spec (consp source-snapshot)
-                       (listp (car source-snapshot)) (stringp (cdr source-snapshot))
-                       (not (or safe-v3-spec call1-template rooted-stack-spec
-                                conditional-spec rooted-branch-spec rooted-branch-join-spec)))))
-    (error "nelisp-native-load: cache compilation requires a rooted-CFG snapshot"))
-  (unless (and (stringp source-path)
-               (or cache-only (file-readable-p source-path)))
-    (error "nelisp-native-load: v2 raw source is not readable: %S" source-path))
-  (when safe-v3-spec
-    (unless (and (nelisp-native-load--rooted-cfg-safe-v3-spec-shape-p safe-v3-spec)
-                 (not (or rooted-cfg-spec call1-template rooted-stack-spec
-                          conditional-spec rooted-branch-spec rooted-branch-join-spec)))
-      (error "nelisp-native-load: malformed, mixed, or unbounded safe-v3 spec")))
-  (unless (and (stringp artifact-path) (> (length artifact-path) 0))
-    (error "nelisp-native-load: v2 raw artifact path is empty"))
-  (unless (nelisp-native-load--raw-v2-contract)
-    (error "nelisp-native-load: GC ABI contract is unavailable"))
-  (unless (nelisp-native-load--raw-v2-symbols)
-    (error "nelisp-native-load: runtime resolver contract is unavailable"))
-  (unless (fboundp 'nelisp-aot-compile-to-link-unit)
-    (require 'nelisp-aot-compiler))
-  (unless (fboundp 'nelisp-standalone--chunk-arena-rewrite)
-    ;; The rewrite has its own source module; do not load the build driver
-    ;; merely to compile a runtime unit from a clean session.
-    (require 'nelisp-standalone-arena-rewrite))
-  (unless (fboundp 'nelisp-aot-compile-to-link-unit)
-    (error "nelisp-native-load: raw compiler is unavailable in this runtime"))
-  ;; The same bounded atom cache already used by contract digests also
-  ;; covers compiled-source and manifest printing. It changes no print mode
-  ;; or authenticated byte and never carries entries into another compile.
-  (let* ((nelisp--prn-symbol-cache (make-hash-table :test 'equal))
-         (source
-          (if source-snapshot (cdr source-snapshot)
-           (with-temp-buffer
-            (set-buffer-multibyte nil)
-            (insert-file-contents-literally source-path)
-            (buffer-string))))
-         (forms (if source-snapshot (car source-snapshot)
-                  (nelisp-native-load--raw-source-forms source-path source)))
-         (contract (nelisp-native-load--raw-v2-contract))
-         (runtime-owned-gc (or rooted-cfg-spec safe-v3-spec))
-         (resolver-symbols (nelisp-native-load--raw-v2-symbols))
-         (layout nelisp-native-load-raw-layout-id-v2)
-         (build (or build-id
-                    (and (boundp 'nelisp--cli-version) nelisp--cli-version)
-                    "unknown"))
-         (binary (or binary-sha256
-                     (nelisp-native-load--running-binary-sha256)))
-         (compile-forms (if (or call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
-                            (cl-remove-if
-                             (lambda (form)
-                               (and (eq (car form) 'defun)
-                                    (eq (cadr form)
-                                        'wf_bytecode_call_gateway_exit)))
-                             forms)
-                          forms))
-         (prepared (nelisp-native-load--raw-v2-chunk-rewrite compile-forms))
-         (data-names (nelisp-native-load--raw-v2-collect-data-addr-names
-                      prepared))
-         (rewritten (nelisp-native-load--raw-v2-rewrite-data-addr prepared))
-         (unit nil)
-         (cfg-validated-contract nil)
-         (cfg-validation-result nil)
-         (cfg-validation-digest nil))
-    (unless forms
-      (error "nelisp-native-load: v2 raw source has no top-level defun"))
-    (dolist (form forms)
-      (unless (and (listp form) (eq (car form) 'defun))
-        (error "nelisp-native-load: v2 raw source has non-defun top level")))
-    (when (and call1-template
-               (not (nelisp-native-load--raw-v2-call1-source-valid-p
-                     forms contract)))
-      (error "nelisp-native-load: CALL1 source does not match fixed wrapper"))
-    (when rooted-stack-spec
-      (require 'nelisp-bytecode-native-rooted-stack)
-      (let* ((input (plist-get rooted-stack-spec :input))
-             (plan (plist-get rooted-stack-spec :plan))
-             (entry (cl-find-if (lambda (f) (equal (cadr f) 'nl_native_stack_probe_v1)) forms))
-             (expected (list 'defun 'nl_native_stack_probe_v1
-                             '(env ticket argument-count root-count)
-                             (nelisp-bytecode-native-rooted-stack-body
-                              (plist-get plan :operations))))
-             (gc-forms (cl-remove-if (lambda (f) (equal (cadr f) 'nl_native_stack_probe_v1)) forms)))
-        (unless (and (equal (nelisp-bytecode-native-rooted-stack-plan input) plan)
-                     entry (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                                  (nelisp-native-load--rooted-stack-normalize-ast expected))
-                     (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
-                     (= (length forms) (1+ (length contract))))
-          (error "nelisp-native-load: rooted-stack AST/plan/import mismatch"))))
-    (when conditional-spec
-      (let ((entry-name (plist-get conditional-spec :entry-name))
-            (expected (plist-get conditional-spec :entry-ast))
-            (entry (cl-find-if
-                    (lambda (form) (and (eq (car form) 'defun)
-                                        (equal (cadr form)
-                                               (intern (plist-get conditional-spec :entry-name)))))
-                    forms)))
-        (unless (and (not rooted-stack-spec) (not call1-template)
-                     (equal entry-name "nl_native_rooted_conditional_probe_v1")
-                     entry expected
-                     (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                            (nelisp-native-load--rooted-stack-normalize-ast expected))
-                     (= (length forms) (1+ (length contract))))
-          (error "nelisp-native-load: conditional AST contract mismatch"))))
-    (when rooted-branch-spec
-      (require 'nelisp-bytecode-native-rooted-branch)
-      (let* ((input (plist-get rooted-branch-spec :input))
-             (plan (plist-get rooted-branch-spec :plan))
-             (entry (cl-find-if (lambda (f) (equal (cadr f) 'nl_native_rooted_branch_probe_v1)) forms))
-             (expected (plist-get rooted-branch-spec :entry-ast))
-             (gc-forms (cl-remove-if (lambda (f) (equal (cadr f) 'nl_native_rooted_branch_probe_v1)) forms)))
-        (unless (and (not rooted-stack-spec) (not conditional-spec) (not call1-template)
-                     (eq (plist-get (nelisp-bytecode-native-rooted-branch-plan input) :status)
-                         'complete)
-                     (equal (nelisp-bytecode-native-rooted-branch-plan input) plan)
-                     entry expected
-                     (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                            (nelisp-native-load--rooted-stack-normalize-ast expected))
-                     (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
-                     (= (length forms) (1+ (length contract))))
-          (error "nelisp-native-load: rooted branch AST/plan mismatch"))))
-    (when rooted-branch-join-spec
-      (require 'nelisp-bytecode-native-rooted-branch-join)
-      (let* ((input (plist-get rooted-branch-join-spec :input))
-             (operation (plist-get rooted-branch-join-spec :operation))
-             (plan (plist-get rooted-branch-join-spec :plan))
-             (entry (cl-find-if
-                     (lambda (f) (equal (cadr f)
-                                        'nl_native_rooted_branch_join_probe_v1))
-                     forms))
-             (expected (plist-get rooted-branch-join-spec :entry-ast))
-             (gc-forms (cl-remove-if
-                        (lambda (f) (equal (cadr f)
-                                           'nl_native_rooted_branch_join_probe_v1))
+    ;; The complete collector is deeper than the host's default evaluation
+    ;; budget. Match the ordinary standalone compiler locally; source/spec,
+    ;; import, size and relocation validation below retain their own bounds.
+    (let ((max-lisp-eval-depth (max max-lisp-eval-depth 40000)))
+      (when (and cache-only
+                 (not (and rooted-cfg-spec (consp source-snapshot)
+                           (listp (car source-snapshot)) (stringp (cdr source-snapshot))
+                           (not (or safe-v3-spec call1-template rooted-stack-spec
+                                    conditional-spec rooted-branch-spec rooted-branch-join-spec)))))
+        (error "nelisp-native-load: cache compilation requires a rooted-CFG snapshot"))
+      (unless (and (stringp source-path)
+                   (or cache-only (file-readable-p source-path)))
+        (error "nelisp-native-load: v2 raw source is not readable: %S" source-path))
+      (when safe-v3-spec
+        (unless (and (nelisp-native-load--rooted-cfg-safe-v3-spec-shape-p safe-v3-spec)
+                     (not (or rooted-cfg-spec call1-template rooted-stack-spec
+                              conditional-spec rooted-branch-spec rooted-branch-join-spec)))
+          (error "nelisp-native-load: malformed, mixed, or unbounded safe-v3 spec")))
+      (unless (and (stringp artifact-path) (> (length artifact-path) 0))
+        (error "nelisp-native-load: v2 raw artifact path is empty"))
+      (unless (nelisp-native-load--raw-v2-contract)
+        (error "nelisp-native-load: GC ABI contract is unavailable"))
+      (unless (nelisp-native-load--raw-v2-symbols)
+        (error "nelisp-native-load: runtime resolver contract is unavailable"))
+      (unless (fboundp 'nelisp-aot-compile-to-link-unit)
+        (require 'nelisp-aot-compiler))
+      (unless (fboundp 'nelisp-standalone--chunk-arena-rewrite)
+        ;; The rewrite has its own source module; do not load the build driver
+        ;; merely to compile a runtime unit from a clean session.
+        (require 'nelisp-standalone-arena-rewrite))
+      (unless (fboundp 'nelisp-aot-compile-to-link-unit)
+        (error "nelisp-native-load: raw compiler is unavailable in this runtime"))
+      ;; The same bounded atom cache already used by contract digests also
+      ;; covers compiled-source and manifest printing. It changes no print mode
+      ;; or authenticated byte and never carries entries into another compile.
+      (let* ((nelisp--prn-symbol-cache (make-hash-table :test 'equal))
+             (source
+              (if source-snapshot (cdr source-snapshot)
+                (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (insert-file-contents-literally source-path)
+                  (buffer-string))))
+             (forms (if source-snapshot (car source-snapshot)
+                      (nelisp-native-load--raw-source-forms source-path source)))
+             (contract (nelisp-native-load--raw-v2-contract))
+             (runtime-owned-gc (or rooted-cfg-spec safe-v3-spec))
+             (resolver-symbols (nelisp-native-load--raw-v2-symbols))
+             (layout nelisp-native-load-raw-layout-id-v2)
+             (build (or build-id
+                        (and (boundp 'nelisp--cli-version) nelisp--cli-version)
+                        "unknown"))
+             (binary (or binary-sha256
+                         (nelisp-native-load--running-binary-sha256)))
+             (compile-forms (if (or call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+                                (cl-remove-if
+                                 (lambda (form)
+                                   (and (eq (car form) 'defun)
+                                        (eq (cadr form)
+                                            'wf_bytecode_call_gateway_exit)))
+                                 forms)
+                              forms))
+             (prepared (nelisp-native-load--raw-v2-chunk-rewrite compile-forms))
+             (data-names (nelisp-native-load--raw-v2-collect-data-addr-names
+                          prepared))
+             (rewritten (nelisp-native-load--raw-v2-rewrite-data-addr prepared))
+             (unit nil)
+             (cfg-validated-contract nil)
+             (cfg-validation-result nil)
+             (cfg-validation-digest nil))
+        (unless forms
+          (error "nelisp-native-load: v2 raw source has no top-level defun"))
+        (dolist (form forms)
+          (unless (and (listp form) (eq (car form) 'defun))
+            (error "nelisp-native-load: v2 raw source has non-defun top level")))
+        (when (and call1-template
+                   (not (nelisp-native-load--raw-v2-call1-source-valid-p
+                         forms contract)))
+          (error "nelisp-native-load: CALL1 source does not match fixed wrapper"))
+        (when rooted-stack-spec
+          (require 'nelisp-bytecode-native-rooted-stack)
+          (let* ((input (plist-get rooted-stack-spec :input))
+                 (plan (plist-get rooted-stack-spec :plan))
+                 (entry (cl-find-if (lambda (f) (equal (cadr f) 'nl_native_stack_probe_v1)) forms))
+                 (expected (list 'defun 'nl_native_stack_probe_v1
+                                 '(env ticket argument-count root-count)
+                                 (nelisp-bytecode-native-rooted-stack-body
+                                  (plist-get plan :operations))))
+                 (gc-forms (cl-remove-if (lambda (f) (equal (cadr f) 'nl_native_stack_probe_v1)) forms)))
+            (unless (and (equal (nelisp-bytecode-native-rooted-stack-plan input) plan)
+                         entry (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                      (nelisp-native-load--rooted-stack-normalize-ast expected))
+                         (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
+                         (= (length forms) (1+ (length contract))))
+              (error "nelisp-native-load: rooted-stack AST/plan/import mismatch"))))
+        (when conditional-spec
+          (let ((entry-name (plist-get conditional-spec :entry-name))
+                (expected (plist-get conditional-spec :entry-ast))
+                (entry (cl-find-if
+                        (lambda (form) (and (eq (car form) 'defun)
+                                            (equal (cadr form)
+                                                   (intern (plist-get conditional-spec :entry-name)))))
                         forms)))
-        (unless (and (not call1-template) (not rooted-stack-spec)
-                     (not conditional-spec) (not rooted-branch-spec)
-                     (eq (plist-get (nelisp-bytecode-native-rooted-branch-join-plan
-                                     input operation) :status) 'complete)
-                     (equal (nelisp-bytecode-native-rooted-branch-join-plan
-                             input operation) plan)
-                     entry expected
-                     (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                            (nelisp-native-load--rooted-stack-normalize-ast expected))
-                     (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
-                     (= (length forms) (1+ (length contract))))
-          (error "nelisp-native-load: rooted branch-join AST/plan mismatch: %S"
-                 (list :plan-status
-                       (plist-get (nelisp-bytecode-native-rooted-branch-join-plan
-                                   input operation) :status)
-                       :plan-equal
-                       (equal (nelisp-bytecode-native-rooted-branch-join-plan
-                               input operation) plan)
-                       :entry (and entry t) :expected (and expected t)
-                       :ast-equal
-                       (and entry expected
-                            (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                                   (nelisp-native-load--rooted-stack-normalize-ast expected)))
-                       :gc (nelisp-native-load--rooted-stack-gc-forms-valid-p
-                            gc-forms contract)
-                       :counts (list (length forms) (1+ (length contract))))))))
-    ;; The producer and artifact admission authenticate the F1 capability,
-    ;; including the frame descriptor/hash.  Raw compilation creates no
-    ;; executable permission and must not repeat that full memory proof.
-    (when rooted-cfg-spec
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-start")
-      (require 'nelisp-bytecode-native-rooted-cfg-contract)
-      (let* ((input (plist-get rooted-cfg-spec :input))
-             (plan (plist-get rooted-cfg-spec :plan))
-             (emitted (plist-get rooted-cfg-spec :emitted))
-             (cfg-contract (plist-get rooted-cfg-spec :contract))
-             (shared-v2 (member (plist-get cfg-contract :version)
-                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
-                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
-             (version (plist-get cfg-contract :version))
-             (entry-name (if shared-v2
-                             nelisp-bytecode-native-rooted-cfg-contract-shared-entry
-                           "nl_native_rooted_cfg_probe_v1"))
-             (entry (cl-find-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
-             (gc-forms (cl-remove-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
-             (validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-             (reconstruction
-              (and (eq validator cfg-validator-owner)
-                   (setq cfg-validation-result
-                         (funcall cfg-validator-owner cfg-contract :reconstruction input))
-                   (progn
-                     ;; Fingerprint immediately after validation, before AOT.
-                     (setq cfg-validated-contract cfg-contract
-                           cfg-validation-digest
-                           (let ((print-length nil) (print-level nil)
-                                 (print-circle t) (print-escape-newlines t)
-                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-                             (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract))))
-                     cfg-validation-result)))
-             (verified-input (plist-get reconstruction :input))
-             (canonical-input
-              (and reconstruction
-                   (or (and (eq input-reuse-owner
-                                (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
-                            (funcall input-reuse-owner input))
-                       (nelisp-bytecode-compiler-input-build (plist-get input :function)))))
-             (verified-plan (plist-get reconstruction :plan))
-             (verified-emitted (plist-get reconstruction :emitted))
-             (expected-contract (plist-get reconstruction :expected-contract)))
-        ;; Recheck the live function after fingerprinting, at the original
-        ;; canonical-input check point. The private build snapshot retains
-        ;; this check without reconstructing the frame; external callers and
-        ;; changed inputs still take the independent reconstruction path.
-        (cl-labels ((input-data (value)
-                      (let ((rest value) (data nil))
-                        (while rest
-                          (let ((key (pop rest)) (item (pop rest)))
-                            (unless (eq key :function)
-                              (push key data) (push item data))))
-                        (nreverse data))))
-        (unless (and (not call1-template) (not rooted-stack-spec)
-                     (not conditional-spec) (not rooted-branch-spec)
-                     (not rooted-branch-join-spec)
-                     (member version (list nelisp-bytecode-native-rooted-cfg-contract-version
-                                           nelisp-bytecode-native-rooted-cfg-contract-shared-version
-                                           nelisp-bytecode-native-rooted-cfg-contract-f1-version
-                                           nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
-                     reconstruction
-                     (eq validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-                     (equal input canonical-input)
-                     (equal (nelisp-bytecode-native-rooted-cfg-contract-input-recipe input)
-                            (nelisp-bytecode-native-rooted-cfg-contract-input-recipe verified-input))
-                     (equal (input-data input) (input-data verified-input))
-                     (eq (plist-get verified-plan :status) 'complete)
-                     (equal plan verified-plan)
-                     (eq (plist-get verified-emitted :status) 'complete)
-                     (equal emitted verified-emitted)
-                     (equal cfg-contract expected-contract)
-                     (nelisp-native-load--rooted-cfg-import-names-valid-p
-                      (plist-get cfg-contract :imports) cfg-contract)
-                     (< (plist-get cfg-contract :root-count) 256)
-                     entry (= (length (nth 2 entry)) 4)
-                     ;; Equal objects have equal pure normalizations. The
-                     ;; independent full emission comparison above still
-                     ;; authenticates this shared producer/source subtree.
-                     (or (eq entry (plist-get emitted :form))
+            (unless (and (not rooted-stack-spec) (not call1-template)
+                         (equal entry-name "nl_native_rooted_conditional_probe_v1")
+                         entry expected
+                         (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                (nelisp-native-load--rooted-stack-normalize-ast expected))
+                         (= (length forms) (1+ (length contract))))
+              (error "nelisp-native-load: conditional AST contract mismatch"))))
+        (when rooted-branch-spec
+          (require 'nelisp-bytecode-native-rooted-branch)
+          (let* ((input (plist-get rooted-branch-spec :input))
+                 (plan (plist-get rooted-branch-spec :plan))
+                 (entry (cl-find-if (lambda (f) (equal (cadr f) 'nl_native_rooted_branch_probe_v1)) forms))
+                 (expected (plist-get rooted-branch-spec :entry-ast))
+                 (gc-forms (cl-remove-if (lambda (f) (equal (cadr f) 'nl_native_rooted_branch_probe_v1)) forms)))
+            (unless (and (not rooted-stack-spec) (not conditional-spec) (not call1-template)
+                         (eq (plist-get (nelisp-bytecode-native-rooted-branch-plan input) :status)
+                             'complete)
+                         (equal (nelisp-bytecode-native-rooted-branch-plan input) plan)
+                         entry expected
+                         (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                (nelisp-native-load--rooted-stack-normalize-ast expected))
+                         (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
+                         (= (length forms) (1+ (length contract))))
+              (error "nelisp-native-load: rooted branch AST/plan mismatch"))))
+        (when rooted-branch-join-spec
+          (require 'nelisp-bytecode-native-rooted-branch-join)
+          (let* ((input (plist-get rooted-branch-join-spec :input))
+                 (operation (plist-get rooted-branch-join-spec :operation))
+                 (plan (plist-get rooted-branch-join-spec :plan))
+                 (entry (cl-find-if
+                         (lambda (f) (equal (cadr f)
+                                            'nl_native_rooted_branch_join_probe_v1))
+                         forms))
+                 (expected (plist-get rooted-branch-join-spec :entry-ast))
+                 (gc-forms (cl-remove-if
+                            (lambda (f) (equal (cadr f)
+                                               'nl_native_rooted_branch_join_probe_v1))
+                            forms)))
+            (unless (and (not call1-template) (not rooted-stack-spec)
+                         (not conditional-spec) (not rooted-branch-spec)
+                         (eq (plist-get (nelisp-bytecode-native-rooted-branch-join-plan
+                                         input operation) :status) 'complete)
+                         (equal (nelisp-bytecode-native-rooted-branch-join-plan
+                                 input operation) plan)
+                         entry expected
+                         (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                (nelisp-native-load--rooted-stack-normalize-ast expected))
+                         (nelisp-native-load--rooted-stack-gc-forms-valid-p gc-forms contract)
+                         (= (length forms) (1+ (length contract))))
+              (error "nelisp-native-load: rooted branch-join AST/plan mismatch: %S"
+                     (list :plan-status
+                           (plist-get (nelisp-bytecode-native-rooted-branch-join-plan
+                                       input operation) :status)
+                           :plan-equal
+                           (equal (nelisp-bytecode-native-rooted-branch-join-plan
+                                   input operation) plan)
+                           :entry (and entry t) :expected (and expected t)
+                           :ast-equal
+                           (and entry expected
+                                (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                       (nelisp-native-load--rooted-stack-normalize-ast expected)))
+                           :gc (nelisp-native-load--rooted-stack-gc-forms-valid-p
+                                gc-forms contract)
+                           :counts (list (length forms) (1+ (length contract))))))))
+        ;; The producer and artifact admission authenticate the F1 capability,
+        ;; including the frame descriptor/hash.  Raw compilation creates no
+        ;; executable permission and must not repeat that full memory proof.
+        (when rooted-cfg-spec
+          (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-start")
+          (require 'nelisp-bytecode-native-rooted-cfg-contract)
+          (let* ((input (plist-get rooted-cfg-spec :input))
+                 (plan (plist-get rooted-cfg-spec :plan))
+                 (emitted (plist-get rooted-cfg-spec :emitted))
+                 (cfg-contract (plist-get rooted-cfg-spec :contract))
+                 (shared-v2 (member (plist-get cfg-contract :version)
+                                    (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                          nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version)))
+                 (version (plist-get cfg-contract :version))
+                 (entry-name (if shared-v2
+                                 nelisp-bytecode-native-rooted-cfg-contract-shared-entry
+                               "nl_native_rooted_cfg_probe_v1"))
+                 (entry (cl-find-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
+                 (gc-forms (cl-remove-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
+                 (validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+                 (reconstruction
+                  (and (eq validator cfg-validator-owner)
+                       (setq cfg-validation-result
+                             (funcall cfg-validator-owner cfg-contract :reconstruction input))
+                       (progn
+                         ;; Fingerprint immediately after validation, before AOT.
+                         (setq cfg-validated-contract cfg-contract
+                               cfg-validation-digest
+                               (let ((print-length nil) (print-level nil)
+                                     (print-circle t) (print-escape-newlines t)
+                                     (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
+                                 (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract))))
+                         cfg-validation-result)))
+                 (verified-input (plist-get reconstruction :input))
+                 (canonical-input
+                  (and reconstruction
+                       (or (and (eq input-reuse-owner
+                                    (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+                                (funcall input-reuse-owner input))
+                           (nelisp-bytecode-compiler-input-build (plist-get input :function)))))
+                 (verified-plan (plist-get reconstruction :plan))
+                 (verified-emitted (plist-get reconstruction :emitted))
+                 (expected-contract (plist-get reconstruction :expected-contract)))
+            ;; Recheck the live function after fingerprinting, at the original
+            ;; canonical-input check point. The private build snapshot retains
+            ;; this check without reconstructing the frame; external callers and
+            ;; changed inputs still take the independent reconstruction path.
+            (cl-labels ((input-data (value)
+                          (let ((rest value) (data nil))
+                            (while rest
+                              (let ((key (pop rest)) (item (pop rest)))
+                                (unless (eq key :function)
+                                  (push key data) (push item data))))
+                            (nreverse data))))
+              (unless (and (not call1-template) (not rooted-stack-spec)
+                           (not conditional-spec) (not rooted-branch-spec)
+                           (not rooted-branch-join-spec)
+                           (member version (list nelisp-bytecode-native-rooted-cfg-contract-version
+                                                 nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                                 nelisp-bytecode-native-rooted-cfg-contract-f1-version
+                                                 nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
+                           reconstruction
+                           (eq validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+                           (equal input canonical-input)
+                           (equal (nelisp-bytecode-native-rooted-cfg-contract-input-recipe input)
+                                  (nelisp-bytecode-native-rooted-cfg-contract-input-recipe verified-input))
+                           (equal (input-data input) (input-data verified-input))
+                           (eq (plist-get verified-plan :status) 'complete)
+                           (equal plan verified-plan)
+                           (eq (plist-get verified-emitted :status) 'complete)
+                           (equal emitted verified-emitted)
+                           (equal cfg-contract expected-contract)
+                           (nelisp-native-load--rooted-cfg-import-names-valid-p
+                            (plist-get cfg-contract :imports) cfg-contract)
+                           (< (plist-get cfg-contract :root-count) 256)
+                           entry (= (length (nth 2 entry)) 4)
+                           ;; Equal objects have equal pure normalizations. The
+                           ;; independent full emission comparison above still
+                           ;; authenticates this shared producer/source subtree.
+                           (or (eq entry (plist-get emitted :form))
+                               (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
+                                      (nelisp-native-load--rooted-stack-normalize-ast
+                                       (plist-get emitted :form))))
+                           (nelisp-native-load--rooted-cfg-provider-forms-valid-p
+                            forms entry contract (plist-get verified-emitted :additional-source) cfg-contract))
+                (error "nelisp-native-load: generic rooted-CFG AST/plan mismatch"))))
+          (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-end"))
+        (when safe-v3-spec
+          (let* ((input (plist-get safe-v3-spec :input))
+                 (plan (plist-get safe-v3-spec :plan))
+                 (emitted (plist-get safe-v3-spec :emitted))
+                 (safe-contract (plist-get safe-v3-spec :contract))
+                 (entry-name "nl_native_rooted_cfg_safe_probe_v3")
+                 (entry (cl-find-if (lambda (form)
+                                      (equal (cadr form) (intern entry-name))) forms))
+                 (gc-forms (cl-remove-if (lambda (form)
+                                           (equal (cadr form) (intern entry-name))) forms))
+                 (verified-plan
+                  (nelisp-bytecode-native-rooted-cfg-plan input 'safe-primitives-v3))
+                 (verified-emitted
+                  (and (eq (plist-get verified-plan :status) 'complete)
+                       (nelisp-bytecode-native-rooted-cfg-emit verified-plan entry-name)))
+                 (expected-contract
+                  (and verified-emitted
+                       (nelisp-bytecode-native-rooted-cfg-safe-contract-create
+                        input verified-plan verified-emitted))))
+            (unless (and (not rooted-cfg-spec) (not call1-template)
+                         (not rooted-stack-spec) (not conditional-spec)
+                         (not rooted-branch-spec) (not rooted-branch-join-spec)
+                         (eq (plist-get verified-plan :status) 'complete)
+                         (equal plan verified-plan)
+                         (eq (plist-get verified-emitted :status) 'complete)
+                         (equal emitted verified-emitted)
+                         (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p
+                          safe-contract)
+                         (equal safe-contract expected-contract)
+                         (equal (plist-get safe-contract :imports)
+                                (sort (copy-sequence (plist-get safe-contract :imports))
+                                      #'string<))
+                         (let ((safe-imports (plist-get safe-contract :imports)))
+                           (and (listp safe-imports)
+                                (equal safe-imports
+                                       (sort (delete-dups (copy-sequence safe-imports))
+                                             #'string<))
+                                (cl-some
+                                 (lambda (name) (member name safe-imports))
+                                 '("nl_native_car_v2" "nl_native_cdr_v2"
+                                   "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"))
+                                (cl-every
+                                 (lambda (name)
+                                   (member name
+                                           '("nl_native_car_v2" "nl_native_cdr_v2"
+                                             "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
+                                             "nl_root_pin_slot_v2")))
+                                 safe-imports)))
+                         (< (plist-get safe-contract :root-count) 256)
+                         entry (= (length (nth 2 entry)) 4)
                          (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
                                 (nelisp-native-load--rooted-stack-normalize-ast
-                                 (plist-get emitted :form))))
-                     (nelisp-native-load--rooted-cfg-provider-forms-valid-p
-                      forms entry contract (plist-get verified-emitted :additional-source) cfg-contract))
-          (error "nelisp-native-load: generic rooted-CFG AST/plan mismatch"))))
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "contract-validation-end"))
-    (when safe-v3-spec
-      (let* ((input (plist-get safe-v3-spec :input))
-             (plan (plist-get safe-v3-spec :plan))
-             (emitted (plist-get safe-v3-spec :emitted))
-             (safe-contract (plist-get safe-v3-spec :contract))
-             (entry-name "nl_native_rooted_cfg_safe_probe_v3")
-             (entry (cl-find-if (lambda (form)
-                                  (equal (cadr form) (intern entry-name))) forms))
-             (gc-forms (cl-remove-if (lambda (form)
-                                       (equal (cadr form) (intern entry-name))) forms))
-             (verified-plan
-              (nelisp-bytecode-native-rooted-cfg-plan input 'safe-primitives-v3))
-             (verified-emitted
-              (and (eq (plist-get verified-plan :status) 'complete)
-                   (nelisp-bytecode-native-rooted-cfg-emit verified-plan entry-name)))
-             (expected-contract
-              (and verified-emitted
-                   (nelisp-bytecode-native-rooted-cfg-safe-contract-create
-                    input verified-plan verified-emitted))))
-        (unless (and (not rooted-cfg-spec) (not call1-template)
-                     (not rooted-stack-spec) (not conditional-spec)
-                     (not rooted-branch-spec) (not rooted-branch-join-spec)
-                     (eq (plist-get verified-plan :status) 'complete)
-                     (equal plan verified-plan)
-                     (eq (plist-get verified-emitted :status) 'complete)
-                     (equal emitted verified-emitted)
-                     (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p
-                      safe-contract)
-                     (equal safe-contract expected-contract)
-                     (equal (plist-get safe-contract :imports)
-                            (sort (copy-sequence (plist-get safe-contract :imports))
-                                  #'string<))
-                     (let ((safe-imports (plist-get safe-contract :imports)))
-                       (and (listp safe-imports)
-                            (equal safe-imports
-                                   (sort (delete-dups (copy-sequence safe-imports))
-                                         #'string<))
-                            (cl-some
-                             (lambda (name) (member name safe-imports))
-                             '("nl_native_car_v2" "nl_native_cdr_v2"
-                               "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"))
-                            (cl-every
-                             (lambda (name)
-                               (member name
-                                       '("nl_native_car_v2" "nl_native_cdr_v2"
-                                         "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
-                                         "nl_root_pin_slot_v2")))
-                             safe-imports)))
-                     (< (plist-get safe-contract :root-count) 256)
-                     entry (= (length (nth 2 entry)) 4)
-                     (equal (nelisp-native-load--rooted-stack-normalize-ast entry)
-                            (nelisp-native-load--rooted-stack-normalize-ast
-                             (plist-get emitted :form)))
-                     (nelisp-native-load--rooted-stack-gc-forms-valid-p
-                      gc-forms contract)
-                     (= (length forms) (1+ (length contract))))
-          (error "nelisp-native-load: safe-v3 rooted-CFG AST/plan mismatch"))))
-    ;; A source without the canonical rewrite is unsafe even if the compiler
-    ;; happens to accept it: fixed arena addresses are part of the corruption
-    ;; class this lane exists to avoid.
-    (when (nelisp-native-load--raw-v2-fixed-address-p rewritten)
-      (error "nelisp-native-load: v2 source retains a fixed arena address"))
-    (dolist (name data-names)
-      (unless (member name resolver-symbols)
-        (error "nelisp-native-load: v2 data import is not exported: %s" name)))
-    ;; Validate the source against the stable ordered contract before emitting
-    ;; code.  This catches a missing body or accidental duplicate before any
-    ;; artifact can be published.
-    (let ((seen nil))
-      (dolist (entry rewritten)
-        (let ((name (and (consp entry) (eq (car entry) 'defun)
-                         (symbol-name (cadr entry)))))
-          (when name
-            (when (member name seen)
-              (error "nelisp-native-load: v2 source duplicates %s" name))
-            (setq seen (cons name seen)))))
-      (dolist (entry contract)
-        (let ((name (car entry)))
-          (unless (member name seen)
-            (error "nelisp-native-load: v2 source lacks GC entry %s" name)))))
-    ;; Authenticate the complete generated source above before dropping its
-    ;; contract stubs. Runtime replacement units keep their actual GC bodies.
-    (when runtime-owned-gc
-      (setq rewritten
-            (cl-remove-if
-             (lambda (form)
-               (assoc (symbol-name (cadr form)) contract)) rewritten)))
-    (let ((nelisp-native-load-raw-max-arity
-           nelisp-native-load-raw-max-arity-v2)
-          (nelisp-aot-compiler--runtime-entry-params nil))
-      (dolist (form rewritten)
-        (unless (nelisp-native-load--raw-compile-defun-p form)
-          (error "nelisp-native-load: unsupported v2 raw defun: %S"
-                 (nth 1 form))))
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-start")
-      (setq unit
-            (nelisp-aot-compile-to-link-unit
-             (cons 'seq rewritten) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
-      (setq unit (nelisp-native-load--raw-v2-resolve-local-calls unit))
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
-    (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
-    (let* ((text (or (plist-get unit :text) ""))
-           (rodata (or (plist-get unit :rodata) ""))
-           (data (or (plist-get unit :data) ""))
-           (bss (or (plist-get unit :bss-size) 0))
-           (symbols (plist-get unit :symbols))
-           (defuns (plist-get unit :defuns))
-           (imports0 (plist-get unit :extern-symbols))
-           (imports (delete-dups (copy-sequence imports0)))
-           (exports nil)
-           (import-descriptors nil)
-           (gc-entries nil)
-           (text-size (string-bytes text))
-           (object-sha256 (nelisp-native-load--sha256 text))
-           (manifest nil))
-      (when (> (string-bytes rodata) 0)
-        (error "nelisp-native-load: v2 GC unit cannot carry private rodata"))
-      (when (or (> (string-bytes data) 0) (> bss 0))
-        (error "nelisp-native-load: v2 GC unit cannot carry private data/BSS"))
-      (dolist (def defuns)
-        (let* ((name (plist-get def :name))
-               (name (if (stringp name) name (symbol-name name)))
-               (sym nil))
-          (dolist (candidate symbols)
-            (when (and (null sym) (equal (plist-get candidate :name) name))
-              (setq sym candidate)))
-          (unless (and sym (integerp (plist-get sym :value)))
-            (error "nelisp-native-load: v2 defun has no text symbol: %s" name))
-          (push (list :name name
-                      :value (plist-get sym :value)
-                      :size (or (plist-get sym :size) (plist-get def :size) 0)
-                      :type 'func :abi (nelisp-native-load--runtime-abi-v2)
-                      :arity (or (plist-get def :arity) 0)
-                      :return 'u64)
-                exports)))
-      (setq exports (nreverse exports))
-      (when call1-template
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports)
-                       nelisp-native-load-raw-v2-call1-entry)))
-          (unless export (error "nelisp-native-load: CALL1 entry missing"))
-          (plist-put export :params '(u64 u64))))
-      (when rooted-stack-spec
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports) "nl_native_stack_probe_v1")))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: rooted-stack entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (when conditional-spec
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports) "nl_native_rooted_conditional_probe_v1")))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: conditional entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (when rooted-branch-spec
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports) "nl_native_rooted_branch_probe_v1")))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: rooted branch entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (when rooted-branch-join-spec
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports) "nl_native_rooted_branch_join_probe_v1")))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: rooted branch-join entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (when rooted-cfg-spec
-        (let* ((cfg-contract (plist-get rooted-cfg-spec :contract))
-               (entry-name
-                (if (member (plist-get cfg-contract :version)
-                            (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
-                                  nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
-                    nelisp-bytecode-native-rooted-cfg-contract-shared-entry
-                  "nl_native_rooted_cfg_probe_v1"))
-               (export (nelisp-native-load--raw-export
-                        (list :exports exports) entry-name)))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: generic rooted-CFG entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (when safe-v3-spec
-        (let ((export (nelisp-native-load--raw-export
-                       (list :exports exports)
-                       "nl_native_rooted_cfg_safe_probe_v3")))
-          (unless (and export (= (plist-get export :arity) 4))
-            (error "nelisp-native-load: safe-v3 entry export mismatch"))
-          (plist-put export :params '(u64 u64 u64 u64))))
-      (dolist (import imports)
-        (let* ((provider (and rooted-cfg-spec
-                              (nelisp-native-load--rooted-cfg-provider-import
-                               (plist-get rooted-cfg-spec :contract) import)))
-               (typed-call1 (and call1-template
-                                 (equal import nelisp-native-load-raw-v2-call1-import)))
-               (typed-conditional (and (or conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
-                                       (nelisp-native-load--raw-v2-conditional-import-mode import)))
-               (typed-rooted-branch (and (or rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
-                                          (member import
-                                                  '("nl_native_car_v2"
-                                                    "nl_native_cdr_v2"
-                                                    "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
-                                                    "nl_root_pin_slot_v2"))))
-               (mode (cond (provider 'arithmetic-provider-v1)
-                           (typed-call1 'call1-typed-v1)
-                           (typed-conditional typed-conditional)
-                           (t (nelisp-native-load--raw-v2-import-mode import))))
-               (index (if (or typed-call1 provider)
-                          (cl-position import nelisp-native-load-bridgeable-symbols
-                                       :test #'equal)
-                        (if typed-conditional
-                            (nelisp-native-load--raw-v2-conditional-import-index import)
-                          (nelisp-native-load--raw-v2-import-index
-                           import resolver-symbols)))))
-          (unless (and (stringp import) mode (integerp index))
-            (error "nelisp-native-load: v2 import is not exported: %S" import))
-          (push (append (list :name import
-                      :kind (if (member import data-names) 'data 'func)
-                      :abi (nelisp-native-load--runtime-abi-v2)
-                      :index index :address-mode mode)
-                       (when typed-call1
-                         '(:arity 6 :params (u64 u64 u64 u64 u64 u64)
-                           :return u64))
-                       (when provider
-                         (let ((copy (copy-sequence provider)))
-                           (setq copy (plist-put copy :name nil)
-                                 copy (plist-put copy :kind nil))
-                           (cl-loop for (key value) on copy by #'cddr
-                                    unless (memq key '(:name :kind)) append (list key value))))
-                       (when (and (not provider) (or typed-conditional typed-rooted-branch))
-                         '(:arity 6 :params (u64 u64 u64 u64 u64 u64)
-                           :return u64)))
-                import-descriptors)))
-      (setq import-descriptors
-            (sort import-descriptors
-                  (lambda (a b) (< (plist-get a :index)
-                                   (plist-get b :index)))))
-      (when rooted-stack-spec
-        (let ((actual (sort (copy-sequence imports) #'string<))
-              (planned (sort (delete-dups
-                              (mapcar (lambda (o) (format "nl_native_%s_v2" (plist-get o :operation)))
-                                      (plist-get (plist-get rooted-stack-spec :plan) :operations)))
-                             #'string<)))
-          (unless (equal actual planned)
-            (error "nelisp-native-load: rooted-stack imports mismatch"))))
-      (let ((index 0))
-        (dolist (entry contract)
-          (let ((name (car entry)) (arity (cdr entry)) (export nil))
-          (dolist (candidate exports)
-            (when (and (null export) (equal (plist-get candidate :name) name))
-              (setq export candidate)))
-          (unless (or runtime-owned-gc export)
-            (error "nelisp-native-load: v2 GC entry was not exported: %s" name))
-          (unless (or runtime-owned-gc (= arity (plist-get export :arity)))
-            (error "nelisp-native-load: v2 arity mismatch for %s" name))
-          (push (list :name name :arity arity :index index
-                      :return 'u64 :abi (nelisp-native-load--runtime-abi-v2))
-                gc-entries)
-            (setq index (1+ index)))))
-      (setq gc-entries (nreverse gc-entries))
-      (setq manifest
-            (list :format nelisp-native-load-raw-artifact-format-v2
-                  :kind 'raw-runtime
-                  :runtime-kind 'gc-arena
-                  :runtime-abi (nelisp-native-load--runtime-abi-v2)
-                  :layout-id layout :arch nelisp-native-load-raw-supported-arch
-                  :build-id build :binary-sha256 binary
-                  :source (expand-file-name source-path)
-                  :source-sha256 (nelisp-native-load--sha256 source)
-                  :compiled-source-sha256
-                  (nelisp-native-load--sha256 (prin1-to-string rewritten))
-                  :runtime-opt-in t
-                  :gc-contract-hash
-                  (nelisp-native-load--raw-v2-contract-hash contract)
-                  :gc-address-mode (if runtime-owned-gc 'runtime-bridge-v1 'artifact-export-v1)
-                  :gc-entries gc-entries
-                  :gc-table-magic nelisp-native-load-raw-gc-table-magic
-                  :gc-table-count (length gc-entries)
-                  :resolver-contract-version
-                  nelisp-native-load-raw-v2-import-contract-version
-                  :resolver-contract-hash
-                  (nelisp-native-load--raw-v2-import-contract-hash
-                   resolver-symbols)
-                  :native
-                  (list :raw-abi (nelisp-native-load--runtime-abi-v2)
-                        :object-format 'nelisp-aot-raw-unit-v2
-                        :text-size text-size
-                        :text-base64 (base64-encode-string text t)
-                        :object-sha256 object-sha256 :object-size text-size
-                        :exports exports :symbols exports
-                        :imports import-descriptors
-                        :extern-symbols imports
-                        :relocs (plist-get unit :relocs)
-                        :data-size 0 :bss-size 0)))
-      (when (nelisp-native-load--windows-p)
-        (setq manifest (append manifest (list :target (nelisp-native-load--target-v2)))))
-      (when call1-template
-        (setq manifest
-              (append manifest
-                      (list :call1-contract-version
-                            nelisp-native-load-raw-v2-call1-contract-version
-                            :call1-contract-hash
-                            (nelisp-native-load--raw-v2-call1-contract-hash)
-                            :call1-caller
-                            (list :name nelisp-native-load-raw-v2-call1-entry
-                                  :arity 2 :params '(u64 u64) :return 'u64
-                                  :slots '(4 5 2 0))
-                            :call1-producer-validation-version
-                            "nelisp-call1-exact-ast-v1"
-                            :call1-producer-ast-sha256
-                            (nelisp-native-load--sha256
-                             (prin1-to-string forms))))))
-      (when (and (not rooted-stack-spec)
-                 (equal imports '("nl_native_car_v2" "nl_native_cdr_v2")))
-        (setq manifest
-              (append manifest
-                      (list :native-object-op-contract-version
-                            nelisp-native-load-native-object-op-contract-version
-                            :native-object-op-gateway-imports
-                            '("nl_native_car_v2" "nl_native_cdr_v2")
-                            :native-object-opcodes
-                            nelisp-native-load-native-object-opcodes
-                            :native-object-op-contract-hash
-                            (nelisp-native-load--native-object-op-contract-hash)))))
-      (when rooted-stack-spec
-        (setq manifest
-              (append manifest
-                      (list :native-rooted-stack-contract-version
-                            nelisp-native-load-rooted-stack-contract-version
-                            :native-rooted-stack-entry "nl_native_stack_probe_v1"
-                            :native-rooted-stack-gateway-imports
-                            (sort (copy-sequence imports) #'string<)
-                            :native-rooted-stack-status-base 256
-                            :native-rooted-stack-contract-hash
-                            (nelisp-native-load--rooted-stack-contract-hash imports)))))
-      (when conditional-spec
-        (unless (equal imports '("nl_root_pin_slot_v2"))
-          (error "nelisp-native-load: conditional import set mismatch"))
-        (setq manifest
-              (append manifest
-                      (list :native-rooted-conditional-contract-version
-                            nelisp-native-load-raw-v2-conditional-contract-version
-                            :native-rooted-conditional-entry
-                            "nl_native_rooted_conditional_probe_v1"
-                            :native-rooted-conditional-imports imports
-                            :native-rooted-conditional-status-base 256
-                            :native-rooted-conditional-contract-hash
-                            (nelisp-native-load--sha256
-                             (prin1-to-string
-                              (list nelisp-native-load-raw-v2-conditional-contract-version
-                                    "nl_native_rooted_conditional_probe_v1"
-                                    '("nl_root_pin_slot_v2")
-                                    '(u64 u64 u64 u64 u64 u64) 'u64)))))))
-      (when rooted-branch-spec
-        (unless (equal (sort (copy-sequence imports) #'string<)
-                       '("nl_native_car_v2" "nl_native_cdr_v2" "nl_root_pin_slot_v2"))
-          (error "nelisp-native-load: rooted branch import set mismatch"))
-        (setq manifest
-              (append manifest
-                      (list :native-rooted-branch-contract-version
-                            nelisp-native-load-raw-v2-rooted-branch-contract-version
-                            :native-rooted-branch-entry "nl_native_rooted_branch_probe_v1"
-                            :native-rooted-branch-imports
-                            '("nl_native_car_v2" "nl_native_cdr_v2" "nl_root_pin_slot_v2")
-                            :native-rooted-branch-status-base 256
-                            :native-rooted-branch-contract-hash
-                            (nelisp-native-load--rooted-branch-contract-hash)))))
-      (when rooted-branch-join-spec
-        (let* ((operation (plist-get rooted-branch-join-spec :operation))
-               (expected (sort (list (format "nl_native_%s_v2" operation)
-                                     "nl_root_pin_slot_v2") #'string<)))
-          (unless (and (memq operation '(car cdr))
-                       (equal (sort (copy-sequence imports) #'string<) expected))
-            (error "nelisp-native-load: rooted branch-join import set mismatch"))
+                                 (plist-get emitted :form)))
+                         (nelisp-native-load--rooted-stack-gc-forms-valid-p
+                          gc-forms contract)
+                         (= (length forms) (1+ (length contract))))
+              (error "nelisp-native-load: safe-v3 rooted-CFG AST/plan mismatch"))))
+        ;; A source without the canonical rewrite is unsafe even if the compiler
+        ;; happens to accept it: fixed arena addresses are part of the corruption
+        ;; class this lane exists to avoid.
+        (when (nelisp-native-load--raw-v2-fixed-address-p rewritten)
+          (error "nelisp-native-load: v2 source retains a fixed arena address"))
+        (dolist (name data-names)
+          (unless (member name resolver-symbols)
+            (error "nelisp-native-load: v2 data import is not exported: %s" name)))
+        ;; Validate the source against the stable ordered contract before emitting
+        ;; code.  This catches a missing body or accidental duplicate before any
+        ;; artifact can be published.
+        (let ((seen nil))
+          (dolist (entry rewritten)
+            (let ((name (and (consp entry) (eq (car entry) 'defun)
+                             (symbol-name (cadr entry)))))
+              (when name
+                (when (member name seen)
+                  (error "nelisp-native-load: v2 source duplicates %s" name))
+                (setq seen (cons name seen)))))
+          (dolist (entry contract)
+            (let ((name (car entry)))
+              (unless (member name seen)
+                (error "nelisp-native-load: v2 source lacks GC entry %s" name)))))
+        ;; Authenticate the complete generated source above before dropping its
+        ;; contract stubs. Runtime replacement units keep their actual GC bodies.
+        (when runtime-owned-gc
+          (setq rewritten
+                (cl-remove-if
+                 (lambda (form)
+                   (assoc (symbol-name (cadr form)) contract)) rewritten)))
+        (let ((nelisp-native-load-raw-max-arity
+               nelisp-native-load-raw-max-arity-v2)
+              (nelisp-aot-compiler--runtime-entry-params nil))
+          (dolist (form rewritten)
+            (unless (nelisp-native-load--raw-compile-defun-p form)
+              (error "nelisp-native-load: unsupported v2 raw defun: %S"
+                     (nth 1 form))))
+          (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-start")
+          (setq unit
+                (nelisp-aot-compile-to-link-unit
+                 (cons 'seq rewritten) :arch 'x86_64 :format (if (nelisp-native-load--windows-p) 'coff 'elf)))
+          (setq unit (nelisp-native-load--raw-v2-resolve-local-calls unit))
+          (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "aot-end"))
+        (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-start")
+        (let* ((text (or (plist-get unit :text) ""))
+               (rodata (or (plist-get unit :rodata) ""))
+               (data (or (plist-get unit :data) ""))
+               (bss (or (plist-get unit :bss-size) 0))
+               (symbols (plist-get unit :symbols))
+               (defuns (plist-get unit :defuns))
+               (imports0 (plist-get unit :extern-symbols))
+               (imports (delete-dups (copy-sequence imports0)))
+               (exports nil)
+               (import-descriptors nil)
+               (gc-entries nil)
+               (text-size (string-bytes text))
+               (object-sha256 (nelisp-native-load--sha256 text))
+               (manifest nil))
+          (when (> (string-bytes rodata) 0)
+            (error "nelisp-native-load: v2 GC unit cannot carry private rodata"))
+          (when (or (> (string-bytes data) 0) (> bss 0))
+            (error "nelisp-native-load: v2 GC unit cannot carry private data/BSS"))
+          (dolist (def defuns)
+            (let* ((name (plist-get def :name))
+                   (name (if (stringp name) name (symbol-name name)))
+                   (sym nil))
+              (dolist (candidate symbols)
+                (when (and (null sym) (equal (plist-get candidate :name) name))
+                  (setq sym candidate)))
+              (unless (and sym (integerp (plist-get sym :value)))
+                (error "nelisp-native-load: v2 defun has no text symbol: %s" name))
+              (push (list :name name
+                          :value (plist-get sym :value)
+                          :size (or (plist-get sym :size) (plist-get def :size) 0)
+                          :type 'func :abi (nelisp-native-load--runtime-abi-v2)
+                          :arity (or (plist-get def :arity) 0)
+                          :return 'u64)
+                    exports)))
+          (setq exports (nreverse exports))
+          (when call1-template
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports)
+                           nelisp-native-load-raw-v2-call1-entry)))
+              (unless export (error "nelisp-native-load: CALL1 entry missing"))
+              (plist-put export :params '(u64 u64))))
+          (when rooted-stack-spec
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports) "nl_native_stack_probe_v1")))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: rooted-stack entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (when conditional-spec
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports) "nl_native_rooted_conditional_probe_v1")))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: conditional entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (when rooted-branch-spec
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports) "nl_native_rooted_branch_probe_v1")))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: rooted branch entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (when rooted-branch-join-spec
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports) "nl_native_rooted_branch_join_probe_v1")))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: rooted branch-join entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (when rooted-cfg-spec
+            (let* ((cfg-contract (plist-get rooted-cfg-spec :contract))
+                   (entry-name
+                    (if (member (plist-get cfg-contract :version)
+                                (list nelisp-bytecode-native-rooted-cfg-contract-shared-version
+                                      nelisp-bytecode-native-rooted-cfg-contract-f1-shared-version))
+                        nelisp-bytecode-native-rooted-cfg-contract-shared-entry
+                      "nl_native_rooted_cfg_probe_v1"))
+                   (export (nelisp-native-load--raw-export
+                            (list :exports exports) entry-name)))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: generic rooted-CFG entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (when safe-v3-spec
+            (let ((export (nelisp-native-load--raw-export
+                           (list :exports exports)
+                           "nl_native_rooted_cfg_safe_probe_v3")))
+              (unless (and export (= (plist-get export :arity) 4))
+                (error "nelisp-native-load: safe-v3 entry export mismatch"))
+              (plist-put export :params '(u64 u64 u64 u64))))
+          (dolist (import imports)
+            (let* ((provider (and rooted-cfg-spec
+                                  (nelisp-native-load--rooted-cfg-provider-import
+                                   (plist-get rooted-cfg-spec :contract) import)))
+                   (typed-call1 (and call1-template
+                                     (equal import nelisp-native-load-raw-v2-call1-import)))
+                   (typed-conditional (and (or conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+                                           (nelisp-native-load--raw-v2-conditional-import-mode import)))
+                   (typed-rooted-branch (and (or rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec)
+                                             (member import
+                                                     '("nl_native_car_v2"
+                                                       "nl_native_cdr_v2"
+                                                       "nl_native_cons_v2" "nl_native_funcall_v2" "nl_native_poll_v2"
+                                                       "nl_root_pin_slot_v2"))))
+                   (mode (cond (provider 'arithmetic-provider-v1)
+                               (typed-call1 'call1-typed-v1)
+                               (typed-conditional typed-conditional)
+                               (t (nelisp-native-load--raw-v2-import-mode import))))
+                   (index (if (or typed-call1 provider)
+                              (cl-position import nelisp-native-load-bridgeable-symbols
+                                           :test #'equal)
+                            (if typed-conditional
+                                (nelisp-native-load--raw-v2-conditional-import-index import)
+                              (nelisp-native-load--raw-v2-import-index
+                               import resolver-symbols)))))
+              (unless (and (stringp import) mode (integerp index))
+                (error "nelisp-native-load: v2 import is not exported: %S" import))
+              (push (append (list :name import
+                                  :kind (if (member import data-names) 'data 'func)
+                                  :abi (nelisp-native-load--runtime-abi-v2)
+                                  :index index :address-mode mode)
+                            (when typed-call1
+                              '(:arity 6 :params (u64 u64 u64 u64 u64 u64)
+                                       :return u64))
+                            (when provider
+                              (let ((copy (copy-sequence provider)))
+                                (setq copy (plist-put copy :name nil)
+                                      copy (plist-put copy :kind nil))
+                                (cl-loop for (key value) on copy by #'cddr
+                                         unless (memq key '(:name :kind)) append (list key value))))
+                            (when (and (not provider) (or typed-conditional typed-rooted-branch))
+                              '(:arity 6 :params (u64 u64 u64 u64 u64 u64)
+                                       :return u64)))
+                    import-descriptors)))
+          (setq import-descriptors
+                (sort import-descriptors
+                      (lambda (a b) (< (plist-get a :index)
+                                       (plist-get b :index)))))
+          (when rooted-stack-spec
+            (let ((actual (sort (copy-sequence imports) #'string<))
+                  (planned (sort (delete-dups
+                                  (mapcar (lambda (o) (format "nl_native_%s_v2" (plist-get o :operation)))
+                                          (plist-get (plist-get rooted-stack-spec :plan) :operations)))
+                                 #'string<)))
+              (unless (equal actual planned)
+                (error "nelisp-native-load: rooted-stack imports mismatch"))))
+          (let ((index 0))
+            (dolist (entry contract)
+              (let ((name (car entry)) (arity (cdr entry)) (export nil))
+                (dolist (candidate exports)
+                  (when (and (null export) (equal (plist-get candidate :name) name))
+                    (setq export candidate)))
+                (unless (or runtime-owned-gc export)
+                  (error "nelisp-native-load: v2 GC entry was not exported: %s" name))
+                (unless (or runtime-owned-gc (= arity (plist-get export :arity)))
+                  (error "nelisp-native-load: v2 arity mismatch for %s" name))
+                (push (list :name name :arity arity :index index
+                            :return 'u64 :abi (nelisp-native-load--runtime-abi-v2))
+                      gc-entries)
+                (setq index (1+ index)))))
+          (setq gc-entries (nreverse gc-entries))
           (setq manifest
-                (append manifest
-                        (list :native-rooted-branch-join-contract-version
-                              nelisp-native-load-raw-v2-rooted-branch-join-contract-version
-                              :native-rooted-branch-join-entry
-                              "nl_native_rooted_branch_join_probe_v1"
-                              :native-rooted-branch-join-operation operation
-                              :native-rooted-branch-join-imports expected
-                              :native-rooted-branch-join-status-base 256
-                              :native-rooted-branch-join-contract-hash
-                              (nelisp-native-load--rooted-branch-join-contract-hash
-                               operation))))))
-      (when rooted-cfg-spec
-        (let* ((cfg-contract (plist-get rooted-cfg-spec :contract))
-               (expected (plist-get cfg-contract :imports)))
-          (unless (and (or (and cfg-validation-result
-                                (eq cfg-contract cfg-validated-contract)
-                                (eq cfg-validator-owner
-                                    (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
-                                (equal cfg-validation-digest
-                                       (let ((print-length nil) (print-level nil)
-                                             (print-circle t) (print-escape-newlines t)
-                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
-                                         (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract)))))
-                           (nelisp-bytecode-native-rooted-cfg-contract-valid-p cfg-contract))
-                       (equal (sort (copy-sequence imports) #'string<) expected))
-            (error "nelisp-native-load: generic rooted-CFG import set mismatch"))
-          (setq manifest
-                (append manifest
-                        (list :native-rooted-cfg-contract-version
-                              (plist-get cfg-contract :version)
-                              :native-rooted-cfg-contract cfg-contract
-                              :native-rooted-cfg-import-descriptors import-descriptors)))))
-      (when safe-v3-spec
-        (let* ((safe-contract (plist-get safe-v3-spec :contract))
-               (expected (plist-get safe-contract :imports)))
-          (unless (and (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p
-                        safe-contract)
-                       (equal (sort (copy-sequence imports) #'string<) expected))
-            (error "nelisp-native-load: safe-v3 rooted-CFG import set mismatch: expected %S, actual %S"
-                   expected (sort (copy-sequence imports) #'string<)))
-          (setq manifest
-                (append manifest
-                        (list :native-rooted-cfg-safe-v3-contract-version
-                              (plist-get safe-contract :version)
-                              :native-rooted-cfg-safe-v3-contract safe-contract
-                              :native-rooted-cfg-safe-v3-entry
-                              "nl_native_rooted_cfg_safe_probe_v3"
-                              :native-rooted-cfg-safe-v3-imports expected
-                              :native-rooted-cfg-safe-v3-import-descriptors import-descriptors
-                              :native-rooted-cfg-safe-v3-contract-hash
-                              (plist-get safe-contract :digest))))))
-      (let* ((unsigned (if rooted-cfg-spec
-                           (nelisp-bytecode-native-rooted-cfg-data-print manifest)
-                         (prin1-to-string manifest)))
-             (digest (nelisp-native-load--sha256 unsigned)))
-        (setq manifest (append manifest (list :artifact-sha256 digest)))
-        (when nelisp-native-load--serialization-receiver
-          (funcall nelisp-native-load--serialization-receiver manifest
-                   (nelisp-native-load--signed-manifest unsigned digest))))
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-end")
-      (unless cache-only
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-start")
-      (let* ((absolute (expand-file-name artifact-path))
-             (parent (file-name-directory absolute))
-             (temporary nil))
-        (when parent (make-directory parent t))
-        (setq temporary (make-temp-file
-                         (expand-file-name ".nelr-v2-staging-" parent)
-                         nil ".tmp"))
-        (unwind-protect
-            (progn
-              (let ((coding-system-for-write 'utf-8-unix))
-                (with-temp-file temporary
-                  (insert ";;; nelisp-private-nelr-v2\n")
-                  (prin1 manifest (current-buffer))
-                  (insert "\n")))
-              (rename-file temporary absolute t)
-              (setq temporary nil))
-          (when (and temporary (file-exists-p temporary))
-            (ignore-errors (delete-file temporary)))))
-      (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-end"))
-      (when (and validation-receiver cfg-validation-result)
-        (funcall validation-receiver cfg-validated-contract
-                 cfg-validation-digest cfg-validator-owner))
-      manifest))))
-)
+                (list :format nelisp-native-load-raw-artifact-format-v2
+                      :kind 'raw-runtime
+                      :runtime-kind 'gc-arena
+                      :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                      :layout-id layout :arch nelisp-native-load-raw-supported-arch
+                      :build-id build :binary-sha256 binary
+                      :source (expand-file-name source-path)
+                      :source-sha256 (nelisp-native-load--sha256 source)
+                      :compiled-source-sha256
+                      (nelisp-native-load--sha256 (prin1-to-string rewritten))
+                      :runtime-opt-in t
+                      :gc-contract-hash
+                      (nelisp-native-load--raw-v2-contract-hash contract)
+                      :gc-address-mode (if runtime-owned-gc 'runtime-bridge-v1 'artifact-export-v1)
+                      :gc-entries gc-entries
+                      :gc-table-magic nelisp-native-load-raw-gc-table-magic
+                      :gc-table-count (length gc-entries)
+                      :resolver-contract-version
+                      nelisp-native-load-raw-v2-import-contract-version
+                      :resolver-contract-hash
+                      (nelisp-native-load--raw-v2-import-contract-hash
+                       resolver-symbols)
+                      :native
+                      (list :raw-abi (nelisp-native-load--runtime-abi-v2)
+                            :object-format 'nelisp-aot-raw-unit-v2
+                            :text-size text-size
+                            :text-base64 (base64-encode-string text t)
+                            :object-sha256 object-sha256 :object-size text-size
+                            :exports exports :symbols exports
+                            :imports import-descriptors
+                            :extern-symbols imports
+                            :relocs (plist-get unit :relocs)
+                            :data-size 0 :bss-size 0)))
+          (when (nelisp-native-load--windows-p)
+            (setq manifest (append manifest (list :target (nelisp-native-load--target-v2)))))
+          (when call1-template
+            (setq manifest
+                  (append manifest
+                          (list :call1-contract-version
+                                nelisp-native-load-raw-v2-call1-contract-version
+                                :call1-contract-hash
+                                (nelisp-native-load--raw-v2-call1-contract-hash)
+                                :call1-caller
+                                (list :name nelisp-native-load-raw-v2-call1-entry
+                                      :arity 2 :params '(u64 u64) :return 'u64
+                                      :slots '(4 5 2 0))
+                                :call1-producer-validation-version
+                                "nelisp-call1-exact-ast-v1"
+                                :call1-producer-ast-sha256
+                                (nelisp-native-load--sha256
+                                 (prin1-to-string forms))))))
+          (when (and (not rooted-stack-spec)
+                     (equal imports '("nl_native_car_v2" "nl_native_cdr_v2")))
+            (setq manifest
+                  (append manifest
+                          (list :native-object-op-contract-version
+                                nelisp-native-load-native-object-op-contract-version
+                                :native-object-op-gateway-imports
+                                '("nl_native_car_v2" "nl_native_cdr_v2")
+                                :native-object-opcodes
+                                nelisp-native-load-native-object-opcodes
+                                :native-object-op-contract-hash
+                                (nelisp-native-load--native-object-op-contract-hash)))))
+          (when rooted-stack-spec
+            (setq manifest
+                  (append manifest
+                          (list :native-rooted-stack-contract-version
+                                nelisp-native-load-rooted-stack-contract-version
+                                :native-rooted-stack-entry "nl_native_stack_probe_v1"
+                                :native-rooted-stack-gateway-imports
+                                (sort (copy-sequence imports) #'string<)
+                                :native-rooted-stack-status-base 256
+                                :native-rooted-stack-contract-hash
+                                (nelisp-native-load--rooted-stack-contract-hash imports)))))
+          (when conditional-spec
+            (unless (equal imports '("nl_root_pin_slot_v2"))
+              (error "nelisp-native-load: conditional import set mismatch"))
+            (setq manifest
+                  (append manifest
+                          (list :native-rooted-conditional-contract-version
+                                nelisp-native-load-raw-v2-conditional-contract-version
+                                :native-rooted-conditional-entry
+                                "nl_native_rooted_conditional_probe_v1"
+                                :native-rooted-conditional-imports imports
+                                :native-rooted-conditional-status-base 256
+                                :native-rooted-conditional-contract-hash
+                                (nelisp-native-load--sha256
+                                 (prin1-to-string
+                                  (list nelisp-native-load-raw-v2-conditional-contract-version
+                                        "nl_native_rooted_conditional_probe_v1"
+                                        '("nl_root_pin_slot_v2")
+                                        '(u64 u64 u64 u64 u64 u64) 'u64)))))))
+          (when rooted-branch-spec
+            (unless (equal (sort (copy-sequence imports) #'string<)
+                           '("nl_native_car_v2" "nl_native_cdr_v2" "nl_root_pin_slot_v2"))
+              (error "nelisp-native-load: rooted branch import set mismatch"))
+            (setq manifest
+                  (append manifest
+                          (list :native-rooted-branch-contract-version
+                                nelisp-native-load-raw-v2-rooted-branch-contract-version
+                                :native-rooted-branch-entry "nl_native_rooted_branch_probe_v1"
+                                :native-rooted-branch-imports
+                                '("nl_native_car_v2" "nl_native_cdr_v2" "nl_root_pin_slot_v2")
+                                :native-rooted-branch-status-base 256
+                                :native-rooted-branch-contract-hash
+                                (nelisp-native-load--rooted-branch-contract-hash)))))
+          (when rooted-branch-join-spec
+            (let* ((operation (plist-get rooted-branch-join-spec :operation))
+                   (expected (sort (list (format "nl_native_%s_v2" operation)
+                                         "nl_root_pin_slot_v2") #'string<)))
+              (unless (and (memq operation '(car cdr))
+                           (equal (sort (copy-sequence imports) #'string<) expected))
+                (error "nelisp-native-load: rooted branch-join import set mismatch"))
+              (setq manifest
+                    (append manifest
+                            (list :native-rooted-branch-join-contract-version
+                                  nelisp-native-load-raw-v2-rooted-branch-join-contract-version
+                                  :native-rooted-branch-join-entry
+                                  "nl_native_rooted_branch_join_probe_v1"
+                                  :native-rooted-branch-join-operation operation
+                                  :native-rooted-branch-join-imports expected
+                                  :native-rooted-branch-join-status-base 256
+                                  :native-rooted-branch-join-contract-hash
+                                  (nelisp-native-load--rooted-branch-join-contract-hash
+                                   operation))))))
+          (when rooted-cfg-spec
+            (let* ((cfg-contract (plist-get rooted-cfg-spec :contract))
+                   (expected (plist-get cfg-contract :imports)))
+              (unless (and (or (and cfg-validation-result
+                                    (eq cfg-contract cfg-validated-contract)
+                                    (eq cfg-validator-owner
+                                        (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
+                                    (equal cfg-validation-digest
+                                           (let ((print-length nil) (print-level nil)
+                                                 (print-circle t) (print-escape-newlines t)
+                                                 (nelisp--prn-symbol-cache (make-hash-table :test 'equal)))
+                                             (secure-hash 'sha256 (nelisp-bytecode-native-rooted-cfg-data-print cfg-contract)))))
+                               (nelisp-bytecode-native-rooted-cfg-contract-valid-p cfg-contract))
+                           (equal (sort (copy-sequence imports) #'string<) expected))
+                (error "nelisp-native-load: generic rooted-CFG import set mismatch"))
+              (setq manifest
+                    (append manifest
+                            (list :native-rooted-cfg-contract-version
+                                  (plist-get cfg-contract :version)
+                                  :native-rooted-cfg-contract cfg-contract
+                                  :native-rooted-cfg-import-descriptors import-descriptors)))))
+          (when safe-v3-spec
+            (let* ((safe-contract (plist-get safe-v3-spec :contract))
+                   (expected (plist-get safe-contract :imports)))
+              (unless (and (nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p
+                            safe-contract)
+                           (equal (sort (copy-sequence imports) #'string<) expected))
+                (error "nelisp-native-load: safe-v3 rooted-CFG import set mismatch: expected %S, actual %S"
+                       expected (sort (copy-sequence imports) #'string<)))
+              (setq manifest
+                    (append manifest
+                            (list :native-rooted-cfg-safe-v3-contract-version
+                                  (plist-get safe-contract :version)
+                                  :native-rooted-cfg-safe-v3-contract safe-contract
+                                  :native-rooted-cfg-safe-v3-entry
+                                  "nl_native_rooted_cfg_safe_probe_v3"
+                                  :native-rooted-cfg-safe-v3-imports expected
+                                  :native-rooted-cfg-safe-v3-import-descriptors import-descriptors
+                                  :native-rooted-cfg-safe-v3-contract-hash
+                                  (plist-get safe-contract :digest))))))
+          (let* ((unsigned (if rooted-cfg-spec
+                               (nelisp-bytecode-native-rooted-cfg-data-print manifest)
+                             (prin1-to-string manifest)))
+                 (digest (nelisp-native-load--sha256 unsigned)))
+            (setq manifest (append manifest (list :artifact-sha256 digest)))
+            (when nelisp-native-load--serialization-receiver
+              (funcall nelisp-native-load--serialization-receiver manifest
+                       (nelisp-native-load--signed-manifest unsigned digest))))
+          (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "manifest-materialization-end")
+          (unless cache-only
+            (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-start")
+            (let* ((absolute (expand-file-name artifact-path))
+                   (parent (file-name-directory absolute))
+                   (temporary nil))
+              (when parent (make-directory parent t))
+              (setq temporary (make-temp-file
+                               (expand-file-name ".nelr-v2-staging-" parent)
+                               nil ".tmp"))
+              (unwind-protect
+                  (progn
+                    (let ((coding-system-for-write 'utf-8-unix))
+                      (with-temp-file temporary
+                        (insert ";;; nelisp-private-nelr-v2\n")
+                        (prin1 manifest (current-buffer))
+                        (insert "\n")))
+                    (rename-file temporary absolute t)
+                    (setq temporary nil))
+                (when (and temporary (file-exists-p temporary))
+                  (ignore-errors (delete-file temporary)))))
+            (nelisp-native-load--raw-v2-compile-stage source-path artifact-path "atomic-output-end"))
+          (when (and validation-receiver cfg-validation-result)
+            (funcall validation-receiver cfg-validated-contract
+                     cfg-validation-digest cfg-validator-owner))
+          manifest))))
+  )
 
 (defun nelisp-native-load--raw-v2-compile-file-with-validation
     (source-path artifact-path &optional build-id binary-sha256 call1-template rooted-stack-spec conditional-spec rooted-branch-spec rooted-branch-join-spec rooted-cfg-spec safe-v3-spec source-snapshot)

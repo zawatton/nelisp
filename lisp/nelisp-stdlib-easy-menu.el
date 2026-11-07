@@ -5,7 +5,7 @@
 (defvar nelisp-stdlib-easy-menu--eval-owner (symbol-function 'eval))
 (defconst nelisp-stdlib-easy-menu--forms
   '
-((defsubst easy-menu-intern (s) (if (stringp s) (intern s) s)) (defmacro easy-menu-define (symbol maps doc menu) "Define a pop-up menu and/or menu bar menu specified by MENU.
+  ((defsubst easy-menu-intern (s) (if (stringp s) (intern s) s)) (defmacro easy-menu-define (symbol maps doc menu) "Define a pop-up menu and/or menu bar menu specified by MENU.
 If SYMBOL is non-nil, define SYMBOL as a function to pop up the
 submenu defined by MENU, with DOC as its doc string.  Also define
 SYMBOL as a variable whose value is the menu.

@@ -100,25 +100,25 @@ also prevent fabricating a join on a different terminating arm."
               :nearest-joins (plist-get joins :joins))))))
 
 (let ((reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked)))
-(defun nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p (input)
-  "Return non-nil when INPUT metadata matches a fresh frame decode."
-  (let* ((function (plist-get input :function))
-         (fresh (and (byte-code-function-p function)
-                     (or (and (eq reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
-                                      (funcall reuse-owner input))
-                                 (nelisp-bytecode-compiler-input-build function))))
-         (keys '(:status :argument-descriptor :argument-count :argument-min
-                 :argument-max :rest-argument-p :initial-stack-depth :code
-                 :constants :frame-result)))
-    (and fresh
-         ;; A fresh input can retain non-fixnum/primitive diagnostics while
-         ;; its canonical rooted plan proves those operations through F1.
-         ;; Analyze still requires that independently admitted complete plan.
-         (memq (plist-get fresh :status) '(complete unsupported))
-         (cl-every (lambda (key) (equal (plist-get input key)
-                                        (plist-get fresh key)))
-                   keys))))
-)
+  (defun nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p (input)
+    "Return non-nil when INPUT metadata matches a fresh frame decode."
+    (let* ((function (plist-get input :function))
+           (fresh (and (byte-code-function-p function)
+                       (or (and (eq reuse-owner (symbol-function 'nelisp-bytecode-compiler-input--reuse-checked))
+                                (funcall reuse-owner input))
+                           (nelisp-bytecode-compiler-input-build function))))
+           (keys '(:status :argument-descriptor :argument-count :argument-min
+                           :argument-max :rest-argument-p :initial-stack-depth :code
+                           :constants :frame-result)))
+      (and fresh
+           ;; A fresh input can retain non-fixnum/primitive diagnostics while
+           ;; its canonical rooted plan proves those operations through F1.
+           ;; Analyze still requires that independently admitted complete plan.
+           (memq (plist-get fresh :status) '(complete unsupported))
+           (cl-every (lambda (key) (equal (plist-get input key)
+                                          (plist-get fresh key)))
+                     keys))))
+  )
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom-analyze (input)
   "Return verified postdominators and nearest joins for compiler INPUT."

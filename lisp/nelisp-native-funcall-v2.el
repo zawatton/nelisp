@@ -7,13 +7,13 @@
 (defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-2")
 (let ((descriptor
        '(:version "nelisp-native-funcall-v2-2" :name "nl_native_funcall_v2"
-         :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64
-         :root-limit 256 :arguments contiguous :scratch-count 4
-         :exit-offset 1 :exit-base 1024 :exit-kinds (1 2)
-         :poll-entry nl_native_poll_v2 :poll-state vector-9 :ownership reauthenticate :stash publish-before-clear)))
-(defun nelisp-native-funcall-v2-descriptor ()
-  "Return fresh source-owned bounds, signature and exit semantics."
-  (copy-tree descriptor)))
+                  :kind func :arity 6 :params (u64 u64 u64 u64 u64 u64) :return u64
+                  :root-limit 256 :arguments contiguous :scratch-count 4
+                  :exit-offset 1 :exit-base 1024 :exit-kinds (1 2)
+                  :poll-entry nl_native_poll_v2 :poll-state vector-9 :ownership reauthenticate :stash publish-before-clear)))
+  (defun nelisp-native-funcall-v2-descriptor ()
+    "Return fresh source-owned bounds, signature and exit semantics."
+    (copy-tree descriptor)))
 (defun nelisp-native-funcall-v2-hash ()
   "Bind all generic evaluator ABI semantics."
   (let ((print-length nil) (print-level nil))
@@ -48,9 +48,9 @@
                     (156 elt 2) (157 member 2) (158 assq 2)
                     (159 nreverse 1) (160 setcar 2) (161 setcdr 2)
                     (162 car-safe 1) (163 cdr-safe 1))))
-(defun nelisp-native-funcall-v2-primitive (opcode)
-  "Return the canonical runtime primitive and arity for OPCODE."
-  (copy-tree (assq opcode primitives))))
+  (defun nelisp-native-funcall-v2-primitive (opcode)
+    "Return the canonical runtime primitive and arity for OPCODE."
+    (copy-tree (assq opcode primitives))))
 (let ((lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq))
       (association (if (fboundp 'nelisp--eval-source-string)
@@ -58,19 +58,19 @@
       (membership (symbol-function 'memq))
       (legacy-providers nelisp-bytecode-legacy-providers)
       (originals (mapcar (lambda (name) (cons name (symbol-function (if (eq name 'previous-char) 'preceding-char name)))) '(nelisp--bytecode-legacy-window nelisp--bytecode-legacy-catch
-                                                                            nelisp--bytecode-legacy-condition nelisp--bytecode-legacy-setup nelisp--bytecode-legacy-show
-                                                                            car cdr car-safe cdr-safe cons list nth memq length aref aset
-                                                                            symbol-value symbol-function set fset get substring concat insert apply
-                                                                            set-marker match-beginning match-end upcase downcase
-                                                                            string-equal string-lessp equal nthcdr elt member assq
-                                                                            nreverse setcar setcdr
-                                                                            point goto-char insert point-max point-min char-after
-                                                                            following-char previous-char current-column indent-to
-                                                       eolp eobp bolp bobp current-buffer set-buffer forward-char forward-word
-                                                       skip-chars-forward skip-chars-backward forward-line char-syntax
-                                                       buffer-substring delete-region narrow-to-region widen end-of-line
-                                                                            symbolp consp stringp listp eq not
-                                                                            1- 1+ = > < <= >= - + max min * nconc / % numberp integerp)))
+                                                                                                                                                           nelisp--bytecode-legacy-condition nelisp--bytecode-legacy-setup nelisp--bytecode-legacy-show
+                                                                                                                                                           car cdr car-safe cdr-safe cons list nth memq length aref aset
+                                                                                                                                                           symbol-value symbol-function set fset get substring concat insert apply
+                                                                                                                                                           set-marker match-beginning match-end upcase downcase
+                                                                                                                                                           string-equal string-lessp equal nthcdr elt member assq
+                                                                                                                                                           nreverse setcar setcdr
+                                                                                                                                                           point goto-char insert point-max point-min char-after
+                                                                                                                                                           following-char previous-char current-column indent-to
+                                                                                                                                                           eolp eobp bolp bobp current-buffer set-buffer forward-char forward-word
+                                                                                                                                                           skip-chars-forward skip-chars-backward forward-line char-syntax
+                                                                                                                                                           buffer-substring delete-region narrow-to-region widen end-of-line
+                                                                                                                                                           symbolp consp stringp listp eq not
+                                                                                                                                                           1- 1+ = > < <= >= - + max min * nconc / % numberp integerp)))
       (car-safe-provider
        (let ((consp-value '(builtin consp)) (car-value '(builtin car)))
          (lambda (object)
@@ -235,33 +235,33 @@
            (unless (funcall symbolp-value symbol)
              (funcall signal-value 'wrong-type-argument (list 'symbolp symbol)))
            (funcall plist-get-value (funcall symbol-plist-value symbol) property)))))
-(defun nelisp-native-funcall-v2-initializer (name)
-  "Materialize only a canonical frozen VM primitive, never a public function cell."
-  (unless (funcall association name originals) (error "Unknown funcall primitive initializer"))
-  (if (funcall association name legacy-providers)
-      (cdr (funcall association name legacy-providers))
-    (if (fboundp 'nelisp--eval-source-string)
-      ;; Builtin values are runtime evaluator tokens, not a caller certificate.
-      (cond ((funcall same name 'car-safe) car-safe-provider)
-            ((funcall same name 'cdr-safe) cdr-safe-provider)
-            ((funcall same name 'nth) nth-provider)
-            ((funcall same name 'get) get-provider)
-            ((funcall same name 'nreverse) nreverse-provider)
-            ((funcall same name 'max) max-provider) ((funcall same name 'min) min-provider)
-            ((funcall same name 'nconc) nconc-provider) ((funcall same name '%) rem-provider)
-            ;; These VM operations are Lisp-owned. Their values were frozen
-            ;; by the prelude, before caller code can rebind a public cell.
-            ((funcall membership name '(set-marker match-beginning match-end upcase downcase
+  (defun nelisp-native-funcall-v2-initializer (name)
+    "Materialize only a canonical frozen VM primitive, never a public function cell."
+    (unless (funcall association name originals) (error "Unknown funcall primitive initializer"))
+    (if (funcall association name legacy-providers)
+        (cdr (funcall association name legacy-providers))
+      (if (fboundp 'nelisp--eval-source-string)
+          ;; Builtin values are runtime evaluator tokens, not a caller certificate.
+          (cond ((funcall same name 'car-safe) car-safe-provider)
+                ((funcall same name 'cdr-safe) cdr-safe-provider)
+                ((funcall same name 'nth) nth-provider)
+                ((funcall same name 'get) get-provider)
+                ((funcall same name 'nreverse) nreverse-provider)
+                ((funcall same name 'max) max-provider) ((funcall same name 'min) min-provider)
+                ((funcall same name 'nconc) nconc-provider) ((funcall same name '%) rem-provider)
+                ;; These VM operations are Lisp-owned. Their values were frozen
+                ;; by the prelude, before caller code can rebind a public cell.
+                ((funcall membership name '(set-marker match-beginning match-end upcase downcase
                                                        point goto-char insert point-max point-min char-after
                                                        following-char previous-char current-column indent-to
                                                        eolp eobp bolp bobp current-buffer set-buffer forward-char forward-word
                                                        skip-chars-forward skip-chars-backward forward-line char-syntax
                                                        buffer-substring delete-region narrow-to-region widen end-of-line))
-             (cdr (funcall association name nelisp--bytecode-lisp-providers)))
-            ((funcall same name 'string-equal) '(builtin string=))
-            ((funcall same name 'string-lessp) '(builtin string<))
-            (t (list 'builtin name)))
-    (cdr (funcall association name originals))))))
+                 (cdr (funcall association name nelisp--bytecode-lisp-providers)))
+                ((funcall same name 'string-equal) '(builtin string=))
+                ((funcall same name 'string-lessp) '(builtin string<))
+                (t (list 'builtin name)))
+        (cdr (funcall association name originals))))))
 (defun nelisp-native-funcall-v2-reference (function arguments)
   "Lisp reference for the evaluator entry; roots are an infrastructure concern."
   (apply function arguments))
