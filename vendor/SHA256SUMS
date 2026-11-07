@@ -827,3 +827,17 @@ a51d2fb5d52749133cc95904d24aaceb6887a591b0f6c07ee255c1e876d20b96  vendor/staged-
 013e2bb3e95392cf6fbfb16c20aec9d91ad607b857af55cbdb5d2bd8429820f5  vendor/emacs-lisp/help-fns.el
 9832fa2107419949dc8b5cd3b16cb5855e16d2293f72c70d88e06778c344ff1b  vendor/emacs-lisp/outline.el
 69da956e13421032de348f44a8a5a4bc8d84de1e08774bf0fd1a5a8ecb78ff49  vendor/emacs-lisp/so-long.el
+c42001460f1d751bbb77a6c939539d9e123338dd744c48ae7213ba2a8ea05fa5  vendor/emacs-lisp/url/url-cache.el
+76931cebf2233563c7467e737e481fc3f01342477f42fd8fe24eda935f5befa1  vendor/emacs-lisp/url/url-cid.el
+d61252dea83bbdd39c73efb7942d85eb6ff7134b2b355acc1538fb65488105ba  vendor/emacs-lisp/url/url-dav.el
+cfe0af0942abdefda3a96f78dd3ba1fb31a33dc3208924bb06e74624707fcbaa  vendor/emacs-lisp/url/url-ftp.el
+045869f2f784e9f75c4cca1c97208c5bb8fb6d6e42174cc94e6100a59f9721d0  vendor/emacs-lisp/url/url-future.el
+720d8e0d02563cc6335e48db01bdb3f2ae97181813dff20518c8fb5ec3450e57  vendor/emacs-lisp/url/url-handlers.el
+eb17142fe27b2d42d4707ec6b5320f67b441bb5dc6cd3e9ac29de95cd9be794a  vendor/emacs-lisp/url/url-imap.el
+60f14700f100ca1abb3e30133b0b99bb0f5cb0abf5d498f8f3789ffff596f545  vendor/emacs-lisp/url/url-irc.el
+1d9e61301b24ccbdd6cbe1398688222610da15e2831fef4b80f75e534f78676a  vendor/emacs-lisp/url/url-ldap.el
+a7232cfacd3b1d4107845c0087893ea4f94498aa6d6fc0ccae56b6f95689cef8  vendor/emacs-lisp/url/url-mailto.el
+879a5f006e942c753e2f19b94761dbb0d6bf5da72c3e2ea37411de0781ce371f  vendor/emacs-lisp/url/url-misc.el
+bdb82277c0b4c11abd1d19f12623d7f1b6790a1713faa048520bacd4cdcc429f  vendor/emacs-lisp/url/url-news.el
+ca4d1cd2a7cba61c833ed6bdbfb18aa662a4b867bd572aa0a731ae08cea60c81  vendor/emacs-lisp/url/url-nfs.el
+4bbdd9556a573d2e425aa6dda3fb0bd3df4f0dd8d6f2776f04a5bdd3efdcb08c  vendor/emacs-lisp/url/url-tramp.el
