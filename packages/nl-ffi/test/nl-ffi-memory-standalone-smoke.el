@@ -4,8 +4,8 @@
 
 ;;; Code:
 
-(load "packages/nl-ffi/src/nl-ffi.el")
 (load "packages/nl-ffi/src/nl-ffi-memory.el")
+(load "packages/nl-ffi/src/nl-ffi.el")
 (load "packages/nl-ffi/src/nl-ffi-loader.el")
 
 (defun nl-ffi-memory-smoke-check (condition detail)
