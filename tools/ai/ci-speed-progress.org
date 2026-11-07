@@ -1,0 +1,46 @@
+#+TITLE: NeLisp CI speed lane: back near the pre-merge wall time, gates still detecting
+#+NOTE: Created 2026-11-07 before any implementation (handoff/ci-speed_kickoff_2026-11-07.md). Workers: Sonnet.
+
+* S1 No-change standalone-reader builds are skipped, and only those
+
+** S1.1 Hermetic: an unchanged tree skips the build; changing a source, the target, the Emacs identity, a NELISP_* mode switch, the output path, or the output binary itself forces a real build; a failed build leaves no stamp
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-build-stamp-test.py)
+
+** S1.2 Every file a real standalone-reader build opens from the repo is covered by the stamp key or explicitly listed as a derived cache (recorded strace list, re-checked live against the key's file set)
+cmd: (ulimit -v 8388608; timeout 50 python3 -I tools/ai/ci-speed-evidence/check-build-inputs.py)
+
+** S1.3 The stamp has a registered gate and a lethal gate-mutation row, and gates.expected and ci.yml name the gate
+cmd: grep -q '^build-stamp *|' tools/gate-mutations.txt && grep -q '^build-stamp\b' tools/ai/gates.expected && grep -q 'make build-stamp' .github/workflows/ci.yml
+
+** S1.4 E2E: on a really built target/nelisp a no-change `make standalone-reader' finishes under 5 s and leaves the binary byte-identical
+#+TIMEOUT: 60
+cmd: (ulimit -v 8388608; bash tools/ai/ci-speed-evidence/check-noop-build.sh)
+
+** S1.5 E2E: on a really built target/nelisp, editing one source really rebuilds, and restoring it really rebuilds again (recorded log with both builds and both binary hashes)
+pending
+
+* S2 gate-mutation rows are bounded and report their time
+
+** S2.1 Hermetic: a row whose gate or rebuild hangs is killed at the per-row timeout, reported as a named TIMEOUT failure, its file restored, and the next row still runs
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py)
+
+** S2.2 Hermetic: every slow or timed-out row prints gate, file and seconds as it finishes, and the run ends with a slowest-rows summary
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py RowTimingReport)
+
+** S2.3 Existing harness behavior holds: the mutation recovery test still passes
+#+TIMEOUT: 300
+cmd: (ulimit -v 8388608; python3 -I test/nelisp-mutation-recovery-test.py)
+
+** S2.4 E2E: one real local shard of the full table finishes with per-row durations recorded (log with shard, wall time and the slowest rows)
+pending
+
+* S3 CI runs less on feature branches and shows what it spent
+
+** S3.1 ci.yml: main keeps the full sweep and manual dispatch can still request gate-mutation on any branch
+pending
+
+** S3.2 ci.yml: the feature-branch trigger rule for gate-mutation is implemented as decided by the user
+pending
+
+** S3.3 E2E: a real CI run on this lane's branch shows measured durations per job, compared with the kickoff table (needs a push, which only the user decides)
+pending
