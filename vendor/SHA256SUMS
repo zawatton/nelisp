@@ -851,3 +851,4 @@ f81aa44014b97634626df626a46d4d3c90e42f32431482553a50a41db71fcc69  vendor/emacs-l
 13f45c48bf005f05ec41e7bad02d942d53131bdc9b5038407b2a250d90193ffb  vendor/emacs-lisp/org/ob-lob.el
 ba25307190b2b645b5b9caf272774ede2927560313ffccdb7c55a78f11595ceb  vendor/emacs-lisp/org/ob-ref.el
 41a1ae08f252e97f507a79d76284fdf106171efc9fc25ee78db2d18c2c4816e6  vendor/emacs-lisp/org/ob-tangle.el
+d223d03f31531a632ef7a7f28a83bade96eb64ecffe24c65a3549f9dd0ea81bf  vendor/emacs-lisp/org/org-habit.el

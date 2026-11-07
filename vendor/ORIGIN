@@ -844,3 +844,4 @@ emacs-lisp/org/ob-table.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/o
 emacs-lisp/org/ob-lob.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/ob-lob.el	sha256=13f45c48bf005f05ec41e7bad02d942d53131bdc9b5038407b2a250d90193ffb
 emacs-lisp/org/ob-ref.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/ob-ref.el	sha256=ba25307190b2b645b5b9caf272774ede2927560313ffccdb7c55a78f11595ceb
 emacs-lisp/org/ob-tangle.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/ob-tangle.el	sha256=41a1ae08f252e97f507a79d76284fdf106171efc9fc25ee78db2d18c2c4816e6
+emacs-lisp/org/org-habit.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/org-habit.el	sha256=d223d03f31531a632ef7a7f28a83bade96eb64ecffe24c65a3549f9dd0ea81bf
