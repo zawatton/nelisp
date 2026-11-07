@@ -8,30 +8,33 @@
 # sbcl-impl f12 worktree, which is due to merge into main next.
 
 * S1 host ERT failures on Linux (ert ubuntu-latest jobs, 19 unexpected)
+# Most of these tests skip without target/nelisp, so a run without the
+# binary passes falsely (S1.5-S1.7 did on 2026-11-07); CI builds it first.
+# Build it with: make standalone-reader
 
 ** S1.1 dynfast unbind tests
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-dynfast-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-dynfast-test.el >/dev/null 2>&1)
 
 ** S1.2 all-completions obarray boundary
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-all-completions-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-all-completions-test.el >/dev/null 2>&1)
 
 ** S1.3 backtrace handled snapshot
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-backtrace-handled-snapshot-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-backtrace-handled-snapshot-test.el >/dev/null 2>&1)
 
 ** S1.4 bool-vector malformed literals
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bool-vector-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bool-vector-test.el >/dev/null 2>&1)
 
 ** S1.5 bytecode compiler input closure template
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-compiler-input-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one test/nelisp-bytecode-compiler-input-test.el >/dev/null 2>&1)
 
 ** S1.6 eventloop async timers
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nelisp-eventloop/test/nelisp-async-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nelisp-eventloop/test/nelisp-async-test.el >/dev/null 2>&1)
 
 ** S1.7 nl-ns host shadow report
-cmd: (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nl-ns/test/nl-ns-host-shadow-test.el >/dev/null 2>&1)
+cmd: test -x target/nelisp && (ulimit -v 8388608; timeout 600 bash tools/ai/nelisp-ai.sh test-one packages/nl-ns/test/nl-ns-host-shadow-test.el >/dev/null 2>&1)
 
 ** S1.8 closurevm, core1 and native-funcall-v2 (gates-job ERT run)
-cmd: (ulimit -v 8388608; for f in test/nelisp-closurevm-test.el test/nelisp-core1-test.el test/nelisp-native-funcall-v2-test.el; do timeout 600 bash tools/ai/nelisp-ai.sh test-one $f >/dev/null 2>&1 || exit 1; done)
+cmd: test -x target/nelisp && (ulimit -v 8388608; for f in test/nelisp-closurevm-test.el test/nelisp-core1-test.el test/nelisp-native-funcall-v2-test.el; do timeout 600 bash tools/ai/nelisp-ai.sh test-one $f >/dev/null 2>&1 || exit 1; done)
 
 ** S1.9 the CI ert job command passes end to end
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh ert-full
