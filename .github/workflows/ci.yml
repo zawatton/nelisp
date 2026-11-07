@@ -672,6 +672,10 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: python3 test/nelisp-mutation-recovery-test.py
+      - name: Mutation harness row budgets and timing report
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 test/nelisp-gate-mutation-row-timeout-test.py
 
       # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
       # standalone reader binary, which is where the defect lived.

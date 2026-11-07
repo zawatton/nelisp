@@ -55,11 +55,76 @@ if [ "$nl_num_mutation_timeout" -lt 1 ] || [ "$nl_num_mutation_timeout" -gt 90 ]
   exit 1
 fi
 
-rebuild_checked() {
-  make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1 && return 0
-  sleep 2
-  make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1
+# Two further budgets, validated the same loud way.  A timeout is never
+# evidence that a gate is lethal: it files the row as a named failure.
+#   NELISP_GATE_MUTATION_ROW_TIMEOUT    each single gate invocation (s)
+#   NELISP_GATE_MUTATION_BUILD_TIMEOUT  each `make standalone-reader' attempt
+#                                       (s); a mutation in a widely used
+#                                       source can recompile most units, so
+#                                       builds are budgeted apart from gates
+#   NELISP_GATE_MUTATION_SLOW_ROW       rows at least this slow get a line
+require_positive_int() {
+  case "$2" in
+    ''|*[!0-9]*) echo "gate-mutation: FAIL ($1 must be a positive integer, got '$2')"; exit 1 ;;
+  esac
+  if [ "${#2}" -gt 9 ] || [ "$2" -lt 1 ]; then
+    echo "gate-mutation: FAIL ($1 must be a positive integer, got '$2')"
+    exit 1
+  fi
 }
+row_timeout=${NELISP_GATE_MUTATION_ROW_TIMEOUT:-1200}
+build_timeout=${NELISP_GATE_MUTATION_BUILD_TIMEOUT:-2700}
+slow_row=${NELISP_GATE_MUTATION_SLOW_ROW:-60}
+require_positive_int NELISP_GATE_MUTATION_ROW_TIMEOUT "$row_timeout"
+require_positive_int NELISP_GATE_MUTATION_BUILD_TIMEOUT "$build_timeout"
+require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
+
+# A timeout(1) exit of 124 (TERM) or 137 (the --kill-after KILL took the
+# whole group, `timeout' included) only counts as a budget timeout when the
+# budget was really used up, so a gate that exits 124 by itself is not
+# mislabelled.  Sets rebuild_timed_out; a timed-out attempt is not retried.
+#
+# timeout(1) exits as soon as its direct child has, so a descendant that
+# ignores TERM would outlive --kill-after.  timeout puts itself in a process
+# group of its own (its pid is the group id), so the job runs in the
+# background and a timeout is followed by a KILL of that whole group.
+bounded_pid=""
+wait_bounded() {
+  local pid="$1" rc
+  bounded_pid="$pid"
+  wait "$pid"
+  rc=$?
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+    kill -s KILL -- "-$pid" 2>/dev/null || true
+  fi
+  bounded_pid=""
+  return "$rc"
+}
+rebuild_timed_out=0
+rebuild_checked() {
+  local attempt rc t0
+  rebuild_timed_out=0
+  for attempt in 1 2; do
+    t0=$SECONDS
+    timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1 &
+    wait_bounded $!
+    rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    if { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && [ $((SECONDS - t0)) -ge "$build_timeout" ]; then
+      rebuild_timed_out=1
+      return 1
+    fi
+    [ "$attempt" = 1 ] && sleep 2
+  done
+  return 1
+}
+
+# Set once a rebuild timed out: the binary may be partial or built from
+# injected source.  The standalone build deletes its stamp before building, so
+# a later `make standalone-reader' rebuilds, but a gate whose prerequisite is
+# only "binary absent" would happily run the partial file.  The next row
+# therefore starts with a clean rebuild (see the row loop).
+binary_dirty=0
 
 report_harness_log() {
   local label="$1" log="$2"
@@ -167,6 +232,44 @@ gate_needs_rebuild() {
 # directory instead; nothing else reads this one.
 mutation_gate_dir="$(mktemp -d)"
 
+# Per-row timing.  finish_row runs when the next row starts (and from the
+# summary), so every row's line is printed as soon as the row is over; the
+# summary is also printed from the EXIT trap, so a failed or interrupted
+# sweep still says where the time went.
+timing_file="$mutation_gate_dir/row-times"
+timing_started=0; timing_printed=0; warmup_secs=0
+row_total=0; row_index=0; row_open=0; row_started=0; row_timed_out=0
+row_gate=""; row_file=""
+start_row() {
+  row_open=1; row_started=$SECONDS; row_timed_out=0; row_gate="$1"; row_file="$2"
+}
+finish_row() {
+  [ "$row_open" = 1 ] || return 0
+  row_open=0
+  local secs=$((SECONDS - row_started)) tag=""
+  printf '%s|%s|%s\n' "$secs" "$row_gate" "$row_file" >>"$timing_file"
+  if [ "$row_timed_out" = 1 ]; then tag=TIMEOUT
+  elif [ "$secs" -ge "$slow_row" ]; then tag=slow
+  fi
+  if [ -n "$tag" ]; then
+    printf 'gate-mutation: row %s/%s %s file=%s %ss [%s]\n' \
+      "$row_index" "$row_total" "$row_gate" "$row_file" "$secs" "$tag"
+  fi
+}
+print_timing_summary() {
+  [ "$timing_started" = 1 ] && [ "$timing_printed" = 0 ] || return 0
+  timing_printed=1
+  finish_row
+  echo "gate-mutation: slowest rows"
+  if [ -s "$timing_file" ]; then
+    LC_ALL=C sort -t'|' -k1,1nr "$timing_file" | head -10 |
+      while IFS='|' read -r t_secs t_gate t_file; do
+        printf '  %6ss  %s  file=%s\n' "$t_secs" "$t_gate" "$t_file"
+      done
+  fi
+  printf 'gate-mutation: total wall %ss, warm-up %ss\n' "$SECONDS" "$warmup_secs"
+}
+
 # A row is inject -> run -> restore, and until this trap existed the restore
 # only happened on the paths that reach it.  Kill the sweep between the
 # `sed -i' and the restore and the injected defect stays in the working tree,
@@ -194,6 +297,11 @@ mutation_restore() {
 }
 
 mutation_cleanup() {
+  # An interrupt can arrive while a bounded gate or build is still running.
+  if [ -n "${bounded_pid:-}" ]; then
+    kill -s KILL -- "-$bounded_pid" 2>/dev/null || true
+    bounded_pid=""
+  fi
   if [ -n "${mutation_active_backup:-}" ] && [ -f "$mutation_active_backup" ]; then
     if mutation_restore; then
       printf 'gate-mutation: restored %s (left mid-row)\n' "$mutation_active_file" >&2
@@ -201,6 +309,7 @@ mutation_cleanup() {
     fi
   fi
   mutation_active_file=""; mutation_active_backup=""
+  print_timing_summary
   rm -rf "$mutation_gate_dir"
 }
 trap 'mutation_cleanup' EXIT
@@ -219,11 +328,14 @@ trap 'mutation_cleanup; exit 129' HUP
 # `test_files()' ITSELF (source: `tools/ai/nelisp-ai.sh'), so it must run
 # UNSCOPED: scoping would bypass the very line the row exists to test.
 run_gate() {
-  local g="$1" f="$2" log="$3"
+  local g="$1" f="$2" log="$3" generic=1 rc t0=$SECONDS
+  local bounded=(timeout --kill-after=10s "$row_timeout")
+  run_gate_timeout=0
   if [ "$g" = "ert-full" ]; then
     if [ "$f" = "tools/ai/nelisp-ai.sh" ]; then
       NELISP_GATE_DIR="$mutation_gate_dir" \
-        tools/ai/nelisp-ai.sh test >"$log" 2>&1
+        "${bounded[@]}" tools/ai/nelisp-ai.sh test >"$log" 2>&1 &
+      wait_bounded $!
     else
       # Which test file a source-file mutation gets scoped to (speed
       # only -- see the block comment above): `src/nelisp-eval.el' is
@@ -247,13 +359,15 @@ run_gate() {
       fi
       EMACS="$scoped_emacs" NELISP_GATE_DIR="$mutation_gate_dir" \
         NELISP_GATE_MUTATION_TEST_FILES="$scoped_test" \
-        tools/ai/nelisp-ai.sh test >"$log" 2>&1
+        "${bounded[@]}" tools/ai/nelisp-ai.sh test >"$log" 2>&1 &
+      wait_bounded $!
     fi
   elif [ "$g" = "nelisp-thread-allocating-standalone-smoke" ]; then
     # The no-GC mutation can invalidate another worker's private frame before
     # it reaches the completion increment.  That missed-root manifestation is
     # an intentionally red hang, so bound the mutation run; the clean smoke
     # completes in well under one second on the same binary.
+    generic=0
     timeout 30 make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
   elif [ "$g" = "nl-num-standalone-smoke" ]; then
     # A malformed nl-num implementation can enter an unbounded numeric loop
@@ -263,10 +377,20 @@ run_gate() {
     # timeout alone is never accepted as proof that the gate went red.
     # This harness is non-interactive.  Let timeout manage the subprocess
     # tree and force-kill anything that ignores TERM after five seconds.
+    generic=0
     timeout --kill-after=5s "$nl_num_mutation_timeout" make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
   else
-    make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1
+    "${bounded[@]}" make "$g" $MUTATION_TARGET_ARG >"$log" 2>&1 &
+    wait_bounded $!
   fi
+  rc=$?
+  # Only the generic branches use the row budget; the two special rows above
+  # keep their own timeouts and their own classification.
+  if [ "$generic" = 1 ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } &&
+     [ $((SECONDS - t0)) -ge "$row_timeout" ]; then
+    run_gate_timeout=1
+  fi
+  return "$rc"
 }
 
 rows=$(grep -v '^#' tools/gate-mutations.txt | grep -v '^[[:space:]]*$')
@@ -418,14 +542,54 @@ if [ -n "${NELISP_GATE_MUTATION_LIST_ONLY:-}" ]; then
 fi
 
 
+# Warm-up.  Every gate carries the conditional prerequisite `standalone-reader
+# when the binary is absent', so on a cold tree the first gate would do the
+# cold build inside its own gate budget and time out falsely.  Build once
+# here, under the build budget, after every selection filter so an empty
+# selection stays cheap.  Failure is a harness failure before any row runs.
+in_scope=$(printf '%s\n' "$rows" | awk -F'|' -v t="$MUTATION_TARGET" \
+  'NF >= 4 && ($5 == "" || $5 == t) { n++ } END { print n + 0 }')
+if [ "$in_scope" -gt 0 ]; then
+  if ! command -v timeout >/dev/null 2>&1; then
+    echo "gate-mutation: FAIL (timeout(1) is required for the row and build budgets)"
+    exit 1
+  fi
+  warm_start=$SECONDS
+  if ! rebuild_checked; then
+    if [ "$rebuild_timed_out" = 1 ]; then
+      echo "gate-mutation: FAIL (warm-up rebuild: TIMEOUT after ${build_timeout}s; no row was run)"
+    else
+      echo "gate-mutation: FAIL (warm-up rebuild failed; no row was run)"
+    fi
+    exit 1
+  fi
+  warmup_secs=$((SECONDS - warm_start))
+  echo "gate-mutation: warm-up rebuild took ${warmup_secs}s"
+fi
+timing_started=1
+row_total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
+
 passed=0; failed=0; skipped=0
 while IFS='|' read -r gate file expr what scope; do
+  finish_row
   [ -z "${gate:-}" ] && continue
+  row_index=$((row_index+1))
   if [ -n "${scope:-}" ] && [ "$scope" != "$MUTATION_TARGET" ]; then
     echo "  $gate: SKIP (row scope $scope does not include target $MUTATION_TARGET)"
     skipped=$((skipped+1))
     continue
   fi
+  if [ "$binary_dirty" = 1 ]; then
+    # An earlier rebuild timed out; do not let this row see a partial binary.
+    recover_start=$SECONDS
+    if ! rebuild_checked; then
+      echo "gate-mutation: FAIL (recovery rebuild after an earlier rebuild timeout did not succeed; stopping, later rows would test a partial binary)"
+      exit 1
+    fi
+    binary_dirty=0
+    echo "gate-mutation: recovery rebuild took $((SECONDS - recover_start))s"
+  fi
+  start_row "$gate" "$file"
   # nl-num is the one mutation row known to have produced a runaway smoke.
   # Establish a clean PASS before touching the source.  This prevents a
   # timeout or other non-zero result from being treated as the baseline when
@@ -510,7 +674,12 @@ while IFS='|' read -r gate file expr what scope; do
   # outer-tag-gate mutation read as green.
   if gate_needs_rebuild "$gate" "$file"; then
     if ! rebuild_checked; then
-      echo "  $gate: HARNESS ERROR (rebuild with the injection failed; a stale binary would have read as PASS)"
+      if [ "$rebuild_timed_out" = 1 ]; then
+        echo "  $gate: TIMEOUT (rebuild with injection after ${build_timeout}s; file $file)"
+        row_timed_out=1; binary_dirty=1
+      else
+        echo "  $gate: HARNESS ERROR (rebuild with the injection failed; a stale binary would have read as PASS)"
+      fi
       failed=$((failed+1))
       mutation_restore || exit 1
       rm -f "$backup"; continue
@@ -519,6 +688,7 @@ while IFS='|' read -r gate file expr what scope; do
   gate_log="$(mktemp)"
   run_gate "$gate" "$file" "$gate_log"
   gate_rc=$?
+  gate_timed_out=$run_gate_timeout
   gate_ok=0; [ "$gate_rc" -eq 0 ] && gate_ok=1
   if [ "$gate" = "nl-num-standalone-smoke" ]; then
     # Restore before judging a timeout.  Then rerun the same clean gate and
@@ -577,7 +747,14 @@ while IFS='|' read -r gate file expr what scope; do
   # make gate-mutation' (mocks a host outside 30.x; CI's ubuntu/29.4 lane
   # hits this for real): emacs-parity's row failed the whole harness on a
   # host where the gate cannot run at all, independent of any real defect.
-  skip_after=$(grep -E '^GATE-SKIP ' "$gate_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+  skip_after=""
+  if [ "$gate_timed_out" = 1 ]; then
+    # A killed gate says nothing about lethality, and its partial output must
+    # not be mined for a GATE-SKIP line.
+    report_harness_log "gate output before the timeout:" "$gate_log"
+  else
+    skip_after=$(grep -E '^GATE-SKIP ' "$gate_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+  fi
   rm -f "$gate_log"
   if [ -n "$skip_after" ]; then
     # A row can only prove anything on a host where its gate actually runs;
@@ -594,7 +771,12 @@ while IFS='|' read -r gate file expr what scope; do
     mutation_restore || exit 1
     if gate_needs_rebuild "$gate" "$file"; then
       if ! rebuild_checked; then
-        echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt before the clean skip check)"
+        if [ "$rebuild_timed_out" = 1 ]; then
+          echo "  $gate: TIMEOUT (rebuild after restore after ${build_timeout}s; file $file)"
+          row_timed_out=1; binary_dirty=1
+        else
+          echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt before the clean skip check)"
+        fi
         failed=$((failed+1))
         rm -f "$backup"
         mutation_active_file=""; mutation_active_backup=""
@@ -603,9 +785,19 @@ while IFS='|' read -r gate file expr what scope; do
     fi
     baseline_log="$(mktemp)"
     run_gate "$gate" "$file" "$baseline_log"
-    skip_before=$(grep -E '^GATE-SKIP ' "$baseline_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    baseline_timed_out=$run_gate_timeout
+    skip_before=""
+    if [ "$baseline_timed_out" = 1 ]; then
+      report_harness_log "clean baseline output before the timeout:" "$baseline_log"
+    else
+      skip_before=$(grep -E '^GATE-SKIP ' "$baseline_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    fi
     rm -f "$baseline_log"
-    if [ -n "$skip_before" ]; then
+    if [ "$baseline_timed_out" = 1 ]; then
+      echo "  $gate: TIMEOUT (clean-baseline gate run after ${row_timeout}s; file $file)"
+      row_timed_out=1
+      failed=$((failed+1))
+    elif [ -n "$skip_before" ]; then
       echo "  $gate: SKIP (gate not runnable on this host: $skip_after)"
       skipped=$((skipped+1))
     else
@@ -615,7 +807,11 @@ while IFS='|' read -r gate file expr what scope; do
     rm -f "$backup"
     continue
   fi
-  if [ "$gate_ok" = 1 ]; then
+  if [ "$gate_timed_out" = 1 ]; then
+    echo "  $gate: TIMEOUT (gate run with injection after ${row_timeout}s; file $file)"
+    row_timed_out=1
+    failed=$((failed+1))
+  elif [ "$gate_ok" = 1 ]; then
     echo "  $gate: STAYED GREEN with a real defect in front of it ($what)"
     failed=$((failed+1))
   else
@@ -626,13 +822,19 @@ while IFS='|' read -r gate file expr what scope; do
   rm -f "$backup"
   if gate_needs_rebuild "$gate" "$file"; then
     if ! rebuild_checked; then
-      echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt; later rows would otherwise test the injected artifact)"
+      if [ "$rebuild_timed_out" = 1 ]; then
+        echo "  $gate: TIMEOUT (rebuild after restore after ${build_timeout}s; file $file)"
+        row_timed_out=1; binary_dirty=1
+      else
+        echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt; later rows would otherwise test the injected artifact)"
+      fi
       failed=$((failed+1))
       mutation_active_file=""; mutation_active_backup=""
       continue
     fi
   fi
 done <<< "$rows"
+print_timing_summary
 checked=$((passed+failed))
 echo "GATE-COUNT checked=$checked findings=$failed passed=$passed failed=$failed skipped=$skipped"
 if [ "$failed" -gt 0 ]; then
