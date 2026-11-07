@@ -139,8 +139,10 @@ resolve_output() {
 # the caches under them are content addressed and hold no extra input.
 # HOSTNAME and PWD are read only by code running inside the produced binary.
 # EMACSLOADPATH/EMACSDATA/EMACSPATH steer what the build Emacs loads even under
-# -Q, and the locale variables can change how it decodes source files.
-EXTRA_ENV="EMACS TZ TZDIR F1_FORCE_GC WINEPREFIX EMACSLOADPATH EMACSDATA EMACSPATH LC_ALL LC_CTYPE LANG"
+# -Q.  Locale variables stay out: builds under en_DK.UTF-8 and LC_ALL=C gave a
+# byte-identical binary (measured 2026-11-07), and tools that export LC_ALL=C
+# would otherwise force a rebuild on every call.
+EXTRA_ENV="EMACS TZ TZDIR F1_FORCE_GC WINEPREFIX EMACSLOADPATH EMACSDATA EMACSPATH"
 
 env_included() {
   case "$1" in
