@@ -567,9 +567,10 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                     forms)))
                 (starts-with-dash-dash-p
                   (name)
+                  ;; b51fe66f4 moved the byte reads to `heap-read-u8'.
                   (let ((source (defun-source name)))
-                    (and (string-match-p "(ptr-read-u8 ptr 0) 45" source)
-                         (string-match-p "(ptr-read-u8 ptr 1) 45" source)))))
+                    (and (string-match-p "(heap-read-u8 ptr 0) 45" source)
+                         (string-match-p "(heap-read-u8 ptr 1) 45" source)))))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_eval))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_load))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_neln_selftest))
@@ -1120,19 +1121,20 @@ implementation before a cross-host binary is available."
         (should argv-init)
         ;; Every byte access in the synthetic-buffer fixture is preceded by
         ;; its length check; both consumers use the same bounded helper.
+        ;; b51fe66f4 moved these byte reads to `heap-read-u8'.
         (should (tree-member-p
                  '(while (and (= done 0) (< i limit))
-                    (if (= (ptr-read-u8 ptr i) 0)
+                    (if (= (heap-read-u8 ptr i) 0)
                         (setq done 1)
                       (setq i (+ i 1))))
                  nul))
         (should (tree-member-p
-                 '(while (and (< i limit) (= (ptr-read-u8 ptr i) 0))
+                 '(while (and (< i limit) (= (heap-read-u8 ptr i) 0))
                     (setq i (+ i 1)))
                  (defun-form 'nl_darwin_procargs_skip_padding forms)))
         (should (tree-member-p
                  '(while (and (< i end) (< found 0))
-                    (if (= (ptr-read-u8 ptr i) 61)
+                    (if (= (heap-read-u8 ptr i) 61)
                         (setq found i)
                       (setq i (+ i 1))))
                  (defun-form 'nl_darwin_procargs_env_eq forms)))
@@ -1169,7 +1171,7 @@ implementation before a cross-host binary is available."
         (should (tree-member-p '(>= path-end limit) argv-init))
         ;; Execute the generated bounded readers against a synthetic
         ;; KERN_PROCARGS2 byte buffer as a host fixture.  This uses the actual
-        ;; generated function bodies (only ptr-read-u8 is adapted to a String),
+        ;; generated function bodies (only heap-read-u8 is adapted to a String),
         ;; so padding, an empty middle argv, valid PATH/EMPTY values, a
         ;; malformed entry, and truncation all exercise the same offsets that
         ;; the native target will use.
@@ -1188,7 +1190,7 @@ implementation before a cross-host binary is available."
                         "arg2" "\0" "PATH=/x" "\0" "EMPTY=" "\0"
                         "NOEQ" "\0" "\0"))
                (limit (length fixture)))
-          (cl-letf (((symbol-function 'ptr-read-u8)
+          (cl-letf (((symbol-function 'heap-read-u8)
                      (lambda (ptr off) (aref ptr off)))
                     ((symbol-function 'nl_darwin_procargs_nul)
                      nul-fn)
@@ -1578,12 +1580,13 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                '(nl_cli_write_value fbuf out)
                forms))
       (should (tree-member-p
+               ;; b51fe66f4 (Doc 216 S1 heap accessors) renamed the reads.
                '(defun nl_cli_value_to_buf (fbuf off out)
-                  (let* ((tag (ptr-read-u64 out 0)))
+                  (let* ((tag (heap-sexp-tag-word out)))
                     (cond
                      ((= tag 0) (nl_cli_put_nil fbuf off))
                      ((= tag 1) (nl_cli_put_byte fbuf off 116))
-                     ((= tag 2) (nl_cli_put_dec fbuf off (ptr-read-u64 out 8)))
+                     ((= tag 2) (nl_cli_put_dec fbuf off (heap-sexp-payload out)))
                      ((or (= tag 4) (= tag 16))
                       (nl_cli_put_string_value fbuf off out 0))
                      ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
@@ -1675,15 +1678,16 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
           (boundary nelisp-standalone--reader-boundary-source)
           (eval-source nelisp-standalone--reader-eval-source-source))
       (should (tree-member-p
+               ;; b51fe66f4 (Doc 216 S1 heap accessors) renamed the reads.
                '(defun nl_boundary_immediate_result_p (out)
-                  (if (<= (ptr-read-u64 out 0) 3) 1 0))
+                  (if (<= (heap-read-u64 out 0) 3) 1 0))
                boundary))
       (should (tree-member-p
-               '(if (= (ptr-read-u64 268436216 0) 1)
+               '(if (= (heap-read-u64 268436216 0) 1)
                     (if (= (nl_boundary_immediate_result_p out) 1)
-                        (if (= (ptr-read-u64 268435544 0) epoch0)
-                            (if (= (ptr-read-u64 268435472 0) 0)
-                                (if (= (ptr-read-u64 268435464 0) 0)
+                        (if (= (heap-read-u64 268435544 0) epoch0)
+                            (if (= (heap-read-u64 268435472 0) 0)
+                                (if (= (heap-read-u64 268435464 0) 0)
                                     (nl_boundary_reclaim mark_chunk mark_cursor)
                                   0)
                               0)
