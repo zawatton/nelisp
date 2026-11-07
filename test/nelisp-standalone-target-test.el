@@ -47,6 +47,21 @@
 (require 'nelisp-cc-mirror-set-constant-or-insert)
 (require 'nelisp-cc-mirror-install-entry-or-insert)
 
+(defvar nelisp-standalone-target-test--driver-cache nil
+  "Alist of (TARGET . FORMS) from `nelisp-standalone--reader-driver-source'.")
+
+(defun nelisp-standalone-target-test--driver-source ()
+  "Return the reader driver source for the current target, built once.
+Each build composes the whole boot image (about 15 minutes, and slower
+late in a long-lived Emacs).  The expensive tests below only read the
+forms, so they share one build per target; otherwise the file cannot
+finish within the runner's timeout."
+  (let ((target (nelisp-standalone-arena-rewrite-target)))
+    (or (cdr (assq target nelisp-standalone-target-test--driver-cache))
+        (let ((forms (nelisp-standalone--reader-driver-source)))
+          (push (cons target forms) nelisp-standalone-target-test--driver-cache)
+          forms))))
+
 (ert-deftest nelisp-standalone-target-reader-driver-uses-cache ()
   "The reader driver goes through the content-addressed unit cache."
   :tags '(:expensive-test)
@@ -513,7 +528,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
   "Doc 152 Stage 5 arms mid-form GC only after the boot watermark is valid."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--driver-source))
          (driver (cl-find-if (lambda (form)
                                (and (consp form)
                                     (eq (car form) 'defun)
@@ -554,7 +569,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--driver-source))
          (flat (flatten-tree forms)))
     (cl-labels ((defun-source
                   (name)
@@ -584,7 +599,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
   "The standalone reader dispatch table includes `--neln-selftest'."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
+  (let ((source (prin1-to-string (nelisp-standalone-target-test--driver-source))))
     (should (string-match-p "nl_cstr_eq_neln_selftest" source))
     (should (string-match-p "(nl_neln_demo_exec ctx 41)" source))))
 
@@ -1112,7 +1127,7 @@ implementation before a cross-host binary is available."
              (fill (defun-form 'nl_darwin_procargs_fill forms))
              (env-init (defun-form 'nl_os_environ_init forms))
              (argv-init (defun-form 'nl_os_argv_init forms))
-             (driver (nelisp-standalone--reader-driver-source)))
+             (driver (nelisp-standalone-target-test--driver-source)))
         (should nul)
         (should env-walk)
         (should argv-end)
@@ -1512,7 +1527,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                   ((consp tree)
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
-      (let ((forms (nelisp-standalone--reader-driver-source)))
+      (let ((forms (nelisp-standalone-target-test--driver-source)))
         (should (tree-member-p
                  '(defun nl_cli_argv_shifted_p (argc slot0 slot1)
                     (if (> argc 1)
@@ -1572,7 +1587,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source)))
+    (let ((forms (nelisp-standalone-target-test--driver-source)))
       (should (tree-member-p
                '(nl_alloc_str fbuf n src)
                forms))
@@ -1674,7 +1689,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source))
+    (let ((forms (nelisp-standalone-target-test--driver-source))
           (boundary nelisp-standalone--reader-boundary-source)
           (eval-source nelisp-standalone--reader-eval-source-source))
       (should (tree-member-p
