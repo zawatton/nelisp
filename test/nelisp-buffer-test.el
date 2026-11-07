@@ -15,6 +15,7 @@
 (require 'ert)
 (require 'cl-lib)
 (require 'nelisp-buffer)
+(require 'nelisp-host-arith-restore)
 
 (defmacro nelisp-buffer-test--fresh (name &rest body)
   "Evaluate BODY with a freshly created NeLisp buffer named NAME.

@@ -28,6 +28,7 @@
 (require 'nelisp)
 (require 'nelisp-load)
 (require 'nelisp-buffer)
+(require 'nelisp-host-arith-restore)
 (require 'nelisp-redisplay)
 (require 'nelisp-eventloop)
 (require 'nelisp-actor)
