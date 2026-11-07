@@ -3,10 +3,20 @@
 (require 'cl-lib)
 ;; Native names must exist while capturing owners; the model tests the exact
 ;; internal implementation, without claiming native primitive authentication.
+(defvar nelisp-native-raw-file-test--stubbed nil
+  "Native names this file stubbed because the host lacks them.")
 (dolist (name '(syscall-direct ptr-write-u8 ptr-read-bytes
                nelisp--target-os-code nelisp--target-arch-code))
-  (unless (fboundp name) (fset name (lambda (&rest _) (error "Model only")))))
+  (unless (fboundp name)
+    (push name nelisp-native-raw-file-test--stubbed)
+    (fset name (lambda (&rest _) (error "Model only")))))
 (require 'nelisp-native-raw-file)
+;; The stubs only have to exist while the owners are captured.  Left in place
+;; they make later host tests see a "native" `nelisp--target-os-code' that
+;; errors (e.g. nelisp-core1-test via `nelisp-native-load--windows-p').
+;; Tests below bind the names they need with `cl-letf'.
+(dolist (name nelisp-native-raw-file-test--stubbed)
+  (fmakunbound name))
 (ert-deftest nelisp-native-raw-file-model-window-and-cleanup ()
   (dolist (mode '(success short close-failure))
     (let ((calls nil) (writes nil)
