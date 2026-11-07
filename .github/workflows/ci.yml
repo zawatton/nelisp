@@ -29,6 +29,21 @@ on:
   pull_request:
     branches: ['**']
   workflow_dispatch:
+    inputs:
+      gate_mutation:
+        description: 'Run the gate-mutation sweep on this (non-main) branch'
+        type: boolean
+        default: false
+
+# gate-mutation trigger policy (user decision 2026-11-07), computed by the
+# `policy' step of the `mutation' job:
+#   - any run on refs/heads/main (push or dispatch): full sweep;
+#   - pull_request into main/master: narrowed sweep, as before;
+#   - pull_request into any other base: only with the `gate-mutation' label;
+#   - workflow_dispatch on another branch: only with the gate_mutation input.
+# `pull_request' deliberately does not list the `labeled' type: that would
+# rerun the whole CI on every label change.  A label therefore takes effect
+# on the next push to the PR.  The job itself is never skipped (see below).
 
 jobs:
   # Fast ratchet/inventory pass, Linux only, run BEFORE the full matrix.
@@ -913,13 +928,73 @@ jobs:
           # changed-only diffs against the merge base, which a shallow
           # clone does not have.
           fetch-depth: 0
+      # Decide whether this run sweeps.  The job is NOT skipped with a
+      # job-level `if:' because `verify' needs it and fails a gate that has
+      # no report; instead the costly steps below are gated on this output
+      # and a skipped run still uploads a reasoned GATE-SKIP report, which
+      # verify (pass|skip) and the shard merge accept.  The github.* values
+      # arrive through env, never interpolated into the script body.
+      - name: gate-mutation trigger policy
+        id: policy
+        shell: bash
+        env:
+          POLICY_EVENT: ${{ github.event_name }}
+          POLICY_REF: ${{ github.ref }}
+          POLICY_BASE_REF: ${{ github.base_ref }}
+          POLICY_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          POLICY_DISPATCH_INPUT: ${{ inputs.gate_mutation }}
+        run: |
+          set -eu
+          decide() {
+            echo "run=$1" >> "$GITHUB_OUTPUT"
+            echo "reason=$2" >> "$GITHUB_OUTPUT"
+            echo "gate-mutation policy: run=$1 ($2)"
+          }
+          case "$POLICY_REF" in
+            refs/heads/main|refs/heads/master)
+              decide true 'integration branch: full sweep'
+              exit 0 ;;
+          esac
+          case "$POLICY_EVENT" in
+            pull_request)
+              case "$POLICY_BASE_REF" in
+                main|master)
+                  decide true "pull request into $POLICY_BASE_REF: narrowed sweep" ;;
+                *)
+                  if printf '%s' "$POLICY_LABELS_JSON" | python3 -c 'import json,sys; sys.exit(0 if "gate-mutation" in (json.load(sys.stdin) or []) else 1)'; then
+                    decide true "pull request into $POLICY_BASE_REF with the gate-mutation label"
+                  else
+                    decide false "pull request into $POLICY_BASE_REF without the gate-mutation label"
+                  fi ;;
+              esac ;;
+            workflow_dispatch)
+              if [ "$POLICY_DISPATCH_INPUT" = true ]; then
+                decide true 'manual dispatch with gate_mutation=true'
+              else
+                decide false 'manual dispatch without gate_mutation'
+              fi ;;
+            *)
+              decide true "unexpected event $POLICY_EVENT: failing open" ;;
+          esac
+      - name: gate-mutation skipped by trigger policy
+        if: steps.policy.outputs.run != 'true'
+        shell: bash
+        env:
+          POLICY_REASON: ${{ steps.policy.outputs.reason }}
+        run: |
+          # Same reporting path as the harness's own GATE-SKIP cases, no
+          # Emacs needed.
+          bash tools/ai/nelisp-ai.sh gate gate-mutation -- \
+            printf 'GATE-SKIP trigger policy: %s\n' "$POLICY_REASON"
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
       # Keep the host at 30.2 for its existing parity and compatibility gates.
       - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: steps.policy.outputs.run == 'true'
         uses: purcell/setup-emacs@v8.0
         with:
           version: '31.1'
       - name: Record GNU bytecode compiler executable
+        if: steps.policy.outputs.run == 'true'
         shell: bash
         run: |
           emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
@@ -948,16 +1023,18 @@ jobs:
           fi
 
       - name: Set up Emacs
+        if: steps.policy.outputs.run == 'true'
         uses: purcell/setup-emacs@v8.0
         with:
           version: '31.1'
       - name: Install rooted-protocol decoder dependencies (Linux)
-        if: runner.os == 'Linux'
+        if: steps.policy.outputs.run == 'true' && runner.os == 'Linux'
         shell: bash
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
         run: python3 -m pip install --user --break-system-packages capstone pyelftools
       - name: "gate-mutation, shard ${{ matrix.shard }} of 4"
+        if: steps.policy.outputs.run == 'true'
         shell: bash
         run: |
           # The rows are independent -- each injects a defect, runs the
