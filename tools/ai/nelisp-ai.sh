@@ -344,6 +344,7 @@ cmd_extras() {
              substrate-parity-smoke \
              nl-condition-standalone-smoke \
              nl-safe-standalone-smoke \
+             nelisp-eval-closure-standalone-smoke \
              nl-resource-standalone-smoke \
              nl-num-standalone-smoke \
              nelisp-toml-standalone-smoke \

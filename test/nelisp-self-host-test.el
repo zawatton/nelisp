@@ -126,7 +126,7 @@ as NeLisp closures (not host functions) in `nelisp--functions'."
                                nelisp--eval-condition-case))
       (let ((fn (gethash sym nelisp--functions nelisp--unbound)))
         (should-not (eq fn nelisp--unbound))
-        (should (nelisp--closure-p fn))))))
+        (should (nelisp-eval-closure-p fn))))))
 
 (ert-deftest nelisp-self-host-installs-reader ()
   "After self-host load, the reader functions are NeLisp closures too."
@@ -141,7 +141,7 @@ as NeLisp closures (not host functions) in `nelisp--functions'."
                                nelisp-read--string nelisp-read--bq-expand))
       (let ((fn (gethash sym nelisp--functions nelisp--unbound)))
         (should-not (eq fn nelisp--unbound))
-        (should (nelisp--closure-p fn))))))
+        (should (nelisp-eval-closure-p fn))))))
 
 (ert-deftest nelisp-self-host-installs-macro-system ()
   "After self-host load, `defmacro' dispatch and `macroexpand' family
@@ -157,7 +157,7 @@ are NeLisp closures."
                                          nelisp-macroexpand-all))
       (let ((fn (gethash sym nelisp--functions nelisp--unbound)))
         (should-not (eq fn nelisp--unbound))
-        (should (nelisp--closure-p fn))))))
+        (should (nelisp-eval-closure-p fn))))))
 
 (ert-deftest nelisp-self-host-installed-globals ()
   "Hash tables and the unbound sentinel are visible after self-host."
