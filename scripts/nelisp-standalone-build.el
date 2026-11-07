@@ -9222,7 +9222,7 @@ REPL-facing module it feeds."
       (let ((header (heap-read-u64 box 0)))
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 (if (if (= kind 23) (= n 2) 0) 2 1))
               (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (nl_gc_mark_slots box 1 (+ n 1))
                 (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_mark_slots (owner offset n)
@@ -9295,7 +9295,7 @@ REPL-facing module it feeds."
                 (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
               0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_inline_words box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_inline_words box 1 (if (if (= kind 23) (= n 2) 0) 2 1))
             (if (= kind 22)
                 ;; Hash table object: a weak table is chained at BOX+8 (meta, index
                 ;; read as a cons's car and cdr) for the end-of-mark weak pass.
@@ -12281,7 +12281,7 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_compact_rw_vec_slots (+ box 8) 0 (if (if (= kind 23) (= n 2) 0) 2 1))
             (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
               (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
@@ -13806,6 +13806,12 @@ argument (reachability + in-arena bounds checks).")
                                            3)))
     ((:lit "nelisp--closure-p") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (nl_cl_unwrap w) w) 3 7)))
     ((:lit "nelisp--closure-cons") :word . (let* ((w (nl_word_canon (wf_arg_word args 0))) (u (nl_cl_unwrap w))) (if (= u w) 3 u)))
+    ;; A Lisp primitive: a closure that reports as a subr.  A kind-23 object
+    ;; with length field 2 -- slot 0 the closure cons, slot 1 the name symbol.
+    ((:lit "nelisp--make-lisp-primitive") :word . (let* ((w (nl_word_canon (wf_arg_word args 0))) (u (nl_cl_unwrap w)))
+                                                    (if (= u w) w (nl_cl_prim_wrap u (nl_word_canon (wf_arg_word args 1))))))
+    ((:lit "nelisp--lisp-primitive-p") :word . (if (= (nl_k23_name (nl_word_canon (wf_arg_word args 0))) 0) 3 7))
+    ((:lit "nelisp--lisp-primitive-name") :word . (let* ((nm (nl_k23_name (nl_word_canon (wf_arg_word args 0))))) (if (= nm 0) 3 nm)))
     ((:lit "nelisp--closure-make") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (logand w 7) 2) (nl_cl_wrap w) w)))
     ((:lit "nelisp--hash-make") :word . (let* ((obj (nl_alloc_vector 2)))
                                     (seq (ptr-write-u64 obj 0 (+ 256 22))
@@ -19540,7 +19546,10 @@ list groups retain the original leaves/default exactly."
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
         (if (or (= tag 11) (= tag 20) (= tag 23))
-            (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
+            ;; A Lisp primitive (kind 23, length field 2) has a second slot, the name.
+            (nl_fa_vec_slots (+ box 8) 0
+                             (if (if (= tag 23) (= (sar (heap-read-u64 box 0) 8) 2) 0) 2 1)
+                             ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
                              ds span dest cin cout dir)
@@ -31624,6 +31633,14 @@ bytes are written into a fresh 8-byte buffer instead."
       (seq (mut-str-push-byte ms 40)
            (if (= elt-t 1) (m5_push_lit_t ms) (m5_push_lit_nil ms))
            (mut-str-push-byte ms 41) 1))
+    ;; A Lisp primitive prints like a GNU subr: #<subr NAME>, the name raw.
+    (defun m5_prin1_lisp_primitive (ms name)
+      (seq (mut-str-push-byte ms 35) (mut-str-push-byte ms 60)
+           (mut-str-push-byte ms 115) (mut-str-push-byte ms 117)
+           (mut-str-push-byte ms 98) (mut-str-push-byte ms 114)
+           (mut-str-push-byte ms 32)
+           (m5_push_str ms name)
+           (mut-str-push-byte ms 62) 1))
     (defun m5_prin1_closure (ms vptr)
       (let* ((d1 (nl_cons_cdr_word vptr))
              (env (nl_cons_car_ptr d1))
@@ -31779,7 +31796,9 @@ bytes are written into a fresh 8-byte buffer instead."
          ((= tag 15) (m5_prin1_unibyte_string ms vptr))
          ((= tag 7) (m5_prin1_cons ms vptr))
          ((= tag 22) (m5_prin1_hashtable ms vptr))
-         ((= tag 23) (m5_prin1_closure ms (nl_cl_unwrap vptr)))
+         ((= tag 23) (if (= (nl_k23_name vptr) 0)
+                         (m5_prin1_closure ms (nl_cl_unwrap vptr))
+                       (m5_prin1_lisp_primitive ms (nl_k23_name vptr))))
          ((= tag 8) (if (= (m5_prin1_vec_buffer_p vptr) 1)
                         (m5_prin1_buffer ms vptr)
                       (seq (mut-str-push-byte ms 91)
@@ -40493,7 +40512,10 @@ into that constant unconditionally is what broke every aarch64 build."
                            (if (= (sexp-tag obj) 7)
                                (if (= (let* ((carw (nl_cons_car_word obj))) (if (= (logand carw 1) 0) (nl_sp_eq_lit carw 7 31078196194145634 0) 0)) 1)
                                    7 3)
-                             3))))
+                             (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 23)
+                                 ;; A Lisp primitive reports as a subr.
+                                 (if (= (nl_k23_name (nl_word_canon (wf_arg_word args 0))) 0) 3 7)
+                               3)))))
     ((:lit "stringp")  :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 5) 7 (if (= tg 6) 7
                              (if (= tg 14) 7 (if (= tg 15) 7
@@ -42238,7 +42260,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
-      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index nelisp--closure-p nelisp--closure-cons nelisp--closure-make
+      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index nelisp--closure-p nelisp--closure-cons nelisp--closure-make nelisp--lisp-primitive-p nelisp--lisp-primitive-name
       obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
       symbol-plist
       goto-char
@@ -42286,7 +42308,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
-      nelisp--hash-set-index nelisp--hash-make
+      nelisp--hash-set-index nelisp--hash-make nelisp--make-lisp-primitive
       nelisp--region-u8-ref nelisp--region-i64-ref
       narrow-to-region nelisp--gb-column delete-region buffer-substring buffer-substring-no-properties nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert
       nelisp--pow unintern
@@ -48404,7 +48426,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
-    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--closure-p" "nelisp--closure-cons" "nelisp--closure-make" "nelisp--cell-value" "nelisp--assoc-raw"
+    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--closure-p" "nelisp--closure-cons" "nelisp--closure-make" "nelisp--make-lisp-primitive" "nelisp--lisp-primitive-p" "nelisp--lisp-primitive-name" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
     ;; bufnative: buffer read path
@@ -50916,6 +50938,9 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
     (insert "\n(nelisp-stdlib-print-quoted-install)\n")
     (when nelisp-standalone--rooted-protocol-startup-source
       (insert nelisp-standalone--rooted-protocol-startup-source))
+    ;; The providers above redefine some GNU primitive names in Lisp; mark
+    ;; them too (see `nelisp--mark-lisp-primitives' in the prelude).
+    (insert "\n(when (fboundp 'nelisp--mark-lisp-primitives) (nelisp--mark-lisp-primitives))\n")
     (nelisp-boot-image-expand-composed-prelude (buffer-string))))
 
 (defun nelisp-standalone--prelude-subr-arity-metadata ()
