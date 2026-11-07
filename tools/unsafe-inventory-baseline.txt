@@ -331,7 +331,7 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 2529
+unsafe-call 2530
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -592,7 +592,8 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #     `default-directory'/`noninteractive' above.
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 1971
+# 2026-11-07: scripts/nelisp-standalone-build.el 1971 -> 1972.  `nl_n4_finish_w_fail' (backtrace capture before the pop of a failing VM activation) adds one ptr-write-u64 to the pop, mirroring the existing pop in `nl_n4_finish_w'.
+pinned-kernel-call scripts/nelisp-standalone-build.el 1972
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

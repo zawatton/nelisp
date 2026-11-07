@@ -64567,10 +64567,21 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
     ;; record (debug-on-exit, +18) and a signal answer (W = 0) leave the hot body.
     (defun nl_n4_finish_w (w env _pad frame)
       (if (= frame 0) w
-        (if (and (/= w 0) (/= (heap-read-u8 frame 18) 0))
-            (nl_n4_finish_w_cold w env)
-          (let* ((state (heap-read-u64 env 176)))
-            (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) w)))))
+        (if (= w 0)
+            (nl_n4_finish_w_fail env)
+          (if (/= (heap-read-u8 frame 18) 0)
+              (nl_n4_finish_w_cold w env)
+            (let* ((state (heap-read-u64 env 176)))
+              (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) w))))))
+    ;; A signal answer (W = 0) leaves through here: the failing activation is
+    ;; still on the stack, so the bounded backtrace is taken before the pop.
+    ;; The VM pushes records the interpreter's capture (`nl_eval_inner_w') never
+    ;; sees pop.  `nl_bt_maybe_capture' keeps the first (innermost) snapshot.
+    (defun nl_n4_finish_w_fail (env)
+      (let* ((state (heap-read-u64 env 176)))
+        (seq (if (= (nl_gc_frame_record_armed_p) 1) (nl_bt_maybe_capture env 1) 0)
+             (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1))
+             0)))
     (defun nl_n4_finish_w_cold (w env)
       (let* ((state (heap-read-u64 env 176))
              (r (nl_n4_exit_debug_w w env)))
@@ -64588,7 +64599,9 @@ of DEFUN-NAMES in the unit's source (for persistent-install escape sites)."
           ;; rooted argument before evaluation. It never escapes as a WORD.
           (nl_n4_finish_w out env 0 frame) out 0)
       (let* ((state (heap-read-u64 env 176)))
-        (seq (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) rc)))))
+        (seq (if (= rc 0) 0
+               (if (= (nl_gc_frame_record_armed_p) 1) (nl_bt_maybe_capture env 1) 0))
+             (ptr-write-u64 state 0 (- (heap-read-u64 state 0) 1)) rc)))))
     (defun nl_n4_direct_apply_w (function args env _pad)
       ;; The cons evaluator already owns the activation. Keep its original
       ;; operator (including aliases), and replace forms only after evaluation.
