@@ -502,11 +502,28 @@ was fully checked."
                    calls))))))
     (nreverse calls)))
 
+(defun nelisp-pkg--resolve-bare-load (path file)
+  "Resolve a bare PATH (no directory part) the way `load\=' would.
+The package owning FILE (<pkg>/test/FILE) is assumed to have its own
+<pkg>/src/ on `load-path'.  Return a readable file name, or nil."
+  (unless (file-name-directory path)
+    (let ((src (expand-file-name
+                "src/" (file-name-directory
+                        (directory-file-name
+                         (file-name-directory (expand-file-name file)))))))
+      (cl-some (lambda (name)
+                  (let ((candidate (expand-file-name name src)))
+                    (and (file-regular-p candidate) candidate)))
+                (list (concat path ".el") path)))))
+
 (defun nelisp-pkg-check-load-list (file &optional root)
   "Return findings for the hand-written load list in FILE.
 
 ROOT is the directory the paths are relative to, default
 `default-directory'.
+
+A bare name (no directory part) that is not under ROOT is also looked
+up as <pkg>/src/NAME.el, where <pkg> owns FILE, mirroring `load-path\='.
 
 Two things are checked, and both are failures that produce no message
 at run time:
@@ -527,7 +544,11 @@ order, so two unrelated files in either order are not a finding."
       (if (not (plist-get call :literal))
           (push (list :kind 'load-list-computed-path :subject file) findings)
         (let* ((path (plist-get call :path))
-               (full (expand-file-name path root)))
+               (full (let ((plain (expand-file-name path root)))
+                       (if (file-readable-p plain)
+                           plain
+                         (or (nelisp-pkg--resolve-bare-load path file)
+                             plain)))))
           (if (not (file-readable-p full))
               (push (list :kind 'load-list-missing-file
                           :subject file :path path)
