@@ -1109,8 +1109,12 @@
                      (>= (nelisp_reader_p_bv_str_len str-slot) (nl_bv_bytelen n)))
                 (nl_alloc_bool_vector_from_bytes_w
                  n (nelisp_reader_p_bv_str_ptr str-slot) 0)
-              (nl_abi_fail -1 0)))
-        (nl_abi_fail -1 0)))
+              ;; Fail without stashing: the caller (which has the source
+              ;; text) stashes `invalid-read-syntax'.  A bare
+              ;; `nl_abi_fail' here would stash the generic ABI error first
+              ;; and `nelisp_reader_p_fail_syntax' would then skip.
+              0))
+        0))
 
     (defun nelisp_reader_p_bool_vector_prefix_p (str-ptr cursor-slot)
       (let* ((cursor (nl_word_payload cursor-slot)))
@@ -1138,7 +1142,10 @@
             (if (or (= n 0) (= n 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
               (let* ((s (nelisp_reader_p_parse_at_w str-ptr cursor-slot 0 slot-pool (+ depth 1))))
                 (if (or (= s 0) (= s 2)) (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
-                  (nelisp_reader_p_build_bool_vector_w n s 0)))))
+                  (let* ((bv (nelisp_reader_p_build_bool_vector_w n s 0)))
+                    (if (= bv 0)
+                        (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)
+                      bv))))))
         (nl_abi_fail (nelisp_reader_p_fail_syntax str-ptr) 0)))))
 
     ;; ===========================================================
