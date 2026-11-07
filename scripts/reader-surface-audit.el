@@ -33,7 +33,11 @@
                       (stringp (cadr key)))
            (error "Malformed reader dispatch arm for %s: %S" target arm))
          (cadr key)))
-     (nelisp-standalone--applyfn-reader-table))))
+     ;; The guarded table is what dispatch and admission actually use: it
+     ;; appends arms (the native pin/unbox primitives) to the plain one.
+     (if (fboundp 'nelisp-standalone--applyfn-guarded-reader-table)
+         (nelisp-standalone--applyfn-guarded-reader-table)
+       (nelisp-standalone--applyfn-reader-table)))))
 
 (defun nelisp-reader-surface-audit--dispatch-names ()
   "Return names with a dispatch arm on every release target.
@@ -53,7 +57,9 @@ missing from even one target is absent from the returned intersection."
      :initial-value (car tables))))
 
 (defconst nelisp-reader-surface-audit--combiner-handled
-  '("eval" "funcall" "apply" "fset" "symbol-function"
+  ;; `provide' lost its table arm in 3edc5b180 and became an evaluator
+  ;; entry intercepted before dispatch, like eval/funcall/apply.
+  '("eval" "funcall" "apply" "provide" "fset" "symbol-function"
     "nelisp--push-frame" "nelisp--pop-frame" "nelisp--bind-local"
     "nelisp--push-captured" "nelisp--set-use-elisp" "nelisp--env-globals-op")
   "Names the apply combiner executes directly (cls 1) — no dispatch arm needed.")
