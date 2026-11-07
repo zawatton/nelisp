@@ -32,7 +32,8 @@
 (load "packages/nl-clj/test/nl-clj-future-test.el")
 (load "packages/nl-clj/test/nl-clj-future-lint-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests

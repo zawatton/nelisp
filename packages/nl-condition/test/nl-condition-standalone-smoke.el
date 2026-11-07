@@ -17,11 +17,12 @@
 ;;; Code:
 
 ;; Installs the shim, loads nl-prelude + its tests, runs them (errors
-;; on failure), and leaves `nl-smoke--tests' populated.
+;; on failure), and leaves the prelude tests registered in ERT.
 (load "packages/nl-prelude/test/nl-prelude-standalone-smoke.el")
 
 ;; Reset the registry and run only this package's tests.
-(setq nl-smoke--tests nil)
+(dolist (tt (ert-select-tests t t))
+  (ert-delete-test (ert-test-name tt)))
 
 (load "packages/nl-condition/src/nl-condition.el")
 (load "packages/nl-condition/test/nl-condition-test.el")
@@ -30,7 +31,8 @@
 ;; keeps the demo honest on the substrate its README claims to support.
 (load "packages/nl-condition/test/nl-condition-example-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests

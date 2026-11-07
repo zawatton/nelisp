@@ -37,7 +37,8 @@
       nil
     (nl-bounce #'nl-hygiene-smoke--even-p (1- n))))
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests

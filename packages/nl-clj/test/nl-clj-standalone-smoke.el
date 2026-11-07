@@ -103,7 +103,8 @@
     (error "nl-clj-standalone-smoke: bignum-promoting range: got %S (most-positive-fixnum=%S)"
            taken most-positive-fixnum)))
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests

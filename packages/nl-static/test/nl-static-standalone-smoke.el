@@ -19,7 +19,8 @@
 (load "packages/nl-static/src/nl-static.el")
 (load "packages/nl-static/test/nl-static-test.el")
 
-(let ((tests (reverse nl-smoke--tests))
+(let ((tests (mapcar (lambda (tt) (cons (ert-test-name tt) (ert-test-body tt)))
+                      (ert-select-tests t t)))
       (ran 0)
       (failures nil))
   (while tests
