@@ -5,7 +5,9 @@
 # commit fail.  Triage of CI runs 42314087248 (CI) and 42314087265
 # (standalone parity) on ca0a70fd4; job logs are kept outside the repo.
 # Every cmd runs from the repository root.  F12_TREE is the
-# sbcl-impl f12 worktree, which is due to merge into main next.
+# f12 branch merged with this branch (fix/f12-gates-20261107), i.e. f12
+# as it will look once it lands on main; the shared f12 worktree is not
+# touched.
 
 * S1 host ERT failures on Linux (ert ubuntu-latest jobs, 19 unexpected)
 # Most of these tests skip without target/nelisp, so a run without the
@@ -75,6 +77,13 @@ cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make emacs-compat >/dev
 #+REQUIRES: F12_TREE
 #+TIMEOUT: 600
 cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make parens-check >/dev/null 2>&1)
+
+** S2.9 ns-inventory on the f12 tree (2 new divergent collisions from f12: subr-name, type-of)
+# Added 2026-11-07 after the f12 trial merge: the merge passes S2.7/S2.8
+# but f12's own prelude changes add new duplicates that main lacks.
+#+REQUIRES: F12_TREE
+#+TIMEOUT: 600
+cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make ns-inventory >/dev/null 2>&1)
 
 * S3 standalone tiers
 
