@@ -1307,3 +1307,11 @@ vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(defun days-between (a b) 0)|an
 # lisp/nelisp-stdlib-misc.el' guarded / FAIL; restored -- byte-identical
 # to the pre-mutation file (`git diff' empty).
 vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-leap-year-p)) (defun date-leap-year-p (y) t))|a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt)
+# build-stamp (2026-11-07): the stamp tool must key on NELISP_* mode switches.
+# Injected: the env filter's `NELISP_*) return 0' (include) becomes `return 1'
+# (exclude), so NELISP_TCO=0 no longer changes the key and a switched build
+# mode would be skipped as "up to date" -- a stale-binary false green.  RED:
+# test_nelisp_mode_switch_rebuilds fails (build counter stays 1 where 2 is
+# required).  Restored: GATE-COUNT checked=35 findings=0.  Host-only, no
+# binary build, structural (no timing).
+build-stamp|tools/nelisp-standalone-reader-build.sh|s/^    NELISP_\*) return 0 ;;$/    NELISP_*) return 1 ;;/|NELISP_* mode switches are dropped from the stamp key, so a changed build mode is skipped as up to date

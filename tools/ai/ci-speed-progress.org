@@ -1,6 +1,8 @@
 #+TITLE: NeLisp CI speed lane: back near the pre-merge wall time, gates still detecting
 #+NOTE: Created 2026-11-07 before any implementation (handoff/ci-speed_kickoff_2026-11-07.md). Workers: Sonnet.
 
+#+NOTE: S1 criteria S1.2/S1.1 cover packages/, templates/, standalone-compat/ and git identity in the key (found by strace, 2026-11-07).
+
 * S1 No-change standalone-reader builds are skipped, and only those
 
 ** S1.1 Hermetic: an unchanged tree skips the build; changing a source, the target, the Emacs identity, a NELISP_* mode switch, the output path, or the output binary itself forces a real build; a failed build leaves no stamp
@@ -17,7 +19,7 @@ cmd: grep -q '^build-stamp *|' tools/gate-mutations.txt && grep -q '^build-stamp
 cmd: (ulimit -v 8388608; bash tools/ai/ci-speed-evidence/check-noop-build.sh)
 
 ** S1.5 E2E: on a really built target/nelisp, editing one source really rebuilds, and restoring it really rebuilds again (recorded log with both builds and both binary hashes)
-pending
+evidence: tools/ai/ci-speed-evidence/s1-5-rebuild.log sha256=cf5c8a5d9100ce12b1e29c1f25a6c64218113d6f03a583de14812172ff4f8799
 
 * S2 gate-mutation rows are bounded and report their time
 

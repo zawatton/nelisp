@@ -1,0 +1,17 @@
+# S1.5 real run, 2026-11-07T13:13:26Z, worktree detached at 22bbfb557, file edited: lisp/nelisp-stdlib.el
+# Cold build wall time (no stamp, cold unit cache, this machine): 1165.0s, rc=0, stamp written (logs: cold-build.log)
+# Forced cold-cache build under strace: 1158.8s
+[baseline-after-tool-edit] rc=0 wall=64.2s  standalone-reader: rebuilding (key changed; key 402f845f61b5)
+[baseline-after-tool-edit] binary sha256=d5f37a351af0ad7fc14b2928575f4386d3df51ccf0a7d0a1895df9d94f9f0323
+[no-change] rc=0 wall=0.3s  standalone-reader: up to date (key 402f845f61b5, output sha256 d5f37a351af0)
+[no-change] binary sha256=d5f37a351af0ad7fc14b2928575f4386d3df51ccf0a7d0a1895df9d94f9f0323
+[edited] rc=0 wall=64.7s  standalone-reader: rebuilding (key changed; key 14147e13c1e3)
+[edited] binary sha256=b4bb7ca86a677317953925c888a853fc86028a216dbe93a020ff2ed498389b73
+[restore] lisp/nelisp-stdlib.el byte-identical to original
+[restored] rc=0 wall=64.4s  standalone-reader: rebuilding (key changed; key 402f845f61b5)
+[restored] binary sha256=d5f37a351af0ad7fc14b2928575f4386d3df51ccf0a7d0a1895df9d94f9f0323
+[third-no-change] rc=0 wall=0.3s  standalone-reader: up to date (key 402f845f61b5, output sha256 d5f37a351af0)
+[third-no-change] binary sha256=d5f37a351af0ad7fc14b2928575f4386d3df51ccf0a7d0a1895df9d94f9f0323
+[git diff --stat lisp/nelisp-stdlib.el] 0 lines (0 = no leftover change)
+# no-change wall time (S1.4 criterion measures it again): 0.2-0.3s; key computation included.
+# warm-unit-cache rebuild after one source edit: about 64s.

@@ -1904,3 +1904,7 @@ project-bench
 project-packages
 project-arguments
 project-distribution
+# The stamp that lets `make standalone-reader' skip a provably unchanged build
+# (tools/nelisp-standalone-reader-build.sh).  Host-only hermetic test; the
+# gate-mutation row drops NELISP_* variables from the key.
+build-stamp

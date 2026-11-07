@@ -680,6 +680,14 @@ jobs:
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
 
+      # Host-only hermetic test of the standalone-reader build stamp.  It lives
+      # here, not in the fast `gates' job, because that job uploads no gate
+      # report and `verify' requires one for every gates.expected entry.
+      - name: "Build-stamp skip logic (tools/ai/nelisp-ai.sh gate build-stamp); host only, no runtime build"
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate build-stamp -- make build-stamp
+
       # Every Linux gate report this lane produced.  The `verify' job
       # collects these together with the ert, mutation, and subsystem
       # jobs' and checks the union against gates.expected; on its own,

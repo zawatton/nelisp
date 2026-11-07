@@ -591,10 +591,20 @@ standalone-eval-clean:
 #   make standalone-reader        # build -> target/nelisp
 #   make standalone-reader-test   # build, run, assert exit == eval(NELISP_SRC)
 # Embedded source via NELISP_SRC (default "(+ 40 2)" -> 42; + - * only for now).
+# The build is skipped only when tools/nelisp-standalone-reader-build.sh proves
+# that no input changed since the binary was stamped (see its header for the
+# key); NELISP_STANDALONE_FORCE_REBUILD=1 always builds.  The target crosses
+# the make boundary as an argument, exactly as the old assignment prefix did.
 standalone-reader:
-	NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
+	bash tools/nelisp-standalone-reader-build.sh --target '$(STANDALONE_GATE_TARGET)' -- \
+	  $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
+# Hermetic test of the stamp tool above (fake tree, fake build command).
+.PHONY: build-stamp
+build-stamp:
+	python3 -I test/nelisp-build-stamp-test.py
 
 # Opt-in native allocator/collector development, Linux x86_64 only.
 .PHONY: runtime-reload-reader runtime-reload-test
