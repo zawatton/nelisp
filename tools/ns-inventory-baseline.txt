@@ -1043,7 +1043,11 @@ ns-prefix-violation 2420
 # calls the native builtins `nelisp--string-search' (expand-file-name fast path,
 # string-search) and `nelisp--sha256' (secure-hash sha256) that live in the build
 # script's native primitive table, the same way lisp/nelisp-stdlib-regexp.el already does.
-ns-private-escape 2389
+# 2026-11-07: +1 ns-private-escape, user-approved.  scripts/reader-surface-audit.el
+# now reads nelisp-standalone--applyfn-guarded-reader-table, the table
+# dispatch and admission actually use (it already read the sibling
+# --applyfn-reader-table the same way); an audit inspects build internals.
+ns-private-escape 2390
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
