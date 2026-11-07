@@ -53,6 +53,9 @@
   (prefer-coding-system 'utf-8-unix))
 (require 'nelisp-native-arithmetic-v2)
 (require 'nelisp-standalone-arena-rewrite)
+;; Host byte-opt leaks top-level defvar names into this global; without
+;; rebinding it, each compile scans an ever-growing list.
+(defvar byte-optimize--dynamic-vars)
 (require 'bytecomp)
 (require 'nelisp-cc-variable-watchers)
 (require 'json)
@@ -48916,6 +48919,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                   (setq-local lexical-binding t)
                   (let ((byte-compile-warnings nil)
                         (byte-compile-verbose nil)
+                        (byte-optimize--dynamic-vars nil)
                         (warning-suppress-types '((bytecomp))))
                     (byte-compile lambda-form))))
                (code (and (byte-code-function-p compiled)
@@ -49086,7 +49090,8 @@ never on the build host.  Keep the original Lisp factory as the reference."
       (let* ((creator
               (with-temp-buffer
                 (setq-local lexical-binding t)
-                (byte-compile (list 'lambda nil (nelisp-bytecode-cleanup-source)))))
+                (let ((byte-optimize--dynamic-vars nil))
+                  (byte-compile (list 'lambda nil (nelisp-bytecode-cleanup-source))))))
              (bad (append
                    (cl-remove-if (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
                                  (nelisp-prelude-bytecode--decode-opcodes (aref creator 1)))
