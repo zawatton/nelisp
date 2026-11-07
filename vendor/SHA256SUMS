@@ -841,3 +841,13 @@ a7232cfacd3b1d4107845c0087893ea4f94498aa6d6fc0ccae56b6f95689cef8  vendor/emacs-l
 bdb82277c0b4c11abd1d19f12623d7f1b6790a1713faa048520bacd4cdcc429f  vendor/emacs-lisp/url/url-news.el
 ca4d1cd2a7cba61c833ed6bdbfb18aa662a4b867bd572aa0a731ae08cea60c81  vendor/emacs-lisp/url/url-nfs.el
 4bbdd9556a573d2e425aa6dda3fb0bd3df4f0dd8d6f2776f04a5bdd3efdcb08c  vendor/emacs-lisp/url/url-tramp.el
+71a21bea22654aeb84dc39884c1f7ed4d735a9be317b7f6d6f106c473c8962d6  vendor/emacs-lisp/org/oc.el
+c588e43cfc1e5f989414190102bab5b00977d84f4d150148c35e21a765303d18  vendor/emacs-lisp/org/ob.el
+664fca0ae73ba7ea7ff372f151f6eb2d47b9bca13c2f8db9aae9625da4328e8c  vendor/emacs-lisp/org/ob-eval.el
+7291c32c149b631fb2fdf3be5de1686d6a914ccb96a8d2a7db8f5276402385cc  vendor/emacs-lisp/org/ob-core.el
+324632370453191f767a5b44d52b6f80dbc30f7baaf1121b91a65c99f92c2612  vendor/emacs-lisp/org/ob-comint.el
+f81aa44014b97634626df626a46d4d3c90e42f32431482553a50a41db71fcc69  vendor/emacs-lisp/org/ob-exp.el
+67a84f4647fb8f60473f0ce39661e0b617ab1164c3ecb2069b591ff185f57457  vendor/emacs-lisp/org/ob-table.el
+13f45c48bf005f05ec41e7bad02d942d53131bdc9b5038407b2a250d90193ffb  vendor/emacs-lisp/org/ob-lob.el
+ba25307190b2b645b5b9caf272774ede2927560313ffccdb7c55a78f11595ceb  vendor/emacs-lisp/org/ob-ref.el
+41a1ae08f252e97f507a79d76284fdf106171efc9fc25ee78db2d18c2c4816e6  vendor/emacs-lisp/org/ob-tangle.el
