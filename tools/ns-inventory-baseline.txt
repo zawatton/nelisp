@@ -2486,7 +2486,7 @@ pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.e
 pinned-collision ns-collision-divergent	macroexp-progn	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-shims.el	251c4d996a2a
 pinned-collision ns-collision-divergent	macroexpand	lisp/nelisp-load-macroexpand.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	c8c4ddfc6e7d
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	4e9c036fa3f6
-pinned-collision ns-collision-divergent	macroexpand-all	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	6c60dad678a1
+pinned-collision ns-collision-divergent	macroexpand-all	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	a7302394df5b
 pinned-collision ns-collision-divergent	macrop	packages/emacs-lib-core/src/emacs-parity-macroexpand.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	29feaa55fb8d
 pinned-collision ns-collision-divergent	make-bool-vector	lisp/nelisp-stdlib-plist-str.el packages/emacs-lib-core/src/emacs-fns.el scripts/nelisp-stdlib-prelude.el	4f4bcfcd0dd6
 pinned-collision ns-collision-divergent	make-composed-keymap	packages/emacs-lib-core/src/emacs-parity-shims.el scripts/nelisp-stdlib-prelude.el	4ada5cbba79f
