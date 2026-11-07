@@ -72,6 +72,8 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
               ((symbol-function 'nl_root_release) (lambda (_ mark) (setq released mark)))
@@ -116,6 +118,8 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
               ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) roots)))
@@ -374,6 +378,8 @@ the index vector, all vectorlike WORDS (low bits 6)."
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
+              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v mem)))
               ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) mem)))

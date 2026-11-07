@@ -40,6 +40,8 @@
                ((symbol-function 'nl_cons_cdr_word) (lambda (v) (cdr (gethash v cells))))
                ((symbol-function 'wf_bytecode_w_consp) (lambda (v) (if (gethash v cells) 1 0)))
                ((symbol-function 'wf_bytecode_w_pop_lean) (fxlet-test--generated 'wf_bytecode_w_pop_lean))
+               ;; pop_lean restores through this helper since b63cac37a.
+               ((symbol-function 'wf_bytecode_w_lean_store) (fxlet-test--generated 'wf_bytecode_w_lean_store))
                ((symbol-function 'wf_bytecode_w_aux_spill) (fxlet-test--generated 'wf_bytecode_w_aux_spill))
                ((symbol-function 'wf_bytecode_unwind_push) (fxlet-test--generated 'wf_bytecode_unwind_push))
                ((symbol-function 'm5_fx_general_event) (fxlet-test--generated 'm5_fx_general_event t))
