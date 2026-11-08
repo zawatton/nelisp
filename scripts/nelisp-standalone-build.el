@@ -32472,8 +32472,11 @@ bytes are written into a fresh 8-byte buffer instead."
                   (ptr-write-u64 (+ fr (* i 8)) 0 v)
                   (setq i (+ i 1)))))
          fr)))
+    ;; A Doc 199 registry worker runs the call interpreted: registering
+    ;; writes the shared globals mirror, which the worker's write ceiling
+    ;; refuses (the main thread compiles BODY on its own first call).
     (defun m5_fx_first_call (body env captured formals)
-      (if (/= (nl_fx_compiling) 0) 0
+      (if (or (/= (nl_fx_compiling) 0) (= (nl_sb_worker_p env) 1)) 0
         (let* ((mark (nl_root_mark env)) (views (nl_anchor_views env 3)))
           (seq
            (nl_fx_compiling_set 1 0)
