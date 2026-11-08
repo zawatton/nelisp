@@ -274,7 +274,7 @@ transferred to TARGET.  Function cells and plists are not changed."
 
 ;;; Closure representation --------------------------------------------
 
-(defsubst nelisp--closure-p (x)
+(defsubst nelisp-eval-closure-p (x)
   (and (consp x) (eq (car x) 'nelisp-closure)))
 
 (defsubst nelisp--native-function-p (x)
@@ -330,18 +330,24 @@ Special (dynamic) variables bypass ENV and read directly from
    ((eq sym t) t)
    ((keywordp sym) sym)
    ((gethash sym nelisp--specials)
-    (let ((g (nelisp-variable-get sym nelisp--unbound)))
-      (if (eq g nelisp--unbound)
-          (signal 'nelisp-unbound-variable (list sym))
-        g)))
+    (nelisp--global-value sym))
    (t
     (let ((cell (assq sym env)))
       (if cell
           (cdr cell)
-        (let ((g (nelisp-variable-get sym nelisp--unbound)))
-          (if (eq g nelisp--unbound)
-              (signal 'nelisp-unbound-variable (list sym))
-            g)))))))
+        (nelisp--global-value sym))))))
+
+(defun nelisp--global-value (sym)
+  "Return SYM's global value: the NeLisp table first, then the host's.
+A variable the host binds (e.g. `coding-system-for-write', read by host
+library code this evaluator calls into) has no entry in `nelisp--globals';
+reading it from the host matches what Emacs itself would answer.  Signal
+`nelisp-unbound-variable' when neither binds SYM."
+  (let ((g (nelisp-variable-get sym nelisp--unbound)))
+    (cond
+     ((not (eq g nelisp--unbound)) g)
+     ((nelisp--host-boundp sym) (nelisp--host-symbol-value sym))
+     (t (signal 'nelisp-unbound-variable (list sym))))))
 
 (defun nelisp--function-of (sym)
   "Return the callable bound to SYM in `nelisp--functions'.
@@ -400,9 +406,23 @@ Signal `nelisp-void-function' if none is bound."
                       nelisp--unbound)))
         (nelisp--ensure-macro-system)
         (nelisp-eval-form (nelisp-macroexpand (cons head args)) env))
+       ;; A macro the host defines but this evaluator's tables do not
+       ;; (`dolist', `dotimes', ... when `nelisp--install-core-macros' has
+       ;; not run, as on the standalone source-command path): expand it
+       ;; with the host macro function and evaluate the expansion here.
+       ((and (symbolp head)
+             (eq (gethash head nelisp--functions nelisp--unbound)
+                 nelisp--unbound)
+             (nelisp--host-fboundp head)
+             (let ((hf (nelisp--host-symbol-function head)))
+               (and (consp hf) (eq (car hf) 'macro))))
+        (nelisp-eval-form
+         (nelisp--host-apply (cdr (nelisp--host-symbol-function head)) args)
+         env))
        (t (nelisp--eval-call head args env)))))
-   (t
-    (signal 'nelisp-eval-error (list "cannot evaluate" form)))))
+   ;; Vectors (and the other non-cons, non-symbol objects) evaluate to
+   ;; themselves, as in Emacs Lisp; `make-byte-code' constants rely on it.
+   (t form)))
 
 (defun nelisp--eval-body (forms env)
   "Evaluate FORMS sequentially in ENV, return the last value."
@@ -590,7 +610,11 @@ required args, `&optional' entries as symbols or `(VAR DEFAULT
   (let ((name (car args)))
     (unless (symbolp name)
       (signal 'nelisp-eval-error (list "defvar needs a symbol" name)))
-    (puthash name t nelisp--specials)
+    ;; A binding already live in ENV keeps shadowing: Emacs only makes the
+    ;; variable special for bindings made after the `defvar', while the
+    ;; initial value still goes to the toplevel (global) cell.
+    (unless (assq name env)
+      (puthash name t nelisp--specials))
     (when (and (cdr args)
                (eq (nelisp-variable-get name nelisp--unbound)
                    nelisp--unbound))
@@ -713,7 +737,7 @@ the first match wins.  Unmatched errors propagate to the caller."
              ((symbolp head) (nelisp--function-of head))
              ((and (consp head) (eq (car head) 'lambda))
               (nelisp--make-closure env (cadr head) (cddr head)))
-             ((nelisp--closure-p head) head)
+             ((nelisp-eval-closure-p head) head)
              (t (signal 'nelisp-eval-error
                         (list "not callable" head))))))
     (nelisp--apply fn
@@ -737,6 +761,16 @@ the first match wins.  Unmatched errors propagate to the caller."
 ;; only sees `nelisp--functions', which is empty in a self-hosted copy of
 ;; this file, so the guard in `nelisp--install-primitives' would skip
 ;; every primitive there.
+(unless (fboundp 'nelisp--host-boundp)
+  (defalias 'nelisp--host-boundp (symbol-function 'boundp)))
+(unless (fboundp 'nelisp--host-symbol-value)
+  (defalias 'nelisp--host-symbol-value (symbol-function 'symbol-value)))
+(unless (fboundp 'nelisp--host-symbol-function)
+  (defalias 'nelisp--host-symbol-function (symbol-function 'symbol-function)))
+(unless (fboundp 'nelisp--host-fset)
+  (defalias 'nelisp--host-fset (symbol-function 'fset)))
+(unless (fboundp 'nelisp--host-fmakunbound)
+  (defalias 'nelisp--host-fmakunbound (symbol-function 'fmakunbound)))
 (unless (fboundp 'nelisp--host-fboundp)
   (defalias 'nelisp--host-fboundp (symbol-function 'fboundp)))
 
@@ -768,7 +802,7 @@ dispatches straight into the VM."
         (nelisp-bc-run fn args)
       (signal 'nelisp-eval-error
               (list "bcl received without bytecode VM loaded" fn))))
-   ((nelisp--closure-p fn)
+   ((nelisp-eval-closure-p fn)
     (nelisp--apply-closure fn args))
    ((symbolp fn)
     (let ((nfn (gethash fn nelisp--functions nelisp--unbound)))
@@ -1014,7 +1048,15 @@ as `(VAR DEFAULT [SUPPLIEDP])'."
     ;; this block, which is fboundp in both.  Root cause not isolated
     ;; further here; see `tools/substrate-parity-accepted.el's note on
     ;; this key for the KNOWN GAP writeup.
-    defvaralias)
+    defvaralias
+    ;; Pure data primitives the substrate-parity corpus reaches from
+    ;; source-fallback (forms 39/40, 56-58, 64-66, 73).  Each is a plain
+    ;; function with no NeLisp-table state, so borrowing it is exact.
+    logxor string-as-unibyte make-char-table char-table-p make-byte-code
+    autoload multibyte-string-p string-to-multibyte make-record sort
+    set-char-table-parent char-table-parent char-table-extra-slot
+    set-char-table-extra-slot char-table-range set-char-table-range
+    garbage-collect char-table-subtype)
   "Host Elisp primitives borrowed wholesale by Phase 1 NeLisp.
 Each entry is copied by `symbol-function' at install time so the
 host's bytecode / subr implementation runs unchanged.")
@@ -1071,7 +1113,8 @@ the host `maphash'."
 (defun nelisp--builtin-boundp (sym)
   "Non-nil if SYM has a value in the NeLisp global table.
 Self-evaluating atoms (nil, t, keywords) are always bound."
-  (nelisp-variable-boundp sym))
+  (or (nelisp-variable-boundp sym)
+      (nelisp--host-boundp sym)))
 
 (defun nelisp--builtin-fboundp (sym)
   "Non-nil if SYM has a function (or macro) in the NeLisp tables."
@@ -1083,10 +1126,64 @@ Self-evaluating atoms (nil, t, keywords) are always bound."
 (defun nelisp--builtin-symbol-value (sym)
   "Return SYM's NeLisp value — dynamic / global only, not lexical.
 Matches Elisp `symbol-value' which never sees lexical bindings."
-  (let ((value (nelisp-variable-get sym nelisp--unbound)))
-    (if (eq value nelisp--unbound)
-        (signal 'nelisp-unbound-variable (list sym))
-      value)))
+  (nelisp--global-value sym))
+
+(defun nelisp--builtin-set (sym value)
+  "NeLisp-aware `set': store VALUE in the NeLisp global table for SYM.
+The host `set' would write the host value cell, which `symbol-value'
+and `boundp' in this evaluator never read."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (nelisp-variable-put sym value)
+  value)
+
+(defun nelisp--builtin-makunbound (sym)
+  "NeLisp-aware `makunbound': unbind SYM in the NeLisp global table."
+  (nelisp-variable-makunbound sym))
+
+(defun nelisp--builtin-fmakunbound (sym)
+  "NeLisp-aware `fmakunbound': drop SYM's function and macro bindings.
+The host cell is cleared too, except for a borrowed host primitive,
+whose host cell must stay intact for the rest of the process."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (remhash sym nelisp--functions)
+  (remhash sym nelisp--macros)
+  (unless (memq sym nelisp--primitive-symbols)
+    (nelisp--host-fmakunbound sym))
+  sym)
+
+(defun nelisp--builtin-symbol-function (sym)
+  "NeLisp-aware `symbol-function': the NeLisp table first, then the host.
+`defun' in this evaluator stores into `nelisp--functions', which the
+host `symbol-function' never sees."
+  (let ((f (gethash sym nelisp--functions nelisp--unbound)))
+    (if (eq f nelisp--unbound)
+        (let ((m (gethash sym nelisp--macros nelisp--unbound)))
+          (if (eq m nelisp--unbound)
+              (and (nelisp--host-fboundp sym) (nelisp--host-symbol-function sym))
+            (cons 'macro m)))
+      f)))
+
+(defun nelisp--builtin-fset (sym definition)
+  "NeLisp-aware `fset': set SYM's function in the NeLisp table only.
+The host's function cell is left alone, so interpreted code cannot redefine
+the runtime's own functions."
+  (unless (symbolp sym)
+    (signal 'wrong-type-argument (list 'symbolp sym)))
+  (if definition
+      (puthash sym definition nelisp--functions)
+    (remhash sym nelisp--functions))
+  (remhash sym nelisp--macros)
+  definition)
+
+(defun nelisp--builtin-defvaralias (new-alias base-variable &optional _doc)
+  "NeLisp-aware `defvaralias': alias in the NeLisp variable tables."
+  (nelisp-variable-install-alias new-alias base-variable))
+
+(defun nelisp--builtin-eval (form &optional _lexical)
+  "NeLisp-aware `eval': evaluate FORM in the NeLisp evaluator."
+  (nelisp-eval-form form nil))
 
 (defun nelisp--builtin-defalias (symbol definition &optional _docstring)
   "Set SYMBOL's function cell in the NeLisp runtime to DEFINITION.
@@ -1256,6 +1353,13 @@ primitive installation for entries nothing in a given run needs."
   (puthash 'nelisp-variable-boundp
            (symbol-function 'nelisp-variable-boundp)
            nelisp--functions)
+  (puthash 'set          #'nelisp--builtin-set          nelisp--functions)
+  (puthash 'makunbound   #'nelisp--builtin-makunbound   nelisp--functions)
+  (puthash 'fmakunbound  #'nelisp--builtin-fmakunbound  nelisp--functions)
+  (puthash 'eval         #'nelisp--builtin-eval         nelisp--functions)
+  (puthash 'symbol-function #'nelisp--builtin-symbol-function nelisp--functions)
+  (puthash 'fset         #'nelisp--builtin-fset         nelisp--functions)
+  (puthash 'defvaralias  #'nelisp--builtin-defvaralias  nelisp--functions)
   (puthash 'defalias     #'nelisp--builtin-defalias     nelisp--functions)
   (puthash 'require      #'nelisp--builtin-require      nelisp--functions)
   (puthash 'provide      #'nelisp--builtin-provide      nelisp--functions)

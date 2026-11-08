@@ -808,6 +808,7 @@ substrate-parity-smoke
 # Linux this session).
 nl-condition-standalone-smoke
 nl-safe-standalone-smoke
+nelisp-eval-closure-standalone-smoke
 nl-resource-standalone-smoke
 #
 # standalone-reader-buffer-smoke: promoted 2026-08-23, Doc 188 Phase 1

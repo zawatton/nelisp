@@ -91,9 +91,15 @@ cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make ns-inventory >/dev
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh smokes
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh smokes
 
-** S3.2 extras (declare-function, nl-smoke--tests, walk void)
-# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh extras
-cmd: bash tools/ai/main-ci-reds/check-heavy.sh extras
+** S3.2 extras except standalone-eval-test (declare-function, nl-smoke--tests, walk void)
+# Redefined 2026-11-09 (user decision): standalone-eval-test builds the
+# separate eval binary, which the word-ABI stack (bd25c1caa onwards) never
+# reached; porting it is its own task, tracked as a failing cmd in
+# tools/ai/eval-build-port-progress.org.  This criterion now records the
+# extras tier without that one gate.  The denominator is unchanged (24): the
+# criterion is redefined, not removed.
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh extras-s3
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh extras-s3
 
 ** S3.3 perf gate (GATE-COUNT findings=1)
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh perf

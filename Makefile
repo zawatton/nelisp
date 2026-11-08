@@ -13,6 +13,7 @@
         nelisp-nelix-operational-gate \
         nelisp-runtime-image-cache-gate nelisp-source-command-substrate-gate \
         nl-condition-standalone-smoke nl-safe-standalone-smoke nl-resource-standalone-smoke \
+        nelisp-eval-closure-standalone-smoke \
         nl-ns-reader-standalone-smoke \
         standalone-reader-buffer-smoke \
         nl-actor-standalone-smoke nelisp-actor-cps-baseline nelisp-actor-cps-parity \
@@ -213,6 +214,12 @@ wasm-smoke:
 	  target/wasm-smoke/symbol-lit-probe.wasm symbol-lit-probe 163230213 0
 	@echo "GATE-COUNT checked=4 findings=0"
 
+# Extra node options for the wasm smokes, empty by default.  Under a
+# `ulimit -v' address-space cap node cannot reserve its Wasm guard regions
+# ("Cannot allocate Wasm memory"); --disable-wasm-trap-handler uses explicit
+# bounds checks instead and needs no reservation.  tools/ai/main-ci-reds/
+# run-heavy.sh sets it; CI runs without a cap and leaves it empty.
+NELISP_NODE_FLAGS ?=
 wasm-runtime-image-smoke:
 	mkdir -p target/wasm-runtime-image
 	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
@@ -231,7 +238,7 @@ wasm-runtime-image-smoke:
 	  echo "  file nobody wrote."; \
 	  echo "GATE-COUNT checked=2 findings=1"; \
 	  exit 1; }
-	@if node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
+	@if node $(NELISP_NODE_FLAGS) tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
 	  echo "GATE-COUNT checked=2 findings=0"; \
 	else \
 	  echo "GATE-COUNT checked=2 findings=1"; exit 1; \
@@ -890,6 +897,23 @@ nl-safe-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,stan
 	  exit 0; \
 	fi; \
 	"$$bin" --load packages/nl-safe/test/nl-safe-standalone-smoke.el
+
+# Requiring src/nelisp-eval.el must not break the native closure kind.
+nelisp-eval-closure-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(EMACS) --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+	  --eval '(kill-emacs (if (nelisp-standalone--target-runnable-on-host-p) 0 3))' \
+	  >/dev/null 2>&1; \
+	host_rc=$$?; \
+	if [ "$$host_rc" = 3 ]; then \
+	  echo "GATE-SKIP target $(STANDALONE_GATE_TARGET) cannot run on this host"; \
+	  exit 0; \
+	fi; \
+	bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	"$$bin" --load test/nelisp-eval-closure-standalone-smoke.el
 
 # Doc 189 Phase 0 (reader-time namespace resolution): runs the exact
 # ERT bodies of `packages/nl-ns/test/nl-ns-reader-test.el' on
@@ -1933,7 +1957,7 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
+	  '       (mtime-ok (and (consp mtime) (> (float-time mtime) 1700000000)))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -1989,6 +2013,11 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  *) echo "[fileattrs-smoke] FAIL: $$out (expected pass=t -- stat, readdir or the file/directory classification regressed)"; exit 1;; \
 	esac
 
+# Since 7476fb81b (v29) `string-match' runs the native matcher (`nlre--nat-have'),
+# which bypasses the Lisp leading-filter counter, so the timed sweeps bind
+# `nlre--nat-have' to nil to keep exercising and counting the Lisp filter.
+# Sweep B ("[0-9]+zzz") is filtered too since 3edc5b180 added the required
+# leading-atom filter and 83626ebeb counted it, so both sweeps' calls count.
 # Doc 201 §5.4: `nlre-string-match' retried at every start position and did
 # full work at each one -- a fresh `make-vector' plus a walk into
 # `nlre--match-list''s dispatch chain -- even where the pattern's first node
@@ -2002,8 +2031,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 # a mandatory literal (the shape the filter can skip positions for), sweep B
 # a pattern with no leading literal (the shape it cannot help).  Neither
 # matches, so both are full scans.  The verdict is structural rather than
-# timed: `nlre--leading-filter-calls' must report exactly the 42 sweep-A
-# calls and none of sweep B.  The old ratio < 0.25 verdict was host-sensitive:
+# timed: `nlre--leading-filter-calls' must report exactly the 84 calls of
+# both 42-path sweeps.  The old ratio < 0.25 verdict was host-sensitive:
 # WSL measured 0.272-0.301 injected and 0.065-0.071 clean, while CI's runner
 # stayed green with the same injection.
 #
@@ -2020,7 +2049,7 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	@bin=$(STANDALONE_BIN); \
 	mkdir -p target; \
 	printf '%s\n' \
-	  '(let* ((got (list (string-match "abc" "xxabcyy")' \
+	  '(let* ((fn (lambda () (list (string-match "abc" "xxabcyy")' \
 	  '                  (string-match "abc+" "xxabcc")' \
 	  '                  (string-match "abc" "xxabxx")' \
 	  '                  (let ((case-fold-search t)) (string-match "ABC" "xxabc"))' \
@@ -2029,21 +2058,26 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '                  (string-match "a*" "bbb")' \
 	  '                  (string-match "x" "")' \
 	  '                  (string-match "" "abc")' \
-	  '                  (string-match "b" "abc" 2)))' \
-	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil))' \
+	  '                  (string-match "b" "abc" 2)' \
+	  '                  (string-match "b." "abcd")' \
+	  '                  (let ((case-fold-search t)) (string-match "B[a-z]" "xabc")))))' \
+	  '       (got (funcall fn))' \
+	  '       (got-lisp (let ((nlre--nat-have nil)) (funcall fn)))' \
+	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil 1 2))' \
 	  '       (r6 (string-match "\\(a+\\)\\(b+\\)" "zzaabbb"))' \
 	  '       (g1 (list (match-beginning 1) (match-end 1)' \
 	  '                 (match-beginning 2) (match-end 2)))' \
 	  '       (r7 (string-match "\\(a\\)c" "abac"))' \
 	  '       (g2 (list (match-beginning 1) (match-end 1)))' \
-	  '       (correct-ok (and (equal got want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
+	  '       (correct-ok (and (equal got want) (equal got-lisp want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
 	  '                        (equal r7 2) (equal g2 (list 2 3))))' \
 	  '       (paths nil) (i 0))' \
 	  '  (while (< i 42)' \
 	  '    (setq paths (cons (format "/home/someone/.emacs.d/elpa/package-%02d/lisp" i) paths))' \
 	  '    (setq i (1+ i)))' \
 	  '  (setq nlre--leading-filter-calls 0)' \
-	  '  (let* ((t0 (float-time))' \
+	  '  (let* ((nlre--nat-have nil)' \
+	  '         (t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
 	  '         (ta (- (float-time) t0))' \
 	  '         (t1 (float-time))' \
@@ -2051,7 +2085,7 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
 	  '         (filter-calls nlre--leading-filter-calls)' \
-	  '         (filter-ok (= filter-calls (length paths))))' \
+	  '         (filter-ok (= filter-calls (* 2 (length paths)))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
 	  '                   (and correct-ok filter-ok)))))' \
@@ -3104,7 +3138,7 @@ standalone-reader-declare-strip-smoke: standalone-reader
 	  '(defmacro ds-m3 (x) (declare (debug (form))) "doc" (list (quote quote) x))' \
 	  '(defun ds-f1 () "doc" (declare (indent 0)) (interactive) (+ 41 1))' \
 	  '(defun ds-f2 () (declare (indent 0)))' \
-	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (equal (car (cdr (cdr (cdr fn)))) (quote (interactive))) (ds-f2)))' \
+	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (eq (car (interactive-form (quote ds-f1))) (quote interactive)) (ds-f2)))' \
 	  > target/standalone-reader-declare-strip-smoke.el
 	@out="$$($(STANDALONE_BIN) --repl --no-prompt < target/standalone-reader-declare-strip-smoke.el | tail -1)"; \
 	if [ "$$out" = "(foo bar baz 42 t nil)" ]; then \
@@ -3230,16 +3264,19 @@ standalone-reader-pcase-quote-literal-smoke: standalone-reader
 # t tag, nil tag, an ordinary symbol tag (pre-existing-working baseline),
 # throw-less catch, a same-tag nested catch, and a mismatched-tag nested
 # catch (inner `t' catch must NOT swallow an outer-bound `nil' throw).
+# GNU Emacs (31.1 verified) forbids throwing to a nil tag: Fthrow signals
+# `(no-catch nil VALUE)' even inside `(catch nil ...)', so the nil rows
+# expect that error rather than the thrown value.
 standalone-reader-catch-throw-tag-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(list (catch t (throw t (quote a))) (catch nil (throw nil (quote b))) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (catch nil (catch t (throw nil (quote outer)))))' \
+	  '(list (catch t (throw t (quote a))) (condition-case e (catch nil (throw nil (quote b))) (no-catch e)) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (condition-case e (catch nil (catch t (throw nil (quote outer)))) (no-catch e)))' \
 	  > target/standalone-reader-catch-throw-tag-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-catch-throw-tag-smoke.el)"; \
-	if [ "$$out" = "(a b c 42 inner outer)" ]; then \
+	if [ "$$out" = "(a (no-catch nil b) c 42 inner (no-catch nil outer))" ]; then \
 	  echo "[standalone-reader-catch-throw-tag-smoke] PASS: -> $$out"; \
 	else \
-	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a b c 42 inner outer))"; \
+	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a (no-catch nil b) c 42 inner (no-catch nil outer)))"; \
 	  exit 1; \
 	fi
 
@@ -4149,7 +4186,7 @@ standalone-reader-dns-smoke: standalone-reader
 	@printf '%s\n' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
-	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (insert-file-contents-literally f) (buffer-string)))' \
+	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (buffer-string)))' \
 	  '(let* ((full (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-full.bin")) (truncated (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-truncated.bin")) (bad-rdlength (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-badrdlen.bin"))) (list (nelisp--dns-parse-response full) (condition-case e (nelisp--dns-parse-response truncated) (nelisp-dns-error (quote dns-error-caught))) (condition-case e (progn (string-byte truncated 999) (quote raw-unguarded-no-error)) (error (quote raw-unexpectedly-errored))) (condition-case e (nelisp--dns-byte truncated 999) (nelisp-dns-error (quote guarded-dns-error-caught))) (condition-case e (nelisp--dns-parse-response bad-rdlength) (nelisp-dns-error (quote dns-error-caught))) (nelisp--dns-skip-name full 12) (string-bytes (nelisp--dns-encode-query "example.com"))))' \
 	  > target/standalone-reader-dns-smoke-parse.el
 	@parse_out="$$($(STANDALONE_BIN) --load target/standalone-reader-dns-smoke-parse.el)"; \

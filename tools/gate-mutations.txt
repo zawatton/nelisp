@@ -737,7 +737,7 @@ standalone-reader-fileattrs-smoke|scripts/nelisp-stdlib-prelude.el|s/(= (logand 
 # GREEN restored:
 #   [regexp-lead-filter-smoke] PASS: got=(2 nil 2 nil 2 0 nil 0 nil) ...
 #     ratio=0.047 pass=t
-standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(lead (and lead (nlre--fold-char lead)))/(lead (and lead (nlre--flip-case lead)))/|the leading-character filter folds the required character the wrong way, so no leading-literal pattern matches at all
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/^\( *\)lead nlre--pattern-multibyte$/\1(1+ lead) nlre--pattern-multibyte/|the leading-character scan compares the wrong character instead of the required one, so leading-literal patterns skip their real matches
 # Doc 201 §5.4, row 2 of 2 (the PATH-SELECTION half).  Makes
 # `nlre--leading-lit-char' answer nil for every pattern, so the filter never
 # fires and the scan is exactly what it was before the fix.  Correctness is
@@ -763,7 +763,7 @@ standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(lead 
 # only 0.022-0.051 across the threshold.  Ratio and times remain diagnostics,
 # but the verdict now uses the exact path-selection count: 42 clean, 0 when
 # this injection makes the filter unreachable.
-standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/^(defun nlre--leading-lit-char (nodes)$/(defun nlre--leading-lit-char (nodes) (setq nodes nil)/|the leading-character filter never fires, putting the scan back to full work at every start position
+standalone-reader-regexp-lead-filter-smoke|lisp/nelisp-stdlib-regexp.el|s/(prefix (and (> (length compiled) 4) (aref compiled 4)))/(prefix nil)/;s/(lead (and (not prefix) (nlre--leading-lit-char top)))/(lead nil)/;s/(req-atom (and (not prefix) (not lead)/(req-atom (and nil (not lead)/|none of the prefix, leading-character or required-atom filters is ever selected, so the smoke's two sweeps count no filter setups
 # Stage D1 (2026-09-03).  The Windows-scoped FFI gate must execute the PE
 # import-backed arm, not merely find the builtin name.  Replacing the mapped
 # system DLL with a nonexistent name leaves the generated dispatch intact but
@@ -1332,6 +1332,13 @@ build-stamp|tools/nelisp-standalone-reader-build.sh|s#^  local norm h$#  local n
 # spin); the probe then prints no arena-stats and the test goes red.  The sed
 # is anchored on the single `new_chunk' binding in nl_alloc_bytes_uncheck.
 # The variant build is near cold here (build.el is in the toolchain digest):
-# run with NELISP_GATE_MUTATION_ROW_TIMEOUT=6000; slice 4/5 must decide the
-# budget (main and nightly only).
+# the harness gives this variant-building gate the build budget, not the
+# row budget (slice 4); moving it to main and nightly only is slice 5.
 standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_chunk (nl_chunk_alloc_new want)))/(let* ((new_chunk 0))/|chunk growth always fails, so a full first chunk aborts instead of adding a chunk|linux-x86_64
+
+# nelisp-eval-closure-standalone-smoke (532e998b7): put back the collision the
+# smoke guards against.  src/nelisp-eval.el once defined `nelisp--closure-p',
+# the native closure-kind builtin the prelude uses, so requiring nelisp-eval
+# made every interpreted closure report type-of cons with closurep nil.  RED
+# prints `nelisp-eval-closure-standalone-smoke: FAIL closurep fresh lambda'.
+nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again

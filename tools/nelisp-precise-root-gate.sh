@@ -172,10 +172,17 @@ if [ ! -x "$NELISP" ]; then
   exit 0
 fi
 
-# ITERS is sized so the alloc-debt gate (16 MiB) fires several times inside one
-# top-level form; the assertion is on a literal that lives only in that form, so
-# a collection that loses the form loses the literal too.
-ITERS="${NELISP_PRECISE_ROOT_ITERS:-250000}"
+# ITERS is sized so the allocation trigger fires inside one top-level form; the
+# assertion is on a literal that lives only in that form, so a collection that
+# loses the form loses the literal too.  The conses of `list' are typed blocks
+# mapped outside the arena reservation, so the reservation trigger never sees
+# them; before the debt trigger arms (two collections after boot, and boot makes
+# none) only the 64 MiB backstop of `nl_gc_vm_poll' collects.  250000 iterations
+# allocate 64,001,264 bytes, 3 MiB under it, and collected zero times.  2000000
+# give 6 collections inside the form (500000 gave 1, 1000000 gave 3), matching
+# the `collections=6' the precise-root row in tools/gate-mutations.txt
+# documents; the clean gate takes about 12 s.
+ITERS="${NELISP_PRECISE_ROOT_ITERS:-2000000}"
 EXPECT=$((ITERS * 7))
 
 write_workload() {  # $1 = file, $2 = switch prologue

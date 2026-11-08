@@ -77,18 +77,74 @@ build_variant() {
       >"$BUILD_LOG" 2>&1
 }
 
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/nl-chunk-growth.XXXXXX")" || exit 1
+SNAP_DONE=0
+# An interrupted variant build must not leave its fixed-path files behind.
+trap '[ "$SNAP_DONE" = 1 ] && restore_fixed; rm -rf "$WORK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# The artifact runtime files have fixed names under target/ (they do not
+# follow NELISP_STANDALONE_READER_OUTPUT), so the variant build rewrites the
+# default build's copies.  Their content does not depend on the arena size;
+# the manifest differs only in the source :mtime/:ctime.  Check that on every
+# run and put the default's files back, so nothing here is hidden.
+FIXED_CONTENT="target/nelisp-artifact-runtime.el target/nelisp-artifact-runtime.el.nelc target/nelisp-artifact-runtime.el.nelc.enable"
+FIXED_ALL="$FIXED_CONTENT target/nelisp-artifact-runtime.el.nelc.manifest.el"
+restore_fixed() {
+  local f b
+  for f in $FIXED_ALL; do
+    b="$WORK/fixed/$(basename "$f")"
+    if [ -e "$b" ]; then
+      cp -p "$b" "$f" || echo "[chunk-growth] ERROR: could not restore $f" >&2
+    else
+      rm -f "$f"
+    fi
+  done
+}
+# The manifest without its source :mtime/:ctime fields.
+manifest_core() { sed -E 's/:(mtime|ctime) \([^)]*\)//g' "$1"; }
+mkdir -p "$WORK/fixed" || exit 1
+for f in $FIXED_ALL; do
+  if [ -e "$f" ]; then
+    cp -p "$f" "$WORK/fixed/$(basename "$f")" || {
+      echo "[chunk-growth] FAIL: could not snapshot $f"
+      echo "GATE-COUNT checked=1 findings=1"
+      echo "[chunk-growth] RESULT: FAIL"
+      exit 1
+    }
+  fi
+done
+SNAP_DONE=1
+
 echo "[chunk-growth] building standalone reader with an 8 MiB first chunk ..."
 if ! build_variant; then
   echo "[chunk-growth] last 40 lines of $BUILD_LOG:"
   tail -n 40 "$BUILD_LOG" 2>/dev/null
+  restore_fixed; SNAP_DONE=0
   echo "[chunk-growth] FAIL: variant build failed"
   echo "GATE-COUNT checked=1 findings=1"
   echo "[chunk-growth] RESULT: FAIL"
   exit 1
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/nl-chunk-growth.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+MANIFEST=target/nelisp-artifact-runtime.el.nelc.manifest.el
+for f in $FIXED_CONTENT $MANIFEST; do
+  b="$WORK/fixed/$(basename "$f")"
+  if [ "$f" = "$MANIFEST" ]; then
+    [ -e "$b" ] && [ -e "$f" ] && [ "$(manifest_core "$b")" != "$(manifest_core "$f")" ]
+  else
+    [ -e "$b" ] && ! cmp -s "$b" "$f"
+  fi
+  if [ $? -eq 0 ]; then
+    restore_fixed; SNAP_DONE=0
+    echo "[chunk-growth] FAIL: the variant build changed the content of $f (fixed path shared with the default build); originals restored"
+    echo "GATE-COUNT checked=1 findings=1"
+    echo "[chunk-growth] RESULT: FAIL"
+    exit 1
+  fi
+done
+restore_fixed; SNAP_DONE=0
 
 # Hold 200 vectors of 100000 elements (about 160 MB) so the first chunk must grow.
 cat > "$WORK/stats.el" <<'EOF'
@@ -97,6 +153,8 @@ EOF
 STATS="$("$VARIANT_OUT" --load "$WORK/stats.el" 2>&1 | head -1)"
 # tuple: (base size bump used live next free coll reuse CHUNK-COUNT reserved used)
 CHUNK_COUNT="$(printf '%s' "$STATS" | sed -E 's/[()]//g' | awk '{print $10}')"
+# A crash or error text puts a non-number here; treat it as no growth.
+case "$CHUNK_COUNT" in ''|*[!0-9]*) CHUNK_COUNT_N=0 ;; *) CHUNK_COUNT_N=$CHUNK_COUNT ;; esac
 RESERVED="$(printf '%s' "$STATS" | sed -E 's/[()]//g' | awk '{print $11}')"
 
 printf '(car (let ((p (cons 7 8))) p))\n' > "$WORK/eval.el"
@@ -106,7 +164,7 @@ echo "[chunk-growth] arena-stats: $STATS"
 echo "[chunk-growth] chunk-count=$CHUNK_COUNT  reserved-bytes=$RESERVED  let-escape=$ESCAPE"
 
 rc=0
-if [ "${CHUNK_COUNT:-0}" -gt 1 ]; then
+if [ "$CHUNK_COUNT_N" -gt 1 ]; then
   echo "[chunk-growth] PASS: arena grew to $CHUNK_COUNT chunks after a retained allocation (no fixed-size dependency)"
 else
   echo "[chunk-growth] FAIL: chunk-count=${CHUNK_COUNT:-?} (expected > 1 = growth)"; rc=1

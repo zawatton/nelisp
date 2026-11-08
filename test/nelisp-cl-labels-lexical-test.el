@@ -144,6 +144,18 @@
   (princ (list (nl-test-memo 3) (fboundp 'fail-key)))"
  "((6 12) nil)")
 
+;; GNU `macroexpand-all' dynamically binds `macroexpand-all-environment';
+;; GNU `cl-labels' (`cl--labels-convert') reads it to rewrite `#'NAME'.
+;; The source prelude's `macroexpand-all' must bind it too.  The baked
+;; binary resolves cl-labels without it, so load the prelude source explicitly.
+(nelisp-cl-labels-lexical--deftest
+ nelisp-cl-labels-lexical-prelude-binds-macroexpand-all-environment
+ "(load (expand-file-name \"scripts/nelisp-stdlib-prelude.el\"))
+  (defmacro nl-test-see-env () (list 'quote macroexpand-all-environment))
+  (princ (list (macroexpand-all '(nl-test-see-env) '((nl-env-marker . ignore)))
+               (cl-labels ((walk (n) (if (consp n) (mapc #'walk n) n))) (walk '(1 2)))))"
+ "('((nl-env-marker . ignore)) (1 2))")
+
 (provide 'nelisp-cl-labels-lexical-test)
 
 ;;; nelisp-cl-labels-lexical-test.el ends here

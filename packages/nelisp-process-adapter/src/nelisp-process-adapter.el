@@ -1045,6 +1045,11 @@ first-line-wins rule."
 ;; socket-type parameter (Doc 194 S6, not built here).
 
 (define-error 'nelisp-dns-error "NeLisp DNS resolution error")
+;; The socket primitives signal this bare symbol (no error-conditions), so a
+;; plain `(error ...)' handler never matched it and a refused connect leaked
+;; instead of becoming the GNU-shaped `file-error' (see
+;; `nelisp--network-process-signal-refused').
+(define-error 'nelisp-socket-error "NeLisp socket error")
 
 (defvar nelisp-dns-resolver-ip nil
   "Numeric IPv4 address of the DNS-over-TCP/53 resolver

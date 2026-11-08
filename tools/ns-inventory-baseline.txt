@@ -460,7 +460,7 @@ ns-collision 433
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 897
+ns-collision-divergent 896
 # 133 -> 135 on 2026-10-20 (prim-alias): indirect-variable and
 # internal-delete-indirect-variable gain native-only standalone facades;
 # foundation retains fboundp-gated registry fallbacks. defvaralias already
@@ -1047,7 +1047,7 @@ ns-prefix-violation 2420
 # now reads nelisp-standalone--applyfn-guarded-reader-table, the table
 # dispatch and admission actually use (it already read the sibling
 # --applyfn-reader-table the same way); an audit inspects build internals.
-ns-private-escape 2390
+ns-private-escape 2391
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
@@ -2486,7 +2486,7 @@ pinned-collision ns-collision-divergent	macroexp-parse-body	lisp/nelisp-stdlib.e
 pinned-collision ns-collision-divergent	macroexp-progn	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-shims.el	251c4d996a2a
 pinned-collision ns-collision-divergent	macroexpand	lisp/nelisp-load-macroexpand.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	c8c4ddfc6e7d
 pinned-collision ns-collision-divergent	macroexpand-1	lisp/nelisp-stdlib.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	4e9c036fa3f6
-pinned-collision ns-collision-divergent	macroexpand-all	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	6c60dad678a1
+pinned-collision ns-collision-divergent	macroexpand-all	packages/emacs-lib-core/src/emacs-eval.el packages/emacs-lib-core/src/emacs-parity-macroexpand.el scripts/nelisp-stdlib-prelude.el	a7302394df5b
 pinned-collision ns-collision-divergent	macrop	packages/emacs-lib-core/src/emacs-parity-macroexpand.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	29feaa55fb8d
 pinned-collision ns-collision-divergent	make-bool-vector	lisp/nelisp-stdlib-plist-str.el packages/emacs-lib-core/src/emacs-fns.el scripts/nelisp-stdlib-prelude.el	4f4bcfcd0dd6
 pinned-collision ns-collision-divergent	make-composed-keymap	packages/emacs-lib-core/src/emacs-parity-shims.el scripts/nelisp-stdlib-prelude.el	4ada5cbba79f
@@ -2568,7 +2568,6 @@ pinned-collision ns-collision-divergent	nelisp--bq-expand	packages/emacs-lib-cor
 pinned-collision ns-collision-divergent	nelisp--buffer-multibyte-p	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	159007d3a45f
 pinned-collision ns-collision-divergent	nelisp--case-object	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	2b11bf52f28b
 pinned-collision ns-collision-divergent	nelisp--check-live-frame	packages/emacs-lib-core/src/emacs-frame-builtins.el scripts/nelisp-stdlib-prelude.el	203807fb0f6d
-pinned-collision ns-collision-divergent	nelisp--closure-p	scripts/nelisp-stdlib-prelude.el src/nelisp-eval.el	e81fd689be06
 pinned-collision ns-collision-divergent	nelisp--hash-index	lisp/nelisp-stdlib-hash.el scripts/nelisp-stdlib-prelude.el	6213827881d1
 pinned-collision ns-collision-divergent	nelisp--load-eval-source-incremental	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-load.el	579e068f85c1
 pinned-collision ns-collision-divergent	nelisp--motion-eol	packages/emacs-lib-core/src/emacs-search-builtins.el scripts/nelisp-stdlib-prelude.el	a63c3d4be2ab

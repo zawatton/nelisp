@@ -1,0 +1,27 @@
+#+TITLE: standalone eval build and precise-root mutation row work again
+
+# Defined 2026-11-09, split out of tools/ai/main-ci-reds-progress.org S3.2 by
+# user decision.  Both passed at 1404ced83, the last green main.
+# - The eval build (`make standalone-eval-test', nelisp-standalone-test)
+#   never received the word-ABI stack that landed in the reader build from
+#   bd25c1caa (2026-10-19) on.  It now fails to link; an unverified scan
+#   lists ~205 candidate missing definitions.  The third link error is
+#   nl_eval_inner_w unresolved in shim.o.
+# - The precise-root-coverage mutation row (remove the executing form's
+#   precise-root arm) stays green even at 10 collections: something added
+#   in the import range also roots the form.  Candidates: the src/cursor
+#   arms, the eager-load root stack.
+# Kickoff, partial patch and divergence scan: Notes
+# handoff/eval-build-port_kickoff_2026-11-09.md.
+# Long criteria are recorded by tools/ai/main-ci-reds/run-heavy.sh NAME and
+# checked against HEAD by check-heavy.sh, as in the main-ci-reds ledger.
+
+* E1 eval build links and runs
+** E1.1 make standalone-eval-test passes
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh eval-test
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh eval-test
+
+* E2 precise-root mutation row is live again
+** E2.1 the precise-root-coverage gate-mutation row goes red
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh precise-root-mutation
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh precise-root-mutation
