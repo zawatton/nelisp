@@ -39698,10 +39698,20 @@ bytes are written into a fresh 8-byte buffer instead."
                          ;; A closure is a kind-23 object (wrapping the
                          ;; (closure ...) cons); older paths may still hold
                          ;; the bare cons.
-                         (if (and (> function 4096) (= (logand function 1) 0)
-                                  (or (= (nl_val_tag function) 7)
-                                      (/= (nl_cl_unwrap function) function)))
-                             (cons-set-car (nl_exit_val_w) function) 0))
+                         ;; GNU's eval_sub reports the call form's symbol
+                         ;; for a subr (original_fun); funcall/apply report
+                         ;; the subr object.  A Lisp primitive called by
+                         ;; name from an interpreted form is that case: the
+                         ;; record was pushed unevaluated (+16 byte 1 is 0).
+                         (if (and (or (= kind 4) (= kind 16))
+                                  (= (logand (heap-read-u64 frame 16) 65280) 0)
+                                  (> function 4096) (= (logand function 1) 0)
+                                  (/= (nl_k23_name (nl_word_canon function)) 0))
+                             (cons-set-car (nl_exit_val_w) op)
+                           (if (and (> function 4096) (= (logand function 1) 0)
+                                    (or (= (nl_val_tag function) 7)
+                                        (/= (nl_cl_unwrap function) function)))
+                               (cons-set-car (nl_exit_val_w) function) 0)))
                      0))))
            0)
          1)))
