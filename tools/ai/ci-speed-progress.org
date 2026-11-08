@@ -48,3 +48,21 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-trigger-t
 
 ** S3.3 E2E: a real CI run on this lane's branch shows measured durations per job, compared with the kickoff table (needs a push, which only the user decides)
 pending
+
+* S4 Logs stream live and every smoke and row reports its time (fast plan slice 1)
+#+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation.
+
+** S4.1 Hermetic: `nelisp-ai.sh gate' streams the command's output while it runs, keeps the full log and the report, and keeps the command's exit code
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ai-gate-stream-test.py)
+
+** S4.2 Hermetic: the reader smokes print each target's duration as it finishes and a slowest-10 table at the end, still print a failing target's log, and keep the exit code
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-reader-smokes-timing-test.py)
+
+** S4.3 Hermetic: gate-mutation keeps each rebuild's output in a log and prints its tail when the rebuild fails or times out
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py RebuildLog)
+
+** S4.4 E2E local: a real `nelisp-ai.sh gate build-stamp' run prints GATE-COUNT on stdout before it exits and writes its report
+cmd: (ulimit -v 8388608; rm -f target/gates/build-stamp.json; timeout 50 bash tools/ai/nelisp-ai.sh gate build-stamp -- make build-stamp | grep -q '^GATE-COUNT' && test -s target/gates/build-stamp.json)
+
+** S4.5 E2E CI: a real CI run's logs show streamed gate output and per-smoke durations (needs a push; the user confirms each push)
+pending
