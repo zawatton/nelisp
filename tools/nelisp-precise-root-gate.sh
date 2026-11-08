@@ -178,9 +178,11 @@ fi
 # mapped outside the arena reservation, so the reservation trigger never sees
 # them; before the debt trigger arms (two collections after boot, and boot makes
 # none) only the 64 MiB backstop of `nl_gc_vm_poll' collects.  250000 iterations
-# allocate 64,001,264 bytes, 3 MiB under it, and collected zero times; 500000
-# pass the backstop and the armed debt limit alike.
-ITERS="${NELISP_PRECISE_ROOT_ITERS:-500000}"
+# allocate 64,001,264 bytes, 3 MiB under it, and collected zero times.  2000000
+# give 6 collections inside the form (500000 gave 1, 1000000 gave 3), matching
+# the `collections=6' the precise-root row in tools/gate-mutations.txt
+# documents; the clean gate takes about 12 s.
+ITERS="${NELISP_PRECISE_ROOT_ITERS:-2000000}"
 EXPECT=$((ITERS * 7))
 
 write_workload() {  # $1 = file, $2 = switch prologue

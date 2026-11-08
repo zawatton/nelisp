@@ -356,6 +356,12 @@ cmd_extras() {
              precise-root-coverage \
              nl-actor-standalone-smoke; do
         printf '\n=== %s ===\n' "$g"
+        # NELISP_AI_EXTRAS_EXCLUDE: space-separated gates a caller has moved
+        # to another ledger (tools/ai/main-ci-reds/run-heavy.sh extras-s3).
+        # Empty by default, so CI runs every gate.
+        case " ${NELISP_AI_EXTRAS_EXCLUDE:-} " in
+          *" $g "*) echo "excluded by NELISP_AI_EXTRAS_EXCLUDE"; continue ;;
+        esac
         ( cmd_gate "$g" -- make "$g" ) || failures=$((failures + 1))
     done
     [ "$failures" -eq 0 ]
