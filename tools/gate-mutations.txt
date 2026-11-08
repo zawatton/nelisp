@@ -915,17 +915,6 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # `GATE-COUNT checked=11 findings=0'.
 native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
 #
-# standalone-chunk-growth-test builds its OWN 8 MiB-arena variant from source
-# (target/nelisp-chunk8m, private unit cache), so it is deliberately NOT in
-# gate_needs_rebuild: the harness need not rebuild target/nelisp around it.
-# The injection makes the allocator's chunk-growth step report failure, so a
-# full first chunk aborts through nl_os_alloc_fail at once (fail fast, no
-# spin); the probe then prints no arena-stats and the test goes red.  The sed
-# is anchored on the single `new_chunk' binding in nl_alloc_bytes_uncheck.
-# The variant build is near cold here (build.el is in the toolchain digest),
-# so this row takes a full variant build (roughly 15-20 min locally).
-standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_chunk (nl_chunk_alloc_new want)))/(let* ((new_chunk 0))/|chunk growth always fails, so a full first chunk aborts instead of adding a chunk|linux-x86_64
-#
 # Project-toolchain contract suites. None mutates code baked into
 # target/nelisp, so none needs an entry in gate_needs_rebuild.
 #
