@@ -20572,22 +20572,42 @@ eval applyfn.")
                               (seq (setq res 0) (setq again 0)))
                           (seq (setq res (wf_eqd a b (+ depth 1))) (setq again 0))))))))))
            res))))
+    ;; A byte-code function (tag 17, RecordBox-backed) is equal to another
+    ;; when every slot is, as GNU internal_equal compares PVEC_CLOSURE
+    ;; objects slot by slot.  Same contract as `wf_eqd_vec'.
+    (defun wf_eqd_rec (a b depth)
+      (if (> depth 10) 2
+        (let* ((n (nl_record_length a)) (i 0) (res 1))
+          (if (= n (nl_record_length b))
+              (seq (while (and (= res 1) (< i n))
+                     (seq (setq res (wf_eqd (nl_record_slot_word a i)
+                                            (nl_record_slot_word b i) (+ depth 1)))
+                          (setq i (+ i 1))))
+                   res)
+            0))))
+    ;; A lexical cell (tag 11) is how a closure's environment holds a captured
+    ;; value; GNU's environment holds the value itself, so compare what the
+    ;; cell holds.  Without this two closures over equal values were never
+    ;; `equal'.
     (defun wf_eqd (a b depth)
       (if (= a b) 1
         (let* ((ta (nl_val_tag a)) (tb (nl_val_tag b)))
+          (if (= ta 11) (wf_eqd (nl_cell_get_value_w a 0) b (+ depth 1))
+          (if (= tb 11) (wf_eqd a (nl_cell_get_value_w b 0) (+ depth 1))
           (if (if (= (m5_string_tag_p ta) 1) (= (m5_string_tag_p tb) 1) 0)
               (m5_streq a b)
             (if (= ta tb)
                 (if (= ta 7) (wf_eqd_cons a b depth)
                   (if (= ta 23) (wf_eqd (nl_cl_unwrap a) (nl_cl_unwrap b) (+ depth 1))
+                  (if (= ta 17) (wf_eqd_rec a b depth)
                   (if (= ta 8) (wf_eqd_vec a b depth)
                     (if (= ta 10) (wf_key_eq_bv a b)
                       (if (= ta 13) (if (= (nl_bignum_cmp_bignum a b) 0) 1 0)
                         (if (= ta 9) 2
                           (if (= ta 12) 2
                             (if (= ta 19) 2
-                              (bf_eq2 a b)))))))))
-              (if (= ta 19) 2 (if (= tb 19) 2 0)))))))
+                              (bf_eq2 a b))))))))))
+              (if (= ta 19) 2 (if (= tb 19) 2 0)))))))))
     ;; `wf_key_eq' (hash tables, reachable from the prelink root closure through
     ;; `nl_ht_find_index') is unchanged; the list walkers use `wf_key_eqn'.
     (defun wf_key_eq (ka kb)
