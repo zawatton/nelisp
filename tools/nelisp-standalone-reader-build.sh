@@ -134,6 +134,13 @@ resolve_output() {
 #                                 build does not read it.
 #   NELISP_STANDALONE_FORCE_REBUILD  this script's own force switch; it only
 #                                 decides whether to consult the key.
+#   NELISP_STANDALONE_JOBS        number of prewarm child processes, and
+#   NELISP_STANDALONE_JOB_WRAPPER the command wrapped around them.  They change
+#                                 scheduling, not output: a child's unit cache
+#                                 entry is used only when its content key equals
+#                                 the parent's.  Evidence that JOBS=1 and JOBS=4
+#                                 give the same binary:
+#                                 tools/ai/ci-speed-evidence/s5-2-jobs-identity.txt
 # Non-NELISP variables the build reads that can change the binary or how it is
 # built.  Cache-location variables (HOME, XDG_CACHE_HOME, TMPDIR) are left out:
 # the caches under them are content addressed and hold no extra input.
@@ -146,7 +153,7 @@ EXTRA_ENV="EMACS TZ TZDIR F1_FORCE_GC WINEPREFIX EMACSLOADPATH EMACSDATA EMACSPA
 
 env_included() {
   case "$1" in
-    NELISP_GATE_MUTATION_*|NELISP_CHECK_SKIP|NELISP_STANDALONE_FORCE_REBUILD) return 1 ;;
+    NELISP_GATE_MUTATION_*|NELISP_CHECK_SKIP|NELISP_STANDALONE_FORCE_REBUILD|NELISP_STANDALONE_JOBS|NELISP_STANDALONE_JOB_WRAPPER) return 1 ;;
     NELISP_*) return 0 ;;
   esac
   local e

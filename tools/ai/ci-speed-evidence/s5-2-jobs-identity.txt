@@ -1,0 +1,42 @@
+S5.2 evidence: cold standalone-reader builds with NELISP_STANDALONE_JOBS=1 and 4
+Commit a55c521b0 plus the uncommitted S5 edits (tree reports -dirty). Linux x86_64, host Emacs 31.1.
+Every build ran under `ulimit -v 8388608` via bin/heavy-run.sh; no child died (no exit 88, no allocation failure).
+Each build used its own unit cache (NELISP_STANDALONE_UNIT_CACHE_DIR, empty at start) and
+target/nelisp-vendor-bytecode was deleted first (that directory cannot be relocated by env).
+Memory: tools/ai/ci-speed-evidence/run-measured.py samples the whole process tree every 5 s.
+
+build                     wall    peak sum of RSS   largest single process (kernel ru_maxrss)  max emacs procs
+j1  JOBS=1 out=nelisp-j1  1065 s  1.92 GB           1.91 GB                                     1
+j4  JOBS=4 out=nelisp-j4   687 s  2.25 GB           1.44 GB                                     4
+ctl JOBS=4 out=nelisp-j1   712 s  2.22 GB           1.43 GB                                     4   (same output path as j1)
+Speedup 1.55x. Peak with 4 processes is 2.3 GB, far below the 14 GB stop limit. Logs: s5-2-mem-j1.log, s5-2-mem-j4.log.
+
+sha256 of the binary:
+  j1  9c4fec24bb1fdccf92ca3ed37c555fdfeb6c09948733189161aaa0ac75280cfa
+  j4  9c4fec24bb1fdccf92ca3ed37c555fdfeb6c09948733189161aaa0ac75280cfa   IDENTICAL (cmp)
+  ctl 9c4fec24bb1fdccf92ca3ed37c555fdfeb6c09948733189161aaa0ac75280cfa   IDENTICAL
+The .buffer-local-bytecode.tsv, .variable-alias-bytecode.tsv and .native-startup.el companions are identical too.
+
+sha256 of the .cold companion: NOT identical, and not because of JOBS.
+  j1  70ff3e09d06335b546ac7957d016b3bfcdf34b4efb3ba81258fc6458627ba9b1
+  j4  839265e93e4db7a51dd02cca8c64cfe43f2e9c0f2d61cc9cc98e34eb0b0132be
+  ctl 5c0044d37e220341762e2ba6f81d5cd75353bc5eeb8fcad1e014620e6090db8a   (same path as j1, JOBS=4)
+  Two warm rebuilds with identical settings (JOBS=1, same cache, same path) also differ:
+  wA a5c8933af4099ff7cffc30aa0ee9cb77e1b49d22390000e1d72caa2fe8ce940c
+  wB f64b6b9efcc82c8643b03ce34052e11ec64125c09768724edd393fb687819591
+  The .cold image is a heap dump; its size varies by a few bytes between runs (18632160, 18632165, 18632150).
+  It embeds its own output path (the dump command line), which is a further difference between j1 and j4.
+  So the criterion's ".cold sha256" half cannot hold for any pair of builds; the binary half holds.
+  Does anything consume .cold byte-for-byte? Not checked.
+
+Output path and tree path are embedded in the BINARY itself:
+  Binaries built in two worktrees of the same commit (.../ref and .../fresh) differ (6bf1d9... vs 6fe706...);
+  strings shows the repo root, e.g. nelisp-standalone--backquote-file "<root>/vendor/emacs-lisp/emacs-lisp/backquote.el".
+  A dirty tree adds "-dirty" to the version string, which also shifts layout. Compare binaries only for one commit,
+  one root path and one clean/dirty state. (The output file name is not in the binary: j1 == j4.)
+  CI always uses the same root, so this does not bite there.
+
+Side observation (not resolved): rebuilding in the dirty wt tree with leftover target/ state and a warm cache gave
+  4ceac6bd1a30ef25302918c09b16cab92bd2655f55a500d66e6559ee9275992b, not 9c4fec...; 181 bytes differ, mainly gensym
+  names (#:x537 vs #:x540) and an embedded hash. A clean tree seeded with only the two cache dirs matched the cold build
+  (see s5-4-seeded-cache.txt). Leftover target/ files (shared byte-code cache .eld, reports) are the likely difference.

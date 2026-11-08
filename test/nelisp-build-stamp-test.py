@@ -194,6 +194,18 @@ class BuildStampTest(unittest.TestCase):
             "NELISP_CHECK_SKIP": "x",
         }))
 
+    def test_jobs_and_wrapper_do_not_rebuild(self):
+        # A stamp written with JOBS unset stays fresh under JOBS=4 and under a
+        # job wrapper; any other NELISP_* switch still rebuilds.
+        self.first_build()
+        self.assert_skipped(1, self.run_tool(env={"NELISP_STANDALONE_JOBS": "4"}))
+        self.assert_skipped(1, self.run_tool(env={"NELISP_STANDALONE_JOB_WRAPPER": "nice -n 5"}))
+        self.assert_skipped(1, self.run_tool(env={"NELISP_STANDALONE_JOBS": "1",
+                                                  "NELISP_STANDALONE_JOB_WRAPPER": "x"}))
+        self.assert_built(2, self.run_tool(env={"NELISP_STANDALONE_JOBS": "4", "NELISP_TCO": "0"}))
+        self.assert_built(3, self.run_tool(env={"NELISP_STANDALONE_JOBS": "4",
+                                                "NELISP_STANDALONE_JOBX": "1"}))
+
     def test_extra_non_nelisp_env_rebuilds(self):
         self.first_build()
         self.assert_built(2, self.run_tool(env={"TZ": "Asia/Tokyo"}))
