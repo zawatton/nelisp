@@ -420,7 +420,11 @@ captured-env closures that mutate their captures."
                                        for i from 0
                                        collect `(,sym (aref ,env-vec ,i)))))
                         `(lambda ,params
-                           (let ,binds ,@translated)))
+                           (let ,binds
+                             ;; Mark every capture used so the compiler
+                             ;; emits no "Unused lexical variable" warning.
+                             (ignore ,@env-syms)
+                             ,@translated)))
                     `(lambda ,params ,@translated)))
                  (host-fn (byte-compile host-form)))
             (nelisp-jit--wrap-as-bcl host-fn)))))
