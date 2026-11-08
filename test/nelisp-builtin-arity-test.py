@@ -82,7 +82,8 @@ def fixed_cases(contracts):
             arguments = ' '.join(['nil'] * count)
             records.append((f"(condition-case e (apply '(builtin {name}) '({arguments})) "
                             '(wrong-number-of-arguments e))',
-                            f'(wrong-number-of-arguments {name} {count})'))
+                            # `apply' reports the subr object, as in GNU.
+                            f'(wrong-number-of-arguments #<subr {name}> {count})'))
     return records
 
 
@@ -94,9 +95,12 @@ def cases():
             forms = [f'({name} {arguments})', f"(funcall #'{name} {arguments})",
                      f"(apply #'{name} '({arguments}))",
                      f"(apply '(builtin {name}) '({arguments}))"]
-            for form in forms:
+            for index, form in enumerate(forms):
+                # As in GNU Emacs 31.1: an interpreted call form reports the
+                # function's name, `funcall'/`apply' report the subr object.
+                culprit = name if index == 0 else f'#<subr {name}>'
                 records.append((f'(condition-case err {form} (wrong-number-of-arguments err))',
-                                f'(wrong-number-of-arguments {name} {count})'))
+                                f'(wrong-number-of-arguments {culprit} {count})'))
         records.extend([(f'({name} nil)', 'nil'),
                         (f'(condition-case err ({name} 5) (wrong-type-argument err))',
                          '(wrong-type-argument listp 5)')])
@@ -104,7 +108,9 @@ def cases():
                     ('(setq arity-state 40)', '40'),
                     ('(condition-case err (car (setq arity-state (+ arity-state 1)) nil) '
                      '(wrong-number-of-arguments err))', '(wrong-number-of-arguments car 2)'),
-                    ('arity-state', '41'), ('(+ arity-state 1)', '42')])
+                    # GNU checks a subr's arity before evaluating the
+                    # arguments, so the failed call leaves the state at 40.
+                    ('arity-state', '40'), ('(+ arity-state 1)', '41')])
     return records
 
 
