@@ -8114,13 +8114,19 @@ which is what a caller asking for a range check wants."
     (apply (function nconc) (mapcar func sequence))))
 (unless (fboundp 'remq)
   (defun remq (elt list)
-    "Return a copy of LIST with all `eq' occurrences of ELT removed."
+    "Return LIST with all `eq' occurrences of ELT removed.
+As in GNU subr.el, leading occurrences are skipped without copying and
+LIST (or that tail) itself is returned when ELT does not occur; only
+otherwise is the result a fresh copy.  The byte optimizer relies on
+this: `byte-optimize-cond' returns `(remq nil form)' and
+`byte-optimize-form' repeats until the result is `eq' to its input."
     (unless (listp list) (signal 'wrong-type-argument (list 'listp list)))
     (unless (proper-list-p list)
       (signal 'wrong-type-argument (list 'listp list)))
-    (let ((acc nil))
-      (dolist (x list (nreverse acc))
-        (unless (eq x elt) (setq acc (cons x acc)))))))
+    (while (and (eq elt (car list)) (setq list (cdr list))))
+    (if (memq elt list)
+        (delq elt (copy-sequence list))
+      list)))
 (unless (fboundp 'memql)
   ;; GNU `memql' is a C loop; here it is the native `memq' (fixnums, symbols and
   ;; other objects are `eql' exactly when `eq') or the native `member' (floats and
