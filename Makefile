@@ -1883,7 +1883,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
+	  '       (mtime-ok (or (and (integerp mtime) (> mtime 1700000000))' \
+	  '                     (and (consp mtime) (> (float-time mtime) 1700000000))))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -1995,12 +1996,13 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '  (setq nlre--leading-filter-calls 0)' \
 	  '  (let* ((t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
+	  '         (lead-calls nlre--leading-filter-calls)' \
 	  '         (ta (- (float-time) t0))' \
 	  '         (t1 (float-time))' \
 	  '         (_b (dolist (p paths) (string-match "[0-9]+zzz" p)))' \
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
-	  '         (filter-calls nlre--leading-filter-calls)' \
+	  '         (filter-calls lead-calls)' \
 	  '         (filter-ok (= filter-calls (length paths))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
