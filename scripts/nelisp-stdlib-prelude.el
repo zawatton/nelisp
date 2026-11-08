@@ -23092,6 +23092,12 @@ start (Doc 243).  Keep the formulas in sync with the defvars of
       (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
   (if (boundp 'temporary-file-directory)
       (setq temporary-file-directory (or (getenv "TMPDIR") "/tmp")))
+  ;; The driver has already set the current buffer's `default-directory'
+  ;; from getcwd(2), but the default value still holds the dump's neutral
+  ;; directory, which buffers without a local value (`*Messages*') show
+  ;; once they become current.  GNU starts every buffer from the cwd.
+  (if (stringp default-directory)
+      (set-default 'default-directory default-directory))
   (if (boundp 'user-emacs-directory)
       (setq user-emacs-directory
             (let* ((emacs-d-dir "~/.emacs.d/")
