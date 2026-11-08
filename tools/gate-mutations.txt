@@ -1316,6 +1316,14 @@ vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-le
 # binary build, structural (no timing).
 build-stamp|tools/nelisp-standalone-reader-build.sh|s/^    NELISP_\*) return 0 ;;$/    NELISP_*) return 1 ;;/|NELISP_* mode switches are dropped from the stamp key, so a changed build mode is skipped as up to date
 
+# build-stamp (2026-11-09): the manifest companion must be hashed with only its
+# :mtime/:ctime values removed.  Injected: right after `local norm h' a shell
+# function named sed is defined that strips EVERY character of the manifest, so
+# a non-timestamp manifest change no longer reaches the stamp -- a stale-cache
+# false green.  RED: the test_manifest_*_is_stale negative controls fail.
+# Host-only (build-stamp is not in gate_needs_rebuild: no binary build).
+build-stamp|tools/nelisp-standalone-reader-build.sh|s#^  local norm h$#  local norm h; sed() { command sed -E 's,.*,,' "$3"; }#|the manifest companion is hashed with its whole content stripped, so a non-timestamp manifest change is missed
+
 # standalone-chunk-growth-test builds its OWN 8 MiB-arena variant from source
 # (target/nelisp-chunk8m, private unit cache), so it is deliberately NOT in
 # gate_needs_rebuild: the harness need not rebuild target/nelisp around it.

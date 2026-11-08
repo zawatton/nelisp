@@ -1,23 +1,39 @@
-== S6.2 chunk-growth run, 2026-11-08T04:09:19Z, HEAD 6901edc16 (+uncommitted edits)
--- before: default status + hashes
-standalone-reader: up to date (key b5d158fdcc71, output sha256 5cc701052e65)
-  5cc701052e65e7c910d7ce2b261f5fc801fb5adb590c7b2e1dbb1f34ca48ece7 target/nelisp
-  fbc1f94a62c0311deca619898d9dd7dfd074b7130497d84704cb8f30a1174e6c target/nelisp.build-stamp
-  default-partition listing sha256: 12cb3d850a8787228f3d2660dd1bf87c987758316fbf667313c260639de7b69c (119 entries)
-[chunk-growth] building standalone reader with an 8 MiB first chunk ...
-[chunk-growth] arena-stats: (140256912277504 99680256 99220800 188021552 99999848 116457472 0 0 0 3 233897984 188021552 1 270 263)
+# Note: the earlier 2026-11-08 record predated the manifest companion in COMPANIONS; this log replaces it (2026-11-09, stamp hashes the manifest without :mtime/:ctime).
+== S6.2 re-record 2026-11-08T22:03:26Z (manifest hashed without :mtime/:ctime)
+-- default build
+  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+-- rc=0 wall=0s
+-- before
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw db283f65471e6f90cd6a9763d1452f9989510c453019db65ef32a99fffd18e36
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)
+-- chunk-growth
 [chunk-growth] chunk-count=3  reserved-bytes=233897984  let-escape=7
 [chunk-growth] PASS: arena grew to 3 chunks after a retained allocation (no fixed-size dependency)
 [chunk-growth] PASS: value escaping a let body is correct across chunk growth
-GATE-COUNT checked=1 findings=0
 [chunk-growth] RESULT: PASS
--- make standalone-chunk-growth-test rc=0 wall=82s
--- after: default status + hashes (must equal 'before')
-standalone-reader: up to date (key b5d158fdcc71, output sha256 5cc701052e65)
-  5cc701052e65e7c910d7ce2b261f5fc801fb5adb590c7b2e1dbb1f34ca48ece7 target/nelisp
-  fbc1f94a62c0311deca619898d9dd7dfd074b7130497d84704cb8f30a1174e6c target/nelisp.build-stamp
-  default-partition listing sha256: 12cb3d850a8787228f3d2660dd1bf87c987758316fbf667313c260639de7b69c (119 entries)
--- variant partition (added, not a violation): core-src linux-x86_64-tco prelude-src 
--- variant status (EMACS=emacs exported, as the make recipe does; it is part of the stamp key, so a direct script run without EMACS in the environment would key differently and rebuild warm):
-standalone-reader: up to date (key 464f355c42ff, output sha256 e7fe1b05e6f6)
--- default sha before == after: yes (see the two blocks above)
+-- rc=0 wall=82s
+-- after chunk-growth (binary, stamp, partition must equal before; raw manifest may differ)
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw 3412184aac6ad91a0d482753444010188b71f2d37b87f10ae42db05b2e555f97
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)
+-- skip run
+standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+-- rc=0 wall=0s
+-- dyn variant build
+standalone-reader: stamp written (key 8b6db07b8d6a, output sha256 4ccd86112e77)
+-- rc=0 wall=90s
+-- after dyn
+  status: standalone-reader: up to date (key 9c7329cd17a3, output sha256 3741a290a1c1)
+  3741a290a1c1b9a21b135cf72a4d964d42430e868862f2c4b31bec690cc767f9  target/nelisp
+  28649694dfee73b10c98efb43d5d44962bfe94245a23581f7736318b3a97ca08  target/nelisp.build-stamp
+  manifest raw 4c00e4c242407110c0e356780031ed75354e3489314495845c9de42a027d7d5b
+  manifest normalized 8384150c64a82a2f34c2cf22a8abeafbb56d72e57b1a64d53e60a9e07cb7aeba
+  default-partition listing sha256: 40ceec34b3ce1a13857eeefe0dade3e3e30383b5704f32cb728fa33660f8f265 (119 entries)

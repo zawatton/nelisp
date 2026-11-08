@@ -43,6 +43,9 @@ fi
 mkdir -p "$(dirname "$out")"
 echo "cold image" > "$out.cold"
 echo "binary build=$n target=${NELISP_STANDALONE_TARGET:-} tco=${NELISP_TCO:-}" > "$out"
+if [ -n "${FAKE_MANIFEST:-}" ]; then
+  printf '%s\n' "$FAKE_MANIFEST" > "$(dirname "$out")/nelisp-artifact-runtime.el.nelc.manifest.el"
+fi
 """
 
 
@@ -418,6 +421,80 @@ class BuildStampTest(unittest.TestCase):
         self.assertIn("companion", res.stdout)
         man.unlink()
         self.assert_built(3, self.run_tool())
+
+    # -- manifest hashed without :mtime/:ctime -------------------------------
+    MANIFEST = ("(:format v1 :artifact-sha256 \"aaa\" :source (:path \"/x/r.el\" "
+                ":sha256 \"bbb\" :size 10 :mtime (27376 34988 632256 861000) "
+                ":ctime (27376 34988 632256 861000)) :artifact-size 99)")
+
+    def manifest_path(self):
+        return self.out().parent / "nelisp-artifact-runtime.el.nelc.manifest.el"
+
+    def manifest_build(self, text=None):
+        res = self.run_tool(env={"FAKE_MANIFEST": text or self.MANIFEST})
+        self.assert_built(1, res)
+        self.assertEqual(self.manifest_path().read_text().strip(), text or self.MANIFEST)
+
+    def test_manifest_timestamp_only_change_stays_fresh(self):
+        self.manifest_build()
+        new = (self.MANIFEST.replace("(27376 34988 632256 861000)", "(27377 1 2 3)", 1)
+               .replace("(27376 34988 632256 861000)", "(27377 4 5 6)", 1))
+        self.assertNotEqual(new, self.MANIFEST)
+        self.manifest_path().write_text(new + "\n")
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        self.assertTrue(res.stdout.startswith("standalone-reader: up to date"), res.stdout)
+        self.assert_skipped(1, self.run_tool())
+
+    def assert_manifest_edit_is_stale(self, old, new):
+        # Negative control: any non-timestamp change must still be detected.
+        self.manifest_build()
+        edited = self.MANIFEST.replace(old, new)
+        self.assertNotEqual(edited, self.MANIFEST)
+        self.manifest_path().write_text(edited + "\n")
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("stale: companion file changed", res.stdout)
+        self.assert_built(2, self.run_tool())
+
+    def test_manifest_artifact_sha_change_is_stale(self):
+        self.assert_manifest_edit_is_stale('"aaa"', '"zzz"')
+
+    def test_manifest_source_sha_change_is_stale(self):
+        self.assert_manifest_edit_is_stale('"bbb"', '"yyy"')
+
+    def test_manifest_path_change_is_stale(self):
+        self.assert_manifest_edit_is_stale('"/x/r.el"', '"/y/r.el"')
+
+    def test_manifest_size_change_is_stale(self):
+        self.assert_manifest_edit_is_stale(":size 10", ":size 11")
+
+    def test_manifest_deleted_is_stale(self):
+        self.manifest_build()
+        self.manifest_path().unlink()
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("stale: companion file changed", res.stdout)
+        self.assert_built(2, self.run_tool())
+
+    def test_manifest_unexpected_time_shape_fails_closed(self):
+        # A :mtime value the normalizer does not understand (nested list) is
+        # left in place, so changing it, or anything else, makes the stamp stale.
+        odd = self.MANIFEST.replace(":mtime (27376 34988 632256 861000)",
+                                    ":mtime ((27376 34988) (1 2))")
+        self.manifest_build(odd)
+        self.manifest_path().write_text(odd.replace("(1 2)", "(3 4)") + "\n")
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("stale: companion file changed", res.stdout)
+        self.manifest_path().write_text(odd + "\n")
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 0, res.stdout)
+        # With the odd shape kept, a content change elsewhere is still stale.
+        self.manifest_path().write_text(odd.replace('"aaa"', '"zzz"') + "\n")
+        res = self.run_tool(status=True)
+        self.assertEqual(res.returncode, 1, res.stdout)
+        self.assertIn("stale: companion file changed", res.stdout)
 
     def test_git_identity_change_rebuilds(self):
         if not shutil.which("git"):

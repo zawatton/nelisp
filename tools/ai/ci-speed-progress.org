@@ -7,6 +7,7 @@
 
 ** S1.1 Hermetic: an unchanged tree skips the build; changing a source, the target, the Emacs identity, a NELISP_* mode switch, the output path, or the output binary itself forces a real build; a failed build leaves no stamp
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-build-stamp-test.py)
+#+NOTE: 2026-11-09 user decision (c): the artifact manifest companion is hashed without its :mtime/:ctime values (`notime:' prefix) because variant builds rewrite only those and the loader falls back to the content sha256 when they differ (`nelisp-artifact--validate' in lisp/nelisp-artifact.el); any other manifest change, or its deletion, still makes the stamp stale (test_manifest_*_is_stale negative controls, gate-mutation row build-stamp #2).
 
 ** S1.2 Every file a real standalone-reader build opens from the repo is covered by the stamp key or explicitly listed as a derived cache (recorded strace list, re-checked live against the key's file set)
 cmd: (ulimit -v 8388608; timeout 50 python3 -I tools/ai/ci-speed-evidence/check-build-inputs.py)
@@ -100,8 +101,9 @@ pending
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-variant-outputs-test.py)
 
 ** S6.2 chunk-growth: the test checks growth after a retained allocation (S3 request 2026-11-08); a run is recorded PASS with chunk-count > 1, and target/nelisp, its stamp and its unit cache are untouched (--status fresh, same sha)
-evidence: tools/ai/ci-speed-evidence/s6-2-chunk-growth.log sha256=eb2c0d899b9a1cac6d8a6f7d3bd7b9868287d55ad200066cca6a49ab6ebc46fd
+evidence: tools/ai/ci-speed-evidence/s6-2-chunk-growth.log sha256=4cb0933669a3bde264380b3a79e25e59e6967157a7cd96454be60595094f08b2
 #+NOTE: 2026-11-08 lane 3a: PASS chunk-count=3 in 82 s on a fresh default build; default target/nelisp sha, stamp and default unit-cache partition listing identical before and after; the variant lives in target/nelisp-chunk8m and target/standalone-units/arena8m.
+#+NOTE: 2026-11-09 stamp-c re-record: the manifest is now a normalized stamp companion; PASS chunk-count=3 (82 s), then `standalone-reader-status' fresh with the raw manifest hash changed but the normalized one, target/nelisp, its stamp and the default partition listing identical, the next `make standalone-reader' skipped (0 s), and a dyn variant build (90 s) still left the default fresh. The earlier log predated the manifest companion.
 
 ** S6.3 Negative control: with chunk growth broken by an injected defect, the chunk-growth test goes red (lethal gate-mutation row, recorded run)
 cmd: (ulimit -v 8388608; timeout 50 bash tools/ai/ci-speed-evidence/check-probe-default.sh)
@@ -111,6 +113,7 @@ evidence: tools/ai/ci-speed-evidence/s6-3-negative.log sha256=9749c9e25f5ac657a7
 ** S6.4 E2E local: the dynamic-reader smokes (standalone-reader-ffi-smoke, ffi-dsl, standalone-reader-tls-smoke-linux) and ffi-loader/ffi-unsupported leave target/nelisp fresh (--status fresh, same sha), recorded
 evidence: tools/ai/ci-speed-evidence/s6-4-variants.log sha256=28a6b438cf21358fcc54743c08b726472ab216cea3740594ab56a3a1e37b6b04
 #+NOTE: 2026-11-08 lane 3a-ii: the three dyn smokes share one stamped build at target/nelisp-dyn (own -dyn-tco unit partition and .cold) and PASS; ffi-unsupported FAILs exactly as in CI run 42418244107 (eval-elisp-source) and ffi-loader reports one finding (ffi-loader-ptr-call-rejects-invalid-arity-before-call), a binary-behaviour assertion the changed build line cannot affect; target/nelisp, its stamp, .cold and the default unit-cache partition listing are identical before and after, the dyn build rewrites the fixed-path artifact-runtime manifest, which the stamp tool now hashes as a companion: the default goes stale (`companion file changed') and the next default build is a warm rebuild (70 s) back to the same binary sha (see NOTES.txt).
+#+NOTE: 2026-11-09 stamp-c: the previous record (3b4ee07b5) ended fresh with the same sha, but only because standalone-reader-ffi-unsupported-smoke warm-rebuilt target/nelisp (70 s) after the dyn build had changed the raw manifest hash; re-recorded after decision (c) with the default status printed after every target.
 
 ** S6.5 ci.yml: one Linux build job builds with the unit cache and uploads the binary, companions and stamp; consumers need it, download after checkout, and log `--status'; capstone/pyelftools are pinned
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-build-job-test.py)

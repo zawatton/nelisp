@@ -40,7 +40,12 @@
 # The artifact-runtime cache lives at a FIXED path under target/ (not next to a
 # variant output), so a variant build rewrites it; its .manifest.el is read by
 # lisp/nelisp-artifact.el, hence it is hashed too and an alternation of default
-# and variant builds cannot skip with a manifest the other build wrote.
+# and variant builds cannot skip with a manifest the other build wrote.  It is
+# hashed WITHOUT its :mtime/:ctime values: a variant build rewrites only those
+# (sizes, shas and paths stay identical), and the loader treats a time mismatch
+# as "not proof of change" and falls back to the content sha256
+# (`nelisp-artifact--validate' in lisp/nelisp-artifact.el), so timestamps carry
+# no staleness information while any other manifest change still shows.
 #
 # Modes: default builds-or-skips.  --status never builds: prints `fresh ...'
 # and exits 0, or prints `stale: REASON' and exits 1.
@@ -249,6 +254,19 @@ compute_key() {
   return 0
 }
 
+# sha256 of an artifact manifest with its `:mtime VALUE' and `:ctime VALUE'
+# entries removed, prefixed `notime:' so an old raw-hash stamp reads as stale
+# once.  VALUE is whatever `nelisp-artifact--file-mtime/ctime' printed: a
+# parenthesized time list `(HI LO US PS)' or ticks pair `(TICKS . HZ)', nil, or
+# an integer; a shape not matched here is left in place, so the hash can only
+# differ more, never less (fail closed).  Returns 1 if sed or the hash fails.
+manifest_notime_hash() {
+  local norm h
+  norm=$(sed -E 's/ :(mtime|ctime) (\([^()]*\)|nil|-?[0-9]+)//g' "$1") || return 1
+  h=$(printf '%s' "$norm" | h256) || return 1
+  printf 'notime:%s\n' "$h"
+}
+
 # Companion files next to the output that the binary or its tooling uses at run
 # time: the cold image and the artifact-runtime cache.  Prints `PATH SHA|absent'
 # lines.  A companion that is absent at stamp time must still be absent.
@@ -256,7 +274,12 @@ COMPANIONS() {
   local d f h
   d=$(dirname "$OUT")
   for f in "$OUT.cold" "$d/nelisp-artifact-runtime.el.nelc" "$d/nelisp-artifact-runtime.el.nelc.enable" "$d/nelisp-artifact-runtime.el.nelc.manifest.el"; do
-    if [ -f "$f" ]; then h=$(h256file "$f") || return 1; else h=absent; fi
+    if [ -f "$f" ]; then
+      case "$f" in
+        *.manifest.el) h=$(manifest_notime_hash "$f") || return 1 ;;
+        *) h=$(h256file "$f") || return 1 ;;
+      esac
+    else h=absent; fi
     printf '%s %s\n' "${f#"$d"/}" "$h"
   done
 }
