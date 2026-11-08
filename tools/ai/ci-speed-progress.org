@@ -47,6 +47,11 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-trigger-t
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-trigger-test.py)
 
 ** S3.3 E2E: a real CI run on this lane's branch shows measured durations per job, compared with the kickoff table (needs a push, which only the user decides)
+#+NOTE: 2026-11-08 measured on run 42418244107 (S1-S3 only); later runs after the fast-plan slices are measured under S4.5, S5.5 and S6.6.
+evidence: tools/ai/ci-speed-evidence/s3-3-ci-run-42418244107.txt sha256=ed6f7c9c167e007db6f832a2875cb1cb81498796eda53bd08541687056339852
+
+** S3.4 E2E CI: a dispatch without gate_mutation on this branch yields GATE-SKIP reports from all 4 shards, and verify does not fail on gate-mutation
+#+NOTE: Added 2026-11-08 (advisor review): the run=false path has not run on GitHub yet.
 pending
 
 * S4 Logs stream live and every smoke and row reports its time (fast plan slice 1)
