@@ -1928,7 +1928,7 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (integerp mtime) (> mtime 1700000000)))' \
+	  '       (mtime-ok (and (consp mtime) (> (float-time mtime) 1700000000)))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -1984,6 +1984,11 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  *) echo "[fileattrs-smoke] FAIL: $$out (expected pass=t -- stat, readdir or the file/directory classification regressed)"; exit 1;; \
 	esac
 
+# Since 7476fb81b (v29) `string-match' runs the native matcher (`nlre--nat-have'),
+# which bypasses the Lisp leading-filter counter, so the timed sweeps bind
+# `nlre--nat-have' to nil to keep exercising and counting the Lisp filter.
+# Sweep B ("[0-9]+zzz") is filtered too since 3edc5b180 added the required
+# leading-atom filter and 83626ebeb counted it, so both sweeps' calls count.
 # Doc 201 §5.4: `nlre-string-match' retried at every start position and did
 # full work at each one -- a fresh `make-vector' plus a walk into
 # `nlre--match-list''s dispatch chain -- even where the pattern's first node
@@ -1997,8 +2002,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 # a mandatory literal (the shape the filter can skip positions for), sweep B
 # a pattern with no leading literal (the shape it cannot help).  Neither
 # matches, so both are full scans.  The verdict is structural rather than
-# timed: `nlre--leading-filter-calls' must report exactly the 42 sweep-A
-# calls and none of sweep B.  The old ratio < 0.25 verdict was host-sensitive:
+# timed: `nlre--leading-filter-calls' must report exactly the 84 calls of
+# both 42-path sweeps.  The old ratio < 0.25 verdict was host-sensitive:
 # WSL measured 0.272-0.301 injected and 0.065-0.071 clean, while CI's runner
 # stayed green with the same injection.
 #
@@ -2038,7 +2043,8 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '    (setq paths (cons (format "/home/someone/.emacs.d/elpa/package-%02d/lisp" i) paths))' \
 	  '    (setq i (1+ i)))' \
 	  '  (setq nlre--leading-filter-calls 0)' \
-	  '  (let* ((t0 (float-time))' \
+	  '  (let* ((nlre--nat-have nil)' \
+	  '         (t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
 	  '         (ta (- (float-time) t0))' \
 	  '         (t1 (float-time))' \
@@ -2046,7 +2052,7 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
 	  '         (filter-calls nlre--leading-filter-calls)' \
-	  '         (filter-ok (= filter-calls (length paths))))' \
+	  '         (filter-ok (= filter-calls (* 2 (length paths)))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
 	  '                   (and correct-ok filter-ok)))))' \
@@ -4144,7 +4150,7 @@ standalone-reader-dns-smoke: standalone-reader
 	@printf '%s\n' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_1)' \
 	  '$(NELISP_PROCESS_ADAPTER_LOAD_2)' \
-	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (insert-file-contents-literally f) (buffer-string)))' \
+	  '(defun nelisp-dns-smoke--slurp (f) (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally f) (buffer-string)))' \
 	  '(let* ((full (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-full.bin")) (truncated (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-truncated.bin")) (bad-rdlength (nelisp-dns-smoke--slurp "target/standalone-reader-dns-smoke-badrdlen.bin"))) (list (nelisp--dns-parse-response full) (condition-case e (nelisp--dns-parse-response truncated) (nelisp-dns-error (quote dns-error-caught))) (condition-case e (progn (string-byte truncated 999) (quote raw-unguarded-no-error)) (error (quote raw-unexpectedly-errored))) (condition-case e (nelisp--dns-byte truncated 999) (nelisp-dns-error (quote guarded-dns-error-caught))) (condition-case e (nelisp--dns-parse-response bad-rdlength) (nelisp-dns-error (quote dns-error-caught))) (nelisp--dns-skip-name full 12) (string-bytes (nelisp--dns-encode-query "example.com"))))' \
 	  > target/standalone-reader-dns-smoke-parse.el
 	@parse_out="$$($(STANDALONE_BIN) --load target/standalone-reader-dns-smoke-parse.el)"; \

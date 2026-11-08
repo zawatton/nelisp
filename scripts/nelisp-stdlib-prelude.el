@@ -23079,6 +23079,12 @@ start (Doc 243).  Keep the formulas in sync with the defvars of
   (nelisp--fx-trace-file)
   (if (and (boundp 'nelisp--text-quoting-owned) nelisp--text-quoting-owned)
       (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
+  ;; The driver stores the real cwd where the current buffer sees it, while
+  ;; the image froze the build-time directory as the default value, so any
+  ;; buffer without its own value (*Messages*, reached by `kill-buffer' of the
+  ;; current one) read a stale directory.  GNU gives every buffer the cwd.
+  (if (and (boundp 'default-directory) (stringp default-directory))
+      (set-default 'default-directory default-directory))
   (if (boundp 'temporary-file-directory)
       (setq temporary-file-directory (or (getenv "TMPDIR") "/tmp")))
   (if (boundp 'user-emacs-directory)

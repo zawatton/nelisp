@@ -53892,7 +53892,14 @@ artifact of any size once the bytes come from a file instead of here."
               (lambda (stub)
                 (nelisp-standalone--ptr-write-u8-forms
                  `(+ codepage ,(plist-get stub :offset))
-                 stub-template-bytes))
+                 ;; `nl_arena_base' is a bss slot, not code.  Compiled
+                 ;; units `call' it and read the slot through the returned
+                 ;; address (the artifact shim is `return &neln_arena_base'),
+                 ;; so its stub answers the address with `ret' instead of
+                 ;; jumping into the data.
+                 (if (equal (plist-get stub :name) "nl_arena_base")
+                     '(#x48 #xb8 0 0 0 0 0 0 0 0 #xc3 #x90)
+                   stub-template-bytes)))
               stub-specs)))
            (stub-patches
             (mapcar
