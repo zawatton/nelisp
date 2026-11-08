@@ -13,13 +13,9 @@ else
   sum() { shasum -a 256 "$1" | cut -d' ' -f1; }
 fi
 
-# The exact command line the recipe would run, from a dry run.
-# The recipe spans several backslash-continued lines; join them (sh -c reads
-# the backslash-newlines as continuations).
-recipe=$(make -n standalone-reader 2>/dev/null | awk '/nelisp-standalone-reader-build.sh/ {on=1} on {print} on && !/\\$/ {exit}') && [ -n "$recipe" ] || {
-  echo "FAIL: cannot read the standalone-reader recipe from make -n" >&2; exit 1; }
-status_cmd=${recipe/nelisp-standalone-reader-build.sh/nelisp-standalone-reader-build.sh --status}
-status_out=$(sh -c "$status_cmd" 2>&1)
+# `make standalone-reader-status' runs the stamp tool with --status and exactly
+# the recipe's target and build command, without building.
+status_out=$(make -s standalone-reader-status 2>&1)
 status_rc=$?
 if [ "$status_rc" -ne 0 ]; then
   echo "FAIL: no fresh stamp ($status_out); build first with make standalone-reader" >&2

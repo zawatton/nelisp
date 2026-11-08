@@ -601,6 +601,19 @@ standalone-reader:
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 
+# Read-only twin of `standalone-reader': the same stamp tool, target argument
+# and build command (the key covers EMACS, which make exports, and the build
+# command's first word, so a call outside make reads `key changed' for that
+# reason alone), but --status never builds.  It prints `standalone-reader: up to
+# date ...' (exit 0) or `stale: REASON' (the tool exits 1, make reports 2).  CI
+# logs it after downloading the shared binary.
+.PHONY: standalone-reader-status
+standalone-reader-status:
+	bash tools/nelisp-standalone-reader-build.sh --status --target '$(STANDALONE_GATE_TARGET)' -- \
+	  $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
+	  --eval '(setq load-prefer-newer t)' \
+	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+
 # Hermetic test of the stamp tool above (fake tree, fake build command).
 .PHONY: build-stamp
 build-stamp:

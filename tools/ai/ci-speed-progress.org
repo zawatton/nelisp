@@ -114,6 +114,9 @@ evidence: tools/ai/ci-speed-evidence/s6-4-variants.log sha256=28a6b438cf21358fcc
 
 ** S6.5 ci.yml: one Linux build job builds with the unit cache and uploads the binary, companions and stamp; consumers need it, download after checkout, and log `--status'; capstone/pyelftools are pinned
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-build-job-test.py)
+#+NOTE: 2026-11-08 local same-tree consumer simulation: fresh mtimes stay up to date, running the binary does not rewrite the manifest, a source edit gives `stale: key changed` and a real rebuild back to the same sha.
+evidence: tools/ai/ci-speed-evidence/s6-5-consumer-sim.txt sha256=839cf2b5f0ce9a566c0cb6bf297bee7753ad1d7fd1978b0f93e9a39383f8db55
 
-** S6.6 E2E CI: consumers log `--status' fresh after download, and a consumer on a changed source logs stale and rebuilds (needs a push; the user confirms each push)
+** S6.6 E2E CI: every Linux consumer's first stamp status logs `up to date' after downloading the shared build, and its end-of-job status shows whether anything rebuilt it (needs a push; the user confirms each push)
+#+NOTE: 2026-11-08 reworded (advisor review): "a consumer on a changed source logs stale and rebuilds" cannot be observed on CI, where every consumer checks out the same commit; it is evidenced locally under S6.5 (s6-5-consumer-sim.txt). The tool prints `up to date', not `fresh'.
 pending

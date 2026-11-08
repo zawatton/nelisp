@@ -57,6 +57,9 @@ PARTITION_VARS = {"NELISP_READER_DYNAMIC", "NELISP_TCO", "NELISP_RUNTIME_RELOAD"
 ALLOWLIST = {
     ("Makefile", "standalone-reader"):
         "the stamp-tool recipe itself",
+    ("Makefile", "standalone-reader-status"):
+        "read-only twin of standalone-reader: runs the stamp tool with "
+        "--status and the same build command, never builds",
     ("Makefile", "standalone-reader-ffi-smoke"):
         "Windows branch: direct default build on a target where the dyn "
         "variant does not exist; Linux branch goes through the stamp tool",
