@@ -65734,9 +65734,22 @@ tails run against a private box), and the (rc, OUT) adapter F."
         (if (= exp_w 0) 0
           ;; The cache stores Sexp pointers and its collector reads a view.
           ;; Only an immediate expansion needs a durable view at this boundary.
+          ;; An expansion (quote V) is not cached: the expander computed V
+          ;; itself (GNU byte-run's `eval-and-compile', `eval-when-compile'),
+          ;; and GNU expands a macro call again each time it evaluates one.
           (let* ((exp_ptr (wf_word_view exp_w)))
-            (seq (if (= (logand exp_w 1) 0) (nl_mxcache_store form_ptr exp_ptr) 0)
+            (seq (if (= (logand exp_w 1) 0)
+                     (if (= (nl_mxcache_quote_expansion_p exp_w) 1) 0
+                       (nl_mxcache_store form_ptr exp_ptr))
+                   0)
                  (nelisp_eval_call_w exp_w env 0))))))
+    (defun nl_mxcache_quote_expansion_p (exp_w)
+      (if (= (nl_val_tag exp_w) 7)
+          (let* ((qh (nl_cons_car_ptr exp_w)))
+            (if (= (sexp-tag qh) 4)
+                (if (= (symbol-name-eq qh "quote") 1) 1 0)
+              0))
+        0))
     (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
       (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
