@@ -120,3 +120,27 @@ evidence: tools/ai/ci-speed-evidence/s6-5-consumer-sim.txt sha256=839cf2b5f0ce9a
 ** S6.6 E2E CI: every Linux consumer's first stamp status logs `up to date' after downloading the shared build, and its end-of-job status shows whether anything rebuilt it (needs a push; the user confirms each push)
 #+NOTE: 2026-11-08 reworded (advisor review): "a consumer on a changed source logs stale and rebuilds" cannot be observed on CI, where every consumer checks out the same commit; it is evidenced locally under S6.5 (s6-5-consumer-sim.txt). The tool prints `up to date', not `fresh'.
 pending
+
+* S7 gate-mutation rows stop paying for the restore build and stay inside a budget (fast plan slice 4)
+#+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation.
+
+** S7.1 Hermetic: after a rebuild row, the harness restores the saved clean binary, companions and stamp instead of rebuilding; the restored binary has the baseline sha256, the following status is up to date, and the next row's gate runs on it
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py RestoreByCopy)
+
+** S7.2 Hermetic: an injected build whose binary sha256 equals the baseline fails the row as HARNESS ERROR (injection did not reach the binary), and a no-op sed control fails the same way
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py InjectionReachedBinary)
+
+** S7.3 Hermetic: each injected build uses its own hardlink copy of the unit cache, and the baseline cache is byte-identical afterwards
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py PrivateUnitCache)
+
+** S7.4 Hermetic: past NELISP_GATE_MUTATION_SHARD_BUDGET every remaining row prints NOT RUN and the shard fails; the merged report fails when the shards' row counts do not add up to the table's in-scope rows
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py ShardBudget)
+
+** S7.5 ci.yml: the mutation job has timeout-minutes and passes the shard budget; rows whose gate builds a variant get the build budget, not the row budget
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-budget-test.py)
+
+** S7.6 E2E local: a real rebuild row on the default binary restores in under 3 min with the same verdict, and a variant-building row (chunk-growth) passes within its budget, recorded
+pending
+
+** S7.7 E2E CI: a real gate-mutation shard finishes inside its budget with every row accounted for (passed, failed, skipped or NOT RUN) and a slowest-rows table (needs a push; the user confirms each push)
+pending
