@@ -87,3 +87,24 @@ evidence: tools/ai/ci-speed-evidence/s5-4-seeded-cache.txt sha256=f25bd9758b9b6a
 
 ** S5.5 E2E CI: on CI an exact-key cache hit builds in under 120 s, a partial hit after a one-file change in under 10 min, and both give the cold build's sha256 (needs a push; the user confirms each push)
 pending
+
+* S6 Variant builds stop overwriting target/nelisp, and CI builds it once (fast plan slice 3)
+#+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation. Lane 3a = variants + chunk-growth, lane 3b = build job.
+
+** S6.1 Static: every recipe or script that builds a non-default variant writes its own output (and, for env-sensitive modes, its own unit cache dir); default builds go through `make standalone-reader'
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-variant-outputs-test.py)
+
+** S6.2 chunk-growth: the test checks growth after a retained allocation (S3 request 2026-11-08); a run is recorded PASS with chunk-count > 1, and target/nelisp, its stamp and its unit cache are untouched (--status fresh, same sha)
+pending
+
+** S6.3 Negative control: with chunk growth broken by an injected defect, the chunk-growth test goes red (lethal gate-mutation row, recorded run)
+pending
+
+** S6.4 E2E local: the dynamic-reader smokes (standalone-reader-ffi-smoke, ffi-dsl, standalone-reader-tls-smoke-linux) and ffi-loader/ffi-unsupported leave target/nelisp fresh (--status fresh, same sha), recorded
+pending
+
+** S6.5 ci.yml: one Linux build job builds with the unit cache and uploads the binary, companions and stamp; consumers need it, download after checkout, and log `--status'; capstone/pyelftools are pinned
+cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-build-job-test.py)
+
+** S6.6 E2E CI: consumers log `--status' fresh after download, and a consumer on a changed source logs stale and rebuilds (needs a push; the user confirms each push)
+pending
