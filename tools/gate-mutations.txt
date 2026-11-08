@@ -1315,3 +1315,15 @@ vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-le
 # required).  Restored: GATE-COUNT checked=35 findings=0.  Host-only, no
 # binary build, structural (no timing).
 build-stamp|tools/nelisp-standalone-reader-build.sh|s/^    NELISP_\*) return 0 ;;$/    NELISP_*) return 1 ;;/|NELISP_* mode switches are dropped from the stamp key, so a changed build mode is skipped as up to date
+
+# standalone-chunk-growth-test builds its OWN 8 MiB-arena variant from source
+# (target/nelisp-chunk8m, private unit cache), so it is deliberately NOT in
+# gate_needs_rebuild: the harness need not rebuild target/nelisp around it.
+# The injection makes the allocator's chunk-growth step report failure, so a
+# full first chunk aborts through nl_os_alloc_fail at once (fail fast, no
+# spin); the probe then prints no arena-stats and the test goes red.  The sed
+# is anchored on the single `new_chunk' binding in nl_alloc_bytes_uncheck.
+# The variant build is near cold here (build.el is in the toolchain digest):
+# run with NELISP_GATE_MUTATION_ROW_TIMEOUT=6000; slice 4/5 must decide the
+# budget (main and nightly only).
+standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_chunk (nl_chunk_alloc_new want)))/(let* ((new_chunk 0))/|chunk growth always fails, so a full first chunk aborts instead of adding a chunk|linux-x86_64
