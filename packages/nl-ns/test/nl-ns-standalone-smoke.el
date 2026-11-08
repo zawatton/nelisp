@@ -28,7 +28,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 ;; Precondition.  Namespace inference counts prefixes in a hash table,
 ;; so it needs `puthash' to overwrite an existing key.  Runtimes built

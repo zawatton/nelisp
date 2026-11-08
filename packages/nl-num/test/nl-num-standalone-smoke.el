@@ -17,7 +17,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 ;; Capture stock function identities before the opt-in package is loaded.
 (setq nl-num-test--stock-plus (symbol-function '+))

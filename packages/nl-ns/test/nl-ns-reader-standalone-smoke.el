@@ -33,7 +33,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 ;; Namespace membership is accumulated in a hash table.  Check that
 ;; `puthash' overwrites before failures are obscured by a broken runtime.

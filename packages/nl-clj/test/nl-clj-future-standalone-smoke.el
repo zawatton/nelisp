@@ -18,7 +18,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 (load "packages/nl-prelude/src/nl-prelude-trampoline.el")
 (load "packages/nl-prelude/src/nl-prelude.el")

@@ -22,7 +22,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 ;; Explicit paths are intentional: standalone `require' cannot be trusted
 ;; to locate an absent library, while each source file's own require

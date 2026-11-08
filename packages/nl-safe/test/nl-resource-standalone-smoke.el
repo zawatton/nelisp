@@ -28,7 +28,7 @@
 
 ;;; Code:
 
-(require 'ert)
+(load "test/nl-smoke-ert-registry.el")
 
 (load "packages/nl-prelude/src/nl-prelude-trampoline.el") ; wave8: nl-prelude requires it
 (load "packages/nl-prelude/src/nl-prelude.el")
