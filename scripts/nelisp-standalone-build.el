@@ -32430,8 +32430,14 @@ bytes are written into a fresh 8-byte buffer instead."
                   (ptr-write-u64 (+ fr (* i 8)) 0 v)
                   (setq i (+ i 1)))))
          fr)))
+    ;; A registered worker never compiles: the compiler writes the global
+    ;; function table and allocates, both forbidden to workers (Doc 199).  The
+    ;; closure stays interpreted there until the main thread compiles it.
     (defun m5_fx_first_call (body env captured formals)
       (if (/= (nl_fx_compiling) 0) 0
+       (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 0
+             (/= (nl_thread_registry_find env) 0))
+           0
         (let* ((mark (nl_root_mark env)) (views (nl_anchor_views env 3)))
           (seq
            (nl_fx_compiling_set 1 0)
@@ -32440,7 +32446,7 @@ bytes are written into a fresh 8-byte buffer instead."
                                 captured formals)
            (nl_fx_compiling_set 0 0)
            (nl_root_release env mark)
-           0))))
+           0)))))
     ;; FSLOT, ARGS and VALUE: three views -- the callee, its argument list,
     ;; its value.
     (defun m5_fx_first_call_in (body env fslot args value captured formals)
