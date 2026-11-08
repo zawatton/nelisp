@@ -8127,6 +8127,15 @@ which is what a caller asking for a range check wants."
     (unless (sequencep sequence)
       (signal 'wrong-type-argument (list 'sequencep sequence)))
     (apply (function nconc) (mapcar func sequence))))
+;; GNU subr.el `xor' (a defsubst there), verbatim body.  GNU ert's equality
+;; explainer calls it, so every failing string `should' needs it.
+(unless (fboundp 'xor)
+  (defun xor (cond1 cond2)
+    "Return the boolean exclusive-or of COND1 and COND2.
+If only one of the arguments is non-nil, return it; otherwise
+return nil."
+    (cond ((not cond1) cond2)
+          ((not cond2) cond1))))
 (unless (fboundp 'remq)
   (defun remq (elt list)
     "Return LIST with all `eq' occurrences of ELT removed.
