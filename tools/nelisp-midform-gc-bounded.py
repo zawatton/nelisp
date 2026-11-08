@@ -64,8 +64,15 @@ def expression(n: int, poison: bool = False, growth_probe: bool = False) -> str:
         else ""
     )
     return (
-        f"(let* ({setup}{policy}(d (nelisp--debug-switch 24)) (i 0)) "
-        f"(while (< i {n}) (setq i (1+ i))) "
+        f"(let* ({setup}{policy}(d (nelisp--debug-switch 24)) (i 0) (junk nil)) "
+        # The loop must allocate: the plain counter loop allocates nothing
+        # now that fixnum steps take no arena memory, so no trigger was ever
+        # reached.  Conses are typed blocks mapped outside the arena chunks,
+        # so they can neither grow nor empty a growth chunk; an 8 KiB vector
+        # is an arena block, which is what the chunk reclaimer under test
+        # frees.
+        f"(while (< i {n}) (setq junk (make-vector 1000 i)) "
+        "(setq i (1+ i))) "
         "(list i (nelisp--debug-switch 0)))"
     )
 
