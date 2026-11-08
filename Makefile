@@ -3099,7 +3099,7 @@ standalone-reader-declare-strip-smoke: standalone-reader
 	  '(defmacro ds-m3 (x) (declare (debug (form))) "doc" (list (quote quote) x))' \
 	  '(defun ds-f1 () "doc" (declare (indent 0)) (interactive) (+ 41 1))' \
 	  '(defun ds-f2 () (declare (indent 0)))' \
-	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (equal (car (cdr (cdr (cdr fn)))) (quote (interactive))) (ds-f2)))' \
+	  '(let ((fn (symbol-function (quote ds-f1)))) (list (ds-m1 foo) (ds-m2 bar) (ds-m3 baz) (ds-f1) (eq (car (interactive-form (quote ds-f1))) (quote interactive)) (ds-f2)))' \
 	  > target/standalone-reader-declare-strip-smoke.el
 	@out="$$($(STANDALONE_BIN) --repl --no-prompt < target/standalone-reader-declare-strip-smoke.el | tail -1)"; \
 	if [ "$$out" = "(foo bar baz 42 t nil)" ]; then \
@@ -3225,16 +3225,19 @@ standalone-reader-pcase-quote-literal-smoke: standalone-reader
 # t tag, nil tag, an ordinary symbol tag (pre-existing-working baseline),
 # throw-less catch, a same-tag nested catch, and a mismatched-tag nested
 # catch (inner `t' catch must NOT swallow an outer-bound `nil' throw).
+# GNU Emacs (31.1 verified) forbids throwing to a nil tag: Fthrow signals
+# `(no-catch nil VALUE)' even inside `(catch nil ...)', so the nil rows
+# expect that error rather than the thrown value.
 standalone-reader-catch-throw-tag-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(list (catch t (throw t (quote a))) (catch nil (throw nil (quote b))) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (catch nil (catch t (throw nil (quote outer)))))' \
+	  '(list (catch t (throw t (quote a))) (condition-case e (catch nil (throw nil (quote b))) (no-catch e)) (catch (quote tag) (throw (quote tag) (quote c))) (catch t 42) (catch nil (catch t (throw t (quote inner)))) (condition-case e (catch nil (catch t (throw nil (quote outer)))) (no-catch e)))' \
 	  > target/standalone-reader-catch-throw-tag-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-catch-throw-tag-smoke.el)"; \
-	if [ "$$out" = "(a b c 42 inner outer)" ]; then \
+	if [ "$$out" = "(a (no-catch nil b) c 42 inner (no-catch nil outer))" ]; then \
 	  echo "[standalone-reader-catch-throw-tag-smoke] PASS: -> $$out"; \
 	else \
-	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a b c 42 inner outer))"; \
+	  echo "[standalone-reader-catch-throw-tag-smoke] FAIL: -> $$out (expected (a (no-catch nil b) c 42 inner (no-catch nil outer)))"; \
 	  exit 1; \
 	fi
 

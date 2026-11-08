@@ -60327,27 +60327,17 @@ correctly."
 	                              ,nelisp-standalone--reader-read-cap)))
 	                     (if (< n 0)
 	                         ;; A bare positional FILE argument that does not
-	                         ;; exist used to silently become the source text
-	                         ;; "1" -- a well-formed, silent no-op program --
-	                         ;; completely different from `--load''s usage-
-	                         ;; text dump for the SAME failure, and from
-	                         ;; `--eval '(load "...")'''s correct, named
-	                         ;; `file-missing' report.  Stash the SAME
-	                         ;; condition `bf_require_file_missing' raises for
-	                         ;; `load' (fixed in 21cc84650), naming this path,
-	                         ;; then hand the reader a single stray close
-	                         ;; paren: `nl_eval_source_all''s reader-error
-	                         ;; path only falls back to a generic syntax
-	                         ;; error when nothing more specific is already
-	                         ;; stashed, so this reports the file-missing
-	                         ;; condition just stashed instead of a fresh,
-	                         ;; less useful diagnostic.
-	                         (let* ((path-str (alloc-bytes 32 8)))
-	                           (seq
-	                            (nl_alloc_str path (nl_cstr_len path) path-str)
-	                            (bf_require_file_missing path-str)
-	                            (sexp-write-str-lit src ")")))
-	                       (if (= (nl_cli_read_cap_hit_p n) 1)
+                         ;; exist used to silently become the source text
+                         ;; "1".  Hand the reader a form that signals the
+                         ;; same `file-missing' condition `load' raises,
+                         ;; naming the path from `nelisp-standalone-argv'
+                         ;; (its car is FILE in this mode).  Stashing the
+                         ;; condition and feeding a stray ")" stopped
+                         ;; working once the source driver started clearing
+                         ;; the signal stash before every top-level form
+                         ;; (3edc5b180).
+                         (sexp-write-str-lit src "(signal 'file-missing (list \"Cannot open load file\" \"No such file or directory\" (car nelisp-standalone-argv)))")
+                       (if (= (nl_cli_read_cap_hit_p n) 1)
 	                           ;; Read exactly the buffer's max -- see
 	                           ;; `nl_cli_stash_source_too_large' above.  Same
 	                           ;; stray-close-paren trick as the file-missing
