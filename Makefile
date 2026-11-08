@@ -3381,6 +3381,15 @@ standalone-reader-current-time-smoke: standalone-reader
 # FT_Init_FreeType + FT_Library_Version).  Self-contained (does NOT depend on the default static
 # `standalone-reader').  GnuTLS/FreeType assertions are version-prefix checks so
 # they survive minor library bumps.
+# The Linux dynamic-reader smokes (standalone-reader-ffi-smoke, ffi-dsl and
+# standalone-reader-tls-smoke-linux) share ONE stamped build at
+# target/nelisp-dyn (own .cold and companions, own -dyn unit-cache partition);
+# they never touch target/nelisp.  Because they share that output they must
+# not run concurrently.  Windows keeps its direct default build in ffi-smoke.
+STANDALONE_DYN_OUT = target/nelisp-dyn
+STANDALONE_DYN_BIN = ./$(STANDALONE_DYN_OUT)
+STANDALONE_FFI_BIN = $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),$(STANDALONE_BIN),$(STANDALONE_DYN_BIN))
+
 standalone-reader-ffi-smoke:
 	@mkdir -p target
 ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
@@ -3388,13 +3397,12 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	  --eval '(setq load-prefer-newer t)' \
 	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
 else
-	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@# Linux-only branch: the env-passed mode variable never crosses an MSYS boundary.
+	@NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader
 endif
-	@chmod +x target/nelisp
+	@chmod +x $(STANDALONE_FFI_BIN)
 	@printf '%s\n' '(nl-ffi-call "toupper" 97)' > target/standalone-reader-ffi-smoke.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-smoke.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-smoke.el)"; \
 	if [ "$$out" = "65" ]; then \
 	  echo "[ffi-smoke libc] PASS: (nl-ffi-call \"toupper\" 97) -> $$out"; \
 	else \
@@ -3402,7 +3410,7 @@ endif
 	fi
 	@if [ "$(STANDALONE_GATE_TARGET)" = "windows-x86_64" ]; then \
 	  printf '%s\n' '(nl-ffi-call "toupper" -1)' > target/standalone-reader-ffi-s32.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-s32.el)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-s32.el)"; \
 	  if [ "$$out" = "-1" ]; then \
 	    echo "[ffi-smoke Win64 s32] PASS: toupper(EOF) -> $$out"; \
 	  else \
@@ -3413,21 +3421,21 @@ endif
 	@: 'renders any float (even a literal) as #<object>, so assert on numeric'
 	@: 'equality (= -> t) rather than the printed form.'
 	@printf '%s\n' '(= (nl-ffi-call "sqrt" 4.0) 2.0)' > target/standalone-reader-ffi-f64.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f64.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f64.el)"; \
 	if [ "$$out" = "t" ]; then \
 	  echo "[ffi-smoke f64 libm] PASS: (= (nl-ffi-call \"sqrt\" 4.0) 2.0) -> $$out"; \
 	else \
 	  echo "[ffi-smoke f64 libm] FAIL: -> $$out (expected t)"; exit 1; \
 	fi
 	@printf '%s\n' '(list (= (nl-ffi-call "pow" 2.0 10.0) 1024.0) (= (nl-ffi-call "ldexp" 1.5 3) 12.0) (= (nl-ffi-call "hypot" 3.0 4.0) 5.0))' > target/standalone-reader-ffi-f64b.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f64b.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f64b.el)"; \
 	if [ "$$out" = "(t t t)" ]; then \
 	  echo "[ffi-smoke f64 mixed] PASS: pow(2,10)=1024 / ldexp(1.5,3 :: f64+i64)=12 / hypot(3,4)=5 -> $$out"; \
 	else \
 	  echo "[ffi-smoke f64 mixed] FAIL: -> $$out (expected (t t t))"; exit 1; \
 	fi
 	@printf '%s\n' '(let* ((cs (lambda (s) (let ((p (alloc-bytes (1+ (length s)) 1)) (i 0)) (while (< i (length s)) (ptr-write-u8 p i (aref s i)) (setq i (1+ i))) (ptr-write-u8 p (length s) 0) p))) (dbp (alloc-bytes 8 8)) (rc (nl-ffi-call "sqlite3_open_v2" (funcall cs ":memory:") dbp 6 0)) (db (ptr-read-u64 dbp 0)) (stp (alloc-bytes 8 8)) (rp (nl-ffi-call "sqlite3_prepare_v2" db (funcall cs "select 6*7, 2.5, '"'"'ok'"'"'") -1 stp 0)) (st (ptr-read-u64 stp 0)) (step (nl-ffi-call "sqlite3_step" st)) (v (nl-ffi-call "sqlite3_column_int64" st 0)) (d (nl-ffi-call "sqlite3_column_double" st 1)) (tp (nl-ffi-call "sqlite3_column_text" st 2)) (txt (unibyte-string (ptr-read-u8 tp 0) (ptr-read-u8 tp 1)))) (nl-ffi-call "sqlite3_finalize" st) (nl-ffi-call "sqlite3_close_v2" db) (list rc rp step v (= d 2.5) txt))' > target/standalone-reader-ffi-sqlite.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-sqlite.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-sqlite.el)"; \
 	if [ "$$out" = '(0 0 100 42 t "ok")' ]; then \
 	  echo "[ffi-smoke S1 sqlite] PASS: open(:memory:)+prepare+step+column_{int64,double,text} -> $$out"; \
 	else \
@@ -3438,13 +3446,13 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	@echo "[ffi-smoke FreeType] SKIP: no Windows DLL mapping in Stage D1"
 else
 	@printf '%s\n' '(let ((p (nl-ffi-call "gnutls_check_version" 0))) (if (= p 0) "NULL" (unibyte-string (ptr-read-u8 p 0) (ptr-read-u8 p 1))))' > target/standalone-reader-ffi-d1.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-d1.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-d1.el)"; \
 	case "$$out" in \
 	  '"'[0-9].'"') echo "[ffi-smoke D1 gnutls] PASS: gnutls_check_version -> $$out (X.)";; \
 	  *) echo "[ffi-smoke D1 gnutls] FAIL: -> $$out (expected \"<digit>.\")"; exit 1;; \
 	esac
 	@printf '%s\n' '(let* ((s (alloc-bytes 8 8)) (rc (nl-ffi-call "FT_Init_FreeType" s)) (lib (ptr-read-u64 s 0)) (mj (alloc-bytes 4 4)) (mn (alloc-bytes 4 4)) (pt (alloc-bytes 4 4))) (nl-ffi-call "FT_Library_Version" lib mj mn pt) (let ((r (list rc (ptr-read-u32 mj 0)))) (nl-ffi-call "FT_Done_FreeType" lib) r))' > target/standalone-reader-ffi-f1.el
-	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f1.el)"; \
+	@out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f1.el)"; \
 	case "$$out" in \
 	  '(0 '[0-9]*')') echo "[ffi-smoke F1 freetype] PASS: FT_Init+Version -> $$out (rc=0, major)";; \
 	  *) echo "[ffi-smoke F1 freetype] FAIL: -> $$out (expected (0 <major>))"; exit 1;; \
@@ -3454,19 +3462,19 @@ else
 	  echo "[ffi-smoke F2 glyph] SKIP: $$font not installed"; \
 	else \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (ap (alloc-bytes 8 8)) (gr (nl-ffi-call "FT_Get_Advance" face gi 0 ap)) (adv (ptr-read-u64 ap 0))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) (list nf gi gr adv)))))' > target/standalone-reader-ffi-f2.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f2.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f2.el 2>/dev/null)"; \
 	  case "$$out" in \
 	    '(0 '[1-9]*' 0 '[1-9]*')') echo "[ffi-smoke F2 glyph] PASS: FT_New_Face+Get_Advance('A') -> $$out (newface rc, gindex, adv rc, 16.16 advance)";; \
 	    *) echo "[ffi-smoke F2 glyph] FAIL: -> $$out (expected (0 <gindex> 0 <advance>))"; exit 1;; \
 	  esac; \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (lg (nl-ffi-call "FT_Load_Glyph" face gi 0)) (slot (ptr-read-u64 face 152)) (rg (nl-ffi-call "FT_Render_Glyph" slot 0)) (rows (ptr-read-u32 slot 152)) (width (ptr-read-u32 slot 156))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) (list lg rg rows width)))))' > target/standalone-reader-ffi-f3.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f3.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f3.el 2>/dev/null)"; \
 	  case "$$out" in \
 	    '(0 0 '[1-9]*' '[1-9]*')') echo "[ffi-smoke F3 bitmap] PASS: FT_Load_Glyph+FT_Render_Glyph('A') -> $$out (load rc, render rc, bitmap rows, width)";; \
 	    *) echo "[ffi-smoke F3 bitmap] FAIL: -> $$out (expected (0 0 <rows> <width>))"; exit 1;; \
 	  esac; \
 	  printf '%s\n' '(let* ((libp (alloc-bytes 8 8))) (nl-ffi-call "FT_Init_FreeType" libp) (let* ((lib (ptr-read-u64 libp 0)) (path "'"$$font"'") (pl (length path)) (pb (alloc-bytes 256 1)) (i 0)) (while (< i pl) (ptr-write-u8 pb i (aref path i)) (setq i (1+ i))) (ptr-write-u8 pb pl 0) (let* ((fp (alloc-bytes 8 8)) (nf (nl-ffi-call "FT_New_Face" lib pb 0 fp)) (face (ptr-read-u64 fp 0)) (mat (alloc-bytes 32 8)) (vec (alloc-bytes 16 8))) (nl-ffi-call "FT_Set_Pixel_Sizes" face 0 48) (ptr-write-u64 mat 0 131072) (ptr-write-u64 mat 8 0) (ptr-write-u64 mat 16 0) (ptr-write-u64 mat 24 131072) (ptr-write-u64 vec 0 0) (ptr-write-u64 vec 8 0) (nl-ffi-call "FT_Set_Transform" face mat vec) (let* ((gi (nl-ffi-call "FT_Get_Char_Index" face 65)) (lg (nl-ffi-call "FT_Load_Glyph" face gi 0)) (slot (ptr-read-u64 face 152)) (rg (nl-ffi-call "FT_Render_Glyph" slot 0)) (w (ptr-read-u32 slot 156))) (nl-ffi-call "FT_Done_Face" face) (nl-ffi-call "FT_Done_FreeType" lib) w))))' > target/standalone-reader-ffi-f4.el; \
-	  out="$$($(STANDALONE_BIN) --load target/standalone-reader-ffi-f4.el 2>/dev/null)"; \
+	  out="$$($(STANDALONE_FFI_BIN) --load target/standalone-reader-ffi-f4.el 2>/dev/null)"; \
 	  if [ "$$out" -ge 55 ] 2>/dev/null; then \
 	    echo "[ffi-smoke F4 transform] PASS: FT_Set_Transform(2x via FT_Matrix/FT_Vector) -> 2x-glyph width $$out px (vs ~33 untransformed)"; \
 	  else \
@@ -3514,9 +3522,7 @@ ifeq ($(STANDALONE_GATE_TARGET),windows-x86_64)
 	@echo "[standalone-reader-ffi-unsupported-smoke] PASS: not applicable; windows-x86_64 has an unconditional PE-import-backed FFI subset (covered by ffi-smoke)"
 else
 	@mkdir -p target
-	@env -u NELISP_READER_DYNAMIC NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@env -u NELISP_READER_DYNAMIC $(MAKE) standalone-reader NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET)
 	@chmod +x $(STANDALONE_BIN)
 	@case "$$(file -b $(STANDALONE_BIN) 2>/dev/null)" in \
 	  *"dynamically linked"*) echo "[ffi-unsupported-smoke] FAIL: target/nelisp is dynamically linked -- not the static default this smoke must test"; exit 1;; \
@@ -3577,8 +3583,9 @@ endif
 # Declarative FFI surface (packages/nl-ffi): `ffi:library'/`ffi:defun' over
 # `nl-ffi-call'.  Needs the dynamic reader for the same reason
 # `standalone-reader-ffi-smoke' above does, so this rebuilds it the same
-# way -- unconditionally, with NELISP_READER_DYNAMIC=1, never relying on
-# whatever flavor of target/nelisp a previous target left behind.  See
+# way, through the stamp tool at target/nelisp-dyn (Linux-only, so the mode
+# variable need not cross the MSYS make boundary), never relying on or
+# overwriting whatever flavor of target/nelisp a previous target left behind.  See
 # packages/nl-ffi/README.org for the surface and packages/nl-ffi/test/
 # nl-ffi-dsl-standalone-smoke.el for what this gate actually checks
 # (toupper/sqrt/sqlite3_libversion through ffi:defun, the ffi-call
@@ -3586,11 +3593,9 @@ endif
 .PHONY: ffi-dsl
 ffi-dsl:
 	@mkdir -p target
-	@NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
-	@chmod +x target/nelisp
-	@$(STANDALONE_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
+	@NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader
+	@chmod +x $(STANDALONE_DYN_BIN)
+	@$(STANDALONE_DYN_BIN) --load packages/nl-ffi/test/nl-ffi-dsl-standalone-smoke.el
 
 # FFI step 3 increments 2-3 (packages/nl-ffi/src/nl-ffi-loader.el): a
 # pure-elisp ELF loader, so the whole point is that this gate runs on the
@@ -3663,9 +3668,7 @@ ifneq ($(NL_FFI_LOADER_CC),)
 	  -Wl,-rpath,$(NL_FFI_LOADER_TARGET_ABS)
 	@cc -shared -fPIC -nostdlib -o target/nl-ffi-loader-fixture-ifunc.so \
 	  packages/nl-ffi/test/fixtures/nl-ffi-loader-fixture-ifunc.c
-	@NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET) $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader
+	@$(MAKE) standalone-reader NELISP_STANDALONE_TARGET=$(STANDALONE_GATE_TARGET)
 	@chmod +x $(STANDALONE_BIN)
 	@case "$$(file -b $(STANDALONE_BIN) 2>/dev/null)" in \
 	  *"dynamically linked"*) echo "[ffi-loader] FAIL: target/nelisp is dynamically linked -- not the static default this gate must test"; exit 1;; \
@@ -3696,16 +3699,16 @@ standalone-reader-tls-smoke: $(if $(filter windows%,$(STANDALONE_GATE_TARGET)),s
 	@:
 
 standalone-reader-tls-smoke-linux:
+	@# Linux-only (the dispatcher above picks it for non-windows targets), so the
+	@# env-passed NELISP_READER_DYNAMIC below never crosses an MSYS make boundary.
 	@mkdir -p target
 	@if ! timeout 6 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then \
 	  echo "[tls-smoke D2] SKIP: no egress to 1.1.1.1:443"; exit 0; \
 	fi; \
-	NELISP_READER_DYNAMIC=1 $(NELISP_BUILD_EMACS) --batch -Q -L lisp -L src -L scripts \
-	  --eval '(setq load-prefer-newer t)' \
-	  -l nelisp-standalone-build -f nelisp-standalone-build-reader; \
-	chmod +x target/nelisp; \
+	NELISP_READER_DYNAMIC=1 NELISP_STANDALONE_READER_OUTPUT=$(STANDALONE_DYN_OUT) $(MAKE) standalone-reader || exit 1; \
+	chmod +x $(STANDALONE_DYN_BIN); \
 	printf '%s\n' '(let* ((fd (syscall-direct 41 2 1 0 0 0 0)) (sa (alloc-bytes 16 8)) (i 0) (host "one.one.one.one") (hl (length host)) (hbuf (alloc-bytes 32 1)) (j 0) (req "GET / HTTP/1.1\r\nHost: one.one.one.one\r\nConnection: close\r\n\r\n") (rl (length req)) (rbuf (alloc-bytes 256 1)) (k 0)) (while (< j hl) (ptr-write-u8 hbuf j (aref host j)) (setq j (1+ j))) (while (< k rl) (ptr-write-u8 rbuf k (aref req k)) (setq k (1+ k))) (while (< i 16) (ptr-write-u8 sa i 0) (setq i (1+ i))) (ptr-write-u8 sa 0 2) (ptr-write-u8 sa 2 1) (ptr-write-u8 sa 3 187) (ptr-write-u8 sa 4 1) (ptr-write-u8 sa 5 1) (ptr-write-u8 sa 6 1) (ptr-write-u8 sa 7 1) (let ((crc (syscall-direct 42 fd sa 16 0 0 0)) (credp (alloc-bytes 8 8)) (sessp (alloc-bytes 8 8))) (nl-ffi-call "gnutls_global_init") (nl-ffi-call "gnutls_certificate_allocate_credentials" credp) (nl-ffi-call "gnutls_init" sessp 2) (let* ((cred (ptr-read-u64 credp 0)) (sess (ptr-read-u64 sessp 0))) (nl-ffi-call "gnutls_server_name_set" sess 1 hbuf hl) (nl-ffi-call "gnutls_set_default_priority" sess) (nl-ffi-call "gnutls_credentials_set" sess 1 cred) (nl-ffi-call "gnutls_transport_set_int2" sess fd fd) (let* ((hs (nl-ffi-call "gnutls_handshake" sess)) (ver (nl-ffi-call "gnutls_protocol_get_version" sess)) (np (nl-ffi-call "gnutls_protocol_get_name" ver)) (nm (if (= np 0) "?" (unibyte-string (ptr-read-u8 np 0) (ptr-read-u8 np 1) (ptr-read-u8 np 2) (ptr-read-u8 np 3)))) (sent (nl-ffi-call "gnutls_record_send" sess rbuf rl)) (resp (alloc-bytes 512 1)) (g1 (nl-ffi-call "gnutls_record_recv" sess resp 511)) (got (nl-ffi-call "gnutls_record_recv" sess resp 511)) (st (if (> got 0) (unibyte-string (ptr-read-u8 resp 0) (ptr-read-u8 resp 1) (ptr-read-u8 resp 2) (ptr-read-u8 resp 3)) "?"))) (nl-ffi-call "gnutls_bye" sess 0) (nl-ffi-call "gnutls_deinit" sess) (nl-ffi-call "gnutls_certificate_free_credentials" cred) (nl-ffi-call "gnutls_global_deinit") (syscall-direct 3 fd 0 0 0 0 0) (list hs nm sent st)))))' > target/standalone-reader-tls-smoke.el; \
-	out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_BIN) --load target/standalone-reader-tls-smoke.el 2>/dev/null)"; \
+	out="$$(timeout $(STANDALONE_SMOKE_TIMEOUT) $(STANDALONE_DYN_BIN) --load target/standalone-reader-tls-smoke.el 2>/dev/null)"; \
 	case "$$out" in \
 	  '(0 "TLS'*'"HTTP")') echo "[tls-smoke D2+D3] PASS: real handshake + HTTPS GET -> $$out (handshake, proto, bytes-sent, response)";; \
 	  *) echo "[tls-smoke D2+D3] FAIL: -> $$out (expected (0 \"TLS..\" <sent> \"HTTP\"))"; exit 1;; \

@@ -131,7 +131,9 @@ export status_dir MAKE_BIN
 # (`standalone-reader-prelude-test', 2026-08-30) rather than the
 # `Text file busy' this comment describes -- same race, different OS
 # wording.  The detection below now matches both spellings.
-SERIAL_SMOKES="standalone-reader-ffi-smoke standalone-reader-ffi-unsupported-smoke standalone-reader-tls-smoke standalone-reader-prelude-test standalone-reader-repl-smoke standalone-reader-malformed-input-smoke"
+# The two dyn targets are adjacent so a sweep switches default -> dyn -> default
+# once; they share target/nelisp-dyn and must never run concurrently.
+SERIAL_SMOKES="standalone-reader-ffi-smoke standalone-reader-tls-smoke standalone-reader-ffi-unsupported-smoke standalone-reader-prelude-test standalone-reader-repl-smoke standalone-reader-malformed-input-smoke"
 
 # That list is a copy of a fact about the Makefile, so check it still
 # holds.  If a new smoke starts building the reader and is not listed, it

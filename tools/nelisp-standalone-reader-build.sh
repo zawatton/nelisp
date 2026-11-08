@@ -37,6 +37,10 @@
 #
 # The stamp also records the sha256 of companion files the build writes next to
 # the output and the binary uses at run time (COMPANIONS); they must still match.
+# The artifact-runtime cache lives at a FIXED path under target/ (not next to a
+# variant output), so a variant build rewrites it; its .manifest.el is read by
+# lisp/nelisp-artifact.el, hence it is hashed too and an alternation of default
+# and variant builds cannot skip with a manifest the other build wrote.
 #
 # Modes: default builds-or-skips.  --status never builds: prints `fresh ...'
 # and exits 0, or prints `stale: REASON' and exits 1.
@@ -251,7 +255,7 @@ compute_key() {
 COMPANIONS() {
   local d f h
   d=$(dirname "$OUT")
-  for f in "$OUT.cold" "$d/nelisp-artifact-runtime.el.nelc" "$d/nelisp-artifact-runtime.el.nelc.enable"; do
+  for f in "$OUT.cold" "$d/nelisp-artifact-runtime.el.nelc" "$d/nelisp-artifact-runtime.el.nelc.enable" "$d/nelisp-artifact-runtime.el.nelc.manifest.el"; do
     if [ -f "$f" ]; then h=$(h256file "$f") || return 1; else h=absent; fi
     printf '%s %s\n' "${f#"$d"/}" "$h"
   done

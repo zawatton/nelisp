@@ -409,6 +409,16 @@ class BuildStampTest(unittest.TestCase):
         Path(str(self.out()) + ".cold").unlink()
         self.assert_built(3, self.run_tool())
 
+    def test_artifact_manifest_change_rebuilds(self):
+        self.first_build()
+        man = Path(str(self.out().parent / "nelisp-artifact-runtime.el.nelc.manifest.el"))
+        man.write_text("(:manifest written by another build)\n")
+        res = self.run_tool()
+        self.assert_built(2, res)
+        self.assertIn("companion", res.stdout)
+        man.unlink()
+        self.assert_built(3, self.run_tool())
+
     def test_git_identity_change_rebuilds(self):
         if not shutil.which("git"):
             self.skipTest("git not installed")
