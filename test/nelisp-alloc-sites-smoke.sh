@@ -5,7 +5,7 @@
 # checks its JSON report:
 # - every window is complete: the allocations the breakpoint recorded equal
 #   the allocator's own success counters;
-# - windows do not bleed into each other: 20 global reads in a loop allocate
+# - windows do not bleed into each other: 20 loop iterations (one vector each) allocate
 #   as much more than 10 as 10 do more than 0;
 # - sizes are read: a 40-element vector's window asked for at least 320 bytes;
 # - every allocation has a caller chain, and the chains add up to the count.
@@ -34,7 +34,9 @@ cat > "$smoke_dir/windows.el" <<'EOF'
 ;;; windows.el --- alloc-sites smoke fixture -*- lexical-binding: t; -*-
 (defvar as-global 1)
 (defun as-read (n)
-  (let ((i 0) (sink nil)) (while (< i n) (setq sink as-global) (setq i (1+ i)))))
+  ;; One vector per iteration: a global read alone no longer allocates, and
+  ;; the windows below need a workload whose count grows with N.
+  (let ((i 0) (sink nil)) (while (< i n) (setq sink (make-vector 1 as-global)) (setq i (1+ i)))))
 (as-read 5)
 ;; One top-level form per window: between separate forms the reader parses
 ;; the next one, and that parsing would be counted in the window too.
@@ -91,9 +93,9 @@ for window in windows:
         fail("window %d has an allocation without a caller" % window["index"])
 empty, zero, ten, twenty, vector = windows
 if ten["count"] <= zero["count"]:
-    fail("10 reads allocated %d, no more than 0 reads (%d)" % (ten["count"], zero["count"]))
+    fail("10 iterations allocated %d, no more than 0 (%d)" % (ten["count"], zero["count"]))
 if twenty["count"] - ten["count"] != ten["count"] - zero["count"]:
-    fail("windows bleed: 0, 10 and 20 reads allocated %d, %d and %d"
+    fail("windows bleed: 0, 10 and 20 iterations allocated %d, %d and %d"
          % (zero["count"], ten["count"], twenty["count"]))
 if vector["bytes"] < 320:
     fail("the 40-element vector window asked for only %d bytes" % vector["bytes"])
