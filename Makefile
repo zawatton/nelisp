@@ -2026,7 +2026,7 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	@bin=$(STANDALONE_BIN); \
 	mkdir -p target; \
 	printf '%s\n' \
-	  '(let* ((got (list (string-match "abc" "xxabcyy")' \
+	  '(let* ((fn (lambda () (list (string-match "abc" "xxabcyy")' \
 	  '                  (string-match "abc+" "xxabcc")' \
 	  '                  (string-match "abc" "xxabxx")' \
 	  '                  (let ((case-fold-search t)) (string-match "ABC" "xxabc"))' \
@@ -2035,14 +2035,18 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '                  (string-match "a*" "bbb")' \
 	  '                  (string-match "x" "")' \
 	  '                  (string-match "" "abc")' \
-	  '                  (string-match "b" "abc" 2)))' \
-	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil))' \
+	  '                  (string-match "b" "abc" 2)' \
+	  '                  (string-match "b." "abcd")' \
+	  '                  (let ((case-fold-search t)) (string-match "B[a-z]" "xabc")))))' \
+	  '       (got (funcall fn))' \
+	  '       (got-lisp (let ((nlre--nat-have nil)) (funcall fn)))' \
+	  '       (want (list 2 2 nil 2 nil 2 0 nil 0 nil 1 2))' \
 	  '       (r6 (string-match "\\(a+\\)\\(b+\\)" "zzaabbb"))' \
 	  '       (g1 (list (match-beginning 1) (match-end 1)' \
 	  '                 (match-beginning 2) (match-end 2)))' \
 	  '       (r7 (string-match "\\(a\\)c" "abac"))' \
 	  '       (g2 (list (match-beginning 1) (match-end 1)))' \
-	  '       (correct-ok (and (equal got want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
+	  '       (correct-ok (and (equal got want) (equal got-lisp want) (equal r6 2) (equal g1 (list 2 4 4 7))' \
 	  '                        (equal r7 2) (equal g2 (list 2 3))))' \
 	  '       (paths nil) (i 0))' \
 	  '  (while (< i 42)' \
