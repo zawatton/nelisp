@@ -17,6 +17,7 @@ class MutationRecovery(unittest.TestCase):
                 (root / name).mkdir()
             script = root / "tools/nelisp-gate-mutation.sh"
             shutil.copy2(ROOT / "tools/nelisp-gate-mutation.sh", script)
+            shutil.copy2(ROOT / "tools/nelisp-standalone-reader-build.sh", root / "tools/nelisp-standalone-reader-build.sh")
             (root / "tools/gate-mutations.txt").write_text('sample|lisp/sample.el|s/OLD/NEW/|injected defect\n')
             original = b'OLD\nlocal uncommitted content\n'
             source = root / "lisp/sample.el"

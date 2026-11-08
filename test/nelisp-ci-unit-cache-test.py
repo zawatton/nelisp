@@ -73,9 +73,24 @@ def check_job(doc, name):
     save = find(steps, "actions/cache/save@")
     if len(restore) != 1:
         bad.append("expected exactly one restore step, found %d" % len(restore))
-    if len(save) != 1:
-        bad.append("expected exactly one save step, found %d" % len(save))
+    # The mutation shards are restore-only: private unit-cache copies leave
+    # the restored cache unchanged, so a save would be four near-copies.
+    want_saves = 0 if name == "mutation" else 1
+    if len(save) != want_saves:
+        bad.append("expected %d save step(s), found %d" % (want_saves, len(save)))
     if bad:
+        return bad
+    if name == "mutation":
+        r = steps[restore[0]]
+        if "steps.policy.outputs.run == 'true'" not in r.get("if", ""):
+            bad.append("mutation restore is not gated on the trigger policy")
+        if sorted(x.strip() for x in r["with"]["path"].splitlines() if x.strip()) != sorted(PATHS):
+            bad.append("restore paths are wrong")
+        builds = [i for i, st in enumerate(steps) if is_build_step(st)]
+        if builds and restore[0] > builds[0]:
+            bad.append("restore step %d is after the first build step %d" % (restore[0], builds[0]))
+        if str(job.get("env", {}).get("NELISP_STANDALONE_JOBS", "")) != "4":
+            bad.append("NELISP_STANDALONE_JOBS is not 4, expected 4")
         return bad
     r, sv = steps[restore[0]], steps[save[0]]
     builds = [i for i, s in enumerate(steps) if is_build_step(s)]
@@ -208,10 +223,17 @@ class NegativeControl(unittest.TestCase):
 
     def test_wrong_path_and_jobs_value_are_caught(self):
         def m(doc):
-            self.save_step(doc, "mutation")["with"]["path"] = "target/standalone-units"
+            steps = doc["jobs"]["mutation"]["steps"]
+            steps[find(steps, "actions/cache/restore@")[0]]["with"]["path"] = "target/standalone-units"
             doc["jobs"]["mutation"]["env"]["NELISP_STANDALONE_JOBS"] = "2"
         bad = check_job(self.damaged(m), "mutation")
         self.assertTrue(any("paths" in b for b in bad) and any("expected 4" in b for b in bad), bad)
+
+    def test_a_save_step_in_the_mutation_job_is_caught(self):
+        def m(doc):
+            steps = doc["jobs"]["mutation"]["steps"]
+            steps.append({"uses": "actions/cache/save@v4", "with": {"path": "x", "key": "y"}})
+        self.assertTrue(any("save step" in b for b in check_job(self.damaged(m), "mutation")))
 
     def test_unconditional_jobs_4_on_matrix_job_is_caught(self):
         def m(doc):

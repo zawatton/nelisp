@@ -80,6 +80,10 @@ ALLOWLIST = {
     ("tools/ai/windows-bringup-check.sh", ""):
         "Windows bring-up on MSYS2: deliberately rebuilds the default "
         "target/nelisp.exe in a cold-image mode (known cache-key gap)",
+    ("tools/nelisp-gate-mutation.sh", ""):
+        "gate-mutation injected build: builds the defect into target/nelisp "
+        "on purpose (private unit-cache copy, NELISP_VERSION pinned to the "
+        "baseline's) and the harness restores the saved baseline afterwards",
     ("tools/ai/win-smoke.sh", ""):
         "cross-built Windows PE under wine with its own output directory",
 }

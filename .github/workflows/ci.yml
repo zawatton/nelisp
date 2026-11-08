@@ -1236,6 +1236,9 @@ jobs:
     name: "gate-mutation shard ${{ matrix.shard }}/4"
     runs-on: ubuntu-latest
     needs: build
+    # Hard stop for a stuck shard.  The harness budget below (90 min of rows)
+    # plus checkout, setup, the final report and upload fit inside 120.
+    timeout-minutes: 120
     # Parallel unit prewarm on the 4 vCPU / 16 GB Linux runner.  Output is
     # identical for every JOBS value (the stamp key ignores it).
     env:
@@ -1421,6 +1424,11 @@ jobs:
             done
             # No base found: leave it unset so the sweep stays full.
           fi
+          # 5400 s = 90 min of rows: a row starts only if its worst case
+          # (build + row budgets) still fits; later rows print NOT RUN and
+          # fail the shard.  Setup and the final report fit in the rest of
+          # the job's 120 minutes.
+          NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
           NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
             bash tools/ai/nelisp-ai.sh gate gate-mutation -- make gate-mutation
       # Informational: shows whether the downloaded binary survived the job
@@ -1431,23 +1439,21 @@ jobs:
         continue-on-error: true
         run: make -s standalone-reader-status || true
 
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
-      - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.policy.outputs.run == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            target/standalone-units
-            target/nelisp-vendor-bytecode
-          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.shard }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+      # No cache/save here: every injected build works on a private copy of
+      # the unit cache, so the restored cache is unchanged and four shards
+      # saving near-identical caches would be waste.
 
       - name: Upload gate report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-reports-mutation-${{ matrix.shard }}
-          path: target/gates/*.json
+          # The row-accounting sidecar lives outside target/gates (local
+          # `verify' reads every *.json there); the merge step finds it by its
+          # `shard' field.
+          path: |
+            target/gates/*.json
+            target/gate-mutation-rows/*.json
           if-no-files-found: error
 
   subsystems:

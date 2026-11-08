@@ -140,7 +140,9 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-mutation-budget-test.py)
 
 ** S7.6 E2E local: a real rebuild row on the default binary restores in under 3 min with the same verdict, and a variant-building row (chunk-growth) passes within its budget, recorded
-pending
+evidence: tools/ai/ci-speed-evidence/s7-6-rows.log sha256=ba995593030b734bdbb5a64094393435062160dcd9b2cf53fe965a4bcb3736d8
+#+NOTE: 2026-11-09 A2: part A rerun on the final harness with NELISP_VERSION pinned to the baseline version: the row went red in 143s, the restored sha equals the baseline, the unit-cache and vendor-bytecode listings are unchanged, and the status is up to date.
+#+NOTE: 2026-11-08 A: host-parity decode-coding-string row 152s, restore by copy (no second build), restored sha == baseline, status up to date, default unit-cache and vendor-bytecode listing hashes unchanged. B: chunk-growth row 697s PASS under the build budget.
 
 ** S7.7 E2E CI: a real gate-mutation shard finishes inside its budget with every row accounted for (passed, failed, skipped or NOT RUN) and a slowest-rows table (needs a push; the user confirms each push)
 pending

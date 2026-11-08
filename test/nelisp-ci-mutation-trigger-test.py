@@ -184,7 +184,7 @@ class FeaturePR(unittest.TestCase):
         self.assertEqual(label(up), "Upload gate report")
         self.assertEqual(up["if"], "always()")
         self.assertEqual(up["with"]["if-no-files-found"], "error")
-        self.assertEqual(up["with"]["path"], "target/gates/*.json")
+        self.assertEqual(up["with"]["path"].split(), ["target/gates/*.json", "target/gate-mutation-rows/*.json"])
 
     def test_verify_needs_unchanged(self):
         self.assertEqual(self.doc["jobs"]["verify"]["needs"],

@@ -28,10 +28,10 @@ if [ "$n" -ne "$want" ]; then
   exit 1
 fi
 
-python3 - "$name" "$outdir/$name.json" $found <<'PY'
+python3 - "$name" "$outdir/$name.json" $found "$indir" <<'PY'
 import json,sys
 name, out = sys.argv[1], sys.argv[2]
-paths = sys.argv[3:]
+paths = sys.argv[3:-1]
 tot = {"ran":0,"passed":0,"failed":0,"skipped":0,"duration_ms":0}
 status = "pass"
 reasons = []
@@ -48,6 +48,50 @@ for p in paths:
         status = st if status == "pass" else status
     if d.get("reason"):
         reasons.append(d["reason"])
+# Row accounting (gate-mutation only).  `nelisp-ai.sh gate' keeps just two
+# fields of the harness's GATE-COUNT line, so each shard also writes
+# gate-mutation-rows-<k>.json (under target/gate-mutation-rows/, outside the
+# directory `verify' reads).  Sidecars are found anywhere under <indir> and
+# tied to their shard by the `shard' field inside, not by their location, so a
+# flattened download directory works.  A shard that reported a skip (trigger
+# policy, nothing changed, empty shard) has no row counts and is exempt.
+# The shards must agree on the selected total, the assigned counts must add
+# up to it, and every shard must account for every row it was assigned.
+if name == "gate-mutation":
+    import glob, os
+    problems = []
+    ran = [p for p in paths if json.load(open(p)).get("status") != "skip"]
+    side = []
+    for root, _dirs, files in os.walk(sys.argv[-1]):
+        side += [os.path.join(root, f) for f in files
+                 if f.startswith("gate-mutation-rows-") and f.endswith(".json")]
+    side = sorted(side)
+    recs = [(f, json.load(open(f))) for f in side]
+    if len(recs) != len(ran):
+        problems.append("%d non-skip shard report(s) but %d row-accounting file(s)" % (len(ran), len(recs)))
+    shards = [r.get("shard") for _f, r in recs]
+    if len(set(shards)) != len(shards):
+        problems.append("duplicate shard ids in the row-accounting files: %s" % sorted(shards))
+    totals = set()
+    assigned_sum = 0
+    for f, r in recs:
+        acc = sum(int(r.get(k) or 0) for k in ("passed", "failed", "skipped", "not_run"))
+        if acc != int(r.get("assigned") or 0):
+            problems.append("%s: accounted %d rows (passed+failed+skipped+not_run) but %s were assigned"
+                            % (f, acc, r.get("assigned")))
+        totals.add(int(r.get("selected_total") or 0))
+        assigned_sum += int(r.get("assigned") or 0)
+    if len(totals) > 1:
+        problems.append("shards disagree on the selected total: %s" % sorted(totals))
+    elif totals and assigned_sum != next(iter(totals)):
+        problems.append("shards were assigned %d rows in total but %d were selected"
+                        % (assigned_sum, next(iter(totals))))
+    if problems:
+        print("merge-gate-reports: FAIL (%s: row accounting)" % name)
+        for m in problems:
+            print("  " + m)
+        sys.exit(1)
+
 merged = {
     "schema": "nelisp-gate/1",
     "name": name,

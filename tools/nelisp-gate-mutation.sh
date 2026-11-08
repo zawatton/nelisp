@@ -78,6 +78,14 @@ slow_row=${NELISP_GATE_MUTATION_SLOW_ROW:-60}
 require_positive_int NELISP_GATE_MUTATION_ROW_TIMEOUT "$row_timeout"
 require_positive_int NELISP_GATE_MUTATION_BUILD_TIMEOUT "$build_timeout"
 require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
+# Optional budget for the whole shard (seconds since this harness started).
+# Unset means no budget.  A row is started only when its worst case still
+# fits; every row that does not fit is reported NOT RUN and fails the shard.
+shard_budget=${NELISP_GATE_MUTATION_SHARD_BUDGET:-}
+if [ -n "$shard_budget" ]; then
+  require_positive_int NELISP_GATE_MUTATION_SHARD_BUDGET "$shard_budget"
+fi
+not_run=0; selected_total=0; assigned=0
 
 # A timeout(1) exit of 124 (TERM) or 137 (the --kill-after KILL took the
 # whole group, `timeout' included) only counts as a budget timeout when the
@@ -102,6 +110,18 @@ wait_bounded() {
 }
 rebuild_timed_out=0
 rebuild_seq=0
+# Set only around an injected build (see unit_scratch_make).  It is passed
+# through `env' on that one command and never exported: the variable is part
+# of the stamp key, so a leak would make every later status read `key changed'.
+# The injected build also gets NELISP_VERSION=<baseline version>: the build
+# embeds `git describe --dirty' (scripts/nelisp-version.el), the baseline comes
+# from a clean checkout and every injected build runs in a dirty tree, so
+# without it the injected set would always differ and the injection check could
+# never fire.  nelisp-build-source-revision (HEAD) is not affected by a working
+# tree edit.  Like the cache variable, it is passed through `env' on that one
+# command only.
+baseline_version=""
+rebuild_cache_dir=""
 # Print the end of a failed attempt's build log under a header that names
 # the row, so a red rebuild is diagnosable from the CI log alone.
 show_rebuild_tail() {
@@ -127,7 +147,12 @@ rebuild_checked() {
   for attempt in 1 2; do
     t0=$SECONDS
     blog="target/gate-mutation-logs/rebuild-$rebuild_seq-$safe-attempt$attempt.log"
-    timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >"$blog" 2>&1 &
+    if [ -n "$rebuild_cache_dir" ]; then
+      env "NELISP_STANDALONE_UNIT_CACHE_DIR=$rebuild_cache_dir" "NELISP_VERSION=$baseline_version" \
+        timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >"$blog" 2>&1 &
+    else
+      timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >"$blog" 2>&1 &
+    fi
     wait_bounded $!
     rc=$?
     [ "$rc" -eq 0 ] && return 0
@@ -248,6 +273,240 @@ gate_needs_rebuild() {
   [ "$1:$2" = "ert-full:scripts/nelisp-standalone-build.el" ]
 }
 
+# Gates whose recipe builds its OWN variant binary (target/nelisp-dyn,
+# target/nelisp-chunk8m) from the current sources and runs only that.  Their
+# gate run is a build, so it gets the build budget, not the row budget.  They
+# also rewrite the fixed-path companions of the default build, so the default
+# binary is restored from the baseline copy after them.  One list; a test
+# parses it.  `standalone-reader-tls-smoke' is the table's name, the -linux
+# spelling is the Makefile target it dispatches to.
+gate_builds_variant() {
+  case "$1" in
+    standalone-chunk-growth-test) return 0 ;;
+    standalone-reader-ffi-smoke) return 0 ;;
+    ffi-dsl) return 0 ;;
+    standalone-reader-tls-smoke) return 0 ;;
+    standalone-reader-tls-smoke-linux) return 0 ;;
+  esac
+  return 1
+}
+
+# A rebuild only changes anything when the mutated file is a build input.  The
+# lists are read from the stamp tool, which owns them; copying them here would
+# let the two drift.
+stamp_tool=tools/nelisp-standalone-reader-build.sh
+build_key_dirs=$(sed -n 's/^KEY_DIRS="\(.*\)"$/\1/p' "$stamp_tool" 2>/dev/null)
+build_key_files=$(sed -n 's/^KEY_FILES="\(.*\)"$/\1/p' "$stamp_tool" 2>/dev/null)
+if [ -z "$build_key_dirs" ] || [ -z "$build_key_files" ]; then
+  echo "gate-mutation: FAIL (cannot read KEY_DIRS/KEY_FILES from $stamp_tool; build inputs are unknown)"
+  exit 1
+fi
+file_is_build_input() {
+  local f="$1" d k
+  for d in $build_key_dirs; do
+    case "$f" in "$d"/*) return 0 ;; esac
+  done
+  for k in $build_key_files; do
+    [ "$f" = "$k" ] && return 0
+  done
+  return 1
+}
+# Does this row rebuild around its injection?
+# A variant-building gate builds AND runs its own binary (target/nelisp-dyn,
+# target/nelisp-chunk8m) and never executes target/nelisp (Makefile:3607-3611
+# ffi-dsl, 3406-3532 standalone-reader-ffi-smoke which runs STANDALONE_FFI_BIN =
+# the dyn binary on Linux, 3714-3735 tls-smoke-linux; tools/chunk-growth-test.sh
+# runs only VARIANT_OUT), so a default rebuild around it is wasted work.  Its
+# clean binary is still restored afterwards: the variant build rewrites the
+# fixed-path companions of the default build.
+row_rebuilds() {
+  gate_needs_rebuild "$1" "$2" && file_is_build_input "$2" && ! gate_builds_variant "$1"
+}
+# The "injection reached the build output" check applies only to source files
+# under the stamp's KEY_DIRS.  A KEY_FILE (Makefile, the parity .tsv, the opcode
+# .json, the stamp tool) is part of the stamp key but need not change the output.
+file_in_key_dirs() {
+  local d
+  for d in $build_key_dirs; do
+    case "$1" in "$d"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+# The set of files one clean build produces.  The single definition is the
+# upload list of job `build' in .github/workflows/ci.yml; a test compares the
+# two.  An entry ending in `/' is a directory.
+# BASELINE-SET-BEGIN
+baseline_set='
+target/nelisp
+target/nelisp.cold
+target/nelisp.build-stamp
+target/nelisp.version.json
+target/nelisp.native-startup.el
+target/nelisp.buffer-local-bytecode.tsv
+target/nelisp.variable-alias-bytecode.tsv
+target/nelisp-artifact-runtime.el
+target/nelisp-artifact-runtime.el.nelc
+target/nelisp-artifact-runtime.el.nelc.enable
+target/nelisp-artifact-runtime.el.nelc.manifest.el
+target/nelisp-core-bytecode-report.tsv
+target/nelisp-prelude-bytecode-report.tsv
+target/nelisp-regexp-bytecode-report.tsv
+target/nelisp-vendor-bytecode-report.tsv
+target/nelisp-boot-image/
+'
+# BASELINE-SET-END
+baseline_dir=target/gate-mutation-baseline
+baseline_ready=0
+baseline_bin_sha=""
+baseline_set_sha=""
+
+# sha256 of a file, of a directory's file listing, or `absent'.
+sha_of() {
+  if [ -d "$1" ]; then
+    (cd "$1" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)
+  elif [ -f "$1" ]; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    echo absent
+  fi
+}
+
+# One hash over the whole set except the stamp (binary, .cold, companions,
+# reports): "the injection reached the build output" means any of it changed.
+set_sha() {
+  local f
+  for f in $baseline_set; do
+    case "$f" in target/nelisp.build-stamp) continue ;; esac
+    printf '%s %s\n' "$f" "$(sha_of "${f%/}")"
+  done | sha256sum | cut -d' ' -f1
+}
+
+# Real copies (no hardlinks) of the clean build set, with their hashes.  A
+# missing file is recorded as absent and must be absent after a restore.
+baseline_save() {
+  local f p
+  rm -rf "$baseline_dir"
+  mkdir -p "$baseline_dir" || return 1
+  : >"$baseline_dir/manifest.txt"
+  for f in $baseline_set; do
+    p=${f%/}
+    if [ -e "$p" ]; then
+      mkdir -p "$baseline_dir/$(dirname "$p")" || return 1
+      cp -R "$p" "$baseline_dir/$p" || return 1
+    fi
+    printf '%s %s\n' "$p" "$(sha_of "$p")" >>"$baseline_dir/manifest.txt"
+  done
+  baseline_bin_sha=$(sha_of target/nelisp)
+  baseline_set_sha=$(set_sha)
+  baseline_version=$(sed -n 's/.*"version" *: *"\([^"]*\)".*/\1/p' "$baseline_dir/target/nelisp.version.json" 2>/dev/null | head -1)
+  baseline_ready=1
+}
+
+# Copy the baseline set back with PLAIN cp, after the source was restored, so
+# every file is newer than every source (binary-size-ratchet refuses a binary
+# older than a source .el).  Derived files go last: the binary, then the stamp.
+baseline_restore() {
+  local p
+  for p in $(printf '%s\n' $baseline_set | sed 's:/$::' |
+             grep -v -e '^target/nelisp$' -e '^target/nelisp.build-stamp$') \
+           target/nelisp target/nelisp.build-stamp; do
+    rm -rf "$p"
+    if [ -e "$baseline_dir/$p" ]; then
+      cp -R "$baseline_dir/$p" "$p" || return 1
+    fi
+  done
+}
+
+# Put the clean binary back after a row.  Restore by copy, then ask the stamp
+# tool whether the tree is up to date; if not, say so loudly and rebuild.
+# Never continues silently.
+binary_may_be_dirty=0
+restore_clean_binary() {
+  local ctx="$1" st why
+  rebuild_timed_out=0
+  if [ "$baseline_ready" = 1 ] && baseline_restore; then
+    st=$(timeout 300 make -s standalone-reader-status $MUTATION_TARGET_ARG 2>&1)
+    case "$st" in
+      *"up to date"*)
+        if [ "$(sha_of target/nelisp)" = "$baseline_bin_sha" ]; then
+          binary_may_be_dirty=0
+          return 0
+        fi
+        why="restored binary differs from the baseline" ;;
+      *) why=$(printf '%s\n' "$st" | tail -1) ;;
+    esac
+  else
+    why="no usable baseline copy"
+  fi
+  echo "gate-mutation: RESTORE-BY-COPY NOT CONFIRMED ($ctx): ${why:-no status output}; falling back to a full rebuild"
+  if rebuild_checked "$ctx (fallback rebuild)"; then
+    binary_may_be_dirty=0
+    return 0
+  fi
+  return 1
+}
+
+# A private copy of the unit cache for one injected build.  Hardlinks are safe
+# because the build writes a temp name and renames it over the entry and
+# prunes with unlink (scripts/nelisp-standalone-build.el, unit cache write
+# path); it never writes into an existing entry.  The copy is removed right
+# after the build, by the EXIT trap, and on INT/TERM.
+unit_scratch=""
+unit_scratch_make() {
+  mkdir -p target/gate-mutation-units || return 1
+  unit_scratch="target/gate-mutation-units/row-$row_index"
+  rm -rf "$unit_scratch"
+  if [ -d target/standalone-units ]; then
+    if ! cp -al target/standalone-units "$unit_scratch" 2>/dev/null; then
+      echo "gate-mutation: hardlink copy of the unit cache failed; using a full copy (slower)"
+      rm -rf "$unit_scratch"
+      cp -a target/standalone-units "$unit_scratch" || return 1
+    fi
+  else
+    mkdir -p "$unit_scratch" || return 1
+  fi
+  rebuild_cache_dir="$(cd "$unit_scratch" && pwd)"
+  # The build also writes target/nelisp-vendor-bytecode/ (scripts/nelisp-
+  # standalone-build.el:49943 out-dir, 50006 with-temp-file; the path is fixed,
+  # not redirectable).  Swap in a hardlink copy for the injected build only.
+  if [ -d target/nelisp-vendor-bytecode ]; then
+    vendor_orig="target/gate-mutation-units/vendor-orig-$row_index"
+    rm -rf "$vendor_orig"
+    mv target/nelisp-vendor-bytecode "$vendor_orig" || return 1
+    cp -al "$vendor_orig" target/nelisp-vendor-bytecode ||
+      cp -a "$vendor_orig" target/nelisp-vendor-bytecode || return 1
+  fi
+}
+vendor_orig=""
+unit_scratch_drop() {
+  rebuild_cache_dir=""
+  if [ -n "$vendor_orig" ] && [ -d "$vendor_orig" ]; then
+    rm -rf target/nelisp-vendor-bytecode
+    mv "$vendor_orig" target/nelisp-vendor-bytecode
+  fi
+  vendor_orig=""
+  [ -n "$unit_scratch" ] && rm -rf "$unit_scratch"
+  unit_scratch=""
+  rmdir target/gate-mutation-units 2>/dev/null || true
+}
+
+# Worst-case seconds one row can use, for the shard budget.  This is a
+# PRE-CHECK, not a hard guarantee: it ignores the second build attempt, the
+# restore fallback rebuild and the clean-baseline check, which the 30 minutes
+# between the 90 minute budget and the job's timeout-minutes 120 absorb.
+# (Doubling BUILD would equal the whole budget, so no rebuild row would start.)
+row_worst_case() {
+  local g="$1" f="$2" w=0
+  case "$g" in
+    nl-num-standalone-smoke) echo $((3 * nl_num_mutation_timeout)); return ;;
+    nelisp-thread-allocating-standalone-smoke) echo 30; return ;;
+  esac
+  if row_rebuilds "$g" "$f"; then w=$build_timeout; fi
+  if gate_builds_variant "$g"; then w=$((w + build_timeout)); else w=$((w + row_timeout)); fi
+  echo "$w"
+}
+
 # `ert-full' rows run a real (deliberately red) `nelisp-ai.sh test', which
 # writes a gate report into `NELISP_GATE_DIR' (default `target/gates').
 # Left alone that would overwrite the tree's real `ert-full' report with a
@@ -290,7 +549,7 @@ print_timing_summary() {
         printf '  %6ss  %s  file=%s\n' "$t_secs" "$t_gate" "$t_file"
       done
   fi
-  printf 'gate-mutation: total wall %ss, warm-up %ss\n' "$SECONDS" "$warmup_secs"
+  printf 'gate-mutation: total wall %ss, warm-up %ss, not run %s\n' "$SECONDS" "$warmup_secs" "${not_run:-0}"
 }
 
 # A row is inject -> run -> restore, and until this trap existed the restore
@@ -332,6 +591,15 @@ mutation_cleanup() {
     fi
   fi
   mutation_active_file=""; mutation_active_backup=""
+  # Scratch unit caches and the private vendor-bytecode swap go too.
+  unit_scratch_drop
+  rm -rf target/gate-mutation-units
+  # An injected build or a variant gate may have left the default build set
+  # changed.  Copy the baseline back (plain cp, no status run); do it only when
+  # a row actually touched the set, so a clean finish costs nothing.
+  if [ "${binary_may_be_dirty:-0}" = 1 ] && [ "${baseline_ready:-0}" = 1 ] && [ -d "$baseline_dir" ]; then
+    baseline_restore && binary_may_be_dirty=0
+  fi
   print_timing_summary
   rm -rf "$mutation_gate_dir"
 }
@@ -350,9 +618,14 @@ trap 'mutation_cleanup; exit 129' HUP
 # full suite is too slow to carry here.  The empty-glob row corrupts
 # `test_files()' ITSELF (source: `tools/ai/nelisp-ai.sh'), so it must run
 # UNSCOPED: scoping would bypass the very line the row exists to test.
+run_gate_budget=$row_timeout
 run_gate() {
   local g="$1" f="$2" log="$3" generic=1 rc t0=$SECONDS
-  local bounded=(timeout --kill-after=10s "$row_timeout")
+  local budget=$row_timeout
+  # A gate that builds its own variant runs under the build budget.
+  if gate_builds_variant "$g"; then budget=$build_timeout; fi
+  run_gate_budget=$budget
+  local bounded=(timeout --kill-after=10s "$budget")
   run_gate_timeout=0
   if [ "$g" = "ert-full" ]; then
     if [ "$f" = "tools/ai/nelisp-ai.sh" ]; then
@@ -410,7 +683,7 @@ run_gate() {
   # Only the generic branches use the row budget; the two special rows above
   # keep their own timeouts and their own classification.
   if [ "$generic" = 1 ] && { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } &&
-     [ $((SECONDS - t0)) -ge "$row_timeout" ]; then
+     [ $((SECONDS - t0)) -ge "$budget" ]; then
     run_gate_timeout=1
   fi
   return "$rc"
@@ -529,7 +802,11 @@ fi
 # the slow rows (the six that rebuild the binary, the six that run a
 # scoped ERT suite) are clustered in the table, and contiguous blocks
 # would put them all in one shard.
+# Rows selected before sharding (after scope/ONLY/GREP/BASE narrowing); the
+# merge checks that every shard saw the same total.
+selected_total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 shard=${NELISP_GATE_MUTATION_SHARD:-}
+shard_k=0; shard_n=1
 if [ -n "$shard" ]; then
   shard_k=${shard%%/*}
   shard_n=${shard##*/}
@@ -551,6 +828,7 @@ if [ -n "$shard" ]; then
   fi
   echo "gate-mutation: shard $shard_k of $shard_n ($(printf '%s\n' "$rows" | wc -l | tr -d ' ') rows)"
 fi
+assigned=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 
 # Show the selection and stop.  Inspecting which rows a filter picks used
 # to mean starting a sweep and killing it, which is how an injected defect
@@ -588,11 +866,16 @@ if [ "$in_scope" -gt 0 ]; then
   fi
   warmup_secs=$((SECONDS - warm_start))
   echo "gate-mutation: warm-up rebuild took ${warmup_secs}s"
+  if ! baseline_save; then
+    echo "gate-mutation: FAIL (cannot save the clean baseline copy under $baseline_dir; no row was run)"
+    exit 1
+  fi
+  echo "gate-mutation: baseline copy saved ($(grep -vc ' absent$' "$baseline_dir/manifest.txt") present, $(grep -c ' absent$' "$baseline_dir/manifest.txt") absent)"
 fi
 timing_started=1
 row_total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 
-passed=0; failed=0; skipped=0
+passed=0; failed=0; skipped=0; budget_exhausted=0
 while IFS='|' read -r gate file expr what scope; do
   finish_row
   [ -z "${gate:-}" ] && continue
@@ -601,6 +884,15 @@ while IFS='|' read -r gate file expr what scope; do
     echo "  $gate: SKIP (row scope $scope does not include target $MUTATION_TARGET)"
     skipped=$((skipped+1))
     continue
+  fi
+  if [ -n "$shard_budget" ]; then
+    row_worst=$(row_worst_case "$gate" "$file")
+    if [ "$budget_exhausted" = 1 ] || [ $((SECONDS + row_worst)) -gt "$shard_budget" ]; then
+      budget_exhausted=1
+      echo "  $gate: NOT RUN (shard budget ${shard_budget}s exhausted; file $file)"
+      not_run=$((not_run+1))
+      continue
+    fi
   fi
   if [ "$binary_dirty" = 1 ]; then
     # An earlier rebuild timed out; do not let this row see a partial binary.
@@ -613,6 +905,13 @@ while IFS='|' read -r gate file expr what scope; do
     echo "gate-mutation: recovery rebuild took $((SECONDS - recover_start))s"
   fi
   start_row "$gate" "$file"
+  # Restore the clean binary after this row when it rebuilt around its
+  # injection, or when its gate builds a variant (which rewrites the fixed-path
+  # companions of the default build).
+  need_clean_binary=0
+  if row_rebuilds "$gate" "$file" || gate_builds_variant "$gate"; then
+    need_clean_binary=1; binary_may_be_dirty=1
+  fi
   # nl-num is the one mutation row known to have produced a runaway smoke.
   # Establish a clean PASS before touching the source.  This prevents a
   # timeout or other non-zero result from being treated as the baseline when
@@ -695,17 +994,47 @@ while IFS='|' read -r gate file expr what scope; do
   # mutate the standalone build script also rebuild: Doc 200's cross-tag key
   # test executes target/nelisp, so a stale fixed binary would make the new
   # outer-tag-gate mutation read as green.
-  if gate_needs_rebuild "$gate" "$file"; then
-    if ! rebuild_checked; then
+  if row_rebuilds "$gate" "$file" && [ -z "$baseline_version" ]; then
+    echo "  $gate: HARNESS ERROR (no readable \"version\" in the baseline target/nelisp.version.json; the injected build cannot be pinned to the baseline version)"
+    failed=$((failed+1))
+    mutation_restore || exit 1
+    rm -f "$backup"
+    mutation_active_file=""; mutation_active_backup=""
+    continue
+  fi
+  if row_rebuilds "$gate" "$file"; then
+    if ! { unit_scratch_make && rebuild_checked; }; then
+      unit_scratch_drop
       if [ "$rebuild_timed_out" = 1 ]; then
         echo "  $gate: TIMEOUT (rebuild with injection after ${build_timeout}s; file $file)"
-        row_timed_out=1; binary_dirty=1
+        row_timed_out=1
       else
         echo "  $gate: HARNESS ERROR (rebuild with the injection failed; a stale binary would have read as PASS)"
       fi
       failed=$((failed+1))
       mutation_restore || exit 1
-      rm -f "$backup"; continue
+      rm -f "$backup"
+      mutation_active_file=""; mutation_active_backup=""
+      restore_clean_binary "after the failed injected build, gate $gate" || binary_dirty=1
+      continue
+    fi
+    unit_scratch_drop
+    if [ "$baseline_ready" = 1 ] && ! file_in_key_dirs "$file"; then
+      echo "  $gate: injection check skipped ($file is a stamp KEY_FILE; it need not change the build output)"
+    elif [ "$baseline_ready" = 1 ] && [ "$(set_sha)" = "$baseline_set_sha" ]; then
+      echo "  $gate: HARNESS ERROR (injection did not reach the binary; file $file)"
+      failed=$((failed+1))
+      mutation_restore || exit 1
+      rm -f "$backup"
+      mutation_active_file=""; mutation_active_backup=""
+      restore_clean_binary "after an injection that did not reach the binary, gate $gate" || binary_dirty=1
+      continue
+    fi
+  elif gate_needs_rebuild "$gate" "$file"; then
+    if gate_builds_variant "$gate"; then
+      echo "  $gate: no default rebuild (the gate builds and runs its own variant)"
+    else
+      echo "  $gate: no rebuild ($file is not a build input)"
     fi
   fi
   gate_log="$(mktemp)"
@@ -792,13 +1121,13 @@ while IFS='|' read -r gate file expr what scope; do
     # a skip that appears only once the defect lands is the defect itself,
     # dressed as "could not be asked".
     mutation_restore || exit 1
-    if gate_needs_rebuild "$gate" "$file"; then
-      if ! rebuild_checked; then
+    if [ "$need_clean_binary" = 1 ]; then
+      if ! restore_clean_binary "before the clean skip check, gate $gate"; then
         if [ "$rebuild_timed_out" = 1 ]; then
           echo "  $gate: TIMEOUT (rebuild after restore after ${build_timeout}s; file $file)"
           row_timed_out=1; binary_dirty=1
         else
-          echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt before the clean skip check)"
+          echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be restored before the clean skip check)"
         fi
         failed=$((failed+1))
         rm -f "$backup"
@@ -817,7 +1146,7 @@ while IFS='|' read -r gate file expr what scope; do
     fi
     rm -f "$baseline_log"
     if [ "$baseline_timed_out" = 1 ]; then
-      echo "  $gate: TIMEOUT (clean-baseline gate run after ${row_timeout}s; file $file)"
+      echo "  $gate: TIMEOUT (clean-baseline gate run after ${run_gate_budget}s; file $file)"
       row_timed_out=1
       failed=$((failed+1))
     elif [ -n "$skip_before" ]; then
@@ -831,7 +1160,7 @@ while IFS='|' read -r gate file expr what scope; do
     continue
   fi
   if [ "$gate_timed_out" = 1 ]; then
-    echo "  $gate: TIMEOUT (gate run with injection after ${row_timeout}s; file $file)"
+    echo "  $gate: TIMEOUT (gate run with injection after ${run_gate_budget}s; file $file)"
     row_timed_out=1
     failed=$((failed+1))
   elif [ "$gate_ok" = 1 ]; then
@@ -843,13 +1172,13 @@ while IFS='|' read -r gate file expr what scope; do
   fi
   mutation_restore || exit 1
   rm -f "$backup"
-  if gate_needs_rebuild "$gate" "$file"; then
-    if ! rebuild_checked; then
+  if [ "$need_clean_binary" = 1 ]; then
+    if ! restore_clean_binary "after the row, gate $gate"; then
       if [ "$rebuild_timed_out" = 1 ]; then
         echo "  $gate: TIMEOUT (rebuild after restore after ${build_timeout}s; file $file)"
         row_timed_out=1; binary_dirty=1
       else
-        echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be rebuilt; later rows would otherwise test the injected artifact)"
+        echo "  $gate: HARNESS ERROR (clean source was restored, but the binary could not be restored; later rows would otherwise test the injected artifact)"
       fi
       failed=$((failed+1))
       mutation_active_file=""; mutation_active_backup=""
@@ -859,9 +1188,24 @@ while IFS='|' read -r gate file expr what scope; do
 done <<< "$rows"
 print_timing_summary
 checked=$((passed+failed))
-echo "GATE-COUNT checked=$checked findings=$failed passed=$passed failed=$failed skipped=$skipped"
-if [ "$failed" -gt 0 ]; then
-  echo "gate-mutation: FAIL ($failed failed, $passed passed, $skipped skipped)"
+accounted=$((passed+failed+skipped+not_run))
+# Row accounting for the shard merge.  `nelisp-ai.sh gate' keeps only the
+# checked= and findings= fields of GATE-COUNT, so the counts also go to a
+# sidecar file under target/gate-mutation-rows/ (not target/gates/, which
+# local `verify' reads in full); the CI upload step ships it with the report
+# and only tools/nelisp-merge-gate-reports.sh reads it.
+rows_dir=target/gate-mutation-rows
+mkdir -p "$rows_dir"
+printf '{"schema": "gate-mutation-rows/1", "shard": "%s/%s", "selected_total": %s, "assigned": %s, "passed": %s, "failed": %s, "skipped": %s, "not_run": %s}\n' \
+  "$shard_k" "$shard_n" "$selected_total" "$assigned" "$passed" "$failed" "$skipped" "$not_run" \
+  >"$rows_dir/gate-mutation-rows-$shard_k.json"
+echo "GATE-COUNT checked=$checked findings=$((failed+not_run)) passed=$passed failed=$failed skipped=$skipped not_run=$not_run selected_total=$selected_total assigned=$assigned"
+if [ "$accounted" -ne "$assigned" ]; then
+  echo "gate-mutation: FAIL (row accounting: passed+failed+skipped+not_run=$accounted but $assigned rows were assigned)"
+  exit 1
+fi
+if [ "$failed" -gt 0 ] || [ "$not_run" -gt 0 ]; then
+  echo "gate-mutation: FAIL ($failed failed, $passed passed, $skipped skipped, $not_run not run)"
   exit 1
 fi
 echo "gate-mutation: PASS ($passed passed, $skipped skipped)"
