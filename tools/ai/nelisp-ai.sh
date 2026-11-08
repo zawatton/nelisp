@@ -525,11 +525,28 @@ cmd_gate() {
     shift
     log=$(mktemp)
     started=$(date +%s)
+    # Stream the output while the command runs and keep the full log for
+    # the parsing below.  The command writes to the log file, never into a
+    # pipe: a pipe would also wait for any child the gate leaves behind
+    # holding stdout, so a finished gate could hang the job.  `tail --pid'
+    # follows the file until the command exits.  Where tail has no --pid
+    # (BSD tail on macOS) the log is printed once the command finishes, as
+    # before.  `<&0' keeps the caller's stdin, which an asynchronous list
+    # would otherwise replace with /dev/null.
     set +e
-    "$@" > "$log" 2>&1
+    "$@" <&0 > "$log" 2>&1 &
+    gate_pid=$!
+    if tail --pid="$$" -n 0 /dev/null >/dev/null 2>&1; then
+        tail --pid="$gate_pid" -n +1 -f "$log"
+    else
+        streamed=no
+    fi
+    wait "$gate_pid"
     code=$?
     set -e
-    cat "$log"
+    if [ "${streamed:-yes}" = no ]; then
+        cat "$log"
+    fi
     skip=$(grep -E '^GATE-SKIP ' "$log" | tail -1 | sed 's/^GATE-SKIP //' || true)
     if [ -n "$skip" ]; then
         duration=$(( ($(date +%s) - started) * 1000 ))

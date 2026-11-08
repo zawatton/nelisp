@@ -101,21 +101,44 @@ wait_bounded() {
   return "$rc"
 }
 rebuild_timed_out=0
+rebuild_seq=0
+# Print the end of a failed attempt's build log under a header that names
+# the row, so a red rebuild is diagnosable from the CI log alone.
+show_rebuild_tail() {
+  local context="$1" blog="$2"
+  echo "gate-mutation: rebuild log tail ($context; log $blog)"
+  if [ -s "$blog" ]; then
+    tail -40 "$blog" | sed 's/^/    /'
+  else
+    echo "    (build produced no output)"
+  fi
+}
+# Each attempt's build output goes to its own file under
+# target/gate-mutation-logs/ (redirected into the file, not through a pipe,
+# so $! and the exit code stay those of timeout).  Nothing extra is printed
+# for a successful build.  $1 optionally names the context for the header.
 rebuild_checked() {
-  local attempt rc t0
+  local attempt rc t0 context blog safe
+  context="${1:-gate ${gate:-<none>}, file ${file:-<none>}}"
   rebuild_timed_out=0
+  mkdir -p target/gate-mutation-logs
+  safe=$(printf '%s' "${gate:-warmup}" | tr -c 'A-Za-z0-9._-' '_')
+  rebuild_seq=$((rebuild_seq + 1))
   for attempt in 1 2; do
     t0=$SECONDS
-    timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >/dev/null 2>&1 &
+    blog="target/gate-mutation-logs/rebuild-$rebuild_seq-$safe-attempt$attempt.log"
+    timeout --kill-after=10s "$build_timeout" make standalone-reader $MUTATION_TARGET_ARG >"$blog" 2>&1 &
     wait_bounded $!
     rc=$?
     [ "$rc" -eq 0 ] && return 0
     if { [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; } && [ $((SECONDS - t0)) -ge "$build_timeout" ]; then
       rebuild_timed_out=1
+      show_rebuild_tail "$context, TIMEOUT after ${build_timeout}s, attempt $attempt" "$blog"
       return 1
     fi
     [ "$attempt" = 1 ] && sleep 2
   done
+  show_rebuild_tail "$context, failed twice, last exit $rc" "$blog"
   return 1
 }
 
@@ -555,7 +578,7 @@ if [ "$in_scope" -gt 0 ]; then
     exit 1
   fi
   warm_start=$SECONDS
-  if ! rebuild_checked; then
+  if ! rebuild_checked "warm-up rebuild, no row yet"; then
     if [ "$rebuild_timed_out" = 1 ]; then
       echo "gate-mutation: FAIL (warm-up rebuild: TIMEOUT after ${build_timeout}s; no row was run)"
     else
@@ -582,7 +605,7 @@ while IFS='|' read -r gate file expr what scope; do
   if [ "$binary_dirty" = 1 ]; then
     # An earlier rebuild timed out; do not let this row see a partial binary.
     recover_start=$SECONDS
-    if ! rebuild_checked; then
+    if ! rebuild_checked "recovery rebuild before row $gate, file $file"; then
       echo "gate-mutation: FAIL (recovery rebuild after an earlier rebuild timeout did not succeed; stopping, later rows would test a partial binary)"
       exit 1
     fi

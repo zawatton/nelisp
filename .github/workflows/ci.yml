@@ -687,6 +687,12 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: python3 test/nelisp-mutation-recovery-test.py
+      - name: Gate output streaming and reader-smoke timing
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 test/nelisp-ai-gate-stream-test.py
+          python3 test/nelisp-reader-smokes-timing-test.py
       - name: Mutation harness row budgets and timing report
         if: runner.os == 'Linux'
         shell: bash

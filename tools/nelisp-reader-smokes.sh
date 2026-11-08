@@ -83,18 +83,29 @@ mkdir -p target/tmp
 status_dir="$(mktemp -d)"
 trap 'rm -rf "$status_dir"' EXIT
 
+# Record one finished target: its duration for the slowest-targets table
+# and one progress line, so a long run is not silent until the end.  The
+# line is a single printf (one write) so parallel workers cannot split it.
+finish_target() {
+  local t="$1" secs="$2" verdict="$3"
+  printf '%s\n' "$secs" > "$status_dir/$t.secs"
+  printf '[reader-smokes] %s done in %ss (%s)\n' "$t" "$secs" "$verdict"
+}
+
 run_one() {
-  local t="$1" log="target/tmp/nelisp-smoke-$1.log"
+  local t="$1" log="target/tmp/nelisp-smoke-$1.log" t0=$SECONDS
   if "$MAKE_BIN" --no-print-directory -o standalone-reader "$t" $MAKE_TARGET_ARG > "$log" 2>&1; then
     : > "$status_dir/$t.ok"
+    finish_target "$t" $((SECONDS - t0)) ok
   else
     # Keep the tail with the marker: the aggregator prints it later, in
     # target order, instead of whenever this worker happened to finish.
-    tail -3 "$log" > "$status_dir/$t.fail"
+    tail -40 "$log" > "$status_dir/$t.fail"
+    finish_target "$t" $((SECONDS - t0)) FAIL
   fi
   rm -f "$log"
 }
-export -f run_one
+export -f run_one finish_target
 export status_dir MAKE_BIN
 
 # Six of these targets do NOT just read the binary: they rebuild it
@@ -165,10 +176,13 @@ printf '%s\n' $par_list | xargs -P "$jobs" -I{} bash -c 'run_one "$@"' _ {}
 for t in $SERIAL_SMOKES; do
   case " $* " in *" $t "*) ;; *) continue ;; esac
   log="target/tmp/nelisp-smoke-$t.log"
+  t0=$SECONDS
   if "$MAKE_BIN" --no-print-directory "$t" $MAKE_TARGET_ARG > "$log" 2>&1; then
     : > "$status_dir/$t.ok"
+    finish_target "$t" $((SECONDS - t0)) ok
   else
-    tail -3 "$log" > "$status_dir/$t.fail"
+    tail -40 "$log" > "$status_dir/$t.fail"
+    finish_target "$t" $((SECONDS - t0)) FAIL
   fi
   rm -f "$log"
 done
@@ -189,6 +203,15 @@ for t in "$@"; do
     ran=$((ran + 1)); failed=$((failed + 1)); failed_names="$failed_names $t(no-result)"
     echo "[reader-smokes] FAIL: $t produced no result (worker died before reporting)"
   fi
+done
+
+# Slowest targets first, shown whether or not anything failed.
+echo "[reader-smokes] slowest targets"
+for f in "$status_dir"/*.secs; do
+  [ -e "$f" ] || continue
+  printf '%s %s\n' "$(cat "$f")" "$(basename "$f" .secs)"
+done | sort -k1,1nr -k2,2 | head -10 | while read -r secs name; do
+  printf '    %4ss  %s\n' "$secs" "$name"
 done
 
 echo "GATE-COUNT checked=$ran findings=$failed"

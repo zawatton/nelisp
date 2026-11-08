@@ -2,7 +2,7 @@
 gate-mutation harness.  A fixture repository with a fake Makefile and a fake
 row table stands in for the real tree; no real gate or build runs.
 
-Usage: python3 test/nelisp-gate-mutation-row-timeout-test.py [RowTimeout|RowTimingReport]
+Usage: python3 test/nelisp-gate-mutation-row-timeout-test.py [RowTimeout|RowTimingReport|RebuildLog]
 
 NELISP_GATE_MUTATION_UNDER_TEST may name another copy of the harness; it
 exists so a deliberately broken copy can prove these tests are able to fail.
@@ -255,6 +255,60 @@ class RowTimingReport(Fixture):
         self.assertEqual(self.builds(), 0, self.out)
         self.assertEqual(self.gates_run(), [])
         self.assertNotIn("warm-up rebuild took", self.out)
+
+
+class RebuildLog(Fixture):
+    """Each rebuild attempt keeps its output in a log; a failed or timed-out
+    rebuild shows the tail of that log under a header naming gate and file."""
+
+    def logs(self):
+        return sorted((self.root / "target/gate-mutation-logs").glob("rebuild-*.log"))
+
+    def test_failing_rebuild_prints_tail_with_gate_and_file(self):
+        self.build([row("emacs-parity", "lisp/rb.el")],
+                   rebuild='if grep -q NEW lisp/rb.el; then '
+                           'i=1; while [ $i -le 60 ]; do echo "cc-line-$i"; i=$((i+1)); done; '
+                           'echo "compile error xyz"; exit 1; fi')
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertIn("HARNESS ERROR (rebuild with the injection failed", self.out)
+        self.assertRegex(self.out, r"rebuild log tail \(gate emacs-parity, file lisp/rb\.el, failed twice")
+        self.assertIn("    compile error xyz\n", self.out)
+        self.assertIn("    cc-line-23\n", self.out)       # last 40 lines: 23..60, message, make error
+        self.assertNotIn("cc-line-22\n", self.out)
+        names = [p.name for p in self.logs()]
+        self.assertTrue(any("emacs-parity-attempt2" in n for n in names), names)
+        failed = [p for p in self.logs() if "compile error xyz" in p.read_text()]
+        self.assertEqual(len(failed), 2, names)        # both attempts kept
+        self.assertRestored("rb")
+
+    def test_timed_out_rebuild_prints_tail(self):
+        self.build([row("emacs-parity", "lisp/rb.el")],
+                   rebuild='if grep -q NEW lisp/rb.el; then echo "linking forever"; sleep 300; fi',
+                   env={"NELISP_GATE_MUTATION_BUILD_TIMEOUT": "2"})
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertRegex(self.out, r"rebuild log tail \(gate emacs-parity, file lisp/rb\.el, TIMEOUT after 2s")
+        self.assertIn("    linking forever\n", self.out)
+        self.assertIn("emacs-parity: TIMEOUT (rebuild with injection after 2s", self.out)
+        self.assertRestored("rb")
+
+    def test_successful_rebuild_prints_no_tail_but_keeps_a_log(self):
+        self.build([row("emacs-parity", "lisp/rb.el")], rebuild='echo quiet-build-output')
+        result = self.run_harness()
+        self.assertEqual(result.returncode, 0, self.out)
+        self.assertNotIn("rebuild log tail", self.out)
+        self.assertNotIn("quiet-build-output", self.out)
+        logs = self.logs()
+        self.assertGreaterEqual(len(logs), 2, logs)     # warm-up, injected, restored
+        self.assertTrue(all("quiet-build-output" in p.read_text() for p in logs))
+
+    def test_warm_up_failure_names_the_warm_up(self):
+        self.build([row("okred", "lisp/okred.el")], rebuild='echo warm broke; exit 1')
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertIn("rebuild log tail (warm-up rebuild", self.out)
+        self.assertIn("    warm broke\n", self.out)
 
 
 if __name__ == "__main__":
