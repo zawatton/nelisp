@@ -214,6 +214,12 @@ wasm-smoke:
 	  target/wasm-smoke/symbol-lit-probe.wasm symbol-lit-probe 163230213 0
 	@echo "GATE-COUNT checked=4 findings=0"
 
+# Extra node options for the wasm smokes, empty by default.  Under a
+# `ulimit -v' address-space cap node cannot reserve its Wasm guard regions
+# ("Cannot allocate Wasm memory"); --disable-wasm-trap-handler uses explicit
+# bounds checks instead and needs no reservation.  tools/ai/main-ci-reds/
+# run-heavy.sh sets it; CI runs without a cap and leaves it empty.
+NELISP_NODE_FLAGS ?=
 wasm-runtime-image-smoke:
 	mkdir -p target/wasm-runtime-image
 	HOME="$(CURDIR)" XDG_CONFIG_HOME="$(CURDIR)" $(EMACS) --batch -Q -L lisp -L src \
@@ -232,7 +238,7 @@ wasm-runtime-image-smoke:
 	  echo "  file nobody wrote."; \
 	  echo "GATE-COUNT checked=2 findings=1"; \
 	  exit 1; }
-	@if node tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
+	@if node $(NELISP_NODE_FLAGS) tools/wasm-driver.mjs target/wasm-runtime-image/runtime-image.wasm _start 3; then \
 	  echo "GATE-COUNT checked=2 findings=0"; \
 	else \
 	  echo "GATE-COUNT checked=2 findings=1"; exit 1; \

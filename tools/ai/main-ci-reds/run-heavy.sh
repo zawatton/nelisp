@@ -21,7 +21,12 @@ mkdir -p "$out"
 sha=$(git rev-parse HEAD)
 dirty=$(git status --porcelain --untracked-files=no | wc -l)
 ulimit -v 8388608
-$heavy timeout 3600 bash -c "$cmd" > "$out/$name.log" 2>&1
+# The cap defeats node's Wasm guard reservation; see NELISP_NODE_FLAGS in the
+# Makefile.
+export NELISP_NODE_FLAGS=${NELISP_NODE_FLAGS---disable-wasm-trap-handler}
+# 7200 s: extras alone measured over an hour on 2026-11-08 (chunk-growth
+# ~38 min, substrate-parity ~30 min), so 3600 s cut it off with rc 124.
+$heavy timeout 7200 bash -c "$cmd" > "$out/$name.log" 2>&1
 rc=$?
 mkdir -p "$out"
 echo "$sha $dirty $rc" > "$out/$name.result"

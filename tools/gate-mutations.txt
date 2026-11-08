@@ -1307,3 +1307,9 @@ vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(defun days-between (a b) 0)|an
 # lisp/nelisp-stdlib-misc.el' guarded / FAIL; restored -- byte-identical
 # to the pre-mutation file (`git diff' empty).
 vendor-shadow-gate|lisp/nelisp-stdlib-misc.el|1a\(unless (fboundp (quote date-leap-year-p)) (defun date-leap-year-p (y) t))|a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt)
+# nelisp-eval-closure-standalone-smoke (532e998b7): put back the collision the
+# smoke guards against.  src/nelisp-eval.el once defined `nelisp--closure-p',
+# the native closure-kind builtin the prelude uses, so requiring nelisp-eval
+# made every interpreted closure report type-of cons with closurep nil.  RED
+# prints `nelisp-eval-closure-standalone-smoke: FAIL closurep fresh lambda'.
+nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again
