@@ -149,10 +149,12 @@ jobs:
       - name: "Preflight gates (inventories + parity, all failures collected)"
         shell: bash
         run: bash tools/ai/preflight.sh
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
       - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
           path: |
@@ -284,10 +286,12 @@ jobs:
           # 7 days, not 1: "re-run failed jobs" a day later must still find the
           # artifact (public repo, so storage costs nothing).
           retention-days: 7
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
       - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
           path: |
@@ -947,10 +951,12 @@ jobs:
         continue-on-error: true
         run: make -s standalone-reader-status || true
 
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
       - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1188,10 +1194,12 @@ jobs:
         continue-on-error: true
         run: make -s standalone-reader-status || true
 
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
       - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main' && runner.os == 'Linux'
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
         uses: actions/cache/save@v4
         with:
           path: |
@@ -1565,10 +1573,12 @@ jobs:
         continue-on-error: true
         run: make -s standalone-reader-status || true
 
-      # Saved only from a push to main, so pull requests never write the
-      # cache.  The first save of a key wins; a repeat only logs a warning.
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
       - name: Save standalone unit cache
-        if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
         uses: actions/cache/save@v4
         with:
           path: |

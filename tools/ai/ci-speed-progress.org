@@ -84,7 +84,8 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-build-stamp-test.py)
 #+NOTE: Unexplained, recorded for the build owner: one warm rebuild in a tree with leftover target/ state (shared byte-code .eld cache, reports) gave a binary 181 bytes off (gensym numbers). A clean tree seeded with only standalone-units and nelisp-vendor-bytecode, which is what CI caches, matched the cold build (S5.4). S5.5 on CI is the real check.
 evidence: tools/ai/ci-speed-evidence/s5-2-jobs-identity.txt sha256=b42c5444b4ddc80f688f144a6c22019242a8a1ca8245b33b12a9f6379f4611d1
 
-** S5.3 ci.yml: every Linux job that builds restores the unit cache (standalone-units and nelisp-vendor-bytecode) keyed on the build inputs, saves it only on a main push, and sets NELISP_STANDALONE_JOBS=4
+** S5.3 ci.yml: every Linux job that builds restores the unit cache (standalone-units and nelisp-vendor-bytecode) keyed on the build inputs, saves it only on a main push or a workflow_dispatch, and sets NELISP_STANDALONE_JOBS=4
+#+NOTE: 2026-11-09 criterion changed (coordinator decision): workflow_dispatch also saves the unit cache; caches are branch-scoped so main is never fed by a branch; keys unchanged.
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-unit-cache-test.py)
 
 ** S5.4 E2E local: a fresh tree seeded only with another tree's unit cache builds a binary with the same sha256 as that tree's, in a recorded time far below a cold build
@@ -92,6 +93,7 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-unit-cache-test.py
 evidence: tools/ai/ci-speed-evidence/s5-4-seeded-cache.txt sha256=f25bd9758b9b6aef50960ad89531ae0b4c7c7e08a465dd7787338b68169056f1
 
 ** S5.5 E2E CI: on CI an exact-key cache hit builds in under 120 s, a partial hit after a one-file change in under 10 min, and both give the cold build's sha256 (needs a push; the user confirms each push)
+#+NOTE: 2026-11-09 the cache measured here is saved by a workflow_dispatch run on the lane branch (not a main push).
 pending
 
 * S6 Variant builds stop overwriting target/nelisp, and CI builds it once (fast plan slice 3)

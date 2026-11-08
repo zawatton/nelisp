@@ -3,7 +3,7 @@
 
 Every Linux job that builds the standalone reader must restore the
 content-addressed unit cache before its first build step, save it only from a
-push to main, and run with NELISP_STANDALONE_JOBS=4.  macOS and Windows must
+push to main or a workflow_dispatch, and run with NELISP_STANDALONE_JOBS=4.  macOS and Windows must
 not get JOBS=4.  The workflow is parsed with pyyaml; no step is executed.
 
 Run:  python3 -I test/nelisp-ci-unit-cache-test.py
@@ -37,7 +37,105 @@ BUILD_JOBS = ["gates", "build", "smoke", "ert", "mutation", "subsystems"]
 NON_BUILD_JOBS = ["verify"]
 PATHS = ["target/standalone-units", "target/nelisp-vendor-bytecode"]
 GLOBS = ["lisp/**", "src/**", "scripts/**", "packages/**", "vendor/**", "templates/**"]
-MAIN_PUSH = ["github.event_name == 'push'", "github.ref == 'refs/heads/main'"]
+
+# Save-condition scenarios: (event, ref, expected).  runner.os is Linux.
+SAVE_SCENARIOS = [
+    ("pull_request", "refs/pull/1/merge", False),
+    ("pull_request", "refs/heads/main", False),
+    ("push", "refs/heads/main", True),
+    ("workflow_dispatch", "refs/heads/fix/x", True),
+    ("push", "refs/heads/fix/x", False),
+]
+_TOKEN = re.compile(r"\s*(?:(?P<str>'[^']*')|(?P<op>==|!=|&&|\|\||\(|\))|(?P<call>always\(\))|(?P<ident>[A-Za-z_][A-Za-z0-9_.]*))")
+
+
+def eval_condition(expr, event, ref, runner_os="Linux"):
+    """Evaluate a GitHub `if:' expression from the subset used for save steps.
+
+    Supports ==, !=, &&, ||, parentheses, always(), string literals and the
+    contexts github.event_name, github.ref and runner.os.  Any other token
+    raises ValueError.
+    """
+    ctx = {"github.event_name": event, "github.ref": ref, "runner.os": runner_os}
+    toks, pos = [], 0
+    expr = expr.strip()
+    while pos < len(expr):
+        m = _TOKEN.match(expr, pos)
+        if not m:
+            raise ValueError("unknown token at %d in %r" % (pos, expr))
+        pos = m.end()
+        kind = m.lastgroup
+        text = m.group(kind)
+        if kind == "ident" and text not in ctx:
+            raise ValueError("unknown identifier %r in %r" % (text, expr))
+        toks.append((kind, text))
+    i = 0
+
+    def peek():
+        return toks[i] if i < len(toks) else (None, None)
+
+    def operand():
+        nonlocal i
+        kind, text = peek()
+        i += 1
+        if kind == "str":
+            return text[1:-1]
+        if kind == "call":
+            return True
+        if kind == "ident":
+            return ctx[text]
+        if kind == "op" and text == "(":
+            v = parse_or()
+            if peek() != ("op", ")"):
+                raise ValueError("missing ) in %r" % expr)
+            i += 1
+            return v
+        raise ValueError("unexpected %r in %r" % (text, expr))
+
+    def compare():
+        nonlocal i
+        v = operand()
+        if peek()[0] == "op" and peek()[1] in ("==", "!="):
+            op = peek()[1]
+            i += 1
+            w = operand()
+            return (v == w) if op == "==" else (v != w)
+        return v
+
+    def parse_and():
+        nonlocal i
+        v = compare()
+        while peek() == ("op", "&&"):
+            i += 1
+            w = compare()
+            v = bool(v) and bool(w)
+        return v
+
+    def parse_or():
+        nonlocal i
+        v = parse_and()
+        while peek() == ("op", "||"):
+            i += 1
+            w = parse_and()
+            v = bool(v) or bool(w)
+        return v
+
+    result = parse_or()
+    if i != len(toks):
+        raise ValueError("trailing tokens in %r" % expr)
+    return bool(result)
+
+
+def save_condition_problems(cond, label):
+    bad = []
+    for event, ref, want in SAVE_SCENARIOS:
+        try:
+            got = eval_condition(cond, event, ref)
+        except ValueError as exc:
+            return ["%s save condition not evaluable: %s" % (label, exc)]
+        if got != want:
+            bad.append("save condition %r is %s for %s on %s, want %s" % (cond, got, event, ref, want))
+    return bad
 LINUX_ONLY_EXPR = "${{ matrix.os == 'ubuntu-latest' && '4' || '1' }}"
 # A step that can start a build: a make target, preflight, or a tier run.
 BUILD_STEP = re.compile(r"\bmake\b|preflight\.sh|nelisp-ai\.sh (?:test|check|extras|smokes|perf|\$\{\{ matrix\.tier)|nelisp-ai\.sh \$\{\{ matrix\.tier")
@@ -117,9 +215,7 @@ def check_job(doc, name):
     if len(rk) < 2 or not rk[0].startswith("units-${{ runner.os }}-") or rk[0] == "units-${{ runner.os }}-":
         bad.append("restore-keys lack a job-specific prefix first")
     cond = sv.get("if", "")
-    for part in MAIN_PUSH + ["always()"]:
-        if part not in cond:
-            bad.append("save condition lacks %r: %r" % (part, cond))
+    bad.extend(save_condition_problems(cond, name))
     if name == "mutation":
         for st, label in ((r, "restore"), (sv, "save")):
             if "steps.policy.outputs.run == 'true'" not in st.get("if", ""):
@@ -169,9 +265,8 @@ class UnitCacheWiring(unittest.TestCase):
         for name, job in self.doc["jobs"].items():
             for i in find(job["steps"], "actions/cache/save@"):
                 cond = job["steps"][i].get("if", "")
-                self.assertIn("github.event_name == 'push'", cond, name)
-                self.assertIn("github.ref == 'refs/heads/main'", cond, name)
-                self.assertNotIn("pull_request", cond, name)
+                self.assertEqual(save_condition_problems(cond, name), [], name)
+                self.assertFalse(eval_condition(cond, "pull_request", "refs/heads/main"), name)
             # the combined actions/cache@ action also saves, and has no condition
             self.assertEqual(find(job["steps"], "actions/cache@"), [], name)
 
@@ -213,6 +308,23 @@ class NegativeControl(unittest.TestCase):
         def m(doc):
             self.save_step(doc, "gates")["if"] = "always()"
         self.assertTrue(any("save condition" in b for b in check_job(self.damaged(m), "gates")))
+
+    def test_save_condition_negative_controls(self):
+        main_push = "(github.event_name == 'push' && github.ref == 'refs/heads/main')"
+        dispatch = "github.event_name == 'workflow_dispatch'"
+        controls = {
+            "always() alone": "always()",
+            "no workflow_dispatch arm": "always() && " + main_push,
+            "pull_request exclusion only": "always() && github.event_name != 'pull_request'",
+        }
+        for label, cond in controls.items():
+            def m(doc, cond=cond):
+                self.save_step(doc, "gates")["if"] = cond
+            with self.subTest(control=label):
+                self.assertTrue(any("save condition" in b for b in check_job(self.damaged(m), "gates")), label)
+        # the intended condition passes, and an unknown token fails loudly
+        self.assertEqual(save_condition_problems("always() && (%s || %s)" % (main_push, dispatch), "x"), [])
+        self.assertTrue(any("not evaluable" in b for b in save_condition_problems("always() && github.actor == 'x'", "x")))
 
     def test_restore_after_build_is_caught(self):
         def m(doc):
