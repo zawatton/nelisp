@@ -6028,6 +6028,15 @@ path, which asks for a NUMBER first and only then for an integer."
         (when (eq fast slow) (signal 'circular-list (list object)))))
     (when fast (signal 'wrong-type-argument (list 'listp object)))))
 
+(defun nelisp--w302-json-check-cycle (object)
+  "Signal `circular-list' when OBJECT's spine is circular; a dotted tail is fine."
+  (let ((fast object) (slow object))
+    (while (consp fast)
+      (setq fast (cdr fast))
+      (when (consp fast)
+        (setq fast (cdr fast) slow (cdr slow))
+        (when (eq fast slow) (signal 'circular-list (list object)))))))
+
 (defun nelisp--w302-json-encode (object options parents)
   "Encode OBJECT recursively with OPTIONS, detecting ancestor cycles."
   (when (> (length parents) 50)
@@ -6061,12 +6070,17 @@ path, which asks for a NUMBER first and only then for an integer."
          object)
         (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))
        (t
-        ;; Validate the spine before encoding; dotted and circular lists are
-        ;; not JSON objects, even when their first members are valid.
-        (nelisp--w302-json-check-list object)
+        ;; As in GNU json.c: an alist's spine is validated up front, so a
+        ;; dotted alist reports (wrong-type-argument listp OBJECT).  A plist is
+        ;; walked pair by pair -- a missing value reports `consp' on the tail,
+        ;; a non-symbol key `symbolp' -- and only a dotted tail left after the
+        ;; last complete pair reports `listp'.  Circular lists signal in both.
+        (if (consp (car object))
+            (nelisp--w302-json-check-list object)
+          (nelisp--w302-json-check-cycle object))
         (let ((tail object) (alist (consp (car object)))
               (seen (make-hash-table :test 'equal)))
-          (while tail
+          (while (if alist tail (consp tail))
             (let ((key nil) (value nil))
               (if alist
                   (progn
@@ -6084,6 +6098,7 @@ path, which asks for a NUMBER first and only then for an integer."
                 (puthash key t seen)
                 (setq parts (cons (concat (nelisp--w302-json-quote key) ":"
                                           (nelisp--w302-json-encode value options parents)) parts)))))
+          (when tail (signal 'wrong-type-argument (list 'listp object)))
           (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))))))
    (t (signal 'wrong-type-argument (list 'json-value-p object)))))
 
