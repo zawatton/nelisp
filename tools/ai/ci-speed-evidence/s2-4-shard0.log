@@ -1,0 +1,59 @@
+# S2.4 local run, 2026-11-07/08, worktree detached at 58abb8eaa, NELISP_GATE_MUTATION_SHARD=0/4, full sweep (no base), cold start, this machine
+gate-mutation: target linux-x86_64
+gate-mutation: shard 0 of 4 (29 rows)
+gate-mutation: warm-up rebuild took 1152s
+  parity-coverage: went red as it should (a covered name stops being mentioned)
+  ns-inventory: went red as it should (a pinned ns-collision-divergent pair's definition drifts to a new shape, subject and file list unchanged)
+  doc200-census: went red as it should (the sole direct Str-tag test in nl_jit_length vanishes from the live census)
+  ert-full: went red as it should (arrayp stops accepting a hand-built tag-14 string)
+gate-mutation: row 4/29 ert-full file=scripts/nelisp-standalone-build.el 2349s [slow]
+  ert-full: went red as it should (CLI value output stops rendering tag-14 bytes with raw octal escapes)
+gate-mutation: row 5/29 ert-full file=scripts/nelisp-standalone-build.el 2361s [slow]
+  nelisp-thread-mirror-guard-standalone-smoke: went red as it should (worker registry lookup uses a non-worker key, so mirror/intern writes are admitted instead of raising the named condition)
+gate-mutation: row 6/29 nelisp-thread-mirror-guard-standalone-smoke file=lisp/nelisp-cc-rootstack.el 162s [slow]
+  ert-full: went red as it should (an unmatched generic-function call silently returns nil instead of signaling cl-no-applicable-method)
+  standalone-reader-test: SED MATCHED NOTHING -- the injection is stale (nl_ht_put stops treating a materialised nil cdr as an absent data slot, so puthash into an empty reader-built table writes into a scratch view and the table stays empty)
+  standalone-reader-bignum-smoke: SED MATCHED NOTHING -- the injection is stale (a constructed bignum is mis-tagged as a plain Int (its sign word read back as the "value"), corrupting bignump/prin1/comparison for every bignum the reader produces)
+  nl-num-standalone-smoke: went red (rc=2; clean baseline before/after PASS; source restored byte-for-byte; nl-num mixed addition hands a Bignum and Float to the native standalone fold, which reads the bignum sign word as its magnitude)
+  standalone-reader-bounded-backtrace-smoke: went red as it should (the bounded backtrace prints outermost-first instead of innermost-first (the capture write index is reversed))
+gate-mutation: row 11/29 standalone-reader-bounded-backtrace-smoke file=scripts/nelisp-standalone-build.el 1134s [slow]
+  standalone-reader-network-process-smoke: went red as it should (a freshly-connected client process reports status closed instead of open, breaking Doc 194 S1.3's measured "open the instant make-network-process returns" contract)
+gate-mutation: row 12/29 standalone-reader-network-process-smoke file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el 1107s [slow]
+  standalone-reader-nonblocking-socket-smoke: SKIP (row scope windows-x86_64 does not include target linux-x86_64)
+  standalone-reader-network-process-server-smoke: went red as it should (an auto-accepted child's filter is dropped instead of inherited from the :server t listener, so per-connection data never reaches the caller's filter)
+gate-mutation: row 14/29 standalone-reader-network-process-server-smoke file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el 86s [slow]
+  version-consistency: went red as it should (windows installer default left behind at a stale release version)
+  standalone-reader-alloc-bytes-int-root-smoke: went red as it should (integers stop pinning the arena blocks they name)
+gate-mutation: row 16/29 standalone-reader-alloc-bytes-int-root-smoke file=scripts/nelisp-standalone-build.el 2272s [slow]
+  standalone-reader-regexp-lead-filter-smoke: SED MATCHED NOTHING -- the injection is stale (the leading-character filter folds the required character the wrong way, so no leading-literal pattern matches at all)
+  standalone-reader-host-parity-smoke: went red as it should (`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes)
+gate-mutation: row 18/29 standalone-reader-host-parity-smoke file=scripts/nelisp-stdlib-prelude.el 171s [slow]
+  builtin-arity: SED MATCHED NOTHING -- the injection is stale (car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior)
+  lsp-server: went red as it should (exact-name filtering is dropped from workspace candidate search, so every symbol in a namespace is returned as a candidate instead of only the ones actually named by the query)
+  project-manifest: went red as it should (the staged rollback copy of the manifest is never chmod'ed to match the live file; a failed lock publish then restores a manifest with the wrong permissions)
+  project-build: went red as it should (the build metadata always reports native_symbols as "all", so a release build's own record no longer reflects that it stripped symbols down to the entry point)
+gate-mutation: row 22/29 project-build file=tools/nelisp-project.py 300s [slow]
+  project-bench: went red as it should (the reported median is the fastest sample instead of the statistical median, so the benchmark summary misrepresents typical process latency)
+  project-arguments: went red as it should (the argv separator before forwarded application arguments is dropped, so a data argument that looks like a flag (for example --help) is parsed by the runtime instead of being handed to the project unchanged)
+  ffi-dsl: SED MATCHED NOTHING -- the injection is stale (nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result)
+  parity-fuzz: went red as it should (the shared-name parser's regex stops matching the compat table, so the fuzzer silently draws from zero names instead of refusing to run)
+  standalone-reader-bignum-smoke: went red as it should (`nl_bignum_shl_bits_loop` stops propagating the intra-limb carry on a left shift, so any `ash` left shift whose result crosses a 32-bit limb boundary silently drops the carried-out bits instead of promoting an exact wider value)
+gate-mutation: row 27/29 standalone-reader-bignum-smoke file=scripts/nelisp-standalone-build.el 2342s [slow]
+  standalone-reader-bignum-smoke: went red as it should (`nl_bignum_small_divisor_p` stops accepting any nonzero divisor, so every Bignum-dividend `/`/`%`/`mod` case (even a tiny divisor like 256) signals `nelisp-bignum-division-unsupported` instead of computing the exact answer)
+gate-mutation: row 28/29 standalone-reader-bignum-smoke file=scripts/nelisp-standalone-build.el 2296s [slow]
+  vendor-shadow-gate: went red as it should (a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt))
+gate-mutation: slowest rows
+    2361s  ert-full  file=scripts/nelisp-standalone-build.el
+    2349s  ert-full  file=scripts/nelisp-standalone-build.el
+    2342s  standalone-reader-bignum-smoke  file=scripts/nelisp-standalone-build.el
+    2296s  standalone-reader-bignum-smoke  file=scripts/nelisp-standalone-build.el
+    2272s  standalone-reader-alloc-bytes-int-root-smoke  file=scripts/nelisp-standalone-build.el
+    1134s  standalone-reader-bounded-backtrace-smoke  file=scripts/nelisp-standalone-build.el
+    1107s  standalone-reader-network-process-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+     300s  project-build  file=tools/nelisp-project.py
+     171s  standalone-reader-host-parity-smoke  file=scripts/nelisp-stdlib-prelude.el
+     162s  nelisp-thread-mirror-guard-standalone-smoke  file=lisp/nelisp-cc-rootstack.el
+gate-mutation: total wall 15768s, warm-up 1152s
+GATE-COUNT checked=28 findings=5 passed=23 failed=5 skipped=1
+gate-mutation: FAIL (5 failed, 23 passed, 1 skipped)
+exit=1 at 2026-11-08T01:51:16Z

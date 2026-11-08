@@ -34,7 +34,8 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 cmd: (ulimit -v 8388608; python3 -I test/nelisp-mutation-recovery-test.py)
 
 ** S2.4 E2E: one real local shard of the full table finishes with per-row durations recorded (log with shard, wall time and the slowest rows)
-pending
+#+NOTE: 2026-11-08 shard 0/4: 29 rows, 15768 s wall, warm-up 1152 s, no TIMEOUT. 5 rows failed as stale injections (SED MATCHED NOTHING), not timing: standalone-reader-test, standalone-reader-bignum-smoke, standalone-reader-regexp-lead-filter-smoke, builtin-arity, ffi-dsl. Rows mutating scripts/nelisp-standalone-build.el cost about 2300 s each (two near-cold rebuilds).
+evidence: tools/ai/ci-speed-evidence/s2-4-shard0.log sha256=30bc53355fcb262ba2fa0705d791c51ca12d98dbe0771c0c6c9e6d1c111ae0d0
 
 * S3 CI runs less on feature branches and shows what it spent
 
