@@ -280,7 +280,15 @@ standalone-reader-form-location-smoke|scripts/nelisp-standalone-build.el|s/(setq
 # divergence this row deliberately does not depend on.  This injection
 # fails at the very first `load' statement, before any scheduling code
 # runs, so it cannot hit that class of problem.
-nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'generator)/|nelisp-actor becomes unloadable standalone again (file-missing: generator), the exact pre-Doc-193-§4 defect
+# Re-aimed 2026-11-10: `generator' itself is now loadable standalone
+# (`(require (quote generator))' on target/nelisp answers `generator' with
+# `iter-next' bound), so the original `(require (quote generator))' injection
+# no longer reproduces the defect and the gate rightly stayed green on it.
+# The injection now hard-requires a feature that does not exist
+# (`nl-gm-absent-feature'), which reproduces the same observable failure --
+# `nelisp: uncaught error: file-missing' at the smoke's first `load' -- and
+# the smoke goes red on it (proven on target/nelisp, clean tree PASS).
+nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'nl-gm-absent-feature)/|nelisp-actor becomes unloadable standalone again (file-missing on a hard require of a feature the substrate cannot supply), the failure class of the pre-Doc-193-§4 defect
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase A,
 # feat/bignum-p1).  The injection flips the tag byte `nl_bignum_write'
 # stamps into a freshly-constructed Bignum Sexp from 13 (Bignum) to 2
@@ -1281,7 +1289,12 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_sy
 # orders of magnitude over the threshold, so this is not a marginal proof;
 # restored -- byte-identical to the pre-mutation Makefile (`git diff`
 # empty).
-standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect
+# Re-aimed 2026-11-10: cons cells no longer count toward the checked
+# allocator's live-blocks (measured: retaining 8000 conses per round left
+# live-blocks flat at 8424 over 5 rounds, so the old third-loop injection
+# stayed green).  Vectors are counted: this injection grows live-blocks by
+# 4000 per round (12762 16424 20424 24424 28424), far past the 8-block slack.
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (make-vector 12 i) acc)) (setq i (+ i 1))))#(setq acc (cons (make-vector 12 i) acc)) (setq nelisp-checked-soak-retain (cons (make-vector 12 i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's second loop retains its whole batch of vectors in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round
 
 # vendor-shadow-gate (Doc segI, vendor-emacs-lisp): an unconditional
 # redefinition of `days-between' (a vendor/emacs-lisp/calendar/time-date.el
