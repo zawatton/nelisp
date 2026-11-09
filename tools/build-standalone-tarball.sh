@@ -156,6 +156,12 @@ fi
 cp src/nelisp*.el "$STAGE_DIR/src/"
 [[ -d scripts ]] && cp scripts/*.el "$STAGE_DIR/scripts/" 2>/dev/null || true
 [[ -d lisp ]] && cp lisp/*.el "$STAGE_DIR/lisp/" 2>/dev/null || true
+# An installed `nelisp build' runs the reader build, whose rooted-protocol
+# preflight (`nelisp-standalone--rooted-protocol-preflight') also requires
+# scripts/*.py and templates/*.in.
+cp scripts/*.py "$STAGE_DIR/scripts/"
+mkdir -p "$STAGE_DIR/templates"
+cp templates/* "$STAGE_DIR/templates/"
 # The bundled reader's development entry point is intentionally small: keep
 # the launcher and its usage contract alongside the copied Lisp sources so a
 # relocated extraction can start a normal REPL without a checkout.
@@ -168,6 +174,55 @@ cp docs/repl-development.md "$STAGE_DIR/docs/repl-development.md"
 # copying the repository's complete package tree.
 cp packages/nelisp-eventloop/src/*.el "$STAGE_DIR/packages/nelisp-eventloop/src/"
 cp packages/nelisp-process-adapter/src/*.el "$STAGE_DIR/packages/nelisp-process-adapter/src/"
+# The REPL entry point regenerates its runtime with
+# `nelisp-standalone--artifact-command-runtime-src', which also reads
+# vendored GNU sources and other package files.  Stage every repository file
+# that generator reads (relative paths kept), as recorded from one run here,
+# so the list follows the generator instead of a hand-kept copy.  target/
+# caches are left out: the generator rebuilds what they hold.
+runtime_inputs="$BUILD_DIR/runtime-inputs.txt"
+"$EMACS_BIN" --batch -Q -L lisp -L src -L scripts --eval '(setq load-prefer-newer t)' \
+  --eval '(progn
+            (defvar nelisp-tarball--read nil)
+            (dolist (fn (list (quote insert-file-contents) (quote insert-file-contents-literally)))
+              (advice-add fn :before
+                          (lambda (file &rest _)
+                            (push (expand-file-name file) nelisp-tarball--read))))
+            (require (quote nelisp-standalone-build))
+            (nelisp-standalone--artifact-command-runtime-src t)
+            (let ((root (file-name-as-directory (expand-file-name default-directory))))
+              (dolist (file (delete-dups (append nelisp-tarball--read
+                                                 (mapcar (function car) load-history))))
+                (when (and (stringp file) (string-prefix-p root file) (file-regular-p file))
+                  (let ((relative (file-relative-name file root)))
+                    (unless (string-prefix-p "target/" relative)
+                      (princ (concat relative "\n"))))))))' \
+  > "$runtime_inputs" 2>/dev/null \
+  || { err "listing the REPL runtime generator's inputs failed"; exit 1; }
+[[ -s "$runtime_inputs" ]] || { err "the REPL runtime generator read no repository files"; exit 1; }
+# The runtime then loads more files when the REPL boots (`require' of
+# vendored GNU libraries and packages).  Boot it once with the binary just
+# built and add every repository file in its `load-history'.
+root_prefix="$REPO_ROOT/"
+printf '%s\n' \
+  '(dolist (e load-history) (when (stringp (car e)) (princ (concat "NELISP-TARBALL-LOADED " (car e) "\n"))))' \
+  '(exit 0)' \
+  | NELISP_BIN="$STANDALONE_BIN" EMACS="$EMACS_BIN" tools/ai/nelisp-ai.sh repl 2>/dev/null \
+  | sed -n 's/^NELISP-TARBALL-LOADED //p' \
+  | while IFS= read -r loaded; do
+      case "$loaded" in
+        "$root_prefix"target/*) ;;
+        "$root_prefix"*) printf '%s\n' "${loaded#"$root_prefix"}" ;;
+      esac
+    done > "$runtime_inputs.boot"
+grep -q '^vendor/' "$runtime_inputs.boot" \
+  || { err "booting the REPL runtime recorded no vendored library"; exit 1; }
+sort -u -o "$runtime_inputs" "$runtime_inputs" "$runtime_inputs.boot"
+while IFS= read -r input; do
+  mkdir -p "$STAGE_DIR/$(dirname "$input")"
+  cp "$input" "$STAGE_DIR/$input"
+done < "$runtime_inputs"
+log "staged $(wc -l < "$runtime_inputs") REPL runtime inputs"
 
 STAGED_RUNTIME_PATH="bin/$STAGED_BIN_NAME"
 if [ "$PROJECT_CLI" -eq 1 ]; then
@@ -250,11 +305,12 @@ log "assembling tarball"
       exit 1; \
     fi )
 
-# 5. Size cap check (15 MB).
+# 5. Size cap check (17 MB; raised from 15 MB when the bundle began carrying
+#    the vendored sources its REPL entry point reads).
 SIZE_BYTES=$(wc -c < "$TAR_FILE" | tr -d ' ')
 SIZE_MB=$(( (SIZE_BYTES + 1048575) / 1048576 ))
-if (( SIZE_BYTES >= 15 * 1024 * 1024 )); then
-  err "tarball exceeds 15 MB cap: ${SIZE_BYTES} bytes"
+if (( SIZE_BYTES >= 17 * 1024 * 1024 )); then
+  err "tarball exceeds 17 MB cap: ${SIZE_BYTES} bytes"
   exit 2
 fi
 
@@ -262,4 +318,4 @@ rm -rf "$STAGE_DIR"
 
 log "built $TAR_FILE ($(du -h "$TAR_FILE" | cut -f1))"
 log "checksum: $TAR_FILE.sha256"
-log "size cap: OK (< 15 MB; rounded=${SIZE_MB} MiB)"
+log "size cap: OK (< 17 MB; rounded=${SIZE_MB} MiB)"

@@ -277,7 +277,7 @@ The standalone bundle contains:
 
 * Notes
 
-- Tarball cap: < 15 MB compressed.
+- Tarball cap: < 17 MB compressed.
 - The verifier checks SHA-256, layout, and native =eval= / REPL execution
   when the platform matches the host.
 - macOS arm64 native verification also checks the existing code signature
