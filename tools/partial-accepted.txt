@@ -9,10 +9,6 @@
 # an explanation.
 
 accept-process-output|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
-alist-get|lisp/nelisp-stdlib-misc.el|_remove|REMOVE ignored: it only affects setf expansion
-alist-get|scripts/nelisp-stdlib-prelude.el|_remove|REMOVE ignored: it only affects setf expansion, which this alist-get is not used through
-always|scripts/nelisp-stdlib-prelude.el|_arguments|not yet reviewed
-base64-encode-string|scripts/nelisp-stdlib-prelude.el|_no-line-break|not yet reviewed
 byte-code-function-p|scripts/nelisp-stdlib-prelude.el|_object|not yet reviewed
 byte-compile-file|scripts/nelisp-stdlib-prelude.el|_load|LOAD ignored: there is no byte compiler in the standalone, so nothing is produced to load.  The entry point exists to check FILENAME and report a missing input file the way Emacs does, instead of answering void-function and hiding the argument error too.
 characterp|scripts/nelisp-stdlib-prelude.el|_ignore|not yet reviewed
@@ -20,19 +16,14 @@ decode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 decode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
 delete-directory|scripts/nelisp-stdlib-prelude.el|_trash|not yet reviewed
 delete-file|scripts/nelisp-stdlib-prelude.el|_trash|not yet reviewed
-directory-files|scripts/nelisp-stdlib-prelude.el|_nosort|not yet reviewed
 encode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 encode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
 executable-find|scripts/nelisp-stdlib-prelude.el|_remote|not yet reviewed
 file-attributes|scripts/nelisp-stdlib-prelude.el|_id-format|not yet reviewed
 help-split-fundoc|scripts/nelisp-stdlib-prelude.el|_def|not yet reviewed
-ignore|scripts/nelisp-stdlib-prelude.el|_arguments|not yet reviewed
-insert-file-contents|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
-json-serialize|scripts/nelisp-stdlib-prelude.el|_keys|not yet reviewed
 kill-process|scripts/nelisp-stdlib-prelude.el|_current-group|not yet reviewed
 load|lisp/nelisp-stdlib-misc.el|_must-suffix _nomessage _nosuffix|not yet reviewed
 locate-library|lisp/nelisp-stdlib-misc.el|_interactive-call _nosuffix _path|not yet reviewed
-lwarn|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
 make-string|lisp/nelisp-stdlib-plist-str.el|_multibyte|not yet reviewed
 prin1|scripts/nelisp-stdlib-prelude.el|_stream|not yet reviewed
 princ|scripts/nelisp-stdlib-prelude.el|_stream|STREAM ignored: output always goes to stdout, there are no buffers or markers to print into
@@ -41,9 +32,6 @@ set-file-modes|scripts/nelisp-stdlib-prelude.el|_flag|not yet reviewed
 setenv|scripts/nelisp-stdlib-prelude.el|_substitute|not yet reviewed
 split-string|lisp/nelisp-stdlib-plist-str.el|_omit-nulls _trim|not yet reviewed
 split-string|scripts/nelisp-stdlib-prelude.el|_trim|not yet reviewed
-string-trim-left|lisp/nelisp-stdlib-plist-str.el|_regexp|not yet reviewed
-string-trim-right|lisp/nelisp-stdlib-plist-str.el|_regexp|not yet reviewed
-string-trim|lisp/nelisp-stdlib-plist-str.el|_trim-left _trim-right|not yet reviewed
 write-region|lisp/nelisp-stdlib-misc.el|_lockname _mustbenew _visit|not yet reviewed
 write-region|scripts/nelisp-stdlib-prelude.el|_lockname|LOCKNAME ignored: this runtime has no file-locking/clash-detection facility to key it against (single-process, headless); APPEND/VISIT/MUSTBENEW are now handled, not ignored
 locate-file|scripts/nelisp-stdlib-prelude.el|_predicate|PREDICATE ignored: the search is file-exists-p only, so a caller asking for executable-only or readable-only gets any existing file

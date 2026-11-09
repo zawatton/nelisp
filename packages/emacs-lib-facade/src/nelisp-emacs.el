@@ -34,6 +34,16 @@ features remain behind `emacs-init' and its explicit loader functions.")
 (dolist (feature nelisp-emacs-library-features)
   (require feature))
 
+;; Defined by `emacs-foundation', which the loop above requires at load time;
+;; declare them so byte-compilation does not depend on file order.
+(defvar emacs-foundation-features)
+(defvar emacs-foundation-c-core-features)
+(defvar emacs-text-core-features)
+(defvar emacs-buffer-core-features)
+(defvar emacs-editing-features)
+(defvar emacs-io-features)
+(defvar emacs-core-features)
+
 (defconst nelisp-emacs-library-packages
   `((foundation
      :owner FND
