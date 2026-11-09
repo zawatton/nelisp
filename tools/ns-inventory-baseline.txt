@@ -321,7 +321,13 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 433
+# 2026-11-09 (integ/hub-owner-20261109, merge of the owner line into the
+# hub): +1 ns-collision, +3 ns-collision-divergent.  The prelude gained
+# `xor', `remq', `subr-name' (S3, 48342b978) and a corrected `type-of'
+# (A13, 23853ad48) while the emacs-lib import kept its own copies, each
+# under `(unless (fboundp ...))', so on NeLisp the prelude's wins and on
+# GNU Emacs neither runs.  Pinned below.
+ns-collision 434
 # 354 -> 344 on 2026-11-05 (cl-gnu P3): native pcase deleted; GNU pcase.el is the only pcase.
 # Removed only the 10 pinned rows for pcase-defmacro, pcase, pcase--flip and nelisp-pcase--*.
 # 353 -> 354 on 2026-10-20 (prim-alias): the baked explicit-local provider
@@ -460,7 +466,7 @@ ns-collision 433
 # unguarded `(defvar process-environment nil ...)' in
 # lisp/nelisp-build-host.el (a host-side build-tool file with its own
 # getenv/setenv sandbox, predates this segment and is out of its scope).
-ns-collision-divergent 896
+ns-collision-divergent 897
 # 133 -> 135 on 2026-10-20 (prim-alias): indirect-variable and
 # internal-delete-indirect-variable gain native-only standalone facades;
 # foundation retains fboundp-gated registry fallbacks. defvaralias already
@@ -843,7 +849,10 @@ ns-collision-divergent 896
 # used for the identical pair in scripts/nelisp-stdlib-prelude.el (see the
 # `ns-collision' pin for these two names) rather than diverging the name
 # to fit each file's local convention.
-ns-prefix-violation 2420
+# 2026-11-09 (integ/hub-owner-20261109): +4 -- the GNU-named prelude
+# definitions `xor', `subr-name', `subr-primitive-p', `primitive-function-p'
+# (S3, 48342b978), measured against the hub tree 3bdf30706.
+ns-prefix-violation 2424
 # 328 -> 329 on 2026-10-20 (prim-alias): the same GNU public built-in
 # variable is intentionally initialized in the buffer-local provider.
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
@@ -1047,7 +1056,14 @@ ns-prefix-violation 2420
 # now reads nelisp-standalone--applyfn-guarded-reader-table, the table
 # dispatch and admission actually use (it already read the sibling
 # --applyfn-reader-table the same way); an audit inspects build internals.
-ns-private-escape 2391
+# 2026-11-09 (integ/hub-owner-20261109): +43, measured against the hub
+# tree 3bdf30706.  39 are GNU C primitives with `--' in their names
+# (comp--*, dbus--*, internal--*, treesit--*, print--preprocess, ...),
+# named by S3's prelude primitive list (48342b978); the other 4 are
+# `nelisp--lisp-primitive-p'/`-name' (S3), `nelisp--host-symbol-function'
+# (the tramp fix in src/nelisp-load.el, c781ded2e) and
+# `nelisp-standalone--target-file' (read-only installed builds).
+ns-private-escape 2434
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
@@ -2939,3 +2955,8 @@ pinned-collision ns-collision-divergent	write-file	packages/emacs-lib-core/src/e
 pinned-collision ns-collision-divergent	write-region	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	4feef090f456
 pinned-collision ns-collision-divergent	y-or-n-p	packages/emacs-lib-core/src/emacs-minibuffer-builtins.el packages/emacs-lib-core/src/emacs-stub.el	cc3bd3bc1b87
 pinned-collision ns-collision-divergent	yes-or-no-p	packages/emacs-lib-core/src/emacs-minibuffer-builtins.el packages/emacs-lib-core/src/emacs-stub.el	36d00b23c31f
+# 2026-11-09 integ/hub-owner-20261109: see the ns-collision note.
+pinned-collision ns-collision	xor	packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision-divergent	remq	packages/emacs-lib-core/src/emacs-list.el scripts/nelisp-stdlib-prelude.el	7629e7556c12
+pinned-collision ns-collision-divergent	subr-name	packages/emacs-lib-core/src/emacs-cc-subr-metadata-1.el scripts/nelisp-stdlib-prelude.el	e05564735b91
+pinned-collision ns-collision-divergent	type-of	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	4719b1715824
