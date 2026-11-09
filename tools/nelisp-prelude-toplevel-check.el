@@ -43,7 +43,16 @@
     ;; shape as `cl-defstruct' above, a definition rather than a call.
     define-derived-mode
     ;; the prelude installs some names by calling its own registrars
-    nelisp--error-register)
+    nelisp--error-register
+    ;; a key binding mirroring GNU's preloaded bindings.el, e.g.
+    ;; `(define-key esc-map "s" search-map)' after the `search-map' defvar
+    define-key
+    ;; deliberate boot-time calls: registrars, buffer-local and obsolete
+    ;; declarations, the subr marker pass, and cache priming
+    nelisp--define-core-record make-variable-buffer-local make-obsolete
+    nelisp--set-special-form-implementation nelisp--mark-lisp-primitives
+    nelisp-casetab--register-standard-data
+    nelisp--fx-active-p nelisp--fx-trace-file)
   "Heads that make sense as a top-level form here.")
 
 (defun nelisp-prelude-toplevel--offenders (form)
@@ -121,7 +130,10 @@ gates later by `make emacs-compat' instead."
     (setq bad (append bad (car bad-cell)))
     (princ (format "prelude-toplevel: %d top-level forms, %d file(s) ended cleanly\n"
                    forms nelisp-prelude-toplevel--eofs))
-    (dolist (b (nreverse bad))
+    ;; `nreverse' reuses the cells, so take the reversed list as the value:
+    ;; `bad' alone would afterwards be its old head, now the last cell.
+    (setq bad (nreverse bad))
+    (dolist (b bad)
       (princ (format "  %s:%d  top-level `%S'\n" (nth 0 b) (nth 1 b) (nth 2 b))))
     ;; `checked' counts FORMS: a reader that stopped at form 3 would
     ;; otherwise report a clean file.
