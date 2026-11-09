@@ -50162,6 +50162,31 @@ skipped and re-run once cl-preloaded has defined the base types."
             (b (and a (string-search m text a))))
        (unless b (error "cl-macs.el pcase advice form not found"))
        (substring text a (+ b (length m))))
+     ;; GNU `cl-labels' (and its siblings) expand local bodies through the
+     ;; global `macroexpand-all'.  A library may replace that function with
+     ;; a shallow walker that leaves `(function (lambda ...))' opaque, and
+     ;; every local call then stays a plain global call (`void-function').
+     ;; The deleted native `cl-labels' used the prelude's own walker, which
+     ;; no library replaces; keep that immunity by running the GNU
+     ;; expanders with that walker installed as `macroexpand-all'.
+     "\n;; --- cl-labels family: immune to a replaced `macroexpand-all' ---\n"
+     "(defun nelisp--apply-macro-with-own-walker (expander args)\n"
+     "  (let ((saved (symbol-function 'macroexpand-all)))\n"
+     "    (unwind-protect\n"
+     "        (progn\n"
+     "          (fset 'macroexpand-all\n"
+     "                (lambda (form &optional environment)\n"
+     "                  (let ((macroexpand-all-environment environment))\n"
+     "                    (nelisp--macroexpand-all-walk form environment))))\n"
+     "          (apply expander args))\n"
+     "      (fset 'macroexpand-all saved))))\n"
+     "(dolist (m '(cl-labels cl-flet cl-macrolet cl-symbol-macrolet))\n"
+     "  (let ((def (symbol-function m)))\n"
+     "    (when (eq (car-safe def) 'macro)\n"
+     "      (fset m (cons 'macro\n"
+     "                    (list 'lambda '(&rest args)\n"
+     "                          (list 'nelisp--apply-macro-with-own-walker\n"
+     "                                (list 'quote (cdr def)) 'args)))))))\n"
      ;; cl-lib is not preloaded in GNU: forget the feature the prelude
      ;; provides natively so `require' loads GNU's.
      "\n(setq features (delq 'cl-lib features))\n")))
