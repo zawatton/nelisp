@@ -851,7 +851,7 @@ lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(
 # First differing element 59: 'nil' != '(wrong-number-of-arguments car 1)''
 # (`GATE-COUNT checked=2 findings=1'); restored, `GATE-COUNT checked=2
 # findings=0'.
-builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^  '((1 car cdr car-safe/  '((1 cdr car-safe/;s/^    (2 cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=$/    (2 car cons eq eql equal setcar setcdr nth nthcdr elt aref rassoc string=/|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
+builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^    (1 goto-char nelisp--clear-string-bytes car cdr car-safe/    (1 goto-char nelisp--clear-string-bytes cdr car-safe/;s/^    (2 nelisp--equal-leaf /    (2 car nelisp--equal-leaf /|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
 #
 # special-variables: `bf_defvar_init_mode' (scripts/nelisp-standalone-
 # build.el) decides whether `defvar' may skip re-initializing an
