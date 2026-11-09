@@ -14,7 +14,8 @@
 ;;
 ;;   ./target/nelisp --load test/nelisp-eval-closure-standalone-smoke.el
 ;;
-;; Prints `nelisp-eval-closure-standalone-smoke: PASS'; any failure signals
+;; Prints a GATE-COUNT line and `nelisp-eval-closure-standalone-smoke: PASS';
+;; any failure signals
 ;; an error so the process exits non-zero.
 
 ;;; Code:
@@ -23,7 +24,11 @@
                         load-path))
 (require 'nelisp-eval)
 
+(defvar nelisp-eval-closure-smoke--checked 0)
+
 (defun nelisp-eval-closure-smoke--check (label ok)
+  (setq nelisp-eval-closure-smoke--checked
+        (1+ nelisp-eval-closure-smoke--checked))
   (unless ok
     (error "nelisp-eval-closure-standalone-smoke: FAIL %s" label)))
 
@@ -37,6 +42,8 @@
  "closurep defun"
  (closurep (symbol-function 'nelisp-eval-closure-smoke--fn)))
 
+(princ (format "GATE-COUNT checked=%d findings=0\n"
+               nelisp-eval-closure-smoke--checked))
 (princ "nelisp-eval-closure-standalone-smoke: PASS\n")
 
 ;;; nelisp-eval-closure-standalone-smoke.el ends here

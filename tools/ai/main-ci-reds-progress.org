@@ -109,6 +109,18 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh perf
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh selfhost
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh selfhost
 
+** S3.5 emacs-parity: the reader build answers like stock Emacs 31
+# Added 2026-11-09 at the coordinator's request, after S3 had first been
+# recorded 4/4 on cd41f8bdf; the denominator goes from 24 to 25.  CI run
+# 42539347517 showed this gate red once the shadow differential before it
+# in the smoke job turned green.  Its four divergences (equal on byte-code
+# objects and on interpreted closures, the string-search arity error data,
+# the json-serialize dotted-list error data) all reproduce on a fresh
+# fba278a22 build, so S3 did not introduce them.  The recipe GATE-SKIPs on
+# hosts without Emacs 31.x and a skip records rc 0; this host has 31.1.
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh emacs-parity
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh emacs-parity
+
 * S4 real CI on the fixed commit
 # Needs a push, which only the user authorises; these stay red until then.
 # They also cover what cannot run here: macOS AOT ERT (84 unexpected),
@@ -119,5 +131,8 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh selfhost
 cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow CI --json conclusion --jq '.[0].conclusion')" = success
 
 ** S4.2 standalone parity workflow succeeds on HEAD
+# Blocked by tools/ai/eval-build-port-progress.org E1.2 (the Linux and
+# Windows legs stop in the eval build) and by the macOS Doc 97 AOT
+# :not-value-expr error that main ca0a70fd4 also shows; not S3-actionable.
 cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow 'stage-d-v3.0 standalone parity' --json conclusion --jq '.[0].conclusion')" = success
 
