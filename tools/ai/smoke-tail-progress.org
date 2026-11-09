@@ -18,6 +18,9 @@
 
 * T1 check-tier gates (smoke steps 21-22, tools/ai/nelisp-ai.sh check)
 ** T1.1 compile: free variable emacs-foundation-features in packages/emacs-lib-facade/src/nelisp-emacs.el:41
+# Order-dependent: `make compile' alone passes (meter, 2026-11-10); it
+# failed inside nelisp-ai.sh check after the earlier steps.  This cmd does
+# not reproduce the CI sequence.
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 make compile >/dev/null 2>&1)
 
