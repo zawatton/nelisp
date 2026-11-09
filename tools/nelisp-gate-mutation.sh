@@ -1134,6 +1134,11 @@ while IFS='|' read -r gate file expr what scope; do
   else
     skip_after=$(grep -E '^GATE-SKIP ' "$gate_log" | tail -1 | sed 's/^GATE-SKIP //' || true)
   fi
+  # What the gate counted WITH the injection in place.  A count-versus-baseline
+  # gate (emacs-compat) can stay green on one host and go red on another when
+  # the injected defect is smaller than the host-dependent slack; the count
+  # makes that visible in the CI log instead of leaving it to be guessed.
+  mutated_count=$(grep -E '^GATE-COUNT |^emacs-compat: ' "$gate_log" 2>/dev/null | tail -2 | tr '\n' ' ' || true)
   rm -f "$gate_log"
   if [ -n "$skip_after" ]; then
     # A row can only prove anything on a host where its gate actually runs;
@@ -1192,9 +1197,11 @@ while IFS='|' read -r gate file expr what scope; do
     failed=$((failed+1))
   elif [ "$gate_ok" = 1 ]; then
     echo "  $gate: STAYED GREEN with a real defect in front of it ($what)"
+    [ -n "$mutated_count" ] && echo "    $gate: gate count with the injection: $mutated_count"
     failed=$((failed+1))
   else
     echo "  $gate: went red as it should ($what)"
+    [ -n "$mutated_count" ] && echo "    $gate: gate count with the injection: $mutated_count"
     passed=$((passed+1))
   fi
   mutation_restore || exit 1
