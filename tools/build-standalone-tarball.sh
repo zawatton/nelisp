@@ -154,7 +154,7 @@ RECORD_READS
 #!/bin/sh
 if [ "\$1" = --batch ] && [ "\$2" = -Q ]; then
   shift 2
-  exec "$EMACS_BIN" --batch -Q -l "$BUILD_DIR/record-reads.el" "\$@"
+  NELISP_TARBALL_READ_LOG="$build_reads" exec "$EMACS_BIN" --batch -Q -l "$BUILD_DIR/record-reads.el" "\$@"
 fi
 exec "$EMACS_BIN" "\$@"
 EMACS_RECORDING
@@ -163,7 +163,6 @@ EMACS_RECORDING
     ;;
 esac
 : > "$build_reads"
-NELISP_TARBALL_READ_LOG="$build_reads" \
 make standalone-reader EMACS="$build_emacs" NELISP_STANDALONE_TARGET="$PLATFORM" \
   NELISP_STANDALONE_READER_OUTPUT="$STANDALONE_BIN"
 [[ -f "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
