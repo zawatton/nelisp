@@ -67,7 +67,7 @@ ns-gate|scripts/nelisp-stdlib-prelude.el|s/^(defun round (x \&optional div)/(def
 # generated table at all (so it was never counted, and removing it changed
 # nothing).  Both read as a broken gate when the gate was fine.
 parity-coverage|test/nelisp-shadow-differential-cases.el|s/generate-new-buffer/ignore-me-not-a-name/g|a covered name stops being mentioned
-prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun string-empty-p (s) (string-equal s ""))$/(defun string-empty-p (s) (string-equal s ""))\n  (nelisp--check-string s)/|a check lands outside a one-line defun
+prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun natnump (x) (and (integerp x) (>= x 0)))$/(defun natnump (x) (and (integerp x) (>= x 0)))\n  (nelisp--check-number x)/|a check lands outside a one-line defun
 # The sed expression cannot use `|' -- it is this file's field separator.
 prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|/^  (defun seq-length (seq) (length seq)))$/a\    (unless (sequencep seq) (signal (quote wrong-type-argument) (list (quote sequencep) seq)))|a check lands outside a one-line defun INSIDE an unless wrapper
 #
@@ -701,7 +701,7 @@ standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|
 # 184/200 wrong under mid-form GC, 200/200 after garbage-collect";
 # restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
 # loaded from source, so no rebuild is needed.
-standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (logand (ptr-read-u64 addr 8) 281474976710655)$/      (ignore addr (logand (ptr-read-u64 addr 8) 281474976710655)/|boxed strings stop being pinned while a raw slot holds them
 # 2026-11-03 (second row): the same gate polices the scratch-vector pin.
 # The injection drops the box pin, so a scratch vector in the mmap'd slots
 # is held only by memory the GC does not scan.  RED: "... 49/50 scratch
@@ -913,7 +913,7 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # construction and after a `dump-runtime-image'/`eval-runtime-image'
 # round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
 # `GATE-COUNT checked=11 findings=0'.
-native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
+native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;N;s/(if (or (= tag 4) (= tag 16))\n\( *(nl_seq2\n *(if (= tag 16) (nl_gc_mark_symview sp) 0)\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
 #
 # Project-toolchain contract suites. None mutates code baked into
 # target/nelisp, so none needs an entry in gate_needs_rebuild.
