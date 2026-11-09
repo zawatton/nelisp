@@ -85,6 +85,16 @@ cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make parens-check >/dev
 #+TIMEOUT: 600
 cmd: (cd "$F12_TREE" && ulimit -v 8388608 && timeout 590 make ns-inventory >/dev/null 2>&1)
 
+** S2.10 prelude-toplevel-check
+# Added 2026-11-09 (denominator 25 -> 26).  CI run 42590388646 on 2095d93a9
+# reached it once emacs-parity passed; origin/main, fba278a22 and 0a618c89c
+# fail it the same way (14 registrar calls, reported as findings=1 by a
+# counting bug).  Later smoke-job steps are not criteria yet: see the
+# 2026-11-09 handoff (partial-inventory, fallback-inventory, builtin-arity,
+# ns-gate, compile, doc200-census, gate-selfcheck).
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make prelude-toplevel-check >/dev/null 2>&1)
+
 * S3 standalone tiers
 
 ** S3.1 reader smokes (malformed-input, realrt segfault and 10 more)
