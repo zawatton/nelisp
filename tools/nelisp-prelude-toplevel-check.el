@@ -57,7 +57,12 @@
     nelisp-casetab--register-standard-data  ; case-table seed
     ;; prime the fx env caches before any worker runs (see the comment
     ;; above the two calls in the prelude)
-    nelisp--fx-active-p nelisp--fx-trace-file)
+    nelisp--fx-active-p nelisp--fx-trace-file
+    ;; 2026-11-10: 48342b978 (on origin/main, red there at afec22e7d) wraps
+    ;; prelude closures as Lisp primitives with two load-time calls; like
+    ;; the registrars above it re-installs definitions and takes no defun
+    ;; parameter.
+    nelisp--mark-lisp-primitives)
   "Heads that make sense as a top-level form here.")
 
 (defun nelisp-prelude-toplevel--offenders (form)
