@@ -35700,10 +35700,20 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; slots by position, and `oclosure--lambda' mentions the slots in slot
     ;; order, so capture order is the order it needs.
     ;; Doc 215 builtin word ABI: bf_closure_env_view_fwd_w returns the result WORD (0 = signal stashed); bf_closure_env_view_fwd keeps the (rc, OUT) ABI.
+    ;; Lexical bindings come first, then the bare (dynamically bound)
+    ;; symbols, as in GNU's `cconv-make-interpreted-closure' result (free
+    ;; variables, then dynamic ones).  Capture order alone put the file's
+    ;; earlier `(defvar X)' declarations in front, and `oclosure--copy'
+    ;; then took `(caar env)' of a symbol (REPL bootstrap failure).
     (defun bf_closure_env_view_fwd_w (node _pad)
+      (bf_closure_env_view_fwd_part_w node 1 (bf_closure_env_view_fwd_part_w node 0 3)))
+    ;; NODE's entries of one kind in capture order, ahead of TAIL: the
+    ;; (NAME . VALUE) bindings when PAIRS is 1, the bare symbols when 0.
+    (defun bf_closure_env_view_fwd_part_w (node pairs tail)
   (if (= (nl_val_tag node) 7)
       (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node))
-             (tail_word (bf_closure_env_view_fwd_w rest 0)))
+             (tail_word (bf_closure_env_view_fwd_part_w rest pairs tail)))
+        (if (/= (if (= (heap-sexp-tag-word entry) 7) 1 0) pairs) tail_word
         (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1) tail_word
           (let* ((value_word
                   (if (= (heap-sexp-tag-word entry) 7)
@@ -35712,8 +35722,8 @@ bytes are written into a fresh 8-byte buffer instead."
                          (nl_cons_car_word entry)
                          (if (= (nl_val_tag word) 11) (nl_cell_get_value_w word 0) word) 0))
                     (nl_cons_car_word node))))
-            (nelisp_cons_construct_w value_word tail_word 0))))
-    3))
+            (nelisp_cons_construct_w value_word tail_word 0)))))
+    tail))
     (defun bf_closure_env_view_fwd (node out)
       (nl_abi_word_to_rc (bf_closure_env_view_fwd_w node 0) out))
     ;; 1 when the closure body B0 starts with a `(:documentation 'TYPE)' form.
