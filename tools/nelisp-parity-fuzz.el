@@ -291,7 +291,12 @@ few lines down, and what `make fallback-inventory' flags a bare handler for."
          (lo (and ar (car ar)))
          (hi (and ar (or (cdr ar) (max 2 (car ar))))))
     (when (and lo (<= lo 4))
-      (let* ((n (+ lo (if (> hi lo) (mod (nelisp-parity-fuzz--next) (1+ (- (min hi 3) lo))) 0)))
+      ;; A function needing 4 arguments has no room under the cap of 3; the
+      ;; draw still happens (so later cases keep their random sequence) and
+      ;; the call takes exactly LO arguments.
+      (let* ((n (+ lo (if (> hi lo)
+                          (mod (nelisp-parity-fuzz--next) (max 1 (1+ (- (min hi 3) lo))))
+                        0)))
              (args (cl-loop repeat n
                             collect (nelisp-parity-fuzz--pick nelisp-parity-fuzz--pool))))
         (cons sym args)))))
