@@ -39,6 +39,10 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
 EMACS="${EMACS:-emacs}"
+# Extra arguments placed right after the Emacs binary (the JIT lanes pass
+# "-l scripts/nelisp-jit-enable.el").  A separate variable rather than a
+# multi-word EMACS, which would leak into the tests' own environment.
+read -r -a PRELOAD <<< "${EMACS_PRELOAD:-}"
 JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 OUT_DIR="${OUT_DIR:-target/test-parallel}"
 if [ "${NELISP_TEST_EXPENSIVE:-0}" = 1 ]; then
@@ -96,7 +100,7 @@ T0=$(date +%s.%N)
 run_one() {
   local f=$1 log rc summ ran unexp skip expf
   log="$OUT_DIR/$(echo "$f" | tr '/' '_' | sed 's/\.el$//').log"
-  timeout "$TEST_TIMEOUT" "$EMACS" --batch -Q "${LOAD_DIRS[@]}" \
+  timeout "$TEST_TIMEOUT" "$EMACS" "${PRELOAD[@]}" --batch -Q "${LOAD_DIRS[@]}" \
     --eval '(setq load-prefer-newer t)' \
     -l ert -l "$f" \
     --eval "(ert-run-tests-batch-and-exit '$SELECTOR)" \
@@ -124,7 +128,7 @@ wait
 T1=$(date +%s.%N)
 
 # --- aggregate --------------------------------------------------------------
-total_ran=0 total_unexpected=0 total_expected_fail=0 total_skipped=0 failed_files=0
+total_ran=0 total_unexpected=0 total_expected_fail=0 total_skipped=0 failed_files=0 error_files=0
 while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
   total_ran=$(( total_ran + ran ))
   total_unexpected=$(( total_unexpected + unexp ))
@@ -133,6 +137,7 @@ while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
   if [ "$rc" != "0" ] || [ "$unexp" != "0" ] || [ "$has_summ" = "0" ]; then
     failed_files=$(( failed_files + 1 ))
     if [ "$has_summ" = "0" ]; then
+      error_files=$(( error_files + 1 ))
       echo "[parallel-test] ERROR $f (rc=$rc, no ert summary; see $log)"
     else
       echo "[parallel-test] FAIL  $f (rc=$rc, $unexp unexpected of $ran; see $log)"
@@ -144,6 +149,10 @@ WALL=$(awk "BEGIN{printf \"%.1f\", $T1-$T0}")
 echo "---------------------------------------------------------------"
 printf '[parallel-test] ran %d tests, %d unexpected, %d skipped, %d expected-failures in %ss across %d files\n' \
   "$total_ran" "$total_unexpected" "$total_skipped" "$total_expected_fail" "$WALL" "$NFILES"
+
+# Machine-readable totals for tools/ai/nelisp-ai.sh's gate report.
+printf '[parallel-test] TOTALS ran=%d unexpected=%d skipped=%d error-files=%d failed-files=%d\n' \
+  "$total_ran" "$total_unexpected" "$total_skipped" "$error_files" "$failed_files"
 
 if [ "$failed_files" -gt 0 ]; then
   echo "[parallel-test] RESULT: FAIL ($failed_files of $NFILES file(s) failed)"

@@ -412,8 +412,8 @@ jit-unverified:
 # through it.  Unlike `jit-unverified' it adds no per-body work -- that
 # one is the measurement, this one is the coverage.
 test-jit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS)
 
 # The mirror.  With `nelisp-jit-enabled' defaulting to t, the ordinary
 # suite exercises the JIT and the bcl / interpreter paths stop being
@@ -422,8 +422,8 @@ test-jit:
 # how the JIT reached a default-off state with three semantic
 # differences from the interpreter still in it.
 test-nojit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS)
 
 # `compile' is the byte-compile-error-on-warn lint: it removes the .elc
 # files of its targets before and after the run (also when the run fails,

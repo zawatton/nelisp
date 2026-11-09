@@ -250,24 +250,51 @@ run_ert_gate() {
             --command "nelisp-ai.sh $gate_name"
         exit 1
     fi
-    # Loaded through nelisp-ert-collection-load-env: each file once, and a
-    # file that fails to load becomes a failing test instead of an abort.
+    # Each file runs in its own `emacs --batch' (tools/run-tests-parallel.sh).
+    # One Emacs loading every file never completed: files that called
+    # `ert-run-tests-batch-and-exit' at load time ended the run early, and
+    # without them the run reached tests whose files redefine each other's
+    # functions ("source owner changed") and an ELF registration test that
+    # crashes the host Emacs after the raw-call tests.  A file that fails to
+    # load is an ERROR file, counted as one failure.
     started=$(date +%s)
+    out_dir="target/test-parallel/$gate_name"
+    summary="target/test-parallel/$gate_name.summary"
+    mkdir -p target/test-parallel
     set +e
-    # shellcheck disable=SC2046,SC2086
-    # Keep GNU's host tooling API before standalone packages shadow json.el.
-    NELISP_GATE_NAME="$gate_name" \
-    NELISP_GATE_COMMAND="tools/ai/nelisp-ai.sh $gate_name" \
-    NELISP_ERT_FILES="$files" \
-        "$EMACS" --batch -Q -l json $(load_path_args) \
-            --eval '(setq load-prefer-newer t)' \
-            -l ert -l "$here/nelisp-ert-collection.el" \
-            -f nelisp-ert-collection-load-env \
-            --eval '(nelisp-ert-collection-finish)' \
-            -l "$here/nelisp-ert-gate.el" -f nelisp-ert-gate-run
+    # shellcheck disable=SC2086
+    # The runner's default selector leaves out `:expensive-test', as
+    # `make test' does; NELISP_GATE_SELECTOR overrides it.
+    OUT_DIR="$out_dir" EMACS="$EMACS" \
+    SELECTOR="${NELISP_GATE_SELECTOR:-(not (tag :expensive-test))}" \
+        "$here/../run-tests-parallel.sh" $files > "$summary" 2>&1
     code=$?
     set -e
-    printf 'elapsed: %ss\n' "$(( $(date +%s) - started ))"
+    cat "$summary"
+    totals=$(sed -n 's/^\[parallel-test\] TOTALS //p' "$summary" | tail -1)
+    ran=$(printf '%s' "$totals" | sed -nE 's/.*ran=([0-9]+).*/\1/p')
+    unexpected=$(printf '%s' "$totals" | sed -nE 's/.*unexpected=([0-9]+).*/\1/p')
+    skipped=$(printf '%s' "$totals" | sed -nE 's/.*skipped=([0-9]+).*/\1/p')
+    error_files=$(printf '%s' "$totals" | sed -nE 's/.*error-files=([0-9]+).*/\1/p')
+    elapsed=$(( $(date +%s) - started ))
+    if [ -z "$ran" ]; then
+        "$here/gate-report.sh" --name "$gate_name" --kind ert --ran 0 \
+            --failed 1 --reason "the parallel runner printed no totals (exit $code)" \
+            --command "nelisp-ai.sh $gate_name" || true
+        code=1
+    else
+        failed=$(( unexpected + error_files ))
+        # A nonzero runner exit with no counted failure (a file timed out
+        # after printing its summary) still fails the gate.
+        [ "$code" -ne 0 ] && [ "$failed" -eq 0 ] && failed=1
+        "$here/gate-report.sh" --name "$gate_name" --kind ert \
+            --ran "$(( ran - skipped ))" --passed "$(( ran - skipped - unexpected ))" \
+            --failed "$failed" --skipped "$skipped" \
+            --command "nelisp-ai.sh $gate_name" \
+            --duration-ms "$(( elapsed * 1000 ))" || code=1
+    fi
+    printf 'GATE-COUNT checked=%s findings=%s\n' "${ran:-0}" "${failed:-1}"
+    printf 'elapsed: %ss\n' "$elapsed"
     return $code
 }
 
