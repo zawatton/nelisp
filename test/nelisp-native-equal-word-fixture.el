@@ -44,8 +44,8 @@
       (error "Missing genuine helper %S" name)))
 (defun audit-eq-word-call (offset)
   ;; Keep both-pointer recursion direct, preserving the pre-existing TCO edge.
-  (let ((a `(ptr-read-u64 (ptr-read-u64 a 8) ,offset))
-        (b `(ptr-read-u64 (ptr-read-u64 b 8) ,offset)))
+  (let ((a `(heap-read-u64 (heap-sexp-payload a) ,offset))
+        (b `(heap-read-u64 (heap-sexp-payload b) ,offset)))
     `(if (and (= (logand ,a 1) 0) (= (logand ,b 1) 0))
          (bf_equal2 ,a ,b)
        (bf_equal_words ,a ,b))))
@@ -87,11 +87,11 @@
     ("bad-shift" (setq word-slot (cl-subst 'shr 'sar word-slot)))
     ("bad-odd" (setq words (cl-subst '(if (= a b) 1 0)
                                    '(if (= a 3) (if (= b 3) 1 0) (if (= b 3) 0 1)) words :test #'equal)))
-    ("bad-mixed-tag" (setq word-slot (cl-subst t '(= (ptr-read-u64 slot 0) 2) word-slot :test #'equal)))
+    ("bad-mixed-tag" (setq word-slot (cl-subst t '(= (nl_word_tag64 slot) 2) word-slot :test #'equal)))
     ("bad-cdr" (setq candidate (cl-subst 1 (audit-eq-word-call 8) candidate :test #'equal)))
     ("bad-pointer" (setq candidate
-                         (cl-subst 1 '(bf_equal2 (ptr-read-u64 (ptr-read-u64 a 8) 0)
-                                                 (ptr-read-u64 (ptr-read-u64 b 8) 0))
+                         (cl-subst 1 '(bf_equal2 (heap-read-u64 (heap-sexp-payload a) 0)
+                                                 (heap-read-u64 (heap-sexp-payload b) 0))
                                    candidate :test #'equal))))
   ;; Cartesian immediate/boxed-immediate matrix, including noncanonical odd T.
   (let ((values (list (cons 3 '(nil)) (cons 7 '(t)) (cons 11 '(t)) (cons 15 '(t))
@@ -137,8 +137,7 @@
              (audit-eq-write table (* i 24) a)
              (audit-eq-write table (+ (* i 24) 8) b)
              (audit-eq-write table (+ (* i 24) 16) expected))
-    (nelisp-link-units output
-     (list (nelisp-standalone--compile-to-unit "tagged-equality.o"
+    (progn (nelisp-aot-test-runtime-link-units output "tagged-equality.o"
       `(seq
         (defun nl_alloc_bytes (size align)
           (let ((p (ptr-read-u64 ,audit-eq-base 40)))
@@ -151,6 +150,9 @@
           (let ((i 0) (failure 0) (old-result 0) (new-result 0) (expected 0))
             (seq
              (syscall-direct 9 ,audit-eq-base 16777216 3 50 -1 0)
+             ;; Arena metadata is read through the driver-owned base slot (Doc 140 S8); point it
+             ;; at zeroed private memory.
+             (ptr-write-u64 (data-addr nl_arena_base) 0 ,(+ audit-eq-base #x200000))
              (ptr-write-u64 ,audit-eq-base 40 ,pool-start)
              ,@(nreverse audit-eq-init)
              ;; Allocate oracle runs before the general matrix.
@@ -185,7 +187,7 @@
              (ptr-write-u64 ,audit-eq-base 24 failure)
              (syscall-direct 1 1 ,audit-eq-base 32 0 0 0)
              failure)))
-        (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0))))) "_start")
+        (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0))) (list (nelisp-standalone--arena-base-slot-unit)) "_start"))
     (with-temp-file (concat output ".cases.el") (prin1 audit-eq-cases (current-buffer)))
     (with-temp-file (concat output ".candidate.el") (prin1 (list word-slot words candidate) (current-buffer)))
     (princ (format "TAGGED-EQUAL-COMPILED variant=%s cases=%d exact-original=%s\n"

@@ -1,7 +1,4 @@
 ;;; nelisp-hashfast-test.el --- Hash/walker production IR checks -*- lexical-binding: t; -*-
-;; Guarded so that a `require' from another test plus the Makefile `-l' define
-;; the tests only once.
-(unless (featurep 'nelisp-hashfast-test)
 (require 'ert)
 (require 'cl-lib)
 
@@ -25,6 +22,8 @@
         ((memq (car form) '(if while))
          (cons (car form) (cons `(hf--truth ,(hf--host (cadr form)))
                                 (mapcar #'hf--host (cddr form)))))
+        ;; A binding list: its first binding is the car and needs adapting too.
+        ((consp (car form)) (mapcar #'hf--host form))
         (t (cons (pcase (car form) ('seq 'progn) ('shr 'hf--shr)
                         ('sar 'hf--sar) ('shl 'ash) (_ (car form)))
                  (mapcar #'hf--host (cdr form))))))
@@ -72,7 +71,7 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
-              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ;; Callbacks here are host values, never heap closure objects.
               ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
@@ -118,7 +117,7 @@
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
-              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ;; Callbacks here are host values, never heap closure objects.
               ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v roots)))
               ((symbol-function 'heap-read-u64) (lambda (p off) (gethash (+ p off) roots)))
@@ -246,10 +245,6 @@
   (let ((meta (make-vector 15 0)) (reads 0) (reindexes 0))
     (aset meta 2 'eq)
     (cl-letf (((symbol-function 'nl_cons_car_word) (lambda (_) meta))
-              ;; Not a kind-22 object word, so the cached-code fast path is
-              ;; skipped (7d7ba0c02) and the decoding body runs on META.
-              ((symbol-function 'nl_ht_obj) (lambda (_) 0))
-              ((symbol-function 'nl_ht_meta_slot) (lambda (_) meta))
               ((symbol-function 'heap-sexp-tag-word) (lambda (_) 8))
               ((symbol-function 'vector-len) #'length)
               ((symbol-function 'vector-ref-ptr) #'aref)
@@ -258,6 +253,9 @@
               ((symbol-function 'heap-sexp-data) (lambda (_) 4096))
               ((symbol-function 'heap-read-u8)
                (lambda (_ i) (cl-incf reads) (aref "eq" i)))
+              ;; Model a cons-shaped table: not a kind-22 heap table object.
+              ((symbol-function 'nl_ht_obj) (lambda (_) 0))
+              ((symbol-function 'nl_ht_meta_slot) (lambda (_) meta))
               ((symbol-function 'nl_ht_int) #'aref)
               ((symbol-function 'nl_ht_set_int) #'aset)
               ((symbol-function 'nl_ht_reindex)
@@ -269,6 +267,48 @@
       (dotimes (_ 10) (should (= (nl_ht_test_mode 1000) 1)))
       (should (= reads 2))
       (should (= reindexes 1)))))
+
+;; 7d7ba0c02 made a table a kind-22 heap object; the test above stubs
+;; `nl_ht_obj' to 0 and so covers only the decoding path.  This one runs the
+;; real `nl_ht_obj' and the real heap-object fast path of `nl_ht_test_mode'.
+(defun hf--ht-mode-mem (header-kind meta-slots cache)
+  "Fake memory: table object at 4096 (kind HEADER-KIND), meta vector at 8192
+with META-SLOTS slots whose slot 5 holds fixnum CACHE.  Returns (MEM . WORD)."
+  (let ((mem (make-hash-table :test 'eql)))
+    (puthash 4096 (logior header-kind (ash 1 8)) mem)
+    (puthash 4104 8198 mem)
+    (puthash 8192 (logior 11 (ash meta-slots 8)) mem)
+    (puthash (+ 8192 48) (+ (* cache 4) 1) mem)
+    (cons mem 4102)))
+
+(defun hf--ht-mode-run (mm decode-calls)
+  "Run the real `nl_ht_test_mode' on MM; count decoding helpers in DECODE-CALLS."
+  (let ((mem (car mm)))
+    (cl-letf (((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem 0)))
+              ((symbol-function 'ptr-read-u8)
+               (lambda (p off) (logand (gethash (+ p off) mem 0) 255)))
+              ((symbol-function 'nl_ht_meta_slot)
+               (lambda (_) (cl-incf (car decode-calls)) (vector 0 0 0 0 0 -103 0 0 0 0 0 0 0 0 0)))
+              ((symbol-function 'vector-len) #'length)
+              ((symbol-function 'nl_ht_int) #'aref))
+      (nl_ht_test_mode (cdr mm)))))
+
+(ert-deftest hf-test-mode-heap-object-fast-path ()
+  (hf--install '(nl_ht_obj nl_ht_test_mode))
+  ;; Cached codes -101/-102/-103 (equal/eq/eql) answer 0/1/2 straight from the
+  ;; kind-22 object's meta vector, never reaching the decoding helpers.
+  (dolist (c '((-101 . 0) (-102 . 1) (-103 . 2)))
+    (let ((calls (list 0)))
+      (should (= (hf--ht-mode-run (hf--ht-mode-mem 22 15 (car c)) calls) (cdr c)))
+      (should (= (car calls) 0))))
+  ;; Uncached (slot 5 = 0), too-short meta, or a non-table header kind all
+  ;; fall through to the decoding body (here answering eql = 2 from -103).
+  (dolist (mm (list (hf--ht-mode-mem 22 15 0)
+                    (hf--ht-mode-mem 22 14 -102)
+                    (hf--ht-mode-mem 20 15 -102)))
+    (let ((calls (list 0)))
+      (should (= (hf--ht-mode-run mm calls) 2))
+      (should (= (car calls) 1)))))
 
 (ert-deftest hf-symbol-stable-arena-id ()
   (hf--install '(bf_identity_hash nl_ht_key_hash))
@@ -361,12 +401,13 @@
     (should (null (nth 2 r)))))
 
 (defun hf--fake-table (kv markers cap)
-  "Fake memory for a table WORD 4102: kind-22 object at 4096, meta word at +8.
-The layout follows 7d7ba0c02 (hash tables are heap objects, not conses).
+  "Fake memory for a table WORD 4102: kind-22 hash-table object at 4096 whose
+slot at +8 is the meta vector word 8198 (hash tables are their own heap kind
+since 7d7ba0c02).
 Returns (MEMORY . TABLE-WORD).  Slot 3 of the meta is CAP, 11 the pairs, 12
 the index vector, all vectorlike WORDS (low bits 6)."
   (let ((mem (make-hash-table :test 'eql)) (fix (lambda (n) (+ (* n 4) 1))))
-    (puthash (+ 4096 8) 8198 mem)
+    (puthash 4104 8198 mem)
     (puthash (+ 8192 8 (* 3 8)) (funcall fix cap) mem)
     (puthash (+ 8192 8 (* 11 8)) 12294 mem)
     (puthash (+ 8192 8 (* 12 8)) 16390 mem)
@@ -383,7 +424,7 @@ the index vector, all vectorlike WORDS (low bits 6)."
               ((symbol-function 'nl_root_mark) (lambda (_) 17))
               ((symbol-function 'nl_root_words) (lambda (_ _) 1024))
               ((symbol-function 'nl_word_canon) #'identity)
-              ;; Closure-kind unwrap (02a1dccef): plain words are not closures.
+              ;; Callbacks here are host values, never heap closure objects.
               ((symbol-function 'nl_cl_unwrap) #'identity)
               ((symbol-function 'ptr-write-u64) (lambda (p off v) (puthash (+ p off) v mem)))
               ((symbol-function 'ptr-read-u64) (lambda (p off) (gethash (+ p off) mem)))
@@ -425,4 +466,3 @@ the index vector, all vectorlike WORDS (low bits 6)."
                   (puthash (+ 16384 8 (* 3 8)) (funcall fix 3) mem)))))
     (should (= (car r) 3))
     (should (equal (nth 1 r) '((1 10) (21 28) (35 42) (49 56))))))
-)

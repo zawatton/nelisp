@@ -53,6 +53,9 @@
   (prefer-coding-system 'utf-8-unix))
 (require 'nelisp-native-arithmetic-v2)
 (require 'nelisp-standalone-arena-rewrite)
+;; Host byte-opt leaks top-level defvar names into this global; without
+;; rebinding it, each compile scans an ever-growing list.
+(defvar byte-optimize--dynamic-vars)
 (require 'bytecomp)
 (require 'nelisp-cc-variable-watchers)
 (require 'json)
@@ -184,6 +187,18 @@
                              ("comp" . "a5301de34ef5768d36044f4ffb4e4136966487435c3c33431912d4b36ff00eb8"))))))
         (concat "GNU Emacs 31.1; inventory-sha256=" inventory-hash))))
   "Pinned GNU bytecode identity verified by this standalone build host, or nil.")
+
+;; Build outputs other than the reader executable (byte-code reports, the
+;; vendor byte-code cache, cold-compiler artifacts) go under REPO/target, or
+;; under `nelisp-standalone--target-root' when a project build of an
+;; installed, read-only toolchain points it at the user's build cache.
+(defvar nelisp-standalone--target-root nil
+  "Directory for build outputs; nil means target/ in the repository.")
+
+(defun nelisp-standalone--target-file (relative)
+  "Return RELATIVE under the build output directory."
+  (expand-file-name relative (or nelisp-standalone--target-root
+                                 (expand-file-name "target" nelisp-standalone--repo-root))))
 
 (defconst nelisp-standalone--cache-dir
   (let ((dir (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR")))
@@ -9222,7 +9237,7 @@ REPL-facing module it feeds."
       (let ((header (heap-read-u64 box 0)))
         (let* ((kind (logand header 63)) (n (sar header 8)))
           (if (= kind 8) (nl_gc_mark_slots box 1 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_slots box 1 (if (if (= kind 23) (= n 2) 0) 2 1))
               (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22)) (nl_gc_mark_slots box 1 (+ n 1))
                 (if (= kind 9) (nl_gc_mark_char_table_children box) 0)))))))
     (defun nl_gc_mark_slots (owner offset n)
@@ -9295,7 +9310,7 @@ REPL-facing module it feeds."
                 (if (= mr 2) (nl_gc_typed_vectorlike box kind n mr) 0)
               0))
           (if (= kind 8) (nl_gc_mark_inline_words box 1 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_inline_words box 1 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_gc_mark_inline_words box 1 (if (if (= kind 23) (= n 2) 0) 2 1))
             (if (= kind 22)
                 ;; Hash table object: a weak table is chained at BOX+8 (meta, index
                 ;; read as a cons's car and cdr) for the end-of-mark weak pass.
@@ -12281,7 +12296,7 @@ REPL-facing module it feeds."
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 24)))
                    (nl_compact_rw_word (nl_compact_rw_word_edge (+ box 32))))
           (if (= kind 8) (nl_compact_rw_vec_slots (+ box 8) 0 n)
-            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_compact_rw_vec_slots (+ box 8) 0 1)
+            (if (or (= kind 11) (= kind 20) (= kind 23)) (nl_compact_rw_vec_slots (+ box 8) 0 (if (if (= kind 23) (= n 2) 0) 2 1))
             (if (or (= kind 12) (= kind 17) (= kind 18) (= kind 22))
                 (nl_compact_rw_vec_slots (+ box 8) 0 (+ n 1))
               (if (= kind 9) (nl_compact_rw_char_table box) 0))))))))
@@ -13806,6 +13821,12 @@ argument (reachability + in-arena bounds checks).")
                                            3)))
     ((:lit "nelisp--closure-p") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (nl_cl_unwrap w) w) 3 7)))
     ((:lit "nelisp--closure-cons") :word . (let* ((w (nl_word_canon (wf_arg_word args 0))) (u (nl_cl_unwrap w))) (if (= u w) 3 u)))
+    ;; A Lisp primitive: a closure that reports as a subr.  A kind-23 object
+    ;; with length field 2 -- slot 0 the closure cons, slot 1 the name symbol.
+    ((:lit "nelisp--make-lisp-primitive") :word . (let* ((w (nl_word_canon (wf_arg_word args 0))) (u (nl_cl_unwrap w)))
+                                                    (if (= u w) w (nl_cl_prim_wrap u (nl_word_canon (wf_arg_word args 1))))))
+    ((:lit "nelisp--lisp-primitive-p") :word . (if (= (nl_k23_name (nl_word_canon (wf_arg_word args 0))) 0) 3 7))
+    ((:lit "nelisp--lisp-primitive-name") :word . (let* ((nm (nl_k23_name (nl_word_canon (wf_arg_word args 0))))) (if (= nm 0) 3 nm)))
     ((:lit "nelisp--closure-make") :word . (let* ((w (nl_word_canon (wf_arg_word args 0)))) (if (= (logand w 7) 2) (nl_cl_wrap w) w)))
     ((:lit "nelisp--hash-make") :word . (let* ((obj (nl_alloc_vector 2)))
                                     (seq (ptr-write-u64 obj 0 (+ 256 22))
@@ -19540,7 +19561,10 @@ list groups retain the original leaves/default exactly."
           (nl_fa_vec_slots (+ box 8) 0 (sar (heap-read-u64 box 0) 8)
                            ds span dest cin cout dir)
         (if (or (= tag 11) (= tag 20) (= tag 23))
-            (nl_fa_vec_slots (+ box 8) 0 1 ds span dest cin cout dir)
+            ;; A Lisp primitive (kind 23, length field 2) has a second slot, the name.
+            (nl_fa_vec_slots (+ box 8) 0
+                             (if (if (= tag 23) (= (sar (heap-read-u64 box 0) 8) 2) 0) 2 1)
+                             ds span dest cin cout dir)
         (if (or (= tag 12) (= tag 17) (= tag 18) (= tag 22))
             (nl_fa_vec_slots (+ box 8) 0 (+ 1 (sar (heap-read-u64 box 0) 8))
                              ds span dest cin cout dir)
@@ -20560,22 +20584,42 @@ eval applyfn.")
                               (seq (setq res 0) (setq again 0)))
                           (seq (setq res (wf_eqd a b (+ depth 1))) (setq again 0))))))))))
            res))))
+    ;; A byte-code function (tag 17, RecordBox-backed) is equal to another
+    ;; when every slot is, as GNU internal_equal compares PVEC_CLOSURE
+    ;; objects slot by slot.  Same contract as `wf_eqd_vec'.
+    (defun wf_eqd_rec (a b depth)
+      (if (> depth 10) 2
+        (let* ((n (nl_record_length a)) (i 0) (res 1))
+          (if (= n (nl_record_length b))
+              (seq (while (and (= res 1) (< i n))
+                     (seq (setq res (wf_eqd (nl_record_slot_word a i)
+                                            (nl_record_slot_word b i) (+ depth 1)))
+                          (setq i (+ i 1))))
+                   res)
+            0))))
+    ;; A lexical cell (tag 11) is how a closure's environment holds a captured
+    ;; value; GNU's environment holds the value itself, so compare what the
+    ;; cell holds.  Without this two closures over equal values were never
+    ;; `equal'.
     (defun wf_eqd (a b depth)
       (if (= a b) 1
         (let* ((ta (nl_val_tag a)) (tb (nl_val_tag b)))
+          (if (= ta 11) (wf_eqd (nl_cell_get_value_w a 0) b (+ depth 1))
+          (if (= tb 11) (wf_eqd a (nl_cell_get_value_w b 0) (+ depth 1))
           (if (if (= (m5_string_tag_p ta) 1) (= (m5_string_tag_p tb) 1) 0)
               (m5_streq a b)
             (if (= ta tb)
                 (if (= ta 7) (wf_eqd_cons a b depth)
                   (if (= ta 23) (wf_eqd (nl_cl_unwrap a) (nl_cl_unwrap b) (+ depth 1))
+                  (if (= ta 17) (wf_eqd_rec a b depth)
                   (if (= ta 8) (wf_eqd_vec a b depth)
                     (if (= ta 10) (wf_key_eq_bv a b)
                       (if (= ta 13) (if (= (nl_bignum_cmp_bignum a b) 0) 1 0)
                         (if (= ta 9) 2
                           (if (= ta 12) 2
                             (if (= ta 19) 2
-                              (bf_eq2 a b)))))))))
-              (if (= ta 19) 2 (if (= tb 19) 2 0)))))))
+                              (bf_eq2 a b))))))))))
+              (if (= ta 19) 2 (if (= tb 19) 2 0)))))))))
     ;; `wf_key_eq' (hash tables, reachable from the prelink root closure through
     ;; `nl_ht_find_index') is unchanged; the list walkers use `wf_key_eqn'.
     (defun wf_key_eq (ka kb)
@@ -31624,6 +31668,14 @@ bytes are written into a fresh 8-byte buffer instead."
       (seq (mut-str-push-byte ms 40)
            (if (= elt-t 1) (m5_push_lit_t ms) (m5_push_lit_nil ms))
            (mut-str-push-byte ms 41) 1))
+    ;; A Lisp primitive prints like a GNU subr: #<subr NAME>, the name raw.
+    (defun m5_prin1_lisp_primitive (ms name)
+      (seq (mut-str-push-byte ms 35) (mut-str-push-byte ms 60)
+           (mut-str-push-byte ms 115) (mut-str-push-byte ms 117)
+           (mut-str-push-byte ms 98) (mut-str-push-byte ms 114)
+           (mut-str-push-byte ms 32)
+           (m5_push_str ms name)
+           (mut-str-push-byte ms 62) 1))
     (defun m5_prin1_closure (ms vptr)
       (let* ((d1 (nl_cons_cdr_word vptr))
              (env (nl_cons_car_ptr d1))
@@ -31779,7 +31831,9 @@ bytes are written into a fresh 8-byte buffer instead."
          ((= tag 15) (m5_prin1_unibyte_string ms vptr))
          ((= tag 7) (m5_prin1_cons ms vptr))
          ((= tag 22) (m5_prin1_hashtable ms vptr))
-         ((= tag 23) (m5_prin1_closure ms (nl_cl_unwrap vptr)))
+         ((= tag 23) (if (= (nl_k23_name vptr) 0)
+                         (m5_prin1_closure ms (nl_cl_unwrap vptr))
+                       (m5_prin1_lisp_primitive ms (nl_k23_name vptr))))
          ((= tag 8) (if (= (m5_prin1_vec_buffer_p vptr) 1)
                         (m5_prin1_buffer ms vptr)
                       (seq (mut-str-push-byte ms 91)
@@ -35661,10 +35715,20 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; slots by position, and `oclosure--lambda' mentions the slots in slot
     ;; order, so capture order is the order it needs.
     ;; Doc 215 builtin word ABI: bf_closure_env_view_fwd_w returns the result WORD (0 = signal stashed); bf_closure_env_view_fwd keeps the (rc, OUT) ABI.
+    ;; Lexical bindings come first, then the bare (dynamically bound)
+    ;; symbols, as in GNU's `cconv-make-interpreted-closure' result (free
+    ;; variables, then dynamic ones).  Capture order alone put the file's
+    ;; earlier `(defvar X)' declarations in front, and `oclosure--copy'
+    ;; then took `(caar env)' of a symbol (REPL bootstrap failure).
     (defun bf_closure_env_view_fwd_w (node _pad)
+      (bf_closure_env_view_fwd_part_w node 1 (bf_closure_env_view_fwd_part_w node 0 3)))
+    ;; NODE's entries of one kind in capture order, ahead of TAIL: the
+    ;; (NAME . VALUE) bindings when PAIRS is 1, the bare symbols when 0.
+    (defun bf_closure_env_view_fwd_part_w (node pairs tail)
   (if (= (nl_val_tag node) 7)
       (let* ((entry (nl_cons_car_ptr node)) (rest (nl_cons_cdr_ptr node))
-             (tail_word (bf_closure_env_view_fwd_w rest 0)))
+             (tail_word (bf_closure_env_view_fwd_part_w rest pairs tail)))
+        (if (/= (if (= (heap-sexp-tag-word entry) 7) 1 0) pairs) tail_word
         (if (= (bf_closure_env_shadowed_p (bf_closure_env_key entry) rest) 1) tail_word
           (let* ((value_word
                   (if (= (heap-sexp-tag-word entry) 7)
@@ -35673,8 +35737,8 @@ bytes are written into a fresh 8-byte buffer instead."
                          (nl_cons_car_word entry)
                          (if (= (nl_val_tag word) 11) (nl_cell_get_value_w word 0) word) 0))
                     (nl_cons_car_word node))))
-            (nelisp_cons_construct_w value_word tail_word 0))))
-    3))
+            (nelisp_cons_construct_w value_word tail_word 0)))))
+    tail))
     (defun bf_closure_env_view_fwd (node out)
       (nl_abi_word_to_rc (bf_closure_env_view_fwd_w node 0) out))
     ;; 1 when the closure body B0 starts with a `(:documentation 'TYPE)' form.
@@ -39659,10 +39723,20 @@ bytes are written into a fresh 8-byte buffer instead."
                          ;; A closure is a kind-23 object (wrapping the
                          ;; (closure ...) cons); older paths may still hold
                          ;; the bare cons.
-                         (if (and (> function 4096) (= (logand function 1) 0)
-                                  (or (= (nl_val_tag function) 7)
-                                      (/= (nl_cl_unwrap function) function)))
-                             (cons-set-car (nl_exit_val_w) function) 0))
+                         ;; GNU's eval_sub reports the call form's symbol
+                         ;; for a subr (original_fun); funcall/apply report
+                         ;; the subr object.  A Lisp primitive called by
+                         ;; name from an interpreted form is that case: the
+                         ;; record was pushed unevaluated (+16 byte 1 is 0).
+                         (if (and (or (= kind 4) (= kind 16))
+                                  (= (logand (heap-read-u64 frame 16) 65280) 0)
+                                  (> function 4096) (= (logand function 1) 0)
+                                  (/= (nl_k23_name (nl_word_canon function)) 0))
+                             (cons-set-car (nl_exit_val_w) op)
+                           (if (and (> function 4096) (= (logand function 1) 0)
+                                    (or (= (nl_val_tag function) 7)
+                                        (/= (nl_cl_unwrap function) function)))
+                               (cons-set-car (nl_exit_val_w) function) 0)))
                      0))))
            0)
          1)))
@@ -40499,7 +40573,10 @@ into that constant unconditionally is what broke every aarch64 build."
                            (if (= (sexp-tag obj) 7)
                                (if (= (let* ((carw (nl_cons_car_word obj))) (if (= (logand carw 1) 0) (nl_sp_eq_lit carw 7 31078196194145634 0) 0)) 1)
                                    7 3)
-                             3))))
+                             (if (= (heap-sexp-tag-word (wf_arg_word args 0)) 23)
+                                 ;; A Lisp primitive reports as a subr.
+                                 (if (= (nl_k23_name (nl_word_canon (wf_arg_word args 0))) 0) 3 7)
+                               3)))))
     ((:lit "stringp")  :word . (let* ((tg (heap-sexp-tag-word (wf_arg_word args 0))))
                            (if (= tg 5) 7 (if (= tg 6) 7
                              (if (= tg 14) 7 (if (= tg 15) 7
@@ -42244,7 +42321,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
-      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index nelisp--closure-p nelisp--closure-cons nelisp--closure-make
+      hash-table-p nelisp--hash-table-p nelisp--hash-meta nelisp--hash-index nelisp--closure-p nelisp--closure-cons nelisp--closure-make nelisp--lisp-primitive-p nelisp--lisp-primitive-name
       obarrayp tan asin acos exp sqrt float logb ffloor fceiling ftruncate fround
       symbol-plist
       goto-char
@@ -42292,7 +42369,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       / < <= = > >= apply error format funcall max min nelisp--native-format nelisp-process-call-process
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
-      nelisp--hash-set-index nelisp--hash-make
+      nelisp--hash-set-index nelisp--hash-make nelisp--make-lisp-primitive
       nelisp--region-u8-ref nelisp--region-i64-ref
       narrow-to-region nelisp--gb-column delete-region buffer-substring buffer-substring-no-properties nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert
       nelisp--pow unintern
@@ -48410,7 +48487,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--env-globals-op"
     ;; M4 hash tables
     "make-hash-table" "puthash" "gethash" "remhash" "hash-table-count" "maphash"
-    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--closure-p" "nelisp--closure-cons" "nelisp--closure-make" "nelisp--cell-value" "nelisp--assoc-raw"
+    "nelisp--hash-table-make-raw" "hash-table-p" "nelisp--hash-table-p" "nelisp--hash-meta" "nelisp--hash-index" "nelisp--hash-set-index" "nelisp--hash-make" "nelisp--closure-p" "nelisp--closure-cons" "nelisp--closure-make" "nelisp--make-lisp-primitive" "nelisp--lisp-primitive-p" "nelisp--lisp-primitive-name" "nelisp--cell-value" "nelisp--assoc-raw"
     "nelisp--byte-code-wrap-test"
     "nelisp--plist-get-eq" "nelisp--plist-member-eq"
     ;; bufnative: buffer read path
@@ -48900,6 +48977,7 @@ keeps this slice independent of caller-scope dynamic-variable semantics."
                   (setq-local lexical-binding t)
                   (let ((byte-compile-warnings nil)
                         (byte-compile-verbose nil)
+                        (byte-optimize--dynamic-vars nil)
                         (warning-suppress-types '((bytecomp))))
                     (byte-compile lambda-form))))
                (code (and (byte-code-function-p compiled)
@@ -49017,9 +49095,7 @@ equal, or the build stops."
                      (nelisp-standalone--prelude-cache-read file)))
          (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
     (if (and entry (not verify))
-        (let ((report-path (expand-file-name
-                            "target/nelisp-prelude-bytecode-report.tsv"
-                            nelisp-standalone--repo-root)))
+        (let ((report-path (nelisp-standalone--target-file "nelisp-prelude-bytecode-report.tsv")))
           (setq nelisp-standalone--prelude-bytecode-count
                 (+ nelisp-standalone--prelude-bytecode-count (nth 1 entry)))
           (setq nelisp-standalone--prelude-bytecode-report (nth 2 entry))
@@ -49070,7 +49146,8 @@ never on the build host.  Keep the original Lisp factory as the reference."
       (let* ((creator
               (with-temp-buffer
                 (setq-local lexical-binding t)
-                (byte-compile (list 'lambda nil (nelisp-bytecode-cleanup-source)))))
+                (let ((byte-optimize--dynamic-vars nil))
+                  (byte-compile (list 'lambda nil (nelisp-bytecode-cleanup-source))))))
              (bad (append
                    (cl-remove-if (lambda (op) (memq op nelisp-prelude-bytecode--opcodes))
                                  (nelisp-prelude-bytecode--decode-opcodes (aref creator 1)))
@@ -49379,9 +49456,7 @@ never on the build host.  Keep the original Lisp factory as the reference."
                             (+ nelisp-standalone--prelude-bytecode-count
                                generic-count file-attrs-count))
                       (let ((report-path
-                             (expand-file-name
-                              "target/nelisp-prelude-bytecode-report.tsv"
-                              nelisp-standalone--repo-root)))
+                             (nelisp-standalone--target-file "nelisp-prelude-bytecode-report.tsv")))
                         (make-directory (file-name-directory report-path) t)
                         (nelisp-prelude-bytecode-write-report
                          report-path nelisp-standalone--prelude-bytecode-report))
@@ -49638,8 +49713,7 @@ be equal, or the build stops.  A failed THUNK signals and caches nothing."
                      (nelisp-standalone--prelude-cache-read file)))
          (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
     (if (and entry (not verify))
-        (let ((report-path (expand-file-name "target/nelisp-core-bytecode-report.tsv"
-                                             nelisp-standalone--repo-root)))
+        (let ((report-path (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")))
           (make-directory (file-name-directory report-path) t)
           (nelisp-prelude-bytecode-write-report report-path (nth 1 entry))
           (message "[standalone-reader] core byte-code: shared cache hit %s"
@@ -49756,9 +49830,7 @@ published on every invocation. Keep this generator self-contained for source-onl
 			  (push (list name (secure-hash 'sha256 source) (car split) (cdr split))
 				entries))
 			(setq reports (append reports (nth 2 transformed)))))
-		    (let ((report-path (expand-file-name
-					"target/nelisp-core-bytecode-report.tsv"
-					nelisp-standalone--repo-root)))
+		    (let ((report-path (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")))
 		      (make-directory (file-name-directory report-path) t)
 		      (nelisp-prelude-bytecode-write-report report-path reports))
 		    (setq generated-reports reports)
@@ -49792,8 +49864,7 @@ published on every invocation. Keep this generator self-contained for source-onl
 	       (if cached
 		   (progn
 		     (nelisp-prelude-bytecode-write-report
-		      (expand-file-name "target/nelisp-core-bytecode-report.tsv"
-					nelisp-standalone--repo-root)
+		      (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")
                       (nth 2 cached))
                      (nth 1 cached))
 		 ;; Across builds the shared cache replays GENERATE's results:
@@ -49906,8 +49977,7 @@ source."
                                   nelisp-prelude-bytecode--opcodes)))))
     (if (equal (car nelisp-standalone--vendor-bytecode-cache) key)
         (cdr nelisp-standalone--vendor-bytecode-cache)
-      (let ((out-dir (expand-file-name "target/nelisp-vendor-bytecode/"
-                                       nelisp-standalone--repo-root))
+      (let ((out-dir (nelisp-standalone--target-file "nelisp-vendor-bytecode/"))
             (entries nil)
             (reports nil))
         (make-directory out-dir t)
@@ -49975,8 +50045,7 @@ source."
                     entries))
             (setq reports (append reports (nth 2 transformed)))))
         (nelisp-prelude-bytecode-write-report
-         (expand-file-name "target/nelisp-vendor-bytecode-report.tsv"
-                           nelisp-standalone--repo-root)
+         (nelisp-standalone--target-file "nelisp-vendor-bytecode-report.tsv")
          reports)
         (let ((result
                (concat
@@ -50557,9 +50626,7 @@ top-level form defines NAME that way."
       (require 'nelisp-prelude-bytecode)
       (let ((transformed (nelisp-prelude-bytecode-transform
                           source "lisp/nelisp-stdlib-regexp.el" nil t))
-            (report-path (expand-file-name
-                          "target/nelisp-regexp-bytecode-report.tsv"
-                          nelisp-standalone--repo-root)))
+            (report-path (nelisp-standalone--target-file "nelisp-regexp-bytecode-report.tsv")))
         (make-directory (file-name-directory report-path) t)
         (nelisp-prelude-bytecode-write-report report-path (nth 2 transformed))
         (car transformed)))))
@@ -50656,20 +50723,31 @@ publishes the same providers before dumping."
   (if (nelisp-standalone--runtime-reload-enabled-p)
       "(defun nelisp-native-startup-ensure () (error \"source-frozen native capabilities unavailable in runtime-reload build\"))\n"
     (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+    ;; The evidence builders' work directories are scratch: nothing reads
+    ;; them after the source string is built.  They live under
+    ;; `temporary-file-directory' and are deleted here, because an installed
+    ;; toolchain's target/ is read-only and each one was ~32 MB left behind
+    ;; in the tree by every build.
     (let* ((nelisp-native-load--build-target (nelisp-standalone-arena-rewrite-target))
-           (source (concat (nelisp-native-rooted-startup-evidence-build
+           (scratch nil)
+           (work (lambda (prefix)
+                   (car (push (make-temp-file
+                               (expand-file-name prefix temporary-file-directory) t)
+                              scratch))))
+           (source
+            (unwind-protect
+                (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
-     (make-temp-file (expand-file-name "target/standalone-rooted-protocol-"
-                                       nelisp-standalone--repo-root) t)
+     (funcall work "nelisp-standalone-rooted-protocol-")
      (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
             (nelisp-native-compiler-startup-evidence-build
              units nelisp-standalone--this-file nelisp-standalone--repo-root
-             (make-temp-file (expand-file-name "target/standalone-compiler-constructor-"
-                                               nelisp-standalone--repo-root) t))
+             (funcall work "nelisp-standalone-compiler-constructor-"))
             (nelisp-native-funcall-startup-evidence-build
              units nelisp-standalone--this-file nelisp-standalone--repo-root
-             (make-temp-file (expand-file-name "target/standalone-compiler-f1-"
-                                               nelisp-standalone--repo-root) t)))))
+             (funcall work "nelisp-standalone-compiler-f1-")))
+              (dolist (directory scratch)
+                (ignore-errors (delete-directory directory t))))))
       (nelisp-standalone--native-startup-autoload-src source)))))
 
 (defun nelisp-standalone--compat-metadata-src ()
@@ -50857,6 +50935,9 @@ matcher (Doc 143), then registers relocatable, demand-loaded libraries."
     (insert "\n(nelisp-stdlib-print-quoted-install)\n")
     (when nelisp-standalone--rooted-protocol-startup-source
       (insert nelisp-standalone--rooted-protocol-startup-source))
+    ;; The providers above redefine some GNU primitive names in Lisp; mark
+    ;; them too (see `nelisp--mark-lisp-primitives' in the prelude).
+    (insert "\n(when (fboundp 'nelisp--mark-lisp-primitives) (nelisp--mark-lisp-primitives))\n")
     (nelisp-boot-image-expand-composed-prelude (buffer-string))))
 
 (defun nelisp-standalone--prelude-subr-arity-metadata ()
@@ -65706,9 +65787,22 @@ tails run against a private box), and the (rc, OUT) adapter F."
         (if (= exp_w 0) 0
           ;; The cache stores Sexp pointers and its collector reads a view.
           ;; Only an immediate expansion needs a durable view at this boundary.
+          ;; An expansion (quote V) is not cached: the expander computed V
+          ;; itself (GNU byte-run's `eval-and-compile', `eval-when-compile'),
+          ;; and GNU expands a macro call again each time it evaluates one.
           (let* ((exp_ptr (wf_word_view exp_w)))
-            (seq (if (= (logand exp_w 1) 0) (nl_mxcache_store form_ptr exp_ptr) 0)
+            (seq (if (= (logand exp_w 1) 0)
+                     (if (= (nl_mxcache_quote_expansion_p exp_w) 1) 0
+                       (nl_mxcache_store form_ptr exp_ptr))
+                   0)
                  (nelisp_eval_call_w exp_w env 0))))))
+    (defun nl_mxcache_quote_expansion_p (exp_w)
+      (if (= (nl_val_tag exp_w) 7)
+          (let* ((qh (nl_cons_car_ptr exp_w)))
+            (if (= (sexp-tag qh) 4)
+                (if (= (symbol-name-eq qh "quote") 1) 1 0)
+              0))
+        0))
     (defun nl_cons_macro_apply_eval (form_ptr func_ptr tail_ptr env out)
       (nl_abi_word_to_rc (nl_cons_macro_apply_eval_w form_ptr func_ptr tail_ptr env 0) out)))
   "Word forms of the combiner-cons evaluator chain (Doc 215).")
@@ -68666,15 +68760,13 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
               (when native-compiler-cold
                 (load (expand-file-name "scripts/nelisp-native-template-bytecode.el"
                                         nelisp-standalone--repo-root) nil t t)
-                (expand-file-name "target/nelisp-template-bytecode.el"
-                                  nelisp-standalone--repo-root)))
+                (nelisp-standalone--target-file "nelisp-template-bytecode.el")))
              (optimizer-bytecode
               (when (and native-compiler-cold (not template-cold))
                 (unless (featurep 'nelisp-native-optimizer-bytecode)
                   (load (expand-file-name "scripts/nelisp-native-optimizer-bytecode.el"
                                           nelisp-standalone--repo-root) nil t t))
-                (expand-file-name "target/nelisp-optimizer-bytecode.el"
-                                  nelisp-standalone--repo-root)))
+                (nelisp-standalone--target-file "nelisp-optimizer-bytecode.el")))
              (runner (getenv "NELISP_STANDALONE_COLD_RUNNER"))
              (form
               (if native-compiler-cold
@@ -68691,18 +68783,15 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                        ;; every reconstruction plan twice on the source path.
                        (format "(progn (unless (featurep 'nelisp-native-structural-bytecode) (load %S nil t t)) (add-to-list 'load-path %S) (require 'nelisp-bytecode-native-rooted-cfg-shared-emit))"
                                (nelisp-standalone--cold-target-path
-                                (expand-file-name "target/nelisp-structural-bytecode.el"
-                                                  nelisp-standalone--repo-root))
+                                (nelisp-standalone--target-file "nelisp-structural-bytecode.el"))
                                (nelisp-standalone--cold-target-path
-                                (expand-file-name "target/nelisp-compiler-bytecode"
-                                                  nelisp-standalone--repo-root)))
+                                (nelisp-standalone--target-file "nelisp-compiler-bytecode")))
                      "nil")
                    (nelisp-standalone--cold-target-path template-bytecode)
                    (if template-cold "nelisp-native-cache-prepare-cold-template"
                      (format "load %S nil t t"
                              (nelisp-standalone--cold-target-path
-                              (expand-file-name "target/nelisp-compiler-bytecode-load.el"
-                                                nelisp-standalone--repo-root))))
+                              (nelisp-standalone--target-file "nelisp-compiler-bytecode-load.el"))))
                    (if optimizer-bytecode (format "(load %S nil t t)" (nelisp-standalone--cold-target-path optimizer-bytecode)) "nil")
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
@@ -71817,6 +71906,9 @@ retains the checkout default. Application outputs still go to OUTPUT."
   (let* ((nelisp-standalone--cache-dir
           (if cache-directory (expand-file-name cache-directory)
             nelisp-standalone--cache-dir))
+         (nelisp-standalone--target-root
+          (if cache-directory (expand-file-name "target" cache-directory)
+            nelisp-standalone--target-root))
          (nelisp-standalone--recompiled nil)
          (source (nelisp-standalone--project-source file entry profile))
          (data (nelisp-standalone--project-data source debug-digest))

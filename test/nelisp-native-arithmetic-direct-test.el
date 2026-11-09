@@ -28,10 +28,17 @@
     ;; 4bd8c139a: the "+" arm is now a WORD body (fixnum fast path, marker
     ;; normalisation, then the former shared float/sum body); the table grew
     ;; from 107 to 168 rows through later builtin work.  Re-pinned.
+    ;; 7d7ba0c02 (hash tables are a heap kind) added the hash-table-p,
+    ;; nelisp--hash-{table-p,meta,index,set-index,make} rows and rewrote the
+    ;; puthash/gethash/remhash/hash-table-count bodies; 02a1dccef (closures
+    ;; are heap kind 23) added nelisp--closure-{p,cons,make}: 168 -> 177 rows.
+    ;; 48342b978 (Lisp-defined GNU primitives report as subrs) added the
+    ;; nelisp--make-lisp-primitive, nelisp--lisp-primitive-p and
+    ;; nelisp--lisp-primitive-name rows: 177 -> 180.  No other row changed.
     (should (eq (cadar table) :word))
-    (should (= (length table) 168))
+    (should (= (length table) 180))
     (should (equal (secure-hash 'sha256 (prin1-to-string (cdr table)))
-                   "6738d4eef3933d104093a3e32d576c6212732ce6e71e153a8255d3d0cef7c0c7"))))
+                   "9f1cd283dfd91bfd0e82a662e3be23f4582b72defffcf51d8b131c633d54eb1e"))))
 (defun nelisp-arithmetic-direct-test--contains (tree node)
   (or (equal tree node)
       (and (consp tree)

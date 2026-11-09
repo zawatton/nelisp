@@ -325,6 +325,7 @@
     (cl-labels ((has (needle x) (or (equal needle x)
                                   (and (consp x) (or (has needle (car x)) (has needle (cdr x)))))))
       (should (has '(nl_root_words env 9) f))
-      (should (has '(ptr-write-u64 roots 0 (nl_word_canon fnw)) f)))))
+      ;; 02a1dccef: a heap closure object is unwrapped to its cons before rooting.
+      (should (has '(ptr-write-u64 roots 0 (nl_cl_unwrap (nl_word_canon fnw))) f)))))
 
 (provide 'nelisp-primitive-callback-test)

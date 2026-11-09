@@ -5,7 +5,7 @@
 (let* ((variant (or (getenv "AD_VARIANT") "positive")) (output (getenv "AD_OUTPUT"))
        (pools (append nelisp-standalone--applyfn-bytecode-helpers nelisp-standalone--applyfn-core-helpers))
        (original (copy-tree (ad-def 'wf_bytecode_builtin_difference pools)))
-       (helper (copy-tree original)) (arith (copy-tree (ad-def 'wf_bytecode_small_arithmetic pools)))
+       (helper (copy-tree original))
        (base #x3a000000) (fn (+ base 128)) (data (+ base 256)) (head (+ base 320)) (tail (+ base 384))
        (td (+ base 448)) (name (+ base 512)) (hb (+ base 576)) (nb (+ base 608)) (args (+ base 640)) (out (+ base 736))
        (minv -2305843009213693952) (maxv 2305843009213693951)
@@ -14,11 +14,14 @@
  (pcase variant
   ("bad-head" (setq helper (cl-subst nil '(/= (symbol-name-eq head "builtin") 1) helper :test #'equal)))
   ("bad-name" (setq helper (cl-subst nil '(/= (symbol-name-eq name "-") 1) helper :test #'equal)))
-  ("bad-tail" (setq helper (cl-subst nil '(/= (ptr-read-u64 tail-data 8) 3) helper :test #'equal)))
+  ("bad-tail" (setq helper (cl-subst nil '(/= (heap-read-u64 tail-data 8) 3) helper :test #'equal)))
   ("bad-argc" (setq helper (cl-subst nil '(/= argc 2) helper :test #'equal)))
   ("bad-tag" (setq helper (cl-subst nil '(/= (sexp-tag function) 7) helper :test #'equal)))
-  ("bad-op" (setq helper (cl-subst '(wf_bytecode_small_arithmetic args 2 92) '(wf_bytecode_small_arithmetic args 2 90) helper :test #'equal)))
-  ("bad-copy" (setq helper (cl-subst '(ptr-write-u64 result 8 (ptr-read-u64 args 8)) '(wf_bytecode_copy result args) helper :test #'equal)))
+  ;; Since 443f25ba8 the difference is computed here, on the operand payloads
+  ;; (no separate arithmetic call), so the operation and the result store are
+  ;; mutated in place.
+  ("bad-op" (setq helper (cl-subst '(+ a b) '(- a b) helper :test #'equal)))
+  ("bad-copy" (setq helper (cl-subst '(seq (wf_write_int result value) (ptr-write-u64 result 16 123)) '(wf_write_int result value) helper :test #'equal)))
   ("bad-allocation" (setcar (nthcdr 3 helper) `(seq (nl_alloc_bytes 32 8) ,(nth 3 helper)))))
  (unless (or (equal variant "positive") (not (equal helper original))) (error "Inactive mutant %s" variant))
  (cl-labels ((add (a b &optional changes eligible argc alias forced)
@@ -38,8 +41,7 @@
   (add 7 2 `((,hb 0 31078196194145635)) 'no)
   (add 7 2 `((,head 24 6)) 'no) (add 7 2 `((,head 24 8)) 'no)
   (add 7 2 `((,nb 0 43)) 'no) (add 7 2 `((,name 24 0)) 'no) (add 7 2 `((,name 24 2)) 'no)
-  (add 7 2 nil nil 2 1) (add 7 2 nil nil 2 2)
-  (add 7 2 nil nil 2 nil 1) (add 7 2 nil nil 2 nil 2))
+  (add 7 2 nil nil 2 1) (add 7 2 nil nil 2 2))
  (setq cases (nreverse cases))
  (dolist (row cases)
   (cl-incf serial)
@@ -60,27 +62,25 @@
     (dolist (c changes) (apply #'write c))
     (emit `(setq rc (wf_bytecode_builtin_difference ,fn ,args ,argc ,dest)))
     (check `(= rc ,(if ok 0 2)) 1)
-    (check `(= (ptr-read-u64 ,base 8) ,(if eligible 1 0)) 2)
     (check `(= (ptr-read-u64 ,base 0) 0) 3)
     (if ok
      (progn
-      (dolist (p (delete-dups (list args dest)))
-       (check `(and (= (ptr-read-u64 ,p 0) 2) (= (ptr-read-u64 ,p 8) ,(- a b)) (= (ptr-read-u64 ,p 16) 0) (= (ptr-read-u64 ,p 24) 0)) 4))
+      ;; Since 443f25ba8 the difference is stored only at DEST; the operands are not consumed.
+      (check `(and (= (ptr-read-u64 ,dest 0) 2) (= (ptr-read-u64 ,dest 8) ,(- a b)) (= (ptr-read-u64 ,dest 16) 0) (= (ptr-read-u64 ,dest 24) 0)) 4)
+      (unless (= dest args) (check `(and (= (ptr-read-u64 ,args 0) ,at) (= (ptr-read-u64 ,args 8) ,a) (= (ptr-read-u64 ,args 16) 12345) (= (ptr-read-u64 ,args 24) 54321)) 5))
       (unless (= dest (+ args 32)) (check `(and (= (ptr-read-u64 ,(+ args 32) 0) ,bt) (= (ptr-read-u64 ,(+ args 32) 8) ,b) (= (ptr-read-u64 ,(+ args 32) 16) 12345) (= (ptr-read-u64 ,(+ args 32) 24) 54321)) 5)))
      (progn
       (dolist (spec (list (list args at a) (list (+ args 32) bt b) (list out 18 123)))
        (check `(and (= (ptr-read-u64 ,(car spec) 0) ,(cadr spec)) (= (ptr-read-u64 ,(car spec) 8) ,(caddr spec)) (= (ptr-read-u64 ,(car spec) 16) 12345) (= (ptr-read-u64 ,(car spec) 24) 54321)) 6))))
     (push `(defun ,n () (let ((failure 0) (rc 0)) (seq ,@(nreverse forms) (if (/= failure 0) (ptr-write-u64 ,base 16 ,serial) 0) failure))) functions)
     (push `(when (= failure 0) (setq failure (,n))) calls))))
- (setcar (cdr arith) 'ad_real_arithmetic)
  (let ((source `(seq ,@ (nreverse functions)
-    ,helper ,arith
+    ,helper
     ,@(mapcar (lambda (n) (ad-def n pools)) '(wf_bytecode_slot wf_bytecode_copy wf_copy32 wf_write_int wf_write_t wf_write_nil))
-    (defun wf_bytecode_small_arithmetic (slots sp op) (seq (ptr-write-u64 ,base 8 (+ (ptr-read-u64 ,base 8) 1)) (if (/= (ptr-read-u64 ,base 32) 0) (ptr-read-u64 ,base 32) (ad_real_arithmetic slots sp op))))
     (defun nl_alloc_bytes (size align) (seq (ptr-write-u64 ,base 0 (+ (ptr-read-u64 ,base 0) 1)) ,(+ base 4096)))
     (defun audit_run () (let ((failure 0)) (seq (syscall-direct 9 ,base 65536 3 50 -1 0) ,@(nreverse calls) (ptr-write-u64 ,base 24 failure) (syscall-direct 1 1 ,base 32 0 0 0) failure)))
     (defun _start () (syscall-direct 60 (audit_run) 0 0 0 0 0)))))
-  (nelisp-link-units output (list (nelisp-standalone--compile-to-unit "call-diff-audit.o" (append source nelisp-aot-test-runtime-link-defuns))) "_start")
+  (let ((inhibit-message t)) (nelisp-aot-test-runtime-link-units output "call-diff-audit.o" source (list (nelisp-standalone--arena-base-slot-unit)) "_start"))
   (with-temp-file (concat output ".source.el") (prin1 source (current-buffer)))
   (with-temp-file (concat output ".original.el") (prin1 original (current-buffer)))
   (princ (format "CALL-DIFF-UNIT-COMPILED variant=%s cases=%d\n" variant serial))))

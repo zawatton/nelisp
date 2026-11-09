@@ -1,6 +1,9 @@
 ;;; nelisp-native-template-bytecode.el --- Compile Tier 0 Lisp -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'bytecomp)
+;; Host byte-opt leaks top-level defvar names into this global; without
+;; rebinding it, each compile scans an ever-growing list.
+(defvar byte-optimize--dynamic-vars)
 (require 'nelisp-native-cache)
 (let* ((root (expand-file-name ".." (file-name-directory load-file-name)))
        (output (expand-file-name "target/nelisp-template-bytecode.el" root)))
@@ -14,7 +17,8 @@
                     nelisp-native-template-bounded-data-p
                     nelisp-native-template--native-printable-p
                     nelisp-native-template-patch32))
-      (let ((compiled (byte-compile (symbol-function name)))
+      (let ((compiled (let ((byte-optimize--dynamic-vars nil))
+                        (byte-compile (symbol-function name))))
             (print-length nil) (print-level nil) (print-circle nil)
             (print-escape-newlines t) (print-escape-nonascii t))
         (unless (byte-code-function-p compiled) (error "Tier 0 bytecode refused: %s" name))

@@ -22,7 +22,8 @@
 #   SELECTOR='"pattern"' tools/run-tests-parallel.sh
 #                                          # ert string/regexp selector per file
 #   TEST_TIMEOUT=900 tools/run-tests-parallel.sh
-#                                          # per-file timeout in seconds (default 600)
+#                                          # per-file timeout in seconds (default 600;
+#                                          # 7200 with NELISP_TEST_EXPENSIVE=1)
 #   NELISP_TEST_EXPENSIVE=1 tools/run-tests-parallel.sh
 #                                          # also run tests tagged :expensive-test
 #
@@ -42,6 +43,9 @@ JOBS="${JOBS:-$(nproc 2>/dev/null || echo 4)}"
 OUT_DIR="${OUT_DIR:-target/test-parallel}"
 if [ "${NELISP_TEST_EXPENSIVE:-0}" = 1 ]; then
   SELECTOR="${SELECTOR:-t}"
+  # One expensive file builds the cold standalone reader more than once
+  # (test/nelisp-standalone-target-test.el: about 83 min alone).
+  TEST_TIMEOUT="${TEST_TIMEOUT:-7200}"
 else
   SELECTOR="${SELECTOR:-(not (tag :expensive-test))}"
 fi
