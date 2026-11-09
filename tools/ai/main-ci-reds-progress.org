@@ -131,5 +131,8 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh emacs-parity
 cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow CI --json conclusion --jq '.[0].conclusion')" = success
 
 ** S4.2 standalone parity workflow succeeds on HEAD
+# Blocked by tools/ai/eval-build-port-progress.org E1.2 (the Linux and
+# Windows legs stop in the eval build) and by the macOS Doc 97 AOT
+# :not-value-expr error that main ca0a70fd4 also shows; not S3-actionable.
 cmd: test "$(gh run list --commit "$(git rev-parse HEAD)" --workflow 'stage-d-v3.0 standalone parity' --json conclusion --jq '.[0].conclusion')" = success
 
