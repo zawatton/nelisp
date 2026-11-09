@@ -86,8 +86,9 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-build-stamp-test.py)
 #+NOTE: Unexplained, recorded for the build owner: one warm rebuild in a tree with leftover target/ state (shared byte-code .eld cache, reports) gave a binary 181 bytes off (gensym numbers). A clean tree seeded with only standalone-units and nelisp-vendor-bytecode, which is what CI caches, matched the cold build (S5.4). S5.5 on CI is the real check.
 evidence: tools/ai/ci-speed-evidence/s5-2-jobs-identity.txt sha256=b42c5444b4ddc80f688f144a6c22019242a8a1ca8245b33b12a9f6379f4611d1
 
-** S5.3 ci.yml: every Linux job that builds restores the unit cache (standalone-units and nelisp-vendor-bytecode) keyed on the build inputs, saves it only on a main push or a workflow_dispatch, and sets NELISP_STANDALONE_JOBS=4
+** S5.3 ci.yml: every Linux job that builds restores the unit cache (standalone-units and nelisp-vendor-bytecode) keyed on the build inputs, saves it only on a main push or a workflow_dispatch, and sets NELISP_STANDALONE_JOBS=4 (the gates job sets none)
 #+NOTE: 2026-11-09 criterion changed (coordinator decision): workflow_dispatch also saves the unit cache; caches are branch-scoped so main is never fed by a branch; keys unchanged.
+#+NOTE: 2026-11-09 criterion changed (coordinator decision): the gates job keeps the unit cache but must NOT set NELISP_STANDALONE_JOBS. It builds no reader, and with JOBS=4 its host ERT tests that compile units started prewarm children (host ERT 632 s -> 1728 s, cause 9aee4c796; handoff ci-speed_future-work_2026-11-09.md section 3). The test checks that the variable is absent there.
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-unit-cache-test.py)
 
 ** S5.4 E2E local: a fresh tree seeded only with another tree's unit cache builds a binary with the same sha256 as that tree's, in a recorded time far below a cold build
@@ -147,6 +148,7 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 #+NOTE: 2026-11-09 criterion changed (user decision): the budget check is per row (no latch); a row whose worst case does not fit is NOT RUN, later rows that fit still run.
 #+NOTE: 2026-11-09 criterion changed (user decision, policy C): a non-variant rebuild row is charged a measured estimate (3300 s = max 2379 s x the largest same-row spread 38.5%, tools/ai/ci-speed-evidence/s7-rebuild-row-times.txt) capped at build + row timeout, instead of the 3900 s worst case; the hard timeouts are unchanged. The NOT RUN line now says `estimate'.
 #+NOTE: 2026-11-09 the hermetic test does not validate the 3300 s figure on CI: on run 42596869405 it admitted rebuild rows that then timed out (see S7.7 NOTE).
+#+NOTE: 2026-11-09 (coordinator decision) the default rebuild-row estimate is back to 3900 s (build_timeout + row_timeout), the value of run 42578356513 (71 rows ran). The override variable and its tests stay. How ordinary rows are charged is left for slice 5 (handoff).
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py ShardBudget)
 
 ** S7.5 ci.yml: the mutation job has timeout-minutes and passes the shard budget; rows whose gate builds a variant get the build budget, not the row budget
