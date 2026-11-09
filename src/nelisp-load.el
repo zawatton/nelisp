@@ -103,27 +103,37 @@ See `nelisp-artifact-default-native-policy'.")
 (defvar nelisp-load--artifact-probe-active nil
   "Non-nil while `nelisp-load-file' is probing artifact fallbacks.")
 
+;; Read SYM's host function cell.  Evaluated by the self-hosted evaluator
+;; (tramp cycle 2), plain `symbol-function' is the table-aware builtin and
+;; answers NeLisp's own `nelisp--builtin-provide' for `provide', which then
+;; called itself; `nelisp--host-symbol-function' is bridged to the host's.
+(defun nelisp-load--host-function (sym)
+  "Return SYM's host function definition, or nil when it has none."
+  (and (fboundp sym)
+       (if (fboundp 'nelisp--host-symbol-function)
+           (nelisp--host-symbol-function sym)
+         (symbol-function sym))))
+
 ;; These references are deliberately captured from GNU Emacs itself.
 ;; NeLisp's `eval-after-load' adapter below delegates all registration
 ;; and ordering to these functions rather than maintaining a parallel queue.
 (defvar nelisp-load--host-eval-after-load
-  (and (fboundp 'eval-after-load) (symbol-function 'eval-after-load)))
+  (nelisp-load--host-function 'eval-after-load))
 (defvar nelisp-load--host-provide
-  (and (fboundp 'provide) (symbol-function 'provide)))
+  (nelisp-load--host-function 'provide))
 (defvar nelisp-load--host-after-load-evaluation
-  (and (fboundp 'do-after-load-evaluation)
-       (symbol-function 'do-after-load-evaluation)))
+  (nelisp-load--host-function 'do-after-load-evaluation))
 
 ;; GNU byte-compiled files contain reader literals (`#[...]') and
 ;; top-level `(byte-code ...)' forms that the NeLisp source reader and
 ;; evaluator do not represent as source forms.  Capture the host reader
 ;; and evaluator before NeLisp installs names with the same spelling.
 (defvar nelisp-load--host-read-from-string
-  (and (fboundp 'read-from-string) (symbol-function 'read-from-string)))
+  (nelisp-load--host-function 'read-from-string))
 (defvar nelisp-load--host-eval
-  (and (fboundp 'eval) (symbol-function 'eval)))
+  (nelisp-load--host-function 'eval))
 (defvar nelisp-load--host-check-parens
-  (and (fboundp 'check-parens) (symbol-function 'check-parens)))
+  (nelisp-load--host-function 'check-parens))
 
 (defvar nelisp-load--current-file nil
   "Canonical source path currently evaluated by `nelisp-load-string'.")
