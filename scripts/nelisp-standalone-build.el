@@ -34359,7 +34359,9 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (m5_string_tag_p (nl_val_tag input)) 0) 3
         (let* ((fmt (bf_fmt_arg_w input)))
         (if (= fmt 0) 3
-        (if (= (bf_format_plain_p fmt) 1) input
+        ;; Raw high bytes decline (see `bf_fmt_simple_scan'): the elisp layer
+        ;; owns the unibyte/multibyte distinction there.
+        (if (= (bf_format_plain_p fmt) 1) (if (= (m5_raw_high_p fmt) 1) 3 input)
           (if (/= (ptr-read-u64 (- fmt 4) 16) 0) 3
             (let* ((single
                     (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 1) 115)
@@ -34367,7 +34369,7 @@ bytes are written into a fresh 8-byte buffer instead."
                         (let* ((a (nl_cons_car_word argl)) (name (bf_fmt_arg_w a)) (tag (nl_val_tag a)))
                           (if (= name 0) 3
                             (if (= (m5_string_tag_p (nl_val_tag name)) 1)
-                                (if (= (m5_string_tag_p tag) 1) a name)
+                                (if (= (m5_string_tag_p tag) 1) (if (= (m5_raw_high_p a) 1) 3 a) name)
                               (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16)) 3 0)))) 0)))
               (if (/= single 0) single
                 (if (= (m5_raw_high_p fmt) 1) 3
