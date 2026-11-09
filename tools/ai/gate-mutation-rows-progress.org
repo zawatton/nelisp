@@ -1,0 +1,40 @@
+#+TITLE: every gate-mutation row turns its gate red
+
+# Defined 2026-11-09 at notes-d0's request, from the ci-speed lane's run
+# 42578356513 (gate-mutation shards).  Kept out of the main-ci-reds
+# denominator.  Each criterion is one gate's rows in tools/gate-mutations.txt,
+# run with NELISP_GATE_MUTATION_ONLY=<gate>; it passes when every row turns
+# the gate red.  Recorded by tools/ai/main-ci-reds/run-heavy.sh mut-<gate> and
+# checked against HEAD by check-heavy.sh, as in the main-ci-reds ledger.
+# The harness does not check that the gate is green before injecting, so a
+# gate that is already red passes its rows; G1 pairs each row with the
+# unmutated gate.
+# Killing a run mid-row (run-heavy's timeout 7200 included) can leave the
+# injected defect in the tree; check `git status' after every run.
+
+* G1 stale rows (sed matched nothing in run 42578356513)
+** G1.1 builtin-arity: unmutated gate green, row goes red
+# The row's anchors went stale in 941c79827 (both arity groups gained
+# leading names); re-anchored 2026-11-09.  The gate itself is red on the
+# reader build (wrong-number-of-arguments data names `#<subr car>', not
+# `car'), so this stays red until that is fixed.
+cmd: make -s builtin-arity >/dev/null 2>&1 && bash tools/ai/main-ci-reds/check-heavy.sh mut-builtin-arity
+
+** G1.2 prelude-toplevel-check: unmutated gate green, both rows go red
+# Row 1 edited a one-line `string-empty-p' that 3edc5b180 removed;
+# re-anchored on `purecopy' 2026-11-09.
+cmd: make -s prelude-toplevel-check >/dev/null 2>&1 && bash tools/ai/main-ci-reds/check-heavy.sh mut-prelude-toplevel-check
+
+* G2 rows that stayed green in run 42578356513 (the gate missed the defect)
+** G2.1 ert-full (13 rows)
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-ert-full
+
+** G2.2 standalone-reader-checked-soak
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-standalone-reader-checked-soak
+
+** G2.3 nl-actor-standalone-smoke
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-nl-actor-standalone-smoke
+
+* G3 rows that timed out in run 42578356513
+** G3.1 gate-selfcheck (harness limit 90 s per row)
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-gate-selfcheck

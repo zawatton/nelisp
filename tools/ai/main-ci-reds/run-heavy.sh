@@ -5,7 +5,7 @@
 # so check-heavy.sh can tell a fresh pass on this commit from a stale one.
 # Usage: run-heavy.sh NAME   (NAME: ert-full smokes extras extras-s3 perf selfhost
 #                              emacs-parity eval-test precise-root-mutation
-#                              cross-platform)
+#                              cross-platform mut-GATE)
 set -u
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root" || exit 2
@@ -25,6 +25,9 @@ case "$name" in
   # builds the eval binary, so it fails like eval-test until that is ported.
   cross-platform) cmd='bash scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball' ;;
   precise-root-mutation) cmd='NELISP_GATE_MUTATION_ONLY=precise-root-coverage bash tools/nelisp-gate-mutation.sh' ;;
+  # Criteria of tools/ai/gate-mutation-rows-progress.org: the rows of one
+  # gate in tools/gate-mutations.txt, each of which must turn the gate red.
+  mut-*) cmd="NELISP_GATE_MUTATION_ONLY=${name#mut-} bash tools/nelisp-gate-mutation.sh" ;;
   *) echo "unknown criterion: $name" >&2; exit 2 ;;
 esac
 # HEAVY_RUN names a machine-wide job limiter (Notes bin/heavy-run.sh); unset

@@ -4,7 +4,8 @@
 Every Linux job that builds the standalone reader must restore the
 content-addressed unit cache before its first build step, save it only from a
 push to main or a workflow_dispatch, and run with NELISP_STANDALONE_JOBS=4.  macOS and Windows must
-not get JOBS=4.  The workflow is parsed with pyyaml; no step is executed.
+not get JOBS=4.  The gates job must not set JOBS at all: its host ERT tests
+compile units, and with JOBS > 1 they start prewarm children that slow them.  The workflow is parsed with pyyaml; no step is executed.
 
 Run:  python3 -I test/nelisp-ci-unit-cache-test.py
 """
@@ -30,8 +31,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # NELISP_CI_WORKFLOW points the test at a damaged copy (negative control).
 WORKFLOW = os.environ.get("NELISP_CI_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "ci.yml")
 
-# Jobs whose Linux lane builds the reader: gates (preflight's emacs-parity),
-# smoke and ert (standalone-reader-checked and the gate battery), mutation
+# Jobs whose Linux lane builds the reader or compiles units: gates (host ERT
+# tests call nelisp-standalone--compile-to-unit), smoke and ert (standalone-reader-checked and the gate battery), mutation
 # (warm-up rebuild) and subsystems (the tiers).  verify only reads reports.
 BUILD_JOBS = ["gates", "build", "smoke", "ert", "mutation", "subsystems"]
 NON_BUILD_JOBS = ["verify"]
@@ -228,6 +229,9 @@ def check_job(doc, name):
     if name in ("smoke", "ert"):
         if jobs_env != LINUX_ONLY_EXPR:
             bad.append("JOBS expression is %r" % jobs_env)
+    elif name == "gates":
+        if "NELISP_STANDALONE_JOBS" in job.get("env", {}):
+            bad.append("gates sets NELISP_STANDALONE_JOBS (%r), expected unset" % jobs_env)
     elif jobs_env != "4":
         bad.append("NELISP_STANDALONE_JOBS is %r, expected 4" % jobs_env)
     return bad
@@ -340,6 +344,12 @@ class NegativeControl(unittest.TestCase):
             doc["jobs"]["mutation"]["env"]["NELISP_STANDALONE_JOBS"] = "2"
         bad = check_job(self.damaged(m), "mutation")
         self.assertTrue(any("paths" in b for b in bad) and any("expected 4" in b for b in bad), bad)
+
+    def test_jobs_on_the_gates_job_is_caught(self):
+        def m(doc):
+            doc["jobs"]["gates"].setdefault("env", {})["NELISP_STANDALONE_JOBS"] = "4"
+        bad = check_job(self.damaged(m), "gates")
+        self.assertTrue(any("expected unset" in b for b in bad), bad)
 
     def test_a_save_step_in_the_mutation_job_is_caught(self):
         def m(doc):

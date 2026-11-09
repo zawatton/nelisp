@@ -1,0 +1,69 @@
+# S6.6 evidence: CI run 42596869405 (workflow_dispatch, f2c518053, gate_mutation=true).
+# Every Linux job that downloads the shared build: what its first and final
+# `make -s standalone-reader-status' steps printed, and the one-line report of
+# `tools/ci-stamp-checkpoint.sh end' (whether the reader was rebuilt in the job).
+# The build job's stamp: key 4848712e1679, output sha256 86d316957ec8.
+
+## build
+  producer: standalone-reader: rebuilding (no stamp; key 4848712e1679)
+  producer: standalone-reader: stamp written (key 4848712e1679, output sha256 86d316957ec8)
+## ert_ubuntu_latest___jit
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: no
+## ert_ubuntu_latest___nojit
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: no
+## ert_ubuntu_latest___plain
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: no
+## gates
+  not a consumer: no `needs: build' (ci.yml keeps `gates' independent on purpose)
+## shard04
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: yes (stamp rewritten with the same key 4848712e1679, output sha256 unchanged 86d316957ec8)
+## shard14
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: yes (stamp rewritten with the same key 4848712e1679, output sha256 unchanged 86d316957ec8)
+## shard24
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: yes (stamp rewritten with the same key 4848712e1679, output sha256 unchanged 86d316957ec8)
+## shard34
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: yes (stamp rewritten with the same key 4848712e1679, output sha256 unchanged 86d316957ec8)
+## smoke__ubuntu_latest__31.1_
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: no
+## tier_extras
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  end report:   standalone-reader: rebuilt during this job: no
+## tier_perf
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: stale: companion file changed | make: *** [Makefile:619: standalone-reader-status] Error 1
+  end report:   standalone-reader: rebuilt during this job: yes (stamp rewritten with the same key 4848712e1679, output sha256 unchanged 86d316957ec8)
+## tier_smokes
+  first status: standalone-reader: up to date (key 4848712e1679, output sha256 86d316957ec8)
+  final status: stale: companion file changed | make: *** [Makefile:619: standalone-reader-status] Error 1
+  end report:   standalone-reader: rebuilt during this job: no
+
+# tier extras: no in-job rebuild (run 42578356513 rebuilt here on `key changed',
+# NELISP_GATE_DIR; f2c518053 moved it to the key denylist).
+# tier perf: tools/nelisp-performance-gate.sh deletes the companion
+# target/nelisp-artifact-runtime.el.nelc.enable before `make standalone-reader' and
+# fails unless the build restores it, so this rebuild is the gate's own check, not
+# a key change (same key, output sha256 unchanged):
+  standalone-reader: rebuilding (companion file changed; key 4848712e1679)
+  standalone-reader: stamp written (key 4848712e1679, output sha256 86d316957ec8)
+# tier smokes: a smoke changes a companion file (final status `companion file
+# changed') without rebuilding; the end report says `no'.
+# gate-mutation shards: rebuild rows rebuild and then restore the saved baseline
+# binary, companions and stamp by copy, so the end report says `yes' with the same
+# key and the same output sha256.
