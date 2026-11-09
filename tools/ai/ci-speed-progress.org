@@ -25,7 +25,8 @@ evidence: tools/ai/ci-speed-evidence/s1-5-rebuild.log sha256=cf5c8a5d9100ce12b1e
 * S2 gate-mutation rows are bounded and report their time
 
 ** S2.1 Hermetic: a row whose gate or rebuild hangs is killed at the per-row timeout, reported as a named TIMEOUT failure, its file restored, and the next row still runs
-cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py)
+#+NOTE: 2026-11-09 criterion changed: wrapper timeout 50 -> 120 s, test file unchanged. Whole file measured 51.4 s locally (47 tests, ~4 s user CPU; ShardBudget 16.3 s and RowTimingReport 15.7 s the largest classes) after f62c499ad added two budget tests that pay real seconds. The cap only bounds meter runtime; every assertion still runs.
+cmd: (ulimit -v 8388608; timeout 120 python3 -I test/nelisp-gate-mutation-row-timeout-test.py)
 
 ** S2.2 Hermetic: every slow or timed-out row prints gate, file and seconds as it finishes, and the run ends with a slowest-rows summary
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py RowTimingReport)
