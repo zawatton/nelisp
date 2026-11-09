@@ -202,8 +202,16 @@ runtime_inputs="$BUILD_DIR/runtime-inputs.txt"
 [[ -s "$runtime_inputs" ]] || { err "the REPL runtime generator read no repository files"; exit 1; }
 # The runtime then loads more files when the REPL boots (`require' of
 # vendored GNU libraries and packages).  Boot it once with the binary just
-# built and add every repository file in its `load-history'.
+# built and add every repository file in its `load-history'.  This runs the
+# binary, so only where it runs natively with POSIX fifos (Linux, macOS); MSYS
+# fifos give an instant EOF, so a Windows bundle carries the generator's list
+# only.
 root_prefix="$REPO_ROOT/"
+case "$(uname -s)" in
+  Linux|Darwin) boot_inputs=1 ;;
+  *) boot_inputs=0; log "skipping the REPL boot list on $(uname -s)" ;;
+esac
+if [ "$boot_inputs" -eq 1 ]; then
 printf '%s\n' \
   '(dolist (e load-history) (when (stringp (car e)) (princ (concat "NELISP-TARBALL-LOADED " (car e) "\n"))))' \
   '(exit 0)' \
@@ -218,6 +226,7 @@ printf '%s\n' \
 grep -q '^vendor/' "$runtime_inputs.boot" \
   || { err "booting the REPL runtime recorded no vendored library"; exit 1; }
 sort -u -o "$runtime_inputs" "$runtime_inputs" "$runtime_inputs.boot"
+fi
 while IFS= read -r input; do
   mkdir -p "$STAGE_DIR/$(dirname "$input")"
   cp "$input" "$STAGE_DIR/$input"
