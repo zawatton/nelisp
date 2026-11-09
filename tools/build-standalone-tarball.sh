@@ -360,12 +360,13 @@ log "assembling tarball"
       exit 1; \
     fi )
 
-# 5. Size cap check (17 MB; raised from 15 MB when the bundle began carrying
-#    the vendored sources its REPL entry point reads).
+# 5. Size cap check (22 MB; raised from 15 MB when the bundle began carrying
+#    the vendored sources its REPL entry point reads, then from 17 MB when
+#    the reader build began reading the emacs-lib packages).
 SIZE_BYTES=$(wc -c < "$TAR_FILE" | tr -d ' ')
 SIZE_MB=$(( (SIZE_BYTES + 1048575) / 1048576 ))
-if (( SIZE_BYTES >= 17 * 1024 * 1024 )); then
-  err "tarball exceeds 17 MB cap: ${SIZE_BYTES} bytes"
+if (( SIZE_BYTES >= 22 * 1024 * 1024 )); then
+  err "tarball exceeds 22 MB cap: ${SIZE_BYTES} bytes"
   exit 2
 fi
 
@@ -373,4 +374,4 @@ rm -rf "$STAGE_DIR"
 
 log "built $TAR_FILE ($(du -h "$TAR_FILE" | cut -f1))"
 log "checksum: $TAR_FILE.sha256"
-log "size cap: OK (< 17 MB; rounded=${SIZE_MB} MiB)"
+log "size cap: OK (< 22 MB; rounded=${SIZE_MB} MiB)"
