@@ -6018,15 +6018,18 @@ path, which asks for a NUMBER first and only then for an integer."
       (setq i (1+ i)))
     (concat "\"" (apply #'concat (nreverse pieces)) "\"")))
 
-(defun nelisp--w302-json-check-list (object)
-  "Require a proper OBJECT spine and report dotted or circular input."
+(defun nelisp--w302-json-check-list (object &optional defer-dotted)
+  "Require a proper OBJECT spine and report dotted or circular input.
+With DEFER-DOTTED a dotted end is left to the caller's walk, which reports the
+element errors GNU raises first."
   (let ((fast object) (slow object))
     (while (consp fast)
       (setq fast (cdr fast))
       (when (consp fast)
         (setq fast (cdr fast) slow (cdr slow))
         (when (eq fast slow) (signal 'circular-list (list object)))))
-    (when fast (signal 'wrong-type-argument (list 'listp object)))))
+    (when (and fast (not defer-dotted))
+      (signal 'wrong-type-argument (list 'listp object)))))
 
 (defun nelisp--w302-json-check-cycle (object)
   "Signal `circular-list' when OBJECT's spine is circular; a dotted tail is fine."
@@ -6070,17 +6073,16 @@ path, which asks for a NUMBER first and only then for an integer."
          object)
         (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))
        (t
-        ;; As in GNU json.c: an alist's spine is validated up front, so a
-        ;; dotted alist reports (wrong-type-argument listp OBJECT).  A plist is
-        ;; walked pair by pair -- a missing value reports `consp' on the tail,
-        ;; a non-symbol key `symbolp' -- and only a dotted tail left after the
-        ;; last complete pair reports `listp'.  Circular lists signal in both.
-        (if (consp (car object))
-            (nelisp--w302-json-check-list object)
-          (nelisp--w302-json-check-cycle object))
+        ;; Validate the spine before encoding; dotted and circular lists are
+        ;; not JSON objects, even when their first members are valid.
+        ;; A dotted plist is walked so its key and tail errors come in GNU's
+        ;; order (the cdr is checked with `consp' before the key is checked).
+        (nelisp--w302-json-check-list object (not (consp (car object))))
         (let ((tail object) (alist (consp (car object)))
               (seen (make-hash-table :test 'equal)))
-          (while (if alist tail (consp tail))
+          (while tail
+            (unless (consp tail)
+              (signal 'wrong-type-argument (list 'listp object)))
             (let ((key nil) (value nil))
               (if alist
                   (progn
@@ -25883,6 +25885,13 @@ comment above this definition for how that value was measured."))
                    (or (null (nelisp-marker-buffer o1))
                        (= (nelisp-marker-position o1) (nelisp-marker-position o2)))))
              ((and (recordp o1) (recordp o2)) (nelisp--equal-slots o1 o2 depth ht))
+             ;; GNU compares byte-code objects and interpreted closures slot by
+             ;; slot (PVEC_CLOSURE), each kind only with itself.
+             ((or (byte-code-function-p o1) (interpreted-function-p o1))
+              (and (if (byte-code-function-p o1)
+                       (byte-code-function-p o2)
+                     (interpreted-function-p o2))
+                   (nelisp--equal-slots o1 o2 depth ht)))
              (t (nelisp--native-equal o1 o2)))))
     res))
 
