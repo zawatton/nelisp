@@ -50981,10 +50981,21 @@ The registry is consulted only after argument binding has failed."
      "\n(setq nelisp--subr-arity-names nil)
 (dolist (name '%S)
   (when (fboundp name)
-    (let ((fn (symbol-function name)))
+    (let ((fn (symbol-function name)) (hops 0))
+      ;; A public name may be an alias (`fset' to another symbol, as the
+      ;; chartab install does for `map-char-table'): follow it to the
+      ;; installed function so the arity error still names NAME.
+      (while (and fn (symbolp fn) (fboundp fn) (< hops 8))
+        (setq fn (symbol-function fn) hops (1+ hops)))
       (cond
        ((and (consp fn) (memq (car fn) '(lambda closure)))
         (let ((body (if (eq (car fn) 'closure) (cdddr fn) (cddr fn))))
+          (when body
+            (push (cons body name) nelisp--subr-arity-names))))
+       ;; An interpreted-function object (not a cons): key on its body,
+       ;; slot 1, as the cons case keys on the lambda body.
+       ((eq (type-of fn) 'interpreted-function)
+        (let ((body (aref fn 1)))
           (when body
             (push (cons body name) nelisp--subr-arity-names))))
        ((byte-code-function-p fn)
