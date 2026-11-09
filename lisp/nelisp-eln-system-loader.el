@@ -701,7 +701,7 @@ resolution the running NeLisp stat primitive exposes.  On the
 standalone runtime this reads the raw `struct stat' fields directly
 through `nelisp--syscall-stat-field' rather than going through this
 runtime's own `file-attributes' fallback (see
-scripts/nelisp-stdlib-prelude.el): that fallback hard-codes ctime to a
+the stdlib prelude under scripts/): that fallback hard-codes ctime to a
 constant and truncates mtime to whole seconds, while reading the raw
 fields recovers real nanosecond-resolution mtime/ctime, which this
 cache's safety depends on.  On host Emacs (used by this file's own ERT

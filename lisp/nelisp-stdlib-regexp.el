@@ -3309,7 +3309,7 @@ of STRING.  Sets `nlre--match-data' as usual."
 ;; existing string without copying it, so the fix is to hand it `(buffer-
 ;; string)' (itself memoized per buffer against a content tick -- see
 ;; `nelisp-buffer-string' in src/nelisp-buffer.el / this file's own
-;; scripts/nelisp-stdlib-prelude.el mirror) instead of a fresh substring,
+;; mirror in the stdlib prelude under scripts/) instead of a fresh substring,
 ;; with START/MAX-END doing the windowing that used to require a copy.
 ;; `nlre--caps-offset' then wants 1 (0-based full-string index -> 1-based
 ;; buffer position), not BASE, since index 0 of the whole-buffer string is
