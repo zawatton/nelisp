@@ -9,6 +9,7 @@
 140-standalone-fully-chunked-arena.org
 150-intra-form-scratch-recycling.org
 18-stage-d-standalone.org
+240-saved-application-images.org
 25-phase6.5-nelisp-defs-index.org
 27-phase7-c-runtime-self-impl.org
 47-rust-seed-image-abi.org
