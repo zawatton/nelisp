@@ -1,0 +1,37 @@
+#+TITLE: large smoke-tail gates go green
+
+# Split out of tools/ai/smoke-tail-progress.org on 2026-11-10 (policy A,
+# notes-d0): each of these needs more than about 100 fixes or a large port,
+# and no single root cause was found.  Counts are `GATE-COUNT' lines measured
+# on fix/smoke-tail-20261110 (532dd2f75..0c8065184; logs under the lane's
+# smoke-tail-evidence directory).  Each stays a failing cmd until the gate
+# itself passes; nothing here is fixed yet.
+
+* L1 static inventories of the check tier
+** L1.1 doc200-census: 549 MISSING-FROM-LEDGER, 76 STALE-LEDGER-ROW, 2 READ-ERROR (checked=3571)
+# 306 of the missing rows are in scripts/nelisp-standalone-build.el.
+# tools/nelisp-doc200-tag-census.el has no write/regenerate mode for its
+# ledger, so no single generator run covers these rows.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make doc200-census >/dev/null 2>&1)
+
+** L1.2 ns-gate: findings=953 (checked=7638)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make ns-gate >/dev/null 2>&1)
+
+** L1.3 fallback-inventory: findings=793 (checked=630)
+# Also red on 0a618c89c, with different output.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make fallback-inventory >/dev/null 2>&1)
+
+** L1.4 vendor-shadow-gate: 711 stubs shadow a vendored feature (checked=11124)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make vendor-shadow-gate >/dev/null 2>&1)
+
+* L2 later smoke steps
+** L2.1 lisp-byte-compile: findings=88 against the baseline (checked=418)
+# Spread over many lisp/ files (new diagnostics in files that compiled
+# clean before, and counts above baseline in stdlib-regexp, -prn, -misc,
+# -plist-str, static-linker); no single cause found.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make lisp-byte-compile >/dev/null 2>&1)

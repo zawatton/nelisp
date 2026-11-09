@@ -12,9 +12,17 @@
 # (nelisp-ai.sh ns) passed that way.  Not enumerated: the VS Code steps
 # (network), the macOS Mach-O step, gate-mutation (skipped in the smoke
 # job; see tools/ai/gate-mutation-rows-progress.org).  Each
-# criterion is one red gate; nothing here is fixed yet (the user decides).
+# criterion is one red gate as enumerated; fixing started 2026-11-10 on
+# fix/smoke-tail-20261110 (user decision), and the comments under each
+# criterion record what changed.
 # Some results depend on what the previous steps left in target/ (for
 # example binary-size-ratchet), so a standalone run can differ from CI.
+#
+# 2026-11-10: T1.2 doc200-census, T1.5 ns-gate, T1.6 fallback-inventory,
+# T1.10 vendor-shadow-gate and T2.15 lisp-byte-compile moved to
+# tools/ai/smoke-tail-large-progress.org (policy A: each needs more than
+# about 100 fixes or a large port).  Criteria defined here: 27 -> 22; the
+# remaining ids keep their numbers.
 
 * T1 check-tier gates (smoke steps 21-22, tools/ai/nelisp-ai.sh check)
 ** T1.1 compile: free variable emacs-foundation-features in packages/emacs-lib-facade/src/nelisp-emacs.el:41
@@ -28,10 +36,6 @@
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 bash tools/ai/nelisp-ai.sh compile >/dev/null 2>&1)
 
-** T1.2 doc200-census: read errors and MISSING-FROM-LEDGER rows (bf_error_w)
-#+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make doc200-census >/dev/null 2>&1)
-
 ** T1.3 partial-inventory: 43 sites ignore an Emacs argument (2 on 0a618c89c)
 # The first red of CI run 42619271705's ubuntu smoke.
 #+TIMEOUT: 600
@@ -41,15 +45,6 @@ cmd: (ulimit -v 8388608; timeout 590 make partial-inventory >/dev/null 2>&1)
 # Also its gate-mutation row timed out (gate-mutation ledger G3.1).
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 make gate-selfcheck >/dev/null 2>&1)
-
-** T1.5 ns-gate: findings=952
-#+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make ns-gate >/dev/null 2>&1)
-
-** T1.6 fallback-inventory: 316 sites exceed their pinned-site count
-# Also red on 0a618c89c, with different output.
-#+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make fallback-inventory >/dev/null 2>&1)
 
 ** T1.7 bootstrap-contract: did not finish locally
 # The check tier was killed in it after 7200 s; CI never reached it; a hang
@@ -64,10 +59,6 @@ cmd: (ulimit -v 8388608; timeout 590 make parity-coverage >/dev/null 2>&1)
 ** T1.9 substrate-presence-corpus-check: the corpus file is stale
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 make substrate-presence-corpus-check >/dev/null 2>&1)
-
-** T1.10 vendor-shadow-gate: 711 stubs shadow a vendored feature
-#+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make vendor-shadow-gate >/dev/null 2>&1)
 
 ** T1.11 doc-claims: 3 SHIPPED docs name no gate that exists
 #+TIMEOUT: 600
@@ -143,8 +134,4 @@ cmd: (ulimit -v 8388608; timeout 590 make native-unit-repl-smoke >/dev/null 2>&1
 ** T2.14 ffi-loader: 1 of 33 loader checks fails
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 make ffi-loader >/dev/null 2>&1)
-
-** T2.15 lisp-byte-compile: 88 findings against the baseline
-#+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make lisp-byte-compile >/dev/null 2>&1)
 
