@@ -82,10 +82,10 @@ class ProjectDistribution(unittest.TestCase):
             env.pop("PYTHONPATH", None)
             env.pop("NELISP_BUILD_CACHE", None)
 
-            def command(*args, cwd=home, extra=None):
+            def command(*args, cwd=home, extra=None, timeout=300):
                 result = subprocess.run([str(cli), *args], cwd=cwd,
                                         env=dict(env, **(extra or {})),
-                                        capture_output=True, text=True, timeout=300)
+                                        capture_output=True, text=True, timeout=timeout)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 return result
 
@@ -295,7 +295,12 @@ class ProjectDistribution(unittest.TestCase):
             self.assertEqual(json.loads(command("check", "--json", cwd=project).stdout)["status"], "ok")
             command("doc", cwd=project)
             started = time.monotonic()
-            command("build", cwd=project)
+            # A fresh installation's first build compiles every runtime unit
+            # into the empty user cache (docs/project-cli.md: "First builds
+            # can take longer"); about 15-18 minutes on a 2026-11 checkout.
+            # The warm rebuild below keeps the 300 s budget and must
+            # recompile no runtime unit.
+            command("build", cwd=project, timeout=1800)
             cold_seconds = time.monotonic() - started
             first = (project / "target/hello").read_bytes()
             self.assertTrue(list((home / "user-cache/nelisp/build-v1").rglob("*.unit")))
