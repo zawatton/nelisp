@@ -1,0 +1,140 @@
+#+TITLE: the ubuntu smoke job runs to its end
+
+# Defined 2026-11-09 at notes-d0's request, outside the main-ci-reds
+# denominator (policy A).  Main's ubuntu smoke has failed at
+# unsafe-inventory, its first gate, so every step after it was hidden on
+# main as well.  On this branch CI run 42619271705 (e0e0b4114) stops at
+# partial-inventory.  Enumerated locally on e0e0b4114 in a separate
+# worktree by running each Linux step of the smoke job in CI order (runner:
+# Notes session scratchpad smoke_tail.py).  The check tier (step 22) was
+# killed in bootstrap-contract after 7200 s, so T1.8-T1.12 and the other
+# gates after it were run one by one, outside nelisp-ai.sh check; `ns'
+# (nelisp-ai.sh ns) passed that way.  Not enumerated: the VS Code steps
+# (network), the macOS Mach-O step, gate-mutation (skipped in the smoke
+# job; see tools/ai/gate-mutation-rows-progress.org).  Each
+# criterion is one red gate; nothing here is fixed yet (the user decides).
+# Some results depend on what the previous steps left in target/ (for
+# example binary-size-ratchet), so a standalone run can differ from CI.
+
+* T1 check-tier gates (smoke steps 21-22, tools/ai/nelisp-ai.sh check)
+** T1.1 compile: free variable emacs-foundation-features in packages/emacs-lib-facade/src/nelisp-emacs.el:41
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make compile >/dev/null 2>&1)
+
+** T1.2 doc200-census: read errors and MISSING-FROM-LEDGER rows (bf_error_w)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make doc200-census >/dev/null 2>&1)
+
+** T1.3 partial-inventory: 43 sites ignore an Emacs argument (2 on 0a618c89c)
+# The first red of CI run 42619271705's ubuntu smoke.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make partial-inventory >/dev/null 2>&1)
+
+** T1.4 gate-selfcheck: 4 gates looked at an unexpected amount
+# Also its gate-mutation row timed out (gate-mutation ledger G3.1).
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make gate-selfcheck >/dev/null 2>&1)
+
+** T1.5 ns-gate: findings=952
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make ns-gate >/dev/null 2>&1)
+
+** T1.6 fallback-inventory: 316 sites exceed their pinned-site count
+# Also red on 0a618c89c, with different output.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make fallback-inventory >/dev/null 2>&1)
+
+** T1.7 bootstrap-contract: did not finish locally
+# The check tier was killed in it after 7200 s; CI never reached it; a hang
+# and a slow run are not told apart yet.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make bootstrap-contract >/dev/null 2>&1)
+
+** T1.8 parity-coverage: 1 pinned name no longer covered
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make parity-coverage >/dev/null 2>&1)
+
+** T1.9 substrate-presence-corpus-check: the corpus file is stale
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make substrate-presence-corpus-check >/dev/null 2>&1)
+
+** T1.10 vendor-shadow-gate: 711 stubs shadow a vendored feature
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make vendor-shadow-gate >/dev/null 2>&1)
+
+** T1.11 doc-claims: 3 SHIPPED docs name no gate that exists
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make doc-claims >/dev/null 2>&1)
+
+** T1.12 wasm-dtw-skeleton-smoke: Wasm instantiate out of memory
+# Possibly local only: Node cannot reserve Wasm memory under the 8 GiB cap,
+# even with NELISP_NODE_FLAGS=--disable-wasm-trap-handler.  CI never reached it.
+# The cmd carries the same cap, so this may be measurable only in CI.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make wasm-dtw-skeleton-smoke >/dev/null 2>&1)
+
+* T2 later smoke steps (23-66)
+** T2.1 parity-fuzz: the driver stops with an arithmetic error after 0 s
+# Possibly environmental; not investigated.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make parity-fuzz >/dev/null 2>&1)
+
+** T2.2 standalone-reader-test: stdlib-completion smoke: one nil in 23 results
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make standalone-reader-test >/dev/null 2>&1)
+
+** T2.3 builtin-arity: wrong-number-of-arguments data names #<subr car>, not car (3 failures)
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make builtin-arity >/dev/null 2>&1)
+
+** T2.4 lsp-server: 28 errors
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make lsp-server >/dev/null 2>&1)
+
+** T2.5 native-symbol-test: 13 errors
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make native-symbol-test >/dev/null 2>&1)
+
+** T2.6 project-packages: 1 error
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-packages >/dev/null 2>&1)
+
+** T2.7 project-build: 1 error
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-build >/dev/null 2>&1)
+
+** T2.8 project-profile-build: 1 error
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-profile-build >/dev/null 2>&1)
+
+** T2.9 project-debug: 1 error
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-debug >/dev/null 2>&1)
+
+** T2.10 project-arguments: 1 error
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-arguments >/dev/null 2>&1)
+
+** T2.11 project-distribution: 1 failure
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make project-distribution >/dev/null 2>&1)
+
+** T2.12 binary-size-ratchet: over baseline locally (value unconfirmed)
+# Locally 55630856 bytes against 9490208, measured on whatever steps 26-56
+# left in target/; the gate does not check which build that is.  CI never
+# reached this step.
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make binary-size-ratchet >/dev/null 2>&1)
+
+** T2.13 native-unit-repl-smoke: runtime-reload-reader fails
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make native-unit-repl-smoke >/dev/null 2>&1)
+
+** T2.14 ffi-loader: 1 of 33 loader checks fails
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make ffi-loader >/dev/null 2>&1)
+
+** T2.15 lisp-byte-compile: 88 findings against the baseline
+#+TIMEOUT: 600
+cmd: (ulimit -v 8388608; timeout 590 make lisp-byte-compile >/dev/null 2>&1)
+
