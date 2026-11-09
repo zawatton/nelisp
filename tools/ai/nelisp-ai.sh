@@ -763,7 +763,11 @@ EOF
     # Generate through the same source producer used by the standalone
     # artifact command.  Passing the output path through an environment
     # variable keeps shell quoting out of the Elisp form, including when
-    # TMPDIR contains spaces or quote characters.
+    # TMPDIR contains spaces or quote characters.  The generator's progress
+    # lines go to a log shown only on failure, and the runtime is loaded with
+    # `inhibit-message' bound: vendored GNU sources print obsolete-macro
+    # warnings while loading (as GNU does), which are not the session's
+    # output.
     set +e
     NELISP_AI_REPL_RUNTIME="$repl_runtime" NELISP_AI_REPL_MODE="$repl_mode" \
         "$EMACS" --batch -Q -L lisp -L src -L scripts \
@@ -776,13 +780,15 @@ EOF
                       (insert "\n"))
                   (require (quote nelisp-standalone-build))
                   (with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
-                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' &
+                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' \
+        2> "$repl_tmp_dir/generate.log" &
     repl_generator_pid=$!
     wait "$repl_generator_pid"
     repl_generation_status=$?
     repl_generator_pid=
     set -e
     if [ "$repl_generation_status" -ne 0 ]; then
+        cat "$repl_tmp_dir/generate.log" >&2
         echo "nelisp-ai.sh repl: failed to generate $repl_runtime" >&2
         return 1
     fi
@@ -792,7 +798,7 @@ EOF
     # bootstrap form and then copies the caller's input into a named pipe.
     # Keeping its PID lets normal exit and signal paths reap it along with the
     # native child, including when stdin remains open after `(exit)'.
-    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+    printf '%s\n' '(condition-case err (progn (let ((inhibit-message t)) (load (getenv "NELISP_AI_REPL_RUNTIME"))) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
     repl_input_fifo="$repl_tmp_dir/input.fifo"
     if ! mkfifo "$repl_input_fifo"; then
         echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2
