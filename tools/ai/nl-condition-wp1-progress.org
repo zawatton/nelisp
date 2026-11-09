@@ -1,0 +1,55 @@
+#+TITLE: nl-condition completion (Doc 244 WP1)
+
+* S1 Handlers see primitive errors
+
+** S1.1 A restart chosen by nl-handler-bind recovers from a primitive error on host Emacs
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-primitive' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-primitive")'
+
+** S1.2 A handler fires exactly once for one nl-signal, with no double firing through the bridge
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-once' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-once")'
+
+* S2 Restart and condition API
+
+** S2.1 nl-with-simple-restart, nl-restart-bind and nl-cerror work on host Emacs
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-restart-api' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-restart-api")'
+
+** S2.2 The standard restarts nl-abort, nl-continue, nl-muffle-warning, nl-use-value and nl-store-value work on host Emacs
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-standard' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-standard")'
+
+** S2.3 Correctable nl-check-type and nl-assert accept a replacement through a restart
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-correctable' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-correctable")'
+
+** S2.4 nl-signal-condition returns nil when unhandled, including for an undeclared symbol
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-signal-condition' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-signal-condition")'
+
+* S3 No regression and package rules
+
+** S3.1 The full nl-condition host suite passes with at least 29 pre-existing test names kept
+#+TIMEOUT: 120
+cmd: test "$(git show origin/main:packages/nl-condition/test/nl-condition-test.el | grep -c '^(ert-deftest')" -le "$(grep -c '^(ert-deftest' packages/nl-condition/test/nl-condition-test.el)" && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el -f ert-run-tests-batch-and-exit
+
+** S3.2 The package graph gate passes
+#+TIMEOUT: 300
+cmd: make pkg-graph
+
+** S3.3 A plain signal with data equal to an earlier nl-signal still fires the handler
+#+TIMEOUT: 120
+cmd: grep -q '^(ert-deftest nl-condition-wp1-no-stale-suppression' packages/nl-condition/test/nl-condition-test.el && emacs --batch -Q -L packages/nl-prelude/src -L packages/nl-condition/src -l packages/nl-condition/test/nl-condition-test.el --eval '(ert-run-tests-batch-and-exit "nl-condition-wp1-no-stale-suppression")'
+
+* S4 End to end on the standalone binary
+
+** S4.1 The standalone smoke, including a restart recovering from a real primitive error and a no-restart negative control, passes on the built binary
+#+REQUIRES: NL_CONDITION_BIN
+#+TIMEOUT: 300
+cmd: "$NL_CONDITION_BIN" --load packages/nl-condition/test/nl-condition-standalone-smoke.el 2>&1 | grep -q 'WP1-PRIMITIVE-RESTART-PASS'
+
+** S4.2 On the binary, a handler outside nl-restart-case recovers from a primitive error, which needs a pre-unwind handler-bind in the core (Doc 245 D8)
+#+REQUIRES: NL_CONDITION_BIN
+#+TIMEOUT: 120
+cmd: "$NL_CONDITION_BIN" -L packages/nl-prelude/src -L packages/nl-condition/src --eval "(progn (require 'nl-condition) (unless (equal 42 (nl-handler-bind ((error (lambda (_) (nl-invoke-restart 'r 7)))) (nl-restart-case (car 1) (r (v) (* v 6))))) (kill-emacs 1)))"

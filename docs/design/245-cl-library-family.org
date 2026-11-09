@@ -140,6 +140,12 @@ Each was reproduced with a minimal probe against GNU Emacs 31.1 unless stated ot
 | D5 | =skip-chars-forward= does not treat =[:alnum:]= as a character class    | Core: parity     |
 | D6 | =xor=, =pi=, =float-pi=, =capitalize-word=, =upcase-word=, =downcase-word= are void in the core | Core or emacs-lib |
 | D7 | =font-lock-add-keywords= is void, and =calc-eval= rejects the list form | emacs-lib boundary |
+| D8 | =handler-bind-1= runs its handler after unwinding: cleanups have already run and dynamic bindings are gone | Core: parity |
+
+D8 was found while completing =nl-condition=, not by the =cl-format= evaluation.  Its visible
+effect: a handler outside =nl-restart-case= gets =nl-control-error= for a primitive error,
+because the restart frame has already gone.  A restart outside =nl-handler-bind= works.  ERT
+also uses =handler-bind-1=, so D8 may be related to D3, but that has not been tested.
 
 D3's cause is not identified.  The log shows =cl-prin1: (void-function documentation)=, but
 defining =documentation= did not stop the abort, so that is at most a second problem.
@@ -174,7 +180,7 @@ Doc 244's survey found.
 1. Fix D1, with a gate that loads cookie-less and =nil=-cookie files.  Audit what relies on
    the current behavior first, because fixing it changes the semantics of every such file
    in the tree.
-2. Fix D3 so that failures stop hiding other results, then D2, D5 and D4.
+2. Fix D8 and D3, testing whether they share a cause, then D2, D5 and D4.
 3. =nl-condition= completion (Doc 244 WP1).
 4. Fork =cl-format=, with an SBCL differential gate over a larger corpus.
 5. =nl-num= bit and math functions, =nl-weak-ref=.
