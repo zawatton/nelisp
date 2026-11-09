@@ -2838,7 +2838,7 @@ pinned-collision ns-collision-divergent	string-make-multibyte	lisp/nelisp-stdlib
 pinned-collision ns-collision-divergent	string-make-unibyte	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-cc-byte8-conversion-1.el packages/emacs-lib-core/src/emacs-fns.el	c968f78d88a0
 pinned-collision ns-collision-divergent	string-match	packages/emacs-lib-core/src/emacs-search-builtins.el packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/nemacs-runtime-stdlib-extra.el	acfb29d6d295
 pinned-collision ns-collision-divergent	string-match-p	packages/emacs-lib-core/src/emacs-search-builtins.el packages/emacs-lib-core/src/nemacs-runtime-stdlib-extra.el	0c0f7b29526c
-pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	7456d1c13969
+pinned-collision ns-collision-divergent	string-search	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	53e6f0f89b00
 pinned-collision ns-collision-divergent	string-split	packages/emacs-lib-core/src/emacs-string.el scripts/nelisp-stdlib-prelude.el	09e6a42eb2b1
 pinned-collision ns-collision-divergent	string-to-list	packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	91ad007b1004
 pinned-collision ns-collision-divergent	string-to-number	lisp/nelisp-stdlib-plist-str.el scripts/nelisp-stdlib-prelude.el	757ff57c3af0

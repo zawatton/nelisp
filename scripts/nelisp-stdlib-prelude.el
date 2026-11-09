@@ -742,11 +742,19 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   ;; multibyte haystack used to fall to the walk below: an allocation and a
   ;; compare per position, seconds on a 700 KB SVG).  It answers t for what
   ;; it leaves to `nelisp--string-search-walk', errors included.
-  (defun string-search (needle haystack &optional start)
-    (let ((r (if (fboundp 'nelisp--string-search-chars)
-                 (nelisp--string-search-chars needle haystack start)
-               t)))
-      (if (eq r t) (nelisp--string-search-walk needle haystack start) r)))
+  (defun string-search (&rest args)
+    ;; &rest so the arity error names the function and the count, as GNU does
+    ;; for a subr (a lambda would put the closure in the error data).  The
+    ;; count is only computed on the error path; two or three arguments pass.
+    (let ((rest (cdr args)))
+      (if (and rest (null (cdr (cdr rest))))
+          (let ((r (if (fboundp 'nelisp--string-search-chars)
+                       (nelisp--string-search-chars (car args) (car rest) (car (cdr rest)))
+                     t)))
+            (if (eq r t)
+                (nelisp--string-search-walk (car args) (car rest) (car (cdr rest)))
+              r))
+        (signal 'wrong-number-of-arguments (list 'string-search (length args))))))
   (defun nelisp--string-search-walk (needle haystack &optional start)
     (nelisp--check-string needle)
     (nelisp--check-string haystack)
@@ -6013,15 +6021,18 @@ path, which asks for a NUMBER first and only then for an integer."
       (setq i (1+ i)))
     (concat "\"" (apply #'concat (nreverse pieces)) "\"")))
 
-(defun nelisp--w302-json-check-list (object)
-  "Require a proper OBJECT spine and report dotted or circular input."
+(defun nelisp--w302-json-check-list (object &optional defer-dotted)
+  "Require a proper OBJECT spine and report dotted or circular input.
+With DEFER-DOTTED a dotted end is left to the caller's walk, which reports the
+element errors GNU raises first."
   (let ((fast object) (slow object))
     (while (consp fast)
       (setq fast (cdr fast))
       (when (consp fast)
         (setq fast (cdr fast) slow (cdr slow))
         (when (eq fast slow) (signal 'circular-list (list object)))))
-    (when fast (signal 'wrong-type-argument (list 'listp object)))))
+    (when (and fast (not defer-dotted))
+      (signal 'wrong-type-argument (list 'listp object)))))
 
 (defun nelisp--w302-json-encode (object options parents)
   "Encode OBJECT recursively with OPTIONS, detecting ancestor cycles."
@@ -6058,10 +6069,14 @@ path, which asks for a NUMBER first and only then for an integer."
        (t
         ;; Validate the spine before encoding; dotted and circular lists are
         ;; not JSON objects, even when their first members are valid.
-        (nelisp--w302-json-check-list object)
+        ;; A dotted plist is walked so its key and tail errors come in GNU's
+        ;; order (the cdr is checked with `consp' before the key is checked).
+        (nelisp--w302-json-check-list object (not (consp (car object))))
         (let ((tail object) (alist (consp (car object)))
               (seen (make-hash-table :test 'equal)))
           (while tail
+            (unless (consp tail)
+              (signal 'wrong-type-argument (list 'listp object)))
             (let ((key nil) (value nil))
               (if alist
                   (progn
@@ -25844,6 +25859,13 @@ comment above this definition for how that value was measured."))
                    (or (null (nelisp-marker-buffer o1))
                        (= (nelisp-marker-position o1) (nelisp-marker-position o2)))))
              ((and (recordp o1) (recordp o2)) (nelisp--equal-slots o1 o2 depth ht))
+             ;; GNU compares byte-code objects and interpreted closures slot by
+             ;; slot (PVEC_CLOSURE), each kind only with itself.
+             ((or (byte-code-function-p o1) (interpreted-function-p o1))
+              (and (if (byte-code-function-p o1)
+                       (byte-code-function-p o2)
+                     (interpreted-function-p o2))
+                   (nelisp--equal-slots o1 o2 depth ht)))
              (t (nelisp--native-equal o1 o2)))))
     res))
 

@@ -21,6 +21,17 @@
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh eval-test
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh eval-test
 
+** E1.2 standalone parity workflow, Linux leg (verify-cross-platform.sh)
+# Added 2026-11-09 (denominator 2 -> 3).  CI run 42539350597 on cd41f8bdf
+# failed on Linux and Windows with "abi split requires a direct WORD
+# producer: nl_apply_list_append", the E1.1 error, in the eval build this
+# script makes.  Main's run 42314087265 (ca0a70fd4) failed earlier, at the
+# self-host step that S3.4 fixed.  Until this passes, main ledger S4.2
+# stays red; its macOS legs also fail on the Doc 97 AOT :not-value-expr
+# error, which main ca0a70fd4 shows too.
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh cross-platform
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh cross-platform
+
 * E2 precise-root mutation row is live again
 ** E2.1 the precise-root-coverage gate-mutation row goes red
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh precise-root-mutation
