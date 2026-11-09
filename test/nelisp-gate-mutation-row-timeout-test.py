@@ -527,7 +527,7 @@ class ShardBudget(Fixture):
         self.build([row("s3", "lisp/okred.el")] * 4, env={"NELISP_GATE_MUTATION_SHARD_BUDGET": "12"})
         result = self.run_harness(limit=60)
         self.assertNotEqual(result.returncode, 0, self.out)
-        self.assertEqual(self.out.count("NOT RUN (shard budget 12s exhausted; file lisp/okred.el)"), 2, self.out)
+        self.assertEqual(self.out.count("NOT RUN (worst case 5s does not fit the "), 2, self.out)
         self.assertEqual(self.out.count("s3: went red as it should"), 2, self.out)
         self.assertRegex(self.out, r"GATE-COUNT checked=2 findings=2 passed=2 failed=0 skipped=0 not_run=2 "
                                    r"selected_total=4 assigned=4")
@@ -537,6 +537,45 @@ class ShardBudget(Fixture):
                                           "selected_total": 4, "assigned": 4, "passed": 2,
                                           "failed": 0, "skipped": 0, "not_run": 2})
         self.assertRestored("okred")
+
+    def test_an_unfit_rebuild_row_does_not_stop_later_cheap_rows(self):
+        # worst cases: okred 5 s, emacs-parity (rebuild) 65 s; budget 30 s
+        self.build([row("okred", "lisp/okred.el"), row("emacs-parity", "lisp/rb.el"),
+                    row("green", "lisp/green.el")],
+                   env={"NELISP_GATE_MUTATION_SHARD_BUDGET": "30"})
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertEqual(self.out.count("NOT RUN"), 1, self.out)
+        self.assertRegex(self.out, r"emacs-parity: NOT RUN \(worst case 65s does not fit the \d+s left of the 30s shard budget; file lisp/rb\.el\)")
+        self.assertIn("okred: went red as it should", self.out)
+        self.assertIn("green:", self.out)
+        self.assertEqual(self.gates_run(), ["okred", "green"], self.out)   # the row after it ran
+        self.assertRegex(self.out, r"GATE-COUNT checked=\d+ findings=\d+ passed=\d+ failed=\d+ skipped=0 not_run=1 "
+                                   r"selected_total=3 assigned=3")
+        self.assertIn("1 not run)", self.out)
+        c = self.sidecar()
+        self.assertEqual(c["not_run"], 1)
+        self.assertEqual(c["passed"] + c["failed"] + c["skipped"] + c["not_run"], 3)
+        # The skipped rebuild row did no work: only the warm-up build ran, and
+        # its file was never injected, rebuilt around, or restored.
+        self.assertEqual(self.builds(), 1, self.out)
+        self.assertNotIn("emacs-parity: went red", self.out)
+        self.assertNotIn("emacs-parity:", self.out.replace(
+            [l for l in self.out.splitlines() if "emacs-parity: NOT RUN" in l][0], ""), self.out)
+        self.assertFalse((self.root / "gateenv.log").exists(), self.out)   # its gate never ran
+        self.assertRestored("rb")
+
+    def test_the_check_stays_per_row_when_even_a_cheap_row_does_not_fit(self):
+        # s3 takes >= 4 s, so fewer than its 5 s worst case is left afterwards
+        self.build([row("s3", "lisp/okred.el"), row("okred", "lisp/okred.el"),
+                    row("green", "lisp/green.el")],
+                   env={"NELISP_GATE_MUTATION_SHARD_BUDGET": "8"})
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertIn("s3: went red as it should", self.out)
+        self.assertRegex(self.out, r"okred: NOT RUN \(worst case 5s does not fit the \d+s left of the 8s shard budget; file lisp/okred\.el\)")
+        self.assertRegex(self.out, r"green: NOT RUN \(worst case 5s does not fit the \d+s left of the 8s shard budget; file lisp/green\.el\)")
+        self.assertEqual(self.sidecar()["not_run"], 2)
 
     def test_budget_below_the_first_rows_worst_case_runs_nothing(self):
         self.build([row("okred", "lisp/okred.el"), row("green", "lisp/green.el")],
@@ -554,7 +593,7 @@ class ShardBudget(Fixture):
         self.build([row("emacs-parity", "lisp/rb.el")], env={"NELISP_GATE_MUTATION_SHARD_BUDGET": "30"})
         result = self.run_harness()
         self.assertNotEqual(result.returncode, 0, self.out)
-        self.assertIn("emacs-parity: NOT RUN (shard budget 30s exhausted; file lisp/rb.el)", self.out)
+        self.assertRegex(self.out, r"emacs-parity: NOT RUN \(worst case 65s does not fit the \d+s left of the 30s shard budget; file lisp/rb\.el\)")
         self.assertEqual(self.builds(), 1, self.out)                 # warm-up only
         self.build([row("emacs-parity", "lisp/rb.el")], env={"NELISP_GATE_MUTATION_SHARD_BUDGET": "100"})
         result = self.run_harness()
