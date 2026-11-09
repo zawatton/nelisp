@@ -25,7 +25,8 @@ evidence: tools/ai/ci-speed-evidence/s1-5-rebuild.log sha256=cf5c8a5d9100ce12b1e
 * S2 gate-mutation rows are bounded and report their time
 
 ** S2.1 Hermetic: a row whose gate or rebuild hangs is killed at the per-row timeout, reported as a named TIMEOUT failure, its file restored, and the next row still runs
-cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py)
+#+NOTE: 2026-11-09 criterion changed: wrapper timeout 50 -> 120 s, test file unchanged. Whole file measured 51.4 s locally (47 tests, ~4 s user CPU; ShardBudget 16.3 s and RowTimingReport 15.7 s the largest classes) after f62c499ad added two budget tests that pay real seconds. The cap only bounds meter runtime; every assertion still runs.
+cmd: (ulimit -v 8388608; timeout 120 python3 -I test/nelisp-gate-mutation-row-timeout-test.py)
 
 ** S2.2 Hermetic: every slow or timed-out row prints gate, file and seconds as it finishes, and the run ends with a slowest-rows summary
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py RowTimingReport)
@@ -53,7 +54,7 @@ evidence: tools/ai/ci-speed-evidence/s3-3-ci-run-42418244107.txt sha256=ed6f7c9c
 
 ** S3.4 E2E CI: a dispatch without gate_mutation on this branch yields GATE-SKIP reports from all 4 shards, and verify does not fail on gate-mutation
 #+NOTE: Added 2026-11-08 (advisor review): the run=false path has not run on GitHub yet.
-pending
+evidence: tools/ai/ci-speed-evidence/s3-4-ci-run-42534407660.txt sha256=4c573bc4d7ad32310599100086fb7019b6713cc806a30d91b4bb6d94689f2f1a
 
 * S4 Logs stream live and every smoke and row reports its time (fast plan slice 1)
 #+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation.
@@ -71,12 +72,13 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 cmd: (ulimit -v 8388608; rm -f target/gates/build-stamp.json; timeout 50 bash tools/ai/nelisp-ai.sh gate build-stamp -- make build-stamp | grep -q '^GATE-COUNT' && test -s target/gates/build-stamp.json)
 
 ** S4.5 E2E CI: a real CI run's logs show streamed gate output and per-smoke durations (needs a push; the user confirms each push)
-pending
+evidence: tools/ai/ci-speed-evidence/s4-5-ci-run-42578356513.txt sha256=98cb5db84d402d46a8085f012371eb5becce9dec15d7aaa5e41c59da5a69db5e
 
 * S5 CI keeps the unit cache and builds in parallel (fast plan slice 2)
 #+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation.
 
-** S5.1 Hermetic: NELISP_STANDALONE_JOBS and NELISP_STANDALONE_JOB_WRAPPER are out of the stamp key (a stamp written under JOBS=1 is fresh under JOBS=4), and every other NELISP_* switch still changes it
+** S5.1 Hermetic: NELISP_STANDALONE_JOBS, NELISP_STANDALONE_JOB_WRAPPER and NELISP_GATE_DIR are out of the stamp key (a stamp written under JOBS=1 is fresh under JOBS=4), and every other NELISP_* switch still changes it
+#+NOTE: 2026-11-09 criterion changed (user decision, policy C): NELISP_GATE_DIR joined the denylist after a grep of the build's input surface found no read and a forced rebuild under another value gave the same binary (tools/ai/ci-speed-evidence/s5-gate-dir-identity.txt). tools/ai/nelisp-ai.sh exports it, which made tier extras/perf rebuild inside the job on CI run 42578356513.
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-build-stamp-test.py)
 
 ** S5.2 Evidence: cold builds with JOBS=1 and JOBS=4 give the same binary sha256, with wall time and peak RSS of every build process recorded
@@ -94,7 +96,7 @@ evidence: tools/ai/ci-speed-evidence/s5-4-seeded-cache.txt sha256=f25bd9758b9b6a
 
 ** S5.5 E2E CI: on CI an exact-key cache hit builds in under 120 s, a partial hit after a one-file change in under 10 min, and both give the cold build's sha256 (needs a push; the user confirms each push)
 #+NOTE: 2026-11-09 the cache measured here is saved by a workflow_dispatch run on the lane branch (not a main push).
-pending
+evidence: tools/ai/ci-speed-evidence/s5-5-ci-cache-runs.txt sha256=411e5356c9b4f922c49e9b4d6330c0fe19f2ea7edeebd7314c852535a5e6695c
 
 * S6 Variant builds stop overwriting target/nelisp, and CI builds it once (fast plan slice 3)
 #+NOTE: Added 2026-11-08 from handoff/ci-speed_fast-plan_2026-11-08.md (user decision 2026-11-08), before implementation. Lane 3a = variants + chunk-growth, lane 3b = build job.
@@ -124,6 +126,8 @@ evidence: tools/ai/ci-speed-evidence/s6-5-consumer-sim.txt sha256=839cf2b5f0ce9a
 
 ** S6.6 E2E CI: every Linux consumer's first stamp status logs `up to date' after downloading the shared build, and its end-of-job status shows whether anything rebuilt it (needs a push; the user confirms each push)
 #+NOTE: 2026-11-08 reworded (advisor review): "a consumer on a changed source logs stale and rebuilds" cannot be observed on CI, where every consumer checks out the same commit; it is evidenced locally under S6.5 (s6-5-consumer-sim.txt). The tool prints `up to date', not `fresh'.
+#+NOTE: 2026-11-09 run 42578356513: every Linux consumer's first status is `up to date' (key 10423d9feb78), but the final `make -s standalone-reader-status' step prints only `stale: key changed' in tier smokes/extras/perf and all four gate-mutation shards, which does not show whether anything rebuilt target/nelisp; ert ubuntu x3 and smoke ubuntu end `up to date'. tier extras/perf rebuild inside `tools/ai/nelisp-ai.sh' because it exports NELISP_GATE_DIR, which the stamp key hashes (output sha256 unchanged).
+#+NOTE: 2026-11-09 (policy C) the stamp tool now writes the hashed key material next to the stamp (target/nelisp.build-stamp.inputs, verified against the key) and prints which inputs changed after `stale: key changed'; tools/ci-stamp-checkpoint.sh end prints `rebuilt during this job: yes|no|unknown' after every Linux consumer's final status step. Evidence comes from the next CI run.
 pending
 
 * S7 gate-mutation rows stop paying for the restore build and stay inside a budget (fast plan slice 4)
@@ -138,8 +142,9 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 ** S7.3 Hermetic: each injected build uses its own hardlink copy of the unit cache, and the baseline cache is byte-identical afterwards
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py PrivateUnitCache)
 
-** S7.4 Hermetic: past NELISP_GATE_MUTATION_SHARD_BUDGET a row whose worst case does not fit prints NOT RUN while later rows that fit still run, and the shard fails; the merged report fails when the shards' row counts do not add up to the table's in-scope rows
+** S7.4 Hermetic: past NELISP_GATE_MUTATION_SHARD_BUDGET a row whose estimate does not fit prints NOT RUN while later rows that fit still run, and the shard fails; the merged report fails when the shards' row counts do not add up to the table's in-scope rows
 #+NOTE: 2026-11-09 criterion changed (user decision): the budget check is per row (no latch); a row whose worst case does not fit is NOT RUN, later rows that fit still run.
+#+NOTE: 2026-11-09 criterion changed (user decision, policy C): a non-variant rebuild row is charged a measured estimate (3300 s = max 2379 s x the largest same-row spread 38.5%, tools/ai/ci-speed-evidence/s7-rebuild-row-times.txt) capped at build + row timeout, instead of the 3900 s worst case; the hard timeouts are unchanged. The NOT RUN line now says `estimate'.
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py ShardBudget)
 
 ** S7.5 ci.yml: the mutation job has timeout-minutes and passes the shard budget; rows whose gate builds a variant get the build budget, not the row budget
@@ -151,4 +156,5 @@ evidence: tools/ai/ci-speed-evidence/s7-6-rows.log sha256=ba995593030b734bdbb5a6
 #+NOTE: 2026-11-08 A: host-parity decode-coding-string row 152s, restore by copy (no second build), restored sha == baseline, status up to date, default unit-cache and vendor-bytecode listing hashes unchanged. B: chunk-growth row 697s PASS under the build budget.
 
 ** S7.7 E2E CI: a real gate-mutation shard finishes inside its budget with every row accounted for (passed, failed, skipped or NOT RUN) and a slowest-rows table (needs a push; the user confirms each push)
-pending
+#+NOTE: 2026-11-09 run 42578356513: 75 of 120 rows ran, 45 NOT RUN, every shard inside 5400 s (3890-4657 s). The harness checks a clean baseline only for nl-num-standalone-smoke, so `went red as it should' on a gate already red on this commit (emacs-parity) proves nothing; row findings (SED MATCHED NOTHING, STAYED GREEN, gate-selfcheck TIMEOUT) are routed to S3 (coordinator decision 2026-11-09).
+evidence: tools/ai/ci-speed-evidence/s7-7-ci-run-42578356513.txt sha256=c429d94c8a4c2a50ab6a3a41ce3378367b6b1b491f7fc1c4fcfe5450eb671978

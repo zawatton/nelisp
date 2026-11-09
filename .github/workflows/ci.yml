@@ -252,7 +252,7 @@ jobs:
         shell: bash
         run: |
           missing=0
-          for f in target/nelisp target/nelisp.cold target/nelisp.build-stamp target/nelisp.version.json target/nelisp.native-startup.el target/nelisp.buffer-local-bytecode.tsv target/nelisp.variable-alias-bytecode.tsv target/nelisp-artifact-runtime.el target/nelisp-artifact-runtime.el.nelc target/nelisp-artifact-runtime.el.nelc.enable target/nelisp-artifact-runtime.el.nelc.manifest.el target/nelisp-core-bytecode-report.tsv target/nelisp-prelude-bytecode-report.tsv target/nelisp-regexp-bytecode-report.tsv target/nelisp-vendor-bytecode-report.tsv target/nelisp-boot-image/ ; do
+          for f in target/nelisp target/nelisp.cold target/nelisp.build-stamp target/nelisp.build-stamp.inputs target/nelisp.version.json target/nelisp.native-startup.el target/nelisp.buffer-local-bytecode.tsv target/nelisp.variable-alias-bytecode.tsv target/nelisp-artifact-runtime.el target/nelisp-artifact-runtime.el.nelc target/nelisp-artifact-runtime.el.nelc.enable target/nelisp-artifact-runtime.el.nelc.manifest.el target/nelisp-core-bytecode-report.tsv target/nelisp-prelude-bytecode-report.tsv target/nelisp-regexp-bytecode-report.tsv target/nelisp-vendor-bytecode-report.tsv target/nelisp-boot-image/ ; do
             if [ ! -e "$f" ]; then echo "missing: $f"; missing=1; fi
           done
           [ "$missing" = 0 ]
@@ -269,6 +269,7 @@ jobs:
             target/nelisp
             target/nelisp.cold
             target/nelisp.build-stamp
+            target/nelisp.build-stamp.inputs
             target/nelisp.version.json
             target/nelisp.native-startup.el
             target/nelisp.buffer-local-bytecode.tsv
@@ -414,6 +415,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
 
       - name: Set up Emacs (Windows)
         if: runner.os == 'Windows'
@@ -950,6 +956,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
 
       # Saved only from a push to main or a workflow_dispatch, so pull requests
       # never write the cache (caches are branch-scoped, so a dispatch run on a
@@ -1108,6 +1119,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
 
       - name: Set up Emacs (Windows)
         if: runner.os == 'Windows'
@@ -1193,6 +1209,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
 
       # Saved only from a push to main or a workflow_dispatch, so pull requests
       # never write the cache (caches are branch-scoped, so a dispatch run on a
@@ -1403,6 +1424,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
       - name: "gate-mutation, shard ${{ matrix.shard }} of 4"
         if: steps.policy.outputs.run == 'true'
         shell: bash
@@ -1432,10 +1458,12 @@ jobs:
             done
             # No base found: leave it unset so the sweep stays full.
           fi
-          # 5400 s = 90 min of rows: a row starts only if its worst case
-          # (build + row budgets) still fits; a row that does not fit prints
-          # NOT RUN and fails the shard, while later rows that fit still
-          # run.  Setup and the final report fit in the rest of
+          # 5400 s = 90 min of rows: a row starts only if its estimate still
+          # fits (a rebuild row is charged a measured 3300 s, every other row
+          # its build + row budgets); a row that does not fit prints NOT RUN
+          # and fails the shard, while later rows that fit still run.  A
+          # rebuild row that overruns its estimate is still killed by its hard
+          # limits by 6000 s, so setup and the final report fit in the rest of
           # the job's 120 minutes.
           NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
           NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
@@ -1447,6 +1475,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && steps.policy.outputs.run == 'true'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
 
       # No cache/save here: every injected build works on a private copy of
       # the unit cache, so the restored cache is unchanged and four shards
@@ -1563,6 +1596,10 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
       - name: "AI toolchain tier: ${{ matrix.tier }}"
         shell: bash
         run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }}
@@ -1573,6 +1610,11 @@ jobs:
         shell: bash
         continue-on-error: true
         run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always()
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
 
       # Saved only from a push to main or a workflow_dispatch, so pull requests
       # never write the cache (caches are branch-scoped, so a dispatch run on a

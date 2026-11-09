@@ -37,7 +37,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Keep in step with the env handling of tools/nelisp-standalone-reader-build.sh
 # (`env_included' and its denylist): that tool hashes every NELISP_* variable
-# except GATE_MUTATION_*, CHECK_SKIP, FORCE_REBUILD, JOBS and JOB_WRAPPER.  This
+# except GATE_MUTATION_*, GATE_DIR, CHECK_SKIP, FORCE_REBUILD, JOBS and
+# JOB_WRAPPER.  This
 # set is a different question -- which variables do NOT make a build a variant
 # -- so TARGET, READER_OUTPUT and UNIT_CACHE_DIR are benign here although the
 # stamp key does include them.
