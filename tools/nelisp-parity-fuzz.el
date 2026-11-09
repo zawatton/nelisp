@@ -194,6 +194,15 @@ the one call that caused them."
     read
     ;; interactive / display / buffer state
     message read-string read-from-minibuffer y-or-n-p
+    ;; wait for terminal input: in batch Emacs they block on stdin, so the
+    ;; driver never finishes (read-char was reached once the arity draw no
+    ;; longer stopped the run at startup)
+    read-char read-char-exclusive read-event read-key read-key-sequence
+    read-key-sequence-vector read-passwd read-number read-buffer
+    read-file-name read-directory-name read-command read-variable
+    read-answer read-multiple-choice read-char-choice
+    read-char-from-minibuffer read-shell-command read-regexp
+    completing-read completing-read-multiple yes-or-no-p
     insert erase-buffer current-buffer get-buffer-create set-buffer
     buffer-string buffer-substring point goto-char
     ;; control flow that a generated call cannot use meaningfully
@@ -249,6 +258,11 @@ printed is a gap somebody has to rediscover."
                      (not (memq sym nelisp-parity-fuzz--skip))
                      (not (macrop sym))
                      (not (special-form-p sym))
+                     ;; interactive commands read events or act on the
+                     ;; display; since the emacs-lib import the table lists
+                     ;; hundreds (isearch-forward-word, ...) and batch
+                     ;; Emacs blocks on the first one that reads input
+                     (not (commandp sym))
                      ;; a name that only exists as a variable here
                      (not (string-prefix-p "nelisp" (symbol-name sym))))
             (push sym names)))))
