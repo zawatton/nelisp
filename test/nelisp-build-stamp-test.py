@@ -525,6 +525,113 @@ class BuildStampTest(unittest.TestCase):
         self.assertTrue(self.stamp("target/nelisp.exe").exists())
 
 
+    # -- what changed, and whether the job rebuilt --------------------------
+    CHECKPOINT_SRC = REPO / "tools" / "ci-stamp-checkpoint.sh"
+
+    def stale_line(self, **kw):
+        res = self.run_tool(status=True, **kw)
+        self.assertEqual(res.returncode, 1, res.stdout + res.stderr)
+        self.assertTrue(res.stdout.startswith("stale: key changed"), res.stdout)
+        return res.stdout
+
+    def test_summary_names_added_env_without_its_value(self):
+        self.first_build()
+        out = self.stale_line(env={"NELISP_SECRET_PROBE": "hunter2-value"})
+        self.assertIn("env added: NELISP_SECRET_PROBE", out)
+        self.assertNotIn("hunter2-value", out)
+        build = self.run_tool(env={"NELISP_SECRET_PROBE": "hunter2-value"})
+        self.assertIn("standalone-reader: rebuilding (key changed (", build.stdout)
+        self.assertNotIn("hunter2-value", build.stdout + build.stderr)
+
+    def test_summary_names_changed_env_and_removed_env(self):
+        self.first_build(env={"NELISP_TCO": "0"})
+        out = self.stale_line(env={"NELISP_TCO": "1"})
+        self.assertIn("env changed: NELISP_TCO", out)
+        self.assertNotIn("=1", out)
+        out = self.stale_line()
+        self.assertIn("env removed: NELISP_TCO", out)
+
+    def test_summary_names_the_changed_source(self):
+        self.first_build()
+        (self.root / "lisp" / "a.el").write_text("(provide 'a-changed)\n")
+        out = self.stale_line()
+        self.assertIn("files: 1 changed [lisp/a.el]", out)
+        (self.root / "lisp" / "new.el").write_text("x\n")
+        out = self.stale_line()
+        self.assertIn("1 changed, 1 added", out)
+        self.assertIn("lisp/new.el", out)
+
+    def test_summary_bounds_the_path_list(self):
+        self.first_build()
+        for i in range(7):
+            (self.root / "lisp" / f"m{i}.el").write_text(f"{i}\n")
+        line = self.stale_line().splitlines()[0]
+        self.assertIn("files: 7 added [", line)
+        self.assertIn(", +2 more]", line)
+        self.assertEqual(line.count(".el"), 5, line)
+
+    def test_stamp_without_sidecar_says_so_and_stays_stale(self):
+        self.first_build()
+        self.assertTrue(Path(str(self.stamp()) + ".inputs").exists())
+        Path(str(self.stamp()) + ".inputs").unlink()
+        (self.root / "src" / "b.el").write_text("changed\n")
+        out = self.stale_line()
+        self.assertIn("no recorded inputs to compare", out)
+        self.assert_built(2, self.run_tool())
+
+    def test_sidecar_that_does_not_match_the_stamp_is_not_trusted(self):
+        self.first_build()
+        side = Path(str(self.stamp()) + ".inputs")
+        side.write_bytes(side.read_bytes() + b"tampered\n")
+        (self.root / "src" / "b.el").write_text("changed\n")
+        out = self.stale_line()
+        self.assertIn("recorded inputs do not match this stamp", out)
+        self.assertNotIn("files:", out)
+        self.assertNotIn("env ", out)
+
+    def test_gate_dir_is_not_part_of_the_key(self):
+        self.first_build()
+        self.assert_skipped(1, self.run_tool(env={"NELISP_GATE_DIR": "/somewhere/gates"}))
+        self.assert_skipped(1, self.run_tool(env={"NELISP_GATE_DIR": "/elsewhere/gates"}))
+        res = self.run_tool(status=True, env={"NELISP_GATE_DIR": "/elsewhere/gates"})
+        self.assertTrue(res.stdout.startswith("standalone-reader: up to date"), res.stdout)
+        out = self.stale_line(env={"NELISP_GATE_DIR": "/x", "NELISP_OTHER_SWITCH": "1"})
+        self.assertIn("env added: NELISP_OTHER_SWITCH", out)
+        self.assertNotIn("NELISP_GATE_DIR", out)
+
+    def checkpoint(self, what):
+        (self.root / "tools" / "ci-stamp-checkpoint.sh").write_text(self.CHECKPOINT_SRC.read_text())
+        res = subprocess.run(["bash", "tools/ci-stamp-checkpoint.sh", what], cwd=self.root,
+                             env=dict(self.base_env), capture_output=True, text=True, timeout=20)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        return res.stdout
+
+    def test_checkpoint_reports_no_rebuild(self):
+        self.first_build()
+        self.checkpoint("start")
+        self.assert_skipped(1, self.run_tool())
+        self.assertEqual(self.checkpoint("end"),
+                         "standalone-reader: rebuilt during this job: no\n")
+
+    def test_checkpoint_reports_a_rebuild_with_both_keys(self):
+        self.first_build()
+        old = [l for l in self.stamp().read_text().splitlines() if l.startswith("key=")][0][4:]
+        self.checkpoint("start")
+        (self.root / "lisp" / "a.el").write_text("(provide 'a-changed)\n")
+        self.assert_built(2, self.run_tool())
+        new = [l for l in self.stamp().read_text().splitlines() if l.startswith("key=")][0][4:]
+        line = self.checkpoint("end")
+        self.assertEqual(line.count("\n"), 1, line)
+        self.assertIn("rebuilt during this job: yes", line)
+        self.assertIn(f"stamp key {old[:12]} -> {new[:12]}", line)
+        self.assertIn("output sha256", line)
+
+    def test_checkpoint_without_start_record_is_unknown(self):
+        self.first_build()
+        self.assertEqual(self.checkpoint("end"),
+                         "standalone-reader: rebuilt during this job: unknown (no start record)\n")
+
+
 if __name__ == "__main__":
     result = unittest.main(verbosity=2, exit=False).result
     checked = result.testsRun - len(result.skipped)

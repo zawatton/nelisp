@@ -1,0 +1,67 @@
+# S7 rebuild-row times (seconds per row, as printed by gate-mutation: row N/M GATE file=F SECS)
+# Sources: CI run 42578356513 (F.shard0-3), CI run 42534410508 (B.shard0-3), local s2-4-shard0.log, s7-6-rows.log.
+# Only rows >= 60 s are logged (the [slow] threshold). 'rebuild' = row_rebuilds() of tools/nelisp-gate-mutation.sh at 9fb8587e7,
+# evaluated by extracting gate_needs_rebuild/file_is_build_input/gate_builds_variant/row_rebuilds and calling them per row.
+# s2-4 was recorded BEFORE dd9f25202 (restore-by-copy): its rebuild rows include a restore build, so it is excluded from the max.
+# source\tgate\tfile\tsecs\trebuild\tflag
+F.shard0	ert-full	scripts/nelisp-standalone-build.el	979	y	[slow]
+F.shard0	ert-full	scripts/nelisp-standalone-build.el	1016	y	[slow]
+F.shard0	standalone-reader-bounded-backtrace-smoke	scripts/nelisp-standalone-build.el	1002	n	[slow]
+F.shard0	standalone-reader-network-process-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	668	n	[slow]
+F.shard0	standalone-reader-network-process-server-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	85	n	[slow]
+F.shard0	project-build	tools/nelisp-project.py	301	n	[slow]
+B.shard0	ert-full	scripts/nelisp-standalone-build.el	1207	y	[slow]
+B.shard0	ert-full	scripts/nelisp-standalone-build.el	1196	y	[slow]
+F.shard1	ert-full	lisp/nelisp-cc-jit-type-of.el	61	n	[slow]
+F.shard1	ert-full	scripts/nelisp-standalone-build.el	1205	y	[slow]
+F.shard1	standalone-reader-buffer-smoke	scripts/nelisp-stdlib-prelude.el	109	y	[slow]
+F.shard1	standalone-reader-test	scripts/nelisp-standalone-build.el	2379	y	[slow]
+F.shard1	standalone-reader-hosts-file-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	807	n	[slow]
+B.shard1	ert-full	scripts/nelisp-standalone-build.el	1040	y	[slow]
+B.shard1	standalone-reader-buffer-smoke	scripts/nelisp-stdlib-prelude.el	87	y	[slow]
+B.shard1	standalone-reader-test	scripts/nelisp-standalone-build.el	2005	y	[slow]
+F.shard2	emacs-parity	scripts/nelisp-stdlib-prelude.el	111	y	[slow]
+F.shard2	ert-full	scripts/nelisp-standalone-build.el	1207	y	[slow]
+F.shard2	standalone-reader-buffer-smoke	scripts/nelisp-stdlib-prelude.el	110	y	[slow]
+F.shard2	standalone-reader-dns-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	108	n	[slow]
+F.shard2	standalone-reader-network-process-nowait-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	115	n	[slow]
+F.shard2	native-unit-repl-smoke	lisp/nelisp-native-load.el	515	n	[slow]
+F.shard2	project-profile-build	lisp/nelisp-project-profile.el	301	n	[slow]
+F.shard2	ffi-dsl	packages/nl-ffi/src/nl-ffi.el	1295	n	[slow]
+B.shard2	emacs-parity	scripts/nelisp-stdlib-prelude.el	114	y	[slow]
+B.shard2	ert-full	scripts/nelisp-standalone-build.el	1221	y	[slow]
+B.shard2	standalone-reader-buffer-smoke	scripts/nelisp-stdlib-prelude.el	110	y	[slow]
+F.shard3	generated-source-parse	scripts/nelisp-standalone-build.el	183	n	[slow]
+F.shard3	ert-full	lisp/nelisp-aot-compiler.el	76	n	[slow]
+F.shard3	ert-full	lisp/nelisp-cc-sexp-clone-into.el	74	n	[slow]
+F.shard3	gate-selfcheck	tools/nelisp-bootstrap-contract.el	1200	n	[TIMEOUT]
+F.shard3	project-debug	tools/nelisp_project_debug.py	300	n	[slow]
+F.shard3	ffi-dsl	packages/nl-ffi/src/nl-ffi.el	1794	n	[slow]
+F.shard3	standalone-eval-test	scripts/nelisp-standalone-build.el	152	n	[slow]
+B.shard3	generated-source-parse	scripts/nelisp-standalone-build.el	227	n	[slow]
+B.shard3	ert-full	lisp/nelisp-aot-compiler.el	77	n	[slow]
+B.shard3	ert-full	lisp/nelisp-cc-sexp-clone-into.el	76	n	[slow]
+B.shard3	gate-selfcheck	tools/nelisp-bootstrap-contract.el	1200	n	[TIMEOUT]
+s2-4(pre-dd9f25202)	ert-full	scripts/nelisp-standalone-build.el	2349	y	[slow]
+s2-4(pre-dd9f25202)	ert-full	scripts/nelisp-standalone-build.el	2361	y	[slow]
+s2-4(pre-dd9f25202)	nelisp-thread-mirror-guard-standalone-smoke	lisp/nelisp-cc-rootstack.el	162	y	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-bounded-backtrace-smoke	scripts/nelisp-standalone-build.el	1134	n	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-network-process-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	1107	n	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-network-process-server-smoke	packages/nelisp-process-adapter/src/nelisp-process-adapter.el	86	n	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-alloc-bytes-int-root-smoke	scripts/nelisp-standalone-build.el	2272	y	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-host-parity-smoke	scripts/nelisp-stdlib-prelude.el	171	y	[slow]
+s2-4(pre-dd9f25202)	project-build	tools/nelisp-project.py	300	n	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-bignum-smoke	scripts/nelisp-standalone-build.el	2342	y	[slow]
+s2-4(pre-dd9f25202)	standalone-reader-bignum-smoke	scripts/nelisp-standalone-build.el	2296	y	[slow]
+s7-6	standalone-reader-host-parity-smoke	scripts/nelisp-stdlib-prelude.el	152	y	[slow]
+s7-6	standalone-reader-host-parity-smoke	scripts/nelisp-stdlib-prelude.el	152	y	[slow]
+s7-6	standalone-chunk-growth-test	scripts/nelisp-standalone-build.el	697	n	[slow]
+s7-6	standalone-reader-host-parity-smoke	scripts/nelisp-stdlib-prelude.el	143	y	[slow]
+
+MAX rebuild-row total, post-dd9f25202 (CI + s7-6): 2379 s
+MAX rebuild-row total, incl. pre-dd9f25202 s2-4:    2361 s (excluded: contains a restore build)
+Largest same-row spread (same gate+file, >1 measurement, post-dd9f25202, TIMEOUT rows excluded):
+  ffi-dsl packages/nl-ffi/src/nl-ffi.el 1295 vs 1794 s = 38.5% (variant row, not a rebuild row, but the largest repeat spread)
+  next: standalone-reader-buffer-smoke 26.4%, ert-full standalone-build.el 24.7%, standalone-reader-test 18.7% (2005 vs 2379)
+Estimate: ceil-to-100(2379 * 1794/1295) = ceil-to-100(3295.7) = 3300 s  (margin 38.5% >= max spread, >= 25%)
+Excluded: gate-selfcheck 1200 s [TIMEOUT] (hit row_timeout, not a rebuild row).

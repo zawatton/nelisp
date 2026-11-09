@@ -78,8 +78,22 @@ slow_row=${NELISP_GATE_MUTATION_SLOW_ROW:-60}
 require_positive_int NELISP_GATE_MUTATION_ROW_TIMEOUT "$row_timeout"
 require_positive_int NELISP_GATE_MUTATION_BUILD_TIMEOUT "$build_timeout"
 require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
+# Shard-budget ESTIMATE for a rebuild row (a row that rebuilds the default
+# binary around its injection).  This is a measured figure, not a worst case:
+# the largest rebuild-row total seen on CI was 2379 s (standalone-reader-test,
+# run 42578356513) and the largest spread of one row measured twice was 38.5%
+# (ffi-dsl 1295 s vs 1794 s), so 2379 * 1794/1295 = 3296, rounded up to 3300.
+# Data: tools/ai/ci-speed-evidence/s7-rebuild-row-times.txt.  The hard limits
+# (build_timeout, row_timeout) still kill a row; row_worst_case never returns
+# more than build_timeout + row_timeout.  Overrun arithmetic: a row starts only
+# if SECONDS + 3300 <= 5400, and ends by SECONDS + 3900 at the latest with the
+# default timeouts, i.e. at most 5400 + 600 = 6000 s into the shard, inside the
+# 7200 s of the shard job's timeout-minutes 120 (ci.yml) with 1200 s left for
+# setup, the second-build/restore work this estimate ignores, and the report.
+rebuild_row_estimate=${NELISP_GATE_MUTATION_REBUILD_ESTIMATE:-3300}
+require_positive_int NELISP_GATE_MUTATION_REBUILD_ESTIMATE "$rebuild_row_estimate"
 # Optional budget for the whole shard (seconds since this harness started).
-# Unset means no budget.  Each row is judged on its own worst case against
+# Unset means no budget.  Each row is judged on its own estimate against
 # the time left: a row that does not fit is reported NOT RUN (and fails the
 # shard), while a later, cheaper row that does fit is still run.
 shard_budget=${NELISP_GATE_MUTATION_SHARD_BUDGET:-}
@@ -342,6 +356,7 @@ baseline_set='
 target/nelisp
 target/nelisp.cold
 target/nelisp.build-stamp
+target/nelisp.build-stamp.inputs
 target/nelisp.version.json
 target/nelisp.native-startup.el
 target/nelisp.buffer-local-bytecode.tsv
@@ -373,12 +388,14 @@ sha_of() {
   fi
 }
 
-# One hash over the whole set except the stamp (binary, .cold, companions,
-# reports): "the injection reached the build output" means any of it changed.
+# One hash over the whole set except the stamp and its inputs sidecar (binary,
+# .cold, companions, reports): "the injection reached the build output" means
+# any of it changed.  The sidecar is derived from the key, so counting it would
+# make that trivially true.
 set_sha() {
   local f
   for f in $baseline_set; do
-    case "$f" in target/nelisp.build-stamp) continue ;; esac
+    case "$f" in target/nelisp.build-stamp|target/nelisp.build-stamp.inputs) continue ;; esac
     printf '%s %s\n' "$f" "$(sha_of "${f%/}")"
   done | sha256sum | cut -d' ' -f1
 }
@@ -406,12 +423,14 @@ baseline_save() {
 
 # Copy the baseline set back with PLAIN cp, after the source was restored, so
 # every file is newer than every source (binary-size-ratchet refuses a binary
-# older than a source .el).  Derived files go last: the binary, then the stamp.
+# older than a source .el).  Derived files go last: the binary, then the stamp
+# inputs sidecar, then the stamp.
 baseline_restore() {
   local p
   for p in $(printf '%s\n' $baseline_set | sed 's:/$::' |
-             grep -v -e '^target/nelisp$' -e '^target/nelisp.build-stamp$') \
-           target/nelisp target/nelisp.build-stamp; do
+             grep -v -e '^target/nelisp$' -e '^target/nelisp.build-stamp$' \
+                     -e '^target/nelisp.build-stamp.inputs$') \
+           target/nelisp target/nelisp.build-stamp.inputs target/nelisp.build-stamp; do
     rm -rf "$p"
     if [ -e "$baseline_dir/$p" ]; then
       cp -R "$baseline_dir/$p" "$p" || return 1
@@ -492,8 +511,10 @@ unit_scratch_drop() {
   rmdir target/gate-mutation-units 2>/dev/null || true
 }
 
-# Worst-case seconds one row can use, for the shard budget.  This is a
-# PRE-CHECK, not a hard guarantee: it ignores the second build attempt, the
+# Seconds one row is expected to use, for the shard budget.  A non-variant
+# rebuild row is charged `rebuild_row_estimate' (measured, see above) capped at
+# its hard limit build_timeout + row_timeout; every other row is charged its
+# hard limit.  This is a PRE-CHECK, not a hard guarantee: it ignores the second build attempt, the
 # restore fallback rebuild and the clean-baseline check, which the 30 minutes
 # between the 90 minute budget and the job's timeout-minutes 120 absorb.
 # (Doubling BUILD would equal the whole budget, so no rebuild row would start.)
@@ -505,6 +526,8 @@ row_worst_case() {
   esac
   if row_rebuilds "$g" "$f"; then w=$build_timeout; fi
   if gate_builds_variant "$g"; then w=$((w + build_timeout)); else w=$((w + row_timeout)); fi
+  if row_rebuilds "$g" "$f" && ! gate_builds_variant "$g" &&
+     [ "$rebuild_row_estimate" -lt "$w" ]; then w=$rebuild_row_estimate; fi
   echo "$w"
 }
 
@@ -893,7 +916,7 @@ while IFS='|' read -r gate file expr what scope; do
     if [ $((SECONDS + row_worst)) -gt "$shard_budget" ]; then
       row_left=$((shard_budget - SECONDS))
       [ "$row_left" -lt 0 ] && row_left=0
-      echo "  $gate: NOT RUN (worst case ${row_worst}s does not fit the ${row_left}s left of the ${shard_budget}s shard budget; file $file)"
+      echo "  $gate: NOT RUN (estimate ${row_worst}s does not fit the ${row_left}s left of the ${shard_budget}s shard budget; file $file)"
       not_run=$((not_run+1))
       continue
     fi

@@ -150,6 +150,13 @@ resolve_output() {
 #                                 the parent's.  Evidence that JOBS=1 and JOBS=4
 #                                 give the same binary:
 #                                 tools/ai/ci-speed-evidence/s5-2-jobs-identity.txt
+#   NELISP_GATE_DIR               where tools/ai/nelisp-ai.sh writes gate result
+#                                 JSON; nothing the build reads.  tools/ai/
+#                                 nelisp-ai.sh exports it, so hashing it forced a
+#                                 rebuild inside every `nelisp-ai.sh' gate run.
+#                                 Evidence (no read in the build's input surface,
+#                                 and an identical binary under another value):
+#                                 tools/ai/ci-speed-evidence/s5-gate-dir-identity.txt
 # Non-NELISP variables the build reads that can change the binary or how it is
 # built.  Cache-location variables (HOME, XDG_CACHE_HOME, TMPDIR) are left out:
 # the caches under them are content addressed and hold no extra input.
@@ -162,7 +169,7 @@ EXTRA_ENV="EMACS TZ TZDIR F1_FORCE_GC WINEPREFIX EMACSLOADPATH EMACSDATA EMACSPA
 
 env_included() {
   case "$1" in
-    NELISP_GATE_MUTATION_*|NELISP_CHECK_SKIP|NELISP_STANDALONE_FORCE_REBUILD|NELISP_STANDALONE_JOBS|NELISP_STANDALONE_JOB_WRAPPER) return 1 ;;
+    NELISP_GATE_MUTATION_*|NELISP_GATE_DIR|NELISP_CHECK_SKIP|NELISP_STANDALONE_FORCE_REBUILD|NELISP_STANDALONE_JOBS|NELISP_STANDALONE_JOB_WRAPPER) return 1 ;;
     NELISP_*) return 0 ;;
   esac
   local e
@@ -244,14 +251,104 @@ print(sys.version.split()[0], "capstone=" + v("capstone"), "pyelftools=" + v("el
   return 0
 }
 
-# Sets KEY (hex) or returns non-zero with WHY set.
+# Sets KEY (hex) and MATERIAL (path of the exact bytes that were hashed), or
+# returns non-zero with WHY set.  MATERIAL is removed by the EXIT trap.
+MATERIAL=
+trap '[ -z "$MATERIAL" ] || rm -f "$MATERIAL"' EXIT
 compute_key() {
   local scratch
   scratch=$(mktemp "${TMPDIR:-/tmp}/nl-stamp-key.XXXXXX") || { WHY="mktemp failed"; return 1; }
   if ! write_key_material "$scratch"; then rm -f "$scratch"; return 1; fi
   KEY=$(h256 < "$scratch") && [ -n "$KEY" ] || { rm -f "$scratch"; WHY="cannot hash key material"; return 1; }
-  rm -f "$scratch"
+  [ -z "$MATERIAL" ] || rm -f "$MATERIAL"
+  MATERIAL=$scratch
   return 0
+}
+
+# ---- say what changed -------------------------------------------------------
+# Prints a bounded one-line summary of how the key material in $1 (recorded
+# with the stamp) differs from the material in $2 (now).  Environment variables
+# are reported by name only, never by value.  Paths: at most 5, then `+N more'.
+describe_material_diff() {
+  local old=$1 new=$2
+  { tr '\0' '\n' < "$old" | sed 's/^/O /'; tr '\0' '\n' < "$new" | sed 's/^/N /'; } |
+  awk '
+    function cat(line,   a) {
+      if (line ~ /^env [^=]+=/) { a = line; sub(/^env /, "", a); sub(/=.*/, "", a); return "env\t" a }
+      if (line ~ /^(stamp-format|target|output) /) { a = line; sub(/ .*/, "", a); return "head\t" a }
+      if (line ~ /^emacs-/) return "emacs\temacs"
+      if (line ~ /^python /) return "python\tpython"
+      if (line ~ /^git-(head|describe) /) { a = line; sub(/ .*/, "", a); return "git\t" a }
+      if (line ~ /^file /) { split(line, f, " "); return "file\t" f[2] }
+      if (line ~ /^[0-9a-f]+ [ *]/ && index(line, " ") == 65) { a = line; sub(/^[0-9a-f]+ [ *]/, "", a); return "file\t" a }
+      return ""
+    }
+    function val(line,   a) {
+      if (line ~ /^env /) { a = line; sub(/^env [^=]+=/, "", a); return a }
+      if (line ~ /^file /) { split(line, f, " "); return f[3] }
+      if (line ~ /^[0-9a-f]+ [ *]/ && index(line, " ") == 65) return substr(line, 1, 64)
+      a = line; sub(/^[^ ]+ /, "", a); return a
+    }
+    {
+      side = substr($0, 1, 1); line = substr($0, 3); c = cat(line)
+      if (c == "") next
+      # Several lines can share a category (emacs-*); concatenate their values.
+      if (side == "O") ov[c] = ov[c] val(line) "\034"; else nv[c] = nv[c] val(line) "\034"
+      seen[c] = 1
+    }
+    END {
+      for (c in seen) {
+        if (!(c in ov)) print c "\tadded\t\t" short(nv[c])
+        else if (!(c in nv)) print c "\tremoved\t" short(ov[c]) "\t"
+        else if (ov[c] != nv[c]) print c "\tchanged\t" short(ov[c]) "\t" short(nv[c])
+      }
+    }
+    function short(s) { gsub(/\034/, "", s); return substr(s, 1, 40) }
+  ' | LC_ALL=C sort | awk -F'\t' '
+    function addpath(p) { if (np < 5) plist = plist (np ? ", " : "") p; else more++; np++ }
+    function addname(n) { if (nn < 5) nlist = nlist (nn ? ", " : "") n; else nmore++; nn++ }
+    {
+      kind = $1; name = $2; how = $3; o = $4; n = $5
+      if (kind == "head") parts = parts "; " name ": " (how == "changed" ? o " -> " n : how)
+      else if (kind == "emacs") parts = parts "; emacs identity changed"
+      else if (kind == "python") parts = parts "; python identity changed"
+      else if (kind == "git") parts = parts "; " name ": " (how == "changed" ? o " -> " n : how)
+      else if (kind == "env") { envn[how] = envn[how] (envc[how]++ ? ", " : "") name; }
+      else if (kind == "file") { fc[how]++; addpath(name) }
+    }
+    END {
+      s = parts
+      for (h in envn) { split(envn[h], e, ", "); out = ""; for (i = 1; i <= envc[h] && i <= 5; i++) out = out (i > 1 ? ", " : "") e[i]; if (envc[h] > 5) out = out ", +" (envc[h] - 5) " more"; envs = envs "; env " h ": " out }
+      s = envs s
+      if (np) {
+        fs = ""
+        if (fc["changed"]) fs = fs (fs ? ", " : "") fc["changed"] " changed"
+        if (fc["added"]) fs = fs (fs ? ", " : "") fc["added"] " added"
+        if (fc["removed"]) fs = fs (fs ? ", " : "") fc["removed"] " removed"
+        s = s "; files: " fs " [" plist (more ? ", +" more " more" : "") "]"
+      }
+      sub(/^; /, "", s)
+      print s
+    }'
+}
+
+# Sets DETAIL to the parenthesized explanation appended to `key changed'.
+# Never fails: every path says what it could not do.
+explain_key_change() {
+  local inputs=$STAMP.inputs sum
+  DETAIL=
+  if [ ! -r "$inputs" ] || [ ! -f "$inputs" ]; then
+    DETAIL="no recorded inputs to compare"; return 0
+  fi
+  sum=$(h256 < "$inputs") || sum=
+  if [ -z "$sum" ] || [ "$sum" != "$s_key" ]; then
+    DETAIL="recorded inputs do not match this stamp"; return 0
+  fi
+  if [ -z "$MATERIAL" ] || [ ! -f "$MATERIAL" ]; then
+    DETAIL="current inputs are not available"; return 0
+  fi
+  DETAIL=$(describe_material_diff "$inputs" "$MATERIAL") || DETAIL=
+  [ -n "$DETAIL" ] || DETAIL="inputs differ but no difference could be listed"
 }
 
 # sha256 of an artifact manifest with its `:mtime VALUE' and `:ctime VALUE'
@@ -322,7 +419,9 @@ if [ -z "$REASON" ]; then
     done < "$STAMP"
     now_comp=$(COMPANIONS | tr '\n' ',') || now_comp=
     if [ "$s_key" != "$KEY" ]; then
-      REASON="key changed"
+      DETAIL=
+      explain_key_change
+      REASON="key changed ($DETAIL)"
     elif [ ! -f "$OUT" ]; then
       REASON="output missing"
     else
@@ -355,7 +454,7 @@ fi
 # ---- build ------------------------------------------------------------------
 # Delete the stamp first so a failed or killed build never leaves a skippable
 # state, then write it only after the command exits 0 and the output exists.
-[ -n "$STAMP" ] && rm -f "$STAMP"
+[ -n "$STAMP" ] && rm -f "$STAMP" "$STAMP.inputs"
 "${CMD[@]}"
 rc=$?
 [ "$rc" -eq 0 ] || exit "$rc"
@@ -383,10 +482,13 @@ comp=$(COMPANIONS | tr '\n' ',') && [ -n "$comp" ] || {
   echo "standalone-reader: cannot hash companion files; no stamp written" >&2
   exit 0
 }
-if printf 'key=%s\noutput_sha256=%s\ncompanions=%s\n' "$KEY" "$out_sha" "$comp" > "$tmp" && mv -f "$tmp" "$STAMP"; then
+# The inputs sidecar (the exact bytes the key hashed) goes first: a sidecar
+# without its stamp is harmless, and readers verify sha256(sidecar) == key.
+if cp "$MATERIAL" "$STAMP.inputs.tmp.$$" && mv -f "$STAMP.inputs.tmp.$$" "$STAMP.inputs" &&
+   printf 'key=%s\noutput_sha256=%s\ncompanions=%s\n' "$KEY" "$out_sha" "$comp" > "$tmp" && mv -f "$tmp" "$STAMP"; then
   echo "standalone-reader: stamp written (key ${KEY:0:12}, output sha256 ${out_sha:0:12})"
 else
-  rm -f "$tmp" "$STAMP"
+  rm -f "$tmp" "$STAMP" "$STAMP.inputs" "$STAMP.inputs.tmp.$$"
   echo "standalone-reader: cannot write stamp $STAMP" >&2
 fi
 exit 0
