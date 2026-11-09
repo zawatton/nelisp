@@ -128,6 +128,7 @@ wait
 T1=$(date +%s.%N)
 
 # --- aggregate --------------------------------------------------------------
+DETAIL_LINES=${FAIL_DETAIL_LINES:-40}
 total_ran=0 total_unexpected=0 total_expected_fail=0 total_skipped=0 failed_files=0 error_files=0
 while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
   total_ran=$(( total_ran + ran ))
@@ -139,8 +140,13 @@ while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
     if [ "$has_summ" = "0" ]; then
       error_files=$(( error_files + 1 ))
       echo "[parallel-test] ERROR $f (rc=$rc, no ert summary; see $log)"
+      # CI keeps no per-file logs: show the end of this one inline.
+      tail -n "$DETAIL_LINES" "$log" 2>/dev/null | sed 's/^/    | /'
     else
       echo "[parallel-test] FAIL  $f (rc=$rc, $unexp unexpected of $ran; see $log)"
+      # Each failing test's condition, bounded, so a CI log names the cause.
+      awk '/^Test .* condition:$/{p=1} /^   (FAILED|passed|skipped) /{p=0} p' "$log" 2>/dev/null \
+        | head -n "$DETAIL_LINES" | cut -c1-300 | sed 's/^/    | /'
     fi
   fi
 done < <(sort "$RESULTS")
