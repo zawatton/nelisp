@@ -128,7 +128,43 @@ log "building standalone reader for $PLATFORM"
 # environment prefix is not seen by make under MSYS on Windows, so the
 # prefix form silently built the host default (ELF) and the PE check
 # below then failed with "standalone binary missing: target/nelisp.exe".
-make standalone-reader EMACS="$EMACS_BIN" NELISP_STANDALONE_TARGET="$PLATFORM" \
+# On Linux and macOS the reader build runs through a wrapper that records
+# every repository file it reads: an installed `nelisp build' runs this same
+# build, so those files are staged below (vendored GNU sources such as
+# loaddefs.el and cl-extra.el included).
+build_reads="$BUILD_DIR/build-reads.log"
+build_emacs="$EMACS_BIN"
+case "$(uname -s)" in
+  Linux|Darwin)
+    cat > "$BUILD_DIR/record-reads.el" <<'RECORD_READS'
+;;; record-reads.el -*- lexical-binding: t -*-
+(let ((log (getenv "NELISP_TARBALL_READ_LOG")))
+  (when log
+    (let ((record (lambda (file)
+                    (when (stringp file)
+                      (write-region (concat (expand-file-name file) "\n") nil log t 'silent)))))
+      (dolist (fn '(insert-file-contents insert-file-contents-literally))
+        (advice-add fn :before (lambda (file &rest _) (funcall record file))))
+      (advice-add 'load :before
+                  (lambda (file &rest _)
+                    (when (stringp file)
+                      (funcall record (locate-file file load-path (get-load-suffixes)))))))))
+RECORD_READS
+    cat > "$BUILD_DIR/emacs-recording" <<EMACS_RECORDING
+#!/bin/sh
+if [ "\$1" = --batch ] && [ "\$2" = -Q ]; then
+  shift 2
+  exec "$EMACS_BIN" --batch -Q -l "$BUILD_DIR/record-reads.el" "\$@"
+fi
+exec "$EMACS_BIN" "\$@"
+EMACS_RECORDING
+    chmod +x "$BUILD_DIR/emacs-recording"
+    build_emacs="$BUILD_DIR/emacs-recording"
+    ;;
+esac
+: > "$build_reads"
+NELISP_TARBALL_READ_LOG="$build_reads" \
+make standalone-reader EMACS="$build_emacs" NELISP_STANDALONE_TARGET="$PLATFORM" \
   NELISP_STANDALONE_READER_OUTPUT="$STANDALONE_BIN"
 [[ -f "$STANDALONE_BIN" ]] || { err "standalone binary missing: $STANDALONE_BIN"; exit 1; }
 
@@ -227,11 +263,21 @@ grep -q '^vendor/' "$runtime_inputs.boot" \
   || { err "booting the REPL runtime recorded no vendored library"; exit 1; }
 sort -u -o "$runtime_inputs" "$runtime_inputs" "$runtime_inputs.boot"
 fi
+# Files the reader build read (see the wrapper above), minus target/.
+if [ -s "$build_reads" ]; then
+  sort -u "$build_reads" | while IFS= read -r read_file; do
+    case "$read_file" in
+      "$root_prefix"target/*) ;;
+      "$root_prefix"*) if [ -f "$read_file" ]; then printf '%s\n' "${read_file#"$root_prefix"}"; fi ;;
+    esac
+  done > "$runtime_inputs.build"
+  sort -u -o "$runtime_inputs" "$runtime_inputs" "$runtime_inputs.build"
+fi
 while IFS= read -r input; do
   mkdir -p "$STAGE_DIR/$(dirname "$input")"
   cp "$input" "$STAGE_DIR/$input"
 done < "$runtime_inputs"
-log "staged $(wc -l < "$runtime_inputs") REPL runtime inputs"
+log "staged $(wc -l < "$runtime_inputs") REPL runtime and reader build inputs"
 
 STAGED_RUNTIME_PATH="bin/$STAGED_BIN_NAME"
 if [ "$PROJECT_CLI" -eq 1 ]; then
