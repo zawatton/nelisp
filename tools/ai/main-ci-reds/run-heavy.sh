@@ -4,7 +4,7 @@
 # Records "<HEAD sha> <dirty> <exit code>" in target/main-ci-reds/NAME.result
 # so check-heavy.sh can tell a fresh pass on this commit from a stale one.
 # Usage: run-heavy.sh NAME   (NAME: ert-full smokes extras extras-s3 perf selfhost
-#                              eval-test precise-root-mutation)
+#                              emacs-parity eval-test precise-root-mutation)
 set -u
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root" || exit 2
@@ -15,6 +15,9 @@ case "$name" in
   # extras without standalone-eval-test, which moved to
   # tools/ai/eval-build-port-progress.org on 2026-11-09 (user decision).
   extras-s3) cmd='NELISP_AI_EXTRAS_EXCLUDE=standalone-eval-test bash tools/ai/nelisp-ai.sh extras' ;;
+  # emacs-parity compares target/nelisp with stock Emacs, so it needs the
+  # reader build; the extras tier relinks target/nelisp differently.
+  emacs-parity) cmd='make standalone-reader && bash tools/ai/nelisp-ai.sh gate emacs-parity -- make emacs-parity' ;;
   # Criteria of tools/ai/eval-build-port-progress.org.
   eval-test) cmd='make standalone-eval-test' ;;
   precise-root-mutation) cmd='NELISP_GATE_MUTATION_ONLY=precise-root-coverage bash tools/nelisp-gate-mutation.sh' ;;
