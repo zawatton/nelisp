@@ -51,6 +51,9 @@ fi
 # unbounded rather than fail every file.
 if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD=(timeout)
 elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD=(gtimeout)
+elif command -v perl >/dev/null 2>&1; then
+  # SIGALRM survives exec, so the test Emacs is killed at the deadline.
+  TIMEOUT_CMD=(perl -e 'alarm shift; exec @ARGV or die "exec: $!"')
 else TIMEOUT_CMD=(); fi
 
 # BSD date has no %N.
