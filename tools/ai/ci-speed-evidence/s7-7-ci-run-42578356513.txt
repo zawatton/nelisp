@@ -1,0 +1,194 @@
+# S7.7 evidence: CI run 42578356513 (workflow_dispatch, 3d6469608, gate_mutation=true),
+# shard budget NELISP_GATE_MUTATION_SHARD_BUDGET=5400 s, per-row NOT RUN check (f62c499ad).
+# Every shard: passed + failed + skipped + not_run = 30 assigned rows; 4 x 30 = 120 = selected_total.
+# Caveat: the harness checks a clean baseline only for nl-num-standalone-smoke, so `went red as it
+# should' on a gate already red on this commit (emacs-parity, main CI reds tracked by S3) proves nothing.
+
+## gate-mutation shard 0/4
+  parity-coverage: went red as it should (a covered name stops being mentioned)
+  ns-inventory: went red as it should (a pinned ns-collision-divergent pair's definition drifts to a new shape, subject and file list unchanged)
+  doc200-census: went red as it should (the sole direct Str-tag test in nl_jit_length vanishes from the live census)
+  ert-full: went red as it should (arrayp stops accepting a hand-built tag-14 string)
+  ert-full: went red as it should (CLI value output stops rendering tag-14 bytes with raw octal escapes)
+  nelisp-thread-mirror-guard-standalone-smoke: NOT RUN (worst case 3900s does not fit the 3326s left of the 5400s shard budget; file lisp/nelisp-cc-rootstack.el)
+  ert-full: went red as it should (an unmatched generic-function call silently returns nil instead of signaling cl-no-applicable-method)
+  standalone-reader-test: NOT RUN (worst case 3900s does not fit the 3325s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 3325s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  nl-num-standalone-smoke: went red (rc=2; clean baseline before/after PASS; source restored byte-for-byte; nl-num mixed addition hands a Bignum and Float to the native standalone fold, which reads the bignum sign word as its magnitude)
+  standalone-reader-bounded-backtrace-smoke: went red as it should (the bounded backtrace prints outermost-first instead of innermost-first (the capture write index is reversed))
+  standalone-reader-network-process-smoke: went red as it should (a freshly-connected client process reports status closed instead of open, breaking Doc 194 S1.3's measured "open the instant make-network-process returns" contract)
+  standalone-reader-nonblocking-socket-smoke: SKIP (row scope windows-x86_64 does not include target linux-x86_64)
+  standalone-reader-network-process-server-smoke: went red as it should (an auto-accepted child's filter is dropped instead of inherited from the :server t listener, so per-connection data never reaches the caller's filter)
+  version-consistency: went red as it should (windows installer default left behind at a stale release version)
+  standalone-reader-alloc-bytes-int-root-smoke: NOT RUN (worst case 3900s does not fit the 1565s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-regexp-lead-filter-smoke: NOT RUN (worst case 3900s does not fit the 1565s left of the 5400s shard budget; file lisp/nelisp-stdlib-regexp.el)
+  standalone-reader-host-parity-smoke: NOT RUN (worst case 3900s does not fit the 1565s left of the 5400s shard budget; file scripts/nelisp-stdlib-prelude.el)
+  builtin-arity: SED MATCHED NOTHING -- the injection is stale (car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior)
+  lsp-server: went red as it should (exact-name filtering is dropped from workspace candidate search, so every symbol in a namespace is returned as a candidate instead of only the ones actually named by the query)
+  project-manifest: went red as it should (the staged rollback copy of the manifest is never chmod'ed to match the live file; a failed lock publish then restores a manifest with the wrong permissions)
+  project-build: went red as it should (the build metadata always reports native_symbols as "all", so a release build's own record no longer reflects that it stripped symbols down to the entry point)
+  project-bench: went red as it should (the reported median is the fastest sample instead of the statistical median, so the benchmark summary misrepresents typical process latency)
+  project-arguments: went red as it should (the argv separator before forwarded application arguments is dropped, so a data argument that looks like a flag (for example --help) is parsed by the runtime instead of being handed to the project unchanged)
+  ffi-dsl: NOT RUN (worst case 2700s does not fit the 1258s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  parity-fuzz: went red as it should (the shared-name parser's regex stops matching the compat table, so the fuzzer silently draws from zero names instead of refusing to run)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1258s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1258s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  vendor-shadow-gate: went red as it should (a GUARDED defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must still fail the gate (guarded is not exempt))
+  nelisp-eval-closure-standalone-smoke: went red as it should (requiring nelisp-eval overwrites the native closure predicate again)
+gate-mutation: slowest rows
+    1016s  ert-full  file=scripts/nelisp-standalone-build.el
+    1002s  standalone-reader-bounded-backtrace-smoke  file=scripts/nelisp-standalone-build.el
+     979s  ert-full  file=scripts/nelisp-standalone-build.el
+     668s  standalone-reader-network-process-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+     301s  project-build  file=tools/nelisp-project.py
+      85s  standalone-reader-network-process-server-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+       6s  doc200-census  file=lisp/nelisp-cc-jit-length.el
+       5s  nl-num-standalone-smoke  file=packages/nl-num/src/nl-num-rational.el
+       4s  lsp-server  file=tools/nelisp_workspace.py
+       4s  parity-coverage  file=test/nelisp-shadow-differential-cases.el
+gate-mutation: total wall 4146s, warm-up 65s, not run 9
+gate-mutation: total wall 4146s, warm-up 65s, not run 9
+GATE-COUNT checked=20 findings=10 passed=19 failed=1 skipped=1 not_run=9 selected_total=120 assigned=30
+gate-mutation: FAIL (1 failed, 19 passed, 1 skipped, 9 not run)
+
+## gate-mutation shard 1/4
+  project-cli-contract: went red as it should (failed or incomplete test run is reported as success)
+  prelude-toplevel-check: SED MATCHED NOTHING -- the injection is stale (a check lands outside a one-line defun)
+  fallback-inventory: went red as it should (a pinned bare-handler site's exact shape drifts while its file and toplevel stay the same)
+  ert-full: went red as it should (nelisp-eval always returns nil, corrupting every should that reads its value)
+  ert-full: went red as it should (type-of stops mapping tag 14 to string)
+  ert-full: STAYED GREEN with a real defect in front of it (wf_key_eq_depth again rejects equal ASCII string keys when one is tag 5 and the other tag 14)
+  standalone-reader-buffer-smoke: went red as it should (insert drops every string argument (silent no-op for text; 2026-09-21: re-aimed at `insert''s rewritten body, which no longer has the old one-line `nelisp-insert' call -- the row went SED MATCHED NOTHING on CI run 35518797218) (Doc 188 §1.3's original bug shape); buffer-string never reflects it)
+  standalone-reader-test: went red as it should (wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum)
+  bench-aot-checked-arith: went red as it should (the --checked-arith guard call is disabled, making the opt-in flag emit the same native object as the default unchecked path)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1550s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  nelisp-thread-standalone-smoke: NOT RUN (worst case 3900s does not fit the 1550s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-midform-gc-bounded: NOT RUN (worst case 3900s does not fit the 1550s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-hosts-file-smoke: went red as it should (/etc/hosts lookup always answers nil, as if the file (or its fixture) were never consulted)
+  standalone-reader-tls-smoke: SKIP (row scope windows-x86_64 does not include target linux-x86_64)
+  standalone-reader-ipv6-socket-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-splitstring-perf-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file lisp/nelisp-stdlib-regexp.el)
+  standalone-reader-native-load-slot-pin-smoke: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file lisp/nelisp-native-load.el)
+  standalone-reader-regexp-lead-filter-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file lisp/nelisp-stdlib-regexp.el)
+  standalone-reader-print-large-sexp-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-stdlib-prelude.el)
+  special-variables: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  native-symbol-test: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  package-store: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file tools/nelisp_package_store.py)
+  project-cli-integration: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file tools/nelisp-project.py)
+  project-packages: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file tools/nelisp-project.py)
+  project-distribution: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file tools/build-standalone-tarball.sh)
+  ffi-loader: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file packages/nl-ffi/src/nl-ffi-loader.el)
+  emacs-compat: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file lisp/nelisp-cc-alloc-dealloc.el)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 743s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  build-stamp: NOT RUN (worst case 1200s does not fit the 743s left of the 5400s shard budget; file tools/nelisp-standalone-reader-build.sh)
+gate-mutation: slowest rows
+    2379s  standalone-reader-test  file=scripts/nelisp-standalone-build.el
+    1205s  ert-full  file=scripts/nelisp-standalone-build.el
+     807s  standalone-reader-hosts-file-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+     109s  standalone-reader-buffer-smoke  file=scripts/nelisp-stdlib-prelude.el
+      61s  ert-full  file=lisp/nelisp-cc-jit-type-of.el
+       4s  ert-full  file=src/nelisp-eval.el
+       2s  fallback-inventory  file=lisp/nelisp-artifact.el
+       1s  project-cli-contract  file=tools/nelisp-project.py
+       0s  bench-aot-checked-arith  file=lisp/nelisp-aot-compiler.el
+       0s  prelude-toplevel-check  file=scripts/nelisp-stdlib-prelude.el
+gate-mutation: total wall 4657s, warm-up 89s, not run 19
+gate-mutation: total wall 4657s, warm-up 89s, not run 19
+GATE-COUNT checked=10 findings=21 passed=8 failed=2 skipped=1 not_run=19 selected_total=120 assigned=30
+gate-mutation: FAIL (2 failed, 8 passed, 1 skipped, 19 not run)
+
+## gate-mutation shard 2/4
+  emacs-parity: went red as it should (regexp-quote appends a stray character)
+  prelude-toplevel-check: went red as it should (a check lands outside a one-line defun INSIDE an unless wrapper)
+  pkg-graph: went red as it should (a hard host require is swapped for a different unresolved one, count unchanged)
+  ert-full: went red as it should (test_files() output gets filtered to nothing regardless of what matched; "no test file matched" must still fail ert-full)
+  ert-full: went red as it should (the precise GC marker stops marking a reachable tag-14 byte buffer)
+  doc-claims: went red as it should (a compliant SHIPPED doc loses its #+VERIFIED-BY: line and is not in the baseline)
+  standalone-reader-buffer-smoke: went red as it should (erase-buffer becomes a silent no-op; buffer-string/point never reflect the clear)
+  standalone-reader-test: NOT RUN (worst case 3900s does not fit the 3879s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-form-location-smoke: NOT RUN (worst case 3900s does not fit the 3879s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  ert-full: went red as it should (nl-num doubling division omits an exact top multiple, leaving a remainder equal to the denominator instead of canonical Euclidean divmod)
+  nelisp-thread-percpu-roots-smoke: went red as it should (the reached post-mark/sweep diagnostic reports zero parked workers, so the mandatory last-parked=3 assertion fails)
+  precise-root-coverage: NOT RUN (worst case 3900s does not fit the 3876s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-dns-smoke: went red as it should (the DNS response parser's own bounds check never fires, so a truncated/malformed response silently reads a wrong value from the unguarded native string-byte primitive instead of signalling the catchable nelisp-dns-error)
+  standalone-reader-network-process-nowait-smoke: went red as it should (a successful nonblocking connect (real SO_ERROR 0) is misclassified as failed, firing "failed with code 0\n" instead of transitioning to open)
+  nl-clj-async-standalone-smoke: went red as it should (successful nl-clj-<! takes unwrap to a sentinel instead of their payload, so the repeated-take fixture and wrapper-based ping/pong cannot complete correctly)
+  standalone-reader-winpath-smoke: NOT RUN (worst case 3900s does not fit the 3652s left of the 5400s shard budget; file scripts/nelisp-stdlib-prelude.el)
+  standalone-reader-native-load-slot-pin-smoke: went red as it should (scratch vector boxes stop being pinned while the mmap'd slot holds them)
+  standalone-reader-ffi-smoke: SKIP (row scope windows-x86_64 does not include target linux-x86_64)
+  native-unit-repl-smoke: went red as it should (the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true)
+  symbol-identity: NOT RUN (worst case 3900s does not fit the 3131s left of the 5400s shard budget; file lisp/nelisp-cc-nlstr-direct-ops.el)
+  package-resolver: went red as it should (the inclusive lower bound of a caret or bare version requirement becomes exclusive, so a release exactly at that bound no longer satisfies its own requirement)
+  artifact-service: went red as it should (an offline cache miss is classified as "digest-mismatch" instead of "missing", so a caller can no longer tell a missing artifact from a corrupted one or match it to the "run nelisp fetch" guidance)
+  project-test-runner: went red as it should (duplicate --exact selections are no longer deduplicated, so selecting the same test twice inflates its reported total instead of running it once)
+  project-profile-build: went red as it should (the completed counter increments unconditionally on every call instead of only when the call actually returned, so a function that raised or the process exited mid-call still reports as completed)
+  ffi-dsl: went red as it should (nl-ffi--invoke stops turning an unresolved FFI symbol's raw nil into nl-ffi-unresolved-symbol, so a typo'd or unlinked C symbol name silently returns nil from the generated wrapper instead of signalling)
+  nelisp-toml-standalone-smoke: went red as it should (nelisp-toml's integer branch returns a constant 0 instead of the parsed value, so every TOML integer (schema_version, array elements, etc.) silently becomes 0)
+  binary-size-ratchet: NOT RUN (worst case 3900s does not fit the 1527s left of the 5400s shard budget; file Makefile)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1527s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-checked-soak: STAYED GREEN with a real defect in front of it (checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect)
+  build-stamp: went red as it should (the manifest companion is hashed with its whole content stripped, so a non-timestamp manifest change is missed)
+gate-mutation: slowest rows
+    1295s  ffi-dsl  file=packages/nl-ffi/src/nl-ffi.el
+    1207s  ert-full  file=scripts/nelisp-standalone-build.el
+     515s  native-unit-repl-smoke  file=lisp/nelisp-native-load.el
+     301s  project-profile-build  file=lisp/nelisp-project-profile.el
+     115s  standalone-reader-network-process-nowait-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+     111s  emacs-parity  file=scripts/nelisp-stdlib-prelude.el
+     110s  standalone-reader-buffer-smoke  file=scripts/nelisp-stdlib-prelude.el
+     108s  standalone-reader-dns-smoke  file=packages/nelisp-process-adapter/src/nelisp-process-adapter.el
+      15s  build-stamp  file=tools/nelisp-standalone-reader-build.sh
+       6s  standalone-reader-native-load-slot-pin-smoke  file=lisp/nelisp-native-load.el
+gate-mutation: total wall 3890s, warm-up 88s, not run 7
+gate-mutation: total wall 3890s, warm-up 88s, not run 7
+GATE-COUNT checked=22 findings=8 passed=21 failed=1 skipped=1 not_run=7 selected_total=120 assigned=30
+gate-mutation: FAIL (1 failed, 21 passed, 1 skipped, 7 not run)
+
+## gate-mutation shard 3/4
+  ns-gate: went red as it should (round diverges from its lisp/ mirror)
+  unsafe-inventory: went red as it should (a kernel file with no `pinned-kernel-call' line starts calling an unsafe primitive)
+  generated-source-parse: went red as it should (drops a closing paren inside a generated string literal, invisible to parens-check)
+  ert-full: went red as it should (the direct AOT stringp expansion stops accepting tag 14)
+  ert-full: went red as it should (the cloner stops refcounting the NlStr box of a hand-built tag-15 string)
+  gate-selfcheck: TIMEOUT (gate run with injection after 1200s; file tools/nelisp-bootstrap-contract.el)
+  ert-full: went red as it should (every struct instance matches every struct-type specializer regardless of ancestry, so struct-based dispatch order silently collapses (a dog instance would satisfy an unrelated struct's method too))
+  standalone-reader-test: NOT RUN (worst case 3900s does not fit the 3745s left of the 5400s shard budget; file lisp/nelisp-cc-reader-parser.el)
+  nl-actor-standalone-smoke: STAYED GREEN with a real defect in front of it (nelisp-actor becomes unloadable standalone again (file-missing: generator), the exact pre-Doc-193-§4 defect)
+  ert-full: went red as it should (nl-rational stops reducing numerator and denominator by their gcd, violating the canonical lowest-terms invariant)
+  standalone-reader-frame-stack-pop-desync-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-socket-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-nonblocking-socket-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-process-adapter-smoke: SKIP (row scope windows-x86_64 does not include target linux-x86_64)
+  version-consistency: went red as it should (installer default left behind at a stale release version)
+  standalone-reader-defvar-alloc-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-fileattrs-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-stdlib-prelude.el)
+  standalone-reader-host-parity-smoke: NOT RUN (worst case 3900s does not fit the 3742s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  lisp-byte-compile: went red as it should (a defun with an unused lexical binding in a lisp\/ file the baseline records as clean)
+  reference-parity: went red as it should (the reference-Emacs major-version guard never fires, so a differential recorded against the wrong Emacs major version is accepted as a valid parity pass)
+  project-doc: went red as it should (declaration documentation text is no longer HTML-escaped before being embedded in the generated API page, so a docstring containing markup renders as live HTML instead of literal text)
+  package-registry: went red as it should (registry search becomes case-sensitive, so a query that does not match a package name's exact case returns no results even when the package exists)
+  project-test-runner: went red as it should (--jobs no longer detects a shard that registered a test static discovery did not list, so a macro\/eval-defined test can be silently dropped from a sharded run instead of failing it)
+  project-debug: went red as it should (debug-info's symbol name filter is inverted, so looking up one declared symbol returns every other declared symbol instead of the one actually requested)
+  ffi-dsl: went red as it should (nl-ffi--ptr-call-invoke stops checking a dlsym-resolved address for zero before calling it through ptr-call, so a symbol no declared library exports is called at address 0 (a null function pointer, undefined behaviour) instead of signalling nl-ffi-unresolved-symbol)
+  standalone-eval-test: went red as it should (the driver writes operand A into int2 instead of B, so the embedded (OP A B) form silently evaluates as (OP A A) and the exit code no longer matches NELISP_FORM_A/_B)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1454s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  standalone-reader-bignum-smoke: NOT RUN (worst case 3900s does not fit the 1454s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+  vendor-shadow-gate: went red as it should (an unconditional defun for a name vendor/emacs-lisp/calendar/time-date.el also defines, unaccepted, must fail the gate)
+  standalone-chunk-growth-test: NOT RUN (worst case 2700s does not fit the 1451s left of the 5400s shard budget; file scripts/nelisp-standalone-build.el)
+gate-mutation: slowest rows
+    1794s  ffi-dsl  file=packages/nl-ffi/src/nl-ffi.el
+    1200s  gate-selfcheck  file=tools/nelisp-bootstrap-contract.el
+     300s  project-debug  file=tools/nelisp_project_debug.py
+     183s  generated-source-parse  file=scripts/nelisp-standalone-build.el
+     152s  standalone-eval-test  file=scripts/nelisp-standalone-build.el
+      76s  ert-full  file=lisp/nelisp-aot-compiler.el
+      74s  ert-full  file=lisp/nelisp-cc-sexp-clone-into.el
+      33s  lisp-byte-compile  file=lisp/nelisp-native-unit.el
+       7s  ns-gate  file=scripts/nelisp-stdlib-prelude.el
+       7s  project-test-runner  file=tools/nelisp-project.py
+gate-mutation: total wall 3949s, warm-up 110s, not run 10
+gate-mutation: total wall 3949s, warm-up 110s, not run 10
+GATE-COUNT checked=19 findings=12 passed=17 failed=2 skipped=1 not_run=10 selected_total=120 assigned=30
+gate-mutation: FAIL (2 failed, 17 passed, 1 skipped, 10 not run)
+
