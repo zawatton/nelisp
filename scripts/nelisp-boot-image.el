@@ -47,6 +47,15 @@ the entry points of the others are autoloaded by loaddefs.el and cl-loaddefs.el
 `nelisp-boot-image--providers' these register no autoload for each definition,
 so the natives that exist before the first load are not replaced by stubs.")
 
+;; Byte-code reports go where the standalone build puts its other outputs
+;; (`nelisp-standalone--target-file'): under the user's build cache when a
+;; project build runs from an installed, read-only toolchain.
+(defun nelisp-boot-image--report-file (relative)
+  "Return the path of report RELATIVE."
+  (if (fboundp 'nelisp-standalone--target-file)
+      (nelisp-standalone--target-file relative)
+    (expand-file-name (concat "target/" relative) nelisp-boot-image--root)))
+
 (defun nelisp-boot-image--pcase-source (source path &optional name)
   "Bake GNU SOURCE (pcase.el, or the file named NAME) like its `.elc'."
   (if (equal (getenv "NELISP_STANDALONE_PRELUDE_SOURCE_ONLY") "1") source
@@ -60,9 +69,8 @@ so the natives that exist before the first load are not replaced by stubs.")
                        (expand-file-name "vendor/emacs-lisp"
                                          nelisp-boot-image--root)))
            (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
-           (report (expand-file-name (format "target/nelisp-boot-image/%s-bytecode.tsv"
-                                             (or name 'pcase))
-                                     nelisp-boot-image--root)))
+           (report (nelisp-boot-image--report-file
+                    (format "nelisp-boot-image/%s-bytecode.tsv" (or name 'pcase)))))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
       (nelisp-boot-image--expand-load-time-macros (car result)))))
@@ -195,8 +203,8 @@ and booting the image loads no cl-seq.el."
                        (expand-file-name "vendor/emacs-lisp"
                                          nelisp-boot-image--root)))
            (result (nelisp-prelude-bytecode-vendor-transform source path dirs))
-           (report (expand-file-name "target/nelisp-boot-image/macroexp-bytecode.tsv"
-                                     nelisp-boot-image--root)))
+           (report (nelisp-boot-image--report-file
+                    "nelisp-boot-image/macroexp-bytecode.tsv")))
       (make-directory (file-name-directory report) t)
       (nelisp-prelude-bytecode-write-report report (nth 2 result))
       (car result))))

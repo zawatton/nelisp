@@ -525,7 +525,7 @@
   (nelisp-native-compiler-startup-evidence--loader-template-valid root)
   (let* ((template-path (expand-file-name "templates/nelisp-native-rooted-abi-proof.el.in" root))
          (generator-path (expand-file-name "lisp/nelisp-native-rooted-startup-evidence.el" root))
-         (temporary (make-temp-file (expand-file-name "target/compiler-proof-template-" root) nil ".el.in"))
+         (temporary (make-temp-file (expand-file-name "nelisp-compiler-proof-template-" temporary-file-directory) nil ".el.in"))
          (nelisp-native-compiler-startup-evidence--template temporary)
          (nelisp-native-compiler-startup-evidence--source-root root)
          (nelisp-native-compiler-startup-evidence--boot-sources

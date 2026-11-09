@@ -188,6 +188,18 @@
         (concat "GNU Emacs 31.1; inventory-sha256=" inventory-hash))))
   "Pinned GNU bytecode identity verified by this standalone build host, or nil.")
 
+;; Build outputs other than the reader executable (byte-code reports, the
+;; vendor byte-code cache, cold-compiler artifacts) go under REPO/target, or
+;; under `nelisp-standalone--target-root' when a project build of an
+;; installed, read-only toolchain points it at the user's build cache.
+(defvar nelisp-standalone--target-root nil
+  "Directory for build outputs; nil means target/ in the repository.")
+
+(defun nelisp-standalone--target-file (relative)
+  "Return RELATIVE under the build output directory."
+  (expand-file-name relative (or nelisp-standalone--target-root
+                                 (expand-file-name "target" nelisp-standalone--repo-root))))
+
 (defconst nelisp-standalone--cache-dir
   (let ((dir (getenv "NELISP_STANDALONE_UNIT_CACHE_DIR")))
     (if (and dir (not (string= dir "")))
@@ -49080,9 +49092,7 @@ equal, or the build stops."
                      (nelisp-standalone--prelude-cache-read file)))
          (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
     (if (and entry (not verify))
-        (let ((report-path (expand-file-name
-                            "target/nelisp-prelude-bytecode-report.tsv"
-                            nelisp-standalone--repo-root)))
+        (let ((report-path (nelisp-standalone--target-file "nelisp-prelude-bytecode-report.tsv")))
           (setq nelisp-standalone--prelude-bytecode-count
                 (+ nelisp-standalone--prelude-bytecode-count (nth 1 entry)))
           (setq nelisp-standalone--prelude-bytecode-report (nth 2 entry))
@@ -49437,9 +49447,7 @@ never on the build host.  Keep the original Lisp factory as the reference."
                             (+ nelisp-standalone--prelude-bytecode-count
                                generic-count file-attrs-count))
                       (let ((report-path
-                             (expand-file-name
-                              "target/nelisp-prelude-bytecode-report.tsv"
-                              nelisp-standalone--repo-root)))
+                             (nelisp-standalone--target-file "nelisp-prelude-bytecode-report.tsv")))
                         (make-directory (file-name-directory report-path) t)
                         (nelisp-prelude-bytecode-write-report
                          report-path nelisp-standalone--prelude-bytecode-report))
@@ -49726,8 +49734,7 @@ be equal, or the build stops.  A failed THUNK signals and caches nothing."
                      (nelisp-standalone--prelude-cache-read file)))
          (verify (equal (getenv "NELISP_STANDALONE_PRELUDE_CACHE_VERIFY") "1")))
     (if (and entry (not verify))
-        (let ((report-path (expand-file-name "target/nelisp-core-bytecode-report.tsv"
-                                             nelisp-standalone--repo-root)))
+        (let ((report-path (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")))
           (make-directory (file-name-directory report-path) t)
           (nelisp-prelude-bytecode-write-report report-path (nth 1 entry))
           (message "[standalone-reader] core byte-code: shared cache hit %s"
@@ -49844,9 +49851,7 @@ published on every invocation. Keep this generator self-contained for source-onl
 			  (push (list name (secure-hash 'sha256 source) (car split) (cdr split))
 				entries))
 			(setq reports (append reports (nth 2 transformed)))))
-		    (let ((report-path (expand-file-name
-					"target/nelisp-core-bytecode-report.tsv"
-					nelisp-standalone--repo-root)))
+		    (let ((report-path (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")))
 		      (make-directory (file-name-directory report-path) t)
 		      (nelisp-prelude-bytecode-write-report report-path reports))
 		    (setq generated-reports reports)
@@ -49880,8 +49885,7 @@ published on every invocation. Keep this generator self-contained for source-onl
 	       (if cached
 		   (progn
 		     (nelisp-prelude-bytecode-write-report
-		      (expand-file-name "target/nelisp-core-bytecode-report.tsv"
-					nelisp-standalone--repo-root)
+		      (nelisp-standalone--target-file "nelisp-core-bytecode-report.tsv")
                       (nth 2 cached))
                      (nth 1 cached))
 		 ;; Across builds the shared cache replays GENERATE's results:
@@ -49994,8 +49998,7 @@ source."
                                   nelisp-prelude-bytecode--opcodes)))))
     (if (equal (car nelisp-standalone--vendor-bytecode-cache) key)
         (cdr nelisp-standalone--vendor-bytecode-cache)
-      (let ((out-dir (expand-file-name "target/nelisp-vendor-bytecode/"
-                                       nelisp-standalone--repo-root))
+      (let ((out-dir (nelisp-standalone--target-file "nelisp-vendor-bytecode/"))
             (entries nil)
             (reports nil))
         (make-directory out-dir t)
@@ -50063,8 +50066,7 @@ source."
                     entries))
             (setq reports (append reports (nth 2 transformed)))))
         (nelisp-prelude-bytecode-write-report
-         (expand-file-name "target/nelisp-vendor-bytecode-report.tsv"
-                           nelisp-standalone--repo-root)
+         (nelisp-standalone--target-file "nelisp-vendor-bytecode-report.tsv")
          reports)
         (let ((result
                (concat
@@ -50645,9 +50647,7 @@ top-level form defines NAME that way."
       (require 'nelisp-prelude-bytecode)
       (let ((transformed (nelisp-prelude-bytecode-transform
                           source "lisp/nelisp-stdlib-regexp.el" nil t))
-            (report-path (expand-file-name
-                          "target/nelisp-regexp-bytecode-report.tsv"
-                          nelisp-standalone--repo-root)))
+            (report-path (nelisp-standalone--target-file "nelisp-regexp-bytecode-report.tsv")))
         (make-directory (file-name-directory report-path) t)
         (nelisp-prelude-bytecode-write-report report-path (nth 2 transformed))
         (car transformed)))))
@@ -50744,20 +50744,31 @@ publishes the same providers before dumping."
   (if (nelisp-standalone--runtime-reload-enabled-p)
       "(defun nelisp-native-startup-ensure () (error \"source-frozen native capabilities unavailable in runtime-reload build\"))\n"
     (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
+    ;; The evidence builders' work directories are scratch: nothing reads
+    ;; them after the source string is built.  They live under
+    ;; `temporary-file-directory' and are deleted here, because an installed
+    ;; toolchain's target/ is read-only and each one was ~32 MB left behind
+    ;; in the tree by every build.
     (let* ((nelisp-native-load--build-target (nelisp-standalone-arena-rewrite-target))
-           (source (concat (nelisp-native-rooted-startup-evidence-build
+           (scratch nil)
+           (work (lambda (prefix)
+                   (car (push (make-temp-file
+                               (expand-file-name prefix temporary-file-directory) t)
+                              scratch))))
+           (source
+            (unwind-protect
+                (concat (nelisp-native-rooted-startup-evidence-build
      units nelisp-standalone--this-file nelisp-standalone--repo-root
-     (make-temp-file (expand-file-name "target/standalone-rooted-protocol-"
-                                       nelisp-standalone--repo-root) t)
+     (funcall work "nelisp-standalone-rooted-protocol-")
      (equal (getenv "NELISP_STANDALONE_NATIVE_COMPILER_COLD") "1"))
             (nelisp-native-compiler-startup-evidence-build
              units nelisp-standalone--this-file nelisp-standalone--repo-root
-             (make-temp-file (expand-file-name "target/standalone-compiler-constructor-"
-                                               nelisp-standalone--repo-root) t))
+             (funcall work "nelisp-standalone-compiler-constructor-"))
             (nelisp-native-funcall-startup-evidence-build
              units nelisp-standalone--this-file nelisp-standalone--repo-root
-             (make-temp-file (expand-file-name "target/standalone-compiler-f1-"
-                                               nelisp-standalone--repo-root) t)))))
+             (funcall work "nelisp-standalone-compiler-f1-")))
+              (dolist (directory scratch)
+                (ignore-errors (delete-directory directory t))))))
       (nelisp-standalone--native-startup-autoload-src source)))))
 
 (defun nelisp-standalone--compat-metadata-src ()
@@ -68730,15 +68741,13 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
               (when native-compiler-cold
                 (load (expand-file-name "scripts/nelisp-native-template-bytecode.el"
                                         nelisp-standalone--repo-root) nil t t)
-                (expand-file-name "target/nelisp-template-bytecode.el"
-                                  nelisp-standalone--repo-root)))
+                (nelisp-standalone--target-file "nelisp-template-bytecode.el")))
              (optimizer-bytecode
               (when (and native-compiler-cold (not template-cold))
                 (unless (featurep 'nelisp-native-optimizer-bytecode)
                   (load (expand-file-name "scripts/nelisp-native-optimizer-bytecode.el"
                                           nelisp-standalone--repo-root) nil t t))
-                (expand-file-name "target/nelisp-optimizer-bytecode.el"
-                                  nelisp-standalone--repo-root)))
+                (nelisp-standalone--target-file "nelisp-optimizer-bytecode.el")))
              (runner (getenv "NELISP_STANDALONE_COLD_RUNNER"))
              (form
               (if native-compiler-cold
@@ -68755,18 +68764,15 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
                        ;; every reconstruction plan twice on the source path.
                        (format "(progn (unless (featurep 'nelisp-native-structural-bytecode) (load %S nil t t)) (add-to-list 'load-path %S) (require 'nelisp-bytecode-native-rooted-cfg-shared-emit))"
                                (nelisp-standalone--cold-target-path
-                                (expand-file-name "target/nelisp-structural-bytecode.el"
-                                                  nelisp-standalone--repo-root))
+                                (nelisp-standalone--target-file "nelisp-structural-bytecode.el"))
                                (nelisp-standalone--cold-target-path
-                                (expand-file-name "target/nelisp-compiler-bytecode"
-                                                  nelisp-standalone--repo-root)))
+                                (nelisp-standalone--target-file "nelisp-compiler-bytecode")))
                      "nil")
                    (nelisp-standalone--cold-target-path template-bytecode)
                    (if template-cold "nelisp-native-cache-prepare-cold-template"
                      (format "load %S nil t t"
                              (nelisp-standalone--cold-target-path
-                              (expand-file-name "target/nelisp-compiler-bytecode-load.el"
-                                                nelisp-standalone--repo-root))))
+                              (nelisp-standalone--target-file "nelisp-compiler-bytecode-load.el"))))
                    (if optimizer-bytecode (format "(load %S nil t t)" (nelisp-standalone--cold-target-path optimizer-bytecode)) "nil")
                    (nelisp-standalone--cold-target-path image))
                 ;; S3.1 (tools/ai/eval-core-progress.org): the prelude's
@@ -71881,6 +71887,9 @@ retains the checkout default. Application outputs still go to OUTPUT."
   (let* ((nelisp-standalone--cache-dir
           (if cache-directory (expand-file-name cache-directory)
             nelisp-standalone--cache-dir))
+         (nelisp-standalone--target-root
+          (if cache-directory (expand-file-name "target" cache-directory)
+            nelisp-standalone--target-root))
          (nelisp-standalone--recompiled nil)
          (source (nelisp-standalone--project-source file entry profile))
          (data (nelisp-standalone--project-data source debug-digest))
