@@ -154,7 +154,7 @@ call time, so it is safe for FN to mutate TABLE during the walk
 (defvar nelisp--obarray-marker (make-symbol "nelisp-obarray-marker"))
 
 (defun obarrayp (object)
-  "Return non-nil when OBJECT has the private NeLisp obarray shape."
+  "Return non-nil if OBJECT has the private NeLisp obarray shape."
   (and (recordp object)
        (= (nelisp--record-length object) 3)
        (eq (nelisp--record-type object) 'obarray)
