@@ -19,12 +19,12 @@
 * T1 check-tier gates (smoke steps 21-22, tools/ai/nelisp-ai.sh check)
 ** T1.1 compile: free variable emacs-foundation-features in packages/emacs-lib-facade/src/nelisp-emacs.el:41
 # The check tier's compile step is `nelisp-ai.sh compile', not `make
-# compile'.  Both compile the same globs, but nelisp-ai.sh adds test/,
-# bench/, scripts/ and packages/*/test to the load path and orders files with
-# ls rather than make's $(sort).  On c9cf432f2 `make compile' passes and
-# `nelisp-ai.sh compile' run alone fails with the error above, so this cmd
-# runs that step exactly as CI does.  Which of the two differences matters
-# is not yet isolated.
+# compile', so the cmd runs that step.  The red was seen only by a local
+# runner under LANG=en_DK.UTF-8: `nelisp-ai.sh compile' orders files with ls,
+# and that locale's collation orders the package files differently from
+# byte order (nelisp-emacs*.el among them).  Under LC_ALL=C or C.UTF-8 (GitHub runners; the
+# meter exports LC_ALL=C) it passes on c9cf432f2.  CI run 42619271705 never
+# reached the check tier, so no CI log shows this criterion red.
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 bash tools/ai/nelisp-ai.sh compile >/dev/null 2>&1)
 
