@@ -89,6 +89,7 @@ evidence: tools/ai/ci-speed-evidence/s5-2-jobs-identity.txt sha256=b42c5444b4ddc
 ** S5.3 ci.yml: every Linux job that builds restores the unit cache (standalone-units and nelisp-vendor-bytecode) keyed on the build inputs, saves it only on a main push or a workflow_dispatch, and sets NELISP_STANDALONE_JOBS=4 (the gates job sets none)
 #+NOTE: 2026-11-09 criterion changed (coordinator decision): workflow_dispatch also saves the unit cache; caches are branch-scoped so main is never fed by a branch; keys unchanged.
 #+NOTE: 2026-11-09 criterion changed (coordinator decision): the gates job keeps the unit cache but must NOT set NELISP_STANDALONE_JOBS. It builds no reader, and with JOBS=4 its host ERT tests that compile units started prewarm children (host ERT 632 s -> 1728 s, cause 9aee4c796; handoff ci-speed_future-work_2026-11-09.md section 3). The test checks that the variable is absent there.
+#+NOTE: 2026-11-09 run 42610328131 (f669e4de8): gates host ERT step 452 s (base 632 s, F 1729 s) on a faster runner (the other tests took 0.72x of their base time); record in tools/ai/ci-speed-evidence/gates-ffi-smoke-times.txt (not a criterion).
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-ci-unit-cache-test.py)
 
 ** S5.4 E2E local: a fresh tree seeded only with another tree's unit cache builds a binary with the same sha256 as that tree's, in a recorded time far below a cold build
