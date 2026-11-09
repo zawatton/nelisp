@@ -18,11 +18,15 @@
 
 * T1 check-tier gates (smoke steps 21-22, tools/ai/nelisp-ai.sh check)
 ** T1.1 compile: free variable emacs-foundation-features in packages/emacs-lib-facade/src/nelisp-emacs.el:41
-# Order-dependent: `make compile' alone passes (meter, 2026-11-10); it
-# failed inside nelisp-ai.sh check after the earlier steps.  This cmd does
-# not reproduce the CI sequence.
+# The check tier's compile step is `nelisp-ai.sh compile', not `make
+# compile'.  Both compile the same globs, but nelisp-ai.sh adds test/,
+# bench/, scripts/ and packages/*/test to the load path and orders files with
+# ls rather than make's $(sort).  On c9cf432f2 `make compile' passes and
+# `nelisp-ai.sh compile' run alone fails with the error above, so this cmd
+# runs that step exactly as CI does.  Which of the two differences matters
+# is not yet isolated.
 #+TIMEOUT: 600
-cmd: (ulimit -v 8388608; timeout 590 make compile >/dev/null 2>&1)
+cmd: (ulimit -v 8388608; timeout 590 bash tools/ai/nelisp-ai.sh compile >/dev/null 2>&1)
 
 ** T1.2 doc200-census: read errors and MISSING-FROM-LEDGER rows (bf_error_w)
 #+TIMEOUT: 600

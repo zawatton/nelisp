@@ -270,7 +270,10 @@ pinned sqrt
 pinned string
 pinned string-as-multibyte
 pinned string-blank-p
-pinned string-chop-newline
+# string-chop-newline unpinned: 3edc5b180 replaced the prelude definition
+# with the genuine GNU subr-x.el source (nelisp-standalone-build.el), so it
+# is no longer a NeLisp shadow and left the compat table's shared set
+# (895ef21c8).  The differential cases still exercise it.
 pinned string-empty-p
 pinned string-equal
 pinned string-equal-ignore-case
