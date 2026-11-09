@@ -277,7 +277,7 @@ trampoline — the installed `nelisp-tramp-eval' is present in
   (let ((fn (gethash 'nelisp-tramp-eval nelisp--functions
                      nelisp--unbound)))
     (should-not (eq fn nelisp--unbound))
-    (should (nelisp--closure-p fn))))
+    (should (nelisp--eval-closure-p fn))))
 
 (ert-deftest nelisp-tramp-cycle2-fixpoint-fib ()
   "cycle-1 result == cycle-2 result for `(fib N)'.  Cycle-1 runs the

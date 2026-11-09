@@ -431,7 +431,7 @@ editor-style file APIs.  UTF-8 decoding is handled by
 (defun nelisp-load--run-after-load-form (form)
   "Evaluate FORM as the callback accepted by GNU `eval-after-load'."
   (cond
-   ((or (nelisp--closure-p form)
+   ((or (nelisp--eval-closure-p form)
         (nelisp--native-function-p form)
         (and (symbolp form)
              (or (gethash form nelisp--functions)

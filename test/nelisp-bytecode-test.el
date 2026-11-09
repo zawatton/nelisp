@@ -1381,7 +1381,7 @@ a label.  Returns the resolved int vector."
     (nelisp--reset)
     (nelisp-eval '(defun nelisp-bc-test--ac2 (x) (* x 3)))
     (let ((fn (gethash 'nelisp-bc-test--ac2 nelisp--functions)))
-      (should (nelisp--closure-p fn))
+      (should (nelisp--eval-closure-p fn))
       (should (= (nelisp-eval '(nelisp-bc-test--ac2 7)) 21)))))
 
 (ert-deftest nelisp-bc-3b5c-recursive-defun-via-bcl ()
@@ -1403,7 +1403,7 @@ a label.  Returns the resolved int vector."
     (nelisp--reset)
     (nelisp-eval '(defun nelisp-bc-test--mix (x) (or x (progn ((1 2) 3) t))))
     (let ((fn (gethash 'nelisp-bc-test--mix nelisp--functions)))
-      (should (nelisp--closure-p fn))
+      (should (nelisp--eval-closure-p fn))
       (should (eq (nelisp-eval '(nelisp-bc-test--mix t)) t)))))
 
 (ert-deftest nelisp-bc-3b5c-setq-on-captured-lex-compiles-and-mutates ()

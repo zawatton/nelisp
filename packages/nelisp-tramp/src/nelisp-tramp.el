@@ -539,11 +539,11 @@ NeLisp closures do not consume host C stack frames per call."
                                   ((and (consp head) (eq (car head) 'lambda))
                                    (nelisp--make-closure e (cadr head)
                                                          (cddr head)))
-                                  ((nelisp--closure-p head) head)
+                                  ((nelisp--eval-closure-p head) head)
                                   (t (signal 'nelisp-eval-error
                                              (list "not callable" head))))))
                          (cond
-                          ((nelisp--closure-p fn)
+                          ((nelisp--eval-closure-p fn)
                            (let* ((params (nelisp--closure-params fn))
                                   (body (nelisp--closure-body fn))
                                   (cenv (nelisp--closure-env fn))
@@ -573,7 +573,7 @@ NeLisp closures do not consume host C stack frames per call."
                (let ((target (nth 1 step))
                      (args (nth 2 step)))
                  (cond
-                  ((nelisp--closure-p target)
+                  ((nelisp--eval-closure-p target)
                    (let* ((params (nelisp--closure-params target))
                           (body (nelisp--closure-body target))
                           (cenv (nelisp--closure-env target))

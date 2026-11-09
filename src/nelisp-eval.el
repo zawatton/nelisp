@@ -274,7 +274,11 @@ transferred to TARGET.  Function cells and plists are not changed."
 
 ;;; Closure representation --------------------------------------------
 
-(defsubst nelisp--closure-p (x)
+;; Not `nelisp--closure-p': the standalone runtime provides that name as a
+;; builtin for its own closure objects, and this file is loaded into the
+;; artifact-command REPL runtime, where redefining it made `type-of' and
+;; `closurep' see every closure as a cons.
+(defsubst nelisp--eval-closure-p (x)
   (and (consp x) (eq (car x) 'nelisp-closure)))
 
 (defsubst nelisp--native-function-p (x)
@@ -713,7 +717,7 @@ the first match wins.  Unmatched errors propagate to the caller."
              ((symbolp head) (nelisp--function-of head))
              ((and (consp head) (eq (car head) 'lambda))
               (nelisp--make-closure env (cadr head) (cddr head)))
-             ((nelisp--closure-p head) head)
+             ((nelisp--eval-closure-p head) head)
              (t (signal 'nelisp-eval-error
                         (list "not callable" head))))))
     (nelisp--apply fn
@@ -768,7 +772,7 @@ dispatches straight into the VM."
         (nelisp-bc-run fn args)
       (signal 'nelisp-eval-error
               (list "bcl received without bytecode VM loaded" fn))))
-   ((nelisp--closure-p fn)
+   ((nelisp--eval-closure-p fn)
     (nelisp--apply-closure fn args))
    ((symbolp fn)
     (let ((nfn (gethash fn nelisp--functions nelisp--unbound)))
