@@ -5,7 +5,7 @@
 # so check-heavy.sh can tell a fresh pass on this commit from a stale one.
 # Usage: run-heavy.sh NAME   (NAME: ert-full smokes extras extras-s3 perf selfhost
 #                              emacs-parity eval-test precise-root-mutation
-#                              cross-platform mut-GATE)
+#                              cross-platform mut-GATE gate-GATE)
 set -u
 root=$(git rev-parse --show-toplevel) || exit 2
 cd "$root" || exit 2
@@ -28,6 +28,9 @@ case "$name" in
   # Criteria of tools/ai/gate-mutation-rows-progress.org: the rows of one
   # gate in tools/gate-mutations.txt, each of which must turn the gate red.
   mut-*) cmd="NELISP_GATE_MUTATION_ONLY=${name#mut-} bash tools/nelisp-gate-mutation.sh" ;;
+  # Criteria of tools/ai/smoke-tail-progress.org whose gate runs longer
+  # than the meter's 600 s ceiling: `gate-GATE' runs `make GATE'.
+  gate-*) cmd="make ${name#gate-}" ;;
   *) echo "unknown criterion: $name" >&2; exit 2 ;;
 esac
 # HEAVY_RUN names a machine-wide job limiter (Notes bin/heavy-run.sh); unset
