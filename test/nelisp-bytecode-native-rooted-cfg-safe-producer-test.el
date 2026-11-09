@@ -380,6 +380,4 @@
       (when (file-exists-p artifact)
         (delete-file artifact)))))
 
-(ert-run-tests-batch-and-exit)
-
 ;;; nelisp-bytecode-native-rooted-cfg-safe-producer-test.el ends here

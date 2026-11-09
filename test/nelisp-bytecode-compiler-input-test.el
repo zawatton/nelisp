@@ -26,7 +26,9 @@
     (unless (looking-at ";ELC")
       (error "Not an ELC file: %s" path))
     (forward-line 1)
-    (let (forms)
+    ;; `#$' in an .elc reads as `load-file-name'; bind it so the forms do
+    ;; not depend on what the test runner has loaded.
+    (let (forms (load-file-name nil))
       (condition-case nil
           (while t (push (read (current-buffer)) forms))
         (end-of-file (nreverse forms))))))

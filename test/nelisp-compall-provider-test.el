@@ -39,4 +39,3 @@
           (with-temp-file path (insert ";;; BEGIN GENERATED missing-end\n"))
           (should-error (compall-gen--embedded-bytecode-providers)))
       (delete-directory root t))))
-(ert-run-tests-batch-and-exit)

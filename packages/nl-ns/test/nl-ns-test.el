@@ -20,17 +20,22 @@
 
 ;;; Helpers ------------------------------------------------------------
 
-(defun nl-ns-test--package-root ()
-  "Return the package root directory.
-`load-file-name' is bound while this file loads and nil by the time a
-test body runs, so it cannot be the only source -- that is what made
-every path built from it come back nil.  Both runners start at the
-repository root, so that is the fallback."
+(defconst nl-ns-test--load-root
   (let ((here (or (and (boundp 'load-file-name) load-file-name)
                   (and (boundp 'buffer-file-name) buffer-file-name))))
-    (if here
-        (expand-file-name ".." (file-name-directory here))
-      (expand-file-name "packages/nl-ns"))))
+    (and here (expand-file-name ".." (file-name-directory here))))
+  "The package root, captured while this file loads.")
+
+(defun nl-ns-test--package-root ()
+  "Return the package root directory.
+It is taken from this file's own location when it loaded.  A test body
+cannot read `load-file-name' itself: it is nil then, or, when one Emacs
+loads every test file before running them, whatever value another file
+left behind -- which made the baseline path point at the repository
+root.  Both runners start at the repository root, so that is the
+fallback."
+  (or nl-ns-test--load-root
+      (expand-file-name "packages/nl-ns")))
 
 (defun nl-ns-test--baseline-usable-p ()
   "Return non-nil when the checked-in host baseline can be read here.

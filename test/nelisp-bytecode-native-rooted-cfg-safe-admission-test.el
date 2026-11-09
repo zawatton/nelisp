@@ -77,6 +77,4 @@
                            :status)
                 'unsupported))))
 
-(ert-run-tests-batch-and-exit)
-
 ;;; nelisp-bytecode-native-rooted-cfg-safe-admission-test.el ends here
