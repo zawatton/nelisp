@@ -769,6 +769,9 @@ build_run boxed '(seq
         box)))
   (defun nl_record_set_slot (rec idx valptr)
     (nl_val_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 8))))
+  ;; record-type-tag copies the inline type view through this accessor.
+  (defun nl_record_type_copy (record out)
+    (seq (nl_sexp_clone_into record out) out))
   (defun nl_record_slot_ptr (sexpptr idx)
     (nl_val_load
      (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 40) (* idx 8)) 0)

@@ -166,6 +166,13 @@ v13 by the strguard census, none of them is a hot nl_string_read64 caller.")
 (defvar nelisp-heap-accessors--string-guarded nil
   "Non-nil inside a function listed in `nelisp-heap-accessors-guarded-functions'.")
 
+(defvar nelisp-heap-accessors-gnu-string-words t
+  "Non-nil lowers string accessors to the Doc 227 GNU string WORD helpers.
+Those helpers (`nl_val_tag', `nl_word_data', `nl_string_read64', ...) exist
+only inside the standalone reader image.  A freestanding AOT program, such as
+the macOS Mach-O smokes, has no such functions and binds this to nil so the
+accessors keep their legacy Sexp-field lowering.")
+
 (defvar nelisp-heap-accessors--string-physical nil
   "Non-nil inside a storage API whose caller has already decoded WORDs.")
 
@@ -300,16 +307,16 @@ Every operand is retained exactly once; dotted data is preserved."
           (let ((nelisp-heap-accessors--string-guarded t))
             (append (list 'defun (cadr source) (caddr source))
                     (nelisp-heap-accessors--lower-tail (cdddr source)))))
-         ((and (eq (car source) 'sexp-tag) (= (length source) 2))
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'sexp-tag) (= (length source) 2))
           ;; Wrong-arity forms stay for the parser's :sexp-tag-arity error.
           (nelisp-heap-accessors--lower-string-tag (cadr source)))
-         ((memq (car source) '(nl_val_tag nl_word_tag64))
+         ((and nelisp-heap-accessors-gnu-string-words (memq (car source) '(nl_val_tag nl_word_tag64)))
           (nelisp-heap-accessors--lower-string-tag (cadr source)))
-         ((eq (car source) 'sexp-name-eq)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'sexp-name-eq))
           (nelisp-heap-accessors--lower-string-name-eq (cadr source) (caddr source)))
-         ((eq (car source) 'str-eq)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'str-eq))
           (nelisp-heap-accessors--lower-string-eq (cadr source) (caddr source)))
-         ((eq (car source) 'str-len)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'str-len))
           ;; This grammar op's contract is String/Symbol, while the
           ;; generic Sexp length accessor also handles vectorlike flags.
           (let ((p (make-symbol "string-length-value")))
@@ -319,23 +326,24 @@ Every operand is retained exactly once; dotted data is preserved."
                    (let* ((n (ptr-read-u64 (- ,p 4) 8)))
                      (if (< n 0) (logand (ptr-read-u64 (- ,p 4) 0) 9223372036854775807) n))
                  (ptr-read-u64 ,p 24)))))
-         ((eq (car source) 'str-bytes)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'str-bytes))
           (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
          ;; Pointer hoisting: derive a string's data pointer once per scan
          ;; (`str-data-ptr') and read bytes from it (`ptr-byte-at').  The
          ;; pointer is valid until the next collection that compacts small
          ;; strings; callers re-derive it after any allocation point.
-         ((eq (car source) 'str-data-ptr)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'str-data-ptr))
           (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source))))
          ((eq (car source) 'ptr-byte-at)
           (list 'ptr-read-u8
                 (nelisp-heap-accessors-lower (cadr source))
                 (nelisp-heap-accessors-lower (caddr source))))
-         ((eq (car source) 'str-byte-at)
+         ((and nelisp-heap-accessors-gnu-string-words (eq (car source) 'str-byte-at))
           (list 'ptr-read-u8
                 (list 'nl_word_data (nelisp-heap-accessors-lower (cadr source)))
                 (nelisp-heap-accessors-lower (caddr source))))
-         ((and (not nelisp-heap-accessors--string-physical)
+         ((and nelisp-heap-accessors-gnu-string-words
+               (not nelisp-heap-accessors--string-physical)
                (memq (car source) '(heap-read-u64 heap-read-u8))
                (if (eq (car source) 'heap-read-u8) (eql (nth 2 source) 0)
                  (memq (nth 2 source) '(0 8 16 24)))
