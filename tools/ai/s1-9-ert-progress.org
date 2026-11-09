@@ -1,0 +1,90 @@
+#+TITLE: S1.9 host ERT: the segfault, a complete CI run, and the failing tests
+
+# Lane fix/s1-9-ert-20261110 (main afec22e7d + fix/ci-speed-20261107
+# c8c1ea8b4).  main-ci-reds S1.9 said the full host ERT run never completes:
+# host Emacs died with SIGSEGV (exit 139) after 3837-3841 of ~9719 tests,
+# on CI and locally.  e3470413f (on main) runs each test file in its own
+# Emacs, which hides the crash: it needs state left by earlier tests.
+# Scope: Linux (the ert ubuntu jobs and the gates job).  macOS and Windows
+# ERT jobs are red as well and are not measured here.
+#
+# Heavy criteria are recorded outside the meter (run time > 600 s):
+#   HEAVY_RUN=<Notes>/bin/heavy-run.sh bash tools/ai/main-ci-reds/run-heavy.sh NAME
+# and checked against HEAD by tools/ai/main-ci-reds/check-heavy.sh NAME.
+# Fixing the tests listed in S3 is outside this lane; they stay red here.
+
+* S1 Host Emacs no longer segfaults when the whole suite runs in one Emacs
+
+** S1.1 The crashing test and the earlier test whose state it trips on are named, with the mechanism
+#+NOTE: crashing test nelisp-eln-registration-accepts-writable-bss-object-by-memsz; trigger nelisp-bytecode-native-package-sealed-preflight-refuses-mutation mutates a bytecode string GNU Emacs 31.1 shares between functions.
+evidence: tools/ai/s1-9-ert/evidence/segfault-cause.txt sha256=b3e746583012d41682a77e14cc03b93c379318cd17b74a4ef3b3ef1a8b452af9
+
+** S1.2 Mutating tests use a private copy of the function; the regression test and the whole file pass
+#+NOTE: negative control: with the helper reduced to plain byte-compile, private-function-owns-its-code FAILs.
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-bytecode-native-package-test.el
+
+** S1.3 The whole suite in one host Emacs runs to its ERT summary (no exit 139)
+#+NOTE: before the fix: exit 139 after 3839 of 9753 tests, last passed nelisp-eln-raw-call/split-u32-round-trip-boundaries (local, 2026-11-10).
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-single
+
+* S2 Every Linux ERT test runs to the end
+
+** S2.1 CI on main (run 42632323148) ran all 10288 tests with error-files=0 in the three ert ubuntu jobs and gates
+evidence: tools/ai/s1-9-ert/evidence/ci-run-42632323148.txt sha256=cc032da4434496b213b15f8ad0fce3444e99275a672fd59f58789296ace422ce
+
+** S2.2 Locally at HEAD the per-file suite runs every file to its end (error-files=0)
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-complete
+
+** S2.3 A CI run of this branch's head shows error-files=0 in the three ert ubuntu jobs and gates
+#+NOTE: needs a push (done by the coordinator session).
+pending
+
+* S3 Failing Linux ERT tests, one criterion per file (fixing them is out of scope)
+
+** S3.1 nelisp-cl-labels-lexical-test passes (red: survives-shallow-macroexpand-all, standalone void-function fail-key)
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-cl-labels-lexical-test.el
+
+** S3.2 nelisp-intern-obarray-test passes (red: format-simple-accepts-and-declines, "nil" vs "\310")
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-intern-obarray-test.el
+
+** S3.3 nelisp-map-char-table-test passes (red: parity-and-effective-ranges, standalone segfault)
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-map-char-table-test.el
+
+** S3.4 nelisp-stdlib-test passes (red: segf-encode-decode-roundtrip, segf-format-time-string-unsupported-directive)
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-stdlib-test.el
+
+** S3.5 nelisp-vendor-bytecode-triparity-test passes (red: byte-compile-lambda-minimal-input, gnu31-zerop-native-regression)
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-vendor-bytecode-triparity-test.el
+
+** S3.6 nelisp-eln-emitter-test passes on CI (4 of 7 red in all three ert ubuntu jobs and gates)
+#+NOTE: passes locally (7/7 at 309e53053), so a local cmd would read green; CI-only, cause not read.
+pending
+
+** S3.7 nelisp-eln-registration-metadata-test passes on CI (1 of 3 red in all three ert ubuntu jobs and gates)
+#+NOTE: passes locally (3/3 at 309e53053); CI-only, cause not read.
+pending
+
+** S3.8 nelisp-fx-ordinary-vector-test passes on CI (1 of 3 red in gates only)
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
+pending
+
+** S3.9 nelisp-fxvm-coverage-test passes on CI (1 of 6 red in gates only)
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
+pending
+
+** S3.10 nelisp-parity9-test passes on CI (1 of 11 red in gates only)
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
+pending
+
+** S3.11 nelisp-w1vec-test passes on CI (1 of 8 red in gates only)
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
+pending
+
+** S3.12 The ert-full gate (tools/ai/nelisp-ai.sh test) passes end to end
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-full
