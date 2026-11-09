@@ -138,7 +138,8 @@ cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-tim
 ** S7.3 Hermetic: each injected build uses its own hardlink copy of the unit cache, and the baseline cache is byte-identical afterwards
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py PrivateUnitCache)
 
-** S7.4 Hermetic: past NELISP_GATE_MUTATION_SHARD_BUDGET every remaining row prints NOT RUN and the shard fails; the merged report fails when the shards' row counts do not add up to the table's in-scope rows
+** S7.4 Hermetic: past NELISP_GATE_MUTATION_SHARD_BUDGET a row whose worst case does not fit prints NOT RUN while later rows that fit still run, and the shard fails; the merged report fails when the shards' row counts do not add up to the table's in-scope rows
+#+NOTE: 2026-11-09 criterion changed (user decision): the budget check is per row (no latch); a row whose worst case does not fit is NOT RUN, later rows that fit still run.
 cmd: (ulimit -v 8388608; timeout 50 python3 -I test/nelisp-gate-mutation-row-timeout-test.py ShardBudget)
 
 ** S7.5 ci.yml: the mutation job has timeout-minutes and passes the shard budget; rows whose gate builds a variant get the build budget, not the row budget

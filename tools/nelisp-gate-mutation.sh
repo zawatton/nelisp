@@ -79,8 +79,9 @@ require_positive_int NELISP_GATE_MUTATION_ROW_TIMEOUT "$row_timeout"
 require_positive_int NELISP_GATE_MUTATION_BUILD_TIMEOUT "$build_timeout"
 require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
 # Optional budget for the whole shard (seconds since this harness started).
-# Unset means no budget.  A row is started only when its worst case still
-# fits; every row that does not fit is reported NOT RUN and fails the shard.
+# Unset means no budget.  Each row is judged on its own worst case against
+# the time left: a row that does not fit is reported NOT RUN (and fails the
+# shard), while a later, cheaper row that does fit is still run.
 shard_budget=${NELISP_GATE_MUTATION_SHARD_BUDGET:-}
 if [ -n "$shard_budget" ]; then
   require_positive_int NELISP_GATE_MUTATION_SHARD_BUDGET "$shard_budget"
@@ -875,7 +876,7 @@ fi
 timing_started=1
 row_total=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
 
-passed=0; failed=0; skipped=0; budget_exhausted=0
+passed=0; failed=0; skipped=0
 while IFS='|' read -r gate file expr what scope; do
   finish_row
   [ -z "${gate:-}" ] && continue
@@ -887,9 +888,12 @@ while IFS='|' read -r gate file expr what scope; do
   fi
   if [ -n "$shard_budget" ]; then
     row_worst=$(row_worst_case "$gate" "$file")
-    if [ "$budget_exhausted" = 1 ] || [ $((SECONDS + row_worst)) -gt "$shard_budget" ]; then
-      budget_exhausted=1
-      echo "  $gate: NOT RUN (shard budget ${shard_budget}s exhausted; file $file)"
+    # Per-row check, no latch: an expensive row that does not fit must not
+    # stop cheaper rows after it from running.
+    if [ $((SECONDS + row_worst)) -gt "$shard_budget" ]; then
+      row_left=$((shard_budget - SECONDS))
+      [ "$row_left" -lt 0 ] && row_left=0
+      echo "  $gate: NOT RUN (worst case ${row_worst}s does not fit the ${row_left}s left of the ${shard_budget}s shard budget; file $file)"
       not_run=$((not_run+1))
       continue
     fi

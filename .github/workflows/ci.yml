@@ -1433,8 +1433,9 @@ jobs:
             # No base found: leave it unset so the sweep stays full.
           fi
           # 5400 s = 90 min of rows: a row starts only if its worst case
-          # (build + row budgets) still fits; later rows print NOT RUN and
-          # fail the shard.  Setup and the final report fit in the rest of
+          # (build + row budgets) still fits; a row that does not fit prints
+          # NOT RUN and fails the shard, while later rows that fit still
+          # run.  Setup and the final report fit in the rest of
           # the job's 120 minutes.
           NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
           NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
