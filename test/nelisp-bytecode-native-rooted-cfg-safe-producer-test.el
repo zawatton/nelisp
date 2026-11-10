@@ -36,14 +36,14 @@
                              (cl-position name nelisp-native-load-bridgeable-symbols
                                           :test #'equal))))
                (list :name name :kind 'func
-                     :abi nelisp-native-load-raw-runtime-abi-v2
+                     :abi (nelisp-native-load--runtime-abi-v2)
                      :index index
                      :address-mode (if slot 'conditional-root-slot-v1
                                      'native-bridgeable-v1)
                      :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64)))
            imports))
          (entry (list :name nelisp-bytecode-native-rooted-cfg-safe-contract-entry
-                      :type 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                      :type 'func :abi (nelisp-native-load--runtime-abi-v2)
                       :arity 4 :params '(u64 u64 u64 u64) :return 'u64)))
     (list :native-rooted-cfg-safe-v3-contract-version
           nelisp-bytecode-native-rooted-cfg-safe-contract-version
@@ -101,6 +101,8 @@
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-loader/admit-valid-v3-manifest-and-reject-rehashed-mutations ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
+                   (executable-find "gzip")))
   (let* ((contract (nelisp-bytecode-native-rooted-cfg-safe-producer-test--contract))
          (manifest (nelisp-bytecode-native-rooted-cfg-safe-producer-test--manifest
                     contract)))
@@ -298,6 +300,8 @@
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-contract/portable-dialect-requires-pinned-host-or-runtime-witness ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
+                   (executable-find "gzip")))
   (let* ((inventory nelisp-bytecode-compiler-input--inventory-sha256)
          (host (nelisp-bytecode-compiler-input-dialect))
          (runtime (list :status 'pinned :dialect "GNU Emacs 31.1"

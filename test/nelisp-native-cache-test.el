@@ -76,7 +76,12 @@
 
 (defmacro nelisp-native-cache-test--directory (&rest body)
   (declare (indent 0) (debug t))
-  `(let ((directory (make-temp-file "nelisp-cache-test-" t))
+  `(let ((directory (progn
+                      ;; On Windows the cache directory code needs the
+                      ;; standalone runtime's FFI (`nl-ffi-call'), absent in host Emacs.
+                      (skip-unless (or (not (nelisp-native-load--windows-p))
+                                       (fboundp 'nl-ffi-call)))
+                      (make-temp-file "nelisp-cache-test-" t)))
           (process-environment (copy-sequence process-environment)))
      (unwind-protect
          (progn (set-file-modes directory #o700)
@@ -111,7 +116,7 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
          (contract (copy-tree (nth 4 nelisp-native-cache-test--derived)))
          (imports
           (mapcar (lambda (name)
-                    (list :name name :kind 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                    (list :name name :kind 'func :abi (nelisp-native-load--runtime-abi-v2)
                           :index (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal)
                           :address-mode (if (equal name "nl_root_pin_slot_v2")
                                             'conditional-root-slot-v1 'native-bridgeable-v1)
@@ -122,15 +127,15 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
     (should contract)
     (dolist (spec (append gc (list (cons (plist-get contract :entry) 4))))
       (push (list :name (car spec) :value 0 :size 1 :type 'func
-                  :abi nelisp-native-load-raw-runtime-abi-v2 :arity (cdr spec)
+                  :abi (nelisp-native-load--runtime-abi-v2) :arity (cdr spec)
                   :params (make-list (cdr spec) 'u64) :return 'u64) exports))
     (dolist (spec gc)
       (push (list :name (car spec) :index index :arity (cdr spec)
-                  :abi nelisp-native-load-raw-runtime-abi-v2) entries)
+                  :abi (nelisp-native-load--runtime-abi-v2)) entries)
       (setq index (1+ index)))
     (let ((manifest
            (list :kind 'raw-runtime :format nelisp-native-load-raw-artifact-format-v2
-                 :runtime-kind 'gc-arena :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                 :runtime-kind 'gc-arena :runtime-abi (nelisp-native-load--runtime-abi-v2)
                  :runtime-opt-in t :layout-id nelisp-native-load-raw-layout-id-v2
                  :arch nelisp-native-load-raw-supported-arch :binary-sha256 (make-string 64 ?a)
                  :resolver-contract-version nelisp-native-load-raw-v2-import-contract-version
@@ -142,7 +147,7 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
                  :native-rooted-cfg-contract-version (plist-get contract :version)
                  :native-rooted-cfg-contract contract
                  :native-rooted-cfg-import-descriptors imports
-                 :native (list :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                 :native (list :raw-abi (nelisp-native-load--runtime-abi-v2)
                                :object-format 'nelisp-aot-raw-unit-v2
                                :text-size 1 :object-size 1 :text-base64 "ww=="
                                :object-sha256 (nelisp-native-load--raw-digest (unibyte-string 195))
@@ -481,6 +486,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
           (should-error (funcall callable 1 2)))))))
 
 (ert-deftest nelisp-native-cache/trusted-memory-safety-refusals-and-cleanup ()
+  ;; These mock the Linux munmap path; Windows releases via VirtualFree.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (skip-unless (equal emacs-version "31.1"))
   (nelisp-native-cache-test--runtime
     (pcase-let ((`(,_ ,manifest ,header) (nelisp-native-cache-test--fixture)))
@@ -502,6 +509,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
       (should (= unmaps 2)))))
 
 (ert-deftest nelisp-native-cache/trusted-symbol-and-displacement-cleanup ()
+  ;; These mock the Linux munmap path; Windows releases via VirtualFree.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (skip-unless (equal emacs-version "31.1"))
   (nelisp-native-cache-test--runtime
     (pcase-let ((`(,_ ,manifest ,header) (nelisp-native-cache-test--fixture)))

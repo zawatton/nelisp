@@ -8,7 +8,7 @@
 (ert-deftest nelisp-native-load/raw-v2-call1-needs-exact-typed-contract ()
   "The CALL1 exit import resolves only with its exact typed manifest proof."
   (let* ((entry (list :name nelisp-native-load-raw-v2-call1-import
-                      :kind 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                      :kind 'func :abi (nelisp-native-load--runtime-abi-v2)
                       :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64))
          (manifest (list :call1-contract-version
                          nelisp-native-load-raw-v2-call1-contract-version
@@ -39,18 +39,18 @@
     (should-not
      (nelisp-native-load--raw-v2-call1-import-valid-p
       (plist-put (copy-sequence manifest) :call1-contract-hash "bad") entry))
-    (let* ((raw (list :raw-abi nelisp-native-load-raw-runtime-abi-v2
+    (let* ((raw (list :raw-abi (nelisp-native-load--runtime-abi-v2)
                       :object-format 'nelisp-aot-raw-unit-v2 :text-size 1 :object-size 1
                       :text-base64 (base64-encode-string "x" t)
                       :object-sha256 (nelisp-native-load--raw-digest "x") :imports nil
                       :exports (list (list :name nelisp-native-load-raw-v2-call1-entry
                                            :value 0 :size 1 :type 'func
-                                           :abi nelisp-native-load-raw-runtime-abi-v2
+                                           :abi (nelisp-native-load--runtime-abi-v2)
                                            :arity 2 :params '(u64 u64) :return 'u64))
                       :relocs nil :data-size 0 :bss-size 0))
            (candidate (append manifest
                               (list :kind 'raw-runtime :format nelisp-native-load-raw-artifact-format-v2
-                                    :runtime-kind 'gc-arena :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                                    :runtime-kind 'gc-arena :runtime-abi (nelisp-native-load--runtime-abi-v2)
                                     :runtime-opt-in t :layout-id nelisp-native-load-raw-layout-id-v2
                                     :arch nelisp-native-load-raw-supported-arch
                                     :binary-sha256 (make-string 64 ?a) :native raw))))
@@ -83,23 +83,23 @@
             (should-error (nelisp-native-load-raw-v2-artifact "synthetic.nelr"))
             (should (= maps 0))))))
     (let* ((entry0 (list :name nelisp-native-load-raw-v2-call1-import
-                         :kind 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                         :kind 'func :abi (nelisp-native-load--runtime-abi-v2)
                          :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64
                          :index (cl-position nelisp-native-load-raw-v2-call1-import
                                              nelisp-native-load-bridgeable-symbols :test #'equal)
                          :address-mode 'call1-typed-v1))
-           (raw (list :raw-abi nelisp-native-load-raw-runtime-abi-v2
+           (raw (list :raw-abi (nelisp-native-load--runtime-abi-v2)
                       :object-format 'nelisp-aot-raw-unit-v2 :text-size 1 :object-size 1
                       :text-base64 (base64-encode-string "x" t)
                       :object-sha256 (nelisp-native-load--raw-digest "x")
                       :imports (list entry0)
                       :exports (list (list :name nelisp-native-load-raw-v2-call1-entry
                                            :value 0 :size 1 :type 'func
-                                           :abi nelisp-native-load-raw-runtime-abi-v2
+                                           :abi (nelisp-native-load--runtime-abi-v2)
                                            :arity 5 :params '(u64 u64 u64 u64 u64) :return 'u64))
                       :relocs nil :data-size 0 :bss-size 0))
            (candidate (append manifest (list :kind 'raw-runtime :format nelisp-native-load-raw-artifact-format-v2
-                                             :runtime-kind 'gc-arena :runtime-abi nelisp-native-load-raw-runtime-abi-v2
+                                             :runtime-kind 'gc-arena :runtime-abi (nelisp-native-load--runtime-abi-v2)
                                              :runtime-opt-in t :layout-id nelisp-native-load-raw-layout-id-v2
                                              :arch nelisp-native-load-raw-supported-arch
                                              :binary-sha256 (make-string 64 ?a) :native raw)))
