@@ -89,6 +89,9 @@ Only column-zero instructions belong to OBJECT; nested code is indented."
     (should-error (nelisp-bytecode-decode (unibyte-string opcode 1)))))
 
 (ert-deftest nelisp-bytecode-decode-source-parity ()
+  ;; The GNU sources may be installed as .el.gz; decompression needs gzip.
+  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
+                   (executable-find "gzip")))
   (let* ((files (nelisp-bytecode-source-paths))
          (entries (nelisp-bytecode-compile-sources files))
          (objects 0))
