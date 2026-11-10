@@ -8,51 +8,82 @@
 # justifications -- but an entry that keeps that text is an admission, not
 # an explanation.
 
+:documentation|scripts/nelisp-stdlib-prelude.el|_form|_FORM ignored on purpose: this is the no-op function that lets a lambda body's leading (:documentation FORM) be skipped when run; the form is kept in the body for the native slot view
 accept-process-output|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
-alist-get|lisp/nelisp-stdlib-misc.el|_remove|REMOVE ignored: it only affects setf expansion
-alist-get|scripts/nelisp-stdlib-prelude.el|_remove|REMOVE ignored: it only affects setf expansion, which this alist-get is not used through
-always|scripts/nelisp-stdlib-prelude.el|_arguments|not yet reviewed
-base64-encode-string|scripts/nelisp-stdlib-prelude.el|_no-line-break|not yet reviewed
+bool-vector-p|lisp/nelisp-stdlib-plist-str.el|_x|always nil; byte-identical to the prelude copy
+bool-vector-p|scripts/nelisp-stdlib-prelude.el|_x|always nil: bool vectors are plain vectors here, so nothing can be one
+buffer-list|scripts/nelisp-stdlib-prelude.el|_frame|FRAME ignored: there are no frames, so the answer is always the one global buffer list
 byte-code-function-p|scripts/nelisp-stdlib-prelude.el|_object|not yet reviewed
 byte-compile-file|scripts/nelisp-stdlib-prelude.el|_load|LOAD ignored: there is no byte compiler in the standalone, so nothing is produced to load.  The entry point exists to check FILENAME and report a missing input file the way Emacs does, instead of answering void-function and hiding the argument error too.
 characterp|scripts/nelisp-stdlib-prelude.el|_ignore|not yet reviewed
+cl-struct-define|scripts/nelisp-stdlib-prelude.el|_docstring _parent _print _type|DOCSTRING, PARENT, TYPE and PRINT ignored: only the slots, tag and children registry are recorded; no docstring, inheritance link, vector/list representation or print option is kept
+current-active-maps|scripts/nelisp-stdlib-prelude.el|_olp _position|OLP and POSITION ignored: there are no overlays, text properties or minor-mode maps, so the result is only the local map plus the global map
+current-window-configuration|scripts/nelisp-stdlib-prelude.el|_frame|FRAME ignored: no windows or frames exist; it returns an empty opaque window-configuration record
 decode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 decode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
+decode-time|lisp/nelisp-stdlib-misc.el|_form|FORM ignored: SEC is always an integer, so the (TICKS . HZ) form that FORM=t requests in Emacs is never produced
+define-key|scripts/nelisp-stdlib-prelude.el|_remove|REMOVE ignored: the binding is always stored (DEF nil binds nil) and never deleted from the keymap
 delete-directory|scripts/nelisp-stdlib-prelude.el|_trash|not yet reviewed
 delete-file|scripts/nelisp-stdlib-prelude.el|_trash|not yet reviewed
-directory-files|scripts/nelisp-stdlib-prelude.el|_nosort|not yet reviewed
+display-graphic-p|scripts/nelisp-stdlib-prelude.el|_display|DISPLAY ignored: there is no display; always returns nil
 encode-coding-string|lisp/nelisp-stdlib-misc.el|_nocopy|not yet reviewed
 encode-coding-string|scripts/nelisp-stdlib-prelude.el|_nocopy|not yet reviewed
 executable-find|scripts/nelisp-stdlib-prelude.el|_remote|not yet reviewed
+featurep|scripts/build-nelisp-bootstrap.el|_subfeature|SUBFEATURE ignored: only membership of FEATURE in `features' is tested; subfeatures are not tracked
 file-attributes|scripts/nelisp-stdlib-prelude.el|_id-format|not yet reviewed
+file-modes|scripts/nelisp-stdlib-prelude.el|_flag|FLAG ignored: symlinks are always followed (no nofollow lstat)
+file-name-sans-versions|scripts/nelisp-stdlib-prelude.el|_keep-backup-version|KEEP-BACKUP-VERSION ignored: backup version suffixes (.~N~) are always stripped
+file-remote-p|lisp/nelisp-stdlib-misc.el|_connected _filename _identification|IDENTIFICATION and CONNECTED (and FILENAME) ignored: there is no Tramp, so every file is local and the answer is always nil
+file-remote-p|scripts/nelisp-stdlib-prelude.el|_connected _filename _identification|IDENTIFICATION and CONNECTED (and FILENAME) ignored: there is no Tramp, so every file is local and the answer is always nil
+file-truename|lisp/nelisp-stdlib-misc.el|_prev-dirs|the same; byte-identical to the prelude copy
+function-alias-p|scripts/nelisp-stdlib-prelude.el|_noerror|NOERROR ignored: Emacs 30 made it obsolete and it never changed the result; the alias chain is returned either way
+generate-new-buffer|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|there are no buffer hooks here, so nothing can be inhibited
+get-buffer-create|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|INHIBIT-BUFFER-HOOKS ignored: buffers are created without running buffer-list-update-hook, so there are no hooks to inhibit
 help-split-fundoc|scripts/nelisp-stdlib-prelude.el|_def|not yet reviewed
-ignore|scripts/nelisp-stdlib-prelude.el|_arguments|not yet reviewed
-insert-file-contents|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
-json-serialize|scripts/nelisp-stdlib-prelude.el|_keys|not yet reviewed
+indirect-function|scripts/nelisp-stdlib-prelude.el|_noerror|NOERROR ignored: obsolete in Emacs and likewise unused there; the chain is followed regardless
+insert-char|lisp/nelisp-stdlib-misc.el|_inherit|INHERIT ignored: inserted characters never inherit text properties from neighbours
+insert-file-contents-literally|lisp/nelisp-stdlib-misc.el|_replace _visit|the same; byte-identical to the prelude copy
+insert-file-contents-literally|scripts/nelisp-stdlib-prelude.el|_replace _visit|VISIT/REPLACE ignored: the same as the `insert-file-contents' site below it -- this runtime never visits a file into a buffer (no buffer-file-name, no modtime) and never replaces a region in place; the bytes are inserted at point either way
+key-binding|scripts/nelisp-stdlib-prelude.el|_accept-default _no-remap _position|ACCEPT-DEFAULT, NO-REMAP and POSITION ignored: no default bindings (t), command remapping, or position-based (overlay/text property) keymaps exist; it looks KEY up in the active maps only
+key-description|scripts/nelisp-stdlib-prelude.el|_prefix|PREFIX ignored: KEYS are described alone, without a preceding prefix key sequence
+kill-emacs|scripts/nelisp-stdlib-prelude.el|_restart|RESTART ignored: the process exits with ARG as status and never re-executes itself
 kill-process|scripts/nelisp-stdlib-prelude.el|_current-group|not yet reviewed
 load|lisp/nelisp-stdlib-misc.el|_must-suffix _nomessage _nosuffix|not yet reviewed
+local-variable-p|scripts/nelisp-stdlib-prelude.el|_buffer|BUFFER ignored: the runtime has no buffer-local variables, so the answer is always nil
+locate-file|scripts/nelisp-stdlib-prelude.el|_predicate|PREDICATE ignored: the search is file-exists-p only, so a caller asking for executable-only or readable-only gets any existing file
 locate-library|lisp/nelisp-stdlib-misc.el|_interactive-call _nosuffix _path|not yet reviewed
-lwarn|scripts/nelisp-stdlib-prelude.el|_args|not yet reviewed
+locate-library|scripts/nelisp-stdlib-prelude.el|_interactive-call _nosuffix _path|NOSUFFIX/PATH/INTERACTIVE-CALL ignored: the search is always load-path with .el and no suffix
+lookup-key|scripts/nelisp-stdlib-prelude.el|_accept-default|ACCEPT-DEFAULT ignored: the t default binding is not consulted, only exact event bindings and the parent chain
 make-string|lisp/nelisp-stdlib-plist-str.el|_multibyte|not yet reviewed
+map-keymap|scripts/nelisp-stdlib-prelude.el|_sort-first|SORT-FIRST ignored: bindings are visited in storage order, not sorted by event
+md5|scripts/nelisp-stdlib-prelude.el|_coding-system _noerror|CODING-SYSTEM and NOERROR ignored: the object is hashed through secure-hash with no recoding step
+move-to-column|scripts/nelisp-stdlib-prelude.el|_force|FORCE ignored: the point stops at end of line if COLUMN is not reached; no spaces or tabs are inserted to reach it and a tab is not converted to spaces
+native-comp-function-p|scripts/nelisp-stdlib-prelude.el|_object|OBJECT ignored: there is no native compiler, so always nil
+other-buffer|scripts/nelisp-stdlib-prelude.el|_frame _visible-ok|VISIBLE-OK and FRAME ignored: there are no windows or frames, so no buffer counts as visible and no frame's buffer list is consulted
+pop-to-buffer|lisp/nelisp-stdlib-misc.el|_action _norecord|ACTION and NORECORD ignored: no window is displayed or split; it only makes the buffer current (set-buffer) and the buffer list order is not recorded
+pop-to-buffer|scripts/nelisp-stdlib-prelude.el|_action _norecord|ACTION and NORECORD ignored: no window is displayed or split; it only makes the buffer current (set-buffer) and the buffer list order is not recorded
 prin1|scripts/nelisp-stdlib-prelude.el|_stream|not yet reviewed
+prin1-to-string|lisp/nelisp-stdlib-prn.el|_overrides|OVERRIDES ignored; byte-identical to the prelude copy
 princ|scripts/nelisp-stdlib-prelude.el|_stream|STREAM ignored: output always goes to stdout, there are no buffers or markers to print into
+process-contact|scripts/nelisp-stdlib-prelude.el|_no-block|NO-BLOCK ignored: contact information is read from the process object directly and never waits for a connection, so there is nothing to block on
+provide|scripts/build-nelisp-bootstrap.el|_subfeatures|SUBFEATURES ignored: the bootstrap registry only records FEATURE; subfeatures are not tracked
+read-from-minibuffer|lisp/nelisp-stdlib-misc.el|_history _inherit-input-method _initial-contents _keymap|INITIAL-CONTENTS, KEYMAP, HISTORY and INHERIT-INPUT-METHOD ignored: a line is read from stdin as in batch Emacs; there is no minibuffer to prefill, bind keys in, or record history for
+read-from-minibuffer|scripts/nelisp-stdlib-prelude.el|_history _inherit-input-method _initial-contents _keymap|INITIAL-CONTENTS, KEYMAP, HISTORY and INHERIT-INPUT-METHOD ignored: a line is read from stdin as in batch Emacs; there is no minibuffer to prefill, bind keys in, or record history for
+read-string|lisp/nelisp-stdlib-misc.el|_history _inherit-input-method _initial-input|INITIAL-INPUT, HISTORY and INHERIT-INPUT-METHOD ignored: a line is read from stdin as in batch Emacs; there is no minibuffer to prefill or record history for
+read-string|scripts/nelisp-stdlib-prelude.el|_history _inherit-input-method _initial-input|INITIAL-INPUT, HISTORY and INHERIT-INPUT-METHOD ignored: a line is read from stdin as in batch Emacs; there is no minibuffer to prefill or record history for
+replace-match|lisp/nelisp-stdlib-misc.el|_fixedcase _literal|FIXEDCASE and LITERAL ignored: the fallback copy never converts case and never expands \\N or \\& backreferences, i.e. it behaves as if both were non-nil (the prelude copy is the full one)
+set-buffer-file-coding-system|lisp/nelisp-stdlib-misc.el|_force _nomodify|NOMODIFY and FORCE ignored: only buffer-file-coding-system is set; no conversion happens and the modified flag is never touched
+set-buffer-file-coding-system|scripts/nelisp-stdlib-prelude.el|_force _nomodify|NOMODIFY and FORCE ignored: only buffer-file-coding-system is set; no conversion happens and the modified flag is never touched
 set-file-modes|lisp/nelisp-stdlib-misc.el|_flag|not yet reviewed
 set-file-modes|scripts/nelisp-stdlib-prelude.el|_flag|not yet reviewed
+set-process-coding-system|lisp/nelisp-stdlib-misc.el|_decoding _encoding _process|DECODING and ENCODING ignored: no coding system is stored for the process; the function does nothing and returns nil
+set-process-coding-system|scripts/nelisp-stdlib-prelude.el|_decoding _encoding _process|DECODING and ENCODING ignored: no coding system is stored for the process; the function does nothing and returns nil
+set-window-configuration|scripts/nelisp-stdlib-prelude.el|_dont-set-frame _dont-set-miniwindow|DONT-SET-FRAME and DONT-SET-MINIWINDOW ignored: no windows or frames exist, so it only validates CONFIGURATION and returns t
 setenv|scripts/nelisp-stdlib-prelude.el|_substitute|not yet reviewed
 split-string|lisp/nelisp-stdlib-plist-str.el|_omit-nulls _trim|not yet reviewed
 split-string|scripts/nelisp-stdlib-prelude.el|_trim|not yet reviewed
-string-trim-left|lisp/nelisp-stdlib-plist-str.el|_regexp|not yet reviewed
-string-trim-right|lisp/nelisp-stdlib-plist-str.el|_regexp|not yet reviewed
-string-trim|lisp/nelisp-stdlib-plist-str.el|_trim-left _trim-right|not yet reviewed
+subst-char-in-region|scripts/nelisp-stdlib-prelude.el|_noundo|NOUNDO ignored: there is no undo list, so nothing is recorded either way
+terpri|scripts/nelisp-stdlib-prelude.el|_ensure|ENSURE ignored: output always goes to stdout and a newline is always written, so "only if not at column 0" cannot be honoured without a column to read
+where-is-internal|scripts/nelisp-stdlib-prelude.el|_no-remap _noindirect|NOINDIRECT and NO-REMAP ignored: no command remapping or menu-item indirection exists, so every binding is matched by exact definition equality
 write-region|lisp/nelisp-stdlib-misc.el|_lockname _mustbenew _visit|not yet reviewed
 write-region|scripts/nelisp-stdlib-prelude.el|_lockname|LOCKNAME ignored: this runtime has no file-locking/clash-detection facility to key it against (single-process, headless); APPEND/VISIT/MUSTBENEW are now handled, not ignored
-locate-file|scripts/nelisp-stdlib-prelude.el|_predicate|PREDICATE ignored: the search is file-exists-p only, so a caller asking for executable-only or readable-only gets any existing file
-terpri|scripts/nelisp-stdlib-prelude.el|_ensure|ENSURE ignored: output always goes to stdout and a newline is always written, so "only if not at column 0" cannot be honoured without a column to read
-prin1-to-string|lisp/nelisp-stdlib-prn.el|_overrides|OVERRIDES ignored; byte-identical to the prelude copy
-locate-library|scripts/nelisp-stdlib-prelude.el|_interactive-call _nosuffix _path|NOSUFFIX/PATH/INTERACTIVE-CALL ignored: the search is always load-path with .el and no suffix
-bool-vector-p|scripts/nelisp-stdlib-prelude.el|_x|always nil: bool vectors are plain vectors here, so nothing can be one
-bool-vector-p|lisp/nelisp-stdlib-plist-str.el|_x|always nil; byte-identical to the prelude copy
-generate-new-buffer|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|there are no buffer hooks here, so nothing can be inhibited
-file-truename|lisp/nelisp-stdlib-misc.el|_prev-dirs|the same; byte-identical to the prelude copy
-insert-file-contents-literally|scripts/nelisp-stdlib-prelude.el|_replace _visit|VISIT/REPLACE ignored: the same as the `insert-file-contents' site below it -- this runtime never visits a file into a buffer (no buffer-file-name, no modtime) and never replaces a region in place; the bytes are inserted at point either way
-insert-file-contents-literally|lisp/nelisp-stdlib-misc.el|_replace _visit|the same; byte-identical to the prelude copy

@@ -62,7 +62,7 @@
 (ert-deftest nelisp-reader-lexer-hoist-accessor-ops ()
   (with-temp-buffer
     (insert-file-contents (nelisp-reader-lexer-hoist-test--file "nelisp-heap-accessors.el"))
-    (should (search-forward "((eq (car source) 'str-data-ptr)" nil t))
+    (should (search-forward "(eq (car source) 'str-data-ptr))" nil t))
     (should (search-forward "((eq (car source) 'ptr-byte-at)" nil t))))
 
 (provide 'nelisp-reader-lexer-hoist-test)
