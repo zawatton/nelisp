@@ -4240,8 +4240,16 @@ directory tracks the tree rather than accumulating every key ever built."
         ;; child replays the build with every other unit stubbed, so its
         ;; source -- and key -- can differ from the build's; pruning there
         ;; deleted the build's own entry and cost a full recompile on
-        ;; every build (fxir-native.o, ~290 s).
-        (unless target
+        ;; every build (fxir-native.o, ~290 s).  The same holds for a build
+        ;; of another binary (NELISP_STANDALONE_READER_OUTPUT: a gate's
+        ;; fixture reader such as `make native-symbol-test', or a project
+        ;; build): its driver/applyfn units differ from the default
+        ;; reader's, and pruning deleted the reader's entries, so the next
+        ;; project build recompiled them and timed out (T2.6
+        ;; project-packages, red only right after native-symbol-test,
+        ;; 2026-11-11).  The default reader build still prunes every
+        ;; other entry of a unit, so the cache stays bounded.
+        (unless (or target (getenv "NELISP_STANDALONE_READER_OUTPUT"))
           (dolist (old (directory-files cache-dir t
                                         (concat "\\`" (regexp-quote name) "\\(\\.[0-9a-f]+\\)?\\.unit\\'")))
             (unless (string= old cache) (delete-file old))))
