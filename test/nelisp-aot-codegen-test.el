@@ -598,6 +598,9 @@
 
 (ert-deftest nelisp-aot-codegen/terminal-barrier-loops-mutation-full-word ()
   "Pure loop branches and terminal argument mutations preserve all result bits."
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((barriers 0) (calls 0)
         (emit (symbol-function 'nelisp-aot-compiler--emit-terminal-barrier-x86))
         (call (symbol-function 'nelisp-aot-compiler--emit-call)))
@@ -628,6 +631,9 @@
 
 (ert-deftest nelisp-aot-codegen/terminal-barrier-dynamic-alias-flush ()
   "Flush each actual slot once, using its innermost alias register."
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((aliases 0) (flush (symbol-function 'nelisp-aot-compiler--flush-promoted-slots-x86))
         (op (symbol-function 'nelisp-aot-compiler--x86-op)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--flush-promoted-slots-x86)
@@ -660,6 +666,9 @@
 
 (ert-deftest nelisp-aot-codegen/terminal-barrier-late-string-word-guards ()
   "String fallback stays behind WORD tag guards and ends the register map."
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((strings 0) (emit (symbol-function 'nelisp-aot-compiler--emit-str-eq)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-str-eq)
                (lambda (ir buf) (setq strings (1+ strings))
@@ -1190,6 +1199,9 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
 
 (ert-deftest nelisp-aot-codegen/wide-u32-masks ()
   "Wide unsigned masks match GNU with full-width inputs and fallback masks."
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((xs (list (- (expt 2 63)) (1+ (- (expt 2 63)))
                   -1025 -1024 -1023 -9 -8 -7 -1 0 1 7 8 9
                   1023 1024 1025 (1- (expt 2 63))))
@@ -1224,6 +1236,9 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
 
 (ert-deftest nelisp-aot-codegen/wide-mask-evaluates-once ()
   "A constant mask on either side preserves observable operand evaluation."
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should
    (= 0
       (nelisp-aot-codegen-test--run
@@ -1518,6 +1533,9 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
     ;; Two ordinary emission passes, each reporting all ten entries including91.
     (should (equal spans '(40 40)))))
 (ert-deftest nelisp-aot-codegen/sparse-switch-source-label-collision ()
+  ;; Runs the x86_64 ELF it emits (`nelisp-aot-codegen-test--run').
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (keys (list (number-sequence 83 91)
                      (nelisp-aot-codegen-test--sparse-keys 83)))
     (let* ((form (nelisp-aot-codegen-test--sparse-form keys))

@@ -14,19 +14,28 @@
 (defun nelisp-bytecode-coverage-audit-u0--child (&rest args)
   "Run an isolated GNU subprocess with a five-second deadline."
   (let ((out (generate-new-buffer " *u0-out*"))
-        (err (generate-new-buffer " *u0-err*")) process)
+        (err (generate-new-buffer " *u0-err*")) process
+        (done 0))
     (unwind-protect
         (progn
+          ;; Wait for both sentinels, not for `process-live-p': Emacs runs a
+          ;; sentinel only after the process's remaining output has been read,
+          ;; while `process-live-p' turns nil as soon as the child exits.
+          ;; Polling liveness read `:exit 0 :stdout ""' for 11 of the 230
+          ;; slots on macos-latest (CI run 42748394272) -- the child printed
+          ;; U0-VALID but its last pipe read had not happened yet.
           (setq process
                 (make-process :name "u0-audit" :buffer out :stderr err
-                              :connection-type 'pipe :noquery t :sentinel #'ignore
+                              :connection-type 'pipe :noquery t
+                              :sentinel (lambda (_p _e) (cl-incf done))
                               :command (append (list (expand-file-name invocation-name invocation-directory)
                                                      "-Q" "--batch") args)))
-          (set-process-sentinel (get-buffer-process err) #'ignore)
+          (set-process-sentinel (get-buffer-process err)
+                                (lambda (_p _e) (cl-incf done)))
           (let ((deadline (+ (float-time) 5)))
-            (while (and (process-live-p process) (< (float-time) deadline))
-              (accept-process-output process 0.05)))
-          (when (process-live-p process)
+            (while (and (< done 2) (< (float-time) deadline))
+              (accept-process-output nil 0.05)))
+          (when (< done 2)
             (delete-process process)
             (error "U0 subprocess exceeded deadline"))
           (list :exit (process-exit-status process)
