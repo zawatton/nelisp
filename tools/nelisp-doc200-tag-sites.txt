@@ -2,13 +2,16 @@
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--aot-direct-tag-predicate-form	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--aot-direct-tag-predicate-form	tag-const-ref	1	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--collect-strings	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-literal-word-tag-test-x86	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-sexp-name-eq	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-sexp-name-eq-arm64	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-stmt	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
-lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
-lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	1	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
-lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	2	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
-lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value	unresolved-numeric	3	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value-unpromoted	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value-unpromoted	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value-unpromoted	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--emit-value-unpromoted	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--lisp-predicate-tags	tag-const-ref	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--lisp-predicate-tags	tag-const-ref	1	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-aot-funcall3	unresolved-numeric	0	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-value	unresolved-numeric	0	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--parse-value	unresolved-numeric	1	n-a	This compares a source form or parameter-list arity of 5/6, not any tag namespace.
@@ -18,13 +21,117 @@ lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-collect-handler-local-ids	
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-emit-value	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
 lisp/nelisp-aot-compiler.el	nelisp-aot-compiler--wasm-register-ir-imports	unresolved-numeric	0	n-a	This compares AOT compiler IR/grammar-op tag 5/6 (call/cell-make), not a Sexp tag.
 lisp/nelisp-artifact.el	nelisp-artifact--native-driver-c	unparsed-region	0	walked	Hand-inspected the generated native C driver and added tag-14/tag-15 layout-aware value output.
+lisp/nelisp-bytecode-ir.el	nelisp-bytecode-ir-decode-result	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-ir.el	nelisp-bytecode-ir-decode-result	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-jit.el	nelisp-bytecode-jit--decode-boxed-predicate	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-jit.el	nelisp-bytecode-jit--decode-branch	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-jit.el	nelisp-bytecode-jit--decode-ir	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-jit.el	nelisp-bytecode-jit--function-payload-fingerprint	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-arithmetic-lowering.el	nelisp-bytecode-native-arithmetic-lowering--operation-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-boxed-branch.el	nelisp-bytecode-native-boxed-branch--optional-default-shape-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-boxed-branch.el	nelisp-bytecode-native-boxed-branch--optional-default-shape-p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-boxed-branch.el	nelisp-bytecode-native-boxed-branch--optional-default-shape-p	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-boxed-branch.el	nelisp-bytecode-native-boxed-branch-build	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-rooted-branch-join-call.el	nelisp-bytecode-native-rooted-branch-join-call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-rooted-cfg-safe-contract.el	nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-bytecode-native-rooted-cfg-safe-contract.el	nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-lookup-function.el	nelisp_env_lookup_function	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-lookup-function.el	nelisp_env_lookup_function_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-lookup-value.el	nelisp_env_entry_slot_tag	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_lazy	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_name_ok	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-env-set-value.el	nelisp_env_set_value_name_ok	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-env-set-value.el	nelisp_env_setv_cell_hit	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-evalport-combiner-apply.el	nl_apply_builtin	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-lisp/nelisp-cc-evalport-combiner-arglist.el	nl_eval_arg_list_drive	unresolved-numeric	0	n-a	This compares argument-list walker status codes, not Sexp tags.
-lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el	nl_mut_str_set_codepoint_raw	tag-test-bound-sym	0	walked	Read the fixed-width mutation lower: tag 15 resolves its boxed NlStr and writes one byte in 0..255; tag 6 writes only when both old and new characters are ASCII, preserving tag and byte length.
+lisp/nelisp-cc-evalport-combiner-apply.el	nl_apply_name_class_sid	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-env-leaves-simple.el	nl_env_lookup_val_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-env-leaves-simple.el	nl_env_lookup_val_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-env-leaves-simple.el	nl_env_lookup_val_w	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-env-leaves-simple.el	nl_env_lookup_val_w	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-env-leaves-simple.el	nl_env_lookup_val_w	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-evalport-nonenv-mut-str-set-cp.el	nl_mut_str_set_codepoint_raw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-fnv1a.el	nelisp_fnv1a	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fnv1a.el	nelisp_fnv1a	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fnv1a.el	nelisp_symbol_key_equal	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fnv1a.el	nelisp_symbol_key_equal	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_captured_decls	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_word_name_p	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_valid_key	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_walk_bucket_m	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_walk_bucket_m	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_word_name_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-sexp-tag, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-frame-stack-find.el	nelisp_frame_stack_find_word_name_p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-sexp-tag, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-frame-stack-find.el	nl_gv_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nl_lex_walk	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nl_lex_walk	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nl_lex_walk	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-frame-stack-find.el	nl_lex_walk	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_cached_function	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_cached_function	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr_any	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr_any	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_call_subr_any	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_primitive_run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_primitive_run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_primitive_run	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_primitive_run	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_primitive_run	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_string_argument_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_string_argument_p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	m5_fx_word_ptr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_buf_current	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_buf_leaf_run	tag-write-u64	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_gb_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_gb_record	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_gb_strw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_gb_wprim_more	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fx-call-primitives.el	nl_gb_wprim_more	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-admission.el	nelisp-cc-fxir-admission--generation-budget	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-admission.el	nelisp-cc-fxir-admission--read-rows	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-analysis.el	nelisp-cc-fxir-analysis-row	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-facts.el	nelisp-cc-fxir-facts--canonical-add-region	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-facts.el	nelisp-cc-fxir-facts--truth-proofs-consistent-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-inline.el	nelisp-cc-fxir-inline--checked-activation	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-inline.el	nelisp-cc-fxir-inline-form	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-inline.el	nelisp-cc-fxir-inline-form	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-inline.el	nelisp-cc-fxir-inline-form	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_aref_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_arith_slow	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_aset_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_dsubr_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_length_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_length_fast	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_pred6	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_pred6	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_site_sym	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_site_sym	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nc_subr_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--defun	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--defun	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-fast	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--inline-op	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--site-rec-form	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--site-rec-form	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--site-rec-form	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--subr-guard	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--subr-guard	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-fxir-native.el	nelisp-cc-fxir-native--subr-guard	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-jit-alias.el	nl_jit_alias	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-jit-cons-car-ptr.el	nl_cons_car_ptr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-jit-cons-cdr-ptr.el	nl_cons_cdr_ptr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-downcase.el	nl_jit_downcase_byte_len	tag-test-sexp-tag	0	walked	Read the case-conversion byte-length helper and made boxed tags 6/15 resolve NlStr.len before preserving their output representation.
@@ -61,130 +168,498 @@ lisp/nelisp-cc-jit-type-of.el	nl_jit_type_of_tag	unresolved-numeric	1	walked	Rea
 lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-jit-upcase.el	nl_jit_upcase_byte_len	tag-test-sexp-tag	0	walked	Read the case-conversion byte-length helper and made boxed tags 6/15 resolve NlStr.len before preserving their output representation.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_owned	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_owned	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_owned	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_valid_key	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-mirror-lookup-entry.el	nelisp_mirror_lookup_entry_valid_key	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nl_symcell_entry	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nl_symcell_entry	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nl_symcell_entry	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-mirror-lookup-entry.el	nl_symcell_refresh	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-mut-str.el	nl_jit_mut_str_len	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-nlstr-direct-ops.el	nl_alloc_mut_str_write	tag-write-u8	0	walked	Kept the UTF-8 mutable producer writing tag 6 and added the layout-identical unibyte mutable writer/allocator that writes tag 15.
-lisp/nelisp-cc-nlstr-direct-ops.el	nl_alloc_str_write	tag-write-u8	0	walked	Kept the UTF-8 immutable producer writing tag 5 and added the layout-identical unibyte immutable writer/allocator that writes tag 14.
 lisp/nelisp-cc-nlstr-direct-ops.el	nl_mut_str_finalize_write	tag-write-u8	0	walked	Kept tag-6 builders finalizing to tag 5, added the tag-14 writer, and made the public finalizer select tag 14 exactly for a tag-15 source.
-lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-sexp-tag, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_str_bytes_ptr	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-sexp-tag, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_symbol_name_fast	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-nlstr-direct-ops.el	nl_symbol_name_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_char_count	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_char_count	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_codepoint_at	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_codepoint_at	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_codepoint_at_decode	tag-write-u64	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_is_alphanumeric_at	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-nlstr-utf8-direct.el	nl_str_is_alphanumeric_at	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch	unresolved-numeric	0	n-a	This dispatches reader token kinds 5/6 for quote-prefix syntax, not Sexp tags.
-lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch	unresolved-numeric	1	n-a	This dispatches reader token kinds 5/6 for quote-prefix syntax, not Sexp tags.
-lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_parse_propertized_string	tag-test-sexp-tag	0	walked	Read the propertized-string literal arm and accepted both immutable UTF-8 tag 5 and layout-identical unibyte tag 14 before discarding unsupported text properties.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_len	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_ptr	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_byte_code_valid_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_byte_code_valid_p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_dispatch_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_parse_propertized_string_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_symbol_name_kind	tag-write-u8	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-sexp-clone-into.el	nl_sci_bump	unresolved-numeric	0	walked	Read the cloner dispatch: tag 14 shallow-copies the immutable slot and tag 15 follows the tag-6 NlStr refcount path.
 lisp/nelisp-cc-sexp-clone-into.el	nl_sci_dispatch	unresolved-numeric	0	walked	Read the cloner dispatch: tag 14 shallow-copies the immutable slot and tag 15 follows the tag-6 NlStr refcount path.
+lisp/nelisp-cc-sexp-clone-into.el	nl_sexp_clone_into	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-cc-sexp-eq.el	nl_sexp_eq	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_dispatch	tag-test-sexp-tag	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
 lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_dispatch	tag-test-sexp-tag	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
 lisp/nelisp-cc-sexp-fmt.el	nl_fmt_sexp_write_quoted_str	tag-test-sexp-tag	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
 lisp/nelisp-cc-sexp-write-str.el	nl_jit_intern	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 lisp/nelisp-cc-sexp-write-str.el	nl_jit_intern	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-lisp/nelisp-cc-val-load.el	nl_val_clone_into	tag-test-read-u8	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+lisp/nelisp-cc-sf-lambda.el	nl_cl_unwrap	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-sf-lambda.el	nl_k23_name	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-sort.el	m5_sort_before	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-sort.el	m5_sort_symbol	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-string-blocks.el	nl_string_mapping_op	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-string-blocks.el	nl_string_mapping_op	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-string-blocks.el	nl_string_pin_word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-string-blocks.el	nl_string_store_view	tag-write-u64	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-string-blocks.el	nl_string_view_header	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_big_count	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_big_identity	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_big_limbs	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_big_sign	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_cell_box	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_cell_pair_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-cc-val-load.el	nl_val_clone_legacy	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-abi.el	nelisp-eln-abi-classify-word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-bignum.el	nelisp-eln-bignum--live-view	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-bignum.el	nelisp-eln-bignum-release	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-float.el	nelisp-eln-float--live-base	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-float.el	nelisp-eln-float-release	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-handler-frame.el	nelisp-eln-handler-frame--modrm	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-handler-frame.el	nelisp-eln-handler-frame--modrm	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-metadata-arena.el	nelisp-eln-metadata-arena--live-token	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-metadata-bytecode.el	nelisp-eln-metadata-bytecode--read-byte-code	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-native-subr.el	nelisp-eln-native-subr-create	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-native-subr.el	nelisp-eln-native-subr-create	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-native-subr.el	nelisp-eln-native-subr-create-multi-nary	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-raw-call.el	nelisp-eln-raw-call--context-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration-objects.el	nelisp-eln-registration-objects--live-activation	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration-objects.el	nelisp-eln-registration-objects-create-unit	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration-objects.el	nelisp-eln-registration-objects-retire-activation	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration.el	nelisp-eln-registration--native-constructor-for	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration.el	nelisp-eln-registration--scalar0-code-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration.el	nelisp-eln-registration--setjmp-undefined-set-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration.el	nelisp-eln-registration--weak-got-slots	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-eln-registration.el	nelisp-eln-registration-glob-dat-slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-heap-accessors.el	nelisp-heap-accessors--lower-string-name-eq	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-heap-accessors.el	nelisp-heap-accessors--symbol-name-operand	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-compiler-startup-evidence.el	nelisp-native-compiler-startup-evidence-serializer-form	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-frame-v2.el	nelisp-native-frame-v2-source	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-frame-v2.el	nelisp-native-frame-v2-source	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-frame-v2.el	nelisp-native-frame-v2-source	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-funcall-v2.el	nelisp-native-funcall-v2-value-form	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-funcall-v2.el	nelisp-native-funcall-v2-value-form	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-gccjit.el	nelisp-native-gccjit--lower	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-gccjit.el	nelisp-native-gccjit--lower	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-call1-import-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-conditional-contract-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-rooted-branch-contract-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-rooted-branch-join-contract-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-rooted-cfg-contract-valid-slow-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load--raw-v2-rooted-cfg-safe-v3-contract-valid-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load-raw-v2-cons-call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-load.el	nelisp-native-load-raw-v2-object-op-call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-template.el	nelisp-native-template-validate	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-native-windows.el	nelisp-native-windows-protect	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-process-buffer.el	nelisp-process-buffer-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	0	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
 lisp/nelisp-sexp-layout.el	nelisp-sexp--abi-export	tag-const-ref	1	walked	Read this ABI constant consumer and added tag-14/tag-15 constants to its exported or emitted string-tag set.
+lisp/nelisp-stdlib-reader.el	nelisp--read-parse-byte-code	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+lisp/nelisp-x86-64-decode.el	nelisp-x86-64-decode-insn	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-process-events.el	emacs-process-events--get	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-process-events.el	emacs-process-events--get	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-process-events.el	emacs-process-events--set	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-server-client-polyfills.el	format-network-address	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-sqlite-ffi.el	emacs-sqlite-ffi--column-value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-sqlite.el	emacs-sqlite--column	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/emacs-time.el	emacs-time--parse-zone-offset	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/nemacs-gui-file-bridge-runtime.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+packages/emacs-lib-core/src/nemacs-gui-file-bridge-runtime.el	-	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 packages/nelisp-eventloop-multiplex/src/nelisp-eventloop-multiplex.el	nelisp-eventloop-multiplex-unregister-fd	unresolved-numeric	0	n-a	This validates the six-field eventloop registration handle shape, not a Sexp tag.
+packages/nelisp-gui-xcb/src/nelisp-gui-menu.el	nelisp-gui-menu-pointer	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 packages/nelisp-process-adapter/src/nelisp-process-adapter.el	nelisp-process-adapter--signal-name	unresolved-numeric	0	n-a	This compares POSIX signal number 6 (SIGABRT), not a Sexp tag.
-scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_aref_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_arrayp_raw	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_arrayp_raw	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_aset_checked	tag-test-read-u64	0	walked	Read the tag-14/15 branch: it resolves either inline or boxed storage, permits only byte values 0..255, and writes exactly one byte without changing tag or byte length.
-scripts/nelisp-standalone-build.el	bf_aset_checked	tag-test-read-u64	1	walked	Read the tag-5/6 branch: it permits mutation only when both replaced and replacement characters are ASCII, so the exact tag and byte length remain invariant.
-scripts/nelisp-standalone-build.el	bf_debug_switch	unresolved-numeric	0	n-a	This compares private debug commands 5/6 (mid-form GC arm/disarm), not Sexp tags.
-scripts/nelisp-standalone-build.el	bf_debug_switch	unresolved-numeric	1	n-a	This compares private debug commands 5/6 (mid-form GC arm/disarm), not Sexp tags.
-scripts/nelisp-standalone-build.el	nl_eval_arg_list_drive	unresolved-numeric	0	n-a	This compares argument-list walker status codes, not Sexp tags.
-scripts/nelisp-standalone-build.el	bf_elt	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_elt	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_elt_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_elt_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-prelude-bytecode.el	nelisp-prelude-bytecode--decode-opcodes	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_aref_checked_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_aref_checked_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_arrayp_raw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_arrayp_raw	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_aset_checked_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_aset_checked_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_aset_multibyte_string_status	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_builtin_subr_arity_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_builtin_subr_arity_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_clear_string_bytes_w	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_debug_switch_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_debug_switch_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_elt_checked_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_elt_checked_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_elt_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_elt_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_eq2	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_equal2	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_equal2	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_identity_hash	tag-test-bound-sym	0	walked	Doc 201 §6.17 identity hash behind `sxhash-eq': tags 5/14 (and 13) hash their inline buffer pointer and length, every empty string alike; tags 6/15 take the box pointer at 8 like every other boxed type.
-scripts/nelisp-standalone-build.el	bf_aset_multibyte_string	tag-test-read-u64	0	walked	T95: this tag-5-only branch applies the byte-boundary cursor cache only to immutable inline strings; mutable tag 6 remains on the existing uncached mutation path, while raw-byte tags 14/15 remain handled by the preceding unibyte branch.
-scripts/nelisp-standalone-build.el	bf_error	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_error	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_length_checked	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	bf_length_checked	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	bf_eq2	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_equal2	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_equal2	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_error_w	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_error_w	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_external_sequence_width	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_fmt_arg_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_hash_table_p_raw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_identity_hash	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_identity_hash	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_identity_hash	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	bf_length_checked_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_length_checked_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_byte_code_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	5	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	6	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	7	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	8	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	9	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	10	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_make_native_subr_w	unresolved-numeric	11	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_makunbound_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_pf_cons	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_pf_kind	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_pf_kind	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_pf_vec	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_read_one_cb	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	bf_read_one_from_string_native_w	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	bf_str_len	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	bf_str_ptr	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	bf_string_inline_p	tag-test-bound-sym	0	walked	Read the conversion layout dispatch and classified immutable tags 5/14 as inline while boxed tags 6/15 take the NlStr allocation path.
 scripts/nelisp-standalone-build.el	bf_strsym_raw	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	bf_strsym_raw	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_concat_arg_kind	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_concat_arg_kind	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_concat_first_bad	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_concat_first_bad	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_emit_value	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	m5_emit_value	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	m5_json	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	m5_json	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_concat_arg_kind	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_concat_arg_kind	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_concat_first_bad	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_concat_first_bad	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_emit_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_emit_value	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_forced_multibyte_p	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_apply_no_word_subr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_apply_no_word_subr	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_apply_word_subr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_apply_word_subr	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_builtin_name	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_entry_check	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_entry_check	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_eval_forms	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_funcall_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_funcall_value	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_funcall_value	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_funcall_value	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_intrinsic_slow	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_literal_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_fx_run_body	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_json	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_json	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
 scripts/nelisp-standalone-build.el	m5_json_sym_is_null	unresolved-numeric	0	n-a	This compares the five-byte length of the symbol name :null, not a Sexp tag.
-scripts/nelisp-standalone-build.el	m5_length	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_length	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	m5_prin1	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	m5_prin1	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
+scripts/nelisp-standalone-build.el	m5_length	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_length	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_prin1	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_prin1	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	m5_prin1_vec_buffer_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_rx_run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_rx_run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_rx_search	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_string_search_chars	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	m5_string_search_chars	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	m5_string_tag_p	unresolved-numeric	0	walked	Read the central string predicate and admitted immutable tag 14 alongside tag 5.
 scripts/nelisp-standalone-build.el	m5_string_tag_p	unresolved-numeric	1	walked	Read the central string predicate and admitted boxed tag 15 alongside tag 6.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-sexp-tag	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
 scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	0	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
 scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	1	walked	Read the quoted standalone builtin arm and added tags 14/15 to its string predicate/access dispatch.
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-bound-sym	0	walked	T90 2026-09-06: the `intern' / `intern-soft' arms test the argument's tag through the bound `tg' (4 = Symbol, 0/1 = nil/t, 5/6/14/15 = the string kinds, raw-byte 14/15 accepted as strings) before dispatching; the OBARRAY check reads the second argument's tag against 0 (nil).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-bound-sym	1	walked	T90 2026-09-06: the `intern' / `intern-soft' arms test the argument's tag through the bound `tg' (4 = Symbol, 0/1 = nil/t, 5/6/14/15 = the string kinds, raw-byte 14/15 accepted as strings) before dispatching; the OBARRAY check reads the second argument's tag against 0 (nil).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-bound-sym	2	walked	T90 2026-09-06: the `intern' / `intern-soft' arms test the argument's tag through the bound `tg' (4 = Symbol, 0/1 = nil/t, 5/6/14/15 = the string kinds, raw-byte 14/15 accepted as strings) before dispatching; the OBARRAY check reads the second argument's tag against 0 (nil).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	tag-test-bound-sym	3	walked	T90 2026-09-06: the `intern' / `intern-soft' arms test the argument's tag through the bound `tg' (4 = Symbol, 0/1 = nil/t, 5/6/14/15 = the string kinds, raw-byte 14/15 accepted as strings) before dispatching; the OBARRAY check reads the second argument's tag against 0 (nil).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-read-u64	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-read-u64	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-read-u64	2	walked	T95: this tag-5-only branch enables the byte-boundary cursor cache for immutable inline strings; mutable tag 6 deliberately remains uncached, and raw-byte tags 14/15 retain the preceding unibyte dispatch.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-bf-arms	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
 scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-build-dispatch	tag-test-sexp-tag	0	walked	Read the dispatch name layout: Symbol/Str/UnibyteStr tags 4/5/14 all store their byte length at offset 24; every other tag receives the non-matching -1 sentinel.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	tag-test-sexp-tag	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nelisp-standalone--applyfn-dispatch-table	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
 scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-cache-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
 scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-runtime-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
 scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-command-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
 scripts/nelisp-standalone-build.el	nelisp-standalone--artifact-source-command-cache-src	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--autoload-rewrite-lookups	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nelisp-standalone--prelude-bytecode-supported-p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nelisp-standalone--reader-repl-prelude-source	unparsed-region	0	walked	Hand-inspected this generated source region; its string predicates delegate to the tag-14/tag-15-aware standalone paths.
+scripts/nelisp-standalone-build.el	nelisp-standalone--sid-read-form	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_apply_native_subr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_apply_native_subr	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nl_bi_process_string_sx_p	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_bi_process_string_sx_p	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_bi_read_file_maybe_raw_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nl_bi_strlen	tag-test-bound-sym	1	walked	Read this duplicate generated Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_bi_strlen	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_bi_strptr	tag-test-bound-sym	1	walked	Read this duplicate generated Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_bi_strptr	tag-test-bound-sym	0	walked	Read this Sexp string dispatch, bound its tag read once, and added the applicable layout-identical tag-14/tag-15 arm(s).
 scripts/nelisp-standalone-build.el	nl_bi_word_byte	unresolved-numeric	0	n-a	This selects byte index 5/6 while unpacking a u64 word, not a Sexp tag.
 scripts/nelisp-standalone-build.el	nl_bi_word_byte	unresolved-numeric	1	n-a	This selects byte index 5/6 while unpacking a u64 word, not a Sexp tag.
-scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	tag-test-bound-sym	0	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	tag-test-bound-sym	1	walked	Read the value-output dispatch and added tag-14/tag-15 raw-byte-safe string rendering.
-scripts/nelisp-standalone-build.el	nl_compact_pin_src	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_compact_pin_src	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_compact_rw_slot	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_compact_rw_slot	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_cli_value_to_buf	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_closure_doc_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_closure_doc_p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_cold_load_arena	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_compact_pin_src	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_compact_pin_src	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_compact_rw_legacy_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_compact_rw_legacy_slot	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_compact_rw_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_compact_rw_word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nl_compact_unpin_root	unresolved-numeric	0	n-a	This compares GC header mark-state 5 for a pinned root, not a Sexp tag.
 scripts/nelisp-standalone-build.el	nl_ct_tag_eq	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_fa_slot	tag-test-bound-sym	0	walked	Read the flat-arena reachability marker and added tag 14 to the inline-buffer arm and tag 15 to the boxed-NlStr arm.
-scripts/nelisp-standalone-build.el	nl_fa_slot	tag-test-bound-sym	1	walked	Read the flat-arena reachability marker and added tag 14 to the inline-buffer arm and tag 15 to the boxed-NlStr arm.
-scripts/nelisp-standalone-build.el	nl_gc_mark_slot	tag-test-bound-sym	0	walked	Read the precise GC marker and added tag 14 exactly to the inline-buffer arm and tag 15 exactly to the boxed-NlStr arm.
-scripts/nelisp-standalone-build.el	nl_gc_mark_slot	tag-test-bound-sym	1	walked	Read the precise GC marker and added tag 14 exactly to the inline-buffer arm and tag 15 exactly to the boxed-NlStr arm.
-scripts/nelisp-standalone-build.el	nl_ht_key_hash	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_ht_key_hash	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	tag-test-bound-sym	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
+scripts/nelisp-standalone-build.el	nl_directcall_id	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_directcall_id	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_directcall_id	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_directcall_invoke	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_directcall_list_words	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_after_args_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_after_lookup_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_bind_pair_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_bind_pair_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_bind_pair_w	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_builtin_name	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_eval_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_bind_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_hybrid_ok	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_scope_clean	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_shape	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_shape	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_star_run_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_star_run_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_let_values_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_resolve_alias_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_setq_store_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_setq_store_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_setq_store_w	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_setq_store_w	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_setq_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_symbol_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eic_symbol_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_n	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_plain_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_set	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_set_slow	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_set_slow	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_w_slow	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ent_w_slow	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_env_set_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eval_inner_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_eval_inner_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_cons	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_cons	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_mirror_buckets	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_mirror_buckets	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_recorded_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_rootstack_walk	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_fa_slot	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_fa_slot	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_fa_symcells	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fa_word_slots	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fl_formals	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_fl_values_plain	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_conserv_string_area	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_conserv_string_area	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_cons	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_cons	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_cons_view	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_legacy_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_legacy_slot	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_mark_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_gc_mark_word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_typed_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_typed_slot	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_typed_slot	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_typed_slot	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_weak_survives	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_weak_survives	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_gc_weak_table_mode	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_custom_function_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_custom_function_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_data_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_entry_value	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_entry_value	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_entry_value	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_fast_find	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_fast_hdr	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_fast_rem	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_find_index	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_find_index	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_find_index	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_find_index	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_find_index	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_hash_put	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_hash_put	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_identity_sync	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_identity_sync	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_key_hash	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_ht_key_hash	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_ht_key_hash_stable_p	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-bound-sym, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	nl_ht_meta_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_obj	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_remove_index	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_remove_index	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_symbol_hash	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_test_mode	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_ht_test_mode	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_let_nowrite_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_live_symbol_holding	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_load_eager_enabled	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_defvaralias_raw_w	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_defvaralias_raw_w	tag-test-sexp-tag	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_notify	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_notify	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_notify	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n3_notify	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n4_push_words_cold	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_n4_put_words	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_native_frame_v2	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nl_process_windows_map_errno	unresolved-numeric	0	n-a	This compares Win32 GetLastError codes against POSIX errno values inside the windows async-process arm's errno mapper (a1e3999c), not Sexp tags -- the same boundary translation nl_socket_windows_map_errno does for Winsock.
 scripts/nelisp-standalone-build.el	nl_process_windows_map_errno	unresolved-numeric	1	n-a	This compares Win32 GetLastError codes against POSIX errno values inside the windows async-process arm's errno mapper (a1e3999c), not Sexp tags -- the same boundary translation nl_socket_windows_map_errno does for Winsock.
 scripts/nelisp-standalone-build.el	nl_push_captured_walk	tag-test-sexp-tag	0	walked	Restore bare declarations using the frame name predicate (tags 4/5/14/16) plus boxed string tags 6/15. Public closure and private six-representation tests verify declaration retention and identity isolation.
+scripts/nelisp-standalone-build.el	nl_reader_native_result_ref_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_reader_native_result_ref_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sb_pop_saved_local	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sb_pop_saved_local	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sb_pop_saved_local	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sf_decl_has_declare	tag-test-sexp-tag	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/nelisp-standalone-build.el	nl_sf_decl_strip_body	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	0	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	nl_sf_defvaralias_apply	tag-test-sexp-tag	1	walked	Read this Sexp string dispatch and added the applicable layout-identical tag-14/tag-15 arm(s).
-scripts/nelisp-standalone-build.el	wf_bytecode_w_varref	unresolved-numeric	0	n-a	Alias resolver statuses 2 (unbound) and 6 (slow path) are internal sentinels, not Sexp tags; both select the existing dynamic lookup fallback before value dereference.
-scripts/nelisp-standalone-build.el	wf_butlast	unresolved-numeric	0	n-a	This compares the wf_butlast_n_state result code `(= state 5)' (N given but not a number), not a Sexp tag; the Sexp tags it reads are tested only against 0, 2, 3, 7 and 13.
-scripts/nelisp-standalone-build.el	wf_raw_eq	tag-test-read-u64	0	walked	Doc 201 §6.17: the stock `eq' arm's raw compare reads tags 5/14 by inline buffer pointer and length (every empty string alike) instead of the capacity word at 8; tags 6/15 keep the box pointer at 8.
+scripts/nelisp-standalone-build.el	nl_sf_decl_strip_body_word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_so_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_stackmap_classify	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_str_target	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_str_view_header	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_strview_selftest_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sym_make_uninterned	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sym_make_uninterned	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sym_name_string	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_sym_set_plain_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_symbol_intern_remove	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_symname_cell_word	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_symobj_state	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_val_tag	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_word_class	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_word_data	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_word_data	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	nl_word_length	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_butlast_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_boxed_op	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_boxed_op	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call_gateway_exit	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call_leaf	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call_leaf	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_call_leaf	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	tag-test-read-u8	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	tag-test-read-u8	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	tag-test-read-u8	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	tag-test-read-u8	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_execute_frame	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_fast_slot	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_predicate	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_predicate	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_switch_find	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_canon_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_closure_head_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_eqw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_eqw	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_fast_run	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_lean_store	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_bytecode_w_local_set	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_cb_kind	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_cb_prim_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_cb_prim_call	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_cb_prim_call	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_cmpl_fnlist_p	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_intern_global_w	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_intern_global_w	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_intern_soft_global_w	tag-test-bound-sym	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_intern_soft_global_w	tag-test-bound-sym	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapc_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapcar_fx_call	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapcar_fx_call	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapcar_fx_call	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapcar_fx_call	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_mapcar_fx_call	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_maphash_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_maphash_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_maphash_w	unresolved-numeric	2	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_maphash_w	unresolved-numeric	3	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_maphash_w	unresolved-numeric	4	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_numeric_marker_compare_w	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_numeric_marker_compare_w	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-standalone-build.el	wf_raw_eq	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited. Earlier rows for this function (tag-test-read-u64, walked) went stale when its tag-test shape changed; re-audit.
+scripts/nelisp-standalone-build.el	wf_word_view	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-stdlib-prelude.el	backward-prefix-chars	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-stdlib-prelude.el	nelisp--fx-register-fn	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+scripts/nelisp-stdlib-prelude.el	nelisp--rd-one	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 scripts/standalone-bignum-smoke.el	-	unresolved-numeric	0	n-a	This compares bignum probe results with the small integers 5 and 6 ((> 2^61 5), (mod N 6) = 1/5/-5): arithmetic operands in a smoke test, not Sexp tags.
+tools/ai/integ-wh-gc-string-area.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/integ-wh-interval-fuzz.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/nelisp-bytecode-coverage-audit.el	nelisp-bytecode-coverage-audit--probe-code	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/overlay1/fuzz.el	fz-step	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/overlay1/fuzz.el	fz-step	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/overlay1/fuzz2.el	fz-step-1	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/overlay1/fuzz2.el	fz-step-1	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/rxnative/refvm.el	rxn-run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/rxnative/refvm.el	rxn-run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/strings-image-b.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/symbols-name-word-census.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/symbols-name-word-census.el	snw-heap-check	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/symbols-name-word-census.el	snw-heap-check	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/textprop1-fuzz.el	tf-buf-run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/textprop1-fuzz.el	tf-buf-run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/textprop1-fuzz.el	tf-str-run	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/textprop1-fuzz.el	tf-str-run	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/vmfast2/src-lex.el	v2-nested-throw	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/wasm-rootstack-compose.el	wasm-rootstack--input-authority	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/wasm-target-init-test.el	-	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/ai/wasm-target-init.el	wasm-target-init--validate	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--ledger-rows	unresolved-numeric	0	n-a	This validates the ledger row has six tab-separated fields, not a Sexp tag.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	0	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
 tools/nelisp-doc200-tag-census.el	nelisp-doc200-tag-census--target-number-p	unresolved-numeric	1	n-a	These literals define the census scanner input tags 5/6; adding 14/15 would change the stable Phase-0 site key set.
+tools/nelisp-native-application-build.el	nelisp-native-application-build--output-plan	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/nelisp-native-application-build.el	nelisp-native-application-build-prepare-and-activate	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/nelisp-native-inventory.el	nn-table	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/nelisp-substrate-parity-corpus.el	nelisp-substrate-parity-corpus	unresolved-numeric	0	pending	Added after the last ledger refresh; not yet audited.
+tools/nelisp-substrate-parity-corpus.el	nelisp-substrate-parity-corpus	unresolved-numeric	1	pending	Added after the last ledger refresh; not yet audited.
 tools/nelisp-thread-allocating-standalone-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected five-element worker result list, not a Sexp tag.
 tools/nelisp-thread-percpu-roots-smoke.el	-	unresolved-numeric	0	n-a	This asserts the expected worker result integer 5, not a Sexp tag.
 # T101 bool-vector helper numeric constants are bit offsets, and parser string
@@ -195,8 +670,6 @@ lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el	nl_jit_access_aset_bv_bitval
 lisp/nelisp-cc-jit-access-aset-bool-vector-inner.el	nl_jit_access_aset_bv_bitval	unresolved-numeric	1	n-a	This compares bit offsets 0/1 in a lookup table, not Sexp tags.
 lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	0	n-a	This compares packed bit offsets 0/1 in a lookup table, not Sexp tags.
 lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	1	n-a	This compares packed bit offsets 0/1 in a lookup table, not Sexp tags.
-lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_len	tag-test-read-u64	0	walked	Reads string length at representation offsets, not a Sexp tag.
-lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_str_ptr	tag-test-read-u64	0	walked	Reads string data pointer at representation offsets, not a Sexp tag.
 lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	0	walked	Recognizes string tag 5 for bool-vector literal payloads, not a new Sexp tag.
 lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	1	walked	Recognizes string tag 6/14/15 for bool-vector literal payloads, not a new Sexp tag.
 scripts/nelisp-standalone-build.el	nelisp-standalone--prelude-source-with-list-accessors	unresolved-numeric	0	n-a	Host-side count of six bytecompiled provider defuns; this is not a runtime value tag.
