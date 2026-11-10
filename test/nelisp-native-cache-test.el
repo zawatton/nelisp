@@ -76,7 +76,12 @@
 
 (defmacro nelisp-native-cache-test--directory (&rest body)
   (declare (indent 0) (debug t))
-  `(let ((directory (make-temp-file "nelisp-cache-test-" t))
+  `(let ((directory (progn
+                      ;; On Windows the cache directory code needs the
+                      ;; standalone runtime's FFI (`nl-ffi-call'), absent in host Emacs.
+                      (skip-unless (or (not (nelisp-native-load--windows-p))
+                                       (fboundp 'nl-ffi-call)))
+                      (make-temp-file "nelisp-cache-test-" t)))
           (process-environment (copy-sequence process-environment)))
      (unwind-protect
          (progn (set-file-modes directory #o700)
@@ -481,6 +486,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
           (should-error (funcall callable 1 2)))))))
 
 (ert-deftest nelisp-native-cache/trusted-memory-safety-refusals-and-cleanup ()
+  ;; These mock the Linux munmap path; Windows releases via VirtualFree.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (skip-unless (equal emacs-version "31.1"))
   (nelisp-native-cache-test--runtime
     (pcase-let ((`(,_ ,manifest ,header) (nelisp-native-cache-test--fixture)))
@@ -502,6 +509,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
       (should (= unmaps 2)))))
 
 (ert-deftest nelisp-native-cache/trusted-symbol-and-displacement-cleanup ()
+  ;; These mock the Linux munmap path; Windows releases via VirtualFree.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (skip-unless (equal emacs-version "31.1"))
   (nelisp-native-cache-test--runtime
     (pcase-let ((`(,_ ,manifest ,header) (nelisp-native-cache-test--fixture)))
