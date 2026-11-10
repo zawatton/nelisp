@@ -703,7 +703,10 @@ build_run cons-clone '(seq
 # boxed data ops: cell-make/value/set/null, vector make/ref/ref-ptr/set,
 # record make/type-tag/slot-ref/slot-ref-ptr/set/count, and cons-cdr-raw.
 # The local helpers implement the minimal Vec/NlCell/NlRecord layouts the
-# aarch64 emitters read: NlVector data@+8 len@+16; NlRecord data@+40 len@+48;
+# aarch64 emitters read: NlVector header@+0 data@+8 len@+16; NlRecord
+# header@+0 type-tag Sexp@+8 data@+40 len@+48.  `vector-len' and
+# `record-slot-count' read the compact vectorlike header (c94267651):
+# (length << 8) | kind at backing+0, so the helpers stamp it.
 # NlCell value-WORD@+0 refcount@+8 (Doc 147 Phase 1 -- 16 bytes, align 8).
 build_run boxed '(seq
   (defun nl_alloc_bytes (size align) (atomic-fetch-add 34359738368 size))
@@ -751,6 +754,7 @@ build_run boxed '(seq
   (defun nl_alloc_vector (cap)
     (let ((box (nl_alloc_bytes 32 8)))
       (seq
+        (ptr-write-u64 box 0 (+ (* cap 256) 8))
         (ptr-write-u64 box 8 (nl_alloc_bytes (* cap 8) 8))
         (ptr-write-u64 box 16 cap)
         box)))
@@ -763,17 +767,18 @@ build_run boxed '(seq
   (defun nl_alloc_record (tagptr count)
     (let ((box (nl_alloc_bytes 64 8)))
       (seq
-        (nl_sexp_clone_into tagptr box)
+        (ptr-write-u64 box 0 (+ (* count 256) 12))
+        (nl_sexp_clone_into tagptr (+ box 8))
         (ptr-write-u64 box 40 (nl_alloc_bytes (* count 8) 8))
         (ptr-write-u64 box 48 count)
         box)))
   (defun nl_record_set_slot (rec idx valptr)
     (nl_val_clone_into valptr (+ (ptr-read-u64 rec 40) (* idx 8))))
   ;; record-type-tag copies the inline type tag of the record (the Sexp at
-  ;; offset 0 of the NlRecord the payload points to) into OUT, as the
+  ;; offset 8 of the NlRecord the payload points to) into OUT, as the
   ;; emitter did inline before it called this accessor.
   (defun nl_record_type_copy (record out)
-    (seq (nl_sexp_clone_into (ptr-read-u64 record 8) out) out))
+    (seq (nl_sexp_clone_into (+ (ptr-read-u64 record 8) 8) out) out))
   (defun nl_record_slot_ptr (sexpptr idx)
     (nl_val_load
      (ptr-read-u64 (+ (ptr-read-u64 (ptr-read-u64 sexpptr 8) 40) (* idx 8)) 0)
