@@ -895,17 +895,20 @@ builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^    (1 goto-char nelisp--clear
 # restored + rebuilt, `GATE-COUNT checked=6 findings=0'.
 special-variables|scripts/nelisp-standalone-build.el|s/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 0 1)/(if (= (nelisp_mirror_is_bound (+ env 0) sym (+ env 64)) 1) 1 1)/|defvar's override-protection is defeated: an already-bound global is reinitialized, and its VALUE form re-evaluated, on every later (defvar NAME VALUE)
 #
-# symbol-identity: `nl_next_symbol_identity' (lisp/nelisp-cc-nlstr-direct-
-# ops.el) is the atomic counter that gives every `make-symbol' call a
-# distinct identity, which `nl_uninterned_symbol_equal' reads to tell two
-# uninterned symbols apart under `equal'.  Pinning it to a constant makes
-# every uninterned symbol answer the same identity.  Baked into
-# target/nelisp, so the gate is listed in `gate_needs_rebuild'.  Verified:
-# mutated + rebuilt, the 5 tests reported 9 subtest failures,
-# including `equal-table-identities' overwriting the first key's slot
-# (`GATE-COUNT checked=5 findings=9'); restored + rebuilt, `GATE-COUNT
-# checked=5 findings=0'.
-symbol-identity|lisp/nelisp-cc-nlstr-direct-ops.el|s/(+ (atomic-fetch-add 268435544 1) 1)/1/|every make-symbol call receives the same identity number, so two uninterned symbols sharing a name collide under an equal-test hash table instead of remaining distinct
+# symbol-identity: an uninterned symbol's identity is its cell address (the
+# object WORD), not `nl_next_symbol_identity' (that counter only serves the
+# reader's `#:', the JIT make-symbol and the unbound marker), and `eq' on
+# two symbol objects short-circuits on the word, so neither `nl_symbol_word_eq'
+# nor the counter is on the path the gate exercises.  What separates two
+# same-named make-symbol results in a hash table is `nl_ht_key_hash' (the
+# object's address for tag 16) plus `nl_ht_key_match'.  The row makes tag-16
+# keys hash to one bucket and any two of them match, in both the `eq' and
+# `equal' modes.  Baked into target/nelisp, so the gate is listed in
+# `gate_needs_rebuild'.  Verified with
+# NELISP_GATE_MUTATION_ONLY=symbol-identity: went red (`GATE-COUNT checked=5
+# findings=2'), tree restored.  A key_match-only injection stayed green
+# because distinct addresses never share a bucket.
+symbol-identity|scripts/nelisp-standalone-build.el|s/(if (= mode 1) (bf_eq2 ka kb)/(if (= mode 1) (if (= (nl_val_tag ka) 16) 1 (bf_eq2 ka kb))/;s/(bf_eql2 ka kb) (wf_key_eq ka kb))/(bf_eql2 ka kb) (if (= (nl_val_tag ka) 16) 1 (wf_key_eq ka kb)))/;s/(logand (heap-sexp-payload key_ptr) 2147483647)/(logand (heap-sexp-payload key_ptr) (if (= tag 16) 0 2147483647))/|a hash-table probe stops telling uninterned symbols apart: they all hash to one bucket and the key match calls any two of them the same key, so two make-symbol results sharing a name overwrite each other's slot in eq and equal tables instead of remaining distinct
 #
 # reference-parity: `tools/nelisp-reference-parity.py' is itself the
 # checker `substrate-parity-smoke' and the CI "Emacs parity" step build
