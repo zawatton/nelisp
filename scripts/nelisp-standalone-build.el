@@ -47963,7 +47963,14 @@ Parallelism pays off only once per-unit compilation dominates startup
     (setq nelisp-standalone--recompiled nil)
     (dolist (entry nelisp-standalone--manifest)
       (unless (memq (nth 1 entry) '(:start :driver))
-        (when (= (mod pos n) idx)
+        ;; The base-source applyfn/eval-inner/combiner units are not linked
+        ;; any more: the eval build takes its patched word-ABI versions from
+        ;; `nelisp-standalone--reader-units'.  Compiling the unpatched ones
+        ;; fails (abi split) and warms nothing.
+        (when (and (= (mod pos n) idx)
+                   (not (member (car entry)
+                                '("applyfn.o" "eval-inner.o" "combiner-cons.o"
+                                  "combiner-apply.o"))))
           (nelisp-standalone--unit-for entry))
         (setq pos (1+ pos))))
     (message "[standalone] chunk %d/%d compiled: %s" idx n
