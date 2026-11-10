@@ -399,14 +399,34 @@ standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_
 # root set risks, and in the SHIPPED configuration it is invisible: measured
 # 2026-08-29, with the arm gone the reader-smoke suite (41 smokes) and the full
 # anvil module load are both still green, because the conservative native-stack
-# scan holds the form up.  With the scan off the same binary dies immediately.
+# scan holds the form up.  With the scan off the same binary then died
+# immediately (rc=139).
+# Re-aimed 2026-11-10: removing ONLY the `result' arm of
+# `nl_gc_mark_recorded_frame' stopped turning the no-conservative-scan labels
+# red (51 configurations, 0 findings), even with the pool slot walk off.  A
+# second, deliberate precise root now covers the executing form: `nl_n4_mark_env'
+# (run for every recorded frame by `nl_gc_mark_recorded_env', and by
+# `nl_gc_mark_roots') marks the backtrace activation records, and the record
+# `nl_eval_inner_w' pushes for the running special form (the top-level `while')
+# holds that form's function and argument list, i.e. its AST.  Neither root is
+# redundant by accident, so the injection removes BOTH: the `result' arm and
+# the activation-record marking (a second sed command, anchored on the defun
+# because `nl_n4_rewrite_env' has an identical first line).  The executing form
+# then has no precise root at all.  Measured with both applied: `shipped' still
+# passes (`acc=14000000 collections=6'), and `no-conservative-scan',
+# `no-conservative-scan-no-pool-walk' and `setq-collects-in-value' die with
+# rc=139 (GATE-COUNT checked=51 findings=3).  Applying either half alone leaves
+# the gate green, which is why the row carries both.
 # RED prints: `precise_root_fail label=no-conservative-scan reason=nonzero-exit
 # rc=139' and `... label=no-conservative-scan-no-pool-walk ... rc=139', with
-# `label=shipped acc=1750000' still passing above them -- that contrast is the
+# `label=shipped acc=14000000' still passing above them -- that contrast is the
 # point of the row.  GREEN prints three `precise_root_result' lines,
-# `acc=1750000 collections=6' each.  Structural, not timing-dependent: the arm
-# is gone, so the form has no precise root at all.
-precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/|the executing top-level form is no longer a precise root, so only the conservative stack scan keeps it alive
+# `acc=14000000 collections=6' each.  Structural, not timing-dependent: both
+# roots are gone, so the form has no precise root at all.  The sed stays two
+# commands in one row; the harness fails the row if the combined edit changes
+# nothing, but cannot see one half going stale, so re-measure both halves when
+# either function is touched.
+precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/;/defun nl_n4_mark_env (env)/{n;s/(if (= (heap-read-u64 env 176) 0) 0/(if (= 1 1) 0 ; MUTATION2: backtrace records are not roots/}|the executing top-level form is no longer a precise root through either the recorded-frame result arm or the backtrace activation records, so only the conservative stack scan keeps it alive
 # precise-root-coverage gained two `setq' cases when that construct was closed.
 # They carry NO row here, deliberately: the defect they cover is an ordering
 # inside one CPS chain (the cdr taken before the eval instead of after), which
