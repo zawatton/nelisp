@@ -89,7 +89,15 @@ require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
 # 120 against 71, mostly because its runners were slower).  Override with
 # NELISP_GATE_MUTATION_REBUILD_ESTIMATE; row_worst_case never returns more
 # than build_timeout + row_timeout.
-rebuild_row_estimate=${NELISP_GATE_MUTATION_REBUILD_ESTIMATE:-3900}
+#
+# 2026-11-10: 1200 s.  Since the reader build loads its toolchain
+# byte-compiled (CI's cold `make standalone-reader' 1163 s -> 220 s), the
+# 26 timed rows of run 42793703030 took median 195 s, p90 340 s, max 373 s
+# (rebuild rows included), yet 4-7 rows per shard were still NOT RUN on the
+# 3900 s estimate with 3200-3850 s of budget left.  1200 s is over 3x the
+# slowest measured row, which covers runners slower than that run's, and
+# a row's hard limits (build_timeout, row_timeout) are unchanged.
+rebuild_row_estimate=${NELISP_GATE_MUTATION_REBUILD_ESTIMATE:-1200}
 require_positive_int NELISP_GATE_MUTATION_REBUILD_ESTIMATE "$rebuild_row_estimate"
 # Optional budget for the whole shard (seconds since this harness started).
 # Unset means no budget.  Each row is judged on its own estimate against
@@ -552,7 +560,8 @@ row_worst_case() {
   else
     w=$((w + row_timeout))
   fi
-  if row_rebuilds "$g" "$f" && ! gate_builds_variant "$g" &&
+  # A gate that compiles units in its own run costs what a rebuild row costs.
+  if { row_rebuilds "$g" "$f" || gate_run_compiles "$g"; } && ! gate_builds_variant "$g" &&
      [ "$rebuild_row_estimate" -lt "$w" ]; then w=$rebuild_row_estimate; fi
   echo "$w"
 }

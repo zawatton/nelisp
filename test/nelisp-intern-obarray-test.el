@@ -137,21 +137,29 @@ Minimums, not means: a GC pause lands in one batch and would otherwise
 make the assertion about the collector.  A linearly scanned table shows up
 in every batch, so it cannot hide from the minimum.  `concat' rather than
 `format' builds the names so the measurement is `intern' itself."
-  (let* ((printed (nelisp-intern-obarray-test--run
-                   "(let ((i 0) (times nil))
-                      (while (< i 6000)
-                        (let ((t0 (float-time)) (end (+ i 500)))
-                          (while (< i end)
-                            (intern (concat \"nl-t90-grow-\" (number-to-string i)))
-                            (setq i (1+ i)))
-                          (push (- (float-time) t0) times)))
-                      (nreverse times))"))
-         (times (car (read-from-string printed)))
-         (early (apply #'min (seq-take times 4)))
-         (late (apply #'min (seq-drop times 8))))
-    (should (= 12 (length times)))
-    (message "intern growth: per-call us early=%.1f late=%.1f (batches %S)"
-             (/ (* 1e6 early) 500.0) (/ (* 1e6 late) 500.0) times)
+  ;; Up to three fresh processes: on a loaded CI runner one 2-5 ms batch
+  ;; minimum can miss the 2x bound by noise alone (5.0 vs 2x2.3 ms on run
+  ;; 42793703030).  A table that really scans linearly is slow in every
+  ;; attempt, so passing on any attempt keeps the check.
+  (let ((attempt 0) (ok nil) late early)
+    (while (and (not ok) (< attempt 3))
+      (setq attempt (1+ attempt))
+      (let* ((printed (nelisp-intern-obarray-test--run
+                       "(let ((i 0) (times nil))
+                          (while (< i 6000)
+                            (let ((t0 (float-time)) (end (+ i 500)))
+                              (while (< i end)
+                                (intern (concat \"nl-t90-grow-\" (number-to-string i)))
+                                (setq i (1+ i)))
+                              (push (- (float-time) t0) times)))
+                          (nreverse times))"))
+             (times (car (read-from-string printed))))
+        (should (= 12 (length times)))
+        (setq early (apply #'min (seq-take times 4))
+              late (apply #'min (seq-drop times 8))
+              ok (<= late (* 2.0 early)))
+        (message "intern growth (attempt %d): per-call us early=%.1f late=%.1f (batches %S)"
+                 attempt (/ (* 1e6 early) 500.0) (/ (* 1e6 late) 500.0) times)))
     (should (<= late (* 2.0 early)))))
 
 ;; ---------------------------------------------------------------------------
