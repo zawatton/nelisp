@@ -101,8 +101,10 @@
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-loader/admit-valid-v3-manifest-and-reject-rehashed-mutations ()
   (skip-unless (equal emacs-version "31.1"))
-  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
-                   (executable-find "gzip")))
+  (skip-unless (or (locate-library "bytecomp.el" t)
+                   ;; Windows Emacs zips ship no .el sources at all.
+                   (and (locate-library "bytecomp.el.gz" t)
+                        (executable-find "gzip"))))
   (let* ((contract (nelisp-bytecode-native-rooted-cfg-safe-producer-test--contract))
          (manifest (nelisp-bytecode-native-rooted-cfg-safe-producer-test--manifest
                     contract)))
@@ -300,8 +302,10 @@
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-contract/portable-dialect-requires-pinned-host-or-runtime-witness ()
   (skip-unless (equal emacs-version "31.1"))
-  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
-                   (executable-find "gzip")))
+  (skip-unless (or (locate-library "bytecomp.el" t)
+                   ;; Windows Emacs zips ship no .el sources at all.
+                   (and (locate-library "bytecomp.el.gz" t)
+                        (executable-find "gzip"))))
   (let* ((inventory nelisp-bytecode-compiler-input--inventory-sha256)
          (host (nelisp-bytecode-compiler-input-dialect))
          (runtime (list :status 'pinned :dialect "GNU Emacs 31.1"
