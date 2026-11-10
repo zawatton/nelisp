@@ -41,7 +41,8 @@
   (let ((here (or (and (boundp 'load-file-name) load-file-name)
                   (and (boundp 'buffer-file-name) buffer-file-name))))
     (when here
-      (expand-file-name "../vendor" (file-name-directory here)))))
+      (require 'nelisp-emacs-vendor)
+      (nelisp-emacs-vendor--find-root (file-name-directory here)))))
 
 (when (emacs-init--standalone-runtime-p)
   (unless (boundp 'load-path)
