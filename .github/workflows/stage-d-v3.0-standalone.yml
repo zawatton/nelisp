@@ -266,14 +266,34 @@ jobs:
       # Not purcell/setup-emacs here, unlike the aarch64 job: that action
       # builds Emacs from nixpkgs, and Nixpkgs 26.11 dropped x86_64-darwin
       # ("error: Nixpkgs 26.11 has dropped support for x86_64-darwin"), so
-      # this job could not even install Emacs.  Homebrew still ships an
-      # Intel build.  The version is whatever brew has rather than a pinned
-      # 31.1, so print it -- a parity job that does not say which Emacs it
-      # compared against is reporting half a result.
-      - name: Set up Emacs (Homebrew; nixpkgs no longer supports x86_64-darwin)
+      # this job could not even install Emacs.  Homebrew's Intel bottle was
+      # 30.2, and the build refuses anything but 31.1 ("expected GNU Emacs
+      # 31.1, got 30.2" compiling vendor bytecomp.el, run 42748394177, after
+      # nearly five hours), so build the GNU 31.1 release from source once
+      # and cache the install.
+      - name: Restore GNU Emacs 31.1 (macOS Intel build)
+        id: emacs31
+        uses: actions/cache@v4
+        with:
+          path: ~/emacs-31.1
+          key: emacs-31.1-macos-15-intel-v1
+      - name: Build GNU Emacs 31.1 from the release tarball
+        if: steps.emacs31.outputs.cache-hit != 'true'
         run: |
-          brew install emacs
-          emacs --version | head -1
+          brew install pkg-config gnutls
+          curl -fsSL -o "$RUNNER_TEMP/emacs-31.1.tar.xz" https://ftp.gnu.org/gnu/emacs/emacs-31.1.tar.xz
+          tar -C "$RUNNER_TEMP" -xf "$RUNNER_TEMP/emacs-31.1.tar.xz"
+          cd "$RUNNER_TEMP/emacs-31.1"
+          ./configure --prefix="$HOME/emacs-31.1" --without-ns --without-x \
+            --without-native-compilation --with-gnutls=ifavailable \
+            --without-makeinfo
+          make -j"$(sysctl -n hw.ncpu)"
+          make install
+      - name: Set up Emacs 31.1
+        run: |
+          echo "$HOME/emacs-31.1/bin" >> "$GITHUB_PATH"
+          "$HOME/emacs-31.1/bin/emacs" --version | head -1
+          "$HOME/emacs-31.1/bin/emacs" --batch -Q --eval '(unless (equal emacs-version "31.1") (error "need GNU Emacs 31.1, got %s" emacs-version))'
 
       - name: Verify macOS Intel standalone parity
         shell: bash

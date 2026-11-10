@@ -4,7 +4,7 @@
 # Records "<HEAD sha> <dirty> <exit code>" in target/main-ci-reds/NAME.result
 # so check-heavy.sh can tell a fresh pass on this commit from a stale one.
 # Usage: run-heavy.sh NAME   (NAME: ert-full smokes extras extras-s3 perf selfhost
-#                              emacs-parity eval-test precise-root-mutation
+#                              emacs-parity eval-test build-identity precise-root-mutation
 #                              cross-platform mut-GATE gate-GATE)
 set -u
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -24,6 +24,8 @@ case "$name" in
   # The Linux leg of the standalone parity workflow (main ledger S4.2); it
   # builds the eval binary, so it fails like eval-test until that is ported.
   cross-platform) cmd='bash scripts/verify-cross-platform.sh --parallel-jobs 2 --include-tarball' ;;
+  # B1.1 of tools/ai/build-speed-progress.org.
+  build-identity) cmd='bash tools/ai/build-speed/identity.sh' ;;
   precise-root-mutation) cmd='NELISP_GATE_MUTATION_ONLY=precise-root-coverage bash tools/nelisp-gate-mutation.sh' ;;
   # Criteria of tools/ai/gate-mutation-rows-progress.org: the rows of one
   # gate in tools/gate-mutations.txt, each of which must turn the gate red.
