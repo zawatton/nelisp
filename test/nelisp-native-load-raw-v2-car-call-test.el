@@ -39,8 +39,8 @@
               ((symbol-function 'nelisp-native-load-unbox) (lambda (&rest _) result)))
       (let* ((handle (list :kind 'raw-runtime-v2 :entry 5
                            :entry-name "nl_native_car_probe" :arity 4
-                           :runtime-abi nelisp-native-load-raw-runtime-abi-v2
-                           :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                           :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                           :raw-abi (nelisp-native-load--runtime-abi-v2)
                            :imports '("nl_native_car_v2")))
              (nelisp-native-load-raw-mappings (list handle)))
         (should (eq (nelisp-native-load-raw-v2-car-call handle input) result))
@@ -55,8 +55,8 @@
 (ert-deftest nelisp-native-load-raw-v2-car-call/rejects-nearby-import-contracts ()
   (let* ((handle (list :kind 'raw-runtime-v2 :entry 5
                        :entry-name "nl_native_car_probe" :arity 4
-                       :runtime-abi nelisp-native-load-raw-runtime-abi-v2
-                       :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                       :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                       :raw-abi (nelisp-native-load--runtime-abi-v2)
                        :imports '("nl_native_car_v2" "nl_native_cdr_v2")))
          (nelisp-native-load-raw-mappings (list handle)))
     (should-error (nelisp-native-load-raw-v2-car-call handle nil)

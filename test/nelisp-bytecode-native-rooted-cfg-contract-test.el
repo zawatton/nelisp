@@ -23,7 +23,7 @@
                               (cl-position name nelisp-native-load-bridgeable-symbols
                                            :test #'equal))))
                 (append (list :name name :kind 'func
-                              :abi nelisp-native-load-raw-runtime-abi-v2
+                              :abi (nelisp-native-load--runtime-abi-v2)
                               :index index
                               :address-mode (if slot 'conditional-root-slot-v1
                                               'native-bridgeable-v1))
@@ -33,7 +33,7 @@
          (native (list :exports
                        (list (list :name (plist-get contract :entry)
                                    :value 16 :size 80 :type 'func
-                                   :abi nelisp-native-load-raw-runtime-abi-v2
+                                   :abi (nelisp-native-load--runtime-abi-v2)
                                    :arity 4 :params '(u64 u64 u64 u64) :return 'u64))
                        :imports imports)))
     (list :native native
