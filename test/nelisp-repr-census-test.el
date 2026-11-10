@@ -53,7 +53,8 @@
            (default-directory nelisp-repr-census-test--root)
            (status (call-process
                     "sh" nil t nil "-c"
-                    (format "ulimit -v 8388608; ulimit -c 0; exec emacs --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
+                    (format "ulimit -v 8388608; ulimit -c 0; exec %s --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
+                            (shell-quote-argument (expand-file-name invocation-name invocation-directory))
                             (shell-quote-argument file)
                             (shell-quote-argument (format "%S" nelisp-repr-census-test--probe))))))
       (should (eq status 0))
@@ -144,7 +145,8 @@
            (default-directory nelisp-repr-census-test--root)
            (status (call-process
                     "sh" nil t nil "-c"
-                    (format "ulimit -v 8388608; ulimit -c 0; exec emacs --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
+                    (format "ulimit -v 8388608; ulimit -c 0; exec %s --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
+                            (shell-quote-argument (expand-file-name invocation-name invocation-directory))
                             (shell-quote-argument (nelisp-repr-census-test--file))
                             (shell-quote-argument (format "(princ (format \"%%S\\n\" %S))" form))))))
       (should (eq status 0))
