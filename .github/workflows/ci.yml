@@ -516,6 +516,10 @@ jobs:
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
         if: runner.os == 'Windows'
         shell: bash
+        # Bound the build: on run 42748394272 the build Emacs printed
+        # "Re-entering top level after C stack overflow" in applyfn-reader
+        # and then sat until the 6 h job cap cancelled all four jobs.
+        timeout-minutes: 90
         run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Windows was the only lane that could run this, because arming the
       # redzone verifier needs the boot env probe and `nl_os_environ_init'
@@ -1177,6 +1181,10 @@ jobs:
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
         if: runner.os == 'Windows'
         shell: bash
+        # Bound the build: on run 42748394272 the build Emacs printed
+        # "Re-entering top level after C stack overflow" in applyfn-reader
+        # and then sat until the 6 h job cap cancelled all four jobs.
+        timeout-minutes: 90
         run: make standalone-reader-checked NELISP_STANDALONE_TARGET=windows-x86_64 NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
 
       # `make test' alone (as this ran before) never writes a gate report;
