@@ -2,6 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (require 'ert)
+;; Fixtures are read back byte-exactly; keep LF on CRLF-default hosts (Windows).
+(setq-default buffer-file-coding-system 'utf-8-unix)
 (require 'nelisp-native-application-build)
 
 (defconst nnab-test-root (file-name-directory (or load-file-name buffer-file-name)))
