@@ -51,6 +51,10 @@ TESTS := $(sort $(filter-out test/nelisp-worker-soak-test.el, \
                   $(wildcard test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nelisp*-test.el) \
                   $(wildcard packages/*/test/nl-*-test.el)))
+# The runner globs this same set itself, so the suite targets pass the list
+# only when TESTS is overridden: all ~714 paths as arguments overran the
+# Windows command-line limit (CI run 42793703030 ran 182 files).
+TESTS_ARGS = $(if $(filter command line environment environment override,$(origin TESTS)),$(TESTS))
 # Load each test file once.  Many test files `load'/`require' other test
 # files, so a plain `-l' list can load a file twice and ERT then aborts with
 # "redefined (or loaded twice)".  Skip any file already in `load-history'
@@ -96,7 +100,7 @@ all: test
 # tools/run-tests-parallel.sh); loading every file into one process made
 # results depend on load order and on earlier files' redefinitions.
 test: clean
-	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh $(TESTS)
+	@JOBS=$(JOBS) EMACS="$(EMACS)" ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # Fast TDD loop: same test load graph as `test' but skips `clean';
 # use `test' as the clean verification gate before trusting results.
@@ -413,7 +417,7 @@ jit-unverified:
 # one is the measurement, this one is the coverage.
 test-jit:
 	@EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
-	  ./tools/run-tests-parallel.sh $(TESTS)
+	  ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # The mirror.  With `nelisp-jit-enabled' defaulting to t, the ordinary
 # suite exercises the JIT and the bcl / interpreter paths stop being
@@ -423,7 +427,7 @@ test-jit:
 # differences from the interpreter still in it.
 test-nojit:
 	@EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
-	  ./tools/run-tests-parallel.sh $(TESTS)
+	  ./tools/run-tests-parallel.sh $(TESTS_ARGS)
 
 # `compile' is the byte-compile-error-on-warn lint: it removes the .elc
 # files of its targets before and after the run (also when the run fails,
