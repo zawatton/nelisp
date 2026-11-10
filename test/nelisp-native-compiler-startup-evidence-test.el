@@ -760,6 +760,8 @@
   (eval (nelisp-native-compiler-startup-evidence-test--elf-form 'nelisp-elf-test-wrong t) t))
 
 (ert-deftest nelisp-native-compiler-startup-evidence-elf-search-paths ()
+  ;; Exercises the generated ELF reader; Windows generates the PE reader instead.
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (let ((saved (and (fboundp 'nelisp--string-search) (symbol-function 'nelisp--string-search)))
         (nelisp-elf-test-evidence '(:functions ((:name "a") (:name "b")))))
     (unwind-protect
