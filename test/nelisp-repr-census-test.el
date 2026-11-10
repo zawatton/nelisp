@@ -45,18 +45,27 @@
                                (let ((f '(seq (defun nl_word_data (w) (foo w)))))
                                  (eq f (nelisp-standalone--census-instrument f)))))))))
 
+(defun nelisp-repr-census-test--child (file eval-form)
+  "Run FILE plus EVAL-FORM in a child Emacs batch; insert stdout here; return status.
+Windows has no reliable sh/ulimit, so the child is started directly there."
+  (let ((emacs (expand-file-name invocation-name invocation-directory))
+        (args (list "--batch" "-L" "lisp" "-L" "src" "-L" "scripts"
+                    "-l" file "--eval" eval-form)))
+    (if (eq system-type 'windows-nt)
+        (apply #'call-process emacs nil (list t nil) nil args)
+      (call-process
+       "sh" nil t nil "-c"
+       (format "ulimit -v 8388608; ulimit -c 0; exec %s %s 2>/dev/null"
+               (shell-quote-argument emacs)
+               (mapconcat #'shell-quote-argument args " "))))))
+
 (defun nelisp-repr-census-test--run (file switch)
   "Load FILE in a child Emacs with NELISP_REPR_CENSUS=SWITCH; return the probe list."
   (with-temp-buffer
     (let* ((process-environment
             (cons (concat "NELISP_REPR_CENSUS=" switch) process-environment))
            (default-directory nelisp-repr-census-test--root)
-           (status (call-process
-                    "sh" nil t nil "-c"
-                    (format "ulimit -v 8388608; ulimit -c 0; exec %s --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
-                            (shell-quote-argument (expand-file-name invocation-name invocation-directory))
-                            (shell-quote-argument file)
-                            (shell-quote-argument (format "%S" nelisp-repr-census-test--probe))))))
+           (status (nelisp-repr-census-test--child file (format "%S" nelisp-repr-census-test--probe))))
       (should (eq status 0))
       (goto-char (point-max))
       (forward-line -1)
@@ -143,12 +152,9 @@
   (with-temp-buffer
     (let* ((process-environment (cons "NELISP_REPR_CENSUS=1" process-environment))
            (default-directory nelisp-repr-census-test--root)
-           (status (call-process
-                    "sh" nil t nil "-c"
-                    (format "ulimit -v 8388608; ulimit -c 0; exec %s --batch -L lisp -L src -L scripts -l %s --eval %s 2>/dev/null"
-                            (shell-quote-argument (expand-file-name invocation-name invocation-directory))
-                            (shell-quote-argument (nelisp-repr-census-test--file))
-                            (shell-quote-argument (format "(princ (format \"%%S\\n\" %S))" form))))))
+           (status (nelisp-repr-census-test--child
+                    (nelisp-repr-census-test--file)
+                    (format "(princ (format \"%%S\\n\" %S))" form))))
       (should (eq status 0))
       (goto-char (point-max))
       (forward-line -1)

@@ -32,6 +32,11 @@
 
 (if (url--standalone-runtime-p)
     (let ((file (url--vendor-file)))
+      ;; `main-thread' is a C variable in GNU Emacs, and it is nil when
+      ;; Emacs is built without threads.  NeLisp has no threads, and
+      ;; url-http reads the variable on every connection, so give it the
+      ;; no-thread value before loading the vendored library.
+      (defvar main-thread nil)
       (load file nil t))
   (url--host-load-standard))
 

@@ -337,14 +337,17 @@
             (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
                                   :runtime-key-computations)
                        before-generation)))
-          (let ((nelisp-native-load-raw-runtime-abi-v2 "changed-abi")
-                (before-abi (plist-get
-                             (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
-                             :runtime-key-computations)))
-            (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)
-            (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
-                                  :runtime-key-computations)
-                       before-abi)))))
+          ;; Override the accessor too: on Windows it ignores the constant.
+          (cl-letf (((symbol-function 'nelisp-native-load--runtime-abi-v2)
+                     (lambda () "changed-abi")))
+            (let ((nelisp-native-load-raw-runtime-abi-v2 "changed-abi")
+                  (before-abi (plist-get
+                               (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
+                               :runtime-key-computations)))
+              (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest)
+              (should (> (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics)
+                                    :runtime-key-computations)
+                         before-abi))))))
       (should (>= (plist-get (nelisp-native-load-raw-v2-rooted-cfg-cache-statistics) :misses)
                   (+ (plist-get start :misses) 1))))))
 

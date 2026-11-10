@@ -2,6 +2,10 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
 (require 'cl-lib)
+;; The build script loads the toolchain byte-compiled when no toolchain library
+;; is loaded yet.  The producer test below compiles the whole reader source;
+;; interpreted, that recursion overflows the host C stack on Windows.
+(require 'nelisp-standalone-build)
 (require 'nelisp-aot-compiler)
 (defvar nelisp-aot-compiler--x86-ordered-jump-tables-enabled)
 (defvar nelisp-ordered-test--force-off (getenv "NELISP_ORDERED_DISABLE"))

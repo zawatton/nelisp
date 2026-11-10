@@ -146,7 +146,8 @@ host Emacs defines, so only the public name is renamed."
 
 (defmacro nelisp-sh-fast-test--should-parity (algorithm object &rest start-end-binary)
   "Assert the fast `secure-hash' agrees with host Emacs's on the same call."
-  `(should (equal (apply #'secure-hash ,algorithm ,object (list ,@start-end-binary))
+  `(should (equal (let ((coding-system-for-write 'utf-8)) ; not cp932 on Windows
+                    (apply #'secure-hash ,algorithm ,object (list ,@start-end-binary)))
                   ;; The fast path stages bytes in a temp file; keep host
                   ;; Emacs on Windows from CRLF-translating them.
                   (let ((coding-system-for-write 'no-conversion))
