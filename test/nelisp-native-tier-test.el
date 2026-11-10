@@ -174,6 +174,8 @@
         (nelisp-native-tier-cancel entry)
         (should (= deleted 2)) (should (= nelisp-native-tier--reaped 2))))))
 (ert-deftest nelisp-native-tier-worker-executable-and-static-gccjit-fences ()
+  ;; Worker supervision is refused on Windows (nelisp-native-tier.el).
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (let ((binary (make-temp-file "tier-binary-")))
     (unwind-protect
         (cl-letf (((symbol-function 'nelisp-native-load-running-binary-sha256)
@@ -186,11 +188,15 @@
             (should-error (nelisp-native-tier--check-worker binary 'gccjit)))))
       (delete-file binary))))
 (ert-deftest nelisp-native-tier-worker-uses-raw-executable-identity ()
+  ;; Worker supervision is refused on Windows (nelisp-native-tier.el).
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (cl-letf (((symbol-function 'nelisp-native-load--sha256-file-external) (lambda (_) "complete-raw-elf"))
             ((symbol-function 'nelisp-native-cache--file-hash) (lambda (_) (ert-fail "encoded buffer hash used")))
             ((symbol-function 'nelisp-native-load-running-binary-sha256) (lambda () "complete-raw-elf")))
     (should-not (nelisp-native-tier--check-worker "reader" 'in-house))))
 (ert-deftest nelisp-native-tier-worker-raw-hash-fallback ()
+  ;; Worker supervision is refused on Windows (nelisp-native-tier.el).
+  (skip-unless (not (nelisp-native-load--windows-p)))
   (let ((binary (make-temp-file "tier-binary-")) (bytes (unibyte-string 0 128 255)))
     (unwind-protect
         (let ((coding-system-for-write 'no-conversion))
