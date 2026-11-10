@@ -89,20 +89,37 @@
              (let* ((name (wf_arg_ptr args 0)))
                (seq (nl_alloc_uninterned_symbol
                      (bf_str_ptr name) (bf_str_len name) (wf_argval args 1) out) 0)))
+            ;; d409a23e6 (Doc 226 step 5.3): an uninterned symbol is a direct
+            ;; kind-16 symbol_block object.  Its identity is the backing
+            ;; address (`heap-sexp-payload'; the caller-supplied identity of
+            ;; the retired 32-byte layout is no longer stored), the name is the
+            ;; GNU SYMBOL_NAME string read through bf_str_ptr/bf_str_len, and
+            ;; the gcmarkbit is the cell's own header bit 24 (nl_symbol_mark_cell).
             ((:lit "symbol-test-id") .
-             (wf_write_int out (ptr-read-u64 (wf_arg_ptr args 0) 8)))
+             (wf_write_int out (heap-sexp-payload (wf_arg_ptr args 0))))
             ((:lit "symbol-test-mark") .
              (let* ((sym (wf_arg_ptr args 0))
-                    (header (- (ptr-read-u64 sym 16) 8))
-                    (saved (nl_hdr_mark header)))
-               (seq (nl_hdr_set_mark header 0)
-                    (nl_gc_mark_slot sym)
-                    (wf_write_int out (nl_hdr_mark header))
-                    (nl_hdr_set_mark header saved)
-                    0)))
+                    (base (heap-sexp-payload sym))
+                    (word (+ base 6)))
+               (if (> (if (< base (heap-read-u64 (data-addr nl_typed_alloc) 96)) 0
+                        (if (>= base (heap-read-u64 (data-addr nl_typed_alloc) 104)) 0
+                          (nl_typed_find base))) 1)
+                   ;; A symbol_block cell: clear the bit, run the precise
+                   ;; marker, read the bit back, restore it.
+                   (let* ((saved (heap-read-u64 base 0)))
+                     (seq (ptr-write-u64 base 0 (logand saved (- 0 16777217)))
+                          (nl_gc_mark_slot word)
+                          (wf_write_int out (if (= (logand (heap-read-u64 base 0) 16777216) 0) 0 1))
+                          (ptr-write-u64 base 0 saved)
+                          0))
+                 ;; Not a symbol_block cell: nothing to probe.  Answer -1 so a
+                 ;; test cannot pass by accident (run with the marker removed,
+                 ;; the image test read 0 from the cell branch, so restored
+                 ;; image symbols live in symbol blocks too).
+                 (seq (wf_write_int out -1) 0))))
             ((:lit "symbol-test-name") .
              (let* ((sym (wf_arg_ptr args 0)))
-               (seq (nl_alloc_str (ptr-read-u64 sym 16) (ptr-read-u64 sym 24) out) 0)))
+               (seq (nl_alloc_str (bf_str_ptr sym) (bf_str_len sym) out) 0)))
             ((:lit "symbol-test-name-equal") .
              (if (= (str-eq (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
                  (wf_write_t out) (wf_write_nil out)))
