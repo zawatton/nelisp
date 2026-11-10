@@ -211,7 +211,11 @@
         (should (equal (substring destination 7 (+ 7 (length bytes))) (vconcat bytes)))
         (should (equal (substring destination 0 7) (make-vector 7 165)))
         (should (equal (substring destination (+ 7 (length bytes))) (make-vector 9 165)))
-        (unless (eq target 'linux-x86_64)
+        ;; Linux and (since the Windows size fix, 2026-11-11) Windows put the
+        ;; literal in readonly data; other targets keep the chunk defuns.
+        (if (memq target '(linux-x86_64 windows-x86_64))
+            (unless (= (length bytes) 0)
+              (should (cl-find 'data-blob forms :key #'car)))
           (should-not (cl-find 'data-blob forms :key #'car)))))))
 
 (ert-deftest nelisp-build-trace-data-reloc-and-validation-controls ()
