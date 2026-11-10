@@ -79,7 +79,9 @@
                    (fboundp 'decode-coding-string))
         (nelisp-eln-string--fail 'utf8-conversion-unavailable))
       (condition-case data
-          (setq encoded (encode-coding-string string 'utf-8 t))
+          ;; No NOCOPY: with it GNU hands back an ASCII-only multibyte
+          ;; STRING itself, still multibyte, instead of its bytes.
+          (setq encoded (encode-coding-string string 'utf-8))
         (error (nelisp-eln-string--fail 'utf8-encoding-failed data)))
       (unless (and (stringp encoded)
                    (not (multibyte-string-p encoded)))

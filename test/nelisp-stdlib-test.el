@@ -1201,14 +1201,15 @@ segment's fix, regardless of TIME or FORMAT-STRING."
                     "\"100%\""))))
 
 (ert-deftest nelisp-stdlib-segf-format-time-string-unsupported-directive ()
-  "An unsupported directive signals rather than passing text through."
+  "An unknown directive is copied through, as GNU's strftime port does.
+The runtime has used GNU's timefns since 0c7099cc3 (v21 timefmt); the
+earlier hand-written version signalled instead."
   (let ((binary (expand-file-name "target/nelisp" default-directory)))
     (unless (file-executable-p binary)
       (ert-skip "target/nelisp is not built; standalone-reader gate owns it"))
-    (with-temp-buffer
-      (let ((rc (call-process binary nil t nil "--eval"
-                              "(format-time-string \"%Q\" 0 t)")))
-        (should-not (= rc 0))))))
+    (should (equal (nelisp-stdlib-segf--standalone-eval
+                    "(format-time-string \"%Q\" 0 t)")
+                   (prin1-to-string (format-time-string "%Q" 0 t))))))
 
 (ert-deftest nelisp-stdlib-segf-decode-time-utc ()
   "`decode-time' at ZONE=t matches Emacs 31.1's (SEC MIN HOUR DAY MONTH
@@ -1226,12 +1227,20 @@ YEAR DOW DST UTCOFF) shape, DST always nil, UTCOFF always 0."
 
 (ert-deftest nelisp-stdlib-segf-encode-decode-roundtrip ()
   "`(encode-time (decode-time TIME t))' round-trips TIME, across the
-same fixture dates used for the `format-time-string' UTC check."
+same fixture dates used for the `format-time-string' UTC check.
+The value is in GNU's form: a (HI LO) list while `current-time-list'
+is t, as in GNU's timefns, which the runtime has used since 0c7099cc3."
   (dolist (pair nelisp-stdlib-segf-time-fixtures)
     (let ((epoch (car pair)))
       (should (equal (nelisp-stdlib-segf--standalone-eval
                        (format "(encode-time (decode-time %d t))" epoch))
-                      (number-to-string epoch))))))
+                      (prin1-to-string (encode-time (decode-time epoch t)))))
+      (should (= (time-convert
+                  (car (read-from-string
+                        (nelisp-stdlib-segf--standalone-eval
+                         (format "(encode-time (decode-time %d t))" epoch))))
+                  'integer)
+                 epoch)))))
 
 (ert-deftest nelisp-stdlib-segf-current-time-string-shape ()
   "`current-time-string' has the classic asctime-ish shape."

@@ -916,10 +916,16 @@ Cons and string results are admitted through the pinned reference bridge."
                             (eq (plist-get handle :param-repr) 'sexp-ptr)
                             (memq (plist-get handle :return-repr)
                                   '(sexp-ptr raw-bool unknown))))
-                   (and (eq (plist-get handle :abi) 'integer)
-                        (memq (plist-get handle :param-repr) '(raw-i64 unknown))
-                        (memq (plist-get handle :return-repr)
-                              '(raw-i64 unknown)))))))))
+                   (or
+                    ;; Raw runtime handles (from `nelisp-native-load-raw-artifact')
+                    ;; carry no ABI/representation metadata: the raw loader
+                    ;; itself fixes the SysV i64 entry, so their kind is the
+                    ;; proof of the integer ABI.
+                    (memq (plist-get handle :kind) '(raw-runtime raw-runtime-v2))
+                    (and (eq (plist-get handle :abi) 'integer)
+                         (memq (plist-get handle :param-repr) '(raw-i64 unknown))
+                         (memq (plist-get handle :return-repr)
+                               '(raw-i64 unknown))))))))))
 
 (defun nelisp-bytecode-jit--compile-ir-private (function ir)
   "Compile FUNCTION's generic IR through its raw or boxed AOT compiler."
@@ -1590,7 +1596,16 @@ one request for the next explicit safe-point call to
         (if (not safe)
             nil
           (puthash function calls nelisp-bytecode-jit--hot-counts)
-          (if (< calls nelisp-bytecode-jit-threshold)
+          (if (or (< calls nelisp-bytecode-jit-threshold)
+                  ;; A payload whose native compile already failed is not
+                  ;; recompiled on every hot call; the retry cost dominated
+                  ;; whole programs that run many unsupported leaf functions.
+                  (let ((failure (gethash function
+                                          nelisp-bytecode-jit--compile-failures)))
+                    (and failure
+                         (equal (plist-get failure :fingerprint)
+                                (nelisp-bytecode-jit--function-payload-fingerprint
+                                 function)))))
               (progn
                 (setq nelisp-bytecode-jit--interpreter-fallback-count
                       (1+ nelisp-bytecode-jit--interpreter-fallback-count))
@@ -1627,6 +1642,12 @@ one request for the next explicit safe-point call to
                      (error nil)))
                  (if (car nelisp-bytecode-jit--native-entry-state)
                      (signal (car error-data) (cdr error-data))
+                   (puthash function
+                            (list :fingerprint
+                                  (nelisp-bytecode-jit--function-payload-fingerprint
+                                   function)
+                                  :condition error-data)
+                            nelisp-bytecode-jit--compile-failures)
                    (setq nelisp-bytecode-jit--interpreter-fallback-count
                          (1+ nelisp-bytecode-jit--interpreter-fallback-count))
                    nil))))))))))
