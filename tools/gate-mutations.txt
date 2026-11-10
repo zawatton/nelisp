@@ -415,8 +415,9 @@ standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_
 # then has no precise root at all.  Measured with both applied: `shipped' still
 # passes (`acc=14000000 collections=6'), and `no-conservative-scan',
 # `no-conservative-scan-no-pool-walk' and `setq-collects-in-value' die with
-# rc=139 (GATE-COUNT checked=51 findings=3).  Applying either half alone leaves
-# the gate green, which is why the row carries both.
+# rc=139 (GATE-COUNT checked=51 findings=3).  The result-arm half alone was
+# measured green (2026-11-10, checked=51 findings=0), which is why the row
+# carries both; the nl_n4_mark_env half alone was not measured.
 # RED prints: `precise_root_fail label=no-conservative-scan reason=nonzero-exit
 # rc=139' and `... label=no-conservative-scan-no-pool-walk ... rc=139', with
 # `label=shipped acc=14000000' still passing above them -- that contrast is the
