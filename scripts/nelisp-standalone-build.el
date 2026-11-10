@@ -141,9 +141,21 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                 (setq reason (format "byte-compile child exited %s" status))
               (dolist (lib nelisp-standalone--toolchain-elc-compile-order)
                 (let ((tmp (expand-file-name (concat lib ".elc" tag) dir)))
-                  (if (file-exists-p tmp)
-                      (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
-                    (setq reason (format "%s.elc was not written" lib))))))))
+                  (cond
+                   ((not (file-exists-p tmp))
+                    (setq reason (format "%s.elc was not written" lib)))
+                   ;; Windows refuses to rename over a file another process
+                   ;; has open, and parallel ERT files load this script at
+                   ;; once (permission-denied, CI run 42793703030).  A
+                   ;; finished .elc there is the same content -- the
+                   ;; directory is keyed by the sources -- so keep it.
+                   ((condition-case nil
+                        (progn (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
+                               t)
+                      (file-error nil)))
+                   ((file-exists-p (expand-file-name (concat lib ".elc") dir))
+                    (ignore-errors (delete-file tmp)))
+                   (t (setq reason (format "%s.elc could not be renamed into place" lib)))))))))
         (unless reason
           (setq load-path (cons dir (delete dir load-path)))
           (message "[standalone] toolchain: byte-compiled (%s)" dir))))
