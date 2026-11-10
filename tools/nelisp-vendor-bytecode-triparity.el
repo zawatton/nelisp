@@ -347,14 +347,27 @@
           (push 'triparity-add1 names))
         (cl-remove-if-not (lambda (spec) (memq (car spec) names)) all)))))
 
+(defun nelisp-vendor-bytecode-triparity--setup-budget (sources)
+  "Return the default child timeout for a lane that loads SOURCES first.
+A child that loads no vendor source keeps the 15s budget.  One that does
+loads GNU Emacs Lisp *source* (`load-file' of macroexp.el, cconv.el and
+sometimes bytecomp.el, interpreted): that alone took 5.1s on an idle
+32-core host, and on a loaded 2-core GitHub runner running the ERT files
+in parallel it passed 15s, so the host lane timed out (`not-executable')
+on runs 42748394272, 42764592583 and 42748264604 before it computed
+anything.  The budget only bounds a hung child; a result still has to
+match, so a longer budget cannot turn a wrong answer into a pass."
+  (if (eq sources :none) 15 60))
+
 (defun nelisp-vendor-bytecode-triparity--lane
     (program object args lane &optional sources timeout-seconds)
   (let ((form (nelisp-vendor-bytecode-triparity--child-form
                object args lane sources)))
-    (let ((result (nelisp-vendor-bytecode-triparity--run-child
-                   program (list "-Q" "--batch" "--eval" form)
-                   (or timeout-seconds 15))))
-      (plist-put result :timeout_seconds (or timeout-seconds 15)))))
+    (let* ((budget (or timeout-seconds
+                       (nelisp-vendor-bytecode-triparity--setup-budget sources)))
+           (result (nelisp-vendor-bytecode-triparity--run-child
+                    program (list "-Q" "--batch" "--eval" form) budget)))
+      (plist-put result :timeout_seconds budget))))
 
 (defun nelisp-vendor-bytecode-triparity-run ()
   "Run bounded Host/VM/JIT fixtures and write JSON report.
