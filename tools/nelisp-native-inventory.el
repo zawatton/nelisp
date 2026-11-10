@@ -29,7 +29,11 @@
           (walk form))
         (when (and (consp form) (eq (car form) 'defconst)
                    (eq (cadr form) 'nelisp-standalone--reader-builtins))
+          ;; Build-time switches the table consults; the inventory is of the
+          ;; default build (no runtime reload, no Doc 238 debug census).
           (setq found (cl-letf (((symbol-function 'nelisp-standalone--runtime-reload-enabled-p)
+                                 (lambda () nil))
+                                ((symbol-function 'nelisp-standalone--census-p)
                                  (lambda () nil)))
                         (eval (nth 2 form) t)))))
       (unless found (error "reader-builtins defconst not found in %s" nn-source))
