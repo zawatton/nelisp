@@ -68204,7 +68204,14 @@ baked driver of its own, so it gets the very same forms as a separate unit."
      (defun nl_cstr_len (ptr)
        (if (= ptr 0) 0 (nl_cstr_len_loop ptr 0)))
      ,@(nelisp-standalone--reader-os-source-forms)
-     ,@(nelisp-standalone--reader-cold-source-forms))
+     ,@(nelisp-standalone--reader-cold-source-forms)
+     ;; Windows' cold loader opens the image through the pinned boot-image
+     ;; helpers (`nl_boot_image_open_pinned', `nl_boot_image_read_header'),
+     ;; which the reader build gets from its driver; without them the
+     ;; Windows eval link failed (stage-d run 42793702779).  Other targets'
+     ;; cold loader uses `nl_os_open_read' and needs none of them.
+     ,@(and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+            (nelisp-boot-image-native-forms)))
    nelisp-standalone--this-file))
 
 (defun nelisp-standalone--reader-units (&optional eval-p)
