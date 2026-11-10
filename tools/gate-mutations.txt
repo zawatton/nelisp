@@ -243,7 +243,7 @@ ert-full|lisp/nelisp-cl-macros.el|s/(signal 'cl-no-applicable-method (cons name 
 standalone-reader-test|scripts/nelisp-standalone-build.el|s/(and (> v 0) (> acc (- 2305843009213693951 v)))/(and (> v 0) nil)/|wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum
 standalone-reader-test|scripts/nelisp-standalone-build.el|s#(/= (/ prod acc) v)#nil#|wf_prod's div-round-trip overflow check is deleted, (* 100000000000 100000000000) wraps silently again instead of promoting to a bignum
 standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) n$/(if (= data 1) n/|the NULL guard in nelisp_reader_p_hash_pair_count is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- reads the tag word at address 0 and the binary faults
-standalone-reader-test|scripts/nelisp-standalone-build.el|s/(if (if (= data_slot 0) 1 (= (ptr-read-u64 data_slot 0) 0))/(if (= data_slot 0)/|nl_ht_put stops treating a materialised nil cdr as an absent data slot, so puthash into an empty reader-built table writes into a scratch view and the table stays empty
+standalone-reader-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 h 16 (+ cnt 4))/(ptr-write-u64 h 16 cnt)/|nl_ht_hash_put fills the pair and links its bucket but no longer bumps the table's live count, so a puthash into a reader-built table is invisible to hash-table-count and the table keeps reading as empty
 # 2026-08-26 (Doc 187 P4 continuous cost gate): the exact flag-controlled
 # guard call is made unconditional-false.  The gate compiles its one-add loop
 # twice from the same source; this mutation makes the checked and unchecked
@@ -298,7 +298,7 @@ nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 
 # instead of the real digits, and comparisons read garbage.  Caught by
 # this smoke's own fencepost/printing/GC-stress checks, not by any
 # pre-existing gate (no prior gate constructs a tag-13 Sexp at all).
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u8  result_slot 0  13)/(seq (ptr-write-u8  result_slot 0  2)/|a constructed bignum is mis-tagged as a plain Int (its sign word read back as the "value"), corrupting bignump/prin1/comparison for every bignum the reader produces
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u64 box 0 (+ 13 (+ (\* sign 64)/(seq (ptr-write-u64 box 0 (+ 2 (+ (\* sign 64)/|a constructed bignum is mis-tagged as a plain Int (the Bignum object header written by nl_bignum_write_w carries the Int tag instead of 13), so its limb words are read back as the "value", corrupting bignump/prin1/comparison for every bignum the reader produces
 
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase B,
 # feat/bignum-p2-arith).  New correctness property this phase introduces:
@@ -399,14 +399,35 @@ standalone-midform-gc-bounded|scripts/nelisp-standalone-build.el|s/(defun nl_os_
 # root set risks, and in the SHIPPED configuration it is invisible: measured
 # 2026-08-29, with the arm gone the reader-smoke suite (41 smokes) and the full
 # anvil module load are both still green, because the conservative native-stack
-# scan holds the form up.  With the scan off the same binary dies immediately.
+# scan holds the form up.  With the scan off the same binary then died
+# immediately (rc=139).
+# Re-aimed 2026-11-10: removing ONLY the `result' arm of
+# `nl_gc_mark_recorded_frame' stopped turning the no-conservative-scan labels
+# red (51 configurations, 0 findings), even with the pool slot walk off.  A
+# second, deliberate precise root now covers the executing form: `nl_n4_mark_env'
+# (run for every recorded frame by `nl_gc_mark_recorded_env', and by
+# `nl_gc_mark_roots') marks the backtrace activation records, and the record
+# `nl_eval_inner_w' pushes for the running special form (the top-level `while')
+# holds that form's function and argument list, i.e. its AST.  Neither root is
+# redundant by accident, so the injection removes BOTH: the `result' arm and
+# the activation-record marking (a second sed command, anchored on the defun
+# because `nl_n4_rewrite_env' has an identical first line).  The executing form
+# then has no precise root at all.  Measured with both applied: `shipped' still
+# passes (`acc=14000000 collections=6'), and `no-conservative-scan',
+# `no-conservative-scan-no-pool-walk' and `setq-collects-in-value' die with
+# rc=139 (GATE-COUNT checked=51 findings=3).  The result-arm half alone was
+# measured green (2026-11-10, checked=51 findings=0), which is why the row
+# carries both; the nl_n4_mark_env half alone was not measured.
 # RED prints: `precise_root_fail label=no-conservative-scan reason=nonzero-exit
 # rc=139' and `... label=no-conservative-scan-no-pool-walk ... rc=139', with
-# `label=shipped acc=1750000' still passing above them -- that contrast is the
+# `label=shipped acc=14000000' still passing above them -- that contrast is the
 # point of the row.  GREEN prints three `precise_root_result' lines,
-# `acc=1750000 collections=6' each.  Structural, not timing-dependent: the arm
-# is gone, so the form has no precise root at all.
-precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/|the executing top-level form is no longer a precise root, so only the conservative stack scan keeps it alive
+# `acc=14000000 collections=6' each.  Structural, not timing-dependent: both
+# roots are gone, so the form has no precise root at all.  The sed stays two
+# commands in one row; the harness fails the row if the combined edit changes
+# nothing, but cannot see one half going stale, so re-measure both halves when
+# either function is touched.
+precise-root-coverage|scripts/nelisp-standalone-build.el|s/(nl_seq2 (nl_gc_mark_recorded_slot result) ; executing form . subform/(nl_seq2 0 ; MUTATION: executing form is not a root/;/defun nl_n4_mark_env (env)/{n;s/(if (= (heap-read-u64 env 176) 0) 0/(if (= 1 1) 0 ; MUTATION2: backtrace records are not roots/}|the executing top-level form is no longer a precise root through either the recorded-frame result arm or the backtrace activation records, so only the conservative stack scan keeps it alive
 # precise-root-coverage gained two `setq' cases when that construct was closed.
 # They carry NO row here, deliberately: the defect they cover is an ordering
 # inside one CPS chain (the cdr taken before the eval instead of after), which
@@ -1066,7 +1087,7 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--pt
 # f64-return-using cases, all fail their `should' assertion; the
 # f64-arg-int-return case, whose return is plain integer, is unaffected)
 # with the mutation in place; checked=20 findings=0 (GREEN) restored.
-ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float out (bits-to-f64 pcret)) 0))/(wf_write_int out pcret))/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
+ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float object (bits-to-f64 pcret)) object)/(wf_write_int_w 0 pcret)/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
 #
 # ffi-loader (FFI step 3 increment 2, pure-elisp ELF loader): the row moved
 # from increment 1's line (`(when (= st-shndx 0)' in

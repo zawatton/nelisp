@@ -364,7 +364,11 @@ match, so a longer budget cannot turn a wrong answer into a pass."
   (let ((form (nelisp-vendor-bytecode-triparity--child-form
                object args lane sources)))
     (let* ((budget (or timeout-seconds
-                       (nelisp-vendor-bytecode-triparity--setup-budget sources)))
+                       ;; A JIT lane also loads nelisp-bytecode-jit.el from
+                       ;; source, so it gets the JIT lanes' 90 s.
+                       (if (eq lane 'jit)
+                           (max 90 (nelisp-vendor-bytecode-triparity--setup-budget sources))
+                         (nelisp-vendor-bytecode-triparity--setup-budget sources))))
            (result (nelisp-vendor-bytecode-triparity--run-child
                     program (list "-Q" "--batch" "--eval" form) budget)))
       (plist-put result :timeout_seconds budget))))
