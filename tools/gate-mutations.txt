@@ -649,7 +649,7 @@ standalone-reader-splitstring-perf-smoke|lisp/nelisp-stdlib-regexp.el|s/(if (and
 # GREEN restored:
 #   [winpath-smoke] PASS: sep=";" abs-ok=t exp-ok=t yes-ok=t no-ok=t
 #     found=".../target/tmp/winpath-smoke/nelisp-doc201-marker" pass=t
-standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat (or drive "") "/" (mapconcat#(concat (or drive "") "/zz/" (mapconcat#|expand-file-name injects a bogus component into every name it expands
+standalone-reader-winpath-smoke|scripts/nelisp-stdlib-prelude.el|s#(concat b "/" path)#(concat b "/zz/" path)#|expand-file-name injects a bogus component into every relative name it expands against a plain absolute base (the POSIX fast path the smoke walks)
 # Doc 201 §5.3.  `standalone-reader-defvar-alloc-smoke' polices §5.1's
 # replacement of `nl_sf_defvar'/`nl_sf_defconst''s per-call AST synthesis
 # with direct primitives.  The row targets the half of that fix with a
