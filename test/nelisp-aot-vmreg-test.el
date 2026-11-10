@@ -23,9 +23,17 @@
     (dolist (d defuns) (nelisp-aot-compiler--emit-defun d buf))
     (nelisp-asm-x86_64-resolve-fixups buf)))
 
+(defun vmreg-test--gnu-objdump-p ()
+  "Return non-nil when `objdump' is GNU binutils (macOS ships llvm-objdump)."
+  (and (executable-find "objdump")
+       (with-temp-buffer
+         (ignore-errors (call-process "objdump" nil t nil "--version"))
+         (goto-char (point-min))
+         (re-search-forward "GNU objdump\\|GNU Binutils" nil t))))
+
 (defun vmreg-test--disasm (bytes)
-  "Return objdump's Intel disassembly of BYTES, or nil without objdump."
-  (when (executable-find "objdump")
+  "Return GNU objdump's Intel disassembly of BYTES, or nil without it."
+  (when (vmreg-test--gnu-objdump-p)
     (let ((f (make-temp-file "vmreg" nil ".bin")))
       (unwind-protect
           (progn
@@ -92,7 +100,7 @@
 
 (ert-deftest vmreg-no-frame-access-to-promoted-slots ()
   "After the prologue spill and register load, no instruction addresses a promoted parameter's word."
-  (skip-unless (executable-find "objdump"))
+  (skip-unless (vmreg-test--gnu-objdump-p))
   (let* ((nelisp-aot-compiler-vm-register-functions '((vmt_run pc sp)))
          (nelisp-aot-compiler--vm-reg-decisions nil)
          (asm (vmreg-test--disasm (vmreg-test--emit (nth 3 vmreg-test--src))))
@@ -123,7 +131,7 @@
          (d (cdr (assq 'vmt_run nelisp-aot-compiler--vm-reg-decisions))))
     (should (eq (car d) :admit))
     (should-not (cl-intersection (mapcar #'cdr (cdr d)) '(r8 r9 rbx rdi rsi)))
-    (when (executable-find "objdump")
+    (when (vmreg-test--gnu-objdump-p)
       (let ((asm (vmreg-test--disasm text)))
         ;; the four callee-saved registers are saved and restored
         (dolist (r '("r12" "r13" "r14" "r15"))
@@ -226,7 +234,7 @@ The raw proof decides only without spillcall, which admits refused variables as 
 (ert-deftest regraw-region-runs-beside-the-map ()
   "A call-free region inside a vm-register function keeps its variables in r8/r9 and leaves the
 map's slots alone; forbidding the coexistence leaves strictly more frame traffic."
-  (skip-unless (executable-find "objdump"))
+  (skip-unless (vmreg-test--gnu-objdump-p))
   (let* ((nelisp-aot-compiler-vm-register-functions '((rg_run a b c d e)))
          (nelisp-aot-compiler--vm-reg-decisions nil)
          (count-refs

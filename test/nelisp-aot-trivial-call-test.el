@@ -83,6 +83,8 @@
       (delete-directory dir t))))
 
 (ert-deftest nelisp-aot-trivial-call/scope-independent-units-and-executable-pass ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "trivial-call-scope-" t)) (obj (expand-file-name "unit.o" dir))
          (exe (expand-file-name "unit" dir))
          (a '(seq (defun same (x) x) (defun caller (x) (same x))))

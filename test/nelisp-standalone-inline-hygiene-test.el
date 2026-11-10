@@ -42,6 +42,8 @@
       (delete-file path))))
 
 (ert-deftest nelisp-inline-hygiene/gnu-native-fullword-and-effect-order ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((helper '(defun nii_mix (x y) (let* ((temp (+ x y))) (- (* temp 3) y))))
         (values '(0 1 -1 4294967295 4294967296 9223372036854775807
                     -9223372036854775808 18446744073709551615))
@@ -67,6 +69,8 @@
     (message "Inline initializer GNU/native full-word cases: %d" count)))
 
 (ert-deftest nelisp-inline-hygiene/fresh-arguments-avoid-caller-and-callee-capture ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((count 0))
     (dolist (cross '(nil t))
       (dolist (helper '((defun nii_sum (x y) (+ x y))

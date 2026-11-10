@@ -2008,33 +2008,19 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                          (cdr (assq 'bss (plist-get u :sections))))))))))
 
 (ert-deftest nelisp-standalone-target-stage8-build-appends-arena-base-slot-unit ()
-  "Doc 140 Stage 8: standalone link units append the `nl_arena_base' slot unit."
+  "Doc 140 Stage 8: the eval build links the word-ABI reader unit list, which
+carries the `nl_arena_base' slot unit on every dynamic-arena-base target.
+`nelisp-standalone-build' must request that list with EVAL-P and link it."
   (dolist (target '(linux-x86_64 windows-x86_64 macos-aarch64))
     (let ((nelisp-standalone--target target)
-          (nelisp-standalone--manifest '(("probe.o" :helper nil)))
-          captured)
-      (cl-letf (((symbol-function 'nelisp-standalone--unit-for)
-                 (lambda (_entry)
-                   (nelisp-link-unit-make "probe.o" nil nil nil)))
-                ((symbol-function 'nelisp-standalone--arena-base-slot-unit)
-                 (lambda ()
-                   (nelisp-link-unit-make
-                    (nelisp-standalone--target-object-name "arena-base.o")
-                    (list (cons 'bss 8)) nil nil)))
-                ;; Fixed 2026-08-24 (integration/wave6 full-battery run,
-                ;; standalone-eval-test's bounded-backtrace dependency
-                ;; fix): `nelisp-standalone-build' now ALSO appends
-                ;; `nelisp-standalone--eval-extra-manifest''s units
-                ;; (mapped through the already-mocked `unit-for' above,
-                ;; harmlessly producing more fake "probe.o" units) and
-                ;; one real `nelisp-standalone--compile-to-unit' call
-                ;; for "bt-extra-eval.o" -- mocked here too, so this
-                ;; test still exercises only the arena-base-slot-unit
-                ;; behavior it names, not a real AOT compile of
-                ;; unrelated new source.
-                ((symbol-function 'nelisp-standalone--compile-to-unit)
-                 (lambda (name &optional _source _abi)
-                   (nelisp-link-unit-make name nil nil nil)))
+          eval-p captured)
+      (cl-letf (((symbol-function 'nelisp-standalone--reader-units)
+                 (lambda (&optional e)
+                   (setq eval-p e)
+                   (list (nelisp-link-unit-make "probe.o" nil nil nil)
+                         (nelisp-link-unit-make
+                          (nelisp-standalone--target-object-name "arena-base.o")
+                          (list (cons 'bss 8)) nil nil))))
                 ((symbol-function 'nelisp-standalone--output-path)
                  (lambda (&optional _reader-p) "/tmp/nelisp-target-test"))
                 ((symbol-function 'nelisp-link-units)
@@ -2053,19 +2039,12 @@ Windows uses the target-correct `.obj' unit name; linux/macOS keep `.o'."
                 ((symbol-function 'message)
                  (lambda (&rest _) nil)))
         (nelisp-standalone-build)
+        (should eval-p)
         (should captured)
-        ;; Membership, not tail position: fixed 2026-08-24 (integration/
-        ;; wave6 full-battery run) -- `nelisp-standalone-build' now
-        ;; appends `nelisp-standalone--eval-extra-manifest''s units and
-        ;; "bt-extra-eval.o" AFTER the arena-base-slot-unit append this
-        ;; test names, so arena-base.o is no longer the last element,
-        ;; only a member. The feature this test verifies (the slot unit
-        ;; gets appended at all, once per dynamic-arena-base target) is
-        ;; unaffected by where in the list it ends up.
         (should (cl-find (nelisp-standalone--target-object-name "arena-base.o")
-                          captured
-                          :key (lambda (u) (plist-get u :name))
-                          :test #'equal))))))
+                         captured
+                         :key (lambda (u) (plist-get u :name))
+                         :test #'equal))))))
 
 (ert-deftest nelisp-standalone-target-stage8-chunk-arena-rewrite-cross-platform ()
   "Doc 140 Stage 8: chunk-arena rewrite fires for linux, windows, and macOS.
@@ -2706,15 +2685,10 @@ deterministic against-the-bug gate for both emitted cache implementations."
 (ert-deftest nelisp-standalone-target-windows-imports-virtualfree ()
   "Windows eval and reader link paths import VirtualFree for chunk release."
   (let ((nelisp-standalone--target 'windows-x86_64)
-        (nelisp-standalone--manifest '(("probe.o" :helper nil)))
         captured-imports)
-    (cl-letf (((symbol-function 'nelisp-standalone--unit-for)
-               (lambda (_entry)
-                 (nelisp-link-unit-make "probe.obj" nil nil nil)))
-              ((symbol-function 'nelisp-standalone--arena-base-slot-unit)
-               (lambda ()
-                 (nelisp-link-unit-make "arena-base.obj"
-                                        (list (cons 'bss 8)) nil nil)))
+    (cl-letf (((symbol-function 'nelisp-standalone--reader-units)
+               (lambda (&optional _eval-p)
+                 (list (nelisp-link-unit-make "probe.obj" nil nil nil))))
               ((symbol-function 'nelisp-standalone--output-path)
                (lambda (&optional _reader-p) "/tmp/nelisp-target-test.exe"))
               ((symbol-function 'nelisp-link-units-pe32)
@@ -2723,7 +2697,8 @@ deterministic against-the-bug gate for both emitted cache implementations."
               ((symbol-function 'message)
                (lambda (&rest _) nil)))
       (nelisp-standalone-build)
-      (should (member "VirtualFree" captured-imports))))
+      (should (member "VirtualFree"
+                      (cdr (assoc "KERNEL32.dll" captured-imports))))))
   (should (member "VirtualFree"
                   (cdr (assoc "KERNEL32.dll"
                               (nelisp-standalone--reader-pe-imports))))))

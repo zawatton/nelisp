@@ -67,6 +67,8 @@
       (nelisp-aot-memory-call-test--wrap
        (cl-loop for a in args for k from 0 sum (* (eval `(let ,bindings ,a) t) (+ 3 (* k 2))))))))
 (ert-deftest nelisp-aot-memory-call-args/gnu-native-fullword ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((cases 0))
     (dolist (seed '(0 -1 1311768467139281697 -81985529216486896))
       (let ((words (cl-loop for k below 12 collect (logand (+ seed (* k 4294967311)) (1- (ash 1 64)))))
@@ -88,6 +90,8 @@
             (setq cases (1+ cases))))))
     (message "Memory GP argument GNU/native fullword cases:%d" cases)))
 (ert-deftest nelisp-aot-memory-call-args/effects-and-word-guards ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should (= 0 (nelisp-aot-memory-call-test--run
                  '(seq (defun opaque (x) (+ x 17))
                        (defun callee (a b) (- a b))

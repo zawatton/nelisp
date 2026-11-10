@@ -50,6 +50,9 @@ covered 272
 # gate and says which.  Deleting a case is fine, but it has to come with
 # deleting its `pinned' line, which is where somebody gets asked why.
 
+# string-chop-newline unpinned on 2026-11-10: 895ef21c8 (2026-11-04) guarded
+# the prelude definition, so it left the shared set (the regenerated
+# docs/emacs-compat-table.txt no longer lists it); the cases still exercise it.
 pinned *
 pinned +
 pinned -
@@ -270,10 +273,6 @@ pinned sqrt
 pinned string
 pinned string-as-multibyte
 pinned string-blank-p
-# string-chop-newline unpinned: 3edc5b180 replaced the prelude definition
-# with the genuine GNU subr-x.el source (nelisp-standalone-build.el), so it
-# is no longer a NeLisp shadow and left the compat table's shared set
-# (895ef21c8).  The differential cases still exercise it.
 pinned string-empty-p
 pinned string-equal
 pinned string-equal-ignore-case

@@ -132,6 +132,8 @@
       (advice-remove 'nelisp-aot-compiler--x86-terminal-entry-plan #'nelisp-aot-terminal-caller-test--record)
       (delete-directory dir t))))
 (ert-deftest nelisp-aot-terminal-caller/word-control-retains-ordinary-map ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should (= 0 (nelisp-aot-terminal-caller-test--run
                  '(seq (defun finish (kind a b c d e) (+ kind a b c d e))
                        (defun guarded (w a b c d e)

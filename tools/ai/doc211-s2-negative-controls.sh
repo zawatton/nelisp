@@ -6,7 +6,7 @@ trap 'rm -rf "$tmp"' EXIT
 case ${1:?expected native or purity} in
   native)
     cp "$root/scripts/nelisp-standalone-build.el" "$tmp/build.el"
-    sed -i 's/"nelisp--symbol-global-cell-p")/"nelisp--symbol-global-cell-p" "doc211-fake-native")/' "$tmp/build.el"
+    sed -i 's/"nelisp--native-pin-eq-slots"/"nelisp--native-pin-eq-slots" "doc211-fake-native"/' "$tmp/build.el"
     if NN_SOURCE="$tmp/build.el" NN_INVENTORY="$root/tools/nelisp-native-inventory.txt" \
        emacs --batch -Q -l "$root/tools/nelisp-native-inventory.el" >"$tmp/log" 2>&1; then
       echo 'native inventory negative control unexpectedly passed' >&2; exit 1

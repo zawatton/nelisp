@@ -153,6 +153,8 @@
       (should-not (nelisp-aot-deferred-loop-test--plan owner defs)))))
 
 (ert-deftest nelisp-aot-deferred-loop/fullword-frame-effects-reentry-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "deferred-loop-" t)) (o (expand-file-name "probe.o" dir))
          (c (expand-file-name "probe.c" dir)) (exe (expand-file-name "probe" dir))
          (defs (let ((nelisp-aot-compiler--object-hidden-boundary-symbols nil)
@@ -187,6 +189,8 @@
           (should (= 0 (car counts))) (should (> (cadr counts) 0)))
       (delete-directory dir t))))
 (ert-deftest nelisp-aot-deferred-loop/standalone-unit-loop-label-collision ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (require 'nelisp-standalone-build)
   (let* ((dir (make-temp-file "deferred-loop-unit-" t)) (exe (expand-file-name "probe" dir))
          (source (copy-tree (nelisp-aot-deferred-loop-test--source)))

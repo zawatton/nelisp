@@ -105,6 +105,8 @@
     (when result (cl-incf nelisp-aot-literal-word-test--selected)) result))
 
 (ert-deftest nelisp-aot-literal-word/native-full-domain-order-fault-and-full64 ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "nelisp-literal-word-" t))
          (c (expand-file-name "probe.c" dir)) counts)
     (unwind-protect

@@ -43,8 +43,8 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${
       exec "$b" "$0" "$@"
     fi
   done
-  echo "[parallel-test] needs bash >= 4.3 (found $BASH_VERSION)" >&2
-  exit 2
+  # No newer bash: poll for a free slot instead of `wait -n'.
+  NO_WAIT_N=1
 fi
 
 # GNU timeout is `gtimeout' under Homebrew coreutils; without either, run
@@ -145,7 +145,7 @@ run_one() {
 
 for f in "${FILES[@]}"; do
   while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do
-    wait -n
+    if [ -n "${NO_WAIT_N:-}" ]; then sleep 0.2; else wait -n; fi
   done
   run_one "$f" &
 done

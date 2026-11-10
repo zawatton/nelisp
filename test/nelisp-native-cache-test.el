@@ -169,6 +169,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
         nelisp-bytecode-native-rooted-cfg-contract--validation-count))
 
 (ert-deftest nelisp-native-cache/name-content-and-modes ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (let* ((fn (nelisp-native-cache-test--function))
@@ -252,6 +254,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
               (should-not (equal name (nelisp-native-cache-file fn))))))))))
 
 (ert-deftest nelisp-native-cache/process-checks-once ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (let* ((checks 0)
           (observer (lambda (&rest _) (setq checks (1+ checks)))))
@@ -376,6 +380,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
 
 (ert-deftest nelisp-native-cache/header-refusal-before-mapping ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))
@@ -392,6 +398,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
 
 (ert-deftest nelisp-native-cache/load-zero-validations-and-positive-controls ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   ;; The trusted load runs under the native-runtime stubs.  The positive
   ;; controls run afterwards without them, because the stubbed primitives make
   ;; the host compiler input refuse to reconstruct the contract.
@@ -429,6 +437,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
 
 (ert-deftest nelisp-native-cache/snapshot-read-once ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))
@@ -445,6 +455,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
 
 (ert-deftest nelisp-native-cache/frame-failures-and-broken-unit ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))
@@ -529,6 +541,8 @@ compiler input refuse host bytecode, so the genuine contract is derived first."
 
 (ert-deftest nelisp-native-cache/exit-protocol-keeps-roots-until-cleanup ()
   (skip-unless (equal emacs-version "31.1"))
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))
