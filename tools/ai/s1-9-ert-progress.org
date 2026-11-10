@@ -37,8 +37,9 @@ evidence: tools/ai/s1-9-ert/evidence/ci-run-42632323148.txt sha256=cc032da443449
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-complete
 
 ** S2.3 A CI run of this branch's head shows error-files=0 in the three ert ubuntu jobs and gates
-#+NOTE: needs a push (done by the coordinator session).
-pending
+#+NOTE: reads the ci.yml run for HEAD through gh; red until that run exists and completes (push by the coordinator session).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh --complete
 
 * S3 Failing Linux ERT tests, one criterion per file (fixing them is out of scope)
 
@@ -63,28 +64,34 @@ cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-stdlib-test.el
 cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-vendor-bytecode-triparity-test.el
 
 ** S3.6 nelisp-eln-emitter-test passes on CI (4 of 7 red in all three ert ubuntu jobs and gates)
-#+NOTE: passes locally (7/7 at 309e53053), so a local cmd would read green; CI-only, cause not read.
-pending
+#+NOTE: passes locally (7/7 at 309e53053), so a local cmd would read green; CI-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-eln-emitter-test.el
 
 ** S3.7 nelisp-eln-registration-metadata-test passes on CI (1 of 3 red in all three ert ubuntu jobs and gates)
-#+NOTE: passes locally (3/3 at 309e53053); CI-only, cause not read.
-pending
+#+NOTE: passes locally (3/3 at 309e53053); CI-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-eln-registration-metadata-test.el
 
 ** S3.8 nelisp-fx-ordinary-vector-test passes on CI (1 of 3 red in gates only)
-#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
-pending
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-fx-ordinary-vector-test.el
 
 ** S3.9 nelisp-fxvm-coverage-test passes on CI (1 of 6 red in gates only)
-#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
-pending
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-fxvm-coverage-test.el
 
 ** S3.10 nelisp-parity9-test passes on CI (1 of 11 red in gates only)
-#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
-pending
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-parity9-test.el
 
 ** S3.11 nelisp-w1vec-test passes on CI (1 of 8 red in gates only)
-#+NOTE: passes locally and in the ert ubuntu jobs; gates-only, cause not read.
-pending
+#+NOTE: passes locally and in the ert ubuntu jobs; gates-only; cause not read; checked from the CI job logs of the run for HEAD (FAIL on run 42632323148).
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-w1vec-test.el
 
 ** S3.12 The ert-full gate (tools/ai/nelisp-ai.sh test) passes end to end
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-full
