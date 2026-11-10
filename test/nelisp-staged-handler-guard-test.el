@@ -168,6 +168,8 @@ alist of (RELATIVE-FILE . TEXT)."
     file))
 
 (ert-deftest nelisp-staged-handler-guard-test-binary-with-and-without-the-helpers ()
+  ;; Needs a #!/bin/sh stand-in executed directly (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (clrhash nelisp-staged-handler-guard--forms-cache)
   (let ((whole (nsgt--stand-in nil))
         (cut (nsgt--stand-in '(keymap--compile-check define-keymap--compile))))
@@ -192,6 +194,8 @@ alist of (RELATIVE-FILE . TEXT)."
       (delete-file cut))))
 
 (ert-deftest nelisp-staged-handler-guard-test-callee-void-in-gnu-is-allowed ()
+  ;; Needs a #!/bin/sh stand-in executed directly (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (nsgt--with-tree
    "(defun stage-it () (nelisp-vendor-source-form \"vendor/g.el\" 'a))"
    '(("vendor/g.el" . "(defun a (x) (declare (compiler-macro (lambda (form) (nsgt-no-such-function x) form))) x)"))
