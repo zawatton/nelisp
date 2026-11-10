@@ -95,12 +95,31 @@ build host.")
     (defcustom) (defgroup) (defface))
   "Macro environment for build-time expansion of load-time forms.")
 
+;; Deterministic gensyms (2026-11-10).  Macros such as `pcase' and
+;; `cl-defstruct' name their temporaries with `gensym', whose counter is
+;; process-global, so the baked text read `#:x540' or `#:x523' depending on
+;; how many gensyms the build had made before -- an interpreted and a
+;; byte-compiled toolchain linked binaries that differed only there (and in
+;; the build digest over them).  Every expansion below starts the counter at
+;; 0.  The names carry no meaning: each form is printed with `print-circle'
+;; and `print-gensym', so a temporary's identity travels as a #N= label and
+;; reading `#:x0' twice still yields two distinct symbols.
+(defun nelisp-boot-image--expand-all (form &optional environment)
+  "`macroexpand-all' FORM in ENVIRONMENT with `gensym-counter' at 0."
+  (let ((gensym-counter 0))
+    (macroexpand-all form environment)))
+
+(defun nelisp-boot-image--expand-1 (form &optional environment)
+  "`macroexpand-1' FORM in ENVIRONMENT with `gensym-counter' at 0."
+  (let ((gensym-counter 0))
+    (macroexpand-1 form environment)))
+
 (defun nelisp-boot-image--expand-rx (form)
   "Return FORM with each `rx' call expanded, skipping quoted data."
   (cond ((not (consp form)) form)
         ((memq (car form) '(quote \`)) form)
         ((eq (car form) 'rx)
-         (macroexpand-all form nelisp-boot-image--expansion-environment))
+         (nelisp-boot-image--expand-all form nelisp-boot-image--expansion-environment))
         (t (let ((head (nelisp-boot-image--expand-rx (car form)))
                  (tail (cdr form)))
              (cons head
@@ -139,7 +158,7 @@ them at compile time)."
                              ;; expansion would load cl-seq.el (GNU's `.elc' has it
                              ;; expanded).
                              (equal (nth 1 form) '(fboundp 'cl-generic-define-method)))
-                         (macroexpand-all form nelisp-boot-image--expansion-environment))
+                         (nelisp-boot-image--expand-all form nelisp-boot-image--expansion-environment))
                         ((and (memq (car-safe form) '(defun defalias defvar defconst))
                               (nelisp-boot-image--tree-has-rx-p form))
                          (nelisp-boot-image--expand-rx form)))))
@@ -173,7 +192,7 @@ and booting the image loads no cl-seq.el."
     (unless (and at macro-start (< macro-start at))
       (error "cl-macs.el cl--defnumtype block not found"))
     (eval (car (read-from-string text macro-start)) t)
-    (let ((expansion (macroexpand-all (car (read-from-string call))
+    (let ((expansion (nelisp-boot-image--expand-all (car (read-from-string call))
                                       nelisp-boot-image--expansion-environment)))
       (when (string-match-p "#\\[" (prin1-to-string expansion))
         (error "Host byte-code leaked into the baked derived-type block"))
@@ -258,7 +277,7 @@ providers and source-only builds retain their exact source text."
    ((and (symbolp (car form))
          (memq (car form) nelisp-boot-image--prelude-expanded-macros)
          (nelisp-boot-image--cl-target-p form))
-    (let ((new (macroexpand-1 form nelisp-boot-image--expansion-environment)))
+    (let ((new (nelisp-boot-image--expand-1 form nelisp-boot-image--expansion-environment)))
       (when (equal new form)
         (error "Host cannot expand prelude %S use: %S" (car form) form))
       (nelisp-boot-image--cl-post (nelisp-boot-image--cl-walk new))))
@@ -333,7 +352,7 @@ are defined on the host first, so GNU's gv resolves them as the runtime will."
               (when (eq (car-safe form) 'nelisp--define-core-record)
                 (when (fboundp (intern (format "%s-p" (cadr form))))
                   (error "Host already defines %S" (cadr form)))
-                (dolist (def (cdr (macroexpand-1 form)))
+                (dolist (def (cdr (nelisp-boot-image--expand-1 form)))
                   (when (memq (car-safe def) '(defun))
                     (push (cadr def) defined)))
                 (eval form nil))))
@@ -374,7 +393,7 @@ GNU's `.elc' has them expanded (through `define-inline') at compile time."
   (let ((patches nil))
     (dolist (span (nelisp-prelude-bytecode--top-level-spans text))
       (when (eq (car-safe (nth 2 span)) 'cl-defstruct)
-        (let* ((new (macroexpand-all (nth 2 span)
+        (let* ((new (nelisp-boot-image--expand-all (nth 2 span)
                                      nelisp-boot-image--expansion-environment))
                (printed (let ((print-length nil) (print-level nil)
                               (print-circle t) (print-gensym t)

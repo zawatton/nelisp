@@ -249,6 +249,13 @@ gate_needs_rebuild() {
     standalone-midform-gc-bounded) return 0 ;;
     standalone-reader-nonblocking-socket-smoke) return 0 ;;
     standalone-reader-tls-smoke) return 0 ;;
+    # Both carry the unconditional prerequisite `standalone-reader', so an
+    # injection into their package source (nelisp-process-adapter.el) was
+    # rebuilt INSIDE the 1200 s row budget and timed out (CI run 42748394272,
+    # shard 2).  Rebuilding first, under the build budget, leaves the
+    # prerequisite a stamp hit.
+    standalone-reader-dns-smoke) return 0 ;;
+    standalone-reader-network-process-nowait-smoke) return 0 ;;
     # These two run the shared target/nelisp, which their Makefile targets
     # build only when it is absent.  native-symbol-test rebuilds its own
     # fixture on every run.
@@ -301,6 +308,22 @@ gate_builds_variant() {
     ffi-dsl) return 0 ;;
     standalone-reader-tls-smoke) return 0 ;;
     standalone-reader-tls-smoke-linux) return 0 ;;
+  esac
+  return 1
+}
+
+# Gates whose own recipe compiles native units in the gate run itself (not a
+# variant binary the harness can skip rebuilding for): `standalone-reader-test'
+# compiles and runs its reader fixtures, `standalone-eval-test' compiles the
+# reader units with EVAL-P into target/nelisp-standalone-eval.  An injection
+# into a toolchain file (scripts/nelisp-standalone-build.el, the reader parser)
+# misses every unit cache entry, so that compile is a cold one: both rows hit
+# the 1200 s row budget on CI run 42748394272 (shard 3) before judging
+# anything.  They run under the build budget instead.
+gate_run_compiles() {
+  case "$1" in
+    standalone-reader-test) return 0 ;;
+    standalone-eval-test) return 0 ;;
   esac
   return 1
 }
@@ -524,7 +547,11 @@ row_worst_case() {
     nelisp-thread-allocating-standalone-smoke) echo 30; return ;;
   esac
   if row_rebuilds "$g" "$f"; then w=$build_timeout; fi
-  if gate_builds_variant "$g"; then w=$((w + build_timeout)); else w=$((w + row_timeout)); fi
+  if gate_builds_variant "$g" || gate_run_compiles "$g"; then
+    w=$((w + build_timeout))
+  else
+    w=$((w + row_timeout))
+  fi
   if row_rebuilds "$g" "$f" && ! gate_builds_variant "$g" &&
      [ "$rebuild_row_estimate" -lt "$w" ]; then w=$rebuild_row_estimate; fi
   echo "$w"
@@ -646,7 +673,7 @@ run_gate() {
   local g="$1" f="$2" log="$3" generic=1 rc t0=$SECONDS
   local budget=$row_timeout
   # A gate that builds its own variant runs under the build budget.
-  if gate_builds_variant "$g"; then budget=$build_timeout; fi
+  if gate_builds_variant "$g" || gate_run_compiles "$g"; then budget=$build_timeout; fi
   run_gate_budget=$budget
   local bounded=(timeout --kill-after=10s "$budget")
   run_gate_timeout=0

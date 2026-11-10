@@ -1,0 +1,30 @@
+#+TITLE: reader build fast enough for the full gate-mutation sweep
+
+# Defined 2026-11-10 by user decision ("先にビルドを速くする").  The full
+# gate-mutation sweep on main no longer fits 4 shards x 90 min: about 60%
+# of its rows rebuild target/nelisp, and a cold `make standalone-reader'
+# now takes 1163 s in CI (run 42748394272; 38 s on 1404ced83, 2026-11-03,
+# before the merged native lineage).  Rows were not removed or weakened.
+# Measured locally on c461db6ba+4 (32 cores, JOBS=1):
+#   warm build, every unit cached                         67 s
+#   only applyfn-reader.o recompiled, toolchain as .el   575 s
+#   same, toolchain libraries loaded byte-compiled       187 s
+#   applyfn-reader.o unit bytes identical in both cases.
+# The toolchain (lisp/nelisp-aot-compiler.el and the other
+# nelisp-standalone--dep-files libraries) runs interpreted in every build.
+# Long local criteria are recorded by tools/ai/main-ci-reds/run-heavy.sh
+# NAME and checked against HEAD by check-heavy.sh.
+
+* B1 cold reader build is fast and unchanged
+** B1.1 a cold build with the compiled toolchain links a byte-identical target/nelisp
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh build-identity
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh build-identity
+
+** B1.2 CI build job's make standalone-reader step takes at most 600 s on HEAD
+#+TIMEOUT: 120
+cmd: bash tools/ai/build-speed/ci-check.sh build-seconds 600
+
+* B2 the full gate-mutation sweep passes on main
+** B2.1 every gate-mutation shard of HEAD's main CI run succeeds
+#+TIMEOUT: 120
+cmd: bash tools/ai/build-speed/ci-check.sh gate-mutation
