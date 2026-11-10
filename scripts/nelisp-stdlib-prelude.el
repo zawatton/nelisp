@@ -15248,23 +15248,56 @@ a character changed."
               (nelisp-goto-char pt b))))))
     nil))
 
+;; GNU indent.c `Fmove_to_column'.  FORCE non-nil splits a tab that
+;; straddles COLUMN into spaces (re-padded with `indent-to' rules after the
+;; split point); FORCE eq t also pads a too-short line with whitespace.
 (unless (fboundp 'move-to-column)
-  (defun move-to-column (column &optional _force)
+  (defun move-to-column (column &optional force)
     "Move point to column COLUMN in the current line; return the column
-reached (tabs expand per `tab-width').  Stops at the end of the line."
+reached (tabs expand per `tab-width').  If the line is too short, stop at
+its end unless FORCE is t, in which case pad with whitespace (tabs when
+`indent-tabs-mode').  If COLUMN falls inside a tab and FORCE is non-nil,
+the tab is converted to spaces so point lands exactly at COLUMN."
     (unless (and (integerp column) (>= column 0))
       (signal 'wrong-type-argument (list 'wholenump column)))
     (let* ((b (or nelisp--current-buffer (nelisp-buffer--ambient nil)))
            (pos (nelisp--motion-bol (nelisp-point b) b))
            (eol (nelisp--motion-eol pos b))
            (width (if (and (integerp tab-width) (> tab-width 0)) tab-width 8))
-           (col 0))
+           (col 0) (prev-col 0)
+           (pad
+            ;; Whitespace taking a line from column FROM to column TO, the
+            ;; way `indent-to' inserts it.
+            (lambda (from to)
+              (let ((tabs 0))
+                (when (and indent-tabs-mode (< from to))
+                  (setq tabs (- (/ to width) (/ from width)))
+                  (when (> tabs 0) (setq from (* (/ to width) width))))
+                (concat (make-string tabs ?\t)
+                        (make-string (max 0 (- to from)) ?\s))))))
       (while (and (< pos eol) (< col column))
-        (setq col (if (eq (nelisp-char-after pos b) ?\t)
+        (setq prev-col col
+              col (if (eq (nelisp-char-after pos b) ?\t)
                       (* width (1+ (/ col width)))
                     (1+ col)))
         (setq pos (1+ pos)))
+      (when (and force (> col column) (> pos 1)
+                 (eq (nelisp-char-after (1- pos) b) ?\t)
+                 (< prev-col column))
+        ;; A tab overshot COLUMN: put spaces in front of it, then replace
+        ;; the tab by whitespace that re-reaches its old end column.
+        (let* ((lead (- column prev-col))
+               (goal (+ (1- pos) lead)))
+          (nelisp-goto-char (1- pos) b)
+          (nelisp-insert (make-string lead ?\s) b)
+          (nelisp-delete-region goal (1+ goal) b)
+          (nelisp-goto-char goal b)
+          (nelisp-insert (funcall pad column col) b)
+          (setq pos goal col column)))
       (nelisp-goto-char pos b)
+      (when (and (< col column) (eq force t))
+        (nelisp-insert (funcall pad col column) b)
+        (setq col column))
       col)))
 
 (unless (boundp 'tab-width)

@@ -2575,7 +2575,7 @@ pinned-collision ns-collision-divergent	modify-syntax-entry	packages/emacs-lib-c
 pinned-collision ns-collision-divergent	most-negative-fixnum	lisp/nelisp-stdlib.el packages/emacs-lib-core/src/emacs-vars.el scripts/nelisp-stdlib-prelude.el	dbf06f6f9a28
 pinned-collision ns-collision-divergent	most-positive-fixnum	lisp/nelisp-stdlib.el packages/emacs-lib-core/src/emacs-vars.el scripts/nelisp-stdlib-prelude.el	0a12cfa38001
 pinned-collision ns-collision-divergent	move-overlay	packages/emacs-lib-core/src/emacs-cc-census-buffer-w203.el scripts/nelisp-stdlib-prelude.el	f5111860a3c6
-pinned-collision ns-collision-divergent	move-to-column	packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	51873e9dba9f
+pinned-collision ns-collision-divergent	move-to-column	packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	8e0174580b19
 pinned-collision ns-collision-divergent	multibyte-string-p	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-buffer-builtins.el packages/emacs-lib-core/src/emacs-fns.el packages/emacs-lib-core/src/emacs-stub-bulk.el	c5613fec5799
 pinned-collision ns-collision-divergent	native-comp-available-p	packages/emacs-lib-core/src/emacs-cc-census-files-w301.el scripts/nelisp-stdlib-prelude.el	e6ecbd9b8ff0
 pinned-collision ns-collision-divergent	natnump	packages/emacs-lib-core/src/emacs-numeric.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	553c8e0dfcd0
@@ -2743,7 +2743,7 @@ pinned-collision ns-collision-divergent	remove-text-properties	packages/emacs-li
 pinned-collision ns-collision-divergent	remq	packages/emacs-lib-core/src/emacs-list.el scripts/nelisp-stdlib-prelude.el	d4c07974381d
 pinned-collision ns-collision-divergent	rename-buffer	packages/emacs-lib-core/src/emacs-fileio.el scripts/nelisp-stdlib-prelude.el	bae91bfff627
 pinned-collision ns-collision-divergent	rename-file	packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	e9f28db464cd
-pinned-collision ns-collision-divergent	replace-match	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-search-builtins.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	3e02817a9795
+pinned-collision ns-collision-divergent	replace-match	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-search-builtins.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	906eb028819d
 pinned-collision ns-collision-divergent	replace-regexp-in-string	packages/emacs-lib-core/src/emacs-search-builtins.el packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/nemacs-runtime-stdlib-extra.el	442ffe80fedb
 pinned-collision ns-collision-divergent	require	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-fns.el packages/emacs-lib-core/src/emacs-parity-cc.el	7a251f2cdd7b
 pinned-collision ns-collision-divergent	restore-buffer-modified-p	packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	ebbe1c38be6b

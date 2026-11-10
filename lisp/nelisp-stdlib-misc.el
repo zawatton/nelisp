@@ -2083,23 +2083,88 @@ insertion point ends up pointing after the inserted text."
   (defvar directory-files-no-dot-files-regexp "[^.]\\|\\.\\.\\."))
 (unless (boundp 'shell-command-switch)
   (defvar shell-command-switch "-c"))
+;; Self-contained port of the prelude's `replace-match' (GNU search.c):
+;; this file can be loaded without the prelude, so it cannot call the
+;; prelude's `nelisp--cc03-*' helpers.  Keep the two copies in step.
 (unless (fboundp 'replace-match)
-  (defun replace-match (newtext &optional _fixedcase _literal string subexp)
-    "Same as the prelude's copy: no backreference expansion, no
-case-fixing; STRING mode returns the edited copy, buffer mode edits
-in place and returns nil."
-    (let* ((n (or subexp 0))
-           (b (match-beginning n))
-           (e (match-end n)))
-      (unless (and b e) (signal 'error (list "No match data, or match data corrupted")))
-      (if string
-          (concat (substring string 0 b) newtext (substring string e))
-        (progn
-          (goto-char b)
-          (delete-region b e)
-          (goto-char b)
-          (insert newtext)
-          nil)))))
+  (defun replace-match (newtext &optional fixedcase literal string subexp)
+    "Replace the last match with NEWTEXT, expanding references unless LITERAL.
+Unless FIXEDCASE, convert NEWTEXT's case to that of the matched text.
+With STRING, return an edited copy; otherwise edit the current buffer
+and return nil."
+    (unless (stringp newtext) (signal 'wrong-type-argument (list 'stringp newtext)))
+    (when (and string (not (stringp string)))
+      (signal 'wrong-type-argument (list 'stringp string)))
+    (when (and subexp (not (integerp subexp)))
+      (signal 'wrong-type-argument (list 'integerp subexp)))
+    (let ((n (or subexp 0)))
+      (when (< n 0) (signal 'args-out-of-range (list n 0)))
+      (let ((b (match-beginning n)) (e (match-end n)))
+        (unless (and b e)
+          (signal 'error (list "No match data, or match data corrupted")))
+        (let* ((slice
+                (lambda (group)
+                  (let ((gb (match-beginning group)) (ge (match-end group)))
+                    (if (and gb ge)
+                        (if string (substring string gb ge) (buffer-substring gb ge))
+                      ""))))
+               (matched (funcall slice n))
+               ;; Case decision: GNU's four flags over the matched text.
+               (action
+                (unless fixedcase
+                  (let ((i 0) (len (length matched)) (prevc ?\n)
+                        (multi nil) (lower nil) (nonup-init nil) (upper nil))
+                    (while (< i len)
+                      (let* ((c (aref matched i))
+                             (down (downcase c))
+                             (prevc-word (eq (char-syntax prevc) ?w)))
+                        (cond
+                         ((and (/= (upcase c) down) (= c down))
+                          (setq lower t)
+                          (if prevc-word (setq multi t) (setq nonup-init t)))
+                         ((/= down c)
+                          (setq upper t)
+                          (when prevc-word (setq multi t)))
+                         ((not prevc-word) (setq nonup-init t)))
+                        (setq prevc c))
+                      (setq i (1+ i)))
+                    (cond ((and (not lower) multi) 'upper)
+                          ((and (not nonup-init) multi) 'capitalize)
+                          ((and (not nonup-init) upper) 'upper)))))
+               (len (length newtext)) (i 0) (start 0) pieces part)
+          (while (< i len)
+            (if (and (not literal) (eq (aref newtext i) ?\\))
+                (progn
+                  (when (> i start)
+                    (setq pieces (cons (substring newtext start i) pieces)))
+                  (setq i (1+ i))
+                  (when (= i len)
+                    (signal 'error (list "Invalid use of ‘\\’ in replacement text")))
+                  (let ((c (aref newtext i)))
+                    (cond
+                     ((eq c ?&) (setq part (funcall slice 0)))
+                     ((and (>= c ?1) (<= c ?9))
+                      (setq part (funcall slice (- c ?0))))
+                     ((eq c ?\\) (setq part "\\"))
+                     ((eq c ??) (setq part "\\?"))
+                     (t (signal 'error
+                                (list "Invalid use of ‘\\’ in replacement text"))))
+                    (setq pieces (cons part pieces)))
+                  (setq i (1+ i) start i))
+              (setq i (1+ i))))
+          (when (> len start)
+            (setq pieces (cons (substring newtext start len) pieces)))
+          (let ((replacement (apply #'concat (nreverse pieces))))
+            (cond ((eq action 'upper) (setq replacement (upcase replacement)))
+                  ((eq action 'capitalize)
+                   (setq replacement (upcase-initials replacement))))
+            (if string
+                (concat (substring string 0 b) replacement (substring string e))
+              (goto-char b)
+              (delete-region b e)
+              (goto-char b)
+              (insert replacement)
+              nil)))))))
 (unless (fboundp 'pop-to-buffer)
   (defun pop-to-buffer (buffer-or-name &optional _action _norecord)
     "Same as the prelude's copy: `set-buffer', no display."
