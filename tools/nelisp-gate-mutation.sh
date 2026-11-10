@@ -79,18 +79,17 @@ require_positive_int NELISP_GATE_MUTATION_ROW_TIMEOUT "$row_timeout"
 require_positive_int NELISP_GATE_MUTATION_BUILD_TIMEOUT "$build_timeout"
 require_positive_int NELISP_GATE_MUTATION_SLOW_ROW "$slow_row"
 # Shard-budget ESTIMATE for a rebuild row (a row that rebuilds the default
-# binary around its injection).  This is a measured figure, not a worst case:
-# the largest rebuild-row total seen on CI was 2379 s (standalone-reader-test,
-# run 42578356513) and the largest spread of one row measured twice was 38.5%
-# (ffi-dsl 1295 s vs 1794 s), so 2379 * 1794/1295 = 3296, rounded up to 3300.
-# Data: tools/ai/ci-speed-evidence/s7-rebuild-row-times.txt.  The hard limits
-# (build_timeout, row_timeout) still kill a row; row_worst_case never returns
-# more than build_timeout + row_timeout.  Overrun arithmetic: a row starts only
-# if SECONDS + 3300 <= 5400, and ends by SECONDS + 3900 at the latest with the
-# default timeouts, i.e. at most 5400 + 600 = 6000 s into the shard, inside the
-# 7200 s of the shard job's timeout-minutes 120 (ci.yml) with 1200 s left for
-# setup, the second-build/restore work this estimate ignores, and the report.
-rebuild_row_estimate=${NELISP_GATE_MUTATION_REBUILD_ESTIMATE:-3300}
+# binary around its injection).  The default is the hard worst case with the
+# default timeouts (build_timeout 2700 + row_timeout 1200 = 3900 s), so a row
+# that starts always ends inside the shard budget.  A measured 3300 s (largest
+# rebuild-row total 2379 s on run 42578356513 plus the 38.5% spread of ffi-dsl;
+# tools/ai/ci-speed-evidence/s7-rebuild-row-times.txt) was tried on run
+# 42596869405: there it admitted rebuild rows late in two shards that then hit
+# the 1200 s row timeout after about 2840 s (fewer rows ran on that run, 43 of
+# 120 against 71, mostly because its runners were slower).  Override with
+# NELISP_GATE_MUTATION_REBUILD_ESTIMATE; row_worst_case never returns more
+# than build_timeout + row_timeout.
+rebuild_row_estimate=${NELISP_GATE_MUTATION_REBUILD_ESTIMATE:-3900}
 require_positive_int NELISP_GATE_MUTATION_REBUILD_ESTIMATE "$rebuild_row_estimate"
 # Optional budget for the whole shard (seconds since this harness started).
 # Unset means no budget.  Each row is judged on its own estimate against

@@ -65,10 +65,10 @@ jobs:
   # round reports every broken gate instead of only the earliest one.
   gates:
     runs-on: ubuntu-latest
-    # Parallel unit prewarm on the 4 vCPU / 16 GB Linux runner.  Output is
-    # identical for every JOBS value (the stamp key ignores it).
-    env:
-      NELISP_STANDALONE_JOBS: '4'
+    # No NELISP_STANDALONE_JOBS here: this job builds no reader, and with
+    # JOBS > 1 the host ERT tests that call nelisp-standalone--compile-to-unit
+    # start N-1 prewarm child Emacs processes that compete with the test on
+    # the 4 vCPU runner (host ERT 632 s -> 1728 s after 9aee4c796 set it).
     steps:
       - uses: actions/checkout@v4
       # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
@@ -1475,12 +1475,13 @@ jobs:
             # No base found: leave it unset so the sweep stays full.
           fi
           # 5400 s = 90 min of rows: a row starts only if its estimate still
-          # fits (a rebuild row is charged a measured 3300 s, every other row
-          # its build + row budgets); a row that does not fit prints NOT RUN
-          # and fails the shard, while later rows that fit still run.  A
-          # rebuild row that overruns its estimate is still killed by its hard
-          # limits by 6000 s, so setup and the final report fit in the rest of
-          # the job's 120 minutes.
+          # worst case fits: an ordinary row is charged its 1200 s row limit,
+          # a rebuild row 3900 s (build 2700 + row 1200), a row of a gate
+          # that builds a variant its build limit(s).  A row that does not
+          # fit prints NOT RUN and fails the shard, while later rows that fit
+          # still run.  Every row is killed by its hard limits within its
+          # charge, so setup and the final report fit in the rest of the
+          # job's 120 minutes.
           NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
           NELISP_GATE_MUTATION_SHARD='${{ matrix.shard }}/4' \
             bash tools/ai/nelisp-ai.sh gate gate-mutation -- make gate-mutation
