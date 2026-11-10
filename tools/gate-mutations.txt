@@ -819,7 +819,7 @@ standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fbou
 # gate-mutation-verify GATE=standalone-reader-print-large-sexp-smoke' before
 # landing: mutated, the smoke prints `FAIL: 10k-int list printed length ->
 # 60002' (exit 1); restored, `PASS: 10k-int list 70001 bytes exact, ...'.
-standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|/^    (defun m5_prin1_list_tail/,+5 s/(if (= first 1) 0 (mut-str-push-byte ms 32))/0/|list elements print with no separator between them in the native printer (`m5_prin1_list_tail'): a 10k-int list comes out 60002 bytes instead of 70001, text no reader could take back
+standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|s/(seq (if (= first-p 1) 0 (mut-str-push-byte ms 32))/(seq 0/|list elements print with no separator between them in the native `%S' printer (`bf_pf_list', which `prin1-to-string' reaches through `nelisp--native-format'): a 10k-int list comes out 60001 bytes instead of 70001, text no reader could take back
 #
 # native-unit-repl-smoke (WS-F, 2026-09-12): widening the raw-v1 argument
 # ceiling by one lets a seven-argument export compile and publish, which
