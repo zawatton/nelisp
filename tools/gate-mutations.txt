@@ -1295,6 +1295,7 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_sy
 # stayed green).  Vectors are counted: this injection grows live-blocks by
 # 4000 per round (12762 16424 20424 24424 28424), far past the 8-block slack.
 standalone-reader-checked-soak|Makefile|s#(setq acc (cons (make-vector 12 i) acc)) (setq i (+ i 1))))#(setq acc (cons (make-vector 12 i) acc)) (setq nelisp-checked-soak-retain (cons (make-vector 12 i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's second loop retains its whole batch of vectors in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds; cons cells live in typed blocks the live-blocks census does not walk, so only the garbage-collect cons count sees the retention
 
 # vendor-shadow-gate (Doc segI, vendor-emacs-lisp): an unconditional
 # redefinition of `days-between' (a vendor/emacs-lisp/calendar/time-date.el
