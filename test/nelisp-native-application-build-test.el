@@ -15,7 +15,7 @@
   (with-temp-file file (insert text)))
 
 (ert-deftest nnab-discovers-only-top-level-defuns-without-evaluating-driver-forms ()
-  (let* ((directory (make-temp-file "nnab-discovery-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-discovery-" t)))
          (one (expand-file-name "one.el" directory))
          (two (expand-file-name "two.el" directory))
          (names (expand-file-name "names" directory))
@@ -51,7 +51,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-refuses-duplicate-symbols-and-baseline-identities ()
-  (let* ((directory (make-temp-file "nnab-conflict-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-conflict-" t)))
          (one (expand-file-name "one.el" directory))
          (two (expand-file-name "two.el" directory)))
     (unwind-protect
@@ -71,7 +71,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-refuses-nonlexical-and-conflicting-headers-bounds-and-unreadable-inputs ()
-  (let* ((directory (make-temp-file "nnab-bounds-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-bounds-" t)))
          (plain (expand-file-name "plain.el" directory))
          (conflicting (expand-file-name "conflicting.el" directory))
          (oversized (expand-file-name "large.el" directory)))
@@ -95,7 +95,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-refuses-canonical-input-aliases-and-output-aliases-before-writing ()
-  (let* ((directory (make-temp-file "nnab-alias-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-alias-" t)))
          (source (expand-file-name "module.el" directory))
          (empty (expand-file-name "empty.el" directory))
          (alias (expand-file-name "alias.el" directory))
@@ -133,7 +133,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-prepares-and-activates-only-after-matching-harvest-evidence ()
-  (let* ((directory (make-temp-file "nnab-activate-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-activate-" t)))
          (source (expand-file-name "module.el" directory))
          (names (expand-file-name "names" directory))
          (manifest (expand-file-name "manifest.sexp" directory))
@@ -190,7 +190,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-complete-harvest-rejects-partial-and-extra-evidence ()
-  (let* ((directory (make-temp-file "nnab-complete-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-complete-" t)))
          (source (expand-file-name "module.el" directory))
          (names (expand-file-name "names" directory))
          (manifest (expand-file-name "manifest.sexp" directory))
@@ -244,7 +244,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-owned-output-mapping-rejects-swapped-foreign-and-symlink-paths ()
-  (let* ((directory (make-temp-file "nnab-owned-map-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-owned-map-" t)))
          (owned (expand-file-name "owned" directory))
          (source (expand-file-name "module.el" directory))
          (names (expand-file-name "names" directory))
@@ -314,7 +314,7 @@
 
 (ert-deftest nnab-run-owned-offline-process-mock-reaches-real-activation-validator ()
   "Exercise host orchestration offline; only the child process boundary is mocked."
-  (let* ((directory (make-temp-file "nnab-owned-run-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-owned-run-" t)))
          (repository (expand-file-name "repository" directory))
          (outside (expand-file-name "outside" directory))
          (module (expand-file-name "module.el" repository))
@@ -699,7 +699,7 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-image-pin-hashing-is-bounded-and-role-specific ()
-  (let* ((directory (make-temp-file "nnab-image-pin-" t))
+  (let* ((directory (file-truename (make-temp-file "nnab-image-pin-" t)))
          (file (expand-file-name "image.data" directory))
          (alias (expand-file-name "alias.data" directory))
          (bytes (make-string 2097152 ?x))

@@ -69,6 +69,8 @@
     (while (setq i (string-search pattern bytes i)) (cl-incf n) (cl-incf i))
     n))
 (ert-deftest nelisp-bytecode-core-threaded/results-and-shape ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((dir (make-temp-file "nelisp-threaded-" t)) (indirect (unibyte-string #xFF #xE0)))
     (unwind-protect
         (progn

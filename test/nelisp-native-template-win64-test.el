@@ -52,6 +52,8 @@
    (should (string-match-p (regexp-quote (unibyte-string #x3d #xff #xff 0 0)) windows-native-sentinel--code))
    (should (fboundp 'windows-native-sentinel-with-entry))))
 (ert-deftest nelisp-template-win64-reference-negative-controls ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((linux (nelisp-native-template-open-library)))
     (dolist (name '(prologue epilogue call frame))
       (should-not (equal (plist-get (cdr (assq name (plist-get linux :fragments))) :bytes)

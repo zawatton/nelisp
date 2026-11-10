@@ -284,6 +284,8 @@
         (should (plist-get (plist-get entry :refusal) :permanent))
         (should (equal (funcall (car (plist-get entry :cell)) 42) '(1 42)))))))
 (ert-deftest nelisp-native-tier-exhausted-budget-refuses-actual-trusted-mapper ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (nelisp-native-cache-test--runtime
     (nelisp-native-cache-test--directory
       (pcase-let* ((`(,fn ,manifest ,header) (nelisp-native-cache-test--fixture))

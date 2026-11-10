@@ -23,6 +23,8 @@
       (delete-directory dir t))))
 
 (ert-deftest executable-reloc-resolves-genuine-local-extern ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "executable-reloc-" t)) (path (expand-file-name "good" dir)))
     (unwind-protect
         (progn

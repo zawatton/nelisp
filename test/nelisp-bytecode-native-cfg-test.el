@@ -7,6 +7,8 @@
 (require 'nelisp-native-load)
 
 (ert-deftest nelisp-bytecode-native-cfg/uses-loader-running-image-identity ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((invocation-name (or (executable-find "sh") "/bin/sh"))
         (invocation-directory "/"))
     (cl-letf (((symbol-function 'nelisp-native-load-running-binary-sha256)

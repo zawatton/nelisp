@@ -64,7 +64,7 @@
                        (nelisp-native-application-protocol-digest new)))))))
 
 (ert-deftest nnap-protocol-byte-bounds-alias-growth ()
-  (let* ((dir (make-temp-file "nnap-protocol-" t))
+  (let* ((dir (file-truename (make-temp-file "nnap-protocol-" t)))
          (file (expand-file-name "source" dir))
          (link (expand-file-name "alias" dir))
          (original (symbol-function 'insert-file-contents-literally))

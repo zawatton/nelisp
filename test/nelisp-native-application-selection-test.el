@@ -13,7 +13,7 @@
     (secure-hash 'sha256 (current-buffer))))
 
 (defun nnap-selection-test--fixture ()
-  (let* ((directory (make-temp-file "nnap-selection-" t))
+  (let* ((directory (file-truename (make-temp-file "nnap-selection-" t)))
          (module (expand-file-name "module.el" directory))
          (manifest-file (expand-file-name "manifest.el" directory))
          (names-file (expand-file-name "names.txt" directory))

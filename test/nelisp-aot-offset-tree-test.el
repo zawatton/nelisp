@@ -64,6 +64,8 @@
         (should-not (nelisp-aot-compiler--x86-memory-tree-info node))))))
 (ert-deftest nelisp-aot-offset-tree/fullword-and-live-siblings ()
   "Four balanced load chains exercise RAX/R10/R11 without reordering reads."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((emit (symbol-function 'nelisp-aot-compiler--emit-memory-tree-x86))
         (destinations nil) (cases 0))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-memory-tree-x86)
@@ -97,6 +99,8 @@
     (dolist (reg '(rax r10 r11)) (should (memq reg destinations)))
     (message "Load-chain fullword cases:%d; live sibling destinations:RAX/R10/R11" cases)))
 (ert-deftest nelisp-aot-offset-tree/effect-and-capture-fallback ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should (= 0 (nelisp-aot-offset-tree-test--run
                  '(seq (defun opaque (x) (+ x 17))
                        (defun f (p) (opaque 0)
