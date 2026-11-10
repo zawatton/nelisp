@@ -14,15 +14,15 @@
 
 * G1 stale rows (sed matched nothing in run 42578356513)
 ** G1.1 builtin-arity: unmutated gate green, row goes red
-# The row's anchors went stale in 941c79827 (both arity groups gained
-# leading names); re-anchored 2026-11-09.  The gate itself is red on the
-# reader build (wrong-number-of-arguments data names `#<subr car>', not
-# `car'), so this stays red until that is fixed.
+# The row's anchors went stale in 941c79827; main re-aimed it at the
+# current fixed-arity table in 3370a217b (2026-11-10).  The unmutated gate
+# passes on fix/smoke-tail-20261110 (base meter 2026-11-10).
 cmd: make -s builtin-arity >/dev/null 2>&1 && bash tools/ai/main-ci-reds/check-heavy.sh mut-builtin-arity
 
 ** G1.2 prelude-toplevel-check: unmutated gate green, both rows go red
-# Row 1 edited a one-line `string-empty-p' that 3edc5b180 removed;
-# re-anchored on `purecopy' 2026-11-09.
+# Row 1 edited a one-line `string-empty-p' that 3edc5b180 removed; main
+# re-aimed the rows in d01fa77f0 (natnump, seq-length) and fixed the
+# gate's count in de335fc1f (2026-11-10).
 cmd: make -s prelude-toplevel-check >/dev/null 2>&1 && bash tools/ai/main-ci-reds/check-heavy.sh mut-prelude-toplevel-check
 
 * G2 rows that stayed green in run 42578356513 (the gate missed the defect)
@@ -30,9 +30,12 @@ cmd: make -s prelude-toplevel-check >/dev/null 2>&1 && bash tools/ai/main-ci-red
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-ert-full
 
 ** G2.2 standalone-reader-checked-soak
+# Main re-aimed both rows at defects that still exist in 6b2fd19c8 and
+# f29d03a68 (2026-11-10); not re-recorded since.
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-standalone-reader-checked-soak
 
 ** G2.3 nl-actor-standalone-smoke
+# Main re-aimed the row in 6b2fd19c8 (2026-11-10); not re-recorded since.
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh mut-nl-actor-standalone-smoke
 
 * G3 rows that timed out in run 42578356513
