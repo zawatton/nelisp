@@ -807,7 +807,7 @@ standalone-reader-ffi-smoke|scripts/nelisp-standalone-build.el|s/("libm.so.6" . 
 # state v1.2.0 shipped in, so each row restores that release exactly -- which
 # is the point: the gate has to notice a REGRESSION to the previous release,
 # not just an arbitrary edit.
-standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(bf_load_with_lfn args env out)/(bf_load_readable args env out)/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
+standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(nl_env_set_value env (nl_word_canon sym) (wf_arg_word args 0))/(nl_env_set_value env (nl_word_canon sym) (heap-read-u64 old-root 0))/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
 standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fboundp .string-as-multibyte) (string-as-multibyte str) str)))/str))/|`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes
 # 2026-09-05 print-large-sexp smoke (tools/print-large-sexp-smoke.el), added
 # with the nelisp-llm crash investigation (both consumer faults were the
@@ -819,7 +819,7 @@ standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fbou
 # gate-mutation-verify GATE=standalone-reader-print-large-sexp-smoke' before
 # landing: mutated, the smoke prints `FAIL: 10k-int list printed length ->
 # 60002' (exit 1); restored, `PASS: 10k-int list 70001 bytes exact, ...'.
-standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|/^    (defun m5_prin1_list_tail/,+5 s/(if (= first 1) 0 (mut-str-push-byte ms 32))/0/|list elements print with no separator between them in the native printer (`m5_prin1_list_tail'): a 10k-int list comes out 60002 bytes instead of 70001, text no reader could take back
+standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|s/(seq (if (= first-p 1) 0 (mut-str-push-byte ms 32))/(seq 0/|list elements print with no separator between them in the native `%S' printer (`bf_pf_list', which `prin1-to-string' reaches through `nelisp--native-format'): a 10k-int list comes out 60001 bytes instead of 70001, text no reader could take back
 #
 # native-unit-repl-smoke (WS-F, 2026-09-12): widening the raw-v1 argument
 # ceiling by one lets a seven-argument export compile and publish, which
@@ -1280,7 +1280,7 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nextcarry (
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (= tg 2) 1 (if (= tg 13) 1 0))/(if (= tg 2) 1 0)/|`bf_first_non_integer_or_bignum` stops treating a Bignum as an integer, so `logand`/`logior`/`logxor` with a Bignum operand report `wrong-type-argument integer-or-marker-p` again instead of computing the bitwise result
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(bf_lognot_general_w (wf_arg_ptr args 0) 0)/(bf_wrong_type_integerp (wf_arg_ptr args 0))/|`lognot`'s Bignum-operand arm is replaced with the fixnum-only type error, so `(lognot BIGNUM)` signals `wrong-type-argument integerp` again instead of computing -X-1
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(logxor (if (< i dec_count) (heap-read-u32 dec_ptr (\* i 4)) 0) 4294967295)/(logxor (if (< i dec_count) (heap-read-u32 dec_ptr (* i 4)) 0) 4294967294)/|`nl_bignum_twos_fill_neg`'s bit-complement mask is off by one bit, so every AND/OR/XOR with a NEGATIVE Bignum operand computes a wrong two's-complement window and returns the wrong value instead of signalling anything
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(if (<= mag 2147483648) 1 0)/(if (<= mag 0) 1 0)/|`nl_bignum_small_divisor_p` stops accepting any nonzero divisor, so every Bignum-dividend `/`/`%`/`mod` case (even a tiny divisor like 256) signals `nelisp-bignum-division-unsupported` instead of computing the exact answer
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(setq r (- cur (\* q d)))/(setq r 0)/|`nl_bignum_divmod_u32_loop' (the live one-limb-divisor division path of `nl_bignum_divrem_mag') drops the running remainder, so every Bignum-dividend `/`/`%`/`mod` by a one-limb divisor (even a tiny one like 256) carries nothing between limbs and answers a wrong quotient and remainder instead of the exact answer
 standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_symbol sbuf 34 268435480)/(nl_alloc_symbol sbuf 0 268435480)/|`bf_signal_bignum_division_unsupported` writes a zero-length condition symbol, so `condition-case` handlers keyed on `nelisp-bignum-division-unsupported` (a genuine Bignum divisor to `/`/`%`/`mod`) no longer catch it
 
 # standalone-reader-checked-soak: added this session (ci/fast-release-blocker)
