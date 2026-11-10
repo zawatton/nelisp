@@ -84,6 +84,31 @@
     "nelisp-standalone-arena-rewrite")
   "Order in which one child compiles every toolchain library; see above.")
 
+(defun nelisp-standalone--toolchain-elc-dir (root hash)
+  "Directory for the compiled toolchain HASH, or nil when none is writable.
+NELISP_STANDALONE_TOOLCHAIN_ELC_DIR first, then ROOT/target (the tree's own
+build output), then the user cache.  An installed toolchain is read-only:
+always using ROOT/target made `nelisp build' fail there with \"Creating
+directory: Permission denied\" (gate project-distribution)."
+  (let ((candidates
+         (delq nil
+               (list (let ((d (getenv "NELISP_STANDALONE_TOOLCHAIN_ELC_DIR")))
+                       (and d (not (string= d "")) d))
+                     (expand-file-name "target/toolchain-elc" root)
+                     (expand-file-name "nelisp/toolchain-elc"
+                                       (or (getenv "XDG_CACHE_HOME")
+                                           (expand-file-name "~/.cache")))))))
+    (cl-loop for base in candidates
+             for dir = (expand-file-name hash base)
+             ;; Writable means: the directory exists and is writable, or
+             ;; its nearest existing ancestor is.
+             when (let ((probe dir))
+                    (while (and probe (not (file-exists-p probe)))
+                      (let ((up (file-name-directory (directory-file-name probe))))
+                        (setq probe (and up (not (equal up probe)) up))))
+                    (and probe (file-writable-p probe)))
+             return dir)))
+
 (defun nelisp-standalone--toolchain-elc-setup ()
   "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
 Prints one `[standalone] toolchain:' line saying which copy is used."
@@ -112,13 +137,22 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                          (concat f "\0" (secure-hash 'sha1 (current-buffer)))))
                      sources
                      (concat "\n" emacs-version "\n"))))
-             (dir (expand-file-name (concat "target/toolchain-elc/" hash) root))
-             (missing (cl-remove-if
-                       (lambda (lib)
-                         (file-exists-p (expand-file-name (concat lib ".elc") dir)))
-                       nelisp-standalone--toolchain-elc-libraries)))
+             (dir (nelisp-standalone--toolchain-elc-dir root hash))
+             (missing (and dir
+                           (cl-remove-if
+                            (lambda (lib)
+                              (file-exists-p (expand-file-name (concat lib ".elc") dir)))
+                            nelisp-standalone--toolchain-elc-libraries))))
+        (cond
+         ((null dir)
+          (setq reason "no writable directory for the compiled toolchain")
+          (setq missing nil))
+         (missing
+          (unless (condition-case nil (progn (make-directory dir t) t)
+                    (file-error nil))
+            (setq reason (format "cannot create %s" dir)
+                  missing nil))))
         (when missing
-          (make-directory dir t)
           (let* ((tag (format ".tmp%d" (emacs-pid)))
                  (paths (apply #'append
                                (mapcar (lambda (d) (and (stringp d)
