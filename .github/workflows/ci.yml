@@ -354,9 +354,17 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        shell: bash
+        # setup-emacs-windows builds `emacs-31.1-x86_64.zip' for any version it
+        # does not list, a name GNU never published (404); fetch the real zip.
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/emacs-31.1.zip" \
+            https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip
+          mkdir -p "$RUNNER_TEMP/emacs-31.1"
+          unzip -q "$RUNNER_TEMP/emacs-31.1.zip" -d "$RUNNER_TEMP/emacs-31.1"
+          exe=$(find "$RUNNER_TEMP/emacs-31.1" -path '*/bin/emacs.exe' | head -n 1)
+          test -n "$exe" || { echo "emacs.exe not found in emacs-31.1.zip"; exit 1; }
+          cygpath -w "$(dirname "$exe")" >> "$GITHUB_PATH"
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |
@@ -1058,9 +1066,17 @@ jobs:
           version: '31.1'
       - name: Set up GNU bytecode compiler (Windows)
         if: runner.os == 'Windows'
-        uses: jcs090218/setup-emacs-windows@master
-        with:
-          version: '31.1'
+        shell: bash
+        # setup-emacs-windows builds `emacs-31.1-x86_64.zip' for any version it
+        # does not list, a name GNU never published (404); fetch the real zip.
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/emacs-31.1.zip" \
+            https://ftp.gnu.org/gnu/emacs/windows/emacs-31/emacs-31.1.zip
+          mkdir -p "$RUNNER_TEMP/emacs-31.1"
+          unzip -q "$RUNNER_TEMP/emacs-31.1.zip" -d "$RUNNER_TEMP/emacs-31.1"
+          exe=$(find "$RUNNER_TEMP/emacs-31.1" -path '*/bin/emacs.exe' | head -n 1)
+          test -n "$exe" || { echo "emacs.exe not found in emacs-31.1.zip"; exit 1; }
+          cygpath -w "$(dirname "$exe")" >> "$GITHUB_PATH"
       - name: Record GNU bytecode compiler executable
         shell: bash
         run: |

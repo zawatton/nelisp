@@ -58,10 +58,10 @@ Return plist :rc :unwinds (remaining event names) :writes :dirty :lean-calls."
                 ((symbol-function 'nelisp_mirror_lookup_entry)
                  (lambda (_e name) (if (funcall entry-ok name) (+ 50000 (* name 64)) 0)))
                 ((symbol-function 'nl_word_payload) #'identity)
-                ;; The single-event path restores through `wf_bytecode_w_lean_store'
-                ;; (b63cac37a); model its plain-symbol branch: store at +16.
+                ;; The production restore callee (plain-cell branch only here).
                 ((symbol-function 'wf_bytecode_w_lean_store)
-                 (lambda (sym saved) (ptr-write-u64 (+ sym 16) 0 saved)))
+                 (eval (cons 'lambda (cddr (sst--host-form
+                                            (sst--function 'wf_bytecode_w_lean_store)))) t))
                 ((symbol-function 'wf_dirty) (lambda () (cl-incf dirty) 1))
                 ((symbol-function 'wf_bytecode_w_lean_unbind)
                  (lambda (_e ev) (cl-incf lean)

@@ -61,6 +61,7 @@ before flipping the Vector/Record layout."
   (skip-unless (nelisp-aot-doc147-groupA-test--load-standalone-build))
   (let ((scratch-calls 0)
         (materializer-calls 0)
+        (aggregate-literals nil)
         (lower-calls 0))
     (cl-letf* ((orig-scratch
                 (symbol-function 'nelisp-aot-compiler--scratch-slot))
@@ -78,6 +79,11 @@ before flipping the Vector/Record layout."
                   'nelisp-aot-compiler--top-level-literal-write-forms)
                  (lambda (&rest args)
                    (cl-incf materializer-calls)
+                   ;; Only cons and vector literals are built through a
+                   ;; scratch slot; nil, symbols, integers and strings
+                   ;; are written directly.
+                   (when (or (consp (nth 1 args)) (vectorp (nth 1 args)))
+                     (push (nth 1 args) aggregate-literals))
                    (apply orig-mat args)))
                 ((symbol-function
                   'nelisp-aot-compiler--lower-top-level-var-form)
@@ -86,7 +92,14 @@ before flipping the Vector/Record layout."
                    (apply orig-lower args))))
         (funcall (intern "nelisp-standalone--reader-units"))))
     (should (= scratch-calls 0))
-    (should (= materializer-calls 0))
+    ;; Stale `(= materializer-calls 0)': quoted symbol literals in extern
+    ;; call arguments (e.g. (nl_env_lookup_val_w 'float-output-format ...),
+    ;; added by 8bb3de78c and 44ad119ec) now go through the materializer
+    ;; (--runtime-sexp-literal-form, ab98372888) as scratch-free
+    ;; `sexp-write-symbol-lit' writes: 30 calls, 29 symbols and 1 integer.
+    ;; The pillar is that no aggregate literal needing scratch is emitted.
+    (should (> materializer-calls 0))
+    (should (null aggregate-literals))
     (should (= lower-calls 0))))
 
 (ert-deftest nelisp-aot-doc147-groupA/host-init-scratch-is-host-vector ()

@@ -742,19 +742,11 @@ times, so `(exp -1.0e6)' took ~1.44e6 iterations and `(exp -1.0e9)' ~1.44e9
   ;; multibyte haystack used to fall to the walk below: an allocation and a
   ;; compare per position, seconds on a 700 KB SVG).  It answers t for what
   ;; it leaves to `nelisp--string-search-walk', errors included.
-  (defun string-search (&rest args)
-    ;; &rest so the arity error names the function and the count, as GNU does
-    ;; for a subr (a lambda would put the closure in the error data).  The
-    ;; count is only computed on the error path; two or three arguments pass.
-    (let ((rest (cdr args)))
-      (if (and rest (null (cdr (cdr rest))))
-          (let ((r (if (fboundp 'nelisp--string-search-chars)
-                       (nelisp--string-search-chars (car args) (car rest) (car (cdr rest)))
-                     t)))
-            (if (eq r t)
-                (nelisp--string-search-walk (car args) (car rest) (car (cdr rest)))
-              r))
-        (signal 'wrong-number-of-arguments (list 'string-search (length args))))))
+  (defun string-search (needle haystack &optional start)
+    (let ((r (if (fboundp 'nelisp--string-search-chars)
+                 (nelisp--string-search-chars needle haystack start)
+               t)))
+      (if (eq r t) (nelisp--string-search-walk needle haystack start) r)))
   (defun nelisp--string-search-walk (needle haystack &optional start)
     (nelisp--check-string needle)
     (nelisp--check-string haystack)
@@ -4438,6 +4430,11 @@ trailing newline) that `message' would otherwise do.")
   (defun nelisp--closure-p (x) (eq (car-safe x) 'closure))
   (defun nelisp--closure-cons (x) (and (eq (car-safe x) 'closure) x))
   (defun nelisp--closure-make (x) x))
+;; A Lisp primitive is a closure marked to report as a GNU subr (a kind-23
+;; object with a second slot holding the name).  An older image has none.
+(unless (fboundp 'nelisp--lisp-primitive-p)
+  (defun nelisp--lisp-primitive-p (_x) nil)
+  (defun nelisp--lisp-primitive-name (_x) nil))
 (defun nelisp--maphash-reference (fn table)
   (nelisp--hash-capacity table)
   ;; GNU Fmaphash reads slots in increasing index order, including reuse.
@@ -6034,6 +6031,15 @@ element errors GNU raises first."
     (when (and fast (not defer-dotted))
       (signal 'wrong-type-argument (list 'listp object)))))
 
+(defun nelisp--w302-json-check-cycle (object)
+  "Signal `circular-list' when OBJECT's spine is circular; a dotted tail is fine."
+  (let ((fast object) (slow object))
+    (while (consp fast)
+      (setq fast (cdr fast))
+      (when (consp fast)
+        (setq fast (cdr fast) slow (cdr slow))
+        (when (eq fast slow) (signal 'circular-list (list object)))))))
+
 (defun nelisp--w302-json-encode (object options parents)
   "Encode OBJECT recursively with OPTIONS, detecting ancestor cycles."
   (when (> (length parents) 50)
@@ -6094,6 +6100,7 @@ element errors GNU raises first."
                 (puthash key t seen)
                 (setq parts (cons (concat (nelisp--w302-json-quote key) ":"
                                           (nelisp--w302-json-encode value options parents)) parts)))))
+          (when tail (signal 'wrong-type-argument (list 'listp object)))
           (concat "{" (mapconcat #'identity (nreverse parts) ",") "}"))))))
    (t (signal 'wrong-type-argument (list 'json-value-p object)))))
 
@@ -8126,15 +8133,30 @@ which is what a caller asking for a range check wants."
     (unless (sequencep sequence)
       (signal 'wrong-type-argument (list 'sequencep sequence)))
     (apply (function nconc) (mapcar func sequence))))
+;; GNU subr.el `xor' (a defsubst there), verbatim body.  GNU ert's equality
+;; explainer calls it, so every failing string `should' needs it.
+(unless (fboundp 'xor)
+  (defun xor (cond1 cond2)
+    "Return the boolean exclusive-or of COND1 and COND2.
+If only one of the arguments is non-nil, return it; otherwise
+return nil."
+    (cond ((not cond1) cond2)
+          ((not cond2) cond1))))
 (unless (fboundp 'remq)
   (defun remq (elt list)
-    "Return a copy of LIST with all `eq' occurrences of ELT removed."
+    "Return LIST with all `eq' occurrences of ELT removed.
+As in GNU subr.el, leading occurrences are skipped without copying and
+LIST (or that tail) itself is returned when ELT does not occur; only
+otherwise is the result a fresh copy.  The byte optimizer relies on
+this: `byte-optimize-cond' returns `(remq nil form)' and
+`byte-optimize-form' repeats until the result is `eq' to its input."
     (unless (listp list) (signal 'wrong-type-argument (list 'listp list)))
     (unless (proper-list-p list)
       (signal 'wrong-type-argument (list 'listp list)))
-    (let ((acc nil))
-      (dolist (x list (nreverse acc))
-        (unless (eq x elt) (setq acc (cons x acc)))))))
+    (while (and (eq elt (car list)) (setq list (cdr list))))
+    (if (memq elt list)
+        (delq elt (copy-sequence list))
+      list)))
 (unless (fboundp 'memql)
   ;; GNU `memql' is a C loop; here it is the native `memq' (fixnums, symbols and
   ;; other objects are `eql' exactly when `eq') or the native `member' (floats and
@@ -9204,7 +9226,8 @@ See that variable's own docstring."
   ;; closures and byte-code functions (verified on host:
   ;; `(closurep (byte-compile (lambda (x) x)))' => t).
   (defun closurep (object)
-    (if (or (nelisp--closure-p object)
+    (if (or (and (nelisp--closure-p object)
+                 (not (nelisp--lisp-primitive-p object)))
             (and (fboundp 'byte-code-function-p)
                  (byte-code-function-p object)))
         t
@@ -9295,7 +9318,8 @@ replacing the elements in the beginning of the constant-vector."
 ;; Full cl-generic dispatch needs the reader to gain compiled functions
 ;; (byte-compilation) so the dispatchers compile fast — a reader-core perf item.
 (unless (fboundp 'interpreted-function-p)
-  (defun interpreted-function-p (object) (nelisp--closure-p object)))
+  (defun interpreted-function-p (object)
+    (and (nelisp--closure-p object) (not (nelisp--lisp-primitive-p object)))))
 ;; GNU eval.c `Ffunction' consumes a lambda's leading `(:documentation FORM)'
 ;; when the closure is created (it becomes slot 4: the OClosure type).  This
 ;; runtime keeps the form in the body, where the native slot view reads it,
@@ -20729,6 +20753,8 @@ without the `charset' property, `plain' to print the string without intervals."
    ((nelisp--prn-hash-table-p obj) (nelisp--prn-hash-table obj escape cache))
    ((and (consp obj) (eq (car obj) 'builtin) (consp (cdr obj)))
     (concat "#<subr " (symbol-name (car (cdr obj))) ">"))
+   ((nelisp--lisp-primitive-p obj)
+    (concat "#<subr " (symbol-name (nelisp--lisp-primitive-name obj)) ">"))
    ((nelisp--closure-p obj)
     ;; GNU Emacs 31.1 prints an interpreted-function object as its slots,
     ;; #[ARGS BODY ENV] or #[ARGS BODY ENV nil DOC [IFORM]]; `length'/`aref'
@@ -26875,6 +26901,8 @@ nil), so there is nothing else to update for that name."
      ((and (fboundp 'byte-code-function-p) (byte-code-function-p x)) 'byte-code-function)
      ;; GNU Emacs 31.1: an interpreted closure is an `interpreted-function'
      ;; object; a bare `(lambda ...)' list is just a cons.
+     ;; A Lisp primitive (a marked closure) reports as the subr it stands for.
+     ((nelisp--lisp-primitive-p x) 'subr)
      ((nelisp--closure-p x) 'interpreted-function)
      ((and (consp x) (eq (car x) 'builtin)) 'subr)
      ((and (fboundp 'subrp) (subrp x)) 'subr)
@@ -30024,6 +30052,324 @@ function cell remains a special-form object; ordinary advice cannot wrap it."
             (setq remaining (- remaining)))))
       (nelisp-goto-char p b)
       (>= remaining 0))))
+;; GNU defines these names in C, so each must answer `subrp'.  This runtime
+;; defines some of them in Lisp; mark each such closure as a Lisp primitive
+;; (same body, same dispatch) so it reports as a subr.  A byte-code function
+;; is left alone (it is not a closure, so it stays a non-subr).  The name list is
+;; scripts/nelisp-gnu-primitive-names.txt (GNU 31.1 `subrp' names), embedded
+;; here because the prelude cannot read a data file while the image is built.
+(defun nelisp--mark-lisp-primitives ()
+  "Mark every plain closure bound to a GNU primitive name as a Lisp primitive."
+  (dolist (nelisp--name
+           '(
+    % * + - / /= 1+ 1- < <= = > >= Snarf-documentation abort-minibuffers abort-recursive-edit abs
+    accept-process-output access-file accessible-keymaps acos active-minibuffer-window
+    add-face-text-property add-name-to-file add-text-properties add-variable-watcher
+    all-completions all-threads append apply aref arrayp aset ash asin assoc assoc-string assq atan
+    atom autoload autoload-do-load backtrace--frames-from-thread backtrace--locals backtrace-debug
+    backtrace-eval backtrace-frame--internal backward-char backward-prefix-chars bare-symbol
+    bare-symbol-p barf-if-buffer-read-only base64-decode-region base64-decode-string
+    base64-encode-region base64-encode-string base64url-encode-region base64url-encode-string
+    beginning-of-line bidi-find-overridden-directionality bidi-resolved-levels bitmap-spec-p bobp
+    bolp bool-vector bool-vector-count-consecutive bool-vector-count-population
+    bool-vector-exclusive-or bool-vector-intersection bool-vector-not bool-vector-p
+    bool-vector-set-difference bool-vector-subsetp bool-vector-union boundp buffer-base-buffer
+    buffer-chars-modified-tick buffer-enable-undo buffer-file-name buffer-hash buffer-last-name
+    buffer-line-statistics buffer-list buffer-live-p buffer-local-toplevel-value buffer-local-value
+    buffer-local-variables buffer-modified-p buffer-modified-tick buffer-name buffer-size
+    buffer-string buffer-substring buffer-substring-no-properties buffer-swap-text
+    buffer-text-pixel-size bufferp bury-buffer-internal byte-code byte-code-function-p
+    byte-to-position byte-to-string byteorder call-interactively call-last-kbd-macro call-process
+    call-process-region cancel-kbd-macro-events capitalize capitalize-region capitalize-word car
+    car-less-than-car car-safe case-table-p category-docstring category-set-mnemonics
+    category-table category-table-p ccl-execute ccl-execute-on-string ccl-program-p cdr cdr-safe
+    ceiling char-after char-before char-category-set char-charset char-equal char-or-string-p
+    char-resolve-modifiers char-syntax char-table-extra-slot char-table-p char-table-parent
+    char-table-range char-table-subtype char-to-string char-width characterp charset-after
+    charset-id-internal charset-plist charset-priority-list charsetp check-coding-system
+    check-coding-systems-region cl-type-of clear-buffer-auto-save-failure clear-charset-maps
+    clear-composition-cache clear-face-cache clear-font-cache clear-image-cache clear-string
+    clear-this-command-keys close-font closurep clrhash coding-system-aliases coding-system-base
+    coding-system-eol-type coding-system-p coding-system-plist coding-system-priority-list
+    coding-system-put color-distance color-gray-p color-supported-p color-values-from-color-spec
+    combine-after-change-execute combine-windows command-error-default-function command-modes
+    command-remapping commandp comp--compile-ctxt-to-file0 comp--init-ctxt comp--install-trampoline
+    comp--late-register-subr comp--register-lambda comp--register-subr comp--release-ctxt
+    comp--subr-signature comp-el-to-eln-filename comp-el-to-eln-rel-filename comp-libgccjit-version
+    comp-native-compiler-options-effective-p comp-native-driver-options-effective-p
+    compare-buffer-substrings compare-strings completing-read completion--flex-cost-gotoh
+    compose-region-internal compose-string-internal composition-get-gstring composition-sort-rules
+    compute-motion concat condition-mutex condition-name condition-notify condition-variable-p
+    condition-wait cons consp constrain-to-field continue-process controlling-tty-p
+    coordinates-in-window-p copy-alist copy-category-table copy-file copy-hash-table copy-keymap
+    copy-marker copy-sequence copy-syntax-table copysign cos current-active-maps
+    current-bidi-paragraph-direction current-buffer current-case-table current-column
+    current-cpu-time current-global-map current-idle-time current-indentation current-input-mode
+    current-local-map current-message current-minor-mode-maps current-thread current-time
+    current-time-string current-time-zone current-window-configuration daemon-initialized daemonp
+    dbus--fd-close dbus--fd-open dbus--init-bus dbus--registered-fds dbus-get-unique-name
+    dbus-message-internal debugger-trap declare-equiv-charset decode-big5-char decode-char
+    decode-coding-region decode-coding-string decode-sjis-char decode-time defalias default-boundp
+    default-file-modes default-toplevel-value default-value defconst-1 define-category
+    define-charset-alias define-charset-internal define-coding-system-alias
+    define-coding-system-internal define-fringe-bitmap define-hash-table-test define-key
+    defining-kbd-macro defvar-1 defvaralias delete delete-all-overlays delete-and-extract-region
+    delete-char delete-directory-internal delete-field delete-file-internal delete-frame
+    delete-other-windows-internal delete-overlay delete-process delete-region delete-terminal
+    delete-window-internal delq describe-buffer-bindings describe-vector destroy-fringe-bitmap
+    detect-coding-region detect-coding-string ding directory-file-name directory-files
+    directory-files-and-attributes directory-name-p discard-input display--line-is-continued-p
+    display--update-for-mouse-movement display-supports-face-attributes-p do-auto-save
+    documentation documentation-property documentation-stringp downcase downcase-region
+    downcase-word dump-emacs-portable dump-emacs-portable--sort-predicate
+    dump-emacs-portable--sort-predicate-copied elt emacs-pid encode-big5-char encode-char
+    encode-coding-region encode-coding-string encode-sjis-char encode-time end-kbd-macro
+    end-of-line eobp eolp eq eql equal equal-including-properties erase-buffer error-message-string
+    eval eval-buffer eval-region event-convert-list execute-kbd-macro exit-recursive-edit exp
+    expand-file-name expt external-debugging-output face-attribute-relative-p
+    face-attributes-as-vector face-font fboundp fceiling featurep ffloor field-beginning field-end
+    field-string field-string-no-properties file-accessible-directory-p file-acl file-attributes
+    file-attributes-lessp file-directory-p file-executable-p file-exists-p file-locked-p file-modes
+    file-name-absolute-p file-name-all-completions file-name-as-directory
+    file-name-case-insensitive-p file-name-completion file-name-concat file-name-directory
+    file-name-nondirectory file-newer-than-file-p file-readable-p file-regular-p
+    file-selinux-context file-symlink-p file-system-info file-writable-p fillarray find-buffer
+    find-charset-region find-charset-string find-coding-systems-region-internal
+    find-composition-internal find-file-name-handler find-font find-operation-coding-system float
+    float-time floatp floor flush-standard-output fmakunbound following-char font-at
+    font-face-attributes font-family-list font-get font-get-glyphs font-get-system-font
+    font-get-system-normal-font font-has-char-p font-info font-match-p font-put font-shape-gstring
+    font-spec font-variation-glyphs font-xlfd-name fontp fontset-font fontset-info fontset-list
+    force-mode-line-update force-window-update format format-message format-mode-line
+    format-network-address format-time-string forward-char forward-comment forward-line
+    forward-word frame--face-hash-table frame--set-was-invisible frame--z-order-lessp
+    frame-after-make-frame frame-ancestor-p frame-bottom-divider-width frame-char-height
+    frame-char-width frame-child-frame-border-width frame-first-window frame-focus frame-font-cache
+    frame-fringe-width frame-id frame-initial-p frame-internal-border-width frame-list frame-live-p
+    frame-native-height frame-native-width frame-old-selected-window frame-or-buffer-changed-p
+    frame-parameter frame-parameters frame-parent frame-pointer-visible-p frame-position
+    frame-right-divider-width frame-root-frame frame-root-window frame-scale-factor
+    frame-scroll-bar-height frame-scroll-bar-width frame-selected-window frame-terminal
+    frame-text-cols frame-text-height frame-text-lines frame-text-width frame-total-cols
+    frame-total-lines frame-visible-p frame-window-state-change framep frexp fringe-bitmaps-at-pos
+    fround fset ftruncate func-arity funcall funcall-interactively funcall-with-delayed-message
+    function-equal functionp gap-position gap-size garbage-collect garbage-collect-heapsize
+    garbage-collect-maybe generate-new-buffer-name get get-buffer get-buffer-create
+    get-buffer-process get-buffer-window get-byte get-char-property get-char-property-and-overlay
+    get-display-property get-file-buffer get-internal-run-time get-load-suffixes get-pos-property
+    get-process get-text-property get-truename-buffer get-unicode-property-internal
+    get-unused-category get-unused-iso-final-char get-variable-watchers getenv-internal gethash
+    gnutls-asynchronous-parameters gnutls-available-p gnutls-boot gnutls-bye gnutls-ciphers
+    gnutls-deinit gnutls-digests gnutls-error-fatalp gnutls-error-string gnutls-errorp
+    gnutls-format-certificate gnutls-get-initstage gnutls-hash-digest gnutls-hash-mac gnutls-macs
+    gnutls-peer-status gnutls-peer-status-warning-describe gnutls-symmetric-decrypt
+    gnutls-symmetric-encrypt goto-char group-gid group-name group-real-gid handle-switch-frame
+    handler-bind-1 hash-table-count hash-table-p hash-table-rehash-size hash-table-rehash-threshold
+    hash-table-size hash-table-test hash-table-weakness help--describe-vector iconify-frame
+    identity image-cache-size image-flush image-mask-p image-metadata image-size image-transforms-p
+    imagep indent-to indirect-function indirect-variable init-image-library innermost-minibuffer-p
+    inotify-add-watch inotify-rm-watch inotify-valid-p input-pending-p insert insert-and-inherit
+    insert-before-markers insert-before-markers-and-inherit insert-buffer-substring insert-byte
+    insert-char insert-file-contents insert-special-event integer-or-marker-p integerp
+    interactive-form intern intern-soft internal--define-uninitialized-variable
+    internal--hash-table-buckets internal--hash-table-histogram internal--hash-table-index-size
+    internal--labeled-narrow-to-region internal--labeled-widen internal--obarray-buckets
+    internal--set-buffer-modified-tick internal--track-mouse internal-char-font
+    internal-complete-buffer internal-copy-lisp-face internal-default-interrupt-process
+    internal-default-process-filter internal-default-process-sentinel
+    internal-default-signal-process internal-delete-indirect-variable
+    internal-describe-syntax-value internal-event-symbol-parse-modifiers
+    internal-face-x-get-resource internal-get-lisp-face-attribute internal-handle-focus-in
+    internal-lisp-face-attribute-values internal-lisp-face-empty-p internal-lisp-face-equal-p
+    internal-lisp-face-p internal-make-lisp-face internal-make-var-non-special
+    internal-merge-in-global-face internal-set-alternative-font-family-alist
+    internal-set-alternative-font-registry-alist internal-set-font-selection-order
+    internal-set-lisp-face-attribute internal-set-lisp-face-attribute-from-resource
+    internal-show-cursor internal-show-cursor-p internal-stack-stats internal-subr-documentation
+    interpreted-function-p interrupt-process invisible-p invocation-directory invocation-name isnan
+    iso-charset json-insert json-parse-buffer json-parse-string json-serialize key-binding
+    key-description keyboard-coding-system keymap--get-keyelt keymap-parent keymap-prompt keymapp
+    keywordp kill-all-local-variables kill-buffer kill-emacs kill-local-variable kill-process
+    last-nonminibuffer-frame ldexp length length< length= length> libxml-available-p
+    line-beginning-position line-end-position line-number-at-pos line-number-display-width
+    line-pixel-height list list-fonts list-system-processes listp load load-average
+    local-variable-if-set-p local-variable-p locale-info locate-file-internal lock-buffer lock-file
+    log logand logb logcount logior lognot logxor long-line-optimizations-p looking-at
+    lookup-image-map lookup-key lossage-size lower-frame lread--substitute-object-in-subtree
+    macroexpand make-bool-vector make-byte-code make-category-set make-category-table make-char
+    make-char-table make-closure make-condition-variable make-directory-internal make-finalizer
+    make-frame-invisible make-frame-visible make-hash-table make-indirect-buffer
+    make-interpreted-closure make-keymap make-list make-local-variable make-marker make-mutex
+    make-network-process make-overlay make-pipe-process make-process make-record
+    make-serial-process make-sparse-keymap make-string make-symbol make-symbolic-link
+    make-temp-file-internal make-temp-name make-terminal-frame make-thread
+    make-variable-buffer-local make-vector makunbound malloc-info malloc-trim map-char-table
+    map-charset-chars map-keymap map-keymap-internal mapatoms mapbacktrace mapc mapcan mapcar
+    mapconcat maphash mark-marker marker-buffer marker-insertion-type marker-last-position
+    marker-position markerp match-beginning match-data match-data--translate match-end
+    matching-paren max max-char md5 member memory-info memory-use-counts memq memql
+    menu-bar-menu-at-x-y menu-or-popup-active-p merge-face-attribute message message-box
+    message-or-box min minibuffer-contents minibuffer-contents-no-properties minibuffer-depth
+    minibuffer-innermost-command-loop-p minibuffer-prompt minibuffer-prompt-end
+    minibuffer-selected-window minibuffer-window minibufferp minor-mode-key-binding mod
+    modify-category-entry modify-frame-parameters modify-syntax-entry module-function-p module-load
+    mouse-pixel-position mouse-position mouse-position-in-root-frame move-overlay
+    move-point-visually move-to-column move-to-window-line multibyte-char-to-unibyte
+    multibyte-string-p mutex-lock mutex-name mutex-unlock mutexp narrow-to-region
+    native-comp-available-p native-comp-function-p native-comp-unit-file native-comp-unit-set-file
+    native-elisp-load natnump nconc network-interface-info network-interface-list
+    network-lookup-address-info new-fontset newline-cache-check next-char-property-change
+    next-frame next-overlay-change next-property-change next-read-file-uses-dialog-p
+    next-single-char-property-change next-single-property-change next-window ngettext nlistp
+    nreverse ntake nth nthcdr null num-processors number-or-marker-p number-to-string numberp
+    obarray-clear obarray-make obarrayp object-intervals old-selected-frame old-selected-window
+    open-dribble-file open-font open-termscript optimize-char-table other-buffer
+    other-window-for-scrolling overlay-buffer overlay-end overlay-get overlay-lists
+    overlay-properties overlay-put overlay-recenter overlay-start overlayp overlays-at overlays-in
+    parse-partial-sexp pdumper-stats pgtk-backend-display-class pgtk-disown-selection-internal
+    pgtk-display-monitor-attributes-list pgtk-drop-finish pgtk-font-name pgtk-frame-edges
+    pgtk-frame-geometry pgtk-frame-restack pgtk-get-page-setup pgtk-get-selection-internal
+    pgtk-mouse-absolute-pixel-position pgtk-own-selection-internal pgtk-page-setup-dialog
+    pgtk-print-frames-dialog pgtk-register-dnd-targets pgtk-selection-exists-p
+    pgtk-selection-owner-p pgtk-set-monitor-scale-factor pgtk-set-mouse-absolute-pixel-position
+    pgtk-set-resource pgtk-update-drop-status pgtk-use-im-context play-sound-internal plist-get
+    plist-member plist-put point point-marker point-max point-max-marker point-min point-min-marker
+    pos-bol pos-eol pos-visible-in-window-p position-bytes position-symbol posix-looking-at
+    posix-search-backward posix-search-forward posix-string-match posn-at-point posn-at-x-y
+    preceding-char prefix-numeric-value previous-char-property-change previous-frame
+    previous-overlay-change previous-property-change previous-single-char-property-change
+    previous-single-property-change previous-window prin1 prin1-to-string princ print
+    print--preprocess process-attributes process-buffer process-coding-system process-command
+    process-contact process-datagram-address process-exit-status process-filter process-id
+    process-inherit-coding-system-flag process-list process-mark process-name process-plist
+    process-query-on-exit-flag process-running-child-p process-send-eof process-send-region
+    process-send-string process-sentinel process-status process-thread process-tty-name
+    process-type processp profiler-cpu-log profiler-cpu-running-p profiler-cpu-start
+    profiler-cpu-stop profiler-memory-log profiler-memory-running-p profiler-memory-start
+    profiler-memory-stop proper-list-p propertize provide put put-text-property
+    put-unicode-property-internal puthash query-font query-fontset quit-process raise-frame random
+    rassoc rassq re--describe-compiled re-search-backward re-search-forward read read-buffer
+    read-char read-char-exclusive read-coding-system read-command read-event read-from-minibuffer
+    read-from-string read-key-sequence read-key-sequence-vector read-non-nil-coding-system
+    read-positioning-symbols read-string read-variable recent-auto-save-p recent-keys recenter
+    reconsider-frame-fonts record recordp recursion-depth recursive-edit redirect-debugging-output
+    redirect-frame-focus redisplay redraw-display redraw-frame regexp-quote region-beginning
+    region-end register-ccl-program register-code-conversion-map remember-mouse-glyph remhash
+    remove-list-of-text-properties remove-pos-from-symbol remove-text-properties
+    remove-variable-watcher rename-buffer rename-file replace-match replace-region-contents require
+    resize-mini-window-internal restore-buffer-modified-p resume-tty reverse round
+    run-hook-with-args run-hook-with-args-until-failure run-hook-with-args-until-success
+    run-hook-wrapped run-hooks run-window-configuration-change-hook run-window-scroll-functions
+    safe-length scan-lists scan-sexps scroll-down scroll-left scroll-right scroll-up
+    search-backward search-backward-regexp search-forward search-forward-regexp secure-hash
+    secure-hash-algorithms select-frame select-window selected-frame selected-window
+    self-insert-command send-string-to-terminal sequencep serial-process-configure set
+    set--this-command-keys set-binary-mode set-buffer set-buffer-auto-saved
+    set-buffer-local-toplevel-value set-buffer-major-mode set-buffer-modified-p
+    set-buffer-multibyte set-buffer-redisplay set-case-table set-category-table
+    set-char-table-extra-slot set-char-table-parent set-char-table-range set-charset-plist
+    set-charset-priority set-coding-system-priority set-default set-default-file-modes
+    set-default-toplevel-value set-file-acl set-file-modes set-file-selinux-context set-file-times
+    set-fontset-font set-frame-height set-frame-position set-frame-selected-window set-frame-size
+    set-frame-size-and-position-pixelwise set-frame-width set-frame-window-state-change
+    set-fringe-bitmap-face set-input-interrupt-mode set-input-meta-mode set-input-mode
+    set-keyboard-coding-system-internal set-keymap-parent set-marker set-marker-insertion-type
+    set-match-data set-minibuffer-window set-mouse-pixel-position set-mouse-position
+    set-network-process-option set-output-flow-control set-process-buffer set-process-coding-system
+    set-process-datagram-address set-process-filter set-process-inherit-coding-system-flag
+    set-process-plist set-process-query-on-exit-flag set-process-sentinel set-process-thread
+    set-process-window-size set-quit-char set-safe-terminal-coding-system-internal
+    set-standard-case-table set-syntax-table set-terminal-coding-system-internal
+    set-terminal-parameter set-text-properties set-time-zone-rule set-visited-file-modtime
+    set-window-buffer set-window-combination-limit set-window-configuration set-window-cursor-type
+    set-window-dedicated-p set-window-display-table set-window-fringes set-window-hscroll
+    set-window-margins set-window-new-normal set-window-new-pixel set-window-new-total
+    set-window-next-buffers set-window-parameter set-window-point set-window-prev-buffers
+    set-window-scroll-bars set-window-start set-window-vscroll setcar setcdr setplist signal
+    signal-names signal-process sin single-key-description skip-chars-backward skip-chars-forward
+    skip-syntax-backward skip-syntax-forward sleep-for sort sort-charsets special-variable-p
+    split-char split-window-internal sqlite-available-p sqlite-close sqlite-columns sqlite-commit
+    sqlite-execute sqlite-execute-batch sqlite-finalize sqlite-load-extension sqlite-more-p
+    sqlite-next sqlite-open sqlite-pragma sqlite-rollback sqlite-select sqlite-transaction
+    sqlite-version sqlitep sqrt standard-case-table standard-category-table standard-syntax-table
+    start-kbd-macro stop-process store-kbd-macro-event string string-as-multibyte string-as-unibyte
+    string-bytes string-collate-equalp string-collate-lessp string-distance string-equal
+    string-lessp string-make-multibyte string-make-unibyte string-match string-search
+    string-to-char string-to-multibyte string-to-number string-to-syntax string-to-unibyte
+    string-version-lessp string-width stringp subr-arity subr-name subr-native-comp-unit
+    subr-native-lambda-list subr-type subrp subst-char-in-region substitute-in-file-name substring
+    substring-no-properties suspend-emacs suspend-tty sxhash-eq sxhash-eql sxhash-equal
+    sxhash-equal-including-properties symbol-function symbol-name symbol-plist symbol-value
+    symbol-with-pos-p symbol-with-pos-pos symbolp syntax-class-to-char syntax-table syntax-table-p
+    system-groups system-name system-users tab-bar-height take tan terminal-coding-system
+    terminal-list terminal-live-p terminal-name terminal-parameter terminal-parameters terpri
+    test-completion text-char-description text-properties-at text-property-any
+    text-property-not-all text-quoting-style this-command-keys this-command-keys-vector
+    this-single-command-keys this-single-command-raw-keys thread--blocker thread-buffer-disposition
+    thread-join thread-last-error thread-live-p thread-name thread-set-buffer-disposition
+    thread-signal thread-yield threadp throw time-add time-convert time-equal-p time-less-p
+    time-subtract tool-bar-get-system-style tool-bar-height tool-bar-pixel-width top-level
+    translate-region-internal transpose-regions treesit--linecol-at treesit--linecol-cache
+    treesit--linecol-cache-set treesit-available-p treesit-compiled-query-p
+    treesit-grammar-location treesit-induce-sparse-tree treesit-language-abi-version
+    treesit-language-available-p treesit-library-abi-version treesit-node-check treesit-node-child
+    treesit-node-child-by-field-name treesit-node-child-count treesit-node-descendant-for-range
+    treesit-node-end treesit-node-eq treesit-node-field-name-for-child
+    treesit-node-first-child-for-pos treesit-node-match-p treesit-node-next-sibling treesit-node-p
+    treesit-node-parent treesit-node-parser treesit-node-prev-sibling treesit-node-start
+    treesit-node-string treesit-node-type treesit-parse-string treesit-parser-add-notifier
+    treesit-parser-buffer treesit-parser-changed-regions treesit-parser-create
+    treesit-parser-delete treesit-parser-embed-level treesit-parser-included-ranges
+    treesit-parser-language treesit-parser-list treesit-parser-notifiers treesit-parser-p
+    treesit-parser-remove-notifier treesit-parser-root-node treesit-parser-set-embed-level
+    treesit-parser-set-included-ranges treesit-parser-tag treesit-parser-tracking-line-column-p
+    treesit-pattern-expand treesit-query-capture treesit-query-compile
+    treesit-query-eagerly-compiled-p treesit-query-expand treesit-query-language treesit-query-p
+    treesit-query-source treesit-search-forward treesit-search-subtree treesit-subtree-stat
+    treesit-tracking-line-column-p truncate try-completion tty--output-buffer-size
+    tty--set-output-buffer-size tty-display-color-cells tty-display-color-p
+    tty-display-pixel-height tty-display-pixel-width tty-frame-at tty-frame-edges
+    tty-frame-geometry tty-frame-list-z-order tty-frame-restack tty-no-underline
+    tty-suppress-bold-inverse-default-colors tty-top-frame tty-type type-of uncombine-window
+    undo-boundary unencodable-char-position unhandled-file-name-directory unibyte-char-to-multibyte
+    unibyte-string unicode-property-table-internal unify-charset unintern unix-sync unlock-buffer
+    unlock-file upcase upcase-initials upcase-initials-region upcase-region upcase-word
+    use-global-map use-local-map user-full-name user-login-name user-ptrp user-real-login-name
+    user-real-uid user-uid value< variable-binding-locus vconcat vector vector-or-char-table-p
+    vectorp verify-visited-file-modtime vertical-motion visible-frame-list visited-file-modtime
+    waiting-for-user-input-p where-is-internal widen window-at window-body-height window-body-width
+    window-bottom-divider-width window-buffer window-bump-use-time window-combination-limit
+    window-configuration-equal-p window-configuration-frame window-configuration-p
+    window-cursor-info window-cursor-type window-dedicated-p window-discard-buffer-from-window
+    window-display-table window-end window-frame window-fringes window-header-line-height
+    window-hscroll window-left-child window-left-column window-line-height
+    window-lines-pixel-dimensions window-list window-list-1 window-live-p window-margins
+    window-minibuffer-p window-mode-line-height window-new-normal window-new-pixel window-new-total
+    window-next-buffers window-next-sibling window-normal-size window-old-body-pixel-height
+    window-old-body-pixel-width window-old-buffer window-old-pixel-height window-old-pixel-width
+    window-old-point window-parameter window-parameters window-parent window-pixel-height
+    window-pixel-left window-pixel-top window-pixel-width window-point window-prev-buffers
+    window-prev-sibling window-resize-apply window-resize-apply-total window-right-divider-width
+    window-scroll-bar-height window-scroll-bar-width window-scroll-bars window-start window-system
+    window-tab-line-height window-text-height window-text-pixel-size window-text-width
+    window-top-child window-top-line window-total-height window-total-width window-use-time
+    window-valid-p window-vscroll windowp write-char write-region x-close-connection x-create-frame
+    x-display-backing-store x-display-color-cells x-display-grayscale-p x-display-list
+    x-display-mm-height x-display-mm-width x-display-pixel-height x-display-pixel-width
+    x-display-planes x-display-save-under x-display-screens x-display-visual-class x-export-frames
+    x-family-fonts x-file-dialog x-focus-frame x-get-resource x-gtk-debug x-gtk-launch-uri
+    x-hide-tip x-list-fonts x-load-color-file x-menu-bar-open-internal x-open-connection
+    x-parse-geometry x-popup-dialog x-popup-menu x-select-font x-server-max-request-size x-show-tip
+    xw-color-defined-p xw-color-values xw-display-color-p yes-or-no-p zlib-available-p
+    zlib-decompress-region))
+    (let ((nelisp--fn (and (fboundp nelisp--name) (symbol-function nelisp--name))))
+      (when (and nelisp--fn (nelisp--closure-p nelisp--fn)
+                 (not (nelisp--lisp-primitive-p nelisp--fn)))
+        (fset nelisp--name (nelisp--make-lisp-primitive nelisp--fn nelisp--name))))))
+;; Mark before the buffer bridge below captures `set-buffer' and
+;; `current-buffer': it compares their function cells with EQ.
+(when (fboundp 'nelisp--make-lisp-primitive)
+  (nelisp--mark-lisp-primitives))
 (let* ((set-value (symbol-function 'set-buffer))
        (current-value (symbol-function 'current-buffer))
        ;; Capture the actual symbol-entry records once. Fset mutates their
@@ -33029,6 +33375,25 @@ SYNTAX should be \" \", \"w\", \".\" or \"_\"."
     (nelisp--fx-defer name)))
 ;; Policy stays in Lisp; the existing globals operation reaches symbol-entry
 ;; redirects. Library compatibility providers must retain these native cells.
+;; GNU subr predicates and `subr-name' over the primitive objects above.
+(unless (fboundp 'subr-name)
+  (defun subr-name (subr)
+    "Return the name of the subr object SUBR, a string."
+    (cond ((not (subrp subr)) (signal 'wrong-type-argument (list 'subrp subr)))
+          ((nelisp--lisp-primitive-p subr)
+           (symbol-name (nelisp--lisp-primitive-name subr)))
+          (t (substring (prin1-to-string subr) 7 -1)))))
+(unless (fboundp 'subr-primitive-p)
+  (defun subr-primitive-p (object)
+    "Return t if OBJECT is a built-in primitive written in C."
+    (and (subrp object) (not (native-comp-function-p object)))))
+(unless (fboundp 'primitive-function-p)
+  (defun primitive-function-p (object)
+    "Return t if OBJECT is a built-in primitive function (not a special form)."
+    (and (subrp object)
+         (not (or (native-comp-function-p object)
+                  (eq (cdr (subr-arity object)) 'unevalled))))))
+
 (defvar nelisp--native-variable-aliases (fboundp 'nelisp--native-env))
 (unless (or (not nelisp--native-variable-aliases) (fboundp 'indirect-variable))
   (defun indirect-variable (object)
@@ -33227,3 +33592,8 @@ ERROR-SYMBOL re-signals DATA, whose car is the real symbol."
   (if (and error-symbol (get error-symbol 'error-conditions))
       (nelisp--native-signal error-symbol data)
     (nelisp--native-signal 'error (list "Invalid error symbol" error-symbol))))
+
+;; Last form of the prelude (the build calls it again after the later
+;; providers; a function defined after that stays a plain closure).
+(when (fboundp 'nelisp--make-lisp-primitive)
+  (nelisp--mark-lisp-primitives))

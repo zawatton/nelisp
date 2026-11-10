@@ -39,7 +39,8 @@ defun is appended after; their labels are forward-resolved by
 `resolve-fixups' (also required for B / B.cond — without it every
 branch keeps its placeholder offset 0 = self-loop).  Returns a
 unibyte string containing code followed by string/table rodata."
-  (let* ((nelisp-aot-compiler--arch 'aarch64)
+  (let* ((nelisp-heap-accessors-gnu-string-words nil)
+         (nelisp-aot-compiler--arch 'aarch64)
          (nelisp-aot-compiler--os 'darwin)
          (nelisp-aot-compiler--label-counter 0)
          ;; Statement grammar (`exit'/`write'/`seq'/`defun'/...) accepts

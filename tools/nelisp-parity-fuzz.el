@@ -194,6 +194,15 @@ the one call that caused them."
     read
     ;; interactive / display / buffer state
     message read-string read-from-minibuffer y-or-n-p
+    ;; wait for terminal input: in batch Emacs they block on stdin, so the
+    ;; driver never finishes (read-char was reached once the arity draw no
+    ;; longer stopped the run at startup)
+    read-char read-char-exclusive read-event read-key read-key-sequence
+    read-key-sequence-vector read-passwd read-number read-buffer
+    read-file-name read-directory-name read-command read-variable
+    read-answer read-multiple-choice read-char-choice
+    read-char-from-minibuffer read-shell-command read-regexp
+    completing-read completing-read-multiple yes-or-no-p
     insert erase-buffer current-buffer get-buffer-create set-buffer
     buffer-string buffer-substring point goto-char
     ;; control flow that a generated call cannot use meaningfully
@@ -291,7 +300,12 @@ few lines down, and what `make fallback-inventory' flags a bare handler for."
          (lo (and ar (car ar)))
          (hi (and ar (or (cdr ar) (max 2 (car ar))))))
     (when (and lo (<= lo 4))
-      (let* ((n (+ lo (if (> hi lo) (mod (nelisp-parity-fuzz--next) (1+ (- (min hi 3) lo))) 0)))
+      ;; A function needing 4 arguments has no room under the cap of 3; the
+      ;; draw still happens (so later cases keep their random sequence) and
+      ;; the call takes exactly LO arguments.
+      (let* ((n (+ lo (if (> hi lo)
+                          (mod (nelisp-parity-fuzz--next) (max 1 (1+ (- (min hi 3) lo))))
+                        0)))
              (args (cl-loop repeat n
                             collect (nelisp-parity-fuzz--pick nelisp-parity-fuzz--pool))))
         (cons sym args)))))
@@ -385,8 +399,16 @@ in the results as `:missing\=', which is what the abort report keys on."
   (let ((out nil) (todo cases) (resumes 0))
     (while todo
       (let* ((rows (nelisp-parity-fuzz--run todo))
+             (gnu-idx (cl-position-if (lambda (r) (eq (nth 1 r) :missing)) rows))
              (idx (cl-position-if (lambda (r) (eq (nth 2 r) :missing)) rows)))
         (cond
+         ;; GNU stopped first: the case waited for input or ran past the side
+         ;; timeout.  It is not a disagreement (GNU gave no answer), so it is
+         ;; listed separately and the chunk resumes after it.
+         ((and gnu-idx (or (null idx) (<= gnu-idx idx)))
+          (push (nth 0 (nth gnu-idx rows)) nelisp-parity-fuzz--gnu-timeouts)
+          (setq out (append out (cl-subseq rows 0 gnu-idx)))
+          (setq todo (nthcdr (1+ gnu-idx) todo)))
          ((null idx) (setq out (append out rows)) (setq todo nil))
          ;; Each resume re-runs the whole remaining tail, so a chunk with many
          ;; aborting calls costs aborts x tail evaluations.  Capped -- and
@@ -406,14 +428,38 @@ in the results as `:missing\=', which is what the abort report keys on."
           (setq todo (nthcdr (1+ idx) todo))))))
     out))
 
+(defconst nelisp-parity-fuzz--side-timeout
+  (string-to-number (or (getenv "NELISP_FUZZ_SIDE_TIMEOUT") "5"))
+  "Seconds one side may take for one chunk before it is killed.
+A normal chunk takes 1-2 s.  A call that waits for terminal input never
+returns: `read-char' and the commands that read events block in batch Emacs
+even with stdin at EOF.  Killing the process leaves that case and the rest of
+the chunk unreported, and `nelisp-parity-fuzz--run-recovering' resumes after
+it.")
+
+(defvar nelisp-parity-fuzz--gnu-timeouts nil
+  "Cases at which GNU Emacs stopped responding within the side timeout.
+The stop is at that case, but its cause may be state an earlier case in the
+same chunk left behind (each one returns at once when run alone).  Never
+counted as findings.")
+
 (defun nelisp-parity-fuzz--capture (argv)
-  "Run ARGV, return an alist of CASE-TEXT -> RESULT-TEXT from its ## lines."
+  "Run ARGV, return an alist of CASE-TEXT -> RESULT-TEXT from its ## lines.
+ARGV runs under timeout(1) with `nelisp-parity-fuzz--side-timeout' when the
+command exists, and with stdin from /dev/null."
   (with-temp-buffer
-    (let ((default-directory (nelisp-parity-fuzz--scratch-dir)))
-      (apply #'call-process (car argv) nil t nil (cdr argv)))
+    (let ((default-directory (nelisp-parity-fuzz--scratch-dir))
+          (timeout (executable-find "timeout")))
+      (if (and timeout (> nelisp-parity-fuzz--side-timeout 0))
+          (apply #'call-process timeout null-device t nil "--signal=KILL"
+                 (number-to-string nelisp-parity-fuzz--side-timeout) argv)
+        (apply #'call-process (car argv) null-device t nil (cdr argv))))
     (goto-char (point-min))
     (let ((rows nil))
-      (while (re-search-forward "^##\\(.*?\\)\t\\(.*\\)$" nil t)
+      ;; Only a line ending in a newline is a result: a case that never
+      ;; returned (killed by the side timeout) leaves "##KEY\t" without one,
+      ;; and counting it would name the NEXT case as the one that hung.
+      (while (re-search-forward "^##\\(.*?\\)\t\\(.*\\)\n" nil t)
         (push (cons (match-string 1) (match-string 2)) rows))
       (nreverse rows))))
 
@@ -539,6 +585,11 @@ ended up slower than the search that produced the case."
                                                            (nth 2 r)))))
                                 rows)))
              (aborts (and suspects (nelisp-parity-fuzz--aborts suspects))))
+        (princ (format "\nparity-fuzz: %d call(s) where GNU Emacs stopped responding for %ds (the call waits for input, or state an earlier call in the chunk left behind does; not compared)\n"
+                       (length nelisp-parity-fuzz--gnu-timeouts)
+                       nelisp-parity-fuzz--side-timeout))
+        (dolist (c (reverse nelisp-parity-fuzz--gnu-timeouts))
+          (princ (format "    %S\n" c)))
         (princ (format "\nparity-fuzz: %d call(s) END THE PROCESS (uncatchable -- condition-case cannot see them)\n"
                        (length aborts)))
         (dolist (a aborts)

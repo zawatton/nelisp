@@ -212,18 +212,20 @@
 
 (defun nelisp-vendor-bytecode-triparity--equal-p (row)
   "Fail closed unless each lane ran and returned the same printed value."
-  (let ((lanes (mapcar (lambda (key) (plist-get row key)) '(:host :vm :jit))))
+  (let ((lanes (mapcar (lambda (key) (plist-get row key)) '(:host :vm :jit)))
+        ;; A row that states no native expectation expects no native calls.
+        (expected (or (plist-get row :native_expected) 0)))
     (and (cl-every (lambda (x) (equal (plist-get x :status) "ok")) lanes)
          (equal (mapcar (lambda (x) (nelisp-bytecode-corpus--print
                                     (plist-get x :value))) lanes)
                 (make-list 3 (nelisp-bytecode-corpus--print
                               (plist-get (car lanes) :value))))
          (= (or (plist-get (plist-get row :jit) :native) -1)
-            (plist-get row :native_expected))
-         (or (= (plist-get row :native_expected) 0)
+            expected)
+         (or (= expected 0)
              (not (plist-member (plist-get row :jit) :native_delta))
              (= (plist-get (plist-get row :jit) :native_delta)
-                (plist-get row :native_expected)))
+                expected))
          (and (stringp (plist-get row :bytecode_sha256))
               (cl-every (lambda (lane)
                           (equal (plist-get lane :bytecode_sha256)

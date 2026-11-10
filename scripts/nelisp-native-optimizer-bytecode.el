@@ -4,6 +4,9 @@
 ;; BEFORE the standalone loader authenticates and freezes the owner identities.
 ;; No validator or captured owner is replaced after cold preparation.
 (require 'bytecomp)
+;; Host byte-opt leaks top-level defvar names into this global; without
+;; rebinding it, each compile scans an ever-growing list.
+(defvar byte-optimize--dynamic-vars)
 (require 'nelisp-native-cache)
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-native-gccjit)
@@ -61,7 +64,8 @@
                    (cons 'lambda (cddr source)))
                   (t source)))
            (lowered (nelisp-native-optimizer-bytecode--source lambda-source)))
-     (let ((compiled (byte-compile (if (equal lowered lambda-source) source lowered))))
+     (let ((compiled (let ((byte-optimize--dynamic-vars nil))
+                       (byte-compile (if (equal lowered lambda-source) source lowered)))))
        (when diagnostics
          (error "Refusing diagnostic bytecode: %s" (car (last diagnostics))))
        compiled)))

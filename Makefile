@@ -412,8 +412,8 @@ jit-unverified:
 # through it.  Unlike `jit-unverified' it adds no per-body work -- that
 # one is the measurement, this one is the coverage.
 test-jit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-enable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS)
 
 # The mirror.  With `nelisp-jit-enabled' defaulting to t, the ordinary
 # suite exercises the JIT and the bcl / interpreter paths stop being
@@ -422,8 +422,8 @@ test-jit:
 # how the JIT reached a default-off state with three semantic
 # differences from the interpreter still in it.
 test-nojit:
-	$(MAKE) test-fast \
-	  EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el"
+	@EMACS_PRELOAD="-l scripts/nelisp-jit-disable.el" JOBS=$(JOBS) EMACS="$(EMACS)" \
+	  ./tools/run-tests-parallel.sh $(TESTS)
 
 # `compile' is the byte-compile-error-on-warn lint: it removes the .elc
 # files of its targets before and after the run (also when the run fails,
@@ -1957,7 +1957,8 @@ standalone-reader-fileattrs-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  '       (count-ok (= (length dfa-count) 1))' \
 	  '       (mtime (file-attribute-modification-time attrs))' \
 	  '       (size-ok (equal (file-attribute-size attrs) 10))' \
-	  '       (mtime-ok (and (consp mtime) (> (float-time mtime) 1700000000)))' \
+	  '       (mtime-ok (or (and (integerp mtime) (> mtime 1700000000))' \
+	  '                     (and (consp mtime) (> (float-time mtime) 1700000000))))' \
 	  '       (reg-ok (and (file-regular-p f) (not (file-directory-p f))))' \
 	  '       (dir-ok (and (file-directory-p sub) (not (file-regular-p sub))))' \
 	  '       (names (directory-files dir))' \
@@ -2079,13 +2080,14 @@ standalone-reader-regexp-lead-filter-smoke: $(if $(wildcard target/nelisp target
 	  '  (let* ((nlre--nat-have nil)' \
 	  '         (t0 (float-time))' \
 	  '         (_a (dolist (p paths) (string-match "ddskk-[0-9]+\\.[0-9]+" p)))' \
+	  '         (lead-calls nlre--leading-filter-calls)' \
 	  '         (ta (- (float-time) t0))' \
 	  '         (t1 (float-time))' \
 	  '         (_b (dolist (p paths) (string-match "[0-9]+zzz" p)))' \
 	  '         (tb (- (float-time) t1))' \
 	  '         (ratio (/ ta tb))' \
-	  '         (filter-calls nlre--leading-filter-calls)' \
-	  '         (filter-ok (= filter-calls (* 2 (length paths)))))' \
+	  '         (filter-calls lead-calls)' \
+	  '         (filter-ok (= filter-calls (length paths))))' \
 	  '    (princ (format "got=%S r6=%S g1=%S r7=%S g2=%S lead=%.3f nolead=%.3f ratio=%.3f filter-calls=%d pass=%S\n"' \
 	  '                   got r6 g1 r7 g2 ta tb ratio filter-calls' \
 	  '                   (and correct-ok filter-ok)))))' \
@@ -2590,6 +2592,13 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 #             finished with; a rise confined to one round is not, see
 #             below.
 #
+#   cons leak the live-blocks census walks only the headered chunks; cons
+#             cells moved to typed 32 KiB blocks (nl_cons_alloc), so a
+#             retained cons is invisible to it.  Each round therefore also
+#             records the used-cons count of `garbage-collect' (measured
+#             flat at 285512 across rounds, +8000 per round when 8000 conses
+#             stay reachable), compared with the same rounds as live-blocks.
+#
 # ROUNDS defaults to 5, the minimum the comparison below needs.
 # Deliberately NOT the 1h wall-clock of `soak-1h': an hour of the same loop
 # adds confidence about time, and rounds add confidence about repetition,
@@ -2637,6 +2646,7 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 .PHONY: standalone-reader-checked-soak
 STANDALONE_CHECKED_SOAK_ROUNDS ?= 5
 STANDALONE_CHECKED_SOAK_SLACK ?= 8
+STANDALONE_CHECKED_SOAK_CONS_SLACK ?= 64
 standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@mkdir -p target
 	@printf '%s\n' \
@@ -2649,7 +2659,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  '  (let* ((i 0) (acc nil))' \
 	  '    (while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))' \
 	  '  (garbage-collect)' \
-	  '  (princ (format "ROUND %S\n" (nelisp--alloc-check-report))))' \
+	  '  (princ (format "ROUND %S %S\n" (nelisp--alloc-check-report) (nth 2 (assq (quote conses) (garbage-collect))))))' \
 	  '(let ((r 0))' \
 	  '  (while (< r $(STANDALONE_CHECKED_SOAK_ROUNDS))' \
 	  '    (checked-soak-round)' \
@@ -2665,6 +2675,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  exit 1; \
 	fi; \
 	i=0; r2=""; r3=""; prevlast=""; last=""; lives=""; \
+	c2=""; c3=""; cprev=""; clast=""; conses=""; \
 	while read -r _tag rest; do \
 	  i=$$(( i + 1 )); \
 	  set -- $$(echo "$$rest" | tr -d "()"); \
@@ -2682,6 +2693,10 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	    exit 1; \
 	  fi; \
 	  lives="$$lives $$9"; \
+	  conses="$$conses $${12:-0}"; \
+	  if [ "$$i" -eq 2 ]; then c2=$${12:-0}; fi; \
+	  if [ "$$i" -eq 3 ]; then c3=$${12:-0}; fi; \
+	  cprev=$$clast; clast=$${12:-0}; \
 	  if [ "$$i" -eq 2 ]; then r2=$$9; fi; \
 	  if [ "$$i" -eq 3 ]; then r3=$$9; fi; \
 	  prevlast=$$last; \
@@ -2689,6 +2704,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	done < $$rounds_file; \
 	rm -f $$rounds_file; \
 	echo "[checked-soak] live-blocks per round:$$lives"; \
+	echo "[checked-soak] live conses (garbage-collect) per round:$$conses"; \
 	if [ -z "$$r2" ]; then \
 	  echo "[checked-soak] PASS (fewer than 2 rounds: no leak comparison possible)"; \
 	  exit 0; \
@@ -2706,6 +2722,19 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	fi; \
 	if [ "$$(( final - baseline ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
 	  echo "[checked-soak] FAIL: live blocks grew $$baseline ($$blabel) -> $$final ($$flabel), past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
+	  exit 1; \
+	fi; \
+	cbase=$$c2; cfinal=$$clast; \
+	if [ "$$n" -ge 5 ]; then \
+	  if [ -n "$$c3" ] && [ "$$c3" -lt "$$cbase" ]; then cbase=$$c3; fi; \
+	  cfinal=$$cprev; if [ -n "$$clast" ] && [ "$$clast" -lt "$$cfinal" ]; then cfinal=$$clast; fi; \
+	fi; \
+	if [ "$$cbase" -le 0 ]; then \
+	  echo "[checked-soak] FAIL: (garbage-collect) reported no live cons count -- the cons leak check saw nothing"; \
+	  exit 1; \
+	fi; \
+	if [ "$$(( cfinal - cbase ))" -gt $(STANDALONE_CHECKED_SOAK_CONS_SLACK) ]; then \
+	  echo "[checked-soak] FAIL: live conses grew $$cbase -> $$cfinal, past the $(STANDALONE_CHECKED_SOAK_CONS_SLACK)-cons slack (cons cells live in typed blocks that the live-blocks census does not walk, so retained conses are counted from garbage-collect)"; \
 	  exit 1; \
 	fi; \
 	echo "$$pass_msg"

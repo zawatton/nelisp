@@ -250,24 +250,51 @@ run_ert_gate() {
             --command "nelisp-ai.sh $gate_name"
         exit 1
     fi
-    # Loaded through nelisp-ert-collection-load-env: each file once, and a
-    # file that fails to load becomes a failing test instead of an abort.
+    # Each file runs in its own `emacs --batch' (tools/run-tests-parallel.sh).
+    # One Emacs loading every file never completed: files that called
+    # `ert-run-tests-batch-and-exit' at load time ended the run early, and
+    # without them the run reached tests whose files redefine each other's
+    # functions ("source owner changed") and an ELF registration test that
+    # crashes the host Emacs after the raw-call tests.  A file that fails to
+    # load is an ERROR file, counted as one failure.
     started=$(date +%s)
+    out_dir="target/test-parallel/$gate_name"
+    summary="target/test-parallel/$gate_name.summary"
+    mkdir -p target/test-parallel
     set +e
-    # shellcheck disable=SC2046,SC2086
-    # Keep GNU's host tooling API before standalone packages shadow json.el.
-    NELISP_GATE_NAME="$gate_name" \
-    NELISP_GATE_COMMAND="tools/ai/nelisp-ai.sh $gate_name" \
-    NELISP_ERT_FILES="$files" \
-        "$EMACS" --batch -Q -l json $(load_path_args) \
-            --eval '(setq load-prefer-newer t)' \
-            -l ert -l "$here/nelisp-ert-collection.el" \
-            -f nelisp-ert-collection-load-env \
-            --eval '(nelisp-ert-collection-finish)' \
-            -l "$here/nelisp-ert-gate.el" -f nelisp-ert-gate-run
+    # shellcheck disable=SC2086
+    # The runner's default selector leaves out `:expensive-test', as
+    # `make test' does; NELISP_GATE_SELECTOR overrides it.
+    OUT_DIR="$out_dir" EMACS="$EMACS" \
+    SELECTOR="${NELISP_GATE_SELECTOR:-(not (tag :expensive-test))}" \
+        "$here/../run-tests-parallel.sh" $files > "$summary" 2>&1
     code=$?
     set -e
-    printf 'elapsed: %ss\n' "$(( $(date +%s) - started ))"
+    cat "$summary"
+    totals=$(sed -n 's/^\[parallel-test\] TOTALS //p' "$summary" | tail -1)
+    ran=$(printf '%s' "$totals" | sed -nE 's/.*ran=([0-9]+).*/\1/p')
+    unexpected=$(printf '%s' "$totals" | sed -nE 's/.*unexpected=([0-9]+).*/\1/p')
+    skipped=$(printf '%s' "$totals" | sed -nE 's/.*skipped=([0-9]+).*/\1/p')
+    error_files=$(printf '%s' "$totals" | sed -nE 's/.*error-files=([0-9]+).*/\1/p')
+    elapsed=$(( $(date +%s) - started ))
+    if [ -z "$ran" ]; then
+        "$here/gate-report.sh" --name "$gate_name" --kind ert --ran 0 \
+            --failed 1 --reason "the parallel runner printed no totals (exit $code)" \
+            --command "nelisp-ai.sh $gate_name" || true
+        code=1
+    else
+        failed=$(( unexpected + error_files ))
+        # A nonzero runner exit with no counted failure (a file timed out
+        # after printing its summary) still fails the gate.
+        [ "$code" -ne 0 ] && [ "$failed" -eq 0 ] && failed=1
+        "$here/gate-report.sh" --name "$gate_name" --kind ert \
+            --ran "$(( ran - skipped ))" --passed "$(( ran - skipped - unexpected ))" \
+            --failed "$failed" --skipped "$skipped" \
+            --command "nelisp-ai.sh $gate_name" \
+            --duration-ms "$(( elapsed * 1000 ))" || code=1
+    fi
+    printf 'GATE-COUNT checked=%s findings=%s\n' "${ran:-0}" "${failed:-1}"
+    printf 'elapsed: %ss\n' "$elapsed"
     return $code
 }
 
@@ -789,7 +816,11 @@ EOF
     # Generate through the same source producer used by the standalone
     # artifact command.  Passing the output path through an environment
     # variable keeps shell quoting out of the Elisp form, including when
-    # TMPDIR contains spaces or quote characters.
+    # TMPDIR contains spaces or quote characters.  The generator's progress
+    # lines go to a log shown only on failure, and the runtime is loaded with
+    # `inhibit-message' bound: vendored GNU sources print obsolete-macro
+    # warnings while loading (as GNU does), which are not the session's
+    # output.
     set +e
     NELISP_AI_REPL_RUNTIME="$repl_runtime" NELISP_AI_REPL_MODE="$repl_mode" \
         "$EMACS" --batch -Q -L lisp -L src -L scripts \
@@ -802,13 +833,15 @@ EOF
                       (insert "\n"))
                   (require (quote nelisp-standalone-build))
                   (with-temp-file (getenv "NELISP_AI_REPL_RUNTIME")
-                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' &
+                    (insert (nelisp-standalone--artifact-command-runtime-src t))))' \
+        2> "$repl_tmp_dir/generate.log" &
     repl_generator_pid=$!
     wait "$repl_generator_pid"
     repl_generation_status=$?
     repl_generator_pid=
     set -e
     if [ "$repl_generation_status" -ne 0 ]; then
+        cat "$repl_tmp_dir/generate.log" >&2
         echo "nelisp-ai.sh repl: failed to generate $repl_runtime" >&2
         return 1
     fi
@@ -818,7 +851,7 @@ EOF
     # bootstrap form and then copies the caller's input into a named pipe.
     # Keeping its PID lets normal exit and signal paths reap it along with the
     # native child, including when stdin remains open after `(exit)'.
-    printf '%s\n' '(condition-case err (progn (load (getenv "NELISP_AI_REPL_RUNTIME")) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
+    printf '%s\n' '(condition-case err (progn (let ((inhibit-message t)) (load (getenv "NELISP_AI_REPL_RUNTIME"))) (unless (fboundp (intern (getenv "NELISP_AI_REPL_REQUIRED"))) (error "selected runtime API was not loaded"))) (error (nelisp--write-stderr-line (format "nelisp-ai.sh repl: runtime bootstrap failed: %S" err)) (exit 1)))' > "$repl_bootstrap"
     repl_input_fifo="$repl_tmp_dir/input.fifo"
     if ! mkfifo "$repl_input_fifo"; then
         echo "nelisp-ai.sh repl: cannot create $repl_input_fifo" >&2

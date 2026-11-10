@@ -47,6 +47,21 @@
 (require 'nelisp-cc-mirror-set-constant-or-insert)
 (require 'nelisp-cc-mirror-install-entry-or-insert)
 
+(defvar nelisp-standalone-target-test--driver-cache nil
+  "Alist of (TARGET . FORMS) from `nelisp-standalone--reader-driver-source'.")
+
+(defun nelisp-standalone-target-test--driver-source ()
+  "Return the reader driver source for the current target, built once.
+Each build composes the whole boot image (about 15 minutes, and slower
+late in a long-lived Emacs).  The expensive tests below only read the
+forms, so they share one build per target; otherwise the file cannot
+finish within the runner's timeout."
+  (let ((target (nelisp-standalone-arena-rewrite-target)))
+    (or (cdr (assq target nelisp-standalone-target-test--driver-cache))
+        (let ((forms (nelisp-standalone--reader-driver-source)))
+          (push (cons target forms) nelisp-standalone-target-test--driver-cache)
+          forms))))
+
 (ert-deftest nelisp-standalone-target-reader-driver-uses-cache ()
   "The reader driver goes through the content-addressed unit cache."
   :tags '(:expensive-test)
@@ -513,7 +528,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
   "Doc 152 Stage 5 arms mid-form GC only after the boot watermark is valid."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--driver-source))
          (driver (cl-find-if (lambda (form)
                                (and (consp form)
                                     (eq (car form) 'defun)
@@ -524,34 +539,37 @@ non-local-exit behaviour are covered by the standalone reader smoke."
          (body (cdr driver-seq))
          (watermark
           '(ptr-write-u64 268435664 0
-                          (+ 268435456 (ptr-read-u64 268435456 0))))
+                          (+ 268435456 (heap-read-u64 268435456 0))))
          (watermark-pos (cl-position watermark body :test #'equal)))
     (should driver)
     (should (eq (car driver-let) 'let*))
     (should (eq (car driver-seq) 'seq))
     (should watermark-pos)
-    ;; The debt counters are reset after the watermark and before arming
-    ;; mid-form collection.  These writes must stay in this order: enabling
-    ;; earlier permits a while backedge to collect boot objects before the
-    ;; permanent generation is frozen, while a zero trigger would collect on
-    ;; every backedge.
-    (should (equal (nth (+ watermark-pos 1) body)
-                   '(ptr-write-u64 (data-addr nl_gc_stats) 0 0)))
-    (should (equal (nth (+ watermark-pos 2) body)
-                   '(ptr-write-u64 (data-addr nl_gc_stats) 8 0)))
-    (should (equal (nth (+ watermark-pos 3) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)))
-    (should (equal (nth (+ watermark-pos 4) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
-                                   (+ (ptr-read-u64 268436184 0) 16777216))))
-    (should (equal (nth (+ watermark-pos 5) body)
-                   '(ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0)))))
+    ;; The debt counters and the allocation budget are reset after the
+    ;; watermark and before arming mid-form collection.  These writes must
+    ;; stay in this order: enabling earlier permits a while backedge to
+    ;; collect boot objects before the permanent generation is frozen, while
+    ;; a zero trigger would collect on every backedge.  b51fe66f4 moved the
+    ;; heap reads to `heap-read-u64'; deb703a17 added the nl_gc_until budget
+    ;; reset and the reserved-bytes base at loop-ctx slot 56.
+    (should (equal (cl-subseq body (1+ watermark-pos) (+ watermark-pos 10))
+                   '((ptr-write-u64 268435624 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_stats) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_stats) 8 0)
+                     (ptr-write-u64 (data-addr nl_gc_until_base) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_until) 0 0)
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 8 1)
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 56
+                                    (heap-read-u64 268436184 0))
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 40
+                                    (+ (heap-read-u64 268436184 0) 16777216))
+                     (ptr-write-u64 (data-addr nl_gc_loop_ctx) 32 0))))))
 
 (ert-deftest nelisp-standalone-target-reader-cli-uses-long-options ()
   "The standalone reader exposes Lisp-like no-args REPL plus long options."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let* ((forms (nelisp-standalone--reader-driver-source))
+  (let* ((forms (nelisp-standalone-target-test--driver-source))
          (flat (flatten-tree forms)))
     (cl-labels ((defun-source
                   (name)
@@ -564,9 +582,10 @@ non-local-exit behaviour are covered by the standalone reader smoke."
                     forms)))
                 (starts-with-dash-dash-p
                   (name)
+                  ;; b51fe66f4 moved the byte reads to `heap-read-u8'.
                   (let ((source (defun-source name)))
-                    (and (string-match-p "(ptr-read-u8 ptr 0) 45" source)
-                         (string-match-p "(ptr-read-u8 ptr 1) 45" source)))))
+                    (and (string-match-p "(heap-read-u8 ptr 0) 45" source)
+                         (string-match-p "(heap-read-u8 ptr 1) 45" source)))))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_eval))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_load))
       (should (starts-with-dash-dash-p 'nl_cstr_eq_neln_selftest))
@@ -580,7 +599,7 @@ non-local-exit behaviour are covered by the standalone reader smoke."
   "The standalone reader dispatch table includes `--neln-selftest'."
   :tags '(:expensive-test)
   (skip-unless (equal emacs-version "31.1"))
-  (let ((source (prin1-to-string (nelisp-standalone--reader-driver-source))))
+  (let ((source (prin1-to-string (nelisp-standalone-target-test--driver-source))))
     (should (string-match-p "nl_cstr_eq_neln_selftest" source))
     (should (string-match-p "(nl_neln_demo_exec ctx 41)" source))))
 
@@ -1108,7 +1127,7 @@ implementation before a cross-host binary is available."
              (fill (defun-form 'nl_darwin_procargs_fill forms))
              (env-init (defun-form 'nl_os_environ_init forms))
              (argv-init (defun-form 'nl_os_argv_init forms))
-             (driver (nelisp-standalone--reader-driver-source)))
+             (driver (nelisp-standalone-target-test--driver-source)))
         (should nul)
         (should env-walk)
         (should argv-end)
@@ -1117,19 +1136,20 @@ implementation before a cross-host binary is available."
         (should argv-init)
         ;; Every byte access in the synthetic-buffer fixture is preceded by
         ;; its length check; both consumers use the same bounded helper.
+        ;; b51fe66f4 moved these byte reads to `heap-read-u8'.
         (should (tree-member-p
                  '(while (and (= done 0) (< i limit))
-                    (if (= (ptr-read-u8 ptr i) 0)
+                    (if (= (heap-read-u8 ptr i) 0)
                         (setq done 1)
                       (setq i (+ i 1))))
                  nul))
         (should (tree-member-p
-                 '(while (and (< i limit) (= (ptr-read-u8 ptr i) 0))
+                 '(while (and (< i limit) (= (heap-read-u8 ptr i) 0))
                     (setq i (+ i 1)))
                  (defun-form 'nl_darwin_procargs_skip_padding forms)))
         (should (tree-member-p
                  '(while (and (< i end) (< found 0))
-                    (if (= (ptr-read-u8 ptr i) 61)
+                    (if (= (heap-read-u8 ptr i) 61)
                         (setq found i)
                       (setq i (+ i 1))))
                  (defun-form 'nl_darwin_procargs_env_eq forms)))
@@ -1166,7 +1186,7 @@ implementation before a cross-host binary is available."
         (should (tree-member-p '(>= path-end limit) argv-init))
         ;; Execute the generated bounded readers against a synthetic
         ;; KERN_PROCARGS2 byte buffer as a host fixture.  This uses the actual
-        ;; generated function bodies (only ptr-read-u8 is adapted to a String),
+        ;; generated function bodies (only heap-read-u8 is adapted to a String),
         ;; so padding, an empty middle argv, valid PATH/EMPTY values, a
         ;; malformed entry, and truncation all exercise the same offsets that
         ;; the native target will use.
@@ -1185,7 +1205,7 @@ implementation before a cross-host binary is available."
                         "arg2" "\0" "PATH=/x" "\0" "EMPTY=" "\0"
                         "NOEQ" "\0" "\0"))
                (limit (length fixture)))
-          (cl-letf (((symbol-function 'ptr-read-u8)
+          (cl-letf (((symbol-function 'heap-read-u8)
                      (lambda (ptr off) (aref ptr off)))
                     ((symbol-function 'nl_darwin_procargs_nul)
                      nul-fn)
@@ -1507,7 +1527,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                   ((consp tree)
                    (or (tree-member-p needle (car tree))
                        (tree-member-p needle (cdr tree)))))))
-      (let ((forms (nelisp-standalone--reader-driver-source)))
+      (let ((forms (nelisp-standalone-target-test--driver-source)))
         (should (tree-member-p
                  '(defun nl_cli_argv_shifted_p (argc slot0 slot1)
                     (if (> argc 1)
@@ -1567,7 +1587,7 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source)))
+    (let ((forms (nelisp-standalone-target-test--driver-source)))
       (should (tree-member-p
                '(nl_alloc_str fbuf n src)
                forms))
@@ -1575,12 +1595,13 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                '(nl_cli_write_value fbuf out)
                forms))
       (should (tree-member-p
+               ;; b51fe66f4 (Doc 216 S1 heap accessors) renamed the reads.
                '(defun nl_cli_value_to_buf (fbuf off out)
-                  (let* ((tag (ptr-read-u64 out 0)))
+                  (let* ((tag (heap-sexp-tag-word out)))
                     (cond
                      ((= tag 0) (nl_cli_put_nil fbuf off))
                      ((= tag 1) (nl_cli_put_byte fbuf off 116))
-                     ((= tag 2) (nl_cli_put_dec fbuf off (ptr-read-u64 out 8)))
+                     ((= tag 2) (nl_cli_put_dec fbuf off (heap-sexp-payload out)))
                      ((or (= tag 4) (= tag 16))
                       (nl_cli_put_string_value fbuf off out 0))
                      ((= tag 5) (nl_cli_put_string_value fbuf off out 1))
@@ -1668,19 +1689,20 @@ report its size as a Unix timestamp.  Pin the reads at the Darwin offsets
                 ((consp tree)
                  (or (tree-member-p needle (car tree))
                      (tree-member-p needle (cdr tree)))))))
-    (let ((forms (nelisp-standalone--reader-driver-source))
+    (let ((forms (nelisp-standalone-target-test--driver-source))
           (boundary nelisp-standalone--reader-boundary-source)
           (eval-source nelisp-standalone--reader-eval-source-source))
       (should (tree-member-p
+               ;; b51fe66f4 (Doc 216 S1 heap accessors) renamed the reads.
                '(defun nl_boundary_immediate_result_p (out)
-                  (if (<= (ptr-read-u64 out 0) 3) 1 0))
+                  (if (<= (heap-read-u64 out 0) 3) 1 0))
                boundary))
       (should (tree-member-p
-               '(if (= (ptr-read-u64 268436216 0) 1)
+               '(if (= (heap-read-u64 268436216 0) 1)
                     (if (= (nl_boundary_immediate_result_p out) 1)
-                        (if (= (ptr-read-u64 268435544 0) epoch0)
-                            (if (= (ptr-read-u64 268435472 0) 0)
-                                (if (= (ptr-read-u64 268435464 0) 0)
+                        (if (= (heap-read-u64 268435544 0) epoch0)
+                            (if (= (heap-read-u64 268435472 0) 0)
+                                (if (= (heap-read-u64 268435464 0) 0)
                                     (nl_boundary_reclaim mark_chunk mark_cursor)
                                   0)
                               0)

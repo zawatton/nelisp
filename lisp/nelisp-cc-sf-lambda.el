@@ -27,6 +27,26 @@
         (seq (ptr-write-u64 obj 0 23)
              (ptr-write-u64 obj 8 c)
              (+ obj 6))))
+    ;; A Lisp primitive: a closure that reports as a subr.  Kind 23 with the
+    ;; length field 2; slot 0 is the closure cons WORD, slot 1 the name symbol.
+    (defun nl_cl_prim_wrap (c name)
+      (let* ((obj (nl_alloc_vector 2)))
+        (seq (ptr-write-u64 obj 0 (+ 512 23))
+             (ptr-write-u64 obj 8 c)
+             (ptr-write-u64 obj 16 name)
+             (+ obj 6))))
+    ;; The name WORD of a Lisp primitive (a WORD or a view), else 0.
+    (defun nl_k23_name (w)
+      (let* ((box (if (= (logand w 7) 6)
+                      (if (< w 4096) 0 (- w 6))
+                    (if (= (logand w 7) 0)
+                        (if (< w 4096) 0
+                          (if (= (ptr-read-u8 w 0) 23) (ptr-read-u64 w 8) 0))
+                      0))))
+        (if (= box 0) 0
+          (if (= (logand (ptr-read-u8 box 0) 63) 23)
+              (if (= (sar (ptr-read-u64 box 0) 8) 2) (ptr-read-u64 box 16) 0)
+            0))))
     (defun nl_sf_lambda_fill (buf s1)
       (and (ptr-write-u8 buf 0 99)
            (ptr-write-u8 buf 1 108)

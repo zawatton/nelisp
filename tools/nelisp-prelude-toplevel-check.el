@@ -44,19 +44,14 @@
     define-derived-mode
     ;; the prelude installs some names by calling its own registrars
     nelisp--error-register
-    ;; 2026-11-09: registrar calls already on main (origin/main, fba278a22,
-    ;; 0a618c89c report the same 14 forms).  Each installs a definition or
-    ;; a property; none takes a defun parameter, so the stray-check shape
-    ;; this tool targets still has an un-allowed head (`signal', a
-    ;; `nelisp--check-*' call).
-    nelisp--define-core-record      ; record type registration
-    make-variable-buffer-local      ; variable property
-    make-obsolete                   ; function property
-    define-key                      ; keymap binding seed
-    nelisp--set-special-form-implementation ; special-form table entry
-    nelisp-casetab--register-standard-data  ; case-table seed
-    ;; prime the fx env caches before any worker runs (see the comment
-    ;; above the two calls in the prelude)
+    ;; a key binding mirroring GNU's preloaded bindings.el, e.g.
+    ;; `(define-key esc-map "s" search-map)' after the `search-map' defvar
+    define-key
+    ;; deliberate boot-time calls: registrars, buffer-local and obsolete
+    ;; declarations, the subr marker pass, and cache priming
+    nelisp--define-core-record make-variable-buffer-local make-obsolete
+    nelisp--set-special-form-implementation nelisp--mark-lisp-primitives
+    nelisp-casetab--register-standard-data
     nelisp--fx-active-p nelisp--fx-trace-file)
   "Heads that make sense as a top-level form here.")
 
@@ -132,11 +127,12 @@ gates later by `make emacs-compat' instead."
                  (nelisp-prelude-toplevel--note-unreadable file start err bad-cell)
                  (setq bad (car bad-cell))
                  (setq done t))))))))
-    ;; Reversed into a fresh binding: `nreverse' inside the `dolist' below
-    ;; left `bad' as its old head cell, so `findings' read 1 for any count.
-    (setq bad (reverse (append bad (car bad-cell))))
+    (setq bad (append bad (car bad-cell)))
     (princ (format "prelude-toplevel: %d top-level forms, %d file(s) ended cleanly\n"
                    forms nelisp-prelude-toplevel--eofs))
+    ;; `nreverse' reuses the cells, so take the reversed list as the value:
+    ;; `bad' alone would afterwards be its old head, now the last cell.
+    (setq bad (nreverse bad))
     (dolist (b bad)
       (princ (format "  %s:%d  top-level `%S'\n" (nth 0 b) (nth 1 b) (nth 2 b))))
     ;; `checked' counts FORMS: a reader that stopped at form 3 would

@@ -672,7 +672,12 @@ def build(release=False, profiling=False, debugging=False):
                    NELISP_PROJECT_PROFILE=profile,
                    NELISP_PROJECT_DEBUG_SHA256=debug_digest,
                    NELISP_PROJECT_BUILD_CACHE=str(cache) if cache is not None else "",
-                   NELISP_PROJECT_OUTPUT=str(candidate))
+                   NELISP_PROJECT_OUTPUT=str(candidate),
+                   # Generating the reader driver writes its native-startup
+                   # companion next to the reader output path; point that at
+                   # the candidate so a project build never rewrites the
+                   # companion of the repository's own target/nelisp.
+                   NELISP_STANDALONE_READER_OUTPUT=str(candidate))
         command = [emacs, "-Q", "--batch", "-L", "lisp", "-L", "src", "-L", "scripts",
                    "--eval", "(setq load-prefer-newer t)", "-l", "nelisp-project-build",
                    "-f", "nelisp-project-build-main"]

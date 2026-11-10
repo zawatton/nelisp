@@ -802,5 +802,16 @@ inside BASE's mapped page."
                            expected))
             (should (equal (output binary arguments) expected))))))))
 
+(ert-deftest nelisp-doc200-unibyte-repr-nested-ascii-string-keys-cross-repr ()
+  "Equal-test hash lookup finds a nested ASCII string key across representations.
+`string-to-unibyte' gives the raw-byte string (tag 14) and
+`string-to-multibyte' the multibyte one (tag 5); `wf_key_eq_depth' must treat
+the two as equal when they sit inside a cons or list key, the same way
+`equal' does.  Flat keys never reach that walker (a direct string-pair arm
+decides them first), so the keys here are nested on purpose."
+  (let ((out (nelisp-doc200-unibyte-repr-test--eval-standalone
+              "(let* ((u (string-to-unibyte \"abc\")) (m (string-to-multibyte \"abc\")) (h (make-hash-table :test 'equal))) (puthash (cons u 1) 'c h) (puthash (list 1 (list u)) 'd h) (list (multibyte-string-p u) (multibyte-string-p m) (gethash (cons m 1) h) (gethash (list 1 (list m)) h) (equal (cons u 1) (cons m 1))))")))
+    (should (string-match-p "(nil t c d t)" out))))
+
 (provide 'nelisp-doc200-unibyte-repr-test)
 ;;; nelisp-doc200-unibyte-repr-test.el ends here

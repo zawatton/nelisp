@@ -129,5 +129,3 @@
         ;; The direct adapter itself allocates only the two rooted cons cells.
         (should (= allocations 1))
         (should (= ended 7))))))
-
-(ert-run-tests-batch-and-exit)

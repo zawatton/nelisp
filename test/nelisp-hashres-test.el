@@ -54,13 +54,14 @@
     (+ a 6)))
 (defun hr--vset (v i w) (hr--w (+ (- v 6) 8 (* 8 i)) w))
 (defun hr--vget (v i) (hr--r64 (- v 6) (+ 8 (* 8 i))))
+;; 7d7ba0c02: a hash table is a kind-22 heap object (header (1<<8)|22, meta
+;; WORD at +8, index WORD at +16); the table WORD is the address plus 6.
+(defun hr--htobj (meta index)
+  (let ((a (hr--alloc 24)))
+    (hr--w a (logior 22 (ash 1 8))) (hr--w (+ a 8) meta) (hr--w (+ a 16) index)
+    (+ a 6)))
 (defun hr--cons (car cdr)
   (let ((a (hr--alloc 16))) (hr--w a car) (hr--w (+ a 8) cdr) (+ a 2)))
-(defun hr--htobj (meta index)
-  "A kind-22 hash-table heap object (commit 7d7ba0c02); returns its table word."
-  (let ((a (hr--alloc 32)))
-    (hr--w a (logior (ash 1 8) 22)) (hr--w (+ a 8) meta) (hr--w (+ a 16) index)
-    (+ a 6)))
 (defun hr--str (s)
   (let* ((n (length s)) (d (hr--alloc (+ n 8))) (a (hr--alloc 32)))
     (dotimes (i n)
@@ -104,7 +105,7 @@
 (defconst hr--defs
   '(nl_val_tag nl_word_payload nl_word_data nl_word_length nl_word_tag64
     nl_cons_car_word nl_cons_cdr_word nl_vector_slot_word nl_ht_marker_word
-    nl_ht_obj nl_ht_raw_meta nl_ht_raw_index nl_ht_marker_word_set nl_ht_int nl_ht_set_int nl_ht_meta_slot nl_ht_data_slot
+    nl_ht_marker_word_set nl_ht_int nl_ht_set_int nl_ht_obj nl_ht_meta_slot nl_ht_data_slot
     nl_ht_hash_index nl_ht_hash nl_ht_identity_key_hash nl_so_p bf_hash_table_p_raw
     nl_ht_test_mode nl_ht_identity_sync nl_ht_custom_function_w nl_ht_entry_value
     nl_ht_find_index nl_ht_find_in wf_bytecode_switch_find bf_identity_hash))
@@ -172,22 +173,48 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (hr--vset meta 1 (hr--fix count))
     (list table meta index)))
 
+;; 7d7ba0c02 dropped the inline cons fast path of `nl_ht_find_index': the
+;; table is a heap object now, so the lookup reads meta and index through
+;; exactly one `nl_ht_meta_slot' and one `nl_ht_data_slot' call (each a plain
+;; physical read) and no other generic accessor.
+(defun hr--helper-calls ()
+  (sort (cl-remove-if-not (lambda (x) (memq x hr--helpers)) hr--calls)
+        (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
 (defun hr--n () (cl-count-if (lambda (x) (memq x hr--helpers)) hr--calls))
 (defmacro hr--measure (&rest body)
   `(progn (setq hr--calls nil) (prog1 (progn ,@body) nil)))
 
+(defun hr--hdr-obj (header)
+  "A 24-byte vectorlike object whose first word is HEADER; returns its WORD."
+  (let ((a (hr--alloc 24))) (hr--w a header) (+ a 6)))
+
 (ert-deftest hr-table-p ()
   (hr--setup)
-  (dolist (kind '(view object object-view-name object-flagged))
-    (let* ((hr--marker-kind kind) (tb (car (hr--build "eq" -102))))
-      (setq hr--calls nil)
-      (should (= (bf_hash_table_p_raw tb) 1))
-      ;; every shape, including the flagged-length one, takes the fast path
-      (should (= (hr--n) 0))
-      ;; Commit 7d7ba0c02: a table is a kind-22 object and no legacy cons view
-      ;; of one is produced, so only the object word itself is checked.
-      ))
+  (let ((tb (car (hr--build "eq" -102))))
+    (setq hr--calls nil)
+    (should (= (bf_hash_table_p_raw tb) 1))
+    (should (= (hr--n) 0)))
+  ;; 7d7ba0c02: recognition is one header-kind read (masked with 63).
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 (ash 1 8)))) 1))
+  ;; high bits above the 6-bit kind do not change the class
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 (ash 5 8) (ash 1 62)))) 1))
+  ;; bit 6 is outside the 63 mask, so 86 = 22 + 64 is still kind 22
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 22 #x40 (ash 1 8)))) 1))
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior 86 (ash 1 8)))) 1))
+  ;; but a changed low kind bit is not
+  (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior #x17 (ash 1 8)))) 0))
+  ;; non-vectorlike words: fixnum, cons-tagged
+  (should (= (bf_hash_table_p_raw (hr--fix 22)) 0))
+  (should (= (bf_hash_table_p_raw (hr--cons (hr--fix 22) 3)) 0))
+  ;; other vectorlike kinds, including the neighbours of 22
+  (dolist (k '(0 8 11 20 21 23 38 54))
+    (should (= (bf_hash_table_p_raw (hr--hdr-obj (logior k (ash 1 8)))) 0)))
+  ;; a legacy view (tag byte 7 over the old cons container) is not a table
+  (let ((tb (car (hr--build "eq" -102))) (v (hr--alloc 32)))
+    (hr--w v 7) (hr--w (+ v 8) (- tb 6))
+    (should (= (bf_hash_table_p_raw v) 0)))
   (let* ((tb (car (hr--build "eq" -102)))
+         ;; Cons cells whose car looks like table metadata: not tables now.
          (bad-name (let ((m (hr--vec 15)))
                      (hr--vset m 0 (hr--sym "hash-tablx")) (hr--cons m (hr--vec 1))))
          (bad-view (let ((m (hr--vec 15)))
@@ -275,10 +302,7 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
       (setq hr--calls nil)
       (let ((i (nl_ht_find_index tb (hr--fix k) (bf_identity_hash (hr--fix k)) 1)))
         (should (= i (cl-position k keys)))
-        ;; Since the kind-22 table (7d7ba0c02) the lookup reads its vectors
-        ;; through exactly one meta-slot and one data-slot call; nothing else.
-        (should (equal (sort (mapcar #'symbol-name (cl-remove 'bf_eq2 hr--calls)) #'string<)
-                       '("nl_ht_data_slot" "nl_ht_meta_slot"))))
+        (should (equal (hr--helper-calls) '(nl_ht_data_slot nl_ht_meta_slot))))
       (should (= (nl_ht_find_in tb (hr--fix k)) (1+ (cl-position k keys)))))
     (should (= (nl_ht_find_in tb (hr--fix 99)) 0))
     (should (= (nl_ht_find_index tb (hr--fix 99) (bf_identity_hash (hr--fix 99)) 1) -1))
@@ -290,9 +314,7 @@ KEYS are fixnum values inserted in order.  Returns (TABLE META INDEX)."
     (dolist (k keys)
       (setq hr--calls nil)
       (should (= (wf_bytecode_switch_find tb (hr--fix k) 1) (1+ (cl-position k keys))))
-      ;; one meta-slot and one data-slot call since 7d7ba0c02
-      (should (equal (sort (mapcar #'symbol-name (cl-remove 'bf_eq2 hr--calls)) #'string<)
-                     '("nl_ht_data_slot" "nl_ht_meta_slot"))))
+      (should (equal (hr--helper-calls) '(nl_ht_data_slot nl_ht_meta_slot))))
     (should (= (wf_bytecode_switch_find tb (hr--fix 42) 1) 0))
     ;; a symbol object key, hashed by the stubbed symbol hash
     (let* ((s (hr--sym "foo")) (meta (cadr b)) (pairs (hr--vget meta 11)))

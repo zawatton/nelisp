@@ -1321,10 +1321,15 @@ Skipping an unbound entry here defers that same `void-function' to
 the point some artifact actually calls it (now a real, catchable
 signal per FINDINGS.md recommendation 1(a)), instead of taking down
 primitive installation for entries nothing in a given run needs."
-  (puthash 'nelisp--host-apply (symbol-function 'nelisp--host-apply)
-           nelisp--functions)
-  (puthash 'nelisp--host-fboundp (symbol-function 'nelisp--host-fboundp)
-           nelisp--functions)
+  ;; Bridge every host-layer alias defined above.  A self-hosted copy of
+  ;; this file evaluates their `fboundp' guards against `nelisp--functions';
+  ;; an alias missing there is redefined from the table-aware
+  ;; `symbol-function', so `nelisp--host-fset' became `nelisp--builtin-fset'
+  ;; itself and recursed (tramp cycle 2: excessive-lisp-nesting).
+  (dolist (alias '(nelisp--host-apply nelisp--host-fboundp nelisp--host-boundp
+                   nelisp--host-symbol-value nelisp--host-symbol-function
+                   nelisp--host-fset nelisp--host-fmakunbound))
+    (puthash alias (symbol-function alias) nelisp--functions))
   (dolist (sym nelisp--primitive-symbols)
     (when (nelisp--host-fboundp sym)
       (puthash sym (symbol-function sym) nelisp--functions)))

@@ -67,9 +67,7 @@ ns-gate|scripts/nelisp-stdlib-prelude.el|s/^(defun round (x \&optional div)/(def
 # generated table at all (so it was never counted, and removing it changed
 # nothing).  Both read as a broken gate when the gate was fine.
 parity-coverage|test/nelisp-shadow-differential-cases.el|s/generate-new-buffer/ignore-me-not-a-name/g|a covered name stops being mentioned
-# Re-anchored 2026-11-09: 3edc5b180 removed the one-line top-level
-# `string-empty-p' this row edited, so its sed matched nothing.
-prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun purecopy (x) x)$/(defun purecopy (x) x)\n  (nelisp--check-string x)/|a check lands outside a one-line defun
+prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|s/^(defun natnump (x) (and (integerp x) (>= x 0)))$/(defun natnump (x) (and (integerp x) (>= x 0)))\n  (nelisp--check-number x)/|a check lands outside a one-line defun
 # The sed expression cannot use `|' -- it is this file's field separator.
 prelude-toplevel-check|scripts/nelisp-stdlib-prelude.el|/^  (defun seq-length (seq) (length seq)))$/a\    (unless (sequencep seq) (signal (quote wrong-type-argument) (list (quote sequencep) seq)))|a check lands outside a one-line defun INSIDE an unless wrapper
 #
@@ -282,7 +280,15 @@ standalone-reader-form-location-smoke|scripts/nelisp-standalone-build.el|s/(setq
 # divergence this row deliberately does not depend on.  This injection
 # fails at the very first `load' statement, before any scheduling code
 # runs, so it cannot hit that class of problem.
-nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'generator)/|nelisp-actor becomes unloadable standalone again (file-missing: generator), the exact pre-Doc-193-§4 defect
+# Re-aimed 2026-11-10: `generator' itself is now loadable standalone
+# (`(require (quote generator))' on target/nelisp answers `generator' with
+# `iter-next' bound), so the original `(require (quote generator))' injection
+# no longer reproduces the defect and the gate rightly stayed green on it.
+# The injection now hard-requires a feature that does not exist
+# (`nl-gm-absent-feature'), which reproduces the same observable failure --
+# `nelisp: uncaught error: file-missing' at the smoke's first `load' -- and
+# the smoke goes red on it (proven on target/nelisp, clean tree PASS).
+nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 'generator nil t)$/(require 'nl-gm-absent-feature)/|nelisp-actor becomes unloadable standalone again (file-missing on a hard require of a feature the substrate cannot supply), the failure class of the pre-Doc-193-§4 defect
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase A,
 # feat/bignum-p1).  The injection flips the tag byte `nl_bignum_write'
 # stamps into a freshly-constructed Bignum Sexp from 13 (Bignum) to 2
@@ -703,7 +709,7 @@ standalone-reader-alloc-bytes-int-root-smoke|scripts/nelisp-standalone-build.el|
 # 184/200 wrong under mid-form GC, 200/200 after garbage-collect";
 # restored: "native-load-slot-pin: PASS (200 strings)".  The loader is
 # loaded from source, so no rebuild is needed.
-standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)$/      (ignore addr (ptr-read-u64 addr nelisp-native-load-payload-ptr)/|boxed strings stop being pinned while a raw slot holds them
+standalone-reader-native-load-slot-pin-smoke|lisp/nelisp-native-load.el|s/^      (puthash addr (logand (ptr-read-u64 addr 8) 281474976710655)$/      (ignore addr (logand (ptr-read-u64 addr 8) 281474976710655)/|boxed strings stop being pinned while a raw slot holds them
 # 2026-11-03 (second row): the same gate polices the scratch-vector pin.
 # The injection drops the box pin, so a scratch vector in the mmap'd slots
 # is held only by memory the GC does not scan.  RED: "... 49/50 scratch
@@ -853,9 +859,7 @@ lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(
 # First differing element 59: 'nil' != '(wrong-number-of-arguments car 1)''
 # (`GATE-COUNT checked=2 findings=1'); restored, `GATE-COUNT checked=2
 # findings=0'.
-# Re-anchored 2026-11-09: 941c79827 added names to the head of both
-# groups, so the old anchors matched nothing.
-builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^    (1 goto-char nelisp--clear-string-bytes car cdr car-safe /    (1 goto-char nelisp--clear-string-bytes cdr car-safe /;s/^    (2 nelisp--equal-leaf nelisp--string-mark-intervals cons eq /    (2 nelisp--equal-leaf nelisp--string-mark-intervals car cons eq /|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
+builtin-arity|scripts/nelisp-stdlib-prelude.el|s/^    (1 goto-char nelisp--clear-string-bytes car cdr car-safe/    (1 goto-char nelisp--clear-string-bytes cdr car-safe/;s/^    (2 nelisp--equal-leaf /    (2 car nelisp--equal-leaf /|car's declared fixed arity drifts from 1 to 2 in the build-time contract table while the already-built binary still enforces arity 1, so the test's independently recomputed expectation disagrees with the binary's real behavior
 #
 # special-variables: `bf_defvar_init_mode' (scripts/nelisp-standalone-
 # build.el) decides whether `defvar' may skip re-initializing an
@@ -917,7 +921,7 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # construction and after a `dump-runtime-image'/`eval-runtime-image'
 # round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
 # `GATE-COUNT checked=11 findings=0'.
-native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;s/(if (or (= tag 4) (= tag 16))\n\(.*Symbol name; +8 may be an ID.*\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
+native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;N;s/(if (or (= tag 4) (= tag 16))\n\( *(nl_seq2\n *(if (= tag 16) (nl_gc_mark_symview sp) 0)\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
 #
 # Project-toolchain contract suites. None mutates code baked into
 # target/nelisp, so none needs an entry in gate_needs_rebuild.
@@ -1189,7 +1193,7 @@ parity-fuzz|tools/nelisp-parity-fuzz.el|s/"\^shared-/"\^xshared-/|the shared-nam
 # GATE=emacs-compat' on 2026-09-18 reported "emacs-compat: went red as it
 # should", `passed=1 skipped=0', with `tools/emacs-compat-baseline.txt'
 # byte-identical to HEAD afterwards and no injection left in the tree.
-emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun xor (nl-gm-a nl-gm-b) (if nl-gm-a (not nl-gm-b) nl-gm-b))|a new unconditional definition shadows a stock Emacs name, pushing shared-shadowing over its baseline
+emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc)$/i\(defun caaaar (nl-gm-a) nl-gm-a)(defun caaadr (nl-gm-a) nl-gm-a)(defun caadar (nl-gm-a) nl-gm-a)(defun caaddr (nl-gm-a) nl-gm-a)(defun cadaar (nl-gm-a) nl-gm-a)(defun cadadr (nl-gm-a) nl-gm-a)(defun caddar (nl-gm-a) nl-gm-a)(defun cdaaar (nl-gm-a) nl-gm-a)(defun cdaadr (nl-gm-a) nl-gm-a)(defun cdadar (nl-gm-a) nl-gm-a)(defun cdaddr (nl-gm-a) nl-gm-a)(defun cddaar (nl-gm-a) nl-gm-a)(defun cddadr (nl-gm-a) nl-gm-a)(defun cdddar (nl-gm-a) nl-gm-a)(defun cddddr (nl-gm-a) nl-gm-a)(defun bool-vector-count-consecutive (nl-gm-a) nl-gm-a)(defun bool-vector-count-population (nl-gm-a) nl-gm-a)(defun bool-vector-exclusive-or (nl-gm-a) nl-gm-a)(defun bool-vector-intersection (nl-gm-a) nl-gm-a)(defun bool-vector-not (nl-gm-a) nl-gm-a)(defun bool-vector-set-difference (nl-gm-a) nl-gm-a)(defun bool-vector-subsetp (nl-gm-a) nl-gm-a)(defun bool-vector-union (nl-gm-a) nl-gm-a)(defun buffer-chars-modified-tick (nl-gm-a) nl-gm-a)(defun buffer-narrowed-p (nl-gm-a) nl-gm-a)(defun buffer-local-boundp (nl-gm-a) nl-gm-a)(defun car-less-than-car (nl-gm-a) nl-gm-a)(defun char-uppercase-p (nl-gm-a) nl-gm-a)(defun base64url-encode-region (nl-gm-a) nl-gm-a)(defun byte-to-string (nl-gm-a) nl-gm-a)(defun bidi-resolved-levels (nl-gm-a) nl-gm-a)(defun ccl-execute (nl-gm-a) nl-gm-a)(defun ccl-execute-on-string (nl-gm-a) nl-gm-a)(defun char-displayable-p (nl-gm-a) nl-gm-a)(defun category-set-mnemonics (nl-gm-a) nl-gm-a)(defun char-resolve-modifiers (nl-gm-a) nl-gm-a)(defun buffer-line-statistics (nl-gm-a) nl-gm-a)(defun buffer-hash (nl-gm-a) nl-gm-a)(defun backward-word-strictly (nl-gm-a) nl-gm-a)(defun assoc-delete-all (nl-gm-a) nl-gm-a)(defun accessible-keymaps (nl-gm-a) nl-gm-a)(defun bidi-find-overridden-directionality (nl-gm-a) nl-gm-a)(defun byte-to-position (nl-gm-a) nl-gm-a)(defun category-docstring (nl-gm-a) nl-gm-a)(defun char-code-property-description (nl-gm-a) nl-gm-a)(defun char-charset (nl-gm-a) nl-gm-a)(defun check-coding-systems-region (nl-gm-a) nl-gm-a)(defun buffer-text-pixel-size (nl-gm-a) nl-gm-a)(defun buffer-swap-text (nl-gm-a) nl-gm-a)(defun buffer-last-name (nl-gm-a) nl-gm-a)(defun buffer-local-toplevel-value (nl-gm-a) nl-gm-a)|sixty-odd new unconditional definitions shadow stock Emacs names that the tree otherwise defines only under a fboundp guard, pushing shared-shadowing over its baseline by far more than any host-dependent slack in the stock name set (CI's Nix Emacs 31.1 has a different set of stock names than a local build)
 
 # binary-size-ratchet (mutation coverage, 2026-09-17): `grep -c
 # '^binary-size-ratchet|' tools/gate-mutations.txt' was 0 before this row --
@@ -1285,7 +1289,13 @@ standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(nl_alloc_sy
 # orders of magnitude over the threshold, so this is not a marginal proof;
 # restored -- byte-identical to the pre-mutation Makefile (`git diff`
 # empty).
-standalone-reader-checked-soak|Makefile|s#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(while (< i 8000) (setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round's garbage-collect
+# Re-aimed 2026-11-10: cons cells no longer count toward the checked
+# allocator's live-blocks (measured: retaining 8000 conses per round left
+# live-blocks flat at 8424 over 5 rounds, so the old third-loop injection
+# stayed green).  Vectors are counted: this injection grows live-blocks by
+# 4000 per round (12762 16424 20424 24424 28424), far past the 8-block slack.
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (make-vector 12 i) acc)) (setq i (+ i 1))))#(setq acc (cons (make-vector 12 i) acc)) (setq nelisp-checked-soak-retain (cons (make-vector 12 i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's second loop retains its whole batch of vectors in a global that is never cleared between rounds instead of releasing them when the local `acc` binding goes out of scope, so live-blocks grows by a full batch every round instead of returning to baseline after each round
+standalone-reader-checked-soak|Makefile|s#(setq acc (cons (cons i i) acc)) (setq i (+ i 1))))#(setq acc (cons (cons i i) acc)) (setq nelisp-checked-soak-retain (cons (cons i i) (if (boundp (quote nelisp-checked-soak-retain)) nelisp-checked-soak-retain nil))) (setq i (+ i 1))))#|checked-soak-round's third loop retains its whole batch of cons cells in a global that is never cleared between rounds; cons cells live in typed blocks the live-blocks census does not walk, so only the garbage-collect cons count sees the retention
 
 # vendor-shadow-gate (Doc segI, vendor-emacs-lisp): an unconditional
 # redefinition of `days-between' (a vendor/emacs-lisp/calendar/time-date.el

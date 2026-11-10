@@ -61,4 +61,36 @@
            ran))
   (princ (format "nl-condition-standalone-smoke: PASS (%d tests)\n" ran)))
 
+;; Doc 244 WP1 end-to-end: a restart chosen by an `nl-handler-bind'
+;; handler recovers from a REAL primitive error, (car 1), and the
+;; negative control (no restart established) still reaches
+;; `condition-case'.  The marker below is printed only if both held.
+(let* ((seen-restart 'unset)
+       (recovered
+        (condition-case err
+            (nl-restart-case
+                (nl-handler-bind ((error
+                                   (lambda (_c)
+                                     (nl-invoke-restart 'recover 'ok))))
+                  (car 1)
+                  'not-reached)
+              (recover (v) (list 'recovered v)))
+          (error (list 'escaped err))))
+       (control
+        (condition-case err
+            (nl-handler-bind ((error
+                               (lambda (_c)
+                                 (setq seen-restart
+                                       (nl-find-restart 'recover)))))
+              (car 1)
+              'not-reached)
+          (wrong-type-argument (list 'propagated (car err))))))
+  (if (and (equal recovered '(recovered ok))
+           (equal control '(propagated wrong-type-argument))
+           (null seen-restart))
+      (princ "WP1-PRIMITIVE-RESTART-PASS\n")
+    (princ (format "WP1-PRIMITIVE-RESTART-FAIL recovered=%S control=%S seen=%S\n"
+                   recovered control seen-restart))
+    (error "nl-condition-standalone-smoke: WP1 primitive restart failed")))
+
 ;;; nl-condition-standalone-smoke.el ends here
