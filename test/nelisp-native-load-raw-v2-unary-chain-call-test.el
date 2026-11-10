@@ -37,8 +37,8 @@
                  (should (= frame (nth 0 slots))) result)))
       (let* ((handle (list :kind 'raw-runtime-v2 :entry 5
                            :entry-name "nl_native_chain_probe_v2" :arity 4
-                           :runtime-abi nelisp-native-load-raw-runtime-abi-v2
-                           :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                           :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                           :raw-abi (nelisp-native-load--runtime-abi-v2)
                            :imports '("nl_native_car_v2" "nl_native_cdr_v2")))
              (nelisp-native-load-raw-mappings (list handle)))
         (should (eq (nelisp-native-load-raw-v2-unary-chain-call handle 'input 1)
@@ -93,8 +93,8 @@
                    9)))
         (let* ((handle (list :kind 'raw-runtime-v2 :entry 5
                              :entry-name "nl_native_chain_probe_v2" :arity 4
-                             :runtime-abi nelisp-native-load-raw-runtime-abi-v2
-                             :raw-abi nelisp-native-load-raw-runtime-abi-v2
+                             :runtime-abi (nelisp-native-load--runtime-abi-v2)
+                             :raw-abi (nelisp-native-load--runtime-abi-v2)
                :imports '("nl_native_car_v2" "nl_native_cdr_v2")))
                (nelisp-native-load-raw-mappings (list handle)))
           (should (equal (condition-case err

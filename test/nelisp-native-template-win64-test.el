@@ -110,6 +110,9 @@
          (should (equal (plist-get row :abi) "nelisp-runtime-raw-v2:win64:v1")))
        (should-not (nelisp-native-template-check manifest))))))
 (ert-deftest nelisp-template-win64-refuses-target-change-after-selection ()
+  ;; Needs a non-Windows host: `nelisp-native-load--windows-p' reports the
+  ;; running system on Windows, so clearing the build target changes nothing.
+  (skip-unless (not (eq system-type 'windows-nt)))
   (nelisp-template-win64-test--with-target
    (nelisp-native-template-open-library)
    (let ((nelisp-native-load--build-target nil))

@@ -13,7 +13,7 @@
 
 (defun nelisp-provider-import-test--descriptor (contract name)
   (append (copy-tree (nelisp-native-load--rooted-cfg-provider-import contract name))
-          (list :abi nelisp-native-load-raw-runtime-abi-v2
+          (list :abi (nelisp-native-load--runtime-abi-v2)
                 :address-mode 'arithmetic-provider-v1
                 :index (cl-position name nelisp-native-load-bridgeable-symbols :test #'equal))))
 
