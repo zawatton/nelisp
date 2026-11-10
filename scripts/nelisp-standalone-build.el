@@ -695,10 +695,14 @@ Capability is asymmetric between the two additions -- see
 (defun nelisp-standalone--dep-files ()
   "Toolchain source files; any newer than a cache entry forces recompile."
   ;; Sources only: with target/toolchain-elc/HASH first on `load-path',
-  ;; `locate-library' alone would return the .elc and change every key.
+  ;; `locate-library' would return the .elc and change every key, so an
+  ;; .elc answer is mapped back to its source.
   (delq nil (cons nelisp-standalone--this-file
                   (mapcar (lambda (lib)
-                            (locate-file (file-name-sans-extension lib) load-path '(".el")))
+                            (let ((found (locate-library lib)))
+                              (if (and found (string-suffix-p ".elc" found))
+                                  (locate-file (file-name-base found) load-path '(".el"))
+                                found)))
                           '("nelisp-aot-compiler" "nelisp-standalone-arena-rewrite" "nelisp-static-linker"
                             "nelisp-elf-write" "nelisp-cc-runtime" "nelisp-standalone-argframe.el"
                             "nelisp-heap-accessors" "nelisp-cc-fxir-native")))))
