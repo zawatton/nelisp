@@ -86,8 +86,12 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh gate-parity-fuzz
 # stage3 rootstack depth 8).  Running every smoke against the built binary
 # leaves 4 failures, identical on origin/main afec22e7d: stage3-rootstack
 # diagnostics (counters 4 and 7 read 0), frame-stack-pop-desync,
-# doc200-mutation and byte-code-object (tag-17 GC/type).  Not yet
-# classified as stale or real.  A full reader rebuild runs about 20 min, so
+# doc200-mutation and byte-code-object (tag-17 GC/type).
+# 2026-11-11: all four were stale smokes, not runtime defects: an unescaped
+# "borrowed" in a docstring (499e0f1ae), functionp of a byte-code object and
+# unibyte-ness of an ASCII literal now as in GNU 31.1, and a stage3 loop that
+# no longer allocates (so the collector never ran).  make standalone-reader-test:
+# checked=36 findings=0.  A full reader rebuild runs about 20 min, so
 # the cmd's 590 s covers the test only when target/nelisp is current.
 #+TIMEOUT: 600
 cmd: (ulimit -v 8388608; timeout 590 make standalone-reader-test >/dev/null 2>&1)

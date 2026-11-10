@@ -69083,7 +69083,10 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
   "Check the private tag-17 fixture through GC and runtime-image restore."
   (let* ((binary nelisp-standalone--reader-out)
          (fixture "(nelisp--byte-code-wrap-test (record 'ignored 0 \"\\\\300\\\\207\" [42] 1))")
-         (expected "(byte-code-function 4 nil nil nil t nil t)")
+         ;; `functionp' is t for a byte-code object, as in GNU 31.1
+         ;; ((functionp (make-byte-code 0 "\300\207" [42] 1)) => t); the
+         ;; prelude's `functionp' answers it through `byte-code-function-p'.
+         (expected "(byte-code-function 4 nil nil nil t t t)")
          (expr (format "(let ((o %s)) (garbage-collect) (list (type-of o) (length o) (recordp o) (vectorp o) (consp o) (byte-code-function-p o) (functionp o) (equal (prin1-to-string o) (nelisp--repr o))))" fixture))
          (actual (nelisp-standalone--reader-run-command binary "--eval" expr))
          (printed (nelisp-standalone--reader-run-command binary "--eval" fixture))
@@ -69342,9 +69345,13 @@ contract."
           "                   (error 'signalled))))"
           "   (list result r0 (multibyte-string-p s) b0"
           "         (string-bytes s) (append s nil))))"))
+        ;; An all-ASCII literal reads as a unibyte string, as GNU reads it
+        ;; ((multibyte-string-p "abc") => nil in GNU 31.1): since 30e09e61a
+        ;; the reader's token copy keeps the allocator's representation,
+        ;; which is unibyte when every byte starts a character.
         (expected
          (concat
-          "((t nil) (255 nil nil 1 1 (255)) (98 t t 4 4 (98 12354)) "
+          "((t t) (255 nil nil 1 1 (255)) (98 t t 4 4 (98 12354)) "
           "(signalled t t 3 3 (12354)) "
           "(signalled nil nil 2 2 (97 98)))\n"))
         (actual nil)
@@ -71167,7 +71174,7 @@ the saved stack top instead of leaking a root entry."
            "  (defun nelisp-stage3-pair (a b) (list a b))\n"
            "  (defun nelisp-stage3-id (x) x)\n"
            "  (defun nelisp-stage3-fail () (error \"stage3\"))\n"
-           "  (let ((i 0) (cleanup 0) (before 0) (after 0)\n"
+           "  (let ((i 0) (junk nil) (cleanup 0) (before 0) (after 0)\n"
            "        (pair nil) (caught-error 0) (caught-throw 0)\n"
            "        (caught-unwind 0) (caught-apply 0) (diag nil))\n"
            "    (setq before (nth 9 (nelisp--debug-switch 0)))\n"
@@ -71175,7 +71182,16 @@ the saved stack top instead of leaking a root entry."
            "          (nelisp-stage3-pair\n"
            "           (list 1 2 3)\n"
            "           (progn\n"
-           (format "             (while (< i %d) (setq i (1+ i)))\n" iterations)
+           ;; The loop must allocate: the collector only runs on allocation
+           ;; debt, and `(setq i (1+ i))' alone allocates nothing once
+           ;; fixnum arithmetic stopped boxing (2026-11-11, af372893b: 1351
+           ;; allocations in the whole run, poison-count and
+           ;; mid-form-fired-count both 0).  One 128-slot vector per turn
+           ;; fires the collector twice at 200k turns on Linux (measured:
+           ;; poison-count 128039, mid-form-fired-count 2, 162 ms), while the
+           ;; rooted function slot and the first argument `(list 1 2 3)' are
+           ;; live -- which is what the length checks below then prove.
+           (format "             (while (< i %d) (setq i (1+ i)) (setq junk (make-vector 128 i)))\n" iterations)
            "             (list 4 5))))\n"
            "    (setq caught-error\n"
            "          (condition-case nil\n"
@@ -71251,7 +71267,7 @@ under deep recursion.
 History: `nelisp_eval_call_recorded_done' popped the context of every
 evaluation unconditionally, whether or not its own push had stored a frame
 (the ring holds `nl_gc_ctx_max_depth' = 1024 of them), so a recursion deeper
-than the ring "borrowed" decrements and walked the recorded depth down while
+than the ring \"borrowed\" decrements and walked the recorded depth down while
 live frames were still open.  Measured against-the-bug: DEPTH=5 at the
 checkpoint of a 3000-deep recursion, 1024 after the fix.
 
