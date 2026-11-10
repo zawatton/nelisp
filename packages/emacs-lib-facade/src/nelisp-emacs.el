@@ -18,16 +18,16 @@
   "Version of the external `nelisp-emacs' library consumer contract.")
 
 (eval-and-compile
-(defconst nelisp-emacs-library-features
-  '(emacs-foundation
-    emacs-text-core
-    emacs-buffer-core
-    emacs-editing
-    emacs-io
-    emacs-special-buffers
-    emacs-core
-    emacs-textmodes-stub)
-  "Reusable feature groups loaded by the `nelisp-emacs' facade.
+  (defconst nelisp-emacs-library-features
+    '(emacs-foundation
+      emacs-text-core
+      emacs-buffer-core
+      emacs-editing
+      emacs-io
+      emacs-special-buffers
+      emacs-core
+      emacs-textmodes-stub)
+    "Reusable feature groups loaded by the `nelisp-emacs' facade.
 This manifest is intentionally limited to library-owned surfaces.
 Application bootstrap, concrete TUI/GUI frontends, and editor-heavy lazy
 features remain behind `emacs-init' and its explicit loader functions."))
