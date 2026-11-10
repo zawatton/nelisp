@@ -54,11 +54,17 @@
 ;; prewarm children that run this same code cannot read a half-written
 ;; file.  Unit cache keys are unaffected: `nelisp-standalone--dep-files'
 ;; hashes the .el sources, not these files.
-;; The child LOADS each source before compiling it: nelisp-elf-write.el
-;; uses `nelisp-elf--build-rel-sym' and two sibling macros (line ~2032)
-;; before their `defmacro' (line ~2183).  Interpreted, the macro is
-;; expanded when the call runs; compiled cold, the call is compiled as a
-;; function call and the link step dies with invalid-function.
+;; All libraries are compiled in ONE child, in
+;; `nelisp-standalone--toolchain-elc-compile-order', and no source is
+;; loaded first.  That order is the one whose .elc files linked a
+;; byte-identical target/nelisp from an empty cache.  It matters twice:
+;; nelisp-elf-write.el uses `nelisp-elf--build-rel-sym' and two sibling
+;; macros (line ~2032) before their `defmacro' (line ~2183), so it must be
+;; compiled after a library whose compilation loads it (compiled alone it
+;; turns those calls into function calls: invalid-function at link); and
+;; loading every source before compiling it changed nelisp-aot-compiler.elc
+;; and the linked binary (differ at byte 16896464, 2026-11-10).  Any change
+;; here must pass tools/ai/build-speed/identity.sh again.
 ;; NELISP_STANDALONE_TOOLCHAIN_ELC=0 keeps the interpreted toolchain (the
 ;; identity control of tools/ai/build-speed-progress.org).
 ;; This must run before the first `require' below: a library already
@@ -70,7 +76,13 @@
   '("nelisp-heap-accessors" "nelisp-elf-write" "nelisp-static-linker"
     "nelisp-cc-runtime" "nelisp-aot-compiler" "nelisp-standalone-arena-rewrite"
     "nelisp-cc-fxir-native")
-  "Toolchain libraries loaded byte-compiled, in dependency order.")
+  "Toolchain libraries loaded byte-compiled.")
+
+(defconst nelisp-standalone--toolchain-elc-compile-order
+  '("nelisp-aot-compiler" "nelisp-static-linker" "nelisp-elf-write"
+    "nelisp-cc-runtime" "nelisp-cc-fxir-native" "nelisp-heap-accessors"
+    "nelisp-standalone-arena-rewrite")
+  "Order in which one child compiles every toolchain library; see above.")
 
 (defun nelisp-standalone--toolchain-elc-setup ()
   "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
@@ -113,13 +125,13 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                                                         (list "-L" (expand-file-name d))))
                                        load-path)))
                  (form
-                  (format "(progn (setq byte-compile-dest-file-function (lambda (f) (expand-file-name (concat (file-name-base f) %S) %S))) (dolist (f '%S) (load f nil t t) (unless (byte-compile-file f) (kill-emacs 3))))"
+                  (format "(progn (setq byte-compile-dest-file-function (lambda (f) (expand-file-name (concat (file-name-base f) %S) %S))) (dolist (f '%S) (unless (byte-compile-file f) (kill-emacs 3))))"
                           (concat ".elc" tag) dir
                           (mapcar (lambda (lib)
                                     (nth (cl-position lib nelisp-standalone--toolchain-elc-libraries
                                                       :test #'equal)
                                          sources))
-                                  missing)))
+                                  nelisp-standalone--toolchain-elc-compile-order)))
                  (status (apply #'call-process
                                 (expand-file-name invocation-name invocation-directory)
                                 nil nil nil
@@ -127,7 +139,7 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                                         (list "--eval" form)))))
             (if (not (eql status 0))
                 (setq reason (format "byte-compile child exited %s" status))
-              (dolist (lib missing)
+              (dolist (lib nelisp-standalone--toolchain-elc-compile-order)
                 (let ((tmp (expand-file-name (concat lib ".elc" tag) dir)))
                   (if (file-exists-p tmp)
                       (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
