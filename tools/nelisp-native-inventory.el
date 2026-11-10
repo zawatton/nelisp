@@ -4,9 +4,11 @@
 
 (defconst nn-source (or (getenv "NN_SOURCE") "scripts/nelisp-standalone-build.el"))
 (defconst nn-inventory (or (getenv "NN_INVENTORY") "tools/nelisp-native-inventory.txt"))
+;; Default: the committed inventory itself (name/verdict/reason rows), so
+;; regeneration keeps existing verdicts and no machine-specific path is needed.
+;; A wider classification TSV (with a "state" column) may be given instead.
 (defconst nn-classifications
-  (or (getenv "NN_CLASSIFICATIONS")
-      "/home/madblack-21/.cache/tmp/nelisp-doc211/inventory/a2-classified.tsv"))
+  (or (getenv "NN_CLASSIFICATIONS") nn-inventory))
 
 (defun nn-table ()
   (with-temp-buffer
@@ -47,13 +49,14 @@
       (insert-file-contents nn-classifications)
       (let* ((rows (split-string (buffer-string) "\n" t))
              (header (split-string (pop rows) "\t"))
+             (inventory-p (equal (car header) "# name"))
              (state-col (cl-position "state" header :test #'equal))
              (name-col 0)
-             (verdict-col (cl-position "verdict" header :test #'equal))
-             (reason-col (cl-position "rule/reason/replacement sketch" header :test #'equal)))
+             (verdict-col (if inventory-p 1 (cl-position "verdict" header :test #'equal)))
+             (reason-col (if inventory-p 2 (cl-position "rule/reason/replacement sketch" header :test #'equal))))
         (dolist (row rows)
           (let ((fields (split-string row "\t")))
-            (when (and (equal (nth state-col fields) "native")
+            (when (and (or inventory-p (equal (nth state-col fields) "native"))
                        (< (max name-col verdict-col reason-col) (length fields)))
               (puthash (nth name-col fields)
                        (cons (nth verdict-col fields) (nth reason-col fields)) result))))))
