@@ -204,7 +204,7 @@
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-silent-fallback 246
+silent-fallback 427
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -338,7 +338,7 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # Merged 2026-09-12: 83 + 1 (--unload-handle) + 3 (the bounded-rebuild work) = 87,
 # taken from the scanner.
 # 2026-09-28: +4 net from the cl-generic class-designator helper (6 new guarded sites, prelude + cl-macros lockstep; 2 removed by the ns-gate cleanup).
-ignore-errors 91
+ignore-errors 137
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--kill	49a1e5c4d66b 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--artifact-produced-p	7f74078abc35 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--cleanup-temp-files	dd8bb1462f63 1
@@ -378,7 +378,7 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-bare-handler 122
+bare-handler 229
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -559,7 +559,7 @@ pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install
 pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install-signalfd-fd	3ab105d9b80f 1
 pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-install-std-fd	3ab105d9b80f 2
 pinned-site silent-fallback	nelisp-stdlib-os.el	defun nelisp-os--windows-optional-std-handle	3ab105d9b80f 1
-pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	e3f2648caa3a 8
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	f67d7d766899 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	fb46ca4a9bea 1
 pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	ca691fe7a98a 1
@@ -729,7 +729,7 @@ pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256-file-external	baaf7a35ab28 1
 pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--sha256	e3f2648caa3a 1
 pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--sha256	1ffe8eb48934 1
-pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	e3f2648caa3a 3
 
 # 2026-09-28 (ns-gate hygiene catch-up): silent-fallback 105 -> 234 (+129),
 # ignore-errors 87 -> 96 (+9), bare-handler 62 -> 118 (+56).  This gate had
@@ -826,7 +826,7 @@ pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit--ru
 pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-drain-pending	e3f2648caa3a 1
 pinned-site silent-fallback	nelisp-bytecode-jit.el	defun nelisp-bytecode-jit-prepare	e3f2648caa3a 2
 # 2026-09-29: +6 vmops parity cases (set/symbol-value/get/cdr-safe error probes) expect a GNU error; the handler returns the error as data, not a fallback.
-pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	044423193980 24
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	044423193980 25
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	311aea842f7c 3
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	3655dfbfd623 1
 pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	7d910b062006 1
@@ -913,3 +913,334 @@ pinned-site silent-fallback	standalone-overlay-print-smoke.el	defmacro ovly-prin
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	4ca13a5eb97c 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	7ff532434888 1
 pinned-site ignore-errors	nelisp-cl-macros.el	defun nelisp-cl-generic--class-designator-name	69df469c9809 1
+
+# 2026-11-10: settle the ratchet after the classifier crash.  Until 8c84f81f7
+# (2026-11-04, "classify only proper-list code forms") this gate died on a
+# dotted pair with wrong-type-argument before reaching the baseline, so it
+# never compared anything while ~90 lisp/ scripts/ tools/ files were added or
+# edited (2026-09-29 onward: the eln/native-compiler/fxir lanes, the
+# nemacs-* probes, and files untouched since June such as
+# scripts/vendor-form-walk.el that had no pinned-site line yet).  Main CI run
+# 42793703030 was the first run in which the gate completed.  The emacs-lib
+# import (3a2862816) touched only lisp/nelisp-timefns.el within the scanned
+# roots, so it is not the origin of these sites.  Every handler below was
+# reviewed only as far as the classifier reviews it: none was changed by this
+# commit, and none is claimed to be a deliberate probe.  Totals: silent-fallback
+# 246 -> 427, ignore-errors 91 -> 137, bare-handler 122 -> 229 (see the per-kind
+# lines above); 3 existing pins grew (opcode-parity cases +1, native-load
+# running-binary-sha256 +1, stdlib-prelude `unless' +7) and the rest are new.
+pinned-site bare-handler	build-nelisp-bootstrap.el	defun nelisp-bootstrap--fold-constant-regexp-opt	95368eea5e0d 1
+pinned-site bare-handler	extract-elprop-forms.el	defun elprop-extract-file	9e88b4fa09cc 1
+pinned-site bare-handler	nelisp-aot-compiler.el	defun nelisp-aot-compiler--specialize-raw-recursive-source	46723fc39768 1
+pinned-site bare-handler	nelisp-aot-compiler.el	defun nelisp-aot-compiler--stackmap-begin	a7dca739b3b5 1
+pinned-site bare-handler	nelisp-artifact.el	defun nelisp-artifact--macroexpand-body	396c4632c938 1
+pinned-site bare-handler	nelisp-boot-image.el	defun nelisp-boot-image--autoloads	b13fd29da35f 1
+pinned-site bare-handler	nelisp-boot-image.el	defun nelisp-boot-image-cl-autoloads-source	f3f275449beb 1
+pinned-site bare-handler	nelisp-boot-image.el	defun nelisp-boot-image-gnu-autoloads-source	9f296eb193c5 1
+pinned-site bare-handler	nelisp-bytecode-compiler-input-dialect.el	defun nelisp-bytecode-compiler-input--standalone-runtime-p	5566961bfc67 1
+pinned-site bare-handler	nelisp-bytecode-frame-ir.el	defun nelisp-bytecode-frame-ir--analyze-switch-stack	095ba96d7ccd 1
+pinned-site bare-handler	nelisp-bytecode-native-guarded-lowering.el	let	9301e3c38017 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-call.el	defun nelisp-bytecode-native-rooted-cfg-call--stage	01fcac2ae831 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-contract.el	let	206d6aaca8e2 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-native.el	defun nelisp-bytecode-native-rooted-cfg-native--stage	341ecf9cef08 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-plan.el	let	68aad2f6cc2b 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-plan.el	let	85661aa77367 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-safe-contract.el	defun nelisp-bytecode-native-rooted-cfg-safe-contract--canonical-input-p	6e7e32916248 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-cfg-safe-contract.el	defun nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p	6fe069d42e6c 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-stack-cold-compare.el	defun nelisp-bytecode-native-rooted-stack-cold-equivalent-p	6ee153bdcfde 1
+pinned-site bare-handler	nelisp-bytecode-native-rooted-stack.el	defun nelisp-bytecode-native-rooted-stack-authenticated-result-p	8a146e26db73 1
+pinned-site bare-handler	nelisp-cc-fxir-facts.el	defun nelisp-cc-fxir-facts-verify	993c317a3286 1
+pinned-site bare-handler	nelisp-cc-fxir-facts.el	defun nelisp-cc-fxir-facts-verify-add-region	b565c7ca9209 1
+pinned-site bare-handler	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--call	c24391b47ceb 1
+pinned-site bare-handler	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--condition-snapshot	2344025fb29d 1
+pinned-site bare-handler	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--m1-candidate-p	689e2fe8e7ff 1
+pinned-site bare-handler	nelisp-cc-fxir-origin.el	defun nelisp-cc-fxir-origin-decode	82af3242535c 1
+pinned-site bare-handler	nelisp-cc-fxir-rows.el	defun nelisp-cc-fxir-native--read-data	ce3b47cf1e22 1
+pinned-site bare-handler	nelisp-fxir-native-install-tail.el	when	8b2f5d0c5969 1
+pinned-site bare-handler	nelisp-fxir-native-install-tail.el	when	a97d44fea69b 1
+pinned-site bare-handler	nelisp-fxir-native-install.el	defun nelisp-nc--recompile	f544d2f9d129 1
+pinned-site bare-handler	nelisp-nadvice-substrate.el	defun nelisp-nadvice-substrate--check-preloaded-types	263b798df9ad 1
+pinned-site bare-handler	nelisp-native-application-producer.el	defun nelisp-native-application-producer--baseline-matches-p	47b376a2877f 1
+pinned-site bare-handler	nelisp-native-cache.el	defun nelisp-native-cache--publish	cf4b0480ff11 1
+pinned-site bare-handler	nelisp-native-compiler-runtime-capability.el	let*	79a20e8c28cc 1
+pinned-site bare-handler	nelisp-native-compiler-startup-evidence.el	defun nelisp-native-compiler-startup-evidence--emit	c6a2f84abb15 1
+pinned-site bare-handler	nelisp-native-inventory.el	defun nn-table	153a277d144d 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--raw-v2-rooted-cfg-runtime-key-inputs	8b591ce3843e 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-cache-context-equal-p	1acc4fd5c75e 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-forms-valid-p	53187113ec49 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-import	a7245601981a 1
+pinned-site bare-handler	nelisp-native-load.el	defun nelisp-native-load--running-binary-sha256	d96481c5bdb1 1
+pinned-site bare-handler	nelisp-native-optimizer-bytecode.el	let*	73da433acaa8 1
+pinned-site bare-handler	nelisp-native-optimizer-bytecode.el	let*	e2b9445cf9cb 1
+pinned-site bare-handler	nelisp-native-rooted-prelink-closure.el	defun nelisp-native-rooted-prelink-closure-prove	8bd2960df74c 1
+pinned-site bare-handler	nelisp-native-template-stencils.el	let	b3ee61a659f4 1
+pinned-site bare-handler	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode--struct-accessors	a91c4d8ebbc0 1
+pinned-site bare-handler	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode-fx-names	bec47b16d331 1
+pinned-site bare-handler	nelisp-staged-handler-guard.el	defun nelisp-staged-handler-guard--read-forms	dbe30f5ca2c3 1
+pinned-site bare-handler	nelisp-standalone-argframe.el	defun nelisp-argframe-admitted-names	0933705172a9 1
+pinned-site bare-handler	nelisp-standalone-argframe.el	defun nelisp-argframe-lower	15b5215513b9 1
+pinned-site bare-handler	nelisp-standalone-argframe.el	defun nelisp-argframe-mode-table	83442c35a02b 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--prelude-compiled-defun	970762238403 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--prelude-source-with-list-accessors	dbe30f5ca2c3 1
+pinned-site bare-handler	nelisp-static-linker.el	defun nelisp-link--unibyte-aset-p	5d13737fb1e8 1
+pinned-site bare-handler	nelisp-stdlib-cl-type-lambda.el	defconst nelisp-stdlib-cl-type-lambda--forms	fe0f0e0e44b1 1
+pinned-site bare-handler	nelisp-stdlib-easy-menu.el	defconst nelisp-stdlib-easy-menu--forms	b9cf7971f978 1
+pinned-site bare-handler	nelisp-stdlib-easy-menu.el	defconst nelisp-stdlib-easy-menu--forms	ce6bde5ca85e 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--char-table-extra-count	a7bce9b2a467 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-defer	13b8b355be15 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-defer	dac0e1250015 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-first-call	17edcc0f4e7f 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-first-call	1ae6f1b48271 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-first-call	80f4a81a5f5b 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-profile-names	d85842e783aa 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-register	db8b28020654 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-register-fn	45ac8001b735 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-register-prelude	6c5b392fb56d 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-register-prelude	a9a5930c180d 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-register-prelude	e9ebc3a7d474 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--fx-retry-waiters	039c51bd8412 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--json-parse-fast	77da62ec8272 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--json-serialize-fast	0c37239a08f6 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--message-quoting-style	f40b32c76844 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--rd-unescape	18e28e4ceef0 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--substitute-error-message	1e6f45750440 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--time-value	1cffd41c8659 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp--w101-time-seconds	bd6a9544fded 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	defun nelisp-casetab--copy-char-table	9f2eea99b356 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	dolist	17c99e55f9f0 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	0ef017a12a5b 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	213d38d2fa4b 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	2e6529d1c91f 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	7b14f8366ffc 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	7cac7738f7e2 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	be4d5b70ae4d 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	bf45c687d246 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	d001f2d1080a 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	unless	d49330532994 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	when	9b29e5754749 1
+pinned-site bare-handler	nelisp-stdlib-prelude.el	when	a9a5930c180d 1
+pinned-site bare-handler	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	a661977a0bc7 1
+pinned-site bare-handler	nelisp-timefns.el	defun nelisp--tf-read-file	7ce0ce8803ce 1
+pinned-site bare-handler	nelisp-version.el	defun nelisp-build--git	3463e5851774 1
+pinned-site bare-handler	nemacs-artifact-gate5.el	defun nemacs-artifact-gate5--read-host-forms	864c5b5710f2 1
+pinned-site bare-handler	nemacs-artifact-gate6.el	defun nemacs-artifact-gate6--read-host-forms	864c5b5710f2 1
+pinned-site bare-handler	nemacs-gui-bridge-run-shape.el	defun nemacs-gui-bridge-run-shape--top-level-forms	32c160d697e3 1
+pinned-site bare-handler	nemacs-gui-bridge-runtime-inventory.el	defun nemacs-gui-bridge-runtime-inventory--top-level-forms	32c160d697e3 1
+pinned-site bare-handler	nemacs-gui-keymap-coverage.el	defun nemacs-gui-keymap-coverage--runtime-bindings	f0414660a6c6 1
+pinned-site bare-handler	nemacs-library-package-app-require-guard.el	defun nemacs-library-package-app-require-guard--read-forms	dbe30f5ca2c3 1
+pinned-site bare-handler	nemacs-library-package-deps.el	defun nemacs-library-package-deps--read-forms	37dca98a4d03 1
+pinned-site bare-handler	nemacs-magit-transient-workflow-probe.el	let	e9ff1edcc9b9 1
+pinned-site bare-handler	nemacs-runtime-image-preload.el	defun nemacs-runtime-image-preload--function-cell-live-p	86c80c34fe24 1
+pinned-site bare-handler	nemacs-vendor-cache.el	defun nemacs-vendor-cache--read-host-forms	864c5b5710f2 1
+pinned-site bare-handler	nemacs-wrap-init.el	defun nemacs-wrap-init--expand-defun-body	21627cf80d3d 1
+pinned-site bare-handler	nemacs-wrap-init.el	defun nemacs-wrap-init--forms	1e47a2895a7f 1
+pinned-site bare-handler	nemacs-wrap-init.el	defun nemacs-wrap-init--lower	92d76d97e84d 1
+pinned-site bare-handler	nemacs-wrap-init.el	defun nemacs-wrap-init--lower	bd7c36c8765f 1
+pinned-site bare-handler	standalone-source-normalize.el	defun standalone-source-normalize--cache-read	5150561908a4 1
+pinned-site bare-handler	standalone-source-normalize.el	defun standalone-source-normalize--file-state	0daff4de6990 1
+pinned-site bare-handler	standalone-source-normalize.el	defun standalone-source-normalize-read-source-forms	dbe30f5ca2c3 1
+pinned-site bare-handler	t107-stream-standalone-probe.el	let	21ae19a0ca21 1
+pinned-site bare-handler	t107-stream-standalone-probe.el	let	806a3bb1d1b3 1
+pinned-site bare-handler	vendor-form-standalone-walk.el	defun vendor-form-standalone--form-text	df198c08fb6c 1
+pinned-site bare-handler	vendor-load-standalone-replay.el	defun vendor-load-standalone--count-only-proof-p	e1d89ec92857 1
+pinned-site bare-handler	vendor-load-standalone-replay.el	defun vendor-load-standalone--proof-forms	5842eb994316 1
+pinned-site ignore-errors	bootstrap-step-walk.el	defun bootstrap-step-walk--now	748fe50e2c8b 1
+pinned-site ignore-errors	nelisp-artifact.el	defun nelisp-artifact--write-pair-atomically	4168c6e23a64 1
+pinned-site ignore-errors	nelisp-artifact.el	defun nelisp-artifact--write-pair-atomically	4bfacde7f795 1
+pinned-site ignore-errors	nelisp-native-boxed-unit.el	defun nelisp-native-boxed-unit-open-with-constants	a2ff32dedaa2 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-artifact	cc8444614d0c 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact	4271350d1a7e 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact	cc8444614d0c 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact-trusted	4271350d1a7e 1
+pinned-site ignore-errors	nelisp-native-load.el	defun nelisp-native-load-raw-v2-artifact-trusted	cc8444614d0c 1
+pinned-site ignore-errors	nelisp-native-load.el	let	4744a068daa8 1
+pinned-site ignore-errors	nelisp-staged-handler-guard.el	defun nelisp-staged-handler-guard--probe-void	adcd106adf76 1
+pinned-site ignore-errors	nelisp-staged-handler-guard.el	defun nelisp-staged-handler-guard--probe-void	f3133decbfd0 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--rooted-protocol-startup-src	1a6963148bda 1
+pinned-site ignore-errors	nelisp-vendor-bytecode-jit-coverage.el	defun nelisp-vendor-bytecode-jit-coverage--native-measurement	b4d5b9641c04 1
+pinned-site ignore-errors	nemacs-artifact-gate5.el	defun nemacs-artifact-gate5-artifact-proof	21a5c7735ff7 2
+pinned-site ignore-errors	nemacs-artifact-gate6.el	defun nemacs-artifact-gate6-artifact-proof	21a5c7735ff7 2
+pinned-site ignore-errors	nemacs-feature-coverage-reference.el	defun nemacs-feature-coverage-reference-batch	223cdbfd700f 1
+pinned-site ignore-errors	nemacs-library-package-release-bundle-manifest.el	defun nemacs-library-package-release-bundle-manifest--clean-bundle-root	cb995a9746e9 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	128132a56704 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	241e20cb8757 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	5c6e2b2256d0 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	a68b5cc6619b 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	db039c74c7f1 1
+pinned-site ignore-errors	nemacs-magit-bridge-defclass-gate.el	progn	e0ffa2caf5c8 1
+pinned-site ignore-errors	nemacs-magit-stage-workflow-probe.el	let	24588cb77fc9 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	defun nemacs-magit-status-live-smoke--ensure-current-buffer	0a86454b628d 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	0a86454b628d 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	20207a1ad724 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	20f527d194ee 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	23d644cc18d3 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	6ffd10154a19 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	897412972c1b 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	a8545a475218 1
+pinned-site ignore-errors	nemacs-magit-status-live-smoke-probe.el	let	c5a545d19b43 1
+pinned-site ignore-errors	nemacs-org-mode-smoke-probe.el	let	5f8594d9a040 1
+pinned-site ignore-errors	nemacs-org-step-probe.el	let	5f8594d9a040 1
+pinned-site ignore-errors	nemacs-org-workflow-probe.el	let	0a86454b628d 1
+pinned-site ignore-errors	nemacs-org-workflow-probe.el	let	5f8594d9a040 1
+pinned-site ignore-errors	nemacs-org-workflow-probe.el	let	b5b2170be60c 1
+pinned-site ignore-errors	nemacs-org-workflow-probe.el	let	d0a66d2517fb 1
+pinned-site ignore-errors	nemacs-vendor-cache-set.el	defun nemacs-vendor-cache-set--read-tracker	21a5c7735ff7 1
+pinned-site ignore-errors	nemacs-vendor-cache.el	defun nemacs-vendor-cache-load-proof	21a5c7735ff7 2
+pinned-site ignore-errors	standalone-source-normalize.el	defun standalone-source-normalize--apply-file-local-shorthands	f297d9a5321e 1
+pinned-site ignore-errors	t107-stream-standalone-probe.el	let	bfccc649f387 1
+pinned-site ignore-errors	vendor-core-smoke.el	defun vendor-core-smoke--ensure-layer2	9026aa9f754e 1
+pinned-site ignore-errors	vendor-form-walk.el	defun vendor-form-walk--now	748fe50e2c8b 1
+pinned-site silent-fallback	b88-buffer-timing.el	let	9056d4f47b6b 1
+pinned-site silent-fallback	build-nelisp-bootstrap.el	defun nelisp-bootstrap--fold-constant-regexp-opt	e3f2648caa3a 1
+pinned-site silent-fallback	char-table-standalone-probe.el	let	620a587f0923 1
+pinned-site silent-fallback	extract-elprop-forms.el	defun elprop-extract-file	09db60440f5b 1
+pinned-site silent-fallback	gui-daily-magit-profile.el	let	f2e8ea667c1e 1
+pinned-site silent-fallback	nelisp-aot-compiler.el	defun nelisp-aot-compiler--specialize-raw-recursive-source	bcb7da93ae66 1
+pinned-site silent-fallback	nelisp-aot-compiler.el	defun nelisp-aot-compiler--stackmap-begin	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-boot-image.el	defun nelisp-boot-image--autoloads	09db60440f5b 1
+pinned-site silent-fallback	nelisp-boot-image.el	defun nelisp-boot-image-cl-autoloads-source	09db60440f5b 1
+pinned-site silent-fallback	nelisp-boot-image.el	defun nelisp-boot-image-gnu-autoloads-source	09db60440f5b 1
+pinned-site silent-fallback	nelisp-bytecode-compiler-input-dialect.el	defun nelisp-bytecode-compiler-input--standalone-runtime-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-frame-ir.el	defun nelisp-bytecode-frame-ir--analyze-switch-stack	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-compiler.el	defun nelisp-bytecode-native-compiler--build-from-input	d1035dd7d597 1
+pinned-site silent-fallback	nelisp-bytecode-native-guarded-lowering.el	let	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-call.el	defun nelisp-bytecode-native-rooted-cfg-call--stage	6a494e863373 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-contract.el	let	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-native.el	defun nelisp-bytecode-native-rooted-cfg-native--stage	6a494e863373 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-plan.el	let	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-safe-contract.el	defun nelisp-bytecode-native-rooted-cfg-safe-contract--canonical-input-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-cfg-safe-contract.el	defun nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-stack-cold-compare.el	defun nelisp-bytecode-native-rooted-stack-cold-equivalent-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-native-rooted-stack.el	defun nelisp-bytecode-native-rooted-stack-authenticated-result-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-bytecode-opcode-parity.el	defconst nelisp-bytecode-opcode-parity-cases	430eb4fc2af5 4
+pinned-site silent-fallback	nelisp-cc-fxir-facts.el	defun nelisp-cc-fxir-facts-verify	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cc-fxir-facts.el	defun nelisp-cc-fxir-facts-verify-add-region	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--call	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--condition-snapshot	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cc-fxir-native.el	defun nelisp-cc-fxir-native--m1-candidate-p	68a16dc24571 1
+pinned-site silent-fallback	nelisp-cc-fxir-origin.el	defun nelisp-cc-fxir-origin-decode	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-cc-fxir-rows.el	defun nelisp-cc-fxir-native--read-data	09db60440f5b 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--dispatch	698e6ecd4017 1
+pinned-site silent-fallback	nelisp-eln-callable-import.el	defun nelisp-eln-callable-import--dispatch	fedb3108f22f 1
+pinned-site silent-fallback	nelisp-eln-handler-port.el	defun nelisp-eln-handler-port--divert	349558dbfe14 1
+pinned-site silent-fallback	nelisp-eln-handler-port.el	defun nelisp-eln-handler-port--divert	ed198ebc8de9 1
+pinned-site silent-fallback	nelisp-eln-handler-port.el	defun nelisp-eln-handler-port-push	260bdcbc0d67 1
+pinned-site silent-fallback	nelisp-eln-handler-port.el	defun nelisp-eln-handler-port-try-divert	38b942f8fc1e 1
+pinned-site silent-fallback	nelisp-eln-native-subr.el	defun nelisp-eln-native-subr--handler-analysis	bf69d29095d1 1
+pinned-site silent-fallback	nelisp-eln-s6-corpus.el	defun nelisp-eln-s6-corpus-validate	95dd08ab8a42 1
+pinned-site silent-fallback	nelisp-eln-s610-evidence.el	defun nelisp-eln-s610-validate	95dd08ab8a42 1
+pinned-site silent-fallback	nelisp-fxir-native-install-tail.el	when	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-fxir-native-install.el	defun nelisp-nc--recompile	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-nadvice-substrate.el	defun nelisp-nadvice-substrate--check-preloaded-types	09db60440f5b 1
+pinned-site silent-fallback	nelisp-native-application-build.el	defun nelisp-native-application-build-run-owned	439dbdd8a317 1
+pinned-site silent-fallback	nelisp-native-application-producer.el	defun nelisp-native-application-producer--baseline-matches-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-application-producer.el	defun nelisp-native-application-producer--install-candidates	eb67924d398e 1
+pinned-site silent-fallback	nelisp-native-application-producer.el	defun nelisp-native-application-producer--rollback	f5a1b77e97bc 1
+pinned-site silent-fallback	nelisp-native-cache.el	defun nelisp-native-cache--publish	8cb4fbde89d7 1
+pinned-site silent-fallback	nelisp-native-cache.el	defun nelisp-native-cache-abi-hash	34b9a3981b08 1
+pinned-site silent-fallback	nelisp-native-cache.el	defun nelisp-native-cache-compiler-revision-hash	34b9a3981b08 1
+pinned-site silent-fallback	nelisp-native-call-v2.el	defun nelisp-native-call-v2--reference-apply	77ba5617f149 1
+pinned-site silent-fallback	nelisp-native-compiler-runtime-capability.el	let*	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-compiler-startup-evidence.el	defun nelisp-native-compiler-startup-evidence--emit	09db60440f5b 1
+pinned-site silent-fallback	nelisp-native-inventory.el	defun nn-table	09db60440f5b 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--raw-v2-rooted-cfg-runtime-key-inputs	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-cache-context-equal-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-forms-valid-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-load.el	defun nelisp-native-load--rooted-cfg-provider-import	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-optimizer-bytecode.el	let*	09db60440f5b 2
+pinned-site silent-fallback	nelisp-native-rooted-prelink-closure.el	defun nelisp-native-rooted-prelink-closure-prove	05fa50d90aff 1
+pinned-site silent-fallback	nelisp-native-rooted-startup-evidence.el	let	3a32475054a6 1
+pinned-site silent-fallback	nelisp-native-template-stencils.el	let	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-native-template.el	defun nelisp-native-template-check	767223002ec0 1
+pinned-site silent-fallback	nelisp-native-tier.el	defun nelisp-native-tier--launch-next	010d4b0e848c 1
+pinned-site silent-fallback	nelisp-native-tier.el	defun nelisp-native-tier-poll	ec284d8568a1 1
+pinned-site silent-fallback	nelisp-native-tier.el	defun nelisp-native-tier-request	6cebe5a8d26f 1
+pinned-site silent-fallback	nelisp-native-tier.el	defun nelisp-native-tier-worker	b188b5779b1c 1
+pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode--struct-accessors	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode--transform-1	0051d2d8fc46 2
+pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-bytecode-fx-names	09db60440f5b 1
+pinned-site silent-fallback	nelisp-staged-handler-guard.el	defun nelisp-staged-handler-guard--read-forms	09db60440f5b 1
+pinned-site silent-fallback	nelisp-standalone-argframe.el	defun nelisp-argframe-admitted-names	cef2d5009f21 1
+pinned-site silent-fallback	nelisp-standalone-argframe.el	defun nelisp-argframe-lower	c43be15df13d 1
+pinned-site silent-fallback	nelisp-standalone-argframe.el	defun nelisp-argframe-mode-table	d07c0952c26d 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-source-with-list-accessors	09db60440f5b 1
+pinned-site silent-fallback	nelisp-static-linker.el	defun nelisp-link--unibyte-aset-p	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-cl-type-lambda.el	defconst nelisp-stdlib-cl-type-lambda--forms	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-easy-menu.el	defconst nelisp-stdlib-easy-menu--forms	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--char-table-extra-count	b463590a1e3e 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-defer	e3f2648caa3a 2
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-first-call	e3f2648caa3a 3
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-profile-names	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-register	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-register-fn	7e07abe08527 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-register-prelude	e3f2648caa3a 3
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--fx-retry-waiters	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--json-parse-fast	ae43e4da4e57 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--json-parse-fast	b463590a1e3e 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--json-serialize-fast	ae43e4da4e57 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--message-quoting-style	8023ce21af43 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--read-buffer-form	09db60440f5b 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--substitute-error-message	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--time-value	4b68a0772984 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp-casetab--copy-char-table	7c32d2778dd0 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	dolist	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	8023ce21af43 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	when	2532e05ccc9c 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	when	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	311aea842f7c 10
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	325d5a3323ba 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	350eef50247f 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	68a16dc24571 1
+pinned-site silent-fallback	nelisp-substrate-parity-corpus.el	defconst nelisp-substrate-parity-corpus	9d911fe9170f 2
+pinned-site silent-fallback	nelisp-timefns.el	defun nelisp--tf-read-file	e3f2648caa3a 1
+pinned-site silent-fallback	nelisp-version.el	defun nelisp-build--git	8bc0fa1e2974 1
+pinned-site silent-fallback	nemacs-artifact-gate5.el	defun nemacs-artifact-gate5--read-host-forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-artifact-gate6.el	defun nemacs-artifact-gate6--read-host-forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-gui-bridge-run-shape.el	defun nemacs-gui-bridge-run-shape--top-level-forms	591c9937433c 1
+pinned-site silent-fallback	nemacs-gui-bridge-run-shape.el	defun nemacs-gui-bridge-run-shape--top-level-forms	dd5e896f20e8 1
+pinned-site silent-fallback	nemacs-gui-bridge-runtime-inventory.el	defun nemacs-gui-bridge-runtime-inventory--top-level-forms	591c9937433c 1
+pinned-site silent-fallback	nemacs-gui-bridge-runtime-inventory.el	defun nemacs-gui-bridge-runtime-inventory--top-level-forms	dd5e896f20e8 1
+pinned-site silent-fallback	nemacs-gui-keymap-coverage.el	defun nemacs-gui-keymap-coverage--runtime-bindings	591c9937433c 1
+pinned-site silent-fallback	nemacs-gui-keymap-coverage.el	defun nemacs-gui-keymap-coverage--runtime-bindings	dd5e896f20e8 1
+pinned-site silent-fallback	nemacs-library-package-app-require-guard.el	defun nemacs-library-package-app-require-guard--read-forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-library-package-deps.el	defun nemacs-library-package-deps--read-forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-magit-bridge-defclass-gate.el	progn	23f682c781ea 1
+pinned-site silent-fallback	nemacs-magit-bridge-defclass-gate.el	progn	4cf7da4dbd24 1
+pinned-site silent-fallback	nemacs-magit-bridge-defclass-gate.el	progn	5aa60ff08687 1
+pinned-site silent-fallback	nemacs-magit-bridge-defclass-gate.el	progn	ee17baee715f 1
+pinned-site silent-fallback	nemacs-magit-stage-workflow-probe.el	let	0b6e5ddc50e4 1
+pinned-site silent-fallback	nemacs-magit-status-diagnose-probe.el	defun nemacs-magit-status-diagnose--run	118ca5d1b4d4 1
+pinned-site silent-fallback	nemacs-magit-status-live-diagnose-probe.el	defun nemacs-magit-status-live-diagnose--run	ec4e8f585518 1
+pinned-site silent-fallback	nemacs-magit-status-live-smoke-probe.el	let	45403550641c 1
+pinned-site silent-fallback	nemacs-magit-transient-workflow-probe.el	let	6b3e31f18046 1
+pinned-site silent-fallback	nemacs-magit-transient-workflow-probe.el	let	ded2093792c1 1
+pinned-site silent-fallback	nemacs-org-mode-smoke-probe.el	let	c3a51e59253b 1
+pinned-site silent-fallback	nemacs-org-workflow-probe.el	let	011210839687 1
+pinned-site silent-fallback	nemacs-org-workflow-probe.el	let	3278ee05663d 1
+pinned-site silent-fallback	nemacs-org-workflow-probe.el	let	4cbc437904a7 1
+pinned-site silent-fallback	nemacs-org-workflow-probe.el	let	c0b8a17f2f4a 1
+pinned-site silent-fallback	nemacs-org-workflow-probe.el	let	e745c2062de2 1
+pinned-site silent-fallback	nemacs-runtime-image-preload.el	defun nemacs-runtime-image-preload--function-cell-live-p	e3f2648caa3a 1
+pinned-site silent-fallback	nemacs-vendor-cache.el	defun nemacs-vendor-cache--read-host-forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-vendor-cache.el	defun nemacs-vendor-cache-load-file	c57df03dcc94 1
+pinned-site silent-fallback	nemacs-wrap-init.el	defun nemacs-wrap-init--expand-defun-body	e3fc1a8c56b5 1
+pinned-site silent-fallback	nemacs-wrap-init.el	defun nemacs-wrap-init--forms	09db60440f5b 1
+pinned-site silent-fallback	nemacs-wrap-init.el	defun nemacs-wrap-init--forms	e286a4daa3f5 1
+pinned-site silent-fallback	nemacs-wrap-init.el	defun nemacs-wrap-init--lower	4390030120d7 2
+pinned-site silent-fallback	standalone-source-normalize.el	defun standalone-source-normalize--cache-read	e3f2648caa3a 1
+pinned-site silent-fallback	standalone-source-normalize.el	defun standalone-source-normalize--file-state	e3f2648caa3a 1
+pinned-site silent-fallback	standalone-source-normalize.el	defun standalone-source-normalize-read-forms-from-file	09db60440f5b 1
+pinned-site silent-fallback	standalone-source-normalize.el	defun standalone-source-normalize-read-source-forms	09db60440f5b 1
+pinned-site silent-fallback	t107-stream-standalone-probe.el	let	68a16dc24571 2
+pinned-site silent-fallback	user-init-audit-runtime.el	defun user-init-audit--one	4015baf9d940 1
+pinned-site silent-fallback	user-init-audit-runtime.el	defun user-init-audit--one	5ebb946aad3e 1
+pinned-site silent-fallback	vendor-class-a-smoke.el	defun vendor-class-a-smoke--require-one	fec61c6e69ef 1
+pinned-site silent-fallback	vendor-core-smoke.el	defun vendor-core-smoke--run-one	fec61c6e69ef 1
+pinned-site silent-fallback	vendor-core-standalone-gate.el	defun vendor-core-standalone-gate-run	30bbfeb400ba 1
+pinned-site silent-fallback	vendor-form-standalone-walk.el	defun vendor-form-standalone--form-text	3ecc1e8e8348 1
+pinned-site silent-fallback	vendor-form-standalone-walk.el	defun vendor-form-standalone--forms	09db60440f5b 1
+pinned-site silent-fallback	vendor-form-walk.el	defun vendor-form-walk-run	205f0194bdb3 1
+pinned-site silent-fallback	vendor-load-standalone-replay.el	defun vendor-load-standalone--count-only-proof-p	e3f2648caa3a 1
+pinned-site silent-fallback	vendor-load-standalone-replay.el	defun vendor-load-standalone--proof-forms	486fb9d79337 1
+pinned-site silent-fallback	vendor-repl-standalone-replay.el	defun vendor-repl-standalone--pretty-form	a77169b1401a 1
+pinned-site silent-fallback	vendor-repl-standalone-replay.el	defun vendor-repl-standalone--source-provided-features	e3f2648caa3a 1

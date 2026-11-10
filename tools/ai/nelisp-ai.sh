@@ -265,9 +265,13 @@ run_ert_gate() {
     # shellcheck disable=SC2086
     # The runner's default selector leaves out `:expensive-test', as
     # `make test' does; NELISP_GATE_SELECTOR overrides it.
-    OUT_DIR="$out_dir" EMACS="$EMACS" \
+    # The list goes through a file, not argv: the full suite overran the
+    # Windows command-line limit (see TEST_FILES_FROM in the runner).
+    list="target/test-parallel/$gate_name.files"
+    printf '%s\n' $files > "$list"
+    OUT_DIR="$out_dir" EMACS="$EMACS" TEST_FILES_FROM="$list" \
     SELECTOR="${NELISP_GATE_SELECTOR:-(not (tag :expensive-test))}" \
-        "$here/../run-tests-parallel.sh" $files > "$summary" 2>&1
+        "$here/../run-tests-parallel.sh" > "$summary" 2>&1
     code=$?
     set -e
     cat "$summary"

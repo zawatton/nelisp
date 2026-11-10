@@ -96,8 +96,16 @@ for d in $(ls -d packages/*/test 2>/dev/null | sort); do LOAD_DIRS+=(-L "$d"); d
 LOAD_DIRS+=(-L scripts -L tools)
 
 # --- test file set: same glob as the Makefile, minus the soak test ----------
+# TEST_FILES_FROM names a file with one test path per line.  Callers with
+# the whole suite use it instead of arguments: ~714 paths passed as argv
+# overran the Windows command-line limit (32 K characters), so the
+# `ert windows-latest' lanes of CI run 42793703030 ran 182 files and
+# tried to load the truncated last one, "test/nelisp-asm-w".
 if [ "$#" -gt 0 ]; then
   FILES=("$@")
+elif [ -n "${TEST_FILES_FROM:-}" ]; then
+  FILES=()
+  while IFS= read -r f; do [ -n "$f" ] && FILES+=("$f"); done < "$TEST_FILES_FROM"
 else
   # No mapfile: macOS ships bash 3.2.
   FILES=()

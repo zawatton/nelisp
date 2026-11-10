@@ -84,6 +84,31 @@
     "nelisp-standalone-arena-rewrite")
   "Order in which one child compiles every toolchain library; see above.")
 
+(defun nelisp-standalone--toolchain-elc-dir (root hash)
+  "Directory for the compiled toolchain HASH, or nil when none is writable.
+NELISP_STANDALONE_TOOLCHAIN_ELC_DIR first, then ROOT/target (the tree's own
+build output), then the user cache.  An installed toolchain is read-only:
+always using ROOT/target made `nelisp build' fail there with \"Creating
+directory: Permission denied\" (gate project-distribution)."
+  (let ((candidates
+         (delq nil
+               (list (let ((d (getenv "NELISP_STANDALONE_TOOLCHAIN_ELC_DIR")))
+                       (and d (not (string= d "")) d))
+                     (expand-file-name "target/toolchain-elc" root)
+                     (expand-file-name "nelisp/toolchain-elc"
+                                       (or (getenv "XDG_CACHE_HOME")
+                                           (expand-file-name "~/.cache")))))))
+    (cl-loop for base in candidates
+             for dir = (expand-file-name hash base)
+             ;; Writable means: the directory exists and is writable, or
+             ;; its nearest existing ancestor is.
+             when (let ((probe dir))
+                    (while (and probe (not (file-exists-p probe)))
+                      (let ((up (file-name-directory (directory-file-name probe))))
+                        (setq probe (and up (not (equal up probe)) up))))
+                    (and probe (file-writable-p probe)))
+             return dir)))
+
 (defun nelisp-standalone--toolchain-elc-setup ()
   "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
 Prints one `[standalone] toolchain:' line saying which copy is used."
@@ -112,13 +137,22 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                          (concat f "\0" (secure-hash 'sha1 (current-buffer)))))
                      sources
                      (concat "\n" emacs-version "\n"))))
-             (dir (expand-file-name (concat "target/toolchain-elc/" hash) root))
-             (missing (cl-remove-if
-                       (lambda (lib)
-                         (file-exists-p (expand-file-name (concat lib ".elc") dir)))
-                       nelisp-standalone--toolchain-elc-libraries)))
+             (dir (nelisp-standalone--toolchain-elc-dir root hash))
+             (missing (and dir
+                           (cl-remove-if
+                            (lambda (lib)
+                              (file-exists-p (expand-file-name (concat lib ".elc") dir)))
+                            nelisp-standalone--toolchain-elc-libraries))))
+        (cond
+         ((null dir)
+          (setq reason "no writable directory for the compiled toolchain")
+          (setq missing nil))
+         (missing
+          (unless (condition-case nil (progn (make-directory dir t) t)
+                    (file-error nil))
+            (setq reason (format "cannot create %s" dir)
+                  missing nil))))
         (when missing
-          (make-directory dir t)
           (let* ((tag (format ".tmp%d" (emacs-pid)))
                  (paths (apply #'append
                                (mapcar (lambda (d) (and (stringp d)
@@ -141,9 +175,21 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                 (setq reason (format "byte-compile child exited %s" status))
               (dolist (lib nelisp-standalone--toolchain-elc-compile-order)
                 (let ((tmp (expand-file-name (concat lib ".elc" tag) dir)))
-                  (if (file-exists-p tmp)
-                      (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
-                    (setq reason (format "%s.elc was not written" lib))))))))
+                  (cond
+                   ((not (file-exists-p tmp))
+                    (setq reason (format "%s.elc was not written" lib)))
+                   ;; Windows refuses to rename over a file another process
+                   ;; has open, and parallel ERT files load this script at
+                   ;; once (permission-denied, CI run 42793703030).  A
+                   ;; finished .elc there is the same content -- the
+                   ;; directory is keyed by the sources -- so keep it.
+                   ((condition-case nil
+                        (progn (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
+                               t)
+                      (file-error nil)))
+                   ((file-exists-p (expand-file-name (concat lib ".elc") dir))
+                    (ignore-errors (delete-file tmp)))
+                   (t (setq reason (format "%s.elc could not be renamed into place" lib)))))))))
         (unless reason
           (setq load-path (cons dir (delete dir load-path)))
           (message "[standalone] toolchain: byte-compiled (%s)" dir))))
@@ -695,10 +741,14 @@ Capability is asymmetric between the two additions -- see
 (defun nelisp-standalone--dep-files ()
   "Toolchain source files; any newer than a cache entry forces recompile."
   ;; Sources only: with target/toolchain-elc/HASH first on `load-path',
-  ;; `locate-library' alone would return the .elc and change every key.
+  ;; `locate-library' would return the .elc and change every key, so an
+  ;; .elc answer is mapped back to its source.
   (delq nil (cons nelisp-standalone--this-file
                   (mapcar (lambda (lib)
-                            (locate-file (file-name-sans-extension lib) load-path '(".el")))
+                            (let ((found (locate-library lib)))
+                              (if (and found (string-suffix-p ".elc" found))
+                                  (locate-file (file-name-base found) load-path '(".el"))
+                                found)))
                           '("nelisp-aot-compiler" "nelisp-standalone-arena-rewrite" "nelisp-static-linker"
                             "nelisp-elf-write" "nelisp-cc-runtime" "nelisp-standalone-argframe.el"
                             "nelisp-heap-accessors" "nelisp-cc-fxir-native")))))
@@ -68200,7 +68250,14 @@ baked driver of its own, so it gets the very same forms as a separate unit."
      (defun nl_cstr_len (ptr)
        (if (= ptr 0) 0 (nl_cstr_len_loop ptr 0)))
      ,@(nelisp-standalone--reader-os-source-forms)
-     ,@(nelisp-standalone--reader-cold-source-forms))
+     ,@(nelisp-standalone--reader-cold-source-forms)
+     ;; Windows' cold loader opens the image through the pinned boot-image
+     ;; helpers (`nl_boot_image_open_pinned', `nl_boot_image_read_header'),
+     ;; which the reader build gets from its driver; without them the
+     ;; Windows eval link failed (stage-d run 42793702779).  Other targets'
+     ;; cold loader uses `nl_os_open_read' and needs none of them.
+     ,@(and (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+            (nelisp-boot-image-native-forms)))
    nelisp-standalone--this-file))
 
 (defun nelisp-standalone--reader-units (&optional eval-p)
