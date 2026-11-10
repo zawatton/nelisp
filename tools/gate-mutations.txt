@@ -807,7 +807,7 @@ standalone-reader-ffi-smoke|scripts/nelisp-standalone-build.el|s/("libm.so.6" . 
 # state v1.2.0 shipped in, so each row restores that release exactly -- which
 # is the point: the gate has to notice a REGRESSION to the previous release,
 # not just an arbitrary edit.
-standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(bf_load_with_lfn args env out)/(bf_load_readable args env out)/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
+standalone-reader-host-parity-smoke|scripts/nelisp-standalone-build.el|s/(nl_env_set_value env (nl_word_canon sym) (wf_arg_word args 0))/(nl_env_set_value env (nl_word_canon sym) (heap-read-u64 old-root 0))/|`load' stops binding `load-file-name', as in v1.2.0 -- every (or load-file-name buffer-file-name) idiom silently sees nil
 standalone-reader-host-parity-smoke|scripts/nelisp-stdlib-prelude.el|s/(if (fboundp .string-as-multibyte) (string-as-multibyte str) str)))/str))/|`decode-coding-string' is the identity again, as in v1.2.0 -- decoded text stays unibyte and `length' counts bytes
 # 2026-09-05 print-large-sexp smoke (tools/print-large-sexp-smoke.el), added
 # with the nelisp-llm crash investigation (both consumer faults were the
