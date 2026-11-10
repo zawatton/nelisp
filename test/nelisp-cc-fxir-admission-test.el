@@ -11,7 +11,7 @@
   (should (fboundp 'nelisp-cc-fxir-admission-activate)))
 
 (defun nfa-admission--write (file value)
-  (with-temp-file file (insert value)))
+  (let ((coding-system-for-write (quote utf-8-unix))) (with-temp-file file (insert value))))
 
 (defun nfa-admission--row-file (file rows)
   (nfa-admission--write file (format "(defconst application-rows '%S)\n(provide 'application-rows)\n" rows)))

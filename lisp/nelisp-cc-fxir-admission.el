@@ -275,7 +275,9 @@ SOURCES are the actual lexical source modules.  PRODUCER supplies :binary,
 This captures supplied evidence, and does not attest that a command ran.
 Return the (:file FILE :sha256 HASH) descriptor accepted by `prepare'."
   (let ((receipt (nelisp-cc-fxir-admission--binding-receipt file constant sources producer)))
-    (with-temp-file output (insert (nelisp-cc-fxir-admission--print receipt) "\n"))
+    ;; Keep LF so `--forms' can read the receipt back on CRLF-default hosts.
+    (let ((coding-system-for-write 'utf-8-unix))
+      (with-temp-file output (insert (nelisp-cc-fxir-admission--print receipt) "\n")))
     (list :file (file-truename output)
           :sha256 (plist-get (nelisp-cc-fxir-admission--pin output) :sha256))))
 
