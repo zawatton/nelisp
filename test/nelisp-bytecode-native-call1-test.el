@@ -8,7 +8,7 @@
 
 (ert-deftest nelisp-bytecode-native-call1/typed-gateway-contract ()
   (let* ((entry (list :name nelisp-native-load-raw-v2-call1-import
-                      :kind 'func :abi nelisp-native-load-raw-runtime-abi-v2
+                      :kind 'func :abi (nelisp-native-load--runtime-abi-v2)
                       :arity 6 :params '(u64 u64 u64 u64 u64 u64) :return 'u64))
          (manifest (list :call1-contract-version
                          nelisp-native-load-raw-v2-call1-contract-version

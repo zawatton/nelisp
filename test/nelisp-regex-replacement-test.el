@@ -63,7 +63,9 @@
                 nelisp--unicode-category-docstrings
                 nelisp--unicode-category-sets
                 nelisp--unicode-category-runs))))
-    (should (equal (secure-hash 'sha256 payload)
+    ;; Encode explicitly: host `secure-hash' encodes a multibyte string with
+    ;; a locale-dependent coding system on Windows.
+    (should (equal (secure-hash 'sha256 (encode-coding-string payload 'utf-8-unix))
                    nelisp--unicode-data-sha256)))
   (should (eq (nelisp-unicode-category ?A) 'Lu))
   (should (eq (nelisp-unicode-category ?ǅ) 'Lt))
