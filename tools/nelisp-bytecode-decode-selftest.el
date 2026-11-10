@@ -90,8 +90,10 @@ Only column-zero instructions belong to OBJECT; nested code is indented."
 
 (ert-deftest nelisp-bytecode-decode-source-parity ()
   ;; The GNU sources may be installed as .el.gz; decompression needs gzip.
-  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
-                   (executable-find "gzip")))
+  (skip-unless (or (locate-library "bytecomp.el" t)
+                   ;; Windows Emacs zips ship no .el sources at all.
+                   (and (locate-library "bytecomp.el.gz" t)
+                        (executable-find "gzip"))))
   (let* ((files (nelisp-bytecode-source-paths))
          (entries (nelisp-bytecode-compile-sources files))
          (objects 0))
