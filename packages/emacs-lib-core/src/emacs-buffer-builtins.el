@@ -338,6 +338,14 @@ adjusts those positions before calling this function."
               (setf (nelisp-buffer-pend peer) position)))
           (emacs-buffer-builtins--share-text buffer))))))
 
+;; The change-hook variables are C-level in GNU Emacs, so nothing in Lisp
+;; defines them.  `emacs-buffer-builtins--change-edit' reads them on every
+;; insert or delete, so this file declares them itself rather than
+;; depending on a bridge that happened to load first.
+(defvar before-change-functions nil
+  "List of functions to call before each text change.")
+(defvar after-change-functions nil
+  "List of functions to call after each text change.")
 (defvar combine-after-change-calls nil
   "Non-nil means defer after-change notifications when possible.")
 (defvar inhibit-modification-hooks nil
