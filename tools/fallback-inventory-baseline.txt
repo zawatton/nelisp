@@ -204,7 +204,7 @@
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-silent-fallback 427
+silent-fallback 429
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-publish	342dd783996d 1
 pinned-site silent-fallback	nelisp-native-unit.el	defun nelisp-native-unit-stage	3cc661a0aa0d 1
 pinned-site bare-handler	nelisp-native-unit.el	defun nelisp-native-unit-code-info	5f806c245674 1
@@ -338,7 +338,7 @@ pinned-site silent-fallback	nelisp-native-unit-development.el	defun nelisp-nativ
 # Merged 2026-09-12: 83 + 1 (--unload-handle) + 3 (the bounded-rebuild work) = 87,
 # taken from the scanner.
 # 2026-09-28: +4 net from the cl-generic class-designator helper (6 new guarded sites, prelude + cl-macros lockstep; 2 removed by the ns-gate cleanup).
-ignore-errors 137
+ignore-errors 138
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--kill	49a1e5c4d66b 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--artifact-produced-p	7f74078abc35 1
 pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-unit-development--cleanup-temp-files	dd8bb1462f63 1
@@ -378,7 +378,7 @@ pinned-site ignore-errors	nelisp-native-unit-development.el	defun nelisp-native-
 # (`--add-vectors', `--rollback-vectors'): each handler records its failure
 # (retained cleanup, releasing unit, retained record list), mirroring the
 # pinned symbol/string handlers.
-bare-handler 229
+bare-handler 231
 pinned-site bare-handler	nelisp-native-unit-development.el	defun nelisp-native-unit-development--wait	4bcd97633357 1
 
 # 0, and it should stay 0.  `nl_dbg_note' has no enable flag on purpose --
@@ -1244,3 +1244,18 @@ pinned-site silent-fallback	vendor-load-standalone-replay.el	defun vendor-load-s
 pinned-site silent-fallback	vendor-load-standalone-replay.el	defun vendor-load-standalone--proof-forms	486fb9d79337 1
 pinned-site silent-fallback	vendor-repl-standalone-replay.el	defun vendor-repl-standalone--pretty-form	a77169b1401a 1
 pinned-site silent-fallback	vendor-repl-standalone-replay.el	defun vendor-repl-standalone--source-provided-features	e3f2648caa3a 1
+#
+# 2026-11-10: nelisp-standalone--toolchain-elc-setup (scripts/
+# nelisp-standalone-build.el, fd828bed9 and f150bed19) compiles the
+# toolchain into a content-hashed directory.  Its handlers are fallbacks to
+# the interpreted toolchain, and each one sets `reason', which the function
+# prints as "[standalone] toolchain: INTERPRETED (REASON)" -- loud, not
+# silent, though this scan cannot see that:
+#   - make-directory failing on a read-only install (file-error -> reason);
+#   - rename-file refused on Windows while another process holds the .elc
+#     (file-error -> keep the identical finished file, else reason);
+#   - ignore-errors deleting our own temp file after that rename race.
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	4fc99aa31349 1
+pinned-site bare-handler	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	707fa542433b 1
+pinned-site ignore-errors	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	7a85c44cdaf9 1
+pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--toolchain-elc-setup	8bc0fa1e2974 2
