@@ -16,13 +16,13 @@
 #
 # GATE            MIN     MAX
 unsafe-inventory  150     600
-ns-inventory      300     600
-ns-gate           1000    4000
-emacs-compat      5000    12000
+ns-inventory      500     2000
+ns-gate           3500    14000
+emacs-compat      12000   48000
 fallback-inventory 100    2000
 pkg-graph         15      2000
 bootstrap-contract 1      500
-parity-coverage   300     900
+parity-coverage   1500    6000
 emacs-parity      1000    100000
 partial-inventory 20      200
 prelude-toplevel-check 200 3000
@@ -47,3 +47,14 @@ prelude-toplevel-check 200 3000
 # than made platform-aware; if a Windows re-run after that fix still reads
 # far from ~19949, that is new evidence for a fresh investigation, not
 # grounds to retroactively read this one differently.
+
+# 2026-11-10 (user approval via notes-d0): ns-inventory 300..600 -> 500..2000,
+# ns-gate 1000..4000 -> 3500..14000, emacs-compat 5000..12000 -> 12000..48000,
+# parity-coverage 300..900 -> 1500..6000.  Measured checked= on origin/main
+# afec22e7d: 1098, 7638, 26465, 3233 (ns-inventory 1102 and ns-gate 6738
+# already on 0a618c89c).  emacs-compat and parity-coverage grew in 895ef21c8,
+# which regenerated docs/emacs-compat-table.txt: rows 7114 -> 25847 and
+# shared names 424 -> 3241, the new rows coming from the imported emacs-lib
+# packages (packages/emacs-lib-core/src 8973) and a larger lisp/ (3185 ->
+# 6960) and scripts/ (1016 -> 5899) -- real input, not quoted data read as
+# definitions.  New bands are about 0.45x..1.8x of today; every floor rose.
