@@ -256,8 +256,11 @@ literal zero offset determine whether this is a tag read."
   "Return (SYMBOL . INIT) for a let BINDING, or nil."
   (cond
    ((symbolp binding) (cons binding nil))
+   ;; `car-safe': a dotted binding such as (a . 1) -- deliberate in
+   ;; test/standalone-eval-call-check.el -- has no init form, and `cadr'
+   ;; signalled wrong-type-argument, ending the file's walk as READ-ERROR.
    ((and (consp binding) (symbolp (car binding)))
-    (cons (car binding) (cadr binding)))
+    (cons (car binding) (car-safe (cdr binding))))
    (t nil)))
 
 (defun nelisp-doc200-tag-census--walk-let (form enclosing env sequential)
