@@ -191,15 +191,22 @@
                          (progn (apply 'ptr-call arguments)
                                 'nl-ffi-loader-smoke--no-error)
                        (wrong-number-of-arguments data))))
+        ;; 84f7d1839 (2026-11-08): `apply' reports the subr object, as GNU
+        ;; Emacs 31.1 does, not the function name.
         (nl-ffi-loader-smoke-should
-         (equal caught (list 'wrong-number-of-arguments 'ptr-call count))))
+         (and (consp caught) (eq (car caught) 'wrong-number-of-arguments)
+              (eq (cadr caught) (symbol-function 'ptr-call))
+              (equal (cddr caught) (list count)))))
       (setq count (1+ count)))
     (let ((caught (condition-case data
                       (progn (apply 'ptr-call (cons addr (make-list 7 0)))
                              'nl-ffi-loader-smoke--no-error)
                     (wrong-number-of-arguments data))))
+      ;; Subr object in the data: see 84f7d1839 above.
       (nl-ffi-loader-smoke-should
-       (equal caught '(wrong-number-of-arguments ptr-call 8))))
+       (and (consp caught) (eq (car caught) 'wrong-number-of-arguments)
+            (eq (cadr caught) (symbol-function 'ptr-call))
+            (equal (cddr caught) '(8)))))
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 40))
     ;; Rebinding the named function cell must still bypass the builtin arm.
     (let ((saved (symbol-function 'ptr-call)))

@@ -42295,6 +42295,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
   '(
     ((0 . 0)
       ;; bufnative: the buffer read path (WORD bodies in `nl_buf_leaf_run').
+      ;; Private fixture probe (test/nelisp-native-symbol-build.el).
+      symbol-test-intern-boundary
       point point-min point-max bobp eobp widen following-char preceding-char bolp eolp
       garbage-collect nelisp--alloc-check-report nelisp--arena-dump-copy-verify
       nelisp--arena-dump-table-verify nelisp--arena-force-grow-smoke
@@ -42313,7 +42315,11 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       * + - append bool-vector concat fetch-bytecode insert list logand logior logxor
       make-hash-table unibyte-string vector)
     ((1 . 1)
-      nelisp--region-open nelisp--region-close nelisp--region-move nelisp--region-live-p nelisp--region-size
+      nelisp--region-open
+      ;; Build-declared callsite bridge and private symbol fixture probes.
+      nelisp--native-callsite-symbol-addr symbol-test-cell symbol-test-jit-make symbol-test-boxed-string
+      symbol-test-jit-error symbol-test-global-get symbol-test-capture symbol-test-id
+      symbol-test-mark symbol-test-name nelisp--region-close nelisp--region-move nelisp--region-live-p nelisp--region-size
       ;; Schannel TLS (windows-x86_64 only): (nelisp-tls-close CONTEXT) and
       ;; (nelisp-tls-protocol CONTEXT).
       nelisp-tls-close nelisp-tls-protocol
@@ -42366,6 +42372,9 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp-process-start nelisp-process-start-process nl-ffi-call record sort)
     ((2 . 2)
       nelisp--hash-set-index nelisp--hash-make nelisp--make-lisp-primitive
+      ;; Private symbol fixture probes (test/nelisp-native-symbol-build.el).
+      symbol-test-restore-declarations symbol-test-local-special symbol-test-global-set
+      symbol-test-intern-scan symbol-test-find symbol-test-make symbol-test-name-equal symbol-test-same
       nelisp--region-u8-ref nelisp--region-i64-ref
       narrow-to-region nelisp--gb-column delete-region buffer-substring buffer-substring-no-properties nelisp--gb-char nelisp--gb-move nelisp--gb-reserve nelisp--gb-insert
       nelisp--pow unintern
@@ -42395,6 +42404,8 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       alist-get)
     ((3 . 3)
       nelisp--region-u8-set nelisp--region-i64-set
+      ;; Private symbol fixture probes (test/nelisp-native-symbol-build.el).
+      symbol-test-bind
       put aset byte-code make-record nelisp--fmt-float nelisp--native-pin-copy
       nelisp--native-unbox-reference nelisp--raw-aset nelisp--symbol-position-op
       nelisp--string-search nelisp--string-search-chars nelisp--casify-fast nelisp--base64-decode
@@ -71011,9 +71022,12 @@ the saved stack top instead of leaking a root entry."
     ;; ert-full and the reader smokes did not.  It moved again, 4 -> 6, when the
     ;; builtin argument list and the `catch' tag became roots as well; the same
     ;; two measurements were repeated and held (equal before/after, and 2000
-    ;; nested `let's leaving the depth exactly where they found it).
+    ;; nested `let's leaving the depth exactly where they found it).  It moved
+    ;; 12 -> 8 by 2026-11-10 (origin/main 5bd734bb3 merged; the commit was not
+    ;; isolated).  Re-measured on the --eval entry point: before = after = 8,
+    ;; and evaluating 2000 nested `let's twice leaves it at 8.
     (unless (equal (cl-subseq value 0 10)
-                   (list iterations 3 2 11 22 33 44 55 12 12))
+                   (list iterations 3 2 11 22 33 44 55 8 8))
       (error "stage3 rootstack smoke result/depth mismatch: %S" value))
     (unless (= (nth 8 value) (nth 9 value))
       (error "stage3 rootstack smoke leaked a root entry: before=%S after=%S"
@@ -71642,7 +71656,9 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                   (truncate (1 . 2)) (ceiling (1 . 2))
                   (float-time (0 . 1)) (prin1-to-string (1 . 3))
                   (string-match-p (2 . 3)) (string-search (2 . 3))
-                  (string-match (2 . 4)) (substring (2 . 4))
+                  ;; substring is (1 . 3), as GNU Emacs 31.1 reports; the old
+                  ;; (2 . 4) row went stale when 48342b978 made it a subr.
+                  (string-match (2 . 4)) (substring (1 . 3))
                   (make-string (2 . 3)) (signal (1 . 2))
                   (+ (0 . many)) (* (0 . many)) (append (0 . many))
                   (list (0 . many)) (concat (0 . many))
@@ -71695,7 +71711,9 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                 "      (unless (equal (condition-case e\n"
                 "                         (apply (list 'builtin name) argv)\n"
                 "                       (wrong-number-of-arguments e))\n"
-                "                     (list 'wrong-number-of-arguments (list 'builtin name) (length argv)))\n"
+                ;; 84f7d1839: apply/funcall report the subr object, as GNU
+                ;; Emacs 31.1 does, since S3 made primitives subrs.
+                "                     (list 'wrong-number-of-arguments (symbol-function name) (length argv)))\n"
                 "        (setq bad (cons (list name argv) bad)))))\n"
                 "  (unless (subrp (symbol-function 'nlistp))\n"
                 "    (setq bad (cons 'nlistp-not-native bad)))\n"
@@ -71706,7 +71724,7 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                 "    (unless (equal (condition-case e\n"
                 "                       (apply '(builtin nlistp) argv)\n"
                 "                     (wrong-number-of-arguments e))\n"
-                "                   (list 'wrong-number-of-arguments '(builtin nlistp) (length argv)))\n"
+                "                   (list 'wrong-number-of-arguments (symbol-function 'nlistp) (length argv)))\n"
                 "      (setq bad (cons (list 'nlistp-arity argv) bad))))\n"
                 "  (if (null bad) 0 (error \"func-arity smoke mismatch\")))\n")
                cases))

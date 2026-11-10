@@ -10,7 +10,7 @@
   (when (equal (file-truename (nelisp-standalone--output-path t))
                (file-truename (expand-file-name "target/nelisp" nelisp-standalone--repo-root)))
     (error "Symbol fixture must not replace target/nelisp"))
-  (let* ((arms
+  (let* ((legacy-arms
           '(((:lit "symbol-test-cell") . (seq (cell-make (wf_arg_ptr args 0) out) 0))
             ((:lit "symbol-test-jit-make") .
              (nl_jit_make_symbol (wf_arg_ptr args 0) out))
@@ -46,7 +46,15 @@
                                              (wf_arg_ptr args 1) (+ env 64))
                   (wf_write_nil out) 0))
             ((:lit "symbol-test-global-get") .
-             (seq (nelisp_mirror_lookup_value (+ env 0) (wf_arg_ptr args 0) out) 0))
+             ;; d409a23e6: a symbol's cell starts as the unbound marker, so an
+             ;; unset key now answers the marker; this probe reports it as nil.
+             (seq (nelisp_mirror_lookup_value (+ env 0) (wf_arg_ptr args 0) out)
+                  (if (= (ptr-read-u64 out 0) 16)
+                      (if (= (ptr-read-u64 out 8)
+                             (ptr-read-u64 (nl_sym_unbound) 8))
+                          (wf_write_nil out) 0)
+                    0)
+                  0))
             ((:lit "symbol-test-intern-scan") .
              (let* ((scratch (alloc-bytes 32 8)))
                (if (= (nl_symbol_test_intern_scan
@@ -102,9 +110,43 @@
              (if (= (nl_uninterned_symbol_equal
                      (wf_arg_ptr args 0) (wf_arg_ptr args 1)) 1)
                  (wf_write_t out) (wf_write_nil out)))))
+         ;; bd25c1caa (2026-10-19) made every builtin arm a direct WORD
+         ;; producer (`nelisp-standalone--applyfn-word-arm').  These probes
+         ;; are still written against the retired (rc, OUT) ABI, so wrap each
+         ;; one: run it against a zeroed private OUT box, then turn (rc, box)
+         ;; into the result WORD with `nl_symbol_test_box_word'.
+         (arms
+          (mapcar
+           (lambda (arm)
+             (cons (car arm)
+                   (cons :word
+                         `(let* ((out (alloc-bytes 32 8)))
+                            (seq (ptr-write-u64 out 0 0) (ptr-write-u64 out 8 0)
+                                 (ptr-write-u64 out 16 0) (ptr-write-u64 out 24 0)
+                                 (nl_symbol_test_box_word ,(cdr arm) out))))))
+           legacy-arms))
          (nelisp-standalone--applyfn-bf-helpers
           (append nelisp-standalone--applyfn-bf-helpers
-                  '((defun nl_symbol_test_intern_scan
+                  '((defun nl_symbol_test_box_word (rc out)
+                      (if (/= rc 0) (nl_abi_fail rc 0)
+                        (let* ((tag (ptr-read-u64 out 0)))
+                          (if (= tag 0) 3
+                            (if (= tag 1) 7
+                              ;; A string result must be a String WORD, not
+                              ;; the legacy box (`nl_sym_name_string').
+                              (if (if (= tag 5) 1 (if (= tag 14) 1 (if (= tag 6) 1 (if (= tag 15) 1 0))))
+                                  (nl_sym_name_string out)
+                              (if (= tag 2)
+                                  (wf_write_int_w 0 (ptr-read-u64 out 8))
+                                ;; Doc 226 D9 (d409a23e6): a symbol view's
+                                ;; payload is its object base; the symbol
+                                ;; WORD is base + 6.
+                                (if (= tag 16)
+                                    (if (> (ptr-read-u64 out 8) 65535)
+                                        (+ (ptr-read-u64 out 8) 6)
+                                      out)
+                                  out))))))))
+                    (defun nl_symbol_test_intern_scan
                       (cursor a b scratch)
                       (let* ((next 0) (seen-a 0) (seen-b 0)
                              (done 0) (monotonic 1))
