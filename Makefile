@@ -1841,12 +1841,16 @@ standalone-reader-splitstring-perf-smoke: $(if $(wildcard target/nelisp target/n
 	mkdir -p target; \
 	printf '%s\n' \
 	  '(let* ((n 60) (path (format "/fake/nelisp-perf-smoke/dir-0")))' \
-	  '  (let ((i 1)) (while (< i n) (setq path (concat path ";" (format "/fake/nelisp-perf-smoke/dir-%d" i))) (setq i (1+ i))))' \
+	  '  (let ((i 1)) (while (< i n) (setq path (concat path ";;" (format "/fake/nelisp-perf-smoke/dir-%d" i))) (setq i (1+ i))))' \
 	  '  (setq nlre--string-match-calls 0)' \
+	  '  (defvar nelisp-smoke-sm-calls 0)' \
+	  '  (let ((orig (symbol-function (quote nlre-string-match))))' \
+	  '    (fset (quote nlre-string-match)' \
+	  '          (lambda (&rest a) (setq nelisp-smoke-sm-calls (1+ nelisp-smoke-sm-calls)) (apply orig a))))' \
 	  '  (let* ((t0 (float-time))' \
-	  '         (dirs (split-string path ";"))' \
+	  '         (dirs (split-string path ";;"))' \
 	  '         (elapsed (- (float-time) t0))' \
-	  '         (regexp-calls nlre--string-match-calls))' \
+	  '         (regexp-calls (+ nlre--string-match-calls nelisp-smoke-sm-calls)))' \
 	  '    (princ (format "n-dirs=%d elapsed=%.3f regexp-calls=%d pass=%S\n"' \
 	  '                   (length dirs) elapsed regexp-calls' \
 	  '                   (and (= (length dirs) n) (= regexp-calls 0))))))' \
