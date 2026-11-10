@@ -39,6 +39,108 @@
 
 ;;; Code:
 
+;; BYTE-COMPILED TOOLCHAIN (2026-11-10).  The AOT compiler and the other
+;; `nelisp-standalone--dep-files' libraries used to run as interpreted
+;; source in every build process.  Measured on c461db6ba (32 cores, JOBS=1):
+;; recompiling only applyfn-reader.o took 575 s interpreted and 187 s with
+;; these libraries byte-compiled, and an empty-cache JOBS=4 build linked a
+;; byte-identical target/nelisp in 165 s.  CI's cold build took 1163 s.
+;;
+;; The .elc files live in target/toolchain-elc/HASH/, HASH covering the
+;; host Emacs version and every listed source, so an edited source (a
+;; gate-mutation injection included) gets a fresh directory instead of a
+;; stale hit.  They are compiled in a child Emacs, so this process never
+;; loads the interpreted copies, and renamed into place, so parallel
+;; prewarm children that run this same code cannot read a half-written
+;; file.  Unit cache keys are unaffected: `nelisp-standalone--dep-files'
+;; hashes the .el sources, not these files.
+;; The child LOADS each source before compiling it: nelisp-elf-write.el
+;; uses `nelisp-elf--build-rel-sym' and two sibling macros (line ~2032)
+;; before their `defmacro' (line ~2183).  Interpreted, the macro is
+;; expanded when the call runs; compiled cold, the call is compiled as a
+;; function call and the link step dies with invalid-function.
+;; NELISP_STANDALONE_TOOLCHAIN_ELC=0 keeps the interpreted toolchain (the
+;; identity control of tools/ai/build-speed-progress.org).
+;; This must run before the first `require' below: a library already
+;; loaded from source stays interpreted (measured: with this block placed
+;; after them, an empty-cache JOBS=4 build took 494 s instead of 166 s).
+;; nelisp-standalone-argframe.el is deliberately absent: it is loaded by
+;; explicit file name below and must stay source.
+(defconst nelisp-standalone--toolchain-elc-libraries
+  '("nelisp-heap-accessors" "nelisp-elf-write" "nelisp-static-linker"
+    "nelisp-cc-runtime" "nelisp-aot-compiler" "nelisp-standalone-arena-rewrite"
+    "nelisp-cc-fxir-native")
+  "Toolchain libraries loaded byte-compiled, in dependency order.")
+
+(defun nelisp-standalone--toolchain-elc-setup ()
+  "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
+Prints one `[standalone] toolchain:' line saying which copy is used."
+  (let* ((root (file-name-directory
+                (directory-file-name
+                 (file-name-directory (or load-file-name buffer-file-name)))))
+         (sources (mapcar (lambda (lib) (locate-file lib load-path '(".el")))
+                          nelisp-standalone--toolchain-elc-libraries))
+         (reason
+          (cond
+           ((equal (getenv "NELISP_STANDALONE_TOOLCHAIN_ELC") "0")
+            "NELISP_STANDALONE_TOOLCHAIN_ELC=0")
+           ((not (fboundp 'byte-compile-file)) "no byte compiler on this host")
+           ((memq nil sources) "a toolchain source is not on load-path")
+           ((cl-some (lambda (lib) (featurep (intern lib)))
+                     nelisp-standalone--toolchain-elc-libraries)
+            "a toolchain library was already loaded from source"))))
+    (unless reason
+      (let* ((hash (secure-hash
+                    'sha1
+                    (mapconcat
+                     (lambda (f)
+                       (with-temp-buffer
+                         (set-buffer-multibyte nil)
+                         (insert-file-contents-literally f)
+                         (concat f "\0" (secure-hash 'sha1 (current-buffer)))))
+                     sources
+                     (concat "\n" emacs-version "\n"))))
+             (dir (expand-file-name (concat "target/toolchain-elc/" hash) root))
+             (missing (cl-remove-if
+                       (lambda (lib)
+                         (file-exists-p (expand-file-name (concat lib ".elc") dir)))
+                       nelisp-standalone--toolchain-elc-libraries)))
+        (when missing
+          (make-directory dir t)
+          (let* ((tag (format ".tmp%d" (emacs-pid)))
+                 (paths (apply #'append
+                               (mapcar (lambda (d) (and (stringp d)
+                                                        (list "-L" (expand-file-name d))))
+                                       load-path)))
+                 (form
+                  (format "(progn (setq byte-compile-dest-file-function (lambda (f) (expand-file-name (concat (file-name-base f) %S) %S))) (dolist (f '%S) (load f nil t t) (unless (byte-compile-file f) (kill-emacs 3))))"
+                          (concat ".elc" tag) dir
+                          (mapcar (lambda (lib)
+                                    (nth (cl-position lib nelisp-standalone--toolchain-elc-libraries
+                                                      :test #'equal)
+                                         sources))
+                                  missing)))
+                 (status (apply #'call-process
+                                (expand-file-name invocation-name invocation-directory)
+                                nil nil nil
+                                (append (list "--batch" "-Q") paths
+                                        (list "--eval" form)))))
+            (if (not (eql status 0))
+                (setq reason (format "byte-compile child exited %s" status))
+              (dolist (lib missing)
+                (let ((tmp (expand-file-name (concat lib ".elc" tag) dir)))
+                  (if (file-exists-p tmp)
+                      (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
+                    (setq reason (format "%s.elc was not written" lib))))))))
+        (unless reason
+          (setq load-path (cons dir (delete dir load-path)))
+          (message "[standalone] toolchain: byte-compiled (%s)" dir))))
+    (when reason
+      (message "[standalone] toolchain: INTERPRETED (%s)" reason))))
+
+(require 'cl-lib)
+(nelisp-standalone--toolchain-elc-setup)
+
 (require 'nelisp-heap-accessors)
 (require 'nelisp-cc-string-blocks)
 
@@ -75,97 +177,6 @@
 (require 'nelisp-vendor-source)
 (require 'nelisp-boot-image)
 (require 'nelisp-version)
-;; BYTE-COMPILED TOOLCHAIN (2026-11-10).  The AOT compiler and the other
-;; `nelisp-standalone--dep-files' libraries used to run as interpreted
-;; source in every build process.  Measured on c461db6ba (32 cores, JOBS=1):
-;; recompiling only applyfn-reader.o took 575 s interpreted and 187 s with
-;; these libraries byte-compiled, and an empty-cache JOBS=4 build linked a
-;; byte-identical target/nelisp in 165 s.  CI's cold build took 1163 s.
-;;
-;; The .elc files live in target/toolchain-elc/HASH/, HASH covering the
-;; host Emacs version and every listed source, so an edited source (a
-;; gate-mutation injection included) gets a fresh directory instead of a
-;; stale hit.  They are compiled in a child Emacs, so this process never
-;; loads the interpreted copies, and renamed into place, so parallel
-;; prewarm children that run this same code cannot read a half-written
-;; file.  Unit cache keys are unaffected: `nelisp-standalone--dep-files'
-;; hashes the .el sources, not these files.
-;; NELISP_STANDALONE_TOOLCHAIN_ELC=0 keeps the interpreted toolchain (the
-;; identity control of tools/ai/build-speed-progress.org).
-;; nelisp-standalone-argframe.el is deliberately absent: it is loaded by
-;; explicit file name below and must stay source.
-(defconst nelisp-standalone--toolchain-elc-libraries
-  '("nelisp-heap-accessors" "nelisp-elf-write" "nelisp-static-linker"
-    "nelisp-cc-runtime" "nelisp-aot-compiler" "nelisp-standalone-arena-rewrite"
-    "nelisp-cc-fxir-native")
-  "Toolchain libraries loaded byte-compiled, in dependency order.")
-
-(defun nelisp-standalone--toolchain-elc-setup ()
-  "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
-Prints one `[standalone] toolchain:' line saying which copy is used."
-  (let* ((root (file-name-directory
-                (directory-file-name
-                 (file-name-directory (or load-file-name buffer-file-name)))))
-         (sources (mapcar (lambda (lib) (locate-file lib load-path '(".el")))
-                          nelisp-standalone--toolchain-elc-libraries))
-         (reason
-          (cond
-           ((equal (getenv "NELISP_STANDALONE_TOOLCHAIN_ELC") "0")
-            "NELISP_STANDALONE_TOOLCHAIN_ELC=0")
-           ((not (fboundp 'byte-compile-file)) "no byte compiler on this host")
-           ((memq nil sources) "a toolchain source is not on load-path"))))
-    (unless reason
-      (let* ((hash (secure-hash
-                    'sha1
-                    (mapconcat
-                     (lambda (f)
-                       (with-temp-buffer
-                         (set-buffer-multibyte nil)
-                         (insert-file-contents-literally f)
-                         (concat f "\0" (secure-hash 'sha1 (current-buffer)))))
-                     sources
-                     (concat "\n" emacs-version "\n"))))
-             (dir (expand-file-name (concat "target/toolchain-elc/" hash) root))
-             (missing (cl-remove-if
-                       (lambda (lib)
-                         (file-exists-p (expand-file-name (concat lib ".elc") dir)))
-                       nelisp-standalone--toolchain-elc-libraries)))
-        (when missing
-          (make-directory dir t)
-          (let* ((tag (format ".tmp%d" (emacs-pid)))
-                 (paths (apply #'append
-                               (mapcar (lambda (d) (and (stringp d)
-                                                        (list "-L" (expand-file-name d))))
-                                       load-path)))
-                 (form
-                  (format "(progn (setq byte-compile-dest-file-function (lambda (f) (expand-file-name (concat (file-name-base f) %S) %S))) (dolist (f '%S) (unless (byte-compile-file f) (kill-emacs 3))))"
-                          (concat ".elc" tag) dir
-                          (mapcar (lambda (lib)
-                                    (nth (cl-position lib nelisp-standalone--toolchain-elc-libraries
-                                                      :test #'equal)
-                                         sources))
-                                  missing)))
-                 (status (apply #'call-process
-                                (expand-file-name invocation-name invocation-directory)
-                                nil nil nil
-                                (append (list "--batch" "-Q") paths
-                                        (list "--eval" form)))))
-            (if (not (eql status 0))
-                (setq reason (format "byte-compile child exited %s" status))
-              (dolist (lib missing)
-                (let ((tmp (expand-file-name (concat lib ".elc" tag) dir)))
-                  (if (file-exists-p tmp)
-                      (rename-file tmp (expand-file-name (concat lib ".elc") dir) t)
-                    (setq reason (format "%s.elc was not written" lib))))))))
-        (unless reason
-          (setq load-path (cons dir (delete dir load-path)))
-          (message "[standalone] toolchain: byte-compiled (%s)" dir))))
-    (when reason
-      (message "[standalone] toolchain: INTERPRETED (%s)" reason))))
-
-(require 'cl-lib)
-(nelisp-standalone--toolchain-elc-setup)
-
 (require 'nelisp-prelude-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
