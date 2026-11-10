@@ -243,7 +243,7 @@ ert-full|lisp/nelisp-cl-macros.el|s/(signal 'cl-no-applicable-method (cons name 
 standalone-reader-test|scripts/nelisp-standalone-build.el|s/(and (> v 0) (> acc (- 2305843009213693951 v)))/(and (> v 0) nil)/|wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum
 standalone-reader-test|scripts/nelisp-standalone-build.el|s#(/= (/ prod acc) v)#nil#|wf_prod's div-round-trip overflow check is deleted, (* 100000000000 100000000000) wraps silently again instead of promoting to a bignum
 standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) n$/(if (= data 1) n/|the NULL guard in nelisp_reader_p_hash_pair_count is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- reads the tag word at address 0 and the binary faults
-standalone-reader-test|scripts/nelisp-standalone-build.el|s/(if (if (= data_slot 0) 1 (= (ptr-read-u64 data_slot 0) 0))/(if (= data_slot 0)/|nl_ht_put stops treating a materialised nil cdr as an absent data slot, so puthash into an empty reader-built table writes into a scratch view and the table stays empty
+standalone-reader-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 h 16 (+ cnt 4))/(ptr-write-u64 h 16 cnt)/|nl_ht_hash_put fills the pair and links its bucket but no longer bumps the table's live count, so a puthash into a reader-built table is invisible to hash-table-count and the table keeps reading as empty
 # 2026-08-26 (Doc 187 P4 continuous cost gate): the exact flag-controlled
 # guard call is made unconditional-false.  The gate compiles its one-add loop
 # twice from the same source; this mutation makes the checked and unchecked
@@ -298,7 +298,7 @@ nl-actor-standalone-smoke|packages/nelisp-actor/src/nelisp-actor.el|s/^(require 
 # instead of the real digits, and comparisons read garbage.  Caught by
 # this smoke's own fencepost/printing/GC-stress checks, not by any
 # pre-existing gate (no prior gate constructs a tag-13 Sexp at all).
-standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u8  result_slot 0  13)/(seq (ptr-write-u8  result_slot 0  2)/|a constructed bignum is mis-tagged as a plain Int (its sign word read back as the "value"), corrupting bignump/prin1/comparison for every bignum the reader produces
+standalone-reader-bignum-smoke|scripts/nelisp-standalone-build.el|s/(seq (ptr-write-u64 box 0 (+ 13 (+ (\* sign 64)/(seq (ptr-write-u64 box 0 (+ 2 (+ (\* sign 64)/|a constructed bignum is mis-tagged as a plain Int (the Bignum object header written by nl_bignum_write_w carries the Int tag instead of 13), so its limb words are read back as the "value", corrupting bignump/prin1/comparison for every bignum the reader produces
 
 # standalone-reader-bignum-smoke: added 2026-08-23 (Doc 190 Phase B,
 # feat/bignum-p2-arith).  New correctness property this phase introduces:
@@ -1066,7 +1066,7 @@ ffi-dsl|packages/nl-ffi/src/nl-ffi.el|s/(when (zerop addr)/(when nil/|nl-ffi--pt
 # f64-return-using cases, all fail their `should' assertion; the
 # f64-arg-int-return case, whose return is plain integer, is unaffected)
 # with the mutation in place; checked=20 findings=0 (GREEN) restored.
-ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float out (bits-to-f64 pcret)) 0))/(wf_write_int out pcret))/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
+ffi-dsl|scripts/nelisp-standalone-build.el|s/(seq (sexp-write-float object (bits-to-f64 pcret)) object)/(wf_write_int_w 0 pcret)/|nelisp-standalone--build-ptr-call-typed-dispatch's f64-return arm boxes the raw i64 bit pattern as an integer instead of a real Lisp float, so a dlsym-resolved double-returning ffi:defun call returns nonsense instead of the actual floating-point result
 #
 # ffi-loader (FFI step 3 increment 2, pure-elisp ELF loader): the row moved
 # from increment 1's line (`(when (= st-shndx 0)' in
