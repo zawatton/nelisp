@@ -114,6 +114,8 @@ When SKIP-PENDING is non-nil the function `byte-compile-form' is pending."
                      (s6c-test--validate fx)))))
 
 (ert-deftest nelisp-eln-s6-corpus/tampered-sha-fails ()
+  ;; The fixture binary is a shell script (POSIX only).
+  (skip-unless (memq system-type '(gnu/linux darwin berkeley-unix)))
   (skip-unless (or (executable-find "timeout") (executable-find "gtimeout")))
   (s6c-test--with-fixture (fx)
     (s6c-test--regen fx)

@@ -1,0 +1,45 @@
+# CI run 42632323148 (push to main, afec22e7d): host ERT with the per-file runner
+# (e3470413f).  Lines are the runner's own FAIL and TOTALS output, with the
+# timestamp and the per-file log path removed.  Every Linux ERT job ran all
+# 10288 tests to the end: error-files=0, no file died on a signal.
+# job ids: gates 129211479345, ert ubuntu plain 129212616133,
+#          nojit 129212616261, jit 129212616527
+
+## ert-plain
+[parallel-test] FAIL  test/nelisp-cl-labels-lexical-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-eln-emitter-test.el (rc=1, 4 unexpected of 7)
+[parallel-test] FAIL  test/nelisp-eln-registration-metadata-test.el (rc=1, 1 unexpected of 3)
+[parallel-test] FAIL  test/nelisp-intern-obarray-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-map-char-table-test.el (rc=1, 1 unexpected of 2)
+[parallel-test] FAIL  test/nelisp-stdlib-test.el (rc=1, 2 unexpected of 137)
+[parallel-test] FAIL  test/nelisp-vendor-bytecode-triparity-test.el (rc=1, 2 unexpected of 16)
+[parallel-test] TOTALS ran=10288 unexpected=12 skipped=556 error-files=0 failed-files=7
+
+## ert-nojit
+[parallel-test] FAIL  test/nelisp-cl-labels-lexical-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-eln-emitter-test.el (rc=1, 4 unexpected of 7)
+[parallel-test] FAIL  test/nelisp-eln-registration-metadata-test.el (rc=1, 1 unexpected of 3)
+[parallel-test] FAIL  test/nelisp-intern-obarray-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-map-char-table-test.el (rc=1, 1 unexpected of 2)
+[parallel-test] FAIL  test/nelisp-stdlib-test.el (rc=1, 2 unexpected of 137)
+[parallel-test] FAIL  test/nelisp-vendor-bytecode-triparity-test.el (rc=1, 2 unexpected of 16)
+[parallel-test] TOTALS ran=10288 unexpected=12 skipped=556 error-files=0 failed-files=7
+
+## ert-jit
+[parallel-test] FAIL  test/nelisp-cl-labels-lexical-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-eln-emitter-test.el (rc=1, 4 unexpected of 7)
+[parallel-test] FAIL  test/nelisp-eln-registration-metadata-test.el (rc=1, 1 unexpected of 3)
+[parallel-test] FAIL  test/nelisp-intern-obarray-test.el (rc=1, 1 unexpected of 9)
+[parallel-test] FAIL  test/nelisp-map-char-table-test.el (rc=1, 1 unexpected of 2)
+[parallel-test] FAIL  test/nelisp-stdlib-test.el (rc=1, 2 unexpected of 137)
+[parallel-test] FAIL  test/nelisp-vendor-bytecode-triparity-test.el (rc=1, 2 unexpected of 16)
+[parallel-test] TOTALS ran=10288 unexpected=12 skipped=553 error-files=0 failed-files=7
+
+## gates
+[parallel-test] FAIL  test/nelisp-eln-emitter-test.el (rc=1, 4 unexpected of 7)
+[parallel-test] FAIL  test/nelisp-eln-registration-metadata-test.el (rc=1, 1 unexpected of 3)
+[parallel-test] FAIL  test/nelisp-fx-ordinary-vector-test.el (rc=1, 1 unexpected of 3)
+[parallel-test] FAIL  test/nelisp-fxvm-coverage-test.el (rc=1, 1 unexpected of 6)
+[parallel-test] FAIL  test/nelisp-parity9-test.el (rc=1, 1 unexpected of 11)
+[parallel-test] FAIL  test/nelisp-w1vec-test.el (rc=1, 1 unexpected of 8)
+[parallel-test] TOTALS ran=10288 unexpected=9 skipped=723 error-files=0 failed-files=6

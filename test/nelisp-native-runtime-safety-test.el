@@ -17,7 +17,10 @@
 
 (ert-deftest nelisp-native-runtime-safety/digest-does-not-change-gc-policy ()
   (let ((freed nil) (copied nil))
-    (cl-letf (((symbol-function 'nelisp--sha256-bytes)
+    (cl-letf (((symbol-function 'nelisp-native-load--windows-p)
+               ;; Pin the POSIX mmap/munmap path this test asserts.
+               (lambda () nil))
+              ((symbol-function 'nelisp--sha256-bytes)
                (lambda (address length)
                  (should (= address 8192)) (should (= length 4)) "digest"))
               ((symbol-function 'nelisp-native-load--mmap)

@@ -47,8 +47,10 @@
 
 (ert-deftest nelisp-native-bytecode-dialect/inventory-matches-pinned-gnu-source ()
   (skip-unless (equal emacs-version "31.1"))
-  (skip-unless (or (not (string-suffix-p ".gz" (or (locate-library "bytecomp") "")))
-                   (executable-find "gzip")))
+  (skip-unless (or (locate-library "bytecomp.el" t)
+                   ;; Windows Emacs zips ship no .el sources at all.
+                   (and (locate-library "bytecomp.el.gz" t)
+                        (executable-find "gzip"))))
   (let* ((inventory-file (nelisp-native-bytecode-dialect-test--fixture
                           "gnu-31.1-opcodes.json"))
          (inventory (json-read-file inventory-file))

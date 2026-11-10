@@ -3,7 +3,7 @@
 # per-command timeout (600 s at most) is shorter than these jobs.
 # Records "<HEAD sha> <dirty> <exit code>" in target/main-ci-reds/NAME.result
 # so check-heavy.sh can tell a fresh pass on this commit from a stale one.
-# Usage: run-heavy.sh NAME   (NAME: ert-full smokes extras extras-s3 perf selfhost
+# Usage: run-heavy.sh NAME   (NAME: ert-full ert-single ert-complete smokes extras extras-s3 perf selfhost
 #                              emacs-parity eval-test build-identity precise-root-mutation
 #                              cross-platform mut-GATE)
 set -u
@@ -30,6 +30,10 @@ case "$name" in
   # Criteria of tools/ai/gate-mutation-rows-progress.org: the rows of one
   # gate in tools/gate-mutations.txt, each of which must turn the gate red.
   mut-*) cmd="NELISP_GATE_MUTATION_ONLY=${name#mut-} bash tools/nelisp-gate-mutation.sh" ;;
+  # Criteria of tools/ai/s1-9-ert-progress.org: the whole suite in one host
+  # Emacs (no signal), and the per-file suite with every file run to its end.
+  ert-single) cmd='bash tools/ai/s1-9-ert/ert-single.sh' ;;
+  ert-complete) cmd='bash tools/ai/s1-9-ert/ert-complete.sh' ;;
   *) echo "unknown criterion: $name" >&2; exit 2 ;;
 esac
 # HEAVY_RUN names a machine-wide job limiter (Notes bin/heavy-run.sh); unset
