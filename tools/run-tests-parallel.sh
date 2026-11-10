@@ -35,6 +35,30 @@
 
 set -uo pipefail
 
+# `wait -n' needs bash 4.3; macOS ships 3.2.  Re-run under a newer bash when
+# one is installed (Homebrew on the GitHub macOS images).
+if [ "${BASH_VERSINFO[0]}" -lt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -lt 3 ]; }; then
+  for b in /opt/homebrew/bin/bash /usr/local/bin/bash "$(command -v bash)"; do
+    if [ -x "$b" ] && "$b" -c '[ "${BASH_VERSINFO[0]}" -ge 5 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 3 ]; }'; then
+      exec "$b" "$0" "$@"
+    fi
+  done
+  echo "[parallel-test] needs bash >= 4.3 (found $BASH_VERSION)" >&2
+  exit 2
+fi
+
+# GNU timeout is `gtimeout' under Homebrew coreutils; without either, run
+# unbounded rather than fail every file.
+if command -v timeout >/dev/null 2>&1; then TIMEOUT_CMD=(timeout)
+elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_CMD=(gtimeout)
+elif command -v perl >/dev/null 2>&1; then
+  # SIGALRM survives exec, so the test Emacs is killed at the deadline.
+  TIMEOUT_CMD=(perl -e 'alarm shift; exec @ARGV or die "exec: $!"')
+else TIMEOUT_CMD=(); fi
+
+# BSD date has no %N.
+now() { local t; t=$(date +%s.%N); case "$t" in *N) date +%s ;; *) echo "$t" ;; esac; }
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
@@ -73,9 +97,11 @@ LOAD_DIRS+=(-L scripts -L tools)
 
 # --- test file set: same glob as the Makefile, minus the soak test ----------
 if [ "$#" -gt 0 ]; then
-  mapfile -t FILES < <(printf '%s\n' "$@")
+  FILES=("$@")
 else
-  mapfile -t FILES < <(
+  # No mapfile: macOS ships bash 3.2.
+  FILES=()
+  while IFS= read -r f; do FILES+=("$f"); done < <(
     { ls test/nelisp*-test.el packages/*/test/nelisp*-test.el \
          packages/*/test/nl-*-test.el 2>/dev/null; } \
       | grep -v 'test/nelisp-worker-soak-test.el' \
@@ -95,12 +121,12 @@ RESULTS="$OUT_DIR/results.tsv"
 : > "$RESULTS"
 
 echo "[parallel-test] $NFILES files, $JOBS at a time (EMACS=$EMACS)"
-T0=$(date +%s.%N)
+T0=$(now)
 
 run_one() {
   local f=$1 log rc summ ran unexp skip expf
   log="$OUT_DIR/$(echo "$f" | tr '/' '_' | sed 's/\.el$//').log"
-  timeout "$TEST_TIMEOUT" "$EMACS" "${PRELOAD[@]}" --batch -Q "${LOAD_DIRS[@]}" \
+  ${TIMEOUT_CMD[@]+"${TIMEOUT_CMD[@]}" "$TEST_TIMEOUT"} "$EMACS" ${PRELOAD[@]+"${PRELOAD[@]}"} --batch -Q "${LOAD_DIRS[@]}" \
     --eval '(setq load-prefer-newer t)' \
     -l ert -l "$f" \
     --eval "(ert-run-tests-batch-and-exit '$SELECTOR)" \
@@ -125,9 +151,10 @@ for f in "${FILES[@]}"; do
 done
 wait
 
-T1=$(date +%s.%N)
+T1=$(now)
 
 # --- aggregate --------------------------------------------------------------
+DETAIL_LINES=${FAIL_DETAIL_LINES:-40}
 total_ran=0 total_unexpected=0 total_expected_fail=0 total_skipped=0 failed_files=0 error_files=0
 while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
   total_ran=$(( total_ran + ran ))
@@ -139,8 +166,13 @@ while IFS=$'\t' read -r f rc ran unexp skip expf has_summ log; do
     if [ "$has_summ" = "0" ]; then
       error_files=$(( error_files + 1 ))
       echo "[parallel-test] ERROR $f (rc=$rc, no ert summary; see $log)"
+      # CI keeps no per-file logs: show the end of this one inline.
+      tail -n "$DETAIL_LINES" "$log" 2>/dev/null | sed 's/^/    | /'
     else
       echo "[parallel-test] FAIL  $f (rc=$rc, $unexp unexpected of $ran; see $log)"
+      # Each failing test's condition, bounded, so a CI log names the cause.
+      awk '/^Test .* condition:$/{p=1} /^   (FAILED|passed|skipped) /{p=0} p' "$log" 2>/dev/null \
+        | head -n "$DETAIL_LINES" | cut -c1-300 | sed 's/^/    | /'
     fi
   fi
 done < <(sort "$RESULTS")

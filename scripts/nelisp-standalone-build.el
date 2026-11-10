@@ -34359,7 +34359,9 @@ bytes are written into a fresh 8-byte buffer instead."
       (if (= (m5_string_tag_p (nl_val_tag input)) 0) 3
         (let* ((fmt (bf_fmt_arg_w input)))
         (if (= fmt 0) 3
-        (if (= (bf_format_plain_p fmt) 1) input
+        ;; Raw high bytes decline (see `bf_fmt_simple_scan'): the elisp layer
+        ;; owns the unibyte/multibyte distinction there.
+        (if (= (bf_format_plain_p fmt) 1) (if (= (m5_raw_high_p fmt) 1) 3 input)
           (if (/= (ptr-read-u64 (- fmt 4) 16) 0) 3
             (let* ((single
                     (if (and (= (m5_strlen fmt) 2) (= (m5_byte_at fmt 1) 115)
@@ -34367,7 +34369,7 @@ bytes are written into a fresh 8-byte buffer instead."
                         (let* ((a (nl_cons_car_word argl)) (name (bf_fmt_arg_w a)) (tag (nl_val_tag a)))
                           (if (= name 0) 3
                             (if (= (m5_string_tag_p (nl_val_tag name)) 1)
-                                (if (= (m5_string_tag_p tag) 1) a name)
+                                (if (= (m5_string_tag_p tag) 1) (if (= (m5_raw_high_p a) 1) 3 a) name)
                               (if (or (= tag 0) (= tag 1) (= tag 4) (= tag 16)) 3 0)))) 0)))
               (if (/= single 0) single
                 (if (= (m5_raw_high_p fmt) 1) 3
@@ -50162,6 +50164,31 @@ skipped and re-run once cl-preloaded has defined the base types."
             (b (and a (string-search m text a))))
        (unless b (error "cl-macs.el pcase advice form not found"))
        (substring text a (+ b (length m))))
+     ;; GNU `cl-labels' (and its siblings) expand local bodies through the
+     ;; global `macroexpand-all'.  A library may replace that function with
+     ;; a shallow walker that leaves `(function (lambda ...))' opaque, and
+     ;; every local call then stays a plain global call (`void-function').
+     ;; The deleted native `cl-labels' used the prelude's own walker, which
+     ;; no library replaces; keep that immunity by running the GNU
+     ;; expanders with that walker installed as `macroexpand-all'.
+     "\n;; --- cl-labels family: immune to a replaced `macroexpand-all' ---\n"
+     "(defun nelisp--apply-macro-with-own-walker (expander args)\n"
+     "  (let ((saved (symbol-function 'macroexpand-all)))\n"
+     "    (unwind-protect\n"
+     "        (progn\n"
+     "          (fset 'macroexpand-all\n"
+     "                (lambda (form &optional environment)\n"
+     "                  (let ((macroexpand-all-environment environment))\n"
+     "                    (nelisp--macroexpand-all-walk form environment))))\n"
+     "          (apply expander args))\n"
+     "      (fset 'macroexpand-all saved))))\n"
+     "(dolist (m '(cl-labels cl-flet cl-macrolet cl-symbol-macrolet))\n"
+     "  (let ((def (symbol-function m)))\n"
+     "    (when (eq (car-safe def) 'macro)\n"
+     "      (fset m (cons 'macro\n"
+     "                    (list 'lambda '(&rest args)\n"
+     "                          (list 'nelisp--apply-macro-with-own-walker\n"
+     "                                (list 'quote (cdr def)) 'args)))))))\n"
      ;; cl-lib is not preloaded in GNU: forget the feature the prelude
      ;; provides natively so `require' loads GNU's.
      "\n(setq features (delq 'cl-lib features))\n")))
@@ -50954,10 +50981,21 @@ The registry is consulted only after argument binding has failed."
      "\n(setq nelisp--subr-arity-names nil)
 (dolist (name '%S)
   (when (fboundp name)
-    (let ((fn (symbol-function name)))
+    (let ((fn (symbol-function name)) (hops 0))
+      ;; A public name may be an alias (`fset' to another symbol, as the
+      ;; chartab install does for `map-char-table'): follow it to the
+      ;; installed function so the arity error still names NAME.
+      (while (and fn (symbolp fn) (fboundp fn) (< hops 8))
+        (setq fn (symbol-function fn) hops (1+ hops)))
       (cond
        ((and (consp fn) (memq (car fn) '(lambda closure)))
         (let ((body (if (eq (car fn) 'closure) (cdddr fn) (cddr fn))))
+          (when body
+            (push (cons body name) nelisp--subr-arity-names))))
+       ;; An interpreted-function object (not a cons): key on its body,
+       ;; slot 1, as the cons case keys on the lambda body.
+       ((eq (type-of fn) 'interpreted-function)
+        (let ((body (aref fn 1)))
           (when body
             (push (cons body name) nelisp--subr-arity-names))))
        ((byte-code-function-p fn)

@@ -243,7 +243,9 @@ Printed through `%s', so a string answer shows bare and a decline as nil."
                   ("(nelisp--format-simple \"%z\" '(1))" . "nil")
                   ("(nelisp--format-simple 5 nil)" . "nil")
                   ("(nelisp--format-simple \"%s\" (list (unibyte-string 200)))" . "nil")
-                  ("(nelisp--format-simple (unibyte-string 97) nil)" . "nil")))
+                  ("(nelisp--format-simple (unibyte-string 200) nil)" . "nil")
+                  ;; ASCII byte strings are admitted on purpose (fe30e1198).
+                  ("(nelisp--format-simple (unibyte-string 97) nil)" . "a")))
     (should (equal (cdr case)
                    (nelisp-intern-obarray-test--run
                     (format "(format \"%%s\" %s)" (car case)))))))

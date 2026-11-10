@@ -2592,6 +2592,13 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 #             finished with; a rise confined to one round is not, see
 #             below.
 #
+#   cons leak the live-blocks census walks only the headered chunks; cons
+#             cells moved to typed 32 KiB blocks (nl_cons_alloc), so a
+#             retained cons is invisible to it.  Each round therefore also
+#             records the used-cons count of `garbage-collect' (measured
+#             flat at 285512 across rounds, +8000 per round when 8000 conses
+#             stay reachable), compared with the same rounds as live-blocks.
+#
 # ROUNDS defaults to 5, the minimum the comparison below needs.
 # Deliberately NOT the 1h wall-clock of `soak-1h': an hour of the same loop
 # adds confidence about time, and rounds add confidence about repetition,
@@ -2639,6 +2646,7 @@ standalone-reader-shadow-smoke: $(if $(wildcard target/nelisp target/nelisp.exe)
 .PHONY: standalone-reader-checked-soak
 STANDALONE_CHECKED_SOAK_ROUNDS ?= 5
 STANDALONE_CHECKED_SOAK_SLACK ?= 8
+STANDALONE_CHECKED_SOAK_CONS_SLACK ?= 64
 standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@mkdir -p target
 	@printf '%s\n' \
@@ -2651,7 +2659,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  '  (let* ((i 0) (acc nil))' \
 	  '    (while (< i 8000) (setq acc (cons (cons i i) acc)) (setq i (+ i 1))))' \
 	  '  (garbage-collect)' \
-	  '  (princ (format "ROUND %S\n" (nelisp--alloc-check-report))))' \
+	  '  (princ (format "ROUND %S %S\n" (nelisp--alloc-check-report) (nth 2 (assq (quote conses) (garbage-collect))))))' \
 	  '(let ((r 0))' \
 	  '  (while (< r $(STANDALONE_CHECKED_SOAK_ROUNDS))' \
 	  '    (checked-soak-round)' \
@@ -2667,6 +2675,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	  exit 1; \
 	fi; \
 	i=0; r2=""; r3=""; prevlast=""; last=""; lives=""; \
+	c2=""; c3=""; cprev=""; clast=""; conses=""; \
 	while read -r _tag rest; do \
 	  i=$$(( i + 1 )); \
 	  set -- $$(echo "$$rest" | tr -d "()"); \
@@ -2684,6 +2693,10 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	    exit 1; \
 	  fi; \
 	  lives="$$lives $$9"; \
+	  conses="$$conses $${12:-0}"; \
+	  if [ "$$i" -eq 2 ]; then c2=$${12:-0}; fi; \
+	  if [ "$$i" -eq 3 ]; then c3=$${12:-0}; fi; \
+	  cprev=$$clast; clast=$${12:-0}; \
 	  if [ "$$i" -eq 2 ]; then r2=$$9; fi; \
 	  if [ "$$i" -eq 3 ]; then r3=$$9; fi; \
 	  prevlast=$$last; \
@@ -2691,6 +2704,7 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	done < $$rounds_file; \
 	rm -f $$rounds_file; \
 	echo "[checked-soak] live-blocks per round:$$lives"; \
+	echo "[checked-soak] live conses (garbage-collect) per round:$$conses"; \
 	if [ -z "$$r2" ]; then \
 	  echo "[checked-soak] PASS (fewer than 2 rounds: no leak comparison possible)"; \
 	  exit 0; \
@@ -2708,6 +2722,19 @@ standalone-reader-checked-soak: $(if $(wildcard target/nelisp target/nelisp.exe)
 	fi; \
 	if [ "$$(( final - baseline ))" -gt $(STANDALONE_CHECKED_SOAK_SLACK) ]; then \
 	  echo "[checked-soak] FAIL: live blocks grew $$baseline ($$blabel) -> $$final ($$flabel), past the $(STANDALONE_CHECKED_SOAK_SLACK)-block slack (each round ends with garbage-collect, so this is retention rather than garbage)"; \
+	  exit 1; \
+	fi; \
+	cbase=$$c2; cfinal=$$clast; \
+	if [ "$$n" -ge 5 ]; then \
+	  if [ -n "$$c3" ] && [ "$$c3" -lt "$$cbase" ]; then cbase=$$c3; fi; \
+	  cfinal=$$cprev; if [ -n "$$clast" ] && [ "$$clast" -lt "$$cfinal" ]; then cfinal=$$clast; fi; \
+	fi; \
+	if [ "$$cbase" -le 0 ]; then \
+	  echo "[checked-soak] FAIL: (garbage-collect) reported no live cons count -- the cons leak check saw nothing"; \
+	  exit 1; \
+	fi; \
+	if [ "$$(( cfinal - cbase ))" -gt $(STANDALONE_CHECKED_SOAK_CONS_SLACK) ]; then \
+	  echo "[checked-soak] FAIL: live conses grew $$cbase -> $$cfinal, past the $(STANDALONE_CHECKED_SOAK_CONS_SLACK)-cons slack (cons cells live in typed blocks that the live-blocks census does not walk, so retained conses are counted from garbage-collect)"; \
 	  exit 1; \
 	fi; \
 	echo "$$pass_msg"
