@@ -69335,9 +69335,11 @@ strings have no property storage."
             (setq rc (call-process nelisp-standalone--reader-out nil t nil
                                    "--eval" "(nelisp--arena-stats)"))
             (setq stats-out (buffer-string)))
+          ;; 15 fields: 59b1a3097 (Doc 223) appended cons blocks in use and
+          ;; the live and free conses of the last sweep to the original 12.
           (unless (and (= rc 0)
                        (string-match-p
-                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+)\n\\'"
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         stats-out))
             (error "--eval arena-stats exit=%S stdout=%S" rc stats-out))
           (with-temp-buffer
@@ -69346,7 +69348,8 @@ strings have no property storage."
             (setq growth-out (buffer-string)))
           (unless (and (= rc 0)
                        (string-match-p
-                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [2-9][0-9]* [0-9]+ [0-9]+)\n\\'"
+                        ;; 15 fields since 59b1a3097, as for arena-stats above.
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [2-9][0-9]* [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         growth-out))
             (error "--eval arena-force-grow exit=%S stdout=%S" rc growth-out))
           (with-temp-file tmp
@@ -69899,8 +69902,11 @@ same documented divergence `expt''s own contract already established)."
              ;; both value AND tag (`bignump'), per Doc 190 §4.
              "(defvar nelisp-src-add-of (+ most-positive-fixnum 1))\n"
              "(defvar nelisp-src-check11 (and (= nelisp-src-add-of 2305843009213693952) (bignump nelisp-src-add-of)))\n"
-             "(defvar nelisp-src-expt-overflow (condition-case nil (progn (expt 2 100) 'no-signal) (overflow-error 'signalled)))\n"
-             "(defvar nelisp-src-check12 (eq nelisp-src-expt-overflow 'signalled))\n"
+             ;; check12 asserted `overflow-error' for (expt 2 100); 44ad119ec
+             ;; bounds `expt' by `integer-width' as GNU does, so it now
+             ;; returns the exact bignum, like GNU Emacs.
+             "(defvar nelisp-src-expt-big (expt 2 100))\n"
+             "(defvar nelisp-src-check12 (and (= nelisp-src-expt-big 1267650600228229401496703205376) (bignump nelisp-src-expt-big)))\n"
              ;; Doc 190 Phase B: `*' promotion (a true 64-bit-register
              ;; overflow, plus a product that stays within 64 bits but
              ;; crosses only the narrower fixnum boundary), and negation/
