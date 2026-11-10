@@ -47973,49 +47973,31 @@ Parallelism pays off only once per-unit compilation dominates startup
 
 ;;;###autoload
 (defun nelisp-standalone-build ()
-  "Incrementally build the standalone NeLisp eval ELF; return its path."
+  "Incrementally build the standalone NeLisp eval ELF; return its path.
+The eval build links the reader build's word-ABI unit stack
+\(`nelisp-standalone--reader-units' with EVAL-P) around its own baked-form
+driver, so it carries the same `_w' evaluator, frame/env and builtin units as
+the reader and none of the reader REPL."
   (setq nelisp-standalone--recompiled nil)
-  (let* ((units (mapcar #'nelisp-standalone--unit-for nelisp-standalone--manifest))
-         ;; Doc 140 Stage 8: append the driver-owned `nl_arena_base' bss slot
-         ;; unit referenced by the chunk-arena rewrite on chunked native
-         ;; targets.
-         (units (if (nelisp-standalone--target-uses-dynamic-arena-base-p)
-                    (append units (list (nelisp-standalone--arena-base-slot-unit)))
-                  units))
-         ;; Fixed 2026-08-24 (integration/wave6 full-battery run): shim.o's
-         ;; bounded-backtrace printer (Doc 180 Phase 2 item 3) needs these
-         ;; units, none of which the base manifest carries -- see
-         ;; `nelisp-standalone--eval-extra-manifest''s own header comment
-         ;; for why they live here and not in the base manifest.
-         (units (append units
-                        (mapcar #'nelisp-standalone--unit-for
-                                nelisp-standalone--eval-extra-manifest)
-                        (list (nelisp-standalone--compile-to-unit
-                               "bt-extra-eval.o"
-                               (nelisp-standalone--eval-bt-extra-unit-source)))))
-         (units (nelisp-standalone--with-stackmap-unit units))
+  (let* ((units (nelisp-standalone--with-stackmap-unit
+                 (nelisp-standalone--reader-units t)))
          (out (nelisp-standalone--output-path nil)))
     (pcase (nelisp-standalone-arena-rewrite-target)
       ('windows-x86_64
-       ;; `nl_os_write_stderr' (from `nelisp-standalone--eval-bt-extra-unit-
-       ;; source', added 2026-08-24 for the bounded-backtrace printer) calls
-       ;; GetStdHandle/WriteFile on this target; the small eval build's own
-       ;; import list had never grown past the base ExitProcess/VirtualAlloc/
-       ;; VirtualFree set, so this link failed with an unresolved symbol on
-       ;; Windows (untested on that platform at the time of that fix).
        (nelisp-link-units-pe32 out units "_start"
-                               '("ExitProcess" "VirtualAlloc" "VirtualFree"
-                                 "GetStdHandle" "WriteFile"
-                                 "GetSystemTimeAsFileTime")
+                               (nelisp-standalone--reader-pe-imports)
                                (list :stack-reserve
-                                     nelisp-standalone--windows-stack-reserve)))
+                                     nelisp-standalone--windows-stack-reserve
+                                     :stack-commit
+                                     nelisp-standalone--windows-stack-commit)))
       ('windows-aarch64
        (nelisp-link-units-pe32 out units "_start"
-                               '("ExitProcess" "VirtualAlloc" "VirtualFree"
-                                 "GetStdHandle" "WriteFile")
+                               (nelisp-standalone--reader-pe-imports)
                                (list :machine 'aarch64
                                      :stack-reserve
-                                     nelisp-standalone--windows-stack-reserve)))
+                                     nelisp-standalone--windows-stack-reserve
+                                     :stack-commit
+                                     nelisp-standalone--windows-stack-commit)))
       ('macos-aarch64
        (nelisp-link-units-macho-exec out units "_main" 'aarch64)
        (set-file-modes out #o755)
@@ -68073,10 +68055,35 @@ reached through its function cell would then skip its argument count silently."
                  (cdr src))
                 nelisp-standalone--eval-inner-word)))
 
-(defun nelisp-standalone--reader-units ()
+(defun nelisp-standalone--eval-os-unit ()
+  "Return the cached unit of OS and cold-image helpers for the eval build.
+The reader's applyfn, GC and file-I/O units call these target OS helpers
+\(`nl_os_*', `nl_cold_*', the socket and thread `_w' impls, `nl_cstr_len'),
+which the reader build compiles into its driver.  The eval build has a small
+baked driver of its own, so it gets the very same forms as a separate unit."
+  (nelisp-standalone--cached-unit
+   "eval-os.o"
+   `(seq
+     (defun nl_cstr_len_loop (ptr n)
+       (if (= (heap-read-u8 ptr n) 0)
+           n
+         (nl_cstr_len_loop ptr (+ n 1))))
+     (defun nl_cstr_len (ptr)
+       (if (= ptr 0) 0 (nl_cstr_len_loop ptr 0)))
+     ,@(nelisp-standalone--reader-os-source-forms)
+     ,@(nelisp-standalone--reader-cold-source-forms))
+   nelisp-standalone--this-file))
+
+(defun nelisp-standalone--reader-units (&optional eval-p)
   "Build the ORDERED reader-path unit list (start first, arena last).
 Links the REAL special-form + env machinery (no trap stubs) so the binary is a
-genuine general interpreter for the 11 special forms + installed builtins."
+genuine general interpreter for the 11 special forms + installed builtins.
+With EVAL-P the list is the word-ABI stack of the small eval build instead
+\(`nelisp-standalone-build'): the same evaluator, applyfn, frame/env and
+special-form units, but neither the reader driver and its literal blobs nor the
+parse+eval loop and the .neln demo; the baked-form driver and the OS helper
+unit (`nelisp-standalone--eval-os-unit') take their place.  The reader build
+is unchanged by this argument."
   (let* ((_protocol-inputs (nelisp-standalone--rooted-protocol-preflight))
          (start (nelisp-standalone--target-start-unit t))
          ;; helpers: shipped manifest minus arena/trap/gc and minus the units we
@@ -68303,14 +68310,16 @@ genuine general interpreter for the 11 special forms + installed builtins."
          ;; Reader parse/eval loop.  This is called by CLI, --load, file loads,
          ;; runtime-image dispatch, and REPL; keeping it cacheable avoids
          ;; recompiling the loop whenever only the driver command surface moves.
-         (eval-source (nelisp-standalone--cached-unit
-                       "reader-eval-source.o"
-                       nelisp-standalone--reader-eval-source-source
-                       nelisp-standalone--this-file))
-         (neln-demo (nelisp-standalone--cached-unit
-                     "reader-neln-demo.o"
-                     (nelisp-standalone--reader-neln-demo-source)
-                     nelisp-standalone--this-file))
+         (eval-source (unless eval-p
+                        (nelisp-standalone--cached-unit
+                         "reader-eval-source.o"
+                         nelisp-standalone--reader-eval-source-source
+                         nelisp-standalone--this-file)))
+         (neln-demo (unless eval-p
+                      (nelisp-standalone--cached-unit
+                       "reader-neln-demo.o"
+                       (nelisp-standalone--reader-neln-demo-source)
+                       nelisp-standalone--this-file)))
          ;; Tracing mark-sweep GC (form-boundary reclaimer).  Compiled from
          ;; the inline source above; the driver calls `nl_gc_collect'.
          (gc (nelisp-standalone--cached-unit
@@ -68339,20 +68348,26 @@ genuine general interpreter for the 11 special forms + installed builtins."
            (append (list start applyfn) applyfn-frames helpers
                    (list eval-inner combiner-cons combiner)
                    extras (list float-stub float-time-stub gc-regs-stub) real-sf
-                   (list sf-cc capture errstub fileio catch-throw boundary
-                         eval-source neln-demo gc arena)
+                   (list sf-cc capture errstub fileio catch-throw boundary)
+                   (delq nil (list eval-source neln-demo))
+                   (list gc arena)
                    (delq nil (list arena-base callsite))))))
          ;; Compile the driver after its selected helper units, allowing
          ;; protocol data generation before startup forms are embedded.
          ;; The final link order below remains unchanged.
-         (driver (nelisp-standalone--reader-driver-unit))
-         (driver-lits (nelisp-standalone--driver-lits-unit)))
+         (driver (if eval-p
+                     (nelisp-standalone--unit-for '("driver.o" :driver nil))
+                   (nelisp-standalone--reader-driver-unit)))
+         (driver-lits (unless eval-p (nelisp-standalone--driver-lits-unit)))
+         (eval-os (and eval-p (nelisp-standalone--eval-os-unit))))
     (append (list start driver) (and driver-lits (list driver-lits))
+            (and eval-os (list eval-os))
             (list applyfn) applyfn-frames helpers
             (list eval-inner combiner-cons combiner)
             extras (list float-stub float-time-stub gc-regs-stub) real-sf
-            (list sf-cc capture errstub fileio catch-throw boundary
-                  eval-source neln-demo gc arena)
+            (list sf-cc capture errstub fileio catch-throw boundary)
+            (delq nil (list eval-source neln-demo))
+            (list gc arena)
             (delq nil (list arena-base callsite)))))
 
 (defun nelisp-standalone--codesign-macos-adhoc (out)
