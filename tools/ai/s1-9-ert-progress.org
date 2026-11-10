@@ -48,6 +48,7 @@ cmd: bash tools/ai/s1-9-ert/ci-file-green.sh --complete
 cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-cl-labels-lexical-test.el
 
 ** S3.2 nelisp-intern-obarray-test passes (red: format-simple-accepts-and-declines, "nil" vs "\310")
+#+NOTE: ert-file.sh runs under LC_ALL=C.UTF-8 like the CI ubuntu runners; under the meter's LC_ALL=C format-errors-match-host FAILs (locale-dependent test, a handoff follow-up, not fixed here).
 #+TIMEOUT: 300
 cmd: bash tools/ai/s1-9-ert/ert-file.sh test/nelisp-intern-obarray-test.el
 
@@ -99,3 +100,8 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-full
 ** S3.13 The whole suite in one host Emacs has no unexpected result (red: 206, single-Emacs only)
 #+NOTE: list: tools/ai/s1-9-ert/evidence/ert-single-failures.txt sha256=1da52b987198b7ebeaf0cc7076de60981f3007b0eceeb213ab8c62df2ea091c4; 61 "source owner changed" log lines, 11 file loads fail; other roots not traced; no SIGSEGV, none at the S1 aset sites.
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-single && grep -q ', 0 unexpected' target/main-ci-reds/ert-single.log
+
+** S3.14 nelisp-vendor-bytecode-triparity-test passes on CI (red: byte-compile-lambda-minimal-input, ert ubuntu plain only, run 42748264604)
+#+NOTE: passes locally (S3.5) and in the CI jit, nojit and gates jobs; checked from the CI job logs of the run for HEAD; cause not read.
+#+TIMEOUT: 300
+cmd: bash tools/ai/s1-9-ert/ci-file-green.sh test/nelisp-vendor-bytecode-triparity-test.el
