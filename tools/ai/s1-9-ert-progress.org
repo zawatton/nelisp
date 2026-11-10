@@ -88,3 +88,7 @@ pending
 
 ** S3.12 The ert-full gate (tools/ai/nelisp-ai.sh test) passes end to end
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-full
+
+** S3.13 The whole suite in one host Emacs has no unexpected result (red: 206, single-Emacs only)
+#+NOTE: list: tools/ai/s1-9-ert/evidence/ert-single-failures.txt sha256=1da52b987198b7ebeaf0cc7076de60981f3007b0eceeb213ab8c62df2ea091c4; 61 "source owner changed" log lines, 11 file loads fail; other roots not traced; no SIGSEGV, none at the S1 aset sites.
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh ert-single && grep -q ', 0 unexpected' target/main-ci-reds/ert-single.log
