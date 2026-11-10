@@ -19,6 +19,8 @@
                (with-temp-buffer (set-buffer-multibyte nil) (insert-file-contents-literally b) (buffer-string)))
       (delete-directory d t))))
 (ert-deftest nelisp-address-fold/GNUas-incoming-inputs-and-held-value ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler--x86-affine-addresses t)
         (nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
         (nelisp-aot-compiler--os 'linux) (nelisp-aot-compiler--checked-arith nil))
@@ -137,6 +139,8 @@
             "memset(b,0,64);au_effect((uintptr_t)b);uint64_t a[4];memcpy(a,b,32);if(a[0]!=1||a[1]!=1||a[2]!=91||a[3]!=1)return 5;\n"
             "uintptr_t q=(uintptr_t)(b+256);q+=(9-q%9)%9;if(au_dup(q/9,UINT64_MAX)!=UINT64_MAX)return 6;return 0;}\n")))
 (ert-deftest nelisp-address-fold/native-all-widths-order-WORD-wrap-and-page-crossing ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((d (make-temp-file "au-native-" t)) (obj (expand-file-name "p.o" d))
          (c (expand-file-name "p.c" d)) (exe (expand-file-name "p" d))
          (nelisp-aot-compiler--x86-affine-addresses nelisp-address-test--enabled)

@@ -59,6 +59,8 @@
 (defun nelisp-unit-frame-proof-test--main (result)
   (cl-find 'unit_proof_main (plist-get result :owners) :key (lambda (x) (plist-get x :name))))
 (ert-deftest nelisp-unit-frame-proof/ordinary-unit-real-proof-and-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((source (nelisp-unit-frame-proof-test--source))
          (off (nelisp-unit-frame-proof-test--compile source t))
          (on (nelisp-unit-frame-proof-test--compile source))

@@ -227,7 +227,10 @@ Return an alist FUNCTION -> (EXIT-CODE OUTPUT STARTED FINISHED)."
                (default-directory root)
                (proc (make-process
                       :name (format "s6-%s" fn) :buffer buffer :noquery t
-                      :command (list "timeout" (number-to-string timeout)
+                      :command (list (or (executable-find "timeout")
+                                         (executable-find "gtimeout")
+                                         "timeout")
+                                     (number-to-string timeout)
                                      "sh" "-c" (nth 2 row))
                       :connection-type 'pipe)))
           (message "s6-corpus: started %s" fn)

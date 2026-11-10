@@ -121,6 +121,8 @@
   (when (eq node (car nelisp-aot-affine-loop-test--edges))
     (nelisp-aot-affine-loop-test--snapshot buf 805306440 805306448)))
 (ert-deftest nelisp-aot-affine-loop/fullword-cold-frame-RAX-FLAGS-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "affine-loop-" t)) (o (expand-file-name "probe.o" dir))
          (c (expand-file-name "probe.c" dir)) (exe (expand-file-name "probe" dir))
          (defs (nelisp-aot-affine-loop-test--defs))

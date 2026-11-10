@@ -120,6 +120,8 @@
       (if (= (sexp-tag w) 7) (wrapper w 4096 w 0 0 0)
         (if (= (sexp-tag w) 9) (wrapper w 4096 w 0 0 0) 77)))))
 (ert-deftest nelisp-aot-predicate-facts/native-fullword-order-abi-and-disabled-gauge ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "predicate-facts-" t))
          (c (expand-file-name "probe.c" dir)) (o (expand-file-name "probe.o" dir))
          (exe (expand-file-name "probe" dir)) (changes nil) (objects nil))

@@ -77,6 +77,8 @@
   (let ((p (make-temp-file "interval-leaf-probe-")))
     (unwind-protect (progn (nelisp-aot-compile-sexp program p) (call-process p nil nil nil)) (delete-file p))))
 (ert-deftest nelisp-aot-interval-leaf/delayed-alias-read-negative-control ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((program `(seq ,(nelisp-aot-interval-leaf-test--alias) (exit (- (alias_probe 3 5 7) 66))))
         (copy (symbol-function 'nelisp-aot-compiler--x86-copy-let-source-register)))
     (should (= 0 (nelisp-aot-interval-leaf-test--run program)))

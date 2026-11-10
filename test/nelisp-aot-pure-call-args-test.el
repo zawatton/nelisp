@@ -83,6 +83,8 @@
           (setq cases (1+ cases)))))
     (message "Pure GP argument GNU/native full64 cases: %d" cases)))
 (ert-deftest nelisp-aot-pure-call-args/effects-and-heap-read-fallback ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should (= 0 (nelisp-aot-pure-call-test--run
                  '(seq (defun callee (a b c) (+ (* a 100) (* b 10) c))
                        (defun f (x)
@@ -100,6 +102,8 @@
 (defvar nelisp-aot-pure-call-test--current nil)
 (ert-deftest nelisp-aot-pure-call-args/source-no-marshalling ()
   "A real three-argument source call must lose its complex-prefix spills."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((emit (symbol-function 'nelisp-aot-compiler--emit-call))
         (push (symbol-function 'nelisp-aot-compiler--emit-temp-push))
         (pop (symbol-function 'nelisp-aot-compiler--emit-temp-pop))
@@ -125,6 +129,8 @@
     (should (= pushes 0))
     (should (= pops 0))))
 (ert-deftest nelisp-aot-pure-call-args/checked-overflow-fallback ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler--checked-arith t))
     (should (= 47 (nelisp-aot-pure-call-test--run
                    '(seq (defun callee (x) x)

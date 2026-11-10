@@ -50674,6 +50674,11 @@ top-level form defines NAME that way."
       (error "Missing rooted protocol layout owner"))
     t))
 
+(defvar nelisp-standalone--native-startup-eval-p nil
+  "Non-nil while generating the eval build's native startup companion.
+The companion then lands beside the eval binary, never beside the reader
+binary, whose build-pinned companion hash it must not clobber.")
+
 (defun nelisp-standalone--native-startup-autoload-src (source)
   "Defer build-pinned native SOURCE until the first compiler/loader request.
 The companion is authenticated by its build-pinned hash on first use.
@@ -50696,7 +50701,7 @@ publishes the same providers before dumping."
          (names (delq nil (mapcar (lambda (form)
                                   (and (eq (car-safe form) 'defun) (cadr form)))
                                 forms))))
-    (with-temp-file (concat (nelisp-standalone--output-path t) ".native-startup.el")
+    (with-temp-file (concat (nelisp-standalone--output-path (not nelisp-standalone--native-startup-eval-p)) ".native-startup.el")
       (insert source))
     (concat
      (format "\n(let ((state 'pending) (expected-hash %S) (base-require (symbol-function 'require)) (base-load (symbol-function 'load)))\n" (secure-hash 'sha256 source))
@@ -68351,14 +68356,15 @@ is unchanged by this argument."
                       "callsite.o" (nelisp-standalone--callsite-source))))
          (nelisp-standalone--rooted-protocol-startup-source
           (nelisp-standalone--build-trace-phase "proof-prepare"
-            (nelisp-standalone--rooted-protocol-startup-src
+            (let ((nelisp-standalone--native-startup-eval-p eval-p))
+             (nelisp-standalone--rooted-protocol-startup-src
            (append (list start applyfn) applyfn-frames helpers
                    (list eval-inner combiner-cons combiner)
                    extras (list float-stub float-time-stub gc-regs-stub) real-sf
                    (list sf-cc capture errstub fileio catch-throw boundary)
                    (delq nil (list eval-source neln-demo))
                    (list gc arena)
-                   (delq nil (list arena-base callsite))))))
+                   (delq nil (list arena-base callsite)))))))
          ;; Compile the driver after its selected helper units, allowing
          ;; protocol data generation before startup forms are embedded.
          ;; The final link order below remains unchanged.

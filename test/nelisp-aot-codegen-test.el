@@ -48,6 +48,8 @@
 
 (ert-deftest nelisp-aot-codegen/affine-widths-and-wrapping ()
   "All read/write widths preserve full bits under affine address rewrites."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((definitions nil) (checks nil) (folds 0)
         (emit (symbol-function 'nelisp-aot-compiler--emit-affine-address-x86))
         (shapes '(((+ p (* (- i 1) 8)) 0)
@@ -86,6 +88,8 @@
 
 (ert-deftest nelisp-aot-codegen/affine-effects-and-memory-rhs ()
   "Pointer/offset/value mutations retain order and aliased RHS reads retain bits."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should
    (= 0 (nelisp-aot-codegen-test--run
          '(seq
@@ -115,6 +119,8 @@
 
 (ert-deftest nelisp-aot-codegen/affine-large-displacement-fallback ()
   "Unencodable displacements fall back, while cancelling constants normalize."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (should
    (= 0 (nelisp-aot-codegen-test--run
          '(seq
@@ -136,6 +142,8 @@
 
 (ert-deftest nelisp-aot-codegen/affine-checked-arithmetic ()
   "Checked arithmetic retains its guards and original evaluation path."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler--checked-arith t) (folds 0)
         (emit (symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-affine-address-x86)
@@ -185,6 +193,8 @@
 
 (ert-deftest nelisp-aot-codegen/self-tco-incoming-cycle-and-full-word ()
   "Incoming R8/R9 cycles and zero/deep loops preserve all 64 result bits."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler-tco-enabled t) (forwards 0) (cycles 0)
         (emit (symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)
@@ -212,6 +222,8 @@
 
 (ert-deftest nelisp-aot-codegen/self-tco-mutation-and-call-exit ()
   "Mutation order and unchanged loop inputs survive the flushed call exit."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler-tco-enabled t) (i 37) (x 11) (y 19) (call-exits 0)
         (plan (symbol-function 'nelisp-aot-compiler--x86-self-tco-entry-plan))
         (call (symbol-function 'nelisp-aot-compiler--emit-call)))
@@ -242,6 +254,8 @@
 
 (ert-deftest nelisp-aot-codegen/self-tco-provenance-and-fallback ()
   "Plain source while, allocating/calling loops and protected frames retain lowering."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((nelisp-aot-compiler-tco-enabled t)
          (nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
          (nelisp-aot-compiler--checked-arith nil)
@@ -305,6 +319,8 @@
 
 (ert-deftest nelisp-aot-codegen/leaf-entry-cycle-and-full-word ()
   "Acyclic parameter references use CG3 registers, including R8/R9 cycles."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((plans 0) (cycles 0)
         (emit (symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--emit-tco-parallel-moves-x86)
@@ -332,6 +348,8 @@
 
 (ert-deftest nelisp-aot-codegen/leaf-entry-mutation-alias-and-memory ()
   "Actual slots preserve branches, lexical shadows, aliases and memory effects."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (p '(0 17 -9223372036854775808 9223372036854775807))
     (dolist (c '(-1 1))
       (let* ((q 7) (old p) (v (+ p q)) (next-p p))
@@ -367,6 +385,8 @@
 
 (ert-deftest nelisp-aot-codegen/leaf-entry-protected-and-loop-fallback ()
   "Calls, loops, implicit clobbers and protected frames retain ordinary lowering."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
          (nelisp-aot-compiler--checked-arith nil)
          (nelisp-aot-compiler--runtime-entry-params nil)
@@ -417,6 +437,8 @@
 
 (ert-deftest nelisp-aot-codegen/leaf-entry-readonly-copy ()
   "Late copy sharing uses the source's actual slot inside the alias scope."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((copies 0) (copy (symbol-function 'nelisp-aot-compiler--x86-copy-let-source-register)))
     (cl-letf (((symbol-function 'nelisp-aot-compiler--x86-copy-let-source-register)
                (lambda (ir)
@@ -457,6 +479,8 @@
 
 (ert-deftest nelisp-aot-codegen/frameless-leaf-cycles-and-no-frame-access ()
   "A complete existing plan omits frame accesses and preserves incoming cycles."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((terms (append (make-list 9 'a) (make-list 8 'f) (make-list 7 'e)
                         (make-list 6 'b) (make-list 5 'c) (make-list 4 'd)))
          (body (cl-reduce (lambda (a b) (list '+ a b)) terms :from-end t))
@@ -507,6 +531,8 @@
 
 (ert-deftest nelisp-aot-codegen/frameless-leaf-coverage-fallback ()
   "Any access omitted by the unchanged plan retains the ordinary frame."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((nelisp-aot-compiler--arch 'x86_64) (nelisp-aot-compiler--abi 'sysv)
          (nelisp-aot-compiler--checked-arith nil)
          (nelisp-aot-compiler--runtime-entry-params nil)
@@ -1138,6 +1164,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
 
 (ert-deftest nelisp-aot-codegen/signed-power2-division ()
   "Signed quotients match GNU, including boundaries and generic fallbacks."
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((xs (list (- (expt 2 63)) (1+ (- (expt 2 63)))
                   -1025 -1024 -1023 -9 -8 -7 -1 0 1 7 8 9
                   1023 1024 1025 (1- (expt 2 63))))
@@ -1221,6 +1249,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
 (defun nelisp-aot-codegen-test--specialization-word (x)
   (let ((u (logand x (1- (ash 1 64))))) (if (>= u (ash 1 63)) (- u (ash 1 64)) u)))
 (ert-deftest nelisp-aot-codegen/recursive-context-clone-shape-and-unknown-entry ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((source '(seq
                    (defun tail (n h mask) (if (> n 0) (tail (- n 1) (logand (* h 16777619) mask) mask) h))
                    (defun bulk (n h mask) (if (> n 3) (bulk (- n 4) (+ h 4) mask) (tail n h mask)))
@@ -1237,6 +1267,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
       (should (= 0 (nelisp-aot-codegen-test--run
                     (append source '((exit (if (= (unknown 7 3 4294967295) (known 7 3)) 0 1))))))))))
 (ert-deftest nelisp-aot-codegen/recursive-context-full-word-gnu-differential ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler-tco-enabled t))
     (dolist (mask '(255 4294967295 -9223372036854775808 9223372036854775807))
       (dolist (initial '(-9223372036854775808 9223372036854775807 -1 3))
@@ -1250,6 +1282,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
                           (defun entry (n h) (mix n h ,mask))
                           (exit (if (= (entry 7 ,initial) ,expected) 0 1)))))))))))
 (ert-deftest nelisp-aot-codegen/recursive-context-effects-permutation-and-deep-loop ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let ((nelisp-aot-compiler-tco-enabled t))
     (should (= 0 (nelisp-aot-codegen-test--run
                   '(seq
@@ -1304,6 +1338,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
             (nelisp-aot-compiler-tco-enabled (not (eq mode 'no-tco))))
         (should (eq source (nelisp-aot-compiler--specialize-raw-recursive-source source)))))))
 (ert-deftest nelisp-aot-codegen/recursive-context-fallback-new-overflow ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (body '((if (> n 0) (f (- n 1) k) (if (> (+ k 1) 0) 1 0))
                   (let ((alias k)) (if (> n 0) (f (- n 1) k) (+ alias 1)))))
     (let ((source `(seq (defun f (n k) ,body) (exit (f 5 9223372036854775807)))))
@@ -1400,6 +1436,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
                   (or first-if (nelisp-aot-compiler--x86-dense-if-plan n)))
          (unless found (setq found n))))) found))
 (ert-deftest nelisp-aot-codegen/sparse-switch-native-signed-full-word-effects ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (dolist (lo '(-2147483648 -6 0 83 2147483638))
     (let* ((keys (nelisp-aot-codegen-test--sparse-keys lo))
            (form (nelisp-aot-codegen-test--sparse-form keys))
@@ -1464,6 +1502,8 @@ non-fixnum word, in and out of a promoted loop, plus TAGGEDP tests."
             (nelisp-aot-compiler--promoted-slots (and (memq mode '(rax r10)) (list (cons 30 mode)))))
         (should-not (nelisp-aot-compiler--x86-dense-if-plan node))))))
 (ert-deftest nelisp-aot-codegen/sparse-switch-inline-data-real-gauge ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((spans nil)
          (nelisp-aot-compiler--x86-inline-data-hook
          (list (lambda (buf offset size)

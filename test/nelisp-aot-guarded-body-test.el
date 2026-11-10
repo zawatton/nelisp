@@ -57,6 +57,8 @@
       (advice-remove 'nelisp-aot-compiler--emit-guarded-named-call-x86
                      #'nelisp-aot-guarded-body-test--record))))
 (ert-deftest nelisp-aot-guarded-body/fullword-effects-returning-fallback-native ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((dir (make-temp-file "guarded-body-" t))
          (source (nelisp-aot-guarded-body-test--source))
          (c (expand-file-name "probe.c" dir))
@@ -104,6 +106,8 @@
   (apply #'nelisp-aot-compiler--make-ir (aref node 0)
          (plist-put (cdr (append node nil)) key value)))
 (ert-deftest nelisp-aot-guarded-body/unused-hidden-pressure-and-independent-units ()
+  (skip-unless (and (eq system-type 'gnu/linux)
+                    (string-match-p "x86_64" system-configuration)))
   (let* ((source (nelisp-aot-guarded-body-test--source))
          (nelisp-aot-compiler--object-hidden-boundary-symbols '(hidden_a hidden_b))
          (nelisp-aot-compiler--allow-external-user-calls t)
