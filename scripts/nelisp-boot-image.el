@@ -648,12 +648,78 @@ memory must be available before the first Lisp form or heap restoration."
                       ,@(nelisp-standalone--byte-write-forms '(+ path n) ".cold")
                       (ptr-write-u8 (+ path n) 5 0)
                       (nl_boot_image_pin scratch path)))))))))
+        ;; BINARY.artifact.cold: heap image of the artifact/source substrate
+        ;; (see `nelisp-standalone--build-substrate-image').  Same discovery
+        ;; and pinning policy as the plain companion above, plus a whole-file
+        ;; check BEFORE the arena loader sees it: the build appends a 32-byte
+        ;; footer (magic, length of everything before it, checksum).  A
+        ;; truncated, extended or flipped file fails it and the launch takes the
+        ;; source path; the loader's own rejection path is not relied upon.
+        ;; checksum: s = s*31 + word over the whole 8-byte words, then the
+        ;; remaining bytes one by one (wrapping 64-bit arithmetic).
+        (defun nl_artifact_image_sum (buf want sum)
+          (let ((i 0) (s sum) (w (/ want 8)))
+            (seq
+             (while (< i w)
+               (seq (setq s (+ (* s 31) (heap-read-u64 buf (* i 8))))
+                    (setq i (+ i 1))))
+             (setq i (* w 8))
+             (while (< i want)
+               (seq (setq s (+ (* s 31) (heap-read-u8 buf i)))
+                    (setq i (+ i 1))))
+             s)))
+        (defun nl_artifact_image_ok_p (path)
+          (let* ((fd (nl_os_open_read path)))
+            (if (< fd 0) 0
+              (let* ((size (syscall-direct ,(if arm 62 8) fd 0 2 0 0 0))
+                     (buf (nl_os_alloc_chunk 4194304)))
+                (if (or (= buf 0) (< size 4128))
+                    (seq (if (= buf 0) 0 (nl_os_free_chunk buf 4194304))
+                         (nl_os_close_handle fd) 0)
+                  (let* ((_p (syscall-direct ,(if arm 62 8) fd (- size 32) 0 0 0 0))
+                         (n (nl_fa_read_all fd buf 32 0))
+                         (len (heap-read-u64 buf 8))
+                         (want (heap-read-u64 buf 16))
+                         (ok (if (and (= n 32) (= (heap-read-u64 buf 0) 21754199712812110)
+                                      (= len (- size 32)))
+                                 1 0))
+                         (_q (syscall-direct ,(if arm 62 8) fd 0 0 0 0 0))
+                         (sum 0) (left len))
+                    (seq
+                     (while (and (= ok 1) (> left 0))
+                       (let* ((chunk (if (> left 4194304) 4194304 left))
+                              (r (nl_fa_read_all fd buf chunk 0)))
+                         (if (= r chunk)
+                             (seq (setq sum (nl_artifact_image_sum buf chunk sum))
+                                  (setq left (- left chunk)))
+                           (setq ok 0))))
+                     (nl_os_free_chunk buf 4194304)
+                     (nl_os_close_handle fd)
+                     (if (and (= ok 1) (= sum want)) 1 0))))))))
+        (defun nl_boot_artifact_companion ()
+          (let* ((scratch (nl_os_alloc_chunk 8192)))
+            (if (= scratch 0) 0
+              (let* ((path (+ scratch 32)))
+                (seq
+                 ,@(nelisp-standalone--byte-write-forms 'scratch "/proc/self/exe")
+                 (ptr-write-u8 scratch 14 0)
+                 (let* ((n (nl_os_readlink_path scratch path 4090)))
+                   (if (or (<= n 0) (>= n 4080))
+                       (seq (nl_os_free_chunk scratch 8192) 0)
+                     (seq
+                      ,@(nelisp-standalone--byte-write-forms '(+ path n) ".artifact.cold")
+                      (ptr-write-u8 (+ path n) 14 0)
+                      (let* ((pinned (nl_boot_image_pin scratch path)))
+                        (if (= pinned 0) 0
+                          (if (= (nl_artifact_image_ok_p pinned) 1) pinned
+                            (seq (nl_boot_image_release pinned) 0))))))))))))
         (defun nl_boot_image_release (path)
           (if (= path 0) 0
             (let ((scratch (- path 4672)))
               (seq (nl_os_close_handle (heap-read-u64 scratch 4640))
                    (nl_os_free_chunk scratch 8192))))))))
    (t '((defun nl_boot_image_companion () 0)
+        (defun nl_boot_artifact_companion () 0)
         (defun nl_boot_image_release (_path) 0)))))
 
 (defun nelisp-boot-image--windows-native-forms ()
@@ -682,6 +748,7 @@ memory must be available before the first Lisp form or heap restoration."
             0
           (extern-call EqualSid (heap-read-u64 exe_owner 0)
                        (heap-read-u64 image_owner 0)))))
+    (defun nl_boot_artifact_companion () 0) ; no artifact boot image on Windows
     (defun nl_boot_image_companion ()
       ;; 32768 UTF-16 units plus metadata. This mapping must survive arena
       ;; restoration; no pathname or handle is allocated inside the heap.
