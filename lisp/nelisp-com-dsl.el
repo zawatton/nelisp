@@ -188,6 +188,7 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
     (IID_IEnumTfDisplayAttributeInfo "{7cef04d7-cb75-4e80-a7ab-5f5bc7d332de}")
     (IID_ITfFunctionProvider "{101d6610-0990-11d3-8df0-00105a2799b5}")
     (IID_ITfFunction "{db593490-098f-11d3-8df0-00105a2799b5}")
+    (IID_ITfFnConfigure "{88f567c6-1757-49f8-a1b2-89234c1eeff9}")
     (IID_ITfCompartmentMgr "{7dcf57ac-18ad-438b-824d-979bffb74b7c}")
     (IID_ITfCompartment "{bb08f7a9-607a-4384-8623-056892b64371}")
     (IID_ITfCompartmentEventSink "{743abd5f-f26d-48df-8cc5-238492419b64}")
