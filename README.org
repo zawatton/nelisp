@@ -647,9 +647,10 @@ Tier guarantees (v2.0):
   parallel build, and tarball/install of the native CLI.  macOS uses
   ad-hoc =codesign= for native execution.  Not release blockers —
   =linux-x86_64= remains the hard gate.
-- =linux-aarch64= / =macos-x86_64= — supported by the elisp
-  object-file writers (=nelisp-elf-write.el= / =nelisp-mach-o-write.el=),
-  but no dedicated CI runner job yet (best-effort).
+- =linux-aarch64= — supported by the elisp object-file writer
+  (=nelisp-elf-write.el=), but no dedicated CI runner job yet
+  (best-effort).
+- =macos-x86_64= (macOS Intel) — not supported (dropped 2026-11-11).
 - =windows-aarch64= (=arm64ec=) — deferred.
 
 Linux (Debian / Ubuntu):

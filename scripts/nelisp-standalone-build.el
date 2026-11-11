@@ -690,43 +690,27 @@ change the toolchain digest and recompile every unit."
 (defun nelisp-standalone--target-runnable-on-host-p (&optional target)
   "Return non-nil when TARGET can run on this Emacs host.
 
-`linux-aarch64' and `macos-x86_64' were missing here even though CI
-already runs an ubuntu-22.04-arm and a macos-15-intel job respectively
-(gap #5 of the 2026-08-22 survey): every binary-building correctness
-gate that guards on this predicate (standalone-reader-test,
-native-artifact, perf, selfhost, nelix-native-hot) silently reported
-\"not runnable\" on both runners forever, so those artifacts were only
-ever checksum-verified, never executed.
+`linux-aarch64' was missing here even though CI already runs an
+ubuntu-22.04-arm job (gap #5 of the 2026-08-22 survey): every
+binary-building correctness gate that guards on this predicate
+(standalone-reader-test, native-artifact, perf, selfhost,
+nelix-native-hot) silently reported \"not runnable\" on that runner
+forever, so those artifacts were only ever checksum-verified, never
+executed.
 
-Capability is asymmetric between the two additions -- see
-`nelisp-standalone--target-abi'/`-arch'/`-os':
+`linux-aarch64' has a complete standalone-build orchestration path
+(arena base/size, ABI/arch/os, output path, `_start' unit via
+`nelisp-standalone--linux-aarch64-start-unit', alloc-chunk-form,
+intern-region-init-form) built on the same `lisp/nelisp-asm-arm64.el'
+AArch64 assembler that `macos-aarch64' already exercises routinely in
+CI.  The Linux ELF entry/syscall path (mmap=222, exit=93 via SVC #0)
+is written with real intent and covered structurally by
+`nelisp-alloc-check-arena-wrapper-every-target' in
+test/nelisp-alloc-check-test.el.
 
-- `linux-aarch64' has a complete standalone-build orchestration path
-  (arena base/size, ABI/arch/os, output path, `_start' unit via
-  `nelisp-standalone--linux-aarch64-start-unit', alloc-chunk-form,
-  intern-region-init-form) built on the same `lisp/nelisp-asm-arm64.el'
-  AArch64 assembler that `macos-aarch64' already exercises routinely in
-  CI.  The Linux ELF entry/syscall path (mmap=222, exit=93 via SVC #0)
-  is written with real intent and covered structurally by
-  `nelisp-alloc-check-arena-wrapper-every-target' in
-  test/nelisp-alloc-check-test.el, but it has never actually executed
-  on real hardware, because this predicate always turned it away first.
-  Recognizing the host here is what lets the gates finally exercise it.
-
-- `macos-x86_64' capability is NOT symmetric: `lisp/nelisp-mach-o-write.el'
-  and `lisp/nelisp-asm-x86_64.el' both support the primitives (Mach-O
-  writer takes an explicit `x86_64' :machine, the x86_64 assembler
-  already backs linux-x86_64/windows-x86_64), but
-  `nelisp-standalone-build.el's per-target orchestration
-  (`nelisp-standalone--target-abi', `-arch', `-os', and the
-  macos-x86_64 case of `nelisp-standalone--target-arena-source' /
-  `-target-start-unit') has no `macos-x86_64' clause anywhere and falls
-  into an explicit \"unsupported target\" `error'.  Answering t here is
-  still correct -- a macos-x86_64 binary, if one existed, could run on
-  this host -- but it turns a silent skip into a loud, diagnosable
-  build error the first time a gate tries to actually build one.  That
-  orchestration gap is real follow-up work, not something this
-  predicate can or should paper over."
+macOS x86_64 (Intel) is not a supported target (dropped 2026-11-11):
+it has no clause here and no per-target orchestration, so an explicit
+request for it signals the \"unsupported target\" `error'."
   (let ((target (or target (nelisp-standalone-arena-rewrite-target)))
         (configuration (or system-configuration "")))
     (pcase target
@@ -742,9 +726,6 @@ Capability is asymmetric between the two additions -- see
       ('linux-aarch64
        (and (eq system-type 'gnu/linux)
             (string-match-p "aarch64\\|arm64" configuration)))
-      ('macos-x86_64
-       (and (eq system-type 'darwin)
-            (string-match-p "x86_64\\|amd64" configuration)))
       (_ nil))))
 
 (defun nelisp-standalone--dep-files ()
@@ -40677,7 +40658,7 @@ at 0ad122d69 linked 112 units cleanly).  Same failure class the extern arms
 already solved with `nelisp-standalone--reader-ffi-live-p', whose own
 comment records the earlier version of this mistake: a predicate that was
 too broad emitted extern-call units on targets that cannot link them."
-  (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 macos-x86_64 windows-x86_64)))
+  (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64)))
 
 (defun nelisp-standalone--applyfn-ptr-call-typed-unsupported-form ()
   "Codegen IR for the `ptr-call-typed' arm on a target that cannot emit xmm0.
