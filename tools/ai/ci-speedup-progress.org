@@ -1,0 +1,40 @@
+#+TITLE: NeLisp CI speed-up (2026-11-11)
+
+* S1 Workflow changes
+
+** S1.1 Every CI and stage-d job has a job-level timeout (ci <=180, stage-d <=60)
+cmd: python3 tools/ai/ci-speedup/check.py timeouts
+
+** S1.2 Both workflows cancel superseded runs, main pushes included
+cmd: python3 tools/ai/ci-speedup/check.py concurrency
+
+** S1.3 gate-mutation runs as 12 shards
+cmd: python3 tools/ai/ci-speedup/check.py shards
+
+** S1.4 parity-fuzz runs in its own job, not inside smoke
+cmd: python3 tools/ai/ci-speedup/check.py parity-split
+
+** S1.5 Existing CI structure tests pass
+cmd: python3 tools/ai/ci-speedup/check.py tests
+
+** S1.6 E2E - a CI run of this branch completes green within 60 min wall
+#+NOTE: needs the user to re-enable GitHub Actions; evidence = run id + timings
+pending
+
+* S2 Windows build C stack overflow hang
+
+** S2.1 Root cause identified with log evidence and a written diagnosis
+pending
+
+** S2.2 E2E - Windows CHECKED build completes on CI without stack overflow
+#+NOTE: needs CI
+pending
+
+* S3 arm64 :branch-out-of-range on macOS stage-d
+
+** S3.1 Failing case reproduced locally by a focused test (red before fix)
+pending
+
+** S3.2 E2E - stage-d macOS legs pass on CI
+#+NOTE: needs CI
+pending

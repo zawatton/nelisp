@@ -34,7 +34,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.environ.get("NELISP_CI_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "ci.yml")
 
 ARTIFACT = "standalone-reader-linux"
-CONSUMERS = ["smoke", "ert", "mutation", "subsystems"]
+CONSUMERS = ["smoke", "ert", "mutation", "subsystems", "parity-fuzz"]
 # Files the binary and the gates read; the first group is the stamp tool's
 # COMPANIONS plus the stamp itself.
 REQUIRED = [
@@ -190,7 +190,7 @@ def check(doc):
         n = [n] if isinstance(n, str) else (n or [])
         if name not in CONSUMERS and "build" in n:
             bad.append("%s must not need build" % name)
-    if jobs.get("verify", {}).get("needs") != ["smoke", "ert", "mutation", "subsystems"]:
+    if jobs.get("verify", {}).get("needs") != ["smoke", "ert", "mutation", "subsystems", "parity-fuzz"]:
         bad.append("verify needs changed")
     return bad
 

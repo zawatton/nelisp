@@ -36,7 +36,7 @@ ORIGINAL_STEPS = [
     "Record GNU bytecode compiler executable",
     "Set up Emacs",
     "Install rooted-protocol decoder dependencies (Linux)",
-    "gate-mutation, shard ${{ matrix.shard }} of 6",
+    "gate-mutation, shard ${{ matrix.shard }} of 12",
     "Upload gate report",
 ]
 COSTLY = ORIGINAL_STEPS[1:6]
@@ -188,7 +188,7 @@ class FeaturePR(unittest.TestCase):
 
     def test_verify_needs_unchanged(self):
         self.assertEqual(self.doc["jobs"]["verify"]["needs"],
-                         ["smoke", "ert", "mutation", "subsystems"])
+                         ["smoke", "ert", "mutation", "subsystems", "parity-fuzz"])
         self.assertNotIn("if", self.doc["jobs"]["mutation"])
 
     def test_original_steps_present_in_order(self):

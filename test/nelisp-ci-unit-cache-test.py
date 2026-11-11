@@ -34,7 +34,7 @@ WORKFLOW = os.environ.get("NELISP_CI_WORKFLOW") or os.path.join(ROOT, ".github",
 # Jobs whose Linux lane builds the reader or compiles units: gates (host ERT
 # tests call nelisp-standalone--compile-to-unit), smoke and ert (standalone-reader-checked and the gate battery), mutation
 # (warm-up rebuild) and subsystems (the tiers).  verify only reads reports.
-BUILD_JOBS = ["gates", "build", "smoke", "ert", "mutation", "subsystems"]
+BUILD_JOBS = ["gates", "build", "smoke", "ert", "mutation", "subsystems", "parity-fuzz"]
 NON_BUILD_JOBS = ["verify"]
 PATHS = ["target/standalone-units", "target/nelisp-vendor-bytecode"]
 GLOBS = ["lisp/**", "src/**", "scripts/**", "packages/**", "vendor/**", "templates/**"]
