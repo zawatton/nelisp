@@ -99,6 +99,25 @@
       (should-error (nelisp-native-load-raw-v2-check manifest)))
     (should (= slow-calls 0))))
 
+;; The admission test below unloads the safe-contract feature to show that
+;; the loader requires it again.  The reload makes new function objects, and
+;; libraries that captured the old ones as owners (the rooted-cfg contract
+;; checks) then refuse every later contract in the same Emacs.  These two
+;; helpers put the feature's original function and variable cells back.
+(defun nelisp-bytecode-native-rooted-cfg-safe-producer-test--feature-cells (feature)
+  "Return the function and variable cells FEATURE's file defined."
+  (require 'loadhist)
+  (let ((cells nil))
+    (dolist (item (cdr (assoc (feature-file feature) load-history)) cells)
+      (cond ((and (eq (car-safe item) 'defun) (fboundp (cdr item)))
+             (push (list #'fset (cdr item) (symbol-function (cdr item))) cells))
+            ((and item (symbolp item) (boundp item))
+             (push (list #'set item (symbol-value item)) cells))))))
+
+(defun nelisp-bytecode-native-rooted-cfg-safe-producer-test--restore-cells (cells)
+  "Put back CELLS from `nelisp-bytecode-native-rooted-cfg-safe-producer-test--feature-cells'."
+  (dolist (cell cells) (funcall (nth 0 cell) (nth 1 cell) (nth 2 cell))))
+
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-loader/admit-valid-v3-manifest-and-reject-rehashed-mutations ()
   (skip-unless (equal emacs-version "31.1"))
   (skip-unless (or (locate-library "bytecomp.el" t)
@@ -107,8 +126,12 @@
                         (executable-find "gzip"))))
   (let* ((contract (nelisp-bytecode-native-rooted-cfg-safe-producer-test--contract))
          (manifest (nelisp-bytecode-native-rooted-cfg-safe-producer-test--manifest
-                    contract)))
+                    contract))
+         (cells (nelisp-bytecode-native-rooted-cfg-safe-producer-test--feature-cells
+                 'nelisp-bytecode-native-rooted-cfg-safe-contract)))
     (should contract)
+    (unwind-protect
+        (progn
     (unload-feature 'nelisp-bytecode-native-rooted-cfg-safe-contract t)
     (should-not (featurep 'nelisp-bytecode-native-rooted-cfg-safe-contract))
     (should (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p manifest))
@@ -165,7 +188,8 @@
           (setf (plist-get candidate :native-rooted-cfg-safe-v3-contract-hash)
                 (plist-get candidate-contract :digest)))
         (should-not
-         (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p candidate))))))
+         (nelisp-native-load-raw-v2-rooted-cfg-contract-valid-p candidate)))))
+      (nelisp-bytecode-native-rooted-cfg-safe-producer-test--restore-cells cells))))
 
 (ert-deftest nelisp-bytecode-native-rooted-cfg-safe-producer/fingerprint-ignores-printer-truncation-but-covers-mutations ()
   (let* ((result (list :artifact-file-sha256 "artifact" :manifest
