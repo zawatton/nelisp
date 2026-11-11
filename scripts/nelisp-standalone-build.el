@@ -763,6 +763,23 @@ Capability is asymmetric between the two additions -- see
                             "nelisp-heap-accessors" "nelisp-cc-fxir-native")))))
 
 
+(defun nelisp-standalone--map-list-spine (list fn)
+  "Return a fresh copy of LIST with FN applied to every element and the tail.
+Same result as (cons (FN (car LIST)) (FN (cdr LIST))) applied recursively
+to the cdr, but the spine is walked iteratively: a source list with
+thousands of forms (the `seq' of a whole unit) costs one Lisp frame, not
+one per element, so the host Emacs C stack stays shallow."
+  (let* ((head (cons (funcall fn (car list)) nil))
+         (tail head)
+         (rest (cdr list)))
+    (while (consp rest)
+      (let ((cell (cons (funcall fn (car rest)) nil)))
+        (setcdr tail cell)
+        (setq tail cell
+              rest (cdr rest))))
+    (setcdr tail (funcall fn rest))
+    head))
+
 (defun nelisp-standalone--windows-rebase-arena-source (source)
   "Rebase fixed arena metadata constants in SOURCE for Windows.
 Standalone glue still uses a compact fixed metadata block for bump, signal,
@@ -788,7 +805,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
           (form)
           (cond
            ((integerp form) (rebased-int form))
-           ((consp form) (cons (walk (car form)) (walk (cdr form))))
+           ((consp form) (nelisp-standalone--map-list-spine form #'walk))
            (t form))))
       (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
         (walk source)))))
@@ -811,7 +828,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
             (form)
             (cond
              ((integerp form) (rebased-int form))
-             ((consp form) (cons (walk (car form)) (walk (cdr form))))
+             ((consp form) (nelisp-standalone--map-list-spine form #'walk))
              (t form))))
         (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
           (walk source))))))
@@ -2392,10 +2409,16 @@ the parent's frame pointer: a helper call there gave it a frame of its
 own, an inlined body reads and writes the parent's locals.  The Doc 199
 thread smokes all failed to spawn until such bodies were left alone.
 On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
-  (cond ((not (consp body)) nil)
-        ((and (eq (car body) 'syscall-direct) (eql (cadr body) 56)) t)
-        (t (or (nelisp-standalone--inline-clone-p (car body))
-               (nelisp-standalone--inline-clone-p (cdr body))))))
+  ;; Iterate along the spine (every tail is tested like a form, as the
+  ;; former car/cdr recursion did); recurse only into nested elements, so
+  ;; the depth follows form nesting, not list length.
+  (let ((found nil))
+    (while (and (not found) (consp body))
+      (if (or (and (eq (car body) 'syscall-direct) (eql (cadr body) 56))
+              (nelisp-standalone--inline-clone-p (car body)))
+          (setq found t)
+        (setq body (cdr body))))
+    found))
 
 (defun nelisp-standalone--inline-constant-base-case (definition args)
   "Select a bounded nonrecursive IF branch for literal integer arguments.
@@ -3564,7 +3587,7 @@ twice appears twice; readers keep the last occurrence of each unit."
          ;; `nl-ffi-call' extern sub-chain) nests far enough to blow the default
          ;; `max-lisp-eval-depth' (signals `excessive-lisp-nesting').  Raise it
          ;; for the whole compile so adding FFI symbols stays a one-row change.
-         (max-lisp-eval-depth (max max-lisp-eval-depth 40000))
+         (max-lisp-eval-depth (max max-lisp-eval-depth 5000))
          ;; Number the inliner's fresh variables from 0 in every unit, as
          ;; `nelisp-aot-compiler--label-counter' below: their names reach the
          ;; object (e.g. the context digest of a specialized helper's name), so
