@@ -852,7 +852,7 @@ ns-collision-divergent 897
 # 2026-11-09 (integ/hub-owner-20261109): +4 -- the GNU-named prelude
 # definitions `xor', `subr-name', `subr-primitive-p', `primitive-function-p'
 # (S3, 48342b978), measured against the hub tree 3bdf30706.
-ns-prefix-violation 2424
+ns-prefix-violation 2427
 # 328 -> 329 on 2026-10-20 (prim-alias): the same GNU public built-in
 # variable is intentionally initialized in the buffer-local provider.
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
@@ -1063,7 +1063,7 @@ ns-prefix-violation 2424
 # `nelisp--lisp-primitive-p'/`-name' (S3), `nelisp--host-symbol-function'
 # (the tramp fix in src/nelisp-load.el, c781ded2e) and
 # `nelisp-standalone--target-file' (read-only installed builds).
-ns-private-escape 2434
+ns-private-escape 2435
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
@@ -2960,3 +2960,8 @@ pinned-collision ns-collision	xor	packages/emacs-lib-core/src/emacs-stub.el scri
 pinned-collision ns-collision-divergent	remq	packages/emacs-lib-core/src/emacs-list.el scripts/nelisp-stdlib-prelude.el	7629e7556c12
 pinned-collision ns-collision-divergent	subr-name	packages/emacs-lib-core/src/emacs-cc-subr-metadata-1.el scripts/nelisp-stdlib-prelude.el	e05564735b91
 pinned-collision ns-collision-divergent	type-of	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el	4719b1715824
+# 2026-11-11: ns-prefix-violation 2424 -> 2427 and ns-private-escape
+# 2434 -> 2435 come from GNU Lisp vendored by the Doc 211 GNU Org merge
+# (88b16f523): vendor/emacs-lisp/indent.el and org/ob-* define names outside
+# this tree's prefix rules and reach other files' private names, as GNU's
+# own code does.  vendor/ is not edited here, so the counts are raised.
