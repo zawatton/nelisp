@@ -16,15 +16,40 @@ cmd: bash tools/ai/pe-dll/wine-e2e.sh --force-rebase
 
 * S2 COM in-proc server from restricted Elisp
 
-** S2.1 E2E - under wine, CoCreateInstance on the DLL's CLSID returns an object whose method returns the expected value
+** S2.1 COM DSL (GUID/UTF-16 blobs, vtables, com-call) has ERT coverage
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-com-dsl-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S2.2 E2E - under wine: regsvr32 registers, CoCreateInstance returns an object whose method returns 42, regsvr32 /u removes it
+cmd: bash tools/ai/com-dll/wine-e2e.sh
+
+* S3 TSF text service (parity with the C++ shim)
+
+** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
 pending
 
-* S3 TSF connection
+** S3.2 E2E - under wine: OnKeyDown called on the sink (as tsf_host.cpp does) reaches the TIP's handler
+pending
 
-** S3.1 E2E - under wine msctf (or Windows), the text service's Activate and OnKeyDown are reached
+** S3.3 Composition / edit sessions, candidate window, language bar, display attributes, settings match the C++ shim feature list
+#+NOTE: feature list taken from windows/src/text_service.cpp; real key routing needs real Windows
+pending
+
+** S3.4 E2E - on real Windows (CI), the native TIP passes the existing TSF host gate
+#+NOTE: needs CI
 pending
 
 * S4 Engine communication
 
-** S4.1 E2E - a key event is forwarded over the named pipe to an engine stub and the reply is applied
+** S4.1 Engine replies in a binary TLV variant (text protocol kept) with tests in nelisp-skk-ime
+pending
+
+** S4.2 E2E - a key event is forwarded over the named pipe to an engine stub and the TLV reply is applied
+pending
+
+* S5 Unwind info before real-Windows validation
+
+** S5.1 DLL output emits .pdata/.xdata for every exported and callback function
+pending
+
+** S5.2 E2E - an access violation raised inside a DLL function is caught by an SEH handler in the host EXE under wine
 pending
