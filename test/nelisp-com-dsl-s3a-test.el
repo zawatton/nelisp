@@ -307,3 +307,15 @@
 
 (provide 'nelisp-com-dsl-s3a-test)
 ;;; nelisp-com-dsl-s3a-test.el ends here
+
+(ert-deftest nelisp-com-dsl-s3a/msctf-guids-sdk-corrections ()
+  "Pin the four GUIDs corrected against the Windows SDK (2026-11-12)."
+  (should (equal (nelisp-com-msctf-guid 'IID_ITfDisplayAttributeInfo)
+                 "{70528852-2f26-4aea-8c96-215150578932}"))
+  (should (equal (nelisp-com-msctf-guid 'IID_ITfSystemLangBarItem)
+                 "{1e13e9ec-6b33-4d4a-b5eb-8a92f029f356}"))
+  (should (equal (nelisp-com-msctf-guid 'GUID_TFCAT_TIPCAP_UIELEMENTENABLED)
+                 "{49d2f9cf-1f5e-11d7-a6d3-00065b84435c}"))
+  (should (equal (nelisp-com-msctf-guid 'GUID_TFCAT_TIPCAP_SECUREMODE)
+                 "{49d2f9ce-1f5e-11d7-a6d3-00065b84435c}"))
+  (should (null nelisp-com-msctf-guids-unverified)))
