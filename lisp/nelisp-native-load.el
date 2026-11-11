@@ -866,12 +866,14 @@ plus one for the entry address."
 (defun nelisp-native-load--protect (address size protection)
   "Apply the shared native mapping boundary; Linux syscall bytes stay unchanged."
   (if (nelisp-native-load--windows-p)
-      (nelisp-native-windows-protect address size protection)
+      (progn (require 'nelisp-native-windows)
+             (nelisp-native-windows-protect address size protection))
     (syscall-direct 10 address size protection 0 0 0)))
 (defun nelisp-native-load--unmap (address size)
   "Release through the same owner used to allocate ADDRESS."
   (if (nelisp-native-load--windows-p)
-      (nelisp-native-windows-unmap address size)
+      (progn (require 'nelisp-native-windows)
+             (nelisp-native-windows-unmap address size))
     (syscall-direct 11 address size 0 0 0 0)))
 
 (defun nelisp-native-load-map-anonymous (size executable)
