@@ -25,6 +25,9 @@ cmd: bash tools/ai/main-ci-reds/check-heavy.sh build-identity
 cmd: bash tools/ai/build-speed/ci-check.sh build-seconds 600
 
 * B2 the full gate-mutation sweep passes on main
-** B2.1 every gate-mutation shard of HEAD's main CI run succeeds
-#+TIMEOUT: 120
-cmd: bash tools/ai/build-speed/ci-check.sh gate-mutation
+** B2.1 every gate-mutation shard passes on HEAD (local 6-shard sweep while CI is disabled)
+# Changed 2026-11-11 (same denominator): the user disabled every CI workflow
+# on 2026-11-11 and chose a local sweep instead.  The criterion was
+# `ci-check.sh gate-mutation' (all shards of HEAD's CI run succeed).
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh bash tools/ai/build-speed/gate-mutation-local.sh 6
+cmd: bash tools/ai/main-ci-reds/check-heavy.sh gate-mutation-local
