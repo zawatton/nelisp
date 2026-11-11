@@ -36,6 +36,14 @@ cmd: bash tools/ai/com-dll/reg-e2e.sh
 ** S3a.4 E2E - thread-safe dynalign: 6 threads x 20000 dynamic-align imports pass; the old global-slot emission crashes
 cmd: bash tools/ai/com-dll/dynalign-threads-e2e.sh
 
+** S3b.1 E2E - real-msctf test host (nelisp-skk-ime) loads a TIP DLL as tsf_host.cpp does and runs a key script under wine
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/host-wine-e2e.sh"
+
+** S3b.2 E2E - mock TSF host records a golden trace for a stub TIP; a reordered golden fails
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/host-mock-e2e.sh"
+
 ** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
 pending
 
