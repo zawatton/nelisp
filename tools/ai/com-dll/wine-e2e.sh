@@ -4,7 +4,8 @@
 # registry key present, client -> 42, bad-IID client -> 102, regsvr32 /u,
 # client -> 184.
 # Env: NELISP_COM_BAD_IID / NELISP_COM_DROP_EXPORT / NELISP_COM_WRONG_SLOT /
-#      NELISP_COM_NO_RELOC (negative-control hooks, see com-sample.el),
+#      NELISP_COM_NO_RELOC (negative-control hooks, see com-sample.el);
+#      NELISP_COM_HIVE is forced to hkcr (wine needs HKCR registrations),
 #      WINEPREFIX or NELISP_COM_DLL_WINEPREFIX (default: temp dir).
 set -u
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +16,8 @@ if [ -n "${WINEPREFIX:-}" ]; then :
 elif [ -n "${NELISP_COM_DLL_WINEPREFIX:-}" ]; then WINEPREFIX="$NELISP_COM_DLL_WINEPREFIX"
 else PFX_TMP="$(mktemp -d "${TMPDIR:-/tmp}/com-dll-wineprefix.XXXXXX")"; WINEPREFIX="$PFX_TMP"; fi
 export WINEPREFIX WINEDEBUG=-all WINEARCH=win64
+# wine ignores HKCU class registrations; the library default is HKCU.
+export NELISP_COM_HIVE=hkcr
 CLSID='{7a1c0de0-5f3a-4a6e-9d11-0123456789ab}'
 # Remove the sample class registration so a shared prefix starts and ends
 # clean even when an earlier run (e.g. a negative control) stopped midway.

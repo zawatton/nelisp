@@ -17,6 +17,9 @@
 ;;   NELISP_COM_NO_RELOC=1         DLL without .reloc, and client.exe first
 ;;                                 reserves the DLL's preferred base so the
 ;;                                 loader must rebase it
+;;   NELISP_COM_HIVE=hkcr          register under HKCR instead of the library
+;;                                 default HKCU (wine ignores HKCU class
+;;                                 registrations, so wine-e2e.sh sets this)
 ;;   NELISP_COM_FORCE_REBASE=1     positive control: client.exe reserves the
 ;;                                 preferred base but the DLL keeps .reloc,
 ;;                                 so the run must still pass (rebased load)
@@ -29,15 +32,17 @@
 (defconst nelisp-com-sample-clsid "{7a1c0de0-5f3a-4a6e-9d11-0123456789ab}")
 (defconst nelisp-com-sample-iid "{7a1c0de1-5f3a-4a6e-9d11-0123456789ab}")
 
-(defun nelisp-com-sample-dll-forms ()
-  "Return the AOT forms of the sample server."
+(defun nelisp-com-sample-dll-forms (&optional hive)
+  "Return the AOT forms of the sample server.
+HIVE defaults to `nelisp-com-default-hive' (HKCU unless NELISP_COM_HIVE=hkcr)."
   (append
    (nelisp-com-class-forms
     'o :interfaces `((:iid ,nelisp-com-sample-iid :methods (o_getvalue))))
    (nelisp-com-factory-forms 'o)
    '((defun o_getvalue (this) 42))
    (nelisp-com-server-forms
-    `((:name o :clsid ,nelisp-com-sample-clsid :threading "Both")))))
+    `((:name o :clsid ,nelisp-com-sample-clsid :threading "Both"))
+    :hive hive)))
 
 (defun nelisp-com-sample-client-forms (&optional bad-iid slot reserve-base)
   "Return client forms.
@@ -47,9 +52,6 @@ RESERVE-BASE is a form evaluating to an address to reserve first."
     `((data-blob g_clsid ,(nelisp-com-guid-bytes nelisp-com-sample-clsid) rodata)
       (data-blob g_iid ,(nelisp-com-guid-bytes nelisp-com-sample-iid) rodata)
       (data-blob pobj ,(make-list 8 0) data)
-      ;; VirtualAlloc is on the compiler's dynamic-align list, whose
-      ;; extern-call arm spills rsp into this driver-owned slot.
-      ,@(when reserve-base '((data-blob nl_dynalign_rsp_save (0 0 0 0 0 0 0 0) data)))
       (defun run ()
         (let ((hr (extern-call CoInitializeEx 0 0)))
           (if (/= (logand hr 2147483648) 0) (extern-call ExitProcess 10)

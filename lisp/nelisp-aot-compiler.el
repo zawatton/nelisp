@@ -20628,6 +20628,24 @@ this file, never a re-entrant dispatch back into `nl_eval_inner'.
 Consecutive extern calls each do their own save immediately before
 their own restore, so the slot is never live across another save.")
 
+;; S3a-2: thread-safe dynamic-align save.  The default emission keeps the
+;; pre-align rsp in a slot on the realigned stack frame itself (see
+;; `nelisp-aot-compiler--emit-dynalign-entry-x86'), so concurrent threads
+;; never share state.  The old single global bss slot
+;; (`nelisp-aot-compiler--win64-rsp-save-symbol') is kept ONLY as a
+;; test-only negative control: set the variable below, or the environment
+;; variable NELISP_AOT_DYNALIGN_GLOBAL_SLOT=1, at build time.
+(defvar nelisp-aot-compiler--dynalign-global-slot nil
+  "Non-nil selects the legacy global-slot dynamic-align emission (test only).")
+
+(defun nelisp-aot-compiler--dynalign-global-slot-p ()
+  "Return non-nil when the legacy global rsp-save slot must be emitted.
+Consulted once per dynamic-align extern call at emission time, never at
+run time of the generated code."
+  (or nelisp-aot-compiler--dynalign-global-slot
+      (let ((v (getenv "NELISP_AOT_DYNALIGN_GLOBAL_SLOT")))
+        (and v (not (member v '("" "0")))))))
+
 (defconst nelisp-aot-compiler--win64-dynamic-align-names
   '(CreateFileW ReadFile WriteFile CloseHandle MoveFileExW
     CreateProcessW WaitForSingleObject GetExitCodeProcess
@@ -20862,6 +20880,12 @@ same branch and emit the same byte count."
          (win64-dynamic-align-p
           (and win64-p
                (memq name nelisp-aot-compiler--win64-dynamic-align-names)))
+         ;; S3a-2: non-nil => the pre-align rsp lives in the realigned
+         ;; frame (thread-safe) instead of the legacy global bss slot.
+         (dynalign-frame-p
+          (and win64-dynamic-align-p
+               (not (nelisp-aot-compiler--dynalign-global-slot-p))))
+         (dynalign-outgoing 0)
          (call-temp-save-count 0)
          (call-needs-align needs-align))
     (when (and (not win64-p)
@@ -21020,16 +21044,31 @@ same branch and emit the same byte count."
       ;; below is completely unaffected -- this MUST stay true of any future
       ;; change here (do not reintroduce a push/pop or any other rsp-moving
       ;; instruction between this save and that copy loop).
-      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #x25))
-      (nelisp-asm-x86_64-reloc-pc32-here
-       buf nelisp-aot-compiler--win64-rsp-save-symbol -4)
+      (if dynalign-frame-p
+          ;; S3a-2: keep the pre-align rsp in r11 (volatile scratch, never
+          ;; an argument register nor the fn-ptr here) until the aligned
+          ;; frame exists; it is then stored INSIDE that frame below.
+          (nelisp-asm-x86_64-mov-reg-reg buf 'r11 'rsp)
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x89 #x25))
+        (nelisp-asm-x86_64-reloc-pc32-here
+         buf nelisp-aot-compiler--win64-rsp-save-symbol -4))
       (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x83 #xE4 #xF0)))
     (let* ((shadow (if win64-p 32 0))
            (win64-stack-bytes (if win64-p (* 8 (length stack-args)) 0))
            (win64-pad (if (and win64-p call-needs-align) 8 0))
            (win64-outgoing (+ shadow win64-stack-bytes win64-pad)))
-      (when (> win64-outgoing 0)
-        (nelisp-asm-x86_64-sub-imm32 buf 'rsp win64-outgoing))
+      (setq dynalign-outgoing win64-outgoing)
+      (if dynalign-frame-p
+          ;; Outgoing area + a 16-byte save area directly above it (keeps
+          ;; 16-byte alignment at CALL).  Stash the pre-align rsp at
+          ;; [rsp+outgoing]; every thread has its own stack, so no shared
+          ;; state exists.
+          (progn
+            (nelisp-asm-x86_64-sub-imm32 buf 'rsp (+ win64-outgoing 16))
+            (nelisp-asm-x86_64-mov-mem-rsp-disp-reg
+             buf win64-outgoing 'r11))
+        (when (> win64-outgoing 0)
+          (nelisp-asm-x86_64-sub-imm32 buf 'rsp win64-outgoing)))
       (when (and win64-p stack-args)
         (if general-stack-spill-p
             (progn
@@ -21054,9 +21093,13 @@ same branch and emit the same byte count."
               ;; through the CURRENT rsp, which is correct (they populate
               ;; the outgoing area just reserved below the aligned rsp).
               (when win64-dynamic-align-p
-                (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x8B #x1D))
-                (nelisp-asm-x86_64-reloc-pc32-here
-                 buf nelisp-aot-compiler--win64-rsp-save-symbol -4))
+                (if dynalign-frame-p
+                    ;; mov r11, [rsp+outgoing] (reload pre-align rsp).
+                    (nelisp-heap-accessors-x86_64-mov-reg-mem-rsp-disp
+                     buf 'r11 win64-outgoing)
+                  (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x4C #x8B #x1D))
+                  (nelisp-asm-x86_64-reloc-pc32-here
+                   buf nelisp-aot-compiler--win64-rsp-save-symbol -4)))
               (dolist (entry stack-indexed)
                 (let* ((idx (nth 0 entry))
                        (target (nth 2 entry))
@@ -21102,9 +21145,23 @@ same branch and emit the same byte count."
       ;; saved above (see the comment there).  `mov rsp, [rip+disp32]' =
       ;; 48 8B 25 <disp32> + pc32 reloc.  Touches neither rax nor xmm0, so
       ;; the call's return value survives untouched.
-      (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8B #x25))
-      (nelisp-asm-x86_64-reloc-pc32-here
-       buf nelisp-aot-compiler--win64-rsp-save-symbol -4))
+      (if dynalign-frame-p
+          ;; S3a-2: `mov rsp, [rsp+outgoing]'.  The callee preserved rsp,
+          ;; so [rsp+outgoing] is still our save slot.  48 8B 64 24 d8 /
+          ;; 48 8B A4 24 d32 (ModRM reg=rsp, rm=SIB base=rsp).
+          (let ((disp dynalign-outgoing))
+            (if (<= disp 127)
+                (nelisp-asm-x86_64-emit-bytes
+                 buf (unibyte-string #x48 #x8B #x64 #x24 disp))
+              (nelisp-asm-x86_64-emit-bytes
+               buf (unibyte-string #x48 #x8B #xA4 #x24
+                                   (logand disp #xFF)
+                                   (logand (ash disp -8) #xFF)
+                                   (logand (ash disp -16) #xFF)
+                                   (logand (ash disp -24) #xFF)))))
+        (nelisp-asm-x86_64-emit-bytes buf (unibyte-string #x48 #x8B #x25))
+        (nelisp-asm-x86_64-reloc-pc32-here
+         buf nelisp-aot-compiler--win64-rsp-save-symbol -4)))
     ;; Reclaim outgoing SysV stack arguments, preserving rax/xmm0.
     (when (and sysv-p stack-args)
       (nelisp-asm-x86_64-add-imm32 buf 'rsp (* 8 (length stack-args)))
