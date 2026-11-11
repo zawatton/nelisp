@@ -52,9 +52,6 @@ RESERVE-BASE is a form evaluating to an address to reserve first."
     `((data-blob g_clsid ,(nelisp-com-guid-bytes nelisp-com-sample-clsid) rodata)
       (data-blob g_iid ,(nelisp-com-guid-bytes nelisp-com-sample-iid) rodata)
       (data-blob pobj ,(make-list 8 0) data)
-      ;; VirtualAlloc is on the compiler's dynamic-align list, whose
-      ;; extern-call arm spills rsp into this driver-owned slot.
-      ,@(when reserve-base '((data-blob nl_dynalign_rsp_save (0 0 0 0 0 0 0 0) data)))
       (defun run ()
         (let ((hr (extern-call CoInitializeEx 0 0)))
           (if (/= (logand hr 2147483648) 0) (extern-call ExitProcess 10)

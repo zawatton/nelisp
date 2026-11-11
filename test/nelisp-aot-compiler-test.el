@@ -4060,11 +4060,47 @@ arguments require 32 + 40 + 8 = 80 bytes before CALL."
                         bytes ".text")))
             (should (nelisp-aot-compiler-test--bytes-contain-p
                      text
-                     ;; and rsp,-16; sub rsp,80.  The crashing form emitted
-                     ;; sub rsp,72, entering SspiCli with rsp misaligned.
-                     (unibyte-string #x48 #x83 #xe4 #xf0
-                                     #x48 #x81 #xec #x50 #x00 #x00 #x00)))))
+                     ;; mov r11,rsp; and rsp,-16; sub rsp,96 (= the 80-byte
+                     ;; outgoing area + the 16-byte frame-local rsp-save
+                     ;; area, S3a-2); mov [rsp+80],r11.  The crashing form
+                     ;; emitted a 72-byte area, entering SspiCli misaligned.
+                     (unibyte-string #x49 #x89 #xe3
+                                     #x48 #x83 #xe4 #xf0
+                                     #x48 #x81 #xec #x60 #x00 #x00 #x00
+                                     #x4c #x89 #x5c #x24 #x50)))
+            ;; Restore: mov rsp,[rsp+80], no add of the outgoing area.
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     text (unibyte-string #x48 #x8b #x64 #x24 #x50)))))
       (ignore-errors (delete-file path)))))
+
+(ert-deftest nelisp-aot-compiler/win64-dynalign-save-is-frame-local ()
+  "S3a-2: the dynamic-align rsp save is thread-safe by default.
+The default emission keeps the pre-align rsp in the realigned frame and has
+no reference to the global `nl_dynalign_rsp_save' slot; the legacy global
+slot stays available as a test-only switch (negative control)."
+  (let ((new (make-temp-file "nelisp-win64-dynalign-new-" nil ".obj"))
+        (old (make-temp-file "nelisp-win64-dynalign-old-" nil ".obj"))
+        (form '(defun probe (h b n w)
+                 (extern-call WriteFile h b n w 0))))
+    (unwind-protect
+        (progn
+          (nelisp-aot-compile-to-object form new :arch 'x86_64 :format 'coff)
+          (let ((nelisp-aot-compiler--dynalign-global-slot t))
+            (nelisp-aot-compile-to-object form old :arch 'x86_64 :format 'coff))
+          (let ((nb (nelisp-aot-compiler-test--read-bytes new))
+                (ob (nelisp-aot-compiler-test--read-bytes old)))
+            (should-not (string-match-p "nl_dynalign_rsp_save" nb))
+            (should (string-match-p "nl_dynalign_rsp_save" ob))
+            (should (nelisp-aot-compiler-test--bytes-contain-p
+                     (nelisp-aot-compiler-test--coff-section-bytes nb ".text")
+                     ;; mov r11,rsp; and rsp,-16; sub rsp,64 (32 shadow + 8
+                     ;; stack arg + 8 pad + 16 save); mov [rsp+48],r11.
+                     (unibyte-string #x49 #x89 #xe3
+                                     #x48 #x83 #xe4 #xf0
+                                     #x48 #x81 #xec #x40 #x00 #x00 #x00
+                                     #x4c #x89 #x5c #x24 #x30)))))
+      (ignore-errors (delete-file new))
+      (ignore-errors (delete-file old)))))
 
 (ert-deftest nelisp-aot-compiler/win64-internal-call-stack-gp-arg ()
   "Win64 internal calls place arg5 above shadow space instead of rejecting it."

@@ -33,9 +33,8 @@ cmd: bash tools/ai/com-dll/wbuf-e2e.sh
 ** S3a.3 E2E - under wine: the default build registers under HKCU, the NELISP_COM_HIVE=hkcr build under HKCR, both unregister
 cmd: bash tools/ai/com-dll/reg-e2e.sh
 
-** S3a.4 Thread-safe dynalign (nl_dynalign_rsp_save no longer one global slot)
-#+NOTE: S3a-2, separate session; touches the AOT compiler
-pending
+** S3a.4 E2E - thread-safe dynalign: 6 threads x 20000 dynamic-align imports pass; the old global-slot emission crashes
+cmd: bash tools/ai/com-dll/dynalign-threads-e2e.sh
 
 ** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
 pending
