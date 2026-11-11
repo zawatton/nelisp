@@ -58095,6 +58095,23 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                           (setq hit 1) 0)
                       (setq i (+ i 1))))))
                hit)))
+          ;; NELISP_RUNTIME_IMAGE_COLD=0 forces `eval-runtime-image' /
+          ;; `exec-runtime-image' onto the slow source-evaluated boot (no
+          ;; companion cold image), so the source path stays testable.  Scans
+          ;; the entry-stack envp directly because it runs before the
+          ;; envp stash (+144) is installed.  1 = forced slow.
+          (defun nl_cold_ri_slow_p (sp0 argc)
+            (let ((ep (+ sp0 (* (+ argc 2) 8))) (i 0) (hit 0))
+              (seq
+               (if (= sp0 0) 0
+                 (while (and (= hit 0) (/= (heap-read-u64 ep (* i 8)) 0))
+                   (let ((p (heap-read-u64 ep (* i 8))))
+                     (nl_seq2
+                      (if ,(nelisp-standalone--cold-cstr-equal-form
+                            'p "NELISP_RUNTIME_IMAGE_COLD=0")
+                          (setq hit 1) 0)
+                      (setq i (+ i 1))))))
+               hit)))
           ;; NELISP_COLD_FORCE_RELOCATE=1: also give the intern region a
           ;; kernel-chosen base so both rebase deltas are non-zero.
           (defun nl_cold_move_intern ()
@@ -59822,7 +59839,16 @@ correctly."
                  (if (or (= (nl_cli_help_command_p path) 1)
                          (= (nl_cstr_eq_embedded path) 1)
                          (= (nl_cstr_eq_neln_selftest path) 1)
-                         (= (nl_runtime_image_command_p path) 1)
+                         ;; eval/exec-runtime-image restore the companion
+                         ;; cold image (the prelude is then already in the
+                         ;; heap); dump-/extend-runtime-image and the
+                         ;; `--cache-kind' path keep their own bootstrap.
+                         ,(if (nelisp-standalone--cold-v5-p)
+                              '(if (= (nl_runtime_image_eval_exec_command_p path) 1)
+                                   (or (= (nl_runtime_image_cache_eval_p sp0 argc) 1)
+                                       (= (nl_cold_ri_slow_p sp0 argc) 1))
+                                 (= (nl_runtime_image_command_p path) 1))
+                            '(= (nl_runtime_image_command_p path) 1))
                          (= (nl_artifact_command_p path) 1))
                      0 (nl_boot_image_companion)))))
             ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
@@ -60567,9 +60593,12 @@ correctly."
            (if (= (nl_runtime_image_eval_exec_command_p path) 1)
                (if (= (nl_runtime_image_cache_eval_p sp0 argc) 1)
                    0
-                 (seq
-                  ,@(nelisp-standalone--reader-repl-prelude-forms
-                     'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym)))
+                 ;; A restored cold image already carries the prelude.
+                 (if (< _cl 0)
+                     (seq
+                      ,@(nelisp-standalone--reader-repl-prelude-forms
+                         'fbuf 'src 'cursor 'result 'pool 'out 'ctx 'builtin_sym))
+                   0))
              ;; Bare positional FILE argument (`target/nelisp FILE'; no
              ;; recognized subcommand name matched, and this is neither a
              ;; runtime-image nor an artifact command -- see the two
