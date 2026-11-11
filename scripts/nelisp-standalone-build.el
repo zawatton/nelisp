@@ -3630,7 +3630,8 @@ twice appears twice; readers keep the last occurrence of each unit."
          (ir (nelisp-aot-compiler--parse source nil))
          (defuns (nelisp-aot-compiler--collect-defuns ir))
          (unit-data
-          (when (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+          (when (and (memq (nelisp-standalone-arena-rewrite-target)
+                           '(linux-x86_64 macos-aarch64 linux-aarch64))
                      (eq (car-safe source) 'seq)
                      (cl-some (lambda (form) (eq (car-safe form) 'data-blob))
                               (cdr source)))
@@ -48044,10 +48045,13 @@ this way: about 67 MB of unit, a 4.7 MB stack buffer at run time, and
 bytes nor the length left in the source.  A top-level rodata `data-blob'
 of at least that size without relocations moves out under its own name.
 BLOBS is a list of (NAME . UNIBYTE-BYTES) for a unit that defines them as
-global symbols.  Linux and Windows x86-64 `(seq ...)' sources only (as in
-`nelisp-standalone--copy-lit-u64-defuns'); otherwise (SOURCE)."
+global symbols.  Linux and Windows x86-64 and macOS and Linux aarch64
+`(seq ...)' sources only (as in `nelisp-standalone--copy-lit-u64-defuns');
+otherwise (SOURCE).  On aarch64 `data-addr' is an ADRP + ADD pair against
+the global rodata symbol, and without the hoist each 8 bytes of LIT cost
+about 4.4 instruction words of mov-immediate plus a store."
   (if (not (and (memq (nelisp-standalone-arena-rewrite-target)
-                      '(linux-x86_64 windows-x86_64))
+                      '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
                 (eq (car-safe source) 'seq)))
       (list source)
     (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
@@ -53837,10 +53841,10 @@ is never touched."
 
 (defun nelisp-standalone--copy-lit-u64-defuns (name string &optional chunk-bytes)
   "Return Phase47 forms copying literal STRING into DST at OFF.
-Linux and Windows x86-64 use readonly data and one bounded copy loop. Other targets retain
-the original chunk defuns, using CHUNK-BYTES (default 2048)."
+Linux and Windows x86-64 and macOS and Linux aarch64 use readonly data and
+one bounded copy loop. Other targets retain the original chunk defuns, using CHUNK-BYTES (default 2048)."
   (if (memq (nelisp-standalone-arena-rewrite-target)
-            '(linux-x86_64 windows-x86_64))
+            '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
       (let* ((bytes (encode-coding-string string 'utf-8 t))
              (len (length bytes))
              (whole (* 8 (/ len 8)))

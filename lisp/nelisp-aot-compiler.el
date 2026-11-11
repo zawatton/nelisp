@@ -15089,7 +15089,7 @@ global names permit static linking without changing its local-symbol rules."
         (names nil) (offset 0) sections symbols references)
     (when blobs
       (unless (and (stringp unit-name) (> (length unit-name) 0)
-                   (eq target 'linux-x86_64))
+                   (memq target '(linux-x86_64 macos-aarch64 linux-aarch64)))
         (signal 'nelisp-aot-compiler-error (list :standalone-unit-data-target target)))
       (dolist (blob blobs)
         (let ((name (plist-get blob :name)))
