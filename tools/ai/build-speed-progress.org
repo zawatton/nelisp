@@ -20,9 +20,14 @@
 # Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh build-identity
 cmd: bash tools/ai/main-ci-reds/check-heavy.sh build-identity
 
-** B1.2 CI build job's make standalone-reader step takes at most 600 s on HEAD
-#+TIMEOUT: 120
-cmd: bash tools/ai/build-speed/ci-check.sh build-seconds 600
+** B1.2 a cold reader build with the compiled toolchain takes at most 600 s on HEAD (local while CI is disabled)
+# Changed 2026-11-11 (same denominator): CI is disabled, so the CI step
+# time (220 s on run of 2026-11-10, criterion `ci-check.sh build-seconds
+# 600') cannot be read for a new HEAD.  Now the compiled build timed by
+# build-identity (empty unit cache and empty toolchain .elc dir, JOBS=4,
+# on a shared machine).
+# Run first: HEAVY_RUN=<Notes>/bin/heavy-run.sh tools/ai/main-ci-reds/run-heavy.sh build-identity
+cmd: bash tools/ai/build-speed/build-seconds-local.sh 600
 
 * B2 the full gate-mutation sweep passes on main
 ** B2.1 every gate-mutation shard passes on HEAD (local 6-shard sweep while CI is disabled)
