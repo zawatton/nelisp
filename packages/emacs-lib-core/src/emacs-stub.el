@@ -1393,10 +1393,17 @@ returns a float, while pixels and face columns return an integer."
 (unless (fboundp 'tty-display-color-p)
   (defun tty-display-color-p (&optional _terminal) nil))
 
+;; A fresh table that inherits the standard one, never the standard table
+;; itself: `define-derived-mode' sets the mode table's parent, so sharing
+;; `standard-syntax-table' made `outline-mode' (derived from `text-mode')
+;; try to make the standard table its own ancestor ("Attempt to make a
+;; chartable be its own parent") on a host that loads this file.
 (unless (boundp 'outline-mode-syntax-table)
-  (defvar outline-mode-syntax-table (standard-syntax-table)))
+  (defvar outline-mode-syntax-table
+    (if (fboundp 'make-syntax-table) (make-syntax-table) (standard-syntax-table))))
 (unless (boundp 'text-mode-syntax-table)
-  (defvar text-mode-syntax-table (standard-syntax-table)))
+  (defvar text-mode-syntax-table
+    (if (fboundp 'make-syntax-table) (make-syntax-table) (standard-syntax-table))))
 
 ;; `set' is a special form in NeLisp bootstrap but appears as void-function
 ;; in some funcall contexts.  Polyfill by routing through `eval' + `setq'.

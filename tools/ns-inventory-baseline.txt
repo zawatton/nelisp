@@ -1431,7 +1431,7 @@ pinned-collision ns-collision-divergent	nelisp--record-type	lisp/nelisp-heap-ima
 pinned-collision ns-collision-divergent	nelisp--repl-idle-pump	packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	b92d582ce214
 pinned-collision ns-collision-divergent	nelisp-cc-runtime-aot-module-init-plan	scripts/nelisp-stdlib-prelude.el src/nelisp-cc-runtime.el	1eb7c8a24c6a
 pinned-collision ns-collision-divergent	nelisp-http-get	packages/nelisp-http/src/nelisp-http.el packages/nelisp-network/src/nelisp-network.el	0c3a19563129
-pinned-collision ns-collision-divergent	nelisp-make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el packages/nelisp-process/src/nelisp-process.el scripts/nelisp-stdlib-prelude.el	8baa20cff7f0
+pinned-collision ns-collision-divergent	nelisp-make-process	packages/nelisp-process-adapter/src/nelisp-process-adapter.el packages/nelisp-process/src/nelisp-process.el scripts/nelisp-stdlib-prelude.el	69da2c5bcecc
 pinned-collision ns-collision-divergent	nelisp-sys-access	packages/nelisp-process/src/nelisp-process.el packages/nelisp-sys/src/nelisp-sys.el	13cdbaaf0ad0
 pinned-collision ns-collision-divergent	nelisp-sys-executable-find	packages/nelisp-process/src/nelisp-process.el packages/nelisp-sys/src/nelisp-sys.el	f8695bea7be4
 pinned-collision ns-collision-divergent	nelisp-sys-getenv	packages/nelisp-process/src/nelisp-process.el packages/nelisp-sys/src/nelisp-sys.el	5de1d302df1f

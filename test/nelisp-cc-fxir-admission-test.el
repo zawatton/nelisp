@@ -1,6 +1,7 @@
 ;;; nelisp-cc-fxir-admission-test.el --- Optional application admission -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'ert)
+(require 'nelisp-test-fresh-emacs)
 (require 'cl-lib)
 (defvar nelisp-cc-fxir-native-windows nil)
 (let ((nelisp-cc-fxir-native-windows t)) (require 'nelisp-cc-fxir-native))
@@ -51,23 +52,24 @@
        (delete-directory directory t))))
 
 (ert-deftest nfa-admission-source-generation-and-install-table ()
-  (nfa-admission--fixture
-    (let* ((a (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor))
-           (b (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor)))
-      (should (equal a b))
-      (should-not nelisp-cc-fxir-native--additional-rows)
-      (let* ((result (nelisp-cc-fxir-admission-activate a))
-             (text (nelisp-cc-fxir-admission--print nelisp-cc-fxir-native--source))
-             (table (nelisp-cc-fxir-native-install-table-source)))
-        (should-not (plist-get result :native-qualified))
-        (dolist (name '(nc_20000 nc_20001 nc_d_20000))
-          (should (string-match-p (symbol-name name) text)))
-        (should (memq 'nc_d_20000 nelisp-cc-fxir-native--boundaries))
-        (should (string-match-p "application-caller" table))
-        (should (equal (nelisp-cc-fxir-admission-rows a) rows))
-        ;; Returned row copies cannot mutate the registered snapshot.
-        (setcar (car (nelisp-cc-fxir-admission-rows a)) 'mutated)
-        (should (eq (caar (nelisp-cc-fxir-admission-rows a)) 'application-leaf))))))
+  (nelisp-test-fresh-emacs-unless (not (featurep 'nelisp-standalone-build))
+    (nfa-admission--fixture
+     (let* ((a (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor))
+            (b (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor)))
+       (should (equal a b))
+       (should-not nelisp-cc-fxir-native--additional-rows)
+       (let* ((result (nelisp-cc-fxir-admission-activate a))
+              (text (nelisp-cc-fxir-admission--print nelisp-cc-fxir-native--source))
+              (table (nelisp-cc-fxir-native-install-table-source)))
+         (should-not (plist-get result :native-qualified))
+         (dolist (name '(nc_20000 nc_20001 nc_d_20000))
+           (should (string-match-p (symbol-name name) text)))
+         (should (memq 'nc_d_20000 nelisp-cc-fxir-native--boundaries))
+         (should (string-match-p "application-caller" table))
+         (should (equal (nelisp-cc-fxir-admission-rows a) rows))
+         ;; Returned row copies cannot mutate the registered snapshot.
+         (setcar (car (nelisp-cc-fxir-admission-rows a)) 'mutated)
+         (should (eq (caar (nelisp-cc-fxir-admission-rows a)) 'application-leaf)))))))
 
 (ert-deftest nfa-admission-default-source-unchanged ()
   (nfa-admission--fixture
@@ -147,21 +149,22 @@
       (should (eq nelisp-cc-fxir-native--source 'original-source)))))
 
 (ert-deftest nfa-admission-snapshot-and-reread-pins ()
-  (nfa-admission--fixture
-    (let* ((snapshot (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor))
-           (mutant (copy-tree snapshot)))
-      (setcar (car (plist-get mutant :rows)) 'changed)
-      (should-error (nelisp-cc-fxir-admission-rows mutant))
-      (let ((manifest (copy-tree (plist-get snapshot :manifest)))
-            (invalid (copy-tree snapshot)))
-        (setq manifest (plist-put manifest :schema 999)
-              invalid (plist-put invalid :manifest manifest)
-              invalid (plist-put invalid :manifest-sha256 (nelisp-cc-fxir-admission--digest manifest)))
-        (should-error (nelisp-cc-fxir-admission-rows invalid)))
-      (nelisp-cc-fxir-admission-activate snapshot)
-      (nfa-admission--write row-file "(error \"must not be evaluated\")\n")
-      (should-error (nelisp-cc-fxir-native--rows))
-      (should-error (nelisp-cc-fxir-native-install-table-source)))))
+  (nelisp-test-fresh-emacs-unless (not (featurep 'nelisp-standalone-build))
+    (nfa-admission--fixture
+     (let* ((snapshot (nelisp-cc-fxir-admission-prepare row-file 'application-rows expected descriptor))
+            (mutant (copy-tree snapshot)))
+       (setcar (car (plist-get mutant :rows)) 'changed)
+       (should-error (nelisp-cc-fxir-admission-rows mutant))
+       (let ((manifest (copy-tree (plist-get snapshot :manifest)))
+             (invalid (copy-tree snapshot)))
+         (setq manifest (plist-put manifest :schema 999)
+               invalid (plist-put invalid :manifest manifest)
+               invalid (plist-put invalid :manifest-sha256 (nelisp-cc-fxir-admission--digest manifest)))
+         (should-error (nelisp-cc-fxir-admission-rows invalid)))
+       (nelisp-cc-fxir-admission-activate snapshot)
+       (nfa-admission--write row-file "(error \"must not be evaluated\")\n")
+       (should-error (nelisp-cc-fxir-native--rows))
+       (should-error (nelisp-cc-fxir-native-install-table-source))))))
 
 (ert-deftest nfa-admission-builder-load-and-baseline-changes-refused ()
   (nfa-admission--fixture
