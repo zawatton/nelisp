@@ -53456,13 +53456,20 @@ artifact before wiring that artifact into the marker command path."
      "    0))\n"
      (if substrate-only
          ""
-       (concat
-       "(if (string= (car nelisp-standalone-argv) \"load-elisp-source\")\n"
-       "    (nelisp-standalone-source-cache-load-source-command nelisp-standalone-argv)\n"
-       "  (if (string= (car nelisp-standalone-argv) \"eval-elisp-source\")\n"
-       "      (nelisp-standalone-source-cache-eval-source-command nelisp-standalone-argv)\n"
-       "    2))\n")))
+       (nelisp-standalone--artifact-source-command-dispatch-src)))
   ))
+
+(defun nelisp-standalone--artifact-source-command-dispatch-src ()
+  "Return the load-/eval-elisp-source dispatch tail of the cache source.
+It is the part of `nelisp-standalone--artifact-source-command-cache-src-raw'
+after the substrate; the substrate boot image (BINARY.artifact.cold) already
+holds everything before it.  Plain Lisp, so it needs no bootstrap expansion."
+  (concat
+   "(if (string= (car nelisp-standalone-argv) \"load-elisp-source\")\n"
+   "    (nelisp-standalone-source-cache-load-source-command nelisp-standalone-argv)\n"
+   "  (if (string= (car nelisp-standalone-argv) \"eval-elisp-source\")\n"
+   "      (nelisp-standalone-source-cache-eval-source-command nelisp-standalone-argv)\n"
+   "    2))\n"))
 
 (defun nelisp-standalone--artifact-source-command-cache-src (&optional substrate-only)
   "Return `nelisp-standalone--artifact-source-command-cache-src-raw' with its pre-cl-macs part host-expanded."
@@ -53481,6 +53488,15 @@ and FORM strings from `nelisp-standalone-argv'.  The source is emitted with
 copy instructions."
   (concat
    (nelisp-standalone--artifact-source-command-substrate-src)
+   (nelisp-standalone--artifact-direct-dispatch-src)))
+
+(defun nelisp-standalone--artifact-direct-dispatch-src ()
+  "Return the dispatch tail of `nelisp-standalone--artifact-direct-command-src'.
+Everything after the substrate: the direct command definition and the
+exec-/eval-elisp-artifact dispatch.  The substrate boot image
+(BINARY.artifact.cold) holds the substrate, so a restored launch runs only
+this tail; the source path runs substrate plus this tail."
+  (concat
    "(defun nelisp-standalone-direct-artifact-command (args printp)\n"
    "  (condition-case err\n"
    "      (let ((path (nth 1 args))\n"
@@ -53495,7 +53511,8 @@ copy instructions."
      "          (setq parsed (cons (car (read-from-string (car forms))) parsed))\n"
      "          (setq forms (cdr forms)))\n"
      "        (setq forms (reverse parsed))\n"
-     "        (nelisp-standalone-source-cache-load-artifact path)\n"
+     "        (if (string= path \"--boot-image-build\") nil\n"
+     "          (nelisp-standalone-source-cache-load-artifact path))\n"
    "        (while forms\n"
    "          (setq last (eval (car forms)))\n"
    "          (setq forms (cdr forms)))\n"
@@ -58112,6 +58129,23 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                           (setq hit 1) 0)
                       (setq i (+ i 1))))))
                hit)))
+          ;; NELISP_ARTIFACT_BOOT_IMAGE=0 forces the artifact/source commands
+          ;; (exec-/eval-elisp-artifact, eval-/load-elisp-source) onto the
+          ;; source-evaluated substrate boot instead of restoring
+          ;; BINARY.artifact.cold, so that path stays testable.  Scans the
+          ;; entry-stack envp like `nl_cold_ri_slow_p'.  1 = forced slow.
+          (defun nl_artifact_boot_slow_p (sp0 argc)
+            (let ((ep (+ sp0 (* (+ argc 2) 8))) (i 0) (hit 0))
+              (seq
+               (if (= sp0 0) 0
+                 (while (and (= hit 0) (/= (heap-read-u64 ep (* i 8)) 0))
+                   (let ((p (heap-read-u64 ep (* i 8))))
+                     (nl_seq2
+                      (if ,(nelisp-standalone--cold-cstr-equal-form
+                            'p "NELISP_ARTIFACT_BOOT_IMAGE=0")
+                          (setq hit 1) 0)
+                      (setq i (+ i 1))))))
+               hit)))
           ;; NELISP_COLD_FORCE_RELOCATE=1: also give the intern region a
           ;; kernel-chosen base so both rebase deltas are non-zero.
           (defun nl_cold_move_intern ()
@@ -58631,6 +58665,28 @@ correctly."
       (let* ((off (nl_artifact_runtime_cache_enable_path fbuf 0))
              (n (nl_os_read_file_cpath fbuf fbuf 1)))
         (if (< n 0) 0 1)))
+    ;; The same marker + cache checks the source selection makes later, but
+    ;; usable before the arena owns a scratch buffer (the cold image choice
+    ;; happens first).  1 = the compiled artifact runtime cache is in use.
+    (defun nl_artifact_runtime_cache_ready_early_p ()
+      (let* ((scratch (nl_os_alloc_chunk 8192)))
+        (if (= scratch 0) 0
+          (let* ((enabled (nl_artifact_runtime_cache_enabled_p scratch))
+                 (exists (nl_artifact_runtime_cache_exists_p scratch)))
+            (seq (nl_os_free_chunk scratch 8192)
+                 (if (= enabled 1) exists 0))))))
+    ;; 1 = this launch should restore BINARY.artifact.cold (the substrate heap
+    ;; image) and run only the dispatch tail.  eval-/load-elisp-source qualify
+    ;; only when they take the compiled-cache source (the same condition as the
+    ;; source selection), so the image never replaces the full command source.
+    (defun nl_artifact_boot_image_p (path sp0 argc)
+      (if (= (nl_artifact_boot_slow_p sp0 argc) 1) 0
+        (if (or (= (nl_cstr_eq_exec_elisp_artifact path) 1)
+                (= (nl_cstr_eq_eval_elisp_artifact path) 1))
+            1
+          (if (= (nl_artifact_source_cache_command_p path) 1)
+              (nl_artifact_runtime_cache_ready_early_p)
+            0))))
     (defun nl_audit_fast_argv_copy (argc sp src-index dst-index argv)
       (if (= src-index argc)
           (nl_seq2 (ptr-write-u64 argv (* dst-index 8) 0) argv)
@@ -59833,9 +59889,17 @@ correctly."
             ;; Ordinary commands restore the executable's own companion.
             ;; Artifact/runtime-image commands own separate bootstrap paths;
             ;; --embedded intentionally retains its bare-native test context.
+            ;; 1 = restore BINARY.artifact.cold (substrate heap image) for an
+            ;; artifact/source command and run only its dispatch tail.  Never
+            ;; with an explicit `--cold-load-from' image.
+            (_abi ,(if (nelisp-standalone--cold-v5-p)
+                       '(if (/= cold_override 0) 0
+                          (if (= path 0) 0 (nl_artifact_boot_image_p path sp0 argc)))
+                     0))
             (cold_image
              (if (/= cold_override 0) cold_override
                (if (= path 0) (nl_boot_image_companion)
+                 (if (= _abi 1) (nl_boot_artifact_companion)
                  (if (or (= (nl_cli_help_command_p path) 1)
                          (= (nl_cstr_eq_embedded path) 1)
                          (= (nl_cstr_eq_neln_selftest path) 1)
@@ -59850,7 +59914,7 @@ correctly."
                                  (= (nl_runtime_image_command_p path) 1))
                             '(= (nl_runtime_image_command_p path) 1))
                          (= (nl_artifact_command_p path) 1))
-                     0 (nl_boot_image_companion)))))
+                     0 (nl_boot_image_companion))))))
             ;; flat-arena cold loader: BEFORE any boot alloc, if the marker image
             ;; exists (or `--cold-load-from PATH' named an image), load it into
             ;; the arena + bump the cursor past it so every following alloc
@@ -59868,6 +59932,9 @@ correctly."
             ;; normal boot; an explicitly named one is fatal, as in GNU.
             (_cl_fatal (if (= cold_override 0) 0
                          (if (< _cl 0) (nl_cold_load_fatal cold_override) 0)))
+            ;; 1 = the substrate image really restored: the dispatch tail alone
+            ;; is the command source.  Any failure (-1) keeps the full source.
+            (_tail (if (= _abi 1) (if (< _cl 0) 0 1) 0))
             ;; A restored image must use this process's signal disposition.
             (_sigpipe_image (nl_os_sigpipe 1))
             ;; Doc 152 §11.21 root-coverage fix (2026-07-04): capture
@@ -60648,18 +60715,24 @@ correctly."
                    (sexp-write-str-lit src ,(nelisp-standalone--runtime-image-command-src))
 	                 (if (= (nl_cstr_eq_eval_elisp_artifact path) 1)
 	                     (if (> argc 2)
-	                         (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src))
+	                         (if (= _tail 1)
+	                             (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-dispatch-src))
+	                           (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src)))
 	                       (sexp-write-str-lit src "1"))
 	                   (if (= (nl_cstr_eq_exec_elisp_artifact path) 1)
 	                       (if (> argc 2)
-	                           (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src))
+	                           (if (= _tail 1)
+	                               (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-dispatch-src))
+	                             (sexp-write-str-lit src ,(nelisp-standalone--artifact-direct-command-src)))
 	                         (sexp-write-str-lit src "1"))
 	                 (if (= (nl_artifact_command_p path) 1)
 	                     (if (and (= (nl_artifact_runtime_cache_command_p path) 1)
 	                               (= (nl_artifact_runtime_cache_enabled_p fbuf) 1)
 	                               (= (nl_artifact_runtime_cache_exists_p fbuf) 1))
 	                          (if (= (nl_artifact_source_cache_command_p path) 1)
-	                              (sexp-write-str-lit src ,(nelisp-standalone--artifact-source-command-cache-src))
+	                              (if (= _tail 1)
+	                                  (sexp-write-str-lit src ,(nelisp-standalone--artifact-source-command-dispatch-src))
+	                                (sexp-write-str-lit src ,(nelisp-standalone--artifact-source-command-cache-src)))
 	                            (sexp-write-str-lit src ,(nelisp-standalone--artifact-command-cache-src)))
 	                        (sexp-write-str-lit src ,(nelisp-standalone--artifact-command-src)))
 	                   ;; file path: open(path,O_RDONLY) -> read -> close -> wrap as Str
@@ -68937,6 +69010,8 @@ The trace parent directory must exist; tracing never skips a build stage."
     (garbage-collect)
     (nelisp-standalone--build-trace-phase "cold-image"
       (nelisp-standalone--build-cold-image out))
+    (nelisp-standalone--build-trace-phase "artifact-boot-image"
+      (nelisp-standalone--build-substrate-image out))
     (nelisp-standalone--build-trace-phase "artifact-runtime"
       (nelisp-standalone-build-artifact-runtime-cache))
     (require 'json)
@@ -68957,6 +69032,99 @@ The trace parent directory must exist; tracing never skips a build stage."
 (defun nelisp-standalone--cold-image-path (binary)
   "Return the build-time cold image path for BINARY (BINARY.cold)."
   (concat binary ".cold"))
+
+(defun nelisp-standalone--substrate-image-path (binary)
+  "Return the build-time artifact substrate image path for BINARY."
+  (concat binary ".artifact.cold"))
+
+(defun nelisp-standalone--artifact-image-seal (image)
+  "Append the whole-file integrity footer to IMAGE and return the new size.
+Footer (32 bytes, little endian): the magic \"NLARTIM\\0\", the length of all
+bytes before the footer, the checksum, zero.  The checksum is s = s*31 + word
+(mod 2^64) over the 8-byte words, then the remaining bytes singly; the driver
+(`nl_artifact_image_ok_p' in nelisp-boot-image.el) recomputes it before the
+arena loader may see the file."
+  (let* ((bytes (with-temp-buffer
+                  (set-buffer-multibyte nil)
+                  (let ((coding-system-for-read 'binary))
+                    (insert-file-contents-literally image))
+                  (buffer-string)))
+         (len (length bytes))
+         (mask #xFFFFFFFFFFFFFFFF)
+         (sum 0) (i 0) (words (/ len 8)))
+    (while (< i words)
+      (let* ((o (* i 8))
+             (w (+ (aref bytes o) (ash (aref bytes (+ o 1)) 8)
+                   (ash (aref bytes (+ o 2)) 16) (ash (aref bytes (+ o 3)) 24)
+                   (ash (aref bytes (+ o 4)) 32) (ash (aref bytes (+ o 5)) 40)
+                   (ash (aref bytes (+ o 6)) 48) (ash (aref bytes (+ o 7)) 56))))
+        (setq sum (logand (+ (* sum 31) w) mask)))
+      (setq i (1+ i)))
+    (setq i (* words 8))
+    (while (< i len)
+      (setq sum (logand (+ (* sum 31) (aref bytes i)) mask))
+      (setq i (1+ i)))
+    (let ((u64 (lambda (n) (apply #'unibyte-string
+                                  (mapcar (lambda (k) (logand (ash n (* -8 k)) 255))
+                                          '(0 1 2 3 4 5 6 7))))))
+      (let ((coding-system-for-write 'binary))
+        (with-temp-buffer
+          (set-buffer-multibyte nil)
+          (insert (unibyte-string ?N ?L ?A ?R ?T ?I ?M 0)
+                  (funcall u64 len) (funcall u64 sum) (funcall u64 0))
+          (write-region (point-min) (point-max) image t 'silent))))
+    (+ len 32)))
+
+(defun nelisp-standalone--build-substrate-image (binary)
+  "Dump the artifact/source substrate heap of BINARY to BINARY.artifact.cold.
+The exec-/eval-elisp-artifact and eval-/load-elisp-source commands otherwise
+re-evaluate the ~6 MB substrate source on every launch.  The dump runs
+`exec-elisp-artifact --boot-image-build FORM' with NELISP_ARTIFACT_BOOT_IMAGE=0
+in the scrubbed cold build environment, so the heap is built by the very same
+source-evaluated boot the slow path uses (a bare boot plus the substrate
+evaluated by the native evaluator, then the dispatch tail's definition): the
+`features', `load-history' and function set are those of the slow path by
+construction.  The dump form applies the same scrub as the cold image.
+`--boot-image-build' only skips loading an artifact (there is none to load).
+Trust and staleness: the image trailer carries BINARY's own build digest and
+BINARY embeds the substrate source, so any change to the substrate, the prelude
+or the runtime sources changes the digest and the loader rejects the old image;
+the driver then falls back to the source path.  (The substrate text is not
+byte-deterministic across generations, so it cannot key the image itself.)
+Linux hosts only; NELISP_STANDALONE_ARTIFACT_IMAGE=0 skips it.  A failed dump
+is reported and leaves no image (never a build failure)."
+  (let ((image (nelisp-standalone--substrate-image-path binary)))
+    (when (file-exists-p image) (delete-file image))
+    (if (or (equal (getenv "NELISP_STANDALONE_ARTIFACT_IMAGE") "0")
+            (equal (getenv "NELISP_STANDALONE_COLD_IMAGE") "0")
+            (not (memq (nelisp-standalone-arena-rewrite-target)
+                       '(linux-x86_64 linux-aarch64)))
+            (not (nelisp-standalone--target-runnable-on-host-p)))
+        (message "[standalone-reader] artifact boot image skipped")
+      (let* ((default-directory temporary-file-directory)
+             (form
+              (format
+               "(progn (if (fboundp 'nelisp-standalone-source-cache-eval-source-command) nil (error \"artifact substrate incomplete\")) (fmakunbound 'nelisp-standalone-direct-artifact-command) (if (fboundp 'nelisp--fx-register-prelude) (nelisp--fx-register-prelude)) (if (boundp 'nlre--nat-scratch) (setq nlre--nat-scratch nil) nil) (garbage-collect) (nelisp--write-stdout-bytes (number-to-string (nelisp--arena-dump-image-stream %S))))"
+               (expand-file-name image)))
+             (process-environment
+              (cons "NELISP_ARTIFACT_BOOT_IMAGE=0"
+                    (nelisp-standalone--cold-build-environment)))
+             (status nil) (output nil))
+        (with-temp-buffer
+          (setq status (call-process (expand-file-name binary) nil t nil
+                                     "exec-elisp-artifact" "--boot-image-build" form))
+          (setq output (string-trim (buffer-string))))
+        (if (and (eql status 0)
+                 (string-match-p "\\`[0-9]+\\'" output)
+                 (> (string-to-number output) 0)
+                 (file-exists-p image)
+                 (= (file-attribute-size (file-attributes image))
+                    (string-to-number output)))
+            (message "[standalone-reader] artifact boot image -> %s (%d bytes)"
+                     image (nelisp-standalone--artifact-image-seal image))
+          (when (file-exists-p image) (delete-file image))
+          (message "[standalone-reader] WARNING: artifact boot image dump failed (%S): %s"
+                   status (substring output 0 (min 400 (length output)))))))))
 
 (defun nelisp-standalone--cold-wine-prefix ()
   "Return the same target prefix used by the coordinator F1 runner."

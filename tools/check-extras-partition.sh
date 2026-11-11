@@ -5,12 +5,14 @@
 #
 # Usage: tools/check-extras-partition.sh [SCRIPT] [BASE_REF]
 #   SCRIPT    the nelisp-ai.sh to check (default: tools/ai/nelisp-ai.sh)
-#   BASE_REF  git ref holding the original list (default: origin/main)
+#   BASE_REF  git ref holding the original 23-gate list (default: eeebb4c43,
+#             the last commit before the extras split; origin/main no longer
+#             has the flat list once the split is merged)
 # Exit 0 when the partition is exact, 1 otherwise.
 set -u
 root=$(cd "$(dirname "$0")/.." && pwd)
 script=${1:-$root/tools/ai/nelisp-ai.sh}
-ref=${2:-origin/main}
+ref=${2:-eeebb4c43}
 
 # The original list: the `for g in ... ; do' block of cmd_extras at REF.
 orig=$(git -C "$root" show "$ref:tools/ai/nelisp-ai.sh" 2>/dev/null \
