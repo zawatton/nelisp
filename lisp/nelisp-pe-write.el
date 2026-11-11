@@ -106,6 +106,21 @@
 
 ;; IMAGE_FILE_HEADER Characteristics — for an object file (= no IMAGE_FILE_EXECUTABLE_IMAGE):
 ;; We emit 0 for a standard relocatable object.
+;; ---- PE32+ DLL constants ----
+
+(defconst nelisp-pe--characteristic-dll #x2000 "IMAGE_FILE_DLL.")
+(defconst nelisp-pe--characteristic-relocs-stripped #x0001
+  "IMAGE_FILE_RELOCS_STRIPPED.")
+(defconst nelisp-pe--dll-characteristics-high-entropy-va #x0020
+  "IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA.")
+(defconst nelisp-pe--dll-characteristics-dynamic-base #x0040
+  "IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE.")
+(defconst nelisp-pe--dll-image-base #x180000000
+  "Default preferred ImageBase for DLL output.")
+(defconst nelisp-pe--rel-based-dir64 10 "IMAGE_REL_BASED_DIR64.")
+(defconst nelisp-pe--scn-mem-discardable #x02000000
+  "IMAGE_SCN_MEM_DISCARDABLE.")
+
 (defconst nelisp-pe--header-size 20
   "sizeof(IMAGE_FILE_HEADER) — the fixed-size COFF header.")
 
@@ -837,10 +852,22 @@ Section numbers (1-based, per COFF spec §4):
                                      nelisp-pe--characteristic-large-address-aware))))
 
 (defun nelisp-pe--write-data-directory-table (cbuf import-rva import-size
-                                                   iat-rva iat-size)
-  "Write the PE32+ 16-entry data-directory table."
+                                                   iat-rva iat-size
+                                                   &optional export-rva export-size
+                                                   reloc-rva reloc-size)
+  "Write the PE32+ 16-entry data-directory table.
+The optional EXPORT-* / RELOC-* arguments fill IMAGE_DIRECTORY_ENTRY_EXPORT
+and IMAGE_DIRECTORY_ENTRY_BASERELOC; omitted they are zero (EXE output)."
   (dotimes (i 16)
     (cond
+     ;; IMAGE_DIRECTORY_ENTRY_EXPORT
+     ((= i 0)
+      (nelisp-pe--write-le32 cbuf (or export-rva 0))
+      (nelisp-pe--write-le32 cbuf (or export-size 0)))
+     ;; IMAGE_DIRECTORY_ENTRY_BASERELOC
+     ((= i 5)
+      (nelisp-pe--write-le32 cbuf (or reloc-rva 0))
+      (nelisp-pe--write-le32 cbuf (or reloc-size 0)))
      ;; IMAGE_DIRECTORY_ENTRY_IMPORT
      ((= i 1)
       (nelisp-pe--write-le32 cbuf import-rva)
@@ -899,8 +926,10 @@ Section numbers (1-based, per COFF spec §4):
     (nelisp-pe--write-le32 cbuf size-of-image)
     (nelisp-pe--write-le32 cbuf size-of-headers)
     (nelisp-pe--write-le32 cbuf 0)      ; CheckSum
-    (nelisp-pe--write-le16 cbuf nelisp-pe--subsystem-windows-cui)
-    (nelisp-pe--write-le16 cbuf nelisp-pe--dll-characteristics-nx-compat)
+    (nelisp-pe--write-le16 cbuf (or (plist-get fields :subsystem)
+                                    nelisp-pe--subsystem-windows-cui))
+    (nelisp-pe--write-le16 cbuf (or (plist-get fields :dll-characteristics)
+                                    nelisp-pe--dll-characteristics-nx-compat))
     (nelisp-pe--write-le64 cbuf stack-reserve) ; SizeOfStackReserve
     (nelisp-pe--write-le64 cbuf stack-commit)  ; SizeOfStackCommit
     (nelisp-pe--write-le64 cbuf heap-reserve)  ; SizeOfHeapReserve
@@ -908,7 +937,9 @@ Section numbers (1-based, per COFF spec §4):
     (nelisp-pe--write-le32 cbuf 0)        ; LoaderFlags
     (nelisp-pe--write-le32 cbuf 16)       ; NumberOfRvaAndSizes
     (nelisp-pe--write-data-directory-table
-     cbuf import-rva import-size iat-rva iat-size)))
+     cbuf import-rva import-size iat-rva iat-size
+     (plist-get fields :export-rva) (plist-get fields :export-size)
+     (plist-get fields :reloc-rva) (plist-get fields :reloc-size))))
 
 (defun nelisp-pe--write-pe-section-header (cbuf fields)
   "Write an IMAGE_SECTION_HEADER for a PE image."
@@ -5081,6 +5112,241 @@ SPEC keys:
     (nelisp-pe--write-bytes cbuf idata-bytes)
     (nelisp-pe--write-pad cbuf (- idata-raw-size (length idata-bytes)))
     (nelisp-pe--buffer-bytes cbuf)))
+
+;;; ---- Doc 138 Stage S1 PE32+ DLL writer ----
+
+(defun nelisp-pe--build-edata (edata-rva dll-name exports text-rva)
+  "Build an export section payload loaded at EDATA-RVA.
+EXPORTS is a list of (NAME . TARGET); TARGET is an integer offset into .text
+or (:rva N).  Ordinals follow EXPORTS order (Base = 1) while the name pointer
+table is sorted by byte order, as the loader's binary search requires.
+Returns (:bytes B :size N)."
+  (let* ((n (length exports))
+         (dir-size 40)
+         (eat-off dir-size)
+         (npt-off (+ eat-off (* 4 n)))
+         (ord-off (+ npt-off (* 4 n)))
+         (str-off (nelisp-pe--align-up (+ ord-off (* 2 n)) 4))
+         (dll-bytes (encode-coding-string dll-name 'utf-8 t))
+         (cursor (+ str-off (length dll-bytes) 1))
+         (idx 0)
+         (entries nil)
+         (cbuf (nelisp-pe--make-buffer)))
+    (dolist (e exports)
+      (let ((name-bytes (encode-coding-string (car e) 'utf-8 t))
+            (target (cdr e)))
+        (push (list :name (car e) :ordinal idx :name-rva (+ edata-rva cursor)
+                    :name-bytes name-bytes
+                    :rva (cond ((integerp target) (+ text-rva target))
+                               ((and (consp target) (eq (car target) :rva))
+                                (cadr target))
+                               (t (error "nelisp-pe: bad export target %S"
+                                         target))))
+              entries)
+        (setq cursor (+ cursor (length name-bytes) 1) idx (1+ idx))))
+    (setq entries (nreverse entries))
+    (let ((sorted (sort (copy-sequence entries)
+                        (lambda (a b)
+                          (string< (plist-get a :name) (plist-get b :name))))))
+      (nelisp-pe--write-le32 cbuf 0)  ; Characteristics
+      (nelisp-pe--write-le32 cbuf 0)  ; TimeDateStamp
+      (nelisp-pe--write-le32 cbuf 0)  ; Major/MinorVersion
+      (nelisp-pe--write-le32 cbuf (+ edata-rva str-off)) ; Name
+      (nelisp-pe--write-le32 cbuf 1)  ; Base
+      (nelisp-pe--write-le32 cbuf n)  ; NumberOfFunctions
+      (nelisp-pe--write-le32 cbuf n)  ; NumberOfNames
+      (nelisp-pe--write-le32 cbuf (+ edata-rva eat-off))
+      (nelisp-pe--write-le32 cbuf (+ edata-rva npt-off))
+      (nelisp-pe--write-le32 cbuf (+ edata-rva ord-off))
+      (dolist (e entries) (nelisp-pe--write-le32 cbuf (plist-get e :rva)))
+      (dolist (e sorted) (nelisp-pe--write-le32 cbuf (plist-get e :name-rva)))
+      (dolist (e sorted) (nelisp-pe--write-le16 cbuf (plist-get e :ordinal)))
+      (nelisp-pe--write-pad cbuf (- str-off (nelisp-pe--buffer-length cbuf)))
+      (nelisp-pe--write-bytes cbuf dll-bytes)
+      (nelisp-pe--write-u8 cbuf 0)
+      (dolist (e entries)
+        (nelisp-pe--write-bytes cbuf (plist-get e :name-bytes))
+        (nelisp-pe--write-u8 cbuf 0)))
+    (let ((bytes (nelisp-pe--buffer-bytes cbuf)))
+      (list :bytes bytes :size (length bytes)))))
+
+(defun nelisp-pe--build-reloc-section (rvas)
+  "Build .reloc payload with IMAGE_REL_BASED_DIR64 entries for RVAS.
+One block per 4 KiB page; blocks are padded to 4 bytes with an ABSOLUTE
+(type 0) entry."
+  (let ((sorted (sort (delete-dups (copy-sequence rvas)) #'<))
+        (cbuf (nelisp-pe--make-buffer))
+        (page nil)
+        (offs nil))
+    (cl-flet ((flush ()
+                (when page
+                  (let* ((entries (reverse offs))
+                         (count (+ (length entries) (mod (length entries) 2))))
+                    (nelisp-pe--write-le32 cbuf page)
+                    (nelisp-pe--write-le32 cbuf (+ 8 (* 2 count)))
+                    (dolist (o entries)
+                      (nelisp-pe--write-le16
+                       cbuf (logior (ash nelisp-pe--rel-based-dir64 12) o)))
+                    (when (> count (length entries))
+                      (nelisp-pe--write-le16 cbuf 0))))))
+      (dolist (r sorted)
+        (let ((pg (logand r (lognot #xFFF))))
+          (unless (eql pg page)
+            (flush)
+            (setq page pg offs nil))
+          (push (logand r #xFFF) offs)))
+      (flush))
+    (nelisp-pe--buffer-bytes cbuf)))
+
+(defconst nelisp-pe--default-dllmain-stub
+  (unibyte-string #xb8 #x01 #x00 #x00 #x00 #xc3)
+  "mov eax,1 ; ret -- DllMain that returns TRUE.")
+
+(defun nelisp-pe--build-generic-dll (spec)
+  "Build a PE32+ DLL image from SPEC.
+SPEC keys:
+  :text :rodata :data :imports  as for the generic EXE plist.
+  :exports       list of (NAME . TARGET), TARGET = offset into :text or
+                 (:rva N).
+  :abs64-relocs  list of RVAs of 8-byte absolute addresses (each gets a
+                 DIR64 base relocation).
+  :entry-rva     DllMain RVA; default appends `mov eax,1; ret' to .text.
+  :dll-name      export directory name (default \"nelisp.dll\").
+  :image-base    preferred base (default #x180000000).
+  :no-reloc      non-nil omits .reloc entirely (negative-control hook).
+  :relocs-stripped non-nil also sets IMAGE_FILE_RELOCS_STRIPPED."
+  (let* ((text0 (or (plist-get spec :text)
+                    (error "nelisp-pe: DLL :text is required")))
+         (entry-rva (plist-get spec :entry-rva))
+         (stub-off (and (null entry-rva) (nelisp-pe--align-up (length text0) 16)))
+         (text (if stub-off
+                   (concat text0 (apply (function unibyte-string) (make-list (- stub-off (length text0)) #xcc))
+                           nelisp-pe--default-dllmain-stub)
+                 text0))
+         (rodata (plist-get spec :rodata))
+         (data (plist-get spec :data))
+         (imports (nelisp-pe--normalize-imports (plist-get spec :imports)))
+         (exports (plist-get spec :exports))
+         (dll-name (or (plist-get spec :dll-name) "nelisp.dll"))
+         (image-base (or (plist-get spec :image-base) nelisp-pe--dll-image-base))
+         (relocs (plist-get spec :abs64-relocs))
+         (want-reloc (and (not (plist-get spec :no-reloc)) relocs))
+         (text-rva nelisp-pe--section-alignment)
+         (rva text-rva)
+         (secs nil))
+    ;; Section descriptors in RVA order: (NAME BYTES FLAGS RVA).
+    (cl-flet ((add (name bytes flags)
+                (push (list name bytes flags rva) secs)
+                (setq rva (nelisp-pe--align-up (+ rva (length bytes))
+                                               nelisp-pe--section-alignment))))
+      (add ".text" text nelisp-pe--scn-exe-text-flags)
+      (when (and rodata (> (length rodata) 0))
+        (add ".rdata" rodata nelisp-pe--scn-rdata-flags))
+      (when (and data (> (length data) 0))
+        (add ".data" data nelisp-pe--scn-data-flags))
+      (let ((idata-info (and imports (nelisp-pe--build-idata rva imports))))
+        (when idata-info
+          (setq spec (plist-put (copy-sequence spec) :--idata-info idata-info))
+          (add ".idata" (plist-get idata-info :bytes) nelisp-pe--scn-idata-flags)))
+      (when exports
+        (let ((ed (nelisp-pe--build-edata rva dll-name exports text-rva)))
+          (setq spec (plist-put (copy-sequence spec) :--edata-rva rva))
+          (setq spec (plist-put spec :--edata-size (plist-get ed :size)))
+          (add ".edata" (plist-get ed :bytes) nelisp-pe--scn-rdata-flags)))
+      (when want-reloc
+        (let ((rb (nelisp-pe--build-reloc-section relocs)))
+          (setq spec (plist-put (copy-sequence spec) :--reloc-rva rva))
+          (setq spec (plist-put spec :--reloc-size (length rb)))
+          (add ".reloc" rb
+               (logior nelisp-pe--scn-cnt-init-data nelisp-pe--scn-mem-read
+                       nelisp-pe--scn-mem-discardable)))))
+    (setq secs (nreverse secs))
+    (let* ((idata-info (plist-get spec :--idata-info))
+           (num-sections (length secs))
+           (pe-offset nelisp-pe--dos-header-size)
+           (nt-headers-size (+ 4 nelisp-pe--header-size
+                               nelisp-pe--optional-header-pe32-plus-size
+                               (* num-sections nelisp-pe--section-header-size)))
+           (size-of-headers (nelisp-pe--align-up (+ pe-offset nt-headers-size)
+                                                 nelisp-pe--file-alignment))
+           (raw-ptr size-of-headers)
+           (init-size 0)
+           (rows nil)
+           (size-of-image nil)
+           (cbuf (nelisp-pe--make-buffer)))
+      (dolist (sec secs)
+        (let ((raw (nelisp-pe--align-up (length (nth 1 sec))
+                                        nelisp-pe--file-alignment)))
+          (push (list sec raw raw-ptr) rows)
+          (unless (string= (car sec) ".text") (setq init-size (+ init-size raw)))
+          (setq raw-ptr (+ raw-ptr raw))))
+      (setq rows (nreverse rows))
+      (setq size-of-image rva)
+      (nelisp-pe--write-dos-stub cbuf pe-offset)
+      (nelisp-pe--write-bytes cbuf (unibyte-string #x50 #x45 #x00 #x00))
+      (nelisp-pe--write-pe-file-header
+       cbuf
+       (list :machine (plist-get spec :machine)
+             :num-sections num-sections
+             :characteristics
+             (logior nelisp-pe--characteristic-executable
+                     nelisp-pe--characteristic-large-address-aware
+                     nelisp-pe--characteristic-dll
+                     (if (plist-get spec :relocs-stripped)
+                         nelisp-pe--characteristic-relocs-stripped 0))))
+      (nelisp-pe--write-optional-header64
+       cbuf
+       (list :entry-rva (or entry-rva (+ text-rva stub-off))
+             :text-rva text-rva
+             :image-base image-base
+             :size-of-code (nth 1 (car rows))
+             :size-of-initialized-data init-size
+             :size-of-image size-of-image
+             :size-of-headers size-of-headers
+             :import-rva (if idata-info (plist-get idata-info :import-rva) 0)
+             :import-size (if idata-info (plist-get idata-info :import-size) 0)
+             :iat-rva (if idata-info (plist-get idata-info :iat-rva) 0)
+             :iat-size (if idata-info (plist-get idata-info :iat-size) 0)
+             :export-rva (plist-get spec :--edata-rva)
+             :export-size (plist-get spec :--edata-size)
+             :reloc-rva (plist-get spec :--reloc-rva)
+             :reloc-size (plist-get spec :--reloc-size)
+             :dll-characteristics
+             (logior nelisp-pe--dll-characteristics-nx-compat
+                     nelisp-pe--dll-characteristics-dynamic-base
+                     nelisp-pe--dll-characteristics-high-entropy-va)
+             :stack-reserve (plist-get spec :stack-reserve)
+             :stack-commit (plist-get spec :stack-commit)
+             :heap-reserve (plist-get spec :heap-reserve)
+             :heap-commit (plist-get spec :heap-commit)))
+      (dolist (row rows)
+        (let ((sec (nth 0 row)))
+          (nelisp-pe--write-pe-section-header
+           cbuf
+           (list :name (nth 0 sec)
+                 :virtual-size (length (nth 1 sec))
+                 :virtual-address (nth 3 sec)
+                 :raw-data-size (nth 1 row)
+                 :raw-data-ptr (nth 2 row)
+                 :characteristics (nth 2 sec)))))
+      (let ((pad (- size-of-headers (nelisp-pe--buffer-length cbuf))))
+        (when (< pad 0) (error "nelisp-pe: PE headers exceed SizeOfHeaders"))
+        (nelisp-pe--write-pad cbuf pad))
+      (dolist (row rows)
+        (let ((bytes (nth 1 (nth 0 row))))
+          (nelisp-pe--write-bytes cbuf bytes)
+          (nelisp-pe--write-pad cbuf (- (nth 1 row) (length bytes)))))
+      (nelisp-pe--buffer-bytes cbuf))))
+
+;;;###autoload
+(defun nelisp-pe-write-dll-binary (file-path spec)
+  "Emit a PE32+ DLL to FILE-PATH from generic plist SPEC.
+See `nelisp-pe--build-generic-dll' for the keys.  Writes raw bytes with
+`no-conversion' and returns FILE-PATH."
+  (let ((bytes (nelisp-pe--build-generic-dll spec))
+        (coding-system-for-write 'no-conversion))
+    (write-region bytes nil file-path nil 'silent)
+    file-path))
 
 ;;;###autoload
 (defun nelisp-pe-write-binary (file-path build-plist)
