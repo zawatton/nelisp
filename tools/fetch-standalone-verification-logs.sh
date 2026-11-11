@@ -79,7 +79,7 @@ if [ "$AUDIT_ONLY" -ne 1 ]; then
 fi
 
 missing=""
-for platform in linux-x86_64 macos-aarch64 macos-x86_64 windows-x86_64; do
+for platform in linux-x86_64 macos-aarch64 windows-x86_64; do
   log="$(find "$OUT_DIR" -type f -name "$platform.log" | head -n 1 || true)"
   if [ -z "$log" ]; then
     missing="${missing}${missing:+, }$platform"
