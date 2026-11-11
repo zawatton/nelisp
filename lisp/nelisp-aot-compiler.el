@@ -4274,6 +4274,17 @@ value expression, docstring, and customization keyword plist."
   (plist-get (nelisp-aot-compiler--extract-defmacros sexp)
              :custom-metadata))
 
+;; Special before the `let' below binds them: byte-compiled, a binding of a
+;; variable not yet declared special is lexical, and the lifted lambdas and
+;; closure descriptors would be collected into the global values instead.
+;; The documented `defvar's follow `nelisp-aot-compiler--with-defmacros'.
+(defvar nelisp-aot-compiler--lambda-lift-counter)
+(defvar nelisp-aot-compiler--closure-lift-counter)
+(defvar nelisp-aot-compiler--lambda-lift-hoists)
+(defvar nelisp-aot-compiler--closure-lift-descriptors)
+(defvar nelisp-aot-compiler--lambda-lift-names)
+(defvar nelisp-aot-compiler--special-vars)
+
 (defun nelisp-aot-compiler--closure-descriptors (sexp)
   "Return Doc 129.7U heap-closure descriptors found in SEXP."
   (let* ((extracted (nelisp-aot-compiler--extract-defmacros sexp))
@@ -11395,6 +11406,11 @@ for direct calls."
     (or (plist-get signature :min-count)
         (plist-get signature :fixed-count)
         (plist-get signature :arity))))
+
+;; Special before `nelisp-aot-compiler--parse-value' binds it (see the
+;; documented `defvar' further down): byte-compiled, the binding would
+;; otherwise be lexical and never inhibit the cache-slot rewrite.
+(defvar nelisp-aot-compiler--symbol-literal-inhibit)
 
 (defun nelisp-aot-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
