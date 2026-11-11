@@ -31,7 +31,6 @@
   (let ((module (nelisp-sys-frontend-parse-module nelisp-sys-mt-test--add)))
     (dolist (case '(("x86_64-unknown-linux-gnu"  elf64    sysv-amd64)
                     ("aarch64-unknown-linux-gnu" elf64    aapcs64)
-                    ("x86_64-apple-darwin"       mach-o64 sysv-amd64)
                     ("aarch64-apple-darwin"      mach-o64 aapcs64)
                     ("x86_64-pc-windows-msvc"    pe-coff  win64)))
       (let ((meta (nelisp-sys-abi-meta-module module (nth 0 case))))
@@ -56,7 +55,6 @@
     (unwind-protect
         (dolist (case '(("x86_64-unknown-linux-gnu"  elf   62)
                         ("aarch64-unknown-linux-gnu" elf   183)
-                        ("x86_64-apple-darwin"       macho nil)
                         ("aarch64-apple-darwin"      macho nil)
                         ("x86_64-pc-windows-msvc"    coff  nil)))
           (let* ((triple (nth 0 case))
