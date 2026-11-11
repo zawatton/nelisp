@@ -1,0 +1,28 @@
+# substrate-parity JOBS equality (corpus subset), 2026-11-11T13:03:30Z
+# binary: copy of ea0ac6a60 standalone reader built in a sibling worktree (NELISP_BIN); host emacs: GNU Emacs 31.1
+# command (per run, cwd = worktree root, ulimit -v 8388608, stdin /dev/null, timeout 3000, under bin/heavy-run.sh):
+#   NELISP_BIN=<bin> NELISP_SUBSTRATE_PARITY_LIMIT=12 NELISP_SUBSTRATE_PARITY_JOBS=<J> emacs --batch -Q -L lisp -L src -L scripts -l tools/nelisp-substrate-parity.el
+JOBS=1 exit=0 wall=271.3s max_single_process_rss=469508KB
+JOBS=4 exit=0 wall=104.8s max_single_process_rss=468624KB
+# peak RSS is the largest single child process (getrusage RUSAGE_CHILDREN), not a sum over the pool
+# stdout JOBS=1:
+#   GATE-COUNT checked=60 findings=0
+#   SUBSTRATE-SKIP name=source-cache reason=no-runtime-cache-enable-marker-was-this-built-by-make-standalone-reader
+#   
+#   [substrate-parity] PASS
+# stdout JOBS=4:
+#   GATE-COUNT checked=60 findings=0
+#   SUBSTRATE-SKIP name=source-cache reason=no-runtime-cache-enable-marker-was-this-built-by-make-standalone-reader
+#   
+#   [substrate-parity] PASS
+# diff out-1 out-4: exit=0 (identical); stderr diff exit=0
+# note: source-cache phase skipped in both runs (no .enable marker in this worktree); source-fallback, runtime-image, artifact, host phases ran.
+
+# Full corpus (73 forms), same repo root/marker, binary e1468b177, 2026-11-11T21:51:13Z
+orig rc=0 wall=1864.501314253 GATE-COUNT checked=436 findings=0
+m1 rc=0 wall=1808 GATE-COUNT checked=436 findings=0
+m4 rc=0 wall=514 GATE-COUNT checked=436 findings=0
+orig.meta is from the first run: rc=0 wall=1864.501314253
+stdout orig==JOBS1
+stdout JOBS1==JOBS4
+stderr all equal (empty)

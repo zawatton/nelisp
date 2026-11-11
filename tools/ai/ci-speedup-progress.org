@@ -48,8 +48,7 @@ cmd: bash tools/check-extras-partition.sh
 cmd: python3 tools/ai/ci-speedup/check.py extras-legs
 
 ** S4.3 substrate-parity output identical at JOBS=1 and JOBS=4 (corpus subset)
-#+NOTE: evidence = diff log produced by the implementer, reviewed by the coordinator
-pending
+evidence: tools/ai/ci-speedup/parity-jobs-equality.log sha256=50058b44f7d7301f5b6036bab783247a51f51f2546b70ef2734493e9a797c04d
 
 ** S4.4 Root cause of slow eval-runtime-image / exec-elisp-artifact / eval-elisp-source startup identified
 pending
