@@ -4932,6 +4932,44 @@ artifacts still give, the runtime sources must not name either one."
   (should-not (and nelisp-aot-compiler-lisp-open-defects
                    (nelisp-aot-compiler-test--replay-primitive-hits))))
 
+(ert-deftest nelisp-aot-compiler/aarch64-symbol-eq-calls-object-word-helper ()
+  "Doc 226 D9 stage 3: arm64 `symbol-eq' hands symbol object WORDs to the helper.
+Without the object-word branch every symbol WORD compared false on aarch64,
+so no condition-case clause matched.  The emission must test the low three
+bits against #b110 and BL to `nl_symbol_word_eq' from the objects label."
+  (let* ((nelisp-aot-compiler--arch 'aarch64)
+         (buf (nelisp-asm-arm64-make-buffer))
+         (node (nelisp-aot-compiler--make-ir
+                'symbol-eq :id 'symeq-t1
+                :a (nelisp-aot-compiler--make-ir 'imm :value 8)
+                :b (nelisp-aot-compiler--make-ir 'imm :value 16)))
+         (fixups nil))
+    (nelisp-aot-compiler--emit-symbol-eq-arm64 node buf)
+    (setq fixups (nelisp-asm-arm64-buffer-fixups buf))
+    (let ((bl (seq-find (lambda (f) (and (eq (nth 1 f) 'nl_symbol_word_eq)
+                                         (eq (nth 2 f) 'bl26)))
+                        fixups)))
+      (should bl)
+      (should (= 1 (length (seq-filter
+                            (lambda (f) (eq (nth 1 f) 'nl_symbol_word_eq))
+                            fixups))))
+      ;; Two `b.eq symeq-t1-objects' guards (one per operand; `b-cond' lowers
+      ;; to an inverted skip plus a `b26' branch).
+      (should (= 2 (length (seq-filter
+                            (lambda (f) (and (eq (nth 1 f) 'symeq-t1-objects)
+                                             (eq (nth 2 f) 'b26)))
+                            fixups))))
+      ;; Argument shuffle precedes the BL: mov x0,x1 ; mov x1,x2.
+      (let* ((bytes (nelisp-asm-arm64-buffer-bytes buf))
+             (slot (nth 0 bl))
+             (w (lambda (off) (logior (aref bytes off)
+                                      (ash (aref bytes (+ off 1)) 8)
+                                      (ash (aref bytes (+ off 2)) 16)
+                                      (ash (aref bytes (+ off 3)) 24)))))
+        (should (= (funcall w (- slot 8)) #xAA0103E0)) ; mov x0, x1
+        (should (= (funcall w (- slot 4)) #xAA0203E1)) ; mov x1, x2
+        (should (= (funcall w slot) #x94000000))))))        ; bl placeholder
+
 (provide 'nelisp-aot-compiler-test)
 
 ;;; nelisp-aot-compiler-test.el ends here

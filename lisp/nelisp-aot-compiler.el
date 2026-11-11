@@ -24679,6 +24679,7 @@ cell), the latter read through its header."
   "Emit `symbol-eq' for aarch64 — both tags Symbol, then byte equality."
   (let* ((id (nelisp-aot-compiler--ir-get node :id))
          (tag-false-lbl (intern (format "%s-tag-false" id)))
+         (object-lbl (intern (format "%s-objects" id)))
          (end-lbl (intern (format "%s-tag-end" id))))
     (nelisp-aot-compiler--emit-value
      (nelisp-aot-compiler--ir-get node :a) buf)
@@ -24687,6 +24688,16 @@ cell), the latter read through its header."
      (nelisp-aot-compiler--ir-get node :b) buf)
     (nelisp-asm-arm64-mov-reg-reg buf 'x2 'x0)
     (nelisp-heap-accessors-arm64-ldr-post-sp-16 buf 'x1)
+    ;; Doc 226 D9 stage 3: a symbol object WORD (low bits 110) on either side
+    ;; is compared by `nl_symbol_word_eq'; two views stay inline.
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x1 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'eq object-lbl)
+    (nelisp-asm-arm64-mov-imm64 buf 'x9 7)
+    (nelisp-asm-arm64-and-reg-reg buf 'x9 'x2 'x9)
+    (nelisp-asm-arm64-cmp-imm buf 'x9 6)
+    (nelisp-asm-arm64-b-cond buf 'eq object-lbl)
     (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x1 'x9 tag-false-lbl)
     (nelisp-aot-compiler--emit-unless-view-arm64 buf 'x2 'x9 tag-false-lbl)
     (nelisp-heap-accessors-arm64-sexp-tag buf 'x0 'x1)
@@ -24696,6 +24707,11 @@ cell), the latter read through its header."
     (nelisp-asm-arm64-cmp-imm buf 'x0 nelisp-sexp--tag-symbol)
     (nelisp-asm-arm64-b-cond buf 'ne tag-false-lbl)
     (nelisp-aot-compiler--emit-string-eq-core-arm64 buf 'x1 'x2 id)
+    (nelisp-asm-arm64-b buf end-lbl)
+    (nelisp-asm-arm64-define-label buf object-lbl)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x0 'x1)
+    (nelisp-asm-arm64-mov-reg-reg buf 'x1 'x2)
+    (nelisp-asm-arm64-bl buf 'nl_symbol_word_eq)
     (nelisp-asm-arm64-b buf end-lbl)
     (nelisp-asm-arm64-define-label buf tag-false-lbl)
     (nelisp-asm-arm64-mov-imm64 buf 'x0 0)
