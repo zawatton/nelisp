@@ -1126,6 +1126,101 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
       (nelisp-native-pe-symbols-append file-path symtab))
     file-path))
 
+(defvar nelisp-pe--dll-image-base)
+(declare-function nelisp-pe-write-dll-binary "nelisp-pe-write" (file-path spec))
+
+(defun nelisp-link--pe-abs64-site-rvas (units combined layout image-base)
+  "Return sorted RVAs of every `abs64' patch site in UNITS.
+COMBINED and LAYOUT are the combined-section map and absolute section
+layout used for linking; IMAGE-BASE is subtracted from section VAs."
+  (let (rvas)
+    (dolist (unit units)
+      (let ((uname (plist-get unit :name)))
+        (dolist (rel (plist-get unit :relocs))
+          (when (eq (plist-get rel :type) 'abs64)
+            (let* ((rsec (nelisp-link--reloc-section rel))
+                   (uoff (nelisp-link--combined-offset combined rsec uname))
+                   (sec-va (cdr (assq rsec layout))))
+              (push (- (+ sec-va uoff (plist-get rel :offset)) image-base)
+                    rvas))))))
+    (sort (delete-dups rvas) #'<)))
+
+(defun nelisp-link-units-pe32-dll (file-path units exports
+                                             &optional imports options)
+  "Link UNITS and emit a PE32+ DLL to FILE-PATH.
+EXPORTS is a list of global symbol names, or (EXPORT-NAME . SYMBOL) pairs.
+IMPORTS is as for `nelisp-link-units-pe32'.  OPTIONS is a plist:
+  :image-base  preferred base (default #x180000000)
+  :dll-name    export directory DLL name (default \"nelisp.dll\")
+  :entry       DllMain symbol (default none: writer appends a TRUE stub)
+  :no-reloc    omit .reloc (negative-control hook)
+Every `abs64' relocation site in UNITS gets an IMAGE_REL_BASED_DIR64 entry.
+Exported functions use the Win64 ABI (rcx, rdx, r8, r9 -> rax) as written by
+the units; the linker does not translate calling conventions."
+  (require 'nelisp-pe-write)
+  (let* ((base (or (plist-get options :image-base) nelisp-pe--dll-image-base))
+         (nelisp-link--pe-image-base base)
+         (normalized-imports (nelisp-pe--normalize-imports imports))
+         (predict-units (if normalized-imports
+                            (append units
+                                    (list (nelisp-link--pe-empty-import-thunk-unit
+                                           normalized-imports 'x86_64)))
+                          units))
+         (predict-combined (nelisp-link-combine-sections predict-units 'x86_64))
+         (predict-rvas (nelisp-link--pe-section-rvas predict-combined
+                                                     normalized-imports))
+         (idata-info (and normalized-imports
+                          (nelisp-pe--build-idata
+                           (plist-get predict-rvas :idata-rva)
+                           normalized-imports)))
+         (orig-combined (nelisp-link-combine-sections units 'x86_64))
+         (orig-text-size
+          (nelisp-link--align-up
+           (nelisp-link--section-len orig-combined 'text)
+           (nelisp-link--unit-section-alignment 'text 'x86_64)))
+         (predict-layout (nelisp-link--pe-layout predict-combined
+                                                 normalized-imports base))
+         (all-units (if normalized-imports
+                        (append units
+                                (list (nelisp-link--pe-import-thunk-unit
+                                       normalized-imports
+                                       (cdr (assq 'text predict-layout))
+                                       orig-text-size idata-info 'x86_64)))
+                      units))
+         (combined (nelisp-link-combine-sections all-units 'x86_64))
+         (layout (nelisp-link--pe-layout combined normalized-imports base))
+         (link-result (nelisp-link-units-2pass all-units layout 'x86_64))
+         (bytes (plist-get link-result :bytes))
+         (symtab (plist-get link-result :symtab))
+         (data (concat (nelisp-link--bytes-or-empty bytes 'data)
+                       (make-string (or (cdr (assq 'bss bytes)) 0) 0)))
+         (resolve (lambda (sym what)
+                    (let ((e (nelisp-link-symtab-lookup symtab sym)))
+                      (unless e
+                        (signal 'nelisp-link--unresolved-symbol (list sym what)))
+                      (list :rva (- (plist-get e :value) base)))))
+         (export-specs
+          (mapcar (lambda (x)
+                    (let ((name (if (consp x) (car x) x))
+                          (sym (if (consp x) (cdr x) x)))
+                      (cons name (funcall resolve sym :export))))
+                  exports))
+         (entry (plist-get options :entry)))
+    (nelisp-pe-write-dll-binary
+     file-path
+     (list :text (nelisp-link--bytes-or-empty bytes 'text)
+           :rodata (nelisp-link--bytes-or-empty bytes 'rodata)
+           :data data
+           :imports normalized-imports
+           :exports export-specs
+           :abs64-relocs (nelisp-link--pe-abs64-site-rvas
+                          all-units combined layout base)
+           :entry-rva (and entry (cadr (funcall resolve entry :entry)))
+           :dll-name (plist-get options :dll-name)
+           :image-base base
+           :no-reloc (plist-get options :no-reloc)))
+    file-path))
+
 (defun nelisp-link--macho-exec-layout (combined &optional machine)
   "Return absolute section layout for the arm64 Mach-O executable writer.
 The writer's executable path has one __TEXT payload, so .rodata is linked
