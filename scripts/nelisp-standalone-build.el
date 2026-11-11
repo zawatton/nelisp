@@ -48055,7 +48055,13 @@ about 4.4 instruction words of mov-immediate plus a store."
                       '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
                 (eq (car-safe source) 'seq)))
       (list source)
-    (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
+    (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000))
+          ;; Identical literals share one blob.  Each use copies the bytes
+          ;; into a fresh string (`nl_alloc_str'), so sharing the read-only
+          ;; source changes nothing at run time.  The reader driver embeds
+          ;; two of its bootstrap sources twice (5.5 MB and 6.0 MB), which
+          ;; otherwise land in rodata twice each (2026-11-11).
+          (seen (make-hash-table :test #'equal)))
       (cl-labels
           ((u64le (v) (apply #'unibyte-string
                              (mapcar (lambda (i) (logand (ash v (* -8 i)) 255))
@@ -48069,9 +48075,12 @@ about 4.4 instruction words of mov-immediate plus a store."
                     (stringp (nth 2 x))
                     (>= (string-bytes (nth 2 x)) nelisp-standalone--str-lit-blob-min))
                (let* ((bytes (encode-coding-string (nth 2 x) 'utf-8 t))
-                      (blob (intern (format "%s_%d" prefix n))))
-                 (setq n (1+ n))
-                 (push (cons blob (concat (u64le (length bytes)) bytes)) blobs)
+                      (blob (gethash bytes seen)))
+                 (unless blob
+                   (setq blob (intern (format "%s_%d" prefix n)))
+                   (setq n (1+ n))
+                   (puthash bytes blob seen)
+                   (push (cons blob (concat (u64le (length bytes)) bytes)) blobs))
                  `(nl_alloc_str (+ (data-addr ,blob) 8)
                                 (heap-read-u64 (data-addr ,blob) 0)
                                 ,(walk (nth 1 x)))))
