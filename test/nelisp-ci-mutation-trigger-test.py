@@ -36,7 +36,7 @@ ORIGINAL_STEPS = [
     "Record GNU bytecode compiler executable",
     "Set up Emacs",
     "Install rooted-protocol decoder dependencies (Linux)",
-    "gate-mutation, shard ${{ matrix.shard }} of 4",
+    "gate-mutation, shard ${{ matrix.shard }} of 6",
     "Upload gate report",
 ]
 COSTLY = ORIGINAL_STEPS[1:6]
