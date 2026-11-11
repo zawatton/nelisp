@@ -5,6 +5,9 @@
 # into the tree, so shards cannot share one).  Records
 # "<HEAD sha> <dirty> <rc>" in target/main-ci-reds/gate-mutation-local.result,
 # the format tools/ai/main-ci-reds/check-heavy.sh reads.
+# No NELISP_GATE_MUTATION_SHARD_BUDGET: that budget fits CI's per-job time
+# limit, and on a shared machine it reported rows NOT RUN (every row must
+# run here, however long it takes).
 # Usage: gate-mutation-local.sh [N]   (default 6; HEAVY_RUN=<Notes>/bin/heavy-run.sh)
 set -u
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -22,7 +25,7 @@ for i in $(seq 0 $((n - 1))); do
   [ -d "$wt" ] && git worktree remove --force "$wt" 2>/dev/null
   git worktree add -q --detach "$wt" "$sha" || exit 2
   ( cd "$wt" && ulimit -v 8388608 &&
-    NELISP_GATE_MUTATION_SHARD="$i/$n" NELISP_GATE_MUTATION_SHARD_BUDGET=5400 \
+    NELISP_GATE_MUTATION_SHARD="$i/$n" \
       $heavy bash tools/nelisp-gate-mutation.sh > "$root/$work/shard-$i.log" 2>&1
     echo $? > "$root/$work/shard-$i.rc" ) &
   pids+=($!)
