@@ -184,7 +184,7 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
     (IID_ITfTextEditSink "{8127d409-ccd3-4683-967a-b43d5b482bf7}")
     (IID_ITfProperty "{e2449660-9542-11d2-bf46-00105a2799b5}")
     (IID_ITfDisplayAttributeProvider "{fee47777-163c-4769-996a-6e9c50ad8f54}")
-    (IID_ITfDisplayAttributeInfo "{70528852-2f26-4aea-8c96-215b0551baa7}")
+    (IID_ITfDisplayAttributeInfo "{70528852-2f26-4aea-8c96-215150578932}")
     (IID_IEnumTfDisplayAttributeInfo "{7cef04d7-cb75-4e80-a7ab-5f5bc7d332de}")
     (IID_ITfFunctionProvider "{101d6610-0990-11d3-8df0-00105a2799b5}")
     (IID_ITfFunction "{db593490-098f-11d3-8df0-00105a2799b5}")
@@ -196,7 +196,7 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
     (IID_ITfLangBarItemButton "{28c7f1d0-de25-11d2-afdd-00105a2799b5}")
     (IID_ITfLangBarItemSink "{57dbe1a0-de25-11d2-afdd-00105a2799b5}")
     (IID_ITfLangBarItemMgr "{ba468c55-9956-4fb1-a59d-52a7dd7cc6aa}")
-    (IID_ITfSystemLangBarItem "{1449d9ab-13cf-4687-aa3e-8d8b18574396}")
+    (IID_ITfSystemLangBarItem "{1e13e9ec-6b33-4d4a-b5eb-8a92f029f356}")
     (IID_ITfUIElement "{ea1ea137-19df-11d7-a6d2-00065b84435c}")
     (IID_ITfUIElementMgr "{ea1ea135-19df-11d7-a6d2-00065b84435c}")
     (IID_ITfUIElementSink "{ea1ea136-19df-11d7-a6d2-00065b84435c}")
@@ -214,8 +214,8 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
     (GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER "{046b8c80-1647-40f7-9b21-b93b81aabc1b}")
     (GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT "{13a016df-560b-46cd-947a-4c3af1e0e35d}")
     (GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT "{25504fb4-7bab-4bc1-9c69-cf81890f0ef5}")
-    (GUID_TFCAT_TIPCAP_UIELEMENTENABLED "{49d2f9ce-1f5e-11d7-a6d3-00065b84435c}")
-    (GUID_TFCAT_TIPCAP_SECUREMODE "{49d2f9cf-1f5e-11d7-a6d3-00065b84435c}")
+    (GUID_TFCAT_TIPCAP_UIELEMENTENABLED "{49d2f9cf-1f5e-11d7-a6d3-00065b84435c}")
+    (GUID_TFCAT_TIPCAP_SECUREMODE "{49d2f9ce-1f5e-11d7-a6d3-00065b84435c}")
     (GUID_TFCAT_TIPCAP_COMLESS "{364215d9-75bc-11d7-a6ef-00065b84435c}")
     (GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT "{ccf05dd7-4a87-11d7-a6e2-00065b84435c}")
     (GUID_PROP_ATTRIBUTE "{34b45670-7526-11d2-a147-00105a2799b5}")
@@ -226,22 +226,15 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
   "Windows SDK msctf GUIDs used by the TSF text service.
 Each entry is (NAME GUID-STRING).  See `nelisp-com-msctf-guids-unverified'.")
 
-;; Cross-check (2026-11-12): every GUID above not listed here has its 16
-;; in-memory bytes present in wine's own uuid table (activeds.dll of
-;; wine-10.0 and Proton Experimental), so its value agrees with the SDK.  The
-;; entries below are absent from wine's headers and are from memory of the
-;; Windows SDK only; nelisp-skk-ime/windows/src/guids.h holds project GUIDs
-;; only, so it cannot confirm them.  Verify on a Windows build before relying
-;; on them for registration.
-(defconst nelisp-com-msctf-guids-unverified
-  '(IID_ITfTextInputProcessorEx IID_ITfDisplayAttributeProvider
-    IID_ITfDisplayAttributeInfo IID_ITfFunction IID_ITfLangBarItemButton
-    IID_ITfSystemLangBarItem IID_ITfCandidateListUIElement
-    GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT
-    GUID_TFCAT_TIPCAP_UIELEMENTENABLED GUID_TFCAT_TIPCAP_SECUREMODE
-    GUID_TFCAT_TIPCAP_COMLESS GUID_TFCAT_TIPCAP_INPUTMODECOMPARTMENT
-    GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION
-    GUID_COMPARTMENT_KEYBOARD_INPUTMODE_SENTENCE GUID_LBI_INPUTMODE)
+;; Cross-check (2026-11-12): every entry above was compared with the raw
+;; text of the Windows SDK bindings generated from Microsoft's win32metadata
+;; (windows-rs 0.58.0: Win32/UI/TextServices, System/Com, System/Ole) and
+;; matches.  Four earlier values were wrong and are fixed here, each also
+;; confirmed by a second source: ITfDisplayAttributeInfo (Wine msctf.idl,
+;; mingw-w64 msctf.h), ITfSystemLangBarItem (ReactOS ctfutb.idl; the old
+;; value was ITfSystemLangBarItemSink's IID), and the swapped
+;; TIPCAP_UIELEMENTENABLED / TIPCAP_SECUREMODE pair.
+(defconst nelisp-com-msctf-guids-unverified nil
   "Names in `nelisp-com-msctf-guids' that could not be cross-checked.")
 
 (defun nelisp-com-msctf-guid (name)
