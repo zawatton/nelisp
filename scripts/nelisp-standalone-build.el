@@ -2087,6 +2087,12 @@ standalone units can call each other."
          (n (length bytes))
          (vec (make-vector n 0))
          (generated-relocs nil)
+         ;; O(1) lookup by label (first cell wins, as `assq' did): a unit with
+         ;; N labels and M fixups was O(N*M) with a linear `assq' per fixup.
+         (label-index (let ((h (make-hash-table :test 'eq :size (max 16 (length labels)))))
+                        (dolist (cell labels h)
+                          (unless (gethash (car cell) h)
+                            (puthash (car cell) cell h)))))
          (i 0))
     (while (< i n)
       (aset vec i (aref bytes i))
@@ -2095,7 +2101,7 @@ standalone units can call each other."
       (let* ((slot (nth 0 fix))
              (label (nth 1 fix))
              (type (or (nth 2 fix) 'b26))
-             (cell (assq label labels)))
+             (cell (gethash label label-index)))
         (if cell
             (let ((disp (- (cdr cell) slot)))
               (unless (zerop (logand disp #x3))

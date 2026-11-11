@@ -152,7 +152,13 @@ are kept as vestigial init values for API compat; they are not
 read on the hot path."
   (vector (list :chunks nil :length 0
                 :bytes "" :pos 0
-                :labels nil :fixups nil :relocs nil)))
+                :labels nil :fixups nil :relocs nil
+                ;; O(1) membership index over =:labels= (NAME -> the very
+                ;; (NAME . POS) cell held in the alist).  The alist stays the
+                ;; public representation (`buffer-labels'); the table only
+                ;; replaces the linear `assq' scans, which made a unit with N
+                ;; labels O(N^2) (applyfn-reader.o: ~130k labels).
+                :label-table (make-hash-table :test 'eq))))
 
 (defun nelisp-asm-arm64-buffer-bytes (buf)
   "Return BUF's accumulated bytes as a unibyte-string.
@@ -184,7 +190,7 @@ Each entry is `(SLOT LABEL TYPE)'."
   "Return BUF's pending relocations as a list of plists.
 Each entry is `(:type TYPE :sym SYM :offset OFFSET :addend N)' —
 order matches emit order, suitable for Doc 93 linker handoff."
-  (plist-get (nelisp-asm-arm64--unwrap buf) :relocs))
+  (reverse (plist-get (nelisp-asm-arm64--unwrap buf) :relocs)))
 
 (defsubst nelisp-asm-arm64--byte-length (s)
   "Return the number of BYTES in S.
@@ -228,18 +234,28 @@ O(N²) for long buffers."
   (nelisp-asm-arm64--append-bytes
    buf (nelisp-asm-arm64--word-bytes word)))
 
+(defsubst nelisp-asm-arm64--label-cell (plist name)
+  "Return the `(NAME . POS)' cell for NAME in PLIST, or nil.
+Uses the O(1) `:label-table' index; a plist without one (hand-built) falls
+back to the `assq' scan of `:labels'.  Same `eq' semantics as that scan."
+  (let ((tbl (plist-get plist :label-table)))
+    (if tbl
+        (gethash name tbl)
+      (assq name (plist-get plist :labels)))))
+
 (defun nelisp-asm-arm64-define-label (buf name)
   "Mark NAME as resolved at BUF's current byte position.
 Signals `nelisp-asm-arm64-error' on duplicate label — silent
 shadow would mask codegen bugs."
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
          (labels (plist-get plist :labels)))
-    (when (assq name labels)
+    (when (nelisp-asm-arm64--label-cell plist name)
       (signal 'nelisp-asm-arm64-error
               (list :duplicate-label name)))
-    (setq plist (plist-put plist :labels
-                           (cons (cons name (plist-get plist :length))
-                                 labels)))
+    (let ((cell (cons name (plist-get plist :length)))
+          (tbl (plist-get plist :label-table)))
+      (when tbl (puthash name cell tbl))
+      (setq plist (plist-put plist :labels (cons cell labels))))
     (nelisp-asm-arm64--rewrap buf plist)))
 
 (defun nelisp-asm-arm64-emit-fixup (buf slot-offset label type)
@@ -286,7 +302,8 @@ matches ELF64 r_addend)."
                       :offset (plist-get plist :length)
                       :addend (or addend 0)
                       :section 'text)))
-    (setq plist (plist-put plist :relocs (append relocs (list entry))))
+    ;; `:relocs' is held newest-first (O(1) push); the accessor reverses.
+    (setq plist (plist-put plist :relocs (cons entry relocs)))
     (nelisp-asm-arm64--rewrap buf plist)))
 
 (defun nelisp-asm-arm64--read-word-le (vec slot)
@@ -318,33 +335,36 @@ there is a codegen bug, not an external reference.  The combined
 reloc list is re-sorted by offset.  Returns the number of fixups
 externalized."
   (let* ((plist (nelisp-asm-arm64--unwrap buf))
-         (labels (plist-get plist :labels))
          (fixups (plist-get plist :fixups))
-         (relocs (plist-get plist :relocs))
+         (relocs (reverse (plist-get plist :relocs)))
+         (new-relocs nil)
          (kept nil)
          (n 0))
     (dolist (fixup fixups)
       (let ((slot (nth 0 fixup))
             (label (nth 1 fixup))
             (type (nth 2 fixup)))
-        (if (and (eq type 'bl26) (not (assq label labels)))
+        (if (and (eq type 'bl26)
+                 (not (nelisp-asm-arm64--label-cell plist label)))
             (progn
-              (setq relocs
-                    (append relocs
-                            (list (list :type 'b26-pc
-                                        :symbol (symbol-name label)
-                                        :sym label
-                                        :offset slot
-                                        :addend 0
-                                        :section 'text))))
+              (push (list :type 'b26-pc
+                          :symbol (symbol-name label)
+                          :sym label
+                          :offset slot
+                          :addend 0
+                          :section 'text)
+                    new-relocs)
               (setq n (1+ n)))
           (push fixup kept))))
     (setq plist (plist-put plist :fixups (nreverse kept)))
+    ;; Emit-order list (old relocs, then the externalized ones in fixup
+    ;; order), stable-sorted by offset exactly as before; stored newest-first.
     (setq plist (plist-put plist :relocs
-                           (sort relocs
-                                 (lambda (a b)
-                                   (< (plist-get a :offset)
-                                      (plist-get b :offset))))))
+                           (reverse
+                            (sort (append relocs (nreverse new-relocs))
+                                  (lambda (a b)
+                                    (< (plist-get a :offset)
+                                       (plist-get b :offset)))))))
     (nelisp-asm-arm64--rewrap buf plist)
     n))
 
@@ -367,7 +387,6 @@ O(total-bytes))."
   (let* ((plist  (nelisp-asm-arm64--unwrap buf))
          (chunks (plist-get plist :chunks))
          (bytes  (apply #'concat (nreverse (copy-sequence chunks))))
-         (labels (plist-get plist :labels))
          (fixups (plist-get plist :fixups))
          ;; Counted and indexed in BYTES, not characters: see
          ;; `nelisp-asm-arm64--byte-length'.
@@ -381,7 +400,7 @@ O(total-bytes))."
       (let* ((slot  (nth 0 fix))
              (label (nth 1 fix))
              (type  (or (nth 2 fix) 'b26))
-             (cell  (assq label labels)))
+             (cell  (nelisp-asm-arm64--label-cell plist label)))
         (unless cell
           (signal 'nelisp-asm-arm64-error
                   (list :unresolved-label label :at-slot slot)))
