@@ -1537,7 +1537,7 @@ jobs:
           if-no-files-found: error
 
   subsystems:
-    name: "tier ${{ matrix.tier }}"
+    name: "tier ${{ matrix.tier }}${{ matrix.group && format(' ({0})', matrix.group) || '' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 120
     needs: build
@@ -1545,12 +1545,27 @@ jobs:
     # identical for every JOBS value (the stamp key ignores it).
     env:
       NELISP_STANDALONE_JOBS: '4'
+      # Process-pool size of the substrate-parity probes (output is identical
+      # for every value; default 1 is fully serial).
+      NELISP_SUBSTRATE_PARITY_JOBS: '4'
     strategy:
       matrix:
-        # Split by cost, measured: extras 519 s, smokes 209 s, perf 113 s.
-        # extras alone is longer than the other two together, so it gets
-        # its own job rather than being paired with one of them.
-        tier: [extras, smokes, perf]
+        # `extras' is split into four legs by cost (see cmd_extras in
+        # tools/ai/nelisp-ai.sh): parity is the long serial-launch gate,
+        # variants holds the two cache-sensitive variant rebuilds, build and
+        # smokes share the rest.  Every gate keeps its own report, so a leg
+        # that does not run shows up as MISSING gates in verify.
+        include:
+          - tier: extras
+            group: parity
+          - tier: extras
+            group: variants
+          - tier: extras
+            group: build
+          - tier: extras
+            group: smokes
+          - tier: smokes
+          - tier: perf
       fail-fast: false
     steps:
       - uses: actions/checkout@v4
@@ -1572,9 +1587,9 @@ jobs:
           path: |
             target/standalone-units
             target/nelisp-vendor-bytecode
-          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
           restore-keys: |
-            units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-
+            units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-
             units-${{ runner.os }}-
 
       - name: Set up GNU bytecode compiler (Linux / macOS)
@@ -1641,7 +1656,7 @@ jobs:
         run: bash tools/ci-stamp-checkpoint.sh start
       - name: "AI toolchain tier: ${{ matrix.tier }}"
         shell: bash
-        run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }}
+        run: bash tools/ai/nelisp-ai.sh ${{ matrix.tier }} ${{ matrix.group }}
       # Informational: shows whether the downloaded binary survived the job
       # or something rebuilt it.
       - name: Log the stamp status again (end of job)
@@ -1666,13 +1681,13 @@ jobs:
           path: |
             target/standalone-units
             target/nelisp-vendor-bytecode
-          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          key: units-${{ runner.os }}-${{ github.job }}-${{ matrix.tier }}-${{ matrix.group }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
 
       - name: Upload gate reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gate-reports-${{ matrix.tier }}
+          name: gate-reports-${{ matrix.tier }}${{ matrix.group && format('-{0}', matrix.group) || '' }}
           path: target/gates/*.json
           if-no-files-found: error
 

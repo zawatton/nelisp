@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Machine checks for the CI speed-up ledger (tools/ai/ci-speedup-progress.org).
 
-Usage: check.py {timeouts|concurrency|shards|parity-split|tests}
+Usage: check.py {timeouts|concurrency|shards|parity-split|extras-legs|tests}
 Exit 0 iff the named property holds on the working-tree workflows.
 """
 import glob, os, subprocess, sys
@@ -60,6 +60,18 @@ def parity_split():
         fail("smoke still runs parity-fuzz")
 
 
+def extras_legs():
+    sub = load("ci.yml")["jobs"]["subsystems"]
+    inc = sub["strategy"]["matrix"].get("include") or []
+    legs = sorted((i.get("tier"), i.get("group")) for i in inc)
+    want = sorted([("extras", "parity"), ("extras", "variants"), ("extras", "build"),
+                   ("extras", "smokes"), ("smokes", None), ("perf", None)])
+    if legs != want:
+        fail(f"subsystems legs = {legs}, want {want}")
+    if "subsystems" not in load("ci.yml")["jobs"]["verify"]["needs"]:
+        fail("verify does not need subsystems")
+
+
 def tests():
     rc = 0
     for t in sorted(glob.glob(os.path.join(ROOT, "test", "nelisp-ci-*-test.py"))):
@@ -73,4 +85,5 @@ def tests():
 
 if __name__ == "__main__":
     {"timeouts": timeouts, "concurrency": concurrency, "shards": shards,
-     "parity-split": parity_split, "tests": tests}[sys.argv[1]]()
+     "parity-split": parity_split, "extras-legs": extras_legs,
+     "tests": tests}[sys.argv[1]]()

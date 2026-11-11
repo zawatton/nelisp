@@ -69,6 +69,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 
 (defvar nelisp-substrate-parity--repo-root
   (let ((here (expand-file-name (or load-file-name buffer-file-name default-directory))))
@@ -232,24 +233,54 @@ difference, and a wording difference should never masquerade as one."
     (insert (nelisp-substrate-parity--probe-line idx form))
     (insert "\n0\n")))
 
-(defun nelisp-substrate-parity--run-bare (bin cwd idx form)
+;; Each runner is split into a SPEC function (writes any per-form file and
+;; returns (PROGRAM . ARGS)) and a `run-*' wrapper that executes it
+;; serially.  The phase driver `--run-phase' uses the specs directly so a
+;; phase can run through the bounded process pool.
+
+(defun nelisp-substrate-parity--spec-bare (bin cwd idx form)
   (let ((file (expand-file-name (format "bare-%d.el" idx) cwd)))
     (nelisp-substrate-parity--write-load-file file idx form)
-    (apply #'nelisp-substrate-parity--extract idx
-           (nelisp-substrate-parity--call bin (list file) cwd))))
+    (cons bin (list file))))
 
-(defun nelisp-substrate-parity--run-load (bin cwd idx form)
+(defun nelisp-substrate-parity--spec-load (bin cwd idx form)
   (let ((file (expand-file-name (format "load-%d.el" idx) cwd)))
     (nelisp-substrate-parity--write-load-file file idx form)
-    (apply #'nelisp-substrate-parity--extract idx
-           (nelisp-substrate-parity--call bin (list "--load" file) cwd))))
+    (cons bin (list "--load" file))))
 
-(defun nelisp-substrate-parity--run-host (cwd idx form &optional preamble)
+(defun nelisp-substrate-parity--spec-host (cwd idx form &optional preamble)
   (let ((file (expand-file-name (format "host-%d.el" idx) cwd)))
     (nelisp-substrate-parity--write-load-file file idx form preamble)
-    (apply #'nelisp-substrate-parity--extract idx
-           (nelisp-substrate-parity--call nelisp-substrate-parity--emacs
-                                          (list "-Q" "--batch" "-l" file) cwd))))
+    (cons nelisp-substrate-parity--emacs (list "-Q" "--batch" "-l" file))))
+
+(defun nelisp-substrate-parity--spec-runtime-image (bin img idx form)
+  (cons bin (list "eval-runtime-image" img
+                  (nelisp-substrate-parity--probe-line idx form))))
+
+(defun nelisp-substrate-parity--spec-artifact (bin art idx form)
+  (cons bin (list "exec-elisp-artifact" art
+                  (nelisp-substrate-parity--probe-line idx form))))
+
+(defun nelisp-substrate-parity--spec-source (bin src idx form)
+  (cons bin (list "eval-elisp-source" src
+                  (nelisp-substrate-parity--probe-line idx form))))
+
+(defun nelisp-substrate-parity--run-spec (spec cwd idx)
+  "Run SPEC (PROGRAM . ARGS) serially in CWD and reduce it for IDX."
+  (apply #'nelisp-substrate-parity--extract idx
+         (nelisp-substrate-parity--call (car spec) (cdr spec) cwd)))
+
+(defun nelisp-substrate-parity--run-bare (bin cwd idx form)
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-bare bin cwd idx form) cwd idx))
+
+(defun nelisp-substrate-parity--run-load (bin cwd idx form)
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-load bin cwd idx form) cwd idx))
+
+(defun nelisp-substrate-parity--run-host (cwd idx form &optional preamble)
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-host cwd idx form preamble) cwd idx))
 
 (defun nelisp-substrate-parity--setup-runtime-image (bin cwd)
   "Dump a runtime image with the shim loaded.  Return its path, or
@@ -265,11 +296,8 @@ difference, and a wording difference should never masquerade as one."
         (cons :unavailable (nelisp-substrate-parity--classify err exit))))))
 
 (defun nelisp-substrate-parity--run-runtime-image (bin cwd img idx form)
-  (apply #'nelisp-substrate-parity--extract idx
-         (nelisp-substrate-parity--call
-          bin (list "eval-runtime-image" img
-                    (nelisp-substrate-parity--probe-line idx form))
-          cwd)))
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-runtime-image bin img idx form) cwd idx))
 
 (defun nelisp-substrate-parity--setup-artifact (bin cwd)
   "Compile the shim as a .neln artifact.  Return its path, or
@@ -289,11 +317,8 @@ difference, and a wording difference should never masquerade as one."
         (cons :unavailable (nelisp-substrate-parity--classify err exit))))))
 
 (defun nelisp-substrate-parity--run-artifact (bin cwd art idx form)
-  (apply #'nelisp-substrate-parity--extract idx
-         (nelisp-substrate-parity--call
-          bin (list "exec-elisp-artifact" art
-                    (nelisp-substrate-parity--probe-line idx form))
-          cwd)))
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-artifact bin art idx form) cwd idx))
 
 (defun nelisp-substrate-parity--setup-source (cwd)
   "Write the shim as a source module for `eval-elisp-source'.  Return its
@@ -307,11 +332,97 @@ on the first form instead."
     src))
 
 (defun nelisp-substrate-parity--run-source (bin cwd src idx form)
-  (apply #'nelisp-substrate-parity--extract idx
-         (nelisp-substrate-parity--call
-          bin (list "eval-elisp-source" src
-                    (nelisp-substrate-parity--probe-line idx form))
-          cwd)))
+  (nelisp-substrate-parity--run-spec
+   (nelisp-substrate-parity--spec-source bin src idx form) cwd idx))
+
+;; ---------------------------------------------------------------------
+;; Bounded process pool (NELISP_SUBSTRATE_PARITY_JOBS)
+;; ---------------------------------------------------------------------
+
+(defun nelisp-substrate-parity--jobs ()
+  "Pool size from NELISP_SUBSTRATE_PARITY_JOBS; default 1 (fully serial)."
+  (let ((n (string-to-number (or (getenv "NELISP_SUBSTRATE_PARITY_JOBS") "1"))))
+    (max 1 n)))
+
+(defun nelisp-substrate-parity--limit ()
+  "Corpus size cap from NELISP_SUBSTRATE_PARITY_LIMIT, or nil (unlimited).
+For tests only: a limited run is not a full gate run."
+  (let ((n (string-to-number (or (getenv "NELISP_SUBSTRATE_PARITY_LIMIT") ""))))
+    (and (> n 0) n)))
+
+(defun nelisp-substrate-parity--start-async (spec cwd)
+  "Start SPEC (PROGRAM . ARGS) in CWD asynchronously.
+Return a state vector [PROCESS OUT-BUFFER ERR-FILE EXIT].  Stdin is
+/dev/null and stderr goes to a temp file, matching `--call'."
+  (let* ((default-directory (file-name-as-directory cwd))
+         (err-file (make-temp-file "nlsp-err-"))
+         (buf (generate-new-buffer " *nlsp-out*"))
+         (state (vector nil buf err-file nil))
+         (proc (make-process
+                :name "nlsp-probe" :buffer buf :connection-type 'pipe
+                :noquery t
+                :command (append (list "/bin/sh" "-c"
+                                       "e=$1; shift; exec \"$@\" </dev/null 2>\"$e\""
+                                       "sh" err-file)
+                                 (list (car spec)) (cdr spec))
+                :sentinel (lambda (p _ev)
+                            (unless (process-live-p p)
+                              (aset state 3 (process-exit-status p)))))))
+    (aset state 0 proc)
+    state))
+
+(defun nelisp-substrate-parity--finish-async (state)
+  "Return (EXIT STDOUT STDERR) for a finished STATE and release its resources."
+  (let ((out (with-current-buffer (aref state 1) (buffer-string)))
+        (err (with-temp-buffer
+               (insert-file-contents (aref state 2))
+               (buffer-string))))
+    (kill-buffer (aref state 1))
+    (ignore-errors (delete-file (aref state 2)))
+    (list (aref state 3) out err)))
+
+(defun nelisp-substrate-parity--run-phase (corpus cwd specfn)
+  "Run one phase over CORPUS and return ((IDX . RESULT) ...) in corpus order.
+SPECFN is called as (SPECFN IDX TAG FORM) and returns (PROGRAM . ARGS).  With
+a pool size of 1 each probe runs serially, exactly as before.  With a larger
+pool the first probe runs alone (so any first-launch cache or marker write
+cannot race), then the rest run up to the pool size at a time.  Results
+never depend on completion order."
+  (let ((jobs (nelisp-substrate-parity--jobs)))
+    (if (or (<= jobs 1) (null (cdr corpus)))
+        (mapcar (lambda (entry)
+                  (cl-destructuring-bind (idx tag form) entry
+                    (cons idx (nelisp-substrate-parity--run-spec
+                               (funcall specfn idx tag form) cwd idx))))
+                corpus)
+      (let* ((first (car corpus))
+             (first-res
+              (cl-destructuring-bind (idx tag form) first
+                (cons idx (nelisp-substrate-parity--run-spec
+                           (funcall specfn idx tag form) cwd idx))))
+             (pending (cdr corpus))
+             (running nil)              ; list of (IDX . STATE)
+             (done nil))                ; list of (IDX . RESULT)
+        (unwind-protect
+            (while (or pending running)
+              (while (and pending (< (length running) jobs))
+                (cl-destructuring-bind (idx tag form) (pop pending)
+                  (push (cons idx (nelisp-substrate-parity--start-async
+                                   (funcall specfn idx tag form) cwd))
+                        running)))
+              (accept-process-output nil 0.05)
+              (dolist (r (copy-sequence running))
+                (let ((state (cdr r)))
+                  (when (and (aref state 3) (not (process-live-p (aref state 0))))
+                    (setq running (delq r running))
+                    (push (cons (car r)
+                                (apply #'nelisp-substrate-parity--extract (car r)
+                                       (nelisp-substrate-parity--finish-async state)))
+                          done)))))
+          (dolist (r running)
+            (ignore-errors (delete-process (aref (cdr r) 0)))))
+        (cons first-res
+              (mapcar (lambda (entry) (assq (car entry) done)) (cdr corpus)))))))
 
 ;; ---------------------------------------------------------------------
 ;; The artifact runtime cache marker.  `nelisp-performance-gate' toggles
@@ -349,6 +460,8 @@ host-Emacs run only (see `nelisp-substrate-parity--presence-host-preamble').
 Return a plist :results (SUBSTRATE . ((IDX . VALUE) ...)) :skips (list of
 report lines) :checked (count of form/substrate comparisons performed)."
   (let* ((corpus (or corpus nelisp-substrate-parity-corpus))
+         (corpus (let ((n (nelisp-substrate-parity--limit)))
+                   (if n (seq-take corpus n) corpus)))
          (bin (nelisp-substrate-parity--nelisp-bin))
          (cwd (make-temp-file "nelisp-substrate-parity-" t))
          (results nil)
@@ -359,82 +472,80 @@ report lines) :checked (count of form/substrate comparisons performed)."
     (unwind-protect
         (progn
           ;; -- baseline: bare-file --
-          (let ((bare nil))
-            (dolist (entry corpus)
-              (cl-destructuring-bind (idx _tag form) entry
-                (push (cons idx (nelisp-substrate-parity--run-bare bin cwd idx form))
-                      bare)))
-            (push (cons "bare" (nreverse bare)) results))
+          (push (cons "bare"
+                      (nelisp-substrate-parity--run-phase
+                       corpus cwd
+                       (lambda (idx _tag form)
+                         (nelisp-substrate-parity--spec-bare bin cwd idx form))))
+                results)
 
           ;; -- --load --
-          (let ((load-res nil))
-            (dolist (entry corpus)
-              (cl-destructuring-bind (idx _tag form) entry
-                (push (cons idx (nelisp-substrate-parity--run-load bin cwd idx form))
-                      load-res)
-                (setq checked (1+ checked))))
-            (push (cons "load" (nreverse load-res)) results))
+          (push (cons "load"
+                      (nelisp-substrate-parity--run-phase
+                       corpus cwd
+                       (lambda (idx _tag form)
+                         (nelisp-substrate-parity--spec-load bin cwd idx form))))
+                results)
+          (setq checked (+ checked (length corpus)))
 
           ;; -- runtime-image --
           (let ((img (nelisp-substrate-parity--setup-runtime-image bin cwd)))
             (if (and (consp img) (eq (car img) :unavailable))
                 (push (format "SUBSTRATE-SKIP name=runtime-image reason=%s" (cdr img)) skips)
-              (let ((ri-res nil))
-                (dolist (entry corpus)
-                  (cl-destructuring-bind (idx _tag form) entry
-                    (push (cons idx (nelisp-substrate-parity--run-runtime-image bin cwd img idx form))
-                          ri-res)
-                    (setq checked (1+ checked))))
-                (push (cons "runtime-image" (nreverse ri-res)) results))))
+              (push (cons "runtime-image"
+                          (nelisp-substrate-parity--run-phase
+                           corpus cwd
+                           (lambda (idx _tag form)
+                             (nelisp-substrate-parity--spec-runtime-image bin img idx form))))
+                    results)
+              (setq checked (+ checked (length corpus)))))
 
           ;; -- compiled artifact --
           (let ((art (nelisp-substrate-parity--setup-artifact bin cwd)))
             (if (and (consp art) (eq (car art) :unavailable))
                 (push (format "SUBSTRATE-SKIP name=artifact reason=%s" (cdr art)) skips)
-              (let ((art-res nil))
-                (dolist (entry corpus)
-                  (cl-destructuring-bind (idx _tag form) entry
-                    (push (cons idx (nelisp-substrate-parity--run-artifact bin cwd art idx form))
-                          art-res)
-                    (setq checked (1+ checked))))
-                (push (cons "artifact" (nreverse art-res)) results))))
+              (push (cons "artifact"
+                          (nelisp-substrate-parity--run-phase
+                           corpus cwd
+                           (lambda (idx _tag form)
+                             (nelisp-substrate-parity--spec-artifact bin art idx form))))
+                    results)
+              (setq checked (+ checked (length corpus)))))
 
           ;; -- source: cache path, then fallback path --
           (let ((src (nelisp-substrate-parity--setup-source cwd))
                 (backup (nelisp-substrate-parity--marker-backup)))
             (unwind-protect
-                (progn
+                (let ((source-spec
+                       (lambda (idx _tag form)
+                         (nelisp-substrate-parity--spec-source bin src idx form))))
                   (unless (file-exists-p nelisp-substrate-parity--marker-file)
                     (push "SUBSTRATE-SKIP name=source-cache reason=no-runtime-cache-enable-marker-was-this-built-by-make-standalone-reader" skips))
                   (when (file-exists-p nelisp-substrate-parity--marker-file)
-                    (let ((cache-res nil))
-                      (dolist (entry corpus)
-                        (cl-destructuring-bind (idx _tag form) entry
-                          (push (cons idx (nelisp-substrate-parity--run-source bin cwd src idx form))
-                                cache-res)
-                          (setq checked (1+ checked))))
-                      (push (cons "source-cache" (nreverse cache-res)) results)))
+                    (push (cons "source-cache"
+                                (nelisp-substrate-parity--run-phase
+                                 corpus cwd source-spec))
+                          results)
+                    (setq checked (+ checked (length corpus))))
                   (nelisp-substrate-parity--marker-remove)
-                  (let ((fallback-res nil))
-                    (dolist (entry corpus)
-                      (cl-destructuring-bind (idx _tag form) entry
-                        (push (cons idx (nelisp-substrate-parity--run-source bin cwd src idx form))
-                              fallback-res)
-                        (setq checked (1+ checked))))
-                    (push (cons "source-fallback" (nreverse fallback-res)) results)))
+                  (push (cons "source-fallback"
+                              (nelisp-substrate-parity--run-phase
+                               corpus cwd source-spec))
+                        results)
+                  (setq checked (+ checked (length corpus))))
               ;; Restore exactly what was there -- this gate must not leave
               ;; the tree's own build state mutated when it exits.
               (nelisp-substrate-parity--marker-restore backup)))
 
           ;; -- host Emacs, shared-tag forms only --
-          (let ((host-res nil))
-            (dolist (entry corpus)
-              (cl-destructuring-bind (idx tag form) entry
-                (when (eq tag 'shared)
-                  (push (cons idx (nelisp-substrate-parity--run-host cwd idx form host-preamble))
-                        host-res)
-                  (setq checked (1+ checked)))))
-            (push (cons "host" (nreverse host-res)) results)))
+          (let ((shared (cl-remove-if-not (lambda (e) (eq (nth 1 e) 'shared)) corpus)))
+            (push (cons "host"
+                        (nelisp-substrate-parity--run-phase
+                         shared cwd
+                         (lambda (idx _tag form)
+                           (nelisp-substrate-parity--spec-host cwd idx form host-preamble))))
+                  results)
+            (setq checked (+ checked (length shared)))))
       (ignore-errors (delete-directory cwd t)))
     (list :results (nreverse results) :skips (nreverse skips) :checked checked)))
 

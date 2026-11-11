@@ -98,7 +98,10 @@ usage: tools/ai/nelisp-ai.sh <command> [args]
   selfhost            build the binary and run gate "standalone-selfhost-test"
   perf                build the binary and run gate "nelisp-performance-gate"
   smokes              run the 28 individual reader smokes as one gate
-  extras              run the remaining binary-building gates, one report each
+  extras [GROUP]      run the remaining binary-building gates, one report each;
+                      GROUP is parity|variants|build|smokes (default: all, in
+                      the historical order); "extras --list-all" prints
+                      "group gate" lines
   presence            build the binary and run gate "substrate-presence-sweep"
                       (~354-name fboundp sweep, own tier: too slow for extras)
   test-one FILE...    run selected test files as gate "ert-focus"
@@ -358,34 +361,64 @@ cmd_presence() {
     cmd_gate substrate-presence-sweep -- make substrate-presence-sweep
 }
 
+# "GROUP GATE" table for `extras', in the order the single-job tier ran them
+# before it was split.  Each gate is in exactly one group
+# (tools/check-extras-partition.sh enforces this against the original list).
+# Groups are balanced by measured per-gate seconds:
+#   parity   substrate-parity-smoke: ~510 process launches, 1261-2298 s
+#            serial; runs through the NELISP_SUBSTRATE_PARITY_JOBS pool.
+#   variants standalone-chunk-growth-test and standalone-eval-test rebuild
+#            unit variants: ~1100-1650 s cold cache, 20-60 s warm.  Alone so
+#            a cold unit cache costs only this leg.
+#   build    the remaining binary-heavy gates (~2-3 min).
+#   smokes   the small smokes (~1-2 min).
+extras_table() {
+    cat <<'TABLE_END'
+build nelisp-runtime-image-cache-gate
+build nelisp-source-command-substrate-gate
+variants standalone-chunk-growth-test
+build standalone-midform-gc-bounded
+build standalone-parallel-compile-test
+build standalone-selfhost-mt-test
+variants standalone-eval-test
+smokes wasm-runtime-image-smoke
+smokes nelisp-nelix-native-hot-gate
+parity substrate-parity-smoke
+smokes nl-condition-standalone-smoke
+smokes nl-safe-standalone-smoke
+smokes nelisp-eval-closure-standalone-smoke
+smokes nl-resource-standalone-smoke
+smokes nl-num-standalone-smoke
+smokes nelisp-toml-standalone-smoke
+smokes nelisp-thread-standalone-smoke
+smokes nelisp-thread-allocating-standalone-smoke
+smokes nelisp-thread-mirror-guard-standalone-smoke
+smokes nelisp-thread-percpu-roots-smoke
+smokes standalone-reader-buffer-smoke
+build precise-root-coverage
+smokes nl-actor-standalone-smoke
+TABLE_END
+}
+
 cmd_extras() {
     # The green gates that build a binary and were not wired.  One report each,
     # because unlike the reader smokes these are independent gates over
     # different subsystems: collapsing them would hide which one went red.
+    #
+    #   extras              every gate, in the historical order
+    #   extras GROUP        only the gates of GROUP (parity|variants|build|smokes)
+    #   extras --list-all   print "GROUP GATE" lines and exit
+    group=${1:-}
+    case "$group" in
+      --list-all) extras_table; return 0 ;;
+      ""|parity|variants|build|smokes) ;;
+      *) echo "extras: unknown group '$group' (parity|variants|build|smokes|--list-all)" >&2
+         return 2 ;;
+    esac
     failures=0
-    for g in nelisp-runtime-image-cache-gate \
-             nelisp-source-command-substrate-gate \
-             standalone-chunk-growth-test \
-             standalone-midform-gc-bounded \
-             standalone-parallel-compile-test \
-             standalone-selfhost-mt-test \
-             standalone-eval-test \
-             wasm-runtime-image-smoke \
-             nelisp-nelix-native-hot-gate \
-             substrate-parity-smoke \
-             nl-condition-standalone-smoke \
-             nl-safe-standalone-smoke \
-             nelisp-eval-closure-standalone-smoke \
-             nl-resource-standalone-smoke \
-             nl-num-standalone-smoke \
-             nelisp-toml-standalone-smoke \
-             nelisp-thread-standalone-smoke \
-             nelisp-thread-allocating-standalone-smoke \
-             nelisp-thread-mirror-guard-standalone-smoke \
-             nelisp-thread-percpu-roots-smoke \
-             standalone-reader-buffer-smoke \
-             precise-root-coverage \
-             nl-actor-standalone-smoke; do
+    # The table is read on fd 3 so a gate's stdin is never the table.
+    while read -r grp g <&3; do
+        [ -z "$group" ] || [ "$grp" = "$group" ] || continue
         printf '\n=== %s ===\n' "$g"
         # NELISP_AI_EXTRAS_EXCLUDE: space-separated gates a caller has moved
         # to another ledger (tools/ai/main-ci-reds/run-heavy.sh extras-s3).
@@ -394,7 +427,7 @@ cmd_extras() {
           *" $g "*) echo "excluded by NELISP_AI_EXTRAS_EXCLUDE"; continue ;;
         esac
         ( cmd_gate "$g" -- make "$g" ) || failures=$((failures + 1))
-    done
+    done 3< <(extras_table)
     [ "$failures" -eq 0 ]
 }
 
@@ -995,7 +1028,7 @@ case "$command" in
     selfhost)       cmd_selfhost ;;
     perf)           cmd_perf ;;
     smokes)         cmd_smokes ;;
-    extras)         cmd_extras ;;
+    extras)         cmd_extras "$@" ;;
     presence)       cmd_presence ;;
     test-one)       cmd_test_one "$@" ;;
     compile)        cmd_compile ;;

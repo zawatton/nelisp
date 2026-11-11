@@ -38,3 +38,21 @@ pending
 ** S3.2 E2E - stage-d macOS legs pass on CI
 #+NOTE: needs CI
 pending
+
+* S4 tier extras wall time (design: substrate-parity serial launches)
+
+** S4.1 extras gates split into matrix legs; every original gate in exactly one group
+cmd: bash tools/check-extras-partition.sh
+
+** S4.2 ci.yml subsystems matrix has the extras legs (parity, variants, build, smokes) plus smokes and perf
+cmd: python3 tools/ai/ci-speedup/check.py extras-legs
+
+** S4.3 substrate-parity output identical at JOBS=1 and JOBS=4 (corpus subset)
+evidence: tools/ai/ci-speedup/parity-jobs-equality.log sha256=50058b44f7d7301f5b6036bab783247a51f51f2546b70ef2734493e9a797c04d
+
+** S4.4 Root cause of slow eval-runtime-image / exec-elisp-artifact / eval-elisp-source startup identified
+pending
+
+** S4.5 E2E - tier extras legs each finish within 15 min on CI
+#+NOTE: needs CI
+pending
