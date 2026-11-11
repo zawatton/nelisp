@@ -773,7 +773,7 @@ while IFS= read -r row; do
     exit 1
   fi
   case "${row_scope:-}" in
-    ""|linux-x86_64|linux-aarch64|windows-x86_64|windows-aarch64|macos-x86_64|macos-aarch64) ;;
+    ""|linux-x86_64|linux-aarch64|windows-x86_64|windows-aarch64|macos-aarch64) ;;
     *) echo "gate-mutation: FAIL (row $row_number has malformed target scope '$row_scope')"; exit 1 ;;
   esac
 done <<< "$rows"

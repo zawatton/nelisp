@@ -4,7 +4,7 @@
 
 ;;; Commentary:
 ;; Stage 132.2/130.2 gate: sizeof/alignof/offsetof + :repr c struct layout
-;; for linux/x86_64, plus a cross-target invariant snapshot for all five
+;; for linux/x86_64, plus a cross-target invariant snapshot for all four
 ;; (currently all 64-bit, so layouts coincide).
 
 ;;; Code:
@@ -91,7 +91,7 @@
                   :type 'nelisp-sys-layout-error)))
 
 (ert-deftest nelisp-sys-layout-cross-target-invariant ()
-  "All five currently-supported targets are 64-bit: withptr is 16/8 on each."
+  "All four currently-supported targets are 64-bit: withptr is 16/8 on each."
   (let ((env (nelisp-sys-abi-layout-test--env)))
     (dolist (tr (nelisp-sys-target-list))
       (let ((l (nelisp-sys-layout-struct 'withptr tr env)))

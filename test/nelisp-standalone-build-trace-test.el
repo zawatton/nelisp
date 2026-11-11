@@ -105,6 +105,8 @@
                   nelisp-standalone--rebase-arena-source
                   nelisp-standalone--compile-to-unit
                   nelisp-standalone--copy-lit-u64-defuns
+                  nelisp-standalone--hoist-large-str-lits
+                  nelisp-standalone--str-lit-blob-min
                   nelisp-standalone-build-reader))
 
 (defvar nelisp-standalone--recompiled nil)
@@ -118,6 +120,47 @@
       (should (= (length small) 2))
       (should (= (length large) 2))
       (should (eq (caar large) 'data-blob)))))
+
+(ert-deftest nelisp-build-trace-aarch64-copy-is-constant-size ()
+  (dolist (target '(macos-aarch64 linux-aarch64))
+    (let ((nelisp-standalone--target target))
+      (let ((small (nelisp-standalone--copy-lit-u64-defuns 'copy "abcdefgh"))
+            (large (nelisp-standalone--copy-lit-u64-defuns 'copy (make-string 4096 ?a))))
+        (should (= (length small) 2))
+        (should (= (length large) 2))
+        (should (eq (caar large) 'data-blob))))))
+
+(ert-deftest nelisp-build-trace-aarch64-hoists-large-str-lit ()
+  (dolist (target '(macos-aarch64 linux-aarch64))
+    (let* ((nelisp-standalone--target target)
+           (lit (make-string (+ nelisp-standalone--str-lit-blob-min 3) ?a))
+           (hoisted (nelisp-standalone--hoist-large-str-lits
+                     `(seq (defun f () (sexp-write-str-lit 'slot ,lit)))
+                     "lit")))
+      (should (= (length (cdr hoisted)) 1))
+      (should (equal (cdr (car (cdr hoisted)))
+                     (concat (unibyte-string (logand (length lit) 255)
+                                             (logand (ash (length lit) -8) 255)
+                                             0 0 0 0 0 0)
+                             lit)))
+      (should-not (cl-search "sexp-write-str-lit" (format "%S" (car hoisted))))
+      (should (cl-search "data-addr" (format "%S" (car hoisted)))))))
+
+(ert-deftest nelisp-build-trace-aarch64-unit-materializes-qualified-data ()
+  (dolist (target '(macos-aarch64 linux-aarch64))
+    (let* ((nelisp-standalone--target target)
+           (unit (nelisp-standalone--compile-to-unit
+                  "copy.o" '(seq (data-blob sample "abcdefgh" rodata)
+                                 (defun copy (dst off) (data-addr sample)))))
+           (blob (cl-find-if (lambda (symbol) (eq (plist-get symbol :type) 'object))
+                             (plist-get unit :symbols)))
+           (relocs (plist-get unit :relocs)))
+      (should (equal (cdr (assq 'rodata (plist-get unit :sections))) "abcdefgh"))
+      (should (eq (plist-get blob :bind) 'global))
+      (should (equal (mapcar (lambda (r) (plist-get r :type)) relocs)
+                     '(adr-prel-pg-hi21 add-abs-lo12-nc)))
+      (dolist (r relocs)
+        (should (equal (plist-get r :symbol) (plist-get blob :name)))))))
 
 (ert-deftest nelisp-build-trace-unit-materializes-qualified-data ()
   (let* ((nelisp-standalone--target 'linux-x86_64)
@@ -193,7 +236,8 @@
 (ert-deftest nelisp-build-trace-copy-bounds-and-target-fallback ()
   (dolist (text (append (mapcar (lambda (n) (make-string n ?a)) '(0 1 7 8 9 2057))
                        (list "a\0b" "日本語🙂")))
-    (dolist (target '(linux-x86_64 windows-x86_64 macos-aarch64))
+    (dolist (target '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64
+                      windows-aarch64))
       (let* ((nelisp-standalone--target target)
              (forms (nelisp-standalone--copy-lit-u64-defuns 'copy text))
              (bytes (encode-coding-string text 'utf-8 t))
@@ -211,9 +255,10 @@
         (should (equal (substring destination 7 (+ 7 (length bytes))) (vconcat bytes)))
         (should (equal (substring destination 0 7) (make-vector 7 165)))
         (should (equal (substring destination (+ 7 (length bytes))) (make-vector 9 165)))
-        ;; Linux and (since the Windows size fix, 2026-11-11) Windows put the
-        ;; literal in readonly data; other targets keep the chunk defuns.
-        (if (memq target '(linux-x86_64 windows-x86_64))
+        ;; Linux and (since the Windows size fix, 2026-11-11) Windows x86-64
+        ;; and macOS and Linux aarch64 put the literal in readonly data;
+        ;; the remaining targets keep the chunk defuns.
+        (if (memq target '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
             (unless (= (length bytes) 0)
               (should (cl-find 'data-blob forms :key #'car)))
           (should-not (cl-find 'data-blob forms :key #'car)))))))

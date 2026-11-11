@@ -89,26 +89,11 @@ uname -a
 "$EMACS" --version | head -1
 
 if [ "$(uname -s)" = "Darwin" ]; then
-  # Everything under this branch targets macos-aarch64 -- the self-host
-  # smoke builds aarch64 Mach-O images, the standalone builds pass
-  # `--target macos-aarch64', and the tarball is named for it.  On an
-  # Intel host those images cannot execute: every smoke exits 126, which
-  # is "found but not executable", not a defect in what was built.
-  #
-  # That was always true and never visible, because macos-15-intel could
-  # not install Emacs at all -- Nixpkgs 26.11 dropped x86_64-darwin, so
-  # the job died at setup.  Moving that job to Homebrew let it reach these
-  # tests for the first time, and it reached them on the wrong machine.
-  #
-  # So on Intel: build everything, run nothing.  A cross-built artifact
-  # that compiles and links is what this host can honestly attest to, and
-  # the aarch64 host attests to the rest.  Saying so out loud, rather than
-  # silently passing, is the same rule the gates here follow.
+  # Everything under this branch targets macos-aarch64.  macOS x86_64
+  # (Intel) is not supported, so fail loudly rather than cross-build.
   if [ "$(uname -m)" != "arm64" ]; then
-    echo "GATE-SKIP macOS host is $(uname -m); the aarch64 images built here cannot run on it"
-    echo "--- macOS: cross-build only on $(uname -m) (execution needs an arm64 host) ---"
-    SKIP_NATIVE_SMOKES=1
-    BUILD_ONLY_STANDALONE_SMOKES=1
+    echo "verify-cross-platform: macOS x86_64 (Intel) is not supported; use an arm64 Mac" >&2
+    exit 2
   fi
 
   echo ""
@@ -123,12 +108,6 @@ if [ "$(uname -s)" = "Darwin" ]; then
     echo ""
     echo "--- macOS OS compatibility ERT smoke ---"
     tools/macos-os-compat-test.sh --emacs "$EMACS"
-  else
-    if [ "$(uname -m)" != "arm64" ]; then
-      echo ""
-      echo "--- macOS arm64 Mach-O self-host smoke (emit only) ---"
-      tools/macos-selfhost-test.sh --emacs "$EMACS" --emit-only
-    fi
   fi
 
   echo ""

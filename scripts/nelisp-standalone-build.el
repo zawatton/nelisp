@@ -690,43 +690,27 @@ change the toolchain digest and recompile every unit."
 (defun nelisp-standalone--target-runnable-on-host-p (&optional target)
   "Return non-nil when TARGET can run on this Emacs host.
 
-`linux-aarch64' and `macos-x86_64' were missing here even though CI
-already runs an ubuntu-22.04-arm and a macos-15-intel job respectively
-(gap #5 of the 2026-08-22 survey): every binary-building correctness
-gate that guards on this predicate (standalone-reader-test,
-native-artifact, perf, selfhost, nelix-native-hot) silently reported
-\"not runnable\" on both runners forever, so those artifacts were only
-ever checksum-verified, never executed.
+`linux-aarch64' was missing here even though CI already runs an
+ubuntu-22.04-arm job (gap #5 of the 2026-08-22 survey): every
+binary-building correctness gate that guards on this predicate
+(standalone-reader-test, native-artifact, perf, selfhost,
+nelix-native-hot) silently reported \"not runnable\" on that runner
+forever, so those artifacts were only ever checksum-verified, never
+executed.
 
-Capability is asymmetric between the two additions -- see
-`nelisp-standalone--target-abi'/`-arch'/`-os':
+`linux-aarch64' has a complete standalone-build orchestration path
+(arena base/size, ABI/arch/os, output path, `_start' unit via
+`nelisp-standalone--linux-aarch64-start-unit', alloc-chunk-form,
+intern-region-init-form) built on the same `lisp/nelisp-asm-arm64.el'
+AArch64 assembler that `macos-aarch64' already exercises routinely in
+CI.  The Linux ELF entry/syscall path (mmap=222, exit=93 via SVC #0)
+is written with real intent and covered structurally by
+`nelisp-alloc-check-arena-wrapper-every-target' in
+test/nelisp-alloc-check-test.el.
 
-- `linux-aarch64' has a complete standalone-build orchestration path
-  (arena base/size, ABI/arch/os, output path, `_start' unit via
-  `nelisp-standalone--linux-aarch64-start-unit', alloc-chunk-form,
-  intern-region-init-form) built on the same `lisp/nelisp-asm-arm64.el'
-  AArch64 assembler that `macos-aarch64' already exercises routinely in
-  CI.  The Linux ELF entry/syscall path (mmap=222, exit=93 via SVC #0)
-  is written with real intent and covered structurally by
-  `nelisp-alloc-check-arena-wrapper-every-target' in
-  test/nelisp-alloc-check-test.el, but it has never actually executed
-  on real hardware, because this predicate always turned it away first.
-  Recognizing the host here is what lets the gates finally exercise it.
-
-- `macos-x86_64' capability is NOT symmetric: `lisp/nelisp-mach-o-write.el'
-  and `lisp/nelisp-asm-x86_64.el' both support the primitives (Mach-O
-  writer takes an explicit `x86_64' :machine, the x86_64 assembler
-  already backs linux-x86_64/windows-x86_64), but
-  `nelisp-standalone-build.el's per-target orchestration
-  (`nelisp-standalone--target-abi', `-arch', `-os', and the
-  macos-x86_64 case of `nelisp-standalone--target-arena-source' /
-  `-target-start-unit') has no `macos-x86_64' clause anywhere and falls
-  into an explicit \"unsupported target\" `error'.  Answering t here is
-  still correct -- a macos-x86_64 binary, if one existed, could run on
-  this host -- but it turns a silent skip into a loud, diagnosable
-  build error the first time a gate tries to actually build one.  That
-  orchestration gap is real follow-up work, not something this
-  predicate can or should paper over."
+macOS x86_64 (Intel) is not a supported target (dropped 2026-11-11):
+it has no clause here and no per-target orchestration, so an explicit
+request for it signals the \"unsupported target\" `error'."
   (let ((target (or target (nelisp-standalone-arena-rewrite-target)))
         (configuration (or system-configuration "")))
     (pcase target
@@ -742,9 +726,6 @@ Capability is asymmetric between the two additions -- see
       ('linux-aarch64
        (and (eq system-type 'gnu/linux)
             (string-match-p "aarch64\\|arm64" configuration)))
-      ('macos-x86_64
-       (and (eq system-type 'darwin)
-            (string-match-p "x86_64\\|amd64" configuration)))
       (_ nil))))
 
 (defun nelisp-standalone--dep-files ()
@@ -762,6 +743,23 @@ Capability is asymmetric between the two additions -- see
                             "nelisp-elf-write" "nelisp-cc-runtime" "nelisp-standalone-argframe.el"
                             "nelisp-heap-accessors" "nelisp-cc-fxir-native")))))
 
+
+(defun nelisp-standalone--map-list-spine (list fn)
+  "Return a fresh copy of LIST with FN applied to every element and the tail.
+Same result as (cons (FN (car LIST)) (FN (cdr LIST))) applied recursively
+to the cdr, but the spine is walked iteratively: a source list with
+thousands of forms (the `seq' of a whole unit) costs one Lisp frame, not
+one per element, so the host Emacs C stack stays shallow."
+  (let* ((head (cons (funcall fn (car list)) nil))
+         (tail head)
+         (rest (cdr list)))
+    (while (consp rest)
+      (let ((cell (cons (funcall fn (car rest)) nil)))
+        (setcdr tail cell)
+        (setq tail cell
+              rest (cdr rest))))
+    (setcdr tail (funcall fn rest))
+    head))
 
 (defun nelisp-standalone--windows-rebase-arena-source (source)
   "Rebase fixed arena metadata constants in SOURCE for Windows.
@@ -788,7 +786,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
           (form)
           (cond
            ((integerp form) (rebased-int form))
-           ((consp form) (cons (walk (car form)) (walk (cdr form))))
+           ((consp form) (nelisp-standalone--map-list-spine form #'walk))
            (t form))))
       (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
         (walk source)))))
@@ -811,7 +809,7 @@ GC, and mutation-epoch slots.  Windows cannot reliably reserve the historical
             (form)
             (cond
              ((integerp form) (rebased-int form))
-             ((consp form) (cons (walk (car form)) (walk (cdr form))))
+             ((consp form) (nelisp-standalone--map-list-spine form #'walk))
              (t form))))
         (let ((max-lisp-eval-depth (max max-lisp-eval-depth 10000)))
           (walk source))))))
@@ -2089,6 +2087,12 @@ standalone units can call each other."
          (n (length bytes))
          (vec (make-vector n 0))
          (generated-relocs nil)
+         ;; O(1) lookup by label (first cell wins, as `assq' did): a unit with
+         ;; N labels and M fixups was O(N*M) with a linear `assq' per fixup.
+         (label-index (let ((h (make-hash-table :test 'eq :size (max 16 (length labels)))))
+                        (dolist (cell labels h)
+                          (unless (gethash (car cell) h)
+                            (puthash (car cell) cell h)))))
          (i 0))
     (while (< i n)
       (aset vec i (aref bytes i))
@@ -2097,7 +2101,7 @@ standalone units can call each other."
       (let* ((slot (nth 0 fix))
              (label (nth 1 fix))
              (type (or (nth 2 fix) 'b26))
-             (cell (assq label labels)))
+             (cell (gethash label label-index)))
         (if cell
             (let ((disp (- (cdr cell) slot)))
               (unless (zerop (logand disp #x3))
@@ -2392,10 +2396,16 @@ the parent's frame pointer: a helper call there gave it a frame of its
 own, an inlined body reads and writes the parent's locals.  The Doc 199
 thread smokes all failed to spawn until such bodies were left alone.
 On arm64, 56 is openat; leaving those bodies uninlined costs nothing."
-  (cond ((not (consp body)) nil)
-        ((and (eq (car body) 'syscall-direct) (eql (cadr body) 56)) t)
-        (t (or (nelisp-standalone--inline-clone-p (car body))
-               (nelisp-standalone--inline-clone-p (cdr body))))))
+  ;; Iterate along the spine (every tail is tested like a form, as the
+  ;; former car/cdr recursion did); recurse only into nested elements, so
+  ;; the depth follows form nesting, not list length.
+  (let ((found nil))
+    (while (and (not found) (consp body))
+      (if (or (and (eq (car body) 'syscall-direct) (eql (cadr body) 56))
+              (nelisp-standalone--inline-clone-p (car body)))
+          (setq found t)
+        (setq body (cdr body))))
+    found))
 
 (defun nelisp-standalone--inline-constant-base-case (definition args)
   "Select a bounded nonrecursive IF branch for literal integer arguments.
@@ -3564,7 +3574,7 @@ twice appears twice; readers keep the last occurrence of each unit."
          ;; `nl-ffi-call' extern sub-chain) nests far enough to blow the default
          ;; `max-lisp-eval-depth' (signals `excessive-lisp-nesting').  Raise it
          ;; for the whole compile so adding FFI symbols stays a one-row change.
-         (max-lisp-eval-depth (max max-lisp-eval-depth 40000))
+         (max-lisp-eval-depth (max max-lisp-eval-depth 5000))
          ;; Number the inliner's fresh variables from 0 in every unit, as
          ;; `nelisp-aot-compiler--label-counter' below: their names reach the
          ;; object (e.g. the context digest of a specialized helper's name), so
@@ -3620,7 +3630,8 @@ twice appears twice; readers keep the last occurrence of each unit."
          (ir (nelisp-aot-compiler--parse source nil))
          (defuns (nelisp-aot-compiler--collect-defuns ir))
          (unit-data
-          (when (and (eq (nelisp-standalone-arena-rewrite-target) 'linux-x86_64)
+          (when (and (memq (nelisp-standalone-arena-rewrite-target)
+                           '(linux-x86_64 macos-aarch64 linux-aarch64))
                      (eq (car-safe source) 'seq)
                      (cl-some (lambda (form) (eq (car-safe form) 'data-blob))
                               (cdr source)))
@@ -40677,7 +40688,7 @@ at 0ad122d69 linked 112 units cleanly).  Same failure class the extern arms
 already solved with `nelisp-standalone--reader-ffi-live-p', whose own
 comment records the earlier version of this mistake: a predicate that was
 too broad emitted extern-call units on targets that cannot link them."
-  (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 macos-x86_64 windows-x86_64)))
+  (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64)))
 
 (defun nelisp-standalone--applyfn-ptr-call-typed-unsupported-form ()
   "Codegen IR for the `ptr-call-typed' arm on a target that cannot emit xmm0.
@@ -48034,10 +48045,13 @@ this way: about 67 MB of unit, a 4.7 MB stack buffer at run time, and
 bytes nor the length left in the source.  A top-level rodata `data-blob'
 of at least that size without relocations moves out under its own name.
 BLOBS is a list of (NAME . UNIBYTE-BYTES) for a unit that defines them as
-global symbols.  Linux and Windows x86-64 `(seq ...)' sources only (as in
-`nelisp-standalone--copy-lit-u64-defuns'); otherwise (SOURCE)."
+global symbols.  Linux and Windows x86-64 and macOS and Linux aarch64
+`(seq ...)' sources only (as in `nelisp-standalone--copy-lit-u64-defuns');
+otherwise (SOURCE).  On aarch64 `data-addr' is an ADRP + ADD pair against
+the global rodata symbol, and without the hoist each 8 bytes of LIT cost
+about 4.4 instruction words of mov-immediate plus a store."
   (if (not (and (memq (nelisp-standalone-arena-rewrite-target)
-                      '(linux-x86_64 windows-x86_64))
+                      '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
                 (eq (car-safe source) 'seq)))
       (list source)
     (let ((blobs nil) (n 0) (max-lisp-eval-depth (max max-lisp-eval-depth 20000)))
@@ -53827,10 +53841,10 @@ is never touched."
 
 (defun nelisp-standalone--copy-lit-u64-defuns (name string &optional chunk-bytes)
   "Return Phase47 forms copying literal STRING into DST at OFF.
-Linux and Windows x86-64 use readonly data and one bounded copy loop. Other targets retain
-the original chunk defuns, using CHUNK-BYTES (default 2048)."
+Linux and Windows x86-64 and macOS and Linux aarch64 use readonly data and
+one bounded copy loop. Other targets retain the original chunk defuns, using CHUNK-BYTES (default 2048)."
   (if (memq (nelisp-standalone-arena-rewrite-target)
-            '(linux-x86_64 windows-x86_64))
+            '(linux-x86_64 windows-x86_64 macos-aarch64 linux-aarch64))
       (let* ((bytes (encode-coding-string string 'utf-8 t))
              (len (length bytes))
              (whole (* 8 (/ len 8)))

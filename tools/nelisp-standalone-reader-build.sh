@@ -126,7 +126,7 @@ resolve_output() {
   esac
   CANON_TARGET=$canon
   case "$canon" in
-    linux-x86_64|macos-aarch64|macos-x86_64) OUT=$PWD/target/nelisp ;;
+    linux-x86_64|macos-aarch64) OUT=$PWD/target/nelisp ;;
     windows-x86_64) OUT=$PWD/target/nelisp.exe ;;
     linux-aarch64) OUT=$PWD/target/nelisp-aarch64 ;;
     windows-aarch64) OUT=$PWD/target/nelisp-aarch64.exe ;;
