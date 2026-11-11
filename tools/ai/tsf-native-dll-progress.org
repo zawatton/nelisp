@@ -24,6 +24,19 @@ cmd: bash tools/ai/com-dll/wine-e2e.sh
 
 * S3 TSF text service (parity with the C++ shim)
 
+** S3a.1 COM DSL foundations (defstruct, try, msctf IID table, :fields/:extra-iids, wbuf library, HKCU/HKCR hive) have ERT golden coverage
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-com-dsl-test.el -l test/nelisp-com-dsl-s3a-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S3a.2 E2E - under wine: wbuf library, struct accessors, try macro, :fields and :extra-iids class run in a nelisp-built DLL (client exits 42)
+cmd: bash tools/ai/com-dll/wbuf-e2e.sh
+
+** S3a.3 E2E - under wine: the default build registers under HKCU, the NELISP_COM_HIVE=hkcr build under HKCR, both unregister
+cmd: bash tools/ai/com-dll/reg-e2e.sh
+
+** S3a.4 Thread-safe dynalign (nl_dynalign_rsp_save no longer one global slot)
+#+NOTE: S3a-2, separate session; touches the AOT compiler
+pending
+
 ** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
 pending
 

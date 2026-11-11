@@ -76,7 +76,11 @@
   (should (equal (nelisp-com-guid= 'riid 'g)
                  '(and (= (ptr-read-u64 riid 0) (ptr-read-u64 (data-addr g) 0))
                        (= (ptr-read-u64 riid 8) (ptr-read-u64 (data-addr g) 8)))))
-  (should-error (nelisp-com-call '(foo) 1))
+  ;; A non-variable object expression is evaluated once through a let.
+  (should (equal (nelisp-com-call '(foo) 3 'a)
+                 '(let ((nl_com_obj (foo)))
+                    (call-ptr (ptr-read-u64 (ptr-read-u64 nl_com_obj 0) 24)
+                              nl_com_obj a))))
   (should-error (nelisp-com-guid= '(foo) 'g)))
 
 (ert-deftest nelisp-com-object-layout-offsets ()
@@ -146,7 +150,7 @@
     (should (member '(ptr-write-u64 o 8 1) subs))))
 
 (ert-deftest nelisp-com-server-forms-shape ()
-  (let* ((forms (nelisp-com-sample-dll-forms))
+  (let* ((forms (nelisp-com-sample-dll-forms 'hkcr))
          (defuns (cl-loop for f in forms when (eq (car-safe f) 'defun) collect (nth 1 f))))
     (dolist (e nelisp-com-server-exports) (should (memq (intern e) defuns)))
     (should (equal (nth 2 (nelisp-com-test--blob forms 'o_w_key))
