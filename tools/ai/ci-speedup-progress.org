@@ -24,7 +24,7 @@ pending
 * S2 Windows build C stack overflow hang
 
 ** S2.1 Root cause identified with log evidence and a written diagnosis
-pending
+evidence: tools/ai/ci-speedup/win-stack-overflow-diagnosis.md sha256=4fc5a4528bb4566bd66b955407fdd58235d7248d43dbafe9e7cf38ce9f15a3fe
 
 ** S2.2 E2E - Windows CHECKED build completes on CI without stack overflow
 #+NOTE: needs CI
