@@ -1,0 +1,30 @@
+#+TITLE: Native TSF/COM DLL from restricted Elisp (2026-11-11)
+
+* S1 PE DLL output in nelisp
+
+** S1.1 nelisp-pe-write emits a PE32+ DLL (IMAGE_FILE_DLL, export directory, base relocations, DllMain entry)
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -l ert -l test/nelisp-pe-write-dll-test.el -f ert-run-tests-batch-and-exit </dev/null)
+
+** S1.2 objdump -p reports the DLL's exports and base relocation table
+cmd: bash tools/ai/pe-dll/objdump-check.sh
+
+** S1.3 E2E - under wine, a nelisp-built EXE LoadLibrary()s the nelisp-built DLL, calls two exported functions via GetProcAddress, and gets the expected results
+cmd: bash tools/ai/pe-dll/wine-e2e.sh
+
+** S1.4 E2E - the DLL still works when loaded at a non-preferred base (relocations applied)
+cmd: bash tools/ai/pe-dll/wine-e2e.sh --force-rebase
+
+* S2 COM in-proc server from restricted Elisp
+
+** S2.1 E2E - under wine, CoCreateInstance on the DLL's CLSID returns an object whose method returns the expected value
+pending
+
+* S3 TSF connection
+
+** S3.1 E2E - under wine msctf (or Windows), the text service's Activate and OnKeyDown are reached
+pending
+
+* S4 Engine communication
+
+** S4.1 E2E - a key event is forwarded over the named pipe to an engine stub and the reply is applied
+pending
