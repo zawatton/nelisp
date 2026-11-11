@@ -51,7 +51,7 @@ cmd: python3 tools/ai/ci-speedup/check.py extras-legs
 evidence: tools/ai/ci-speedup/parity-jobs-equality.log sha256=50058b44f7d7301f5b6036bab783247a51f51f2546b70ef2734493e9a797c04d
 
 ** S4.4 Root cause of slow eval-runtime-image / exec-elisp-artifact / eval-elisp-source startup identified
-pending
+evidence: tools/ai/ci-speedup/startup-step-b-spike.md sha256=be643528b0f2c644a907345a7c98680b112a0304a023d40047980b59cfb511bb
 
 ** S4.5 E2E - tier extras legs each finish within 15 min on CI
 #+NOTE: needs CI
