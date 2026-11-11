@@ -337,9 +337,21 @@ extra `:section' key naming the section in which the patch lives
         :symbols (or symbols nil) :relocs (or relocs nil)))
 
 (defun nelisp-link--copy-aot-value (value)
-  "Copy VALUE recursively, including mutable strings and vectors."
-  (cond ((consp value) (cons (nelisp-link--copy-aot-value (car value))
-                             (nelisp-link--copy-aot-value (cdr value))))
+  "Copy VALUE, including mutable strings and vectors.
+Conses are copied by iterating along the cdr spine and recursing only
+into the elements, so long lists (relocation lists of large units) do
+not consume Lisp stack depth proportional to their length."
+  (cond ((consp value)
+         (let* ((head (cons (nelisp-link--copy-aot-value (car value)) nil))
+                (tail head)
+                (rest (cdr value)))
+           (while (consp rest)
+             (let ((cell (cons (nelisp-link--copy-aot-value (car rest)) nil)))
+               (setcdr tail cell)
+               (setq tail cell
+                     rest (cdr rest))))
+           (setcdr tail (nelisp-link--copy-aot-value rest))
+           head))
         ((stringp value) (copy-sequence value))
         ((vectorp value) (vconcat (mapcar #'nelisp-link--copy-aot-value value)))
         (t value)))

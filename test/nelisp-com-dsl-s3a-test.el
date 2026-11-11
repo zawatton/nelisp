@@ -319,3 +319,149 @@
   (should (equal (nelisp-com-msctf-guid 'GUID_TFCAT_TIPCAP_SECUREMODE)
                  "{49d2f9ce-1f5e-11d7-a6d3-00065b84435c}"))
   (should (null nelisp-com-msctf-guids-unverified)))
+
+;;;; Polish: registration hooks, exact value size, dedupe, helpers
+
+(defconst s3a-test--cls
+  '((:name o :clsid "{7a1c0de0-5f3a-4a6e-9d11-0123456789ab}")))
+
+(ert-deftest s3a-default-value-exact-length ()
+  (let* ((forms (nelisp-com-server-forms s3a-test--cls :hive 'hkcu))
+         (reg (s3a-test--defun forms 'DllRegisterServer))
+         (cls (s3a-test--defun forms 'com_reg_class))
+         (flat (s3a-test--subforms reg)))
+    ;; no fixed 520-byte data length is passed to RegSetValueExW
+    (should-not (cl-some (lambda (f) (and (eq (car-safe f) 'extern-call)
+                                          (eq (nth 1 f) 'RegSetValueExW)
+                                          (member 520 f)))
+                         (s3a-test--subforms cls)))
+    (should (s3a-test--blob forms 'com_pathbytes))
+    ;; the byte size is 2 * (chars + 1) and the buffer is NUL terminated
+    (should (member '(ptr-write-u64 (data-addr com_pathbytes) 0 (* 2 (+ com_n 1)))
+                    flat))
+    (should (member '(ptr-write-u16 (data-addr com_path) (* 2 com_n) 0) flat))
+    (should (cl-some (lambda (f) (equal f '(ptr-read-u64 (data-addr com_pathbytes) 0)))
+                     (s3a-test--subforms cls)))))
+
+(ert-deftest s3a-server-forms-default-has-no-hook-machinery ()
+  (let ((forms (nelisp-com-server-forms s3a-test--cls :hive 'hkcu)))
+    (should-not (s3a-test--defun forms 'com_unreg_all))
+    (should (equal (s3a-test--defun forms 'DllUnregisterServer)
+                   `(defun DllUnregisterServer ()
+                      (seq (extern-call RegDeleteTreeW ,nelisp-com-hkey-current-user
+                                        (data-addr o_w_root))
+                           0))))))
+
+(ert-deftest s3a-server-forms-hooks ()
+  (let* ((forms (nelisp-com-server-forms
+                 s3a-test--cls :hive 'hkcr
+                 :register-forms '((hook_a) (hook_b))
+                 :unregister-forms '((undo_a))))
+         (unreg (s3a-test--defun forms 'com_unreg_all))
+         (reg (s3a-test--defun forms 'DllRegisterServer))
+         (flat (s3a-test--subforms reg)))
+    (should unreg)
+    ;; unregister hooks run before the CLSID deletes, and always return 0
+    (let ((body (nth 3 unreg)))
+      (should (equal (nth 1 body) '(undo_a)))
+      (should (eq (car-safe (nth 2 body)) 'extern-call))
+      (should (equal (car (last body)) 0)))
+    (should (equal (s3a-test--defun forms 'DllUnregisterServer)
+                   '(defun DllUnregisterServer () (com_unreg_all))))
+    ;; register hooks run in order, stop at the first failure and roll back
+    (should (member '(if (= com_hr 0) (setq com_hr (hook_a)) 0) flat))
+    (should (member '(if (= com_hr 0) (setq com_hr (hook_b)) 0) flat))
+    (should (member '(if (/= com_hr 0) (seq (com_unreg_all) com_hr) 0) flat))
+    (let ((ia (cl-position '(if (= com_hr 0) (setq com_hr (hook_a)) 0) flat :test #'equal))
+          (ib (cl-position '(if (= com_hr 0) (setq com_hr (hook_b)) 0) flat :test #'equal)))
+      (should (< ia ib)))
+    ;; only unregister hooks: no rollback logic in registration
+    (let* ((f2 (nelisp-com-server-forms s3a-test--cls :hive 'hkcr
+                                        :unregister-forms '((undo_a))))
+           (flat2 (s3a-test--subforms (s3a-test--defun f2 'DllRegisterServer))))
+      (should (s3a-test--defun f2 'com_unreg_all))
+      (should-not (member '(if (/= com_hr 0) (seq (com_unreg_all) com_hr) 0) flat2))
+      (should-not (assq 'let (cl-remove-if-not
+                              (lambda (f) (and (eq (car-safe f) 'let)
+                                               (equal (caar (nth 1 f)) 'com_hr)))
+                              flat2))))))
+
+(ert-deftest s3a-msctf-blobs-dedupe ()
+  (let ((names (mapcar #'car nelisp-com-msctf-guids)))
+    (let* ((a (nelisp-com-msctf-blobs (list (nth 0 names) (nth 1 names) (nth 0 names)))))
+      (should (equal (mapcar (lambda (f) (nth 1 f)) a)
+                     (list (nth 0 names) (nth 1 names)))))
+    (let ((b (nelisp-com-msctf-blobs (list (nth 0 names) (nth 2 names))
+                                     :exclude (list (nth 0 names)))))
+      (should (equal (mapcar (lambda (f) (nth 1 f)) b) (list (nth 2 names)))))
+    ;; overlapping calls appended into one unit are de-duplicated; the
+    ;; whole unit then links (it failed with invalid-local-symbol before)
+    (let* ((forms (append (nelisp-com-msctf-blobs (list (nth 0 names) (nth 1 names)))
+                          (nelisp-com-msctf-blobs (list (nth 1 names) (nth 2 names)))
+                          '((defun f () 0))))
+           (dd (nelisp-com-dedupe-blobs forms)))
+      (should (= (length dd) 4))
+      (should (= 3 (length (cl-remove-if-not (lambda (f) (eq (car-safe f) 'data-blob)) dd))))
+      (require 'nelisp-aot-compiler)
+      (should (nelisp-com--unit "dup.o" forms)))
+    ;; conflicting content under one name is still an error
+    (should-error (nelisp-com-dedupe-blobs
+                   '((data-blob x (1) rodata) (data-blob x (2) rodata))))))
+
+(ert-deftest s3a-with-hkey-closes-on-all-paths ()
+  (let ((f (nelisp-com-with-hkey `(k ,nelisp-com-hkey-current-user (data-addr kp))
+             '(foo k) '(bar k))))
+    ;; open failure: the Win32 error is returned and the body never runs
+    (should (equal (nth 1 (nth 2 f)) '(/= k__hr 0)))
+    (should (equal (nth 2 (nth 2 f)) 'k__hr))
+    (let ((flat (s3a-test--subforms f)))
+      (should (member '(foo k) flat))
+      (should (member '(bar k) flat))
+      ;; RegCloseKey follows the body and the body value is preserved
+      (should (member '(seq (extern-call RegCloseKey k) k__res) flat))
+      (should (cl-some (lambda (x) (and (eq (car-safe x) 'extern-call)
+                                        (eq (nth 1 x) 'RegCreateKeyExW)))
+                       flat))))
+  (should (cl-some (lambda (x) (and (eq (car-safe x) 'extern-call)
+                                    (eq (nth 1 x) 'RegOpenKeyExW)))
+                   (s3a-test--subforms
+                    (nelisp-com-with-hkey '(k 1 2 :mode open :access 5)))))
+  (should-error (nelisp-com-with-hkey '(k 1 2 :mode frob))))
+
+(ert-deftest s3a-registry-value-helpers ()
+  (should (equal (nelisp-com-reg-set-sz-literal 'k nil 'blob "ab")
+                 '(extern-call RegSetValueExW k 0 0 1 (data-addr blob) 6)))
+  (should (equal (nelisp-com-reg-set-sz-literal 'k 'nm 'blob (string #x1f600))
+                 '(extern-call RegSetValueExW k (data-addr nm) 0 1 (data-addr blob) 6)))
+  (let ((f (nelisp-com-reg-set-sz-wbuf 'k 'nm 'w)))
+    (should (equal (car f) 'if))
+    (should (member '(* 2 (+ (wbuf_len w) 1)) (s3a-test--subforms f))))
+  (should (equal (nelisp-com-reg-set-dword 'k 'nm 7)
+                 '(seq (ptr-write-u32 (data-addr com_rk_dword) 0 7)
+                       (extern-call RegSetValueExW k (data-addr nm) 0 4
+                                    (data-addr com_rk_dword) 4))))
+  (should (equal (nelisp-com-reg-delete-tree 'k '(data-addr s))
+                 '(extern-call RegDeleteTreeW k (data-addr s))))
+  (should (= 2 (length (nelisp-com-registry-blobs)))))
+
+(ert-deftest s3a-wbuf-path-helpers-present ()
+  (let ((forms (nelisp-com-wstr-lib-forms)))
+    (dolist (n '(wbuf_is_sep wbuf_path_join wbuf_parent))
+      (should (s3a-test--defun forms n)))
+    ;; the self test of the wine run covers roots and a 44999-unit path
+    (let ((sample (wbuf-sample-forms)))
+      (should (s3a-test--defun sample 'path_selftest)))))
+
+(ert-deftest s3a-quoted-literal-detected-at-compile-time ()
+  (let ((err (should-error
+              (nelisp-com-check-quoted-literals
+               '((defun probe () (car '(a b))))))))
+    (should (string-match-p "(defun probe)" (cadr err)))
+    (should (string-match-p "'(a b)" (cadr err))))
+  (should-error (nelisp-com-check-quoted-literals '((defun p () 'sym))))
+  (should-error (nelisp-com--unit "q.o" '((defun p () (car '("s" 2))))))
+  ;; integers, nil, t and data-blob contents are fine
+  (should-not (nelisp-com-check-quoted-literals
+               '((defun p () (+ '5 (if '() 1 2)))
+                 (data-blob b (1 2) rodata)
+                 (data-blob c (quote (x)) rodata)))))

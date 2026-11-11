@@ -182,6 +182,58 @@
             (if (= w 0) 0
               (if (= (wbuf_append_w w p) 0) w
                 (seq (wbuf_free w) 0))))))
+      ;; 1 when C is a path separator (backslash or slash).
+      (defun wbuf_is_sep (c) (if (= c 92) 1 (if (= c 47) 1 0)))
+      ;; Append the path component P to W with exactly one backslash between
+      ;; them.  Leading separators of P are dropped when W is non-empty, no
+      ;; separator is added after an existing one, after a bare drive
+      ;; ("C:", so "C:" + "x" = "C:x"), or for an empty component.  W
+      ;; is unchanged on failure.  Lengths are bounded only by WBUF_MAX.
+      (defun wbuf_path_join (w p)
+        (if (= (wbuf_valid w) 0) ,inv
+          (if (= p 0) ,ptrerr
+            (let ((n ,(funcall len 'w)) (skip 0))
+              (seq (if (> n 0)
+                       (while (= (wbuf_is_sep (ptr-read-u16 (+ p (* 2 skip)) 0)) 1)
+                         (setq skip (+ skip 1)))
+                     0)
+                   (let ((q (+ p (* 2 skip))))
+                     (let ((plen (wbuf_wcslen q))
+                           (last (wbuf_get w (- n 1))))
+                       (if (= plen 0) 0
+                         (let ((sep (if (= n 0) 0
+                                      (if (= (wbuf_is_sep last) 1) 0
+                                        (if (and (= n 2) (= last 58)) 0 1)))))
+                           ,(nelisp-com-try
+                             '((hr (wbuf_reserve w (+ sep plen))))
+                             '(seq (if (= sep 1) (wbuf_append_char w 92) 0)
+                                   (wbuf_append_wn w q plen))))))))))))
+      ;; Remove the last path component of W.  The root ("C:\", "C:", "\")
+      ;; is kept; 0 when something was removed (a relative single component
+      ;; becomes empty), 1 (S_FALSE) when W is already a root or empty
+      ;; (unchanged).  Trailing separators are ignored and the separators
+      ;; before the removed component are dropped, except those of the root.
+      (defun wbuf_parent (w)
+        (if (= (wbuf_valid w) 0) ,inv
+          (let ((n ,(funcall len 'w)) (root 0) (end 0) (i 0))
+            (seq (if (= (wbuf_get w 1) 58)
+                     (setq root (if (= (wbuf_is_sep (wbuf_get w 2)) 1) 3 2))
+                   (if (= (wbuf_is_sep (wbuf_get w 0)) 1) (setq root 1) 0))
+                 (setq end n)
+                 (while (and (> end root)
+                             (= (wbuf_is_sep (wbuf_get w (- end 1))) 1))
+                   (setq end (- end 1)))
+                 (if (<= end root) 1
+                   (seq (setq i end)
+                        (while (and (> i root)
+                                    (= (wbuf_is_sep (wbuf_get w (- i 1))) 0))
+                          (setq i (- i 1)))
+                        (while (and (> i root)
+                                    (= (wbuf_is_sep (wbuf_get w (- i 1))) 1))
+                          (setq i (- i 1)))
+                        ,(nelisp-com-set-field 'w 'wbuf 'len 'i)
+                        (ptr-write-u16 (+ ,(funcall ptr 'w) (* 2 i)) 0 0)
+                        0))))))
       ;; Unit at index I, or 65536 when out of range / invalid.
       (defun wbuf_get (w i)
         (if (= (wbuf_valid w) 0) 65536
