@@ -1942,6 +1942,11 @@ The function is a variable or a constant designator and every argument is
       (nelisp-aot-compiler--lisp-truth node)
     node))
 
+;; Special before `nelisp-aot-compiler--lisp-parse-test' binds it (see the documented `defvar'
+;; further down): byte-compiled, the binding would otherwise be lexical
+;; and invisible to the callees that read it.
+(defvar nelisp-aot-compiler--aot-test-position)
+
 (defun nelisp-aot-compiler--lisp-parse-test (form env fenv defuns)
   "Parse FORM as a branch condition, a test position (Doc 229)."
   (nelisp-aot-compiler--lisp-test
@@ -16294,6 +16299,11 @@ prefix state prevents an emitted branch or call from reviving a cache."
 ;; Defined with its documentation before the promotion plan; declared here so the `let*' below binds it
 ;; dynamically in a compiled file too.
 (defvar nelisp-aot-compiler--x86-promotable-memo)
+
+;; Special before `nelisp-aot-compiler--emit-call-free-region' binds it (see the documented `defvar'
+;; further down): byte-compiled, the binding would otherwise be lexical
+;; and invisible to the callees that read it.
+(defvar nelisp-aot-compiler--x86-path-count-memo)
 
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
