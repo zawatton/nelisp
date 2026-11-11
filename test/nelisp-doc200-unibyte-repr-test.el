@@ -20,6 +20,7 @@
 (setq load-prefer-newer t)
 
 (require 'ert)
+(require 'nelisp-test-fresh-emacs)
 (require 'nelisp-aot-test-runtime)
 (require 'cl-lib)
 
@@ -607,20 +608,21 @@ inside BASE's mapped page."
 
 (ert-deftest nelisp-doc200-unibyte-repr/production-and-consumers-use-unibyte-tags ()
   "Production alloc/finalize and hand-built tags survive every representation path."
-  (skip-unless (equal emacs-version "31.1"))
-  (unless (and (eq system-type 'gnu/linux)
-               (string-match-p "x86_64\\|amd64" system-configuration))
-    (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
-  (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
-    (unwind-protect
-        (progn
-          (nelisp-aot-test-runtime-compile-sexp
-           (nelisp-doc200-unibyte-repr-test--probe-source) path)
-          (should (file-executable-p path))
-          (let ((rc (call-process path nil nil nil)))
-            (should (= rc 0))))
-      (when (file-exists-p path)
-        (delete-file path)))))
+  (nelisp-test-fresh-emacs-unless (not (nelisp-test-fresh-emacs-core-records-defined-p))
+    (skip-unless (equal emacs-version "31.1"))
+    (unless (and (eq system-type 'gnu/linux)
+                 (string-match-p "x86_64\\|amd64" system-configuration))
+      (ert-skip "Requires x86_64 Linux for the freestanding AOT executable"))
+    (let ((path (make-temp-file "nelisp-doc200-unibyte-repr-")))
+      (unwind-protect
+          (progn
+            (nelisp-aot-test-runtime-compile-sexp
+             (nelisp-doc200-unibyte-repr-test--probe-source) path)
+            (should (file-executable-p path))
+            (let ((rc (call-process path nil nil nil)))
+              (should (= rc 0))))
+        (when (file-exists-p path)
+          (delete-file path))))))
 
 (ert-deftest nelisp-doc200-unibyte-repr/aot-stringp-expansion-has-all-four-tags ()
   "The direct AOT stringp expansion admits both string representations."

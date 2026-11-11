@@ -1,10 +1,12 @@
 ;;; nelisp-native-arithmetic-direct-test.el --- Shared builtin body controls -*- lexical-binding: t; -*-
 (require 'ert)
 (require 'cl-lib)
-(let ((path (or (getenv "NELISP_ARITHMETIC_SOURCE")
-                (expand-file-name "../lisp/nelisp-native-arithmetic-v2.el"
-                                  (file-name-directory load-file-name)))))
-  (load path nil t))
+;; NELISP_ARITHMETIC_SOURCE loads a mutant source in place of the library.
+;; Otherwise require, not load: a second load redefines the provider's
+;; functions after the lowering libraries captured them as owners, so every
+;; later owner check fails ("source owner changed") when files share one Emacs.
+(let ((path (getenv "NELISP_ARITHMETIC_SOURCE")))
+  (if path (load path nil t) (require 'nelisp-native-arithmetic-v2)))
 (defconst nelisp-arithmetic-direct-test--body
   '(let* ((f (wf_any_float_arith args)))
      (if (= f 2)

@@ -109,9 +109,16 @@ directory: Permission denied\" (gate project-distribution)."
                     (and probe (file-writable-p probe)))
              return dir)))
 
+(defvar nelisp-standalone--toolchain-elc-status nil
+  "The `[standalone] toolchain:' line for this process, or nil.
+`nelisp-standalone--toolchain-elc-setup' decides it when this file loads;
+`nelisp-standalone-build-reader' prints it when a build starts.  Printing
+it at load wrote to the stderr of every process that only requires the
+builder, such as the native fixtures whose tests require empty stderr.")
+
 (defun nelisp-standalone--toolchain-elc-setup ()
   "Put a byte-compiled copy of the toolchain libraries first on `load-path'.
-Prints one `[standalone] toolchain:' line saying which copy is used."
+Records in `nelisp-standalone--toolchain-elc-status' which copy is used."
   (let* ((root (file-name-directory
                 (directory-file-name
                  (file-name-directory (or load-file-name buffer-file-name)))))
@@ -192,9 +199,11 @@ Prints one `[standalone] toolchain:' line saying which copy is used."
                    (t (setq reason (format "%s.elc could not be renamed into place" lib)))))))))
         (unless reason
           (setq load-path (cons dir (delete dir load-path)))
-          (message "[standalone] toolchain: byte-compiled (%s)" dir))))
+          (setq nelisp-standalone--toolchain-elc-status
+                (format "[standalone] toolchain: byte-compiled (%s)" dir)))))
     (when reason
-      (message "[standalone] toolchain: INTERPRETED (%s)" reason))))
+      (setq nelisp-standalone--toolchain-elc-status
+            (format "[standalone] toolchain: INTERPRETED (%s)" reason)))))
 
 (require 'cl-lib)
 (nelisp-standalone--toolchain-elc-setup)
@@ -68805,6 +68814,8 @@ bridge is deliberately callable only through a raw builtin descriptor."
   "Incrementally build the reader-path standalone binary; return its path.
 NELISP_STANDALONE_BUILD_TRACE opts into an appended JSONL phase trace.
 The trace parent directory must exist; tracing never skips a build stage."
+  (when nelisp-standalone--toolchain-elc-status
+    (message "%s" nelisp-standalone--toolchain-elc-status))
   (let ((nelisp-standalone--build-version
          (nelisp-build-version nelisp-standalone--repo-root))
         (nelisp-standalone--build-source-revision

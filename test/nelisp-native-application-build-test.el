@@ -2,6 +2,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 (require 'ert)
+(require 'nelisp-test-fresh-emacs)
 ;; Fixtures are read back byte-exactly; keep LF on CRLF-default hosts (Windows).
 (setq-default buffer-file-coding-system 'utf-8-unix)
 (require 'nelisp-native-application-build)
@@ -135,61 +136,62 @@
       (delete-directory directory t))))
 
 (ert-deftest nnab-prepares-and-activates-only-after-matching-harvest-evidence ()
-  (let* ((directory (file-truename (make-temp-file "nnab-activate-" t)))
-         (source (expand-file-name "module.el" directory))
-         (names (expand-file-name "names" directory))
-         (manifest (expand-file-name "manifest.sexp" directory))
-         (rows-file (expand-file-name "rows.el" directory))
-         (receipt (expand-file-name "receipt.sexp" directory))
-         (report (expand-file-name "report.sexp" directory))
-         (nelisp-cc-fxir-native-windows nil)
-         (nelisp-cc-fxir-native--additional-rows nil)
-         (nelisp-cc-fxir-native--data-files nil)
-         (nelisp-cc-fxir-native--source 'original-source)
-         (nelisp-cc-fxir-native--boundaries '(original-boundary))
-         (nelisp-cc-fxir-native--wrapper-names '(original-wrapper))
-         producer)
-    (unwind-protect
-        (progn
-          (nnab-test--write source
-            ";;; -*- lexical-binding: t; -*-\n(defun application-declined (x) x)\n(defun application-leaf (x) x)\n")
-          (let* ((discovery (nelisp-native-application-build-discover
-                             (list source) nil (nelisp-cc-fxir-native-all-rows)))
-                 (id (plist-get discovery :id0)))
-            (let ((inputs (nelisp-native-application-build-write-inputs
-                           discovery names manifest rows-file receipt report)))
-            (nnab-test--write rows-file
-              (format "(defconst application-rows '((application-leaf %d 1 nil (:fn (:slot 0)) (1 1 -1))))\n"
-                      id))
-            (dolist (role '(:binary :cold :build-manifest :stdout))
-              (let ((file (expand-file-name (substring (symbol-name role) 1) directory)))
-                (nnab-test--write file
-                  (if (eq role :stdout)
-                      (format "HARVEST application-declined skip not-a-closure\nHARVEST application-leaf ok id=%d words=3\n" id)
-                    "synthetic test artifact\n"))
-                (setq producer (plist-put producer role file))))
-            (should-error
-             (nelisp-native-application-build--require-complete-harvest
-              discovery inputs rows-file 'application-rows producer))
-            (cl-letf (((symbol-function 'nelisp-cc-fxir-native-all-rows)
-                       (lambda () '((changed-baseline 100000 1 nil (:fn (:slot 0)) (1 1 -1))))))
-              (should-error (nelisp-native-application-build-prepare-and-activate
-                             discovery inputs rows-file 'application-rows producer receipt report)))
-            (should-not (file-exists-p receipt))
-            (should-not (file-exists-p report))
-            (let ((result (nelisp-native-application-build-prepare-and-activate
-                           discovery inputs rows-file 'application-rows producer receipt report)))
-              (should (plist-get result :activation))
-              (should-not (plist-get (plist-get result :activation) :native-qualified))
-              (should (plist-get nelisp-cc-fxir-native--additional-rows :rows))
-              (let ((outcome (car (plist-get (read (with-temp-buffer
-                                                   (insert-file-contents report)
-                                                   (buffer-string))) :definitions))))
-                (should (eq (plist-get outcome :status) 'rejected))
-                (should (equal (plist-get outcome :reason) "not-a-closure"))
-                (should (stringp (plist-get outcome :form-sha256))))
-              (should (file-exists-p report))))))
-      (delete-directory directory t))))
+  (nelisp-test-fresh-emacs-unless (not (featurep 'nelisp-standalone-build))
+    (let* ((directory (file-truename (make-temp-file "nnab-activate-" t)))
+           (source (expand-file-name "module.el" directory))
+           (names (expand-file-name "names" directory))
+           (manifest (expand-file-name "manifest.sexp" directory))
+           (rows-file (expand-file-name "rows.el" directory))
+           (receipt (expand-file-name "receipt.sexp" directory))
+           (report (expand-file-name "report.sexp" directory))
+           (nelisp-cc-fxir-native-windows nil)
+           (nelisp-cc-fxir-native--additional-rows nil)
+           (nelisp-cc-fxir-native--data-files nil)
+           (nelisp-cc-fxir-native--source 'original-source)
+           (nelisp-cc-fxir-native--boundaries '(original-boundary))
+           (nelisp-cc-fxir-native--wrapper-names '(original-wrapper))
+           producer)
+      (unwind-protect
+          (progn
+            (nnab-test--write source
+                              ";;; -*- lexical-binding: t; -*-\n(defun application-declined (x) x)\n(defun application-leaf (x) x)\n")
+            (let* ((discovery (nelisp-native-application-build-discover
+                               (list source) nil (nelisp-cc-fxir-native-all-rows)))
+                   (id (plist-get discovery :id0)))
+              (let ((inputs (nelisp-native-application-build-write-inputs
+                             discovery names manifest rows-file receipt report)))
+                (nnab-test--write rows-file
+                                  (format "(defconst application-rows '((application-leaf %d 1 nil (:fn (:slot 0)) (1 1 -1))))\n"
+                                          id))
+                (dolist (role '(:binary :cold :build-manifest :stdout))
+                  (let ((file (expand-file-name (substring (symbol-name role) 1) directory)))
+                    (nnab-test--write file
+                                      (if (eq role :stdout)
+                                          (format "HARVEST application-declined skip not-a-closure\nHARVEST application-leaf ok id=%d words=3\n" id)
+                                        "synthetic test artifact\n"))
+                    (setq producer (plist-put producer role file))))
+                (should-error
+                 (nelisp-native-application-build--require-complete-harvest
+                  discovery inputs rows-file 'application-rows producer))
+                (cl-letf (((symbol-function 'nelisp-cc-fxir-native-all-rows)
+                           (lambda () '((changed-baseline 100000 1 nil (:fn (:slot 0)) (1 1 -1))))))
+                  (should-error (nelisp-native-application-build-prepare-and-activate
+                                 discovery inputs rows-file 'application-rows producer receipt report)))
+                (should-not (file-exists-p receipt))
+                (should-not (file-exists-p report))
+                (let ((result (nelisp-native-application-build-prepare-and-activate
+                               discovery inputs rows-file 'application-rows producer receipt report)))
+                  (should (plist-get result :activation))
+                  (should-not (plist-get (plist-get result :activation) :native-qualified))
+                  (should (plist-get nelisp-cc-fxir-native--additional-rows :rows))
+                  (let ((outcome (car (plist-get (read (with-temp-buffer
+                                                         (insert-file-contents report)
+                                                         (buffer-string))) :definitions))))
+                    (should (eq (plist-get outcome :status) 'rejected))
+                    (should (equal (plist-get outcome :reason) "not-a-closure"))
+                    (should (stringp (plist-get outcome :form-sha256))))
+                  (should (file-exists-p report))))))
+        (delete-directory directory t)))))
 
 (ert-deftest nnab-complete-harvest-rejects-partial-and-extra-evidence ()
   (let* ((directory (file-truename (make-temp-file "nnab-complete-" t)))
@@ -316,389 +318,390 @@
 
 (ert-deftest nnab-run-owned-offline-process-mock-reaches-real-activation-validator ()
   "Exercise host orchestration offline; only the child process boundary is mocked."
-  (let* ((directory (file-truename (make-temp-file "nnab-owned-run-" t)))
-         (repository (expand-file-name "repository" directory))
-         (outside (expand-file-name "outside" directory))
-         (module (expand-file-name "module.el" repository))
-         (adapter (expand-file-name "adapter.py" directory))
-         (python (or (executable-find "python3") (error "python3 unavailable")))
-         (names (expand-file-name "names.txt" outside))
-         (same-names (expand-file-name "same-content-names.txt" outside))
-         (manifest (expand-file-name "manifest.sexp" outside))
-         (planned-rows (expand-file-name "planned-rows.el" outside))
-         (planned-receipt (expand-file-name "planned-receipt.sexp" outside))
-         (planned-report (expand-file-name "planned-report.sexp" outside))
-         (nelisp-cc-fxir-native-condition-facts nil)
-         (initial-boundaries '(original-boundary))
-         (initial-wrapper-names '(original-wrapper))
-         (nelisp-cc-fxir-native-windows nil)
-         (nelisp-cc-fxir-native--additional-rows nil)
-         (nelisp-cc-fxir-native--data-files nil)
-         (nelisp-cc-fxir-native--boundaries initial-boundaries)
-         (nelisp-cc-fxir-native--wrapper-names initial-wrapper-names)
-         (initial-source (nelisp-cc-fxir-native-source))
-         (nelisp-cc-fxir-native--source initial-source)
-         discovery inputs request producer-spec mutate-after-child successful-roots
-         (receipt-names-mode 'staged) receipt-sha-mode mutate-staged-names
-         inject-late-write-failure inject-cleanup-failure failed-metadata-path test-run-root)
-    (unwind-protect
-        (progn
-          (make-directory repository)
-          (make-directory outside)
-          (nnab-test--write module
-            ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) x)\n")
-          (nnab-test--write adapter "# fixed offline seam fixture\n")
-          (dolist (role '("build_manifest" "cold_image" "guard" "harvester" "helper"
-                          "launcher" "owned_runner" "prelude" "producer" "producer_image"))
-            (let ((path (expand-file-name (concat role ".pin") repository)))
-              (cond
-               ((equal role "prelude")
-                (copy-file (expand-file-name "../scripts/nelisp-stdlib-prelude.el"
-                                             nnab-test-root)
-                           path))
-               ((member role '("producer_image" "cold_image"))
-                (nnab-test--write path (make-string 2097152 ?x)))
-               (t (nnab-test--write path (concat role " fixture\n"))))))
-          (setq discovery
-                (nelisp-native-application-build-discover
-                 (list module) nil (nelisp-cc-fxir-native-all-rows)))
-          (setq inputs
-                (nelisp-native-application-build-write-inputs
-                 discovery names manifest planned-rows planned-receipt planned-report))
-          (nnab-test--write same-names
-            (with-temp-buffer (insert-file-contents names) (buffer-string)))
-          (let ((pins (make-hash-table :test 'equal)))
-            (dolist (role nelisp-native-application-build--pin-roles)
-              (let* ((path (if (equal role "repository") repository
-                             (pcase role
-                               ("application_manifest" manifest)
-                               ("names" names)
-                               (_ (expand-file-name (concat role ".pin") repository)))))
-                     (digest (if (equal role "repository") (make-string 64 ?a)
-                               (with-temp-buffer
-                                 (set-buffer-multibyte nil)
-                                 (insert-file-contents-literally path)
-                                 (secure-hash 'sha256 (current-buffer)))))
-                     (pin (nelisp-native-application-build--json-hash
-                           (list (cons "path" (file-truename path))
-                                 (cons "sha256" digest)))))
-                (puthash role pin pins)))
-            (setq request
-                  (nelisp-native-application-build--json-hash
-                   (list (cons "schema" "nelisp-native-application-harvest/v1")
-                         (cons "pins" pins) (cons "mode" "strict")
-                         (cons "names_sha256" (plist-get inputs :names-sha256))
-                         (cons "id0" (plist-get discovery :id0))
-                         (cons "constant" "owned-rows")
-                         (cons "output_parent" outside)))
-                  producer-spec
-                  (list :adapter adapter
-                        :adapter-sha256
-                        (nelisp-native-application-build--sha256-file adapter)
-                        :python (file-truename python) :request request
-                        :condition-facts nil))
-          (let ((original-planned (copy-sequence (plist-get inputs :output-paths))))
-            (cl-letf
-                (((symbol-function 'nelisp-native-application-build--invoke-adapter)
-                  (lambda (_python _adapter request-file stdout-file stderr-file)
-                    (let* ((actual-request
-                            (nelisp-native-application-build--read-json-file request-file))
-                           (run-root (gethash "output_parent" actual-request))
-                           (output (expand-file-name "owned-output" run-root))
-                           (child (expand-file-name "child" output))
-                           (cwd (expand-file-name "cwd" child))
-                           (names-copy (expand-file-name "names.txt" output))
-                           (receipt-names-file
-                            (pcase receipt-names-mode
-                              ('staged names-copy)
-                              ('original names)
-                              ('same-content same-names)
-                              ('alias (concat (file-name-directory names-copy) "./"
-                                              (file-name-nondirectory names-copy)))
-                              ('missing nil)))
-                           (receipt-names-sha256
-                            (if (eq receipt-sha-mode 'wrong)
-                                (make-string 64 ?0)
-                              (plist-get inputs :names-sha256)))
-                           (rows-copy (expand-file-name "rows.el" output))
-                           (install-receipt (expand-file-name "install-receipt.el" output))
-                           (stdout (expand-file-name "stdout" child))
-                           (receipt-form
-                            (list :status :installed :native-qualified nil
-                                  :module-initialization-executed nil
-                                  :whole-module-initialization-equivalence nil
-                                  :names (plist-get discovery :names)
-                                  :manifest-file manifest
-                                  :manifest-sha256 (plist-get inputs :manifest-sha256)
-                                  :names-file receipt-names-file :names-sha256 receipt-names-sha256
-                                  :source-modules (plist-get discovery :modules)
-                                  :baseline-sha256 (plist-get discovery :baseline-sha256)
-                                  :mode :strict :omitted-definition-names nil
-                                  :producer-image-sha256
-                                  (gethash "sha256" (gethash "producer_image" pins))
-                                  :producer-source-sha256
-                                  (gethash "sha256" (gethash "producer" pins))
-                                  :helper-sha256 (gethash "sha256" (gethash "helper" pins))
-                                  :prelude-sha256 (gethash "sha256" (gethash "prelude" pins))
-                                  :definitions
-                                  (mapcar (lambda (entry)
-                                            (list :name (plist-get entry :name)
-                                                  :source-form-sha256
-                                                  (plist-get entry :form-sha256)
-                                                  :installed-identity-match t
-                                                  :installed-structure-match t
-                                                  :arguments-authenticated t
-                                                  :body-authenticated t))
-                                          (plist-get discovery :definitions))))
-                           (capture-file (expand-file-name "capture.json" output)))
-                      (setq test-run-root run-root)
-                      (make-directory output)
-                      (make-directory child)
-                      (make-directory cwd)
-                      (nnab-test--write names-copy
-                                        (if mutate-staged-names
-                                            "tampered staged names\n"
-                                          (with-temp-buffer
-                                            (insert-file-contents names)
-                                            (buffer-string))))
-                      (nnab-test--write rows-copy
-                        (format "(defconst owned-rows '((owned-leaf %d 1 nil (:fn (:slot 0)) (1 1 -1))))\n"
-                                (plist-get discovery :id0)))
-                      (nnab-test--write install-receipt
-                        (concat (nelisp-cc-fxir-admission--print receipt-form) "\n"))
-                      (nnab-test--write stdout
-                        (format "HARVEST owned-leaf ok id=%d words=3\n"
-                                (plist-get discovery :id0)))
-                      (nnab-test--write (expand-file-name "stderr" child) "")
-                      (nnab-test--write (expand-file-name "rc" child) "0\n")
-                      (nnab-test--write (expand-file-name "command.json" child) "{}\n")
-                      (nnab-test--write (expand-file-name "launch.json" child) "{}\n")
-                      (nnab-test--write (expand-file-name "producer-driver.el" output) ";; fixed\n")
-                      (let ((output-hashes (make-hash-table :test 'equal)))
-                        (dolist (name '("command.json" "install-receipt.el" "launch.json"
-                                        "names.txt" "producer-driver.el" "rc" "rows.el"
-                                        "stderr" "stdout"))
-                          (let ((path (if (member name '("command.json" "launch.json" "rc"
-                                                         "stderr" "stdout"))
-                                          (expand-file-name name child)
-                                        (expand-file-name name output))))
-                            (puthash name
-                                     (nelisp-native-application-build--sha256-file path)
-                                     output-hashes)))
-                        (nnab-test--write capture-file
-                          (json-serialize
-                           (nelisp-native-application-build--json-hash
-                            (list
-                             (cons "child_lifecycle"
-                                   (nelisp-native-application-build--json-hash
-                                    (list
-                                     (cons "argv"
-                                           (vector (gethash "path" (gethash "producer_image" pins))
-                                                   "--load"
-                                                   (expand-file-name "producer-driver.el" output)))
-                                     (cons "cwd" cwd)
-                                     (cons "environment"
-                                           (let ((environment
-                                                  (nelisp-native-application-build--json-hash
-                                                   (list
-                                                    (cons "LC_ALL" "C")
-                                                    (cons "NC1_CONST" (gethash "constant" actual-request))
-                                                    (cons "NC1_ID0" (number-to-string
-                                                                      (gethash "id0" actual-request)))
-                                                    (cons "NC1_NAMES" names-copy)
-                                                    (cons "NC1_OUT" rows-copy)
-                                                    (cons "NELISP_APPLICATION_INSTALL_RECEIPT"
-                                                          install-receipt)
-                                                    (cons "NELISP_APPLICATION_MANIFEST" manifest)
-                                                    (cons "NELISP_APPLICATION_MANIFEST_SHA256"
-                                                          (gethash "sha256"
-                                                                   (gethash "application_manifest" pins)))
-                                                    (cons "NELISP_APPLICATION_MODE"
-                                                          (gethash "mode" actual-request))
-                                                    (cons "NELISP_APPLICATION_NAMES_SHA256"
-                                                          (gethash "names_sha256" actual-request))
-                                                    (cons "NELISP_APPLICATION_ROOT" repository)
-                                                    (cons "NELISP_FXIR_ROOT" repository)
-                                                    (cons "NELISP_PRODUCER_IMAGE_SHA256"
-                                                          (gethash "sha256"
-                                                                   (gethash "producer_image" pins)))
-                                                    (cons "PATH" (or (getenv "PATH") "/usr/bin:/bin"))))))
-                                             environment))
-                                     (cons "child"
-                                           (nelisp-native-application-build--json-hash
-                                            (list (cons "pid" 222)
-                                                  (cons "session" 222)
-                                                  (cons "start_ticks" 333)
-                                                  (cons "uid" 1000))))
-                                     (cons "controller"
-                                           (nelisp-native-application-build--json-hash
-                                            (list (cons "pid" 111)
-                                                  (cons "session" 100)
-                                                  (cons "start_ticks" 222)
-                                                  (cons "uid" 1000))))
-                                     (cons "cleanup"
-                                           (nelisp-native-application-build--json-hash
-                                            (list (cons "verified" t)
-                                                  (cons "errors" [])
-                                                  (cons "initial" [])
-                                                  (cons "remaining" []))))
-                                     (cons "rc" 0) (cons "timed_out" :false)
-                                     (cons "cancelled" :false) (cons "timeout" 45))))
-                             (cons "outputs" output-hashes)
-                             (cons "owned_report" (make-hash-table :test 'equal))
-                             (cons "pins" pins) (cons "rejected" :false)
-                             (cons "request_sha256"
-                                   (nelisp-native-application-build--sha256-file
-                                    request-file))
-                             (cons "runner_ast_sha256" (make-string 64 ?b))
-                             (cons "status" "RAW_CAPTURED_NOT_ADMITTED"))))))
-                      (nnab-test--write stdout-file
-                        (json-serialize
-                         (nelisp-native-application-build--json-hash
-                          (list (cons "status" "RAW_CAPTURED_NOT_ADMITTED")
-                                (cons "output" output) (cons "capture" capture-file)))))
-                      (nnab-test--write stderr-file "")
-                      (when mutate-after-child
-                        (nnab-test--write module
-                          ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) (cons x nil))\n"))
-                      0)))
-              ((symbol-function 'write-region)
-               (let ((original-write-region (symbol-function 'write-region)))
-                 (lambda (&rest arguments)
-                   (let ((file (nth 2 arguments)))
-                     (if (and inject-late-write-failure
-                              (stringp file)
-                              (equal (file-name-nondirectory file)
-                                     "host-activation.sexp"))
-                         (progn
-                           (setq failed-metadata-path file)
-                           (error "Independent late metadata write failure"))
-                       (apply original-write-region arguments))))))
-              ((symbol-function 'nelisp-native-application-build--delete-owned-tree)
-               (let ((original-delete
-                      (symbol-function 'nelisp-native-application-build--delete-owned-tree)))
-                 (lambda (owned-directory)
-                   (funcall original-delete owned-directory)
-                   (when (and inject-cleanup-failure
-                              (equal owned-directory test-run-root))
-                     (setq inject-cleanup-failure nil)
-                     (error "Injected owned cleanup failure"))))))
-              (let ((result
-                     (nelisp-native-application-build-run-owned
-                      discovery inputs producer-spec planned-rows 'owned-rows
-                      planned-receipt planned-report)))
-                (should (plist-get result :activation))
-                (should-not (plist-get (plist-get result :activation) :native-qualified))
-                (should (equal (plist-get inputs :output-paths) original-planned))
-                (should (eq (plist-get result :condition-facts) nil))
-                (should (file-exists-p (plist-get result :host-configuration-file)))
-                (should (file-exists-p (plist-get result :host-activation-file)))
-                (setq successful-roots (directory-files outside nil "\\`.nnab-owned-"))
-                (should (eq (plist-get (read (with-temp-buffer
-                                               (insert-file-contents
-                                                (plist-get result :host-configuration-file))
-                                               (buffer-string)))
-                                      :condition-facts)
-                            nil)))
-              (dolist (case '((original nil nil "Raw producer receipt does not authenticate selected discovery")
-                              (same-content nil nil "Raw producer receipt does not authenticate selected discovery")
-                              (alias nil nil "Raw producer receipt does not authenticate selected discovery")
-                              (missing nil nil "Raw producer receipt does not authenticate selected discovery")
-                              (staged wrong nil "Raw producer receipt does not authenticate selected discovery")
-                              (staged nil t "Adapter-owned names copy differs from the Lisp input")))
-                (setq receipt-names-mode (nth 0 case)
-                      receipt-sha-mode (nth 1 case)
-                      mutate-staged-names (nth 2 case)
-                      nelisp-cc-fxir-native--additional-rows nil
-                      nelisp-cc-fxir-native--source initial-source
-                      nelisp-cc-fxir-native--boundaries initial-boundaries
-                      nelisp-cc-fxir-native--wrapper-names initial-wrapper-names)
-                (let ((caught
-                       (condition-case condition
-                           (progn
-                             (nelisp-native-application-build-run-owned
-                              discovery inputs producer-spec planned-rows 'owned-rows
-                              planned-receipt planned-report)
-                             nil)
-                         (error condition))))
-                  (should caught)
-                  (should (equal (cadr caught) (nth 3 case))))
-                (should (equal (directory-files outside nil "\\`.nnab-owned-")
-                               successful-roots))
-                (should-not (file-directory-p test-run-root)))
-              (setq receipt-names-mode 'staged
-                    receipt-sha-mode nil
-                    mutate-staged-names nil)
-              (setq mutate-after-child t)
-              (should-error
-               (nelisp-native-application-build-run-owned
-                discovery inputs producer-spec planned-rows 'owned-rows
-                planned-receipt planned-report))
-              (should (equal (plist-get inputs :output-paths) original-planned))
-              (should (file-exists-p names))
-              (should (file-exists-p manifest))
-              (should (equal (directory-files outside nil "\\`.nnab-owned-")
-                             successful-roots))
-              ;; Force a write failure after the unchanged validator has
-              ;; published globals. The host must be marked non-reusable and
-              ;; the original late-write error retained in the condition.
-              (nnab-test--write module
-                ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) x)\n")
-              (setq nelisp-cc-fxir-native--additional-rows nil
-                    nelisp-cc-fxir-native--source initial-source
-                    nelisp-cc-fxir-native--boundaries initial-boundaries
-                    nelisp-cc-fxir-native--wrapper-names initial-wrapper-names
-                    mutate-after-child nil
-                    failed-metadata-path nil inject-late-write-failure t)
-              (let ((caught
-                     (condition-case condition
-                         (progn
-                           (nelisp-native-application-build-run-owned
-                            discovery inputs producer-spec planned-rows 'owned-rows
-                            planned-receipt planned-report)
-                           nil)
-                       (nelisp-native-application-build-host-discard-required condition))))
-                (should caught)
-                (should (eq (car caught)
-                            'nelisp-native-application-build-host-discard-required))
-                (should (eq (plist-get (cdr caught) :activation-attempted) t))
-                (let ((cause (plist-get (cdr caught) :cause)))
-                  (should (eq (car cause) 'error))
-                  (should (equal (cadr cause) "Independent late metadata write failure")))
-                (should (null (plist-get (cdr caught) :owned-cleanup-errors)))
-                (should-not (file-exists-p failed-metadata-path))
-                (should-not
-                 (file-exists-p (expand-file-name "admission-receipt.sexp"
-                                                  (file-name-directory failed-metadata-path))))
-                (should nelisp-cc-fxir-native--additional-rows)
-                (should-not (eq nelisp-cc-fxir-native--source initial-source)))
-              ;; A cleanup error is attached without replacing the activation
-              ;; failure; cleanup was performed before the injected report.
-              (setq nelisp-cc-fxir-native--additional-rows nil
-                    nelisp-cc-fxir-native--source initial-source
-                    nelisp-cc-fxir-native--boundaries initial-boundaries
-                    nelisp-cc-fxir-native--wrapper-names initial-wrapper-names
-                    failed-metadata-path nil inject-cleanup-failure t)
-              (let ((caught
-                     (condition-case condition
-                         (progn
-                           (nelisp-native-application-build-run-owned
-                            discovery inputs producer-spec planned-rows 'owned-rows
-                            planned-receipt planned-report)
-                           nil)
-                       (nelisp-native-application-build-host-discard-required condition))))
-                (should caught)
-                (let ((cause (plist-get (cdr caught) :cause))
-                      (cleanup-errors (plist-get (cdr caught) :owned-cleanup-errors)))
-                  (should (equal (cadr cause) "Independent late metadata write failure"))
-                  (should (equal (cadar cleanup-errors) "Injected owned cleanup failure")))
-                (should-not (file-exists-p failed-metadata-path))
-                (should-not
-                 (file-exists-p (expand-file-name "admission-receipt.sexp"
-                                                  (file-name-directory failed-metadata-path))))
-                (should nelisp-cc-fxir-native--additional-rows)
-                (should-not (eq nelisp-cc-fxir-native--source initial-source)))))))
-      (delete-directory directory t))))
+  (nelisp-test-fresh-emacs-unless (not (featurep 'nelisp-standalone-build))
+    (let* ((directory (file-truename (make-temp-file "nnab-owned-run-" t)))
+           (repository (expand-file-name "repository" directory))
+           (outside (expand-file-name "outside" directory))
+           (module (expand-file-name "module.el" repository))
+           (adapter (expand-file-name "adapter.py" directory))
+           (python (or (executable-find "python3") (error "python3 unavailable")))
+           (names (expand-file-name "names.txt" outside))
+           (same-names (expand-file-name "same-content-names.txt" outside))
+           (manifest (expand-file-name "manifest.sexp" outside))
+           (planned-rows (expand-file-name "planned-rows.el" outside))
+           (planned-receipt (expand-file-name "planned-receipt.sexp" outside))
+           (planned-report (expand-file-name "planned-report.sexp" outside))
+           (nelisp-cc-fxir-native-condition-facts nil)
+           (initial-boundaries '(original-boundary))
+           (initial-wrapper-names '(original-wrapper))
+           (nelisp-cc-fxir-native-windows nil)
+           (nelisp-cc-fxir-native--additional-rows nil)
+           (nelisp-cc-fxir-native--data-files nil)
+           (nelisp-cc-fxir-native--boundaries initial-boundaries)
+           (nelisp-cc-fxir-native--wrapper-names initial-wrapper-names)
+           (initial-source (nelisp-cc-fxir-native-source))
+           (nelisp-cc-fxir-native--source initial-source)
+           discovery inputs request producer-spec mutate-after-child successful-roots
+           (receipt-names-mode 'staged) receipt-sha-mode mutate-staged-names
+           inject-late-write-failure inject-cleanup-failure failed-metadata-path test-run-root)
+      (unwind-protect
+          (progn
+            (make-directory repository)
+            (make-directory outside)
+            (nnab-test--write module
+                              ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) x)\n")
+            (nnab-test--write adapter "# fixed offline seam fixture\n")
+            (dolist (role '("build_manifest" "cold_image" "guard" "harvester" "helper"
+                            "launcher" "owned_runner" "prelude" "producer" "producer_image"))
+              (let ((path (expand-file-name (concat role ".pin") repository)))
+                (cond
+                 ((equal role "prelude")
+                  (copy-file (expand-file-name "../scripts/nelisp-stdlib-prelude.el"
+                                               nnab-test-root)
+                             path))
+                 ((member role '("producer_image" "cold_image"))
+                  (nnab-test--write path (make-string 2097152 ?x)))
+                 (t (nnab-test--write path (concat role " fixture\n"))))))
+            (setq discovery
+                  (nelisp-native-application-build-discover
+                   (list module) nil (nelisp-cc-fxir-native-all-rows)))
+            (setq inputs
+                  (nelisp-native-application-build-write-inputs
+                   discovery names manifest planned-rows planned-receipt planned-report))
+            (nnab-test--write same-names
+                              (with-temp-buffer (insert-file-contents names) (buffer-string)))
+            (let ((pins (make-hash-table :test 'equal)))
+              (dolist (role nelisp-native-application-build--pin-roles)
+                (let* ((path (if (equal role "repository") repository
+                               (pcase role
+                                 ("application_manifest" manifest)
+                                 ("names" names)
+                                 (_ (expand-file-name (concat role ".pin") repository)))))
+                       (digest (if (equal role "repository") (make-string 64 ?a)
+                                 (with-temp-buffer
+                                   (set-buffer-multibyte nil)
+                                   (insert-file-contents-literally path)
+                                   (secure-hash 'sha256 (current-buffer)))))
+                       (pin (nelisp-native-application-build--json-hash
+                             (list (cons "path" (file-truename path))
+                                   (cons "sha256" digest)))))
+                  (puthash role pin pins)))
+              (setq request
+                    (nelisp-native-application-build--json-hash
+                     (list (cons "schema" "nelisp-native-application-harvest/v1")
+                           (cons "pins" pins) (cons "mode" "strict")
+                           (cons "names_sha256" (plist-get inputs :names-sha256))
+                           (cons "id0" (plist-get discovery :id0))
+                           (cons "constant" "owned-rows")
+                           (cons "output_parent" outside)))
+                    producer-spec
+                    (list :adapter adapter
+                          :adapter-sha256
+                          (nelisp-native-application-build--sha256-file adapter)
+                          :python (file-truename python) :request request
+                          :condition-facts nil))
+              (let ((original-planned (copy-sequence (plist-get inputs :output-paths))))
+                (cl-letf
+                    (((symbol-function 'nelisp-native-application-build--invoke-adapter)
+                      (lambda (_python _adapter request-file stdout-file stderr-file)
+                        (let* ((actual-request
+                                (nelisp-native-application-build--read-json-file request-file))
+                               (run-root (gethash "output_parent" actual-request))
+                               (output (expand-file-name "owned-output" run-root))
+                               (child (expand-file-name "child" output))
+                               (cwd (expand-file-name "cwd" child))
+                               (names-copy (expand-file-name "names.txt" output))
+                               (receipt-names-file
+                                (pcase receipt-names-mode
+                                  ('staged names-copy)
+                                  ('original names)
+                                  ('same-content same-names)
+                                  ('alias (concat (file-name-directory names-copy) "./"
+                                                  (file-name-nondirectory names-copy)))
+                                  ('missing nil)))
+                               (receipt-names-sha256
+                                (if (eq receipt-sha-mode 'wrong)
+                                    (make-string 64 ?0)
+                                  (plist-get inputs :names-sha256)))
+                               (rows-copy (expand-file-name "rows.el" output))
+                               (install-receipt (expand-file-name "install-receipt.el" output))
+                               (stdout (expand-file-name "stdout" child))
+                               (receipt-form
+                                (list :status :installed :native-qualified nil
+                                      :module-initialization-executed nil
+                                      :whole-module-initialization-equivalence nil
+                                      :names (plist-get discovery :names)
+                                      :manifest-file manifest
+                                      :manifest-sha256 (plist-get inputs :manifest-sha256)
+                                      :names-file receipt-names-file :names-sha256 receipt-names-sha256
+                                      :source-modules (plist-get discovery :modules)
+                                      :baseline-sha256 (plist-get discovery :baseline-sha256)
+                                      :mode :strict :omitted-definition-names nil
+                                      :producer-image-sha256
+                                      (gethash "sha256" (gethash "producer_image" pins))
+                                      :producer-source-sha256
+                                      (gethash "sha256" (gethash "producer" pins))
+                                      :helper-sha256 (gethash "sha256" (gethash "helper" pins))
+                                      :prelude-sha256 (gethash "sha256" (gethash "prelude" pins))
+                                      :definitions
+                                      (mapcar (lambda (entry)
+                                                (list :name (plist-get entry :name)
+                                                      :source-form-sha256
+                                                      (plist-get entry :form-sha256)
+                                                      :installed-identity-match t
+                                                      :installed-structure-match t
+                                                      :arguments-authenticated t
+                                                      :body-authenticated t))
+                                              (plist-get discovery :definitions))))
+                               (capture-file (expand-file-name "capture.json" output)))
+                          (setq test-run-root run-root)
+                          (make-directory output)
+                          (make-directory child)
+                          (make-directory cwd)
+                          (nnab-test--write names-copy
+                                            (if mutate-staged-names
+                                                "tampered staged names\n"
+                                              (with-temp-buffer
+                                                (insert-file-contents names)
+                                                (buffer-string))))
+                          (nnab-test--write rows-copy
+                                            (format "(defconst owned-rows '((owned-leaf %d 1 nil (:fn (:slot 0)) (1 1 -1))))\n"
+                                                    (plist-get discovery :id0)))
+                          (nnab-test--write install-receipt
+                                            (concat (nelisp-cc-fxir-admission--print receipt-form) "\n"))
+                          (nnab-test--write stdout
+                                            (format "HARVEST owned-leaf ok id=%d words=3\n"
+                                                    (plist-get discovery :id0)))
+                          (nnab-test--write (expand-file-name "stderr" child) "")
+                          (nnab-test--write (expand-file-name "rc" child) "0\n")
+                          (nnab-test--write (expand-file-name "command.json" child) "{}\n")
+                          (nnab-test--write (expand-file-name "launch.json" child) "{}\n")
+                          (nnab-test--write (expand-file-name "producer-driver.el" output) ";; fixed\n")
+                          (let ((output-hashes (make-hash-table :test 'equal)))
+                            (dolist (name '("command.json" "install-receipt.el" "launch.json"
+                                            "names.txt" "producer-driver.el" "rc" "rows.el"
+                                            "stderr" "stdout"))
+                              (let ((path (if (member name '("command.json" "launch.json" "rc"
+                                                             "stderr" "stdout"))
+                                              (expand-file-name name child)
+                                            (expand-file-name name output))))
+                                (puthash name
+                                         (nelisp-native-application-build--sha256-file path)
+                                         output-hashes)))
+                            (nnab-test--write capture-file
+                                              (json-serialize
+                                               (nelisp-native-application-build--json-hash
+                                                (list
+                                                 (cons "child_lifecycle"
+                                                       (nelisp-native-application-build--json-hash
+                                                        (list
+                                                         (cons "argv"
+                                                               (vector (gethash "path" (gethash "producer_image" pins))
+                                                                       "--load"
+                                                                       (expand-file-name "producer-driver.el" output)))
+                                                         (cons "cwd" cwd)
+                                                         (cons "environment"
+                                                               (let ((environment
+                                                                      (nelisp-native-application-build--json-hash
+                                                                       (list
+                                                                        (cons "LC_ALL" "C")
+                                                                        (cons "NC1_CONST" (gethash "constant" actual-request))
+                                                                        (cons "NC1_ID0" (number-to-string
+                                                                                         (gethash "id0" actual-request)))
+                                                                        (cons "NC1_NAMES" names-copy)
+                                                                        (cons "NC1_OUT" rows-copy)
+                                                                        (cons "NELISP_APPLICATION_INSTALL_RECEIPT"
+                                                                              install-receipt)
+                                                                        (cons "NELISP_APPLICATION_MANIFEST" manifest)
+                                                                        (cons "NELISP_APPLICATION_MANIFEST_SHA256"
+                                                                              (gethash "sha256"
+                                                                                       (gethash "application_manifest" pins)))
+                                                                        (cons "NELISP_APPLICATION_MODE"
+                                                                              (gethash "mode" actual-request))
+                                                                        (cons "NELISP_APPLICATION_NAMES_SHA256"
+                                                                              (gethash "names_sha256" actual-request))
+                                                                        (cons "NELISP_APPLICATION_ROOT" repository)
+                                                                        (cons "NELISP_FXIR_ROOT" repository)
+                                                                        (cons "NELISP_PRODUCER_IMAGE_SHA256"
+                                                                              (gethash "sha256"
+                                                                                       (gethash "producer_image" pins)))
+                                                                        (cons "PATH" (or (getenv "PATH") "/usr/bin:/bin"))))))
+                                                                 environment))
+                                                         (cons "child"
+                                                               (nelisp-native-application-build--json-hash
+                                                                (list (cons "pid" 222)
+                                                                      (cons "session" 222)
+                                                                      (cons "start_ticks" 333)
+                                                                      (cons "uid" 1000))))
+                                                         (cons "controller"
+                                                               (nelisp-native-application-build--json-hash
+                                                                (list (cons "pid" 111)
+                                                                      (cons "session" 100)
+                                                                      (cons "start_ticks" 222)
+                                                                      (cons "uid" 1000))))
+                                                         (cons "cleanup"
+                                                               (nelisp-native-application-build--json-hash
+                                                                (list (cons "verified" t)
+                                                                      (cons "errors" [])
+                                                                      (cons "initial" [])
+                                                                      (cons "remaining" []))))
+                                                         (cons "rc" 0) (cons "timed_out" :false)
+                                                         (cons "cancelled" :false) (cons "timeout" 45))))
+                                                 (cons "outputs" output-hashes)
+                                                 (cons "owned_report" (make-hash-table :test 'equal))
+                                                 (cons "pins" pins) (cons "rejected" :false)
+                                                 (cons "request_sha256"
+                                                       (nelisp-native-application-build--sha256-file
+                                                        request-file))
+                                                 (cons "runner_ast_sha256" (make-string 64 ?b))
+                                                 (cons "status" "RAW_CAPTURED_NOT_ADMITTED"))))))
+                          (nnab-test--write stdout-file
+                                            (json-serialize
+                                             (nelisp-native-application-build--json-hash
+                                              (list (cons "status" "RAW_CAPTURED_NOT_ADMITTED")
+                                                    (cons "output" output) (cons "capture" capture-file)))))
+                          (nnab-test--write stderr-file "")
+                          (when mutate-after-child
+                            (nnab-test--write module
+                                              ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) (cons x nil))\n"))
+                          0)))
+                     ((symbol-function 'write-region)
+                      (let ((original-write-region (symbol-function 'write-region)))
+                        (lambda (&rest arguments)
+                          (let ((file (nth 2 arguments)))
+                            (if (and inject-late-write-failure
+                                     (stringp file)
+                                     (equal (file-name-nondirectory file)
+                                            "host-activation.sexp"))
+                                (progn
+                                  (setq failed-metadata-path file)
+                                  (error "Independent late metadata write failure"))
+                              (apply original-write-region arguments))))))
+                     ((symbol-function 'nelisp-native-application-build--delete-owned-tree)
+                      (let ((original-delete
+                             (symbol-function 'nelisp-native-application-build--delete-owned-tree)))
+                        (lambda (owned-directory)
+                          (funcall original-delete owned-directory)
+                          (when (and inject-cleanup-failure
+                                     (equal owned-directory test-run-root))
+                            (setq inject-cleanup-failure nil)
+                            (error "Injected owned cleanup failure"))))))
+                  (let ((result
+                         (nelisp-native-application-build-run-owned
+                          discovery inputs producer-spec planned-rows 'owned-rows
+                          planned-receipt planned-report)))
+                    (should (plist-get result :activation))
+                    (should-not (plist-get (plist-get result :activation) :native-qualified))
+                    (should (equal (plist-get inputs :output-paths) original-planned))
+                    (should (eq (plist-get result :condition-facts) nil))
+                    (should (file-exists-p (plist-get result :host-configuration-file)))
+                    (should (file-exists-p (plist-get result :host-activation-file)))
+                    (setq successful-roots (directory-files outside nil "\\`.nnab-owned-"))
+                    (should (eq (plist-get (read (with-temp-buffer
+                                                   (insert-file-contents
+                                                    (plist-get result :host-configuration-file))
+                                                   (buffer-string)))
+                                           :condition-facts)
+                                nil)))
+                  (dolist (case '((original nil nil "Raw producer receipt does not authenticate selected discovery")
+                                  (same-content nil nil "Raw producer receipt does not authenticate selected discovery")
+                                  (alias nil nil "Raw producer receipt does not authenticate selected discovery")
+                                  (missing nil nil "Raw producer receipt does not authenticate selected discovery")
+                                  (staged wrong nil "Raw producer receipt does not authenticate selected discovery")
+                                  (staged nil t "Adapter-owned names copy differs from the Lisp input")))
+                    (setq receipt-names-mode (nth 0 case)
+                          receipt-sha-mode (nth 1 case)
+                          mutate-staged-names (nth 2 case)
+                          nelisp-cc-fxir-native--additional-rows nil
+                          nelisp-cc-fxir-native--source initial-source
+                          nelisp-cc-fxir-native--boundaries initial-boundaries
+                          nelisp-cc-fxir-native--wrapper-names initial-wrapper-names)
+                    (let ((caught
+                           (condition-case condition
+                               (progn
+                                 (nelisp-native-application-build-run-owned
+                                  discovery inputs producer-spec planned-rows 'owned-rows
+                                  planned-receipt planned-report)
+                                 nil)
+                             (error condition))))
+                      (should caught)
+                      (should (equal (cadr caught) (nth 3 case))))
+                    (should (equal (directory-files outside nil "\\`.nnab-owned-")
+                                   successful-roots))
+                    (should-not (file-directory-p test-run-root)))
+                  (setq receipt-names-mode 'staged
+                        receipt-sha-mode nil
+                        mutate-staged-names nil)
+                  (setq mutate-after-child t)
+                  (should-error
+                   (nelisp-native-application-build-run-owned
+                    discovery inputs producer-spec planned-rows 'owned-rows
+                    planned-receipt planned-report))
+                  (should (equal (plist-get inputs :output-paths) original-planned))
+                  (should (file-exists-p names))
+                  (should (file-exists-p manifest))
+                  (should (equal (directory-files outside nil "\\`.nnab-owned-")
+                                 successful-roots))
+                  ;; Force a write failure after the unchanged validator has
+                  ;; published globals. The host must be marked non-reusable and
+                  ;; the original late-write error retained in the condition.
+                  (nnab-test--write module
+                                    ";;; -*- lexical-binding: t; -*-\n(defun owned-leaf (x) x)\n")
+                  (setq nelisp-cc-fxir-native--additional-rows nil
+                        nelisp-cc-fxir-native--source initial-source
+                        nelisp-cc-fxir-native--boundaries initial-boundaries
+                        nelisp-cc-fxir-native--wrapper-names initial-wrapper-names
+                        mutate-after-child nil
+                        failed-metadata-path nil inject-late-write-failure t)
+                  (let ((caught
+                         (condition-case condition
+                             (progn
+                               (nelisp-native-application-build-run-owned
+                                discovery inputs producer-spec planned-rows 'owned-rows
+                                planned-receipt planned-report)
+                               nil)
+                           (nelisp-native-application-build-host-discard-required condition))))
+                    (should caught)
+                    (should (eq (car caught)
+                                'nelisp-native-application-build-host-discard-required))
+                    (should (eq (plist-get (cdr caught) :activation-attempted) t))
+                    (let ((cause (plist-get (cdr caught) :cause)))
+                      (should (eq (car cause) 'error))
+                      (should (equal (cadr cause) "Independent late metadata write failure")))
+                    (should (null (plist-get (cdr caught) :owned-cleanup-errors)))
+                    (should-not (file-exists-p failed-metadata-path))
+                    (should-not
+                     (file-exists-p (expand-file-name "admission-receipt.sexp"
+                                                      (file-name-directory failed-metadata-path))))
+                    (should nelisp-cc-fxir-native--additional-rows)
+                    (should-not (eq nelisp-cc-fxir-native--source initial-source)))
+                  ;; A cleanup error is attached without replacing the activation
+                  ;; failure; cleanup was performed before the injected report.
+                  (setq nelisp-cc-fxir-native--additional-rows nil
+                        nelisp-cc-fxir-native--source initial-source
+                        nelisp-cc-fxir-native--boundaries initial-boundaries
+                        nelisp-cc-fxir-native--wrapper-names initial-wrapper-names
+                        failed-metadata-path nil inject-cleanup-failure t)
+                  (let ((caught
+                         (condition-case condition
+                             (progn
+                               (nelisp-native-application-build-run-owned
+                                discovery inputs producer-spec planned-rows 'owned-rows
+                                planned-receipt planned-report)
+                               nil)
+                           (nelisp-native-application-build-host-discard-required condition))))
+                    (should caught)
+                    (let ((cause (plist-get (cdr caught) :cause))
+                          (cleanup-errors (plist-get (cdr caught) :owned-cleanup-errors)))
+                      (should (equal (cadr cause) "Independent late metadata write failure"))
+                      (should (equal (cadar cleanup-errors) "Injected owned cleanup failure")))
+                    (should-not (file-exists-p failed-metadata-path))
+                    (should-not
+                     (file-exists-p (expand-file-name "admission-receipt.sexp"
+                                                      (file-name-directory failed-metadata-path))))
+                    (should nelisp-cc-fxir-native--additional-rows)
+                    (should-not (eq nelisp-cc-fxir-native--source initial-source)))))))
+        (delete-directory directory t)))))
 
 (ert-deftest nnab-image-pin-hashing-is-bounded-and-role-specific ()
   (let* ((directory (file-truename (make-temp-file "nnab-image-pin-" t)))

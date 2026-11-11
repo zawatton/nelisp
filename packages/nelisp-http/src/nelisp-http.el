@@ -319,8 +319,12 @@ Returns (:status :headers :body :final-url) or signals an error."
 ;;; Extract pipeline (Phase 6.2.7) ------------------------------------
 
 (defun nelisp-http--libxml-p ()
-  "Return non-nil when this Emacs build bundles libxml2."
-  (fboundp 'libxml-parse-html-region))
+  "Return non-nil when this Emacs build bundles libxml2.
+Ask `libxml-available-p': `libxml-parse-html-region' can be fbound without
+libxml2 (the nelisp-emacs facade's emacs-stub-bulk.el defines a nil stub),
+and parsing then returns nil instead of falling back to the regex subset."
+  (and (fboundp 'libxml-available-p) (libxml-available-p)
+       (fboundp 'libxml-parse-html-region)))
 
 (defun nelisp-http--extract-target-from-content-type (ct)
   "Classify Content-Type CT as `html', `json', `xml', or nil."
@@ -381,7 +385,7 @@ also include text from descendant elements and change selector results."
 (defun nelisp-http--select-html-libxml (html selector)
   "Return text from HTML matching SELECTOR via libxml + dom.el."
   (let ((parts (nelisp-http--parse-selector selector)))
-    (when (and parts (fboundp 'libxml-parse-html-region))
+    (when (and parts (nelisp-http--libxml-p))
       (let* ((dom (with-temp-buffer
                     (insert html)
                     (libxml-parse-html-region (point-min) (point-max))))

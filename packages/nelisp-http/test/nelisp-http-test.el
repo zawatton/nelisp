@@ -317,13 +317,13 @@ so the http cache + robots namespaces start empty for each test."
     (should (equal result "[1,2,3]"))))
 
 (ert-deftest nelisp-http-test-select-html-libxml-class ()
-  (skip-unless (fboundp 'libxml-parse-html-region))
+  (skip-unless (nelisp-http--libxml-p))
   (let ((html "<html><body><p class=\"hit\">A</p><span class=\"hit\">B</span></body></html>"))
     (should (equal (nelisp-http--select-html-libxml html ".hit")
                    "A\n\nB"))))
 
 (ert-deftest nelisp-http-test-select-html-libxml-keeps-direct-text-semantics ()
-  (skip-unless (fboundp 'libxml-parse-html-region))
+  (skip-unless (nelisp-http--libxml-p))
   (let ((html "<div class=\"hit\">before<span>nested</span>after</div>"))
     (should (equal (nelisp-http--select-html-libxml html ".hit")
                    "beforeafter"))))

@@ -21,8 +21,10 @@ else
             packages/*/test/nl-*-test.el 2>/dev/null \
             | grep -v 'nelisp-worker-soak-test\.el$')
 fi
-lp="-L lisp -L src -L test -L bench -L scripts"
+# The load path of tools/run-tests-parallel.sh (LOAD_DIRS), in its order.
+lp="-L lisp -L src -L test -L bench"
 for d in packages/*/src packages/*/test; do [ -d "$d" ] && lp="$lp -L $d"; done
+lp="$lp -L scripts -L tools"
 out=target/s1-9-ert
 mkdir -p "$out"
 # ERT_SINGLE_LOG lets a short run (a ledger cmd) keep its log apart from

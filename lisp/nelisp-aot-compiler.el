@@ -1942,6 +1942,11 @@ The function is a variable or a constant designator and every argument is
       (nelisp-aot-compiler--lisp-truth node)
     node))
 
+;; Special before `nelisp-aot-compiler--lisp-parse-test' binds it (see the documented `defvar'
+;; further down): byte-compiled, the binding would otherwise be lexical
+;; and invisible to the callees that read it.
+(defvar nelisp-aot-compiler--aot-test-position)
+
 (defun nelisp-aot-compiler--lisp-parse-test (form env fenv defuns)
   "Parse FORM as a branch condition, a test position (Doc 229)."
   (nelisp-aot-compiler--lisp-test
@@ -4273,6 +4278,17 @@ descriptor records the variable name, generated init helper, standard
 value expression, docstring, and customization keyword plist."
   (plist-get (nelisp-aot-compiler--extract-defmacros sexp)
              :custom-metadata))
+
+;; Special before the `let' below binds them: byte-compiled, a binding of a
+;; variable not yet declared special is lexical, and the lifted lambdas and
+;; closure descriptors would be collected into the global values instead.
+;; The documented `defvar's follow `nelisp-aot-compiler--with-defmacros'.
+(defvar nelisp-aot-compiler--lambda-lift-counter)
+(defvar nelisp-aot-compiler--closure-lift-counter)
+(defvar nelisp-aot-compiler--lambda-lift-hoists)
+(defvar nelisp-aot-compiler--closure-lift-descriptors)
+(defvar nelisp-aot-compiler--lambda-lift-names)
+(defvar nelisp-aot-compiler--special-vars)
 
 (defun nelisp-aot-compiler--closure-descriptors (sexp)
   "Return Doc 129.7U heap-closure descriptors found in SEXP."
@@ -11396,6 +11412,11 @@ for direct calls."
         (plist-get signature :fixed-count)
         (plist-get signature :arity))))
 
+;; Special before `nelisp-aot-compiler--parse-value' binds it (see the
+;; documented `defvar' further down): byte-compiled, the binding would
+;; otherwise be lexical and never inhibit the cache-slot rewrite.
+(defvar nelisp-aot-compiler--symbol-literal-inhibit)
+
 (defun nelisp-aot-compiler--parse-value (sexp env fenv defuns)
   "Parse SEXP as a value-producing expression.
 Returns an IR node of one of these kinds:
@@ -16278,6 +16299,11 @@ prefix state prevents an emitted branch or call from reviving a cache."
 ;; Defined with its documentation before the promotion plan; declared here so the `let*' below binds it
 ;; dynamically in a compiled file too.
 (defvar nelisp-aot-compiler--x86-promotable-memo)
+
+;; Special before `nelisp-aot-compiler--emit-call-free-region' binds it (see the documented `defvar'
+;; further down): byte-compiled, the binding would otherwise be lexical
+;; and invisible to the callees that read it.
+(defvar nelisp-aot-compiler--x86-path-count-memo)
 
 (defun nelisp-aot-compiler--emit-call-free-region (node buf emit)
   "Call EMIT, keeping profitable call-free raw NODE in registers."
