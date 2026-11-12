@@ -77,7 +77,31 @@ pending
 cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-activate-e2e.sh"
 
 ** S3.3 Composition / edit sessions, candidate window, language bar, display attributes, settings match the C++ shim feature list
-#+NOTE: feature list taken from windows/src/text_service.cpp; real key routing needs real Windows
+#+NOTE: umbrella criterion, split into S3i.1..S3p.1 below (2026-11-12); passes when all of them pass
+pending
+
+** S3i.1 E2E - composition / edit sessions, display attributes and caret map (text_service.cpp 74-165, 2447-3190) match the C++ shim on the mock TSF host
+pending
+
+** S3j.1 E2E - OnKeyDown core path (text_service.cpp 1788-1948, 2038) drives the engine and applies its state; ledger S4.2 end to end
+pending
+
+** S3k.1 E2E - engine worker threads, provider window and deferred keys behave as in the C++ shim
+pending
+
+** S3l.1 E2E - conversion, segments, registration mode and the Ctrl+G emergency paths (text_service.cpp 1952-1991, 2084-2447)
+pending
+
+** S3m.1 E2E - candidate list UI element
+pending
+
+** S3n.1 E2E - language bar items and GDI icons
+pending
+
+** S3o.1 E2E - mode indicator window and settings launcher
+pending
+
+** S3p.1 E2E - hot swap, function provider and diagnostics
 pending
 
 ** S3.4 E2E - on real Windows (CI), the native TIP passes the existing TSF host gate
