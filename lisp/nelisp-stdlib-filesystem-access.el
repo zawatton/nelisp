@@ -2,6 +2,7 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 (require 'nelisp-bytecode-compiler-input)
 (require 'nelisp-native-raw-file)
+(defvar nelisp-stdlib-filesystem-access--owners)
 (defvar nelisp-stdlib-filesystem-access--installed-owner nil)
 (defun nelisp-stdlib-filesystem-access--live ()
   "Validate unchanged native filesystem operations before use."
