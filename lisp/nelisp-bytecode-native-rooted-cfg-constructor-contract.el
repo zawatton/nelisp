@@ -11,6 +11,9 @@
 ;;; Code:
 (require 'cl-lib)
 
+(declare-function nelisp-native-funcall-v2-hash "nelisp-native-funcall-v2" ())
+(declare-function nelisp-native-funcall-v2-descriptor "nelisp-native-funcall-v2" ())
+
 (let ((valid-owner
        (and (fboundp 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)
             (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p)))

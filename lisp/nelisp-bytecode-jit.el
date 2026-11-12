@@ -15,6 +15,19 @@
 (require 'cl-lib)
 (require 'nelisp-bytecode-ir)
 
+(declare-function nelisp-eln-emitter--profile-p "nelisp-eln-emitter" (profile))
+(declare-function nelisp-eln-emitter--symbol-name "nelisp-eln-emitter-templates" (name))
+(declare-function nelisp-eln-emitter-write-ir "nelisp-eln-emitter" (ir output &optional profile))
+(defvar nelisp-eln-emitter-gnu31-profile)
+(declare-function nelisp-eln-system-loader-open "nelisp-eln-system-loader" (path))
+(declare-function nelisp-eln-system-loader-close "nelisp-eln-system-loader" (handle))
+(declare-function nelisp-eln-system-loader-function-capability "nelisp-eln-system-loader" (handle name))
+(declare-function nelisp-eln-native-subr-create "nelisp-eln-native-subr" (handle name &optional function-name))
+(declare-function nelisp-aot-compiler--parse-stmt "nelisp-aot-compiler" (sexp env fenv defuns))
+(declare-function nelisp-artifact-compile-file "nelisp-artifact" (source-path artifact-path &optional manifest-path target
+                                load-paths preloads requested-feature kind
+                                native-policy module-policy))
+
 (defvar nelisp-bytecode-jit--handles (make-hash-table :test 'eq)
   "Published native handles keyed by byte-code function object.")
 (defvar nelisp-bytecode-jit--pending-eln-closes nil
@@ -1076,7 +1089,7 @@ Cons and string results are admitted through the pinned reference bridge."
               nelisp-bytecode-jit--pending-eln-closes))))
   nil)
 
-(defun nelisp-bytecode-jit--compile-eln-ir (function ir identity)
+(defun nelisp-bytecode-jit--compile-eln-ir (_function ir identity)
   "Emit IR as a GNU .eln leaf and prepare its managed callable."
   (require 'nelisp-eln-emitter)
   (require 'nelisp-eln-system-loader)

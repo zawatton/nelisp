@@ -14,6 +14,7 @@
 (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (require 'nelisp-native-load)
 (require 'nelisp-runtime-reload-abi)
+(declare-function nelisp-bytecode-native-rooted-cfg-native--build "nelisp-bytecode-native-rooted-cfg-native" (input artifact-path shared-v2 &optional guard-mode skip-seal))
 
 (defconst nelisp-bytecode-native-rooted-cfg-native-entry
   "nl_native_rooted_cfg_probe_v1")

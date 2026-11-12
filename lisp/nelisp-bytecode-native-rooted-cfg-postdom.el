@@ -13,6 +13,7 @@
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg)
 (require 'nelisp-bytecode-native-rooted-cfg-plan)
+(declare-function nelisp-bytecode-native-rooted-cfg-postdom--canonical-input-p "nelisp-bytecode-native-rooted-cfg-postdom" (input))
 
 (defun nelisp-bytecode-native-rooted-cfg-postdom--nearest-common (common postdom)
   "Return the unique nearest postdominator in COMMON, or nil if ambiguous."
