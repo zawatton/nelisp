@@ -1,0 +1,46 @@
+# Names with a generated call GNU Emacs 31.1 cannot finish in batch mode
+# (it waits for input), confirmed by re-running the call alone.
+# Regenerate: NELISP_FUZZ_WRITE_BASELINE=1 make parity-fuzz
+#
+# Ratchet (tools/nelisp-parity-fuzz.el): an unlisted confirmed hang FAILS
+# (new hang); a listed name none of whose calls hangs FAILS (stale).  The
+# calls of a listed name are run alone with a short timeout, so they
+# never stall a chunk.
+calc-dispatch
+dump-emacs-portable--sort-predicate
+frame--z-order-lessp
+get-variable-watchers
+help-for-help
+internal--define-uninitialized-variable
+isearch-backward
+isearch-backward-regexp
+isearch-cancel
+isearch-forward
+isearch-forward-regexp
+isearch-forward-symbol
+isearch-forward-word
+keyboard-quit
+org-agenda
+org-capture
+pgtk-frame-edges
+pgtk-frame-geometry
+pgtk-mouse-absolute-pixel-position
+pgtk-own-selection-internal
+pgtk-page-setup-dialog
+pgtk-set-mouse-absolute-pixel-position
+pgtk-use-im-context
+quoted-insert
+read-positioning-symbols
+save-buffers-kill-emacs
+save-buffers-kill-terminal
+suspend-emacs
+top-level
+x-close-connection
+x-display-color-cells
+x-display-mm-height
+x-display-pixel-height
+x-display-pixel-width
+x-display-planes
+x-gtk-debug
+x-open-connection
+x-server-max-request-size

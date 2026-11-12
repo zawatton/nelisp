@@ -2296,7 +2296,7 @@ standalone-reader-defvar-alloc-smoke: $(if $(wildcard target/nelisp target/nelis
 # which one is right, and that is a reading job.  Run it, read it, and turn
 # what it finds into `emacs-parity' cases -- those are the ones that stay.
 #
-#   NELISP_FUZZ_SEED=7 NELISP_FUZZ_CASES=4000 make parity-fuzz
+#   NELISP_FUZZ_SEED=7 NELISP_FUZZ_PER_NAME=6 make parity-fuzz
 #   NELISP_FUZZ_ONLY='^string-' make parity-fuzz
 # "buffer ops / text properties / overlays / coding systems are not covered"
 # was an impression until this printed the number: 100 of 424 shared names,

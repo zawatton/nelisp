@@ -1837,6 +1837,27 @@ jobs:
         shell: bash
         timeout-minutes: 40
         run: bash tools/ai/nelisp-ai.sh gate parity-fuzz -- make parity-fuzz
+      # On a ratchet failure, regenerate both lists on this very host class
+      # and upload them for review (never committed automatically).  The
+      # run is deterministic per name, so the candidate is the full set.
+      - name: "Baseline candidates (known-divergence and known-hang lists)"
+        if: failure()
+        shell: bash
+        timeout-minutes: 40
+        run: |
+          mkdir -p target/parity-fuzz-candidate
+          NELISP_FUZZ_WRITE_BASELINE=1 \
+            NELISP_FUZZ_KNOWN_FILE="$PWD/target/parity-fuzz-candidate/parity-fuzz-known-divergences.txt" \
+            NELISP_FUZZ_HANG_FILE="$PWD/target/parity-fuzz-candidate/parity-fuzz-known-hangs.txt" \
+            NELISP_FUZZ_SIDE_TIMEOUT=10 NELISP_FUZZ_CONFIRM_TIMEOUT=10 \
+            make parity-fuzz || true
+      - name: Upload baseline candidates
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-fuzz-baseline-candidate
+          path: target/parity-fuzz-candidate/
+          if-no-files-found: ignore
       # Informational: shows whether the downloaded binary survived the job
       # or something rebuilt it.
       - name: Log the stamp status again (end of job)

@@ -21,12 +21,21 @@
 ;; the two disagree; which one is right is still a reading job.  A generator
 ;; that answered that would be a second implementation of Emacs.
 ;;
-;; The COUNT is sample-dependent.  Adding or removing a name changes the
-;; length of the list the generator draws from, which shifts the whole
-;; pseudo-random sequence -- so two runs either side of such a change are
-;; different samples, not before-and-after.  Compare rates over a large
-;; budget, or hold the name list fixed; do not read a drop as progress
-;; without checking which of the two moved.
+;; DETERMINISM (host independence).  The name universe is the compat table
+;; (minus the committed skip list) and nothing the host answers; every name
+;; gets `NELISP_FUZZ_PER_NAME' cases (default 3) drawn from an RNG seeded by
+;; a stable FNV-1a hash of (seed, name, k).  A name's cases therefore do not
+;; depend on any other name, on list order, on sharding, or on which names
+;; the host Emacs happens to define.  A name the host lacks is an ORACLE GAP:
+;; reported and capped, never silently dropped and never a divergence.  A
+;; case GNU Emacs cannot finish (waits for input) is confirmed alone and
+;; recorded as a HANG; hangs are ratcheted through
+;; tools/parity-fuzz-known-hangs.txt exactly like divergences.
+;;
+;; Environment: NELISP_FUZZ_SEED, NELISP_FUZZ_PER_NAME, NELISP_FUZZ_ONLY,
+;; NELISP_FUZZ_SHARD=i/N (names with fnv(name) mod N = i), NELISP_FUZZ_RESULTS
+;; (dump per-name status), NELISP_FUZZ_SHUFFLE=n and NELISP_FUZZ_HIDE=regexp
+;; (test hooks: permute the name order / pretend the host lacks those names).
 ;;
 ;; Do not run this at the same time as a build.  It executes ./target/nelisp
 ;; continuously, and a concurrent `make standalone-reader' fails with "Text
@@ -246,26 +255,87 @@ printed is a gap somebody has to rediscover."
     "unibyte string: Emacs tracks a per-string multibyte flag; every string here is UTF-8 bytes")
    (t nil)))
 
-(defun nelisp-parity-fuzz--names ()
-  "Shared names from the compat table, minus the ones a differential cannot judge."
+(defun nelisp-parity-fuzz--fnv (str)
+  "Stable 32-bit FNV-1a hash of STR (never the host's `sxhash')."
+  (let ((h 2166136261))
+    (dolist (c (string-to-list str))
+      (setq h (logand (* (logxor h c) 16777619) #xFFFFFFFF)))
+    h))
+
+(defun nelisp-parity-fuzz--universe ()
+  "Every table name that is not skip-listed.
+No host, ONLY, shard or order input: the same list on every machine."
   (let ((names nil))
     (with-temp-buffer
       (insert-file-contents nelisp-parity-fuzz--table)
       (goto-char (point-min))
       (while (re-search-forward "^shared-\\(?:shadowing\\|deferring\\) +\\([^ ]+\\)" nil t)
         (let ((sym (intern (match-string 1))))
-          (when (and (fboundp sym)
-                     (not (memq sym nelisp-parity-fuzz--skip))
-                     (not (macrop sym))
-                     (not (special-form-p sym))
-                     ;; a name that only exists as a variable here
+          (when (and (not (memq sym nelisp-parity-fuzz--skip))
                      (not (string-prefix-p "nelisp" (symbol-name sym))))
             (push sym names)))))
+    (sort (delete-dups names) #'string-lessp)))
+
+(defvar nelisp-parity-fuzz--primed nil)
+(defvar nelisp-parity-fuzz--prime-failures nil
+  "Names whose autoload could not be resolved while priming.")
+
+(defun nelisp-parity-fuzz--note-prime-failure (sym err)
+  "Record that SYM's autoload failed with ERR (reported, not fatal)."
+  (push (cons sym err) nelisp-parity-fuzz--prime-failures))
+
+(defun nelisp-parity-fuzz--prime-host ()
+  "Resolve every autoload of the whole universe once, before any arity read.
+A name's arity can change when a library loaded for ANOTHER name adds advice
+or turns a stub into a generic function (seq-*, org-agenda's advice), so
+reading arities while loading gives order- and host-dependent cases.  After
+everything is loaded the state does not depend on the order."
+  (unless nelisp-parity-fuzz--primed
+    (setq nelisp-parity-fuzz--primed t)
+    (dolist (sym (nelisp-parity-fuzz--universe))
+      (when (fboundp sym)
+        (condition-case err
+            (let ((f (indirect-function sym)))
+              (when (autoloadp f) (autoload-do-load f sym)))
+          (error (nelisp-parity-fuzz--note-prime-failure sym err)))))))
+
+(defun nelisp-parity-fuzz--names ()
+  "Shared names from the compat table, minus the ones a differential cannot judge.
+Selection never consults the host (no `fboundp'/`macrop'): the universe is
+the same on every machine.  Host-dependent classification is
+`nelisp-parity-fuzz--host-kind'."
+  (let ((names (nelisp-parity-fuzz--universe)))
     (let ((only (getenv "NELISP_FUZZ_ONLY")))
       (when (and only (not (string-empty-p only)))
         (setq names (cl-remove-if-not
                      (lambda (s) (string-match-p only (symbol-name s))) names))))
-    (sort (delete-dups names) #'string-lessp)))
+    (setq names (sort (delete-dups names) #'string-lessp))
+    (let ((sh (getenv "NELISP_FUZZ_SHARD")))
+      (when (and sh (string-match "\\`\\([0-9]+\\)/\\([0-9]+\\)\\'" sh))
+        (let ((i (string-to-number (match-string 1 sh)))
+              (n (string-to-number (match-string 2 sh))))
+          (setq names (cl-remove-if-not
+                       (lambda (s) (= (mod (nelisp-parity-fuzz--fnv (symbol-name s)) n) i))
+                       names)))))
+    (let ((shuf (getenv "NELISP_FUZZ_SHUFFLE")))
+      (when (and shuf (not (string-empty-p shuf)))
+        (setq names (sort names
+                          (lambda (a b)
+                            (< (nelisp-parity-fuzz--fnv (format "%s:%s" shuf a))
+                               (nelisp-parity-fuzz--fnv (format "%s:%s" shuf b))))))))
+    names))
+
+(defun nelisp-parity-fuzz--host-kind (sym)
+  "Classify SYM on the host: `gap' (oracle lacks it), `not-callable' or `ok'.
+NELISP_FUZZ_HIDE (a regexp) makes matching names look absent, to test that a
+smaller host shows up as oracle gaps and not as divergences."
+  (let ((hide (getenv "NELISP_FUZZ_HIDE")))
+    (cond ((and hide (not (string-empty-p hide))
+                (string-match-p hide (symbol-name sym)))
+           'gap)
+          ((not (fboundp sym)) 'gap)
+          ((or (macrop sym) (special-form-p sym)) 'not-callable)
+          (t 'ok))))
 
 (defvar nelisp-parity-fuzz--no-arity nil
   "Names whose arity could not be read, so no call was generated for them.")
@@ -287,7 +357,19 @@ it silently shrinks the search and leaves the run reporting a name count it
 did not actually cover -- the same thing the resume cap is careful about a
 few lines down, and what `make fallback-inventory' flags a bare handler for."
   (condition-case err
-      (let ((a (func-arity sym)))
+      (let ((a (progn
+                 ;; An autoload object reports (0 . many) until it is loaded,
+                 ;; so the arity -- and every case drawn from it -- would
+                 ;; depend on what the host had loaded before.  Resolve it.
+                 (let ((f (indirect-function sym)))
+                   (when (autoloadp f) (autoload-do-load f sym)))
+                 ;; Libraries loaded for OTHER names add advice (org loads
+                 ;; `exchange-point-and-mark' :after advice), which reports
+                 ;; (0 . many); read the arity of the advised original.
+                 (let ((f (indirect-function sym)))
+                   (while (and (fboundp 'advice--p) (advice--p f))
+                     (setq f (advice--cd*r f)))
+                   (func-arity f)))))
         (or (and (consp a) (integerp (car a))
                  (cons (car a) (if (integerp (cdr a)) (cdr a) nil)))
             (progn (nelisp-parity-fuzz--note-unreadable-arity sym 'unusable-arity)
@@ -331,6 +413,23 @@ few lines down, and what `make fallback-inventory' flags a bare handler for."
 ;; a string literal, and an unescaped quote inside a docstring ends it -- the
 ;; reader then reads the rest as code.  That is exactly how this function
 ;; failed with `void-variable (\t)' on its first run.
+(defun nelisp-parity-fuzz--seed-case (seed name k)
+  "Seed the RNG from a stable hash of (SEED, NAME, K) only."
+  (let ((h1 (nelisp-parity-fuzz--fnv (format "%d:%s:%d" seed name k)))
+        (h2 (nelisp-parity-fuzz--fnv (reverse (format "%d/%s/%d" seed name k)))))
+    (nelisp-parity-fuzz--seed (logior 1 (logxor (ash h1 24) (ash h2 3) h1)))
+    (dotimes (_ 4) (nelisp-parity-fuzz--next))))
+
+(defun nelisp-parity-fuzz--cases-for (sym seed per-name)
+  "The PER-NAME calls generated for SYM; a pure function of SEED and SYM."
+  (nelisp-parity-fuzz--prime-host)
+  (let ((out nil))
+    (dotimes (k per-name)
+      (nelisp-parity-fuzz--seed-case seed sym k)
+      (let ((c (nelisp-parity-fuzz--gen-call sym)))
+        (when (and c (not (member c out))) (push c out))))
+    (nreverse out)))
+
 (defun nelisp-parity-fuzz--key (case)
   "Line-safe identity for CASE."
   (let* ((raw (prin1-to-string case))
@@ -381,7 +480,7 @@ few lines down, and what `make fallback-inventory' flags a bare handler for."
                        (list nelisp-parity-fuzz--binary "--load" file))))
       (nelisp-parity-fuzz--zip cases emacs-out nelisp-out))))
 
-(defconst nelisp-parity-fuzz--max-resumes 4
+(defconst nelisp-parity-fuzz--max-resumes 60
   "How many times one chunk may resume past an aborting call.")
 
 (defvar nelisp-parity-fuzz--dropped 0
@@ -406,8 +505,13 @@ in the results as `:missing\=', which is what the abort report keys on."
          ;; timeout.  It is not a disagreement (GNU gave no answer), so it is
          ;; listed separately and the chunk resumes after it.
          ((and gnu-idx (or (null idx) (<= gnu-idx idx)))
-          (push (nth 0 (nth gnu-idx rows)) nelisp-parity-fuzz--gnu-timeouts)
+          ;; The chunk stopped here.  Under load that proves nothing, so the
+          ;; case is re-run ALONE with a longer budget; only a case that
+          ;; still cannot finish is a hang.
           (setq out (append out (cl-subseq rows 0 gnu-idx)))
+          (let ((alone (nelisp-parity-fuzz--probe (nth 0 (nth gnu-idx rows))
+                                                  nelisp-parity-fuzz--confirm-timeout)))
+            (when alone (setq out (append out (list alone)))))
           (setq todo (nthcdr (1+ gnu-idx) todo)))
          ((null idx) (setq out (append out rows)) (setq todo nil))
          ;; Each resume re-runs the whole remaining tail, so a chunk with many
@@ -429,7 +533,7 @@ in the results as `:missing\=', which is what the abort report keys on."
     out))
 
 (defconst nelisp-parity-fuzz--side-timeout
-  (string-to-number (or (getenv "NELISP_FUZZ_SIDE_TIMEOUT") "5"))
+  (string-to-number (or (getenv "NELISP_FUZZ_SIDE_TIMEOUT") "8"))
   "Seconds one side may take for one chunk before it is killed.
 A normal chunk takes 1-2 s.  A call that waits for terminal input never
 returns: `read-char' and the commands that read events block in batch Emacs
@@ -438,18 +542,37 @@ the chunk unreported, and `nelisp-parity-fuzz--run-recovering' resumes after
 it.")
 
 (defvar nelisp-parity-fuzz--gnu-timeouts nil
-  "Cases at which GNU Emacs stopped responding within the side timeout.
-The stop is at that case, but its cause may be state an earlier case in the
-same chunk left behind (each one returns at once when run alone).  Never
-counted as findings.")
+  "Cases that GNU Emacs cannot finish even when run alone (confirmed hangs).
+Each is a ratcheted finding: its name must be in the known-hang list.")
+
+(defconst nelisp-parity-fuzz--confirm-timeout
+  (string-to-number (or (getenv "NELISP_FUZZ_CONFIRM_TIMEOUT") "20"))
+  "Seconds a case gets when re-run alone to decide whether it hangs.")
+
+(defun nelisp-parity-fuzz--probe (case timeout)
+  "Run CASE alone with TIMEOUT seconds per side.
+Return its row, or nil after recording CASE as a hang when GNU Emacs did not
+answer.  Only a clean answer from both sides yields a row."
+  (let* ((nelisp-parity-fuzz--side-timeout timeout)
+         (row (car (nelisp-parity-fuzz--run (list case)))))
+    (if (and row (eq (nth 1 row) :missing))
+        (progn (push case nelisp-parity-fuzz--gnu-timeouts) nil)
+      row)))
 
 (defun nelisp-parity-fuzz--capture (argv)
   "Run ARGV, return an alist of CASE-TEXT -> RESULT-TEXT from its ## lines.
 ARGV runs under timeout(1) with `nelisp-parity-fuzz--side-timeout' when the
 command exists, and with stdin from /dev/null."
   (with-temp-buffer
-    (let ((default-directory (nelisp-parity-fuzz--scratch-dir))
-          (timeout (executable-find "timeout")))
+    (let* ((default-directory (nelisp-parity-fuzz--scratch-dir))
+           ;; HOME and TMPDIR point into the emptied scratch directory so a
+           ;; call such as `project-remember-project' cannot leave state
+           ;; (~/.emacs.d/projects, /tmp/rp-*) that another name then sees.
+           (process-environment
+            (append (list (concat "HOME=" default-directory)
+                          (concat "TMPDIR=" default-directory))
+                    process-environment))
+           (timeout (executable-find "timeout")))
       (if (and timeout (> nelisp-parity-fuzz--side-timeout 0))
           (apply #'call-process timeout null-device t nil "--signal=KILL"
                  (number-to-string nelisp-parity-fuzz--side-timeout) argv)
@@ -552,18 +675,59 @@ ended up slower than the search that produced the case."
                         nelisp-parity-fuzz--root)))
 
 (defvar nelisp-parity-fuzz--ratchet-failed nil)
+(defvar nelisp-parity-fuzz--hang-fail nil)
+(defvar nelisp-parity-fuzz--hang-count 0)
 
-(defun nelisp-parity-fuzz--read-known ()
-  "Return the symbols listed in the known-divergence file."
-  (let ((out nil))
-    (when (file-readable-p nelisp-parity-fuzz--known-file)
+(defun nelisp-parity-fuzz--dump-results (run-names gap-names notcall-names by-name
+                                                   rows divergent exercised hang-names)
+  "When NELISP_FUZZ_RESULTS names a file, write one \"NAME STATUS\" line per name."
+  (let ((file (getenv "NELISP_FUZZ_RESULTS")))
+    (when (and file (not (string-empty-p file)))
+      (let ((lines nil))
+        (dolist (n run-names)
+          (push (cons n (cond ((memq n hang-names) "hang")
+                              ((null (cdr (assq n by-name))) "no-call")
+                              ((memq n divergent) "divergent")
+                              ((memq n exercised) "agree")
+                              (t "unexercised")))
+                lines))
+        (dolist (n gap-names) (push (cons n "oracle-gap") lines))
+        (dolist (n notcall-names) (push (cons n "not-callable") lines))
+        (ignore rows)
+        (with-temp-file file
+          (dolist (l (sort lines (lambda (a b) (string< (symbol-name (car a))
+                                                         (symbol-name (car b))))))
+            (insert (format "%s %s\n" (car l) (cdr l)))))))))
+
+(defvar nelisp-parity-fuzz--hang-file
+  (or (getenv "NELISP_FUZZ_HANG_FILE")
+      (expand-file-name "tools/parity-fuzz-known-hangs.txt"
+                        nelisp-parity-fuzz--root)))
+
+(defun nelisp-parity-fuzz--read-known (&optional file)
+  "Return the symbols listed in FILE (default: the known-divergence file)."
+  (let ((out nil) (file (or file nelisp-parity-fuzz--known-file)))
+    (when (file-readable-p file)
       (with-temp-buffer
-        (insert-file-contents nelisp-parity-fuzz--known-file)
+        (insert-file-contents file)
         (dolist (l (split-string (buffer-string) "\n" t))
           (setq l (string-trim l))
           (unless (or (string-empty-p l) (string-prefix-p "#" l))
             (push (intern l) out)))))
     (nreverse out)))
+
+(defun nelisp-parity-fuzz--write-hangs (names)
+  "Write NAMES, sorted, to the known-hang file under its header."
+  (with-temp-file nelisp-parity-fuzz--hang-file
+    (insert "# Names with a generated call GNU Emacs 31.1 cannot finish in batch mode\n"
+            "# (it waits for input), confirmed by re-running the call alone.\n"
+            "# Regenerate: NELISP_FUZZ_WRITE_BASELINE=1 make parity-fuzz\n"
+            "#\n"
+            "# Ratchet (tools/nelisp-parity-fuzz.el): an unlisted confirmed hang FAILS\n"
+            "# (new hang); a listed name none of whose calls hangs FAILS (stale).  The\n"
+            "# calls of a listed name are run alone with a short timeout, so they\n"
+            "# never stall a chunk.\n")
+    (dolist (n names) (insert (symbol-name n) "\n"))))
 
 (defun nelisp-parity-fuzz--write-known (names)
   "Write NAMES, sorted, to the known-divergence file under its header."
@@ -573,7 +737,8 @@ ended up slower than the search that produced the case."
             "# Origin: fd4c2e282 (2026-11-09) put interactive commands back into the\n"
             "# parity-fuzz name pool; most are editor commands this runtime does not\n"
             "# define (void-function), plus type-representation and value differences.\n"
-            "# Generated from a real run of the CI configuration (seed 1, 1500 cases):\n"
+            "# Generated by the deterministic per-name scheme (seed 1, 3 cases per name,\n"
+            "# every name of the compat table; see tools/nelisp-parity-fuzz.el):\n"
             "#   NELISP_FUZZ_WRITE_BASELINE=1 make parity-fuzz\n"
             "#\n"
             "# Ratchet rule (tools/nelisp-parity-fuzz.el): the gate FAILS on a divergent\n"
@@ -581,15 +746,32 @@ ended up slower than the search that produced the case."
             "# that was exercised and now agrees (stale entry: delete the line).  The\n"
             "# list therefore only shrinks.  Never add a name to hide a regression;\n"
             "# fix the divergence or justify it in the commit.  A listed name the\n"
-            "# sample does not draw is neither new nor stale.\n")
+            "# name the host Emacs lacks (oracle gap) or whose calls all abort is neither\n"
+            "# new nor stale.\n")
     (dolist (n names) (insert (symbol-name n) "\n"))))
+
+(defconst nelisp-parity-fuzz--max-oracle-gaps 800
+  "Ceiling on names the host Emacs lacks.
+Oracle gaps are a property of the host build (tree-sitter, sqlite, GUI
+toolkits), so listing them would reintroduce host dependence; they are
+reported every run instead.  The ceiling only catches a host that is
+grossly the wrong Emacs (a GNU Emacs 31.1 build lacks fewer than this).")
 
 (defun nelisp-parity-fuzz-run ()
   (let* ((seed (string-to-number (or (getenv "NELISP_FUZZ_SEED") "1")))
-         (budget (string-to-number (or (getenv "NELISP_FUZZ_CASES") "1500")))
+         (per-name (string-to-number (or (getenv "NELISP_FUZZ_PER_NAME") "3")))
          (shrink-cap (string-to-number (or (getenv "NELISP_FUZZ_SHRINK") "12")))
+         (probe-timeout (string-to-number
+                         (or (getenv "NELISP_FUZZ_HANG_PROBE_TIMEOUT") "5")))
          (names (nelisp-parity-fuzz--names))
-         (cases nil))
+         (kinds (mapcar (lambda (n) (cons n (nelisp-parity-fuzz--host-kind n))) names))
+         (gap-names (mapcar #'car (cl-remove-if-not (lambda (k) (eq (cdr k) 'gap)) kinds)))
+         (notcall-names (mapcar #'car (cl-remove-if-not
+                                       (lambda (k) (eq (cdr k) 'not-callable)) kinds)))
+         (run-names (mapcar #'car (cl-remove-if-not (lambda (k) (eq (cdr k) 'ok)) kinds)))
+         (known-hangs (nelisp-parity-fuzz--read-known nelisp-parity-fuzz--hang-file))
+         (by-name nil)
+         (cases nil) (hang-cases nil) (hang-rows nil))
     (unless (file-executable-p nelisp-parity-fuzz--binary)
       (princ (format "parity-fuzz: FAIL (no standalone binary at %s -- run `make standalone-reader')\n"
                      nelisp-parity-fuzz--binary))
@@ -597,28 +779,34 @@ ended up slower than the search that produced the case."
     (when (null names)
       (princ "parity-fuzz: FAIL (no shared names selected -- is docs/emacs-compat-table.txt present?)\n")
       (kill-emacs 1))
-    (nelisp-parity-fuzz--seed seed)
-    (princ (format "parity-fuzz: seed=%d budget=%d names=%d\n" seed budget (length names)))
+    (princ (format "parity-fuzz: seed=%d per-name=%d names=%d oracle-gaps=%d not-callable=%d\n"
+                   seed per-name (length names) (length gap-names) (length notcall-names)))
     (setq nelisp-parity-fuzz--no-arity nil)
-    (while (< (length cases) budget)
-      (let ((c (nelisp-parity-fuzz--gen-call (nelisp-parity-fuzz--pick names))))
-        (when c (push c cases))))
-    (setq cases (nreverse cases))
-    ;; Chunked so one uncatchable abort loses one chunk, not the whole run.
+    (dolist (n run-names)
+      (let ((cs (nelisp-parity-fuzz--cases-for n seed per-name)))
+        (push (cons n cs) by-name)
+        (if (memq n known-hangs)
+            (setq hang-cases (append hang-cases cs))
+          (setq cases (append cases cs)))))
+    (setq by-name (nreverse by-name))
     (let ((rows nil) (chunk 100))
-      (while cases
-        (let ((batch (cl-subseq cases 0 (min chunk (length cases)))))
-          (setq cases (nthcdr (min chunk (length cases)) cases))
-          (setq rows (append rows (nelisp-parity-fuzz--run-recovering batch)))))
-      ;; Uncatchable aborts are reported FIRST and separately.  Grouped in
-      ;; with the wrong answers they read as one more disagreement, when in
-      ;; fact they are the only class a caller cannot write around.
-      ;; An abort shows two ways.  The driver's own message lands in the
-      ;; RESULT field of the line whose key was already printed -- the process
-      ;; died mid-form -- and every later case in the chunk goes unreported.
-      ;; Keying only on the second would have missed the first entirely, and
-      ;; did: the run said "0 aborts" while `(seq-filter STRING "abc")' was
-      ;; killing the process in front of it.
+      ;; Calls of a known-hang name run alone with a short timeout so they
+      ;; never stall a chunk; the ones that do answer are still compared.
+      (dolist (c hang-cases)
+        (let ((r (nelisp-parity-fuzz--probe c probe-timeout)))
+          (when r (push r hang-rows))))
+      (setq rows (nreverse hang-rows))
+      ;; ONE process pair per name: state a call leaves behind (buffer-local
+      ;; variables, overlays, syntax tables) can then only affect the same
+      ;; name's own few calls, never another name's, so a result does not
+      ;; depend on which other names run, their order, shards, or where a
+      ;; stall forced a restart.
+      (ignore chunk)
+      (dolist (n run-names)
+        (unless (memq n known-hangs)
+          (let ((cs (cdr (assq n by-name))))
+            (when cs
+              (setq rows (append rows (nelisp-parity-fuzz--run-recovering cs)))))))
       (let* ((suspects (mapcar (lambda (r) (nth 0 r))
                                (cl-remove-if-not
                                 (lambda (r)
@@ -629,9 +817,8 @@ ended up slower than the search that produced the case."
                                                            (nth 2 r)))))
                                 rows)))
              (aborts (and suspects (nelisp-parity-fuzz--aborts suspects))))
-        (princ (format "\nparity-fuzz: %d call(s) where GNU Emacs stopped responding for %ds (the call waits for input, or state an earlier call in the chunk left behind does; not compared)\n"
-                       (length nelisp-parity-fuzz--gnu-timeouts)
-                       nelisp-parity-fuzz--side-timeout))
+        (princ (format "\nparity-fuzz: %d call(s) GNU Emacs cannot finish even alone (hangs; not compared, ratcheted by name)\n"
+                       (length nelisp-parity-fuzz--gnu-timeouts)))
         (dolist (c (reverse nelisp-parity-fuzz--gnu-timeouts))
           (princ (format "    %S\n" c)))
         (princ (format "\nparity-fuzz: %d call(s) END THE PROCESS (uncatchable -- condition-case cannot see them)\n"
@@ -686,6 +873,41 @@ ended up slower than the search that produced the case."
                (stale (cl-remove-if-not
                        (lambda (n) (and (memq n exercised) (not (memq n divergent))))
                        known)))
+          (let* ((hang-names (delete-dups (mapcar #'car nelisp-parity-fuzz--gnu-timeouts)))
+                 (new-hang (cl-remove-if (lambda (n) (memq n known-hangs)) hang-names))
+                 (stale-hang (cl-remove-if-not
+                              (lambda (n) (and (memq n run-names) (not (memq n hang-names))))
+                              known-hangs))
+                 (gap-over (> (length gap-names) nelisp-parity-fuzz--max-oracle-gaps)))
+            (nelisp-parity-fuzz--dump-results
+             run-names gap-names notcall-names by-name rows divergent exercised hang-names)
+            (princ (format "\nparity-fuzz: %d oracle gap(s): name(s) this host Emacs lacks, not exercised (ceiling %d): %s\n"
+                           (length gap-names) nelisp-parity-fuzz--max-oracle-gaps
+                           (mapconcat #'symbol-name
+                                      (cl-subseq gap-names 0 (min 12 (length gap-names))) " ")))
+            (when (getenv "NELISP_FUZZ_WRITE_BASELINE")
+              (nelisp-parity-fuzz--write-hangs
+               (sort (cl-remove-duplicates
+                      (append hang-names
+                              (cl-remove-if (lambda (n) (memq n run-names)) known-hangs)))
+                     #'string<))
+              (setq new-hang nil stale-hang nil))
+            (dolist (n new-hang)
+              (princ (format "parity-fuzz: FAIL new hang: %s (not in %s)\n" n
+                             (file-name-nondirectory nelisp-parity-fuzz--hang-file))))
+            (dolist (n stale-hang)
+              (princ (format "parity-fuzz: FAIL stale hang entry: %s no longer hangs; delete it from %s\n" n
+                             (file-name-nondirectory nelisp-parity-fuzz--hang-file))))
+            (when gap-over
+              (princ (format "parity-fuzz: FAIL oracle gaps %d exceed the ceiling %d (wrong host Emacs?)\n"
+                             (length gap-names) nelisp-parity-fuzz--max-oracle-gaps)))
+            (unless (zerop nelisp-parity-fuzz--dropped)
+              (princ (format "parity-fuzz: FAIL %d case(s) NOT RUN (resume cap)\n"
+                             nelisp-parity-fuzz--dropped)))
+            (setq nelisp-parity-fuzz--hang-fail
+                  (or new-hang stale-hang gap-over
+                      (not (zerop nelisp-parity-fuzz--dropped))))
+            (setq nelisp-parity-fuzz--hang-count (length hang-names)))
           (when (getenv "NELISP_FUZZ_WRITE_BASELINE")
             (nelisp-parity-fuzz--write-known divergent)
             (princ (format "parity-fuzz: wrote %d name(s) to %s\n" (length divergent)
@@ -697,10 +919,12 @@ ended up slower than the search that produced the case."
           (dolist (n stale)
             (princ (format "parity-fuzz: FAIL stale entry: %s no longer diverges; delete it from %s\n" n
                            (file-name-nondirectory nelisp-parity-fuzz--known-file))))
-          (princ (format "GATE-COUNT checked=%d findings=%d known=%d new=%d stale=%d\n"
+          (princ (format "GATE-COUNT checked=%d findings=%d known=%d new=%d stale=%d hangs=%d oracle_gaps=%d\n"
                          (length rows) (+ (length new) (length stale))
-                         (length known) (length new) (length stale)))
-          (setq nelisp-parity-fuzz--ratchet-failed (or new stale)))
+                         (length known) (length new) (length stale)
+                         nelisp-parity-fuzz--hang-count (length gap-names)))
+          (setq nelisp-parity-fuzz--ratchet-failed
+                (or new stale nelisp-parity-fuzz--hang-fail)))
         (let ((skipped (delete-dups (mapcar #'car nelisp-parity-fuzz--no-arity))))
           (unless (null skipped)
             (princ (format "parity-fuzz: %d name(s) generated no call (arity unreadable): %s\n"
