@@ -540,6 +540,50 @@ ended up slower than the search that produced the case."
 ;; Entry point
 ;; ---------------------------------------------------------------------------
 
+;; Known-divergence list.  One bare function name per line; `#' lines are
+;; comments.  Generated from a real run (NELISP_FUZZ_WRITE_BASELINE=1 make
+;; parity-fuzz, seed 1 / 1500 cases, the CI configuration).  Ratchet: a
+;; divergent name missing from the list fails the gate, and a listed name
+;; that was exercised and now agrees fails it too, so the list only shrinks.
+;; A listed name the sample did not draw is neither new nor stale.
+(defvar nelisp-parity-fuzz--known-file
+  (or (getenv "NELISP_FUZZ_KNOWN_FILE")
+      (expand-file-name "tools/parity-fuzz-known-divergences.txt"
+                        nelisp-parity-fuzz--root)))
+
+(defvar nelisp-parity-fuzz--ratchet-failed nil)
+
+(defun nelisp-parity-fuzz--read-known ()
+  "Return the symbols listed in the known-divergence file."
+  (let ((out nil))
+    (when (file-readable-p nelisp-parity-fuzz--known-file)
+      (with-temp-buffer
+        (insert-file-contents nelisp-parity-fuzz--known-file)
+        (dolist (l (split-string (buffer-string) "\n" t))
+          (setq l (string-trim l))
+          (unless (or (string-empty-p l) (string-prefix-p "#" l))
+            (push (intern l) out)))))
+    (nreverse out)))
+
+(defun nelisp-parity-fuzz--write-known (names)
+  "Write NAMES, sorted, to the known-divergence file under its header."
+  (with-temp-file nelisp-parity-fuzz--known-file
+    (insert "# Known divergences of the standalone runtime from GNU Emacs 31.1.\n"
+            "#\n"
+            "# Origin: fd4c2e282 (2026-11-09) put interactive commands back into the\n"
+            "# parity-fuzz name pool; most are editor commands this runtime does not\n"
+            "# define (void-function), plus type-representation and value differences.\n"
+            "# Generated from a real run of the CI configuration (seed 1, 1500 cases):\n"
+            "#   NELISP_FUZZ_WRITE_BASELINE=1 make parity-fuzz\n"
+            "#\n"
+            "# Ratchet rule (tools/nelisp-parity-fuzz.el): the gate FAILS on a divergent\n"
+            "# name that is not listed here (new divergence) and FAILS on a listed name\n"
+            "# that was exercised and now agrees (stale entry: delete the line).  The\n"
+            "# list therefore only shrinks.  Never add a name to hide a regression;\n"
+            "# fix the divergence or justify it in the commit.  A listed name the\n"
+            "# sample does not draw is neither new nor stale.\n")
+    (dolist (n names) (insert (symbol-name n) "\n"))))
+
 (defun nelisp-parity-fuzz-run ()
   (let* ((seed (string-to-number (or (getenv "NELISP_FUZZ_SEED") "1")))
          (budget (string-to-number (or (getenv "NELISP_FUZZ_CASES") "1500")))
@@ -623,7 +667,40 @@ ended up slower than the search that produced the case."
           (dolist (r gaps)
             (princ (format "      %S\n        emacs %s\n        nelisp %s\n"
                            (nth 0 r) (nth 1 r) (nth 2 r)))))
-        (princ (format "GATE-COUNT checked=%d findings=%d\n" (length rows) (length bad)))
+        ;; Known-divergence ratchet (see tools/parity-fuzz-known-divergences.txt).
+        ;; `findings' in GATE-COUNT is new + stale, so the gate fails on a
+        ;; divergence nobody has listed and on a listed one that is gone.
+        (let* ((divergent (sort (copy-sequence families)
+                                (lambda (a b) (string< (symbol-name a) (symbol-name b)))))
+               (exercised (delete-dups
+                           (mapcar (lambda (r) (car (nth 0 r)))
+                                   (cl-remove-if
+                                    (lambda (r)
+                                      (or (eq (nth 2 r) :missing)
+                                          (and (stringp (nth 2 r))
+                                               (string-match-p "aborted without signal"
+                                                               (nth 2 r)))))
+                                    rows))))
+               (known (nelisp-parity-fuzz--read-known))
+               (new (cl-remove-if (lambda (n) (memq n known)) divergent))
+               (stale (cl-remove-if-not
+                       (lambda (n) (and (memq n exercised) (not (memq n divergent))))
+                       known)))
+          (when (getenv "NELISP_FUZZ_WRITE_BASELINE")
+            (nelisp-parity-fuzz--write-known divergent)
+            (princ (format "parity-fuzz: wrote %d name(s) to %s\n" (length divergent)
+                           nelisp-parity-fuzz--known-file))
+            (setq new nil stale nil known divergent))
+          (dolist (n new)
+            (princ (format "parity-fuzz: FAIL new divergence: %s (not in %s)\n" n
+                           (file-name-nondirectory nelisp-parity-fuzz--known-file))))
+          (dolist (n stale)
+            (princ (format "parity-fuzz: FAIL stale entry: %s no longer diverges; delete it from %s\n" n
+                           (file-name-nondirectory nelisp-parity-fuzz--known-file))))
+          (princ (format "GATE-COUNT checked=%d findings=%d known=%d new=%d stale=%d\n"
+                         (length rows) (+ (length new) (length stale))
+                         (length known) (length new) (length stale)))
+          (setq nelisp-parity-fuzz--ratchet-failed (or new stale)))
         (let ((skipped (delete-dups (mapcar #'car nelisp-parity-fuzz--no-arity))))
           (unless (null skipped)
             (princ (format "parity-fuzz: %d name(s) generated no call (arity unreadable): %s\n"
@@ -674,9 +751,14 @@ ended up slower than the search that produced the case."
           (when (> (length families) shrink-cap)
             (princ (format "\n  ... and %d more name(s) not shrunk (NELISP_FUZZ_SHRINK to raise)\n"
                            (- (length families) shrink-cap)))))
-        (if bad
-            (princ "parity-fuzz: FINDINGS (each is a name whose answer differs from Emacs)\n")
-          (princ "parity-fuzz: PASS (no disagreement in this budget)\n"))))))
+        (cond
+         (nelisp-parity-fuzz--ratchet-failed
+          (princ "parity-fuzz: FAIL (divergence set differs from the known-divergence list)\n")
+          (kill-emacs 1))
+         (bad
+          (princ "parity-fuzz: PASS (every divergent name is in the known-divergence list)\n"))
+         (t
+          (princ "parity-fuzz: PASS (no disagreement in this budget)\n")))))))
 
 ;; Loadable as a library when NELISP_FUZZ_NORUN is set, so the generator and
 ;; the runner can be exercised from another batch session without kicking off

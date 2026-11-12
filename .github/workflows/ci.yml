@@ -1175,6 +1175,51 @@ jobs:
           $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & $exe.FullName --version | Select-Object -First 1
 
+      # The Windows Emacs zip ships byte-compiled lisp only (no .el, no .el.gz).
+      # Three ERT files compare the GNU 31.1 bytecomp.el / comp.el / cl-seq.el
+      # sources with pinned hashes, so install the matching plain .el files
+      # from the GNU source tarball next to the .elc files (existing files are
+      # kept).  The test helpers and nelisp-bytecode-compiler-input-dialect
+      # accept plain .el through the pinned content SHA-256.
+      - name: Restore GNU Emacs 31.1 lisp sources (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/emacs-31.1-lisp-src
+          key: emacs-31.1-lisp-src-v1
+      - name: Provide GNU Emacs 31.1 lisp sources (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          if [ ! -f emacs-31.1-lisp-src/emacs-lisp/bytecomp.el ]; then
+            curl -fsSL --retry 3 -o emacs-31.1.tar.gz \
+              https://ftp.gnu.org/gnu/emacs/emacs-31.1.tar.gz
+            rm -rf emacs-31.1-lisp-src
+            mkdir emacs-31.1-lisp-src
+            # Only the lisp/ tree's .el files; --force-local keeps tar from
+            # reading a drive letter as a remote host.
+            tar --force-local -xzf emacs-31.1.tar.gz --strip-components=2 \
+              -C emacs-31.1-lisp-src --wildcards 'emacs-31.1/lisp/*.el'
+            rm -f emacs-31.1.tar.gz
+          fi
+          cd "$GITHUB_WORKSPACE"
+          lispdir=$(emacs --batch -Q --eval '(princ (file-name-directory (locate-library "subr")))')
+          test -d "$lispdir" || { echo "lisp directory not found: $lispdir"; exit 1; }
+          # Never overwrite what the install already has.
+          cp -rn "$RUNNER_TEMP/emacs-31.1-lisp-src/." "$lispdir"
+          # Fail here, not in a test, if the sources are not the pinned ones.
+          emacs --batch -Q -L lisp -l nelisp-bytecode-compiler-input-dialect \
+            --eval '(let ((dir (file-name-directory (locate-library "bytecomp"))))
+                      (dolist (n (list "bytecomp" "comp" "cl-seq"))
+                        (unless (file-readable-p (expand-file-name (concat n ".el") dir))
+                          (error "missing %s.el in %s" n dir)))
+                      (dolist (n (list "bytecomp" "comp"))
+                        (unless (equal (nelisp-bytecode-compiler-input--gnu-source-content-sha256 dir n)
+                                       (alist-get (intern n) nelisp-bytecode-compiler-input--gnu-source-content-sha256))
+                          (error "%s.el does not match the pinned GNU 31.1 content hash" n))))'
+
       # Same build, and the same `if:', `smoke' used to run before its
       # own ERT steps: the suite's standalone-dependent cases `ert-skip'
       # when `target/nelisp' is absent (e.g.
