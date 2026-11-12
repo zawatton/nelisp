@@ -176,6 +176,16 @@
     ;; = 2x + 1 -- calls through an R_X86_64_JUMP_SLOT-resolved PLT stub.
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 41))))
 
+;; GNU Emacs 31.1 reports a builtin arity error as
+;; (wrong-number-of-arguments #<subr NAME> N), carrying the subr object rather
+;; than its name; the reader matches that, so require exactly that shape.
+(defun nl-ffi-loader-smoke--ptr-call-arity-error-p (data count)
+  (and (consp data)
+       (eq (car data) 'wrong-number-of-arguments)
+       (= (length data) 3)
+       (eq (nth 1 data) (symbol-function 'ptr-call))
+       (equal (nth 2 data) count)))
+
 (nl-ffi-loader-smoke-deftest ffi-loader-ptr-call-rejects-invalid-arity-before-call
   ;; Exercise the reader's fixed-arity guard with a real, pure exported leaf.
   ;; Every refusal is caught in this process; a padded seven-argument call
@@ -192,14 +202,14 @@
                                 'nl-ffi-loader-smoke--no-error)
                        (wrong-number-of-arguments data))))
         (nl-ffi-loader-smoke-should
-         (equal caught (list 'wrong-number-of-arguments 'ptr-call count))))
+         (nl-ffi-loader-smoke--ptr-call-arity-error-p caught count)))
       (setq count (1+ count)))
     (let ((caught (condition-case data
                       (progn (apply 'ptr-call (cons addr (make-list 7 0)))
                              'nl-ffi-loader-smoke--no-error)
                     (wrong-number-of-arguments data))))
       (nl-ffi-loader-smoke-should
-       (equal caught '(wrong-number-of-arguments ptr-call 8))))
+       (nl-ffi-loader-smoke--ptr-call-arity-error-p caught 8)))
     (nl-ffi-loader-smoke-should (= (ptr-call addr 20 0 0 0 0 0) 40))
     ;; Rebinding the named function cell must still bypass the builtin arm.
     (let ((saved (symbol-function 'ptr-call)))
