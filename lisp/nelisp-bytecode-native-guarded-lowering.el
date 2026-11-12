@@ -2,6 +2,13 @@
 (require 'nelisp-bytecode-native-arithmetic-lowering)
 (require 'nelisp-native-optimization-guard-v1)
 
+(declare-function nelisp-bytecode-native-guarded-lowering--bounded-p
+                  "nelisp-bytecode-native-guarded-lowering"
+                  (value active budget depth))
+(declare-function nelisp-bytecode-native-rooted-cfg-plan
+                  "nelisp-bytecode-native-rooted-cfg-plan"
+                  (input &optional lowering-mode arithmetic-guard-mode))
+
 (let ((owners nil) (owner-checker nil)
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq))
       (head (symbol-function 'car)) (tail (symbol-function 'cdr))
