@@ -9,6 +9,16 @@
 ;; argv values, never interpolated shell code.
 
 ;;; Code:
+;; Provided by the marker and process modules at run time.
+(declare-function nelisp-process-pid "nelisp-runtime")
+(declare-function nelisp-process-object-p "nelisp-runtime")
+(declare-function nelisp-buffer-size "nelisp-runtime")
+(declare-function nelisp-set-marker "nelisp-runtime")
+(declare-function nelisp-marker-position "nelisp-runtime")
+(declare-function nelisp-marker-buffer "nelisp-runtime")
+(declare-function nelisp-marker-p "nelisp-runtime")
+(declare-function nelisp-marker--make "nelisp-runtime")
+(defvar nelisp-process-adapter--live)
 (defvar nelisp-process-buffer--channels nil)
 (defvar nelisp-process-buffer--original-get (symbol-function 'process-get))
 (defvar nelisp-process-buffer--original-put (symbol-function 'process-put))
@@ -206,7 +216,7 @@ This channel has no child pid or externally usable OS descriptor."
       (when (nelisp-process-buffer-p process) (aset process 3 buffer))
       (process-put process :buffer buffer)
       (process-put process :output-marker nil)
-      (process-mark process)
+      (ignore (process-mark process))
       buffer))
   (defun get-buffer-process (buffer)
     "Return the live buffer channel or native subprocess owning BUFFER."

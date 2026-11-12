@@ -26,6 +26,9 @@
 
 ;; ---- predicates -----------------------------------------------------
 
+(declare-function nelisp--apply-builtin-dispatch "nelisp-stdlib-eval-core")
+(declare-function nelisp--apply-lambda-inner "nelisp-stdlib-eval-core")
+
 (defun nelisp--builtinp (fn)
   "T if FN is a `(builtin NAME)' sentinel cons.
 Mirrors the Rust apply_function dispatch arm for builtins."

@@ -51,7 +51,7 @@ holds a keymap.
 (defvar nelisp-stdlib-tool-bar-autoloads--sealed-forms
   (copy-tree nelisp-stdlib-tool-bar-autoloads--forms))
 (defun nelisp-stdlib-tool-bar-autoloads-install ()
-  "Register exact GNU31 loaddefs declarations on an authenticated standalone runtime.
+  "Register exact GNU31 loaddefs on an authenticated standalone runtime.
 Preserve genuine GNU hosts and existing function cells.  This supplies autoload
 metadata only; it does not publish the tool-bar feature or package acceptance."
   (unless (and (eq (symbol-function 'nelisp-bytecode-compiler-input-dialect)
