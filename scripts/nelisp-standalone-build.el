@@ -69357,7 +69357,7 @@ the value template requests Tier 0 only. Both include GNU-compiled Tier 0 Lisp."
   "Check the private tag-17 fixture through GC and runtime-image restore."
   (let* ((binary nelisp-standalone--reader-out)
          (fixture "(nelisp--byte-code-wrap-test (record 'ignored 0 \"\\\\300\\\\207\" [42] 1))")
-         (expected "(byte-code-function 4 nil nil nil t nil t)")
+         (expected "(byte-code-function 4 nil nil nil t t t)")
          (expr (format "(let ((o %s)) (garbage-collect) (list (type-of o) (length o) (recordp o) (vectorp o) (consp o) (byte-code-function-p o) (functionp o) (equal (prin1-to-string o) (nelisp--repr o))))" fixture))
          (actual (nelisp-standalone--reader-run-command binary "--eval" expr))
          (printed (nelisp-standalone--reader-run-command binary "--eval" fixture))
@@ -69618,7 +69618,10 @@ contract."
           "         (string-bytes s) (append s nil))))"))
         (expected
          (concat
-          "((t nil) (255 nil nil 1 1 (255)) (98 t t 4 4 (98 12354)) "
+          ;; `(unibyte-string-p "abc")' is t: since the GNU string-block port
+          ;; (20b1ee832) an ASCII string is unibyte as in GNU, where
+          ;; `(multibyte-string-p "abc")' is nil.
+          "((t t) (255 nil nil 1 1 (255)) (98 t t 4 4 (98 12354)) "
           "(signalled t t 3 3 (12354)) "
           "(signalled nil nil 2 2 (97 98)))\n"))
         (actual nil)
@@ -69861,8 +69864,10 @@ strings have no property storage."
                                    "--eval" "(nelisp--arena-stats)"))
             (setq stats-out (buffer-string)))
           (unless (and (= rc 0)
+                       ;; 15 fields: 12 arena fields + Doc 223 cons blocks in
+                       ;; use, live conses, free conses (appended by 59b1a3097).
                        (string-match-p
-                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+)\n\\'"
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         stats-out))
             (error "--eval arena-stats exit=%S stdout=%S" rc stats-out))
           (with-temp-buffer
@@ -69871,7 +69876,7 @@ strings have no property storage."
             (setq growth-out (buffer-string)))
           (unless (and (= rc 0)
                        (string-match-p
-                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [2-9][0-9]* [0-9]+ [0-9]+)\n\\'"
+                        "\\`([0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+ [01] [01] [2-9][0-9]* [0-9]+ [0-9]+ [0-9]+ [0-9]+ [0-9]+)\n\\'"
                         growth-out))
             (error "--eval arena-force-grow exit=%S stdout=%S" rc growth-out))
           (with-temp-file tmp
@@ -70424,8 +70429,9 @@ same documented divergence `expt''s own contract already established)."
              ;; both value AND tag (`bignump'), per Doc 190 §4.
              "(defvar nelisp-src-add-of (+ most-positive-fixnum 1))\n"
              "(defvar nelisp-src-check11 (and (= nelisp-src-add-of 2305843009213693952) (bignump nelisp-src-add-of)))\n"
-             "(defvar nelisp-src-expt-overflow (condition-case nil (progn (expt 2 100) 'no-signal) (overflow-error 'signalled)))\n"
-             "(defvar nelisp-src-check12 (eq nelisp-src-expt-overflow 'signalled))\n"
+             "(defvar nelisp-src-expt-big (expt 2 100))\n"
+             "(defvar nelisp-src-expt-overflow (condition-case nil (progn (expt 2 70000) 'no-signal) (overflow-error 'signalled)))\n"
+             "(defvar nelisp-src-check12 (and (= nelisp-src-expt-big 1267650600228229401496703205376) (bignump nelisp-src-expt-big) (eq nelisp-src-expt-overflow 'signalled)))\n"
              ;; Doc 190 Phase B: `*' promotion (a true 64-bit-register
              ;; overflow, plus a product that stays within 64 bits but
              ;; crosses only the narrower fixnum boundary), and negation/
@@ -71443,7 +71449,13 @@ the saved stack top instead of leaking a root entry."
            "          (nelisp-stage3-pair\n"
            "           (list 1 2 3)\n"
            "           (progn\n"
-           (format "             (while (< i %d) (setq i (1+ i)))\n" iterations)
+           ;; The loop body allocates a 64-byte string per pass: since the
+           ;; fixnum fast path (v26, 2026-10-27) `(setq i (1+ i))' allocates
+           ;; nothing, so the allocation-debt trigger the mid-form collector
+           ;; and the poison counter depend on never accrued.  Measured on
+           ;; target/nelisp 2026-11-12: poison count 932132 and one mid-form
+           ;; collection at 200k passes (0 and 0 without the allocation).
+           (format "             (while (< i %d) (setq i (1+ i)) (make-string 64 97))\n" iterations)
            "             (list 4 5))))\n"
            "    (setq caught-error\n"
            "          (condition-case nil\n"
@@ -71492,9 +71504,14 @@ the saved stack top instead of leaking a root entry."
     ;; ert-full and the reader smokes did not.  It moved again, 4 -> 6, when the
     ;; builtin argument list and the `catch' tag became roots as well; the same
     ;; two measurements were repeated and held (equal before/after, and 2000
-    ;; nested `let's leaving the depth exactly where they found it).
+    ;; nested `let's leaving the depth exactly where they found it).  It
+    ;; moved a third time, 12 -> 8, when the evaluator took fewer Stage-2 root
+    ;; slots on this path; re-measured on target/nelisp 2026-11-12: top-level
+    ;; depth 8, a `let' with two bindings 8, and the depth after a `let' that
+    ;; encloses 2000 nested `let's is 8 again (12 only while inside them), so
+    ;; the offset is constant and nothing leaks.
     (unless (equal (cl-subseq value 0 10)
-                   (list iterations 3 2 11 22 33 44 55 12 12))
+                   (list iterations 3 2 11 22 33 44 55 8 8))
       (error "stage3 rootstack smoke result/depth mismatch: %S" value))
     (unless (= (nth 8 value) (nth 9 value))
       (error "stage3 rootstack smoke leaked a root entry: before=%S after=%S"
@@ -71516,7 +71533,7 @@ under deep recursion.
 History: `nelisp_eval_call_recorded_done' popped the context of every
 evaluation unconditionally, whether or not its own push had stored a frame
 (the ring holds `nl_gc_ctx_max_depth' = 1024 of them), so a recursion deeper
-than the ring "borrowed" decrements and walked the recorded depth down while
+than the ring \"borrowed\" decrements and walked the recorded depth down while
 live frames were still open.  Measured against-the-bug: DEPTH=5 at the
 checkpoint of a 3000-deep recursion, 1024 after the fix.
 
@@ -72123,7 +72140,7 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                   (truncate (1 . 2)) (ceiling (1 . 2))
                   (float-time (0 . 1)) (prin1-to-string (1 . 3))
                   (string-match-p (2 . 3)) (string-search (2 . 3))
-                  (string-match (2 . 4)) (substring (2 . 4))
+                  (string-match (2 . 4)) (substring (1 . 3))
                   (make-string (2 . 3)) (signal (1 . 2))
                   (+ (0 . many)) (* (0 . many)) (append (0 . many))
                   (list (0 . many)) (concat (0 . many))
@@ -72189,7 +72206,7 @@ its header for the `cat PRELUDE yourfile.el | binary' usage.")
                 "                     (wrong-number-of-arguments e))\n"
                 "                   (list 'wrong-number-of-arguments '(builtin nlistp) (length argv)))\n"
                 "      (setq bad (cons (list 'nlistp-arity argv) bad))))\n"
-                "  (if (null bad) 0 (error \"func-arity smoke mismatch\")))\n")
+                "  (if (null bad) 0 (error \"func-arity smoke mismatch: %%S\" bad)))\n")
                cases))
          (out nil) (rc nil))
     (unwind-protect
