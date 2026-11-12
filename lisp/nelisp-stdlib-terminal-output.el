@@ -21,7 +21,7 @@
                  (eq (plist-get state :constructor) (symbol-function 'char-to-string))
                  (eq (plist-get state :writer) (symbol-function 'nelisp--write-stdout-bytes))
                  (eq (plist-get state :printer) (symbol-function 'nelisp--native-princ))
-                 (null (selected-frame))
+                 (null (funcall (symbol-function 'selected-frame)))
                  (not (display-graphic-p)))
       (error "Standalone output device is unavailable"))
     state))
@@ -88,10 +88,11 @@ attest package acceptance."
                    (fboundp 'nelisp--native-princ)
                    (subrp (symbol-function 'char-to-string))
                    (subrp (symbol-function 'nelisp--write-stdout-bytes))
-                   (null (selected-frame)) (not (display-graphic-p))
-                   (equal (string-as-unibyte
-                           (concat (char-to-string 8593) (char-to-string 955)
-                                   (char-to-string 128512)))
+                   (null (funcall (symbol-function 'selected-frame))) (not (display-graphic-p))
+                   (equal (with-no-warnings
+                           (string-as-unibyte
+                            (concat (char-to-string 8593) (char-to-string 955)
+                                    (char-to-string 128512))))
                           (unibyte-string 226 134 145 206 187 240 159 152 128)))
         (error "Standalone UTF-8 output evidence is unavailable"))
       (setq nelisp--terminal-output-device

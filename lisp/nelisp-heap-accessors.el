@@ -181,7 +181,8 @@ accessors keep their legacy Sexp-field lowering.")
 ;; for the name ops redirect it the same way (`emit-symbol-object-redirect'); these
 ;; lowerings replace the grammar op before the emitter sees it, so they redirect too.
 (defun nelisp-heap-accessors--symbol-name-operand (form)
-  "FORM's value, or the name cell of FORM's value when that is a symbol object WORD."
+  "FORM's value, or the name cell of FORM's value when that is a symbol
+object WORD."
   (let ((v (make-symbol "name-operand")) (k (make-symbol "name-operand-kind")))
     `(let* ((,v ,form))
        (if (= (logand ,v 7) 6)
