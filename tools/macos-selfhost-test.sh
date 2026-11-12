@@ -134,7 +134,9 @@ build_run() {            # NAME  PROGRAM-SEXP  EXPECTED-EXIT [EXPECTED-STDOUT] [
   if ! "$EMACS" --batch -Q -L lisp -L src -L scripts -l nelisp-macos-build \
         --eval "(nelisp-macos-build-program (quote $prog) \"$out\")" \
         >"$log" 2>&1; then
-    echo "[macos] FAIL: $name — build error:"; sed 's/^/    /' "$log" | tail -4
+    echo "[macos] FAIL: $name — build error:"
+    grep -a -m1 -i 'invariant violated\|^Error\|error:\|signal' "$log" | cut -c1-300 | sed 's/^/    first error: /'
+    sed 's/^/    /' "$log" | tail -4 | cut -c1-300
     fail=1; return
   fi
   if [ "$EMIT_ONLY" = 1 ]; then

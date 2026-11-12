@@ -383,9 +383,20 @@ scripts/nelisp-startup-trace.el
 # direct/alloc-bytes/ptr-* live in quoted source-v1 bodies replayed at image
 # build.
 scripts/nemacs-runtime-process-preload.el
+# Native Win64 COM code generator DSL (vtables, QueryInterface/AddRef/Release
+# thunks, GUID and UTF-16 blobs, heap-allocated COM objects).  Raw memory
+# access is inherent: the generated code is machine code whose data layout
+# (vtable slots, GUID bytes, object fields) is written with ptr-write-*.
+# Approved 2026-11-12; 28 calls.
+lisp/nelisp-com-dsl.el
+# UTF-16 wide-string and BSTR helper blobs emitted for the COM DSL above;
+# they build NUL-terminated UTF-16 buffers in raw memory for Win64 callees.
+# Approved 2026-11-12; 18 calls.
+lisp/nelisp-com-wstr-lib.el
 # 2026-11-07: +1, scripts/nelisp-prelude-kernel.el (raw stat-buffer and sigaction
 # helpers moved out of the prelude).
-kernel-files 131
+# 2026-11-12: +2, lisp/nelisp-com-dsl.el and lisp/nelisp-com-wstr-lib.el.
+kernel-files 133
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
 pinned-kernel-touch lisp/nelisp-eln-abi.el
@@ -447,3 +458,6 @@ pinned-kernel-touch lisp/nelisp-cc-sort.el
 # string-blocks: builds GNU-layout string headers (size, size_byte, data) with
 # ptr-write-u64/u8.
 pinned-kernel-touch lisp/nelisp-cc-string-blocks.el
+# Native Win64 COM generators (approved 2026-11-12); see the kernel entries above.
+pinned-kernel-touch lisp/nelisp-com-dsl.el
+pinned-kernel-touch lisp/nelisp-com-wstr-lib.el

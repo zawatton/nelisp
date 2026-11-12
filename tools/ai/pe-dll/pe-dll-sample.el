@@ -139,7 +139,7 @@ the DLL's HMODULE still equals RESERVE-BASE."
   (nelisp-pe-write-exe-binary (expand-file-name "loader.exe" dir)
                               (nelisp-pe-dll-sample-exe-spec))
   (nelisp-pe-write-exe-binary (expand-file-name "loader-rebase.exe" dir)
-                              (nelisp-pe-dll-sample-exe-spec nelisp-pe--dll-image-base))
+                              (nelisp-pe-dll-sample-exe-spec nelisp-pe-write-dll-image-base))
   dir)
 
 (provide 'pe-dll-sample)

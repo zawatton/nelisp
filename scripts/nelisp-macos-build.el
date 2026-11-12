@@ -63,10 +63,18 @@ unibyte string containing code followed by string/table rodata."
                       (str-rodata-len (length str-rodata-bytes))
                       (rodata-bytes (concat str-rodata-bytes table-bytes))
                       (defuns (nelisp-aot-compiler--collect-defuns stmt-ir))
+                      ;; Hand-written probes lack the reader runtime's
+                      ;; `nl_symbol_word_eq'; without it `symbol-eq' must not
+                      ;; branch to that (unresolvable) label.
+                      (no-word-eq
+                       (not (nelisp-aot-compiler-defuns-define-p
+                             defuns "nl_symbol_word_eq")))
                       (emit-pass
                        (lambda (rodata-vaddr table-vaddrs)
                          (let ((nelisp-aot-compiler--table-vaddrs
                                 table-vaddrs)
+                               (nelisp-aot-compiler-arm64-no-symbol-word-eq
+                                no-word-eq)
                                (buf (nelisp-asm-arm64-make-buffer)))
                            (nelisp-aot-compiler--emit-stmt
                             stmt-ir buf str-offsets rodata-vaddr)

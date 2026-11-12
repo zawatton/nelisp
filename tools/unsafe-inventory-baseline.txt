@@ -331,7 +331,7 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 2530
+unsafe-call 2581
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -669,7 +669,9 @@ pinned-kernel-call lisp/nelisp-standalone-argframe.el 2
 
 pinned-kernel-call lisp/nelisp-stdlib-filesystem-access.el 5
 
-pinned-kernel-call scripts/nelisp-boot-image.el 8
+# 2026-11-12 (user-approved): 8 -> 13, boot-image integrity check: length and
+# checksum reads of the artifact heap image (3742b98e6).
+pinned-kernel-call scripts/nelisp-boot-image.el 13
 
 pinned-kernel-call scripts/nelisp-startup-trace.el 6
 # Same commit, kernel files whose measured count had outgrown their pin:
@@ -682,3 +684,8 @@ pinned-kernel-call lisp/nelisp-cc-evalport-aot-apply.el 4
 pinned-kernel-call lisp/nelisp-cc-fxir-inline.el 17
 pinned-kernel-call lisp/nelisp-cc-fxir-native.el 31
 pinned-kernel-call lisp/nelisp-cc-mirror-lookup-entry.el 1
+# 2026-11-12 (user-approved): +46 from the two Win64 COM generators added to the
+# kernel (lisp/nelisp-com-dsl.el 28, lisp/nelisp-com-wstr-lib.el 18).  The total
+# rose 2530 -> 2581 (+46 here, +5 from scripts/nelisp-boot-image.el 8 -> 13).
+pinned-kernel-call lisp/nelisp-com-dsl.el 28
+pinned-kernel-call lisp/nelisp-com-wstr-lib.el 18

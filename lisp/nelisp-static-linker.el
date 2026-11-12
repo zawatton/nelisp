@@ -1138,7 +1138,7 @@ Phase47 `extern-call' direct rel32 calls can target Windows IAT entries."
       (nelisp-native-pe-symbols-append file-path symtab))
     file-path))
 
-(defvar nelisp-pe--dll-image-base)
+(defvar nelisp-pe-write-dll-image-base)
 (declare-function nelisp-pe-write-dll-binary "nelisp-pe-write" (file-path spec))
 
 (defun nelisp-link--pe-abs64-site-rvas (units combined layout image-base)
@@ -1170,7 +1170,7 @@ Every `abs64' relocation site in UNITS gets an IMAGE_REL_BASED_DIR64 entry.
 Exported functions use the Win64 ABI (rcx, rdx, r8, r9 -> rax) as written by
 the units; the linker does not translate calling conventions."
   (require 'nelisp-pe-write)
-  (let* ((base (or (plist-get options :image-base) nelisp-pe--dll-image-base))
+  (let* ((base (or (plist-get options :image-base) nelisp-pe-write-dll-image-base))
          (nelisp-link--pe-image-base base)
          (normalized-imports (nelisp-pe--normalize-imports imports))
          (predict-units (if normalized-imports

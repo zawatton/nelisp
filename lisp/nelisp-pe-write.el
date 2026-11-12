@@ -115,8 +115,8 @@
   "IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA.")
 (defconst nelisp-pe--dll-characteristics-dynamic-base #x0040
   "IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE.")
-(defconst nelisp-pe--dll-image-base #x180000000
-  "Default preferred ImageBase for DLL output.")
+(defconst nelisp-pe-write-dll-image-base #x180000000
+  "Default preferred ImageBase for DLL output (public: the linker reads it).")
 (defconst nelisp-pe--rel-based-dir64 10 "IMAGE_REL_BASED_DIR64.")
 (defconst nelisp-pe--scn-mem-discardable #x02000000
   "IMAGE_SCN_MEM_DISCARDABLE.")
@@ -5228,7 +5228,7 @@ SPEC keys:
          (imports (nelisp-pe--normalize-imports (plist-get spec :imports)))
          (exports (plist-get spec :exports))
          (dll-name (or (plist-get spec :dll-name) "nelisp.dll"))
-         (image-base (or (plist-get spec :image-base) nelisp-pe--dll-image-base))
+         (image-base (or (plist-get spec :image-base) nelisp-pe-write-dll-image-base))
          (relocs (plist-get spec :abs64-relocs))
          (want-reloc (and (not (plist-get spec :no-reloc)) relocs))
          (text-rva nelisp-pe--section-alignment)
