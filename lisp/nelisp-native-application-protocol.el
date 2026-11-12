@@ -75,6 +75,7 @@ still handles those characters inside or at the start of a form."
   "Read source forms as data without editor initialization or evaluation.
 Only clean top-level trivia may terminate input. EOF inside a form is
 propagated. Reader syntax, quoting and escaping belong to read-from-string."
+  (defvar read-eval)
   (let* ((text (decode-coding-string bytes 'utf-8-unix))
          (end (length text)) (position 0)
          (read-circle nil) (read-symbol-shorthands nil) (read-eval nil) forms)
