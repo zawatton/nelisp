@@ -7,6 +7,7 @@
 artifact-service|tools/nelisp_artifact_service.py|1	10
 bench-aot-checked-arith|lisp/nelisp-aot-compiler.el|1	2
 binary-size-ratchet|Makefile|1	125
+binary-size-ratchet|Makefile|2	125
 build-stamp|tools/nelisp-standalone-reader-build.sh|1	5
 build-stamp|tools/nelisp-standalone-reader-build.sh|2	11
 builtin-arity|scripts/nelisp-stdlib-prelude.el|1	4

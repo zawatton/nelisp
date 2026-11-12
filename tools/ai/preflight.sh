@@ -59,7 +59,7 @@ SLOW_GATES=(
 # preflight that cries wolf teaches people to ignore its red, which costs more
 # than the gate was ever going to save.
 #
-# binary-size-ratchet: the `size' pin in tools/nelisp-binary-size-baseline.txt
+# binary-size-ratchet: the `code-size' and `payload-size' pins in tools/nelisp-binary-size-baseline.txt
 # is calibrated against CI's toolchain.  A local build of the SAME commit
 # measures larger -- 8,033,688 B locally vs 7,976,232 B in CI on efa22af65, a
 # ~57KB gap that is environment, not source.  Comparing a local absolute size
