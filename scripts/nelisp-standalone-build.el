@@ -42518,6 +42518,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--char-table-slots
       nelisp--clear-string-bytes nelisp--declare-local-special nelisp--eval-source-string
       nelisp--intern-lookup nelisp--json-encode nelisp--native-runtime-contract-word
+      nelisp--native-callsite-symbol-addr
       nelisp--native-runtime-symbol-addr nelisp--native-subr-arity
       nelisp--native-subr-live-count nelisp--native-symbol-addr nelisp--record-expand
       nelisp--push-captured nelisp--repr nelisp--set-use-elisp-apply nelisp--sha256
