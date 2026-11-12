@@ -58051,8 +58051,8 @@ Keep this source-only boundary usable by Windows preflight and host controls."
          (while (< i n) (nl_seq2 (ptr-write-u64 (+ start i) 0 0) (setq i (+ i 8))))
          0)))
     ;; A rejected image must leave the arena exactly as a fresh boot expects
-    ;; it: chunk-0's data area past the cursor, the table/trailer scratch and
-    ;; the (still empty) intern region were overwritten by the reads, and the
+    ;; it (see `nl_cold_reject_restore'): chunk-0's data area past the
+    ;; cursor, the table/trailer scratch and the (still empty) intern region were overwritten by the reads, and the
     ;; fallback normal boot relies on zero-filled memory there.
     (defun nl_cold_reject_scrub (ds slen tbl tlen ib isz)
       (seq
@@ -58060,6 +58060,49 @@ Keep this source-only boundary usable by Windows preflight and host controls."
        (nl_cold_zero tbl (+ (* tlen 8) 64))
        (nl_cold_zero ib (if (< isz 64) 64 isz))
        0))
+    ;; The loader reads the image over chunk 0 from DS = base+1024 up, but the
+    ;; startup code has already bump-allocated live objects there (the cursor
+    ;; at load time is past 1024: executable path, argv copies).  A rejected
+    ;; image must give them back.  `nl_cold_snap_save' copies [DS, DS+N) into
+    ;; a private anonymous mapping (0 = nothing saved) BEFORE any image byte
+    ;; is read; `nl_cold_reject_restore' undoes everything the loader did to
+    ;; the arena when it did not grow a new chunk: zero the scratch, replace
+    ;; the file-mapped pages (fast path, ML bytes at BASE+4096) with fresh
+    ;; zero pages, and put the saved bytes back.  Without this the fallback
+    ;; boot ran with its own allocations zeroed and the mid-form GC could
+    ;; never complete a collection (it spun).  Linux; the Windows loader does
+    ;; not map the image and keeps the zero-only scrub.
+    ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+         '(defun nl_cold_snap_save (_ds _n) 0)
+       '(defun nl_cold_snap_save (ds n)
+          (if (<= n 0) 0
+            (let* ((n8 (logand (+ n 7) -8))
+                   (m (nl_os_alloc_chunk (+ n8 16))))
+              (if (= m 0) 0
+                (let ((i 0))
+                  (seq
+                   (ptr-write-u64 m 0 n8)
+                   (while (< i n8)
+                     (nl_seq2 (ptr-write-u64 (+ m 8) i (ptr-read-u64 (+ ds i) 0))
+                              (setq i (+ i 8))))
+                   m)))))))
+    (defun nl_cold_snap_drop (snap)
+      (if (= snap 0) 0 (nl_os_free_chunk snap (+ (ptr-read-u64 snap 0) 16))))
+    ,(if (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)
+         '(defun nl_cold_reject_restore (_base _ds _snap _ml) 0)
+       '(defun nl_cold_reject_restore (base ds snap ml)
+          (seq
+           (if (> ml 0)
+               (syscall-direct 9 (+ base 4096) ml 3 50 -1 0)
+             0)
+           (if (= snap 0) 0
+             (let ((n8 (ptr-read-u64 snap 0)) (i 0))
+               (seq
+                (while (< i n8)
+                  (nl_seq2 (ptr-write-u64 (+ ds i) 0 (ptr-read-u64 (+ snap 8) i))
+                           (setq i (+ i 8))))
+                (nl_os_free_chunk snap (+ n8 16)))))
+           0)))
     ;; Trailer = {u64 magic 1195655758 ("NBDG"), u64 version 1, 32-byte build
     ;; digest}.  Valid iff complete, the magic/version match, THIS binary is
     ;; stamped (a non-zero digest; an unstamped build never cold-loads), and
@@ -58362,7 +58405,16 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                              ;; same bases as recorded: no relocation, map the content
                              (fast ,(if (nelisp-standalone--cold-v5-p)
                                         '(if (and (= force 0) (= base fixb) (= ib fixi)) 1 0)
-                                      0)))
+                                      0))
+                             ;; bytes `nl_cold_read_content' maps at BASE+4096
+                             (ml (if (and (= fast 1) (> slen 3072))
+                                     (* (/ (- slen 3072) 4096) 4096)
+                                   0))
+                             ;; live pre-load allocations in [DS, cursor)
+                             ;; are saved only when no new chunk was made
+                             (snap (if (= base base0)
+                                       (nl_cold_snap_save ds (- (heap-read-u64 base 0) 1024))
+                                     0)))
                         (seq
                          ;; build-digest trailer (48 bytes) right after the
                          ;; table in the chunk-0 scratch; `trl_n' < 48 means
@@ -58395,7 +58447,9 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                             (nl_os_close_handle fd)
                             (if (= rok 2)
                                 (seq (nl_cold_reject_scrub ds slen tbl tlen ib isz)
-                                     (nl_cold_diag_bad_reloc) -1)
+                                     (if (= base base0) (nl_cold_reject_restore base ds snap ml) 0)
+                                     (nl_cold_diag_bad_reloc)
+                                     -1)
                               ;; The image must come from THIS build: its
                               ;; trailer carries the digest the build stamped
                               ;; into the dumping binary (`nl_build_digest'),
@@ -58414,6 +58468,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                                                                           ,nelisp-standalone--cold-fixed-ib))
                                                '(nl_cold_reloc_unpack tbl tlen ds slen ib)) 0) 1 0))
                                   (seq (nl_cold_reject_scrub ds slen tbl tlen ib isz)
+                                     (if (= base base0) (nl_cold_reject_restore base ds snap ml) 0)
                                        (if (or (= rok 0) (= iok 0) (/= (heap-read-u64 trl 8) ,(if (nelisp-standalone--cold-v5-p) 5 4))
                                                ,@(if (nelisp-standalone--cold-v5-p) '((= dok 0)) nil))
                                            (nl_cold_diag_bad_intern)
@@ -58422,6 +58477,7 @@ Keep this source-only boundary usable by Windows preflight and host controls."
                                            (nl_cold_diag_bad_reloc)))
                                        -1)
                            (seq
+                            (nl_cold_snap_drop snap)
                             ;; scrub the now-dead relocation table (and the
                             ;; digest trailer after it) so the bump
                             ;; cursor (set to 1024+slen below) re-arms over
