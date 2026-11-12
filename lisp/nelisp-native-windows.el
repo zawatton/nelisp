@@ -4,6 +4,12 @@
 
 (require 'cl-lib)
 
+(declare-function nl-ffi-call nil (name &rest args))
+(declare-function nelisp-native-pe-symbols-imports
+                  "nelisp-native-pe-symbols" (read-window sections))
+(declare-function nelisp-native-pe-symbols-u
+                  "nelisp-native-pe-symbols" (bytes offset width))
+
 (defun nelisp-native-windows-call (name &rest args)
   "Call the reader's fixed system-DLL FFI entry NAME. Unknown entries refuse."
   (let ((result (apply #'nl-ffi-call name args)))

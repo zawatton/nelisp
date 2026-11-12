@@ -42,6 +42,53 @@
 
 (declare-function nelisp-bytecode-native-rooted-cfg-data-print
                   "nelisp-bytecode-native-rooted-cfg-data" (value))
+(declare-function nelisp-native-windows-map "nelisp-native-windows" (size))
+(declare-function nelisp-native-windows-protect "nelisp-native-windows"
+                  (address size protection))
+(declare-function nelisp-native-windows-unmap "nelisp-native-windows"
+                  (address _size))
+(declare-function nelisp-aot-compile-to-link-unit "nelisp-aot-compiler"
+                  (sexp &key arch format auto-frame-roots))
+(declare-function nelisp-bytecode-native-guarded-lowering-dependency-context
+                  "nelisp-bytecode-native-guarded-lowering" ())
+(declare-function nelisp-bytecode-native-guarded-lowering-owner-valid-p
+                  "nelisp-bytecode-native-guarded-lowering" ())
+(declare-function nelisp-bytecode-native-rooted-branch-join-plan
+                  "nelisp-bytecode-native-rooted-branch-join" (input operation))
+(declare-function nelisp-bytecode-native-rooted-branch-plan
+                  "nelisp-bytecode-native-rooted-branch" (input))
+(declare-function nelisp-bytecode-native-rooted-stack-body
+                  "nelisp-bytecode-native-rooted-stack" (operations))
+(declare-function nelisp-bytecode-native-rooted-stack-plan
+                  "nelisp-bytecode-native-rooted-stack" (input))
+(declare-function nelisp-bytecode-native-rooted-cfg-safe-contract-bounded-compiler-spec-p
+                  "nelisp-bytecode-native-rooted-cfg-safe-contract" (value))
+(declare-function nelisp-bytecode-native-rooted-cfg-safe-contract-bounded-data-p
+                  "nelisp-bytecode-native-rooted-cfg-safe-contract" (value))
+(declare-function nelisp-bytecode-native-rooted-cfg-safe-contract-create
+                  "nelisp-bytecode-native-rooted-cfg-safe-contract"
+                  (input plan emitted))
+(declare-function nelisp-bytecode-native-rooted-cfg-safe-contract-valid-p
+                  "nelisp-bytecode-native-rooted-cfg-safe-contract" (contract))
+(declare-function nelisp-native-arithmetic-v2-dependency-context
+                  "nelisp-native-arithmetic-v2" ())
+(declare-function nelisp-native-arithmetic-v2-runtime-imports
+                  "nelisp-native-arithmetic-v2" ())
+(declare-function nelisp-native-arithmetic-v2-source
+                  "nelisp-native-arithmetic-v2" ())
+(declare-function nelisp-native-optimization-guard-v1-source
+                  "nelisp-native-optimization-guard-v1" (mode))
+(declare-function nelisp-native-template-check "nelisp-native-template"
+                  (manifest))
+(declare-function nelisp-native-load-raw-v2-compile-file nil
+                  (source-path artifact-path &optional build-id binary-sha256
+                               call1-template rooted-stack-spec
+                               conditional-spec rooted-branch-spec
+                               rooted-branch-join-spec rooted-cfg-spec
+                               safe-v3-spec validation-receiver
+                               source-snapshot cache-only))
+(declare-function nelisp-native-load--raw-v2-resolve-local-calls nil (unit))
+
 (require 'cl-lib)
 (require 'nelisp-native-budget)
 (require 'nelisp-runtime-reload-abi)
@@ -143,7 +190,7 @@ this list to that one.  They are asserted equal by the test suite.")
 
 (defconst nelisp-native-load-boundary-slots
   (+ 5 nelisp-native-load-callback-slots)
-  "Boundary slots a defun reserves: out, mirror, frames, scratch, name_slot, callbacks.")
+  "Boundary slots a defun reserves.\nThey are: out, mirror, frames, scratch, name_slot, callbacks.")
 
 (defconst nelisp-native-load-page-bytes 4096)
 
@@ -196,6 +243,7 @@ descriptor says so.")
         (and (fboundp 'nelisp-standalone-arena-rewrite-target)
              (eq (nelisp-standalone-arena-rewrite-target) 'windows-x86_64)))))
 (defun nelisp-native-load--runtime-abi-v2 ()
+  (defvar nelisp-native-load-raw-runtime-abi-v2)
   (if (nelisp-native-load--windows-p) "nelisp-runtime-raw-v2:win64:v1"
     nelisp-native-load-raw-runtime-abi-v2))
 (defun nelisp-native-load--target-v2 ()
@@ -378,11 +426,11 @@ on host Emacs."
   "Return the sha256 of BYTES as a lowercase hex string, or nil.
 
 Copies and compresses bytes iteratively, with stack usage independent of
-input length. Goes through a raw buffer and `nelisp--sha256-bytes' rather than handing
-the string to `nelisp--sha256'.  Strings are UTF-8 internally here, so
-the string entry point digests the encoded form: it matches other
-sha256 implementations on ASCII and diverges on any byte over 127, which
-is most of a compiled object.
+input length.  Goes through a raw buffer and `nelisp--sha256-bytes'
+rather than handing the string to `nelisp--sha256'.  Strings are UTF-8
+internally here, so the string entry point digests the encoded form: it
+matches other sha256 implementations on ASCII and diverges on any byte over
+127, which is most of a compiled object.
 
 Returns nil where the byte digest is unavailable -- on host Emacs, and on
 a reader built before it existed -- so a caller can skip the check rather
@@ -2106,6 +2154,7 @@ Host source compilation normally has the standalone build script loaded.  If
 it does not, the caller must have supplied already rewritten source; leaving
 the forms untouched here is paired with the fixed-address scan in the v2
 compiler, which refuses the unsafe artifact before publication."
+  (defvar nelisp-standalone--target)
   (if (fboundp 'nelisp-standalone--chunk-arena-rewrite)
       (let ((nelisp-standalone--target (if (nelisp-native-load--windows-p)
                                             'windows-x86_64 'linux-x86_64)))
@@ -2180,6 +2229,7 @@ code address; runtime BSS is obtained through a named export instead."
 When SOURCE is supplied it is the already-read immutable snapshot used for
 the manifest digest and compiler input; this prevents a concurrent editor
 write from making the definitions disagree with `:source-sha256'."
+  (defvar read-eval)
   (with-temp-buffer
     (if source
         (insert source)
@@ -2243,6 +2293,7 @@ hidden object-mode Sexp boundary.  The artifact retains text, relocations,
   serialized.  This function is a host compiler entry point.  BINARY-SHA256,
   when supplied, identifies the executable that will consume the unit; when
   omitted, the current process executable digest is recorded when available."
+  (defvar nelisp-aot-compiler--runtime-entry-params)
   (unless (and (stringp source-path) (file-readable-p source-path))
     (error "nelisp-native-load: raw source is not readable: %S" source-path))
   (unless (and (stringp artifact-path) (> (length artifact-path) 0))
@@ -2676,6 +2727,8 @@ SOURCE-SNAPSHOT is internal: (FORMS . SOURCE-BYTES) from the emitter, avoiding
 file reading and parsing while retaining identical source provenance.
 CACHE-ONLY is internal to the private rooted-CFG cache: return the manifest
 without publishing an intermediate artifact.  The cache owns publication."
+    (defvar nelisp-aot-compiler--runtime-entry-params)
+    (defvar nelisp-native-load--serialization-receiver)
     ;; The complete collector is deeper than the host's default evaluation
     ;; budget. Match the ordinary standalone compiler locally; source/spec,
     ;; import, size and relocation validation below retain their own bounds.
@@ -2860,7 +2913,7 @@ without publishing an intermediate artifact.  The cache owns publication."
                                  nelisp-bytecode-native-rooted-cfg-contract-shared-entry
                                "nl_native_rooted_cfg_probe_v1"))
                  (entry (cl-find-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
-                 (gc-forms (cl-remove-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
+                 (_gc-forms (cl-remove-if (lambda (form) (equal (cadr form) (intern entry-name))) forms))
                  (validator (symbol-function 'nelisp-bytecode-native-rooted-cfg-contract-valid-p))
                  (reconstruction
                   (and (eq validator cfg-validator-owner)
@@ -3652,6 +3705,7 @@ only semantic reconstruction is omitted, never the manifest structure."
 
 (defun nelisp-native-load-raw-v2-rooted-cfg-cache-statistics ()
   "Return process-local generic CFG cache and key-derivation totals."
+  (defvar nelisp-native-load--raw-v2-rooted-cfg-runtime-key-computations)
   (list :hits nelisp-native-load--raw-v2-rooted-cfg-cache-hits
         :misses nelisp-native-load--raw-v2-rooted-cfg-cache-misses
         :runtime-key-computations
@@ -3738,6 +3792,8 @@ only semantic reconstruction is omitted, never the manifest structure."
 
 (defun nelisp-native-load--raw-v2-rooted-cfg-safe-v3-contract-valid-p (manifest)
   "Validate the distinct safe-v3 contract after bounded inert-data admission."
+  (defvar nelisp-bytecode-native-rooted-cfg-safe-contract-version)
+  (defvar nelisp-bytecode-native-rooted-cfg-safe-contract-f1-version)
   (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
   (let* ((contract (plist-get manifest :native-rooted-cfg-safe-v3-contract))
          (native (nelisp-native-load--raw-native manifest))
@@ -3900,6 +3956,7 @@ This check is deliberately complete before mmap: it validates the executable
 identity, the shared resolver index, every GC table entry and every import
 relocation.  An absent ABI module is a refusal, never a reason to trust the
 candidate's self-described table order."
+  (defvar nelisp-native-template-entry)
   (if (eq (nelisp-native-load--raw-v2-rooted-import-family manifest) 'template)
       (progn
         (setq nelisp-native-load--raw-v2-check-count (1+ nelisp-native-load--raw-v2-check-count))
@@ -5394,7 +5451,8 @@ RESULT-ROOT-INDEX is the authenticated final slot declared by the compiler."
 (defun nelisp-native-load-raw-v2-object-op-call (handle opcode value)
   "Call authenticated object OPCODE on evaluator VALUE through HANDLE.
 
-HANDLE is a raw ELF entry importing the fixed authenticated CAR and CDR gateways.
+HANDLE is a raw ELF entry importing the fixed authenticated CAR and CDR
+gateways.
 The opcode ID is checked against the manifest before roots are allocated.
 The evaluator Sexp is pinned by identity across native execution and GC."
   (unless (and (listp handle)
