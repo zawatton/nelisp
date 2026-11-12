@@ -1557,6 +1557,192 @@ object."
    ((eq sec 'undef) nelisp-elf--shn-undef)
    (t (error "nelisp-elf: cannot map section %S to an shndx" sec))))
 
+;; The positional-arg Shdr / Sym / Rela emit macros must precede their
+;; first use in `nelisp-elf--build-rich' (= a macro defined after a use
+;; site makes the host byte-compiler treat that site as a function call).
+
+(defmacro nelisp-elf--build-rel-shdr
+    (cbuf name type flags addr offset size link info addralign entsize)
+  "Append a 64-byte Elf64_Shdr to CBUF using POSITIONAL args (macro).
+Expands inline at every call site so the standalone NeLisp interpreter
+pays zero defun-table lookup per Shdr.  Each arg is bound exactly once
+inside the expansion (= no re-evaluation of `(plist-get ...)' or
+`(logior ...)' arg expressions per byte).  Byte sequence is identical
+to `nelisp-elf-write-shdr' (= ELF64 gABI §2.4 layout)."
+  (let ((cbuf-s (make-symbol "cbuf"))
+        (nm  (make-symbol "name"))
+        (tp  (make-symbol "type"))
+        (fl  (make-symbol "flags"))
+        (ad  (make-symbol "addr"))
+        (of  (make-symbol "offset"))
+        (sz  (make-symbol "size"))
+        (lk  (make-symbol "link"))
+        (in  (make-symbol "info"))
+        (al  (make-symbol "addralign"))
+        (es  (make-symbol "entsize")))
+    `(let ((,cbuf-s ,cbuf)
+           (,nm ,name) (,tp ,type) (,fl ,flags)
+           (,ad ,addr) (,of ,offset) (,sz ,size)
+           (,lk ,link) (,in ,info) (,al ,addralign) (,es ,entsize))
+       (nelisp-elf--cbuf-push
+        ,cbuf-s
+        (unibyte-string
+         ;; sh_name u32
+         (logand ,nm #xff) (logand (ash ,nm -8) #xff)
+         (logand (ash ,nm -16) #xff) (logand (ash ,nm -24) #xff)
+         ;; sh_type u32
+         (logand ,tp #xff) (logand (ash ,tp -8) #xff)
+         (logand (ash ,tp -16) #xff) (logand (ash ,tp -24) #xff)
+         ;; sh_flags u64
+         (logand ,fl #xff)
+         (logand (ash ,fl -8)  #xff)
+         (logand (ash ,fl -16) #xff)
+         (logand (ash ,fl -24) #xff)
+         (logand (ash ,fl -32) #xff)
+         (logand (ash ,fl -40) #xff)
+         (logand (ash ,fl -48) #xff)
+         (logand (ash ,fl -56) #xff)
+         ;; sh_addr u64
+         (logand ,ad #xff)
+         (logand (ash ,ad -8)  #xff)
+         (logand (ash ,ad -16) #xff)
+         (logand (ash ,ad -24) #xff)
+         (logand (ash ,ad -32) #xff)
+         (logand (ash ,ad -40) #xff)
+         (logand (ash ,ad -48) #xff)
+         (logand (ash ,ad -56) #xff)
+         ;; sh_offset u64
+         (logand ,of #xff)
+         (logand (ash ,of -8)  #xff)
+         (logand (ash ,of -16) #xff)
+         (logand (ash ,of -24) #xff)
+         (logand (ash ,of -32) #xff)
+         (logand (ash ,of -40) #xff)
+         (logand (ash ,of -48) #xff)
+         (logand (ash ,of -56) #xff)
+         ;; sh_size u64
+         (logand ,sz #xff)
+         (logand (ash ,sz -8)  #xff)
+         (logand (ash ,sz -16) #xff)
+         (logand (ash ,sz -24) #xff)
+         (logand (ash ,sz -32) #xff)
+         (logand (ash ,sz -40) #xff)
+         (logand (ash ,sz -48) #xff)
+         (logand (ash ,sz -56) #xff)
+         ;; sh_link u32
+         (logand ,lk #xff) (logand (ash ,lk -8) #xff)
+         (logand (ash ,lk -16) #xff) (logand (ash ,lk -24) #xff)
+         ;; sh_info u32
+         (logand ,in #xff) (logand (ash ,in -8) #xff)
+         (logand (ash ,in -16) #xff) (logand (ash ,in -24) #xff)
+         ;; sh_addralign u64
+         (logand ,al #xff)
+         (logand (ash ,al -8)  #xff)
+         (logand (ash ,al -16) #xff)
+         (logand (ash ,al -24) #xff)
+         (logand (ash ,al -32) #xff)
+         (logand (ash ,al -40) #xff)
+         (logand (ash ,al -48) #xff)
+         (logand (ash ,al -56) #xff)
+         ;; sh_entsize u64
+         (logand ,es #xff)
+         (logand (ash ,es -8)  #xff)
+         (logand (ash ,es -16) #xff)
+         (logand (ash ,es -24) #xff)
+         (logand (ash ,es -32) #xff)
+         (logand (ash ,es -40) #xff)
+         (logand (ash ,es -48) #xff)
+         (logand (ash ,es -56) #xff))))))
+
+(defmacro nelisp-elf--build-rel-sym
+    (cbuf name info other shndx value size)
+  "Append a 24-byte Elf64_Sym to CBUF using POSITIONAL args (macro).
+Wave 21 inline equivalent of `nelisp-elf-write-sym' — same byte output,
+no plist roundtrip, no defun call.  Args are bound exactly once."
+  (let ((cbuf-s (make-symbol "cbuf"))
+        (nm (make-symbol "name"))
+        (in (make-symbol "info"))
+        (ot (make-symbol "other"))
+        (sh (make-symbol "shndx"))
+        (vl (make-symbol "value"))
+        (sz (make-symbol "size")))
+    `(let ((,cbuf-s ,cbuf)
+           (,nm ,name) (,in ,info) (,ot ,other)
+           (,sh ,shndx) (,vl ,value) (,sz ,size))
+       (nelisp-elf--cbuf-push
+        ,cbuf-s
+        (unibyte-string
+         ;; st_name u32
+         (logand ,nm #xff) (logand (ash ,nm -8) #xff)
+         (logand (ash ,nm -16) #xff) (logand (ash ,nm -24) #xff)
+         ;; st_info u8 + st_other u8
+         (logand ,in  #xff)
+         (logand ,ot #xff)
+         ;; st_shndx u16
+         (logand ,sh #xff) (logand (ash ,sh -8) #xff)
+         ;; st_value u64
+         (logand ,vl #xff)
+         (logand (ash ,vl -8)  #xff)
+         (logand (ash ,vl -16) #xff)
+         (logand (ash ,vl -24) #xff)
+         (logand (ash ,vl -32) #xff)
+         (logand (ash ,vl -40) #xff)
+         (logand (ash ,vl -48) #xff)
+         (logand (ash ,vl -56) #xff)
+         ;; st_size u64
+         (logand ,sz #xff)
+         (logand (ash ,sz -8)  #xff)
+         (logand (ash ,sz -16) #xff)
+         (logand (ash ,sz -24) #xff)
+         (logand (ash ,sz -32) #xff)
+         (logand (ash ,sz -40) #xff)
+         (logand (ash ,sz -48) #xff)
+         (logand (ash ,sz -56) #xff))))))
+
+(defmacro nelisp-elf--build-rel-rela (cbuf offset info addend)
+  "Append a 24-byte Elf64_Rela to CBUF using POSITIONAL args (macro).
+Wave 21 inline equivalent of `nelisp-elf-write-rela' — same byte
+output, no plist roundtrip, no defun call.  Two's-complement ADDEND
+conversion is inlined."
+  (let ((cbuf-s (make-symbol "cbuf"))
+        (of (make-symbol "offset"))
+        (in (make-symbol "info"))
+        (au (make-symbol "addend-u")))
+    `(let* ((,cbuf-s ,cbuf)
+            (,of ,offset)
+            (,in ,info)
+            (,au (let ((a ,addend)) (if (< a 0) (+ a (ash 1 64)) a))))
+       (nelisp-elf--cbuf-push
+        ,cbuf-s
+        (unibyte-string
+         ;; r_offset u64
+         (logand ,of #xff)
+         (logand (ash ,of -8)  #xff)
+         (logand (ash ,of -16) #xff)
+         (logand (ash ,of -24) #xff)
+         (logand (ash ,of -32) #xff)
+         (logand (ash ,of -40) #xff)
+         (logand (ash ,of -48) #xff)
+         (logand (ash ,of -56) #xff)
+         ;; r_info u64
+         (logand ,in #xff)
+         (logand (ash ,in -8)  #xff)
+         (logand (ash ,in -16) #xff)
+         (logand (ash ,in -24) #xff)
+         (logand (ash ,in -32) #xff)
+         (logand (ash ,in -40) #xff)
+         (logand (ash ,in -48) #xff)
+         (logand (ash ,in -56) #xff)
+         ;; r_addend s64 (two's-complement)
+         (logand ,au #xff)
+         (logand (ash ,au -8)  #xff)
+         (logand (ash ,au -16) #xff)
+         (logand (ash ,au -24) #xff)
+         (logand (ash ,au -32) #xff)
+         (logand (ash ,au -40) #xff)
+         (logand (ash ,au -48) #xff)
+         (logand (ash ,au -56) #xff))))))
+
 (defun nelisp-elf--build-rich (plist)
   "Build an ET_EXEC ELF64 binary from PLIST, return unibyte string.
 PLIST keys: :text (= unibyte bytes, required), :rodata (= bytes),
@@ -2180,188 +2366,6 @@ Doc 91 §91.c."
 ;; `cmp -l' against host-Emacs ET_REL output for every entry of
 ;; `compile-elisp-objects-manifest' (= 208 .o, 0 differing bytes).
 
-(defmacro nelisp-elf--build-rel-shdr
-    (cbuf name type flags addr offset size link info addralign entsize)
-  "Append a 64-byte Elf64_Shdr to CBUF using POSITIONAL args (macro).
-Expands inline at every call site so the standalone NeLisp interpreter
-pays zero defun-table lookup per Shdr.  Each arg is bound exactly once
-inside the expansion (= no re-evaluation of `(plist-get ...)' or
-`(logior ...)' arg expressions per byte).  Byte sequence is identical
-to `nelisp-elf-write-shdr' (= ELF64 gABI §2.4 layout)."
-  (let ((cbuf-s (make-symbol "cbuf"))
-        (nm  (make-symbol "name"))
-        (tp  (make-symbol "type"))
-        (fl  (make-symbol "flags"))
-        (ad  (make-symbol "addr"))
-        (of  (make-symbol "offset"))
-        (sz  (make-symbol "size"))
-        (lk  (make-symbol "link"))
-        (in  (make-symbol "info"))
-        (al  (make-symbol "addralign"))
-        (es  (make-symbol "entsize")))
-    `(let ((,cbuf-s ,cbuf)
-           (,nm ,name) (,tp ,type) (,fl ,flags)
-           (,ad ,addr) (,of ,offset) (,sz ,size)
-           (,lk ,link) (,in ,info) (,al ,addralign) (,es ,entsize))
-       (nelisp-elf--cbuf-push
-        ,cbuf-s
-        (unibyte-string
-         ;; sh_name u32
-         (logand ,nm #xff) (logand (ash ,nm -8) #xff)
-         (logand (ash ,nm -16) #xff) (logand (ash ,nm -24) #xff)
-         ;; sh_type u32
-         (logand ,tp #xff) (logand (ash ,tp -8) #xff)
-         (logand (ash ,tp -16) #xff) (logand (ash ,tp -24) #xff)
-         ;; sh_flags u64
-         (logand ,fl #xff)
-         (logand (ash ,fl -8)  #xff)
-         (logand (ash ,fl -16) #xff)
-         (logand (ash ,fl -24) #xff)
-         (logand (ash ,fl -32) #xff)
-         (logand (ash ,fl -40) #xff)
-         (logand (ash ,fl -48) #xff)
-         (logand (ash ,fl -56) #xff)
-         ;; sh_addr u64
-         (logand ,ad #xff)
-         (logand (ash ,ad -8)  #xff)
-         (logand (ash ,ad -16) #xff)
-         (logand (ash ,ad -24) #xff)
-         (logand (ash ,ad -32) #xff)
-         (logand (ash ,ad -40) #xff)
-         (logand (ash ,ad -48) #xff)
-         (logand (ash ,ad -56) #xff)
-         ;; sh_offset u64
-         (logand ,of #xff)
-         (logand (ash ,of -8)  #xff)
-         (logand (ash ,of -16) #xff)
-         (logand (ash ,of -24) #xff)
-         (logand (ash ,of -32) #xff)
-         (logand (ash ,of -40) #xff)
-         (logand (ash ,of -48) #xff)
-         (logand (ash ,of -56) #xff)
-         ;; sh_size u64
-         (logand ,sz #xff)
-         (logand (ash ,sz -8)  #xff)
-         (logand (ash ,sz -16) #xff)
-         (logand (ash ,sz -24) #xff)
-         (logand (ash ,sz -32) #xff)
-         (logand (ash ,sz -40) #xff)
-         (logand (ash ,sz -48) #xff)
-         (logand (ash ,sz -56) #xff)
-         ;; sh_link u32
-         (logand ,lk #xff) (logand (ash ,lk -8) #xff)
-         (logand (ash ,lk -16) #xff) (logand (ash ,lk -24) #xff)
-         ;; sh_info u32
-         (logand ,in #xff) (logand (ash ,in -8) #xff)
-         (logand (ash ,in -16) #xff) (logand (ash ,in -24) #xff)
-         ;; sh_addralign u64
-         (logand ,al #xff)
-         (logand (ash ,al -8)  #xff)
-         (logand (ash ,al -16) #xff)
-         (logand (ash ,al -24) #xff)
-         (logand (ash ,al -32) #xff)
-         (logand (ash ,al -40) #xff)
-         (logand (ash ,al -48) #xff)
-         (logand (ash ,al -56) #xff)
-         ;; sh_entsize u64
-         (logand ,es #xff)
-         (logand (ash ,es -8)  #xff)
-         (logand (ash ,es -16) #xff)
-         (logand (ash ,es -24) #xff)
-         (logand (ash ,es -32) #xff)
-         (logand (ash ,es -40) #xff)
-         (logand (ash ,es -48) #xff)
-         (logand (ash ,es -56) #xff))))))
-
-(defmacro nelisp-elf--build-rel-sym
-    (cbuf name info other shndx value size)
-  "Append a 24-byte Elf64_Sym to CBUF using POSITIONAL args (macro).
-Wave 21 inline equivalent of `nelisp-elf-write-sym' — same byte output,
-no plist roundtrip, no defun call.  Args are bound exactly once."
-  (let ((cbuf-s (make-symbol "cbuf"))
-        (nm (make-symbol "name"))
-        (in (make-symbol "info"))
-        (ot (make-symbol "other"))
-        (sh (make-symbol "shndx"))
-        (vl (make-symbol "value"))
-        (sz (make-symbol "size")))
-    `(let ((,cbuf-s ,cbuf)
-           (,nm ,name) (,in ,info) (,ot ,other)
-           (,sh ,shndx) (,vl ,value) (,sz ,size))
-       (nelisp-elf--cbuf-push
-        ,cbuf-s
-        (unibyte-string
-         ;; st_name u32
-         (logand ,nm #xff) (logand (ash ,nm -8) #xff)
-         (logand (ash ,nm -16) #xff) (logand (ash ,nm -24) #xff)
-         ;; st_info u8 + st_other u8
-         (logand ,in  #xff)
-         (logand ,ot #xff)
-         ;; st_shndx u16
-         (logand ,sh #xff) (logand (ash ,sh -8) #xff)
-         ;; st_value u64
-         (logand ,vl #xff)
-         (logand (ash ,vl -8)  #xff)
-         (logand (ash ,vl -16) #xff)
-         (logand (ash ,vl -24) #xff)
-         (logand (ash ,vl -32) #xff)
-         (logand (ash ,vl -40) #xff)
-         (logand (ash ,vl -48) #xff)
-         (logand (ash ,vl -56) #xff)
-         ;; st_size u64
-         (logand ,sz #xff)
-         (logand (ash ,sz -8)  #xff)
-         (logand (ash ,sz -16) #xff)
-         (logand (ash ,sz -24) #xff)
-         (logand (ash ,sz -32) #xff)
-         (logand (ash ,sz -40) #xff)
-         (logand (ash ,sz -48) #xff)
-         (logand (ash ,sz -56) #xff))))))
-
-(defmacro nelisp-elf--build-rel-rela (cbuf offset info addend)
-  "Append a 24-byte Elf64_Rela to CBUF using POSITIONAL args (macro).
-Wave 21 inline equivalent of `nelisp-elf-write-rela' — same byte
-output, no plist roundtrip, no defun call.  Two's-complement ADDEND
-conversion is inlined."
-  (let ((cbuf-s (make-symbol "cbuf"))
-        (of (make-symbol "offset"))
-        (in (make-symbol "info"))
-        (au (make-symbol "addend-u")))
-    `(let* ((,cbuf-s ,cbuf)
-            (,of ,offset)
-            (,in ,info)
-            (,au (let ((a ,addend)) (if (< a 0) (+ a (ash 1 64)) a))))
-       (nelisp-elf--cbuf-push
-        ,cbuf-s
-        (unibyte-string
-         ;; r_offset u64
-         (logand ,of #xff)
-         (logand (ash ,of -8)  #xff)
-         (logand (ash ,of -16) #xff)
-         (logand (ash ,of -24) #xff)
-         (logand (ash ,of -32) #xff)
-         (logand (ash ,of -40) #xff)
-         (logand (ash ,of -48) #xff)
-         (logand (ash ,of -56) #xff)
-         ;; r_info u64
-         (logand ,in #xff)
-         (logand (ash ,in -8)  #xff)
-         (logand (ash ,in -16) #xff)
-         (logand (ash ,in -24) #xff)
-         (logand (ash ,in -32) #xff)
-         (logand (ash ,in -40) #xff)
-         (logand (ash ,in -48) #xff)
-         (logand (ash ,in -56) #xff)
-         ;; r_addend s64 (two's-complement)
-         (logand ,au #xff)
-         (logand (ash ,au -8)  #xff)
-         (logand (ash ,au -16) #xff)
-         (logand (ash ,au -24) #xff)
-         (logand (ash ,au -32) #xff)
-         (logand (ash ,au -40) #xff)
-         (logand (ash ,au -48) #xff)
-         (logand (ash ,au -56) #xff))))))
-
 (defun nelisp-elf--build-rel (plist)
   "Build an ET_REL ELF64 relocatable object from PLIST, return unibyte string.
 PLIST is the same shape `nelisp-elf--build-rich' accepts (= :text /
@@ -2803,7 +2807,7 @@ page-aligned (= .data + .bss, with .bss declared NOBITS).  The ET_REL
 path emits no program headers at all.
 
 The file is written with mode #o755 (= +x bit set)."
-  (let ((exec-direct nil)
+  (let* ((exec-direct nil)
         (bytes
          (cond
           ((eq sections 'minimal-exit-0)
