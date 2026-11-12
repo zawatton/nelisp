@@ -58731,6 +58731,11 @@ correctly."
                  (exists (nl_artifact_runtime_cache_exists_p scratch)))
             (seq (nl_os_free_chunk scratch 8192)
                  (if (= enabled 1) exists 0))))))
+    ;; The real `nl_artifact_boot_slow_p' lives in the version-5 cold block
+    ;; (linux-x86_64 only).  Other targets never restore the image, so give
+    ;; `nl_artifact_boot_image_p' a stub that always reports forced-slow.
+    ,@(unless (nelisp-standalone--cold-v5-p)
+        '((defun nl_artifact_boot_slow_p (sp0 argc) 1)))
     ;; 1 = this launch should restore BINARY.artifact.cold (the substrate heap
     ;; image) and run only the dispatch tail.  eval-/load-elisp-source qualify
     ;; only when they take the compiled-cache source (the same condition as the

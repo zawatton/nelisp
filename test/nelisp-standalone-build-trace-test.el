@@ -398,6 +398,7 @@
                      ((symbol-function 'nelisp-standalone--reader-src) (lambda () "test"))
                      ((symbol-function 'nelisp-standalone--stamp-build-digest) (lambda (_) "digest"))
                      ((symbol-function 'nelisp-standalone--build-cold-image) (lambda (_) (cl-incf cold)))
+                     ((symbol-function 'nelisp-standalone--build-substrate-image) #'ignore)
                      ((symbol-function 'nelisp-standalone-build-artifact-runtime-cache) (lambda () (cl-incf artifact))))
              ,@body))
        (delete-directory directory t))))

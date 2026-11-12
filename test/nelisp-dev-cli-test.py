@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Subprocess contract tests for the machine DEV CLI."""
 import json
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -11,6 +12,14 @@ CLI = ROOT / "tools" / "ai" / "nelisp-ai.sh"
 
 
 class DevCliTests(unittest.TestCase):
+    def test_script_parses_under_posix_sh(self):
+        # The CLI is #!/bin/sh (dash on Debian/Ubuntu CI); bash-only syntax
+        # such as `< <(cmd)' once broke every subcommand there.
+        shell = shutil.which("dash") or shutil.which("sh")
+        result = subprocess.run([shell, "-n", str(CLI)], capture_output=True,
+                                text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def run_request(self, payload):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as request:
             json.dump(payload, request, ensure_ascii=False)

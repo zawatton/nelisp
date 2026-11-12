@@ -416,7 +416,8 @@ cmd_extras() {
          return 2 ;;
     esac
     failures=0
-    # The table is read on fd 3 so a gate's stdin is never the table.
+    # The table is read on fd 3 so a gate's stdin is never the table.  A
+    # here-document, not `< <(...)': this runs under /bin/sh (dash).
     while read -r grp g <&3; do
         [ -z "$group" ] || [ "$grp" = "$group" ] || continue
         printf '\n=== %s ===\n' "$g"
@@ -427,7 +428,9 @@ cmd_extras() {
           *" $g "*) echo "excluded by NELISP_AI_EXTRAS_EXCLUDE"; continue ;;
         esac
         ( cmd_gate "$g" -- make "$g" ) || failures=$((failures + 1))
-    done 3< <(extras_table)
+    done 3<<EXTRAS_TABLE_EOF
+$(extras_table)
+EXTRAS_TABLE_EOF
     [ "$failures" -eq 0 ]
 }
 
