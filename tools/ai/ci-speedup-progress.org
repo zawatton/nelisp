@@ -33,7 +33,7 @@ pending
 * S3 arm64 :branch-out-of-range on macOS stage-d
 
 ** S3.1 Failing case reproduced locally by a focused test (red before fix)
-pending
+cmd: (ulimit -v 8388608; timeout 900 emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-arm64-branch-range-test.el -f ert-run-tests-batch-and-exit </dev/null)
 
 ** S3.2 E2E - stage-d macOS legs pass on CI
 #+NOTE: needs CI
