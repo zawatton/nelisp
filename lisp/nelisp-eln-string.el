@@ -208,7 +208,8 @@ descriptor address to trusted native code only while the owner is live; use
          (chars (nth 2 descriptor))
          (bytes (nth 3 descriptor))
          (unibyte (nth 4 descriptor))
-         (raw (string-make-unibyte (make-string bytes 0)))
+         (raw (with-no-warnings
+                (string-make-unibyte (make-string bytes 0))))
          (index 0))
     (while (< index bytes)
       (aset raw index (ptr-read-u8 data index))
