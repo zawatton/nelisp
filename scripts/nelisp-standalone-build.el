@@ -71610,25 +71610,43 @@ from it."
         (progn
           (with-temp-file inner
             (insert "(setq nl-nest-n (1+ nl-nest-n))\n"
+                    ;; Descent: remember the depth this level's driver frame sees.
+                    "(setq nl-nest-stack (cons (nth 6 (nelisp--debug-switch 0)) nl-nest-stack))\n"
                     "(if (< nl-nest-n 1100) (load " (prin1-to-string inner) " nil t t)\n"
-                    "  (setq nl-nest-peak (nth 6 (nelisp--debug-switch 0))))\n"))
+                    "  (setq nl-nest-peak (nth 6 (nelisp--debug-switch 0))))\n"
+                    ;; Ascent: the same level must read the same depth after the
+                    ;; deeper loads unwound.  An unconditional pop at the failed
+                    ;; levels (past the ring) lowers it while live frames are
+                    ;; still open; the final-depth check alone misses this
+                    ;; because `nl_gc_ctx_pop' clamps at 0.
+                    "(if (/= (car nl-nest-stack) (nth 6 (nelisp--debug-switch 0)))\n"
+                    "    (setq nl-nest-bad (1+ nl-nest-bad)))\n"
+                    "(setq nl-nest-stack (cdr nl-nest-stack))\n"))
           (with-temp-file outer
             (insert "(nelisp--debug-switch 5)\n"
                     "(defvar nl-nest-n 0)\n"
                     "(defvar nl-nest-peak nil)\n"
+                    "(defvar nl-nest-stack nil)\n"
+                    "(defvar nl-nest-bad 0)\n"
                     "(princ (format \"NDEPTH0=%s;\" (nth 6 (nelisp--debug-switch 0))))\n"
                     "(load " (prin1-to-string inner) " nil t t)\n"
-                    "(princ (format \"NDEPTH=%s;NPEAK=%s;NN=%s;\" (nth 6 (nelisp--debug-switch 0)) nl-nest-peak nl-nest-n))\n"))
+                    "(princ (format \"NDEPTH=%s;NPEAK=%s;NN=%s;NBAD=%s;\" (nth 6 (nelisp--debug-switch 0)) nl-nest-peak nl-nest-n nl-nest-bad))\n"))
           (with-temp-buffer
             (setq rc (call-process nelisp-standalone--reader-out nil
                                     (list t nil) nil "--load" outer))
             (setq out (buffer-string)))
-          (unless (string-match "NDEPTH0=\\([0-9]+\\);NDEPTH=\\([0-9]+\\);NPEAK=\\([0-9]+\\);NN=1100;" out)
+          (unless (string-match "NDEPTH0=\\([0-9]+\\);NDEPTH=\\([0-9]+\\);NPEAK=\\([0-9]+\\);NN=1100;NBAD=\\([0-9]+\\);" out)
             (error "frame-stack nested-load smoke: no result line: exit=%S stdout=%S"
                    rc out))
           (let ((before (string-to-number (match-string 1 out)))
                 (after (string-to-number (match-string 2 out)))
-                (peak (string-to-number (match-string 3 out))))
+                (peak (string-to-number (match-string 3 out)))
+                (bad (string-to-number (match-string 4 out))))
+            (unless (= bad 0)
+              (error (concat "frame-stack nested-load smoke: %d levels read a "
+                              "different depth after the deeper loads unwound "
+                              "(a failed push was popped)")
+                     bad))
             (unless (>= peak 1024)
               (error "frame-stack nested-load smoke: peak depth %d never reached the ring size (fixture did not overflow it)"
                      peak))
