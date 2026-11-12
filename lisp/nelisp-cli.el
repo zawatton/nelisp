@@ -59,6 +59,7 @@
 (declare-function compile-elisp-artifacts "nelisp-artifact" (args))
 (declare-function compile-runtime-image "nelisp-artifact" (args))
 (declare-function audit-elisp-artifacts "nelisp-artifact" (args))
+(declare-function compile-native-runtime-unit "nelisp-artifact" (args))
 (declare-function exec-elisp-artifact "nelisp-artifact" (args))
 (declare-function eval-elisp-artifact "nelisp-artifact" (args))
 (declare-function load-elisp-source "nelisp-artifact" (args))

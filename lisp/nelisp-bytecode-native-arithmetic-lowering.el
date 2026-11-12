@@ -1,6 +1,13 @@
 ;;; nelisp-bytecode-native-arithmetic-lowering.el --- Rooted opcode 92 lowering -*- lexical-binding: t; -*-
 (require 'nelisp-native-arithmetic-v2)
 
+(declare-function nelisp-bytecode-native-arithmetic-lowering--variable-p
+                  "nelisp-bytecode-native-arithmetic-lowering" (value))
+(declare-function nelisp-bytecode-native-arithmetic-lowering--operation-p
+                  "nelisp-bytecode-native-arithmetic-lowering" (operation count))
+(declare-function nelisp-bytecode-native-arithmetic-lowering--dependency-context
+                  "nelisp-bytecode-native-arithmetic-lowering" (provider))
+
 (let ((owners nil) (owner-checker nil)
       (lookup (symbol-function 'symbol-function)) (same (symbol-function 'eq))
       (head (symbol-function 'car)) (tail (symbol-function 'cdr))
