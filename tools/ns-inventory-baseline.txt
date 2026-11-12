@@ -1063,7 +1063,14 @@ ns-prefix-violation 2427
 # `nelisp--lisp-primitive-p'/`-name' (S3), `nelisp--host-symbol-function'
 # (the tramp fix in src/nelisp-load.el, c781ded2e) and
 # `nelisp-standalone--target-file' (read-only installed builds).
-ns-private-escape 2435
+# 2026-11-13: +9, user-approved.  Compile-time declarations only, no new
+# run-time reference: lisp/nelisp-runtime-prims-decl.el names the eight
+# runtime arithmetic wrappers nelisp--add2/--sub2/--mul2/--num-{eq,lt,gt,
+# le,ge}2 so host byte-compilation of nelisp-jit-strategy.el knows them,
+# and lisp/nelisp-artifact.el declares nl--with-handlers (the expansion
+# target of nl-handler-bind, now required at compile time).  Dropping
+# them returns those warnings to the lisp-byte-compile gate instead.
+ns-private-escape 2444
 # 768 -> 770 on 2026-09-21 (segment F): +2. This kind stays count-only
 # in the gate's own design (see nl-ns-inventory.el's header); the rx
 # shim's `declare-function' lines for its own private `rx--tr-*'
