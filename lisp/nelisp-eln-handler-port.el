@@ -332,11 +332,12 @@ A non-list HANDLERS is returned as is; a list matches when one element is
              ;; `num_nonmacro_input_events' is 0 outside an editing session.
              (< internal-when-entered-debugger 0))
     (setq internal-when-entered-debugger 0)
-    (let ((debugger-may-continue t)
-          (inhibit-redisplay nil)
-          (inhibit-debugger t)
-          (inhibit-changing-match-data nil))
-      (apply debugger (list 'error failure)))
+    (with-no-warnings
+      (let ((debugger-may-continue t)
+            (inhibit-redisplay nil)
+            (inhibit-debugger t)
+            (inhibit-changing-match-data nil))
+        (apply debugger (list 'error failure))))
     t))
 
 (defun nelisp-eln-handler-port--debugger-decision (clause conditions failure)

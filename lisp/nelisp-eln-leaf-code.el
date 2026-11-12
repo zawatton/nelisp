@@ -37,7 +37,7 @@ test, forward conditional/unconditional branches, and final return."
   (catch 'invalid
     (unless (and (stringp bytes) (> (length bytes) 0))
       (throw 'invalid nil))
-    (setq bytes (string-as-unibyte bytes))
+    (setq bytes (with-no-warnings (string-as-unibyte bytes)))
     (let* ((size (length bytes)) (offset 0) (instructions nil)
            (boundaries (make-hash-table :test #'eql))
            (targets (make-hash-table :test #'eql)))

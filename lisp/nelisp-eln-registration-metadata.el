@@ -135,8 +135,8 @@
     (nelisp-eln-abi-write-word address 32 0)
     (nelisp-eln-abi-write-word address 40 0)))
 
-(defun nelisp-eln-registration-metadata--fill-plan (token plan arena-token)
-  (let* ((object (aref plan 0))
+(defun nelisp-eln-registration-metadata--fill-plan (token plan _arena-token)
+  (let* ((_object (aref plan 0))
          (kind (aref plan 1))
          (address (aref plan 4))
          (snapshot (aref plan 5)))
