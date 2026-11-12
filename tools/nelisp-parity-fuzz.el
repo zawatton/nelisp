@@ -297,7 +297,9 @@ everything is loaded the state does not depend on the order."
         (condition-case err
             (let ((f (indirect-function sym)))
               (when (autoloadp f) (autoload-do-load f sym)))
-          (error (nelisp-parity-fuzz--note-prime-failure sym err)))))))
+          (error
+           (message "parity-fuzz: priming %s failed: %S" sym err)
+           (nelisp-parity-fuzz--note-prime-failure sym err)))))))
 
 (defun nelisp-parity-fuzz--names ()
   "Shared names from the compat table, minus the ones a differential cannot judge.
