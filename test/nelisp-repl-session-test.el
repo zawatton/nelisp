@@ -116,6 +116,17 @@
     (should-not nelisp-repl-session--records)
     (should (= nelisp-repl-session--next-id 1))))
 
+(ert-deftest nelisp-repl-session-form-string-reads-with-read-eval-off ()
+  "The round-trip `read' runs with `read-eval' dynamically bound to nil."
+  (let ((seen 'unset)
+        (orig (symbol-function 'read)))
+    (cl-letf (((symbol-function 'read)
+               (lambda (&rest args)
+                 (setq seen read-eval)
+                 (apply orig args))))
+      (nelisp-repl-session--form-string '(a "b" 3)))
+    (should (eq seen nil))))
+
 (provide 'nelisp-repl-session-test)
 
 (ert-deftest nelisp-repl-session-cyclic-arguments-retain-identity ()

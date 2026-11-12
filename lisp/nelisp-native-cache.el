@@ -9,6 +9,8 @@
 ;; process never adopts a changed runtime or compiler.
 
 ;;; Code:
+
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
 (require 'cl-lib)
 (require 'nelisp-native-load)
 (require 'nelisp-native-poll)
@@ -17,6 +19,31 @@
 (require 'nelisp-bytecode-native-rooted-cfg-safe-contract)
 (require 'nelisp-runtime-reload-abi)
 (require 'nelisp-native-template)
+
+(defvar nelisp-bytecode-runtime-dialect-id)
+(defvar nelisp-bytecode-runtime-opcode-inventory)
+(defvar read-eval)
+
+(declare-function nelisp-bytecode-compiler-input-call-with-built
+                  "nelisp-bytecode-compiler-input" (function callback))
+(declare-function nelisp-bytecode-native-rooted-cfg-native--build
+                  "nelisp-bytecode-native-rooted-cfg-native"
+                  (input artifact-path shared-v2 &optional guard-mode skip-seal))
+(declare-function nelisp-native-gccjit-compile-to-file
+                  "nelisp-native-gccjit" (form imports path))
+(declare-function nelisp-native-gccjit-import-cell-name
+                  "nelisp-native-gccjit" (name))
+(declare-function nelisp-native-gccjit--symbol
+                  "nelisp-native-gccjit" (handle name))
+(declare-function nelisp-native-windows-file-bytes
+                  "nelisp-native-windows" (path &optional private offset size))
+(declare-function nelisp-native-windows-private-directory
+                  "nelisp-native-windows" (directory))
+(declare-function nelisp-native-windows-publish
+                  "nelisp-native-windows" (temporary final))
+(declare-function nelisp-native-windows-temporary
+                  "nelisp-native-windows" (prefix))
+(declare-function nl-ffi--dlopen "nl-ffi" (soname))
 
 (defconst nelisp-native-cache--format "nelisp-native-cache-v1")
 (defconst nelisp-native-cache--compiler-modules
@@ -285,7 +312,8 @@ exactly once.  Failure permanently disables this process's cache."
           (list nelisp-native-cache--abi nelisp-native-cache-backend))))))
 
 (defun nelisp-native-cache--private-directory (directory)
-  "Create DIRECTORY privately, refusing symlinks, foreign owners and non-0700 modes."
+  "Create DIRECTORY privately.
+Refuse symlinks, foreign owners and non-0700 modes."
   (if (nelisp-native-load--windows-p)
       (progn (require 'nelisp-native-windows)
              (nelisp-native-windows-private-directory directory))
@@ -333,7 +361,8 @@ exactly once.  Failure permanently disables this process's cache."
                  nelisp-native-cache-mode nelisp-native-cache-guard-mode)))
 
 (defun nelisp-native-cache-file (function)
-  "Return the content-addressed private cache file for FUNCTION, or nil if disabled."
+  "Return the content-addressed private cache file for FUNCTION.
+Return nil if the cache is disabled."
   (let ((abi (nelisp-native-cache-abi-hash)))
     (when abi
       (let* ((root (nelisp-native-cache--private-directory (nelisp-native-cache--root)))

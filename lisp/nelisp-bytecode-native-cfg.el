@@ -20,6 +20,7 @@
 (eval-when-compile (require 'nelisp-native-load))
 (declare-function nelisp-native-load-raw-check "nelisp-native-load"
                   (manifest &optional name))
+(declare-function nelisp-native-load-running-binary-sha256 "nelisp-native-load" ())
 
 (defun nelisp-bytecode-native-cfg--unsupported (reason frame-ir)
   (list :status 'unsupported :reason reason :frame-ir frame-ir

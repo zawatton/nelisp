@@ -1,5 +1,7 @@
 ;;; nelisp-bytecode-native-rooted-branch-call.el --- checked branch caller -*- lexical-binding: t; -*-
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-rooted-branch)
 
@@ -11,7 +13,8 @@
   (ptr-call address env ticket 3 5 0 0))
 
 (defun nelisp-bytecode-native-rooted-branch-call (result condition car-value cdr-value)
-  "Execute authenticated RESULT for `(if CONDITION (car CAR-VALUE) (cdr CDR-VALUE))'."
+  "Execute authenticated RESULT for a conditional CAR/CDR.
+The form is `(if CONDITION (car CAR-VALUE) (cdr CDR-VALUE))'."
   (unless (nelisp-bytecode-native-rooted-branch-authenticated-result-p result)
     (error "rooted-branch-call: unauthenticated producer result"))
   (unless (and (equal (plist-get result :runtime-binary-sha256)

@@ -3587,11 +3587,11 @@ modified definition in `:attempted', together with the candidate's provenance."
                      :definitions definitions
                      :condition (and (consp err) (car err))
                      :error (nelisp-artifact--reload-error-string err)
-                     :reason 'publish-not-transactional))))
+                     :reason 'publish-not-transactional)))))
             (when (and staging-dir (file-directory-p staging-dir))
               (condition-case nil
                   (delete-directory staging-dir t)
-                (error nil))))))))))
+                (error nil)))))))))
 
 (defun nelisp-artifact-read-manifest (artifact-path)
   "Read the sibling manifest for ARTIFACT-PATH."

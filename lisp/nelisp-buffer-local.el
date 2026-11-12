@@ -2,6 +2,19 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Explicit local cells use the same mirror and dynamic frames as ordinary
 ;; variables. This does not qualify automatic-local creation or watcher hooks.
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+;; Provided by the standalone prelude or the native loader at run time.
+(declare-function nelisp-buffer-local--release "nelisp-runtime")
+(declare-function nelisp-buffer-local--note "nelisp-runtime")
+(declare-function nelisp-buffer-local--new-cell "nelisp-runtime")
+(declare-function nelisp--record-set "nelisp-runtime")
+(declare-function nelisp--make-record "nelisp-runtime")
+(declare-function nelisp--fast-hash-put "nelisp-runtime")
+(declare-function nelisp-env--make-symbol-entry "nelisp-runtime")
+(declare-function nelisp--fast-hash-get "nelisp-runtime")
+(declare-function nelisp--record-ref "nelisp-runtime")
+(declare-function nelisp-native-load--symbol-addr "nelisp-runtime")
+
 (defvar nelisp-buffer-local--mirror nil)
 (defvar nelisp-buffer-local--serial 0)
 (defvar nelisp-buffer-local--root-api-indices nil

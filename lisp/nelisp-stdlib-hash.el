@@ -37,6 +37,13 @@
 
 ;;;; --- equality test dispatch -------------------------------------------
 
+(declare-function nelisp--signal-wrong-type "nelisp-runtime")
+(declare-function nl-jit-call-out-2 "nelisp-runtime")
+(declare-function nelisp--record-set "nelisp-runtime")
+(declare-function nelisp--record-ref "nelisp-runtime")
+(declare-function nelisp--record-type "nelisp-runtime")
+(declare-function nelisp--make-record "nelisp-runtime")
+
 (defconst nelisp--hash-default-size 64
   "Default bucket count for generic NeLisp hash tables.")
 
@@ -71,7 +78,7 @@
    ((numberp key) (logand key nelisp--hash-mask))
    (t (logand key nelisp--hash-mask))))
 
-(defun nelisp--hash-key (key depth)
+(defun nelisp--hash-key (key _depth)
   "Return a bounded structural hash for KEY.
 DEPTH is currently used as a compatibility guard; cons keys hash their first
 pair with atom-level hashing because SMIE hot keys are usually (TOKEN . TOKEN)."

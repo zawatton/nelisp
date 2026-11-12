@@ -13,6 +13,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (defconst nelisp-runtime-image--magic ";;; nelisp-runtime-image source-v1\n")
 
 (defconst nelisp-runtime-image--usage
@@ -32,6 +34,11 @@
 (declare-function nelisp-artifact--read-all-from-string
                   "nelisp-artifact" (source))
 (declare-function nelisp-eval "nelisp-eval" (form))
+;; Standalone-runtime primitives (no host definition).
+(declare-function rdf nil)
+(declare-function nelisp--syscall-read-file nil)
+(declare-function nl-write-file nil)
+(declare-function nelisp--read-all-from-string-impl nil)
 
 (defun nelisp-runtime-image--print-error (msg)
   (nelisp--write-stderr-line (concat "nelisp: " msg)))

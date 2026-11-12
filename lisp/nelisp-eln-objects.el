@@ -41,6 +41,13 @@
 (declare-function nelisp-eln-float-address "nelisp-eln-float" (owner))
 (declare-function nelisp-eln-float-word "nelisp-eln-float" (owner))
 (declare-function nelisp-eln-float-release "nelisp-eln-float" (owner))
+(declare-function nelisp-eln-bignum-retry-pending-cleanup "nelisp-eln-bignum" ())
+(declare-function nelisp-eln-float-retry-pending-cleanup "nelisp-eln-float" ())
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
+;; Defined (with values) further down; declared here for earlier readers.
+(defvar nelisp-eln-objects--constant-symbol-words)
+(defvar nelisp-eln-objects--admit-opaque-vectors)
 
 (define-error 'nelisp-eln-objects-error "Unsupported GNU cons graph")
 (define-error 'nelisp-eln-objects-unsupported
@@ -92,8 +99,8 @@ of observing a fabricated value or function.")
 (defconst nelisp-eln-objects--vector-tag 5)
 (defun nelisp-eln-objects--opaque-symbol-header-byte ()
   "Return the first byte of an opaque interned symbol view."
-  (logior (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
-          (lsh nelisp-eln-objects--symbol-nowrite-trapped-write 3)))
+  (logior (ash nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
+          (ash nelisp-eln-objects--symbol-nowrite-trapped-write 3)))
 (defvar nelisp-eln-objects--live-units nil
   "Handle-to-owner entries; this registry is the strong root for unit data.")
 (defvar nelisp-eln-objects--identity-records nil
@@ -972,7 +979,7 @@ plist; later cell changes make synchronization fail closed."
                              (nelisp-eln-objects--opaque-symbol-header-byte))
                             ((or registration-only
                                  (eq (intern-soft name) symbol))
-                             (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
+                             (ash nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
                             (t 0)))
                           (nelisp-eln-objects--write-word
                            address 8 (+ (aref name-record 2) 4))
@@ -1100,8 +1107,7 @@ variable state is then checked here (see
          (unique nil)
          (names nil)
          (plans nil)
-         (new-strings nil)
-         (new-symbols nil))
+         (new-strings nil))
     (unless (listp symbols)
       (signal 'nelisp-eln-objects-unsupported
               (list 'registration-symbol-list-required symbols)))
@@ -1123,7 +1129,7 @@ variable state is then checked here (see
     (setq new-strings
           (nelisp-eln-objects--add-strings unit names plans))
     (condition-case failure
-        (setq new-symbols (nelisp-eln-objects--add-symbols unit unique t))
+        (nelisp-eln-objects--add-symbols unit unique t)
       (error
        (nelisp-eln-objects--rollback-strings unit new-strings)
        (signal (car failure) (cdr failure))))
@@ -1339,7 +1345,7 @@ variable state is then checked here (see
                       (cond (opaque
                              (nelisp-eln-objects--opaque-symbol-header-byte))
                             (interned
-                             (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
+                             (ash nelisp-eln-objects--symbol-interned-in-initial-obarray 5))
                             (t 0)))
                    (= (nelisp-eln-objects--read-word address 8) name-word)
                    (= (nelisp-eln-objects--read-word address 16)

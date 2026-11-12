@@ -20,7 +20,7 @@
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function nelisp-eln-registration-metadata-type-word
-  "nelisp-eln-registration-metadata" (token))
+  "nelisp-eln-registration-metadata" (token &optional index))
 (declare-function nelisp-eln-registration-metadata-decode
   "nelisp-eln-registration-metadata" (token word))
 
@@ -159,7 +159,8 @@ pending-cleanup list into the whole-process S7.7 consistency snapshot.
 This function only reads existing state; it never mutates it.
 
   :live-units        count of `nelisp-eln-registration-objects--live-units'
-  :pending-cleanups   count of `nelisp-eln-registration-objects--pending-cleanups'
+  :pending-cleanups   count of
+                      `nelisp-eln-registration-objects--pending-cleanups'
   :inconsistencies    list of plists describing any structural problem found"
   (let (problems)
     (dolist (unit nelisp-eln-registration-objects--live-units)
@@ -279,12 +280,12 @@ The returned plist contains its GNU :word and the canonical NeLisp
          (handle (aref unit 1))
          (objects (aref unit 2))
          (capability (nelisp-eln-system-loader-function-capability handle c-name))
-         (_key (append (list capability name c-name intspec command-modes
+         (key (append (list capability name c-name intspec command-modes
                              doc-index (unless metadata-token type) arity)
                        (and min-arity (list min-arity))))
          (cached (cl-find-if
                   (lambda (entry)
-                    (and (equal _key (aref entry 5))
+                    (and (equal key (aref entry 5))
                          (eq metadata-token
                              (and (> (length entry) 6) (aref entry 6)))))
                   (aref activation 4)))
@@ -338,7 +339,7 @@ The returned plist contains its GNU :word and the canonical NeLisp
                   (setq word
                         (nelisp-eln-registration-objects--pointer-word address)
                         entry (vector word native memory symbol-owner
-                                      c-name-owner _key metadata-token)
+                                      c-name-owner key metadata-token)
                         new-entries (cons entry (aref activation 3))
                         new-cache (cons entry (aref activation 4))
                         result (list :word word :callable native :owner unit))

@@ -63,6 +63,26 @@
 
 (require 'cl-lib)
 
+;; Compile-time-only declarations for sibling writers loaded on demand.
+(defvar nelisp-pe--section-alignment)
+(defvar nelisp-pe--machine-arm64)
+(declare-function nelisp-mach-o-write-executable "nelisp-mach-o-write"
+                  (file-path sections))
+(declare-function nelisp-mach-o-exe-layout "nelisp-mach-o-write"
+                  (text-size data-size bss-size &optional machine))
+(declare-function nelisp-native-pe-symbols-append "nelisp-native-pe-symbols"
+                  (path symtab))
+(declare-function nelisp-pe-write-exe-binary "nelisp-pe-write"
+                  (file-path spec))
+(declare-function nelisp-pe--build-idata "nelisp-pe-write"
+                  (idata-rva imports))
+(declare-function nelisp-pe--normalize-imports "nelisp-pe-write" (imports))
+(declare-function nelisp-pe--buffer-bytes "nelisp-pe-write" (cbuf))
+(declare-function nelisp-pe--write-bytes "nelisp-pe-write" (cbuf bytes))
+(declare-function nelisp-pe--write-le32 "nelisp-pe-write" (cbuf v))
+(declare-function nelisp-pe--make-buffer "nelisp-pe-write" ())
+(declare-function nelisp-pe--align-up "nelisp-pe-write" (n align))
+
 (define-error 'nelisp-link-error "nelisp static linker error")
 (define-error 'nelisp-link--unresolved-symbol
   "nelisp static linker: unresolved symbol" 'nelisp-link-error)
@@ -197,7 +217,7 @@ reporting)."
 (defun nelisp-link--vec->ubstring (vec)
   "Convert byte VEC into a unibyte-string (= ELF writer input).
 Uses small `unibyte-string' chunks because standalone NeLisp still
-mis-handles large-arity `(apply #'unibyte-string ...)' calls."
+mis-handles large-arity `apply' calls on `unibyte-string'."
   (let ((n (length vec))
         (i 0)
         (chunks nil))
@@ -848,7 +868,8 @@ deterministic order (= sorted by name)."
 
 (defun nelisp-link--check-hot-alignment (units combined layout &optional symtab machine)
   "Signal `nelisp-link-error' unless hot entries land 64-aligned absolutely.
-UNITS are the linked units (units without text are skipped); COMBINED and LAYOUT are the combined sections and section VA layout of a link.
+UNITS are the linked units (units without text are skipped); COMBINED
+and LAYOUT are the combined sections and section VA layout of a link.
 Every non-empty x86-64 text unit must start on a multiple of
 `nelisp-link-x86-text-alignment' (the compiler aligns :entry 64 relative to its
 unit start), and each of `nelisp-link-hot-entry-symbols' found in SYMTAB must

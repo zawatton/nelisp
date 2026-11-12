@@ -13,6 +13,16 @@
 
 (require 'cl-lib)
 (require 'nelisp-bytecode-native-rooted-cfg-data)
+
+(declare-function nelisp-native-funcall-v2-hash "nelisp-native-funcall-v2" ())
+(declare-function nelisp-native-funcall-v2-descriptor "nelisp-native-funcall-v2" ())
+(declare-function nelisp-native-arithmetic-v2-runtime-imports "nelisp-native-arithmetic-v2" ())
+(declare-function nelisp-native-frame-v2-hash "nelisp-native-frame-v2" ())
+(declare-function nelisp-native-frame-v2-descriptor "nelisp-native-frame-v2" ())
+(declare-function nelisp-native-optimization-guard-v1-source "nelisp-native-optimization-guard-v1" (mode))
+(declare-function nelisp-bytecode-native-rooted-cfg-plan-guard-context-p "nelisp-bytecode-native-rooted-cfg-plan" (plan))
+(declare-function nelisp-bytecode-native-rooted-cfg--canonical-input-p "nelisp-bytecode-native-rooted-cfg-plan" (input))
+(declare-function nelisp-bytecode-compiler-input--snapshot "nelisp-bytecode-compiler-input" (value depth))
 ;; Optimizer dependencies are loaded only when their public API is called.
 (autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
 (autoload 'nelisp-bytecode-compiler-input-dialect "nelisp-bytecode-compiler-input")

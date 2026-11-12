@@ -8,6 +8,22 @@
 (require 'nelisp-native-load)
 (require 'nelisp-native-compiler-startup-evidence)
 
+(declare-function nelisp-native-rooted-startup-evidence--data-bytes nil (value))
+(declare-function nelisp-native-rooted-startup-evidence--data-hash nil (value))
+(declare-function nelisp-native-rooted-startup-evidence--context-equal-p nil
+                  (left right))
+(declare-function nelisp-native-rooted-startup-evidence--json nil (path limit))
+(declare-function nelisp-native-rooted-startup-evidence--relocation-symbol nil
+                  (unit relocation))
+(declare-function nelisp-native-rooted-startup-evidence--forms nil (path))
+(declare-function nelisp-native-rooted-startup-evidence--source nil
+                  (path expected-hash))
+(declare-function nelisp-native-rooted-startup-evidence--numeric-union-p nil
+                  (closure roots binding))
+(declare-function nelisp-native-rooted-startup-evidence-render nil
+                  (capture closure-path closure-sha256 template layout
+                           &optional selection reviewed-binding))
+
 (let ((original-owners nil) (original-checker nil)
       (lookup (symbol-function 'symbol-function))
       (head (symbol-function 'car)) (tail (symbol-function 'cdr))

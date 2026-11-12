@@ -14,7 +14,7 @@
 (require 'nelisp-eln-abi)
 (require 'nl-ffi-memory)
 
-(declare-function ptr-call "ext:nelisp-runtime" (fn a b c d e f g))
+(declare-function ptr-call "ext:nelisp-runtime" (fn a b c d e f))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-read-u32 "ext:nelisp-runtime" (ptr offset))
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))

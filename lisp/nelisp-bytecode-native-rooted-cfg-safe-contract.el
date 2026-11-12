@@ -12,6 +12,9 @@
 ;;; Code:
 
 (require 'cl-lib)
+
+(declare-function nelisp-native-funcall-v2-hash "nelisp-native-funcall-v2" ())
+(declare-function nelisp-native-funcall-v2-descriptor "nelisp-native-funcall-v2" ())
 ;; Optimizer dependencies are loaded only when their public API is called.
 (autoload 'nelisp-bytecode-compiler-input-build "nelisp-bytecode-compiler-input")
 (autoload 'nelisp-bytecode-compiler-input-dialect "nelisp-bytecode-compiler-input")

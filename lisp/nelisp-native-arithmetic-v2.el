@@ -1,5 +1,15 @@
 ;;; nelisp-native-arithmetic-v2.el --- Rooted builtin numeric adapter -*- lexical-binding: t; -*-
 (require 'cl-lib)
+
+(declare-function nelisp-native-arithmetic-v2--copy-node nil
+                  (item ancestors depth budget))
+(declare-function nelisp-native-arithmetic-v2--snapshot nil (value))
+(declare-function nelisp-native-arithmetic-v2-source nil ())
+(declare-function nelisp-native-arithmetic-v2-direct-source nil ())
+(declare-function nelisp-native-arithmetic-v2-plus-body nil ())
+(declare-function nelisp-native-arithmetic-v2-descriptor nil ())
+(declare-function nelisp-native-arithmetic-v2-runtime-imports nil ())
+(declare-function nelisp-native-arithmetic-v2-direct-runtime-imports nil ())
 (defconst nelisp-native-arithmetic-v2--plus-body
   '(let* ((f (wf_any_float_arith args)))
      (if (= f 2)
