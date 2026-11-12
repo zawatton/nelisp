@@ -216,7 +216,7 @@ This channel has no child pid or externally usable OS descriptor."
       (when (nelisp-process-buffer-p process) (aset process 3 buffer))
       (process-put process :buffer buffer)
       (process-put process :output-marker nil)
-      (ignore (process-mark process))
+      (process-mark process)
       buffer))
   (defun get-buffer-process (buffer)
     "Return the live buffer channel or native subprocess owning BUFFER."
