@@ -103,7 +103,8 @@
           0)
         (dealloc-bytes result-address 8 8)
         status)))
-  "AOT bounded alias-chain resolver; status 0=resolved, 1=invalid, 2=cycle/hop limit.")
+  "AOT bounded alias-chain resolver.
+Status 0=resolved, 1=invalid, 2=cycle/hop limit.")
 
 (defconst nelisp-cc-mirror-alias-resolve-source
   nelisp-cc-mirror-alias-resolve--source

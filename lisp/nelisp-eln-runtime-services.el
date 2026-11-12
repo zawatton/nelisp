@@ -540,10 +540,10 @@ shared, not copied, and may be any object."
 ;; S6.11 (`byte-compile-make-closure'): the fixed and MANY services its body
 ;; and its three native lambdas call.  Each is NeLisp's own primitive, called
 ;; the way the byte-code interpreter calls it.
-(defun nelisp-eln-runtime-services-fintern (string obarray)
+(defun nelisp-eln-runtime-services-fintern (string ob)
   "NeLisp equivalent of GNU `Fintern' (src/lread.c): intern STRING in
-OBARRAY (nil selects the standard obarray)."
-  (intern string obarray))
+OB (nil selects the standard obarray)."
+  (intern string ob))
 
 (defun nelisp-eln-runtime-services-fmapcar (function sequence)
   "NeLisp equivalent of GNU `Fmapcar' (src/fns.c): the list of FUNCTION

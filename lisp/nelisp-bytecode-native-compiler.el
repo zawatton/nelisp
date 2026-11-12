@@ -18,6 +18,10 @@
 (require 'nelisp-bytecode-native-rooted-branch)
 (require 'nelisp-bytecode-native-rooted-branch-join)
 
+(declare-function nelisp-bytecode-native-rooted-stack-plan "nelisp-bytecode-native-rooted-stack" (input))
+(declare-function nelisp-bytecode-native-rooted-stack-build "nelisp-bytecode-native-rooted-stack" (input artifact-path))
+(declare-function nelisp-bytecode-native-rooted-cfg-native-build-shared-v2 "nelisp-bytecode-native-rooted-cfg-native" (input artifact-path &optional guard-mode))
+
 (defun nelisp-bytecode-native-compiler-unary-chain-operations (input)
   "Return INPUT's verified CAR/CDR chain operations, or nil.
 
@@ -493,7 +497,7 @@ verification, argument layout, capture metadata and effects remain mandatory."
                  instructions))))))
 
 (defun nelisp-bytecode-native-compiler--build-from-input
-    (function artifact-path entry-name input)
+    (_function artifact-path entry-name input)
   "Compile materialized byte-code FUNCTION to ARTIFACT-PATH.
 
 ENTRY-NAME is the native entry symbol. This bounded frontend accepts required
