@@ -1,5 +1,7 @@
 ;;; nelisp-bytecode-native-rooted-branch-call.el --- checked branch caller -*- lexical-binding: t; -*-
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-rooted-branch)
 

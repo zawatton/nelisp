@@ -37,6 +37,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 ;; ---------------------------------------------------------------------------
 ;; 1. noninteractive — always t in batch mode.
 ;; ---------------------------------------------------------------------------

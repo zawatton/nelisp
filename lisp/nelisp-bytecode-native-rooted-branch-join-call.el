@@ -1,5 +1,7 @@
 ;;; nelisp-bytecode-native-rooted-branch-join-call.el --- checked joined call -*- lexical-binding: t; -*-
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 (require 'nelisp-native-load)
 (require 'nelisp-bytecode-native-rooted-branch-join)

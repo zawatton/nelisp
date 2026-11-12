@@ -13,6 +13,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (defconst nelisp-runtime-image--magic ";;; nelisp-runtime-image source-v1\n")
 
 (defconst nelisp-runtime-image--usage

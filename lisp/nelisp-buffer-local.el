@@ -2,6 +2,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 ;; Explicit local cells use the same mirror and dynamic frames as ordinary
 ;; variables. This does not qualify automatic-local creation or watcher hooks.
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (defvar nelisp-buffer-local--mirror nil)
 (defvar nelisp-buffer-local--serial 0)
 (defvar nelisp-buffer-local--root-api-indices nil

@@ -9,6 +9,8 @@
 ;; process never adopts a changed runtime or compiler.
 
 ;;; Code:
+
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
 (require 'cl-lib)
 (require 'nelisp-native-load)
 (require 'nelisp-native-poll)
