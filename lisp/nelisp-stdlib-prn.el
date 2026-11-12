@@ -1,4 +1,4 @@
-;;; nelisp-stdlib-prn.el --- elisp Sexp printer / serializer  -*- lexical-binding: t; -*-
+;;; nelisp-stdlib-prn.el --- elisp Sexp printer / serializer  -*- lexical-binding: t; byte-compile-warnings: (not redefine); -*-
 
 ;; Phase 7 Stage 7.1.2 (2026-05-07, Doc 64).
 ;;
@@ -25,6 +25,17 @@
 ;; the prior Rust impl.  Cycle-safe printing is Stage 7.1.5 follow-up.
 
 ;; ---- core dispatcher ----
+
+;; Compile-time hints for runtime-provided names (no-ops when evaluated).
+(declare-function nelisp--emit-to-stream "ext:nelisp-runtime")
+(declare-function nelisp--record-length "ext:nelisp-runtime")
+(declare-function nelisp--record-ref "ext:nelisp-runtime")
+(declare-function nelisp--record-type "ext:nelisp-runtime")
+(declare-function nelisp--write-stdout-bytes "ext:nelisp-runtime")
+(declare-function nelisp-buffer-name "ext:nelisp-runtime")
+(declare-function nelisp-overlay-buffer "ext:nelisp-runtime")
+(declare-function nelisp-overlay-end "ext:nelisp-runtime")
+(declare-function nelisp-overlay-start "ext:nelisp-runtime")
 
 (defun nelisp--prn-chunks-add (state chunk)
   "Append CHUNK to STATE without reversing the accumulated chunk list."
