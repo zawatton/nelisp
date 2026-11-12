@@ -44,11 +44,37 @@ cmd: bash "$SKK_IME_ROOT/windows/native/test/host-wine-e2e.sh"
 #+REQUIRES: SKK_IME_ROOT
 cmd: bash "$SKK_IME_ROOT/windows/native/test/host-mock-e2e.sh"
 
+** S3c.1 E2E - under wine: native shim registers (COM class, NativeIME values, TSF profile, 6 categories) and unregisters cleanly
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-reg-e2e.sh"
+
+** S3d.1 E2E - under wine via the DirectThreadMgr proxy: native shim Activate/Deactivate, core loader with ABI checks, key forwarding match the golden
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-activate-e2e.sh"
+
+** S3e.1 E2E - under wine: settings parsing, registry watcher thread and published state match C++ semantics
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/settings-e2e.sh"
+
+** S3g.1 E2E - under wine: native RealtimeFrontend traces are byte-identical to the C++ oracle
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/realtime-e2e.sh"
+
+** S3h.1 E2E - under wine: native shim loads the native core; activation, open/close and key claim match the golden
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/core-e2e.sh"
+
+** S3f.1 E2E - under wine: native engine client talks TLV/text to a stub host, with timeout, RESET-after-failure and spawn throttle
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/engine-client-e2e.sh"
+
 ** S3.1 E2E - under wine msctf: ActivateLanguageProfile reaches the TIP's Activate and AdviseKeyEventSink succeeds
+#+NOTE: wine's ThreadMgr rejects AdviseKeyEventSink for the TIP's client id (E_INVALIDARG); real msctf activation is covered by S3.4 on Windows
 pending
 
 ** S3.2 E2E - under wine: OnKeyDown called on the sink (as tsf_host.cpp does) reaches the TIP's handler
-pending
+#+REQUIRES: SKK_IME_ROOT
+cmd: bash "$SKK_IME_ROOT/windows/native/test/shim-activate-e2e.sh"
 
 ** S3.3 Composition / edit sessions, candidate window, language bar, display attributes, settings match the C++ shim feature list
 #+NOTE: feature list taken from windows/src/text_service.cpp; real key routing needs real Windows
@@ -61,7 +87,9 @@ pending
 * S4 Engine communication
 
 ** S4.1 Engine replies in a binary TLV variant (text protocol kept) with tests in nelisp-skk-ime
-pending
+#+REQUIRES: SKK_IME_ROOT
+#+NOTE: host wiring (windows/host/main.cpp) is unbuilt until Windows CI
+cmd: bash "$SKK_IME_ROOT/windows/native/test/tlv-e2e.sh"
 
 ** S4.2 E2E - a key event is forwarded over the named pipe to an engine stub and the TLV reply is applied
 pending
