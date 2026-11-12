@@ -1,0 +1,33 @@
+#+TITLE: lisp/ byte-compile warning cleanup (2026-11-12)
+# Plan: Fable analysis (scratchpad byte-compile-plan.md).  No baseline raise;
+# the per-file baseline (tools/nelisp-lisp-compile-baseline.txt) may only go down.
+
+* S1 Real defects (B0)
+
+** S1.1 nelisp-elf-write.el: nelisp-elf--build-rel-* macros defined before first use; exec-direct binding warning gone
+cmd: (ulimit -v 8388608; timeout 600 emacs --batch -Q -L lisp -L src -f batch-byte-compile lisp/nelisp-elf-write.el </dev/null 2>&1 | grep -E 'build-rel-|exec-direct' | grep -qE 'Warning|Error' && exit 1; rm -f lisp/nelisp-elf-write.elc; exit 0)
+
+** S1.2 nelisp-eln-raw-call.el ptr-call arity, empty unwind-protect / when, possibly-undefined runtime function resolved with tests
+pending
+
+* S2 Shared runtime-primitive declarations (B1)
+
+** S2.1 lisp/nelisp-runtime-prims-decl.el declares the runtime primitives and is used by the files that call them
+cmd: test -f lisp/nelisp-runtime-prims-decl.el
+
+* S3 Per-file cleanup (B2-B7)
+
+** S3.1 every lisp/*.el compiles at or below its baseline ceiling (gate green)
+cmd: make -s lisp-byte-compile
+
+* S4 Gate structure (B8)
+
+** S4.1 lisp-byte-compile split into a zero-ceiling bugs gate and a ceilinged style gate
+pending
+
+** S4.2 CI records every gate result and fails at the end, so an early red cannot mask later steps
+pending
+
+** S4.3 E2E - CI smoke ubuntu lisp-byte-compile step green
+#+NOTE: needs CI
+pending
