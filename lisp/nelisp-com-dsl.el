@@ -188,6 +188,7 @@ abs64 relocation so the table survives a rebase.  Always emitted in `data'."
     (IID_IEnumTfDisplayAttributeInfo "{7cef04d7-cb75-4e80-a7ab-5f5bc7d332de}")
     (IID_ITfFunctionProvider "{101d6610-0990-11d3-8df0-00105a2799b5}")
     (IID_ITfFunction "{db593490-098f-11d3-8df0-00105a2799b5}")
+    (IID_ITfFnConfigure "{88f567c6-1757-49f8-a1b2-89234c1eeff9}")
     (IID_ITfCompartmentMgr "{7dcf57ac-18ad-438b-824d-979bffb74b7c}")
     (IID_ITfCompartment "{bb08f7a9-607a-4384-8623-056892b64371}")
     (IID_ITfCompartmentEventSink "{743abd5f-f26d-48df-8cc5-238492419b64}")
@@ -247,12 +248,36 @@ Each entry is (NAME GUID-STRING).  See `nelisp-com-msctf-guids-unverified'.")
 Each blob is named NAME, so (data-addr NAME) is the IID pointer."
   (cl-loop for (name guid) in entries collect (nelisp-com-guid-blob name guid)))
 
-(defun nelisp-com-msctf-blobs (&optional names)
-  "Return GUID blobs for NAMES (default: every entry of the msctf table)."
-  (nelisp-com-iid-table
-   (if names
-       (mapcar (lambda (n) (list n (nelisp-com-msctf-guid n))) names)
-     nelisp-com-msctf-guids)))
+(defun nelisp-com-dedupe-blobs (forms)
+  "Return FORMS without repeated `data-blob' definitions.
+A later `data-blob' whose name was already defined in FORMS is dropped
+when its definition is `equal' to the first one; if the contents differ
+the function signals an error, since the unit would otherwise silently
+lose one of two different blobs.  Other forms are kept in order."
+  (let ((seen (make-hash-table :test 'eq)) out)
+    (dolist (f forms)
+      (if (and (eq (car-safe f) 'data-blob) (symbolp (nth 1 f)))
+          (let ((prev (gethash (nth 1 f) seen 'none)))
+            (cond ((eq prev 'none) (puthash (nth 1 f) f seen) (push f out))
+                  ((equal prev f))
+                  (t (error "Conflicting data-blob definitions for %S" (nth 1 f)))))
+        (push f out)))
+    (nreverse out)))
+
+(cl-defun nelisp-com-msctf-blobs (&optional names &key exclude)
+  "Return GUID blobs for NAMES (default: every entry of the msctf table).
+Repeated names yield one blob.  Names in EXCLUDE (blobs already emitted
+by another call) are skipped, so overlapping IID sets can be requested by
+several callers of the same unit; `nelisp-com-dedupe-blobs' removes the
+remaining duplicates after the lists are appended."
+  (let ((seen (copy-sequence exclude)) entries)
+    (dolist (e (if names
+                   (mapcar (lambda (n) (list n (nelisp-com-msctf-guid n))) names)
+                 nelisp-com-msctf-guids))
+      (unless (memq (car e) seen)
+        (push (car e) seen)
+        (push e entries)))
+    (nelisp-com-iid-table (nreverse entries))))
 
 ;;;; Structs with Win64 C layout
 
@@ -638,6 +663,92 @@ create/lock, CLASS_iid_fac, CLASS_locks (server lock count)."
      `(defun ,(funcall s "f_lock") (this lock)
         (seq (atomic-fetch-add (data-addr ,locks) (if (= lock 0) -1 1)) 0)))))
 
+;;;; Registry helpers
+
+(defconst nelisp-com-registry-imports
+  '(("advapi32.dll" "RegOpenKeyExW" "RegCreateKeyExW" "RegSetValueExW"
+     "RegCloseKey" "RegDeleteTreeW"))
+  "Imports needed by the `nelisp-com-with-hkey' and `nelisp-com-reg-*' forms.")
+
+(defun nelisp-com-registry-blobs ()
+  "Return the scratch blobs used by the registry helper forms.
+`com_rk_hkey' receives the key handle of `nelisp-com-with-hkey' and
+`com_rk_dword' holds the data of `nelisp-com-reg-set-dword'.  They are
+process-global scratch slots: the helpers read them back immediately,
+but concurrent callers on several threads need their own :slot."
+  (list (nelisp-com-zero-blob 'com_rk_hkey 8)
+        (nelisp-com-zero-blob 'com_rk_dword 8)))
+
+(defun nelisp-com-with-hkey (spec &rest body)
+  "Return an AOT form that opens a registry key, runs BODY and closes it.
+SPEC is (VAR ROOT SUBKEY [:mode create|open] [:access N] [:slot BLOB]).
+ROOT is an HKEY form (`nelisp-com-hkey-current-user', ...), SUBKEY a form
+yielding a wide-string pointer, e.g. (data-addr BLOB).  Inside BODY, VAR
+is the open HKEY.  The value of the whole form is the Win32 error when the
+key cannot be opened (BODY is skipped), else the value of the last BODY
+form.  RegCloseKey runs after BODY on every path that opened the key.
+:mode `create' (default) uses RegCreateKeyExW, `open' RegOpenKeyExW;
+:access defaults to 131078 (KEY_WRITE); :slot names a zeroed 8-byte blob
+\(default `com_rk_hkey', see `nelisp-com-registry-blobs')."
+  (pcase-let* ((`(,var ,root ,subkey . ,opts) spec)
+               (mode (or (plist-get opts :mode) 'create))
+               (access (or (plist-get opts :access) 131078))
+               (slot (or (plist-get opts :slot) 'com_rk_hkey))
+               (hr (intern (format "%s__hr" var)))
+               (res (intern (format "%s__res" var))))
+    (unless (symbolp var) (error "nelisp-com-with-hkey: bad variable %S" var))
+    `(let ((,hr ,(pcase mode
+                   ('create `(extern-call RegCreateKeyExW ,root ,subkey 0 0 0
+                                          ,access 0 (data-addr ,slot) 0))
+                   ('open `(extern-call RegOpenKeyExW ,root ,subkey 0 ,access
+                                        (data-addr ,slot)))
+                   (_ (error "nelisp-com-with-hkey: unknown :mode %S" mode)))))
+       (if (/= ,hr 0) ,hr
+         (let ((,var (ptr-read-u64 (data-addr ,slot) 0)))
+           (let ((,res (seq ,@(or body '(0)))))
+             (seq (extern-call RegCloseKey ,var) ,res)))))))
+
+(defun nelisp-com--name-form (name)
+  "Return the pointer form for a registry value NAME (nil = default value)."
+  (cond ((null name) 0)
+        ((symbolp name) `(data-addr ,name))
+        (t name)))
+
+(defun nelisp-com-reg-set-sz (hkey name data bytes)
+  "Return a RegSetValueExW REG_SZ form: HKEY, NAME ptr form or nil (default
+value), DATA pointer form, BYTES form (UTF-16 size including the NUL)."
+  `(extern-call RegSetValueExW ,hkey ,(nelisp-com--name-form name) 0 1 ,data ,bytes))
+
+(defun nelisp-com-reg-set-sz-literal (hkey name blob string)
+  "Return a form setting REG_SZ from the wide literal BLOB holding STRING.
+The byte count is exactly the UTF-16 size of STRING plus its terminator.
+NAME is a pointer form, a blob symbol (its address is used) or nil."
+  (nelisp-com-reg-set-sz hkey name
+                         `(data-addr ,blob)
+                         (length (nelisp-com-wstr string))))
+
+(defun nelisp-com-reg-set-sz-wbuf (hkey name w)
+  "Return a form setting REG_SZ from the wbuf form W (a variable).
+The size is 2 * (wbuf_len + 1) bytes.  Evaluates to ERROR_INVALID_PARAMETER
+\(87) for an invalid wbuf.  The unit must contain the wbuf library."
+  (unless (symbolp w) (error "nelisp-com-reg-set-sz-wbuf: W must be a variable"))
+  `(if (= (wbuf_valid ,w) 0) 87
+     ,(nelisp-com-reg-set-sz hkey name
+                             `(wbuf_ptr ,w) `(* 2 (+ (wbuf_len ,w) 1)))))
+
+(defun nelisp-com-reg-set-dword (hkey name value &optional slot)
+  "Return a form setting a REG_DWORD named NAME to the form VALUE.
+SLOT names a zeroed blob of at least 4 bytes (default `com_rk_dword')."
+  (let ((slot (or slot 'com_rk_dword)))
+    `(seq (ptr-write-u32 (data-addr ,slot) 0 ,value)
+          (extern-call RegSetValueExW ,hkey
+                       ,(nelisp-com--name-form name)
+                       0 4 (data-addr ,slot) 4))))
+
+(defun nelisp-com-reg-delete-tree (hkey subkey)
+  "Return a RegDeleteTreeW form deleting SUBKEY (pointer form) below HKEY."
+  `(extern-call RegDeleteTreeW ,hkey ,subkey))
+
 ;;;; DLL entry points
 
 (defun nelisp-com-default-hive ()
@@ -648,26 +759,50 @@ HKCU class registrations for CoCreateInstance, so wine tests build with
 NELISP_COM_HIVE=hkcr (HKEY_CLASSES_ROOT, which wine maps to HKLM)."
   (if (equal (getenv "NELISP_COM_HIVE") "hkcr") 'hkcr 'hkcu))
 
-(cl-defun nelisp-com-server-forms (classes &key hive)
+(defun nelisp-com-hive-root (hive)
+  "Return the AOT HKEY form for registration HIVE (`hkcu' or `hkcr')."
+  (pcase hive
+    ('hkcu nelisp-com-hkey-current-user)
+    ('hkcr nelisp-com-hkey-classes-root)
+    (_ (error "Unknown registration hive %S" hive))))
+
+(cl-defun nelisp-com-server-forms (classes &key hive register-forms
+                                           unregister-forms)
   "Return AOT forms for the four DLL exports serving CLASSES.
 CLASSES is a list of plists (:name SYM :clsid GUID :threading \"Apartment\")
 whose class and factory forms come from `nelisp-com-class-forms' and
 `nelisp-com-factory-forms'.  The module path is obtained with
-GetModuleHandleExW(FROM_ADDRESS|UNCHANGED_REFCOUNT) on DllRegisterServer.
+GetModuleHandleExW(FROM_ADDRESS|UNCHANGED_REFCOUNT) on DllRegisterServer
+and stored as the default value of each InprocServer32 key with its exact
+UTF-16 size (characters plus terminator).
 HIVE is `hkcu' or `hkcr' (default `nelisp-com-default-hive'): `hkcu'
 writes HKEY_CURRENT_USER\\Software\\Classes\\CLSID\\..., `hkcr' writes
 HKEY_CLASSES_ROOT\\CLSID\\....  DllUnregisterServer deletes the CLSID
-subtree in the same hive."
+subtree in the same hive.
+
+REGISTER-FORMS and UNREGISTER-FORMS are optional lists of AOT forms that
+extend registration, so IME code need not write its own Dll* exports.
+Each REGISTER-FORM runs in order after the CLSID keys are written and must
+evaluate to 0 on success; the first nonzero value (a Win32 error or an
+HRESULT) stops the sequence, rolls back (the UNREGISTER-FORMS and the
+CLSID deletes run, as in DllUnregisterServer) and becomes the result of
+DllRegisterServer.  UNREGISTER-FORMS run before the CLSID deletes in
+DllUnregisterServer, each regardless of earlier results (best effort,
+the export returns 0).  The forms may read the module path as
+\(data-addr com_path) (see also `com_pathbytes', its byte size including
+the terminator) and use `nelisp-com-with-hkey' and `nelisp-com-hive-root'.
+The imports of the helper forms must be added by the caller (see
+`nelisp-com-registry-imports').  Without both arguments the generated
+code has no hook machinery."
   (let* ((hive (or hive (nelisp-com-default-hive)))
-         (root (pcase hive
-                 ('hkcu nelisp-com-hkey-current-user)
-                 ('hkcr nelisp-com-hkey-classes-root)
-                 (_ (error "Unknown registration hive %S" hive))))
+         (root (nelisp-com-hive-root hive))
          (prefix (if (eq hive 'hkcu) "Software\\Classes\\" ""))
+         (hooks (or register-forms unregister-forms))
          forms)
     (push (nelisp-com-zero-blob 'com_hmod 8) forms)
     (push (nelisp-com-zero-blob 'com_hkey 8) forms)
     (push (nelisp-com-zero-blob 'com_path 1040) forms)
+    (push (nelisp-com-zero-blob 'com_pathbytes 8) forms)
     (push (nelisp-com-wstr-blob 'com_w_tm "ThreadingModel") forms)
     (cl-loop
      for c in classes for i from 0
@@ -712,52 +847,104 @@ subtree in the same hive."
                  0 1))
           forms)
     ;; Registers one class: key path blob address, threading value blob,
-    ;; value byte count.
+    ;; value byte count.  The default value is the module path, written
+    ;; with its exact size (com_pathbytes, set by DllRegisterServer).
     (push `(defun com_reg_class (key tmval tmbytes)
              (seq
               (extern-call RegCreateKeyExW ,root key
                            0 0 0 131078 0 (data-addr com_hkey) 0)
               (extern-call RegSetValueExW (ptr-read-u64 (data-addr com_hkey) 0)
-                           0 0 1 (data-addr com_path) 520)
+                           0 0 1 (data-addr com_path)
+                           (ptr-read-u64 (data-addr com_pathbytes) 0))
               (extern-call RegSetValueExW (ptr-read-u64 (data-addr com_hkey) 0)
                            (data-addr com_w_tm) 0 1 tmval tmbytes)
               (extern-call RegCloseKey (ptr-read-u64 (data-addr com_hkey) 0))
               0))
           forms)
-    (push `(defun DllRegisterServer ()
-             (seq
-              (extern-call GetModuleHandleExW 6 (addr-of DllRegisterServer)
-                           (data-addr com_hmod))
-              (extern-call GetModuleFileNameW
-                           (ptr-read-u64 (data-addr com_hmod) 0)
-                           (data-addr com_path) 520)
-              ,@(cl-loop for c in classes
-                         for name = (plist-get c :name)
-                         for tm = (or (plist-get c :threading) "Apartment")
-                         collect `(com_reg_class
-                                   (data-addr ,(nelisp-com--sym name "w_key"))
-                                   (data-addr ,(nelisp-com--sym name "w_tmval"))
-                                   ,(* 2 (1+ (length tm)))))
-              0))
-          forms)
-    (push `(defun DllUnregisterServer ()
-             (seq
-              ,@(cl-loop for c in classes
-                         for name = (plist-get c :name)
-                         collect `(extern-call
-                                   RegDeleteTreeW ,root
-                                   (data-addr ,(nelisp-com--sym name "w_root"))))
-              0))
-          forms)
+    (let ((class-deletes
+           (cl-loop for c in classes
+                    for name = (plist-get c :name)
+                    collect `(extern-call
+                              RegDeleteTreeW ,root
+                              (data-addr ,(nelisp-com--sym name "w_root")))))
+          (class-regs
+           (cl-loop for c in classes
+                    for name = (plist-get c :name)
+                    for tm = (or (plist-get c :threading) "Apartment")
+                    collect `(com_reg_class
+                              (data-addr ,(nelisp-com--sym name "w_key"))
+                              (data-addr ,(nelisp-com--sym name "w_tmval"))
+                              ,(* 2 (1+ (length tm)))))))
+      (when hooks
+        ;; Shared by DllUnregisterServer and the DllRegisterServer rollback.
+        (push `(defun com_unreg_all ()
+                 (seq ,@unregister-forms ,@class-deletes 0))
+              forms))
+      ;; The module path is stored NUL-terminated (clamped to the buffer) and
+      ;; its byte size, terminator included, is recorded for the registry.
+      (push `(defun DllRegisterServer ()
+               (seq
+                (extern-call GetModuleHandleExW 6 (addr-of DllRegisterServer)
+                             (data-addr com_hmod))
+                (let ((com_n (extern-call GetModuleFileNameW
+                                      (ptr-read-u64 (data-addr com_hmod) 0)
+                                      (data-addr com_path) 520)))
+                  (seq (if (> com_n 519) (setq com_n 519) 0)
+                       (ptr-write-u16 (data-addr com_path) (* 2 com_n) 0)
+                       (ptr-write-u64 (data-addr com_pathbytes) 0
+                                      (* 2 (+ com_n 1)))
+                       ,@class-regs
+                       ,(if register-forms
+                            `(let ((com_hr 0))
+                               (seq ,@(cl-loop
+                                       for f in register-forms
+                                       collect `(if (= com_hr 0)
+                                                    (setq com_hr ,f) 0))
+                                    (if (/= com_hr 0)
+                                        (seq (com_unreg_all) com_hr) 0)))
+                          0)))))
+            forms)
+      (push (if hooks
+                '(defun DllUnregisterServer () (com_unreg_all))
+              `(defun DllUnregisterServer ()
+                 (seq ,@class-deletes 0)))
+            forms))
     (nreverse forms)))
 
 ;;;; Build driver
 
+(defun nelisp-com-check-quoted-literals (forms)
+  "Signal an error when a top-level form in FORMS quotes a heap literal.
+The freestanding DLL/EXE subset has no allocator, so `(quote X)' with a
+cons, symbol, string or vector X would only fail at link time with an
+unresolved `nl_alloc_bytes'.  Quoted integers, nil and t are accepted and
+`data-blob' forms (plain data) are not inspected.  The error names the
+enclosing form and the quoted literal."
+  (dolist (top forms)
+    (let ((where (if (memq (car-safe top) '(defun defmacro))
+                     (format "(%s %s)" (car top) (nth 1 top))
+                   (format "%S" (car-safe top)))))
+      (cl-labels
+          ((walk (node)
+             (when (consp node)
+               (cond
+                ((eq (car node) 'data-blob))
+                ((and (eq (car node) 'quote) (consp (cdr node)))
+                 (let ((lit (cadr node)))
+                   (unless (or (null lit) (eq lit t) (integerp lit))
+                     (error "Quoted literal %S in %s is not supported in freestanding code (it needs the heap allocator `nl_alloc_bytes'); use data-blob and data-addr instead"
+                            node where))))
+                (t (while (consp node)
+                     (walk (car node))
+                     (setq node (cdr node))))))))
+        (walk top)))))
+
 (defun nelisp-com--unit (name forms)
   (require 'nelisp-aot-compiler)
   (require 'nelisp-static-linker)
+  (nelisp-com-check-quoted-literals forms)
   (nelisp-link-unit-from-aot
-   name (nelisp-aot-compile-to-link-unit `(seq ,@forms)
+   name (nelisp-aot-compile-to-link-unit `(seq ,@(nelisp-com-dedupe-blobs forms))
                                          :arch 'x86_64 :format 'coff)))
 
 (cl-defun nelisp-com-build-dll (path forms &key (exports nelisp-com-server-exports)

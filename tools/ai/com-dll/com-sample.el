@@ -20,6 +20,12 @@
 ;;   NELISP_COM_HIVE=hkcr          register under HKCR instead of the library
 ;;                                 default HKCU (wine ignores HKCU class
 ;;                                 registrations, so wine-e2e.sh sets this)
+;;   NELISP_COM_HOOKS=1|fail      server with custom registration hooks: an
+;;                                 extra key HookTest (REG_SZ, DWORD and the
+;;                                 module path) written by :register-forms and
+;;                                 deleted by :unregister-forms; "fail" adds a
+;;                                 last hook returning E_FAIL so registration must
+;;                                 fail and roll everything back
 ;;   NELISP_COM_FORCE_REBASE=1     positive control: client.exe reserves the
 ;;                                 preferred base but the DLL keeps .reloc,
 ;;                                 so the run must still pass (rebased load)
@@ -32,9 +38,44 @@
 (defconst nelisp-com-sample-clsid "{7a1c0de0-5f3a-4a6e-9d11-0123456789ab}")
 (defconst nelisp-com-sample-iid "{7a1c0de1-5f3a-4a6e-9d11-0123456789ab}")
 
+(defconst nelisp-com-sample-hook-key "NelispComHookTest")
+
+(defun nelisp-com-sample--hook-forms (hive mode)
+  "Return (BLOBS REGISTER-FORMS UNREGISTER-FORMS) for the hook sample.
+MODE is the string \"1\" or \"fail\"."
+  (let* ((root (nelisp-com-hive-root hive))
+         (prefix (if (eq hive 'hkcu) "Software\\Classes\\" "")))
+    (list
+     (append (nelisp-com-registry-blobs)
+             (list (nelisp-com-wstr-blob
+                    'hk_key (concat prefix nelisp-com-sample-hook-key))
+                   (nelisp-com-wstr-blob 'hk_name "Name")
+                   (nelisp-com-wstr-blob 'hk_val "hookval")
+                   (nelisp-com-wstr-blob 'hk_cnt "Count")))
+     `(,(nelisp-com-with-hkey
+         `(k ,root (data-addr hk_key))
+         `(let ((a ,(nelisp-com-reg-set-sz-literal 'k 'hk_name 'hk_val "hookval")))
+            (if (/= a 0) a
+              (let ((b ,(nelisp-com-reg-set-dword 'k 'hk_cnt 7)))
+                (if (/= b 0) b
+                  ,(nelisp-com-reg-set-sz
+                    'k nil '(data-addr com_path)
+                    '(ptr-read-u64 (data-addr com_pathbytes) 0)))))))
+       ,@(when (equal mode "fail") (list nelisp-com-e-fail)))
+     `(,(nelisp-com-reg-delete-tree root '(data-addr hk_key))))))
+
 (defun nelisp-com-sample-dll-forms (&optional hive)
   "Return the AOT forms of the sample server.
 HIVE defaults to `nelisp-com-default-hive' (HKCU unless NELISP_COM_HIVE=hkcr)."
+  (let* ((hive (or hive (nelisp-com-default-hive)))
+         (mode (getenv "NELISP_COM_HOOKS"))
+         (hooks (and mode (not (string-empty-p mode))
+                     (nelisp-com-sample--hook-forms hive mode))))
+    (append
+     (nth 0 hooks)
+     (nelisp-com-sample--dll-forms hive (nth 1 hooks) (nth 2 hooks)))))
+
+(defun nelisp-com-sample--dll-forms (hive register unregister)
   (append
    (nelisp-com-class-forms
     'o :interfaces `((:iid ,nelisp-com-sample-iid :methods (o_getvalue))))
@@ -42,7 +83,42 @@ HIVE defaults to `nelisp-com-default-hive' (HKCU unless NELISP_COM_HIVE=hkcr)."
    '((defun o_getvalue (this) 42))
    (nelisp-com-server-forms
     `((:name o :clsid ,nelisp-com-sample-clsid :threading "Both"))
-    :hive hive)))
+    :hive hive :register-forms register :unregister-forms unregister)))
+
+(defconst nelisp-com-sample-regsize-imports
+  '(("kernel32.dll" "ExitProcess")
+    ("advapi32.dll" "RegOpenKeyExW" "RegQueryValueExW" "RegCloseKey")))
+
+(defun nelisp-com-sample-regsize-forms (&optional hive)
+  "Return forms of regsize.exe: check the stored InprocServer32 default value.
+Exit 42 when the registry size equals 2 * (wcslen + 1), 50 when it does not,
+51 when the key or value cannot be read."
+  (let* ((hive (or hive (nelisp-com-default-hive)))
+         (prefix (if (eq hive 'hkcu) "Software\\Classes\\" "")))
+    `(,(nelisp-com-wstr-blob
+        'rs_key (concat prefix "CLSID\\" nelisp-com-sample-clsid "\\InprocServer32"))
+      (data-blob rs_hkey ,(make-list 8 0) data)
+      (data-blob rs_size ,(make-list 8 0) data)
+      (data-blob rs_buf ,(make-list 2080 0) data)
+      (defun _start ()
+        (if (/= (extern-call RegOpenKeyExW ,(nelisp-com-hive-root hive)
+                             (data-addr rs_key) 0 131097 (data-addr rs_hkey))
+                0)
+            (extern-call ExitProcess 51)
+          (seq
+           (ptr-write-u64 (data-addr rs_size) 0 2080)
+           (let ((rc (extern-call RegQueryValueExW
+                                  (ptr-read-u64 (data-addr rs_hkey) 0) 0 0 0
+                                  (data-addr rs_buf) (data-addr rs_size))))
+             (let ((n 0))
+               (seq (extern-call RegCloseKey (ptr-read-u64 (data-addr rs_hkey) 0))
+                    (if (/= rc 0) (extern-call ExitProcess 51)
+                      (seq (while (/= (ptr-read-u16 (data-addr rs_buf) (* 2 n)) 0)
+                             (setq n (+ n 1)))
+                           (extern-call ExitProcess
+                                        (if (= (ptr-read-u64 (data-addr rs_size) 0)
+                                               (* 2 (+ n 1)))
+                                            42 50)))))))))))))
 
 (defun nelisp-com-sample-client-forms (&optional bad-iid slot reserve-base)
   "Return client forms.
@@ -96,6 +172,9 @@ RESERVE-BASE is a form evaluating to an address to reserve first."
       (and (or no-reloc (equal (getenv "NELISP_COM_FORCE_REBASE") "1"))
            '(* 6 1073741824)))
      nelisp-com-sample-client-imports)
+    (nelisp-com-build-exe (expand-file-name "regsize.exe" dir)
+                          (nelisp-com-sample-regsize-forms)
+                          nelisp-com-sample-regsize-imports)
     (nelisp-com-build-exe (expand-file-name "client-badiid.exe" dir)
                           (nelisp-com-sample-client-forms t)
                           nelisp-com-sample-client-imports))

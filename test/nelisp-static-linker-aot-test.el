@@ -177,3 +177,27 @@
     (should-error (nelisp-link-unit-from-aot "a" raw) :type 'nelisp-link-error)))
 
 ;;; nelisp-static-linker-aot-test.el ends here
+
+(ert-deftest nelisp-link-aot/copy-value-long-list-default-depth ()
+  "Copying a long list must not recurse along its spine."
+  (let* ((max-lisp-eval-depth 1600)
+         (n 300000)
+         (list (cl-loop for i below n collect (format "s%d" i)))
+         (copy (nelisp-link--copy-aot-value list)))
+    (should (equal copy list))
+    (should-not (eq (car copy) (car list)))
+    ;; dotted tails, nested lists and vectors are preserved
+    (should (equal (nelisp-link--copy-aot-value '(1 (2 . 3) [4 (5)] . 6))
+                   '(1 (2 . 3) [4 (5)] . 6)))
+    (should (null (nelisp-link--copy-aot-value nil)))))
+
+(ert-deftest nelisp-link-aot/large-unit-default-depth ()
+  "A unit with a very long reloc list converts at the default eval depth."
+  (let* ((max-lisp-eval-depth 1600)
+         (raw (nelisp-link-aot-test--compile '(defun probe () (data-addr ext))))
+         (rel (car (plist-get raw :relocs)))
+         (big (cl-loop repeat 200000 collect (copy-sequence rel)))
+         (raw2 (plist-put (copy-sequence raw) :relocs big))
+         (unit (nelisp-link-unit-from-aot "big" raw2)))
+    (should (= (length (plist-get unit :relocs)) 200000))
+    (should (= (length (plist-get raw2 :relocs)) 200000))))
