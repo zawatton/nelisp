@@ -156,6 +156,10 @@ the one call that caused them."
   '(;; time, environment, randomness
     current-time float-time current-time-string format-time-string random
     getenv setenv emacs-version emacs-pid system-name user-login-name
+    ;; Answers how the HOST Emacs was built (native compilation), not a
+    ;; function of its arguments: a native-comp host and a CI host without
+    ;; it give different answers for the same call.
+    native-comp-available-p
     ;; `make-temp-name' is randomness by definition, and `make-temp-file'
     ;; is that plus a file.  Neither can agree across two processes.
     make-temp-name make-temp-file

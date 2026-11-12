@@ -914,7 +914,6 @@ mutex-unlock
 mutexp
 narrow-to-defun
 narrow-to-page
-native-comp-available-p
 native-comp-unit-file
 native-comp-unit-set-file
 native-compile-async
