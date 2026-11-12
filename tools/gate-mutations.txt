@@ -1286,7 +1286,13 @@ emacs-compat|lisp/nelisp-cc-alloc-dealloc.el|/^(provide 'nelisp-cc-alloc-dealloc
 # ceiling 7481548 (2% slack)." (the deflated ceiling, the row's visible
 # effect); restored -- byte-identical to the pre-mutation Makefile (`git
 # status` clean, `diff' empty).
-binary-size-ratchet|Makefile|s#ceiling=\$\$(( baseline + baseline \* slack / 100 ))#ceiling=\$\$(( baseline - baseline \* slack / 100 ))#|the ceiling arithmetic subtracts the slack instead of adding it, deflating the ceiling below the pinned baseline
+# 2026-11-13: the gate was split into a code (.text) budget and a payload
+# (total minus .text) budget, so the single `ceiling=' row above now targets
+# `code_ceiling' and a second row targets `payload_ceiling'.  Each is lethal
+# whenever its budget sits within 2% below its pinned baseline (the normal
+# case: the baseline is the last measurement).
+binary-size-ratchet|Makefile|s#code_ceiling=\$\$(( code_base + code_base \* slack / 100 ))#code_ceiling=\$\$(( code_base - code_base \* slack / 100 ))#|the code (.text) ceiling arithmetic subtracts the slack instead of adding it, deflating the code ceiling below the pinned baseline
+binary-size-ratchet|Makefile|s#payload_ceiling=\$\$(( payload_base + payload_base \* slack / 100 ))#payload_ceiling=\$\$(( payload_base - payload_base \* slack / 100 ))#|the payload ceiling arithmetic subtracts the slack instead of adding it, deflating the payload ceiling below the pinned baseline
 
 # standalone-reader-bignum-smoke: added this session (Doc 190 Phase C,
 # feat/bignum-bitwise): `ash`/`logand`/`logior`/`logxor`/`lognot` accept a

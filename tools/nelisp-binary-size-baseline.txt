@@ -703,5 +703,23 @@
 # refuse undefined ones, plus the 31.1 keyword `sort', element-wise
 # `value<' and the "0B" prefix.  The error-symbol table is most of it:
 # it is literal data the image carries whole.
-size 9490208
+# Split 2026-11-13 (user-approved, "pin at the current values"): the single
+# `size' ceiling became two budgets.  History of the old single ceiling:
+# 6,432,608 pinned 2026-08-22, raised in steps to 9,490,208 on 2026-09-21.
+# The f12 merge then grew target/nelisp from 9.49 MB to 44.5 MB, and the
+# commit "standalone build: embed shared command sources once" brought it
+# back to 21.5 MB (.text 12.59 MB, the rest embedded payload).  One number
+# could not tell code growth from embedded-data growth, so:
+#   code-size    = ELF `.text' bytes (`size -A target/nelisp').
+#   payload-size = total file bytes (wc -c) minus `.text': .rodata, .data,
+#                  embedded sources/images, symbols and section headers.
+#                  Total-minus-.text is used instead of .rodata+.data
+#                  because it is defined for any object format and leaves
+#                  no bytes unaccounted between sections.
+# Both measured on 2026-11-13 from a fresh `make standalone-reader' build
+# (unstripped, exactly what the gate weighs): total 21,512,264 = code
+# 12,588,302 + payload 8,923,962.  `slack-pct' applies to each budget.
+# Lower either number whenever the gate says it is safe to.
+code-size 12588302
+payload-size 8923962
 slack-pct 2

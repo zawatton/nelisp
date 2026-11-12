@@ -2512,6 +2512,15 @@ emacs-parity: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reade
 # now.  `$(NELISP_STANDALONE_TARGET)' alone already carries both an
 # environment-variable invocation and a command-line override (same
 # probe), so the redundant shell-side half is simply dropped here.
+# Two budgets, split 2026-11-13: `code' is the ELF `.text' size (`size -A'),
+# `payload' is everything else in the file (wc -c total minus .text:
+# .rodata/.data, embedded sources and images, symbols, section headers).
+# Total-minus-.text is used rather than .rodata+.data because it is
+# defined for any object format and cannot drop bytes between sections.
+# The baseline is pinned to linux-x86_64 ELF; other targets GATE-SKIP above.
+# Override BINARY_SIZE_BASELINE to point the gate at a temporary copy of
+# the baseline file (negative controls).
+BINARY_SIZE_BASELINE ?= tools/nelisp-binary-size-baseline.txt
 binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@target="$(NELISP_STANDALONE_TARGET)"; \
 	if [ -n "$$target" ] && [ "$$target" != "linux-x86_64" ]; then \
@@ -2531,22 +2540,44 @@ binary-size-ratchet: $(if $(wildcard target/nelisp target/nelisp.exe),,standalon
 	  echo "[binary-size-ratchet] SKIP: $$bin is stale ($$stale changed after it was linked)"; \
 	  exit 0; \
 	fi; \
-	baseline=$$(awk '$$1=="size"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
-	slack=$$(awk '$$1=="slack-pct"{print $$2}' tools/nelisp-binary-size-baseline.txt); \
-	if [ -z "$$baseline" ] || [ -z "$$slack" ]; then \
+	baseline_file="$(BINARY_SIZE_BASELINE)"; \
+	code_base=$$(awk '$$1=="code-size"{print $$2}' "$$baseline_file"); \
+	payload_base=$$(awk '$$1=="payload-size"{print $$2}' "$$baseline_file"); \
+	slack=$$(awk '$$1=="slack-pct"{print $$2}' "$$baseline_file"); \
+	if [ -z "$$code_base" ] || [ -z "$$payload_base" ] || [ -z "$$slack" ]; then \
 	  echo "GATE-COUNT checked=0 findings=1"; \
-	  echo "[binary-size-ratchet] FAIL: tools/nelisp-binary-size-baseline.txt missing 'size' or 'slack-pct'"; \
+	  echo "[binary-size-ratchet] FAIL: $$baseline_file missing 'code-size', 'payload-size' or 'slack-pct'"; \
 	  exit 1; \
 	fi; \
-	actual=$$(wc -c < "$$bin" | tr -d ' '); \
-	ceiling=$$(( baseline + baseline * slack / 100 )); \
-	if [ "$$actual" -le "$$ceiling" ]; then findings=0; else findings=1; fi; \
-	echo "GATE-COUNT checked=1 findings=$$findings"; \
+	total=$$(wc -c < "$$bin" | tr -d ' '); \
+	code=$$(size -A "$$bin" 2>/dev/null | awk '$$1==".text"{print $$2}'); \
+	if [ -z "$$code" ]; then \
+	  echo "GATE-COUNT checked=0 findings=1"; \
+	  echo "[binary-size-ratchet] FAIL: cannot read the .text size of $$bin (needs binutils 'size -A')"; \
+	  exit 1; \
+	fi; \
+	payload=$$(( total - code )); \
+	code_ceiling=$$(( code_base + code_base * slack / 100 )); \
+	payload_ceiling=$$(( payload_base + payload_base * slack / 100 )); \
+	findings=0; \
+	if [ "$$code" -gt "$$code_ceiling" ]; then findings=$$(( findings + 1 )); fi; \
+	if [ "$$payload" -gt "$$payload_ceiling" ]; then findings=$$(( findings + 1 )); fi; \
+	echo "GATE-COUNT checked=2 findings=$$findings"; \
+	echo "[binary-size-ratchet] code=$$code ceiling=$$code_ceiling (baseline $$code_base, slack $$slack%)"; \
+	echo "[binary-size-ratchet] payload=$$payload ceiling=$$payload_ceiling (baseline $$payload_base, slack $$slack%; total $$total)"; \
+	if [ "$$code" -gt "$$code_ceiling" ]; then \
+	  echo "[binary-size-ratchet] FAIL: code (.text) is $$code bytes, $$(( code - code_base )) over baseline $$code_base -- exceeds ceiling $$code_ceiling ($$slack% slack).  If this growth is real and explained, raise 'code-size' in $$baseline_file in the same commit."; \
+	elif [ "$$code" -lt "$$code_base" ]; then \
+	  echo "[binary-size-ratchet] code is $$(( code_base - code )) bytes below its baseline: safe to lower 'code-size' to $$code in $$baseline_file"; \
+	fi; \
+	if [ "$$payload" -gt "$$payload_ceiling" ]; then \
+	  echo "[binary-size-ratchet] FAIL: payload (total minus .text) is $$payload bytes, $$(( payload - payload_base )) over baseline $$payload_base -- exceeds ceiling $$payload_ceiling ($$slack% slack).  If this growth is real and explained, raise 'payload-size' in $$baseline_file in the same commit."; \
+	elif [ "$$payload" -lt "$$payload_base" ]; then \
+	  echo "[binary-size-ratchet] payload is $$(( payload_base - payload )) bytes below its baseline: safe to lower 'payload-size' to $$payload in $$baseline_file"; \
+	fi; \
 	if [ "$$findings" = 0 ]; then \
-	  echo "[binary-size-ratchet] PASS: $$bin is $$actual bytes (baseline $$baseline, ceiling $$ceiling, slack $$slack%)"; \
+	  echo "[binary-size-ratchet] PASS: $$bin is $$total bytes (code $$code, payload $$payload)"; \
 	else \
-	  over=$$(( actual - baseline )); \
-	  echo "[binary-size-ratchet] FAIL: $$bin is $$actual bytes, $$over over baseline $$baseline -- exceeds ceiling $$ceiling ($$slack% slack).  If this growth is real and explained, raise 'size' in tools/nelisp-binary-size-baseline.txt in the same commit."; \
 	  exit 1; \
 	fi
 
