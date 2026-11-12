@@ -952,7 +952,9 @@ jobs:
       - name: Mutation harness row budgets and timing report
         if: runner.os == 'Linux'
         shell: bash
-        run: python3 test/nelisp-gate-mutation-row-timeout-test.py
+        run: |
+          python3 test/nelisp-gate-mutation-row-timeout-test.py
+          python3 test/nelisp-gate-mutation-shard-test.py
 
       # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
       # standalone reader binary, which is where the defect lived.
@@ -1472,11 +1474,12 @@ jobs:
         run: |
           # The rows are independent -- each injects a defect, runs the
           # gate, and restores the file before the next begins -- so they
-          # split cleanly.  Shards are taken modulo, not as contiguous
-          # blocks: the slow rows (six rebuild the binary, six run a
-          # scoped ERT suite) are clustered in the table and contiguous
-          # blocks would pile them into one shard.  Measured: 3/2/3/4 of
-          # the twelve slow rows per shard.
+          # split cleanly.  Rows are assigned to shards longest-
+          # processing-time first from the committed per-row seconds in
+          # tools/gate-mutation-weights.txt (tools/gate-mutation-shard.awk);
+          # modulo left shard walls at 951-2313 s on run 43141614135.
+          # Refresh the weights with tools/gate-mutation-weights-update.py
+          # from the gate-reports-mutation-* artifacts.
           #
           # On the integration branch the full sweep runs; branches and
           # PRs get it narrowed to the rows their diff can affect, with

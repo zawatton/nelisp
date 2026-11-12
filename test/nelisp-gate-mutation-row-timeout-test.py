@@ -76,6 +76,7 @@ class Fixture(unittest.TestCase):
         shutil.copy2(HARNESS, root / "tools/nelisp-gate-mutation.sh")
         shutil.copy2(ROOT / "tools/nelisp-standalone-reader-build.sh",
                      root / "tools/nelisp-standalone-reader-build.sh")
+        shutil.copy2(ROOT / "tools/gate-mutation-shard.awk", root / "tools/gate-mutation-shard.awk")
         (root / "tools/gate-mutations.txt").write_text("\n".join(rows) + "\n")
         (root / "Makefile").write_text(MAKEFILE)
         for name in files or ["hang", "okred", "spawn", "skipbase", "green", "rb"]:
@@ -655,7 +656,15 @@ class ShardBudget(Fixture):
         result = self.run_harness()
         self.assertEqual(result.returncode, 0, self.out)
         self.assertEqual(self.sidecar()["selected_total"], 5)
-        self.assertEqual(self.sidecar()["assigned"], 2)              # NR % 2 == 0: rows 2 and 4
+        self.assertEqual(self.sidecar()["assigned"], 3)              # LPT, equal weights: ties go to the lowest bin, so shard 0 gets 3 of 5
+
+    def test_seconds_sidecar_has_every_row_under_its_weight_key(self):
+        self.build([row("okred", "lisp/okred.el"), row("green", "lisp/green.el"),
+                    row("okred", "lisp/okred.el")])
+        self.run_harness()
+        side = json.loads((self.root / "target/gate-mutation-rows/gate-mutation-seconds-0.json").read_text())
+        self.assertEqual(sorted(side["row_seconds"]),
+                         ["green|lisp/green.el|1", "okred|lisp/okred.el|1", "okred|lisp/okred.el|2"])
 
     def test_invalid_budget_is_rejected(self):
         for value in ["0", "abc", "-1", "1.5"]:
