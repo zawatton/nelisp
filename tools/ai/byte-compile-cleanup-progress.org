@@ -13,7 +13,7 @@ cmd: (ulimit -v 8388608; timeout 900 emacs --batch -Q -L lisp -L src -L scripts 
 * S2 Shared runtime-primitive declarations (B1)
 
 ** S2.1 lisp/nelisp-runtime-prims-decl.el declares the runtime primitives and is used by the files that call them
-cmd: test -f lisp/nelisp-runtime-prims-decl.el
+cmd: out=$(emacs --batch -Q -L lisp -L src -L scripts -f batch-byte-compile lisp/nelisp-native-raw-file.el 2>&1); rm -f lisp/nelisp-native-raw-file.elc; ! printf '%s\n' "$out" | grep -E "(ptr-read-bytes|ptr-write-u8|syscall-direct|nelisp--target-arch-code|nelisp--target-os-code).*is not known to be defined"
 
 * S3 Per-file cleanup (B2-B7)
 

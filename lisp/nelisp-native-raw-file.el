@@ -1,5 +1,7 @@
 ;;; nelisp-native-raw-file.el --- Bounded executable byte windows -*- lexical-binding: t; -*-
 ;; Uses existing native syscall and pointer operations.  No decoding is applied.
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (defun nelisp-native-raw-file--read (path offset size)
   "Read exactly SIZE bytes at OFFSET from bounded ASCII PATH."
   (unless (and (stringp path) (<= 1 (length path) 4095)

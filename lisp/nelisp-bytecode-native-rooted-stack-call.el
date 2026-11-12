@@ -1,4 +1,6 @@
 ;;; nelisp-bytecode-native-rooted-stack-call.el --- checked rooted stack caller -*- lexical-binding: t; -*-
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 (require 'nelisp-native-load)
 

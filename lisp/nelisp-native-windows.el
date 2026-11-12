@@ -1,5 +1,7 @@
 ;;; nelisp-native-windows.el --- Win64 trust and OS boundaries -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 
 (defun nelisp-native-windows-call (name &rest args)

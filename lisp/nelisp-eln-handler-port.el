@@ -38,6 +38,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'cl-lib)
 (require 'nelisp-eln-callable-import)
 (require 'nelisp-eln-runtime-services)

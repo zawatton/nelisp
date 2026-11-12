@@ -9,6 +9,8 @@
 
 ;;; Code:
 
+(eval-when-compile (require 'nelisp-runtime-prims-decl nil t))
+
 (require 'nelisp-eln-metadata)
 (require 'nl-ffi)
 (require 'nl-ffi-memory)
