@@ -20,6 +20,23 @@ class DevCliTests(unittest.TestCase):
                                 text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_gate_reads_gate_count_from_a_log_with_binary_bytes(self):
+        # parity-fuzz once printed raw bytes in its shrink display; grep then
+        # treated the log as binary, found no GATE-COUNT line, and the gate
+        # was reported as "ran 0, failed 1" although the command passed.
+        name = "dev-cli-binlog-probe"
+        report = ROOT / "target" / "gates" / (name + ".json")
+        try:
+            result = subprocess.run(
+                [str(CLI), "gate", name, "--", "sh", "-c",
+                 "printf 'x\\000y\\nGATE-COUNT checked=1 findings=0\\n'"],
+                cwd=ROOT, capture_output=True, text=True, timeout=120)
+            self.assertIn("(pass, ran 1, failed 0)", result.stdout + result.stderr)
+            self.assertEqual(json.loads(report.read_text())["status"], "pass")
+        finally:
+            if report.exists():
+                report.unlink()
+
     def run_request(self, payload):
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".json") as request:
             json.dump(payload, request, ensure_ascii=False)
