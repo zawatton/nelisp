@@ -1183,12 +1183,6 @@ jobs:
       # from the GNU source tarball next to the .elc files (existing files are
       # kept).  The test helpers and nelisp-bytecode-compiler-input-dialect
       # accept plain .el through the pinned content SHA-256.
-      - name: Restore GNU Emacs 31.1 lisp sources (Windows)
-        if: runner.os == 'Windows'
-        uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/emacs-31.1-lisp-src
-          key: emacs-31.1-lisp-src-v1
       - name: Provide GNU Emacs 31.1 lisp sources (Windows)
         if: runner.os == 'Windows'
         shell: bash
