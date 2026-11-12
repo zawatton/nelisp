@@ -54,5 +54,4 @@ evidence: tools/ai/ci-speedup/parity-jobs-equality.log sha256=50058b44f7d7301f5b
 evidence: tools/ai/ci-speedup/startup-step-b-spike.md sha256=be643528b0f2c644a907345a7c98680b112a0304a023d40047980b59cfb511bb
 
 ** S4.5 E2E - tier extras legs each finish within 15 min on CI
-#+NOTE: needs CI
-pending
+evidence: tools/ai/ci-speedup/ci-run-43141614135-extras.txt sha256=20c9422d099d858b3f503b16135d206d1c564f06d1fcbd5e6a5e1de4a2a4b8cc
