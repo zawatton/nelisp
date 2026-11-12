@@ -565,8 +565,8 @@ cmd_runtime_probe() {
     # measurements it starts.  A line that travels with the output guards
     # every reader of it.
     printf 'PROBE-BINARY %s\n' "$(binary_identity "$bin")"
-    grep -E '^PROBE ' "$log" || true
-    checked=$(grep -cE '^PROBE ' "$log" || true)
+    grep -aE '^PROBE ' "$log" || true
+    checked=$(grep -acE '^PROBE ' "$log" || true)
     rm -f "$log"
     if [ "$code" -ne 0 ] || [ "${checked:-0}" -eq 0 ]; then
         "$here/gate-report.sh" --name "$gate_name" --kind probe             --ran "${checked:-0}" --failed 1             --reason "the probe did not finish (exit $code)"             --command "nelisp-ai.sh runtime-probe"
@@ -621,7 +621,7 @@ cmd_gate() {
     if [ "${streamed:-yes}" = no ]; then
         cat "$log"
     fi
-    skip=$(grep -E '^GATE-SKIP ' "$log" | tail -1 | sed 's/^GATE-SKIP //' || true)
+    skip=$(grep -aE '^GATE-SKIP ' "$log" | tail -1 | sed 's/^GATE-SKIP //' || true)
     if [ -n "$skip" ]; then
         duration=$(( ($(date +%s) - started) * 1000 ))
         rm -f "$log"
@@ -629,13 +629,13 @@ cmd_gate() {
             --duration-ms "$duration" --reason "$skip" --command "$*"
         return 0
     fi
-    line=$(grep -E '^GATE-COUNT ' "$log" | tail -1 || true)
+    line=$(grep -aE '^GATE-COUNT ' "$log" | tail -1 || true)
     checked=$(printf '%s' "$line" | sed -n 's/.*checked=\([0-9][0-9]*\).*/\1/p')
     findings=$(printf '%s' "$line" | sed -n 's/.*findings=\([0-9][0-9]*\).*/\1/p')
     # The command's own verdict line, when it has one.  A wrapped gate
     # that reports only a count says "1704 findings" where the tool
     # itself said which kind went over its baseline -- keep that half.
-    detail=$(grep -E 'FAIL' "$log" | tail -1 | cut -c1-200 || true)
+    detail=$(grep -aE 'FAIL' "$log" | tail -1 | cut -c1-200 || true)
     duration=$(( ($(date +%s) - started) * 1000 ))
     rm -f "$log"
     if [ -z "$checked" ]; then
