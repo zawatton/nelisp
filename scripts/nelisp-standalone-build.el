@@ -70462,14 +70462,25 @@ same documented divergence `expt''s own contract already established)."
              "(defvar nelisp-src-check20 (and (booleanp t) (booleanp nil) (not (booleanp 0))))\n"
              "(defvar nelisp-src-check21 (and (fixnump most-negative-fixnum) (fixnump most-positive-fixnum) (not (fixnump 2305843009213693952))))\n"
              "(defvar nelisp-src-check22 (and (zerop 0) (zerop 0.0) (not (zerop 1))))\n"
-             "(defvar nelisp-src-check23 (and (null (ignore 1 2)) (always 1 2)))\n"))
+             "(defvar nelisp-src-check23 (and (null (ignore 1 2)) (always 1 2)))\n"
+             ;; `wf_sum_fix_w' positive-overflow half (gate-mutation row, see
+             ;; tools/gate-mutations.txt): `(+ most-positive-fixnum 1)' alone
+             ;; stays correct without that check because the raw i64
+             ;; accumulator still holds 2^61 and the result writer promotes
+             ;; it.  Only a fold that carries the accumulator past the i64
+             ;; range exposes the missing check: five most-positive-fixnums
+             ;; sum to 5 * (2^61 - 1) > 2^63, which wraps negative.  The
+             ;; funcall/apply spelling and the direct call are both checked.
+             "(defvar nelisp-src-wide-sum (apply '+ (list most-positive-fixnum most-positive-fixnum most-positive-fixnum most-positive-fixnum most-positive-fixnum)))\n"
+             "(defvar nelisp-src-wide-sum2 (+ most-positive-fixnum most-positive-fixnum most-positive-fixnum most-positive-fixnum most-positive-fixnum))\n"
+             "(defvar nelisp-src-check24 (and (= nelisp-src-wide-sum 11529215046068469755) (bignump nelisp-src-wide-sum) (= nelisp-src-wide-sum2 11529215046068469755) (bignump nelisp-src-wide-sum2)))\n"))
           (with-temp-buffer
             (call-process nelisp-standalone--reader-out nil t nil
                           "eval-elisp-source" tmp
-                          "(list nelisp-src-check1 nelisp-src-check2 nelisp-src-check3 nelisp-src-check4 nelisp-src-check5 nelisp-src-check6 nelisp-src-check7 nelisp-src-check8 nelisp-src-check9 nelisp-src-check10 nelisp-src-check11 nelisp-src-check12 nelisp-src-check13 nelisp-src-check14 nelisp-src-check15 nelisp-src-check16 nelisp-src-check17 nelisp-src-check18 nelisp-src-check19 nelisp-src-check20 nelisp-src-check21 nelisp-src-check22 nelisp-src-check23)")
+                          "(list nelisp-src-check1 nelisp-src-check2 nelisp-src-check3 nelisp-src-check4 nelisp-src-check5 nelisp-src-check6 nelisp-src-check7 nelisp-src-check8 nelisp-src-check9 nelisp-src-check10 nelisp-src-check11 nelisp-src-check12 nelisp-src-check13 nelisp-src-check14 nelisp-src-check15 nelisp-src-check16 nelisp-src-check17 nelisp-src-check18 nelisp-src-check19 nelisp-src-check20 nelisp-src-check21 nelisp-src-check22 nelisp-src-check23 nelisp-src-check24)")
             (setq out (string-trim (buffer-string))))
-          (unless (string= out "(t t t t t t t t t t t t t t t t t t t t t t t)")
-            (error "stdlib-completion smoke -> %S (expected (t t t t t t t t t t t t t t t t t t t t t t t))" out)))
+          (unless (string= out "(t t t t t t t t t t t t t t t t t t t t t t t t)")
+            (error "stdlib-completion smoke -> %S (expected (t t t t t t t t t t t t t t t t t t t t t t t t))" out)))
       (ignore-errors (delete-file tmp)))))
 
 (defun nelisp-standalone--reader-char-table-smoke ()
@@ -71584,6 +71595,68 @@ from it."
                               "must leave the recorded depth alone)")
                      observed before))))
       (ignore-errors (delete-file load-file))))
+  ;; Second phase: the ring overflows only through NESTED DRIVER frames
+  ;; (every `load' level pushes at least one), never through evaluator
+  ;; recursion.  Nest `load' 1100 deep, past the 1024-frame ring, so the
+  ;; pushes beyond it fail (`pushed' = 0).  The driver must then skip the
+  ;; pop for those levels (`nl_driver_eval_with_recorded_roots' and its
+  ;; word-ABI twin); an unconditional pop walks the recorded depth below
+  ;; the value it had before the loads.  The peak must also saturate at the
+  ;; ring size, proving the fixture really overflowed it.
+  (let* ((inner (make-temp-file "nelisp-frame-stack-nest-inner-" nil ".el"))
+         (outer (make-temp-file "nelisp-frame-stack-nest-" nil ".el"))
+         (rc nil) (out nil))
+    (unwind-protect
+        (progn
+          (with-temp-file inner
+            (insert "(setq nl-nest-n (1+ nl-nest-n))\n"
+                    ;; Descent: remember the depth this level's driver frame sees.
+                    "(setq nl-nest-stack (cons (nth 6 (nelisp--debug-switch 0)) nl-nest-stack))\n"
+                    "(if (< nl-nest-n 1100) (load " (prin1-to-string inner) " nil t t)\n"
+                    "  (setq nl-nest-peak (nth 6 (nelisp--debug-switch 0))))\n"
+                    ;; Ascent: the same level must read the same depth after the
+                    ;; deeper loads unwound.  An unconditional pop at the failed
+                    ;; levels (past the ring) lowers it while live frames are
+                    ;; still open; the final-depth check alone misses this
+                    ;; because `nl_gc_ctx_pop' clamps at 0.
+                    "(if (/= (car nl-nest-stack) (nth 6 (nelisp--debug-switch 0)))\n"
+                    "    (setq nl-nest-bad (1+ nl-nest-bad)))\n"
+                    "(setq nl-nest-stack (cdr nl-nest-stack))\n"))
+          (with-temp-file outer
+            (insert "(nelisp--debug-switch 5)\n"
+                    "(defvar nl-nest-n 0)\n"
+                    "(defvar nl-nest-peak nil)\n"
+                    "(defvar nl-nest-stack nil)\n"
+                    "(defvar nl-nest-bad 0)\n"
+                    "(princ (format \"NDEPTH0=%s;\" (nth 6 (nelisp--debug-switch 0))))\n"
+                    "(load " (prin1-to-string inner) " nil t t)\n"
+                    "(princ (format \"NDEPTH=%s;NPEAK=%s;NN=%s;NBAD=%s;\" (nth 6 (nelisp--debug-switch 0)) nl-nest-peak nl-nest-n nl-nest-bad))\n"))
+          (with-temp-buffer
+            (setq rc (call-process nelisp-standalone--reader-out nil
+                                    (list t nil) nil "--load" outer))
+            (setq out (buffer-string)))
+          (unless (string-match "NDEPTH0=\\([0-9]+\\);NDEPTH=\\([0-9]+\\);NPEAK=\\([0-9]+\\);NN=1100;NBAD=\\([0-9]+\\);" out)
+            (error "frame-stack nested-load smoke: no result line: exit=%S stdout=%S"
+                   rc out))
+          (let ((before (string-to-number (match-string 1 out)))
+                (after (string-to-number (match-string 2 out)))
+                (peak (string-to-number (match-string 3 out)))
+                (bad (string-to-number (match-string 4 out))))
+            (unless (= bad 0)
+              (error (concat "frame-stack nested-load smoke: %d levels read a "
+                              "different depth after the deeper loads unwound "
+                              "(a failed push was popped)")
+                     bad))
+            (unless (>= peak 1024)
+              (error "frame-stack nested-load smoke: peak depth %d never reached the ring size (fixture did not overflow it)"
+                     peak))
+            (unless (= after before)
+              (error (concat "frame-stack nested-load smoke: depth=%d after the "
+                              "nested loads, %d before (a failed push must not be "
+                              "popped)")
+                     after before))))
+      (ignore-errors (delete-file inner))
+      (ignore-errors (delete-file outer))))
   (message "[standalone-reader] frame-stack pop-desync smoke PASS"))
 
 ;;;###autoload

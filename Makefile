@@ -2360,7 +2360,7 @@ gate-mutation:
 .PHONY: gate-mutation-verify
 gate-mutation-verify:
 	@test -n "$(GATE)" || { echo "usage: make gate-mutation-verify GATE=<gate-name>"; exit 2; }
-	@NELISP_GATE_MUTATION_ONLY="$(GATE)" tools/nelisp-gate-mutation.sh
+	@NELISP_GATE_MUTATION_REQUIRE_BASELINE=1 NELISP_GATE_MUTATION_ONLY="$(GATE)" tools/nelisp-gate-mutation.sh
 
 version-consistency:
 	@bash tools/nelisp-version-consistency.sh

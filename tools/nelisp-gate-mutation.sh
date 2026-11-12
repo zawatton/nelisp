@@ -791,6 +791,9 @@ done <<< "$rows"
 #
 # `make gate-mutation-verify GATE=<name>' is the front door for the first.
 only=${NELISP_GATE_MUTATION_ONLY:-}
+require_baseline=${NELISP_GATE_MUTATION_REQUIRE_BASELINE:-0}
+baseline_checked_gates=""
+baseline_red_gates=""
 if [ -n "$only" ]; then
   rows=$(printf '%s\n' "$rows" | awk -F'|' -v g="$only" '$1==g')
   [ -z "$rows" ] && { echo "gate-mutation: FAIL (no row for gate '$only')"; exit 1; }
@@ -994,6 +997,37 @@ while IFS='|' read -r gate file expr what scope; do
   # Establish a clean PASS before touching the source.  This prevents a
   # timeout or other non-zero result from being treated as the baseline when
   # the gate was already broken for an unrelated reason.
+  # NELISP_GATE_MUTATION_REQUIRE_BASELINE=1 (set by `make gate-mutation-verify')
+  # extends the same clean-PASS-first rule to every gate, once per gate per
+  # run.  Without it a gate that is already red for an unrelated reason turns
+  # every injection "red", which reads as lethality (rows 243/245/369 hid
+  # behind a red `standalone-reader-test' until it went green).
+  if [ "$require_baseline" = 1 ] && [ "$gate" != "nl-num-standalone-smoke" ]; then
+    case " $baseline_checked_gates " in
+      *" $gate "*) ;;
+      *)
+        baseline_checked_gates="$baseline_checked_gates $gate"
+        baseline_before_log="$(mktemp)"
+        run_gate "$gate" "$file" "$baseline_before_log"
+        baseline_before_rc=$?
+        if grep -qE '^GATE-SKIP ' "$baseline_before_log"; then
+          :  # the normal skip handling below reports it
+        elif [ "$baseline_before_rc" -ne 0 ]; then
+          baseline_red_gates="$baseline_red_gates $gate"
+          report_harness_log "clean baseline before mutation output:" "$baseline_before_log"
+        fi
+        rm -f "$baseline_before_log" ;;
+    esac
+    case " $baseline_red_gates " in
+      *" $gate "*)
+        echo "  $gate: HARNESS ERROR (clean baseline is not green; an injection would read as red for the wrong reason: $what)"
+        failed=$((failed+1))
+        if [ "$need_clean_binary" = 1 ]; then
+          restore_clean_binary "after the red baseline, gate $gate" || binary_dirty=1
+        fi
+        continue ;;
+    esac
+  fi
   if [ "$gate" = "nl-num-standalone-smoke" ]; then
     # The Makefile invokes the smoke binary with `--load
     # packages/nl-num/test/nl-num-standalone-smoke.el'; that test loads the

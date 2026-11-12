@@ -80,8 +80,13 @@ bounded subprocess rather than from the test process."
          (command-and-args
           (nelisp-native-unit-development-test--eval-form
            '(progn (dotimes (_ 400) (princ (make-string 2048 ?a))) (sleep-for 999))))
+         ;; The wall limit only bounds a hang: the output limit kills the
+         ;; child as soon as ~800 KB arrive.  It is generous (120 s) because a
+         ;; loaded Windows runner can spend more than 30 s just starting the
+         ;; child Emacs, which made this report :timeout instead of
+         ;; :output-limit.  The assertions below are unchanged.
          (result (nelisp-native-unit-development-run-bounded
-                  (car command-and-args) (cdr command-and-args) 30)))
+                  (car command-and-args) (cdr command-and-args) 120)))
     (should (eq (plist-get result :phase) :output-limit))
     (should (plist-get result :output-truncated))
     (should (plist-get result :output-limited))

@@ -242,7 +242,17 @@ ert-full|lisp/nelisp-cl-macros.el|s/(signal 'cl-no-applicable-method (cons name 
 # 11/13-16 of the same smoke now assert the promoted value instead).
 standalone-reader-test|scripts/nelisp-standalone-build.el|s/(and (> v 0) (> acc (- 2305843009213693951 v)))/(and (> v 0) nil)/|wf_sum's positive-overflow half of the literal-bound check is deleted, (+ most-positive-fixnum 1) wraps silently again instead of promoting to a bignum
 standalone-reader-test|scripts/nelisp-standalone-build.el|s#(/= (/ prod acc) v)#nil#|wf_prod's div-round-trip overflow check is deleted, (* 100000000000 100000000000) wraps silently again instead of promoting to a bignum
-standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) n$/(if (= data 1) n/|the NULL guard in nelisp_reader_p_hash_pair_count is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- reads the tag word at address 0 and the binary faults
+# 2026-11-12 RETARGET of the row below (it stayed green in CI run 43199941922):
+# it used to defeat the `(= data 0)' guard of `nelisp_reader_p_hash_pair_count',
+# but that function has had no caller since the hash-table literal builder moved
+# to `nelisp_reader_p_hash_fill_table' (it is dead code), so no probe could ever
+# observe the injection; the old build only looked red while the gate itself was
+# red.  The same defect class (an empty literal with no data key reaching a
+# data walk with a 0 word) now lives in the live guard of
+# `nelisp_reader_p_build_hash_table_w'.  Defeating it makes `nl_val_tag' read
+# address 0 (`heap-read-u8 0 0'), which the generated-reader-literal smoke's
+# `'#s(hash-table test equal)' conjuncts reach.
+standalone-reader-test|lisp/nelisp-cc-reader-parser.el|s/(if (= data 0) 0$/(if (= data 1) 0/|the NULL guard in nelisp_reader_p_build_hash_table_w is defeated, so an empty-table literal with no data key -- '#s(hash-table test equal), what Emacs 30 writes and savehist restores -- is handed to nelisp_reader_p_hash_fill_table with a 0 data word, which reads the tag byte at address 0 and the binary faults
 standalone-reader-test|scripts/nelisp-standalone-build.el|s/(ptr-write-u64 h 16 (+ cnt 4))/(ptr-write-u64 h 16 cnt)/|nl_ht_hash_put fills the pair and links its bucket but no longer bumps the table's live count, so a puthash into a reader-built table is invisible to hash-table-count and the table keeps reading as empty
 # 2026-08-26 (Doc 187 P4 continuous cost gate): the exact flag-controlled
 # guard call is made unconditional-false.  The gate compiles its one-add loop
@@ -374,6 +384,12 @@ nelisp-thread-percpu-roots-smoke|tools/nelisp-thread-percpu-roots-smoke.el|s/(nt
 # wrapper), and reverting the second is harmless here since nothing in this
 # smoke exercises it.  Measured RED with this exact injection applied:
 # depth=5 at the checkpoint (want 1024); GREEN with it removed.
+# 2026-11-12: the recursion phase of the smoke no longer reaches this site (the
+# evaluator stopped pushing a context per call, so the old row stayed green in
+# CI run 43199941922).  The sites are the driver-level wrappers
+# (`nl_driver_eval_with_recorded_roots' / `..._word_with_recorded_roots'), so
+# the smoke now also nests `load' 1100 deep, past the 1024-frame ring, where
+# the failed pushes must not be popped.
 standalone-reader-frame-stack-pop-desync-smoke|scripts/nelisp-standalone-build.el|s/(if (= pushed 1) (nl_gc_ctx_pop) 0)/(nl_gc_ctx_pop)/|the recorded frame-stack depth counter under-counts during unwind past the ring's capacity (the pop/depth-cap desync this smoke exists to catch)
 # standalone-reader-bounded-backtrace-smoke: added 2026-08-23 (Doc 180
 # Phase 2 item 3).  The injection reverses `nl_bt_capture_frames_from''s
