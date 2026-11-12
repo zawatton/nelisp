@@ -378,7 +378,12 @@ Return a state vector [PROCESS OUT-BUFFER ERR-FILE EXIT].  Stdin is
                (insert-file-contents (aref state 2))
                (buffer-string))))
     (kill-buffer (aref state 1))
-    (ignore-errors (delete-file (aref state 2)))
+    (condition-case cleanup-err
+        (delete-file (aref state 2))
+      ;; Cleanup is best effort and never changes a verdict, but a failure
+      ;; stays visible in the gate output.
+      (error (message "substrate-parity: cleanup delete-file failed: %S"
+                      cleanup-err)))
     (list (aref state 3) out err)))
 
 (defun nelisp-substrate-parity--run-phase (corpus cwd specfn)
@@ -420,7 +425,10 @@ never depend on completion order."
                                        (nelisp-substrate-parity--finish-async state)))
                           done)))))
           (dolist (r running)
-            (ignore-errors (delete-process (aref (cdr r) 0)))))
+            (condition-case cleanup-err
+                (delete-process (aref (cdr r) 0))
+              (error (message "substrate-parity: cleanup delete-process failed: %S"
+                              cleanup-err)))))
         (cons first-res
               (mapcar (lambda (entry) (assq (car entry) done)) (cdr corpus)))))))
 

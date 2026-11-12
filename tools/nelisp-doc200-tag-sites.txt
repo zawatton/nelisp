@@ -672,4 +672,8 @@ lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	0	n-a	This 
 lisp/nelisp-cc-nlboolvector-alloc.el	nl_bv_bitval	unresolved-numeric	1	n-a	This compares packed bit offsets 0/1 in a lookup table, not Sexp tags.
 lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	0	walked	Recognizes string tag 5 for bool-vector literal payloads, not a new Sexp tag.
 lisp/nelisp-cc-reader-parser.el	nelisp_reader_p_bv_string_tag_p	unresolved-numeric	1	walked	Recognizes string tag 6/14/15 for bool-vector literal payloads, not a new Sexp tag.
+lisp/nelisp-pe-write.el	nelisp-pe--write-data-directory-table	unresolved-numeric	0	n-a	This compares the PE IMAGE_DATA_DIRECTORY loop index (5 = BASERELOC), not a Sexp tag.
 scripts/nelisp-standalone-build.el	nelisp-standalone--prelude-source-with-list-accessors	unresolved-numeric	0	n-a	Host-side count of six bytecompiled provider defuns; this is not a runtime value tag.
+tools/ai/com-dll/wbuf-sample.el	WbufSelfTest	tag-test-read-u64	0	n-a	This reads a u64 field of a COM selftest scratch struct and compares it to a test constant (4660), not a Sexp tag word.
+tools/ai/com-dll/wbuf-sample.el	WbufSelfTest	unresolved-numeric	0	n-a	This compares a COM selftest buffer length/offset or check number of 5/6, not any tag namespace.
+tools/ai/com-dll/wbuf-sample.el	path_selftest	unresolved-numeric	0	n-a	This compares a wbuf path-buffer length of 5 (drive-prefixed join result), not any tag namespace.
