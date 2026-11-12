@@ -47,6 +47,8 @@ skipbase:
 	@echo skipbase >> gates.log; if grep -q NEW lisp/skipbase.el; then echo "GATE-SKIP injected"; else sleep 300; fi
 green:
 	@echo green >> gates.log
+alwaysred:
+	@echo alwaysred >> gates.log; false
 emacs-parity:
 	@echo emacs-parity >> gates.log; echo "$${NELISP_STANDALONE_UNIT_CACHE_DIR:-unset}" >> gateenv.log; echo "$$(grep -c NEW target/nelisp)" >> bins.log; ls target/gate-mutation-units 2>/dev/null | wc -l >> scratchseen.log; ! grep -q NEW lisp/rb.el
 s0:
@@ -787,6 +789,35 @@ class ShardBudget(Fixture):
             self.shard_dir(k, rows=self.counts(5, a))
         self.shard_dir(3, status="skip")                             # more shards than rows
         self.assertEqual(self.merge().returncode, 0, self.out)
+
+
+class RequireBaseline(Fixture):
+    """A gate that is red before any injection must not read as lethal."""
+
+    def test_red_baseline_is_a_harness_error_when_required(self):
+        self.build([row("alwaysred", "lisp/okred.el"), row("okred", "lisp/okred.el")],
+                   env={"NELISP_GATE_MUTATION_REQUIRE_BASELINE": "1"})
+        result = self.run_harness()
+        self.assertNotEqual(result.returncode, 0, self.out)
+        self.assertIn("alwaysred: HARNESS ERROR (clean baseline is not green", self.out)
+        self.assertNotIn("alwaysred: went red", self.out)
+        self.assertIn("okred: went red as it should", self.out)
+        self.assertRestored("okred")
+        # one clean baseline run for the red gate, none with an injection
+        self.assertEqual(self.gates_run().count("alwaysred"), 1, self.out)
+
+    def test_default_keeps_the_old_verdict(self):
+        self.build([row("alwaysred", "lisp/okred.el")])
+        self.run_harness()
+        self.assertIn("alwaysred: went red as it should", self.out)
+
+    def test_green_baseline_gate_is_still_judged_normally(self):
+        self.build([row("green", "lisp/green.el"), row("okred", "lisp/okred.el")],
+                   env={"NELISP_GATE_MUTATION_REQUIRE_BASELINE": "1"})
+        self.run_harness()
+        self.assertIn("green: STAYED GREEN", self.out)
+        self.assertIn("okred: went red as it should", self.out)
+        self.assertNotIn("HARNESS ERROR", self.out)
 
 
 if __name__ == "__main__":
