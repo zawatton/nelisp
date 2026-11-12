@@ -144,10 +144,26 @@ host Emacs defines, so only the public name is renamed."
 (defvar nelisp-sh-fast-test--fn nil
   "The installed fast `secure-hash', set once per test run by `should-parity'.")
 
+(defun nelisp-sh-fast-test--host-hash (algorithm object &optional start end binary)
+  "Return host Emacs's `secure-hash' of OBJECT, independent of the locale.
+GNU `secure-hash' encodes a multibyte string with the locale's preferred
+coding system and ignores `coding-system-for-write', so the oracle is
+locale-dependent (cp1252 on a Windows runner, ISO-8859-15 under
+en_DK.iso885915).  Hash the explicit UTF-8 bytes instead; START and END are
+character positions, so slice first."
+  (if (stringp object)
+      (if (multibyte-string-p object)
+          (secure-hash algorithm
+                       (encode-coding-string (substring object (or start 0) end)
+                                             'utf-8)
+                       nil nil binary)
+        (secure-hash algorithm object start end binary))
+    (secure-hash algorithm object start end binary)))
+
 (defmacro nelisp-sh-fast-test--should-parity (algorithm object &rest start-end-binary)
   "Assert the fast `secure-hash' agrees with host Emacs's on the same call."
-  `(should (equal (let ((coding-system-for-write 'utf-8)) ; not cp932 on Windows
-                    (apply #'secure-hash ,algorithm ,object (list ,@start-end-binary)))
+  `(should (equal (apply #'nelisp-sh-fast-test--host-hash ,algorithm ,object
+                         (list ,@start-end-binary))
                   ;; The fast path stages bytes in a temp file; keep host
                   ;; Emacs on Windows from CRLF-translating them.
                   (let ((coding-system-for-write 'no-conversion))
