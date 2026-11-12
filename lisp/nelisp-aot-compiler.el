@@ -145,6 +145,87 @@
 (declare-function nelisp-asm-wasm-op-return "nelisp-asm-wasm" (buf))
 (declare-function nelisp-wasm-write-binary "nelisp-wasm-write"
                   (file-path unit))
+(declare-function nelisp-asm-wasm-op-block "nelisp-asm-wasm" (buf &optional result-type))
+(declare-function nelisp-asm-wasm-op-br "nelisp-asm-wasm" (buf depth))
+(declare-function nelisp-asm-wasm-op-br-if "nelisp-asm-wasm" (buf depth))
+(declare-function nelisp-asm-wasm-op-call-indirect "nelisp-asm-wasm" (buf type-index &optional table-index))
+(declare-function nelisp-asm-wasm-op-catch "nelisp-asm-wasm" (buf tag-index))
+(declare-function nelisp-asm-wasm-op-catch-all "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-drop "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-else "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-f64-reinterpret-i64 "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-f64-sqrt "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-global-get "nelisp-asm-wasm" (buf index))
+(declare-function nelisp-asm-wasm-op-global-set "nelisp-asm-wasm" (buf index))
+(declare-function nelisp-asm-wasm-op-i32-add "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-and "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-const "nelisp-asm-wasm" (buf value))
+(declare-function nelisp-asm-wasm-op-i32-eq "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-gt-u "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-load "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i32-shl "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-store "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i32-sub "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i32-wrap-i64 "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-and "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-atomic-rmw-add "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-atomic-rmw-cmpxchg "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-div-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-eq "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-eqz "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-extend-i32-u "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-ge-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-gt-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-le-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-load "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-load16-u "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-load32-u "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-load8-u "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-lt-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-ne "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-or "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-reinterpret-f64 "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-rem-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-shl "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-shr-s "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-shr-u "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-i64-store "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-store16 "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-store32 "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-store8 "nelisp-asm-wasm" (buf &optional align offset))
+(declare-function nelisp-asm-wasm-op-i64-xor "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-if "nelisp-asm-wasm" (buf &optional result-type))
+(declare-function nelisp-asm-wasm-op-local-tee "nelisp-asm-wasm" (buf index))
+(declare-function nelisp-asm-wasm-op-loop "nelisp-asm-wasm" (buf &optional result-type))
+(declare-function nelisp-asm-wasm-op-memory-grow "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-memory-size "nelisp-asm-wasm" (buf))
+(declare-function nelisp-asm-wasm-op-rethrow "nelisp-asm-wasm" (buf depth))
+(declare-function nelisp-asm-wasm-op-throw "nelisp-asm-wasm" (buf tag-index))
+(declare-function nelisp-asm-wasm-op-try "nelisp-asm-wasm" (buf &optional result-type))
+(declare-function nelisp-asm-wasm-op-unreachable "nelisp-asm-wasm" (buf))
+(declare-function nelisp-mach-o-write-binary "nelisp-mach-o-write"
+                  (file-path sections))
+(declare-function nelisp-pe-write-binary "nelisp-pe-write"
+                  (file-path build-plist))
+(declare-function nelisp-native-cfg-grammar-aot-form "nelisp-native-cfg-grammar"
+                  (form))
+(declare-function nelisp-aot-compiler--multi-let-mutation-index
+                  "nelisp-aot-compiler" (body cached))
+(declare-function nelisp-aot-compiler--control-repr-fenv
+                  "nelisp-aot-compiler" (form fenv))
+
+;; Forward declarations of specials defined further down in this file (or in
+;; `nelisp-asm-wasm', which is loaded on demand).
+(defvar nelisp-aot-compiler--special-vars)
+(defvar nelisp-aot-compiler--aot-builtin1-delegation-symbols)
+(defvar nelisp-aot-compiler--aot-builtinn-delegation-symbols)
+(defvar nelisp-aot-compiler--aot-builtinn-designator-arg-indexes)
+(defvar nelisp-aot-compiler--aot-builtinn-extra-designator-arg-indexes)
+(defvar nelisp-aot-compiler--lisp-constant-base)
+(defvar nelisp-aot-compiler-regalloc)
+(defvar nelisp-asm-wasm--mem-kind)
+(defvar nelisp-asm-wasm--global-kind)
+(defvar nelisp-asm-wasm--extern-func-kind)
 
 (define-error 'nelisp-aot-compiler-error
   "Doc 97 AOT Sexp compiler error")
@@ -255,7 +336,8 @@ ignores this var (= AAPCS64 only).")
 (defvar nelisp-aot-compiler--stackmap-live-table nil
   "Nil, or an `eq' hash node -> live-slot bitmask for the defun being emitted.")
 (defvar nelisp-aot-compiler--stackmap-ranges nil
-  "Completed `(START END LIVE)' byte ranges of the defun being emitted, newest first.")
+  "Completed
+`(START END LIVE)' byte ranges of the defun being emitted, newest first.")
 (defvar nelisp-aot-compiler--stackmap-reason nil
   "Nil, or the symbol naming why the defun being emitted keeps a full-frame scan.")
 (defvar nelisp-aot-compiler--stackmap-memo nil
@@ -264,7 +346,8 @@ ignores this var (= AAPCS64 only).")
   "Scratch `eq' hash node -> slots read from outside its lexical bindings.")
 (defvar nelisp-aot-compiler--stackmap-converged t)
 (defvar nelisp-aot-compiler--stackmap-plet nil
-  "Non-nil when the defun being emitted uses the private-let region plan (flagged, still mapped).")
+  "Non-nil when the defun being emitted uses the private-let region
+plan (flagged, still mapped).")
 
 ;; alignhot (2026-10-26): layout-stable hot code.  Measured on Zen 3: the same
 ;; instruction stream mispredicts 5x more in one link layout (decoder redirects,
@@ -341,6 +424,53 @@ Without the policy (or without that key) align to DEFAULT, or do nothing if nil.
 (defvar nelisp-aot-compiler--stackmap-live-table)
 (defvar nelisp-aot-compiler--stackmap-ranges)
 
+(defvar nelisp-aot-compiler--ir-kind-tags)
+
+;; The IR accessors are defsubsts, so they precede their first use.
+(defsubst nelisp-aot-compiler--make-ir (kind &rest plist)
+  "Construct an IR node tagged KIND carrying PLIST.
+A33.4 — the internal representation is now a flat key-value vector
+`[KIND K1 V1 K2 V2 ...]' (slot 0 = the `:kind' symbol, then the PLIST
+keys/values copied in their construction order) instead of the
+A33.1-A33.3 symbol-keyed list `(:kind KIND . PLIST)'.  The construction
+order of PLIST is consistent per kind across every call site (verified
+in A33.4), so each (kind, field) pair lands at a fixed vector offset —
+which is what the A33.N native-emit path needs: it reads slot 0 with
+`vector-ref' to dispatch and reads each field at its kind-fixed offset
+without a heap-walking `plist-get'.  Because all 90 constructors and all
+247 reads were already funnelled through `--make-ir' / `--ir-kind' /
+`--ir-get' (A33.1-A33.3), swapping list -> vector here is invisible to
+the rest of the compiler and, since the emit path computes identical
+bytes either way, the produced `.o' objects are byte-identical."
+  (apply #'vector kind plist))
+
+(defsubst nelisp-aot-compiler--ir-kind (node)
+  "Read the :kind tag of IR NODE.
+A33.4 — NODE is now the flat key-value vector built by `--make-ir', so
+the kind tag lives at slot 0 and this is a single `aref' (the future
+A33.N native dispatch reads the same slot with `vector-ref').  Reads
+were centralized here in A33.2, so the list -> vector swap touches only
+this body; the emitted `.o' bytes are unchanged."
+  (aref node 0))
+
+(defsubst nelisp-aot-compiler--ir-get (node field)
+  "Read FIELD of IR NODE.
+A33.4 — NODE is the flat key-value vector `[KIND K1 V1 K2 V2 ...]', so
+the lookup scans the key slots (1, 3, 5, ...) for FIELD and returns the
+following value slot.  This mirrors the previous `plist-get' linear scan
+(same O(N) over the same key set), so behaviour and the emitted `.o'
+bytes are unchanged; the A33.N native path can instead read each field
+at its kind-fixed offset since per-kind layout is constant."
+  (let ((len (length node))
+        (i 1)
+        (result nil))
+    (while (< i len)
+      (when (eq (aref node i) field)
+        (setq result (aref node (1+ i))
+              i len))
+      (setq i (+ i 2)))
+    result))
+
 (defvar nelisp-aot-compiler-cold-layout t
   "Non-nil moves cold-by-construction arms behind a defun's hot code (x86-64).
 nil emits exactly the bytes of the seed layout.")
@@ -396,8 +526,10 @@ That is a decline: `(setq go 0)', or a sequence of such stores containing one."
                   stores))))
 
 (defconst nelisp-aot-compiler--cold-callees '(nl_string_read64)
-  "Callees whose call is the out-of-line branch of a guarded read (recognised, not changed).
-`nelisp-heap-accessors' lowers a String-aware slot read to an inline tag test that
+  "Callees whose call is the out-of-line branch of a guarded read (recognised,
+not changed).
+`nelisp-heap-accessors' lowers a String-aware slot read to an inline tag test
+that
 calls `nl_string_read64' only for a String WORD.")
 
 (defun nelisp-aot-compiler--cold-call-arm-p (arm)
@@ -564,24 +696,39 @@ untouched by every call-free IR kind), then r12-r15 (pushed around the
 loop).  Nil outside a defun, so top-level code is never promoted.")
 
 (defvar nelisp-aot-compiler-spillcall t
-  "Non-nil lets possible Lisp references live in callee-saved registers across calls (spillcall).
-GNU Emacs keeps Lisp_Object locals of exec_byte_code and friends in callee-saved registers
-across calls (gcc -O2) because its collector flushes the registers before the conservative
-stack scan (alloc.c `flush_stack_call_func1').  NeLisp's `nl_gc_scan_regs' does the same
-since Doc 223, and every callee-saved save word lies outside the mapped fixed part of a frame
-\(a callee's `push', its vm-register save words at base+2.., its rbx word, which the map scan
-always reads), so a reference held in r12-r15/rbx is seen by every collection a call can
-reach.  Two consequences are handled here: the vm-register plan admits a variable the raw
-proof refuses (`--vm-reg-plan'), and the stack map clears that variable's frame word at every
-call site of the function (`--stackmap-register-mask'), because the word is a stale copy that
-the body never reads again and must not keep a dead object alive.  Nil restores the v34
-lowering byte for byte; set it before this file is loaded, as for `nelisp-aot-compiler-regraw':
+  "Non-nil lets possible Lisp references live in callee-saved registers across
+calls (spillcall).
+GNU Emacs keeps Lisp_Object locals of exec_byte_code and friends in callee-saved
+registers
+across calls (gcc -O2) because its collector flushes the registers before the
+conservative
+stack scan (alloc.c `flush_stack_call_func1').  NeLisp's `nl_gc_scan_regs' does
+the same
+since Doc 223, and every callee-saved save word lies outside the mapped fixed
+part of a frame
+\(a callee's
+`push', its vm-register save words at base+2.., its rbx word, which the map scan
+always reads), so a reference held in r12-r15/rbx is seen by every collection a
+call can
+reach.  Two consequences are handled here: the vm-register plan admits a
+variable the raw
+proof refuses (`--vm-reg-plan'), and the stack map clears that variable's frame
+word at every
+call site of the
+function (`--stackmap-register-mask'), because the word is a stale copy that
+the body never reads again and must not keep a dead object alive.  Nil restores
+the v34
+lowering byte for byte; set it before this file is loaded, as for
+`nelisp-aot-compiler-regraw':
 `nelisp-aot-compiler-vm-register-functions' reads it at load time.")
 
 (defvar nelisp-aot-compiler-regraw t
-  "Non-nil enables the regraw extensions: the raw-value proof, rbx as a fifth register, the
-widened opt-in list and call-free regions beside the vm-register map.  Nil reproduces the cgreg
-behaviour byte for byte (the A/B baseline build sets it before loading this file).")
+  "Non-nil enables the regraw extensions: the raw-value proof, rbx as a fifth
+register, the
+widened opt-in list and call-free regions beside the vm-register map.  Nil
+reproduces the cgreg
+behaviour byte for byte (the A/B baseline build sets it before loading this
+file).")
 
 (defvar nelisp-aot-compiler-vm-register-functions
   (if nelisp-aot-compiler-regraw
@@ -597,19 +744,28 @@ behaviour byte for byte (the A/B baseline build sets it before loading this file
           (wf_bytecode_execute_frame arg-index pc sp cb-n done code-len mem depth)))
     '((wf_bytecode_w_fast_run pc sp raw data length mem)))
   "Functions whose raw VM state lives in callee-saved registers (cgreg, regraw).
-Each element is (NAME VAR...): VAR lists, most profitable first, the parameters or
-`let' variables of NAME that hold raw integers or borrowed addresses (never owned
-Lisp references).  Parameters named here are declared raw; every definition inside the
-function is checked by `--vm-reg-proven-slots' and a variable with one that may be a Lisp
-reference is refused.  The first four admitted variables take r12-r15 for the whole body,
-calls included, on SysV and Win64 alike (r8/r9 are argument registers on Win64, rbx is the
-dynamic-alignment register there); on SysV a fifth takes rbx.  Non-local exits are return codes in this
+Each element is (NAME VAR...): VAR lists, most profitable first, the parameters
+or
+`let' variables of NAME that hold raw integers or borrowed addresses (never
+owned
+Lisp references).  Parameters named here are declared raw; every definition
+inside the
+function is checked by
+`--vm-reg-proven-slots' and a variable with one that may be a Lisp
+reference is refused.  The first four admitted variables take r12-r15 for the
+whole body,
+calls included, on SysV and Win64 alike (r8/r9 are argument registers on Win64,
+rbx is the
+dynamic-alignment register there); on SysV a fifth takes rbx.  Non-local exits
+are return codes in this
 runtime, so no unwinder resumes with stale registers; the plan still declines a
-function that holds `aot-', `va-' or frame-observer nodes, any non-register use of
+function that holds `aot-', `va-' or frame-observer nodes, any non-register use
+of
 a candidate slot, or any other register plan (leaf, tco, shrink-wrap, alias).")
 
 (defvar nelisp-aot-compiler--vm-reg-decisions nil
-  "Alist (NAME . (:admit . PAIRS) or (:decline . REASON)) of the vm-register plans made.")
+  "Alist (NAME . (:admit . PAIRS) or (:decline . REASON)) of the vm-register
+plans made.")
 
 (defvar nelisp-aot-compiler--vm-reg-base-slots 0
   "Rounded parameter plus runtime-let slot count of the defun being emitted.")
@@ -755,6 +911,10 @@ Nothing in the source distinguishes the two lanes.  Both reach
 `--allow-external-user-calls' unconditionally, so 1539 of the reader's
 1541 defuns look like object mode and that flag cannot answer this.
 The caller knows and the compiler does not, so the caller says.")
+
+(defsubst nelisp-aot-compiler--lisp-values-p ()
+  "Non-nil when Lisp values follow GNU's rules: native artifacts (Doc 229)."
+  nelisp-aot-compiler--runtime-entry-params)
 
 (defvar nelisp-aot-compiler--raw-bool-returning-names nil
   "Defun names proven to return only source-level T or NIL tail values.")
@@ -942,7 +1102,8 @@ direct call is cheaper than a dispatch.  It is unresolvable for a single
 of that name exists, so the loader has nothing to point a stub at.
 
 The generic evaluator dispatcher resolves symbols through their function
-cells, as GNU funcall_general does (eval.c:3149-3156).  It therefore reaches both native
+cells, as GNU funcall_general does (eval.c:3149-3156).  It therefore reaches
+both native
 builtins and genuine Lisp definitions, and observes redefinitions.  The
 legacy builtin-only bridge cannot resolve Lisp definitions such as `eql'.")
 
@@ -1401,50 +1562,6 @@ already distinguishes `extern-call' (i64 return) from
             :varargs-p varargs-p
             :f64-count (length f64-args)))))
 
-(defsubst nelisp-aot-compiler--make-ir (kind &rest plist)
-  "Construct an IR node tagged KIND carrying PLIST.
-A33.4 — the internal representation is now a flat key-value vector
-`[KIND K1 V1 K2 V2 ...]' (slot 0 = the `:kind' symbol, then the PLIST
-keys/values copied in their construction order) instead of the
-A33.1-A33.3 symbol-keyed list `(:kind KIND . PLIST)'.  The construction
-order of PLIST is consistent per kind across every call site (verified
-in A33.4), so each (kind, field) pair lands at a fixed vector offset —
-which is what the A33.N native-emit path needs: it reads slot 0 with
-`vector-ref' to dispatch and reads each field at its kind-fixed offset
-without a heap-walking `plist-get'.  Because all 90 constructors and all
-247 reads were already funnelled through `--make-ir' / `--ir-kind' /
-`--ir-get' (A33.1-A33.3), swapping list -> vector here is invisible to
-the rest of the compiler and, since the emit path computes identical
-bytes either way, the produced `.o' objects are byte-identical."
-  (apply #'vector kind plist))
-
-(defsubst nelisp-aot-compiler--ir-kind (node)
-  "Read the :kind tag of IR NODE.
-A33.4 — NODE is now the flat key-value vector built by `--make-ir', so
-the kind tag lives at slot 0 and this is a single `aref' (the future
-A33.N native dispatch reads the same slot with `vector-ref').  Reads
-were centralized here in A33.2, so the list -> vector swap touches only
-this body; the emitted `.o' bytes are unchanged."
-  (aref node 0))
-
-(defsubst nelisp-aot-compiler--ir-get (node field)
-  "Read FIELD of IR NODE.
-A33.4 — NODE is the flat key-value vector `[KIND K1 V1 K2 V2 ...]', so
-the lookup scans the key slots (1, 3, 5, ...) for FIELD and returns the
-following value slot.  This mirrors the previous `plist-get' linear scan
-(same O(N) over the same key set), so behaviour and the emitted `.o'
-bytes are unchanged; the A33.N native path can instead read each field
-at its kind-fixed offset since per-kind layout is constant."
-  (let ((len (length node))
-        (i 1)
-        (result nil))
-    (while (< i len)
-      (when (eq (aref node i) field)
-        (setq result (aref node (1+ i))
-              i len))
-      (setq i (+ i 2)))
-    result))
-
 ;; This walker is recursive.  An inline declaration recursively expands its
 ;; callers until GNU's compiler depth limit, bloating the projected compiler.
 ;; Clear the old declaration too when reloading into a live host session.
@@ -1522,10 +1639,6 @@ primitives (Doc 229, \"After Doc 229: the S4 items\", the replay guard):
 nemacs replays a native section as soon as both exist, and its extern
 whitelist admits the dispatcher.  The test
 `nelisp-aot-compiler/no-native-replay-before-lisp-fixes' holds the rule.")
-
-(defsubst nelisp-aot-compiler--lisp-values-p ()
-  "Non-nil when Lisp values follow GNU's rules: native artifacts (Doc 229)."
-  nelisp-aot-compiler--runtime-entry-params)
 
 (defun nelisp-aot-compiler--ir-with (node field value)
   "Return a copy of IR NODE with FIELD set to VALUE, appended when absent."
@@ -1643,7 +1756,8 @@ of a `let' or `progn', so a form whose value is dropped pays nothing."
     (_ (nelisp-aot-compiler--lisp-nilp node))))
 
 (defun nelisp-aot-compiler--lisp-as-sexp (node env fenv defuns)
-  "Return NODE as a Sexp slot: box a fixnum or a boolean (GNU make_fixnum, Qt/Qnil).
+  "Return NODE as a Sexp slot: box a fixnum or a boolean (GNU make_fixnum,
+Qt/Qnil).
 A boolean's raw value is the Sexp tag of nil or t, so boxing it is one
 store of the tag word."
   (pcase (nelisp-aot-compiler--lisp-repr node)
@@ -1900,9 +2014,9 @@ Nil for an infinity, a NaN or a subnormal, which then keep the old path."
 
 (defun nelisp-aot-compiler--lisp-optimize-call (sexp)
   "Return SEXP rewritten as GNU's byte optimizer rewrites it, or nil.
-byte-opt.el: (funcall 'F ARGS...) and (funcall #'F ARGS...) become (F
+byte-opt.el: (funcall \\='F ARGS...) and (funcall #\\='F ARGS...) become (F
 ARGS...); (apply F ... (list X ...)) becomes (funcall F ... X ...) and (apply
-F ... '(X ...)) (funcall F ... 'X ...).  F stays a call through funcall when
+F ... \\='(X ...)) (funcall F ... \\='X ...).  F stays a call through funcall when
 it names a macro or a special form, which funcall would refuse."
   (let ((fn (nth 1 sexp)))
     (pcase (car sexp)
@@ -2150,6 +2264,13 @@ user `let' binding keeps its value as a GNU Lisp_Object does."
           :label (nelisp-aot-compiler--gensym "lisp-condition-landing")
           :body body :repr 'sexp-ptr :lisp-condition-case t
           :error-ref error-ref :clauses clauses)))
+
+(defsubst nelisp-aot-compiler--ir-node-p (value)
+  "Return non-nil when VALUE is a AOT IR node vector."
+  (and (vectorp value)
+       (> (length value) 0)
+       (symbolp (aref value 0))
+       (assq (aref value 0) nelisp-aot-compiler--ir-kind-tags)))
 
 (defun nelisp-aot-compiler--lisp-exit-control-flow (body env fenv defuns)
   "Guard Lisp boundary calls and lower static condition-case landing pads.
@@ -2457,13 +2578,6 @@ This is a behaviour-preserving change: every dispatched kind maps to a
 distinct stable tag, so the emitted `.o' bytes are unchanged."
   (cdr (assq (nelisp-aot-compiler--ir-kind node)
              nelisp-aot-compiler--ir-kind-tags)))
-
-(defsubst nelisp-aot-compiler--ir-node-p (value)
-  "Return non-nil when VALUE is a AOT IR node vector."
-  (and (vectorp value)
-       (> (length value) 0)
-       (symbolp (aref value 0))
-       (assq (aref value 0) nelisp-aot-compiler--ir-kind-tags)))
 
 (defun nelisp-aot-compiler--walk-ir (ir fn)
   "Walk IR and nested IR children, calling FN for each node."
@@ -15889,8 +16003,10 @@ build never reaches here, keeping the produced `.o' bytes unchanged."
   "Keep profitable raw call-free regions in the CG3 register pool.
 This never retains a local across a call, allocating node, checked
 arithmetic guard or Lisp-value operation.  Nil retains the old lowering.
-The environment variable NELISP_CALL_FREE_REGIONS=0 starts a build with it off: the region
-planner walks the IR again at every nested `if', `cond' and `let', and a function with a deep
+The environment variable NELISP_CALL_FREE_REGIONS=0 starts a build with it off:
+the region
+planner walks the IR again at every nested `if', `cond' and
+`let', and a function with a deep
 `let*' nest (the word-heap line's four inline passes make them) takes minutes.")
 
 (defvar nelisp-aot-compiler--x86-call-containing-defun-p nil
@@ -18213,10 +18329,14 @@ Absolute-base folding removes the base load and its register input."
     (and (cl-intersection writes (append inputs held)) t)))
 
 (defun nelisp-aot-compiler--x86-scaled-index (offset)
-  "Return (E SCALE DISP) when OFFSET is E*SCALE+DISP with E a call-free computation, else nil.
-SCALE is 2, 4 or 8 from `*' by that immediate or `shl' by 1-3; constant terms added to or
-subtracted from E, or from the product, move into DISP.  E is not a plain variable reference
-\(`--x86-index-form' already folds that).  GCC selects [base+index*scale+disp] the same way
+  "Return (E SCALE DISP) when OFFSET is E*SCALE+DISP with E a call-free
+computation, else nil.
+SCALE is 2, 4 or 8 from `*' by that immediate or `shl' by 1-3; constant terms
+added to or
+subtracted from E, or from the product, move into DISP.  E is not a plain
+variable reference
+\(`--x86-index-form' already folds that).  GCC selects [base+index*scale+disp]
+the same way
 instead of materializing the scaled byte offset with imul and add (regalloc)."
   (cl-labels
       ((peel (n)
@@ -22448,7 +22568,8 @@ Strategy (= inline word check, no extern call):
 ;; ---- Doc 101 §101.C Symbol/Str read ops emit ----
 
 (defun nelisp-aot-compiler--emit-string-word-fields (buf word len ptr tmp)
-  "Emit LEN = the byte length and PTR = the data pointer of the String whose WORD is in WORD.
+  "Emit LEN = the byte length and PTR = the data pointer of the String whose
+WORD is in WORD.
 Decision item A.  A String WORD has its low bits 100 and its header at WORD - 4
 (docs/design/227): `size' at +0, `size_byte' at +8 -- negative for a unibyte
 string, whose byte length is then `size' without its top bit, the collector's
@@ -22471,7 +22592,8 @@ clobbered when LEN is wanted."
 
 (defun nelisp-aot-compiler--emit-unless-string-word (buf reg tmp label)
   "Emit a jump to LABEL unless REG is a String WORD (low bits 100).
-The pure predicate that `emit-unless-view' is for legacy views.  TMP is clobbered."
+The pure predicate that
+`emit-unless-view' is for legacy views.  TMP is clobbered."
   (nelisp-asm-x86_64-mov-imm32 buf tmp 7)
   (nelisp-asm-x86_64-and-reg-reg buf tmp reg)
   (nelisp-asm-x86_64-cmp-imm32 buf tmp 4)
@@ -22493,14 +22615,16 @@ legacy view).  Any other WORD is left alone.  TMP is clobbered."
     (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-symbol-object-redirect (buf reg tmp &optional redirected-label)
-  "Emit REG = its name string WORD when REG is a symbol object WORD (kind 4 or 16).
+  "Emit REG = its name string WORD when REG is a symbol object WORD (kind 4 or
+16).
 Doc 226 D9 stage 3: an interned symbol is an object as an uninterned one is,
 so the name-comparing emitters read its name cell (backing + 8 = REG + 2)
 where they read a view's inline string.  Decision item A: the cell holds the
 String WORD (GNU's u.s.name), or nil (3) before it is filled; the caller tests
 it with `emit-unless-string-word' and reads it with `emit-string-word-fields'.
 Any other WORD -- a view, an immediate, a string, another vectorlike -- is left
-as it is for the tests that follow.  A symbol's flags byte is its kind, 4 or 16 (bits 6 and 7 of it
+as it is for the tests that follow.  A symbol's flags byte is its kind, 4 or
+16 (bits 6 and 7 of it
 stay clear).  With REDIRECTED-LABEL the redirect jumps there, REG holding the
 name string WORD still to be tested as a view; otherwise it falls through.
 TMP is clobbered."
@@ -22526,7 +22650,8 @@ TMP is clobbered."
     (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-len (node buf)
-  "Emit the byte length of a String, a Symbol or a symbol object after computing NODE's :ptr.
+  "Emit the byte length of a String, a Symbol or a symbol object after computing
+NODE's :ptr.
 A legacy view holds it at +24; a String WORD (a bare string, or the name cell of
 a symbol object) in its header (`emit-string-word-fields')."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
@@ -22545,7 +22670,8 @@ a symbol object) in its header (`emit-string-word-fields')."
     (nelisp-asm-x86_64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-bytes (node buf)
-  "Emit the data pointer of a String, a Symbol or a symbol object after computing NODE's :ptr.
+  "Emit the data pointer of a String, a Symbol or a symbol object after
+computing NODE's :ptr.
 A legacy view holds it at +16; a String WORD at WORD + 20 (the header's +24)."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (id (nelisp-aot-compiler--gensym "strbytes"))
@@ -24450,7 +24576,8 @@ No tag check; caller guarantees :ptr is a `Sexp::Int'."
   (nelisp-heap-accessors-arm64-sexp-payload buf 'x0 'x0))
 
 (defun nelisp-aot-compiler--emit-string-word-fields-arm64 (buf word len ptr tmp hdr)
-  "Emit LEN = the byte length and PTR = the data pointer of the String whose WORD is in WORD (aarch64).
+  "Emit LEN = the byte length and PTR = the data pointer of the String whose
+WORD is in WORD (aarch64).
 The twin of the x86-64 `emit-string-word-fields': the header is at WORD - 4,
 `size' at +0, `size_byte' at +8 (negative: unibyte, the byte length is `size'
 without its top bit) and the data pointer at +24.  The scaled loads reach only
@@ -24478,11 +24605,13 @@ is in).  LEN or PTR nil skips that register.  TMP and HDR are clobbered."
   (nelisp-asm-arm64-b-cond buf 'ne label))
 
 (defun nelisp-aot-compiler--emit-symbol-object-redirect-arm64 (buf reg tmp &optional redirected-label)
-  "Emit REG = its name cell when REG is a symbol object WORD (kind 4 or 16; aarch64).
+  "Emit REG = its name cell when REG is a symbol object WORD (kind 4 or 16;
+aarch64).
 The twin of the x86-64 `emit-symbol-object-redirect', which the aarch64 name
 operations lacked: at 63ec9640e a symbol object WORD (low bits 110) fell into
 `emit-unless-view-arm64' and `symbol-name-eq' answered false for every interned
-symbol.  The cell (backing + 8 = REG + 2) holds the String WORD, or nil before it
+symbol.  The cell (backing + 8 = REG + 2) holds the String WORD, or nil before
+it
 is filled.  Any other WORD is left as it is.  With REDIRECTED-LABEL the redirect
 branches there, REG holding the cell; otherwise it falls through.  TMP is
 clobbered."
@@ -24523,7 +24652,8 @@ The string accessors that follow read a String WORD through its header
     (nelisp-asm-arm64-define-label buf done)))
 
 (defun nelisp-aot-compiler--emit-str-len-arm64 (node buf)
-  "Emit `str-len' for aarch64 -- x0 = the byte length: a legacy view's i64 at [ptr+24], a String WORD's from its header."
+  "Emit `str-len' for aarch64 -- x0 = the byte length: a legacy view's i64 at
+[ptr+24], a String WORD's from its header."
   (let* ((id (nelisp-aot-compiler--gensym "strlen-a64"))
          (view (intern (format "%s-view" id)))
          (done (intern (format "%s-done" id))))
@@ -24571,7 +24701,8 @@ pointer from its header), add idx, LDRB; result (zero-extended byte) in x0."
       (nelisp-asm-arm64-cmp-reg-reg buf reg 'x12))))
 
 (defun nelisp-aot-compiler--emit-str-bytes-arm64 (node buf)
-  "Emit `str-bytes' for aarch64 -- x0 = the data pointer: a legacy view's at +16, a String WORD's from its header."
+  "Emit `str-bytes' for aarch64 -- x0 = the data pointer: a legacy view's at
++16, a String WORD's from its header."
   (let* ((id (nelisp-aot-compiler--gensym "strbytes-a64"))
          (view (intern (format "%s-view" id)))
          (done (intern (format "%s-done" id))))
@@ -24638,8 +24769,10 @@ pointer from its header), add idx, LDRB; result (zero-extended byte) in x0."
 (defun nelisp-aot-compiler--emit-symbol-name-eq-arm64 (node buf)
   "Emit `symbol-name-eq' for aarch64 -- Symbol tag + literal byte compare.
 Like the x86-64 emitter, a symbol object WORD compares by its name cell (the
-redirect the aarch64 operation lacked at 63ec9640e): a String WORD read through its
-header, anything else there -- nil before the cell is filled -- not equal.  A legacy
+redirect the aarch64 operation lacked at 63ec9640e): a String WORD read through
+its
+header, anything else there -- nil before the cell is filled -- not equal.  A
+legacy
 symbol view keeps its inline fields."
   (let* ((ptr (nelisp-aot-compiler--ir-get node :ptr))
          (bytes (nelisp-aot-compiler--ir-get node :bytes))
@@ -24733,7 +24866,8 @@ cell), the latter read through its header."
     (nelisp-asm-arm64-define-label buf end-lbl)))
 
 (defvar nelisp-aot-compiler-arm64-no-symbol-word-eq nil
-  "Non-nil when the aarch64 program being emitted does not define `nl_symbol_word_eq'.
+  "Non-nil when the aarch64 program being emitted does not define
+`nl_symbol_word_eq'.
 Whole-program builders of hand-written probes (no reader runtime) bind it,
 so `symbol-eq' emits only the inline view compare instead of a `bl' to a
 label that never resolves.  The default nil keeps the object-word branch for
@@ -25903,12 +26037,17 @@ the test must compare two variables.")
 
 (defvar nelisp-aot-compiler--threaded-dispatch nil
   "Plist (:node TABLE-IF :tail FUNCTION) while a threaded loop body is emitted.
-FUNCTION receives the table-jump emitter and emits the copied exit test and fetch.")
+FUNCTION receives the table-jump emitter and emits the copied exit test and
+fetch.")
 
 (defun nelisp-aot-compiler--limit-guard-slot (node)
-  "Slot of the continuation limit of `while' NODE when its test is (< PC GO), else nil.
-Only the allow-listed dispatch defuns qualify, whatever the target or the threaded switch: their
-decline arms `(setq go 0)' stay out of line (the cold layout of `--cold-guard-slot') as they were
+  "Slot of the continuation limit of
+`while' NODE when its test is (< PC GO), else nil.
+Only the allow-listed dispatch defuns qualify, whatever the target or the
+threaded switch: their
+decline arms
+`(setq go 0)' stay out of line (the cold layout of `--cold-guard-slot') as they
+were
 when the loop tested (> GO 0)."
   (let ((test (nelisp-aot-compiler--ir-get node :test)))
     (and (memq nelisp-aot-compiler--emitting-defun-name
@@ -25924,7 +26063,8 @@ when the loop tested (> GO 0)."
                 (nelisp-aot-compiler--ir-get b :slot))))))
 
 (defun nelisp-aot-compiler--threaded-loop-plan (node)
-  "Return (FETCH TABLE-IF) when `while' NODE qualifies for threaded dispatch, else nil."
+  "Return (FETCH TABLE-IF) when
+`while' NODE qualifies for threaded dispatch, else nil."
   (when (and nelisp-aot-compiler-threaded-dispatch
              (eq nelisp-aot-compiler--arch 'x86_64)
              (eq nelisp-aot-compiler--abi 'sysv)
@@ -26172,15 +26312,22 @@ nor touches rbx, r8, r9 or r12-r15, so no collection, unwinding or
 callee can observe a frame slot while its variable lives in a register.")
 
 (defvar nelisp-aot-compiler--x86-promotable-memo nil
-  "Eq hash table IR node -> :yes or :no during one outermost call-free-region emission, else nil.
-`--x86-promotion-plan' walks the IR below its node and the region planner runs it at every nested
-if, cond and let of a function, so a function whose let nest is N deep cost N walks of its whole body
-(27 minutes for the integrated tree's driver unit).  Whether a subtree holds only promotable nodes
-is a property of the subtree, so it is computed once per node and a region that contains a call
-declines in constant time.  Guard, not a tuned value: the facts belong in one bottom-up pass.")
+  "Eq hash table IR node -> :yes or :no during one outermost call-free-region
+emission, else nil.
+`--x86-promotion-plan' walks the IR below its node and the region planner runs
+it at every nested
+if, cond and let of a function, so a function whose let nest is N deep cost N
+walks of its whole body
+(27 minutes for the integrated tree's driver unit).  Whether a subtree holds
+only promotable nodes
+is a property of the subtree, so it is computed once per node and a region that
+contains a call
+declines in constant time.  Guard, not a tuned value: the facts belong in one
+bottom-up pass.")
 
 (defun nelisp-aot-compiler--x86-promotable-node-p (n)
-  "Non-nil when the plan's per-node test accepts N alone (its children are not looked at)."
+  "Non-nil when the plan's per-node test accepts N alone (its children are not
+looked at)."
   (let ((kind (nelisp-aot-compiler--ir-kind n)))
     (and (memq kind nelisp-aot-compiler--x86-promotable-kinds)
          (cond
@@ -26195,7 +26342,8 @@ declines in constant time.  Guard, not a tuned value: the facts belong in one bo
           (t t)))))
 
 (defun nelisp-aot-compiler--x86-subtree-promotable-p (node)
-  "Non-nil when NODE and every IR node below it pass `--x86-promotable-node-p', memoized."
+  "Non-nil when NODE and every IR node below it pass
+`--x86-promotable-node-p', memoized."
   (let ((memo nelisp-aot-compiler--x86-promotable-memo))
     (cl-labels
         ((check (n)
@@ -26221,9 +26369,12 @@ declines in constant time.  Guard, not a tuned value: the facts belong in one bo
       (check node))))
 
 (defun nelisp-aot-compiler--x86-region-map-free-p ()
-  "Non-nil when no CG3 register map is active other than the whole-function vm-register map.
-The vm-register slots live in r12-r15/rbx for the whole body and are never written back, so a
-call-free region may start inside such a body; its own pairs use the remaining registers."
+  "Non-nil when no CG3 register map is active other than the whole-function
+vm-register map.
+The vm-register slots live in r12-r15/rbx for the whole body and are never
+written back, so a
+call-free region may start inside such a body; its own pairs use the remaining
+registers."
   (if nelisp-aot-compiler-regraw
       (cl-every (lambda (p) (member p nelisp-aot-compiler--vm-reg-pairs))
                 nelisp-aot-compiler--promoted-slots)
@@ -26290,28 +26441,43 @@ them first (alloc.c `flush_stack_call_func1', `__builtin_unwind_init')."
 
 (defvar nelisp-aot-compiler-regalloc t
   "Non-nil weights call-free region allocation by execution path (regalloc).
-A region's frame accesses are counted along each slot's most used path: the arms of an `if'
-and the clauses of a `cond' are exclusive, so a slot touched once in each of N arms saves one
-access per execution, not N.  A callee-saved register (pushed on every execution) must also
-pay off under static branch probabilities.  The same switch selects GCC's PIC jump-table form (entries are
-offsets from the table start, not from the entry's end): any tool that decodes emitted tables
-must read them that way (test/nelisp-alignhot-test.el does).  Slots are ranked by that count and given the pool's registers
-in order; a proven region-private `let' slot pays no entry load or exit flush.  Nil restores
+A region's frame accesses are counted along each slot's most used path: the arms
+of an `if'
+and the clauses of a
+`cond' are exclusive, so a slot touched once in each of N arms saves one
+access per execution, not N.  A callee-saved register (pushed on every
+execution) must also
+pay off under static branch probabilities.  The same switch selects GCC's PIC
+jump-table form (entries are
+offsets from the table start, not from the entry's end): any tool that decodes
+emitted tables
+must read them that way (test/nelisp-alignhot-test.el does).  Slots are ranked
+by that count and given the pool's registers
+in order; a proven region-private
+`let' slot pays no entry load or exit flush.  Nil restores
 the static whole-subtree count (the A/B baseline).")
 
 (defvar nelisp-aot-compiler--x86-path-count-memo nil
-  "Eq hash table IR node -> its path slot counts during one outermost region emission, else nil.
-The region planner runs at every nested `if', `cond' and `let'; the counts of a subtree do not
+  "Eq hash table IR node -> its path slot counts during one outermost region
+emission, else nil.
+The region planner runs at every nested `if', `cond' and
+`let'; the counts of a subtree do not
 change while it is emitted, so each is computed once (regalloc).")
 
 (defun nelisp-aot-compiler--x86-path-slot-counts (node &optional expected)
   "Return an alist (SLOT . N): frame accesses of SLOT per execution of NODE.
-Accesses are `ref', `setq-local', `let-rt' and `let-rt-n' bindings.  By default N is the
-count on SLOT's most used path: an `if' adds its test to the larger of its arms, a `cond'
-takes the largest of its clauses' prefix sums.  With EXPECTED, N is the expected count under
-GCC's static branch estimate without profile data: each arm of an `if' runs with probability
-1/2, a `cond' reaches its K-th clause with probability 2^-K and runs its body with half of
-that.  The allocator weighs spill cost by block frequency instead of counting static uses
+Accesses are `ref', `setq-local', `let-rt' and `let-rt-n' bindings.  By default
+N is the
+count on SLOT's most used path: an
+`if' adds its test to the larger of its arms, a `cond'
+takes the largest of its clauses' prefix sums.  With EXPECTED, N is the expected
+count under
+GCC's static branch estimate without profile data: each arm of an
+`if' runs with probability
+1/2, a `cond' reaches its K-th clause with probability 2^-K and runs its body
+with half of
+that.  The allocator weighs spill cost by block frequency instead of counting
+static uses
 \(regalloc)."
   (cl-labels
       ((merge (a b fn)
@@ -26373,10 +26539,14 @@ that.  The allocator weighs spill cost by block frequency instead of counting st
     (count node)))
 
 (defun nelisp-aot-compiler--x86-branch-confined-p (node slots)
-  "Non-nil when NODE is an `if' or `cond' and each of SLOTS is accessed in one arm only.
-An `if' test runs on every path, so a slot it reads is not confined; a `cond' clause's
-test belongs to its clause.  Such a region is better split: each arm plans its own
-registers, so sibling arms do not lose the pool to one arm's variables (regalloc)."
+  "Non-nil when NODE is an `if' or `cond' and each of SLOTS is accessed in one
+arm only.
+An `if' test runs on every path, so a slot it reads is not confined; a `cond'
+clause's
+test belongs to its clause.  Such a region is better split: each arm plans its
+own
+registers, so sibling arms do not lose the pool to one arm's
+variables (regalloc)."
   (let ((parts (pcase (nelisp-aot-compiler--ir-kind node)
                  ('if (and (null (cl-intersection
                                   slots (mapcar #'car (nelisp-aot-compiler--x86-path-slot-counts
@@ -26392,8 +26562,10 @@ registers, so sibling arms do not lose the pool to one arm's variables (regalloc
                      slots)))))
 
 (defun nelisp-aot-compiler--x86-path-region-plan (node plan)
-  "Re-plan PLAN's registers for call-free NODE by path-weighted access counts (regalloc).
-Return (PAIRS . WRITTEN) or nil when the region saves fewer than three accesses."
+  "Re-plan PLAN's registers for call-free NODE by path-weighted access
+counts (regalloc).
+Return (PAIRS . WRITTEN) or nil when the region saves fewer than three
+accesses."
   (let* ((counts (sort (cl-remove-if
                         (lambda (c) (or (not (integerp (car c))) (< (car c) 0)
                                         (assq (car c) nelisp-aot-compiler--vm-reg-pairs)))
@@ -28867,8 +29039,10 @@ Records NODE's set in the live table as a side effect."
     m))
 
 (defun nelisp-aot-compiler--stackmap-begin (defun-ir body param-class variadic words)
-  "Prepare the liveness table for the defun being emitted (WORDS = P+R fixed words).
-Sets `--stackmap-live-table' (nil when the defun stays FULL) and `--stackmap-reason'."
+  "Prepare the liveness table for the defun being emitted (WORDS = P+R fixed
+words).
+Sets `--stackmap-live-table' (nil when the defun stays FULL) and
+`--stackmap-reason'."
   (setq nelisp-aot-compiler--stackmap-live-table nil
         nelisp-aot-compiler--stackmap-ranges nil
         nelisp-aot-compiler--stackmap-converged t
@@ -28890,7 +29064,8 @@ Sets `--stackmap-live-table' (nil when the defun stays FULL) and `--stackmap-rea
               nelisp-aot-compiler--stackmap-live-table nil)))))
 
 (defun nelisp-aot-compiler--emit-defun (defun-ir buf)
-  "Emit one function into BUF; with `--stackmap-records' bound, also record its map data."
+  "Emit one function into BUF; with
+`--stackmap-records' bound, also record its map data."
   (if (not (consp nelisp-aot-compiler--stackmap-records))
       (nelisp-aot-compiler--emit-defun-1 defun-ir buf)
     (let* ((nelisp-aot-compiler--stackmap-live-table nil)
@@ -28919,7 +29094,8 @@ Sets `--stackmap-live-table' (nil when the defun stays FULL) and `--stackmap-rea
   "Turn RECORDS (oldest last) into per-function map data using the final TEXT.
 RELOCS are the extracted relocation plists and FIXUPS the assembler's pending
 `(SLOT . LABEL)' fixups, both taken before the fixups were resolved.  Returns a
-list of plists `(:name :start :arity :slots :words :reason :sites)' in text order;
+list of plists
+`(:name :start :arity :slots :words :reason :sites)' in text order;
 `:sites' is a list of `(RET-OFFSET . LIVE-MASK-or-nil)' in ascending order, nil
 mask meaning that call site keeps the whole-frame scan."
   (let ((recs (sort (copy-sequence records)
@@ -28991,8 +29167,10 @@ mask meaning that call site keeps the whole-frame scan."
 ;; `--promoted-slots' and stay out of the body.
 
 (defun nelisp-aot-compiler--stackmap-register-mask (live)
-  "Return LIVE without the frame words of slots held in callee-saved registers (spillcall).
-The vm-register plan keeps those slots in registers for the whole body and never reads their
+  "Return LIVE without the frame words of slots held in callee-saved
+registers (spillcall).
+The vm-register plan keeps those slots in registers for the whole body and never
+reads their
 frame words, which therefore hold stale copies at every call site."
   (if (and nelisp-aot-compiler-spillcall (integerp live) nelisp-aot-compiler--vm-reg-pairs)
       (let ((m live))
@@ -29002,10 +29180,14 @@ frame words, which therefore hold stale copies at every call site."
     live))
 
 (defun nelisp-aot-compiler--vm-reg-pool (&optional no-rbx)
-  "The callee-saved registers the vm-register plan may use on this target, or nil.
-SysV adds rbx as a fifth, last register unless NO-RBX: every non-variadic SysV prologue already
-saves and restores it, and the plan declines a function that contains a node whose emitter uses it
-as the dynamic-alignment scratch (`record-slot-*').  Win64 keeps rbx as the alignment register."
+  "The callee-saved registers the vm-register plan may use on this target, or
+nil.
+SysV adds rbx as a fifth, last register unless NO-RBX: every non-variadic SysV
+prologue already
+saves and restores it, and the plan declines a function that contains a node
+whose emitter uses it
+as the dynamic-alignment
+scratch (`record-slot-*').  Win64 keeps rbx as the alignment register."
   (and (eq nelisp-aot-compiler--arch 'x86_64)
        (memq nelisp-aot-compiler--abi '(sysv win64))
        (if (and nelisp-aot-compiler-regraw (eq nelisp-aot-compiler--abi 'sysv) (not no-rbx))
@@ -29026,16 +29208,19 @@ as the dynamic-alignment scratch (`record-slot-*').  Win64 keeps rbx as the alig
     found))
 
 (defun nelisp-aot-compiler--assert-rbx-free ()
-  "Signal when an rbx-clobbering emitter runs inside a function that keeps a variable in rbx."
+  "Signal when an rbx-clobbering emitter runs inside a function that keeps a
+variable in rbx."
   (when (rassq 'rbx nelisp-aot-compiler--vm-reg-pairs)
     (error "nelisp-aot-compiler: dynamic-alignment scratch rbx used inside a vm-register function")))
 
 (defun nelisp-aot-compiler--vm-reg-slot-offset ()
-  "Frame slot index offset (from the rounded param+let area) of the first r12 save word."
+  "Frame slot index offset (from the rounded param+let area) of the first r12
+save word."
   (if (eq nelisp-aot-compiler--abi 'win64) 25 3))
 
 (defun nelisp-aot-compiler--vm-reg-var-slot (var defun-ir)
-  "Return the frame slot of VAR in DEFUN-IR when every use is a plain register-able access, else nil."
+  "Return the frame slot of VAR in DEFUN-IR when every use is a plain
+register-able access, else nil."
   (let* ((params (nelisp-aot-compiler--ir-get defun-ir :params))
          (pidx (cl-position var params))
          (slot (and pidx (not (cl-find var params :start (1+ pidx))) pidx))
@@ -29119,9 +29304,12 @@ as the dynamic-alignment scratch (`record-slot-*').  Win64 keeps rbx as the alig
 
 (defun nelisp-aot-compiler--vm-reg-analyze (body nslots cand bad)
   "Classify every definition under BODY.
-CAND is a vector mapping a slot to nil, or to the lowest class its definitions may have (1 for a
-declared parameter, 2 for a variable to be proven).  A candidate that receives a lower class is
-entered in hash table BAD with its first offending definition.  Return non-nil when the analysis
+CAND is a vector mapping a slot to nil, or to the lowest class its definitions
+may have (1 for a
+declared parameter, 2 for a variable to be proven).  A candidate that receives a
+lower class is
+entered in hash table BAD with its first offending definition.  Return non-nil
+when the analysis
 completed."
   (let ((st (make-vector nslots 0)))
     (dotimes (i nslots) (when (aref cand i) (aset st i 3)))
@@ -29233,11 +29421,14 @@ completed."
         t))))
 
 (defvar nelisp-aot-compiler--vm-reg-refusals nil
-  "Alist (SLOT . DEFINITION-NODE) of the first definition that made the raw proof drop SLOT.")
+  "Alist (SLOT . DEFINITION-NODE) of the first definition that made the raw
+proof drop SLOT.")
 
 (defun nelisp-aot-compiler--vm-reg-proven-slots (defun-ir declared proven)
-  "Return the members of DECLARED and PROVEN (frame slots) that pass the raw proof in DEFUN-IR.
-DECLARED slots are parameters asserted raw (definitions inside must not be references); PROVEN
+  "Return the members of DECLARED and PROVEN (frame slots) that pass the raw
+proof in DEFUN-IR.
+DECLARED slots are parameters asserted raw (definitions inside must not be
+references); PROVEN
 slots are `let' variables that must be raw or unwrapped at every definition."
   (let* ((nslots (nelisp-aot-compiler--vm-reg-max-slot defun-ir))
          (body (nelisp-aot-compiler--ir-get defun-ir :body))
@@ -29289,13 +29480,18 @@ slots are `let' variables that must be raw or unwrapped at every definition."
      (t nil))))
 
 (defvar nelisp-aot-compiler--vm-reg-dropped nil
-  "Alist (NAME . VARS) of opted-in variables the raw proof refused, per vm-register plan made.")
+  "Alist (NAME . VARS) of opted-in variables the raw proof refused, per
+vm-register plan made.")
 
 (defun nelisp-aot-compiler--vm-reg-plan (defun-ir)
-  "Return the alist (SLOT . REGISTER) the vm-register plan gives DEFUN-IR, or nil.
-Opt-in is by name through `nelisp-aot-compiler-vm-register-functions'.  Every opted-in variable
-is a candidate for the raw proof (`--vm-reg-proven-slots'); the first variables, in list order,
-that pass and have a plain register-able access shape take the pool's registers.  The decision is
+  "Return the alist (SLOT . REGISTER) the vm-register plan gives DEFUN-IR, or
+nil.
+Opt-in is by name through
+`nelisp-aot-compiler-vm-register-functions'.  Every opted-in variable
+is a candidate for the raw
+proof (`--vm-reg-proven-slots'); the first variables, in list order,
+that pass and have a plain register-able access shape take the pool's registers.
+ The decision is
 recorded in `--vm-reg-decisions' and logged as an `nelisp-vmreg:' line."
   (let* ((name (nelisp-aot-compiler--ir-get defun-ir :name))
          (nm (format "%s" name))
@@ -29347,7 +29543,8 @@ recorded in `--vm-reg-decisions' and logged as an `nelisp-vmreg:' line."
         (unless reason pairs)))))
 
 (defun nelisp-aot-compiler--vm-reg-save-disp (index)
-  "Frame displacement of the INDEXth (0..3) callee-saved register save word of the current defun."
+  "Frame displacement of the INDEXth (0..3) callee-saved register save word of
+the current defun."
   (- (* 8 (+ index (nelisp-aot-compiler--vm-reg-slot-offset)
              (nelisp-aot-compiler--vm-reg-base)))))
 
@@ -29355,7 +29552,8 @@ recorded in `--vm-reg-decisions' and logged as an `nelisp-vmreg:' line."
   nelisp-aot-compiler--vm-reg-base-slots)
 
 (defun nelisp-aot-compiler--emit-vm-reg-saves (buf)
-  "Save the vm-register plan's registers and load the promoted parameters; frame is ready."
+  "Save the vm-register plan's registers and load the promoted parameters; frame
+is ready."
   (let ((i 0))
     (dolist (p nelisp-aot-compiler--vm-reg-pairs)
       (unless (eq (cdr p) 'rbx)         ; rbx: the SysV prologue saves it already
@@ -29543,7 +29741,7 @@ return reg, untouched by epilogue)."
           (nelisp-aot-compiler--emit-leaf-body-x86 body buf)
           (nelisp-asm-x86_64--ret-inline buf))
     (if (eq nelisp-aot-compiler--arch 'aarch64)
-        (let ((gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
+        (let ((_gp-arg-regs nelisp-aot-compiler--aarch64-arg-regs)
               (fp-arg-regs '(d0 d1 d2 d3 d4 d5 d6 d7)))
           (nelisp-asm-arm64-define-label buf name)
           ;; Save LR for forward compatibility, then establish x29.
@@ -29964,7 +30162,7 @@ emit dispatchers can read it without plumbing it through every
 helper signature.  Pass nil when no static-imm32 tables exist.
 
 Doc 101 §101.B Wave 5: buffer is created with the current
-`nelisp-aot-compiler--abi' so Win64 callers get a 'win64 buffer."
+`nelisp-aot-compiler--abi' so Win64 callers get a \\='win64 buffer."
   (let ((nelisp-aot-compiler--table-vaddrs table-vaddrs)
         (nelisp-aot-compiler--x86-local-extern-facts
          (and nelisp-aot-compiler--executable-local-externs
@@ -30330,7 +30528,8 @@ drift (= a Doc 92 emitter invariant violation)."
 Bind around compilation; nil preserves the original byte stream.  The allocator
 must take two arguments.  Its module call graph may contain no allocation
 sites (explicit or literal-slot), indirect calls, external calls or imports.
-Raw sites are configured by `nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers'.
+Raw sites are configured by
+`nelisp-aot-compiler-wasm-genuine-alloc-raw-reservers'.
 This static check does not enforce initialization order or one-shot execution.
 This noncollecting mode leaves `dealloc-bytes' unchanged.")
 
@@ -31214,7 +31413,7 @@ also returns the slot pointer)."
          (a0 (nelisp-aot-compiler--ir-get node :a0))
          (a1 (nelisp-aot-compiler--ir-get node :a1))
          (a2 (nelisp-aot-compiler--ir-get node :a2))
-         (a3 (nelisp-aot-compiler--ir-get node :a3))
+         (_a3 (nelisp-aot-compiler--ir-get node :a3))
          (logic-scratch (nelisp-aot-compiler--wasm-logic-scratch-local ctx)))
     (pcase nr
       (0
@@ -31732,7 +31931,7 @@ also returns the slot pointer)."
                                (nelisp-aot-compiler--wasm-ir-contains-tag-p body 91))))
                        defuns))))
     (dolist (defun-ir defuns)
-      (let ((name (nelisp-aot-compiler--ir-get defun-ir :name))
+      (let ((_name (nelisp-aot-compiler--ir-get defun-ir :name))
             (type-key
              (nelisp-aot-compiler--wasm-function-type-key defun-ir)))
         (nelisp-aot-compiler--wasm-register-type
@@ -32341,7 +32540,7 @@ becomes a GLOBAL STT_FUNC symbol named after the defun (= symbol-name
 of the elisp identifier, with underscores preserved for C linkage).
 
 ARCH defaults to `x86_64'.  Object output supports `x86_64', `aarch64',
-and Doc 164 P0's `wasm32' (with `:format 'wasm').
+and Doc 164 P0's `wasm32' (with `:format \\='wasm').
 
 Spike scope: defun bodies must not reference strings.  Signals
 `nelisp-aot-compiler-error' with `:object-mode-no-strings' if
