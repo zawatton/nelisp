@@ -70,10 +70,20 @@
                    (mapcar (lambda (name) (and name (symbol-name name)))
                            (append byte-code-vector nil))))
     (should (equal stack-adjust (append byte-stack+-info nil)))
-    (should (equal (nelisp-native-bytecode-dialect-test--sha256-file bytecomp-source)
-                   (alist-get 'bytecomp.el.gz (alist-get 'source inventory))))
-    (should (equal (nelisp-native-bytecode-dialect-test--sha256-file comp-source)
-                   (alist-get 'comp.el.gz (alist-get 'source inventory))))))
+    (if (and (file-readable-p bytecomp-source) (file-readable-p comp-source))
+        (progn
+          (should (equal (nelisp-native-bytecode-dialect-test--sha256-file bytecomp-source)
+                         (alist-get 'bytecomp.el.gz (alist-get 'source inventory))))
+          (should (equal (nelisp-native-bytecode-dialect-test--sha256-file comp-source)
+                         (alist-get 'comp.el.gz (alist-get 'source inventory)))))
+      ;; Hosts that install plain .el sources (the Windows zip plus the GNU
+      ;; source files CI adds) have no .el.gz bytes to hash.  Compare the
+      ;; same sources by the pinned SHA-256 of their content instead.
+      (require 'nelisp-bytecode-compiler-input-dialect)
+      (dolist (name '(bytecomp comp))
+        (should (equal (nelisp-bytecode-compiler-input--gnu-source-content-sha256
+                        library-dir (symbol-name name))
+                       (alist-get name nelisp-bytecode-compiler-input--gnu-source-content-sha256)))))))
 
 (ert-deftest nelisp-native-bytecode-dialect/reads-real-elc-and-verifies-without-loading ()
   (let* ((path (nelisp-native-bytecode-dialect-test--fixture "gnu-31.1-mini.elc"))
