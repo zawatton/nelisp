@@ -8,6 +8,8 @@
 (require 'cl-lib)
 (require 'nelisp-native-load)
 
+(declare-function nelisp-bytecode-native-rooted-cfg-native-authenticated-result-p "nelisp-bytecode-native-rooted-cfg-native" (result))
+
 (defun nelisp-bytecode-native-rooted-cfg-call--stage (name &optional detail)
   "Write an optional flushed diagnostic stage marker for generic CFG calls."
   (condition-case nil
@@ -31,7 +33,7 @@
                (eq (plist-get result :status) 'complete))
     (error "rooted-cfg-call: producer result is not authenticated"))
   (nelisp-bytecode-native-rooted-cfg-call--stage "result-auth-end")
-  (let* ((input (plist-get result :input))
+  (let* ((_input (plist-get result :input))
          (plan (plist-get result :plan))
          (manifest (plist-get result :manifest))
          (entry (plist-get result :entry-name))

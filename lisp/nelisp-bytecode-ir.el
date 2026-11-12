@@ -391,7 +391,7 @@ does not lower loop operations or admit handler transfers."
                (nelisp-bytecode-ir-cfg-valid-p instructions code-length))
       (dotimes (i (length instructions))
         (let* ((row (aref instructions i)) (pc (aref row 0))
-               (op (aref row 1)) (next (aref row 2)) (target (aref row 3)))
+               (op (aref row 1)) (_next (aref row 2)) (target (aref row 3)))
           (when (and (= op 130) (< target pc))
             (push row backedges))))
       (when (= (length backedges) 1)

@@ -3,6 +3,10 @@
 (require 'cl-lib)
 (require 'nelisp-hash-custom)
 
+(declare-function nelisp-bytecode-ir--instruction-table "nelisp-bytecode-ir" (instructions))
+(declare-function nelisp-bytecode-frame-ir--min-inputs "nelisp-bytecode-frame-ir" (row))
+(declare-function nelisp-bytecode-frame-ir--simple-kind "nelisp-bytecode-frame-ir" (row))
+
 (defun nelisp-bytecode-native-switch-reference (key table targets)
   "Look up KEY using TABLE's current test and validate against TARGETS.
 The fresh sentinel distinguishes a miss from every possible stored value.

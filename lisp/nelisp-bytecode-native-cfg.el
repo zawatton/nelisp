@@ -181,7 +181,7 @@ backedges while keeping initial raw arguments unproven."
      (t nil))))
 
 (defun nelisp-bytecode-native-cfg--validate-frame
-    (blocks constants boolean-values arity)
+    (blocks constants boolean-values _arity)
   "Return a reason if BLOCKS exceeds the raw-i64 slot proof slice."
   (let ((failure nil))
     (dolist (block (append blocks nil))

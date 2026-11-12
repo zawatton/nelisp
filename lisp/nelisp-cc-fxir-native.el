@@ -57,6 +57,10 @@
 (require 'nelisp-cc-fxir-rows)
 (require 'nelisp-cc-fxir-effects)
 
+(declare-function nelisp-cc-fxir-facts-analyze "nelisp-cc-fxir-facts" (row &optional code))
+(declare-function nelisp-cc-fxir-facts-verify "nelisp-cc-fxir-facts" (row code candidate))
+(eval-when-compile (defvar nelisp-cc-fxir-facts--origin-schema))
+
 (declare-function nelisp-cc-fxir-analysis-row "nelisp-cc-fxir-analysis" (row &optional code))
 (declare-function nelisp-cc-fxir-admission-rows "nelisp-cc-fxir-admission" (snapshot))
 (declare-function nelisp-cc-fxir-inline-projection "nelisp-cc-fxir-inline" (row))

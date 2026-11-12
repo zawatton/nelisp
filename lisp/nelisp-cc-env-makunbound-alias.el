@@ -87,7 +87,9 @@
         (nl_exit_signal_w sig-tag sig-val)
         (dealloc-bytes name-bytes 8 8)
         1)))
-  "Private alias detach. Status 0=detached, 1=malformed, 2=cycle, 3=nonalias, 4=constant, 5=guard-refused.")
+  "Private alias detach.
+Status 0=detached, 1=malformed, 2=cycle, 3=nonalias, 4=constant,
+5=guard-refused.")
 
 (defconst nelisp-cc-env-makunbound-alias-source
   nelisp-cc-env-makunbound-alias--source
