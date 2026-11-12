@@ -20,7 +20,7 @@
 (declare-function ptr-write-u8 "ext:nelisp-runtime" (ptr offset value))
 (declare-function ptr-read-u8 "ext:nelisp-runtime" (ptr offset))
 (declare-function nelisp-eln-registration-metadata-type-word
-  "nelisp-eln-registration-metadata" (token))
+  "nelisp-eln-registration-metadata" (token &optional index))
 (declare-function nelisp-eln-registration-metadata-decode
   "nelisp-eln-registration-metadata" (token word))
 

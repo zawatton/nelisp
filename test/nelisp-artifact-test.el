@@ -1562,6 +1562,41 @@ source, publishes both definitions, and preserves an unrelated global."
       (when (file-directory-p temp-dir)
         (delete-directory temp-dir t)))))
 
+(ert-deftest nelisp-artifact/reload-source-file-removes-staging-directory ()
+  "Every reload exit path deletes its staging directory.
+All outcomes leave via `throw', so the cleanup must be a real unwind form."
+  (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-stage-" t))
+         (source-path (expand-file-name "stage.el" temp-dir))
+         (artifact-path (concat source-path ".nelc"))
+         (old-loaded nelisp-artifact--loaded)
+         (old-generation nelisp-artifact--reload-generation)
+         (staged nil)
+         (orig (symbol-function 'nelisp-artifact--make-temp-directory)))
+    (unwind-protect
+        (progn
+          (write-region "(defun nelisp-artifact-stage-test--f (x) (+ x 1))\n"
+                        nil source-path nil 'silent)
+          (nelisp-artifact-compile-file source-path artifact-path)
+          (nelisp--reset)
+          (setq nelisp-artifact--loaded nil)
+          (nelisp-load-file source-path)
+          (cl-letf (((symbol-function 'nelisp-artifact--make-temp-directory)
+                     (lambda (prefix)
+                       (let ((dir (funcall orig prefix)))
+                         (push dir staged)
+                         dir))))
+            (let ((result (nelisp-artifact-reload-source-file
+                           source-path "stage-test-build")))
+              (should (eq (plist-get result :status) 'ok))))
+          (should (= (length staged) 1))
+          (should-not (file-directory-p (car staged))))
+      (nelisp--reset)
+      (setq nelisp-artifact--loaded old-loaded
+            nelisp-artifact--reload-generation old-generation)
+      (dolist (d staged) (ignore-errors (delete-directory d t)))
+      (when (file-directory-p temp-dir)
+        (delete-directory temp-dir t)))))
+
 (ert-deftest nelisp-artifact/reload-source-file-rejects-before-publish ()
   "Strict reload failures preserve the old definition and report a phase."
   (let* ((temp-dir (make-temp-file "nelisp-artifact-reload-fail-" t))

@@ -43,7 +43,7 @@
 (declare-function nelisp-eln-callable-import--call-unary
   "nelisp-eln-callable-import"
   (capability implementation argument &optional convention arity constants
-              ports extra-arguments))
+              ports extra-arguments handler-options))
 (declare-function nelisp-eln-callable-import--call-chain
   "nelisp-eln-callable-import"
   (capability implementation arguments &optional convention arity constants
@@ -2462,9 +2462,9 @@ unary Lisp function; only its internal native call is MANY-convention."
                      handle name 0 size)))
          (word (and code (= (length code) size) (= size 6)
                     (+ (aref code 1)
-                       (lsh (aref code 2) 8)
-                       (lsh (aref code 3) 16)
-                       (lsh (aref code 4) 24))))
+                       (ash (aref code 2) 8)
+                       (ash (aref code 3) 16)
+                       (ash (aref code 4) 24))))
          (scalar0 (and code (= (length code) size) (= size 6)
                        (= (aref code 0) #xb8)
                        (= (aref code 5) #xc3) (= (logand word 3) 2)))

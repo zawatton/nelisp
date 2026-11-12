@@ -253,7 +253,7 @@ attempt that fails while it is nil.")
 (declare-function nelisp-eln-registration-metadata-slot-word
   "nelisp-eln-registration-metadata" (token vector index))
 (declare-function nelisp-eln-registration-metadata-type-word
-  "nelisp-eln-registration-metadata" (token))
+  "nelisp-eln-registration-metadata" (token &optional index))
 (declare-function nelisp-eln-registration-metadata-decode
   "nelisp-eln-registration-metadata" (token word))
 (declare-function nelisp-eln-registration-metadata-release

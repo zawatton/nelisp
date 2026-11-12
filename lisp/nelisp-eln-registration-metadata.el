@@ -127,7 +127,7 @@
     (nelisp-eln-abi-write-word
      address 0
      (if interned
-         (lsh nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
+         (ash nelisp-eln-objects--symbol-interned-in-initial-obarray 5)
        0))
     (nelisp-eln-abi-write-word address 8 name-word)
     (nelisp-eln-abi-write-word address 16 48)
