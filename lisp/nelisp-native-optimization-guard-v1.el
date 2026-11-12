@@ -1,6 +1,12 @@
 ;;; nelisp-native-optimization-guard-v1.el --- Root-authenticated arithmetic guard -*- lexical-binding: t; -*-
 (require 'nelisp-native-arithmetic-v2)
 
+(declare-function nelisp-native-optimization-guard-v1-descriptor
+                  "nelisp-native-optimization-guard-v1" (mode))
+(declare-function nelisp-native-optimization-guard-v1--dependency-context
+                  "nelisp-native-optimization-guard-v1" (provider))
+(declare-function nelisp-native-optimization-guard-v1--copy
+                  "nelisp-native-optimization-guard-v1" (value active budget depth))
 (defconst nelisp-native-optimization-guard-v1--arithmetic
   '(defun nl_native_add_guard_v1 (env ticket left-index right-index output-index exit-index)
      (if (or (<= left-index 0) (<= right-index 0) (<= output-index 0) (<= exit-index 0)

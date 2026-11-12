@@ -13,6 +13,7 @@
     ("nelisp_cons_construct" func 3) ("nl_native_cons_v2" func 5)
     ("nl_root_pin_begin_v2" func 1) ("nl_root_pin_end_v2" func 2)
     ("nl_root_pin_reserve_v2" func 2) ("nl_root_pin_slot_v2" func 3)))
+(eval-when-compile (require 'nelisp-native-cache nil t))
 (defvar nelisp-native-compiler-startup-evidence--template nil)
 (defvar nelisp-native-compiler-startup-evidence--source-root nil)
 (defvar nelisp-native-compiler-startup-evidence--boot-sources nil)

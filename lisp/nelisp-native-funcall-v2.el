@@ -3,6 +3,7 @@
 (require 'cl-lib)
 (require 'nelisp-bytecode-cleanup)
 (declare-function nelisp-native-frame-v2-bank-copy-emit "nelisp-native-frame-v2" (plan inputs roots body))
+(declare-function nelisp-native-funcall-v2-descriptor "nelisp-native-funcall-v2" ())
 (defvar nelisp--bytecode-lisp-providers)
 (defconst nelisp-native-funcall-v2-version "nelisp-native-funcall-v2-2")
 (let ((descriptor
@@ -51,7 +52,7 @@
   (defun nelisp-native-funcall-v2-primitive (opcode)
     "Return the canonical runtime primitive and arity for OPCODE."
     (copy-tree (assq opcode primitives))))
-(let ((lookup (symbol-function 'symbol-function))
+(let ((_lookup (symbol-function 'symbol-function))
       (same (symbol-function 'eq))
       (association (if (fboundp 'nelisp--eval-source-string)
                        '(builtin assq) (symbol-function 'assq)))
