@@ -27,8 +27,7 @@ pending
 evidence: tools/ai/ci-speedup/win-stack-overflow-diagnosis.md sha256=4fc5a4528bb4566bd66b955407fdd58235d7248d43dbafe9e7cf38ce9f15a3fe
 
 ** S2.2 E2E - Windows CHECKED build completes on CI without stack overflow
-#+NOTE: needs CI
-pending
+evidence: tools/ai/ci-speedup/ci-run-febe2380e.txt sha256=19b9966d525197423ee014b9ccc5effc8878eb0a3c1647c135b92a7b6eda5d97
 
 * S3 arm64 :branch-out-of-range on macOS stage-d
 
@@ -36,8 +35,7 @@ pending
 cmd: (ulimit -v 8388608; timeout 900 emacs --batch -Q -L lisp -L src -L scripts -L test -l ert -l test/nelisp-arm64-branch-range-test.el -f ert-run-tests-batch-and-exit </dev/null)
 
 ** S3.2 E2E - stage-d macOS legs pass on CI
-#+NOTE: needs CI
-pending
+evidence: tools/ai/ci-speedup/ci-run-febe2380e.txt sha256=19b9966d525197423ee014b9ccc5effc8878eb0a3c1647c135b92a7b6eda5d97
 
 * S4 tier extras wall time (design: substrate-parity serial launches)
 
