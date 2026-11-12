@@ -588,7 +588,8 @@ finish_row() {
   [ "$row_open" = 1 ] || return 0
   row_open=0
   local secs=$((SECONDS - row_started)) tag=""
-  printf '%s|%s|%s\n' "$secs" "$row_gate" "$row_file" >>"$timing_file"
+  printf '%s|%s|%s|%s\n' "$secs" "$row_gate" "$row_file" \
+    "$(sed -n "${row_index}p" "${row_keys_file:-/dev/null}" 2>/dev/null)" >>"$timing_file"
   if [ "$row_timed_out" = 1 ]; then tag=TIMEOUT
   elif [ "$secs" -ge "$slow_row" ]; then tag=slow
   fi
@@ -604,7 +605,7 @@ print_timing_summary() {
   echo "gate-mutation: slowest rows"
   if [ -s "$timing_file" ]; then
     LC_ALL=C sort -t'|' -k1,1nr "$timing_file" | head -10 |
-      while IFS='|' read -r t_secs t_gate t_file; do
+      while IFS='|' read -r t_secs t_gate t_file _; do
         printf '  %6ss  %s  file=%s\n' "$t_secs" "$t_gate" "$t_file"
       done
   fi
@@ -852,7 +853,9 @@ fi
 
 # Shard selection, for splitting the sweep across parallel CI jobs.
 #
-#   NELISP_GATE_MUTATION_SHARD=<k>/<n>   run rows where (index mod n) == k
+#   NELISP_GATE_MUTATION_SHARD=<k>/<n>   run shard k of n; rows are assigned by
+#     longest-processing-time first from tools/gate-mutation-weights.txt (see
+#     tools/gate-mutation-shard.awk), so shards finish together
 #
 # A full sweep is the single longest thing CI does -- 1257 s of the Linux
 # lane's 46 minutes on run 32956362867, in one serial stretch.  The rows
@@ -877,7 +880,15 @@ if [ -n "$shard" ]; then
     echo "gate-mutation: FAIL (shard $shard_k out of range for $shard_n shards)"
     exit 1
   fi
-  rows=$(printf '%s\n' "$rows" | awk -v k="$shard_k" -v n="$shard_n" 'NR % n == k { print }')
+  shard_dir=$(cd "$(dirname "$0")" && pwd)
+  if [ ! -f "$shard_dir/gate-mutation-shard.awk" ]; then
+    echo "gate-mutation: FAIL ($shard_dir/gate-mutation-shard.awk is missing; cannot split the rows)"
+    exit 1
+  fi
+  rows_all=$rows
+  rows=$(printf '%s\n' "$rows_all" | LC_ALL=C awk -F'|' -v table=tools/gate-mutations.txt \
+    -v wfile="$shard_dir/gate-mutation-weights.txt" -v n="$shard_n" -v k="$shard_k" \
+    -f "$shard_dir/gate-mutation-shard.awk")
   if [ -z "$rows" ]; then
     # More shards than rows.  Not a failure, but it must not read as a
     # clean full sweep either.
@@ -888,6 +899,11 @@ if [ -n "$shard" ]; then
   echo "gate-mutation: shard $shard_k of $shard_n ($(printf '%s\n' "$rows" | wc -l | tr -d ' ') rows)"
 fi
 assigned=$(printf '%s\n' "$rows" | wc -l | tr -d ' ')
+# Weight keys of the assigned rows, one per line in row order, for the
+# per-row seconds sidecar (the input of tools/gate-mutation-weights-update.py).
+row_keys_file="$mutation_gate_dir/row-keys"
+printf '%s\n' "$rows" | LC_ALL=C awk -F'|' -v table=tools/gate-mutations.txt -v mode=keys \
+  -f "$(cd "$(dirname "$0")" && pwd)/gate-mutation-shard.awk" >"$row_keys_file" 2>/dev/null || : >"$row_keys_file"
 
 # Show the selection and stop.  Inspecting which rows a filter picks used
 # to mean starting a sweep and killing it, which is how an injected defect
@@ -1268,6 +1284,12 @@ mkdir -p "$rows_dir"
 printf '{"schema": "gate-mutation-rows/1", "shard": "%s/%s", "selected_total": %s, "assigned": %s, "passed": %s, "failed": %s, "skipped": %s, "not_run": %s}\n' \
   "$shard_k" "$shard_n" "$selected_total" "$assigned" "$passed" "$failed" "$skipped" "$not_run" \
   >"$rows_dir/gate-mutation-rows-$shard_k.json"
+# Per-row seconds (all rows, not just the slow ones) for rebalancing.
+printf '{"schema": "gate-mutation-seconds/1", "shard": "%s/%s", "row_seconds": {' "$shard_k" "$shard_n" \
+  >"$rows_dir/gate-mutation-seconds-$shard_k.json"
+awk -F'|' 'NF >= 6 { k = $4 "|" $5 "|" $6; printf "%s\"%s\": %s", (c++ ? ", " : ""), k, $1 }' "$timing_file" \
+  >>"$rows_dir/gate-mutation-seconds-$shard_k.json" 2>/dev/null || :
+printf '}}\n' >>"$rows_dir/gate-mutation-seconds-$shard_k.json"
 echo "GATE-COUNT checked=$checked findings=$((failed+not_run)) passed=$passed failed=$failed skipped=$skipped not_run=$not_run selected_total=$selected_total assigned=$assigned"
 if [ "$accounted" -ne "$assigned" ]; then
   echo "gate-mutation: FAIL (row accounting: passed+failed+skipped+not_run=$accounted but $assigned rows were assigned)"
