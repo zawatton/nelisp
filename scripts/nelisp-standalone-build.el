@@ -71884,8 +71884,8 @@ from it."
                               "nested loads, %d before (a failed push must not be "
                               "popped)")
                      after before))))
-      (ignore-errors (delete-file inner))
-      (ignore-errors (delete-file outer))))
+      (dolist (file (list inner outer))
+        (when (file-exists-p file) (delete-file file)))))
   (message "[standalone-reader] frame-stack pop-desync smoke PASS"))
 
 ;;;###autoload
