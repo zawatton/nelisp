@@ -393,10 +393,18 @@ lisp/nelisp-com-dsl.el
 # they build NUL-terminated UTF-16 buffers in raw memory for Win64 callees.
 # Approved 2026-11-12; 18 calls.
 lisp/nelisp-com-wstr-lib.el
+# Compile-time declaration table only: names the runtime's raw-memory
+# primitives (`ptr-*', `alloc-bytes', `syscall-direct') so host
+# byte-compilation knows their arity.  It calls none of them, defines and
+# binds nothing, and replays only while `byte-compile-current-file' is set;
+# the quoted names are what the scan counts.  Approved 2026-11-13; 0 calls.
+lisp/nelisp-runtime-prims-decl.el
 # 2026-11-07: +1, scripts/nelisp-prelude-kernel.el (raw stat-buffer and sigaction
 # helpers moved out of the prelude).
 # 2026-11-12: +2, lisp/nelisp-com-dsl.el and lisp/nelisp-com-wstr-lib.el.
-kernel-files 133
+# 2026-11-13: +1, lisp/nelisp-runtime-prims-decl.el (declarations only).
+kernel-files 134
+pinned-kernel-touch lisp/nelisp-runtime-prims-decl.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-emit.el
 pinned-kernel-touch lisp/nelisp-bytecode-native-rooted-cfg-shared-emit.el
 pinned-kernel-touch lisp/nelisp-eln-abi.el

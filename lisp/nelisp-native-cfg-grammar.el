@@ -36,8 +36,9 @@
 
 (defun nelisp-native-cfg-grammar-validate (form)
   "Validate FORM before either backend emits effects; return its blocks.
-This slice admits reachable graphs, including irreducible and closed cycles.  Labels are non-nil symbols
-or nonnegative integers.  Bounds limit compilation resources, not execution."
+This slice admits reachable graphs, including irreducible and closed cycles.
+Labels are non-nil symbols or nonnegative integers.  Bounds limit compilation
+resources, not execution."
   (unless (and (proper-list-p form) (>= (length form) 4)
                (eq (car form) 'cfg) (eql (cadr form) 1)
                (<= (length (cdddr form)) 4096))

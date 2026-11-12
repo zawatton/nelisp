@@ -1,5 +1,8 @@
 ;;; nelisp-native-poll.el --- Frozen runtime poll -*- lexical-binding: t; -*-
 ;; SPDX-License-Identifier: GPL-3.0-or-later
+(declare-function nelisp-bytecode-native-rooted-cfg-poll-function
+                  "nelisp-native-poll" ())
+(declare-function nelisp-native-load--symbol-addr "nelisp-native-load" (name))
 (defvar quit-flag nil)
 (defvar inhibit-quit nil)
 (defvar nelisp-native-poll-force-gc nil

@@ -13,7 +13,7 @@ establish that its implicit display has neither graphics nor a color TTY."
   (unless (and (boundp 'window-system)
                (null window-system)
                (fboundp 'selected-frame)
-               (null (selected-frame))
+               (null (funcall (symbol-function 'selected-frame)))
                (fboundp 'display-graphic-p)
                (not (display-graphic-p))
                (fboundp 'tty-display-color-p)
