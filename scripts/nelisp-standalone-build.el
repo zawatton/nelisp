@@ -47997,11 +47997,231 @@ embed the build tree's path, so with them inside the key changed on every
 build.  They are linked from `nelisp-standalone--driver-lits-unit'."
   (let* ((nelisp-standalone--inline-import-sources
           (nelisp-standalone--unit-inline-imports "driver.o"))
-         (hoisted (nelisp-standalone--hoist-large-str-lits
-                   (nelisp-standalone--reader-driver-source) "nl_driver_lit")))
+         (hoisted (nelisp-standalone--share-lit-segments
+                   (nelisp-standalone--hoist-large-str-lits
+                    (nelisp-standalone--reader-driver-source) "nl_driver_lit")
+                   "nl_driver_lit")))
+    ;; Guard: the large command sources must not be embedded separately again.
+    (let ((dup (nelisp-standalone--lit-duplicate-bytes (cdr hoisted))))
+      (when (and nelisp-standalone--share-lit-segments-enabled (> dup 0))
+        (error "Driver literals embed %d bytes of the same forms more than once" dup)))
     (setq nelisp-standalone--driver-lits (cdr hoisted))
     (nelisp-standalone--cached-unit
      "driver.o" (car hoisted) nelisp-standalone--this-file)))
+
+;; Shared literal segments.  The reader driver embeds one command source per
+;; command group (runtime-image, eval/exec artifact, source cache, compile ...).
+;; Each is the whole Elisp substrate plus a short command tail, so five hoisted
+;; blobs of 4-6 MB repeated the same ~3.6 MB prefix and most of the rest.
+;; `nelisp-standalone--share-lit-segments' cuts every large hoisted literal at
+;; top-level form boundaries, keeps each distinct run of forms once in one pool
+;; blob, and leaves each literal as a small recipe of (OFFSET . LENGTH) pairs
+;; that `nl_driver_lit_assemble' concatenates into the same Str at run time.
+
+(defvar nelisp-standalone--share-lit-segments-enabled t
+  "When nil, `nelisp-standalone--share-lit-segments' returns its input.
+Only the duplicate-embedding negative control in the tests binds this.")
+
+(defconst nelisp-standalone--share-lit-min-bytes 1048576
+  "Hoisted literals shorter than this stay as they are.")
+
+(defconst nelisp-standalone--lit-assemble-defun
+  '(defun nl_driver_lit_assemble (recipe pool slot)
+     ;; RECIPE = [TOTAL u64][NSEG u64]{[OFF u64][LEN u64]}...; the bytes of
+     ;; segment I are POOL+OFF..POOL+OFF+LEN.  The concatenation is staged in
+     ;; a temporary chunk, copied into a fresh Str by `nl_alloc_str' (the call
+     ;; the unshared form made on the rodata blob), and the chunk released.
+     (let* ((total (heap-read-u64 recipe 0))
+            (nseg (heap-read-u64 recipe 8))
+            (buf (nl_string_alloc_mapping (+ total 16)))
+            (i 0) (pos 0) (r 0) (len 0) (res 0))
+       (seq
+        (while (< i nseg)
+          (seq
+           (setq r (+ recipe (+ 16 (* i 16))))
+           (setq len (heap-read-u64 r 8))
+           (nl_alloc_str_copy_loop (+ pool (heap-read-u64 r 0)) (+ buf pos) 0 len)
+           (setq pos (+ pos len))
+           (setq i (+ i 1))))
+        (setq res (nl_alloc_str buf total slot))
+        (nl_os_free_chunk buf (+ total 16))
+        res)))
+  "Run-time half of `nelisp-standalone--share-lit-segments'.")
+
+(defconst nelisp-standalone--lit-copy-defun
+  '(defun nl_driver_lit_copy (recipe pool dst off)
+     ;; Same recipe as `nl_driver_lit_assemble', copied to DST+OFF; returns
+     ;; OFF + TOTAL like the unshared `copy-lit' defun it replaces.
+     (let* ((total (heap-read-u64 recipe 0))
+            (nseg (heap-read-u64 recipe 8))
+            (i 0) (pos 0) (r 0) (len 0))
+       (seq
+        (while (< i nseg)
+          (seq
+           (setq r (+ recipe (+ 16 (* i 16))))
+           (setq len (heap-read-u64 r 8))
+           (nl_alloc_str_copy_loop (+ pool (heap-read-u64 r 0)) (+ dst (+ off pos)) 0 len)
+           (setq pos (+ pos len))
+           (setq i (+ i 1))))
+        (+ off total))))
+  "Run-time half for `nelisp-standalone--copy-lit-u64-defuns' blobs.")
+
+(defun nelisp-standalone--lit-raw-blob-p (name)
+  "Non-nil if NAME is a raw (no length word) `copy-lit' data blob."
+  (string-suffix-p "_literal_data" (symbol-name name)))
+
+(defun nelisp-standalone--lit-skip (name)
+  "Bytes of NAME's blob before its source text: 0 for raw blobs, else 8."
+  (if (nelisp-standalone--lit-raw-blob-p name) 0 8))
+
+(defun nelisp-standalone--lit-pieces (bytes)
+  "Split unibyte BYTES before every line that starts with an open paren."
+  (let ((pos 0) (pieces nil) (next nil))
+    (while (setq next (string-search "\n(" bytes pos))
+      (push (substring bytes pos (1+ next)) pieces)
+      (setq pos (1+ next)))
+    (when (< pos (length bytes)) (push (substring bytes pos) pieces))
+    (nreverse pieces)))
+
+(defun nelisp-standalone--lit-duplicate-bytes (blobs)
+  "Return how many bytes of repeated top-level pieces BLOBS embed more than once.
+BLOBS is a list of (NAME . BYTES); only blobs of at least
+`nelisp-standalone--share-lit-min-bytes' are looked at, and each blob's first
+8 bytes (length word) are skipped.  A piece of at least 256 bytes seen in two
+blobs, or twice in one, counts.  Zero means the large sources are not embedded
+twice."
+  (let ((seen (make-hash-table :test #'equal)) (dup 0))
+    (dolist (blob blobs)
+      (when (>= (length (cdr blob)) nelisp-standalone--share-lit-min-bytes)
+        (dolist (piece (nelisp-standalone--lit-pieces (substring (cdr blob) 8)))
+          (when (>= (length piece) 256)
+            (if (gethash piece seen)
+                (setq dup (+ dup (length piece)))
+              (puthash piece t seen))))))
+    dup))
+
+(defun nelisp-standalone--share-lit-segments (hoisted prefix)
+  "Return HOISTED = (SOURCE . BLOBS) with the large blobs' repeated runs shared.
+BLOBS named PREFIX_N of at least `nelisp-standalone--share-lit-min-bytes' are
+replaced by recipe blobs of the same names plus one pool blob PREFIX_pool;
+the uses `(nl_alloc_str (+ (data-addr N) 8) (heap-read-u64 (data-addr N) 0) SLOT)'
+in SOURCE become `(nl_driver_lit_assemble (data-addr N) (data-addr POOL) SLOT)'.
+Run-time bytes are unchanged; the result is checked before it is returned."
+  (let* ((big (and nelisp-standalone--share-lit-segments-enabled
+                   (cdr hoisted)
+                   (seq-filter
+                    (lambda (b)
+                      (and (or (string-match-p (format "\\`%s_[0-9]+\\'" (regexp-quote prefix))
+                                               (symbol-name (car b)))
+                               (nelisp-standalone--lit-raw-blob-p (car b)))
+                           (>= (length (cdr b)) nelisp-standalone--share-lit-min-bytes)))
+                    (cdr hoisted)))))
+    (if (< (length big) 2)
+        hoisted
+      (let ((ids (make-hash-table :test #'equal)) (rev nil) (n 0)
+            (succ (make-hash-table)) (pred (make-hash-table))
+            (seqs nil))
+        (dolist (b big)
+          (let ((s (mapcar (lambda (p)
+                             (or (gethash p ids)
+                                 (prog1 n (puthash p n ids) (push p rev) (setq n (1+ n)))))
+                           (nelisp-standalone--lit-pieces
+                            (substring (cdr b) (nelisp-standalone--lit-skip (car b)))))))
+            (push (cons (car b) s) seqs)))
+        (setq seqs (nreverse seqs) rev (vconcat (nreverse rev)))
+        (let ((note (lambda (tbl k v)
+                      (let ((old (gethash k tbl 'none)))
+                        (puthash k (cond ((eq old 'none) v) ((eql old v) v) (t :many)) tbl)))))
+          (dolist (e seqs)
+            (let ((s (cdr e)))
+              (funcall note pred (car s) -1)
+              (funcall note succ (car (last s)) -1)
+              (while (cdr s)
+                (funcall note succ (car s) (cadr s))
+                (funcall note pred (cadr s) (car s))
+                (setq s (cdr s))))))
+        (let* ((linked (lambda (a b) (and (eql (gethash a succ) b) (eql (gethash b pred) a))))
+               (chains (make-hash-table :test #'equal)) ; ids list -> (OFF . LEN)
+               (pool-chunks nil) (pool-len 0) (recipes nil))
+          (dolist (e seqs)
+            (let ((cur nil) (segs nil) (flush nil))
+              (setq flush
+                    (lambda ()
+                      (when cur
+                        (let* ((key (reverse cur)) (hit (gethash key chains)))
+                          (unless hit
+                            (let ((bytes (apply #'concat (mapcar (lambda (i) (aref rev i)) key))))
+                              (setq hit (cons pool-len (length bytes)))
+                              (puthash key hit chains)
+                              (push bytes pool-chunks)
+                              (setq pool-len (+ pool-len (length bytes)))))
+                          (push hit segs)
+                          (setq cur nil)))))
+              (dolist (a (cdr e))
+                (unless (and cur (funcall linked (car cur) a)) (funcall flush))
+                (push a cur))
+              (funcall flush)
+              (push (cons (car e) (nreverse segs)) recipes)))
+          (setq recipes (nreverse recipes))
+          (let* ((pool (apply #'concat (nreverse pool-chunks)))
+                 (pool-name (intern (format "%s_pool" prefix)))
+                 (u64le (lambda (v) (apply #'unibyte-string
+                                           (mapcar (lambda (i) (logand (ash v (* -8 i)) 255))
+                                                   (number-sequence 0 7)))))
+                 (new-blobs nil))
+            ;; Check every recipe rebuilds its literal before trusting it.
+            (dolist (r recipes)
+              (let* ((orig (substring (cdr (assq (car r) big)) (nelisp-standalone--lit-skip (car r))))
+                     (got (apply #'concat (mapcar (lambda (sg) (substring pool (car sg) (+ (car sg) (cdr sg))))
+                                                  (cdr r)))))
+                (unless (equal got orig)
+                  (error "Shared literal %s does not rebuild" (car r)))
+                (push (cons (car r)
+                            (concat (funcall u64le (length orig))
+                                    (funcall u64le (length (cdr r)))
+                                    (apply #'concat
+                                           (mapcar (lambda (sg) (concat (funcall u64le (car sg))
+                                                                        (funcall u64le (cdr sg))))
+                                                   (cdr r)))))
+                      new-blobs)))
+            (let* ((names (mapcar #'car big))
+                   (rewrite
+                    (lambda (self x)
+                      (cond
+                       ((not (consp x)) x)
+                       ((memq (car x) '(quote function data-blob)) x)
+                       ((pcase x
+                          (`(nl_alloc_str (+ (data-addr ,(and nm (pred (lambda (v) (memq v names))))) 8)
+                                          (heap-read-u64 (data-addr ,_) 0) ,slot)
+                           `(nl_driver_lit_assemble (data-addr ,nm) (data-addr ,pool-name)
+                                                    ,(funcall self self slot)))))
+                       ((pcase x
+                          (`(defun ,fn (dst off)
+                              (let ((literal-source (data-addr ,(and nm (pred (lambda (v) (memq v names)))))) . ,_)
+                                . ,_))
+                           `(defun ,fn (dst off)
+                              (nl_driver_lit_copy (data-addr ,nm) (data-addr ,pool-name) dst off)))))
+                       (t (let ((out nil) (tail x))
+                            (while (consp tail)
+                              (push (funcall self self (car tail)) out)
+                              (setq tail (cdr tail)))
+                            (let ((res (nreverse out)))
+                              (when tail (setcdr (last res) tail))
+                              res))))))
+                   (max-lisp-eval-depth (max max-lisp-eval-depth 20000))
+                   (src (funcall rewrite rewrite (car hoisted)))
+                   (blobs (append (seq-remove (lambda (b) (memq (car b) names)) (cdr hoisted))
+                                  (nreverse new-blobs)
+                                  (list (cons pool-name pool)))))
+              (dolist (nm names)
+                (when (cl-search (if (nelisp-standalone--lit-raw-blob-p nm)
+                                     (format "(literal-source (data-addr %s))" nm)
+                                   (format "(data-addr %s) 8)" nm))
+                                 (format "%S" src))
+                  (error "Shared literal use of %s left unrewritten" nm)))
+              (cons (append src (list nelisp-standalone--lit-assemble-defun
+                                      nelisp-standalone--lit-copy-defun))
+                    blobs))))))))
 
 (defun nelisp-standalone--driver-lits-unit ()
   "Return a raw link unit holding `nelisp-standalone--driver-lits', or nil.
