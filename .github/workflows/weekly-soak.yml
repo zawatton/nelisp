@@ -49,8 +49,13 @@ jobs:
         with:
           version: '31.1'
 
-      - name: Build and test standalone reader
-        run: make standalone-reader-test
+      # Build only.  The soak needs target/nelisp and nothing else; the
+      # reader's checks belong to CI, which runs them on every push.  Running
+      # `make standalone-reader-test' here meant one stale check skipped the
+      # soak entirely (run 42620312588, 2026-11-09: a stdlib-completion
+      # expectation predating bignum `expt').
+      - name: Build standalone reader
+        run: make standalone-reader
 
       - name: Build THP-disable wrapper
         # Same tools/nelisp-nothp.c the release blocker's 180s soak uses --
