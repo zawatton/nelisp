@@ -1,0 +1,78 @@
+#+TITLE: emacs-lib: no function reads the ec buffer layer when native buffers own
+
+Objective (user, 2026-11-13): fix the doubled buffer representation.  The
+buffer of record is the runtime `nelisp-buffer' (unification plan
+handoff/nelisp-emacs-unification_plan_2026-11-03.md, decision 5.1).  On
+feat/emacs-lib-import at 0e140cf2c every buffer constructor already returns
+`nelisp-buffer', but 13 commands emacs-lib installs still read the
+`nelisp-ec-buffer' layer and fail in any real buffer
+(`nelisp-ec-no-current-buffer').  GNU implements all 13 in Lisp, so the
+plan's criterion 3 prefers the genuine vendor file (paragraphs.el, fill.el,
+indent.el, simple.el, emacs-lisp/lisp.el, font-lock.el) over a polyfill.
+NeLisp core changes go to notes-d0 as patches (decision 5.1 item 5).
+
+Read with (from the NeLisp repo root, after building target/nelisp and
+`make -f mk/emacs-lib.mk build-nelisp-bootstrap'):
+  NELISP_BIN=target/nelisp bin/progress-meter.sh --ledger tools/ai/emacs-lib-ec-leak-progress.org
+(bin/progress-meter.sh lives in the Notes workspace.)
+
+* S1 Measurement
+
+** S1.1 The sweep detects a function that reads the ec current buffer (negative control)
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: test/emacs-lib/ec-leak-sweep.sh --count >/dev/null
+
+** S1.2 After bootstrap every buffer constructor returns `nelisp-buffer'
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null
+
+** S1.3 End to end: the bootstrap bundle rebuilds and the sweep completes with a leak count
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/ec-leak-sweep.sh --count | grep -qE '^[0-9]+$'
+
+* S2 Each command leaves the ec layer
+
+** S2.1 Paragraph and sentence motion/kill commands are not reported by the sweep
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: ! test/emacs-lib/ec-leak-sweep.sh --list | grep -qE '^EC-LEAK	(forward-paragraph|backward-paragraph|forward-sentence|backward-sentence|kill-sentence|backward-kill-sentence)	'
+
+** S2.2 fill-paragraph and tab-to-tab-stop are not reported by the sweep
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: ! test/emacs-lib/ec-leak-sweep.sh --list | grep -qE '^EC-LEAK	(fill-paragraph|tab-to-tab-stop)	'
+
+** S2.3 delete-backward-char and backward-sexp are not reported by the sweep
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: ! test/emacs-lib/ec-leak-sweep.sh --list | grep -qE '^EC-LEAK	(delete-backward-char|backward-sexp)	'
+
+** S2.4 font-lock-mode, font-lock-fontify-buffer and font-lock-unfontify-buffer are not reported by the sweep
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: ! test/emacs-lib/ec-leak-sweep.sh --list | grep -qE '^EC-LEAK	(font-lock-mode|font-lock-fontify-buffer|font-lock-unfontify-buffer)	'
+
+** S2.5 End to end: the sweep reports 0 leaks and still detects its control
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 120
+cmd: test/emacs-lib/ec-leak-sweep.sh >/dev/null
+
+* S3 Behavior
+
+** S3.1 The 13 commands give the same buffer text and point as GNU 31.1 on fixed inputs
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: test -x test/emacs-lib/ec-leak-behavior-parity.sh && test/emacs-lib/ec-leak-behavior-parity.sh
+
+** S3.2 Host ERT for edit and font-lock builtins has no failure other than s22-native-insert-undo-once
+#+NOTE: s22-native-insert-undo-once already failed at 0e140cf2c, before this work.
+#+TIMEOUT: 120
+cmd: bash -c 'args=(-L src); for d in packages/emacs-lib-*/src packages/emacs-lib-*/test packages/nelisp-regex/src; do args+=(-L "$d"); done; out=$(timeout 100 emacs --batch -Q "${args[@]}" -l emacs-edit-builtins-test -l emacs-font-lock-builtins-test -f ert-run-tests-batch-and-exit 2>&1); grep -q "^Ran [0-9]* tests" <<<"$out" && ! grep -E "^   FAILED  [0-9]" <<<"$out" | grep -vq "s22-native-insert-undo-once"'
+
+** S3.3 End to end: one run shows 0 leaks, one buffer type and GNU-equal behavior
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 420
+cmd: test/emacs-lib/ec-leak-sweep.sh >/dev/null && test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null && test -x test/emacs-lib/ec-leak-behavior-parity.sh && test/emacs-lib/ec-leak-behavior-parity.sh
