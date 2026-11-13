@@ -20,9 +20,9 @@
     ("vendor/staged-emacs-lisp/simple.el"
      . "c19d208e61100fc9ff692cef0c95d895e54e17fc1f9031500ac8474c9c2e48f2")
     ("vendor/staged-emacs-lisp/files.el"
-     . "00b8b0ee9e718a34bc8b9ca04526d8ce7449fb3ebf613bef28e4ca01b0a7ad9e")
+     . "f40bf4d7c2a77e045ea244890b870d8463b7879d0880701ce09aa895769e2ed9")
     ("vendor/staged-emacs-lisp/macroexp.el"
-     . "716a3ac7bd9756ad901f4307075cc4bd0e371248ab94c7a200962c7a1e2614e3")
+     . "10df0fe326e6f436a3ec3a74fdaa79b06272e5a35556383d8e2741ce3c16a0c2")
     ("vendor/staged-emacs-lisp/bindings.el"
      . "479dd97f6b78f644f036b8279a2594da7913f404c71f34451a26ed3642342b3b")
     ("vendor/staged-emacs-lisp/cl-macs.el"

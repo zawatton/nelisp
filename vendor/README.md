@@ -284,7 +284,7 @@ this segment introduces.
   `if-let`, `if-let*`, `when-let`, `when-let*`, `and-let*`, and `while-let`.
   Their only extra dependency is `macroexp-progn`, selected from the pinned
   `vendor/staged-emacs-lisp/macroexp.el` (SHA-256
-  `716a3ac7bd9756ad901f4307075cc4bd0e371248ab94c7a200962c7a1e2614e3`).
+  `10df0fe326e6f436a3ec3a74fdaa79b06272e5a35556383d8e2741ce3c16a0c2`).
   Both source and standalone evaluators install these definitions after the
   macro system is available; neither loads the full `macroexp.el` library.
   The same provider stages the exact GNU list forms `last`, `butlast`,
@@ -310,7 +310,7 @@ this segment introduces.
   bodies and formatted `user-error` conditions.
 - `vendor/staged-emacs-lisp/files.el` is byte-identical to GNU Emacs 31.1
   `files.el` in the sibling vendor tree (SHA-256
-  `00b8b0ee9e718a34bc8b9ca04526d8ce7449fb3ebf613bef28e4ca01b0a7ad9e`).
+  `f40bf4d7c2a77e045ea244890b870d8463b7879d0880701ce09aa895769e2ed9`).
   Both evaluators select only `file-attribute-size`,
   `file-attribute-modification-time`, and `file-attribute-file-identifier`;
   the standalone prelude's accessor substitutes were removed without loading
@@ -332,13 +332,13 @@ this segment introduces.
 - `vendor/emacs-lisp/emacs-lisp/easy-mmode.el` is byte-identical to the
   sibling vendor source at commit
   `cbf4f49d2620c264d39c887d024cd23df9cc9c62`; its SHA-256 is
-  `f2c7fd77680a771134c9cc3f1af8df8782d71cb918957ad4d9f8431cad168741`.
+  `87e32585d83c2699928da98850d0b0853758f34abf5710df917330503ec03f95`.
   The common standalone bootstrap requires this GNU provider before
   `cl-lib`, which uses `define-minor-mode` while loading.
 - `vendor/emacs-lisp/emacs-lisp/backquote.el` is byte-identical to the
   sibling vendor source at commit
   `0787c778dfce5c73360363d093e6997e708ec63c`; its SHA-256 is
-  `66ab254956c5e715c6d986132bb7e26278a01e6c5b0608cdaebf969a5e2494b1`.
+  `c35c07f9c07406e930e43daa55084277f28a49137dc7c5478a318145544f957d`.
   The standalone prelude loads this provider after the `put` primitive is
   available; the generated bootstrap supplies its source path without
   exposing other vendor libraries early.
