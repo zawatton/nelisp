@@ -29,5 +29,5 @@ cmd: python3 -I test/nelisp-lisp-compile-gate-test.py
 cmd: python3 -I test/nelisp-ci-gate-isolation-test.py
 
 ** S4.3 E2E - CI smoke ubuntu lisp-byte-compile step green
-#+NOTE: needs CI
-pending
+#+NOTE: CI run 43361840862 (main ffdd872d5): smoke ubuntu lisp-byte-compile step success
+evidence: tools/ai/byte-compile-cleanup/ci-run-43361840862-bcc.txt sha256=8ee026b5506f18141c69e74b7916dcbce43781238020a60b388b155aff064419
