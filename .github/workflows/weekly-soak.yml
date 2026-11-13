@@ -65,7 +65,10 @@ jobs:
         run: cc -O2 -o target/nelisp-nothp tools/nelisp-nothp.c
 
       - name: Standalone NeLisp GC soak
+        # pipefail: without it the step took tee's status, so a soak FAIL
+        # (run 43391884705) still reported success.
         run: |
+          set -o pipefail
           ./target/nelisp-nothp python3 tools/nelisp-standalone-soak.py \
             --binary target/nelisp --duration "$SOAK_DURATION" 2>&1 | tee soak.log
 
