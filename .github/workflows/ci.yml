@@ -141,6 +141,15 @@ jobs:
         # The linux-x86_64 standalone build disassembles its rooted protocol
         # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
         run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       # Fast red.  The ERT suite used to run only inside the `smoke'
       # matrix, so an assertion failure surfaced when the longest lane
       # finished (measured 2026-09-19 on run 35414197855: ubuntu/29.4 took
@@ -153,9 +162,11 @@ jobs:
       # an early answer, it does not replace one.  It runs BEFORE preflight
       # so the more common failure is reported first.
       - name: "ERT suite, host only (fast red; standalone-dependent cases skip here and run in the matrix)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make clean && bash tools/ai/nelisp-ai.sh test
       - name: "Preflight gates (inventories + parity, all failures collected)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: bash tools/ai/preflight.sh
       # Saved only from a push to main or a workflow_dispatch, so pull requests
@@ -461,10 +472,21 @@ jobs:
           $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & $exe.FullName --version | Select-Object -First 1
 
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       - name: Byte-compile
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make compile
       - name: "Unsafe-surface inventory (Doc 170 sec 4.3 baseline gate)"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' }}
         shell: bash
         run: make unsafe-inventory
       # Both scan tree text only -- no toolchain, no platform behaviour --
@@ -479,11 +501,11 @@ jobs:
       # files, 0 findings" and "no files matched" can be told apart in
       # the log.
       - name: "Namespace-boundary inventory (nl-ns ratchet); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make ns-inventory
       - name: "Unbalanced-paren check (nl-parens); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make parens-check
       # Catches a builtin that answers fboundp and then aborts the caller
@@ -491,7 +513,7 @@ jobs:
       # arms.  176 names today; the GATE-COUNT line is what stops an
       # empty list from reading as "every builtin has an arm".
       - name: "Reader surface audit (fboundp-liar builtins); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make reader-surface-audit
       # Derives the cross-package graph from provide/require.  Fails only
@@ -499,7 +521,7 @@ jobs:
       # than an absent one, because it is believed).  34 packages, 20
       # edges, acyclic today.
       - name: "Package dependency graph (nelisp-pkg); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make pkg-graph
       # The standalone smokes load dependencies by explicit path.  A
@@ -507,7 +529,7 @@ jobs:
       # instead of signalling -- so the list is checked here instead:
       # 9 files, 33 loads today.
       - name: "Hand-written load lists (nelisp-pkg); Linux lane only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make pkg-load-lists
       # Blocking again since 2026-08-19.  It was advisory because the ratio
@@ -521,11 +543,11 @@ jobs:
       # the current one 0.995/1.004/1.007, so the step can fail for a real
       # regression rather than by default.
       - name: "Doc 171 G4 native TCO benchmark (TCO-rewritten defun vs hand-written nl-loop, floor 0.95x; Linux is the only lane with the cc + objcopy native-exec toolchain)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make bench-aot-tco
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Windows') }}
         shell: bash
         # Bound the build: on run 42748394272 the build Emacs printed
         # "Re-entering top level after C stack overflow" in applyfn-reader
@@ -538,7 +560,7 @@ jobs:
       # since 2026-08-19, so the highest-value check in Doc 170 now runs on
       # the platform most of the development happens on.
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       # Informational only, never gates (native-comp probe, 2026-09-19):
@@ -549,7 +571,7 @@ jobs:
       # instead of a guess.  `|| true' plus `continue-on-error' so an
       # absent function or a non-native-comp Emacs cannot fail this job.
       - name: "Native compilation probe (informational; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         continue-on-error: true
         run: |
@@ -566,14 +588,14 @@ jobs:
       # round moves live-blocks 382369 386374 390374 394374 398374 over the
       # default 5 rounds and the target fails, which is the point of having it.
       - name: "Standalone NeLisp checked-allocator soak (Doc 170 sec 5.3: redzone + leak blockers; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked-soak
       # 70 of the 245 shared-shadowing names are also native builtins, so
       # loading the prelude swaps the implementation underneath them.  This
       # requires both implementations to answer the same.
       - name: "Standalone NeLisp shadow differential (native builtins vs the prelude's redefinitions; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-shadow-smoke
 
@@ -589,14 +611,14 @@ jobs:
       # unscoped `verify' at the end of this lane would have called it
       # MISSING despite this step having just run and passed it.
       - name: "Emacs parity (differential vs stock Emacs; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate emacs-parity -- make emacs-parity
 
       # Checks on the checks: every gate must report how much it looked at,
       # and a name that ignores an argument Emacs defines must say so.
       - name: "Gate self-check and partial-argument inventory (Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           make prelude-toplevel-check
@@ -622,6 +644,7 @@ jobs:
       # rebuilds target/nelisp through the same cc + objcopy native-exec
       # toolchain `bench-aot-tco' above notes is Linux-only.
       - name: "AI toolchain check-tier gates (tools/ai/nelisp-ai.sh check); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux' && matrix.emacs-version == '31.1') }}
         # Emacs-version-independent: this exercises the standalone
         # BINARY; the host Emacs only builds it.  Running it on both
         # 29.4 and 30.1 did the same work twice -- measured, the 29.4
@@ -630,7 +653,6 @@ jobs:
         # Anything that actually differs BY Emacs version -- compile,
         # emacs-parity, the ERT suites, test-jit/test-nojit -- still
         # runs on both lanes.
-        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
         shell: bash
         run: |
           # gate-mutation is not here: it is 1257 of this lane's 2784
@@ -657,7 +679,7 @@ jobs:
       # absence, so it costs nothing extra if an earlier step in this lane
       # already built one).
       - name: "Compat-table shadowing ratchet (tools/ai/nelisp-ai.sh gate emacs-compat); Emacs 31.1"
-        if: runner.os == 'Linux' && matrix.emacs-version == '31.1'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux' && matrix.emacs-version == '31.1') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate emacs-compat -- make emacs-compat
       # parity-fuzz runs in its own `parity-fuzz' job (needs: build).
@@ -674,7 +696,7 @@ jobs:
       # macOS "Upload gate reports" step further down carries the report
       # this now produces to the `verify' job.
       - name: Mach-O acceptance (NeLisp-emitted arm64 exec + MH_OBJECT vs codesign/clang/ld64; macOS)
-        if: runner.os == 'macOS'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'macOS') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate macho-acceptance-test -- make macho-acceptance-test
 
@@ -690,16 +712,17 @@ jobs:
       # like `emacs-parity' above, had no report producer anywhere in
       # this workflow before this pass.
       - name: Standalone NeLisp reader->eval (text -> AOT reader, zero Rust; x86_64 Linux)
-        if: runner.os == 'Linux'
+        id: reader-test
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate standalone-reader-test -- make standalone-reader-test
       - name: Set up Python for project CLI integration tests
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: "Package resolver and lock contracts (tools/ai/nelisp-ai.sh gate package-resolver); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-resolver -- make package-resolver
       # Each of the three steps below wraps its whole suite through
@@ -709,52 +732,52 @@ jobs:
       # class alone is the separate `project-cli-contract' gate further down,
       # which needs no runtime build and so can run earlier in CI.
       - name: "Project creation, run, and test integration (tools/ai/nelisp-ai.sh gate project-cli-integration); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-cli-integration -- make project-cli-integration
       - name: "Native selected-test execution and machine-readable failure contracts (tools/ai/nelisp-ai.sh gate project-test-runner); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-test-runner -- make project-test-runner
       - name: "Benchmark completion, input identity, and bounded execution contracts (tools/ai/nelisp-ai.sh gate project-bench); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-bench -- make project-bench
       # Contract suites, each wrapped through `nelisp-ai.sh gate' so it writes
       # target/gates/<name>.json from its GATE-COUNT line; the Makefile
       # targets and tools/gate-mutations.txt rows carry the details.
       - name: "Native builtin fixed-arity contract (tools/ai/nelisp-ai.sh gate builtin-arity); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate builtin-arity -- make builtin-arity
       - name: "defvar/defconst/let dynamic-binding contract (tools/ai/nelisp-ai.sh gate special-variables); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate special-variables -- make special-variables
       - name: "Public make-symbol identity contract (tools/ai/nelisp-ai.sh gate symbol-identity); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate symbol-identity -- make symbol-identity
       - name: "tools/nelisp-reference-parity.py false-positive controls (tools/ai/nelisp-ai.sh gate reference-parity); host-only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate reference-parity -- make reference-parity
       - name: "Language server contract (tools/ai/nelisp-ai.sh gate lsp-server); host-only"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lsp-server -- make lsp-server
       # Internal tag-16 symbol representation, checked on a private fixture
       # binary built by test/nelisp-native-symbol-build.el.
       - name: "Internal tag-16 symbol representation (tools/ai/nelisp-ai.sh gate native-symbol-test); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-symbol-test -- make native-symbol-test
       - name: "Project source documentation generation (tools/ai/nelisp-ai.sh gate project-doc); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-doc -- make project-doc
       - name: Set up Node for VS Code extension validation
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -775,88 +798,90 @@ jobs:
       # there.  The "(network)" labels stay because they say what those
       # steps touch, not because they are suspected of anything.
       - name: "VS Code: install xvfb (network)"
-        if: runner.os == 'Linux'
+        id: vscode-xvfb
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb
       - name: "VS Code: npm ci (network)"
-        if: runner.os == 'Linux'
+        id: vscode-npm
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm ci --ignore-scripts
       - name: "VS Code: grammar tests"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run test:grammar
       - name: "VS Code: process tests"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run test:process
       - name: "VS Code: package the extension"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: npm run package
       - name: "VS Code: real extension host (xvfb)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.vscode-npm.outcome == 'success' && steps.vscode-xvfb.outcome == 'success' && (runner.os == 'Linux') }}
         working-directory: editors/vscode
         shell: bash
         run: xvfb-run -a npm run test:package
       - name: "Package HTTPS acquisition and cache contracts (tools/ai/nelisp-ai.sh gate package-store); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-store -- make package-store
       - name: "Artifact-service receipts, reads and error identities (tools/ai/nelisp-ai.sh gate artifact-service); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate artifact-service -- make artifact-service
       - name: "Project manifest edits and failed publication recovery (tools/ai/nelisp-ai.sh gate project-manifest); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-manifest -- make project-manifest
       - name: "Registry HTTPS snapshots and CLI search integration (tools/ai/nelisp-ai.sh gate package-registry); no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-registry -- make package-registry
       - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
       - name: Project CLI result contract (no runtime build)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
       # Each of the five steps below builds its own project executable
       # through host Emacs, or exercises the existing standalone binary
       # directly; none needs a fresh target/nelisp build of its own.
       - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
       - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
       - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
       - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
       - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
       # target/nelisp already exists from the step above (its own
       # Makefile prerequisite is conditional, same as `emacs-parity'
       # further up, so this does not rebuild it).
       - name: "Binary-size ratchet (target/nelisp vs pinned baseline, tools/nelisp-binary-size-baseline.txt; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && steps.reader-test.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate binary-size-ratchet -- make binary-size-ratchet
       # Wrapped through `nelisp-ai.sh gate' (rather than bare `make
@@ -865,7 +890,7 @@ jobs:
       # a required gate with no report producer anywhere in this workflow
       # before this pass.
       - name: Standalone NeLisp SELF-HOST (interpreter compiles recursive fact -> native ELF, zero emacs; x86_64 Linux)
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate standalone-selfhost-test -- make standalone-selfhost-test
       # Three of `nelisp-ai.sh''s binary-tier gates were in no CI lane at
@@ -875,7 +900,7 @@ jobs:
       # builds target/nelisp itself if it is not already there, the same
       # way `standalone-selfhost-test' above does.
       - name: "AI toolchain binary-tier gate: native artifact (tools/ai/nelisp-ai.sh native-artifact); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh native-artifact
       # WS-F: `ptr-call'/`syscall-direct' exist only in the standalone
@@ -888,7 +913,7 @@ jobs:
       # step writes target/gates/native-unit-repl-smoke.json, matching the
       # `standalone-selfhost-test'/`standalone-reader-test' steps above.
       - name: "AI toolchain binary-tier gate: native-unit REPL replacement smoke (tools/ai/nelisp-ai.sh gate native-unit-repl-smoke); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
       # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
@@ -897,7 +922,7 @@ jobs:
       # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
       # that gate does, so it does not depend on run order with it.
       - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
       # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
@@ -909,7 +934,7 @@ jobs:
       # target itself turns any absence of `cc', or a non-linux-x86_64
       # gate target, into a GATE-SKIP rather than a failure.
       - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
 
@@ -917,7 +942,7 @@ jobs:
       # never been byte-compiled by CI.  Linux-only because one lane asserting
       # it is enough and the baseline counts are Emacs-version sensitive.
       - name: "Byte-compile lisp/ against its baseline (tools/ai/nelisp-ai.sh gate lisp-byte-compile); Linux"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate lisp-byte-compile -- make lisp-byte-compile
       # These two suites run private copies of
@@ -925,17 +950,17 @@ jobs:
       # in temporary fixture repositories to check the gate tooling's own
       # failure handling, so they stay plain steps; a nonzero exit fails the job.
       - name: Byte-compiler process failure controls
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: python3 test/nelisp-lisp-compile-gate-test.py
       - name: Mutation harness restoration failure controls
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: python3 test/nelisp-mutation-recovery-test.py
       # Structure tests of this workflow itself; they parse ci.yml with pyyaml,
       # which is installed explicitly (no silent skip when it is absent).
       - name: CI workflow structure tests
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           python3 -m pip install --user --break-system-packages pyyaml==6.0.3
@@ -943,14 +968,15 @@ jobs:
           python3 test/nelisp-ci-mutation-trigger-test.py
           python3 test/nelisp-variant-outputs-test.py
           python3 test/nelisp-ci-build-job-test.py
+          python3 test/nelisp-ci-gate-isolation-test.py
       - name: Gate output streaming and reader-smoke timing
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           python3 test/nelisp-ai-gate-stream-test.py
           python3 test/nelisp-reader-smokes-timing-test.py
       - name: Mutation harness row budgets and timing report
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: |
           python3 test/nelisp-gate-mutation-row-timeout-test.py
@@ -959,7 +985,7 @@ jobs:
       # Arena boundary-reclaim zeroing.  Linux x86_64 only: it drives the
       # standalone reader binary, which is where the defect lived.
       - name: "Arena reclaim zeroing / sexp-clone bind smoke (tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke); Linux x86_64"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
 
@@ -967,7 +993,7 @@ jobs:
       # here, not in the fast `gates' job, because that job uploads no gate
       # report and `verify' requires one for every gates.expected entry.
       - name: "Build-stamp skip logic (tools/ai/nelisp-ai.sh gate build-stamp); host only, no runtime build"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate build-stamp -- make build-stamp
 
@@ -1216,6 +1242,15 @@ jobs:
                                        (alist-get (intern n) nelisp-bytecode-compiler-input--gnu-source-content-sha256))
                           (error "%s.el does not match the pinned GNU 31.1 content hash" n))))'
 
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
       # Same build, and the same `if:', `smoke' used to run before its
       # own ERT steps: the suite's standalone-dependent cases `ert-skip'
       # when `target/nelisp' is absent (e.g.
@@ -1225,11 +1260,11 @@ jobs:
       # ahead of its ERT steps there either, so those cases keep
       # skipping on macOS here too -- unchanged from today.
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2; Linux x86_64)"
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: make standalone-reader-checked NELISP_BUILD_EMACS="$NELISP_BUILD_EMACS"
       - name: "Standalone NeLisp CHECKED allocator smoke (Doc 170 Stage 2 redzone/generation/leak report; Windows x86_64)"
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Windows') }}
         shell: bash
         # Bound the build: on run 42748394272 the build Emacs printed
         # "Re-entering top level after C stack overflow" in applyfn-reader
@@ -1250,7 +1285,7 @@ jobs:
       # through `test-fast' (see the Makefile), which never does -- so
       # the upload step further down is scoped to this variant.
       - name: Run smoke tests
-        if: matrix.variant == 'plain'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'plain') }}
         shell: bash
         run: make clean && bash tools/ai/nelisp-ai.sh test
       # `nelisp-jit-enabled' is nil by default and the only bindings of
@@ -1262,7 +1297,7 @@ jobs:
       # declined, and arity violations surfacing as the host's error
       # instead of nelisp-eval-error.  This keeps that honest.
       - name: Run smoke tests with the JIT enabled
-        if: matrix.variant == 'jit'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'jit') }}
         shell: bash
         run: make test-jit
       # `nelisp-jit-enabled' defaults to t, so the step above and the
@@ -1272,7 +1307,7 @@ jobs:
       # three semantic differences from the interpreter in it precisely
       # because nothing ran it.
       - name: Run smoke tests with the JIT disabled
-        if: matrix.variant == 'nojit'
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (matrix.variant == 'nojit') }}
         shell: bash
         run: make test-nojit
 
