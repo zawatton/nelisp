@@ -1,0 +1,86 @@
+# Manual measurement loop for the intermittent Windows stall of
+# `nelisp-native-unit-development--run-subprocess' (the
+# run-bounded-output-limit-truncates-and-kills test reporting :timeout
+# instead of :output-limit).  It runs only that one ERT test many times,
+# several copies at once, on a Windows runner and reports the failure count.
+# The test drives host Emacs only, so no NeLisp build is needed.
+name: windows-output-limit-loop
+
+on:
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: Number of test runs
+        default: '50'
+      parallel:
+        description: Concurrent test runs
+        default: '4'
+
+jobs:
+  loop:
+    name: output-limit loop (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same host Emacs install as the `ert' job's Windows lane in ci.yml:
+      # GNU publishes emacs-31.1.zip, which setup-emacs-windows cannot fetch.
+      - name: Set up Emacs (Windows)
+        shell: pwsh
+        env:
+          EMACS_WIN_VERSION: '31.1'
+        run: |
+          $v = $env:EMACS_WIN_VERSION
+          $major = $v.Split('.')[0]
+          $dir = Join-Path $env:RUNNER_TEMP "emacs-$v"
+          if (-not (Test-Path $dir)) {
+            $zip = "$dir.zip"
+            Invoke-WebRequest "https://ftp.gnu.org/gnu/emacs/windows/emacs-$major/emacs-$v.zip" -OutFile $zip
+            Expand-Archive $zip -DestinationPath $dir
+          }
+          $exe = Get-ChildItem $dir -Recurse -Filter emacs.exe | Select-Object -First 1
+          if (-not $exe) { throw "emacs.exe not found in emacs-$v.zip" }
+          $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+          & $exe.FullName --version | Select-Object -First 1
+
+      - name: Run the output-limit test in a loop
+        shell: bash
+        env:
+          ITERATIONS: ${{ inputs.iterations }}
+          PARALLEL: ${{ inputs.parallel }}
+        run: |
+          set -u
+          logdir="$RUNNER_TEMP/output-limit-loop"
+          rm -rf "$logdir"; mkdir -p "$logdir"
+          # Same load path as the Makefile's test-one target.
+          loads=""
+          for d in packages/*/src packages/*/test; do
+            [ -d "$d" ] && loads="$loads -L $d"
+          done
+          export logdir loads
+          run_one() {
+            i=$1
+            # shellcheck disable=SC2086
+            if timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
+                 -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
+                 -l test/nelisp-native-unit-development-test.el \
+                 --eval '(ert-run-tests-batch-and-exit "run-bounded-output-limit-truncates-and-kills")' \
+                 </dev/null >"$logdir/iter-$i.log" 2>&1; then
+              echo pass >"$logdir/iter-$i.result"
+            else
+              echo fail >"$logdir/iter-$i.result"
+            fi
+          }
+          export -f run_one
+          seq 1 "$ITERATIONS" | xargs -P "$PARALLEL" -I{} bash -c 'run_one {}'
+          total=$(ls "$logdir"/*.result | wc -l)
+          failed=$(grep -l '^fail' "$logdir"/*.result 2>/dev/null | wc -l)
+          for r in $(grep -l '^fail' "$logdir"/*.result 2>/dev/null); do
+            log="${r%.result}.log"
+            echo "::group::FAILED ${log##*/}"
+            cat "$log"
+            echo "::endgroup::"
+          done
+          echo "LOOP total=$total failed=$failed"
+          [ "$failed" -eq 0 ]
