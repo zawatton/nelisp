@@ -1,6 +1,16 @@
 #+TITLE: NeLisp — Self-Hosted Emacs Lisp VM
 #+AUTHOR: zawatton
-#+DATE: 2026-09-11
+#+DATE: 2026-11-13
+
+#+begin_center
+*A Lisp for hackers — and a Lisp you can hack.*
+#+end_center
+
+Every layer of NeLisp, from the reader to the GC and the native code
+emitters, is Elisp you can read, redefine, and reload from the REPL
+that is running it.  There is no C core underneath to treat as a black
+box: when the runtime does something you don't like, the fix is Lisp,
+and you can try it without restarting.
 
 #+begin_quote
 *Note on language:* I'm a non-native English speaker. The phrasing in
@@ -94,6 +104,28 @@ Use tagged release notes for the released feature and gate status; source
 checkout instructions, including the development launcher above, may
 describe changes not yet in a published release. The v1.0.1 overview below
 is retained as a historical snapshot.
+
+On =main= since v1.2.0 (not yet in a tagged release):
+- *Windows DLLs and COM from Elisp* — the PE writer emits PE32+ DLLs
+  (exports, base relocations, =DllMain=), and a COM DSL builds
+  in-process COM servers (vtables, =QueryInterface=/=AddRef=/=Release=,
+  GUID and UTF-16 data) from restricted Elisp.  This is the base for a
+  native Windows TSF text service.
+- *Faster startup from heap images* — =eval-runtime-image= and
+  =exec-elisp-artifact= / =eval-elisp-source= can start from a saved
+  heap image (=.cold=) instead of re-reading the substrate, and fall
+  back to the source path when an image is rejected.
+- *Smaller binary* — command sources that share the substrate are
+  embedded once: =target/nelisp= went from 44.5 MB to 21.5 MB on
+  linux/x86_64.
+- *GNU Emacs libraries in-tree* — the Emacs-semantics library moved into
+  this repository as =packages/emacs-lib-*= (Doc 211).
+- *Targets* — linux/x86_64, linux/aarch64, macos/aarch64 and
+  windows/x86_64.  The macOS Intel (macos/x86_64) target was dropped in
+  2026-11.
+- *CI* — every check runs even when an earlier one fails, the full
+  matrix finishes in under an hour, and byte-compiling =lisp/= has a
+  zero-tolerance bug check alongside per-file style ceilings.
 
 v1.0.1 ships:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
