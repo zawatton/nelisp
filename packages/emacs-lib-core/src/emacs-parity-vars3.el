@@ -110,6 +110,22 @@ being applied, but still respect file-local ones."))
     "Mapping from logical to physical fringe indicator bitmaps (parity fallback).")
   (make-variable-buffer-local 'fringe-indicator-alist))
 
+;;;; --- buffer.c: abbrev-mode -----------------------------------------
+;; A C per-buffer variable (default nil).  GNU indent.el's `tab-to-tab-stop'
+;; reads it before expanding an abbrev.
+(unless (boundp 'abbrev-mode)
+  (defvar abbrev-mode nil
+    "Non-nil if Abbrev mode is enabled (parity fallback).")
+  (make-variable-buffer-local 'abbrev-mode))
+
+;;;; --- syntax.c: syntax-propertize--done -----------------------------
+;; A C per-buffer variable (default -1: nothing propertized yet).  GNU
+;; syntax.el reads and sets it but never defines it.
+(unless (boundp 'syntax-propertize--done)
+  (defvar syntax-propertize--done -1
+    "Position up to which `syntax-propertize' has run (parity fallback).")
+  (make-variable-buffer-local 'syntax-propertize--done))
+
 (provide 'emacs-parity-vars3)
 
 ;;; emacs-parity-vars3.el ends here

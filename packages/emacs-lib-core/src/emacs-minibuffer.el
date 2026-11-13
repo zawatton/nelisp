@@ -1947,11 +1947,23 @@ Honours `emacs-minibuffer-completion-ignore-case'."
   "Return t if BUFFER is a minibuffer.
 BUFFER may be a buffer record or name; nil means the current buffer.
 When LIVE is non-nil, return t only for an active recursive minibuffer."
-  (let* ((arg (or buffer (nelisp-ec-current-buffer)))
+  (let* ((arg (or buffer (nelisp-ec-current-buffer)
+                  ;; No ec buffer is current: native buffers own the session.
+                  (and (fboundp 'current-buffer) (current-buffer))))
          (b (cond ((stringp arg)
                    (cdr (assoc arg nelisp-ec--buffers)))
                   ((or (null arg) (nelisp-ec-buffer-p arg)) arg)
+                  ((and (fboundp 'bufferp) (bufferp arg)) arg)
                   (t (signal 'wrong-type-argument (list 'bufferp arg))))))
+    (if (and b (not (nelisp-ec-buffer-p b)))
+        ;; Native buffer: never on the ec minibuffer stack, so it is a
+        ;; minibuffer only by its name, and never an active recursive one.
+        (and (not live)
+             (buffer-live-p b)
+             (let ((name (buffer-name b)))
+               (and (stringp name)
+                    (string-match-p "\\` \\*Minibuf-[0-9]+\\*\\'" name)
+                    t)))
     (when (and (nelisp-ec-buffer-p b)
                (not (nelisp-ec-buffer-killed-p b)))
       (let ((active nil)
@@ -1969,7 +1981,7 @@ When LIVE is non-nil, return t only for an active recursive minibuffer."
                 (and (stringp name)
                      (string-match-p
                       "\\` \\*Minibuf-[0-9]+\\*\\'" name)
-                     t))))))))
+                     t)))))))))
 
 ;;;###autoload
 (defun emacs-minibuffer-active-minibuffer-window ()

@@ -70,11 +70,20 @@ and untagged, which load first and would otherwise permanently look
 over this bridge.  Force install unconditionally on standalone via a
 NeLisp-only primitive, matching the char-table standalone predicate in
 `emacs-char-table.el'."
-  (or (fboundp 'nl-write-file)
+  (and
+   ;; GNU font-core.el / font-lock.el own these when native buffers own
+   ;; buffers; the ec bridge would read the wrong buffer layer.
+   (not (and (string-match-p "\\`\\(?:font-lock\\|jit-lock\\)-"
+                             (symbol-name symbol))
+             (or (fboundp 'nl-write-file)
+                 (fboundp 'nelisp--write-stdout-bytes))
+             (boundp 'emacs-buffer-builtins--ec-owns-buffers)
+             (not emacs-buffer-builtins--ec-owns-buffers)))
+   (or (fboundp 'nl-write-file)
       (fboundp 'nelisp--write-stdout-bytes)
       (not (boundp 'emacs-version))
       (get symbol 'emacs-stub-bulk)
-      (not (emacs-font-lock-builtins--function-cell-live-p symbol))))
+      (not (emacs-font-lock-builtins--function-cell-live-p symbol)))))
 
 (when (emacs-font-lock-builtins--install-function-p 'font-lock-mode)
   (defalias 'font-lock-mode #'emacs-font-lock-mode))

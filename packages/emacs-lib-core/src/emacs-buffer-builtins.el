@@ -1102,6 +1102,24 @@ property is used.  A matching cons with non-nil cdr requests ellipses."
   (emacs-buffer-builtins--text-property-mutation-around
    'set orig start end properties object))
 
+(defun emacs-buffer-builtins--remove-list-of-text-properties-around
+    (orig start end list-of-properties &optional object)
+  "Mirror native `remove-list-of-text-properties' into the sidecar.
+Without this, readers that prefer the managed sidecar keep seeing the
+removed properties (GNU font-lock unfontify relies on this primitive)."
+  (let ((result (funcall orig start end list-of-properties object))
+        (plist nil))
+    (dolist (key list-of-properties)
+      (setq plist (cons key (cons nil plist))))
+    (emacs-buffer-builtins--text-property-mutation-around
+     'remove #'ignore start end plist object)
+    result))
+
+(when (and (fboundp 'nelisp--buffer-multibyte-p)
+           (fboundp 'remove-list-of-text-properties))
+  (advice-add 'remove-list-of-text-properties :around
+              #'emacs-buffer-builtins--remove-list-of-text-properties-around))
+
 (when (fboundp 'nelisp--buffer-multibyte-p)
   (dolist (entry '((put-text-property . emacs-buffer-builtins--put-text-property-around)
                    (add-text-properties . emacs-buffer-builtins--add-text-properties-around)

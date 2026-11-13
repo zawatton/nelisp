@@ -99,7 +99,9 @@ nil means infer each paragraph's direction from its own content."))
     "Default cursor shape for the selected buffer."))
 
 (unless (boundp 'font-lock-unfontify-region-function)
-  (defvar font-lock-unfontify-region-function nil
+  ;; Stock default; a nil here would also shadow GNU font-lock.el's defvar.
+  (defvar font-lock-unfontify-region-function
+    #'font-lock-default-unfontify-region
     "Function used by Font Lock to unfontify a region."))
 
 (unless (boundp 'indent-line-function)

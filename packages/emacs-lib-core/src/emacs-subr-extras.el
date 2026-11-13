@@ -698,4 +698,74 @@ QUERY-SPECS is a series of QUERY-SPECs; each QUERY is preceded by pairs of
               (_ (signal 'treesit-font-lock-error
                          `("Unexpected value" ,token))))))
         (nreverse result)))))
+;; GNU subr.el macros that GNU simple.el's `filter-buffer-substring'
+;; (hence `kill-region' and every kill command) expands at call time.  Text is
+;; GNU Emacs 31.1 subr.el, verbatim, defined only when absent.
+(unless (fboundp 'subr--with-wrapper-hook-no-warnings)
+(defmacro with-wrapper-hook (hook args &rest body)
+  "Run BODY, using wrapper functions from HOOK with additional ARGS.
+HOOK is an abnormal hook.  Each hook function in HOOK \"wraps\"
+around the preceding ones, like a set of nested `around' advices.
+
+Each hook function should accept an argument list consisting of a
+function FUN, followed by the additional arguments in ARGS.
+
+The first hook function in HOOK is passed a FUN that, if it is called
+with arguments ARGS, performs BODY (i.e., the default operation).
+The FUN passed to each successive hook function is defined based
+on the preceding hook functions; if called with arguments ARGS,
+it does what the `with-wrapper-hook' call would do if the
+preceding hook functions were the only ones present in HOOK.
+
+Each hook function may call its FUN argument as many times as it wishes,
+including never.  In that case, such a hook function acts to replace
+the default definition altogether, and any preceding hook functions.
+Of course, a subsequent hook function may do the same thing.
+
+Each hook function definition is used to construct the FUN passed
+to the next hook function, if any.  The last (or \"outermost\")
+FUN is then called once."
+  (declare (indent 2) (debug (form sexp body))
+           (obsolete "use a <foo>-function variable modified by `add-function'."
+                     "24.4"))
+  `(subr--with-wrapper-hook-no-warnings ,hook ,args ,@body))
+
+(defmacro subr--with-wrapper-hook-no-warnings (hook args &rest body)
+  "Like (with-wrapper-hook HOOK ARGS BODY), but without warnings."
+  (declare (debug (form sexp def-body)))
+  ;; We need those two gensyms because CL's lexical scoping is not available
+  ;; for function arguments :-(
+  (let ((funs (make-symbol "funs"))
+        (global (make-symbol "global"))
+        (argssym (make-symbol "args"))
+        (runrestofhook (make-symbol "runrestofhook")))
+    ;; Since the hook is a wrapper, the loop has to be done via
+    ;; recursion: a given hook function will call its parameter in order to
+    ;; continue looping.
+    `(letrec ((,runrestofhook
+               (lambda (,funs ,global ,argssym)
+                 ;; `funs' holds the functions left on the hook and `global'
+                 ;; holds the functions left on the global part of the hook
+                 ;; (in case the hook is local).
+                 (if (consp ,funs)
+                     (if (eq t (car ,funs))
+                         (funcall ,runrestofhook
+                                  (append ,global (cdr ,funs)) nil ,argssym)
+                       (apply (car ,funs)
+                              (apply-partially
+                               (lambda (,funs ,global &rest ,argssym)
+                                 (funcall ,runrestofhook ,funs ,global ,argssym))
+                               (cdr ,funs) ,global)
+                              ,argssym))
+                   ;; Once there are no more functions on the hook, run
+                   ;; the original body.
+                   (apply (lambda ,args ,@body) ,argssym)))))
+       (funcall ,runrestofhook ,hook
+                ;; The global part of the hook, if any.
+                ,(if (symbolp hook)
+                     `(if (local-variable-p ',hook)
+                          (default-value ',hook)))
+                (list ,@args)))))
+)
+
 ;;; emacs-subr-extras.el ends here

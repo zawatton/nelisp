@@ -40,8 +40,23 @@
 (declare-function emacs-undo-record-delete "emacs-undo")
 (declare-function emacs-undo-record-insert "emacs-undo")
 
+(defconst emacs-edit-builtins--genuine-gnu-commands
+  '(forward-paragraph backward-paragraph forward-sentence backward-sentence
+    kill-sentence backward-kill-sentence fill-paragraph tab-to-tab-stop
+    delete-backward-char backward-sexp)
+  "Commands whose owner is the vendored GNU Lisp when native buffers own buffers.
+The ec polyfills below read the `nelisp-ec-buffer' layer and fail inside a
+native buffer.  GNU implements these in simple.el, paragraphs.el, fill.el,
+indent.el and lisp.el, which the bootstrap bundle loads unmodified.")
+
 (defun emacs-edit-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
+  (and (not (and (memq symbol emacs-edit-builtins--genuine-gnu-commands)
+                 (not emacs-buffer-builtins--ec-owns-buffers)))
+       (emacs-edit-builtins--install-function-p-1 symbol)))
+
+(defun emacs-edit-builtins--install-function-p-1 (symbol)
+  "Return non-nil when SYMBOL passes the stub/absent install gate."
   ;; Standalone NeLisp loads `emacs-stub-bulk' first, so many of these names
   ;; are already `fboundp' as nil-returning shims.  The NeLisp bootstrap now
   ;; also binds `emacs-version', so do not use that alone as the host/standalone

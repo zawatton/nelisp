@@ -252,6 +252,8 @@ is relative to `nelisp-bootstrap-repo-root'."
     ;; vars3: vars3 fills only what shims/vars2/core-vars did not.
     "emacs-parity-vars2.el"
     "emacs-parity-vars3.el"
+    ;; `char-script-table' for GNU fill.el, which reads it at load time.
+    "charscript.el"
     ;; Runtime primitive repairs belong late: their dependencies have loaded,
     ;; while package/user-init consumers have not run yet.
     "emacs-parity-regex-charclass.el"
@@ -374,6 +376,19 @@ These are existing vendor implementations, not local reimplementations.")
     ;; measured directly (136/595 -> 564/595 present) rather than assumed
     ;; from the form count.
     "emacs-lisp/simple.el"
+    ;; Genuine GNU owners of the commands the ec edit polyfills used to
+    ;; provide (tools/ai/emacs-lib-ec-leak-progress.org); they operate on
+    ;; native buffers.  `emacs-edit-builtins' leaves these names alone when
+    ;; native buffers own buffers.
+    "emacs-lisp/indent.el"
+    "emacs-lisp/textmodes/paragraphs.el"
+    "emacs-lisp/emacs-lisp/lisp.el"
+    "emacs-lisp/textmodes/fill.el"
+    ;; GNU font-lock stack (font-core -> jit-lock -> syntax -> font-lock).
+    "emacs-lisp/font-core.el"
+    "emacs-lisp/jit-lock.el"
+    "emacs-lisp/emacs-lisp/syntax.el"
+    "emacs-lisp/font-lock.el"
     ;; S2 coverage batch 6 (2026-09-29): compile, pcomplete (shell.el's
     ;; live-`require' target), shell, ehelp (term.el's), term, woman,
     ;; project.  All are also listed in `nelisp-bootstrap-normalized-bundle-

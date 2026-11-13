@@ -1347,13 +1347,21 @@ With FORCE t, pad a too-short line with spaces to reach COLUMN."
 
 (when (files--install-fallback-function-p 'indent-to)
   (defun indent-to (column &optional minimum)
-    "Indent from point to COLUMN with spaces, at least MINIMUM (default 0).
-Return the column reached."
+    "Indent from point to COLUMN, at least MINIMUM (default 0) columns.
+Use tabs before spaces when `indent-tabs-mode' is non-nil, like GNU
+`indent-to'.  Return the column reached."
     (let* ((cur (files--column-at (files--buffer-point-value)))
            (target (max column (+ cur (max 0 (or minimum 0)))))
-           (n (- target cur)))
-      (when (> n 0)
-        (insert (make-string n ?\s)))
+           (tw (if (and (boundp 'tab-width) (integerp tab-width)
+                        (> tab-width 0))
+                   tab-width 8)))
+      (when (and (> target cur) (boundp 'indent-tabs-mode) indent-tabs-mode)
+        (let ((tabs (- (/ target tw) (/ cur tw))))
+          (when (> tabs 0)
+            (insert (make-string tabs ?\t))
+            (setq cur (* (/ target tw) tw)))))
+      (when (> target cur)
+        (insert (make-string (- target cur) ?\s)))
       target)))
 
 (when (files--install-fallback-function-p 'count-lines)
