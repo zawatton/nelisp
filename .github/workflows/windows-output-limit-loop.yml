@@ -73,8 +73,15 @@ jobs:
             fi
           }
           export -f run_one
-          seq 1 "$ITERATIONS" | xargs -P "$PARALLEL" -I{} bash -c 'run_one {}'
-          total=$(ls "$logdir"/*.result | wc -l)
+          # "$BASH", not bare bash: on windows-latest a bare `bash' started by
+          # xargs can resolve to C:\Windows\System32\bash.exe (WSL), which
+          # has neither the exported function nor this checkout.
+          seq 1 "$ITERATIONS" | xargs -P "$PARALLEL" -I{} "$BASH" -c 'run_one {}'
+          total=$(find "$logdir" -name '*.result' | wc -l)
+          if [ "$total" -ne "$ITERATIONS" ]; then
+            echo "LOOP harness error: $total of $ITERATIONS iterations recorded a result"
+            exit 1
+          fi
           failed=$(grep -l '^fail' "$logdir"/*.result 2>/dev/null | wc -l)
           for r in $(grep -l '^fail' "$logdir"/*.result 2>/dev/null); do
             log="${r%.result}.log"
