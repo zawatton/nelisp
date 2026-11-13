@@ -42,7 +42,10 @@ In standalone mode the definition being replaced is remembered first,
 so bridges can still reach the substrate's own primitive (Doc 213)."
   (let ((standalone (and (fboundp 'emacs-standalone-mode-p)
                          (emacs-standalone-mode-p))))
-    (when standalone
+    ;; Remember the core definition on every NeLisp runtime, not only when
+    ;; `emacs-standalone-mode-p' is set: the core process adapter owns the
+    ;; processes it creates and bridges must hand those back to it.
+    (when (or standalone (fboundp 'nelisp--repr))
       (emacs-process-remember-substrate-primitive symbol))
     (or standalone
         (not (boundp 'emacs-version))
@@ -162,6 +165,25 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
     "Create a subprocess described by the keyword options in ARGS."
     (emacs-process-builtins--initialize-command
      (apply #'emacs-process-make-process args) (plist-get args :command))))
+
+;; Where the core process adapter owns `make-process' (this layer's own is not
+;; installed), keep the core object and only record the original command on
+;; its plist so `process-command' answers it.  No state of our own.
+(when (and (fboundp 'nelisp--repr)
+           (not (get 'make-process 'emacs-process-builtins--core))
+           (not (eq (symbol-function 'make-process)
+                    (symbol-function 'emacs-process-make-process))))
+  (let ((core (symbol-function 'make-process)))
+    (put 'make-process 'emacs-process-builtins--core core)
+    (unless (and (symbolp core) (string-prefix-p "emacs-process-" (symbol-name core)))
+      (fset 'make-process
+            (lambda (&rest args)
+              (let ((process (apply core args)))
+                (when (and (processp process) (plist-get args :command)
+                           (emacs-process--native-process-p process)
+                           (not (emacs-process--native-metadata-cell process)))
+                  (process-put process :command (plist-get args :command)))
+                process))))))
 
 (when (emacs-process-builtins--install-function-p 'processp)
   (defalias 'processp #'emacs-process-processp))

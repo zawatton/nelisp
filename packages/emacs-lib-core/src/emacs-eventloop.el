@@ -136,7 +136,8 @@ Returns a list of (FD . REVENTS) cons cells whose REVENTS is non-zero."
 (require 'emacs-process)
 (require 'emacs-command-loop)
 
-(when (or emacs-eventloop--standalone-p (not (fboundp 'accept-process-output)))
+;; emacs-process-builtins owns the standalone wait; this is only a fallback.
+(unless (fboundp 'accept-process-output)
   (defalias 'accept-process-output #'emacs-process-accept-process-output))
 
 (when (fboundp 'nl-ffi-call)

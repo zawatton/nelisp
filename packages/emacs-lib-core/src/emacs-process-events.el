@@ -210,29 +210,29 @@ string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
 
 (when emacs-process-events--standalone-p
 
-  (defun processp (object)
+  (defun emacs-process-events--raw-processp (object)
     "Polyfill: return non-nil iff OBJECT is one of our process vectors."
     (emacs-process-events--processp object))
 
-  (defun process-name (process) (emacs-process-events--get process 1))
-  (defun process-status (process)
+  (defun emacs-process-events--raw-process-name (process) (emacs-process-events--get process 1))
+  (defun emacs-process-events--raw-process-status (process)
     (if (and (stringp process) (not (get-process process)))
         nil
       (setq process (emacs-process-events--resolve-process process))
       (if (emacs-process-events--child-process-p process)
           (emacs-process-process-status process)
         (emacs-process-events--get process 4))))
-  (defun process-id (process)
+  (defun emacs-process-events--raw-process-id (process)
     (if (memq (emacs-process-events--get process 3)
               '(network-server network-connection pipe))
         nil
       (emacs-process-events--get process 11)))
-  (defun process-buffer (process) (emacs-process-events--get process 7))
-  (defun process-filter (process) (emacs-process-events--get process 5))
-  (defun process-sentinel (process) (emacs-process-events--get process 6))
-  (defun process-plist (process) (emacs-process-events--get process 8))
+  (defun emacs-process-events--raw-process-buffer (process) (emacs-process-events--get process 7))
+  (defun emacs-process-events--raw-process-filter (process) (emacs-process-events--get process 5))
+  (defun emacs-process-events--raw-process-sentinel (process) (emacs-process-events--get process 6))
+  (defun emacs-process-events--raw-process-plist (process) (emacs-process-events--get process 8))
 
-  (defun process-list ()
+  (defun emacs-process-events--raw-process-list ()
     "Polyfill: return the list of every live process vector."
     (let ((live nil))
       (dolist (p emacs-process-events--all)
@@ -243,17 +243,17 @@ string, or when `encode-coding-string' is unavailable (Doc 06 C4)."
 
   ;; --- mutator -----
 
-  (defun set-process-filter (process function)
+  (defun emacs-process-events--raw-set-process-filter (process function)
     (setq function (or function 'internal-default-process-filter))
     (emacs-process-events--set process 5 function)
     function)
 
-  (defun set-process-sentinel (process function)
+  (defun emacs-process-events--raw-set-process-sentinel (process function)
     (setq function (or function 'internal-default-process-sentinel))
     (emacs-process-events--set process 6 function)
     function)
 
-  (defun set-process-buffer (process buffer)
+  (defun emacs-process-events--raw-set-process-buffer (process buffer)
     (emacs-process-events--require-process process)
     (unless (or (null buffer) (bufferp buffer))
       (signal 'wrong-type-argument (list 'bufferp buffer)))
@@ -286,6 +286,15 @@ A bare-symbol slot value (legacy) is widened to (SYM . SYM)."
   (defun process-query-on-exit-flag (process)
     (emacs-process-events--get process 13)))
 
+
+(when emacs-process-events--standalone-p
+  ;; Single install point for the raw event-provider accessors; the merged
+  ;; dispatchers below capture these as their `event-owner'.
+  (dolist (name '(processp process-name process-status process-id process-buffer
+                  process-filter process-sentinel process-plist process-list
+                  set-process-filter set-process-sentinel set-process-buffer))
+    (fset name (symbol-function
+                (intern (concat "emacs-process-events--raw-" (symbol-name name)))))))
 
 ;;;; --- public API: I/O -------------------------------------------------
 
@@ -700,6 +709,13 @@ Returns the process vector on success, signals `file-error' on failure."
        (or (emacs-process--native-process-p process)
            (emacs-process--fallback-process-p process))))
 
+(defun emacs-process-events--dispatch1 (name proc)
+  "Call NAME's child or event owner on PROC, whichever owns the process."
+  (funcall (get name (if (emacs-process-events--child-process-p proc)
+                         'emacs-process-events--child-owner
+                       'emacs-process-events--event-owner))
+           proc))
+
 (defun emacs-process-events--combined-list ()
   (let ((result (funcall (get 'process-list 'emacs-process-events--event-owner))))
     (dolist (process (emacs-process-process-list))
@@ -737,12 +753,12 @@ re-evaluated, and also runs when the facade has not loaded yet."
     (let ((name (car entry)))
       (put name 'emacs-process-events--event-owner (symbol-function name))
       (put name 'emacs-process-events--child-owner (symbol-function (cadr entry)))
+      ;; A real closure (lexical), not a quoted lambda: a dynamically bound
+      ;; `process' leaked into the child owners' status reads.
       (fset name
-            `(lambda (process)
-               (funcall (get ',name
-                             (if (emacs-process-events--child-process-p process)
-                                 'emacs-process-events--child-owner
-                               'emacs-process-events--event-owner)) process)))))
+            (let ((name name))
+              (lambda (proc)
+                (emacs-process-events--dispatch1 name proc))))))
   (dolist (entry '((set-process-filter emacs-process-set-process-filter)
                    (set-process-sentinel emacs-process-set-process-sentinel)
                    (set-process-buffer emacs-process-set-process-buffer)

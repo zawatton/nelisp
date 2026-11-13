@@ -331,16 +331,19 @@ Preserve the buffer's point unless it follows the process marker."
   (unless (fboundp 'emacs-cc-pipe-process-1--original-default-filter)
     (fset 'emacs-cc-pipe-process-1--original-default-filter
           (symbol-function 'internal-default-process-filter)))
-  (fset 'make-pipe-process (symbol-function 'emacs-cc-pipe-process-1--make-pipe-process))
-  (fset 'process-contact (symbol-function 'emacs-cc-pipe-process-1--process-contact))
-  (fset 'process-mark (symbol-function 'emacs-cc-pipe-process-1--process-mark))
-  (fset 'set-process-buffer (symbol-function 'emacs-cc-pipe-process-1--set-process-buffer))
-  (fset 'set-process-filter (symbol-function 'emacs-cc-pipe-process-1--set-process-filter))
-  (fset 'set-process-sentinel (symbol-function 'emacs-cc-pipe-process-1--set-process-sentinel))
-  (fset 'get-process (symbol-function 'emacs-cc-pipe-process-1--get-process))
-  (fset 'process-command (symbol-function 'emacs-cc-pipe-process-1--process-command))
-  (fset 'internal-default-process-filter (symbol-function 'emacs-cc-pipe-process-1--default-filter))
-  (fset 'accept-process-output (symbol-function 'emacs-cc-pipe-process-1--accept-output)))
+  ;; Install through one table so each public name has a single definer
+  ;; (`accept-process-output' is owned by emacs-process-builtins' shared wait).
+  (dolist (entry '((make-pipe-process . emacs-cc-pipe-process-1--make-pipe-process)
+                   (process-contact . emacs-cc-pipe-process-1--process-contact)
+                   (process-mark . emacs-cc-pipe-process-1--process-mark)
+                   (set-process-buffer . emacs-cc-pipe-process-1--set-process-buffer)
+                   (set-process-filter . emacs-cc-pipe-process-1--set-process-filter)
+                   (set-process-sentinel . emacs-cc-pipe-process-1--set-process-sentinel)
+                   (get-process . emacs-cc-pipe-process-1--get-process)
+                   (process-command . emacs-cc-pipe-process-1--process-command)
+                   (internal-default-process-filter
+                    . emacs-cc-pipe-process-1--default-filter)))
+    (fset (car entry) (symbol-function (cdr entry)))))
 
 (provide 'emacs-cc-pipe-process-1)
 ;;; emacs-cc-pipe-process-1.el ends here

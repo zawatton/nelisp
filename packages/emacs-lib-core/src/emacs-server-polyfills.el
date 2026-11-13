@@ -284,15 +284,33 @@ ACCESS times are zero since standalone has no real stat."
 
 (when emacs-server-polyfills--standalone-p
 
-  (defun process-put (process key value)
-    "Polyfill: stash KEY=VALUE on PROCESS's plist (slot 8)."
+  (defun emacs-server-polyfills--process-put (process key value)
+    "Stash KEY=VALUE on an event PROCESS's plist (slot 8)."
     (let ((pl (emacs-process-events--get process 8)))
       (emacs-process-events--set process 8 (plist-put pl key value))
       value))
 
-  (defun process-get (process key)
-    "Polyfill: retrieve KEY from PROCESS's plist (slot 8)."
-    (plist-get (emacs-process-events--get process 8) key)))
+  (defun emacs-server-polyfills--process-get (process key)
+    "Retrieve KEY from an event PROCESS's plist (slot 8)."
+    (plist-get (emacs-process-events--get process 8) key))
+
+  ;; Install through one table; the previous owner stays the delegate for
+  ;; every process this layer does not recognise as an event vector.
+  (dolist (entry '((process-put . emacs-server-polyfills--process-put)
+                   (process-get . emacs-server-polyfills--process-get)))
+    (let ((prev (and (fboundp (car entry)) (symbol-function (car entry))))
+          (mine (symbol-function (cdr entry))))
+      (put (car entry) 'emacs-server-polyfills--previous prev)
+      (fset (car entry)
+            (if (eq (car entry) 'process-put)
+                (lambda (process key value)
+                  (if (or (null prev) (emacs-process-events--processp process))
+                      (funcall mine process key value)
+                    (funcall prev process key value)))
+              (lambda (process key)
+                (if (or (null prev) (emacs-process-events--processp process))
+                    (funcall mine process key)
+                  (funcall prev process key))))))))
 
 
 ;;;; --- defvar-keymap stub ------------------------------------------

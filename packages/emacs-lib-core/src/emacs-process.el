@@ -182,7 +182,11 @@ re-load after a wrapper leak keeps the original subr capture.")
 (defun emacs-process--native-process-p (object)
   "Return non-nil when OBJECT is a native NeLisp process object."
   (and (fboundp 'nelisp-process-object-p)
-       (ignore-errors (nelisp-process-object-p object))))
+       (or (ignore-errors (nelisp-process-object-p object))
+           ;; A deleted native process stops satisfying the core predicate
+           ;; but is still a process whose status must be readable.
+           (and (vectorp object) (= (length object) 6)
+                (eq (aref object 0) #x70726f63)))))
 
 (defconst emacs-process--network-tag 'network-process
   "Head symbol of a `nelisp-process-adapter' network-process vector.")
@@ -274,6 +278,26 @@ or nil); all other event operations require an event-owned process object."
                       (emacs-process--fallback-process-p target))))
            (and (eq sym 'delete-process)
                 (emacs-process--event-delete-target (car args))))))
+
+(defun emacs-process--core-owned-p (process)
+  "Return non-nil for a native PROCESS this layer did not start.
+Such a process belongs to the core process adapter: its filter, sentinel,
+buffer and name live on the core plist, never in this layer's metadata."
+  (and (emacs-process--native-process-p process)
+       (not (emacs-process--native-metadata-cell process))))
+
+(defun emacs-process--native-prop (process key)
+  "Return PROCESS's KEY from this layer's metadata, or the core plist."
+  (if (emacs-process--core-owned-p process)
+      (process-get process key)
+    (emacs-process--native-metadata process key)))
+
+(defun emacs-process--native-set-prop (process key value)
+  "Set PROCESS's KEY in this layer's metadata, or on the core plist."
+  (if (emacs-process--core-owned-p process)
+      (process-put process key value)
+    (emacs-process--native-set-metadata process key value))
+  value)
 
 (defun emacs-process--native-start-available-p ()
   "Return non-nil when native NeLisp async process start exists."
@@ -1201,6 +1225,9 @@ matches the `files.el' convention of dispatching `start-file-process' on
    ((emacs-process--event-process-p object) t)
    ((emacs-process--network-process-p object) t)
    ((and (not (emacs-standalone-mode-p))
+         ;; On a NeLisp runtime the public name is this layer's own merged
+         ;; dispatcher, so delegating to it would recurse forever.
+         (not (fboundp 'nelisp--repr))
          (emacs-process--delegate-p 'processp))
     (funcall (indirect-function 'processp) object))
    (t nil)))
@@ -1209,6 +1236,9 @@ matches the `files.el' convention of dispatching `start-file-process' on
   "Return the list of currently-active processes."
   (cond
    ((and (not (emacs-standalone-mode-p))
+         ;; On a NeLisp runtime the public name is this layer's own merged
+         ;; dispatcher, so delegating to it would recurse forever.
+         (not (fboundp 'nelisp--repr))
          (emacs-process--delegate-p 'process-list))
     (funcall (indirect-function 'process-list)))
    (t
@@ -1244,7 +1274,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
   (cond
    ((emacs-process--fallback-process-p process) (aref process 2))
    ((emacs-process--native-process-p process)
-    (emacs-process--native-metadata process :buffer))
+    (emacs-process--native-prop process :buffer))
    (t (emacs-process--delegate 'process-buffer (list process)))))
 
 (defun emacs-process-process-name (process)
@@ -1252,7 +1282,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
   (cond
    ((emacs-process--fallback-process-p process) (aref process 1))
    ((emacs-process--native-process-p process)
-    (emacs-process--native-metadata process :name))
+    (emacs-process--native-prop process :name))
    (t (emacs-process--delegate 'process-name (list process)))))
 
 (defun emacs-process-process-command (process)
@@ -1260,7 +1290,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
   (cond
    ((emacs-process--fallback-process-p process) (aref process 3))
    ((emacs-process--native-process-p process)
-    (emacs-process--native-metadata process :command))
+    (emacs-process--native-prop process :command))
    (t (emacs-process--delegate 'process-command (list process)))))
 
 (defun emacs-process-process-live-p (process)
@@ -1301,7 +1331,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
     (aset process 6 filter)
     filter)
    ((emacs-process--native-process-p process)
-    (emacs-process--native-set-metadata process :filter filter))
+    (emacs-process--native-set-prop process :filter filter))
    (t (emacs-process--delegate 'set-process-filter (list process filter)))))
 
 (defun emacs-process-set-process-sentinel (process sentinel)
@@ -1311,7 +1341,7 @@ matches the `files.el' convention of dispatching `start-file-process' on
     (aset process 7 sentinel)
     sentinel)
    ((emacs-process--native-process-p process)
-    (emacs-process--native-set-metadata process :sentinel sentinel))
+    (emacs-process--native-set-prop process :sentinel sentinel))
    (t (emacs-process--delegate 'set-process-sentinel
                                (list process sentinel)))))
 
@@ -1411,7 +1441,11 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
                       (and (fboundp 'emacs-process-events--all-fds)
                            (emacs-process-events--all-fds)))
               (cdr (emacs-command-loop-wait budget 'process process just-this-one))))
-        (if (or (emacs-process--native-process-p process)
+        (if (or (and (emacs-process--native-process-p process)
+                     ;; Only processes this layer started carry metadata;
+                     ;; others belong to the core adapter, which must keep
+                     ;; their output (its default filter inserts it).
+                     (emacs-process--native-metadata-cell process))
                 (and (null process)
                      emacs-process--native-process-metadata))
             (let ((got (emacs-process--native-accept-until
@@ -1427,8 +1461,13 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
               (when (and (null process) substrate)
                 (when (funcall substrate nil 0) (setq got t)))
               got)
-          (emacs-process--delegate 'accept-process-output
-                                   (list process seconds millisec just-this-one))))
+          (let ((substrate (cdr (assq 'accept-process-output
+                                      emacs-process--substrate-primitives))))
+            (if substrate
+                (funcall substrate process seconds millisec just-this-one)
+              (emacs-process--delegate 'accept-process-output
+                                       (list process seconds millisec
+                                             just-this-one))))))
     (emacs-process-not-implemented nil)))
 
 (defun emacs-process-signal-process (process-or-pid signum &optional remote)
@@ -1513,6 +1552,18 @@ top-level alias for parity with the Emacs API."
    (t
     (emacs-process--delegate 'process-send-eof (list process)))))
 
+(defun emacs-process--core-delete (process)
+  "Delete core-owned PROCESS through the core adapter, GNU-style.
+The core adapter fires the sentinel; GNU then reports a killed process as
+`signal', so a process that was still running is relabelled afterwards."
+  (let ((was-running (eq (emacs-process--native-status-symbol process) 'run))
+        (core (cdr (assq 'delete-process emacs-process--substrate-primitives))))
+    (when core (funcall core process))
+    (when was-running
+      (aset process 3 2)
+      (aset process 4 (+ 128 9)))
+    nil))
+
 (defun emacs-process-delete-process (process)
   "Kill PROCESS."
   (if (emacs-process--fallback-process-p process)
@@ -1520,7 +1571,9 @@ top-level alias for parity with the Emacs API."
         (aset process 8 t)
         process)
     (if (emacs-process--native-process-p process)
-        (emacs-process--native-delete process)
+        (if (emacs-process--core-owned-p process)
+            (emacs-process--core-delete process)
+          (emacs-process--native-delete process))
       (emacs-process--delegate 'delete-process (list process)))))
 
 ;;;; --- shell-command / shell-command-to-string ----------------------
@@ -1570,7 +1623,9 @@ unchanged.  Otherwise build a `call-process' invocation manually."
   (cond
    ((emacs-process--fallback-process-p process) (aref process 6))
    ((emacs-process--native-process-p process)
-    (emacs-process--native-metadata process :filter))
+    ;; GNU answers the default filter, not nil, when none was installed.
+    (or (emacs-process--native-prop process :filter)
+        'internal-default-process-filter))
    (t (emacs-process--delegate 'process-filter (list process)))))
 
 (defun emacs-process-process-sentinel (process)
@@ -1578,7 +1633,7 @@ unchanged.  Otherwise build a `call-process' invocation manually."
   (cond
    ((emacs-process--fallback-process-p process) (aref process 7))
    ((emacs-process--native-process-p process)
-    (emacs-process--native-metadata process :sentinel))
+    (emacs-process--native-prop process :sentinel))
    (t (emacs-process--delegate 'process-sentinel (list process)))))
 
 (defun emacs-process-set-process-buffer (process buffer)
@@ -1586,7 +1641,7 @@ unchanged.  Otherwise build a `call-process' invocation manually."
   (cond
    ((emacs-process--fallback-process-p process) (aset process 2 buffer) buffer)
    ((emacs-process--native-process-p process)
-    (emacs-process--native-set-metadata process :buffer buffer) buffer)
+    (emacs-process--native-set-prop process :buffer buffer) buffer)
    (t (emacs-process--delegate 'set-process-buffer (list process buffer)))))
 
 (defun emacs-process-process-plist (process)
