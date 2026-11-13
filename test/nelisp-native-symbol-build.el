@@ -112,6 +112,28 @@
                         (ptr-write-u64 cell 0 (logand (heap-read-u64 cell 0) (- 0 16777217)))
                       (ptr-write-u64 cell 0 (logior (heap-read-u64 cell 0) 16777216)))
                     0)))
+;; Same as `symbol-test-mark', but marks through a legacy 32-byte tag-16
+            ;; view (tag@0, object address@8) instead of the tagged word.  A
+            ;; tagged word takes the pointer arm of `nl_gc_mark_slot' and never
+            ;; reaches the tag-16 arm of `nl_gc_mark_legacy_slot', so only a view
+            ;; observes that arm (e.g. the shared unbound-marker view).
+            ((:lit "symbol-test-mark-view") .
+             (let* ((sym (wf_arg_ptr args 0))
+                    (view (alloc-bytes 32 8))
+                    (cell (nl_live_symbol_holding (heap-sexp-payload sym)))
+                    (saved (logand (heap-read-u64 cell 0) 16777216)))
+               (seq (ptr-write-u64 view 0 16)
+                    (ptr-write-u64 view 8 (heap-sexp-payload sym))
+                    (ptr-write-u64 view 16 0)
+                    (ptr-write-u64 view 24 0)
+                    (if (= saved 0) 0
+                      (ptr-write-u64 cell 0 (logxor (heap-read-u64 cell 0) 16777216)))
+                    (nl_gc_mark_slot view)
+                    (wf_write_int out (if (= (logand (heap-read-u64 cell 0) 16777216) 0) 0 1))
+                    (if (= saved 0)
+                        (ptr-write-u64 cell 0 (logand (heap-read-u64 cell 0) (- 0 16777217)))
+                      (ptr-write-u64 cell 0 (logior (heap-read-u64 cell 0) 16777216)))
+                    0)))
             ;; Doc 226 D9: the name is the symbol object's name string, read
             ;; through the same accessors the runtime uses (GNU SYMBOL_NAME).
             ((:lit "symbol-test-name") .
@@ -176,7 +198,7 @@
               ("symbol-test-intern-boundary" . 0) ("symbol-test-bind" . 3)
               ("symbol-test-find" . 2) ("symbol-test-capture" . 1)
               ("symbol-test-make" . 2) ("symbol-test-id" . 1)
-              ("symbol-test-mark" . 1) ("symbol-test-name" . 1)
+              ("symbol-test-mark" . 1) ("symbol-test-mark-view" . 1) ("symbol-test-name" . 1)
               ("symbol-test-name-equal" . 2) ("symbol-test-same" . 2)))
            nelisp-standalone--builtin-arity-ranges)))
     (nelisp-standalone-build-reader)))

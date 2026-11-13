@@ -56,6 +56,31 @@ class NativeSymbol(unittest.TestCase):
 (terpri)
 '''), '1\n(t ":retained" 1)\n')
 
+    def test_legacy_view_mark_and_collection(self):
+        # A tagged word marks through the pointer arm of `nl_gc_mark_slot';
+        # only a legacy 32-byte tag-16 view reaches the tag-16 arm of
+        # `nl_gc_mark_legacy_slot'.  Mark through such a view, then force
+        # collections with same-size string churn and check the names survive.
+        self.assertEqual(self.repl('''
+(setq view-root (list (symbol-test-make ":view-one" 81) (symbol-test-make ":view-two" 82)))
+(prin1 (list (symbol-test-mark-view (car view-root))
+ (symbol-test-mark-view (car (cdr view-root)))))
+(terpri)
+(setq view-i 0)
+(while (< view-i 3)
+ (setq view-churn nil view-j 0)
+ (while (< view-j 300)
+  (setq view-churn (cons (make-string 9 (+ 65 (mod view-j 20))) view-churn)
+        view-j (+ view-j 1)))
+ (garbage-collect)
+ (setq view-i (+ view-i 1)))
+(prin1 (list (symbol-test-name (car view-root))
+ (symbol-test-name (car (cdr view-root)))
+ (symbol-test-mark-view (car view-root))
+ (symbol-test-mark-view (car (cdr view-root)))))
+(terpri)
+'''), '(1 1)\n(":view-one" ":view-two" 1 1)\n')
+
     def test_public_symbol_inspection(self):
         source = '''
 (setq inspect-a (symbol-test-make ":inspect" 801))

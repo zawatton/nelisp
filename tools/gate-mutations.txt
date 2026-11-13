@@ -961,6 +961,11 @@ lsp-server|tools/nelisp_workspace.py|s/matches = \[item for item in plan\['symbo
 # construction and after a `dump-runtime-image'/`eval-runtime-image'
 # round trip (`GATE-COUNT checked=11 findings=2'); restored + rebuilt,
 # `GATE-COUNT checked=11 findings=0'.
+# NOTE: the sed lands in `nl_gc_mark_legacy_slot', which `nl_gc_mark_slot'
+# reaches only for a legacy 32-byte tag-16 view; a tagged word (what
+# `symbol-test-mark' passes) takes the pointer arm instead, so that probe
+# never saw this defect and the row stayed green.  The `symbol-test-mark-view'
+# probe (test_legacy_view_mark_and_collection) marks through such a view.
 native-symbol-test|scripts/nelisp-standalone-build.el|/(if (or (= tag 4) (= tag 16))/{N;N;s/(if (or (= tag 4) (= tag 16))\n\( *(nl_seq2\n *(if (= tag 16) (nl_gc_mark_symview sp) 0)\)/(if (or (= tag 4) (= tag 999))\n\1/}|the precise GC marker stops marking an uninterned (tag-16) symbol's name buffer, so a reachable uninterned symbol's storage can be swept as garbage
 #
 # Project-toolchain contract suites. None mutates code baked into
