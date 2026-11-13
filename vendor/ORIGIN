@@ -848,3 +848,8 @@ emacs-lisp/org/org-habit.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/
 emacs-lisp/org/org-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/org/org-loaddefs.el	sha256=806a068229d2ed488dde6dedfbf3fd7fdf07f550a0fea011c18aa031d1852ffa
 emacs-lisp/tabify.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/tabify.el	sha256=7076339f83efe6d58ad7eee4305b9d620df1124a8286363b4b19097bb46082a7
 emacs-lisp/indent.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/indent.el	sha256=d940d046611d855bcda229f1b8b7f1ba93900e30cfd7610d3462e0a532533f37
+emacs-lisp/textmodes/paragraphs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/paragraphs.el	sha256=489ff79c6559d0691f375c50a7ec85e8c13a7b5612e0de24c53911b6f8d3b89e
+emacs-lisp/textmodes/fill.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/textmodes/fill.el	sha256=b6344bdd635aa1ed0d2b5812bc340e08d7b1d8d2ef3b5f8136e73c000e9be1e5
+emacs-lisp/emacs-lisp/lisp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/lisp.el	sha256=d242440ec388a783158dd0474092575bb9ef50b264b6d9d2c83f2ba2fd4a3d6c
+emacs-lisp/font-lock.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/font-lock.el	sha256=0fc58b667dbd72643795c5d7bcb8950e4ed7c3d17ea493d6a27741cd0383019d
+emacs-lisp/emacs-lisp/syntax.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/syntax.el	sha256=69efa0d71c64e96fca1d5fb22048cf1cb9d38e94ead4ac71513c8588b3b9dd4a
