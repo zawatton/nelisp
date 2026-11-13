@@ -1,0 +1,69 @@
+#+TITLE: emacs-lib: one owner for processes on the standalone
+
+Objective (user, 2026-11-13): unify the process implementations.  At
+da5adaa85 the standard process functions are defined in up to four places
+(scripts/nelisp-stdlib-prelude.el, emacs-process-builtins.el,
+emacs-process-events.el, emacs-cc-pipe-process-1.el, emacs-cc-process-1.el,
+emacs-eventloop.el, lisp/nelisp-process-buffer.el) and whichever loads last
+wins.  Measured defect: a process made with :buffer and no :filter gets
+`process-filter' = nil and its output is never inserted (GNU: the filter is
+`internal-default-process-filter', which inserts at the process mark).  This
+breaks vc-print-log (smokes ledger S1.3) and any package that reads process
+output from a buffer.
+
+Rule (unification plan 2026-11-03, criterion 1 and 5): one representation and
+one owner per concept.  Process primitives are GNU C-level, so the NeLisp core
+owns them where it defines them; emacs-lib keeps only thin delegates or
+`fboundp'-guarded fallbacks with no state of their own.
+
+Read with (from the NeLisp repo root, target/nelisp present):
+  NELISP_BIN=target/nelisp bin/progress-meter.sh --ledger tools/ai/emacs-lib-process-owner-progress.org
+
+* S1 Measurement
+
+** S1.1 A process behavior parity script compares the standalone with GNU 31.1 and detects a sabotaged expectation
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: test -x test/emacs-lib/process-parity.sh && PARITY_SABOTAGE=1 test/emacs-lib/process-parity.sh >/dev/null 2>&1; test $? -ne 0 && test -x test/emacs-lib/process-parity.sh
+
+** S1.2 An owner inventory lists every unconditional definer of each standard process function
+#+TIMEOUT: 120
+cmd: test -x test/emacs-lib/process-owner-inventory.sh && test/emacs-lib/process-owner-inventory.sh --list | grep -q '^make-process	'
+
+** S1.3 End to end: the bootstrap bundle rebuilds and both scripts run to completion
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 400
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test -x test/emacs-lib/process-parity.sh && test/emacs-lib/process-parity.sh --report >/dev/null && test/emacs-lib/process-owner-inventory.sh --count | grep -qE '^[0-9]+$'
+
+* S2 Behavior
+
+** S2.1 A process with :buffer and no :filter inserts its output into the buffer, and process-filter returns internal-default-process-filter
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: test -x test/emacs-lib/process-parity.sh && test/emacs-lib/process-parity.sh --only default-filter
+
+** S2.2 Every case of the process parity script matches GNU 31.1
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: test -x test/emacs-lib/process-parity.sh && test/emacs-lib/process-parity.sh
+
+** S2.3 End to end: test-nelisp-vc-workflow-smoke passes
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-vc-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+* S3 One owner
+
+** S3.1 No standard process function has more than one unconditional definer
+#+TIMEOUT: 120
+cmd: test -x test/emacs-lib/process-owner-inventory.sh && test "$(test/emacs-lib/process-owner-inventory.sh --count)" = 0
+
+** S3.2 The ec-leak ledger guards still hold (0 leaks, one buffer type, GNU parity of the 13 commands)
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 400
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/ec-leak-sweep.sh >/dev/null && test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null && test/emacs-lib/ec-leak-behavior-parity.sh >/dev/null
+
+** S3.3 End to end: owner count 0, process parity and the vc smoke pass in one run
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: test "$(test/emacs-lib/process-owner-inventory.sh --count)" = 0 && test/emacs-lib/process-parity.sh >/dev/null && h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-vc-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
