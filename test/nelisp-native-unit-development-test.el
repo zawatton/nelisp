@@ -87,7 +87,17 @@ bounded subprocess rather than from the test process."
          ;; :output-limit.  The assertions below are unchanged.
          (result (nelisp-native-unit-development-run-bounded
                   (car command-and-args) (cdr command-and-args) 120)))
-    (should (eq (plist-get result :phase) :output-limit))
+    ;; On a stall ERT prints both lists, so the byte counts, child status and
+    ;; elapsed time make the failure diagnosable from the log alone.
+    (let ((diag (list :stdout-bytes (plist-get result :stdout-bytes)
+                      :stderr-bytes (plist-get result :stderr-bytes)
+                      :used-bytes (plist-get result :used-bytes)
+                      :process-status-at-exit
+                      (plist-get result :process-status-at-exit)
+                      :elapsed-seconds (plist-get result :elapsed-seconds)
+                      :stderr-merged (plist-get result :stderr-merged))))
+      (should (equal (list :phase (plist-get result :phase) :diag diag)
+                     (list :phase :output-limit :diag diag))))
     (should (plist-get result :output-truncated))
     (should (plist-get result :output-limited))
     (should (<= (plist-get result :stdout-bytes)
