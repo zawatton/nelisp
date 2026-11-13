@@ -19,14 +19,19 @@
 (require 'cl-lib)
 
 (defconst nemacs-bootstrap-nelisp-test--repo-root
+  ;; This file lives in test/emacs-lib/ since the import into NeLisp;
+  ;; "../" resolved to test/, so bin/nemacs was never found and every
+  ;; test here skipped while its make target reported success.
   (expand-file-name
-   "../"
+   "../../"
    (file-name-directory (or load-file-name buffer-file-name)))
-  "Absolute path to the nelisp-emacs repo root.")
+  "Absolute path to the repository root (holds bin/nemacs).")
 
 (defconst nemacs-bootstrap-nelisp-test--bin
-  (expand-file-name "bin/nemacs" nemacs-bootstrap-nelisp-test--repo-root)
-  "Path to bin/nemacs from the test file.")
+  ;; bin/nemacs is the GUI launcher in NeLisp; the CLI driver moved here.
+  (expand-file-name "bin/emacs-lib/nemacs"
+                    nemacs-bootstrap-nelisp-test--repo-root)
+  "Path to the nemacs CLI launcher from the test file.")
 
 (defun nemacs-bootstrap-nelisp-test--nelisp-candidate ()
   "Resolve a NeLisp standalone reader candidate.
