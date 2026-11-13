@@ -31,7 +31,10 @@ BEGIN {
   }
   close(table)
   nw = 0
-  while ((getline line < wfile) > 0) {
+  # Keys mode passes no weights file.  An empty name must not reach
+  # getline: some awks (mawk on CI's ubuntu-24.04) read "" as stdin, which
+  # swallows the rows before the main rule sees them.
+  while (wfile != "" && (getline line < wfile) > 0) {
     if (line ~ /^#/ || line ~ /^[ \t]*$/) continue
     tab = index(line, "\t")
     if (tab == 0) continue

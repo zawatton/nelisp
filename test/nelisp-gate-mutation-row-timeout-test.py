@@ -665,8 +665,10 @@ class ShardBudget(Fixture):
                     row("okred", "lisp/okred.el")])
         self.run_harness()
         side = json.loads((self.root / "target/gate-mutation-rows/gate-mutation-seconds-0.json").read_text())
+        # On failure, show the harness output: this once failed only on CI.
         self.assertEqual(sorted(side["row_seconds"]),
-                         ["green|lisp/green.el|1", "okred|lisp/okred.el|1", "okred|lisp/okred.el|2"])
+                         ["green|lisp/green.el|1", "okred|lisp/okred.el|1", "okred|lisp/okred.el|2"],
+                         self.out)
 
     def test_invalid_budget_is_rejected(self):
         for value in ["0", "abc", "-1", "1.5"]:
