@@ -59,31 +59,38 @@ jobs:
             [ -d "$d" ] && loads="$loads -L $d"
           done
           export logdir loads
+          echo "bash=$BASH timeout=$(command -v timeout) emacs=$(command -v emacs)"
           run_one() {
             i=$1
+            # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
             # shellcheck disable=SC2086
-            if timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
+            if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
                  -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
                  -l test/nelisp-native-unit-development-test.el \
                  --eval '(ert-run-tests-batch-and-exit "run-bounded-output-limit-truncates-and-kills")' \
                  </dev/null >"$logdir/iter-$i.log" 2>&1; then
               echo pass >"$logdir/iter-$i.result"
             else
-              echo fail >"$logdir/iter-$i.result"
+              echo "fail rc=$?" >"$logdir/iter-$i.result"
             fi
           }
-          export -f run_one
-          # "$BASH", not bare bash: on windows-latest a bare `bash' started by
-          # xargs can resolve to C:\Windows\System32\bash.exe (WSL), which
-          # has neither the exported function nor this checkout.
-          seq 1 "$ITERATIONS" | xargs -P "$PARALLEL" -I{} "$BASH" -c 'run_one {}'
+          # Plain background jobs, PARALLEL at a time (no xargs, no child bash).
+          set +e
+          for i in $(seq 1 "$ITERATIONS"); do
+            run_one "$i" &
+            while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do sleep 1; done
+          done
+          wait
+          set -e
           total=$(find "$logdir" -name '*.result' | wc -l)
           if [ "$total" -ne "$ITERATIONS" ]; then
             echo "LOOP harness error: $total of $ITERATIONS iterations recorded a result"
             exit 1
           fi
-          failed=$(grep -l '^fail' "$logdir"/*.result 2>/dev/null | wc -l)
-          for r in $(grep -l '^fail' "$logdir"/*.result 2>/dev/null); do
+          # grep exits 1 when nothing failed; under pipefail that must not
+          # end the step before the summary is printed.
+          failed=$({ grep -l '^fail' "$logdir"/*.result 2>/dev/null || true; } | wc -l)
+          for r in $(grep -l '^fail' "$logdir"/*.result 2>/dev/null || true); do
             log="${r%.result}.log"
             echo "::group::FAILED ${log##*/}"
             cat "$log"
