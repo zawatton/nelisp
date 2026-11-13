@@ -82,11 +82,13 @@ file writers, native code emitters, and standalone OS surface) is
 written in Elisp itself.
 
 In the wider "replace Emacs" effort, this repo is *Layer 1* (the
-runtime / reader / AOT compiler that produces =target/nelisp=).  It is
-consumed by *Layer 2 =../nelisp-emacs=* (Emacs 意味論) and *Layer 3
-=../nelisp-gui=* (X11 描画/入力).  The 3-layer responsibility boundary,
-inter-layer contracts, and completion conditions are fixed in
-=../nelisp-gui/docs/design/00-three-layer-architecture.org=.
+runtime / reader / AOT compiler that produces =target/nelisp=).  *Layer 2*
+(Emacs semantics) began as the sibling repository =nelisp-emacs= and now
+lives in this tree as =packages/emacs-lib-*= (Doc 211, see
+[[file:docs/design/211-emacs-api-packages.org][the design]]).  *Layer 3* (X11 drawing and input, =nelisp-gui=) was
+imported as =gui/=.  The 3-layer responsibility boundary, inter-layer
+contracts, and completion conditions are fixed in
+[[file:gui/docs/design/00-three-layer-architecture.org][=gui/docs/design/00-three-layer-architecture.org=]].
 
 The important claim is not merely "Elisp can call into a runtime".
 NeLisp's runtime implementation is Elisp: the evaluator, reader,
@@ -98,14 +100,16 @@ way: standalone file I/O, stdout/stderr, process exit, raw memory,
 syscall surface used by the standalone reader are expressed from Elisp
 via AOT codegen and =syscall-direct=.
 
-Latest published GitHub release:
-[[https://github.com/zawatton/nelisp/releases/tag/v1.2.0][v1.2.0]] (2026-09-03 UTC).
-Use tagged release notes for the released feature and gate status; source
+Latest tagged version: *v1.5.0* (2026-09-20); see [[file:RELEASE_NOTES.md][RELEASE_NOTES.md]] and
+=release/v1.5.0/RELEASE.md=.  GitHub release pages exist only up to
+[[https://github.com/zawatton/nelisp/releases/tag/v1.2.0][v1.2.0]] (2026-09-03 UTC); v1.2.1, v1.3.0, v1.4.0 and v1.5.0 exist as git
+tags with release notes in the repository (checked 2026-11-13).  Use
+tagged release notes for the released feature and gate status; source
 checkout instructions, including the development launcher above, may
-describe changes not yet in a published release. The v1.0.1 overview below
-is retained as a historical snapshot.
+describe changes not yet in a tag.  The overview of the 1.0 line below
+is kept as a historical record.
 
-On =main= since v1.2.0 (not yet in a tagged release):
+On =main= since v1.5.0 (not yet in a tagged release):
 - *Windows DLLs and COM from Elisp* — the PE writer emits PE32+ DLLs
   (exports, base relocations, =DllMain=), and a COM DSL builds
   in-process COM servers (vtables, =QueryInterface=/=AddRef=/=Release=,
@@ -122,20 +126,31 @@ On =main= since v1.2.0 (not yet in a tagged release):
   this repository as =packages/emacs-lib-*= (Doc 211).
 - *Targets* — linux/x86_64, linux/aarch64, macos/aarch64 and
   windows/x86_64.  The macOS Intel (macos/x86_64) target was dropped in
-  2026-11.
+  2026-11 (commits =04256373f=, 2026-11-11).
 - *CI* — every check runs even when an earlier one fails, the full
-  matrix finishes in under an hour, and byte-compiling =lisp/= has a
-  zero-tolerance bug check alongside per-file style ceilings.
+  matrix finishes in under an hour (run 43377687827: about 55 minutes), and
+  byte-compiling =lisp/= has a zero-tolerance bug check alongside per-file
+  style ceilings.
 
-v1.0.1 ships:
+In tagged releases v1.3.0 to v1.5.0 (details in =RELEASE_NOTES.md=):
+- *Syntax-parsing layer* (Doc 204: =parse-partial-sexp=, =scan-lists=,
+  =forward-sexp=, =emacs-lisp-mode=), declarative FFI (=ffi:library= /
+  =ffi:defun=), a project CLI (=nelisp new/run/build/test/fmt/repl/check/clean=),
+  a stdio language server with a VS Code extension, and native-unit
+  replacement through the common =reload.plan= / =reload.apply= (v1.3.0, v1.4.0).
+- *Host-parity compat layer* =standalone-compat/= and the =-L= / =-l= / =-f=
+  / =--batch= command-line flags, so host-only ERT files load on the
+  standalone (v1.5.0).
+
+What the runtime consists of:
 - *Pure-Elisp runtime implementation* — evaluator, reader, special
   forms, builtins, compiler, allocator, GC, object writers, codegen,
   and standalone OS interaction all live in Elisp source.
-- *Cross-platform support* on 5 targets — linux/x86_64,
-  linux/aarch64, macos/x86_64, macos/aarch64, windows/x86_64 — with
-  pure-elisp object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp
-  asm encoders (x86_64 with both SysV and Microsoft x64 ABIs, plus
-  AArch64 AAPCS).
+- *Cross-platform support* on 4 targets — linux/x86_64,
+  linux/aarch64, macos/aarch64, windows/x86_64 — with pure-elisp
+  object-file writers (ELF, Mach-O, PE/COFF) and pure-elisp asm encoders
+  (x86_64 with both SysV and Microsoft x64 ABIs, plus AArch64 AAPCS).
+  See =Cross-platform support=.
 - *Self-host + parallel build* — a pure-elisp AOT-AOT binary
   (=target/nelisp=, pure Elisp) loads its own
   compiler and compiles Elisp source → native ELF *with no Emacs in
@@ -149,7 +164,7 @@ v1.0.1 ships:
   environment, so redefining a function and calling it again takes
   effect immediately, including through persistent
   =nelisp--eval-source-string=.
-- *Low-footprint standalone load* (2026-06) — a hybrid
+- *Low-footprint standalone load* (measured 2026-06) — a hybrid
   refcount+tracing *compacting* GC (=mmap=-chunked arena, segregated
   free-list, a moving collector that forwards live objects and
   =munmap=s reclaimed chunks) together with an *8-byte tagged-word
@@ -158,8 +173,8 @@ v1.0.1 ships:
   to 118MB (−93%)* and the load time *≈13×* (13.4s → 0.9s).  A container
   slot (cons car/cdr, vector element, cell value) is either an immediate
   (=Nil=/=t=/fixnum) or an 8-byte pointer to a 32-byte child box; the GC
-  marks, forwards, and moves them word-aware.  Validated by a 50× load
-  soak under compaction and the 4438-assertion suite.
+  marks, forwards, and moves them word-aware.  Validated at the time by a
+  50× load soak under compaction.
 - *Reader/core breadth since v0.5.1* — correctly-rounded float parse /
   print paths, broader Common Lisp / Emacs Lisp prelude coverage,
   additional raw syscall surface, AOT data/blob relocations, defined
@@ -169,31 +184,34 @@ v1.0.1 ships:
 Use cases: running Elisp on machines without Emacs, and as a
 substrate for Lisp Machine / new-dialect experiments.
 
-* Earlier Release Highlights (v1.0.1)
+* Release history: the 1.0 line
 
-v1.0.1 was the stable tag for this snapshot.  What made the 1.0 line a 1.0 rather than
-another point release: the runtime collects garbage by default, and ordinary
-allocating Elisp runs on real OS threads.  Before it, a long-running loop grew
-without bound unless a debug switch was flipped, and "parallelism" meant
-cooperative scheduling on one thread.
+#+begin_quote
+*Historical record.*  This section describes the v1.0.0 / v1.0.1 tags
+(August 2026) and every figure in it was measured on that tree.  None of
+it is current; see =Status= for numbers measured on =main=.  Later tags
+(v1.1.0 unibyte strings, v1.1.1/v1.1.2 the precise root set and the
+value-word boundary, v1.2.0 Windows x86_64 as a full standalone target,
+then v1.2.1 to v1.5.0) are summarised in [[file:RELEASE_NOTES.md][RELEASE_NOTES.md]].
+#+end_quote
 
-v1.0.1 followed the same day, carrying the in-process =.neln= loader and three
-defects that turning the collector on by default had brought into the open --
-see =release/v1.0.1/RELEASE.md=, which also names two known issues this line
-does NOT fix.
+What made the 1.0 line a 1.0 rather than another point release: the
+runtime collects garbage by default, and ordinary allocating Elisp runs on
+real OS threads.  Before it, a long-running loop grew without bound unless
+a debug switch was flipped, and "parallelism" meant cooperative scheduling
+on one thread.  v1.0.1 carried the in-process =.neln= loader and three
+defects that turning the collector on by default had brought into the
+open; see =release/v1.0.1/RELEASE.md=.
 
-Every figure below was measured on the 1.0 tree; see =Test status= for how.
-
-| Area | What changed |
-|------+--------------|
+| Area | What changed in 1.0 |
+|------+---------------------|
 | Garbage collection | Doc 152's precise-root collector is ON BY DEFAULT (Stage 5).  A 200k allocating loop's peak RSS falls 669,936 KiB -> 339,920 KiB (-49.3%), and RSS stays flat from 500k to 1M iterations (352,624 -> 352,620 KiB) while 256 MiB is returned to the OS.  It is also *faster*: the same loop runs in 5,204 ms collected vs 8,125 ms uncollected, because a small heap keeps locality and avoids further growth =mmap=s. |
 | True multicore | Doc 199 Tiers 1-3b.  =nl-clj-future=/=pcalls=/=pmap= (cooperative), GC-free =clone(2)= workers, bounded allocating tasks, and finally UNRESTRICTED allocating Elisp on real threads: a per-thread precise-root registry, a park barrier that stops every mutator before marking, atomic claim-fill-publish for the macro/function-value caches, and a catchable refusal of worker writes to the shared globals mirror. |
 | No write barrier needed | The park barrier makes Doc 152's planned Stage 6 unnecessary: with all mutators stopped, the tri-colour invariant holds by construction rather than by instrumenting every store. |
 | Buffers, bignums, backquote | Doc 188 buffer unification, Doc 190 bignums, and full backquote all ship — three things the v0.6.0 README still listed as deferred.  =(* 100000000000 100000000000)= evaluates exactly on =target/nelisp=. |
 | Networking | Doc 184 processes and event loop, Doc 194 =make-network-process=/=open-network-stream=, =/etc/hosts= lookup, a DNS-over-TCP resolver, nonblocking sockets with =:nowait=/=:server=, and IPv6 — all in the default binary with no =--load=. |
-| Extension libraries | 39 opt-in packages including =nl-clj= (Clojure compat), =nl-num= (numeric tower), =nl-static= (build-first totality/borrow/typed checks), =nl-hygiene= (hygienic macros), =nl-ns= (namespaces), and =nl-safe=.  Unannotated Elisp is unaffected by all of them. |
-| Zero Rust | 0 =.rs= files remain in the repository.  The evaluator, reader, compiler, allocator, GC, object writers, native emitters and the syscall surface are Elisp. |
-| CI | Three =smoke= lanes (Linux/macOS/Windows x Emacs 30.2) plus a parallel =ert= matrix (same three OSes x the ERT suite's plain/JIT-enabled/JIT-disabled variants) and a fast Linux-only =gates= job that runs the ratchet and inventory battery in ~2 minutes before the matrix starts, collecting every failure instead of stopping at the first. |
+| Extension libraries | 39 opt-in packages at the time, including =nl-clj= (Clojure compat), =nl-num= (numeric tower), =nl-static= (build-first totality/borrow/typed checks), =nl-hygiene= (hygienic macros), =nl-ns= (namespaces), and =nl-safe=.  Unannotated Elisp is unaffected by all of them. |
+| Zero Rust | 0 =.rs= files remained in the repository, and still do.  The evaluator, reader, compiler, allocator, GC, object writers, native emitters and the syscall surface are Elisp. |
 
 * What NeLisp is
 
@@ -212,49 +230,48 @@ Current source is centered in =lisp/=, =src/=, =packages/=, and
 =scripts/=, with the AOT compiler emitting native object code from
 Elisp forms.
 
-** Elisp — the language runtime (v1.0 snapshot: 45 files, 54,511 LoC)
+** Elisp — the language runtime
 
-The breakdown below is the 2026-04-27 v1.0 snapshot and is retained for
-reference.  Current totals (2026-05-14) are =lisp/= 46 files ~20k LOC
-+ =packages/= 27 files ~14k LOC; see =Pure-Elisp Migration Progress=
-for what shifted.
+Scale of the tracked Elisp sources on =main= (2026-11-13, =wc -l= over
+=git ls-files= of =*.el=):
 
+| Directory | Files | Lines |
+|-----------+-------+-------|
+| =lisp/= | 421 | 184,169 |
+| =src/= | 44 | 60,492 |
+| =scripts/= | 161 | 150,669 |
+| =packages/= | 854 | 308,165 |
 
-| Subsystem | Files | LoC | Phase |
-|-----------+-------+-----+-------|
-| *JIT compiler* (SSA + linear-scan, x86_64 + arm64; written in Elisp itself) | 13 | 12,196 | 7.1 |
-| Memory management (allocator + GC) | 5 | 6,290 | 7.2--7.3 |
-| Lisp evaluator (reader, eval, special forms, closures, macros) | 7 | 4,035 | -- |
-| Module loading and bootstrap | 3 | 2,147 | 7.5 |
-| Coding-system (logic) | 1 | 1,928 | 7.4 |
-| Bytecode interpreter | 1 | 1,845 | -- |
-| Emacs compatibility shims | 3 | 1,680 | -- |
-| *Multi-threading / parallel worker pool* (process-level concurrency, file-notify) | 5 | 1,405 | -- |
-| Buffer model | 2 | 1,076 | -- |
-| Other infrastructure (dev-audit, heap-types, EC bridge, entry point) | 4 | 1,094 | -- |
-| Character tables (JIS, data) | 1 | 20,815 | -- |
+The tree contains 0 =.rs= files.  Where to look:
 
-v2.0 ships the four cores Emacs's C core normally gives you — native
+- Compilers and object writers in =lisp/=: =nelisp-aot-compiler.el=, the
+  assemblers =nelisp-asm-x86_64.el= and =nelisp-asm-arm64.el=, the writers
+  =nelisp-elf-write.el=, =nelisp-mach-o-write.el= and =nelisp-pe-write.el=,
+  and =nelisp-static-linker.el=.
+- The collector in =src/nelisp-gc.el= and =src/nelisp-gc-inner.el=.
+- The standalone build driver =scripts/nelisp-standalone-build.el= and the
+  Lisp prelude =scripts/nelisp-stdlib-prelude.el=.
+
+NeLisp ships the four cores Emacs's C core normally gives you — native
 compile, allocator, GC, coding-system — all written in Elisp itself.
-Object file writers, asm encoders, ABI-aware codegen for 5 OS×arch
+Object file writers, asm encoders, and ABI-aware codegen for 4 OS×arch
 targets are also pure Elisp.
 
 ** Two things Emacs proper doesn't ship in the same form
 
-- *A JIT compiler written in Elisp itself.*  Emacs 28+ has
+- *A JIT and AOT compiler written in Elisp itself.*  Emacs 28+ has
   native-comp, but it depends on libgccjit (an external C library)
-  and is used as AOT in practice.  NeLisp's JIT is ~12k LoC of Elisp
-  source you can read end-to-end and modify, with runtime codegen via
-  =mmap= + =PROT_EXEC=.
+  and is used as AOT in practice.  NeLisp's compilers (=lisp/nelisp-jit-*.el=,
+  =lisp/nelisp-aot-compiler.el= and the assemblers) are Elisp source you can
+  read end-to-end and modify, with runtime codegen via =mmap= + =PROT_EXEC=.
 - *Real parallel execution.*  Emacs's =make-thread= is cooperative —
-  one Lisp thread runs at a time.  NeLisp's worker pool gives
-  process-level concurrency under the same Lisp runtime, which is
-  what made the orchestrator and the long-running MCP handler design
-  tractable.
+  one Lisp thread runs at a time.  NeLisp runs allocating Elisp on real
+  =clone(2)= threads with a park barrier for the collector (see
+  =The park barrier=), and =fork(2)= workers for parallel builds.
 
-* Standalone self-host & parallel build (2026-06)
+* Standalone self-host & parallel build
 
-The pure-Elisp AOT AOT toolchain now produces a *standalone
+The pure-Elisp AOT toolchain now produces a *standalone
 interpreter binary* — =target/nelisp=, built by =make
 standalone-reader= — that runs with *no Emacs in the loop
 at all*: it starts a REPL when launched with no arguments, loads an
@@ -435,7 +452,7 @@ All of the following are =fboundp= in a default =target/nelisp= with no
 - Hooks: =add-hook=, =run-hooks=.
 
 The =nelisp-=-prefixed functions still exist as the layer underneath; they are
-the implementation, not the interface.  =make emacs-parity= (19,961 checks, 0
+the implementation, not the interface.  =make emacs-parity= (27,853 checks, 0
 findings) is what keeps the standard names honest -- it diffs behaviour against
 a real stock Emacs rather than against NeLisp's own idea of correct.
 
@@ -524,71 +541,46 @@ gate proves the barrier actually engages rather than skipping an empty
 registry, by asserting =PARK-DIAG parked=3 current=0 missed=0 collections=1=:
 a genuine collection with three live workers parked.
 
-* Pure-Elisp Substrate (v2.0, 2026-05-22)
+* Cross-platform support
 
 The implementation center is Elisp source.  The standalone reader runs
 that substrate without a host Emacs process: source text is read,
 parsed, evaluated, compiled, linked, and used to drive OS interaction
-through Elisp-generated native code.
+through Elisp-generated native code.  Object-file writers and asm
+codegen are pure Elisp, for 4 OS × architecture targets (macos/x86_64
+was removed in 2026-11):
 
-** Shipped substrate
-- *AOT self-emission* (Doc 85 / 91–97):  ~7,550+ LoC of Elisp for
-  the x86_64 + arm64 assemblers, ELF + Mach-O + PE/COFF writers,
-  static linker, =crt0=, the Sexp DSL, and the AOT compiler.
-  600+ ERT.  =(fact 5)= compiles end-to-end to a native =.o=, links,
-  and runs.
-- *Cross-platform native emit* (May 2026 — see =Cross-Platform Support=
-  below): 5 OS×arch targets supported entirely from elisp.
-- *GC pure-elisp* (Doc 79 v7 Phase C Stage 5.3): object tracker and
-  collector implementation at =src/nelisp-gc.el= ( *379 LoC* ) and
-  =src/nelisp-gc-inner.el= ( *2,941 LoC* ).
-- All special forms, builtins, env / mirror / frame ops, NlBox
-  Clone/Drop, reader (lexer + parser), JIT trampolines, syscall
-  handlers — now live in elisp via AOT .o.
+| Target | Object writer | Asm encoder | ABI |
+|--------+---------------+-------------+-----|
+| linux/x86_64 | =nelisp-elf-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 |
+| linux/aarch64 | =nelisp-elf-write.el= | =nelisp-asm-arm64.el= | AAPCS |
+| macos/aarch64 | =nelisp-mach-o-write.el= | =nelisp-asm-arm64.el= | AAPCS |
+| windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 |
 
-** Test gate
-- ERT coverage for elisp .o emission: 600+ tests including
-  Win64-ABI-specific assertions (Wave 5).
-- *Standalone self-host gates* (zero-Emacs, CI, 2026-06):
-  =standalone-selfhost-test= (recursion → native ELF → 120),
-  =standalone-selfhost-mt-test= (=clone(2)= + atomics multi-thread → 42),
-  =standalone-parallel-compile-test= (4 units compiled concurrently via
-  =fork(2)= → 11,22,33,44).
-- *Standalone parallel eval build*: =tools/build-standalone-parallel.sh [NJOBS]=
-  on POSIX, =.\tools\build-standalone-parallel.ps1 -Jobs 4= on Windows.
+The PE/COFF writer (=lisp/nelisp-pe-write.el=, 5,481 lines on =main=;
+it also emits DLLs, see the =main= list above) and the Windows codegen
+path (AOT compiler =--abi 'win64= mode with shadow space allocation +
+RCX/RDX/R8/R9 arg-reg remapping + RBP/RBX/RDI/RSI/R12-R15 callee-save)
+are pure Elisp.  Which targets are CI-gated, and how, is listed under
+=Prerequisites by platform=.
 
-* Cross-Platform Support (v2.0, 2026-05-22)
+Not targeted: Windows on aarch64 (=arm64ec=); Intel macOS.
 
-NeLisp v2.0 builds and runs across 5 OS × architecture targets, with
-*all object-file writers and asm codegen written in pure Elisp*:
+The standalone self-host gates (=standalone-selfhost-test=,
+=standalone-selfhost-mt-test=, =standalone-parallel-compile-test=) are
+described under =Standalone self-host & parallel build=.
 
-| Target | Object writer | Asm encoder | ABI | gate |
-|--------+---------------+-------------+-----+------|
-| linux/x86_64 | =nelisp-elf-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
-| linux/aarch64 | =nelisp-elf-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
-| macos/aarch64 | =nelisp-mach-o-write.el= | =nelisp-asm-arm64.el= | AAPCS | ✓ |
-| macos/x86_64 | =nelisp-mach-o-write.el= | =nelisp-asm-x86_64.el= | SysV AMD64 | ✓ |
-| windows/x86_64 | =nelisp-pe-write.el= | =nelisp-asm-x86_64.el= | Microsoft x64 | ✓ |
+* Status — =main=, 2026-11-13
 
-The PE/COFF writer (=nelisp-pe-write.el=, 765 LoC) and the
-Windows-specific codegen path (AOT compiler =--abi 'win64= mode
-with shadow space allocation + RCX/RDX/R8/R9 arg-reg remapping +
-RBP/RBX/RDI/RSI/R12-R15 callee-save) are pure elisp.
-
-Deferred: aarch64 Windows (=arm64ec=) — currently x86_64 Windows only.
-
-* Status — v1.0.1 (2026-08-26)
-
-NeLisp v1.0.1 centers the runtime in Elisp, keeps the standalone path
-as the primary user surface, and adds cross-platform native emit across
-5 OS×arch targets.
+NeLisp centers the runtime in Elisp, keeps the standalone path as the
+primary user surface, and builds natively for 4 OS×arch targets.
 
 1. *Standalone reader* — =target/nelisp= loads and
    evaluates =.el= files with no host Emacs process.
 2. *Runtime development REPL* — =target/nelisp=
    keeps a live evaluator environment for immediate redefinition.
-3. *Standalone self-host + parallel build* (2026-06) — the pure-elisp
-   AOT AOT toolchain loads its own compiler and compiles Elisp
+3. *Standalone self-host + parallel build* — the pure-elisp
+   AOT toolchain loads its own compiler and compiles Elisp
    source → native ELF *with no Emacs in the loop*: recursion
    (=(fact 5)= → exit 120), multi-threaded native programs (=clone(2)=
    + atomics), and *N units compiled concurrently* via =fork(2)= workers.
@@ -598,21 +590,22 @@ as the primary user surface, and adds cross-platform native emit across
 
 Two paths.
 
-*** Published release source — =v1.2.0=
+*** Pinned release source — =v1.5.0=
 
-For reproducible released source, pin the latest published release tag.
-For the new REPL development launcher, use =main= as described above:
+For reproducible released source, pin the latest tag (v1.5.0, 2026-09-20).
+For the REPL development launcher described at the top, use =main=:
 
 #+begin_src shell
 git clone https://github.com/zawatton/nelisp ~/nelisp
 cd ~/nelisp
-git checkout v1.2.0
+git checkout v1.5.0
 make standalone-reader
 make standalone-reader-test
 #+end_src
 
-The v1.2.0 GitHub release has no attached binary assets (checked
-2026-09-11). Build from source. Historical v1.0.1 tarballs used these names:
+No GitHub release carries attached binary assets (v1.2.0 has none, checked
+2026-11-13; later tags have no release page).  Build from source.
+Historical v1.0.1 tarballs used these names:
 
 #+begin_src text
 anvil-v1.0.1-linux-x86_64.tar.gz
@@ -629,10 +622,14 @@ The standalone-reader build is driven by host Emacs and the pure-Elisp
 AOT toolchain.  Install a normal native build environment for your
 platform, then run =make standalone-reader=.
 
-*Host Emacs 30.2 or newer is required to BUILD from source.*  CI builds
-and tests on 30.2, so that is the version actually verified (29.4
-was dropped from the per-push matrix 2026-09-19); older Emacsen are
-not supported and have been reported to fail
+*Host Emacs 31.1 is what CI builds and tests with* (CI moved from 30.2
+to 31.1 on 2026-10-17; 29.4 was dropped from the per-push matrix on
+2026-09-19).  The standalone build verifies the GNU 31.1 bytecode dialect
+(see the comment at =NELISP_BUILD_EMACS= in the =Makefile=), and
+=make emacs-parity= skips itself unless the host is 31.x.  Builds on other
+Emacs versions are not covered by CI;
+[[file:docs/repl-development.md][docs/repl-development.md]] still states 30.2 as the lower bound for the
+development workflow, and older Emacsen have been reported to fail
 part-way through the build (issue #5, on Emacs 28.2).  This requirement
 applies only to building — the resulting =target/nelisp= is a standalone
 binary and needs no Emacs at run time.
@@ -670,20 +667,23 @@ BOOT_IMAGE_BIN=$PWD/target/boot-image/candidate7 \
 python3 tools/ai/boot-image-differential.py --self-test
 #+end_src
 
-Tier guarantees (v2.0):
-- =linux-x86_64= — 1st-class (CI blocker, every release must pass).
-- =macos-aarch64= / =windows-x86_64= — end-to-end CI gated on real
-  runners (=macos-14= / =windows-latest=) via
+Tier guarantees (main):
+- =linux-x86_64= — 1st-class: the CI blocker (=ubuntu-latest=: byte-compile
+  and gate battery, the three ERT variants, gate mutation, tier jobs).
+- =macos-aarch64= / =windows-x86_64= — per-push CI lanes on real runners
+  (=macos-latest= / =windows-latest=: smoke and the three ERT variants in
+  =.github/workflows/ci.yml=) plus end-to-end native checks via
   =.github/workflows/stage-d-v3.0-standalone.yml=: native self-host
   (Mach-O / PE32+), OS-compat ERT, native eval/reader, cache identity,
   parallel build, and tarball/install of the native CLI.  macOS uses
-  ad-hoc =codesign= for native execution.  Not release blockers —
-  =linux-x86_64= remains the hard gate.
+  ad-hoc =codesign= for native execution.  =linux-x86_64= remains the
+  hard gate.
 - =linux-aarch64= — supported by the elisp object-file writer
-  (=nelisp-elf-write.el=), but no dedicated CI runner job yet
-  (best-effort).
+  (=nelisp-elf-write.el=); there is no per-push CI lane, but the v1.4.0
+  and v1.5.0 release notes record it as qualified by the release
+  pipeline.
 - =macos-x86_64= (macOS Intel) — not supported (dropped 2026-11-11).
-- =windows-aarch64= (=arm64ec=) — deferred.
+- =windows-aarch64= (=arm64ec=) — not a target.
 
 Linux (Debian / Ubuntu):
 
@@ -697,14 +697,14 @@ Linux (Fedora / RHEL):
 sudo dnf install gcc make git emacs
 #+end_src
 
-macOS (arm64 or x86_64):
+macOS (arm64):
 
 #+begin_src shell
 xcode-select --install              # one-time
-brew install emacs
+brew install emacs                  # CI builds with Emacs 31.1; check `emacs --version'
 #+end_src
 
-Windows — native x86_64 (v2.0 supported):
+Windows — native x86_64:
 The elisp-side PE/COFF writer + Win64 ABI codegen produce native COFF
 =.o= files.  Use a native toolchain with host Emacs, or use WSL2/MSYS2
 with the Linux-style commands above.
@@ -824,12 +824,12 @@ printf '(defun hot () 7)\n(hot)\n(nelisp--eval-source-string "(defun hot () 9)")
                                        # => 9
 #+end_src
 
-Older install tarballs may also ship a =nelisp= command.  Current source
-checkouts use the pure-Elisp standalone reader above for REPL
-development and file execution.
+A locally built tarball or install tree ships the same binary as =bin/nelisp=
+(=bin/nelisp.exe= on Windows):
 
 #+begin_src shell
-nelisp --help                          # usage; there is no --version flag
+nelisp --help                          # usage
+nelisp --version                       # the build-captured version line
 nelisp --eval "(+ 1 2 3)"              # => 6
 nelisp --load ~/nelisp/examples/hello/hello.el
 #+end_src
@@ -896,81 +896,78 @@ Two boundaries are pinned:
   forking are exposed through Elisp-generated code and raw syscall
   forms on the standalone path.
 
-** Soak gate (Doc 32 v2 §2.7)
+** Soak gate
 
-| Tier             | Duration | RSS growth ceiling | Status (2026-04-27) |
-|------------------+----------+--------------------+---------------------|
-| blocker (CI)     | 1h       | < 5 MB             | PASS (linux-x86_64) |
-| post-ship audit  | 24h      | < 10 MB / 24h      | scheduled, weekly   |
+Two soak paths exist, neither of them in the per-push CI:
 
-Standalone native CLI matrix (current HEAD):
+- *Release pipeline* — the linux-x86_64 release blocker is a deterministic
+  checked-soak plus a 180 s RSS sanity run (v1.5.0 notes: 5 minutes, down
+  from 65).
+- *Post-ship audit* — =.github/workflows/weekly-soak.yml= runs a 1-hour RSS
+  soak on =linux-x86_64= every Monday (04:17 UTC, default 3600 s, also
+  =workflow_dispatch=).  Nothing depends on it, so it never blocks a
+  release.  The v1.4.0 notes recorded a 1-hour soak at +1,504 KiB against a
+  5,120 KiB ceiling.
+
+Standalone native CLI matrix (current =main=):
 
 | Platform       | Status                                                                 |
 |----------------+------------------------------------------------------------------------|
 | linux-x86_64   | gated by native eval, reader, REPL, cache identity, parallel, tarball/install |
 | macos-aarch64  | gated by Mach-O self-host, OS ERT, signed CLI tarball/install, eval/reader/REPL |
 | windows-x86_64 | gated by PE32+ self-host, OS ERT, CLI tarball/install, eval/reader/REPL |
-| linux-arm64    | best-effort                                                             |
+| linux-arm64    | release-pipeline qualification only, no per-push lane                    |
 
-The older v1.0 arm64 time-box language is retained only in the v1.0 release
-templates and tests.  The current standalone path is verified by
-=scripts/verify-cross-platform.sh --include-tarball= on POSIX and
-=scripts/verify-cross-platform.ps1 -IncludeTarball= on Windows.
-The tarball gate includes a real install smoke from the freshly built =dist=
-directory.
+The standalone path is verified by =scripts/verify-cross-platform.sh
+--include-tarball= on POSIX and =scripts/verify-cross-platform.ps1
+-IncludeTarball= on Windows.  The tarball gate includes a real install
+smoke from the freshly built =dist= directory.
 
-** What is *not* in v1.0
+** Known limits
 
-Said plainly so expectations are calibrated.  This list is measured, not
-remembered -- the v0.6.0 README claimed buffers, bignums and full backquote
-were deferred when all three had already shipped, so each item below was
-checked against =target/nelisp= before being written here.
+Said plainly so expectations are calibrated.  The first item reflects the
+current layer split; the rest were measured on the v1.0 tree and have *not
+been re-measured* on =main=.  The wider C-equivalence limits are in
+[[file:docs/runtime-limitations.md][docs/runtime-limitations.md]] (snapshot 2026-06-24).
 
-- *No windows or frames.*  =selected-window= and =make-frame= are absent by
-  design: NeLisp is Layer 1, the language runtime.  Display belongs to Layer 3
-  (=../nelisp-gui=).
-- *Buffers yes, markers and overlays no.*  Doc 188 landed buffers
-  (=current-buffer=, =set-buffer=, =insert=, =point=, =goto-char=,
-  =buffer-substring=, =buffer-string=, =erase-buffer=), but =make-marker=,
-  =overlay-start= and =save-excursion= are still absent.
-- *Worker heaps are not reclaimed per task.*  A Tier 3b worker's share of the
-  arena comes back at process exit, not at task end.
-- *Workers cannot write the shared globals mirror.*  Such a write signals a
-  catchable =nelisp-worker-mirror-mutation= rather than being serialised.  The
-  read path is unrestricted.
-- *Sockets are Linux-only.*  Doc 194 P6 (Windows) is blocked on Windows PE
-  import-table emission, which does not exist yet; other targets get a
-  catchable =nelisp-unsupported-primitive= from the socket primitives.
-- *Mid-form collection safepoints are =while= backedges only.*  A long-running
-  workload shaped some other way still has few collection opportunities.
-- *Linux arm64 remains best-effort.*  Linux x86_64, macOS arm64 and Windows
-  x86_64 are the gated native standalone targets.
+- *No windows or frames in the core.*  NeLisp is Layer 1, the language
+  runtime.  Display belongs to Layer 3 (=gui/=); markers, overlays and
+  text properties belong to the Emacs-semantics packages (=packages/emacs-lib-*=,
+  =packages/nelisp-overlay=) per Doc 211, not to the core binary.
+- *Worker heaps are not reclaimed per task* (v1.0).  A Tier 3b worker's share
+  of the arena comes back at process exit, not at task end.
+- *Workers cannot write the shared globals mirror* (v1.0).  Such a write
+  signals a catchable =nelisp-worker-mirror-mutation= rather than being
+  serialised.  The read path is unrestricted.
+- *Sockets were Linux-only at v1.0.*  Doc 194 P6 (Windows) was blocked on
+  PE import-table emission; other targets got a catchable
+  =nelisp-unsupported-primitive=.
+- *Mid-form collection safepoints are =while= backedges only* (v1.0).  A
+  long-running workload shaped some other way still has few collection
+  opportunities.
 
-** Test status (v1.0.1, 2026-08-26)
+** Test status
 
-Measured on this tree, Linux x86_64, after a clean =make standalone-reader=:
+Measured in the latest fully green CI run on =main= that I checked: run
+43377687827 (2026-11-13, every job green, about 55 minutes wall clock).
+These are snapshot numbers and will move.
 
-- =tools/ai/nelisp-ai.sh test= = *5466 tests / 5309 expected / 0 unexpected /
-  157 skipped*.  Skipped tests need standalone primitives, platform
+- ERT on =ubuntu-latest=: *10,355 tests across 720 files, 0 unexpected*,
+  560 skipped (plain), 557 (JIT), 560 (no-JIT) — the =[parallel-test]= line of each
+  variant job.  Skipped tests need standalone primitives, platform
   capabilities, or toolchains the running host does not have.
-- =make emacs-parity= = *19,961 checks, 0 findings* — a differential against a
-  real stock Emacs, and the single number that best describes how much of the
+- =make emacs-parity= = *27,853 checks, 0 findings* — a differential against a
+  real stock Emacs (31.x), and the single number that best describes how much of the
   language behaves identically.
-- =tools/ai/nelisp-ai.sh verify= = *VERDICT PASS (66 gates)*; =check= =
-  *PASS (22 gates)*.
-- =make bench-aot-tco= = *0.997x* against a 0.95 floor: a TCO-rewritten
-  =defun= is as fast as the hand-written loop it replaces.
-- =make standalone-midform-gc-bounded= proves reclamation through the
-  production default boot state -- at 1M iterations, =FIRED=5 RECLAIMED=4
-  RECLAIMED_BYTES=268435456 RELEASE_FAILURES=0=.
-- CI round 30 ran all six lanes plus the new =gates= job on real runners.
-
-Scale, for context (=wc -l= on this tree): =lisp/= 234 files / 88,447 lines,
-=src/= 42 / 57,859, =scripts/= 20 / 39,799, =packages/= 212 / 55,338.  The
-standalone binary is 7.66 MB (1.77 MB gzipped) and contains no Rust.
+- The =verify= job merges every job's gate reports against
+  =tools/ai/gates.expected=: *VERDICT: PASS (105 gates)*.
+- =binary-size-ratchet=: =target/nelisp= is 21,512,264 bytes on linux/x86_64
+  and contains no Rust.
 
 ** Key design documents
-
+Design documents live in =docs/design/= (Doc NNN).  The table lists the
+early-phase documents with the status recorded at the time; read each
+document's own header for its current state.
 | Doc    | Topic                                            | Status               |
 |--------+--------------------------------------------------+----------------------|
 | 18     | Stage D launcher charter                         | LOCKED               |
@@ -985,6 +982,8 @@ standalone binary is 7.66 MB (1.77 MB gzipped) and contains no Rust.
 | 100    | Runtime artifact contract                        | §B/C SHIPPED         |
 | 102    | Environment model migration to Elisp             | Phase 8 Sprint A SHIPPED, Sprint B/C deferred |
 | 110    | AOT f64 ABI + float/math migration to Elisp | SHIPPED              |
+| 188    | Buffer unification                               | see doc header       |
+| 211    | Emacs API layer as packages (nelisp-emacs-lib import) | header reads DRAFT (2026-09-30); import landed on =main= |
 
 * Earlier status (Phase 0 — 2026-04-22) — preserved for reference
 
@@ -1045,47 +1044,43 @@ of NeLisp, as extension packages.
 
 * Repository layout
 
+Top level of =main= (not exhaustive):
+
 #+begin_src text
 nelisp/
-├── BRIEFING.org             # First-session design instructions
-├── README.org               # This file
-├── .gitignore
-├── packages/                # Extracted optional libraries
-│   ├── README.org           # Package split convention
-│   └── nelisp-json/         # Pilot extracted library package
-│       ├── README.org
-│       ├── src/
-│       └── test/
-└── docs/
-    ├── 00-motivation.org    # Why this, why now, why not Scheme (USER voice)
-    ├── 01-related-work.org  # 7 projects audited + paper priorities
-    ├── 02-scoping.org       # Stage A/B/C + AI-critical vs long tail
-    ├── 03-architecture.org  # Bootstrap A, primitive boundary, Phase 1 subset
-    ├── 04-concurrency.org   # Actor primary Phase 4, novelty claim
-    ├── 05-roadmap.org       # Phase 1-5 timeline, release schedule
-    ├── 90-ideas-backlog.org # Deferred interesting ideas
-    └── papers/              # Academic paper reading stubs
-        ├── README.org
-        ├── rhodes-2008-sbcl.org           # Priority A: bootstrap methodology
-        ├── corallo-2020-native-comp.org   # Priority A: AOT hybrid
-        ├── bolz-2009-meta-tracing.org     # Priority A: JIT for Phase 3-4
-        └── maclachlan-1992-python.org     # Priority A: CL-in-CL precedent
+├── README.org / AI.md / AGENTS.md / BRIEFING.org  # overview, agent workflow, design briefing
+├── RELEASE_NOTES.md, release/vX.Y.Z/              # per-release notes
+├── VERSION, LICENSE, LICENSE.nelisp-emacs-lib
+├── Makefile, Makefile.ai, mk/                     # build and gate targets
+├── lisp/        # compilers, assemblers, object writers, runtime Elisp
+├── src/         # core runtime Elisp (reader, evaluator pieces, GC)
+├── scripts/     # standalone build driver, stdlib prelude, tooling
+├── packages/    # 53 package directories (see Optional packages)
+├── gui/         # Layer 3: X11 display layer, imported from nelisp-gui
+├── apps/        # applications (nemacs-next)
+├── bin/, tools/ # launchers; tools/ai/nelisp-ai.sh and gate tooling
+├── test/, bench/, examples/
+├── editors/vscode, standalone-compat/
+├── vendor/      # GNU Emacs Lisp sources used by the bundle
+└── docs/        # design/ (numbered Docs), install/, repl-development.md,
+                 # development-protocol.md, runtime-limitations.md, 00-05 notes
 #+end_src
 
 * Optional packages
 
-NeLisp v1.0 now supports an SBCL/Quicklisp-style split between the
-core =src/= tree and individually extractable libraries under
-=packages/*/=.  The =nelisp-json= package is the pilot extraction and
-defines the canonical layout for future package moves:
+=packages/= holds 53 package directories, following an SBCL/Quicklisp-style
+split between the core and individually extractable libraries.  Each one
+follows the layout in =packages/README.org=:
 
 - =packages/<name>/src/<name>.el=
 - =packages/<name>/test/<name>-test.el=
-- =packages/<name>/README.org=
+- =packages/<name>/README.org= and a =manifest.el= naming its =:requires=
 
+Groups: =emacs-lib-*= (the Layer 2 Emacs-semantics library, Doc 211),
+=nl-*= (the opt-in language extensions above), and =nelisp-*= libraries
+such as =nelisp-json=, =nelisp-regex=, =nelisp-http= and =nelisp-sqlite=.
 The build keeps these packages on the Emacs load-path, so existing
-=require= forms continue to work unchanged.  See =packages/README.org=
-and =packages/nelisp-json/README.org=.
+=require= forms continue to work unchanged.  See =packages/README.org=.
 
 * Related work (audited)
 
@@ -1102,8 +1097,9 @@ See =docs/01-related-work.org= §10 for the synthesis.
 
 * License
 
-TBD. Leading candidate: GPLv3+ (to match Emacs) with per-module
-reconsideration if needed. Decided before Phase 1 push.
+GNU General Public License v3 (see [[file:LICENSE][LICENSE]]).  The imported
+=packages/emacs-lib-*= tree carries its own copy in
+[[file:LICENSE.nelisp-emacs-lib][LICENSE.nelisp-emacs-lib]].
 
 * Contact
 
