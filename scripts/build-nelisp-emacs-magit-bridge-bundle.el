@@ -81,7 +81,7 @@ recording to work for M1-M3 (load, status display, section navigation).")
     ("vendor/emacs-lisp/emacs-lisp/crm.el" . crm)
     ("vendor/emacs-lisp/format-spec.el" . format-spec)
     ("vendor/emacs-lisp/emacs-lisp/pp.el" . pp)
-    ("vendor/transient/lisp/transient.el" . transient)
+    ("vendor/emacs-lisp/transient.el" . transient)
     ("vendor/emacs-lisp/emacs-lisp/cursor-sensor.el" . cursor-sensor)
     ("vendor/emacs-lisp/emacs-lisp/benchmark.el" . benchmark)
     ("vendor/emacs-lisp/emacs-lisp/derived.el" . derived)
@@ -426,7 +426,7 @@ known weak evaluator step out of the standalone reader.")
                     '("vendor/compat"
                       "vendor/cond-let"
                       "vendor/llama"
-                      "vendor/transient/lisp"))
+                      "vendor/emacs-lisp"))
             load-path)))
       (load "transient.el" nil 'no-message t t))
     (setq nelisp-emacs-magit-bridge-bundle--host-macro-env-ready t)))
