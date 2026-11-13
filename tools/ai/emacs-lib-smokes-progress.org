@@ -1,0 +1,61 @@
+#+TITLE: emacs-lib: the editor smokes pass on the standalone after the import
+
+Objective (user, 2026-11-13): fix the remaining smoke failures on
+feat/emacs-lib-import.  At cbbd96917 every smoke below fails (first error
+in the criterion NOTE).  An ERT smoke counts only when its one test ran and
+passed: a skipped test is not a pass (these smokes skipped silently from the
+import until b7b705576).
+
+Read with (from the NeLisp repo root; target/nelisp must exist there, a
+symlink to a built binary is enough):
+  NELISP_BIN=target/nelisp bin/progress-meter.sh --ledger tools/ai/emacs-lib-smokes-progress.org
+(bin/progress-meter.sh lives in the Notes workspace.)
+
+* S1 Smokes driven through bin/emacs-lib/nemacs
+
+** S1.1 test-nelisp-help-smoke runs and passes
+#+NOTE: cbbd96917: Autoloading file help-mode failed to define function help-mode
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-help-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+** S1.2 test-nelisp-project-smoke runs and passes
+#+NOTE: cbbd96917: Symbol's function definition is void: hack-dir-local-variables
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-project-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+** S1.3 test-nelisp-vc-workflow-smoke runs and passes
+#+NOTE: cbbd96917: Cannot open load file: vc-rcs
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-vc-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+** S1.4 test-nelisp-dired-workflow-smoke runs and passes
+#+NOTE: cbbd96917: Wrong type argument: stringp, #<buffer *Dired ...*>
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-dired-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+** S1.5 End to end: the ec-leak sweep stays at 0 leaks with one buffer type after these fixes
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/ec-leak-sweep.sh >/dev/null && test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null
+
+* S2 Vendor package smokes (org)
+
+** S2.1 org-mode-smoke passes
+#+NOTE: cbbd96917: ORG-MODE-SMOKE ERROR (error "Cannot open load file: sh-script")
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: h=$(mktemp -d) && HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" org-mode-smoke >/dev/null 2>&1; rc=$?; rm -rf "$h"; test $rc = 0
+
+** S2.2 org-workflow-smoke passes
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: h=$(mktemp -d) && HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" org-workflow-smoke >/dev/null 2>&1; rc=$?; rm -rf "$h"; test $rc = 0
+
+** S2.3 End to end: the behavior parity of the 13 GNU commands still matches GNU 31.1
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/ec-leak-behavior-parity.sh >/dev/null
