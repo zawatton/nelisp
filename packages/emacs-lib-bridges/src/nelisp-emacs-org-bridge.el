@@ -135,6 +135,7 @@ here rather than as a bare `file-error'."
                  (expand-file-name "vendor/emacs-lisp/calendar" root)
                  (expand-file-name "vendor/emacs-lisp/international" root)
                  (expand-file-name "vendor/emacs-lisp/textmodes" root)
+                 (expand-file-name "vendor/emacs-lisp/progmodes" root)
                  (expand-file-name "vendor/emacs-lisp/url" root)
                  (expand-file-name "vendor/emacs-lisp/mail" root)
                  (expand-file-name "vendor/emacs-lisp/gnus" root)

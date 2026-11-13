@@ -3152,6 +3152,15 @@ See `emacs-stub--pcase-test' for supported pattern shapes."
         (list 'let (list (list value-sym expr))
               (cons 'cond forward))))))
 
+;; A pcase pattern written inside an outer backquote (for example the
+;; `org-persist--gc-expired-p' macro body, which contains a `nil clause)
+;; reaches `pcase' as (backquote nil): this runtime's nested backquote
+;; keeps the `backquote' head instead of GNU's \=`-symbol head.  Share the
+;; genuine pcase expander so both heads expand the same way.
+(when (and (get '\` 'pcase-macroexpander)
+           (not (get 'backquote 'pcase-macroexpander)))
+  (put 'backquote 'pcase-macroexpander (get '\` 'pcase-macroexpander)))
+
 (defun emacs-stub--pcase-let-binding (binding)
   "Return (TEMP TEST BINDINGS) for a single pcase-let BINDING."
   (let* ((pattern (car binding))

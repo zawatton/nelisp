@@ -173,6 +173,15 @@
 
 ;;;; treesit
 
+;; GNU treesit.el defines this macro for byte-compiling against an Emacs
+;; built without tree-sitter; it only expands to `declare-function' forms,
+;; so the runtime expansion is empty.  vendor files such as sh-script.el and
+;; c-ts-common.el call it at top level.
+(unless (fboundp 'treesit-declare-unavailable-functions)
+  (defmacro treesit-declare-unavailable-functions ()
+    "Tier 3 facade: expand to nothing (declarations have no runtime effect)."
+    nil))
+
 (unless (fboundp 'treesit-available-p)
   (defun treesit-available-p ()
     "Tier 3 facade: no tree-sitter runtime is available."

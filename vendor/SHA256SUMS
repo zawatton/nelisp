@@ -969,3 +969,10 @@ a40c1ed936bfcf4a713b58e58316a502eb589600e9f0ccf13f5b0d700d49048d  vendor/emacs-l
 cc15c0bc8064d1978543958beb7547c1b3843e784ed0fbca197a99ac864e5ec6  vendor/emacs-lisp/vc/vc-hg.el
 894450fd7a6711f877c3b88511eb79b577eb2e033c339e0c82e4e639761451fa  vendor/emacs-lisp/vc/log-view.el
 39a7ffb48febdfad4d404d7e31152dd3f9df10acb20700d77b3126b95744166f  vendor/emacs-lisp/vc/vc-annotate.el
+fd8604a5c09b18812331815939044f8778bb4e0f1a95ea31cabc5bc37bde2944  vendor/emacs-lisp/progmodes/sh-script.el
+cc9bbdc50412f01aa435a288e3a042621393f229a143b0396a828480915a8c1a  vendor/emacs-lisp/skeleton.el
+00a0c5aabb908fc6831815ea6d08ec17292fdf449692a315cc14496d094f428c  vendor/emacs-lisp/progmodes/executable.el
+a9e7b3a2d6ef8c09c0398ea9b272b472f2f5be8ca60ef32f1f723613e5b66033  vendor/emacs-lisp/emacs-lisp/let-alist.el
+d1b6754bd34bcbbe9758d44b4740add869239232b6b20b79dd55a4446f5c023b  vendor/emacs-lisp/emacs-lisp/smie.el
+00b8ec14f17b969278b699df2e6e851ff34bc3213c32d7ef58be01fe43fc1aa1  vendor/emacs-lisp/calendar/cal-iso.el
+2ecbe3c55435f6fba23a73de9a89246d8677e47ed12f88ef51db481d266fdaca  vendor/emacs-lisp/calendar/diary-lib.el
