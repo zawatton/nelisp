@@ -12,7 +12,7 @@
 (defvar nelisp-bytecode-audit-u0-value 42)
 
 (defun nelisp-bytecode-coverage-audit-u0--child (&rest args)
-  "Run an isolated GNU subprocess with a five-second deadline."
+  "Run an isolated GNU subprocess with a sixty-second deadline."
   (let ((out (generate-new-buffer " *u0-out*"))
         (err (generate-new-buffer " *u0-err*")) process
         (done 0))
@@ -32,7 +32,11 @@
                                                      "-Q" "--batch") args)))
           (set-process-sentinel (get-buffer-process err)
                                 (lambda (_p _e) (cl-incf done)))
-          (let ((deadline (+ (float-time) 5)))
+          ;; The deadline only guards against a hung child.  Five seconds
+          ;; was too short for an Emacs start on a loaded windows-latest
+          ;; runner (CI run 43334969364, nojit lane); the checks on the
+          ;; child's output are unchanged.
+          (let ((deadline (+ (float-time) 60)))
             (while (and (< done 2) (< (float-time) deadline))
               (accept-process-output nil 0.05)))
           (when (< done 2)
