@@ -21299,54 +21299,6 @@ same branch and emit the same byte count."
     ;; return register convention for scalar values.
     (ignore ret-class))))
 
-(defun nelisp-aot-compiler--emit-syscall-direct (node buf)
-  "Emit an x86_64 raw SYSCALL instruction for NODE into BUF.
-NODE is a `:kind syscall-direct' IR node with keys :nr, :a0, :a1,
-:a2, :a3, :a4, :a5 (all value-producing sub-nodes returning i64).
-
-Evaluation strategy (push/pop avoids clobbering param spill slots):
-  1. Evaluate each argument in left-to-right (NR, A0..A5) order,
-     pushing rax after each evaluation (7 pushes total; TOS = A5
-     after the final push, NR is deepest).
-  2. Pop in reverse into the x86_64 SYSCALL ABI registers:
-       pop r9   ← A5   pop r8   ← A4   pop r10  ← A3
-       pop rdx  ← A2   pop rsi  ← A1   pop rdi  ← A0
-       pop rax  ← NR
-  3. On Darwin, add the UNIX syscall class offset (#x02000000) to NR.
-  4. Emit SYSCALL (0F 05).
-  Returns the kernel's raw i64 in rax (negative = -errno on error).
-
-Byte-count is fixed per pass so the pass-1/pass-2 invariant holds:
-  7 × (emit_arg: variable, but same in both passes) + 7 × push +
-  7 × pop + SYSCALL = deterministic per defun.
-
-x86_64 only — callers should gate with `:requires-arch x86_64' in
-the compile-elisp-objects manifest."
-  (let ((nr (nelisp-aot-compiler--ir-get node :nr))
-        (a0 (nelisp-aot-compiler--ir-get node :a0))
-        (a1 (nelisp-aot-compiler--ir-get node :a1))
-        (a2 (nelisp-aot-compiler--ir-get node :a2))
-        (a3 (nelisp-aot-compiler--ir-get node :a3))
-        (a4 (nelisp-aot-compiler--ir-get node :a4))
-        (a5 (nelisp-aot-compiler--ir-get node :a5)))
-    ;; 1. Evaluate and push each arg onto the stack (NR first = deepest).
-    (dolist (arg (list nr a0 a1 a2 a3 a4 a5))
-      (nelisp-aot-compiler--emit-value arg buf)
-      (nelisp-aot-compiler--emit-temp-push buf 'rax))
-    ;; 2. Pop into Linux SYSCALL ABI regs (reverse order = TOS = A5 first).
-    ;;    Linux SYSCALL: rax=nr, rdi=a0, rsi=a1, rdx=a2, r10=a3, r8=a4, r9=a5.
-    (nelisp-aot-compiler--emit-temp-pop buf 'r9)
-    (nelisp-aot-compiler--emit-temp-pop buf 'r8)
-    (nelisp-aot-compiler--emit-temp-pop buf 'r10)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rdx)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rsi)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rdi)
-    (nelisp-aot-compiler--emit-temp-pop buf 'rax)
-    (when (eq nelisp-aot-compiler--os 'darwin)
-      (nelisp-asm-x86_64-add-imm32 buf 'rax #x02000000))
-    ;; 3. Execute SYSCALL.
-    (nelisp-asm-x86_64-syscall buf)))
-
 ;; ---- Doc 100 v2 §100.B Sexp ABI direct-access emit ----
 
 (defun nelisp-aot-compiler--emit-vectorlike-payload (buf dst base)
