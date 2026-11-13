@@ -287,6 +287,12 @@ that is absent, it falls back to the current host Emacs 30.1 oracle path
 to `emacs-stub--load-directory', and finally `/tmp/' as an existing
 last-resort directory."))
 
+;; GNU Emacs defines this C-level variable (callproc.c); vendored vc-rcs.el
+;; reads it at load time.
+(unless (boundp 'rcs2log-program-name)
+  (defvar rcs2log-program-name "rcs2log"
+    "Name of the `rcs2log' program distributed with Emacs."))
+
 (defun emacs-display-window-system (&optional frame)
   "Return the active window-system symbol (= `emacs-display-system'),
 ignoring FRAME (= future per-frame override slot)."

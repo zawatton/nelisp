@@ -136,6 +136,9 @@ envelope.")
 
 (defvar standalone-source-normalize-retained-large-defun-symbols
   '(nelisp-rx--build
+    ;; Every VC backend command (`vc-diff', `vc-print-log', ...) runs through
+    ;; `vc-do-command'; an elided body makes the VC workflow unusable.
+    vc-do-command
     ;; The baked regex bridge calls this on every string/buffer match.
     ;; Eliding it to a nil stub silently kills the whole regex surface.
     nelisp-rx--match-from

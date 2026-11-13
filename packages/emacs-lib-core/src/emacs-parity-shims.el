@@ -540,6 +540,198 @@ Unicode, raw bytes, Latin-1 and the JIS Roman subset."
     "\\`\\(?:[\\/][\\/][^\\/]+\\|/\\(?:net\\|afs\\|\\.\\.\\.\\)/\\)\\'"
     "Regexp of directory names at which `locate-dominating-file' stops."))
 
+;; `locate-dominating-file': verbatim from GNU Emacs 31.1 files.el (the full
+;; library is not loaded in the standalone runtime).
+;; `buffer-match-p' and `match-buffers': verbatim from GNU Emacs 31.1 subr.el
+(unless (fboundp 'buffer-match-p)
+  (defvar buffer-match-p--past-warnings nil)
+
+  (defun buffer-match-p (condition buffer-or-name &rest args)
+    "Return non-nil if BUFFER-OR-NAME matches CONDITION.
+  CONDITION is either:
+  - the symbol t, to always match,
+  - the symbol nil, which never matches,
+  - a regular expression, to match a buffer name,
+  - a predicate function that takes BUFFER-OR-NAME plus ARGS as
+    arguments, and returns non-nil if the buffer matches,
+  - a cons-cell, where the car describes how to interpret the cdr.
+    The car can be one of the following:
+    * `derived-mode': the buffer matches if the buffer's major mode
+      is derived from the major mode in the cons-cell's cdr, or from any
+      major mode in the list as accepted by `provided-mode-derived-p'.
+    * `major-mode': the buffer matches if the buffer's major mode
+      is eq to the cons-cell's cdr.  Prefer using `derived-mode'
+      instead when both can work.
+    * `category': when this function is called from `display-buffer',
+      the buffer matches if the caller of `display-buffer' provides
+      `(category . SYMBOL)' in its ACTION argument, and SYMBOL is `eq'
+      to the cons-cell's cdr.
+    * `this-command': the buffer matches if the command now being executed
+      is `eq' to or a `memq' of the cons-cell's cdr.
+      (This case is not useful when calling `buffer-match-p' directly, but
+      is needed to support the `this-command' buffer display condition
+      entry.  See Info node `(elisp)Choosing Window'.)
+    * `not': the cadr is interpreted as a negation of a condition.
+    * `and': the cdr is a list of recursive conditions, that all have
+      to be met.
+    * `or': the cdr is a list of recursive condition, of which at
+      least one has to be met."
+    (letrec
+        ((buffer (get-buffer buffer-or-name))
+         (match
+          (lambda (conditions)
+            (catch 'match
+              (dolist (condition conditions)
+                (when (pcase condition
+                        ('t t)
+                        ((pred stringp)
+                         (string-match-p condition (buffer-name buffer)))
+                        ((pred functionp)
+                         (if (cdr args)
+                             ;; New in Emacs>29.1. no need for compatibility hack.
+                             (apply condition buffer-or-name args)
+                           (condition-case-unless-debug err
+                               (apply condition buffer-or-name args)
+                             (wrong-number-of-arguments
+                              (unless (member condition
+                                              buffer-match-p--past-warnings)
+                                (message "%s" (error-message-string err))
+                                (push condition buffer-match-p--past-warnings))
+                              (apply condition buffer-or-name
+                                     (if args nil '(nil)))))))
+                        (`(category . ,category)
+                         (eq (alist-get 'category (cdar args)) category))
+                        (`(this-command . ,command-or-commands)
+                         (if (listp command-or-commands)
+                             (memq this-command command-or-commands)
+                           (eq this-command command-or-commands)))
+                        (`(major-mode . ,mode)
+                         (eq
+                          (buffer-local-value 'major-mode buffer)
+                          mode))
+                        (`(derived-mode . ,mode)
+                         (provided-mode-derived-p
+                          (buffer-local-value 'major-mode buffer)
+                          mode))
+                        (`(not . ,cond)
+                         (not (funcall match cond)))
+                        (`(or . ,args)
+                         (funcall match args))
+                        (`(and . ,args)
+                         (catch 'fail
+                           (dolist (c args)
+                             (unless (funcall match (list c))
+                               (throw 'fail nil)))
+                           t)))
+                  (throw 'match t)))))))
+      (funcall match (list condition))))
+
+  (defun match-buffers (condition &optional buffers &rest args)
+    "Return a list of buffers that match CONDITION, or nil if none match.
+  See `buffer-match-p' for various supported CONDITIONs.
+  By default all buffers are checked, but the optional
+  argument BUFFERS can restrict that: its value should be
+  an explicit list of buffers to check.
+  Optional arguments ARGS are passed to `buffer-match-p', for
+  predicate conditions in CONDITION."
+    (let (bufs)
+      (dolist (buf (or buffers (buffer-list)))
+        (when (apply #'buffer-match-p condition (get-buffer buf) args)
+          (push buf bufs)))
+      bufs)))
+
+;; `coding-system-change-eol-conversion' and `coding-system-change-text-conversion':
+;; verbatim from GNU Emacs 31.1 mule-cmds.el (the library is not loaded here).
+(unless (fboundp 'coding-system-change-eol-conversion)
+  (defun coding-system-change-eol-conversion (coding-system eol-type)
+    "Return a coding system which differs from CODING-SYSTEM in EOL conversion.
+  The returned coding system converts end-of-line by EOL-TYPE
+  but text as the same way as CODING-SYSTEM.
+  EOL-TYPE should be `unix', `dos', `mac', or nil.
+  If EOL-TYPE is nil, the returned coding system detects
+  how end-of-line is formatted automatically while decoding.
+
+  EOL-TYPE can be specified by an integer 0, 1, or 2.
+  They means `unix', `dos', and `mac' respectively."
+    (if (symbolp eol-type)
+        (setq eol-type (cond ((eq eol-type 'unix) 0)
+  			   ((eq eol-type 'dos) 1)
+  			   ((eq eol-type 'mac) 2)
+  			   (t eol-type))))
+    ;; We call `coding-system-base' before `coding-system-eol-type',
+    ;; because the coding-system may not be initialized until then.
+    (let* ((base (coding-system-base coding-system))
+  	 (orig-eol-type (coding-system-eol-type coding-system)))
+      (cond ((vectorp orig-eol-type)
+  	   (if (not eol-type)
+  	       coding-system
+  	     (aref orig-eol-type eol-type)))
+  	  ((not eol-type)
+  	   base)
+  	  ((= eol-type orig-eol-type)
+  	   coding-system)
+  	  ((progn (setq orig-eol-type (coding-system-eol-type base))
+  		  (vectorp orig-eol-type))
+  	   (aref orig-eol-type eol-type)))))
+
+  (defun coding-system-change-text-conversion (coding-system coding)
+    "Return a coding system which differs from CODING-SYSTEM in text conversion.
+  The returned coding system converts text by CODING
+  but end-of-line as the same way as CODING-SYSTEM.
+  If CODING is nil, the returned coding system detects
+  how text is formatted automatically while decoding."
+    (let ((eol-type (coding-system-eol-type coding-system)))
+      (coding-system-change-eol-conversion
+       (if coding coding 'undecided)
+       (if (numberp eol-type) (aref [unix dos mac] eol-type))))))
+
+;; GNU Emacs 31.1 files.el: `revert-buffer-in-progress' aliases the `-p' variable.
+(unless (boundp 'revert-buffer-in-progress-p)
+  (defvar revert-buffer-in-progress-p nil
+    "Non-nil if a `revert-buffer' operation is in progress, nil otherwise."))
+(unless (boundp 'revert-buffer-in-progress)
+  (defvaralias 'revert-buffer-in-progress 'revert-buffer-in-progress-p))
+
+;; Fallback (not GNU): GNU files.el applies directory-local variables to
+;; non-file buffers here.  Directory-local variables are not implemented in
+;; this runtime yet, so do nothing; a genuine files.el implementation
+;; defined later replaces this.
+(unless (fboundp 'hack-dir-local-variables-non-file-buffer)
+  (defun hack-dir-local-variables-non-file-buffer ()
+    "Fallback no-op; directory-local variables are unsupported here."
+    nil))
+
+(unless (fboundp 'locate-dominating-file)
+  (defun locate-dominating-file (file name)
+    "Starting at FILE, look up directory hierarchy for directory containing NAME.
+  FILE can be a file or a directory.  If it's a file, its directory will
+  serve as the starting point for searching the hierarchy of directories.
+  Stop at the first parent directory containing a file NAME,
+  and return the directory.  Return nil if not found.
+  Instead of a string, NAME can also be a predicate taking one argument
+  \(a directory) and returning a non-nil value if that directory is the one for
+  which we're looking.  The predicate will be called with every file/directory
+  the function needs to examine, starting with FILE."
+    ;; Represent /home/luser/foo as ~/foo so that we don't try to look for
+    ;; `name' in /home or in /.
+    (setq file (abbreviate-file-name (expand-file-name file)))
+    (let ((root nil)
+          try)
+      (while (not (or root
+                      (null file)
+                      (string-match locate-dominating-stop-dir-regexp file)))
+        (setq file (if (file-directory-p file)
+                       file
+                     (file-name-directory file))
+              try (if (stringp name)
+                      (file-exists-p (expand-file-name name file))
+                    (funcall name file)))
+        (cond (try (setq root file))
+              ((equal file (setq file (file-name-directory
+                                       (directory-file-name file))))
+               (setq file nil))))
+      (if root (file-name-as-directory root)))))
+
 ;; f.el path-equality predicate (real semantics)
 (unless (fboundp 'f-same-p)
   (defun f-same-p (path-a path-b)

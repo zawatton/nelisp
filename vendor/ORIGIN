@@ -975,3 +975,13 @@ staged-emacs-lisp/faces.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/faces
 staged-emacs-lisp/files.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/files.el	sha256=f40bf4d7c2a77e045ea244890b870d8463b7879d0880701ce09aa895769e2ed9
 staged-emacs-lisp/keymap.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/keymap.el	sha256=77337ec8988f4279b9d08a12cbb7af84bd1113e97c2807e63c76c8175475ac11
 staged-emacs-lisp/macroexp.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/macroexp.el	sha256=10df0fe326e6f436a3ec3a74fdaa79b06272e5a35556383d8e2741ce3c16a0c2
+emacs-lisp/vc/vc-rcs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-rcs.el.gz	sha256=05f6418a92befff50d55430a2d0e0442074d5958ed149878403f2bae9b28da8a
+emacs-lisp/vc/vc-filewise.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-filewise.el.gz	sha256=8ce4963523383c81d05da2533c0dc08c8115de7c528a882a6c72b0633a2870f8
+emacs-lisp/vc/vc-cvs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-cvs.el.gz	sha256=742cc25c3afe558f3b910dee408a62a60d1ef07405fc09f06e413493213a7996
+emacs-lisp/vc/vc-svn.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-svn.el.gz	sha256=9663b259361fd1f1f811e097b85a5e202f306663333dc0f38940f7b991d3dceb
+emacs-lisp/vc/vc-sccs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-sccs.el.gz	sha256=35a971d9a83e2069ed235d409e2287c922b0f6090865acee8ff351e5945241b7
+emacs-lisp/vc/vc-src.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-src.el.gz	sha256=9017341c0f219c14345ad125157a7ce6935571ec39876be29637af7262fbf086
+emacs-lisp/vc/vc-bzr.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-bzr.el.gz	sha256=a40c1ed936bfcf4a713b58e58316a502eb589600e9f0ccf13f5b0d700d49048d
+emacs-lisp/vc/vc-hg.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-hg.el.gz	sha256=cc15c0bc8064d1978543958beb7547c1b3843e784ed0fbca197a99ac864e5ec6
+emacs-lisp/vc/log-view.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/log-view.el.gz	sha256=894450fd7a6711f877c3b88511eb79b577eb2e033c339e0c82e4e639761451fa
+emacs-lisp/vc/vc-annotate.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/vc-annotate.el.gz	sha256=39a7ffb48febdfad4d404d7e31152dd3f9df10acb20700d77b3126b95744166f
