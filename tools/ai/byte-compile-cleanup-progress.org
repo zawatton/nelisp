@@ -23,10 +23,10 @@ cmd: make -s lisp-byte-compile
 * S4 Gate structure (B8)
 
 ** S4.1 lisp-byte-compile split into a zero-ceiling bugs gate and a ceilinged style gate
-pending
+cmd: python3 -I test/nelisp-lisp-compile-gate-test.py
 
 ** S4.2 CI records every gate result and fails at the end, so an early red cannot mask later steps
-pending
+cmd: python3 -I test/nelisp-ci-gate-isolation-test.py
 
 ** S4.3 E2E - CI smoke ubuntu lisp-byte-compile step green
 #+NOTE: needs CI
