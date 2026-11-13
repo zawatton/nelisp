@@ -36,28 +36,33 @@
 #   nelisp-process-buffer.el 1: wrapping the bare (process-mark process)
 #     statement changes set-process-buffer's ns-gate digest.
 #
+# Split 2026-11-13 (B8): this file now counts STYLE-class diagnostics only
+# (see tools/nelisp-lisp-byte-compile-gate.sh).  BUG-class diagnostics (14 of
+# the 87) are held at zero by the gate, with verified exemptions in
+# tools/nelisp-lisp-compile-bug-exemptions.txt, so they left these counts:
+# cc-evalport-env-leaves-bind, process-buffer and syscall-table dropped out;
+# cl-macros 5->4, timefns 6->5, elf-write 2->1, stdlib-misc 6->1,
+# stdlib-eval-special 4->3, aot-compiler 2->1.  Every change is downward.
+#
 # FILE                     DIAGNOSTICS
-lisp/nelisp-aot-compiler.el 2
+lisp/nelisp-aot-compiler.el 1
 lisp/nelisp-asm-x86_64.el 7
 lisp/nelisp-boot-libraries.el 1
 lisp/nelisp-build-host.el 3
 lisp/nelisp-cc-bi-syscall-resolve-nr.el 1
-lisp/nelisp-cc-evalport-env-leaves-bind.el 1
 lisp/nelisp-cc-jit-secure-hash-ext.el 1
 lisp/nelisp-cc-sf-function.el 1
-lisp/nelisp-cl-macros.el 5
+lisp/nelisp-cl-macros.el 4
 lisp/nelisp-dev-protocol.el 3
-lisp/nelisp-elf-write.el 2
+lisp/nelisp-elf-write.el 1
 lisp/nelisp-env.el 4
 lisp/nelisp-jit-strategy.el 3
 lisp/nelisp-lexframe.el 4
-lisp/nelisp-process-buffer.el 1
 lisp/nelisp-stdlib.el 19
-lisp/nelisp-stdlib-eval-special.el 4
+lisp/nelisp-stdlib-eval-special.el 3
 lisp/nelisp-stdlib-fast-hash.el 4
-lisp/nelisp-stdlib-misc.el 6
+lisp/nelisp-stdlib-misc.el 1
 lisp/nelisp-stdlib-plist-str.el 1
 lisp/nelisp-stdlib-prn.el 4
 lisp/nelisp-stdlib-unicode.el 2
-lisp/nelisp-syscall-table.el 2
-lisp/nelisp-timefns.el 6
+lisp/nelisp-timefns.el 5

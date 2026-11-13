@@ -849,6 +849,7 @@ standalone-reader-print-large-sexp-smoke|scripts/nelisp-standalone-build.el|s/(s
 # PASS' and `GATE-COUNT checked=88 findings=0' (exit 0).
 native-unit-repl-smoke|lisp/nelisp-native-load.el|s/^(defconst nelisp-native-load-raw-max-arity 6)$/(defconst nelisp-native-load-raw-max-arity 7)/|the declared six-argument ceiling widens to seven, so the refused-seven-argument-export assertion silently stops being true
 lisp-byte-compile|lisp/nelisp-native-unit.el|s/^(require 'nelisp-native-load)$/(require 'nelisp-native-load)\n(defun nelisp-native-unit--mutation-probe () (let ((unused 1)) nil))/|a defun with an unused lexical binding in a lisp\/ file the baseline records as clean
+lisp-byte-compile|tools/nelisp-lisp-byte-compile-gate.sh|s/{ cls = "BUG"; break }/{ cls = "STYLE"; break }/|a gate whose classifier files every BUG-class diagnostic as STYLE, so bug warnings hide under the style ceilings
 # RETIRED 2026-09-18 -- failure mode #2 above, NON-LETHAL AFTER AN IMPROVEMENT.
 # The injection below was lethal when written (2026-09-12) and is not any more,
 # and that is `f25ec9af1' working, not a regression.  Measured with the gate's

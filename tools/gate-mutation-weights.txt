@@ -36,6 +36,7 @@ ffi-loader|packages/nl-ffi/src/nl-ffi-loader.el|1	205
 gate-selfcheck|tools/nelisp-bootstrap-contract.el|1	166
 generated-source-parse|scripts/nelisp-standalone-build.el|1	11
 lisp-byte-compile|lisp/nelisp-native-unit.el|1	6
+lisp-byte-compile|tools/nelisp-lisp-byte-compile-gate.sh|1	40
 lsp-server|tools/nelisp_workspace.py|1	6
 native-symbol-test|scripts/nelisp-standalone-build.el|1	61
 native-unit-repl-smoke|lisp/nelisp-native-load.el|1	10
