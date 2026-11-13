@@ -294,23 +294,22 @@ ACCESS times are zero since standalone has no real stat."
     "Retrieve KEY from an event PROCESS's plist (slot 8)."
     (plist-get (emacs-process-events--get process 8) key))
 
-  ;; Install through one table; the previous owner stays the delegate for
-  ;; every process this layer does not recognise as an event vector.
-  (dolist (entry '((process-put . emacs-server-polyfills--process-put)
-                   (process-get . emacs-server-polyfills--process-get)))
-    (let ((prev (and (fboundp (car entry)) (symbol-function (car entry))))
-          (mine (symbol-function (cdr entry))))
-      (put (car entry) 'emacs-server-polyfills--previous prev)
-      (fset (car entry)
-            (if (eq (car entry) 'process-put)
-                (lambda (process key value)
-                  (if (or (null prev) (emacs-process-events--processp process))
-                      (funcall mine process key value)
-                    (funcall prev process key value)))
-              (lambda (process key)
-                (if (or (null prev) (emacs-process-events--processp process))
-                    (funcall mine process key)
-                  (funcall prev process key))))))))
+  ;; Handlers for the single dispatcher in emacs-process-events.el: they
+  ;; apply to event vectors only; every other process falls through to the
+  ;; next handler and finally to the previous (core) definition.
+  (defun emacs-server-polyfills--process-put-handler (_next process key value)
+    (emacs-server-polyfills--process-put process key value))
+
+  (defun emacs-server-polyfills--process-get-handler (_next process key)
+    (emacs-server-polyfills--process-get process key))
+
+  (when (fboundp 'emacs-process-events-register-handler)
+    (emacs-process-events-register-handler
+     'process-put #'emacs-process-events--processp
+     #'emacs-server-polyfills--process-put-handler)
+    (emacs-process-events-register-handler
+     'process-get #'emacs-process-events--processp
+     #'emacs-server-polyfills--process-get-handler)))
 
 
 ;;;; --- defvar-keymap stub ------------------------------------------

@@ -82,7 +82,7 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
             candidate (format "%s<%d>" name suffix)))
     candidate))
 
-(defun emacs-cc-pipe-process-1--make-pipe-process (&rest args)
+(defun emacs-cc-pipe-process-1--make-pipe-process (_next &rest args)
   "Create and register a pipe process object with the options in ARGS."
   (when args
     (unless (= (% (length args) 2) 0)
@@ -135,8 +135,9 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
           (emacs-process-events--register process)
           process)))))
 
-(defun emacs-cc-pipe-process-1--process-contact (process &optional key no-block)
-  "Return PROCESS's contact information or the field specified by KEY."
+(defun emacs-cc-pipe-process-1--process-contact (next process &optional key no-block)
+  "Return PROCESS's contact information or the field specified by KEY.
+NEXT continues with the previous owner for processes that are not pipes."
   (if (emacs-cc-pipe-process-1--pipe-p process)
       (let ((contact (aref process 14)))
         (cond ((null key) t)
@@ -146,11 +147,11 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
                 (and (vectorp process) (= (length process) 7)
                      (eq (aref process 0) 'pipe-process)))
       (signal 'wrong-type-argument (list 'processp process)))
-    (funcall #'emacs-cc-pipe-process-1--original-process-contact
-             process key no-block)))
+    (funcall next process key no-block)))
 
-(defun emacs-cc-pipe-process-1--process-mark (process)
-  "Return the persistent marker belonging to PROCESS."
+(defun emacs-cc-pipe-process-1--process-mark (next process)
+  "Return the persistent marker belonging to PROCESS.
+NEXT continues with the previous owner for processes that are not pipes."
   (if (emacs-cc-pipe-process-1--pipe-p process)
       (aref process 15)
     (unless (processp process)
@@ -161,12 +162,11 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
               (emacs-process-builtins--initialize-command
                process (emacs-process-process-command process))
               (emacs-process--native-metadata process :output-marker)))
-      (funcall #'emacs-cc-pipe-process-1--original-process-mark process))))
+      (funcall next process))))
 
-(defun emacs-cc-pipe-process-1--set-process-buffer (process buffer)
+(defun emacs-cc-pipe-process-1--set-process-buffer (next process buffer)
   "Assign BUFFER to PROCESS, retaining its marker identity."
-  (let ((result (funcall #'emacs-cc-pipe-process-1--original-set-process-buffer
-                         process buffer)))
+  (let ((result (funcall next process buffer)))
     (when (emacs-cc-pipe-process-1--pipe-p process)
       (aset process 14 (plist-put (aref process 14) :buffer buffer))
       ;; Nil disconnects output, but GNU leaves the marker at its old place.
@@ -176,18 +176,16 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
           (set-marker (aref process 15) (point-max) buffer))))
     result))
 
-(defun emacs-cc-pipe-process-1--set-process-filter (process function)
+(defun emacs-cc-pipe-process-1--set-process-filter (next process function)
   "Set PROCESS's filter and update its contact field."
-  (let ((result (funcall #'emacs-cc-pipe-process-1--original-set-process-filter
-                         process function)))
+  (let ((result (funcall next process function)))
     (when (emacs-cc-pipe-process-1--pipe-p process)
       (aset process 14 (plist-put (aref process 14) :filter result)))
     result))
 
-(defun emacs-cc-pipe-process-1--set-process-sentinel (process function)
+(defun emacs-cc-pipe-process-1--set-process-sentinel (next process function)
   "Set PROCESS's sentinel and update its contact field."
-  (let ((result (funcall #'emacs-cc-pipe-process-1--original-set-process-sentinel
-                         process function)))
+  (let ((result (funcall next process function)))
     (when (emacs-cc-pipe-process-1--pipe-p process)
       (aset process 14 (plist-put (aref process 14) :sentinel result)))
     result))
@@ -295,51 +293,44 @@ Preserve the buffer's point unless it follows the process marker."
 (unless (fboundp 'make-pipe-process)
   (defun make-pipe-process (&rest args)
     "Create a pipe process object with keyword options ARGS."
-    (apply #'emacs-cc-pipe-process-1--make-pipe-process args)))
+    (apply #'emacs-cc-pipe-process-1--make-pipe-process nil args)))
 
 (unless (fboundp 'process-contact)
   (defun process-contact (process &optional key no-block)
     "Return PROCESS's contact information or its field KEY."
-    (emacs-cc-pipe-process-1--process-contact process key no-block)))
+    (emacs-cc-pipe-process-1--process-contact nil process key no-block)))
 
 (unless (fboundp 'process-mark)
   (defun process-mark (process)
     "Return PROCESS's output marker."
-    (emacs-cc-pipe-process-1--process-mark process)))
+    (emacs-cc-pipe-process-1--process-mark nil process)))
 
 ;; Only the NeLisp runtime replaces existing owners; GNU keeps its subrs.
 ;; Capture each delegate once so reloading this unit cannot capture itself.
 (when (fboundp 'nelisp--repr)
-  (unless (fboundp 'emacs-cc-pipe-process-1--original-process-contact)
-    (fset 'emacs-cc-pipe-process-1--original-process-contact
-          (symbol-function 'process-contact)))
-  (unless (fboundp 'emacs-cc-pipe-process-1--original-process-mark)
-    (fset 'emacs-cc-pipe-process-1--original-process-mark
-          (symbol-function 'process-mark)))
-  (unless (fboundp 'emacs-cc-pipe-process-1--original-set-process-buffer)
-    (fset 'emacs-cc-pipe-process-1--original-set-process-buffer
-          (symbol-function 'set-process-buffer)))
-  (unless (fboundp 'emacs-cc-pipe-process-1--original-set-process-filter)
-    (fset 'emacs-cc-pipe-process-1--original-set-process-filter
-          (symbol-function 'set-process-filter)))
-  (unless (fboundp 'emacs-cc-pipe-process-1--original-set-process-sentinel)
-    (fset 'emacs-cc-pipe-process-1--original-set-process-sentinel
-          (symbol-function 'set-process-sentinel)))
   (unless (fboundp 'emacs-cc-pipe-process-1--original-process-command)
     (fset 'emacs-cc-pipe-process-1--original-process-command
           (symbol-function 'process-command)))
   (unless (fboundp 'emacs-cc-pipe-process-1--original-default-filter)
     (fset 'emacs-cc-pipe-process-1--original-default-filter
           (symbol-function 'internal-default-process-filter)))
-  ;; Install through one table so each public name has a single definer
-  ;; (`accept-process-output' is owned by emacs-process-builtins' shared wait).
-  (dolist (entry '((make-pipe-process . emacs-cc-pipe-process-1--make-pipe-process)
-                   (process-contact . emacs-cc-pipe-process-1--process-contact)
-                   (process-mark . emacs-cc-pipe-process-1--process-mark)
-                   (set-process-buffer . emacs-cc-pipe-process-1--set-process-buffer)
-                   (set-process-filter . emacs-cc-pipe-process-1--set-process-filter)
-                   (set-process-sentinel . emacs-cc-pipe-process-1--set-process-sentinel)
-                   (get-process . emacs-cc-pipe-process-1--get-process)
+  ;; The names that several layers extend are installed once, by the single
+  ;; dispatcher in emacs-process-events.el; register this unit's handlers.
+  (when (fboundp 'emacs-process-events-register-handler)
+    (emacs-process-events-register-handler
+     'make-pipe-process nil #'emacs-cc-pipe-process-1--make-pipe-process)
+    (emacs-process-events-register-handler
+     'process-contact nil #'emacs-cc-pipe-process-1--process-contact)
+    (emacs-process-events-register-handler
+     'process-mark nil #'emacs-cc-pipe-process-1--process-mark)
+    (emacs-process-events-register-handler
+     'set-process-buffer nil #'emacs-cc-pipe-process-1--set-process-buffer)
+    (emacs-process-events-register-handler
+     'set-process-filter nil #'emacs-cc-pipe-process-1--set-process-filter)
+    (emacs-process-events-register-handler
+     'set-process-sentinel nil #'emacs-cc-pipe-process-1--set-process-sentinel))
+  ;; `accept-process-output' is owned by emacs-process-builtins' shared wait.
+  (dolist (entry '((get-process . emacs-cc-pipe-process-1--get-process)
                    (process-command . emacs-cc-pipe-process-1--process-command)
                    (internal-default-process-filter
                     . emacs-cc-pipe-process-1--default-filter)))

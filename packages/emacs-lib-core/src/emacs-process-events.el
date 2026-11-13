@@ -288,11 +288,12 @@ A bare-symbol slot value (legacy) is widened to (SYM . SYM)."
 
 
 (when emacs-process-events--standalone-p
-  ;; Single install point for the raw event-provider accessors; the merged
-  ;; dispatchers below capture these as their `event-owner'.
-  (dolist (name '(processp process-name process-status process-id process-buffer
-                  process-filter process-sentinel process-plist process-list
-                  set-process-filter set-process-sentinel set-process-buffer))
+  ;; Install point for the raw event-provider accessors that no other layer
+  ;; extends.  The names that several layers extend (`processp', `process-list',
+  ;; `process-status', `process-buffer', `set-process-*') are installed only
+  ;; by the single dispatcher table near the end of this file.
+  (dolist (name '(process-name process-id process-filter process-sentinel
+                  process-plist))
     (fset name (symbol-function
                 (intern (concat "emacs-process-events--raw-" (symbol-name name)))))))
 
@@ -727,10 +728,9 @@ Returns the process vector on success, signals `file-error' on failure."
   "Save this provider's raw public process functions before merging owners.
 This runs on every reload after the raw definitions above have been
 re-evaluated, and also runs when the facade has not loaded yet."
-  (dolist (name '(processp process-list process-name process-status process-id
-                  process-buffer process-filter process-sentinel process-plist
-                  process-query-on-exit-flag set-process-filter
-                  set-process-sentinel set-process-buffer set-process-plist
+  (dolist (name '(process-name process-id process-filter process-sentinel
+                  process-plist
+                  process-query-on-exit-flag set-process-plist
                   set-process-query-on-exit-flag process-send-string
                   delete-process))
     (when (fboundp name)
@@ -743,9 +743,7 @@ re-evaluated, and also runs when the facade has not loaded yet."
   ;; Keep both owners. A late event-provider load must not erase child
   ;; accessors, while child bridges must not steal event-owned vectors.
   (dolist (entry '((process-name emacs-process-process-name)
-                   (process-status emacs-process-process-status)
                    (process-id emacs-process-process-id)
-                   (process-buffer emacs-process-process-buffer)
                    (process-filter emacs-process-process-filter)
                    (process-sentinel emacs-process-process-sentinel)
                    (process-plist emacs-process-process-plist)
@@ -759,10 +757,7 @@ re-evaluated, and also runs when the facade has not loaded yet."
             (let ((name name))
               (lambda (proc)
                 (emacs-process-events--dispatch1 name proc))))))
-  (dolist (entry '((set-process-filter emacs-process-set-process-filter)
-                   (set-process-sentinel emacs-process-set-process-sentinel)
-                   (set-process-buffer emacs-process-set-process-buffer)
-                   (set-process-plist emacs-process-set-process-plist)
+  (dolist (entry '((set-process-plist emacs-process-set-process-plist)
                    (set-process-query-on-exit-flag emacs-process-set-process-query-on-exit-flag)
                    (process-send-string emacs-process-process-send-string)))
     (let ((name (car entry)))
@@ -790,12 +785,130 @@ re-evaluated, and also runs when the facade has not loaded yet."
            (if (emacs-process-events--child-process-p process)
                (progn (emacs-process-delete-process process) nil)
              (funcall (get 'delete-process 'emacs-process-events--event-owner) process))))
-  (put 'process-list 'emacs-process-events--event-owner (symbol-function 'process-list))
-  (fset 'process-list #'emacs-process-events--combined-list)
-  (fset 'processp
-        '(lambda (process)
-           (or (emacs-process-events--processp process)
-               (emacs-process-processp process)))))
+  nil)
+
+;;;; --- single public-name dispatcher ------------------------------------
+;;
+;; Every standard process function that more than one emacs-lib layer
+;; extends is installed here, exactly once, by the table below.  The
+;; function installed for NAME runs the handlers registered for NAME with
+;; `emacs-process-events-register-handler' (newest first, a handler
+;; applies when its predicate accepts the first argument), then falls back
+;; to the terminal behavior: this provider's event vectors or the child
+;; owner, or the previous (core) definition of NAME.  Other emacs-lib units
+;; (server polyfills, pipe processes) register handlers; they never install
+;; these public names themselves.
+;;
+;; When the core exposes `nelisp-process-kind-register' (see the
+;; core-patches note in the lane notes), the names the core file owns are
+;; registered there instead of being installed from this file.
+
+(defconst emacs-process-events--registry-names
+  '(make-pipe-process process-mark process-get process-put process-status
+    processp process-buffer set-process-buffer)
+  "Public names the core registry can extend when it is present.")
+
+(defconst emacs-process-events--owner-table
+  '((processp emacs-process-events--raw-processp nil)
+    (process-list emacs-process-events--raw-process-list
+                  emacs-process-process-list)
+    (process-status emacs-process-events--raw-process-status
+                    emacs-process-process-status)
+    (process-buffer emacs-process-events--raw-process-buffer
+                    emacs-process-process-buffer)
+    (set-process-filter emacs-process-events--raw-set-process-filter
+                        emacs-process-set-process-filter)
+    (set-process-sentinel emacs-process-events--raw-set-process-sentinel
+                          emacs-process-set-process-sentinel)
+    (set-process-buffer emacs-process-events--raw-set-process-buffer
+                        emacs-process-set-process-buffer))
+  "Rows of (NAME EVENT-OWNER CHILD-OWNER) saved as symbol properties.")
+
+(defun emacs-process-events-register-handler (name predicate function)
+  "Extend public process function NAME with FUNCTION for some processes.
+PREDICATE, called with NAME's first argument, selects the calls FUNCTION
+handles (nil selects every call).  FUNCTION is called as
+\(FUNCTION NEXT ARGS...) where NEXT continues with the older handlers."
+  (if (and (fboundp 'nelisp-process-kind-register)
+           (memq name emacs-process-events--registry-names))
+      (nelisp-process-kind-register name predicate function)
+    (let ((kept nil))
+      (dolist (h (get name 'emacs-process-events--handlers))
+        (unless (eq (cdr h) function) (push h kept)))
+      (put name 'emacs-process-events--handlers
+           (cons (cons predicate function) (nreverse kept)))))
+  function)
+
+(defun emacs-process-events--terminal (name args)
+  "Run the provider's own behavior of public function NAME on ARGS."
+  (cond
+   ((eq name 'processp)
+    (or (funcall (get 'processp 'emacs-process-events--event-owner) (car args))
+        (and (fboundp 'emacs-process-processp)
+             (emacs-process-processp (car args)))))
+   ((and (eq name 'process-list) (fboundp 'emacs-process-processp))
+    (emacs-process-events--combined-list))
+   ((get name 'emacs-process-events--event-owner)
+    (apply (get name (if (and (get name 'emacs-process-events--child-owner)
+                              (emacs-process-events--child-process-p (car args)))
+                         'emacs-process-events--child-owner
+                       'emacs-process-events--event-owner))
+           args))
+   ((get name 'emacs-process-events--base)
+    (apply (get name 'emacs-process-events--base) args))
+   (t (signal 'void-function (list name)))))
+
+(defun emacs-process-events--run-from (name handlers args)
+  "Call the first applicable handler of HANDLERS for NAME, else the terminal."
+  (while (and handlers (car (car handlers))
+              (not (funcall (car (car handlers)) (car args))))
+    (setq handlers (cdr handlers)))
+  (if handlers
+      (let ((rest (cdr handlers)))
+        (apply (cdr (car handlers))
+               (lambda (&rest more)
+                 (emacs-process-events--run-from name rest more))
+               args))
+    (emacs-process-events--terminal name args)))
+
+(defun emacs-process-events--not-core-pipe-p (object)
+  "Return non-nil unless OBJECT is a core buffer pipe."
+  (not (and (fboundp 'nelisp-process-buffer-p) (nelisp-process-buffer-p object))))
+
+(when emacs-process-events--standalone-p
+  (dolist (row emacs-process-events--owner-table)
+    (put (car row) 'emacs-process-events--event-owner
+         (symbol-function (nth 1 row)))
+    (when (and (nth 2 row) (fboundp 'emacs-process-processp))
+      (put (car row) 'emacs-process-events--child-owner
+           (symbol-function (nth 2 row)))))
+  ;; The one installer of these public names.
+  (dolist (name '(processp process-list process-status process-buffer
+                  set-process-filter set-process-sentinel set-process-buffer
+                  process-put process-get process-mark process-contact
+                  make-pipe-process))
+    (unless (and (memq name emacs-process-events--registry-names)
+                 (fboundp 'nelisp-process-kind-register))
+      (when (and (fboundp name)
+                 (not (eq (get name 'emacs-process-events--dispatcher)
+                          (symbol-function name))))
+        (put name 'emacs-process-events--base (symbol-function name)))
+      (fset name (let ((name name))
+                   (lambda (&rest args)
+                     (emacs-process-events--run-from
+                      name (get name 'emacs-process-events--handlers) args))))
+      (put name 'emacs-process-events--dispatcher (symbol-function name))))
+  ;; With the core registry the provider's own behavior is a handler too.
+  (when (fboundp 'nelisp-process-kind-register)
+    (dolist (row emacs-process-events--owner-table)
+      (let ((name (car row)))
+        (when (and (memq name emacs-process-events--registry-names)
+                   (not (get name 'emacs-process-events--registered)))
+          (put name 'emacs-process-events--registered t)
+          (nelisp-process-kind-register
+           name #'emacs-process-events--not-core-pipe-p
+           (lambda (_next &rest args)
+             (emacs-process-events--terminal name args))))))))
 
 (when emacs-process-events--standalone-p
   (require 'emacs-process-coding)
