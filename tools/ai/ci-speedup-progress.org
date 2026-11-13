@@ -18,8 +18,8 @@ cmd: python3 tools/ai/ci-speedup/check.py parity-split
 cmd: python3 tools/ai/ci-speedup/check.py tests
 
 ** S1.6 E2E - a CI run of this branch completes green within 60 min wall
-#+NOTE: needs the user to re-enable GitHub Actions; evidence = run id + timings
-pending
+#+NOTE: CI run 43342897566 on main e17f41656, 34/34 jobs success, 59 min 36 s
+evidence: tools/ai/ci-speedup/ci-run-43342897566-green.txt sha256=bfb978048a47b7255d08c13d34feddb5f89a8148f0a3f191c90c4226a8212b4c
 
 * S2 Windows build C stack overflow hang
 
