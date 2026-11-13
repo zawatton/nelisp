@@ -61,7 +61,59 @@
 set -euo pipefail
 
 SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)"
-NEMACS_HOME="${NEMACS_HOME:-$(cd "$SCRIPT_PATH/.." && pwd)}"
+
+# Detect the repository root: the nearest ancestor of this script that holds
+# either the imported package layout or the old standalone src/ layout.
+nemacs_detect_home() {
+  local d="$SCRIPT_PATH"
+  while [[ "$d" != "/" && -n "$d" ]]; do
+    if [[ -d "$d/packages/emacs-lib-core" || -r "$d/src/nemacs-main.el" ]]; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  (cd "$SCRIPT_PATH/.." && pwd)
+}
+NEMACS_HOME="${NEMACS_HOME:-$(nemacs_detect_home)}"
+
+# Single source of truth for library source directories (stable order):
+# legacy $NEMACS_HOME/src first (old layout), then packages/emacs-lib-*/src,
+# then the vendored GNU Lisp trees.
+NEMACS_SRC_DIRS=()
+NEMACS_VENDOR_DIRS=()
+nemacs_compute_dirs() {
+  local d
+  NEMACS_SRC_DIRS=()
+  NEMACS_VENDOR_DIRS=()
+  # Old standalone layout: src/ holds the library and stays first.
+  [[ -r "$NEMACS_HOME/src/nemacs-main.el" ]] && NEMACS_SRC_DIRS+=("$NEMACS_HOME/src")
+  for d in "$NEMACS_HOME"/packages/emacs-lib-*/src; do
+    [[ -d "$d" ]] && NEMACS_SRC_DIRS+=("$d")
+  done
+  # In the NeLisp tree src/ is the runtime's own tree: last, as in mk/emacs-lib.mk.
+  if [[ -d "$NEMACS_HOME/src" && ! -r "$NEMACS_HOME/src/nemacs-main.el" ]]; then
+    NEMACS_SRC_DIRS+=("$NEMACS_HOME/src")
+  fi
+  for d in "$NEMACS_HOME/vendor/emacs-lisp" "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"; do
+    [[ -d "$d" ]] && NEMACS_VENDOR_DIRS+=("$d")
+  done
+  return 0
+}
+nemacs_compute_dirs
+# Locate a file by name in the source dirs; prints the first hit.
+nemacs_find_src() {
+  local d
+  for d in "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}"; do
+    if [[ -r "$d/$1" ]]; then printf '%s\n' "$d/$1"; return 0; fi
+  done
+  return 1
+}
+# Emit load-path entries one per line (src dirs, then vendor dirs).
+nemacs_all_dirs() {
+  printf '%s\n' "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" \
+    "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}" | sed '/^$/d'
+}
 
 # NeLisp provides a pure-Elisp standalone reader at target/nelisp, built from
 # this same repository tree.
@@ -195,7 +247,8 @@ nemacs paths:
   NEMACS_BATCH_RUNTIME_IMAGE = $NEMACS_BATCH_RUNTIME_IMAGE
   NEMACS_INTERACTIVE_RUNTIME_IMAGE = $NEMACS_INTERACTIVE_RUNTIME_IMAGE
   NEMACS_VENDOR_CORE_RUNTIME_IMAGE = $NEMACS_VENDOR_CORE_RUNTIME_IMAGE
-  src/             = $NEMACS_HOME/src
+  src dirs         = $(printf '%s ' "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}")
+  vendor dirs      = $(printf '%s ' "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}")
   vendor/          = $NEMACS_HOME/vendor
 EOF
 }
@@ -303,14 +356,14 @@ acquire_cold_cache_lock() {
 
 compile_bootstrap_artifact() {
   [[ -n "$NEMACS_BOOTSTRAP_BUNDLE" && -r "$NEMACS_BOOTSTRAP_BUNDLE" ]] || return 1
+  local lp=() d
+  while IFS= read -r d; do lp+=(--load-path "$d"); done < <(nemacs_all_dirs)
   "$NEMACS_NELISP" compile-elisp-artifact \
     --kind neln \
     --input "$NEMACS_BOOTSTRAP_BUNDLE" \
     --output "$NEMACS_COLD_ARTIFACT" \
     --native-policy opportunistic \
-    --load-path "$NEMACS_HOME/src" \
-    --load-path "$NEMACS_HOME/vendor/emacs-lisp" \
-    --load-path "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"
+    "${lp[@]}"
 }
 
 # Reached only when the artifact route is enabled -- see
@@ -702,7 +755,9 @@ fi
 # (unchanged pre-Phase-3 behavior).
 if [[ "$NEMACS_DRIVER" == "nelisp" && "$NO_INIT" != 1 ]] \
    && command -v "$NEMACS_EMACS" >/dev/null 2>&1; then
-  "$NEMACS_EMACS" -Q --batch -L "$NEMACS_HOME/src" \
+  loadup_L=()
+  while IFS= read -r d; do loadup_L+=(-L "$d"); done < <(nemacs_all_dirs)
+  "$NEMACS_EMACS" -Q --batch "${loadup_L[@]}" \
     -l nemacs-loadup -l "$NEMACS_HOME/scripts/nemacs-wrap-init.el" \
     --eval "(let ((dir (nemacs-resolve-user-emacs-directory)))
               (when (or (file-readable-p (concat dir \"early-init.el\"))
@@ -722,6 +777,12 @@ fi
 shell_quote() {
   # Emacs/nelisp string literal escaping for filenames + sexps.
   printf '%s' "$1" | perl -0777 -pe 's/\\/\\\\/g; s/"/\\"/g; s/\r/\\r/g; s/\n/\\n/g'
+}
+
+# Emit " \"dir\"" for each argument (elisp string-literal list elements).
+elisp_dir_strings() {
+  local d
+  for d in "$@"; do printf ' "%s"' "$(shell_quote "$d")"; done
 }
 
 lisp_file_string() {
@@ -747,9 +808,8 @@ resolve_repl_load_path() {
   esac
   local dir
   for dir in "${LOAD_PATHS[@]+"${LOAD_PATHS[@]}"}" \
-             "$NEMACS_HOME/src" \
-             "$NEMACS_HOME/vendor/emacs-lisp" \
-             "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp"; do
+             "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" \
+             "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"; do
     if [[ -r "$dir/$1" ]]; then
       printf '%s\n' "$dir/$1"
       return
@@ -824,21 +884,16 @@ EOF
 )"
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
-        (append (list$LOAD_PATH_LIST
-                      "$(shell_quote "$NEMACS_HOME/src")")
+        (append (list$LOAD_PATH_LIST$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}"))
                 (and (boundp 'load-path) load-path)
-                (list "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")))
+                (list$(elisp_dir_strings "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"))))
 EOF
 )"
 else
   BOOT_HOST_PRELOAD_FORM=""
   BOOT_LOAD_PATH_FORM="$(cat <<EOF
   (setq load-path
-        (append (list$LOAD_PATH_LIST
-                      "$(shell_quote "$NEMACS_HOME/src")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp")"
-                      "$(shell_quote "$NEMACS_HOME/vendor/emacs-lisp/emacs-lisp")")
+        (append (list$LOAD_PATH_LIST$(elisp_dir_strings "${NEMACS_SRC_DIRS[@]+"${NEMACS_SRC_DIRS[@]}"}" "${NEMACS_VENDOR_DIRS[@]+"${NEMACS_VENDOR_DIRS[@]}"}"))
                 (and (boundp 'load-path) load-path)))
 EOF
 )"
@@ -852,8 +907,8 @@ fi
 BOOT_NELISP_SOURCE_REFRESH=""
 if [[ "$NEMACS_DRIVER" == "nelisp" ]]; then
   BOOT_NELISP_SOURCE_REFRESH="$(cat <<EOF
-  (load "$(shell_quote "$NEMACS_HOME/src/emacs-fns.el")" nil 'no-message)
-  (load "$(shell_quote "$NEMACS_HOME/src/nemacs-main.el")" nil 'no-message)
+  (load "$(shell_quote "$(nemacs_find_src emacs-fns.el || printf '%s' "$NEMACS_HOME/src/emacs-fns.el")")" nil 'no-message)
+  (load "$(shell_quote "$(nemacs_find_src nemacs-main.el || printf '%s' "$NEMACS_HOME/src/nemacs-main.el")")" nil 'no-message)
 EOF
 )"
 fi
