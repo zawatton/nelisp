@@ -11344,10 +11344,12 @@ REPL-facing module it feeds."
               (let ((header (logand w -32)))
                 (seq (if (= (heap-read-u64 header 24) 0) 0
                        (seq (nl_gc_mark_word (+ header 4))
+                            (nl_string_pin_block (heap-read-u64 header 24))
                             (ptr-write-u64 st 56 1)))
                      1))
             (if (if (= kind 4) 1 (= kind 5))
-                (seq (ptr-write-u64 st 56 1) 1)
+                (seq (if (= kind 4) (nl_string_pin_block w) 0)
+                     (ptr-write-u64 st 56 1) 1)
               (nl_dump_in_string_image w))))))
     ;; An integer whose value lies inside a live arena block pins that block
     ;; (mark 0 -> 4: alive, payload not declared typed, so a later precise
@@ -16512,13 +16514,13 @@ list groups retain the original leaves/default exactly."
           (let* ((s (- w 4)) (st (data-addr nl_strings_state))
                  (addr (if (= probe 0) (+ s 13) (+ (heap-read-u64 s 24) 1)))
                  (kind (logand (nl_string_mapping_holding addr) 7))
-                 (guard0 (heap-read-u64 st 56)) (size0 (heap-read-u64 s 0)))
+                 (guard0 (heap-read-u64 st 56)) (npin0 (heap-read-u64 st 248)) (size0 (heap-read-u64 s 0)))
             (seq (ptr-write-u64 st 56 0)
                  (let* ((r (nl_gc_conserv_string_area addr))
                         (marked (if (< (heap-read-u64 s 0) 0) 1 0))
                         (guard (if (/= (heap-read-u64 st 56) 0) 1 0)))
                    (seq (if (= marked 1) (ptr-write-u64 s 0 size0) 0)
-                        (ptr-write-u64 st 56 guard0)
+                        (ptr-write-u64 st 56 guard0) (ptr-write-u64 st 248 npin0)
                         (nl_imm_int (+ r (* 2 marked) (* 4 guard) (* 16 kind))))))))))
     ;; A fresh 24-byte string, answered as its header address XOR a mask so that no word of this frame names it.
     (defun nl_gc_area_make ()

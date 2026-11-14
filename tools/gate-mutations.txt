@@ -1408,3 +1408,11 @@ standalone-chunk-growth-test|scripts/nelisp-standalone-build.el|s/(let\* ((new_c
 # made every interpreted closure report type-of cons with closurep nil.  RED
 # prints `nelisp-eval-closure-standalone-smoke: FAIL closurep fresh lambda'.
 nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-closure-p (x)/(defsubst nelisp--closure-p (x)/|requiring nelisp-eval overwrites the native closure predicate again
+
+# standalone-string-block-leak-smoke (2026-11-14): put back the old early
+# return of `nl_compact_small_strings', which skipped the whole pass -- the
+# loop that unmaps empty 8 KiB sblocks included -- whenever any conservative
+# word pinned string storage (strings state +56) or an arena block (bit 4 of
+# the conservative state, set on nearly every collection).  RED: RSS grows
+# ~20 MiB over the 15 measured batches against a 3 MiB bound.
+standalone-string-block-leak-smoke|lisp/nelisp-cc-string-blocks.el|s#(or (= tb 0) (>= (heap-read-u64 st 248) 1000000)) 0#(or (= tb 0) (/= (heap-read-u64 st 56) 0) (= (nl_gc_conserv_pinned_p) 1)) 0#|a pinned string block (or any arena pin) stops empty sblocks from being unmapped again -- the original leak

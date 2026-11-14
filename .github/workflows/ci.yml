@@ -989,6 +989,13 @@ jobs:
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate nelisp-sexp-clone-bind-smoke -- make nelisp-sexp-clone-bind-smoke
 
+      # Small-string block leak: empty sblocks must be unmapped even while a
+      # stale stack word pins another block.  Linux only (reads /proc).
+      - name: "Small-string block leak smoke (tools/ai/nelisp-ai.sh gate standalone-string-block-leak-smoke); Linux"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate standalone-string-block-leak-smoke -- make standalone-string-block-leak-smoke
+
       # Host-only hermetic test of the standalone-reader build stamp.  It lives
       # here, not in the fast `gates' job, because that job uploads no gate
       # report and `verify' requires one for every gates.expected entry.

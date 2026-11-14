@@ -1730,6 +1730,16 @@ standalone-reader-require-provide-smoke: standalone-reader
 nelisp-sexp-clone-bind-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
 	@NELISP_BIN=$(STANDALONE_BIN) sh test/nelisp-sexp-clone-bind-smoke.sh
 
+# Small-string block leak: a conservative word into string storage made
+# `nl_compact_small_strings' skip the pass that unmaps empty 8 KiB sblocks, so
+# RSS grew ~1.3 MiB per batch of dead strings in a REPL.  Drives the reader
+# through 20 batches of 5000 strings, bounds RSS growth after warm-up, and
+# checks survivors' contents (test/nelisp-string-block-leak-smoke.py).
+# Linux only: reads /proc/PID/status.
+.PHONY: standalone-string-block-leak-smoke
+standalone-string-block-leak-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@ulimit -v 8388608; python3 test/nelisp-string-block-leak-smoke.py $(STANDALONE_BIN) </dev/null
+
 # Doc 170 Stage 2: checked-allocator smoke (redzone / generation tags /
 # alloc-site / poison / leak scan).  Three runs against the same binary:
 #   1. env OFF — behaviour must match the stock reader (43) and the

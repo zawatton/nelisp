@@ -229,6 +229,7 @@ gate_needs_rebuild() {
     # binary is ABSENT, so without this the row would test the OLD binary
     # and report STAYED GREEN against an injection that never reached it.
     nelisp-sexp-clone-bind-smoke) return 0 ;;
+    standalone-string-block-leak-smoke) return 0 ;;
     standalone-reader-buffer-smoke) return 0 ;;
     standalone-reader-bignum-smoke) return 0 ;;
     standalone-reader-test) return 0 ;;

@@ -1859,6 +1859,13 @@ lisp-byte-compile
 # the reclaimed span gets reused, with both the `\='x' reader shorthand and
 # `(quote x)'.  Ten checks; against the pre-fix binary, four of them fail.
 nelisp-sexp-clone-bind-smoke
+# standalone-string-block-leak-smoke (2026-11-14): a conservative word into
+# string storage set the small-string compaction guard, so the loop that
+# unmaps empty 8 KiB sblocks never ran and a REPL leaked ~1.3 MiB per batch of
+# dead strings.  The collector now records pinned sblocks and still frees every
+# empty unpinned one.  The smoke bounds RSS growth over 15 batches of 5000
+# strings (the leaking build grows ~20 MiB) and checks survivors' contents.
+standalone-string-block-leak-smoke
 # Host-only project result validation. Real-runtime integration runs separately
 # after standalone-reader-test in CI; mutation proof requires no binary build.
 project-cli-contract
