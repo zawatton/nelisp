@@ -13981,25 +13981,45 @@ functions `((NAME . ARITY) ...)'."
    ;; arg-placement + AL-count machinery via `--parse-extern-call-args'; the
    ;; emitter branches on `:fn-value' to an indirect `call r11'.  The `-f64'
    ;; head marks an f64 return (= read from xmm0).  FN-EXPR must be a trivial
-   ;; value (a gp ref / small imm) at the MVP so it can be loaded into r11
-   ;; without disturbing already-placed arg registers.
+   ;; value (a gp ref / small imm) so it can be loaded into r11 without
+   ;; disturbing already-placed arg registers; any other FN-EXPR is hoisted
+   ;; into a fresh `let' local at parse time (evaluated before the args);
+   ;; `extern-call-ptr-f64' rejects it instead (see the comment there).
    ((and (consp sexp) (memq (car sexp) '(extern-call-ptr extern-call-ptr-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :extern-call-ptr-needs-fn sexp)))
     (let* ((op (car sexp))
            (fn-value (nelisp-aot-compiler--parse-value
-                      (nth 1 sexp) env fenv defuns))
-           (raw-args (nthcdr 2 sexp))
-           (parsed (nelisp-aot-compiler--parse-extern-call-args
-                    op 'call-ptr raw-args env fenv defuns)))
-      (nelisp-aot-compiler--make-ir 'extern-call
-            :name nil
-            :fn-value fn-value
-            :ret-class (if (eq op 'extern-call-ptr-f64) 'f64 'gp)
-            :args (plist-get parsed :args)
-            :varargs-p (plist-get parsed :varargs-p)
-            :f64-count (plist-get parsed :f64-count))))
+                      (nth 1 sexp) env fenv defuns)))
+      (if (not (memq (nelisp-aot-compiler--ir-kind fn-value) '(imm ref)))
+          ;; Non-trivial FN-EXPR (a call, arithmetic, ...): its evaluation
+          ;; would clobber the argument registers once they are placed.
+          ;; Evaluate it first into a fresh local (a frame slot, so it
+          ;; survives the argument evaluation) and call through that local.
+          ;; The wrapping `let' makes the node gp-class, so the f64-returning
+          ;; head cannot be hoisted this way (an f64 leaf cannot be a `let');
+          ;; it is rejected with a clear error instead.
+          (let ((tmp (nelisp-aot-compiler--gensym "extern-ptr-fn")))
+            (when (eq op 'extern-call-ptr-f64)
+              (signal 'nelisp-aot-compiler-error
+                      (list :extern-call-ptr-f64-fn-must-be-trivial
+                            (nth 1 sexp)
+                            "bind the callee to a local with `let' first")))
+            (nelisp-aot-compiler--parse-value
+             `(let ((,tmp ,(nth 1 sexp)))
+                (,op ,tmp ,@(nthcdr 2 sexp)))
+             env fenv defuns))
+        (let* ((raw-args (nthcdr 2 sexp))
+               (parsed (nelisp-aot-compiler--parse-extern-call-args
+                        op 'call-ptr raw-args env fenv defuns)))
+          (nelisp-aot-compiler--make-ir 'extern-call
+                :name nil
+                :fn-value fn-value
+                :ret-class (if (eq op 'extern-call-ptr-f64) 'f64 'gp)
+                :args (plist-get parsed :args)
+                :varargs-p (plist-get parsed :varargs-p)
+                :f64-count (plist-get parsed :f64-count))))))
    ;; (syscall-direct NR A0 A1 A2 A3 A4 A5) — Linux x86_64 raw SYSCALL.
    ;;
    ;; Evaluates 7 i64 value expressions and emits the Linux SYSCALL
@@ -15447,7 +15467,8 @@ across B's conversion, which may call arbitrary integer expressions."
   "Emit a flat f64-class binop NODE, result in xmm0/d0.
 Leaf conversions can run integer expressions with effects.  The shared
 operand emitter preserves their source order and spills across the second
-conversion when necessary.  Nested float binops remain unsupported."
+conversion when necessary.  Nested float binops are handled by the leaf
+emitter, which recurses into this function."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
@@ -15595,7 +15616,22 @@ literal arg) is materialised from its IEEE-754 bits."
       (if (eq nelisp-aot-compiler--arch 'aarch64)
           (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0)
         (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax)))
-     ((memq kind '(f64-binop f64-cmp))
+     ((eq kind 'f64-binop)
+      ;; Nested f64 binop (Doc 112).  `--emit-f64-binop' leaves its result
+      ;; in xmm0/d0 and spills any operand it must keep across a sibling
+      ;; operand's evaluation (see `--emit-f64-binary-operands'), so the
+      ;; nesting depth is bounded only by the temp stack.  A caller that
+      ;; wants the value elsewhere (the right operand goes to xmm1/d1)
+      ;; gets it moved through a GP register.
+      (nelisp-aot-compiler--emit-f64-binop node buf)
+      (unless (memq xmm-dst '(xmm0 d0))
+        (if (eq nelisp-aot-compiler--arch 'aarch64)
+            (progn
+              (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
+              (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0))
+          (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+          (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))))
+     ((eq kind 'f64-cmp)
       (signal 'nelisp-aot-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
      (t
