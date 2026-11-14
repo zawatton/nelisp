@@ -641,6 +641,12 @@ Like glibc compute_change, years <= 1970 are based on 1970-01-01."
   (cond
    ((null tz)
     (or (let ((d (nelisp--tf-read-file "/etc/localtime"))) (and d (nelisp--tf-tzif d)))
+        ;; No /etc/localtime (Windows): the host's current offset from
+        ;; `nl-local-utc-offset' (GetTimeZoneInformation, no DST rules);
+        ;; other targets answer 0, which falls through to UTC.
+        (let ((off (and (fboundp 'nl-local-utc-offset) (nl-local-utc-offset))))
+          (and (integerp off) (/= off 0)
+               (nelisp--tf-posix (nelisp--tf-offset-string off nil nil))))
         (nelisp--tf-posix "UTC0")))
    ((string= tz "") (vector 0 (list 0 nil "Universal")))
    (t

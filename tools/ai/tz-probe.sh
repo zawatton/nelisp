@@ -17,6 +17,9 @@ fail() { echo "FAIL[$MODE]: $*" >&2; exit 1; }
 # host_fmt EPOCH: "%Y-%m-%d %H %z" in the host's local zone
 host_fmt() { date -d "@$1" +'%Y-%m-%d %H %z'; }
 
+# Decimal value of a possibly zero-padded number (POSIX sh: no 10# prefix).
+dec() { v=$(printf %s "$1" | sed 's/^0*//'); printf %s "${v:-0}"; }
+
 case "$MODE" in
 clock)
   out=$(nl '(let ((f (float-time)) (c (current-time))) (list (< (abs (- (+ (* (nth 0 c) 65536.0) (nth 1 c)) f)) 2.0) (< (abs (- (/ (nl-unix-time-usec) 1000000.0) f)) 2.0) (< (abs (- (nl-current-unix-time) f)) 2.0) (> f 1700000000.0)))')
@@ -25,7 +28,7 @@ clock)
 zone)
   out=$(nl '(let ((z (current-time-zone))) (format "%d %s %s" (car z) (stringp (nth 1 z)) (length z)))')
   off=$(date +%z); sign=${off%????}; hh=${off#?}; hh=${hh%??}; mm=${off#???}
-  want=$(( (10#$hh * 3600 + 10#$mm * 60) )); [ "$sign" = "-" ] && want=$((-want))
+  want=$(( ($(dec "$hh") * 3600 + $(dec "$mm") * 60) )); [ "$sign" = "-" ] && want=$((-want))
   [ "$out" = "$want t 2" ] || fail "got '$out', host offset $want"
   ;;
 local)
@@ -50,7 +53,7 @@ decode)
     want=$(date -d "@$n" +'%Y %-m %-d %-H %-M %-S %z')
     # compare fields (offset converted to seconds)
     set -- $want; z=$7; sign=$(printf %s "$z" | cut -c1); hh=$(printf %s "$z" | cut -c2-3); mm=$(printf %s "$z" | cut -c4-5)
-    off=$((10#$hh * 3600 + 10#$mm * 60)); [ "$sign" = "-" ] && off=$((-off))
+    off=$(($(dec "$hh") * 3600 + $(dec "$mm") * 60)); [ "$sign" = "-" ] && off=$((-off))
     [ "$fields" = "$1 $2 $3 $4 $5 $6 $off" ] && exit 0
   done
   fail "got '$fields', host '$1 $2 $3 $4 $5 $6 $off'"
