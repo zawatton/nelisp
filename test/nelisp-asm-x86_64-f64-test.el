@@ -868,16 +868,26 @@ epilogue layout."
     (should (eq (nelisp-aot-compiler--ir-kind body) 'f64-binop))
     (should (eq (nelisp-aot-compiler--ir-get body :op) 'f64-add))))
 
-;; Nested f64-binop rejected at emit time (= MVP scope).
-(ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-binop ()
-  ;; Parsing succeeds — nesting is a structural feature of the IR.
-  ;; The rejection lands at emit-defun -> emit-f64-binop ->
-  ;; emit-f64-leaf-into, which checks each leaf's shape.
-  (should-error
-   (nelisp-asm-x86_64-f64-test--compile-defun
-    '(defun fn ((a :type f64) (b :type f64))
-       (f64-add (f64-add a b) a)))
-   :type 'nelisp-aot-compiler-error))
+;; Nested f64-binop compiles: the inner binop is emitted into xmm0 and
+;; moved to the requested register through a GP register.
+(ert-deftest nelisp-asm-x86_64-f64/emit-nested-f64-binop-compiles ()
+  (let* ((flat (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64)) (f64-add a b))))
+         (nested (nelisp-asm-x86_64-f64-test--compile-defun
+                  '(defun fn ((a :type f64) (b :type f64))
+                     (f64-add (f64-add a b) a)))))
+    (should (> (length nested) (length flat)))
+    ;; Same prologue (push rbp; mov rbp,rsp) and a ret epilogue.
+    (should (equal (seq-take nested 4) (seq-take flat 4)))
+    (should (= (aref nested (1- (length nested))) #xC3))
+    ;; The inner binop contributes a second ADDSD (F2 0F 58).
+    (let ((n 0) (i 0))
+      (while (< (+ i 2) (length nested))
+        (when (and (= (aref nested i) #xF2) (= (aref nested (+ i 1)) #x0F)
+                   (= (aref nested (+ i 2)) #x58))
+          (setq n (1+ n)))
+        (setq i (1+ i)))
+      (should (= n 2)))))
 
 ;; Canonical byte layout for `(defun fn ((a :type f64) (b :type f64))
 ;;   (f64-add a b))'.
@@ -1101,12 +1111,20 @@ epilogue layout."
           (should (= (aref le i) ref))
           (should (= (aref ge i) ref)))))))
 
-;; Nested f64-cmp rejected (= MVP flat-only)
-(ert-deftest nelisp-asm-x86_64-f64/emit-rejects-nested-f64-cmp ()
+;; A binop nested inside an f64-cmp operand compiles now; an f64-cmp used
+;; as a binop operand is still rejected (a cmp yields a flag, not a double).
+(ert-deftest nelisp-asm-x86_64-f64/emit-cmp-with-nested-binop-compiles ()
+  (let ((bytes (nelisp-asm-x86_64-f64-test--compile-defun
+                '(defun fn ((a :type f64) (b :type f64))
+                   (f64-lt (f64-add a b) a)))))
+    (should (> (length bytes) 0))
+    (should (= (aref bytes (1- (length bytes))) #xC3))))
+
+(ert-deftest nelisp-asm-x86_64-f64/emit-rejects-f64-cmp-as-binop-operand ()
   (should-error
    (nelisp-asm-x86_64-f64-test--compile-defun
     '(defun fn ((a :type f64) (b :type f64))
-       (f64-lt (f64-add a b) a)))
+       (f64-add (f64-lt a b) a)))
    :type 'nelisp-aot-compiler-error))
 
 ;; ---- §110.C.2.b (1) ANDPD reg-reg ----

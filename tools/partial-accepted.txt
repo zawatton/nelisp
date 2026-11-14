@@ -39,6 +39,7 @@ file-truename|lisp/nelisp-stdlib-misc.el|_prev-dirs|the same; byte-identical to 
 function-alias-p|scripts/nelisp-stdlib-prelude.el|_noerror|NOERROR ignored: Emacs 30 made it obsolete and it never changed the result; the alias chain is returned either way
 generate-new-buffer|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|there are no buffer hooks here, so nothing can be inhibited
 get-buffer-create|scripts/nelisp-stdlib-prelude.el|_inhibit-buffer-hooks|INHIBIT-BUFFER-HOOKS ignored: buffers are created without running buffer-list-update-hook, so there are no hooks to inhibit
+getenv|scripts/nelisp-stdlib-prelude.el|_frame|FRAME ignored: there are no frames, so no frame-local environment parameter exists to consult; the answer always comes from the global process-environment
 help-split-fundoc|scripts/nelisp-stdlib-prelude.el|_def|not yet reviewed
 indirect-function|scripts/nelisp-stdlib-prelude.el|_noerror|NOERROR ignored: obsolete in Emacs and likewise unused there; the chain is followed regardless
 insert-char|lisp/nelisp-stdlib-misc.el|_inherit|INHERIT ignored: inserted characters never inherit text properties from neighbours
@@ -79,7 +80,6 @@ set-file-modes|scripts/nelisp-stdlib-prelude.el|_flag|not yet reviewed
 set-process-coding-system|lisp/nelisp-stdlib-misc.el|_decoding _encoding _process|DECODING and ENCODING ignored: no coding system is stored for the process; the function does nothing and returns nil
 set-process-coding-system|scripts/nelisp-stdlib-prelude.el|_decoding _encoding _process|DECODING and ENCODING ignored: no coding system is stored for the process; the function does nothing and returns nil
 set-window-configuration|scripts/nelisp-stdlib-prelude.el|_dont-set-frame _dont-set-miniwindow|DONT-SET-FRAME and DONT-SET-MINIWINDOW ignored: no windows or frames exist, so it only validates CONFIGURATION and returns t
-setenv|scripts/nelisp-stdlib-prelude.el|_substitute|not yet reviewed
 split-string|lisp/nelisp-stdlib-plist-str.el|_omit-nulls _trim|not yet reviewed
 split-string|scripts/nelisp-stdlib-prelude.el|_trim|not yet reviewed
 subst-char-in-region|scripts/nelisp-stdlib-prelude.el|_noundo|NOUNDO ignored: there is no undo list, so nothing is recorded either way
