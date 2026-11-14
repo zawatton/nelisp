@@ -270,6 +270,95 @@
             (nelisp-service-client-close client))
         (nelisp-service-daemon-close daemon)))))
 
+;; Intermittent Windows failure: `process-send-string' signalled on a
+;; request frame.  Nothing reached the daemon, so one resend is safe.
+(defmacro nelisp-service-test--with-failing-req-send (failures &rest body)
+  "Run BODY with the first FAILURES request sends signalling an error.
+Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
+  (declare (indent 1))
+  `(let ((req-sends 0)
+         (real (symbol-function 'process-send-string)))
+     (cl-letf (((symbol-function 'process-send-string)
+                (lambda (proc string)
+                  (if (not (string-prefix-p "(req " string))
+                      (funcall real proc string)
+                    (setq req-sends (1+ req-sends))
+                    (when (<= req-sends ,failures)
+                      (signal 'file-error '("Process send failed" "boom")))
+                    (funcall real proc string)))))
+       ,@body)))
+
+(ert-deftest nelisp-service-test-request-resends-once-after-send-failure ()
+  (nelisp-service-test--with-state-dir
+    (let* ((runs 0)
+           (daemon (nelisp-service-daemon-start
+                    "r1" :handler (lambda (_c payload reply)
+                                    (setq runs (1+ runs))
+                                    (funcall reply (concat "ok:" payload)))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r1" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 1
+              (should (equal "ok:x" (nelisp-service-client-request client "x" 20)))
+              (should (= 2 req-sends)))
+            (should (= 1 runs))
+            ;; The old handle forwards to the fresh connection afterwards.
+            (should (nelisp-service-client-live-p client))
+            (should (equal "ok:y" (nelisp-service-client-request client "y" 20))))
+        (when client (nelisp-service-client-close
+                      (nelisp-service-client--current client)))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-request-second-send-failure-surfaces ()
+  (nelisp-service-test--with-state-dir
+    (let* ((runs 0)
+           (daemon (nelisp-service-daemon-start
+                    "r2" :handler (lambda (_c _p reply)
+                                    (setq runs (1+ runs))
+                                    (funcall reply "ok"))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r2" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 2
+              (let ((err (should-error (nelisp-service-client-request
+                                        client "x" 20))))
+                (should (string-match-p "disconnected: send failed: .*boom"
+                                        (cadr err)))
+                (should (eq 'disconnected (nth 2 err)))
+                (should (= 2 req-sends))))
+            (should (= 0 runs)))
+        (when client (nelisp-service-client-close
+                      (nelisp-service-client--current client)))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-request-not-resent-after-successful-send ()
+  (nelisp-service-test--with-state-dir
+    (let* ((daemon (nelisp-service-daemon-start
+                    "r3" :handler (lambda (_c _p reply) (funcall reply "ok"))))
+           (client nil)
+           (req-sends 0)
+           (real (symbol-function 'process-send-string)))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r3" :timeout 20))
+            ;; The send succeeds, then the connection is lost before a reply.
+            (cl-letf (((symbol-function 'process-send-string)
+                       (lambda (proc string)
+                         (funcall real proc string)
+                         (when (string-prefix-p "(req " string)
+                           (setq req-sends (1+ req-sends))
+                           (delete-process proc)))))
+              (let ((err (should-error (nelisp-service-client-request
+                                        client "x" 20))))
+                (should (string-match-p "connection to daemon closed"
+                                        (cadr err)))
+                (should-not (string-match-p "send failed" (cadr err)))))
+            (should (= 1 req-sends)))
+        (when client (nelisp-service-client-close client))
+        (nelisp-service-daemon-close daemon)))))
+
 (ert-deftest nelisp-service-test-daemon-idle-exit ()
   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
