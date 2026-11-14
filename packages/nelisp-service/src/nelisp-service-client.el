@@ -194,12 +194,13 @@ STATUS is `ok', `error' (the handler signalled) or `disconnected'.
 Return the request id."
   (let ((id (nelisp-service-incf client :next-id)))
     (puthash id callback (nelisp-service-get client :pending))
-    (condition-case nil
+    (condition-case err
         (process-send-string (nelisp-service-get client :process)
                              (nelisp-service-encode (list 'req id payload)))
       (error
        (remhash id (nelisp-service-get client :pending))
-       (funcall callback 'disconnected "send failed")))
+       (funcall callback 'disconnected
+                (format "send failed: %s" (error-message-string err)))))
     id))
 
 (defun nelisp-service-client-request (client payload &optional timeout)
