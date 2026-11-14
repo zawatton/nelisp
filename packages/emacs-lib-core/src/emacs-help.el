@@ -1040,7 +1040,11 @@ display core."
              arg))))
 
 ;;;###autoload
-(unless (fboundp 'help-mode)
+;; A GNU loaddefs autoload for `help-mode' (file help-mode, the shim that
+;; re-exports this module) is not a definition: the shim would load and leave
+;; it undefined, so it counts as unbound here.
+(unless (and (fboundp 'help-mode)
+             (not (eq (car-safe (symbol-function 'help-mode)) 'autoload)))
   (defun help-mode ()
     "Major mode for the shared `*Help*' buffer."
     (interactive)

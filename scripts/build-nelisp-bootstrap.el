@@ -206,6 +206,9 @@ is relative to `nelisp-bootstrap-repo-root'."
     "isearch.el"
     "emacs-ielm.el"
     "ielm.el"
+    ;; GNU files.el directory-local-variables definitions (generated, verbatim)
+    ;; for project.el and anything calling `hack-dir-local-variables'.
+    "emacs-files-gnu.el"
     "emacs-project.el"
     "project.el"
     "emacs-shell.el"
