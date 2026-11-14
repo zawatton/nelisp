@@ -74,7 +74,7 @@
     "nelisp--region-close" "nelisp--region-move" "nelisp--region-live-p"
     "nelisp--region-size" "nelisp--region-u8-ref" "nelisp--region-u8-set"
     "nelisp--region-i64-ref" "nelisp--region-i64-set" "nelisp--region-stats"
-    "nelisp--function-epoch")
+    "nelisp--function-epoch" "nl-local-utc-offset")
   "Frozen append-only IDs needed before the first dispatch is generated.
 The full reader table later ratchets this suffix against structural admission;
 no old symbol ID is moved and no late mutation changes a generated dispatch.")
