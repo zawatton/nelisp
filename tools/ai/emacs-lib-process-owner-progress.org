@@ -67,3 +67,25 @@ cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 600
 cmd: test "$(test/emacs-lib/process-owner-inventory.sh --count)" = 0 && test/emacs-lib/process-parity.sh >/dev/null && h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-vc-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
+* S4 One pipe representation (added 2026-11-14)
+
+The core buffer pipe (lisp/nelisp-process-buffer.el) is the one pipe
+representation.  At 18369f42c emacs-lib keeps a second one (OS-pipe vectors in
+emacs-cc-pipe-process-1.el), and a pipe from `make-pipe-process' passed as
+`:stderr' to `make-process' (GNU epg.el pattern) signals
+wrong-type-argument processp on the standalone.
+
+** S4.1 emacs-lib defines no pipe process representation of its own
+#+TIMEOUT: 60
+cmd: ! grep -rqE '\(defun emacs-cc-pipe-process-1--(make-pipe-process|pipe|pipe-p) ' packages/emacs-lib-*/src
+
+** S4.2 A pipe from make-pipe-process works as :stderr of make-process like GNU 31.1
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 300
+cmd: test/emacs-lib/process-parity.sh --only pipe-as-stderr
+
+** S4.3 End to end: pipe parity cases, the ec-leak guards and the owner count do not regress
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/process-parity.sh --report | grep -E '^(PASS|FAIL) pipe-' | grep -q PASS && ! test/emacs-lib/process-parity.sh --report | grep -qE '^FAIL pipe-' && test "$(test/emacs-lib/process-owner-inventory.sh --count)" -le 9 && test/emacs-lib/ec-leak-sweep.sh >/dev/null && test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null
