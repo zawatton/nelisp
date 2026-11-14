@@ -65,7 +65,7 @@ cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-
 ** S3.1 magit-status-smoke passes
 #+NOTE: ba9b6deab: MAGIT-SMOKE ERR (void-function cond*)
 #+REQUIRES: NELISP_BIN
-#+TIMEOUT: 900
+#+TIMEOUT: 600
 cmd: h=$(mktemp -d) && HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" magit-status-smoke >/dev/null 2>&1; rc=$?; rm -rf "$h"; test $rc = 0
 
 ** S3.2 End to end: the vc smoke and the ec-leak guards still pass with magit loadable
