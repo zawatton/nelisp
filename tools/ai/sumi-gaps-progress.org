@@ -1,0 +1,30 @@
+#+TITLE: NeLisp gaps reported by sumi-ui (2026-11-14)
+# Source: the sumi-ui adoption summary (artifact T7WdHAUAFbwTC9vW1yj6U4).
+# Verified on main 6567634cd: gaps 1 (make-process stderr), 2
+# (print-escape-newlines), 3 (char-width, run-with-timer, json-encode,
+# logxor) and 6 (Win64 5+ args, nl_dynalign_rsp_save) are already fixed;
+# reproducers in the session scratchpad sumigaps/.  Remaining: 5, 4b, 4a.
+
+* S1 getenv sees let-bound process-environment (gap 5)
+
+** S1.1 getenv/setenv read and write process-environment; ERT covers let-binding, setenv and child inheritance
+cmd: (ulimit -v 8388608; timeout 900 make -s test-one FILE=test/nelisp-getenv-process-environment-test.el </dev/null)
+
+** S1.2 E2E - the standalone binary returns the let-bound value
+#+REQUIRES: NELISP_GAPS_BIN
+cmd: f=$(mktemp); printf '%s\n' '(setenv "SUMIGAP_X" "base")' '(princ (let ((process-environment (cons "SUMIGAP_X=bound" process-environment))) (getenv "SUMIGAP_X")))' > "$f"; out=$("$NELISP_GAPS_BIN" --load "$f" 2>/dev/null); rm -f "$f"; printf '%s' "$out" | grep -q bound
+
+* S2 extern-call-ptr with an inline callee expression (gap 4b)
+
+** S2.1 a non-trivial FN-EXPR is spilled before argument placement (or rejected at compile time); ERT covers it
+cmd: (ulimit -v 8388608; timeout 900 make -s test-one FILE=test/nelisp-aot-extern-call-ptr-callee-test.el </dev/null)
+
+* S3 Nested f64 arithmetic in AOT (gap 4a)
+
+** S3.1 nested f64 binops compile and give correct bits; ERT covers nesting depth >= 3 and mixed ops
+cmd: (ulimit -v 8388608; timeout 900 make -s test-one FILE=test/nelisp-aot-nested-f64-test.el </dev/null)
+
+* S4 Integration
+
+** S4.1 E2E - CI on main green with all three fixes
+pending
