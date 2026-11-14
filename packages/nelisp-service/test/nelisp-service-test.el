@@ -292,11 +292,13 @@
 ;; second one (Doc 213; three anvil daemons were seen running at once).
 (ert-deftest nelisp-service-test-busy-daemon-is-not-replaced ()
   (nelisp-service-test--with-state-dir
-    (let* ((port 23000)
-           (mute (make-network-process
+    (let* ((mute (make-network-process
                   :name "nelisp-service-test-mute" :server t :host "127.0.0.1"
-                  :service port :family 'ipv4 :noquery t
+                  ;; An ephemeral port: a fixed one collides when several
+                  ;; copies of this test run at once (windows-service-loop).
+                  :service t :family 'ipv4 :noquery t
                   :filter #'ignore))
+           (port (process-contact mute :service))
            (spawned 0)
            (nelisp-service-client-hello-timeout 0.3)
            (nelisp-service-client-spawn-function
