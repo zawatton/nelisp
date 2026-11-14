@@ -59,3 +59,16 @@ cmd: h=$(mktemp -d) && HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_B
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 300
 cmd: make -s -f mk/emacs-lib.mk build-nelisp-bootstrap >/dev/null && test/emacs-lib/ec-leak-behavior-parity.sh >/dev/null
+
+* S3 magit (added 2026-11-14)
+
+** S3.1 magit-status-smoke passes
+#+NOTE: ba9b6deab: MAGIT-SMOKE ERR (void-function cond*)
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 900
+cmd: h=$(mktemp -d) && HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" magit-status-smoke >/dev/null 2>&1; rc=$?; rm -rf "$h"; test $rc = 0
+
+** S3.2 End to end: the vc smoke and the ec-leak guards still pass with magit loadable
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 600
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-vc-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected' && test/emacs-lib/ec-leak-sweep.sh >/dev/null && test/emacs-lib/ec-leak-sweep.sh --owner >/dev/null
