@@ -98,5 +98,8 @@ for rnd in range(3):
     run(batch)
 proc.stdin.close()
 proc.terminate()
+# tools/ai/nelisp-ai.sh gate reads this line; without it a passing run is
+# reported as "ran 0, failed 1".
+print("GATE-COUNT checked=2 findings=%d" % (0 if ok else 1))
 print("string-block leak smoke: %s" % ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)
