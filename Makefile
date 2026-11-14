@@ -1733,8 +1733,9 @@ nelisp-sexp-clone-bind-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,
 # Small-string block leak: a conservative word into string storage made
 # `nl_compact_small_strings' skip the pass that unmaps empty 8 KiB sblocks, so
 # RSS grew ~1.3 MiB per batch of dead strings in a REPL.  Drives the reader
-# through 20 batches of 5000 strings, bounds RSS growth after warm-up, and
-# checks survivors' contents (test/nelisp-string-block-leak-smoke.py).
+# through 60 batches of 5000 strings, bounds RSS growth after warm-up, bounds
+# live arena bytes over 40 batches (REPL line retention), and checks survivors'
+# contents (test/nelisp-string-block-leak-smoke.py).
 # Linux only: reads /proc/PID/status.
 .PHONY: standalone-string-block-leak-smoke
 standalone-string-block-leak-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)

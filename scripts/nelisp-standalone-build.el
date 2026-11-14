@@ -59708,7 +59708,16 @@ correctly."
                     ;; (exit N)/(kill-emacs N) from REPL-evaluated code keeps
                     ;; working unchanged.
                     (nl_eval_source_all src cursor result pool out ctx builtin_sym 2
-                                         repl-name-buf ,(length (encode-coding-string "<repl>" 'utf-8 t)))))
+                                         repl-name-buf ,(length (encode-coding-string "<repl>" 'utf-8 t)))
+                    ;; The REPL keeps a conservative stack pin on every GC, so
+                    ;; the moving compaction (which bumps the epoch) never
+                    ;; runs and each line's wrapped form and expansion stay
+                    ;; cached, pinning its literal strings and their 8 KiB
+                    ;; blocks.  Invalidate the macro-expansion cache once per
+                    ;; line; a miss only costs a re-expansion.  `atomic-fetch-add' (as in
+                    ;; the closure-publication bump) keeps the unsafe-primitive
+                    ;; count unchanged.
+                    (atomic-fetch-add (data-addr nl_mxcache_epoch) 1)))
                  (if (= (heap-read-u64 268435464 0) 0) 0
                    (setq done 1)))))))
          0)))

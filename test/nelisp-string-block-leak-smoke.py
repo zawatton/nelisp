@@ -7,10 +7,16 @@ sblocks never ran and RSS grew by about 1.3 MiB per batch of dead strings.
 The collector now records the pinned sblocks and still unmaps every empty block
 that is not pinned.
 
-Check A (leak): 20 REPL-driven batches of 5000 `(make-string 256 65)', each
+Check A (leak): 60 REPL-driven batches of 5000 `(make-string 256 65)', each
 held, collected, dropped and collected again.  After a 5-batch warm-up the RSS
 growth over the remaining batches must stay under the bound below (the leaking
 build grows about 1.3 MiB per batch, i.e. 20 MiB).
+Check A2 (REPL retention): live arena bytes after `(garbage-collect)' (field 4
+of `nelisp--arena-stats') must stay flat over 40 batches.  The REPL always
+holds a conservative stack pin, so the moving compaction that invalidates the
+macro-expansion cache never runs; without a per-line invalidation every line's
+wrapped form and its literal strings stay cached and live (about 1 KiB per
+eval, and one whole 8 KiB string block per batch).
 Check B (correctness): survivors of a half-dropped vector of strings keep their
 contents across collections, a string held only by a `let' local survives, and
 strings created before and after are intact.
@@ -20,9 +26,11 @@ Usage: nelisp-string-block-leak-smoke.py BINARY
 import subprocess
 import sys
 
-BATCHES = 20
+BATCHES = 60
 WARMUP = 5
-BOUND_KIB = 3072
+BOUND_KIB = 1280
+LIVE_BATCHES = 40
+LIVE_BOUND_BYTES = 16384
 
 if len(sys.argv) != 2:
     sys.exit("usage: nelisp-string-block-leak-smoke.py BINARY")
@@ -58,16 +66,32 @@ batch = ('(progn (setq nl-sb-junk nil nl-sb-i 0)'
          '        nl-sb-i (1+ nl-sb-i)))'
          ' (garbage-collect) (setq nl-sb-junk nil) (garbage-collect)'
          ' (nelisp--write-stdout-bytes "B\\n"))')
+live_probe = ('(progn (garbage-collect)'
+              ' (nelisp--write-stdout-bytes'
+              '  (format "L %d\\n" (nth 4 (nelisp--arena-stats)))))')
 rss = []
+live = []
 for i in range(BATCHES):
     if run(batch) != "B":
         sys.exit("FAIL: batch %d gave no marker" % i)
+    got = run(live_probe)
+    if not got.startswith("L "):
+        sys.exit("FAIL: live-bytes probe answered %r" % got)
+    live.append(int(got[2:]))
     rss.append(rss_kib())
 growth = rss[-1] - rss[WARMUP - 1]
 print("leak: rss after warm-up %d KiB, final %d KiB, growth %d KiB over %d batches (bound %d KiB)"
       % (rss[WARMUP - 1], rss[-1], growth, BATCHES - WARMUP, BOUND_KIB))
 if growth >= BOUND_KIB:
     print("FAIL: leak -- empty string blocks are not returned to the OS")
+    ok = False
+
+live_growth = live[WARMUP - 1 + LIVE_BATCHES] - live[WARMUP - 1]
+print("live: arena live bytes %d -> %d, growth %d B over %d batches (bound %d B)"
+      % (live[WARMUP - 1], live[WARMUP - 1 + LIVE_BATCHES], live_growth,
+         LIVE_BATCHES, LIVE_BOUND_BYTES))
+if live_growth > LIVE_BOUND_BYTES:
+    print("FAIL: REPL lines are retained (macro-expansion cache never invalidated)")
     ok = False
 
 setup = ('(progn (setq nl-sb-keep (make-vector 2000 nil) nl-sb-i 0)'
@@ -100,6 +124,6 @@ proc.stdin.close()
 proc.terminate()
 # tools/ai/nelisp-ai.sh gate reads this line; without it a passing run is
 # reported as "ran 0, failed 1".
-print("GATE-COUNT checked=2 findings=%d" % (0 if ok else 1))
+print("GATE-COUNT checked=3 findings=%d" % (0 if ok else 1))
 print("string-block leak smoke: %s" % ("PASS" if ok else "FAIL"))
 sys.exit(0 if ok else 1)

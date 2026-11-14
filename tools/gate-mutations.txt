@@ -1416,3 +1416,11 @@ nelisp-eval-closure-standalone-smoke|src/nelisp-eval.el|s/(defsubst nelisp-eval-
 # the conservative state, set on nearly every collection).  RED: RSS grows
 # ~20 MiB over the 15 measured batches against a 3 MiB bound.
 standalone-string-block-leak-smoke|lisp/nelisp-cc-string-blocks.el|s#(or (= tb 0) (>= (heap-read-u64 st 248) 1000000)) 0#(or (= tb 0) (/= (heap-read-u64 st 56) 0) (= (nl_gc_conserv_pinned_p) 1)) 0#|a pinned string block (or any arena pin) stops empty sblocks from being unmapped again -- the original leak
+
+# standalone-string-block-leak-smoke (2026-11-14): make the per-line
+# macro-expansion cache invalidation in `nl_repl_loop' add 0 instead of 1.  The
+# REPL's conservative pin keeps the moving compaction (the only other epoch
+# bump) from running, so every line's wrapped form and its literal strings stay
+# cached and live.  RED: live arena bytes grow ~1 KiB per eval (about 40 KiB
+# over 40 batches against a 16 KiB bound) and RSS grows one string block per batch.
+standalone-string-block-leak-smoke|scripts/nelisp-standalone-build.el|/The REPL keeps a conservative stack pin on every GC/,/epoch) 1)))$/s/(atomic-fetch-add (data-addr nl_mxcache_epoch) 1)))$/(atomic-fetch-add (data-addr nl_mxcache_epoch) 0)))/|the REPL no longer invalidates the macro-expansion cache per line, so each line's literals stay live
