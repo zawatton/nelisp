@@ -36059,7 +36059,7 @@ backtrace printer needed `m5_prin1' and its own transitive closure.")
       nelisp--intern-table-symbols nelisp--native-env nelisp--pool-root-coverage
       nelisp--pop-frame nelisp--push-frame nelisp--size-census nelisp--target-arch-code
       nelisp--target-os-code nelisp-process-async-ready-p nl-current-unix-time
-      nl-unix-time-usec)
+      nl-local-utc-offset nl-unix-time-usec)
     ((0 . 1)
       exit float-time nelisp--exit-process)
     ((0 . many)

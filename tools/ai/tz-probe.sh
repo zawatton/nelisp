@@ -44,7 +44,7 @@ zone-arg)
   ;;
 decode)
   for try in 1 2; do
-    out=$(nl '(let* ((n (nl-current-unix-time)) (d (decode-time n))) (format "%d|%s|%s" n (mapconcat (function number-to-string) (list (nth 5 d) (nth 4 d) (nth 3 d) (nth 2 d) (nth 1 d) (nth 0 d) (nth 8 d)) " ") (if (= (encode-time d) n) "rt" "nort")))')
+    out=$(nl '(let* ((n (nl-current-unix-time)) (d (decode-time n))) (format "%d|%s|%s" n (mapconcat (function number-to-string) (list (nth 5 d) (nth 4 d) (nth 3 d) (nth 2 d) (nth 1 d) (nth 0 d) (nth 8 d)) " ") (if (= (float-time (encode-time d)) n) "rt" "nort")))')
     n=${out%%|*}; rest=${out#*|}; fields=${rest%%|*}; rt=${rest#*|}
     [ "$rt" = rt ] || fail "encode-time round trip: $out"
     want=$(date -d "@$n" +'%Y %-m %-d %-H %-M %-S %z')
