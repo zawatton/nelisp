@@ -1130,6 +1130,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
+      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
       - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
         if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
@@ -1157,11 +1162,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
-      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
-      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
       # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
       # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
       # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
