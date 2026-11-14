@@ -24245,7 +24245,7 @@ DST part is not parsed.  The empty string means UTC."
                 (setq mm (+ (* mm 10) (- (aref tz i) ?0)) i (1+ i))))
             (when (> digits 0)
               (let ((mag (+ (* hh 3600) (* mm 60))))
-                (cons (if neg mag (- mag)) name)))))))))))
+                (cons (if neg mag (- mag)) name))))))))))
 
 (unless (fboundp 'nelisp--tm-zone-spec)
   (defun nelisp--tm-zone-spec (zone)
