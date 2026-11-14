@@ -992,3 +992,6 @@ emacs-lisp/let-alist.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-li
 emacs-lisp/smie.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/smie.el	sha256=d1b6754bd34bcbbe9758d44b4740add869239232b6b20b79dd55a4446f5c023b
 calendar/cal-iso.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/cal-iso.el	sha256=00b8ec14f17b969278b699df2e6e851ff34bc3213c32d7ef58be01fe43fc1aa1
 calendar/diary-lib.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/diary-lib.el	sha256=2ecbe3c55435f6fba23a73de9a89246d8677e47ed12f88ef51db481d266fdaca
+emacs-lisp/calendar/diary-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/diary-loaddefs.el.gz	sha256=c84f4544897cd8c7f1d1e3dfa54aaca860ec63db2dde06d8aa63a2430856d336
+emacs-lisp/calendar/holiday-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/holiday-loaddefs.el.gz	sha256=0cf89cb3d1daa99719b36787d99853353751f5483044cd03249d59d15659fa34
+emacs-lisp/emacs-lisp/cond-star.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cond-star.el.gz	sha256=9b0c36a28ae6ddff5db5004536bbd1815831523f0dfc72dc8bc7fc55b51be91e

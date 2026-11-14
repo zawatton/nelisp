@@ -75,7 +75,33 @@
     org-agenda-get-timestamps
     org-agenda-get-deadlines
     org-agenda-get-scheduled
-    org-agenda-get-blocks)
+    org-agenda-get-blocks
+    org-set-regexps-and-options
+    org-read-date
+    org-read-date-analyze
+    org-read-date-get-relative
+    org-read-date-display
+    org-get-compact-tod
+    org-eval-in-calendar
+    org-parse-time-string
+    org-2ft
+    org-time-string-to-time
+    org-matcher-time
+    org-follow-timestamp-link
+    org-read-date-get-year
+    org-timestamp-change
+    org-set-font-lock-defaults
+    org-fontify-meta-lines-and-blocks-1
+    org-fold-core--fix-folded-region
+    org-fold-core-region
+    org-element--cache-process-request
+    org-element--cache-for-removal
+    org-element--cache-submit-request
+    org-element-context
+    org-element--object-lex
+    org-element--parse-to
+    org-element-timestamp-parser
+    org-element-map)
   "Vendor Org defuns that must keep their real bodies in the bridge bundle.")
 
 (defun nelisp-emacs-org-bridge-bundle--output-file ()

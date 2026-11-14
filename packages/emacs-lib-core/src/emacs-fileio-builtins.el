@@ -111,11 +111,22 @@ host Emacs.  Use `files-standalone-runtime-p' so
 leaving stub function cells in place."
   (files-standalone-runtime-p))
 
+(defconst emacs-fileio-builtins--ec-buffer-polyfills
+  '(find-file-noselect find-file save-buffer write-file revert-buffer)
+  "Polyfills that are written against the nelisp-ec buffer type.
+They must not replace the public definitions when the runtime owns buffers
+natively, because file-visiting buffers would then be ec buffers that
+`with-current-buffer' and friends reject.")
+
 (defun emacs-fileio-builtins--install-function-p (symbol)
   "Return non-nil when SYMBOL should be installed by this bridge."
-  (or (not (emacs-fileio-builtins--function-cell-live-p symbol))
-      (and (emacs-fileio-builtins--standalone-p)
-           (memq symbol emacs-fileio-builtins--standalone-overrides))))
+  (and (or (not (memq symbol emacs-fileio-builtins--ec-buffer-polyfills))
+           ;; Gate on the ec buffer family, as `emacs-buffer-builtins' does.
+           (and (boundp 'emacs-buffer-builtins--ec-owns-buffers)
+                emacs-buffer-builtins--ec-owns-buffers))
+       (or (not (emacs-fileio-builtins--function-cell-live-p symbol))
+           (and (emacs-fileio-builtins--standalone-p)
+                (memq symbol emacs-fileio-builtins--standalone-overrides)))))
 
 (defun emacs-fileio-builtins--function-cell-live-p (symbol)
   "Return non-nil when SYMBOL has a usable function cell."
@@ -1294,6 +1305,21 @@ are cleaned up by `find-file-noselect' on next visit.")
                  (not (nelisp-ec-buffer-killed-p (car cell))))
         (setq live (cons cell live))))
     (setq emacs-fileio--buffer-files (nreverse live))))
+
+;; GNU Emacs keeps `buffer-file-name' (and `buffer-file-truename') per buffer.
+;; Native public buffers record the visited file with a plain `setq' in the
+;; buffer, so the variable must be automatically buffer-local; otherwise
+;; every buffer shares one global value and `find-buffer-visiting' matches
+;; unrelated buffers.
+(when (and (emacs-fileio-builtins--standalone-p)
+           (fboundp 'nelisp--repr)
+           (fboundp 'make-variable-buffer-local))
+  (unless (boundp 'buffer-file-truename)
+    (set-default 'buffer-file-truename nil))
+  (dolist (--var-- '(buffer-file-name buffer-file-truename))
+    (unless (local-variable-if-set-p --var--)
+      (make-variable-buffer-local --var--))
+    (put --var-- 'permanent-local t)))
 
 (when (emacs-fileio-builtins--install-function-p 'buffer-file-name)
   (defun buffer-file-name (&optional buffer)

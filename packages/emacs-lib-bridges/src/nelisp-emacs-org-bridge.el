@@ -316,10 +316,14 @@ bodies in a live session."
 
 (defun nelisp-emacs-org-bridge--buffer-live-p (buffer)
   "Return non-nil when BUFFER is a live NeLisp buffer."
-  (and (fboundp 'nelisp-ec-buffer-p)
-       (ignore-errors (nelisp-ec-buffer-p buffer))
-       (not (and (fboundp 'nelisp-ec-buffer-killed-p)
-                 (ignore-errors (nelisp-ec-buffer-killed-p buffer))))))
+  (or (and (fboundp 'nelisp-ec-buffer-p)
+           (ignore-errors (nelisp-ec-buffer-p buffer))
+           (not (and (fboundp 'nelisp-ec-buffer-killed-p)
+                     (ignore-errors (nelisp-ec-buffer-killed-p buffer)))))
+      ;; Core buffers of the standalone runtime are not ec buffers.
+      (and (fboundp 'nelisp-buffer-p)
+           (ignore-errors (nelisp-buffer-p buffer))
+           (buffer-live-p buffer))))
 
 (defun nelisp-emacs-org-bridge--ensure-selected-window-buffer ()
   "Ensure the selected standalone window displays a live current buffer."
@@ -363,8 +367,7 @@ to become current, so use the selected window directly in this bridge lane."
                   (set-window-buffer window buffer)
                   (when (fboundp 'select-window)
                     (select-window window))))
-              (when (fboundp 'nelisp-ec-set-buffer)
-                (nelisp-ec-set-buffer buffer))
+              (set-buffer buffer)
               buffer)))
     (put 'switch-to-buffer-other-window
          'nelisp-emacs-org-bridge-wrapped t)))
@@ -381,8 +384,7 @@ to become current, so use the selected window directly in this bridge lane."
         (set-window-buffer window buffer)
         (when (fboundp 'select-window)
           (select-window window))))
-    (when (fboundp 'nelisp-ec-set-buffer)
-      (nelisp-ec-set-buffer buffer))
+    (set-buffer buffer)
     buffer))
 
 (defun nelisp-emacs-org-bridge--wrap-buffer-display-functions ()
@@ -567,6 +569,18 @@ without changing vendor Org source."
                 value))))
     (put 'org-agenda-list 'nelisp-emacs-org-bridge-wrapped t)))
 
+(defun nelisp-emacs-org-bridge--ensure-window-geometry-predicates ()
+  "Provide `window-full-width-p' when the runtime lacks it.
+Org's `org-fit-window-to-buffer' calls it; the standalone window model has
+a single full-width window per frame, so compare against the frame width."
+  (unless (fboundp 'window-full-width-p)
+    (defalias 'window-full-width-p
+      (lambda (&optional window)
+        (let ((window (or window (selected-window))))
+          (or (not (fboundp 'window-total-width))
+              (not (fboundp 'frame-width))
+              (>= (window-total-width window) (frame-width))))))))
+
 (defun nelisp-emacs-org-bridge-load ()
   "Load the generated vendor Org bridge bundle into the current session."
   (unless nelisp-emacs-org-bridge-loaded
@@ -596,6 +610,7 @@ without changing vendor Org source."
     (nelisp-emacs-org-bridge--disable-persist-cache)
     (nelisp-emacs-org-bridge--ensure-org-element-runtime-constants)
     (nelisp-emacs-org-bridge--ensure-selected-window-buffer)
+    (nelisp-emacs-org-bridge--ensure-window-geometry-predicates)
     (nelisp-emacs-org-bridge--wrap-switch-to-buffer-other-window)
     (nelisp-emacs-org-bridge--wrap-buffer-display-functions)
     (nelisp-emacs-org-bridge--wrap-org-capture-fill-template)
