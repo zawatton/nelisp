@@ -314,7 +314,11 @@
 # table'/`nelisp--buffer-multibyte-p'/`nelisp--char-arg-to-string'
 # plumbing behind them -- 8 new names, all mirrored byte-identically
 # into both files, same pattern as every prior entry in this run.
-ns-collision 344
+# 344 -> 347 on 2026-11-14 (local time zone): +4 for `current-time-zone',
+# `nelisp--tm-offset-name', `nelisp--tm-posix-spec' and
+# `nelisp--tm-zone-spec', mirrored byte-identically into both files; set
+# to the measured 347 (the tree was already one below 344).
+ns-collision 347
 # 314 -> 344 on 2026-09-21 (segment F): +30 same-definition collisions,
 # all mirrored byte-identically between files per this segment's
 # default file-pairing rule -- see the `pinned-collision' block near
@@ -1558,6 +1562,13 @@ pinned-collision ns-collision	rx--tr-repeat	lisp/nelisp-stdlib-misc.el scripts/n
 pinned-collision ns-collision	rx--tr-seq	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	rx--tr-symbol	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision	rx-to-string	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+# 2026-11-14 (local time zone): `current-time-zone' and the zone helpers are defined in both
+# lisp/nelisp-stdlib-misc.el and its prelude mirror, byte-identical, like
+# the other misc/prelude time functions.
+pinned-collision ns-collision	nelisp--tm-posix-spec	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-zone-spec	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	current-time-zone	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
+pinned-collision ns-collision	nelisp--tm-offset-name	lisp/nelisp-stdlib-misc.el scripts/nelisp-stdlib-prelude.el
 pinned-collision ns-collision-divergent	cl-assoc	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	2b698266abcf
 pinned-collision ns-collision-divergent	cl-count	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	02eda017bd1b
 pinned-collision ns-collision-divergent	cl-delete	lisp/nelisp-cl-macros.el scripts/nelisp-stdlib-prelude.el	04158eeaced9

@@ -331,7 +331,9 @@
 # scripts/nelisp-standalone-build.el above (851 -> 875), all in the new
 # `nl_cli_action_*'/`nl_cla_list_from'/`nl_cli_set_clal' helpers, none
 # elsewhere -- gate's own before/after totals agree exactly.
-unsafe-call 997
+# 2026-11-14 997 -> 999 (local time zone): the +2 pinned for
+# scripts/nelisp-standalone-build.el below (GetTimeZoneInformation reads).
+unsafe-call 999
 
 # `pinned-kernel-call FILE COUNT' pins the per-file unquoted `unsafe-call'
 # count behind `total' above -- the kernel files that actually carry
@@ -589,7 +591,12 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 #     `default-directory'/`noninteractive' above.
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
-pinned-kernel-call scripts/nelisp-standalone-build.el 875
+# 875 -> 877 on 2026-11-14 (measured by the scanner): the Windows local
+# time zone helper `nl_os_local_utc_offset' reads Bias, StandardBias and
+# DaylightBias from the GetTimeZoneInformation buffer (three
+# `ptr-read-u32'); with the wall-clock helper move of 022e8d6d7 the file
+# nets +2.
+pinned-kernel-call scripts/nelisp-standalone-build.el 877
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1
