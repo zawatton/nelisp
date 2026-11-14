@@ -996,3 +996,7 @@ emacs-lisp/calendar/diary-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1
 emacs-lisp/calendar/holiday-loaddefs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/calendar/holiday-loaddefs.el.gz	sha256=0cf89cb3d1daa99719b36787d99853353751f5483044cd03249d59d15659fa34
 emacs-lisp/emacs-lisp/cond-star.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/emacs-lisp/cond-star.el.gz	sha256=9b0c36a28ae6ddff5db5004536bbd1815831523f0dfc72dc8bc7fc55b51be91e
 emacs-lisp/uniquify.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/uniquify.el.gz	sha256=502436694f437ee4c904d74012801f551764e8f0c1c343d502775613c788d254
+emacs-lisp/vc/pcvs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pcvs.el.gz	sha256=7bedd53fbbbc8e674cebc5cc3a3acd5ecb16aa1de1d27770842eb75e8cfa9a99
+emacs-lisp/vc/pcvs-defs.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pcvs-defs.el.gz	sha256=48b01f19594f79785f00c004bbafeae76d843b10262cc5b6a10809916ccd08b4
+emacs-lisp/vc/pcvs-info.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pcvs-info.el.gz	sha256=42323762a42aa9bec23cafd0a90fc53605ac9a64df82c17e9ef9df4fedd6dcef
+emacs-lisp/vc/pcvs-parse.el	GNU Emacs 31.1	/usr/local/share/emacs/31.1/lisp/vc/pcvs-parse.el.gz	sha256=5f89d1081f2eaa6eafbb5363b203a432f50142b85b2cf33c4bf9e65ed9a27e5d

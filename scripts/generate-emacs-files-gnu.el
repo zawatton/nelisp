@@ -33,7 +33,8 @@
     find-file-not-found-functions query-about-changed-file
     view-read-only auto-save-default buffer-file-read-only find-file-literally backup-enable-predicate normal-backup-enable-predicate
     out-of-memory-warning-percentage abort-if-file-too-large warn-maybe-out-of-memory files--message
-    find-file-noselect find-file-noselect-1 after-find-file)
+    find-file-noselect find-file-noselect-1 after-find-file
+    find-directory-functions)
   "GNU files.el names this file copies: the directory-local-variables
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")
@@ -45,21 +46,32 @@ subsystem, which the standalone lacks (project.el calls
     progress-reporter-force-update progress-reporter-echo-area
     progress-reporter-do-update progress-reporter-update progress-reporter-done))
 
+;; Preloaded GNU loaddefs.el entries for PCL-CVS: GNU's default
+;; `find-directory-functions' starts with `cvs-dired-noselect', which
+;; loaddefs.el defines in full; the commands it calls autoload from the
+;; vendored pcvs.el.  Appended after the subr.el forms.
+(defconst gen-dl--loaddefs-names
+  '(cvs-examine cvs-status cvs-quickdir
+    cvs-dired-action cvs-dired-use-hook cvs-dired-noselect))
+
 (let* ((root (file-name-directory
               (directory-file-name
                (file-name-directory (or load-file-name buffer-file-name)))))
        (src (expand-file-name "vendor/staged-emacs-lisp/files.el" root))
        (subr-src (expand-file-name "vendor/staged-emacs-lisp/subr.el" root))
+       (loaddefs-src (expand-file-name "vendor/emacs-lisp/loaddefs.el" root))
        (out (expand-file-name "packages/emacs-lib-core/src/emacs-files-gnu.el" root))
        chunks)
   (dolist (spec (list (cons src (cons 0 gen-dl--names))
-                      (cons subr-src (cons 10000000 gen-dl--subr-names))))
+                      (cons subr-src (cons 10000000 gen-dl--subr-names))
+                      (cons loaddefs-src (cons 20000000 gen-dl--loaddefs-names))))
   (with-temp-buffer
     (insert-file-contents (car spec))
     (emacs-lisp-mode)
     (dolist (name (cddr spec))
       (goto-char (point-min))
-      (let ((re (format "^(\\(?:defmacro\\|defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)"
+      (let ((re (format "^(\\(?:defmacro\\|defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)\\|^(autoload '%s "
+                        (regexp-quote (symbol-name name))
                         (regexp-quote (symbol-name name)))))
         (if (not (re-search-forward re nil t))
             (message "skip %s" name)

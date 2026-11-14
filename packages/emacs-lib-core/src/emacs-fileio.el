@@ -510,11 +510,6 @@ FILES-ONLY limits rows to buffers visiting files."
       (switch-to-buffer buffer)
       buffer)))
 
-;; GNU's default is '(cvs-dired-noselect dired-noselect); pcvs.el is not
-;; vendored, so the unavailable CVS entry is left out.  `find-file-noselect'
-;; itself is GNU's (emacs-files-gnu.el).
-(defvar find-directory-functions '(dired-noselect)
-  "Functions `find-file-noselect' tries to visit a directory.")
 
 ;;;###autoload
 (defun find-file (filename &optional wildcards)

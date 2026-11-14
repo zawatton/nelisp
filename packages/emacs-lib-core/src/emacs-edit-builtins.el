@@ -107,6 +107,15 @@ ec-buffer exists.  The shared key-dispatch adapter binds this context.")
 (when (fboundp 'nelisp--write-stdout-bytes)
   (emacs-buffer-declare-per-buffer 'buffer-saved-size 0))
 
+;; GNU buffer.c's per-buffer `list-buffers-directory' (default nil): the
+;; directory Buffer Menu shows for a non-file buffer.  PCL-CVS sets it in
+;; its *cvs* buffer (`cvs-make-cvs-buffer').
+(unless (boundp 'list-buffers-directory)
+  (defvar-local list-buffers-directory nil
+    "String to display in buffer listings for buffers not visiting a file."))
+(when (fboundp 'nelisp--write-stdout-bytes)
+  (emacs-buffer-declare-per-buffer 'list-buffers-directory nil))
+
 ;;;; --- character insertion --------------------------------------------
 
 (unless (boundp 'overwrite-mode)
