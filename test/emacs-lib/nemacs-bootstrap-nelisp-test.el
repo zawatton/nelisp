@@ -1348,10 +1348,13 @@ prove the navigation history stays live inside one reader process."
      (should (string-match-p "HELP-FWD=t" out)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/dired-workflow-callable ()
-  "Standalone Dired workflow runs through the shared directory facade.
+  "Standalone Dired workflow runs through the genuine GNU dired.el.
 Proves the reader can render a listing, enter a subdirectory, return to
 the parent, refresh after on-disk mutation, and run mark/copy/delete
-operations through the real Dired commands."
+operations through the real Dired commands.  Every expectation was
+checked against the same form under GNU Emacs 31.1 `--batch -Q'.  GNU
+`dired-do-flagged-delete' returns nil (not a count), so deletion is
+verified by file state: only the flagged file disappears."
   (nemacs-bootstrap-nelisp-test--skip-unless-binary
    (let ((root (make-temp-file "nemacs-dired-workflow-" t)))
      (unwind-protect
@@ -1359,7 +1362,100 @@ operations through the real Dired commands."
                 (alpha (expand-file-name "alpha.txt" root))
                 (nested (expand-file-name "nested.txt" subdir))
                 (gamma (expand-file-name "gamma.txt" root))
-                (alpha-copy (expand-file-name "alpha-copy.txt" root)))
+                (alpha-copy (expand-file-name "alpha-copy.txt" root))
+                (form
+                 `(let* ((root ,(file-name-as-directory root))
+                         (gamma ,gamma)
+                         (alpha-copy ,alpha-copy)
+                         (alpha ,alpha)
+                         (buf (dired root)))
+                    (set-buffer buf)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-LIST="
+                             (if (and (string-match-p "alpha\\.txt" (buffer-string))
+                                      (string-match-p "subdir" (buffer-string)))
+                                 "t" "nil")
+                             "\n"))
+                    (goto-char (point-min))
+                    (re-search-forward " subdir$")
+                    (beginning-of-line)
+                    (setq buf (dired-find-file))
+                    (set-buffer buf)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-ENTER="
+                             (if (and (string-match-p "nested\\.txt" (buffer-string))
+                                      (not (string-match-p "alpha\\.txt" (buffer-string))))
+                                 "t" "nil")
+                             "\n"))
+                    (dired-up-directory)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-UP="
+                             (if (string-match-p "alpha\\.txt" (buffer-string)) "t" "nil")
+                             "\n"))
+                    (with-temp-file gamma (insert "gamma!"))
+                    (revert-buffer)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-REFRESH="
+                             (if (string-match-p "gamma\\.txt" (buffer-string)) "t" "nil")
+                             "\n"))
+                    (goto-char (point-min))
+                    (re-search-forward " alpha\\.txt$")
+                    (beginning-of-line)
+                    (dired-mark 1)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-MARK="
+                             (if (progn (beginning-of-line 0) (looking-at "^\\*")) "t" "nil")
+                             "\n"))
+                    (goto-char (point-min))
+                    (re-search-forward " alpha\\.txt$")
+                    (beginning-of-line)
+                    (dired-unmark 1)
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-UNMARK="
+                             (if (progn (beginning-of-line 0) (looking-at "^  ")) "t" "nil")
+                             "\n"))
+                    (goto-char (point-min))
+                    (re-search-forward " alpha\\.txt$")
+                    (beginning-of-line)
+                    (cl-letf (((symbol-function 'read-file-name)
+                               (lambda (&rest _) alpha-copy)))
+                      (dired-do-copy))
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-COPY="
+                             (if (and (file-exists-p alpha-copy)
+                                      (string-match-p "alpha-copy\\.txt" (buffer-string)))
+                                 "t" "nil")
+                             "\n"))
+                    (goto-char (point-min))
+                    (re-search-forward " gamma\\.txt$")
+                    (beginning-of-line)
+                    (dired-flag-file-deletion 1)
+                    (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t))
+                              ((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+                      (dired-do-flagged-delete))
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-DELETE="
+                             (if (and (not (file-exists-p gamma))
+                                      (not (string-match-p "gamma\\.txt" (buffer-string))))
+                                 "t" "nil")
+                             "\n"))
+                    (nelisp--write-stdout-bytes
+                     (concat "DW-DELETE-ONLY="
+                             (if (and (file-exists-p alpha) (file-exists-p alpha-copy))
+                                 "t" "nil")
+                             "\n"))
+                    (nelisp--write-stdout-bytes
+                     (concat "FB-DIRED-WORKFLOW="
+                             (if (and (fboundp 'dired)
+                                      (fboundp 'dired-find-file)
+                                      (fboundp 'dired-up-directory)
+                                      (fboundp 'dired-mark)
+                                      (fboundp 'dired-unmark)
+                                      (fboundp 'dired-do-copy)
+                                      (fboundp 'dired-flag-file-deletion)
+                                      (fboundp 'dired-do-flagged-delete))
+                                 "t" "nil")
+                             "\n")))))
            (make-directory subdir)
            (with-temp-file alpha
              (insert "alpha"))
@@ -1367,105 +1463,11 @@ operations through the real Dired commands."
              (insert "nested"))
            (let ((out (nemacs-bootstrap-nelisp-test--run
                        "--batch" "--no-banner"
-                       "--eval"
-                       (concat
-                        "(let ((root " (prin1-to-string (file-name-as-directory root)) ")"
-                        "      (gamma " (prin1-to-string gamma) ")"
-                        "      (alpha-copy " (prin1-to-string alpha-copy) "))"
-                        "  (let ((buf (dired root)))"
-                        "    (with-current-buffer buf"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-LIST=\""
-                        "               (if (and (string-match-p \"alpha.txt\" (buffer-string))"
-                        "                        (string-match-p \"subdir\" (buffer-string)))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (goto-char (point-min))"
-                        "      (search-forward \"subdir\\t\")"
-                        "      (beginning-of-line)"
-                        "      (setq buf (dired-find-file))"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-ENTER=\""
-                        "               (if (and (string-match-p \"nested.txt\" (buffer-string))"
-                        "                        (not (string-match-p \"alpha.txt\" (buffer-string))))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (setq buf (dired-up-directory))"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-UP=\""
-                        "               (if (string-match-p \"alpha.txt\" (buffer-string)) \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (with-temp-file gamma (insert \"gamma!\"))"
-                        "      (emacs-dired-min-revert-buffer)"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-REFRESH=\""
-                        "               (if (string-match-p \"gamma.txt\" (buffer-string)) \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (goto-char (point-min))"
-                        "      (search-forward \"alpha.txt\\t\")"
-                        "      (beginning-of-line)"
-                        "      (dired-mark)"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-MARK=\""
-                        "               (if (eq (cdr (assoc \"alpha.txt\""
-                        "                                  (plist-get (emacs-dired-min--current-state) :marks)))"
-                        "                       ?*)"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (goto-char (point-min))"
-                        "      (search-forward \"alpha.txt\\t\")"
-                        "      (beginning-of-line)"
-                        "      (dired-unmark)"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-UNMARK=\""
-                        "               (if (not (assoc \"alpha.txt\""
-                        "                              (plist-get (emacs-dired-min--current-state) :marks)))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (cl-letf (((symbol-function (quote read-file-name))"
-                        "                 (lambda (&rest _) alpha-copy)))"
-                        "        (dired-do-copy))"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-COPY=\""
-                        "               (if (and (file-exists-p alpha-copy)"
-                        "                        (string-match-p \"alpha-copy.txt\" (buffer-string)))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (goto-char (point-min))"
-                        "      (search-forward \"gamma.txt\\t\")"
-                        "      (beginning-of-line)"
-                        "      (dired-flag-file-deletion)"
-                        "      (let ((deleted (dired-do-flagged-delete)))"
-                        "        (nelisp--write-stdout-bytes"
-                        "         (concat \"DW-DELETE-COUNT=\" (number-to-string deleted) \"\\n\")))"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"DW-DELETE=\""
-                        "               (if (and (not (file-exists-p gamma))"
-                        "                        (not (string-match-p \"gamma.txt\" (buffer-string))))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\"))"
-                        "      (nelisp--write-stdout-bytes"
-                        "       (concat \"FB-DIRED-WORKFLOW=\""
-                        "               (if (and (fboundp (quote dired))"
-                        "                        (fboundp (quote dired-find-file))"
-                        "                        (fboundp (quote dired-up-directory))"
-                        "                        (fboundp (quote dired-mark))"
-                        "                        (fboundp (quote dired-unmark))"
-                        "                        (fboundp (quote dired-do-copy))"
-                        "                        (fboundp (quote dired-flag-file-deletion))"
-                        "                        (fboundp (quote dired-do-flagged-delete)))"
-                        "                   \"t\" \"nil\")"
-                        "               \"\\n\")))))"))))
-             (should (string-match-p "FB-DIRED-WORKFLOW=t" out))
-             (should (string-match-p "DW-LIST=t" out))
-             (should (string-match-p "DW-ENTER=t" out))
-             (should (string-match-p "DW-UP=t" out))
-             (should (string-match-p "DW-REFRESH=t" out))
-             (should (string-match-p "DW-MARK=t" out))
-             (should (string-match-p "DW-UNMARK=t" out))
-             (should (string-match-p "DW-COPY=t" out))
-             (should (string-match-p "DW-DELETE-COUNT=1" out))
-             (should (string-match-p "DW-DELETE=t" out))))
+                       "--eval" (prin1-to-string form))))
+             (dolist (key '("FB-DIRED-WORKFLOW" "DW-LIST" "DW-ENTER" "DW-UP"
+                            "DW-REFRESH" "DW-MARK" "DW-UNMARK" "DW-COPY"
+                            "DW-DELETE" "DW-DELETE-ONLY"))
+               (should (string-match-p (concat key "=t") out)))))
        (delete-directory root t)))))
 
 (ert-deftest nemacs-bootstrap-nelisp-test/minibuffer-callable ()

@@ -6,7 +6,7 @@
 ;; packages/emacs-lib-core/src/emacs-files-gnu.el.
 
 (defconst gen-dl--names
-  '(enable-local-variables enable-local-eval ignored-local-variables
+  '(find-file-visit-truename minibuffer-with-setup-hook revert-without-query revert-buffer-function revert-buffer-insert-file-contents-function revert-buffer-in-progress revert-buffer-preserve-modes revert-buffer-restore-functions revert-buffer-restore-read-only revert-buffer revert-buffer--default revert-buffer-insert-file-contents--default-function file-size-human-readable file-size-human-readable-iec files--name-absolute-system-p backup-file-name-p auto-save-file-name-p find-file-run-dired get-free-disk-space byte-count-to-string-function create-file-buffer insert-directory-program files--use-insert-directory-program-p directory-listing-before-filename-regexp insert-directory-ls-version insert-directory-wildcard-in-dir-p insert-directory-clean insert-directory insert-directory-safely enable-local-variables enable-local-eval ignored-local-variables
     safe-local-variable-directories hack-local-variables-hook
     safe-local-variable-values ignored-local-variable-values
     safe-local-eval-forms file-local-variables-alist dir-local-variables-alist
@@ -31,30 +31,40 @@
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")
 
+;; Progress-reporter definitions from GNU subr.el that Dired's file
+;; operations call (`dired-create-files').  Appended after the files.el forms.
+(defconst gen-dl--subr-names
+  '(make-progress-reporter progress-reporter-text progress-reporter-context
+    progress-reporter-force-update progress-reporter-echo-area
+    progress-reporter-do-update progress-reporter-update progress-reporter-done))
+
 (let* ((root (file-name-directory
               (directory-file-name
                (file-name-directory (or load-file-name buffer-file-name)))))
        (src (expand-file-name "vendor/staged-emacs-lisp/files.el" root))
+       (subr-src (expand-file-name "vendor/staged-emacs-lisp/subr.el" root))
        (out (expand-file-name "packages/emacs-lib-core/src/emacs-files-gnu.el" root))
        chunks)
+  (dolist (spec (list (cons src (cons 0 gen-dl--names))
+                      (cons subr-src (cons 10000000 gen-dl--subr-names))))
   (with-temp-buffer
-    (insert-file-contents src)
+    (insert-file-contents (car spec))
     (emacs-lisp-mode)
-    (dolist (name gen-dl--names)
+    (dolist (name (cddr spec))
       (goto-char (point-min))
-      (let ((re (format "^(\\(?:defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)"
+      (let ((re (format "^(\\(?:defmacro\\|defvar-local\\|defvar\\|defcustom\\|defconst\\|defsubst\\|defun\\) %s\\(?:[ \n]\\|$\\)"
                         (regexp-quote (symbol-name name)))))
         (if (not (re-search-forward re nil t))
             (message "skip %s" name)
           (goto-char (match-beginning 0))
           (let ((beg (point)))
             (forward-sexp 1)
-            (push (cons beg (buffer-substring beg (point))) chunks)
+            (push (cons (+ beg (cadr spec)) (buffer-substring beg (point))) chunks)
             ;; Keep the `put' forms that follow the definition directly.
             (while (looking-at "\n+(put '[^ ]+ '[^ ]+ [^\n]*)")
               (let ((pb (progn (skip-chars-forward "\n") (point))))
                 (forward-sexp 1)
-                (push (cons pb (buffer-substring pb (point))) chunks))))))))
+                (push (cons (+ pb (cadr spec)) (buffer-substring pb (point))) chunks)))))))))
   (setq chunks (sort (delete-dups chunks) (lambda (a b) (< (car a) (car b)))))
   (with-temp-file out
     (insert ";;; emacs-files-gnu.el --- GNU files.el definitions  -*- lexical-binding: t; -*-\n\n"

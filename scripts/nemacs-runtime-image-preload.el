@@ -251,16 +251,10 @@ replay it in runtimes with minimal closure support."
                 (list 'apply (list 'quote public) 'args)))))
 
 (defun nemacs-runtime-image-preload--install-dired-core ()
-  "Install the minimal `dired' daily-driver surface without source `load'."
-  (unless (featurep 'dired)
-    (dolist (symbol '(dired
-                      dired-mode
-                      dired-find-file
-                      dired-next-line
-                      dired-previous-line
-                      dired-up-directory))
-      (nemacs-runtime-image-preload--install-dired-command symbol))
-    (provide 'dired))
+  "Leave `dired' to the genuine GNU dired.el carried by the bootstrap bundle.
+The former lazy wrappers pointed at the `emacs-dired-min' polyfill and, being
+live function cells, made the bundle's guarded GNU `dired-mode' definition
+skip, so the polyfill's ec-layer buffers leaked into the runtime."
   t)
 
 (defun nemacs-runtime-image-preload--install-help-command (public)

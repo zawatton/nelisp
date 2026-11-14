@@ -2066,7 +2066,7 @@ NELISP_CONSUMER_VENDOR_INPUTS = $(shell find vendor/compat vendor/cond-let vendo
 
 build-nelisp-bootstrap: $(NEMACS_BOOTSTRAP_BUNDLE)
 
-$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
+$(NEMACS_BOOTSTRAP_BUNDLE): scripts/build-nelisp-bootstrap.el scripts/standalone-source-normalize.el $(NELISP_EMACS_API_SRC_FILES) $(NELISP_BOOTSTRAP_VENDOR_INPUTS)
 	NELISP_BOOTSTRAP_VENDOR_DIR="$(abspath $(NELISP_BOOTSTRAP_VENDOR_ROOT))" $(EMACS) -Q -L scripts $(NELISP_LOAD_PATH) $(NELISP_LOAD_PATH) \
 		--eval '(setq nelisp-bootstrap-output-file "$(abspath $(NEMACS_BOOTSTRAP_BUNDLE))")' \
 		--eval '(setq nelisp-bootstrap-repl-output-file "$(abspath $(NEMACS_BOOTSTRAP_REPL))")' \

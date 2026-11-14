@@ -979,3 +979,4 @@ d1b6754bd34bcbbe9758d44b4740add869239232b6b20b79dd55a4446f5c023b  vendor/emacs-l
 c84f4544897cd8c7f1d1e3dfa54aaca860ec63db2dde06d8aa63a2430856d336  vendor/emacs-lisp/calendar/diary-loaddefs.el
 0cf89cb3d1daa99719b36787d99853353751f5483044cd03249d59d15659fa34  vendor/emacs-lisp/calendar/holiday-loaddefs.el
 9b0c36a28ae6ddff5db5004536bbd1815831523f0dfc72dc8bc7fc55b51be91e  vendor/emacs-lisp/emacs-lisp/cond-star.el
+502436694f437ee4c904d74012801f551764e8f0c1c343d502775613c788d254  vendor/emacs-lisp/uniquify.el

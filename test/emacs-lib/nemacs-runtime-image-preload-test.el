@@ -32,12 +32,6 @@
     write-file
     insert-file
     list-directory
-    dired
-    dired-mode
-    dired-find-file
-    dired-next-line
-    dired-previous-line
-    dired-up-directory
     help-mode
     help-go-back
     help-go-forward
@@ -707,7 +701,9 @@ The preload installers only `require' it when it is not yet a feature."
     (should (nemacs-runtime-image-preload--install-utility-i18n-core))
     (should (featurep 'files))
     (should (featurep 'simple))
-    (should (featurep 'dired))
+    ;; The dired installer is a no-op now: genuine GNU dired.el comes from
+    ;; the bootstrap bundle, not from a preload facade.
+    (should-not (featurep 'dired))
     (should (featurep 'help-mode))
     (should (featurep 'help-fns))
     (should (featurep 'lisp-mode))
@@ -728,9 +724,6 @@ The preload installers only `require' it when it is not yet a feature."
                                 idna-mapping ja-dic-utl))
       (should (featurep feature)))
     (dolist (symbol nemacs-runtime-image-preload-test--direct-install-functions)
-      (should (fboundp symbol)))
-    (dolist (symbol '(dired dired-mode dired-find-file dired-next-line
-                            dired-previous-line dired-up-directory))
       (should (fboundp symbol)))
     (dolist (symbol nemacs-runtime-image-preload-test--direct-install-variables)
       (should (boundp symbol)))
@@ -838,10 +831,6 @@ The preload installers only `require' it when it is not yet a feature."
                    '(lambda (&rest args)
                       (require 'files-standalone-buffer)
                       (apply 'files--set-visited-file-name args))))
-    (should (equal (symbol-function 'dired)
-                   '(lambda (&rest args)
-                      (require 'emacs-dired-min)
-                      (apply 'dired args))))
     (should (equal (symbol-function 'describe-function)
                    '(lambda (&rest args)
                       (require 'emacs-help)

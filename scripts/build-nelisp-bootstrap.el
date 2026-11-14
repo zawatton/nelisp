@@ -220,12 +220,9 @@ is relative to `nelisp-bootstrap-repo-root'."
     "woman.el"
     "emacs-calc.el"
     "calc.el"
-    ;; directory browser: greenfield `emacs-dired-min' (defines the `dired'
-    ;; command on top of nelisp-ec-directory-files / -file-attributes) then
-    ;; the `dired' feature facade.  Wired once the standalone reader's
-    ;; readdir/stat syscalls return real entries (Doc 142 gate-5).
-    "emacs-dired-min.el"
-    "dired.el"
+    ;; Directory browser: the genuine GNU `dired.el' in the vendor tail is the
+    ;; owner; the `emacs-dired-min' polyfill and its facade are no longer
+    ;; bundled (they returned ec-layer buffers the runtime rejects).
     ;; Reusable Emacs parity owners needed by vendor libraries.  Keep the
     ;; actual modules in the bootstrap rather than duplicating their behavior
     ;; as preload-local shims: Org's chain reaches replace-buffer-contents,
@@ -428,6 +425,9 @@ These are existing vendor implementations, not local reimplementations.")
     "emacs-lisp-31.1/json.el"
     "emacs-lisp-31.1/ielm.el"
     "emacs-lisp-31.1/url/url-vars.el"
+    "emacs-lisp/autorevert.el"
+    "emacs-lisp/files-x.el"
+    "emacs-lisp-31.1/uniquify.el"
     "emacs-lisp-31.1/dired.el"
     "emacs-lisp-31.1/obsolete/cl.el"
     "emacs-lisp-31.1/button.el"
@@ -502,19 +502,12 @@ bundled source that may evaluate a declaration."
       (setq eager (cons macroexp (delete macroexp eager))))
     eager))
 
-;; Local files re-appended AFTER the vendor tail.  GNU `dired.el' (vendor tail)
-;; redefines `dired', `dired-mode', `dired-mark', ... over the lightweight
-;; `emacs-dired-min' browser, and the GNU `dired' entry point cannot run on
-;; this substrate yet (find-file-visit-truename, insert-directory, ...).
-;; Replaying the minimal browser afterwards keeps the working commands while
-;; every name only GNU defines stays bound to the real GNU definition.
+;; Local files re-appended AFTER the vendor tail.
 (defvar nelisp-bootstrap-post-vendor-tail-files
   '(;; GNU simple.el in the vendor tail redefines `newline' after the
     ;; ec-buffer editing shim.  Restore the shared editing owner last;
     ;; its install gates still preserve all unselected native commands.
-    "emacs-edit-builtins.el"
-    "emacs-dired-min.el"
-    "dired.el")
+    "emacs-edit-builtins.el")
   "Local src files moved behind `nelisp-bootstrap-vendor-tail-extra-files'.")
 
 (defvar nelisp-bootstrap-tail-extra-files
@@ -1009,8 +1002,7 @@ concatenated bootstrap bundle must make the order explicit."
     ;; owning prefixed implementation to be present already.  On the REPL
     ;; bootstrap path a wrong order leaves functions defined but features
     ;; unprovided after an early top-level error.
-    (dolist (pair '(("emacs-dired-min.el" . "dired.el")
-                    ("emacs-calc.el" . "calc.el")
+    (dolist (pair '(("emacs-calc.el" . "calc.el")
                     ("emacs-man.el" . "man.el")
                     ("emacs-eshell.el" . "eshell.el")
                     ("emacs-shell.el" . "shell.el")
@@ -1256,6 +1248,9 @@ overrides them for workflow tests."
     "vendor/emacs-lisp/json.el"
     "vendor/emacs-lisp/ielm.el"
     "vendor/emacs-lisp/url/url-vars.el"
+    "vendor/emacs-lisp/autorevert.el"
+    "vendor/emacs-lisp/files-x.el"
+    "vendor/emacs-lisp/uniquify.el"
     "vendor/emacs-lisp/dired.el"
     "vendor/emacs-lisp-31.1/button.el"
     "vendor/emacs-lisp/imenu.el"

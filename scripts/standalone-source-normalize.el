@@ -33,11 +33,14 @@ Diagnostic bundle generation can use this to keep long vendor replays under
 control.  Workflow-oriented bridge bundles can bind it to nil so those
 functions keep their real vendor bodies.")
 
-(defvar standalone-source-normalize-force-retain-defun-symbols nil
+(defvar standalone-source-normalize-force-retain-defun-symbols
+  '(dired-mode dired-insert-directory)
   "Top-level function symbols that must keep their real bodies.
 
 This overrides both generic large-defun elision and the narrower per-symbol
-elision lists for bundle builds that need actual workflow behavior.")
+elision lists for bundle builds that need actual workflow behavior.
+The default keeps the two GNU `dired.el' entry points that the genuine
+Dired workflow needs (`dired-mode', `dired-insert-directory').")
 
 (defvar standalone-source-normalize-read-max-lisp-eval-depth 10000
   "Maximum Lisp nesting depth while reading vendor source for normalization.")

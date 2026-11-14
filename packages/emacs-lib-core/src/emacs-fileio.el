@@ -516,8 +516,15 @@ FILES-ONLY limits rows to buffers visiting files."
   (ignore nowarn rawfile wildcards)
   (let* ((abs (expand-file-name filename))
          (existing (emacs-fileio--find-existing-buffer abs)))
-    (if existing
-        existing
+    (cond
+     (existing existing)
+     ;; Like GNU `find-file-noselect-1': a directory is visited through
+     ;; Dired (when `find-file-run-dired' allows it), never read as a file.
+     ((and (file-directory-p abs)
+           (fboundp 'dired-noselect)
+           (or (not (boundp 'find-file-run-dired)) find-file-run-dired))
+      (dired-noselect abs))
+     (t
       (let ((buf (generate-new-buffer
                   (emacs-fileio--prepare-buffer-name abs))))
         (with-current-buffer buf
@@ -531,7 +538,7 @@ FILES-ONLY limits rows to buffers visiting files."
            buf
            (emacs-fileio--resolve-major-mode abs))
           (set-buffer-modified-p nil))
-        buf))))
+        buf)))))
 
 ;;;###autoload
 (defun find-file (filename &optional wildcards)
@@ -541,7 +548,11 @@ FILES-ONLY limits rows to buffers visiting files."
          nil))
   (ignore wildcards)
   (let ((buf (find-file-noselect filename)))
-    (emacs-fileio--apply-buffer-state buf)
+    (if (with-current-buffer buf (derived-mode-p 'dired-mode))
+        ;; A Dired buffer owns its major mode and buffer-local state;
+        ;; re-activating a file mode here would wipe `dired-subdir-alist'.
+        (set-buffer buf)
+      (emacs-fileio--apply-buffer-state buf))
     buf))
 
 ;;;###autoload

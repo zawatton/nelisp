@@ -4,6 +4,30 @@
 ;; vendor/staged-emacs-lisp/files.el (GNU Emacs 31.1).  The forms below
 ;; are copied verbatim; do not edit by hand.
 
+(defcustom find-file-visit-truename nil
+  "Non-nil means visiting a file uses its truename as the visited-file name.
+That is, the buffer visiting the file has the truename as the
+value of `buffer-file-name'.  The truename of a file is found by
+chasing all links both at the file level and at the levels of the
+containing directories."
+  :type 'boolean
+  :group 'find-file)
+
+(defcustom revert-without-query nil
+  "Specify which files should be reverted without query.
+The value is a list of regular expressions.
+If the file name matches one of these regular expressions,
+then `revert-buffer' reverts the file without querying
+if the file has changed on disk and you have not edited the buffer."
+  :type '(repeat regexp)
+  :group 'find-file)
+
+(defcustom find-file-run-dired t
+  "Non-nil means allow `find-file' to visit directories.
+To visit the directory, `find-file' runs `find-directory-functions'."
+  :type 'boolean
+  :group 'find-file)
+
 (defcustom enable-local-variables t
   "Control use of local variables in files you visit.
 The value can be t, nil, :safe, :all, or something else.
@@ -49,6 +73,137 @@ A value of nil means ignore them; anything else means query."
 		 (const :tag "Ignore" nil)
 		 (other :tag "Query" other))
   :group 'find-file)
+
+(defun files--name-absolute-system-p (file)
+  "Return non-nil if FILE is an absolute name to the operating system.
+This is like `file-name-absolute-p', except that it returns nil for
+names beginning with `~'."
+  (and (file-name-absolute-p file)
+       (not (eq (aref file 0) ?~))))
+
+(defun file-size-human-readable (file-size &optional flavor space unit)
+  "Produce a string showing FILE-SIZE in human-readable form.
+
+Optional second argument FLAVOR controls the units and the display format:
+
+ If FLAVOR is nil or omitted, each kilobyte is 1024 bytes and the produced
+    suffixes are \"k\", \"M\", \"G\", \"T\", etc.
+ If FLAVOR is `si', each kilobyte is 1000 bytes and the produced suffixes
+    are \"k\", \"M\", \"G\", \"T\", etc.
+ If FLAVOR is `iec', each kilobyte is 1024 bytes and the produced suffixes
+    are \"KiB\", \"MiB\", \"GiB\", \"TiB\", etc.
+
+Optional third argument SPACE is a string put between the number and unit.
+It defaults to the empty string.  We recommend a single space or
+non-breaking space, unless other constraints prohibit a space in that
+position.
+
+Optional fourth argument UNIT is the unit to use.  It defaults to \"B\"
+when FLAVOR is `iec' and the empty string otherwise.  We recommend \"B\"
+in all cases, since that is the standard symbol for byte."
+  (let ((power (if (or (null flavor) (eq flavor 'iec))
+		   1024.0
+		 1000.0))
+	(prefixes '("" "k" "M" "G" "T" "P" "E" "Z" "Y" "R" "Q")))
+    (while (and (>= file-size power) (cdr prefixes))
+      (setq file-size (/ file-size power)
+	    prefixes (cdr prefixes)))
+    (let* ((prefix (car prefixes))
+           (prefixed-unit (if (eq flavor 'iec)
+                              (concat
+                               (if (string= prefix "k") "K" prefix)
+                               (if (string= prefix "") "" "i")
+                               (or unit "B"))
+                            (concat prefix unit))))
+      ;; Mimic what GNU "ls -lh" does:
+      ;; If the formatted size will have just one digit before the decimal...
+      (format (if (and (< file-size 10)
+                       ;; ...and its fractional part is not too small...
+                       (>= (mod file-size 1.0) 0.05)
+                       (< (mod file-size 1.0) 0.95))
+                  ;; ...then emit one digit after the decimal.
+		  "%.1f%s%s"
+	        "%.0f%s%s")
+	      file-size
+              (if (string= prefixed-unit "") "" (or space ""))
+              prefixed-unit))))
+
+(defun file-size-human-readable-iec (size)
+  "Human-readable string for SIZE bytes, using IEC prefixes."
+  (file-size-human-readable size 'iec " "))
+
+(defcustom byte-count-to-string-function #'file-size-human-readable-iec
+  "Function that turns a number of bytes into a human-readable string.
+It is for use when displaying file sizes and disk space where other
+constraints do not force a specific format."
+  :type '(radio
+          (function-item file-size-human-readable-iec)
+          (function-item file-size-human-readable)
+          (function :tag "Custom function" :value number-to-string))
+  :group 'files
+  :version "27.1")
+
+(defmacro minibuffer-with-setup-hook (fun &rest body)
+  "Temporarily add FUN to `minibuffer-setup-hook' while executing BODY.
+
+By default, FUN is prepended to `minibuffer-setup-hook'.  But if FUN is of
+the form `(:append FUN1)', FUN1 will be appended to `minibuffer-setup-hook'
+instead of prepending it.
+
+BODY should use the minibuffer at most once.
+Recursive uses of the minibuffer are unaffected (FUN is not
+called additional times).
+
+This macro actually adds an auxiliary function that calls FUN,
+rather than FUN itself, to `minibuffer-setup-hook'."
+  (declare (indent 1) (debug ([&or (":append" form) [&or symbolp form]] body)))
+  (let ((hook (make-symbol "setup-hook"))
+        (funsym (make-symbol "fun"))
+        (append nil))
+    (when (eq (car-safe fun) :append)
+      (setq append '(t) fun (cadr fun)))
+    `(let ((,funsym ,fun)
+           ;; Use a symbol to make sure `add-hook' doesn't waste time
+           ;; in `equal'ity testing (bug#46326).
+           (,hook (make-symbol "minibuffer-setup")))
+       (fset ,hook (lambda ()
+                     ;; Clear out this hook so it does not interfere
+                     ;; with any recursive minibuffer usage.
+                     (remove-hook 'minibuffer-setup-hook ,hook)
+                     (funcall ,funsym)))
+       (unwind-protect
+           (progn
+             (add-hook 'minibuffer-setup-hook ,hook ,@append)
+             ,@body)
+         (remove-hook 'minibuffer-setup-hook ,hook)))))
+
+(defun create-file-buffer (filename)
+  "Create a suitably named buffer for visiting FILENAME, and return it.
+FILENAME (sans directory) is used unchanged if that name is free;
+otherwise the buffer is renamed according to
+`uniquify-buffer-name-style' to get an unused name.
+
+Emacs treats buffers whose names begin with a space as internal buffers.
+To avoid confusion when visiting a file whose name begins with a space,
+this function prepends a \"|\" to the final result if necessary."
+  (let* ((lastname (file-name-nondirectory (directory-file-name filename)))
+         (lastname (if (string= lastname "") ; FILENAME is a root directory
+                       filename lastname))
+         (lastname (cond
+                    ((not (and uniquify-trailing-separator-flag
+                               (file-directory-p filename)))
+                     lastname)
+                    ((eq uniquify-buffer-name-style 'forward)
+	             (file-name-as-directory lastname))
+	            ((eq uniquify-buffer-name-style 'reverse)
+	             (concat (or uniquify-separator "\\") lastname))
+                    (t lastname)))
+         (basename (if (string-prefix-p " " lastname)
+		       (concat "|" lastname)
+		     lastname))
+	 (buf (generate-new-buffer basename)))
+    (uniquify--create-file-buffer-advice buf filename basename)
+    buf))
 
 (defvar ignored-local-variables
   '(ignored-local-variables safe-local-variable-values
@@ -906,6 +1061,761 @@ variables are looked for in `default-directory' and its parent
 directories."
   (hack-dir-local-variables)
   (hack-local-variables-apply))
+
+(defun backup-file-name-p (file)
+  "Return non-nil if FILE is a backup file name (numeric or not).
+This is a separate function so you can redefine it for customization.
+You may need to redefine `file-name-sans-versions' as well."
+    (string-match "~\\'" file))
+
+(defvar revert-buffer-function #'revert-buffer--default
+  "Function to use to revert this buffer.
+The function receives two arguments IGNORE-AUTO and NOCONFIRM,
+which are the arguments that `revert-buffer' received.
+It also has access to the `preserve-modes' argument of `revert-buffer'
+via the `revert-buffer-preserve-modes' dynamic variable.
+
+For historical reasons, a value of nil means to use the default function.
+This should not be relied upon.")
+
+(put 'revert-buffer-insert-file-contents-function 'permanent-local t)
+
+(defvar revert-buffer-insert-file-contents-function
+  #'revert-buffer-insert-file-contents--default-function
+  "Function to use to insert contents when reverting this buffer.
+The function receives two arguments: the first the nominal file name to use;
+the second is t if reading the auto-save file.
+
+The function is responsible for updating (or preserving) point.
+
+For historical reasons, a value of nil means to use the default function.
+This should not be relied upon.")
+
+(defvar revert-buffer-in-progress nil
+  "Non-nil if a `revert-buffer' operation is in progress, nil otherwise.")
+
+(defvar revert-buffer-restore-functions '(revert-buffer-restore-read-only)
+  "Functions to preserve buffer state during `revert-buffer'.
+The value of this variable is a list of functions that are called
+before reverting the buffer.  Each of these functions is called without
+arguments and should return a lambda form that can restore a previous
+state of the buffer.  After reverting the buffer, each of these lambda
+forms will be called in order to restore previous states of the buffer.
+An example of the buffer state is keeping the buffer read-only, or
+keeping minor modes, etc.
+
+The default value restores the buffer's read-only state to what it
+was before reverting.
+
+Set this variable to nil to disable restoring any buffer state
+attributes from before reverting.  Then only the file from which the
+buffer is reverted will determine the buffer's state after reverting.")
+
+(defun revert-buffer-restore-read-only ()
+  "Preserve read-only state for `revert-buffer'."
+  (when-let* ((state (and (boundp 'read-only-mode--state)
+                          (list read-only-mode--state))))
+    (lambda ()
+      (setq buffer-read-only (car state))
+      (setq-local read-only-mode--state (car state)))))
+
+(defun revert-buffer (&optional ignore-auto noconfirm preserve-modes)
+  "Replace current buffer text with the text of the visited file on disk.
+This undoes all changes since the file was visited or saved.
+With a prefix argument, offer to revert from latest auto-save file, if
+that is more recent than the visited file.
+
+This command also implements an interface for special buffers
+that contain text that doesn't come from a file, but reflects
+some other data instead (e.g. Dired buffers, `buffer-list'
+buffers).  This is done via the variable `revert-buffer-function'.
+In these cases, it should reconstruct the buffer contents from the
+appropriate data.
+
+When called from Lisp, the first argument is IGNORE-AUTO; offer to
+revert from the auto-save file only when this is nil.  Note that the
+sense of this argument is the reverse of the prefix argument, for the
+sake of backward compatibility.  IGNORE-AUTO is optional, defaulting
+to nil.
+
+Optional second argument NOCONFIRM means don't ask for confirmation
+at all.  (The variable `revert-without-query' offers another way to
+revert buffers without querying for confirmation.)
+
+Optional third argument PRESERVE-MODES non-nil means don't alter
+the files modes.  Normally we reinitialize them using `normal-mode'.
+
+This function binds `revert-buffer-in-progress' non-nil while it operates.
+
+This function calls the function that `revert-buffer-function' specifies
+to do the work, with arguments IGNORE-AUTO and NOCONFIRM.
+The default function runs the hooks `before-revert-hook' and
+`after-revert-hook'.
+Return value is whatever `revert-buffer-function' returns.  For historical
+reasons, that return value is non-nil when `revert-buffer-function'
+succeeds in its job and returns non-nil.
+
+Reverting a buffer will try to preserve markers in the buffer,
+but it cannot always preserve all of them.  For better results,
+use `revert-buffer-with-fine-grain', which tries harder to
+preserve markers and overlays, at the price of being slower."
+  ;; I admit it's odd to reverse the sense of the prefix argument, but
+  ;; there is a lot of code out there that assumes that the first
+  ;; argument should be t to avoid consulting the auto-save file, and
+  ;; there's no straightforward way to encourage authors to notice a
+  ;; reversal of the argument sense.  So I'm just changing the user
+  ;; interface, but leaving the programmatic interface the same.
+  (interactive (list (not current-prefix-arg)))
+  (let ((revert-buffer-in-progress t)
+        (revert-buffer-preserve-modes preserve-modes)
+        restore-functions)
+    (run-hook-wrapped 'revert-buffer-restore-functions
+                      (lambda (f) (push (funcall f) restore-functions) nil))
+    ;; Return whatever 'revert-buffer-function' returns.
+    (prog1 (funcall (or revert-buffer-function #'revert-buffer--default)
+                    ignore-auto noconfirm)
+      (mapc #'funcall (delq nil restore-functions)))))
+
+(defun revert-buffer--default (ignore-auto noconfirm)
+  "Default function for `revert-buffer'.
+The arguments IGNORE-AUTO and NOCONFIRM are as described for `revert-buffer'.
+Runs the hooks `before-revert-hook' and `after-revert-hook' at the
+start and end.
+The function returns non-nil if it reverts the buffer, and signals an
+error if the buffer is not associated with a file.
+
+Calls `revert-buffer-insert-file-contents-function' to reread the
+contents of the visited file, with two arguments: the first is the file
+name, the second is non-nil if reading an auto-save file.
+
+This function handles only buffers that are visiting files.
+Non-file buffers need a custom `revert-buffer-function'; see
+`revert-buffer'."
+  (with-current-buffer (or (buffer-base-buffer (current-buffer))
+                           (current-buffer))
+    (let* ((auto-save-p (and (not ignore-auto)
+                             (recent-auto-save-p)
+                             buffer-auto-save-file-name
+                             (file-readable-p buffer-auto-save-file-name)
+                             (y-or-n-p "Buffer has been auto-saved recently.  \
+Revert from auto-save file? ")))
+           (file-name (if auto-save-p
+                          buffer-auto-save-file-name
+                        buffer-file-name)))
+      (cond ((null file-name)
+             (error "Buffer does not seem to be associated with any file"))
+            ((or noconfirm
+                 (and (not (buffer-modified-p))
+                      (catch 'found
+                        (dolist (regexp revert-without-query)
+                          (when (string-match regexp file-name)
+                            (throw 'found t)))))
+                 (yes-or-no-p
+                  (format (if (buffer-modified-p)
+                              "Discard edits and reread from %s? "
+                            "Revert buffer from file %s? ")
+                          file-name)))
+             (run-hooks 'before-revert-hook)
+             ;; If file was backed up but has changed since,
+             ;; we should make another backup.
+             (and (not auto-save-p)
+                  (not (verify-visited-file-modtime (current-buffer)))
+                  (setq buffer-backed-up nil))
+             ;; Effectively copy the after-revert-hook status,
+             ;; since after-find-file will clobber it.
+             (let ((global-hook (default-value 'after-revert-hook))
+                   (local-hook (and (local-variable-p 'after-revert-hook)
+                                    after-revert-hook))
+                   (inhibit-read-only t))
+               ;; FIXME: Throw away undo-log when preserve-modes is nil?
+               (funcall
+                (or revert-buffer-insert-file-contents-function
+                    #'revert-buffer-insert-file-contents--default-function)
+                file-name auto-save-p)
+               ;; Recompute the truename in case changes in symlinks
+               ;; have changed the truename.
+               (setq buffer-file-truename
+                     (abbreviate-file-name (file-truename buffer-file-name)))
+               (after-find-file nil nil t nil revert-buffer-preserve-modes)
+               ;; Run after-revert-hook as it was before we reverted.
+               (setq-default revert-buffer-internal-hook global-hook)
+               (if local-hook
+                   (setq-local revert-buffer-internal-hook local-hook)
+                 (kill-local-variable 'revert-buffer-internal-hook))
+               (run-hooks 'revert-buffer-internal-hook))
+             t)))))
+
+(defun revert-buffer-insert-file-contents--default-function (file-name auto-save-p)
+  "Default function for `revert-buffer-insert-file-contents-function'.
+The function `revert-buffer--default' calls this.
+FILE-NAME is the name of the file.  AUTO-SAVE-P is non-nil if this is
+an auto-save file."
+  (cond
+   ((not (file-exists-p file-name))
+    (error (if buffer-file-number
+               "File %s no longer exists!"
+             "Cannot revert nonexistent file %s")
+           file-name))
+   ((not (file-readable-p file-name))
+    (error (if buffer-file-number
+               "File %s no longer readable!"
+             "Cannot revert unreadable file %s")
+           file-name))
+   (t
+    (widen)
+    (let ((coding-system-for-read
+           ;; Auto-saved file should be read by Emacs's
+           ;; internal coding.
+           (if auto-save-p 'auto-save-coding
+             (or coding-system-for-read
+                 (and
+                  buffer-file-coding-system-explicit
+                  (car buffer-file-coding-system-explicit))))))
+      (if (and (not enable-multibyte-characters)
+               coding-system-for-read
+               (not (memq (coding-system-base
+                           coding-system-for-read)
+                          '(no-conversion raw-text))))
+          ;; As a coding system suitable for multibyte
+          ;; buffer is specified, make the current
+          ;; buffer multibyte.
+          (set-buffer-multibyte t))
+
+      ;; This force after-insert-file-set-coding
+      ;; (called from insert-file-contents) to set
+      ;; buffer-file-coding-system to a proper value.
+      (kill-local-variable 'buffer-file-coding-system)
+
+      ;; Note that this preserves point in an intelligent way.
+      (if revert-buffer-preserve-modes
+          (let ((buffer-file-format buffer-file-format))
+            (insert-file-contents file-name (not auto-save-p)
+                                  nil nil 'if-regular))
+        (insert-file-contents file-name (not auto-save-p)
+                              nil nil 'if-regular))))))
+
+(defun auto-save-file-name-p (filename)
+  "Return non-nil if FILENAME can be yielded by `make-auto-save-file-name'.
+FILENAME should lack slashes.
+See also `make-auto-save-file-name'."
+  (string-match "\\`#.*#\\'" filename))
+
+(defcustom insert-directory-program
+  (if (and (memq system-type '(berkeley-unix darwin))
+           (executable-find "gls"))
+      "gls"
+    "ls")
+  "Absolute or relative name of the `ls'-like program.
+This is used by `insert-directory' and `dired-insert-directory'
+\(thus, also by `dired').  For Dired, this should ideally point to
+GNU ls, or another version of ls that supports the \"--dired\"
+flag.  See `dired-use-ls-dired'.
+
+On GNU/Linux and other capable systems, the default is \"ls\".
+
+On *BSD and macOS systems, the default \"ls\" does not support
+the \"--dired\" flag.  Therefore, the default is to use the
+\"gls\" executable on such machines, if it exists.  This means
+that there should normally be no need to customize this when
+installing GNU coreutils using something like ports or Homebrew."
+  :group 'dired
+  :type 'string
+  :initialize #'custom-initialize-delay
+  :version "30.1")
+
+(defun files--use-insert-directory-program-p ()
+  "Return non-nil if we should use `insert-directory-program'.
+Return nil if we should prefer `ls-lisp' instead."
+  ;; FIXME: Should we also check `file-accessible-directory-p' so we
+  ;; automatically redirect to ls-lisp when operating on magic file names?
+  (and (if (boundp 'ls-lisp-use-insert-directory-program)
+           ls-lisp-use-insert-directory-program
+         t)
+       insert-directory-program))
+
+(defun get-free-disk-space (dir)
+  "String describing the amount of free space on DIR's file system.
+If DIR's free space cannot be obtained, this function returns nil."
+  (save-match-data
+    (let ((avail (nth 2 (file-system-info dir))))
+      (if avail
+          (funcall byte-count-to-string-function avail)))))
+
+(defvar directory-listing-before-filename-regexp
+  (let* ((l "\\([A-Za-z]\\|[^\0-\177]\\)")
+	 (l-or-quote "\\([A-Za-z']\\|[^\0-\177]\\)")
+	 ;; In some locales, month abbreviations are as short as 2 letters,
+	 ;; and they can be followed by ".".
+	 ;; In Breton, a month name  can include a quote character.
+	 (month (concat l-or-quote l-or-quote "+\\.?"))
+	 (s " ")
+	 (yyyy "[0-9][0-9][0-9][0-9]")
+	 (dd "[ 0-3][0-9]")
+	 (HH:MM "[ 0-2][0-9][:.][0-5][0-9]")
+	 (seconds "[0-6][0-9]\\([.,][0-9]+\\)?")
+	 (zone "[-+][0-2][0-9][0-5][0-9]")
+	 (iso-mm-dd "[01][0-9]-[0-3][0-9]")
+	 (iso-time (concat HH:MM "\\(:" seconds "\\( ?" zone "\\)?\\)?"))
+	 (iso (concat "\\(\\(" yyyy "-\\)?" iso-mm-dd "[ T]" iso-time
+		      "\\|" yyyy "-" iso-mm-dd "\\)"))
+	 (western (concat "\\(" month s "+" dd "\\|" dd "\\.?" s month "\\)"
+			  s "+"
+			  "\\(" HH:MM "\\|" yyyy "\\)"))
+	 (western-comma (concat month s "+" dd "," s "+" yyyy))
+         ;; This represents the date in strftime(3) format "%e-%b-%Y"
+         ;; (aka "%v"), as it is the default for many ls incarnations.
+         (DD-MMM-YYYY (concat dd "-" month "-" yyyy s HH:MM))
+	 ;; Japanese MS-Windows ls-lisp has one-digit months, and
+	 ;; omits the Kanji characters after month and day-of-month.
+	 ;; On Mac OS X 10.3, the date format in East Asian locales is
+	 ;; day-of-month digits followed by month digits.
+	 (mm "[ 0-1]?[0-9]")
+	 (east-asian
+	  (concat "\\(" mm l "?" s dd l "?" s "+"
+		  "\\|" dd s mm s "+" "\\)"
+		  "\\(" HH:MM "\\|" yyyy l "?" "\\)")))
+	 ;; The "[0-9]" below requires the previous column to end in a digit.
+	 ;; This avoids recognizing `1 may 1997' as a date in the line:
+	 ;; -r--r--r--   1 may      1997        1168 Oct 19 16:49 README
+
+	 ;; The "[BkKMGTPEZYRQ]?" below supports "ls -alh" output.
+
+	 ;; For non-iso date formats, we add the ".*" in order to find
+	 ;; the last possible match.  This avoids recognizing
+	 ;; `jservice 10 1024' as a date in the line:
+	 ;; drwxr-xr-x  3 jservice  10  1024 Jul  2  1997 esg-host
+
+         ;; vc dired listings provide the state or blanks between file
+         ;; permissions and date.  The state is always surrounded by
+         ;; parentheses:
+         ;; -rw-r--r-- (modified) 2005-10-22 21:25 files.el
+         ;; This is not supported yet.
+    (concat "\\([0-9][BkKMGTPEZYRQ]? " iso
+            "\\|.*[0-9][BkKMGTPEZYRQ]? "
+            "\\(" western "\\|" western-comma
+            "\\|" DD-MMM-YYYY "\\|" east-asian "\\)"
+            "\\) +"))
+  "Regular expression to match up to the file name in a directory listing.
+The default value is designed to recognize dates and times
+regardless of the language.")
+
+(defvar insert-directory-ls-version 'unknown)
+
+(defun insert-directory-wildcard-in-dir-p (dir)
+  "Return non-nil if DIR contains shell wildcards in its parent directory part.
+The return value is a cons (DIRECTORY . WILDCARD), where DIRECTORY is the
+part of DIR up to and excluding the first component that includes
+wildcard characters, and WILDCARD is the rest of DIR's components.  The
+DIRECTORY part of the value includes the trailing slash, to indicate that
+it is a directory.
+
+Valid wildcards are `*', `?', `[abc]' and `[a-z]'."
+  (let ((wildcards "[?*"))
+    (when (and (or (not (featurep 'ls-lisp))
+                   ls-lisp-support-shell-wildcards)
+               (string-match (concat "[" wildcards "]") (file-name-directory dir))
+               (not (file-exists-p dir))) ; Prefer an existing file to wildcards.
+      (let ((regexp (format "\\`\\([^%s]*/\\)\\([^%s]*[%s].*\\)"
+                            wildcards wildcards wildcards)))
+        (string-match regexp dir)
+        (cons (match-string 1 dir) (match-string 2 dir))))))
+
+(defun insert-directory-clean (beg switches)
+  (when (if (stringp switches)
+	    (string-match "--dired\\>" switches)
+	  (member "--dired" switches))
+    ;; The following overshoots by one line for an empty
+    ;; directory listed with "--dired", but without "-a"
+    ;; switch, where the ls output contains a
+    ;; "//DIRED-OPTIONS//" line, but no "//DIRED//" line.
+    ;; We take care of that case later.
+    (forward-line -2)
+    ;; We reset case-fold-search here and elsewhere, because
+    ;; case-insensitive search for strings with uppercase 'I' will fail
+    ;; in language environments (such as Turkish) where 'I' downcases to
+    ;; 'ı', not to 'i'.
+    (when (let ((case-fold-search nil)) (looking-at "//SUBDIRED//"))
+      (delete-region (point) (progn (forward-line 1) (point)))
+      (forward-line -1))
+    (if (let ((case-fold-search nil)) (looking-at "//DIRED//"))
+	(let ((end (line-end-position))
+	      (linebeg (point)))
+	  ;; Read the numeric positions of file names.
+	  (goto-char linebeg)
+	  (forward-word-strictly 1)
+	  (forward-char 3)
+	  (while (< (point) end)
+	    (let ((start (+ beg (read (current-buffer))))
+		  (end (+ beg (read (current-buffer)))))
+	      (when (memq (char-after end) '(?\n ?\s ?/ ?* ?@ ?% ?= ?|))
+		;; End is followed by \n or by output of -F.
+	        (put-text-property start end 'dired-filename t))))
+	  (goto-char end)
+	  (beginning-of-line)
+	  (delete-region (point) (progn (forward-line 1) (point))))
+      ;; Take care of the case where the ls output contains a
+      ;; "//DIRED-OPTIONS//"-line, but no "//DIRED//"-line
+      ;; and we went one line too far back (see above).
+      (forward-line 1))
+    (if (let ((case-fold-search nil)) (looking-at "//DIRED-OPTIONS//"))
+	(delete-region (point) (progn (forward-line 1) (point))))))
+
+(defun insert-directory (file switches &optional wildcard full-directory-p)
+  "Insert directory listing for FILE, formatted according to SWITCHES.
+Leaves point after the inserted text.
+SWITCHES may be a string of options, or a list of strings
+representing individual options.
+Optional third arg WILDCARD means treat FILE as shell wildcard.
+Optional fourth arg FULL-DIRECTORY-P means file is a directory and
+switches do not contain `d', so that a full listing is expected.
+
+Depending on the value of `ls-lisp-use-insert-directory-program'
+this works either using a Lisp emulation of the \"ls\" program
+or by running a directory listing program
+whose name is in the variable `insert-directory-program'
+\(and if WILDCARD, it also runs the shell specified by `shell-file-name').
+
+When SWITCHES contains the long `--dired' option, this function
+treats it specially, for the sake of dired.  However, the
+normally equivalent short `-D' option is just passed on to
+`insert-directory-program', as any other option."
+  ;; We need the directory in order to find the right handler.
+  (let ((handler (find-file-name-handler (expand-file-name file)
+					 'insert-directory)))
+    (cond
+     (handler
+      (funcall handler 'insert-directory file switches
+	       wildcard full-directory-p))
+     ((not (files--use-insert-directory-program-p))
+      (require 'ls-lisp)
+      (declare-function ls-lisp--insert-directory "ls-lisp")
+      (ls-lisp--insert-directory file switches wildcard full-directory-p))
+     (t
+      (let ((beg (point))
+            (errfile (make-temp-file "lserr")))
+
+	;; Read the actual directory using `insert-directory-program'.
+	(let* (;; We at first read by no-conversion, then after
+	       ;; putting text property `dired-filename, decode one
+	       ;; bunch by one to preserve that property.
+	       (coding-system-for-read 'no-conversion)
+	       ;; This is to control encoding the arguments in call-process.
+	       (coding-system-for-write
+		(and enable-multibyte-characters
+		     (or file-name-coding-system
+			 default-file-name-coding-system))))
+	  (if wildcard
+	      ;; If the wildcard is just in the file part, then run ls in
+              ;; the directory part of the file pattern using the last
+              ;; component as argument.  Otherwise, run ls in the longest
+              ;; subdirectory of the directory part free of wildcards; use
+              ;; the remaining of the file pattern as argument.
+	      (let* ((dir-wildcard
+                      (insert-directory-wildcard-in-dir-p file))
+                     (default-directory
+                      (cond (dir-wildcard (car dir-wildcard))
+                            (t
+			     (if (file-name-absolute-p file)
+				 (file-name-directory file)
+			       (file-name-directory
+                                (expand-file-name file))))))
+		     (pattern (if dir-wildcard
+                                  (cdr dir-wildcard)
+                                (file-name-nondirectory file))))
+		;; NB since switches is passed to the shell, be
+		;; careful of malicious values, eg "-l;reboot".
+		;; See eg dired-safe-switches-p.
+		(call-process
+		 shell-file-name nil (list t errfile) nil
+		 shell-command-switch
+		 (concat (if (memq system-type '(ms-dos windows-nt))
+			     ""
+			   "\\") ; Disregard Unix shell aliases!
+			 insert-directory-program
+			 " -d "
+			 ;; Quote switches that require quoting
+			 ;; such as "--block-size='1".  But don't
+			 ;; quote switches that use patterns
+			 ;; such as "--ignore=PATTERN" (bug#71935).
+			 (mapconcat #'shell-quote-wildcard-pattern
+				    (if (stringp switches)
+					(split-string-and-unquote switches)
+				      switches)
+				    " ")
+			 " -- "
+			 ;; Quote some characters that have
+			 ;; special meanings in shells; but
+			 ;; don't quote the wildcards--we want
+			 ;; them to be special.  We also
+			 ;; currently don't quote the quoting
+			 ;; characters in case people want to
+			 ;; use them explicitly to quote
+			 ;; wildcard characters.
+			 (shell-quote-wildcard-pattern pattern))))
+	    ;; SunOS 4.1.3, SVr4 and others need the "." to list the
+	    ;; directory if FILE is a symbolic link.
+	    (unless full-directory-p
+	      (setq switches
+		    (cond
+                     ((stringp switches) (concat switches " -d"))
+                     ((member "-d" switches) switches)
+                     (t (append switches '("-d"))))))
+	    (if (string-match "\\`~" file)
+		(setq file (expand-file-name file)))
+	    (apply #'call-process
+		   insert-directory-program nil (list t errfile) nil
+		   (append
+		    (if (listp switches) switches
+		      (unless (equal switches "")
+			;; Split the switches at any spaces so we can
+			;; pass separate options as separate args.
+			(split-string-and-unquote switches)))
+		    ;; Avoid lossage if FILE starts with `-'.
+		    '("--")
+		    (list file)))))
+
+        ;; If `ls' emits an error message, copy it to a buffer that will
+        ;; be displayed when a Dired invocation results in the `ls'
+        ;; error.
+        (when (> (file-attribute-size (file-attributes errfile)) 0)
+          (defvar dired--ls-error-buffer) ; Pacify byte-compiler.
+          (let ((errbuf (get-buffer-create "*ls error*")))
+            (with-current-buffer errbuf
+              (erase-buffer)
+              (insert-file-contents errfile))
+            (setq dired--ls-error-buffer errbuf)))
+        (defvar dired--ls-error-file) ; Pacify byte-compiler.
+        (setq dired--ls-error-file errfile)
+        (delete-file errfile)
+
+        (insert-directory-clean beg switches)
+	;; Now decode what read if necessary.
+	(let ((coding (or coding-system-for-read
+			  file-name-coding-system
+			  default-file-name-coding-system
+			  'undecided))
+	      coding-no-eol
+	      val pos)
+	  (when (and enable-multibyte-characters
+		     (not (memq (coding-system-base coding)
+				'(raw-text no-conversion))))
+	    ;; If no coding system is specified or detection is
+	    ;; requested, detect the coding.
+	    (if (eq (coding-system-base coding) 'undecided)
+		(setq coding (detect-coding-region beg (point) t)))
+	    (if (not (eq (coding-system-base coding) 'undecided))
+		(save-restriction
+		  (setq coding-no-eol
+			(coding-system-change-eol-conversion coding 'unix))
+		  (narrow-to-region beg (point))
+		  (goto-char (point-min))
+		  (while (not (eobp))
+		    (setq pos (point)
+			  val (get-text-property (point) 'dired-filename))
+		    (goto-char (next-single-property-change
+				(point) 'dired-filename nil (point-max)))
+		    ;; Force no eol conversion on a file name, so
+		    ;; that CR is preserved.
+		    (decode-coding-region pos (point)
+					  (if val coding-no-eol coding))
+		    (if val
+			(put-text-property pos (point)
+					   'dired-filename t))))))))))))
+
+(defun insert-directory-safely (file switches
+				     &optional wildcard full-directory-p)
+  "Insert directory listing for FILE, formatted according to SWITCHES.
+
+Like `insert-directory', but if FILE does not exist, it inserts a
+message to that effect instead of signaling an error."
+  (if (file-exists-p file)
+      (insert-directory file switches wildcard full-directory-p)
+    ;; Simulate the message printed by `ls'.
+    (insert (format "%s: No such file or directory\n" file))))
+
+(defsubst progress-reporter-update (reporter &optional value update-text)
+  "Report progress of an operation, by default, in the echo area.
+REPORTER should be the result of a call to `make-progress-reporter'.
+
+If REPORTER is a numerical progress reporter---i.e. if it was
+made using non-nil MIN-VALUE and MAX-VALUE arguments to
+`make-progress-reporter'---then VALUE should be a number between
+MIN-VALUE and MAX-VALUE.
+
+Optional argument UPDATE-TEXT is a string that a progress-reporter
+back-end might display as a result of this update.  A typical use is as
+the \"step\" of the progress reporting process.  If REPORTER is a
+non-numerical reporter, then VALUE should be nil, or a string to use
+instead of UPDATE-TEXT.
+
+See `progress-reporter-update-functions' for the list of functions
+called on each update.
+
+This function is relatively inexpensive.  If the change since
+last update is too small or insufficient time has passed, it does
+nothing."
+  (when (or (not (numberp value))      ; For pulsing reporter
+	    (>= value (car reporter))) ; For numerical reporter
+    (progress-reporter-do-update reporter value update-text)))
+
+(defun make-progress-reporter (message &optional min-value max-value
+				       current-value min-change min-time
+                                       context)
+  "Return progress reporter object for use with `progress-reporter-update'.
+
+MESSAGE is shown in the echo area, with a status indicator
+appended to the end.  When you call `progress-reporter-done', the
+word \"done\" is printed after the MESSAGE.  You can change the
+MESSAGE of an existing progress reporter by calling
+`progress-reporter-force-update'.
+
+MIN-VALUE and MAX-VALUE, if non-nil, are starting (0% complete)
+and final (100% complete) states of operation; the latter should
+be larger.  In this case, the status message shows the percentage
+progress.
+
+If MIN-VALUE and/or MAX-VALUE is omitted or nil, the status
+message shows a \"spinning\", non-numeric indicator.
+
+Optional CURRENT-VALUE is the initial progress; the default is
+MIN-VALUE.
+Optional MIN-CHANGE is the minimal change in percents to report;
+the default is 1%.
+CURRENT-VALUE and MIN-CHANGE do not have any effect if MIN-VALUE
+and/or MAX-VALUE are nil.
+
+Optional MIN-TIME specifies the minimum interval time between
+echo area updates (default is 0.2 seconds.)  If the OS is not
+capable of measuring fractions of seconds, this parameter is
+effectively rounded up.
+
+Optional CONTEXT can be nil or `async'.  It is consulted by back ends before
+showing progress updates.  For example, when CONTEXT is `async',
+the echo area progress reports may be muted if the echo area is busy."
+  (when (string-match "[[:alnum:]]\\'" message)
+    (setq message (concat message "...")))
+  (unless min-time
+    (setq min-time 0.2))
+  (let ((reporter
+	 (cons (or min-value 0)
+	       ;; FIXME: Use defstruct.
+	       (vector (if (>= min-time 0.02)
+			   (float-time) nil)
+		       min-value
+		       max-value
+		       message
+		       (if min-change (max (min min-change 50) 1) 1)
+                       min-time
+                       ;; Unused (formerly SUFFIX).
+                       nil
+                       ;;
+                       context))))
+    ;; Force a call to `message' now.
+    (progress-reporter-update reporter (or current-value min-value))
+    reporter))
+
+(defun progress-reporter-text (reporter)
+  "Return REPORTER's text."
+  (aref (cdr reporter) 3))
+
+(defun progress-reporter-context (reporter)
+  "Return REPORTER's context."
+  (aref (cdr reporter) 7))
+
+(defun progress-reporter-force-update (reporter &optional
+                                                value new-message update-text)
+  "Report progress of an operation in the echo area unconditionally.
+
+REPORTER, VALUE, and UPDATE-TEXT are the same as in
+`progress-reporter-update'.
+NEW-MESSAGE, if non-nil, sets a new message for the reporter."
+  (let ((parameters (cdr reporter)))
+    (when new-message
+      (aset parameters 3 new-message))
+    (when (aref parameters 0)
+      (aset parameters 0 (float-time)))
+    (progress-reporter-do-update reporter value update-text)))
+
+(defun progress-reporter-echo-area (reporter state update-text)
+  "Progress reporter echo area update function.
+REPORTER, STATE, and UPDATE-TEXT are the same as in
+`progress-reporter-update-functions'.
+
+Do not emit a message if the reporter context is `async' and the echo
+area is busy with something else."
+  (let ((text (progress-reporter-text reporter)))
+    (unless (and (eq (progress-reporter-context reporter) 'async)
+                 (current-message)
+                 (not (string-prefix-p text (current-message))))
+      (setq update-text (if update-text (format " %s" update-text) ""))
+      (pcase state
+        ((pred floatp)
+         (if (plusp state)
+             (message "%s%d%%%s" text (* state 100.0) update-text)
+           (message "%s%s" text update-text)))
+        ((pred integerp)
+         (let ((message-log-max nil)
+               (pulse-char
+                (aref progress-reporter--pulse-characters
+                      (mod state (length progress-reporter--pulse-characters)))))
+           (message "%s %s%s" text pulse-char update-text)))
+        ('done
+         (message "%sdone" text))))))
+
+(defun progress-reporter-do-update (reporter value &optional update-text)
+  (let* ((parameters      (cdr reporter))
+	 (update-time     (aref parameters 0))
+	 (min-value       (aref parameters 1))
+	 (max-value       (aref parameters 2))
+	 (enough-time-passed
+	  ;; See if enough time has passed since the last update.
+	  (or (not update-time)
+	      (when (time-less-p update-time nil)
+		;; Calculate time for the next update
+		(aset parameters 0 (+ update-time (aref parameters 5)))))))
+    (cond ((and min-value max-value)
+	   ;; Numerical indicator
+	   (let* ((one-percent (/ (- max-value min-value) 100.0))
+		  (percentage  (if (= max-value min-value)
+				   0
+				 (truncate (/ (- value min-value)
+					      one-percent)))))
+	     ;; Calculate NEXT-UPDATE-VALUE.  If we are not printing
+	     ;; message because not enough time has passed, use 1
+	     ;; instead of MIN-CHANGE.  This makes delays between echo
+	     ;; area updates closer to MIN-TIME.
+	     (setcar reporter
+		     (min (+ min-value (* (+ percentage
+					     (if enough-time-passed
+						 ;; MIN-CHANGE
+						 (aref parameters 4)
+					       1))
+					  one-percent))
+			  max-value))
+	     (when (integerp value)
+	       (setcar reporter (ceiling (car reporter))))
+	     ;; Print message only if enough time has passed
+	     (when enough-time-passed
+               (run-hook-with-args 'progress-reporter-update-functions
+                                   reporter
+                                   (/ percentage 100.0)
+                                   update-text))))
+	  ;; Pulsing indicator
+	  (enough-time-passed
+           (let ((index (1+ (car reporter))))
+	     (setcar reporter index)
+             (run-hook-with-args 'progress-reporter-update-functions
+                                 reporter
+                                 index
+                                 (or update-text value)))))))
+
+(defun progress-reporter-done (reporter)
+  "Print reporter's message followed by word \"done\" in echo area.
+Call the functions on `progress-reporter-update-functions`."
+  (run-hook-with-args 'progress-reporter-update-functions
+                      reporter
+                      'done
+                      nil))
 
 (provide 'emacs-files-gnu)
 
