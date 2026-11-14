@@ -13981,25 +13981,45 @@ functions `((NAME . ARITY) ...)'."
    ;; arg-placement + AL-count machinery via `--parse-extern-call-args'; the
    ;; emitter branches on `:fn-value' to an indirect `call r11'.  The `-f64'
    ;; head marks an f64 return (= read from xmm0).  FN-EXPR must be a trivial
-   ;; value (a gp ref / small imm) at the MVP so it can be loaded into r11
-   ;; without disturbing already-placed arg registers.
+   ;; value (a gp ref / small imm) so it can be loaded into r11 without
+   ;; disturbing already-placed arg registers; any other FN-EXPR is hoisted
+   ;; into a fresh `let' local at parse time (evaluated before the args);
+   ;; `extern-call-ptr-f64' rejects it instead (see the comment there).
    ((and (consp sexp) (memq (car sexp) '(extern-call-ptr extern-call-ptr-f64)))
     (when (< (length sexp) 2)
       (signal 'nelisp-aot-compiler-error
               (list :extern-call-ptr-needs-fn sexp)))
     (let* ((op (car sexp))
            (fn-value (nelisp-aot-compiler--parse-value
-                      (nth 1 sexp) env fenv defuns))
-           (raw-args (nthcdr 2 sexp))
-           (parsed (nelisp-aot-compiler--parse-extern-call-args
-                    op 'call-ptr raw-args env fenv defuns)))
-      (nelisp-aot-compiler--make-ir 'extern-call
-            :name nil
-            :fn-value fn-value
-            :ret-class (if (eq op 'extern-call-ptr-f64) 'f64 'gp)
-            :args (plist-get parsed :args)
-            :varargs-p (plist-get parsed :varargs-p)
-            :f64-count (plist-get parsed :f64-count))))
+                      (nth 1 sexp) env fenv defuns)))
+      (if (not (memq (nelisp-aot-compiler--ir-kind fn-value) '(imm ref)))
+          ;; Non-trivial FN-EXPR (a call, arithmetic, ...): its evaluation
+          ;; would clobber the argument registers once they are placed.
+          ;; Evaluate it first into a fresh local (a frame slot, so it
+          ;; survives the argument evaluation) and call through that local.
+          ;; The wrapping `let' makes the node gp-class, so the f64-returning
+          ;; head cannot be hoisted this way (an f64 leaf cannot be a `let');
+          ;; it is rejected with a clear error instead.
+          (let ((tmp (nelisp-aot-compiler--gensym "extern-ptr-fn")))
+            (when (eq op 'extern-call-ptr-f64)
+              (signal 'nelisp-aot-compiler-error
+                      (list :extern-call-ptr-f64-fn-must-be-trivial
+                            (nth 1 sexp)
+                            "bind the callee to a local with `let' first")))
+            (nelisp-aot-compiler--parse-value
+             `(let ((,tmp ,(nth 1 sexp)))
+                (,op ,tmp ,@(nthcdr 2 sexp)))
+             env fenv defuns))
+        (let* ((raw-args (nthcdr 2 sexp))
+               (parsed (nelisp-aot-compiler--parse-extern-call-args
+                        op 'call-ptr raw-args env fenv defuns)))
+          (nelisp-aot-compiler--make-ir 'extern-call
+                :name nil
+                :fn-value fn-value
+                :ret-class (if (eq op 'extern-call-ptr-f64) 'f64 'gp)
+                :args (plist-get parsed :args)
+                :varargs-p (plist-get parsed :varargs-p)
+                :f64-count (plist-get parsed :f64-count))))))
    ;; (syscall-direct NR A0 A1 A2 A3 A4 A5) — Linux x86_64 raw SYSCALL.
    ;;
    ;; Evaluates 7 i64 value expressions and emits the Linux SYSCALL
