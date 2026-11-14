@@ -66,17 +66,21 @@ anvil-e2e)
   case "$wbin" in [A-Za-z]:*) ;; *) wbin=$(cygpath -w "$(pwd)/$BIN");; esac
   wdb=$(cygpath -w "$TMP/wl.db"); mdb=$(cygpath -w "$TMP/mem.db")
   cmd=$(cygpath -w /d/Cowork/Notes/bin/anvil-standalone.cmd)
+  # Set the environment inside a wrapper .cmd and stop MSYS from rewriting
+  # "/d /c" into paths; otherwise cmd.exe reads the JSON lines as commands.
+  printf '@echo off\r\nset ANVIL_RUNTIME_MODE=standalone\r\nset NELISP_BIN=%s\r\nset ANVIL_WORKLOG_DB=%s\r\nset ANVIL_MEMORY_DB=%s\r\ncall %s\r\n' \
+    "$wbin" "$wdb" "$mdb" "$cmd" > "$TMP/run.cmd"
   {
     echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"tz-probe","version":"1"}}}'
     echo '{"jsonrpc":"2.0","method":"notifications/initialized"}'
     echo '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"worklog-add","arguments":{"title":"tz-probe","body":"tz probe entry"}}}'
     echo '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"worklog-list","arguments":{}}}'
-    sleep 25
-  } | ANVIL_RUNTIME_MODE=standalone NELISP_BIN="$wbin" ANVIL_WORKLOG_DB="$wdb" ANVIL_MEMORY_DB="$mdb" \
-      timeout 200 cmd.exe /d /c "$cmd" > "$TMP/anvil.out" 2> "$TMP/anvil.err"
+  } | MSYS_NO_PATHCONV=1 timeout 200 cmd.exe /d /c "$(cygpath -w "$TMP/run.cmd")" > "$TMP/anvil.out" 2> "$TMP/anvil.err"
   today=$(date +%F)
-  grep -q "tz-probe" "$TMP/anvil.out" || { tail -c 600 "$TMP/anvil.out" "$TMP/anvil.err" >&2; fail "worklog-list did not return the entry"; }
-  grep -q "$today" "$TMP/anvil.out" || { tail -c 600 "$TMP/anvil.out" >&2; fail "stored date is not host local date $today"; }
+  # Only JSON-RPC responses count (an echoed request must not satisfy the check).
+  grep '^{"jsonrpc"' "$TMP/anvil.out" | grep '"id":3' > "$TMP/list.json" || true
+  grep -q "tz-probe" "$TMP/list.json" || { tail -c 600 "$TMP/anvil.out" "$TMP/anvil.err" >&2; fail "worklog-list did not return the entry"; }
+  grep -q "\\\\\"date\\\\\":\\\\\"$today\\\\\"" "$TMP/list.json" || { tail -c 600 "$TMP/list.json" >&2; fail "stored date is not host local date $today"; }
   # When local and UTC dates coincide the date test cannot tell the zones
   # apart, so also require the binary itself to render the local zone.
   utc=$(date -u +%F)
