@@ -27,4 +27,4 @@ cmd: (ulimit -v 8388608; timeout 900 make -s test-one FILE=test/nelisp-aot-neste
 * S4 Integration
 
 ** S4.1 E2E - CI on main green with all three fixes
-pending
+evidence: tools/ai/sumi-gaps/ci-run-43617208735.txt sha256=a3521527cac63831e882e73b73aa7be516b14698f6ac4f9dd9c38d5df3c91add
