@@ -15467,7 +15467,8 @@ across B's conversion, which may call arbitrary integer expressions."
   "Emit a flat f64-class binop NODE, result in xmm0/d0.
 Leaf conversions can run integer expressions with effects.  The shared
 operand emitter preserves their source order and spills across the second
-conversion when necessary.  Nested float binops remain unsupported."
+conversion when necessary.  Nested float binops are handled by the leaf
+emitter, which recurses into this function."
   (let* ((op (nelisp-aot-compiler--ir-get node :op))
          (a (nelisp-aot-compiler--ir-get node :a))
          (b (nelisp-aot-compiler--ir-get node :b))
@@ -15615,7 +15616,22 @@ literal arg) is materialised from its IEEE-754 bits."
       (if (eq nelisp-aot-compiler--arch 'aarch64)
           (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0)
         (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax)))
-     ((memq kind '(f64-binop f64-cmp))
+     ((eq kind 'f64-binop)
+      ;; Nested f64 binop (Doc 112).  `--emit-f64-binop' leaves its result
+      ;; in xmm0/d0 and spills any operand it must keep across a sibling
+      ;; operand's evaluation (see `--emit-f64-binary-operands'), so the
+      ;; nesting depth is bounded only by the temp stack.  A caller that
+      ;; wants the value elsewhere (the right operand goes to xmm1/d1)
+      ;; gets it moved through a GP register.
+      (nelisp-aot-compiler--emit-f64-binop node buf)
+      (unless (memq xmm-dst '(xmm0 d0))
+        (if (eq nelisp-aot-compiler--arch 'aarch64)
+            (progn
+              (nelisp-asm-arm64-fmov-x-from-d buf 'x0 'd0)
+              (nelisp-asm-arm64-fmov-d-from-x buf xmm-dst 'x0))
+          (nelisp-asm-x86_64-movq-r64-xmm buf 'rax 'xmm0)
+          (nelisp-asm-x86_64-movq-xmm-r64 buf xmm-dst 'rax))))
+     ((eq kind 'f64-cmp)
       (signal 'nelisp-aot-compiler-error
               (list :nested-f64-binop-needs-doc-112 node)))
      (t
