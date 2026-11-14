@@ -1,0 +1,47 @@
+#+TITLE: NeLisp standalone wall clock and local time zone
+
+# Run from the repository root with NELISP_TZ_BIN pointing at the built
+# standalone binary (target/nelisp.exe on Windows, target/nelisp elsewhere):
+#   NELISP_TZ_BIN=target/nelisp.exe bin/progress-meter.sh --ledger tools/ai/windows-timezone-progress.org
+# Probes live in tools/ai/tz-probe.sh (MODE as the first argument).
+
+* S1 Wall clock
+
+** S1.1 current-time, nl-unix-time-usec and nl-current-unix-time agree with float-time (smoke)
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh clock
+
+* S2 Local time zone
+
+** S2.1 current-time-zone returns the host UTC offset in seconds and a zone name
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh zone
+
+** S2.2 format-time-string without ZONE renders local time equal to the host clock (%Y-%m-%d %H %z)
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh local
+
+** S2.3 format-time-string with ZONE t, "UTC0" and an integer offset renders the requested zone
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh zone-arg
+
+** S2.4 decode-time and encode-time round-trip in local time and report the offset
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh decode
+
+** S2.5 A POSIX TZ environment value (UTC0, JST-9) overrides the host zone
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 120
+cmd: sh tools/ai/tz-probe.sh tz-env
+
+* S3 End to end
+
+** S3.1 anvil worklog-add without a date stamps today's local date when anvil runs on this binary
+#+REQUIRES: NELISP_TZ_BIN
+#+TIMEOUT: 300
+cmd: sh tools/ai/tz-probe.sh anvil-e2e
