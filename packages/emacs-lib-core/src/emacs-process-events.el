@@ -327,10 +327,7 @@ only fall through to `substring' on the rare partial-write retry."
     ;; the bytes go on the wire (identity for utf-8 / no-conversion).
     (setq string (emacs-process-events--encode-input
                   string (emacs-process-events--get process 9)))
-    (let ((fd (if (and (eq (emacs-process-events--get process 3) 'pipe)
-                       (> (length process) 18))
-                  (aref process 16)
-                (process-id-fd process)))
+    (let ((fd (process-id-fd process))
           (pipe (memq (emacs-process-events--get process 3) '(pipe pipe-process)))
           (i 0)
           (n (length string)))
@@ -364,15 +361,6 @@ only fall through to `substring' on the rare partial-write retry."
     "Polyfill: close the underlying fd, fire the sentinel, drop from registry."
     (setq process (emacs-process-events--resolve-process process))
     (let ((fd (process-id-fd process)))
-      (when (and (eq (emacs-process-events--get process 3) 'pipe)
-                 (> (length process) 18))
-        (let ((i 16))
-          (while (< i 19)
-            (let ((peer (aref process i)))
-              (when (and (integerp peer) (>= peer 0))
-                (emacs-network-ffi--close peer)
-                (aset process i -1)))
-            (setq i (1+ i)))))
       (when (and fd (>= fd 0))
         (emacs-network-ffi--close fd)
         (remhash fd emacs-process-events--by-fd))
@@ -712,10 +700,13 @@ Returns the process vector on success, signals `file-error' on failure."
 
 (defun emacs-process-events--dispatch1 (name proc)
   "Call NAME's child or event owner on PROC, whichever owns the process."
-  (funcall (get name (if (emacs-process-events--child-process-p proc)
-                         'emacs-process-events--child-owner
-                       'emacs-process-events--event-owner))
-           proc))
+  (if (and (fboundp 'emacs-cc-pipe-process-1--core-call)
+           (emacs-cc-pipe-process-1--core-pipe-p proc))
+      (emacs-cc-pipe-process-1--core-call name (list proc))
+    (funcall (get name (if (emacs-process-events--child-process-p proc)
+                           'emacs-process-events--child-owner
+                         'emacs-process-events--event-owner))
+             proc)))
 
 (defun emacs-process-events--combined-list ()
   (let ((result (funcall (get 'process-list 'emacs-process-events--event-owner))))
@@ -782,9 +773,12 @@ re-evaluated, and also runs when the facade has not loaded yet."
                           (fboundp 'emacs-process-builtins--resolve-process))
                      (emacs-process-builtins--resolve-process process)
                    (emacs-process-events--resolve-process process)))
-           (if (emacs-process-events--child-process-p process)
+           (if (and (fboundp 'emacs-cc-pipe-process-1--core-call)
+                    (emacs-cc-pipe-process-1--core-pipe-p process))
+               (emacs-cc-pipe-process-1--core-call 'delete-process (list process))
+             (if (emacs-process-events--child-process-p process)
                (progn (emacs-process-delete-process process) nil)
-             (funcall (get 'delete-process 'emacs-process-events--event-owner) process))))
+             (funcall (get 'delete-process 'emacs-process-events--event-owner) process)))))
   nil)
 
 ;;;; --- single public-name dispatcher ------------------------------------
@@ -842,6 +836,10 @@ handles (nil selects every call).  FUNCTION is called as
 (defun emacs-process-events--terminal (name args)
   "Run the provider's own behavior of public function NAME on ARGS."
   (cond
+   ;; A core buffer pipe is owned by the core; read its channel.
+   ((and args (fboundp 'emacs-cc-pipe-process-1--core-call)
+         (emacs-cc-pipe-process-1--core-pipe-p (car args)))
+    (emacs-cc-pipe-process-1--core-call name args))
    ((eq name 'processp)
     (or (funcall (get 'processp 'emacs-process-events--event-owner) (car args))
         (and (fboundp 'emacs-process-processp)

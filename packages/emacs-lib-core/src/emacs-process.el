@@ -1427,7 +1427,8 @@ Linux x86-64 poll(2) storage is freed even when interrupted or unwound."
 
 (defun emacs-process-accept-process-output (&optional process seconds millisec just-this-one)
   "Wait with timer/input/process dispatch; host Emacs keeps its native wait."
-  (when (and process (not (emacs-process-processp process)))
+  (when (and process (not (emacs-process-processp process))
+             (not (processp process)))
     (signal 'wrong-type-argument (list 'processp process)))
   (unless (or (null seconds) (numberp seconds))
     (signal 'wrong-type-argument (list 'numberp seconds)))

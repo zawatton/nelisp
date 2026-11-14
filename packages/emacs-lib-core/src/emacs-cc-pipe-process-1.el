@@ -2,23 +2,15 @@
 
 ;;; Commentary:
 
-;; The event provider owns the first fourteen slots.  These pipe connections
-;; add a contact plist and a persistent marker in slots 14 and 15.
-;; Slots 16 through 18 own the outgoing fd and the two peer descriptors.
-;; Like GNU, the incoming and outgoing streams are separate OS pipes.
-;; Load this unit after the LIB process and event providers.
+;; The NeLisp core owns the one pipe representation (`nelisp-process-buffer-make',
+;; returned by `make-pipe-process').  This unit keeps the shared accept-output
+;; wait, `get-process', `process-command' and the default filter, and adds
+;; stateless GNU-visible delegates that read the core channel (process-type,
+;; process-name, process-contact, process-list membership, delete-process,
+;; set-process-filter and process-filter).  Load it after the LIB process and
+;; event providers.
 
 ;;; Code:
-
-(defun emacs-cc-pipe-process-1--pipe ()
-  "Return a fresh (READ-FD . WRITE-FD), or nil if pipe creation fails.
-Use the bundled FFI adapter instead of the optional pipe-process module."
-  (let ((buf (nl-ffi-malloc 8)))
-    (unwind-protect
-        (let ((rc (emacs-network-ffi--call "pipe" [:sint32 :pointer] buf)))
-          (when (and (integerp rc) (= rc 0))
-            (cons (nl-ffi-read-i32 buf 0) (nl-ffi-read-i32 buf 4))))
-      (nl-ffi-free buf))))
 
 (defun emacs-cc-pipe-process-1--poll (fds timeout-ms)
   "Return (FD . REVENTS) entries ready within TIMEOUT-MS milliseconds.
@@ -54,12 +46,6 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
               (nreverse ready)))
         (nl-ffi-free buf)))))
 
-(defun emacs-cc-pipe-process-1--pipe-p (process)
-  "Recognize pipe connections with contact and marker storage."
-  (and (vectorp process) (>= (length process) 16)
-       (eq (aref process 0) :emacs-process-events)
-       (eq (aref process 3) 'pipe)))
-
 (defun emacs-cc-pipe-process-1--get-process (name)
   "Return a registered process named NAME, or NAME if it is a process."
   (cond
@@ -74,121 +60,117 @@ loop, whose compatibility definitions would replace this unit's dispatcher."
             (throw 'found process)))
         nil))))
 
-(defun emacs-cc-pipe-process-1--unique-name (name)
-  "Return an unused process name derived from NAME."
-  (let ((candidate name) (suffix 0))
-    (while (get-process candidate)
-      (setq suffix (1+ suffix)
-            candidate (format "%s<%d>" name suffix)))
-    candidate))
-
-(defun emacs-cc-pipe-process-1--make-pipe-process (_next &rest args)
-  "Create and register a pipe process object with the options in ARGS."
-  (when args
-    (unless (= (% (length args) 2) 0)
-      (signal 'malformed-keyword-arg-list nil))
-    (let ((name (plist-get args :name)))
-      (unless (stringp name) (error ":name value not a string"))
-      (let* ((buffer (if (plist-member args :buffer)
-                         (plist-get args :buffer) name))
-             (buffer (cond ((null buffer) nil)
-                           ((bufferp buffer) buffer)
-                           (t (unless (stringp buffer)
-                                (signal 'wrong-type-argument (list 'stringp buffer)))
-                              (get-buffer-create buffer))))
-             (properties (copy-sequence (plist-get args :plist)))
-             (coding (or (plist-get args :coding)
-                         (if (boundp 'default-process-coding-system)
-                             default-process-coding-system
-                           '(utf-8-unix . utf-8-unix)))))
-        (if (consp coding)
-            (progn (check-coding-system (car coding))
-                   (check-coding-system (cdr coding)))
-          (check-coding-system coding))
-        (let* ((marker (make-marker))
-               (outgoing (emacs-cc-pipe-process-1--pipe))
-               (incoming (and outgoing (emacs-cc-pipe-process-1--pipe)))
-               (process
-                (vector :emacs-process-events
-                        (emacs-cc-pipe-process-1--unique-name name)
-                        (if incoming (car incoming) -1) 'pipe
-                        (if (plist-get args :stop) 'stop 'open)
-                        (or (plist-get args :filter) 'internal-default-process-filter)
-                        (or (plist-get args :sentinel) 'internal-default-process-sentinel)
-                        buffer properties
-                        (if (consp coding) (cons (car coding) (cdr coding))
-                          (cons coding coding))
-                        nil nil "" (not (plist-get args :noquery))
-                        (copy-sequence args) marker
-                        (and outgoing (cdr outgoing))
-                        (and outgoing (car outgoing))
-                        (and incoming (cdr incoming)))))
-          (unless incoming
-            (when outgoing
-              (emacs-network-ffi--close (car outgoing))
-              (emacs-network-ffi--close (cdr outgoing)))
-            (signal 'file-error (list "Creating pipe" "Cannot create pipe")))
-          (emacs-network-ffi--set-nonblocking (car incoming))
-          (emacs-network-ffi--set-nonblocking (cdr outgoing))
-          (when (buffer-live-p buffer)
-            (with-current-buffer buffer (set-marker marker (point-max) buffer)))
-          (emacs-process-events--register process)
-          process)))))
+(defun emacs-cc-pipe-process-1--core-pipe-p (object)
+  "Return non-nil when OBJECT is a core buffer pipe channel."
+  (and (fboundp 'nelisp-process-buffer-p) (nelisp-process-buffer-p object)))
 
 (defun emacs-cc-pipe-process-1--process-contact (next process &optional key no-block)
   "Return PROCESS's contact information or the field specified by KEY.
-NEXT continues with the previous owner for processes that are not pipes."
-  (if (emacs-cc-pipe-process-1--pipe-p process)
-      (let ((contact (aref process 14)))
-        (cond ((null key) t)
-              ((eq key t) (copy-sequence contact))
-              (t (plist-get contact key))))
-    (unless (or (processp process)
-                (and (vectorp process) (= (length process) 7)
-                     (eq (aref process 0) 'pipe-process)))
-      (signal 'wrong-type-argument (list 'processp process)))
-    (funcall next process key no-block)))
+NEXT continues with the previous owner."
+  (unless (or (processp process)
+              (and (vectorp process) (= (length process) 7)
+                   (eq (aref process 0) 'pipe-process)))
+    (signal 'wrong-type-argument (list 'processp process)))
+  (funcall next process key no-block))
+
+(defun emacs-cc-pipe-process-1--core-call (name args)
+  "Run public process function NAME on core buffer pipe ARGS.
+Stateless: every answer is read from, or written to, the core channel."
+  (let ((process (car args)))
+    (cond
+     ((eq name 'processp) t)
+     ((eq name 'process-name) (aref process 1))
+     ((eq name 'process-type) 'pipe)
+     ((eq name 'process-id) nil)
+     ((eq name 'process-plist) nil)
+     ((eq name 'process-filter)
+      (or (process-get process :filter) 'internal-default-process-filter))
+     ((eq name 'set-process-filter)
+      (process-put process :filter (cadr args))
+      (or (cadr args) 'internal-default-process-filter))
+     ((eq name 'process-sentinel)
+      (or (process-get process :sentinel) 'internal-default-process-sentinel))
+     ((eq name 'set-process-sentinel)
+      (process-put process :sentinel (cadr args))
+      (or (cadr args) 'internal-default-process-sentinel))
+     ((eq name 'delete-process)
+      (nelisp-process-buffer-delete process))
+     (t (let ((base (get name 'emacs-process-events--base)))
+          (if base (apply base args)
+            (signal 'void-function (list name))))))))
+
+(defun emacs-cc-pipe-process-1--create-core-pipe (_next &rest args)
+  "Create a pipe with the core owner, `nelisp-process-buffer-make'.
+The first call loads the core unit, which then installs its own
+`make-pipe-process' over this dispatcher."
+  (apply #'nelisp-process-buffer-make args))
+
+(defun emacs-cc-pipe-process-1--notify-close (original process)
+  "Run ORIGINAL (the core stderr close) and notify a pipe that it closed.
+GNU calls the pipe's sentinel, or inserts the default message, when the
+pipe is closed by the end of the child's output.  The core closes the
+channel silently, so read the channel state before and after.  Stateless:
+nothing is stored by this unit."
+  (let* ((channel (process-get process :stderr-channel))
+         (was-open (and channel (eq (aref channel 2) 'open))))
+    (prog1 (funcall original process)
+      (when (and was-open (eq (aref channel 2) 'closed))
+        (let ((sentinel (process-get channel :sentinel)))
+          (if (functionp sentinel)
+              (funcall sentinel channel "finished\n")
+            (nelisp-process-buffer-insert
+             channel (format "\nProcess %s finished\n" (aref channel 1)))))))))
+
+;; The core defines `nelisp-process-buffer-close-stderr' when it loads
+;; (lazily); advise it once then.  A core patch makes this unnecessary.
+(defun emacs-cc-pipe-process-1--advise-core ()
+  "Install the close notification on the core stderr close, once."
+  (when (and (fboundp 'advice-add) (fboundp 'nelisp-process-buffer-close-stderr)
+             (featurep 'nelisp-process-buffer)
+             (not (advice-member-p #'emacs-cc-pipe-process-1--notify-close
+                                   'nelisp-process-buffer-close-stderr)))
+    (advice-add 'nelisp-process-buffer-close-stderr :around
+                #'emacs-cc-pipe-process-1--notify-close)))
+
+(when (fboundp 'nelisp--repr)
+  (let ((entry (assq 'nelisp-process-buffer after-load-alist)))
+    (if entry
+        (unless (memq #'emacs-cc-pipe-process-1--advise-core (cdr entry))
+          (setcdr entry (cons #'emacs-cc-pipe-process-1--advise-core (cdr entry))))
+      (push (list 'nelisp-process-buffer #'emacs-cc-pipe-process-1--advise-core)
+            after-load-alist)))
+  (when (featurep 'nelisp-process-buffer)
+    (emacs-cc-pipe-process-1--advise-core)))
+
+(defun emacs-cc-pipe-process-1--process-list (next)
+  "Add live core buffer pipes to the list NEXT returns."
+  (let ((list (funcall next)))
+    (dolist (channel (and (boundp 'nelisp-process-buffer--channels)
+                          nelisp-process-buffer--channels))
+      (unless (memq channel list) (setq list (append list (list channel)))))
+    list))
+
+(defun emacs-cc-pipe-process-1--core-contact (_next process &optional key _no-block)
+  "Read the contact of core buffer pipe PROCESS from its channel."
+  (let ((contact (aref process 4)))
+    (cond ((null key) t)
+          ((eq key t) (copy-sequence contact))
+          ((eq key :name) (aref process 1))
+          (t (plist-get contact key)))))
 
 (defun emacs-cc-pipe-process-1--process-mark (next process)
   "Return the persistent marker belonging to PROCESS.
-NEXT continues with the previous owner for processes that are not pipes."
-  (if (emacs-cc-pipe-process-1--pipe-p process)
-      (aref process 15)
-    (unless (processp process)
-      (signal 'wrong-type-argument (list 'processp process)))
-    (if (emacs-process--process-object-p process)
-        (or (emacs-process--native-metadata process :output-marker)
-            (progn
-              (emacs-process-builtins--initialize-command
-               process (emacs-process-process-command process))
-              (emacs-process--native-metadata process :output-marker)))
-      (funcall next process))))
-
-(defun emacs-cc-pipe-process-1--set-process-buffer (next process buffer)
-  "Assign BUFFER to PROCESS, retaining its marker identity."
-  (let ((result (funcall next process buffer)))
-    (when (emacs-cc-pipe-process-1--pipe-p process)
-      (aset process 14 (plist-put (aref process 14) :buffer buffer))
-      ;; Nil disconnects output, but GNU leaves the marker at its old place.
-      (when (and (buffer-live-p buffer)
-                 (not (eq buffer (marker-buffer (aref process 15)))))
-        (with-current-buffer buffer
-          (set-marker (aref process 15) (point-max) buffer))))
-    result))
-
-(defun emacs-cc-pipe-process-1--set-process-filter (next process function)
-  "Set PROCESS's filter and update its contact field."
-  (let ((result (funcall next process function)))
-    (when (emacs-cc-pipe-process-1--pipe-p process)
-      (aset process 14 (plist-put (aref process 14) :filter result)))
-    result))
-
-(defun emacs-cc-pipe-process-1--set-process-sentinel (next process function)
-  "Set PROCESS's sentinel and update its contact field."
-  (let ((result (funcall next process function)))
-    (when (emacs-cc-pipe-process-1--pipe-p process)
-      (aset process 14 (plist-put (aref process 14) :sentinel result)))
-    result))
+NEXT continues with the previous owner for processes that are not events
+vectors."
+  (unless (processp process)
+    (signal 'wrong-type-argument (list 'processp process)))
+  (if (emacs-process--process-object-p process)
+      (or (emacs-process--native-metadata process :output-marker)
+          (progn
+            (emacs-process-builtins--initialize-command
+             process (emacs-process-process-command process))
+            (emacs-process--native-metadata process :output-marker)))
+    (funcall next process)))
 
 (defun emacs-cc-pipe-process-1--process-command (process)
   "Return PROCESS's original command, or nil for a pipe or network."
@@ -219,23 +201,6 @@ Preserve the buffer's point unless it follows the process marker."
             (when marker (set-marker marker (point) buffer)))
           (when follow (goto-char marker))))))
   nil)
-
-(defun emacs-cc-pipe-process-1--send-eof (process)
-  "Replace the outgoing pipe with /dev/null, leaving input open."
-  (unless (memq (process-status process) '(open stop))
-    (error "Process %s not running: finished\n" (process-name process)))
-  (let* ((path (nl-ffi-malloc 10))
-         (fd (unwind-protect
-                 (progn
-                   (nl-ffi-write-bytes-at path 0 "/dev/null\0")
-                   (emacs-network-ffi--call
-                    "open" [:sint32 :pointer :sint32] path 1))
-               (nl-ffi-free path))))
-    (unless (and (integerp fd) (>= fd 0))
-      (signal 'file-error (list "Opening /dev/null")))
-    (emacs-network-ffi--close (aref process 16))
-    (aset process 16 fd))
-  process)
 
 (defun emacs-cc-pipe-process-1--accept-output
     (&optional process seconds millisec just-this-one)
@@ -290,11 +255,6 @@ Preserve the buffer's point unless it follows the process marker."
                                      '(run open listen connect stop)))))))
     any))
 
-(unless (fboundp 'make-pipe-process)
-  (defun make-pipe-process (&rest args)
-    "Create a pipe process object with keyword options ARGS."
-    (apply #'emacs-cc-pipe-process-1--make-pipe-process nil args)))
-
 (unless (fboundp 'process-contact)
   (defun process-contact (process &optional key no-block)
     "Return PROCESS's contact information or its field KEY."
@@ -318,17 +278,16 @@ Preserve the buffer's point unless it follows the process marker."
   ;; dispatcher in emacs-process-events.el; register this unit's handlers.
   (when (fboundp 'emacs-process-events-register-handler)
     (emacs-process-events-register-handler
-     'make-pipe-process nil #'emacs-cc-pipe-process-1--make-pipe-process)
-    (emacs-process-events-register-handler
      'process-contact nil #'emacs-cc-pipe-process-1--process-contact)
     (emacs-process-events-register-handler
-     'process-mark nil #'emacs-cc-pipe-process-1--process-mark)
+     'process-contact #'emacs-cc-pipe-process-1--core-pipe-p
+     #'emacs-cc-pipe-process-1--core-contact)
     (emacs-process-events-register-handler
-     'set-process-buffer nil #'emacs-cc-pipe-process-1--set-process-buffer)
+     'make-pipe-process nil #'emacs-cc-pipe-process-1--create-core-pipe)
     (emacs-process-events-register-handler
-     'set-process-filter nil #'emacs-cc-pipe-process-1--set-process-filter)
+     'process-list nil #'emacs-cc-pipe-process-1--process-list)
     (emacs-process-events-register-handler
-     'set-process-sentinel nil #'emacs-cc-pipe-process-1--set-process-sentinel))
+     'process-mark nil #'emacs-cc-pipe-process-1--process-mark))
   ;; `accept-process-output' is owned by emacs-process-builtins' shared wait.
   (dolist (entry '((get-process . emacs-cc-pipe-process-1--get-process)
                    (process-command . emacs-cc-pipe-process-1--process-command)

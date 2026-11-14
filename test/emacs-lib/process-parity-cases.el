@@ -124,3 +124,58 @@
   (let ((p (make-process :name "nb" :command '("true"))))
     (pp--wait p)
     (list (process-buffer p) (processp p))))
+
+;;; Pipe processes (`make-pipe-process'): the NeLisp core owns the one
+;;; representation, so these cases read GNU-visible behaviour only.
+
+(defun pp--pipe-wait (proc pipe)
+  "Wait until PROC exits, then drain PROC and PIPE."
+  (pp--wait proc)
+  (accept-process-output pipe 0.1)
+  (accept-process-output pipe 0.1))
+
+(pp--case "pipe-as-stderr"
+  (let* ((eb (pp--buf)) (ob (pp--buf))
+         (pipe (make-pipe-process :name "perr" :buffer eb :noquery t))
+         (p (make-process :name "pp" :buffer ob :noquery t
+                          :command '("sh" "-c" "echo out; echo err >&2")
+                          :stderr pipe)))
+    (pp--pipe-wait p pipe)
+    (list (with-current-buffer ob (buffer-string))
+          (with-current-buffer eb (buffer-string)))))
+
+(pp--case "pipe-as-stderr-filter"
+  (let* ((acc "") (eb (pp--buf))
+         (pipe (make-pipe-process :name "perf" :buffer eb :noquery t
+                                  :filter (lambda (_p s) (setq acc (concat acc s)))))
+         (p (make-process :name "pq" :noquery t
+                          :command '("sh" "-c" "echo e1 >&2") :stderr pipe)))
+    (pp--pipe-wait p pipe)
+    (list acc (with-current-buffer eb (buffer-string)))))
+
+(pp--case "pipe-basics"
+  (let* ((b (pp--buf))
+         (pipe (make-pipe-process :name "pbasic" :buffer b :noquery t)))
+    (prog1 (list (process-type pipe) (process-name pipe)
+                 (eq (process-buffer pipe) b) (process-status pipe)
+                 (and (process-live-p pipe) t) (processp pipe)
+                 (eq (get-process "pbasic") pipe)
+                 (and (memq pipe (process-list)) t)
+                 (process-contact pipe) (process-contact pipe :name))
+      (delete-process pipe))))
+
+(pp--case "pipe-filter-accessors"
+  (let* ((pipe (make-pipe-process :name "pfilt" :buffer nil :noquery t))
+         (f (lambda (_p _s) nil))
+         (before (process-filter pipe)))
+    (set-process-filter pipe f)
+    (let ((set (eq (process-filter pipe) f)))
+      (set-process-filter pipe nil)
+      (prog1 (list before set (process-filter pipe))
+        (delete-process pipe)))))
+
+(pp--case "pipe-delete"
+  (let* ((pipe (make-pipe-process :name "pdel" :buffer nil :noquery t)))
+    (delete-process pipe)
+    (list (process-status pipe) (and (process-live-p pipe) t)
+          (and (memq pipe (process-list)) t) (get-process "pdel"))))

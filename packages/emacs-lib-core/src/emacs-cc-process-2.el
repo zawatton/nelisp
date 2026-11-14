@@ -114,7 +114,9 @@
                        (get-buffer-process process))))
         'pipe
       (let ((p (emacs-cc-process-2--get-process process)))
-      (cond ((and (vectorp p) (>= (length p) 14)
+      (cond ((and (fboundp 'nelisp-process-buffer-p) (nelisp-process-buffer-p p))
+               'pipe)
+              ((and (vectorp p) (>= (length p) 14)
                   (eq (aref p 0) :emacs-process-events))
                (if (memq (aref p 3) '(network-server network-connection))
                    'network 'pipe))

@@ -270,11 +270,8 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
   (defun process-send-eof (&optional process)
     "Close PROCESS's outgoing stream and return the process."
     (setq process (emacs-process-builtins--resolve-process process))
-    (if (and (fboundp 'emacs-cc-pipe-process-1--pipe-p)
-             (emacs-cc-pipe-process-1--pipe-p process))
-        (emacs-cc-pipe-process-1--send-eof process)
-      (emacs-process-process-send-eof process)
-      process)))
+    (emacs-process-process-send-eof process)
+    process))
 
 (when (emacs-process-builtins--install-function-p 'delete-process)
   (defalias 'delete-process #'emacs-process-delete-process))
