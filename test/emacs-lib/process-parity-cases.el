@@ -31,6 +31,21 @@
     (list (with-current-buffer b (buffer-string))
           (process-filter p))))
 
+(pp--case "default-directory"
+  ;; GNU starts every subprocess in `default-directory'; vc and magit
+  ;; let-bind it to the repository.  Compare a relative path the child
+  ;; sees, so the temporary directory name does not enter the result.
+  (let* ((dir (file-name-as-directory (make-temp-file "pp-cwd" t)))
+         (b (pp--buf)))
+    (with-temp-file (expand-file-name "marker.txt" dir) (insert "here"))
+    (let* ((default-directory dir)
+           (p (make-process :name "pd" :command '("cat" "marker.txt")
+                            :buffer b :sentinel #'ignore)))
+      (pp--wait p)
+      (prog1 (list (with-current-buffer b (buffer-string))
+                   (process-command p))
+        (delete-directory dir t)))))
+
 (pp--case "default-filter-mark"
   (let* ((b (pp--buf))
          (p (make-process :name "pm" :command '("printf" "abcdef") :buffer b

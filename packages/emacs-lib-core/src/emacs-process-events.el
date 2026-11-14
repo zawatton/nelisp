@@ -782,6 +782,7 @@ re-evaluated, and also runs when the facade has not loaded yet."
   nil)
 
 ;;;; --- single public-name dispatcher ------------------------------------
+
 ;;
 ;; Every standard process function that more than one emacs-lib layer
 ;; extends is installed here, exactly once, by the table below.  The
@@ -907,6 +908,52 @@ handles (nil selects every call).  FUNCTION is called as
            name #'emacs-process-events--not-core-pipe-p
            (lambda (_next &rest args)
              (emacs-process-events--terminal name args))))))))
+
+;; The core buffer-pipe file (lisp/nelisp-process-buffer.el) redefines
+;; processp, process-status, process-buffer, process-get/put, process-mark,
+;; set-process-buffer and make-pipe-process when it loads.  In the runtime
+;; image it is demand-loaded after this file, and its fall-through targets
+;; were captured at boot (the bare process primitives), so it replaced the
+;; dispatcher above: `process-buffer' of an emacs-lib child answered nil and
+;; vc-print-log lost its output.  When the core loads after the dispatcher,
+;; keep the core definition as the name's base and put the same dispatcher
+;; back.  Skip a name whose core fall-through already is the dispatcher
+;; (bundle load order), where re-wrapping would recurse.
+(defconst emacs-process-events--core-fallthrough
+  '((processp . nelisp-process-buffer--original-p)
+    (process-status . nelisp-process-buffer--original-status)
+    (process-buffer . nelisp-process-buffer--original-buffer)
+    (process-get . nelisp-process-buffer--original-get)
+    (process-put . nelisp-process-buffer--original-put))
+  "Core variables holding the definition each core decorator falls back to.")
+
+(defun emacs-process-events--reassert-after-core ()
+  "Put the dispatcher back over names the core file just redefined.
+Only where emacs-lib owns `make-process' (`emacs-standalone-mode-p', the
+runtime image): its children keep their state in emacs-lib metadata,
+which the core decorators cannot read.  Where the core adapter owns
+`make-process' (the bundle loaded with --load), the core decorators
+already answer for its processes and stay in place."
+  (when (and (fboundp 'emacs-standalone-mode-p) (emacs-standalone-mode-p))
+   (dolist (name '(processp process-status process-buffer set-process-buffer
+                  process-put process-get process-mark make-pipe-process))
+    (let ((dispatcher (get name 'emacs-process-events--dispatcher))
+          (var (cdr (assq name emacs-process-events--core-fallthrough))))
+      (when (and dispatcher
+                 (not (eq (symbol-function name) dispatcher))
+                 (not (and var (boundp var) (eq (symbol-value var) dispatcher))))
+        (put name 'emacs-process-events--base (symbol-function name))
+        (fset name dispatcher))))))
+
+(when (and emacs-process-events--standalone-p
+           (not (featurep 'nelisp-process-buffer)))
+  (let ((entry (assq 'nelisp-process-buffer after-load-alist)))
+    (if entry
+        (unless (memq #'emacs-process-events--reassert-after-core (cdr entry))
+          (setcdr entry (cons #'emacs-process-events--reassert-after-core
+                              (cdr entry))))
+      (push (list 'nelisp-process-buffer #'emacs-process-events--reassert-after-core)
+            after-load-alist))))
 
 (when emacs-process-events--standalone-p
   (require 'emacs-process-coding)

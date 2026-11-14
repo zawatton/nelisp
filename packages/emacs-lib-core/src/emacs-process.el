@@ -914,8 +914,15 @@ Emacs `call-process' semantics (see `emacs-process--call-process-cwd')."
                            infile
                            program)
                      args)
-           (cons program args)))
-        (cwd (emacs-process--call-process-cwd)))
+           (cons program args))))
+    (emacs-process--cwd-command command)))
+
+(defun emacs-process--cwd-command (command)
+  "Return COMMAND wrapped so the child starts in `default-directory'.
+Return COMMAND unchanged when no chdir is needed (see
+`emacs-process--call-process-cwd').  The directory and the command are
+passed as argv values, never interpolated into shell code."
+  (let ((cwd (emacs-process--call-process-cwd)))
     (if cwd
         (append (list emacs-process-shell-file-name
                       emacs-process-shell-command-switch

@@ -168,7 +168,10 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
 
 ;; Where the core process adapter owns `make-process' (this layer's own is not
 ;; installed), keep the core object and only record the original command on
-;; its plist so `process-command' answers it.  No state of our own.
+;; its plist so `process-command' answers it.  No state of our own.  The core
+;; spawns in the parent's cwd, so the child is started in `default-directory'
+;; through the same argv-only wrapper `call-process' uses (GNU runs every
+;; subprocess there; vc and magit let-bind it to the repository).
 (when (and (fboundp 'nelisp--repr)
            (not (get 'make-process 'emacs-process-builtins--core))
            (not (eq (symbol-function 'make-process)
@@ -178,7 +181,16 @@ so bridges can still reach the substrate's own primitive (Doc 213)."
     (unless (and (symbolp core) (string-prefix-p "emacs-process-" (symbol-name core)))
       (fset 'make-process
             (lambda (&rest args)
-              (let ((process (apply core args)))
+              (let ((process
+                     (apply core
+                            (if (consp (plist-get args :command))
+                                (plist-put
+                                 (copy-sequence args) :command
+                                 (emacs-process--cwd-command
+                                  (cons (emacs-process--resolve-program
+                                         (car (plist-get args :command)))
+                                        (cdr (plist-get args :command)))))
+                              args))))
                 (when (and (processp process) (plist-get args :command)
                            (emacs-process--native-process-p process)
                            (not (emacs-process--native-metadata-cell process)))
