@@ -224,6 +224,7 @@ nelisp--read-all-from-string-native	native-review	R2 existing reader escape fix:
 nl-current-unix-time	native-review	No classification row; review against Doc 211 §6.
 nl-unix-time-usec	native-review	No classification row; review against Doc 211 §6.
 float-time	native-must-stay	clock syscall
+nl-local-utc-offset	native-review	No classification row; review against Doc 211 §6.
 nelisp--monotonic-ns	native-must-stay	AGENTS.md clause 4 (clock needed before the first Lisp form; no Lisp form exists)
 nelisp--boot-phase-ns	native-must-stay	AGENTS.md clause 4 (clock needed before the first Lisp form; no Lisp form exists)
 nelisp--region-open	native-must-stay	Clause 3: raw memory access to the bounded (256 MiB budget) region table, nl_region_open_w and companions (c552d6bbb Doc 241-243); no Lisp form can address raw memory. No Lisp reference applicable
