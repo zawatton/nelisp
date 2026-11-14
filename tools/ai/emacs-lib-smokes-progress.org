@@ -37,6 +37,12 @@ cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NE
 #+TIMEOUT: 240
 cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-dired-workflow-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
 
+** S1.6 test-nelisp-cvs-dired-smoke runs and passes (added 2026-11-14)
+#+NOTE: GNU find-directory-functions dispatch: plain and unprefixed CVS dirs give Dired; CVS dir with prefix (4) loads pcvs and gives *cvs* in cvs-mode (matches host 31.1).
+#+REQUIRES: NELISP_BIN
+#+TIMEOUT: 240
+cmd: h=$(mktemp -d) && out=$(HOME=$h make -s -f mk/emacs-lib.mk NELISP_ROOT=. NELISP_BIN="$NELISP_BIN" test-nelisp-cvs-dired-smoke 2>&1); rm -rf "$h"; echo "$out" | grep -q 'Ran 1 tests, 1 results as expected, 0 unexpected'
+
 ** S1.5 End to end: the ec-leak sweep stays at 0 leaks with one buffer type after these fixes
 #+REQUIRES: NELISP_BIN
 #+TIMEOUT: 240

@@ -1347,6 +1347,65 @@ prove the navigation history stays live inside one reader process."
      (should (string-match-p "HELP-BACK=t" out))
      (should (string-match-p "HELP-FWD=t" out)))))
 
+(ert-deftest nemacs-bootstrap-nelisp-test/cvs-directory-dispatch-callable ()
+  "Visiting a directory goes through GNU `find-directory-functions'.
+GNU's default list starts with `cvs-dired-noselect' (preloaded from GNU
+loaddefs.el).  A plain directory and a CVS directory visited without a
+prefix give Dired; a CVS directory visited with prefix (4) loads the
+vendored pcvs.el and returns *cvs* in `cvs-mode'.  Every expectation was
+checked against the same form under GNU Emacs 31.1 `--batch -Q'."
+  (nemacs-bootstrap-nelisp-test--skip-unless-binary
+   (let ((root (make-temp-file "nemacs-cvs-dispatch-" t)))
+     (unwind-protect
+         (let* ((cvs (expand-file-name "CVS" root))
+                (form
+                 `(let ((root ,root)
+                        (cvs ,cvs))
+                    (nelisp--write-stdout-bytes
+                     (concat "CVS-FDF="
+                             (if (equal find-directory-functions
+                                        '(cvs-dired-noselect dired-noselect))
+                                 "t" "nil")
+                             "\n"))
+                    (let ((b (find-file-noselect root)))
+                      (nelisp--write-stdout-bytes
+                       (concat "CVS-PLAIN-DIRED="
+                               (if (eq (buffer-local-value 'major-mode b)
+                                       'dired-mode)
+                                   "t" "nil")
+                               "\n")))
+                    (let ((b (find-file-noselect cvs)))
+                      (nelisp--write-stdout-bytes
+                       (concat "CVS-NOPREFIX-DIRED="
+                               (if (and (eq (buffer-local-value 'major-mode b)
+                                            'dired-mode)
+                                        (not (featurep 'pcvs)))
+                                   "t" "nil")
+                               "\n")))
+                    (let* ((current-prefix-arg '(4))
+                           (b (condition-case nil
+                                  (find-file-noselect (concat cvs "/"))
+                                (error nil))))
+                      (nelisp--write-stdout-bytes
+                       (concat "CVS-PREFIX-PCVS="
+                               (if (and (bufferp b)
+                                        (equal (buffer-name b) "*cvs*")
+                                        (eq (buffer-local-value 'major-mode b)
+                                            'cvs-mode)
+                                        (featurep 'pcvs))
+                                   "t" "nil")
+                               "\n"))))))
+           (make-directory cvs)
+           (with-temp-file (expand-file-name "Entries" cvs)
+             (insert "D\n"))
+           (let ((out (nemacs-bootstrap-nelisp-test--run
+                       "--batch" "--no-banner"
+                       "--eval" (prin1-to-string form))))
+             (dolist (key '("CVS-FDF" "CVS-PLAIN-DIRED" "CVS-NOPREFIX-DIRED"
+                            "CVS-PREFIX-PCVS"))
+               (should (string-match-p (concat key "=t") out)))))
+       (delete-directory root t)))))
+
 (ert-deftest nemacs-bootstrap-nelisp-test/dired-workflow-callable ()
   "Standalone Dired workflow runs through the genuine GNU dired.el.
 Proves the reader can render a listing, enter a subdirectory, return to
