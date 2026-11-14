@@ -2212,13 +2212,26 @@ POSIX counts hours WEST of UTC, so the UTC offset is the negation.  A
 DST part is not parsed.  The empty string means UTC."
     (cond
      ((equal tz "") (cons 0 "UTC"))
-     ((string-match
-       "\`\([A-Za-z]+\)\([+-]?[0-9]+\)\(?::\([0-9]+\)\)?" tz)
-      (let* ((hh (string-to-number (match-string 2 tz)))
-             (mm-str (match-string 3 tz))
-             (mm (if mm-str (string-to-number mm-str) 0))
-             (mag (+ (* (abs hh) 3600) (* mm 60))))
-        (cons (- (if (< hh 0) (- mag) mag)) (match-string 1 tz)))))))
+     (t
+      (let ((i 0) (n (length tz)))
+        (while (and (< i n) (let ((c (aref tz i)))
+                              (or (and (>= c ?A) (<= c ?Z))
+                                  (and (>= c ?a) (<= c ?z)))))
+          (setq i (1+ i)))
+        (when (and (> i 0) (< i n))
+          (let ((name (substring tz 0 i)) (neg nil) (hh 0) (mm 0) (digits 0))
+            (when (memq (aref tz i) '(?+ ?-))
+              (setq neg (= (aref tz i) ?-) i (1+ i)))
+            (while (and (< i n) (>= (aref tz i) ?0) (<= (aref tz i) ?9))
+              (setq hh (+ (* hh 10) (- (aref tz i) ?0)) digits (1+ digits)
+                    i (1+ i)))
+            (when (and (> digits 0) (< i n) (= (aref tz i) ?:))
+              (setq i (1+ i))
+              (while (and (< i n) (>= (aref tz i) ?0) (<= (aref tz i) ?9))
+                (setq mm (+ (* mm 10) (- (aref tz i) ?0)) i (1+ i))))
+            (when (> digits 0)
+              (let ((mag (+ (* hh 3600) (* mm 60))))
+                (cons (if neg mag (- mag)) name)))))))))))
 
 (unless (fboundp 'nelisp--tm-zone-spec)
   (defun nelisp--tm-zone-spec (zone)
