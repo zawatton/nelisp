@@ -3157,10 +3157,10 @@ standalone-reader-match-data-smoke: standalone-reader
 standalone-reader-current-time-smoke: standalone-reader
 	@mkdir -p target
 	@printf '%s\n' \
-	  '(let* ((before (float-time)) (tm (current-time)) (after (float-time)) (hi (nth 0 tm)) (lo (nth 1 tm)) (us (nth 2 tm)) (ps (nth 3 tm)) (secs (+ (* hi 65536) lo))) (list (= (length tm) 4) (and (>= secs (floor before)) (<= secs (floor after))) (and (>= us 0) (< us 1000000)) (= ps 0)))' \
+	  '(let* ((before (float-time)) (tm (current-time)) (after (float-time)) (hi (nth 0 tm)) (lo (nth 1 tm)) (us (nth 2 tm)) (ps (nth 3 tm)) (secs (+ (* hi 65536) lo))) (list (= (length tm) 4) (and (>= secs (floor before)) (<= secs (floor after))) (and (>= us 0) (< us 1000000)) (= ps 0) (< (abs (- (/ (nl-unix-time-usec) 1000000.0) after)) 2.0) (< (abs (- (nl-current-unix-time) after)) 2.0)))' \
 	  > target/standalone-reader-current-time-smoke.el
 	@out="$$($(STANDALONE_BIN) --load target/standalone-reader-current-time-smoke.el)"; \
-	if [ "$$out" = "(t t t t)" ]; then \
+	if [ "$$out" = "(t t t t t t)" ]; then \
 	  echo "[standalone-reader-current-time-smoke] PASS: -> $$out"; \
 	else \
 	  echo "[standalone-reader-current-time-smoke] FAIL: -> $$out"; \
