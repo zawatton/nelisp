@@ -510,35 +510,11 @@ FILES-ONLY limits rows to buffers visiting files."
       (switch-to-buffer buffer)
       buffer)))
 
-;;;###autoload
-(defun find-file-noselect (filename &optional nowarn rawfile wildcards)
-  "Return a buffer visiting FILENAME, without selecting it."
-  (ignore nowarn rawfile wildcards)
-  (let* ((abs (expand-file-name filename))
-         (existing (emacs-fileio--find-existing-buffer abs)))
-    (cond
-     (existing existing)
-     ;; Like GNU `find-file-noselect-1': a directory is visited through
-     ;; Dired (when `find-file-run-dired' allows it), never read as a file.
-     ((and (file-directory-p abs)
-           (fboundp 'dired-noselect)
-           (or (not (boundp 'find-file-run-dired)) find-file-run-dired))
-      (dired-noselect abs))
-     (t
-      (let ((buf (generate-new-buffer
-                  (emacs-fileio--prepare-buffer-name abs))))
-        (with-current-buffer buf
-          (when (file-exists-p abs)
-            (insert-file-contents abs))
-          (if (emacs-fileio-native-public-buffer-p (current-buffer))
-              (emacs-fileio-set-visited-file-name-direct abs)
-            (set-visited-file-name abs))
-          (emacs-fileio--remember-default-directory buf abs)
-          (emacs-fileio--remember-major-mode
-           buf
-           (emacs-fileio--resolve-major-mode abs))
-          (set-buffer-modified-p nil))
-        buf)))))
+;; GNU's default is '(cvs-dired-noselect dired-noselect); pcvs.el is not
+;; vendored, so the unavailable CVS entry is left out.  `find-file-noselect'
+;; itself is GNU's (emacs-files-gnu.el).
+(defvar find-directory-functions '(dired-noselect)
+  "Functions `find-file-noselect' tries to visit a directory.")
 
 ;;;###autoload
 (defun find-file (filename &optional wildcards)

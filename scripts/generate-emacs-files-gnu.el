@@ -26,7 +26,14 @@
     ;; Applying the collected variables (called by the two functions above).
     hack-local-variables-apply hack-one-local-variable
     hack-one-local-variable--obsolete hack-one-local-variable-quotep
-    hack-one-local-variable-eval-safep)
+    hack-one-local-variable-eval-safep
+    ;; File visiting: `find-file-noselect' and its call path.
+    buffer-file-numbers-unique find-buffer-visiting find-file-wildcards
+    find-file-suppress-same-file-warnings find-file-existing-other-name
+    find-file-not-found-functions query-about-changed-file
+    view-read-only auto-save-default buffer-file-read-only find-file-literally backup-enable-predicate normal-backup-enable-predicate
+    out-of-memory-warning-percentage abort-if-file-too-large warn-maybe-out-of-memory files--message
+    find-file-noselect find-file-noselect-1 after-find-file)
   "GNU files.el names this file copies: the directory-local-variables
 subsystem, which the standalone lacks (project.el calls
 `hack-dir-local-variables').")

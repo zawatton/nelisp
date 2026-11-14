@@ -4,6 +4,17 @@
 ;; vendor/staged-emacs-lisp/files.el (GNU Emacs 31.1).  The forms below
 ;; are copied verbatim; do not edit by hand.
 
+(defvar backup-enable-predicate 'normal-backup-enable-predicate
+  "Predicate that looks at a file name and decides whether to make backups.
+Called with an absolute file name as argument, it returns t to enable backup.")
+
+(defcustom find-file-existing-other-name t
+  "Non-nil means find a file under alternative names, in existing buffers.
+This means if any existing buffer is visiting the file you want
+under another name, you get the existing buffer instead of a new buffer."
+  :type 'boolean
+  :group 'find-file)
+
 (defcustom find-file-visit-truename nil
   "Non-nil means visiting a file uses its truename as the visited-file name.
 That is, the buffer visiting the file has the truename as the
@@ -22,11 +33,28 @@ if the file has changed on disk and you have not edited the buffer."
   :type '(repeat regexp)
   :group 'find-file)
 
+(defvar buffer-file-numbers-unique (not (memq system-type '(windows-nt)))
+  "Non-nil means that `buffer-file-number' uniquely identifies files.")
+
+(defvar-local buffer-file-read-only nil
+  "Non-nil if visited file was read-only when visited.")
+
+(defcustom auto-save-default t
+  "Non-nil says by default do auto-saving of every file-visiting buffer."
+  :type 'boolean
+  :group 'auto-save)
+
 (defcustom find-file-run-dired t
   "Non-nil means allow `find-file' to visit directories.
 To visit the directory, `find-file' runs `find-directory-functions'."
   :type 'boolean
   :group 'find-file)
+
+(defvar find-file-not-found-functions nil
+  "List of functions to be called for `find-file' on nonexistent file.
+These functions are called as soon as the error is detected.
+Variable `buffer-file-name' is already set up.
+The functions are called in the order given until one of them returns non-nil.")
 
 (defcustom enable-local-variables t
   "Control use of local variables in files you visit.
@@ -73,6 +101,15 @@ A value of nil means ignore them; anything else means query."
 		 (const :tag "Ignore" nil)
 		 (other :tag "Query" other))
   :group 'find-file)
+
+(defcustom view-read-only nil
+  "Non-nil means buffers visiting files read-only do so in view mode.
+In fact, this means that all read-only buffers normally have
+View mode enabled, including buffers that are read-only because
+you visit a file you cannot alter, and buffers you make read-only
+using \\[read-only-mode]."
+  :type 'boolean
+  :group 'view)
 
 (defun files--name-absolute-system-p (file)
   "Return non-nil if FILE is an absolute name to the operating system.
@@ -204,6 +241,486 @@ this function prepends a \"|\" to the final result if necessary."
 	 (buf (generate-new-buffer basename)))
     (uniquify--create-file-buffer-advice buf filename basename)
     buf))
+
+(defun find-buffer-visiting (filename &optional predicate)
+  "Return the buffer visiting file FILENAME (a string).
+This is like `get-file-buffer', except that it checks for any buffer
+visiting the same file, possibly under a different name.
+
+If PREDICATE is non-nil, only buffers satisfying it are eligible,
+and others are ignored.  PREDICATE is called with the buffer as
+the only argument, but not with the buffer as the current buffer.
+
+Note that indirect buffers don't count as visiting files,
+and that therefore this function only ever returns base buffers.
+
+If there is no such live buffer, return nil."
+  (or (let ((buf (get-file-buffer filename)))
+        (when (and buf (or (not predicate) (funcall predicate buf))) buf))
+      (let ((truename (abbreviate-file-name (file-truename filename))))
+        (or
+         (let ((buf (get-truename-buffer truename)))
+           (when (and buf (buffer-local-value 'buffer-file-name buf)
+                      (or (not predicate) (funcall predicate buf)))
+             buf))
+         (let* ((attributes (file-attributes truename))
+                (number (file-attribute-file-identifier attributes)))
+           (and buffer-file-numbers-unique
+                (car-safe number)       ;Make sure the inode is not just nil.
+                (let* ((buf (find-buffer 'buffer-file-number number))
+                       (buf-file-name
+                        (and buf (buffer-local-value 'buffer-file-name buf))))
+                  (when (and buf-file-name
+                             ;; Verify this buffer's file number
+                             ;; still belongs to its file.
+                             (file-exists-p buf-file-name)
+                             (equal (file-attributes
+                                     (buffer-local-value
+                                      'buffer-file-truename buf))
+                                    attributes)
+                             (or (not predicate)
+                                 (funcall predicate buf)))
+                    buf))))))))
+
+(defcustom find-file-wildcards t
+  "Non-nil means file-visiting commands should handle wildcards.
+For example, if you specify `*.c', that would visit all the files
+whose names match the pattern."
+  :group 'files
+  :version "20.4"
+  :type 'boolean)
+
+(defcustom find-file-suppress-same-file-warnings nil
+  "Non-nil means suppress warning messages for symlinked files.
+When nil, Emacs prints a warning when visiting a file that is already
+visited, but with a different name.  Setting this option to t
+suppresses this warning."
+  :group 'files
+  :version "21.1"
+  :type 'boolean)
+
+(defcustom out-of-memory-warning-percentage nil
+  "Warn if file size exceeds this percentage of available free memory.
+When nil, never issue warning.  Beware: This probably doesn't do what you
+think it does, because \"free\" is pretty hard to define in practice."
+  :group 'files
+  :group 'find-file
+  :version "25.1"
+  :type '(choice integer (const :tag "Never issue warning" nil)))
+
+(defcustom query-about-changed-file t
+  "If non-nil, query the user when re-visiting a file that has changed.
+This happens if the file is already visited in a buffer, the
+file was changed externally, and the user re-visits the file.
+
+If nil, don't prompt the user, but instead provide instructions for
+reverting, after switching to the buffer with its contents before
+the external changes."
+  :group 'files
+  :group 'find-file
+  :version "28.1"
+  :type 'boolean)
+
+(defun abort-if-file-too-large (size op-type filename &optional offer-raw)
+  "If file SIZE larger than `large-file-warning-threshold', allow user to abort.
+OP-TYPE specifies the file operation being performed (for message
+to user).  If OFFER-RAW is true, give user the additional option
+to open the file literally.  If the user chooses this option,
+`abort-if-file-too-large' returns the symbol `raw'.  Otherwise,
+it returns nil or exits non-locally."
+  (let ((choice (and large-file-warning-threshold size
+	             (> size large-file-warning-threshold)
+                     ;; No point in warning if we can't read it.
+                     (file-readable-p filename)
+                     (files--ask-user-about-large-file
+                      size op-type filename offer-raw))))
+    (when (eq choice 'abort)
+      (user-error "Aborted"))
+    choice))
+
+(defun warn-maybe-out-of-memory (size)
+  "Warn if an attempt to open file of SIZE bytes may run out of memory."
+  (when (and (numberp size) (not (zerop size))
+	     (integerp out-of-memory-warning-percentage))
+    (let* ((default-directory temporary-file-directory)
+           (meminfo (memory-info)))
+      (when (consp meminfo)
+	(let ((total-free-memory (float (+ (nth 1 meminfo) (nth 3 meminfo)))))
+	  (when (> (/ size 1024)
+		   (/ (* total-free-memory out-of-memory-warning-percentage)
+		      100.0))
+	    (warn
+	     "You are trying to open a file whose size (%s)
+exceeds the %S%% of currently available free memory (%s).
+If that fails, try to open it with `find-file-literally'
+\(but note that some characters might be displayed incorrectly)."
+	     (funcall byte-count-to-string-function size)
+	     out-of-memory-warning-percentage
+	     (funcall byte-count-to-string-function
+                      (* total-free-memory 1024)))))))))
+
+(defun files--message (format &rest args)
+  "Like `message', except sometimes don't show the message text.
+If the variable `save-silently' is non-nil, the message will not
+be visible in the echo area."
+  (apply #'message format args)
+  (when save-silently (message nil)))
+
+(defun find-file-noselect (filename &optional nowarn rawfile wildcards)
+  "Read file FILENAME into a buffer and return the buffer.
+If a buffer exists visiting FILENAME, return that one, but
+verify that the file has not changed since visited or saved.
+The buffer is not selected, just returned to the caller.
+Optional second arg NOWARN non-nil means suppress any warning messages,
+and also don't verify that the file has not been changed since
+last visited or saved.
+Optional third arg RAWFILE non-nil means the file is read literally.
+Optional fourth arg WILDCARDS non-nil means do wildcard processing
+and visit all the matching files.  When wildcards are actually
+used and expanded, return a list of buffers that are visiting
+the various files."
+  (setq filename
+	(abbreviate-file-name
+	 (expand-file-name filename)))
+  (if (file-directory-p filename)
+      (or (and find-file-run-dired
+	       (run-hook-with-args-until-success
+		'find-directory-functions
+		(if find-file-visit-truename
+		    (abbreviate-file-name (file-truename filename))
+		  filename)))
+	  (error "%s is a directory" filename))
+    (if (and wildcards
+	     find-file-wildcards
+	     (not (file-name-quoted-p filename))
+	     (string-match "[[*?]" filename))
+	(let ((files (condition-case nil
+			 (file-expand-wildcards filename t)
+		       (error (list filename))))
+	      (find-file-wildcards nil))
+	  (if (null files)
+	      (find-file-noselect filename)
+	    (mapcar #'find-file-noselect files)))
+      (let* ((buf (get-file-buffer filename))
+	     (truename (abbreviate-file-name (file-truename filename)))
+	     (attributes (file-attributes truename))
+	     (number (file-attribute-file-identifier attributes))
+	     ;; Find any buffer for a file that has same truename.
+	     (other (and (not buf)
+                         (find-buffer-visiting
+                          filename
+                          ;; We want to filter out buffers that we've
+                          ;; visited via symlinks and the like, where
+                          ;; the symlink no longer exists.
+                          (lambda (buffer)
+                            (let ((file (buffer-local-value
+                                         'buffer-file-name buffer)))
+                              (and file (file-exists-p file))))))))
+	;; Let user know if there is a buffer with the same truename.
+        (when other
+          (or nowarn
+              find-file-suppress-same-file-warnings
+              (string-equal filename (buffer-file-name other))
+              (files--message "%s and %s are the same file"
+                         filename (buffer-file-name other)))
+          ;; Optionally also find that buffer.
+          (if (or find-file-existing-other-name find-file-visit-truename)
+              (setq buf other)))
+	;; Check to see if the file looks uncommonly large.
+	(when (not (or buf nowarn))
+          (when (eq (abort-if-file-too-large
+                     (file-attribute-size attributes) "open" filename
+                     (not rawfile))
+                    'raw)
+            (setf rawfile t))
+	  (warn-maybe-out-of-memory (file-attribute-size attributes)))
+	(if buf
+	    ;; We are using an existing buffer.
+	    (let (nonexistent)
+	      (or nowarn
+		  (verify-visited-file-modtime buf)
+		  (cond ((not (file-exists-p filename))
+			 (setq nonexistent t)
+			 (message "File %s no longer exists!" filename))
+			;; Certain files should be reverted automatically
+			;; if they have changed on disk and not in the buffer.
+			((and (not (buffer-modified-p buf))
+			      (let ((tail revert-without-query)
+				    (found nil))
+				(while tail
+				  (if (string-match (car tail) filename)
+				      (setq found t))
+				  (setq tail (cdr tail)))
+				found))
+			 (with-current-buffer buf
+			   (message "Reverting file %s..." filename)
+			   (revert-buffer t t)
+			   (message "Reverting file %s...done" filename)))
+                        ((not query-about-changed-file)
+                         (message
+                          (substitute-command-keys
+                           "File %s changed on disk.  \\[revert-buffer-quick] to load new contents%s")
+                          (file-name-nondirectory filename)
+                          (if (buffer-modified-p buf)
+                              " and discard your edits"
+                            "")))
+			((yes-or-no-p
+			  (if (string= (file-name-nondirectory filename)
+				       (buffer-name buf))
+			      (format
+			       (if (buffer-modified-p buf)
+				   "File %s changed on disk.  Discard your edits? "
+				 "File %s changed on disk.  Reread from disk? ")
+			       (file-name-nondirectory filename))
+			    (format
+			     (if (buffer-modified-p buf)
+				 "File %s changed on disk.  Discard your edits in %s? "
+			       "File %s changed on disk.  Reread from disk into %s? ")
+			     (file-name-nondirectory filename)
+			     (buffer-name buf))))
+			 (with-current-buffer buf
+			   (revert-buffer t t)))))
+	      (with-current-buffer buf
+
+		;; Check if a formerly read-only file has become
+		;; writable and vice versa, but if the buffer agrees
+		;; with the new state of the file, that is ok too.
+		(let ((read-only (not (file-writable-p buffer-file-name))))
+		  (unless (or nonexistent
+			      (eq read-only buffer-file-read-only)
+			      (eq read-only buffer-read-only))
+		    (when (or nowarn
+			      (let* ((new-status
+				      (if read-only "read-only" "writable"))
+				     (question
+				      (format "File %s is %s on disk.  Make buffer %s, too? "
+					      buffer-file-name
+					      new-status new-status)))
+				(y-or-n-p question)))
+		      (setq buffer-read-only read-only)))
+		  (setq buffer-file-read-only read-only))
+
+		(unless (or (eq (null rawfile) (null find-file-literally))
+			    nonexistent
+			    ;; It is confusing to ask whether to visit
+			    ;; non-literally if they have the file in
+			    ;; hexl-mode or image-mode.
+			    (memq major-mode '(hexl-mode image-mode)))
+		  (if (buffer-modified-p)
+		      (if (let ((help-form
+				 (format-message
+				  (if rawfile "\
+The file %s is already visited normally,
+and you have edited the buffer.  Now you have asked to visit it literally,
+meaning no coding system handling, format conversion, or local variables.
+Emacs can visit a file in only one way at a time."
+				    "\
+The file %s is already visited literally,
+meaning no coding system handling, format conversion, or local variables.
+You have edited the buffer.  Now you have asked to visit the file normally,
+but Emacs can visit a file in only one way at a time.")
+				  (file-name-nondirectory filename))))
+			    (y-or-n-p
+			     (if rawfile "\
+Do you want to save the file, and visit it literally instead? " "\
+Do you want to save the file, and visit it normally instead? ")))
+			  (progn
+			    (save-buffer)
+			    (find-file-noselect-1 buf filename nowarn
+						  rawfile truename number))
+			(if (y-or-n-p
+			     (if rawfile "\
+Do you want to discard your changes, and visit the file literally now? " "\
+Do you want to discard your changes, and visit the file normally now? "))
+			    (find-file-noselect-1 buf filename nowarn
+						  rawfile truename number)
+			  (error (if rawfile "File already visited non-literally"
+				   "File already visited literally"))))
+		    (if (let ((help-form
+			       (format-message
+				(if rawfile "\
+The file %s is already visited normally.
+You have asked to visit it literally,
+meaning no coding system decoding, format conversion, or local variables.
+But Emacs can visit a file in only one way at a time."
+				  "\
+The file %s is already visited literally,
+meaning no coding system decoding, format conversion, or local variables.
+You have asked to visit it normally,
+but Emacs can visit a file in only one way at a time.")
+				(file-name-nondirectory filename))))
+			  (y-or-n-p
+			   (if rawfile "\
+Do you want to revisit the file literally now? " "\
+Do you want to revisit the file normally now? ")))
+			(find-file-noselect-1 buf filename nowarn
+					      rawfile truename number)
+		      (error (if rawfile "File already visited non-literally"
+			       "File already visited literally"))))))
+	      ;; Return the buffer we are using.
+	      buf)
+	  ;; Create a new buffer.
+	  (setq buf (create-file-buffer filename))
+	  ;; find-file-noselect-1 may use a different buffer.
+	  (find-file-noselect-1 buf filename nowarn
+				rawfile truename number))))))
+
+(defun find-file-noselect-1 (buf filename nowarn rawfile truename number)
+  (let (error)
+    (with-current-buffer buf
+      (kill-local-variable 'find-file-literally)
+      ;; Needed in case we are re-visiting the file with a different
+      ;; text representation.
+      (kill-local-variable 'buffer-file-coding-system)
+      (kill-local-variable 'cursor-type)
+      (let ((inhibit-read-only t))
+	(erase-buffer))
+      (and (not rawfile)
+	   (set-buffer-multibyte t))
+      (if rawfile
+	  (condition-case err
+	      (let ((inhibit-read-only t)
+                    (enable-local-variables nil))
+		(insert-file-contents-literally filename t))
+	    (file-error
+	     (when (file-exists-p filename)
+	       (kill-buffer buf)
+	       (signal 'file-error
+		       (if (file-readable-p filename)
+			   (cdr err)
+			 (list "File is not readable" filename))))
+	     ;; Unconditionally set error
+	     (setq error t)))
+	(condition-case err
+	    (let ((inhibit-read-only t))
+	      (insert-file-contents filename t))
+	  (file-error
+	   (when (file-exists-p filename)
+	     (kill-buffer buf)
+	     (signal 'file-error
+		     (if (file-readable-p filename)
+			 (cdr err)
+		       (list "File is not readable" filename))))
+	   ;; Run find-file-not-found-functions until one returns non-nil.
+	   (or (run-hook-with-args-until-success 'find-file-not-found-functions)
+	       ;; If they fail too, set error.
+	       (setq error t)))))
+      ;; Record the file's truename, and maybe use that as visited name.
+      (setq buffer-file-truename
+            (if (equal filename buffer-file-name)
+                truename
+	      (abbreviate-file-name (file-truename buffer-file-name))))
+      (setq buffer-file-number number)
+      (if find-file-visit-truename
+	  (setq buffer-file-name (expand-file-name buffer-file-truename)))
+      ;; Set buffer's default directory to that of the file.
+      (setq default-directory (file-name-directory buffer-file-name))
+      ;; Turn off backup files for certain file names.  Since
+      ;; this is a permanent local, the major mode won't eliminate it.
+      (and backup-enable-predicate
+	   (not (funcall backup-enable-predicate buffer-file-name))
+           (setq-local backup-inhibited t))
+      (if rawfile
+	  (let ((enable-local-variables nil))
+	    (set-buffer-multibyte nil)
+	    (setq buffer-file-coding-system 'no-conversion)
+	    (set-buffer-major-mode buf)
+	    (setq-local find-file-literally t))
+	(after-find-file error (not nowarn)))
+      (current-buffer))))
+
+(defvar find-file-literally nil
+  "Non-nil if this buffer was made by `find-file-literally' or equivalent.
+This has the `permanent-local' property, which takes effect if you
+make the variable buffer-local.")
+
+(put 'find-file-literally 'permanent-local t)
+
+(defun after-find-file (&optional error warn noauto
+				  _after-find-file-from-revert-buffer
+				  nomodes)
+  "Called after finding a file and by the default revert function.
+Sets buffer mode, parses file-local and directory-local variables.
+Optional args ERROR, WARN, and NOAUTO: ERROR non-nil means there was an
+error in reading the file.  WARN non-nil means warn if there
+exists an auto-save file more recent than the visited file.
+NOAUTO means don't mess with auto-save mode.
+Fourth arg AFTER-FIND-FILE-FROM-REVERT-BUFFER is ignored
+\(see `revert-buffer-in-progress' for similar functionality).
+Fifth arg NOMODES non-nil means don't alter the file's modes.
+Finishes by calling the functions in `find-file-hook'
+unless NOMODES is non-nil."
+  (setq buffer-read-only (not (file-writable-p buffer-file-name)))
+  ;; The above is sufficiently like turning on read-only-mode, so run
+  ;; the mode hook here by hand.
+  (if buffer-read-only
+      (run-hooks 'read-only-mode-hook))
+  (if noninteractive
+      nil
+    (let* (not-serious
+	   (msg
+	    (cond
+	     ((and error (file-exists-p buffer-file-name))
+	      (setq buffer-read-only t)
+	      "File exists, but cannot be read")
+	     ((and error (file-symlink-p buffer-file-name))
+	      "Symbolic link that points to nonexistent file")
+	     ((not buffer-read-only)
+	      (if (and
+                   ;; No need to warn if buffer is auto-saved
+		   ;; under the name of the visited file.
+		   (not (and buffer-file-name
+			     auto-save-visited-file-name))
+		   (file-newer-than-file-p (or buffer-auto-save-file-name
+					       (make-auto-save-file-name))
+					   buffer-file-name))
+                  (format (substitute-command-keys
+                           "%s has auto save data; consider \\`M-x recover-this-file'")
+			  (file-name-nondirectory buffer-file-name))
+		(setq not-serious t)
+		(if error "(New file)" nil)))
+	     ((not error)
+	      (setq not-serious t)
+	      "Note: file is write protected")
+	     ((file-accessible-directory-p default-directory)
+	      "File not found and directory write-protected")
+	     (t
+	      (setq buffer-read-only nil)
+	      (unless (file-directory-p default-directory)
+		"Use M-x make-directory RET RET to create the directory and its parents")))))
+      (when (and warn msg)
+	(message "%s" msg)
+	(or not-serious (sit-for 1 t))))
+    (when (and auto-save-default (not noauto))
+      (auto-save-mode 1)))
+  ;; Make people do a little extra work (C-x C-q)
+  ;; before altering a backup file.
+  ;; When a file is marked read-only,
+  ;; make the buffer read-only even if root is looking at it.
+  (unless buffer-read-only
+    (when (or (backup-file-name-p buffer-file-name)
+	      (let ((modes (file-modes (buffer-file-name))))
+		(and modes (zerop (logand modes #o222)))))
+      (setq buffer-read-only t)))
+  (unless nomodes
+    (when (and view-read-only view-mode)
+      (view-mode -1))
+    (normal-mode t)
+    ;; If requested, add a newline at the end of the file.
+    (and (memq require-final-newline '(visit visit-save))
+	 (> (point-max) (point-min))
+	 (/= (char-after (1- (point-max))) ?\n)
+	 (not (and (eq selective-display t)
+		   (= (char-after (1- (point-max))) ?\r)))
+	 (not buffer-read-only)
+	 (save-excursion
+	   (goto-char (point-max))
+	   (ignore-errors (insert "\n"))))
+    (when (and buffer-read-only
+	       view-read-only
+	       (not (eq (get major-mode 'mode-class) 'special)))
+      (view-mode-enter))
+    (run-hooks 'find-file-hook)))
 
 (defvar ignored-local-variables
   '(ignored-local-variables safe-local-variable-values
@@ -1061,6 +1578,36 @@ variables are looked for in `default-directory' and its parent
 directories."
   (hack-dir-local-variables)
   (hack-local-variables-apply))
+
+(defun normal-backup-enable-predicate (name)
+  "Default `backup-enable-predicate' function.
+Checks for files in `temporary-file-directory',
+`small-temporary-file-directory', and \"/tmp\"."
+  (let ((temporary-file-directory temporary-file-directory)
+	caseless)
+    ;; On MS-Windows, file-truename will convert short 8+3 aliases to
+    ;; their long file-name equivalents, so compare-strings does TRT.
+    (if (memq system-type '(ms-dos windows-nt))
+	(setq temporary-file-directory (file-truename temporary-file-directory)
+	      name (file-truename name)
+	      caseless t))
+    (not (or (let ((comp (compare-strings temporary-file-directory 0 nil
+					  name 0 nil caseless)))
+	       ;; Directory is under temporary-file-directory.
+	       (and (not (eq comp t))
+		    (< comp (- (length temporary-file-directory)))))
+	     (let ((comp (compare-strings "/tmp" 0 nil
+					  name 0 nil)))
+	       ;; Directory is under /tmp.
+	       (and (not (eq comp t))
+		    (< comp (- (length "/tmp")))))
+	     (if small-temporary-file-directory
+		 (let ((comp (compare-strings small-temporary-file-directory
+					      0 nil
+					      name 0 nil caseless)))
+		   ;; Directory is under small-temporary-file-directory.
+		   (and (not (eq comp t))
+			(< comp (- (length small-temporary-file-directory))))))))))
 
 (defun backup-file-name-p (file)
   "Return non-nil if FILE is a backup file name (numeric or not).
