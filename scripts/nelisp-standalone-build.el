@@ -34969,7 +34969,7 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; syscall (__NR_time=201, NULL arg).  Lets interpreted code (e.g.
     ;; nelisp-emacs `float-time'/`current-time' polyfills) read wall-clock
     ;; time without process-exiting on an undispatched builtin.
-    ((:lit "nl-current-unix-time") :word . (wf_write_int_w 0 (syscall-direct 201 0 0 0 0 0 0)))
+    ((:lit "nl-current-unix-time") :word . (wf_write_int_w 0 (nl_os_unix_time)))
     ;; float-time: gettimeofday + f64 done entirely in the hand-asm
     ;; nl_os_float_time extern (so the AOT never emits a syscall<->f64 sequence,
     ;; which aborts).  Dispatched here in bf-arms (where :lit works) via the
@@ -34999,10 +34999,11 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; (e.g. `(/ (nl-unix-time-usec) 1000000.0)') is then done in a SEPARATE
     ;; builtin dispatch across an eval-loop boundary, sidestepping the
     ;; syscall<->f64 codegen abort.  Lets `float-time' be a pure-elisp polyfill.
-    ((:lit "nl-unix-time-usec") :word . (let* ((buf (alloc-bytes 16 8)))
-                                    (seq (syscall-direct 96 buf 0 0 0 0 0)
-                                         (wf_write_int_w 0 (+ (* (heap-read-u64 buf 0) 1000000)
-                                              (heap-read-u64 buf 8))))))
+    ;; The clock comes from the per-target `nl_os_unix_usec' (see
+    ;; `nelisp-standalone--os-time-forms'): gettimeofday on the syscall
+    ;; targets, GetSystemTimeAsFileTime on Windows, where syscall 96 is
+    ;; meaningless and left the buffer zero (current-time was 0).
+    ((:lit "nl-unix-time-usec") :word . (wf_write_int_w 0 (nl_os_unix_usec)))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ;; Doc 190 Phase C: `ash' accepts a Bignum (tag 13) N -- always via
     ;; `nl_bignum_ash_general' (fixnum N included: this also fixes two
@@ -46618,6 +46619,29 @@ with a FULL-LENGTH name buffer (ceil(len/8) u64 words), fixing >8-byte names."
            (and (nelisp-standalone--callsite-enabled-p)
                 '("nelisp--native-callsite-symbol-addr")))))
 
+(defun nelisp-standalone--os-time-forms ()
+  "Per-target wall-clock helpers `nl_os_unix_usec' and `nl_os_unix_time'.
+Both return plain integers (no f64).  The syscall targets keep the Linux
+gettimeofday(2) / time(2) numbers the builtins always used.  Windows has
+no such syscall numbers; it reads `KERNEL32!GetSystemTimeAsFileTime'
+(100ns ticks since 1601-01-01): usec = (ticks - 116444736000000000) / 10."
+  (pcase (nelisp-standalone-arena-rewrite-target)
+    ((or 'windows-x86_64 'windows-aarch64)
+     '((defun nl_os_unix_usec ()
+         (let* ((ft (alloc-bytes 8 8)))
+           (seq (extern-call GetSystemTimeAsFileTime ft)
+                (/ (- (heap-read-u64 ft 0) 116444736000000000) 10))))
+       (defun nl_os_unix_time ()
+         (/ (nl_os_unix_usec) 1000000))))
+    (_
+     '((defun nl_os_unix_usec ()
+         (let* ((buf (alloc-bytes 16 8)))
+           (seq (syscall-direct 96 buf 0 0 0 0 0)
+                (+ (* (heap-read-u64 buf 0) 1000000)
+                   (heap-read-u64 buf 8)))))
+       (defun nl_os_unix_time ()
+         (syscall-direct 201 0 0 0 0 0 0))))))
+
 (defun nelisp-standalone--os-syscall-xlat-forms ()
   "Per-target raw-syscall wrappers for the path/stat/dirent fileio builtins.
 The interpreted layer (nemacs bridge, compat-fileio, anvil polyfills)
@@ -49132,6 +49156,7 @@ target the same installed names signal catchable
 (defun nelisp-standalone--reader-os-source-forms ()
   "Return target-specific OS helper defuns used by the reader driver/file I/O."
   (append
+   (nelisp-standalone--os-time-forms)
    (nelisp-standalone--os-syscall-xlat-forms)
    (nelisp-standalone--reader-os-base-forms)
    (nelisp-standalone--n5-signal-forms)
