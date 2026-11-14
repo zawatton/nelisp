@@ -203,17 +203,27 @@ Call `nelisp-service-daemon-run' to serve."
   "Handle CHUNK received by DAEMON on connection CONN."
   (let ((record (nelisp-service-daemon--connection daemon conn)))
     (nelisp-service-put daemon :last-activity (float-time))
-    (dolist (message (nelisp-service-reader-feed
-                      (plist-get (cdr record) :reader) chunk))
-      (nelisp-service-daemon--on-message daemon conn record message))))
+    (unless (plist-get (cdr record) :closing)
+      (dolist (message (nelisp-service-reader-feed
+                        (plist-get (cdr record) :reader) chunk))
+        (nelisp-service-daemon--on-message daemon conn record message)))))
+
+(defvar nelisp-service-daemon-reject-linger 0.3
+  "Seconds a rejected connection stays open so its reply can be read.")
 
 (defun nelisp-service-daemon--reject (daemon conn reason)
-  "Refuse CONN for REASON and close it."
+  "Refuse CONN for REASON and close it after a short linger.
+Closing at once can let the client see the close before the reply."
   (nelisp-service-incf daemon :rejected)
   (nelisp-service-daemon--send
    conn (list 'reject reason (nelisp-service-get daemon :version)))
-  (delete-process conn)
-  (nelisp-service-daemon--forget daemon conn))
+  (let ((record (nelisp-service-daemon--connection daemon conn)))
+    (unless (plist-get (cdr record) :closing)
+      (setcdr record (plist-put (cdr record) :closing t))
+      (run-at-time nelisp-service-daemon-reject-linger nil
+                   (lambda ()
+                     (condition-case nil (delete-process conn) (error nil))
+                     (nelisp-service-daemon--forget daemon conn))))))
 
 (defun nelisp-service-daemon--on-message (daemon conn record message)
   "Act on MESSAGE from CONN, whose connection RECORD DAEMON keeps."

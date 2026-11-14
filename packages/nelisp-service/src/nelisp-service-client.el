@@ -115,6 +115,16 @@ rejection, or nil when nothing answers."
                           (nelisp-service-get client :rejected)
                           (nelisp-service-get client :closed)))
            nelisp-service-client-hello-timeout)
+          ;; The close can be observed before the reply that preceded it
+          ;; has been filtered; drain before giving up.
+          (let ((tries 0))
+            (while (and (nelisp-service-get client :closed)
+                        (not (nelisp-service-get client :welcome))
+                        (not (nelisp-service-get client :rejected))
+                        (< tries 3))
+              (setq tries (1+ tries))
+              (condition-case nil (accept-process-output nil 0.1)
+                (error nil))))
           (cond
            ((nelisp-service-get client :welcome) client)
            (t (condition-case nil (delete-process proc) (error nil))
@@ -266,6 +276,7 @@ the daemon may already have run the request."
 
 (defun nelisp-service-client-ping (client &optional timeout)
   "Return the daemon's stats plist through CLIENT, or nil on timeout."
+  (setq client (nelisp-service-client--current client))
   (nelisp-service-put client :pong nil)
   (process-send-string (nelisp-service-get client :process)
                        (nelisp-service-encode '(ping)))
@@ -274,13 +285,15 @@ the daemon may already have run the request."
 
 (defun nelisp-service-client-shutdown (client &optional timeout)
   "Ask the daemon behind CLIENT to exit; return non-nil when it agreed."
+  (setq client (nelisp-service-client--current client))
   (process-send-string (nelisp-service-get client :process)
                        (nelisp-service-encode '(shutdown)))
   (nelisp-service-wait-until (lambda () (nelisp-service-get client :bye))
                              (or timeout 10)))
 
 (defun nelisp-service-client-close (client)
-  "Close CLIENT's connection."
+  "Close CLIENT's connection, or that of the client that replaced it."
+  (setq client (nelisp-service-client--current client))
   (condition-case nil (delete-process (nelisp-service-get client :process))
     (error nil))
   (nelisp-service-put client :closed t))

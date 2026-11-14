@@ -257,6 +257,33 @@
             (should (nelisp-service-get daemon :stopped)))
         (nelisp-service-daemon-close daemon)))))
 
+(ert-deftest nelisp-service-test-open-drains-reply-seen-after-close ()
+  "A rejection whose close is observed first is still reported."
+  (nelisp-service-test--with-state-dir
+    (let ((daemon (nelisp-service-daemon-start
+                   "t5" :handler #'ignore :version "old"))
+          (held nil)
+          (real-input (symbol-function 'nelisp-service-client--on-input))
+          (real-close (symbol-function 'nelisp-service-client--on-close)))
+      (unwind-protect
+          (let ((state (nelisp-service-read-plist
+                        (nelisp-service-state-file "t5" "state")))
+                (nelisp-service-client--started (+ (float-time) 1000)))
+            ;; Hold every chunk back; deliver it from a timer once the
+            ;; sentinel has run, so the close is seen before the reply.
+            (cl-letf (((symbol-function 'nelisp-service-client--on-input)
+                       (lambda (client chunk) (push (cons client chunk) held)))
+                      ((symbol-function 'nelisp-service-client--on-close)
+                       (lambda (client proc)
+                         (funcall real-close client proc)
+                         (run-at-time 0.05 nil
+                                      (lambda ()
+                                        (dolist (h (nreverse held))
+                                          (funcall real-input (car h) (cdr h))))))))
+              (should (eq 'version
+                          (nelisp-service-client--open "t5" state "new")))))
+        (nelisp-service-daemon-close daemon)))))
+
 (ert-deftest nelisp-service-test-daemon-handler-error-reaches-client ()
   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
@@ -308,6 +335,25 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
             (should (equal "ok:y" (nelisp-service-client-request client "y" 20))))
         (when client (nelisp-service-client-close
                       (nelisp-service-client--current client)))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-superseded-handle-follows-successor ()
+  (nelisp-service-test--with-state-dir
+    (let* ((daemon (nelisp-service-daemon-start
+                    "r3" :handler (lambda (_c payload reply)
+                                    (funcall reply (concat "ok:" payload)))))
+           (client nil))
+      (unwind-protect
+          (progn
+            (setq client (nelisp-service-client-connect "r3" :timeout 20))
+            (nelisp-service-test--with-failing-req-send 1
+              (should (equal "ok:x" (nelisp-service-client-request client "x" 20))))
+            (should (nelisp-service-get client :successor))
+            (should (nelisp-service-client-ping client 10))
+            (should (nelisp-service-client-shutdown client 10))
+            (nelisp-service-client-close client)
+            (nelisp-service-client-close client))
+        (when client (nelisp-service-client-close client))
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-request-second-send-failure-surfaces ()
