@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Structure test: one red gate must not mask the gates after it.
 
-In the `gates', `smoke' and `ert' jobs, every check step after the
+In the `gates', `smoke', `smoke-linux-b' and `ert' jobs, every check step after the
 `setup-done' step must carry `!cancelled()' and depend on
 `steps.setup-done.outcome == 'success'' in its `if', so a failing gate no
 longer skips later gates (default `if: success()'), while a broken setup
@@ -28,7 +28,7 @@ except ImportError:
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKFLOW = os.environ.get("NELISP_CI_WORKFLOW") or os.path.join(ROOT, ".github", "workflows", "ci.yml")
-JOBS = ["gates", "smoke", "ert"]
+JOBS = ["gates", "smoke", "smoke-linux-b", "ert"]
 SETUP_ID = "setup-done"
 # A step that runs a gate or test: make, nelisp-ai.sh, preflight, python tests, npm/xvfb.
 GATE_RUN = re.compile(r"\bmake\b|nelisp-ai\.sh|preflight\.sh|python3 test/|npm run|xvfb-run")

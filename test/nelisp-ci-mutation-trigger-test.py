@@ -188,7 +188,7 @@ class FeaturePR(unittest.TestCase):
 
     def test_verify_needs_unchanged(self):
         self.assertEqual(self.doc["jobs"]["verify"]["needs"],
-                         ["smoke", "ert", "mutation", "subsystems", "parity-fuzz"])
+                         ["smoke", "smoke-linux-b", "ert", "mutation", "subsystems", "parity-fuzz"])
         self.assertNotIn("if", self.doc["jobs"]["mutation"])
 
     def test_original_steps_present_in_order(self):

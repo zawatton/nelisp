@@ -846,37 +846,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate package-registry -- make package-registry
-      - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
-      - name: Project CLI result contract (no runtime build)
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
-      # Each of the five steps below builds its own project executable
-      # through host Emacs, or exercises the existing standalone binary
-      # directly; none needs a fresh target/nelisp build of its own.
-      - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
-      - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
-      - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
-      - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
-      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
       # target/nelisp already exists from the step above (its own
       # Makefile prerequisite is conditional, same as `emacs-parity'
       # further up, so this does not rebuild it).
@@ -916,28 +885,6 @@ jobs:
         if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
         shell: bash
         run: bash tools/ai/nelisp-ai.sh gate native-unit-repl-smoke -- make native-unit-repl-smoke
-      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
-      # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
-      # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
-      # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
-      # that gate does, so it does not depend on run order with it.
-      - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
-      # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
-      # pure-elisp ELF loader, so unlike `ffi-dsl' above this runs on the
-      # DEFAULT STATIC reader (no NELISP_READER_DYNAMIC) -- that is the
-      # whole point of this gate.  Builds its own small test `.so' with
-      # `cc' at gate time (already relied on by this Linux lane's own
-      # native-exec toolchain, see `bench-aot-tco' above); the Makefile
-      # target itself turns any absence of `cc', or a non-linux-x86_64
-      # gate target, into a GATE-SKIP rather than a failure.
-      - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
-        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
-        shell: bash
-        run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
-
       # `make compile' above covers src/ and packages/*/src/ only; lisp/ has
       # never been byte-compiled by CI.  Linux-only because one lane asserting
       # it is enough and the baseline counts are Emacs-version sensitive.
@@ -1054,6 +1001,223 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gate-reports-macho-${{ matrix.emacs-version }}
+          path: target/gates/*.json
+          if-no-files-found: error
+
+  smoke-linux-b:
+    # Second Linux half of the former `smoke' job, split off so the two run in
+    # parallel (the Linux lane of `smoke' alone took 51-64 min).  Same setup as
+    # `smoke' (shared standalone binary from `build'; every gate here either
+    # uses that binary or builds its own project executable through host
+    # Emacs), no matrix: Linux and Emacs 31.1 only.  The project build family
+    # (project-build, -profile-build, -debug, -arguments, -distribution,
+    # -packages, -cli-contract) and the two FFI binary-tier gates moved here;
+    # `smoke' keeps everything else, including the reader-test ->
+    # binary-size-ratchet producer/consumer pair.  Its gate reports upload as
+    # `gate-reports-smoke-b'; `verify' downloads every `gate-reports-*'.
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: build
+    env:
+      NELISP_STANDALONE_JOBS: '4'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gate-mutation's changed-only mode diffs against the merge base,
+          # which a shallow clone does not have.
+          fetch-depth: 0
+
+      # The vendor whole-file compiler emits the pinned GNU 31.1 dialect.
+      # Keep the host at 30.2 for its existing parity and compatibility gates.
+      # Content-addressed unit cache.  The key hashes the build inputs, so an
+      # exact hit is a whole-tree match and a prefix hit still serves every unit
+      # whose own inputs did not change.  The key names the job (and its matrix
+      # value) because each job builds different modes; the generic prefix is the
+      # fallback.  The stamp tool's key does not cover target/, so the cache
+      # directories are not part of any build key.
+      - name: Restore standalone unit cache
+        if: runner.os == 'Linux'
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+          restore-keys: |
+            units-${{ runner.os }}-${{ github.job }}-
+            units-${{ runner.os }}-
+
+      - name: Set up GNU bytecode compiler (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Record GNU bytecode compiler executable
+        shell: bash
+        run: |
+          emacs --batch -Q --eval '(unless (equal emacs-version "31.1") (error "GNU bytecode compiler must be 31.1"))'
+          compiler=$(command -v emacs)
+          if [ "$RUNNER_OS" = Windows ]; then
+            # setup-emacs-windows installs both versions under the same root.
+            # Preserve the whole 31.1 distribution before installing the host.
+            cp -a "$(dirname "$(dirname "$compiler")")" "$RUNNER_TEMP/nelisp-gnu31"
+            compiler=$(cygpath -m "$RUNNER_TEMP/nelisp-gnu31/bin/emacs.exe")
+          else
+            # A Nix profile link can be retargeted by the host setup below.
+            compiler=$(NELISP_CI_COMPILER="$compiler" emacs --batch -Q \
+              --eval '(princ (file-truename (getenv "NELISP_CI_COMPILER")))')
+          fi
+          # Version alone does not establish the pinned bytecode identity.
+          "$compiler" --batch -Q -L lisp -L src -L scripts -l nelisp-standalone-build \
+            --eval '(unless nelisp-standalone--verified-bytecode-dialect-id (error "GNU bytecode compiler source/opcode identity does not match the pinned dialect"))'
+          echo "NELISP_BUILD_EMACS=$compiler" >> "$GITHUB_ENV"
+          if [ "$RUNNER_OS" != Windows ] && command -v nix >/dev/null; then
+            # The recorded store path stays valid; drop the profile entry so
+            # the host Emacs install below does not collide on shared files.
+            nix-store --add-root "$RUNNER_TEMP/nelisp-gnu31-root" --indirect \
+              --realise "$(dirname "$(dirname "$compiler")")" >/dev/null
+            nix profile remove --all 2>/dev/null || nix profile remove --regex '.*' 2>/dev/null \
+              || nix profile remove '.*'
+          fi
+
+      - name: Set up Emacs (Linux / macOS)
+        if: runner.os != 'Windows'
+        uses: purcell/setup-emacs@v8.0
+        with:
+          version: '31.1'
+      - name: Install rooted-protocol decoder dependencies (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        # The linux-x86_64 standalone build disassembles its rooted protocol
+        # with capstone and pyelftools (scripts/nelisp-standalone-build.el).
+        run: python3 -m pip install --user --break-system-packages capstone==5.0.9 pyelftools==0.33
+      # Shared binary from the `build' job.  It must come AFTER checkout:
+      # binary-size-ratchet refuses a binary older than any source file.
+      - name: Download the shared standalone reader
+        if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: standalone-reader-linux
+          path: target
+      - name: Mark the shared binary executable
+        if: runner.os == 'Linux'
+        shell: bash
+        run: chmod +x target/nelisp
+      # Informational: `fresh' means the next make skips; `stale: REASON'
+      # means it will rebuild.  Never fails the job.
+      - name: Log the shared binary's stamp status
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Record the stamp at job start
+        if: runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh start
+
+      # Everything above is setup that every check below needs.  This
+      # no-op runs only if all of it succeeded; the checks key off its
+      # outcome (not off the job's sticky failure state) so one red gate
+      # no longer skips the gates after it.  Do not add continue-on-error
+      # to checks: the job must still end red.
+      - name: Setup complete (gate for the check steps below)
+        id: setup-done
+        shell: bash
+        run: echo "setup steps succeeded"
+      - name: Set up Python for project CLI integration tests
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: "Locked project dependencies and isolated executable (tools/ai/nelisp-ai.sh gate project-packages); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-packages -- make project-packages
+      - name: Project CLI result contract (no runtime build)
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-cli-contract -- make project-cli-contract
+      # Each of the five steps below builds its own project executable
+      # through host Emacs, or exercises the existing standalone binary
+      # directly; none needs a fresh target/nelisp build of its own.
+      - name: "Native packaging acceptance (tools/ai/nelisp-ai.sh gate project-build); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-build -- make project-build
+      - name: "Profiled standalone ELF: recursive counts and failure reports (tools/ai/nelisp-ai.sh gate project-profile-build); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-profile-build -- make project-profile-build
+      - name: "Debug artifacts remain inspectable without source, host Emacs, or execution (tools/ai/nelisp-ai.sh gate project-debug); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-debug -- make project-debug
+      - name: "Run and isolated ELF share lossless application arguments and environment (tools/ai/nelisp-ai.sh gate project-arguments); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-arguments -- make project-arguments
+      - name: "Build, install, relocate, and use the Linux project toolchain bundle (tools/ai/nelisp-ai.sh gate project-distribution); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate project-distribution -- make project-distribution
+      # Strategy section 8.1's declarative FFI surface (packages/nl-ffi:
+      # `ffi:library'/`ffi:defun' over the existing `nl-ffi-call' reader
+      # builtin exercised above by standalone-reader-ffi-smoke).  Rebuilds
+      # the dynamic reader itself (NELISP_READER_DYNAMIC=1), the same way
+      # that gate does, so it does not depend on run order with it.
+      - name: "AI toolchain binary-tier gate: declarative FFI surface (tools/ai/nelisp-ai.sh gate ffi-dsl); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-dsl -- make ffi-dsl
+      # FFI step 3 increment 1 (packages/nl-ffi/src/nl-ffi-loader.el): a
+      # pure-elisp ELF loader, so unlike `ffi-dsl' above this runs on the
+      # DEFAULT STATIC reader (no NELISP_READER_DYNAMIC) -- that is the
+      # whole point of this gate.  Builds its own small test `.so' with
+      # `cc' at gate time (already relied on by this Linux lane's own
+      # native-exec toolchain, see `bench-aot-tco' above); the Makefile
+      # target itself turns any absence of `cc', or a non-linux-x86_64
+      # gate target, into a GATE-SKIP rather than a failure.
+      - name: "AI toolchain binary-tier gate: pure-elisp ELF loader (tools/ai/nelisp-ai.sh gate ffi-loader); Linux x86_64"
+        if: ${{ !cancelled() && steps.setup-done.outcome == 'success' && (runner.os == 'Linux') }}
+        shell: bash
+        run: bash tools/ai/nelisp-ai.sh gate ffi-loader -- make ffi-loader
+
+      # Informational: shows whether the downloaded binary survived the job
+      # or something rebuilt it.
+      - name: Log the stamp status again (end of job)
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: make -s standalone-reader-status || true
+      - name: Report whether the job rebuilt the reader
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        continue-on-error: true
+        run: bash tools/ci-stamp-checkpoint.sh end
+
+      # Saved only from a push to main or a workflow_dispatch, so pull requests
+      # never write the cache (caches are branch-scoped, so a dispatch run on a
+      # branch never feeds main).  The first save of a key wins; a repeat only
+      # logs a warning.
+      - name: Save standalone unit cache
+        if: always() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch') && runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/standalone-units
+            target/nelisp-vendor-bytecode
+          key: units-${{ runner.os }}-${{ github.job }}-${{ hashFiles('lisp/**', 'src/**', 'scripts/**', 'packages/**', 'vendor/**', 'templates/**') }}
+
+      # Every Linux gate report this lane produced.  The `verify' job
+      # collects these together with the ert, mutation, and subsystem
+      # jobs' and checks the union against gates.expected; on its own,
+      # no single job can any longer answer "did every required gate run".
+      - name: Upload gate reports (Linux 31.1 lane, second half)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-reports-smoke-b
           path: target/gates/*.json
           if-no-files-found: error
 
@@ -1938,7 +2102,7 @@ jobs:
     name: "verify (every required gate produced a report)"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    needs: [smoke, ert, mutation, subsystems, parity-fuzz]
+    needs: [smoke, smoke-linux-b, ert, mutation, subsystems, parity-fuzz]
     # `always()' so a red tier still reaches this job: the point of verify
     # is to say WHICH gates are missing or failing, and a skipped verify
     # after a failure tells nobody that.
