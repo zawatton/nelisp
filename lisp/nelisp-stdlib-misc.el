@@ -1812,15 +1812,13 @@ composed from the native predicates as before."
 ;; calendars other than the proleptic Gregorian one Emacs itself now
 ;; defaults to; locale-dependent directives (`%a'/`%b' are always the
 ;; fixed English abbreviations, which is what this runtime's "C" locale
-;; always presents anyway); DST for local time (`ZONE' nil reads a fixed
-;; UTC offset from a `TZ' environment variable in the POSIX
-;; "NAME[+-]H[:MM]" shape -- e.g. "JST-9" -- with no timezone database
-;; and no daylight-time rule; an unset or unparseable `TZ' falls back to
-;; UTC); any `format-time-string' directive other than `%Y %m %d %H %M
-;; %S %y %e %b %a %T %F %s %z %N %%', which signals an error instead of
-;; passing the text through unexpanded; and any `ZONE' shape other than
-;; nil/t/an integer (also treated as UTC rather than rejected, since
-;; `current-time-zone'-style zone lists are not modelled at all).
+;; always presents anyway); DST (local time is `TZ' in the POSIX
+;; "NAME[+-]H[:MM]" shape, e.g. "JST-9", else the host's CURRENT offset
+;; from `nl-local-utc-offset' on Windows, else UTC; no timezone database,
+;; no daylight-time rule, no /etc/localtime parsing); any `format-time-string' directive other than `%Y %m %d %H %M
+;; %S %y %e %b %a %T %F %s %z %Z %N %%', which signals an error instead of
+;; passing the text through unexpanded; and zoneinfo names as `ZONE'
+;; (an unparseable string is treated as UTC).
 (declare-function nelisp--tm-fdiv "nelisp-stdlib-misc")
 (declare-function nelisp--tm-days-from-civil "nelisp-stdlib-misc")
 (declare-function nelisp--tm-civil-from-days "nelisp-stdlib-misc")
@@ -1906,18 +1904,66 @@ parsed.  Returns nil when `TZ' is unset or does not match."
                (mag (+ (* (abs hh) 3600) (* mm 60))))
           (- (if (< hh 0) (- mag) mag)))))))
 
+(unless (fboundp 'nelisp--tm-offset-name)
+  (defun nelisp--tm-offset-name (off)
+    "Numeric zone abbreviation for OFF seconds east of UTC: +09, -0330."
+    (let* ((a (abs off)) (h (/ a 3600)) (m (/ (mod a 3600) 60)))
+      (concat (if (< off 0) "-" "+") (nelisp--tm-pad h 2)
+              (if (zerop m) "" (nelisp--tm-pad m 2))))))
+
+(unless (fboundp 'nelisp--tm-posix-spec)
+  (defun nelisp--tm-posix-spec (tz)
+    "Parse the leading NAME[+-]H[:MM] of POSIX TZ into (OFFSET . NAME), or nil.
+POSIX counts hours WEST of UTC, so the UTC offset is the negation.  A
+DST part is not parsed.  The empty string means UTC."
+    (cond
+     ((equal tz "") (cons 0 "UTC"))
+     ((string-match
+       "\`\([A-Za-z]+\)\([+-]?[0-9]+\)\(?::\([0-9]+\)\)?" tz)
+      (let* ((hh (string-to-number (match-string 2 tz)))
+             (mm-str (match-string 3 tz))
+             (mm (if mm-str (string-to-number mm-str) 0))
+             (mag (+ (* (abs hh) 3600) (* mm 60))))
+        (cons (- (if (< hh 0) (- mag) mag)) (match-string 1 tz)))))))
+
+(unless (fboundp 'nelisp--tm-zone-spec)
+  (defun nelisp--tm-zone-spec (zone)
+    "Resolve ZONE to (OFFSET . NAME), OFFSET in seconds east of UTC.
+ZONE as in GNU Emacs: t = UTC; an integer = that many seconds east; a
+string = a POSIX TZ value such as \"UTC0\" or \"JST-9\" (\"UTC\" and
+\"UTC0\" work; zoneinfo names are not available); (OFFSET NAME ...) =
+that offset and name; nil or `wall' = local time.  Local time is, in
+order: the `TZ' environment variable when it parses (POSIX form, no
+DST rule), else the host zone from `nl-local-utc-offset' (Windows:
+GetTimeZoneInformation, current bias incl. daylight; other targets
+answer 0, so /etc/localtime is NOT read), else UTC."
+    (cond
+     ((eq zone t) (cons 0 "UTC"))
+     ((integerp zone) (cons zone (nelisp--tm-offset-name zone)))
+     ((stringp zone)
+      (or (nelisp--tm-posix-spec zone) (cons 0 "UTC")))
+     ((and (consp zone) (integerp (car zone)))
+      (cons (car zone)
+            (if (stringp (cadr zone)) (cadr zone)
+              (nelisp--tm-offset-name (car zone)))))
+     (t
+      (let* ((tz (getenv "TZ")) (from-env (and tz (nelisp--tm-posix-spec tz))))
+        (or from-env
+            (let ((off (if (fboundp 'nl-local-utc-offset)
+                           (nl-local-utc-offset) 0)))
+              (cons off (if (zerop off) "UTC" (nelisp--tm-offset-name off))))))))))
+
 (unless (fboundp 'nelisp--tm-zone-offset)
   (defun nelisp--tm-zone-offset (zone)
-    "Resolve ZONE (nil, t, or an integer) to a UTC offset in seconds.
-nil means local time: a fixed offset read from `TZ' (see
-`nelisp--tm-tz-env-offset'), or UTC if that is unavailable.  Any other
-ZONE shape (a string, or the (OFFSET NAME ...) list Emacs also
-accepts) is not supported and is treated as UTC."
-    (cond
-     ((integerp zone) zone)
-     ((eq zone t) 0)
-     ((null zone) (or (nelisp--tm-tz-env-offset) 0))
-     (t 0))))
+    "Resolve ZONE (see `nelisp--tm-zone-spec') to a UTC offset in seconds."
+    (car (nelisp--tm-zone-spec zone))))
+
+(unless (fboundp 'current-time-zone)
+  (defun current-time-zone (&optional _time zone)
+    "Return (OFFSET NAME) for ZONE (default local).  DST rules are not
+modelled, so TIME does not change the answer."
+    (let ((s (nelisp--tm-zone-spec zone)))
+      (list (car s) (cdr s)))))
 
 (unless (fboundp 'nelisp--tm-unpack)
   (defun nelisp--tm-unpack (time)
@@ -2000,13 +2046,14 @@ supported)."
   (defun format-time-string (format-string &optional time zone)
     "Format TIME (default now) per FORMAT-STRING, roughly like C
 strftime.  ZONE is as in `decode-time'.  Supported directives: `%Y %m
-%d %H %M %S %y %e %b %a %T %F %s %z %N %%'.  `%a'/`%b' are always the
+%d %H %M %S %y %e %b %a %T %F %s %z %Z %N %%'.  `%a'/`%b' are always the
 fixed English abbreviations (there is no locale database here).  `%z'
 assumes ZONE has no non-integer-minute remainder.  Any other directive
 signals an error rather than passing text through unexpanded."
     (let* ((ts (nelisp--tm-unpack time))
            (secs (car ts)) (nsec (cdr ts))
-           (zoff (nelisp--tm-zone-offset zone))
+           (zspec (nelisp--tm-zone-spec zone))
+           (zoff (car zspec)) (zname (cdr zspec))
            (total (+ secs zoff))
            (days (nelisp--tm-fdiv total 86400))
            (sod (- total (* days 86400)))
@@ -2044,11 +2091,12 @@ signals an error rather than passing text through unexpanded."
                    (concat (if (< zoff 0) "-" "+")
                            (nelisp--tm-pad (/ (abs zoff) 3600) 2)
                            (nelisp--tm-pad (/ (mod (abs zoff) 3600) 60) 2)))
+                  ((= d ?Z) (or zname ""))
                   ((= d ?N) (nelisp--tm-pad nsec 9))
                   ((= d ?%) "%")
                   (t (error
                       "format-time-string: unsupported directive %%%c \
-(supported: Y m d H M S y e b a T F s z N %%%%)"
+(supported: Y m d H M S y e b a T F s z Z N %%%%)"
                       d)))
                  out)
                 (setq i (+ i 2)))
