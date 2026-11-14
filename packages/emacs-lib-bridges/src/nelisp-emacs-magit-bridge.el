@@ -3398,18 +3398,6 @@ destination semantics."
         (nelisp-process-wait proc)
       127)))
 
-(defun nelisp-emacs-magit-bridge--find-buffer-visiting (filename)
-  "Return a live buffer visiting FILENAME, or nil."
-  (catch 'found
-    (dolist (buffer (buffer-list))
-      (with-current-buffer buffer
-        (when (and (boundp 'buffer-file-name)
-                   (stringp buffer-file-name)
-                   (equal (expand-file-name buffer-file-name)
-                          (expand-file-name filename)))
-          (throw 'found buffer))))
-    nil))
-
 (defun nelisp-emacs-magit-bridge--link-section-child (section)
   "Ensure SECTION is present in its parent's `children' list."
   (let ((parent (ignore-errors (oref section parent))))
@@ -4341,12 +4329,6 @@ builtin otherwise."
         (symbol-function
          'nelisp-emacs-magit-bridge--magit-section-forward)))
 
-(defun nelisp-emacs-magit-bridge--ensure-find-buffer-visiting ()
-  "Install a standalone-compatible `find-buffer-visiting'."
-  (fset 'find-buffer-visiting
-        (symbol-function
-         'nelisp-emacs-magit-bridge--find-buffer-visiting)))
-
 (defun nelisp-emacs-magit-bridge--magit-setup-buffer-internal
     (mode locked bindings &rest keys)
   "Directory-stable replacement for `magit-setup-buffer-internal'."
@@ -5032,8 +5014,6 @@ substrate's signal fixes, so this cannot regress into a silent stop."
   (nelisp-emacs-magit-bridge--ensure-buffer-predicate)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 16 buffer-selection-builtins\n")
   (nelisp-emacs-magit-bridge--ensure-buffer-selection-builtins)
-  (nelisp-emacs-magit-bridge--precond-trace "PRECOND 17 find-buffer-visiting\n")
-  (nelisp-emacs-magit-bridge--ensure-find-buffer-visiting)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 18 static-if\n")
   (nelisp-emacs-magit-bridge--ensure-static-if)
   (nelisp-emacs-magit-bridge--precond-trace "PRECOND 20 macroexp-runtime\n")
