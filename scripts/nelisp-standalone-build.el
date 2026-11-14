@@ -35004,6 +35004,10 @@ into that constant unconditionally is what broke every aarch64 build."
     ;; targets, GetSystemTimeAsFileTime on Windows, where syscall 96 is
     ;; meaningless and left the buffer zero (current-time was 0).
     ((:lit "nl-unix-time-usec") :word . (wf_write_int_w 0 (nl_os_unix_usec)))
+    ;; nl-local-utc-offset: the host zone's CURRENT offset in seconds EAST of
+    ;; UTC (integer).  Windows asks GetTimeZoneInformation; other targets
+    ;; answer 0 (the elisp layer honours TZ before calling this).
+    ((:lit "nl-local-utc-offset") :word . (wf_write_int_w 0 (nl_os_local_utc_offset)))
     ;; --- Wave-2 (C) bitwise / shift (2-arg forms; n-ary folds in prelude) ---
     ;; Doc 190 Phase C: `ash' accepts a Bignum (tag 13) N -- always via
     ;; `nl_bignum_ash_general' (fixnum N included: this also fixes two
@@ -40909,7 +40913,8 @@ Parallelism pays off only once per-unit compilation dominates startup
        (nelisp-link-units-pe32 out units "_start"
                                '("ExitProcess" "VirtualAlloc" "VirtualFree"
                                  "GetStdHandle" "WriteFile"
-                                 "GetSystemTimeAsFileTime")
+                                 "GetSystemTimeAsFileTime"
+                                 "GetTimeZoneInformation")
                                (list :stack-reserve
                                      nelisp-standalone--windows-stack-reserve)))
       ('windows-aarch64
@@ -41364,6 +41369,7 @@ value (matches the binary's M8 read+eval-loop driver)."
     "nelisp--write-stdout-bytes" "nelisp--write-stderr-line"
     "nelisp--read-all-from-string-native"
     "nl-current-unix-time" "nl-unix-time-usec" "float-time"
+    "nl-local-utc-offset"
     "exit"
     ;; Wave-1 (B) breadth: predicates / symbol+vector ops / equal / setcar-setcdr
     ;; / signal-error (the names back the breadth arms in the reader applyfn).
@@ -41461,6 +41467,8 @@ dispatch arm in `nelisp-standalone--applyfn-dispatch-table'.")
                     ;; own `nelisp-standalone--float-time-unit-windows-x86_64'):
                     ;; FILETIME source for `float-time'/`round'/etc.
                     "GetSystemTimeAsFileTime"
+                    ;; `nl_os_local_utc_offset' (`nl-local-utc-offset').
+                    "GetTimeZoneInformation"
                     ;; `nl_os_win_access' (this file's
                     ;; `nelisp-standalone--os-syscall-xlat-forms' windows
                     ;; case): backs `nelisp--syscall-path-int' access(2)
@@ -46642,6 +46650,27 @@ no such syscall numbers; it reads `KERNEL32!GetSystemTimeAsFileTime'
        (defun nl_os_unix_time ()
          (syscall-direct 201 0 0 0 0 0 0))))))
 
+(defun nelisp-standalone--os-tz-forms ()
+  "Per-target helper `nl_os_local_utc_offset': host UTC offset, seconds east.
+Windows reads KERNEL32!GetTimeZoneInformation into a 172-byte
+TIME_ZONE_INFORMATION: Bias (LONG, minutes, UTC = local + Bias) at 0,
+StandardBias at 84, DaylightBias at 168; the return value 2 means
+daylight time is in effect now.  Other targets answer 0 (UTC)."
+  (pcase (nelisp-standalone-arena-rewrite-target)
+    ('windows-x86_64
+     '((defun nl_os_local_utc_offset ()
+         (let* ((tz (alloc-bytes 176 8))
+                (id (extern-call GetTimeZoneInformation tz))
+                (bias (heap-read-u32 tz 0))
+                (extra (if (= (logand id 4294967295) 2)
+                           (heap-read-u32 tz 168)
+                         (heap-read-u32 tz 84)))
+                (sum (logand (+ bias extra) 4294967295))
+                (sbias (if (>= sum 2147483648) (- sum 4294967296) sum)))
+           (- 0 (* sbias 60))))))
+    (_
+     '((defun nl_os_local_utc_offset () 0)))))
+
 (defun nelisp-standalone--os-syscall-xlat-forms ()
   "Per-target raw-syscall wrappers for the path/stat/dirent fileio builtins.
 The interpreted layer (nemacs bridge, compat-fileio, anvil polyfills)
@@ -49157,6 +49186,7 @@ target the same installed names signal catchable
   "Return target-specific OS helper defuns used by the reader driver/file I/O."
   (append
    (nelisp-standalone--os-time-forms)
+   (nelisp-standalone--os-tz-forms)
    (nelisp-standalone--os-syscall-xlat-forms)
    (nelisp-standalone--reader-os-base-forms)
    (nelisp-standalone--n5-signal-forms)
