@@ -2163,7 +2163,7 @@ pinned-collision ns-collision-divergent	bufferp	packages/emacs-lib-core/src/emac
 pinned-collision ns-collision-divergent	button-buffer-map	packages/emacs-lib-core/src/emacs-button-builtins.el scripts/nelisp-stdlib-prelude.el	9b075736dd36
 pinned-collision ns-collision-divergent	button-map	packages/emacs-lib-core/src/emacs-button-builtins.el scripts/nelisp-stdlib-prelude.el	bbb213c1fbe3
 pinned-collision ns-collision-divergent	byte-code-function-p	packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	2b17ef9bcdee
-pinned-collision ns-collision-divergent	call-process	packages/emacs-lib-core/src/emacs-process-builtins.el scripts/nelisp-stdlib-prelude.el	a9411b90a8f5
+pinned-collision ns-collision-divergent	call-process	packages/emacs-lib-core/src/emacs-process-builtins.el scripts/nelisp-stdlib-prelude.el	415860511da6
 pinned-collision ns-collision-divergent	called-interactively-p	packages/emacs-lib-core/src/emacs-server-client-polyfills.el packages/emacs-lib-core/src/emacs-subr-extras.el	cae2124e1b4e
 pinned-collision ns-collision-divergent	cancel-timer	packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/emacs-time.el packages/nelisp-eventloop/src/nelisp-async-core.el scripts/nelisp-stdlib-prelude.el	f7d440bcf909
 pinned-collision ns-collision-divergent	capitalize	lisp/nelisp-stdlib-plist-str.el packages/emacs-lib-core/src/emacs-string.el scripts/nelisp-stdlib-prelude.el	b387879544ca
@@ -2402,7 +2402,7 @@ pinned-collision ns-collision-divergent	get-file-buffer	packages/emacs-lib-core/
 pinned-collision ns-collision-divergent	get-pos-property	packages/emacs-lib-core/src/emacs-cc-editfns-1.el scripts/nelisp-stdlib-prelude.el	8f0c693bb9e7
 pinned-collision ns-collision-divergent	get-scratch-buffer-create	packages/emacs-lib-core/src/emacs-server-client-polyfills.el packages/emacs-lib-core/src/emacs-special-buffers.el	1308097824b0
 pinned-collision ns-collision-divergent	get-text-property	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-buffer-builtins.el scripts/nelisp-stdlib-prelude.el	7ec1c2301b58
-pinned-collision ns-collision-divergent	getenv	lisp/nelisp-build-host.el packages/emacs-lib-core/src/emacs-callproc.el scripts/nelisp-stdlib-prelude.el	6836282cd5e1
+pinned-collision ns-collision-divergent	getenv	lisp/nelisp-build-host.el packages/emacs-lib-core/src/emacs-callproc.el scripts/nelisp-stdlib-prelude.el	2c4f4fda7a46
 pinned-collision ns-collision-divergent	gethash	lisp/nelisp-stdlib-hash.el packages/emacs-lib-core/src/emacs-hash.el	8fb7d17a1f65
 pinned-collision ns-collision-divergent	goto-char	packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	21e3e270c151
 pinned-collision ns-collision-divergent	hash-table-count	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-hash.el	f20595af71a8
@@ -2523,7 +2523,7 @@ pinned-collision ns-collision-divergent	make-mode-line-mouse-map	packages/emacs-
 pinned-collision ns-collision-divergent	make-network-process	packages/emacs-lib-core/src/emacs-process-events.el packages/nelisp-process-adapter/src/nelisp-process-adapter.el	e6b9407515ad
 pinned-collision ns-collision-divergent	make-obsolete-variable	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	4d3a7bb5f449
 pinned-collision ns-collision-divergent	make-pipe-process	lisp/nelisp-process-buffer.el packages/emacs-lib-core/src/emacs-cc-pipe-process-1.el scripts/nelisp-stdlib-prelude.el	12aa75391a6f
-pinned-collision ns-collision-divergent	make-process	packages/emacs-lib-core/src/emacs-process-builtins.el packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	bb3fc0b2c081
+pinned-collision ns-collision-divergent	make-process	packages/emacs-lib-core/src/emacs-process-builtins.el packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	10345a21aa29
 pinned-collision ns-collision-divergent	make-sparse-keymap	packages/emacs-lib-core/src/emacs-keymap-builtins.el packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/files.el scripts/nelisp-stdlib-prelude.el	92646054ebef
 pinned-collision ns-collision-divergent	make-symbolic-link	packages/emacs-lib-core/src/files-standalone-buffer.el scripts/nelisp-stdlib-prelude.el	4d729a0502ba
 pinned-collision ns-collision-divergent	make-syntax-table	packages/emacs-lib-core/src/emacs-stub-bulk.el packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/emacs-syntax-table.el scripts/nelisp-stdlib-prelude.el	b05befd0752a
@@ -2703,7 +2703,7 @@ pinned-collision ns-collision-divergent	prin1	lisp/nelisp-stdlib-prn.el scripts/
 pinned-collision ns-collision-divergent	prin1-to-string	lisp/nelisp-stdlib-prn.el scripts/nelisp-stdlib-prelude.el	e47a3b4f39b5
 pinned-collision ns-collision-divergent	process-buffer	lisp/nelisp-process-buffer.el packages/emacs-lib-core/src/emacs-process-builtins.el packages/emacs-lib-core/src/emacs-process-events.el scripts/nelisp-stdlib-prelude.el	04d96bbe0d00
 pinned-collision ns-collision-divergent	process-contact	packages/emacs-lib-core/src/emacs-cc-pipe-process-1.el packages/emacs-lib-core/src/emacs-server-client-polyfills.el packages/nelisp-process-adapter/src/nelisp-process-adapter.el scripts/nelisp-stdlib-prelude.el	0b3c68a3316a
-pinned-collision ns-collision-divergent	process-environment	lisp/nelisp-build-host.el lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-callproc.el packages/emacs-lib-core/src/emacs-server-client-polyfills.el scripts/nelisp-stdlib-prelude.el	f4d45008d563
+pinned-collision ns-collision-divergent	process-environment	lisp/nelisp-build-host.el lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-callproc.el packages/emacs-lib-core/src/emacs-server-client-polyfills.el scripts/nelisp-stdlib-prelude.el	ee245b740f8b
 pinned-collision ns-collision-divergent	process-exit-status	lisp/nelisp-process-buffer.el packages/emacs-lib-core/src/emacs-process-builtins.el scripts/nelisp-stdlib-prelude.el	df0350a72515
 pinned-collision ns-collision-divergent	process-filter	packages/emacs-lib-core/src/emacs-process-builtins.el packages/emacs-lib-core/src/emacs-process-events.el packages/nelisp-process-adapter/src/nelisp-process-adapter.el	eafcd79bb930
 pinned-collision ns-collision-divergent	process-get	lisp/nelisp-process-buffer.el packages/emacs-lib-core/src/emacs-server-polyfills.el scripts/nelisp-stdlib-prelude.el	40900457ff2b
@@ -2826,7 +2826,7 @@ pinned-collision ns-collision-divergent	set-text-properties	packages/emacs-lib-c
 pinned-collision ns-collision-divergent	set-time-zone-rule	lisp/nelisp-timefns.el packages/emacs-lib-core/src/emacs-time.el	e007ef47e546
 pinned-collision ns-collision-divergent	set-window-buffer	packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/emacs-window-builtins.el	6cb0f07466cd
 pinned-collision ns-collision-divergent	set-window-configuration	packages/emacs-lib-core/src/emacs-window-builtins.el scripts/nelisp-stdlib-prelude.el	46f6b2132068
-pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el packages/emacs-lib-core/src/emacs-callproc.el scripts/nelisp-stdlib-prelude.el	9fc9dd60941b
+pinned-collision ns-collision-divergent	setenv	lisp/nelisp-build-host.el packages/emacs-lib-core/src/emacs-callproc.el scripts/nelisp-stdlib-prelude.el	5df275b2114f
 pinned-collision ns-collision-divergent	setf	lisp/nelisp-cl-macros.el lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-parity-setf-places.el	f5f78f1028fb
 pinned-collision ns-collision-divergent	setq-default	lisp/nelisp-stdlib-eval-special.el packages/emacs-lib-core/src/emacs-buffer-builtins.el scripts/nelisp-stdlib-prelude.el	bdd1fca36c5d
 pinned-collision ns-collision-divergent	setq-local	lisp/nelisp-stdlib-eval-special.el packages/emacs-lib-core/src/emacs-stub.el packages/emacs-lib-core/src/nemacs-runtime-stdlib-extra.el scripts/nelisp-stdlib-prelude.el	323775048737

@@ -19021,7 +19021,9 @@ bootstrap implementation.
       (unless command
         (signal 'wrong-type-argument (list 'listp command)))
       (if (fboundp 'nelisp-process-start)
-          (let ((proc (apply #'nelisp-process-start resolved)))
+          (let ((proc (apply #'nelisp-process-start
+                             (let ((prefix (nelisp--env-spawn-prefix)))
+                               (if prefix (append prefix resolved) resolved)))))
             (process-put proc :name name)
             (process-put proc :sentinel sentinel)
             (process-put proc :stderr stderr-buffer)
@@ -19063,7 +19065,11 @@ filter it already wrote."
             'open -1 nil (plist-get plist :filter) "")))
 (unless (fboundp 'call-process)
   (defun call-process (program &optional infile destination display &rest args)
-    (let ((resolved (or (executable-find program) program)))
+    (let* ((resolved (or (executable-find program) program))
+           (prefix (nelisp--env-spawn-prefix)))
+      (when prefix
+        (setq args (append (cdr prefix) (list resolved) args)
+              resolved (car prefix)))
       (if (eq destination t)
           (let ((out-file (make-temp-file "nelisp-call-process-out-")))
             (unwind-protect
@@ -23029,57 +23035,6 @@ first `getenv' is not overwritten by the value the process started with."
               (setq start (1+ i)))
             (setq i (1+ i)))))))))
 
-(unless (fboundp 'getenv)
-  (defun getenv (variable)
-    (nelisp--environment-load)
-    (cdr (assoc variable nelisp--environment))))
-;; GNU emacs.c main: text_quoting_flag = using_utf8 ().  A cold image froze
-;; this value at build time; `nelisp-standalone--cold-boot-reinit-source'
-;; re-derives it on every boot (keep in sync).
-(when nelisp--text-quoting-owned
-  (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
-(unless (fboundp 'setenv)
-  (defun setenv (variable value &optional _substitute)
-    (nelisp--environment-load)
-    (let ((cell (assoc variable nelisp--environment)))
-      (if value
-          (if cell
-              (setcdr cell value)
-            (setq nelisp--environment
-                  (cons (cons variable value) nelisp--environment)))
-        (let ((out nil)
-              (tail nelisp--environment))
-          (while tail
-            (unless (equal (car (car tail)) variable)
-              (setq out (cons (car tail) out)))
-            (setq tail (cdr tail)))
-          (setq nelisp--environment (nreverse out)))))
-    value))
-;; `void-variable' on the ~80-file census (5 hits: cli-jsonl-service-test,
-;; cli-trajectory-test, jsonl-approval-service-test, native-only-service-
-;; test, trajectory-service-test -- all `(let ((process-environment ...))
-;; ...)' dynamic overrides around a `make-process'/`start-process' call).
-;; Real Emacs's `process-environment' is a list of "VAR=VALUE" strings
-;; that both backs `getenv'/`setenv' and is read by `make-process' to
-;; build a child's environment.  This runtime instead keeps
-;; `nelisp--environment' (an alist) as `getenv'/`setenv''s own backing
-;; store, and -- checked directly against `make-process' above -- spawns
-;; children through `nelisp-process-start' without ever reading
-;; `process-environment' at all, so a child always inherits this
-;; process's real OS environment regardless of any `let' override here.
-;; Declaring the variable (so the `let' above does not `void-variable')
-;; and seeding it from the same real environment `nelisp--environment-
-;; load' already knows how to read is the honest partial fix: reading
-;; `process-environment' back gives correct, real values, and a `let'
-;; override no longer errors, but it still has no effect on a spawned
-;; child (documented here rather than silently claimed).
-;; `nelisp--environment-load' has to run BEFORE the `defvar' value form
-;; below reads `nelisp--environment', so it cannot be the `unless' body's
-;; only form -- but `make prelude-toplevel-check' flags any OTHER bare
-;; call sitting beside a definition in an `unless' body (its own
-;; docstring: "a check appended to a one-line defun ... runs while the
-;; prelude loads").  Wrapped in `progn' (an allowed top-level head the
-;; checker does not recurse into) for exactly that reason.
 (unless (boundp 'process-environment)
   (progn
     (nelisp--environment-load)
@@ -23087,11 +23042,125 @@ first `getenv' is not overwritten by the value the process started with."
       (mapcar (lambda (cell) (concat (car cell) "=" (cdr cell)))
               nelisp--environment)
       "A list of \"VAR=VALUE\" strings, seeded once from the real OS
-environment (see `nelisp--environment-load').  DIVERGES from Emacs:
-`make-process'/`start-process' (above, in this file) do not read this
-variable at all, so overriding it before spawning a child has no
-effect on that child's environment -- see the block comment above this
-defvar for why.")))
+environment (see `nelisp--environment-load').  `getenv' and `setenv' read
+and write it, and a spawned child inherits its current (possibly
+`let'-bound) value, as in GNU Emacs.")))
+
+(unless (boundp 'nelisp--initial-environment)
+  (progn
+    (defvar nelisp--initial-environment (copy-sequence process-environment)
+      "List of \"VAR=VALUE\" strings of the environment this process started with.")))
+
+(defun nelisp--getenv-in (variable env)
+  "Return the value of VARIABLE in the \"VAR=VALUE\" list ENV, or nil.
+GNU semantics: the first entry naming VARIABLE wins, \"VAR=VALUE\" gives
+VALUE, and a bare \"VAR\" entry means unset (nil)."
+  (let ((scan env)
+        (n (length variable))
+        (result nil)
+        (done nil))
+    (while (and scan (not done))
+      (let ((entry (car scan)))
+        (when (and (stringp entry) (>= (length entry) n)
+                   (string= (substring entry 0 n) variable))
+          (cond ((= (length entry) n) (setq done t))
+                ((= (aref entry n) 61)
+                 (setq result (substring entry (1+ n)) done t)))))
+      (setq scan (cdr scan)))
+    result))
+(unless (fboundp 'getenv)
+  (defun getenv (variable &optional _frame)
+    "Return the value of environment variable VARIABLE, or nil if unset.
+Reads `process-environment', so a `let'-bound value is honoured."
+    (nelisp--getenv-in variable process-environment)))
+;; GNU emacs.c main: text_quoting_flag = using_utf8 ().  A cold image froze
+;; this value at build time; `nelisp-standalone--cold-boot-reinit-source'
+;; re-derives it on every boot (keep in sync).
+(when nelisp--text-quoting-owned
+  (setq internal--text-quoting-flag (nelisp--using-utf8-p)))
+(unless (fboundp 'setenv)
+  (defun setenv (variable &optional value substitute-env-vars)
+    "Set VARIABLE to VALUE in `process-environment'; nil VALUE unsets it.
+Follows GNU: the first entry naming VARIABLE is replaced in place, else a
+new entry is consed on front.  An unset variable is a bare \"VAR\" entry."
+    (when (and value substitute-env-vars (fboundp 'substitute-env-vars))
+      (setq value (substitute-env-vars value)))
+    (let ((n (length variable))
+          (entry (if value (concat variable "=" value) variable))
+          (scan process-environment)
+          (found nil))
+      (dotimes (i n)
+        (when (= (aref variable i) 61)
+          (error "Environment variable name `%s' contains `='" variable)))
+      (while (and scan (not found))
+        (let ((e (car scan)))
+          (when (and (stringp e) (>= (length e) n)
+                     (string= (substring e 0 n) variable)
+                     (or (= (length e) n) (= (aref e n) 61)))
+            (setcar scan entry)
+            (setq found t)))
+        (setq scan (cdr scan)))
+      (unless found
+        (setq process-environment (cons entry process-environment))))
+    value))
+;; `process-environment' is a list of "VAR=VALUE" strings that backs
+;; `getenv'/`setenv' (above) and is what a spawned child inherits, as in
+;; GNU Emacs.  It is seeded once from the real OS environment
+;; (`nelisp--environment-load'); `nelisp--environment' remains only the
+;; boot-time seed.  The native spawn primitives always pass the
+;; driver-stashed OS environment, so `nelisp--env-spawn-prefix' (below)
+;; turns the difference between `process-environment' and
+;; `nelisp--initial-environment' into an `env' wrapper for the child.
+;; `nelisp--environment-load' has to run BEFORE the `defvar' value form
+;; below reads `nelisp--environment', so it cannot be the `unless' body's
+;; only form -- but `make prelude-toplevel-check' flags any OTHER bare
+;; call sitting beside a definition in an `unless' body.  Wrapped in
+;; `progn' (an allowed top-level head the checker does not recurse into).
+(defun nelisp--env-split (entry)
+  "Return (NAME . VALUE) for the \"NAME=VALUE\" string ENTRY, VALUE nil if bare."
+  (let ((n (length entry)) (i 0))
+    (while (and (< i n) (/= (aref entry i) 61))
+      (setq i (1+ i)))
+    (if (< i n)
+        (cons (substring entry 0 i) (substring entry (1+ i)))
+      (cons entry nil))))
+
+(defun nelisp--env-effective (env)
+  "Return the alist (NAME . VALUE) of ENV, the first entry for a name winning.
+A bare \"NAME\" entry yields (NAME), an unset marker."
+  (let ((out nil))
+    (dolist (e env)
+      (when (stringp e)
+        (let ((cell (nelisp--env-split e)))
+          (unless (assoc (car cell) out)
+            (setq out (cons cell out))))))
+    out))
+
+(defun nelisp--env-spawn-prefix ()
+  "Return an `env' command prefix carrying `process-environment' to a child.
+The native spawn primitives hand the child the OS environment this process
+started with.  When `process-environment' differs from `nelisp--initial-environment'
+this returns (ENV-PROGRAM ARG...), to be placed before the real program, so
+that the child sees exactly the variables of `process-environment'.  Return
+nil when they agree or `env' is unavailable."
+  (when (and (boundp 'nelisp--initial-environment)
+             (not (equal process-environment nelisp--initial-environment)))
+    (let ((envprog (executable-find "env")))
+      (when envprog
+        (let ((cur (nelisp--env-effective process-environment))
+              (init (nelisp--env-effective nelisp--initial-environment))
+              (args nil))
+          (dolist (c cur)
+            (let ((i (assoc (car c) init)))
+              (if (cdr c)
+                  (unless (and i (equal (cdr i) (cdr c)))
+                    (setq args (cons (concat (car c) "=" (cdr c)) args)))
+                (when (and i (cdr i))
+                  (setq args (cons (car c) (cons "-u" args)))))))
+          (dolist (i init)
+            (when (and (cdr i) (not (assoc (car i) cur)))
+              (setq args (cons (car i) (cons "-u" args)))))
+          (and args (cons envprog (nreverse args))))))))
 
 (defun nelisp--cold-boot-reinit-environment ()
   "Re-derive the environment-dependent prelude globals after a cold load.
@@ -23112,7 +23181,8 @@ start (Doc 243).  Keep the formulas in sync with the defvars of
         (while cells
           (setq acc (cons (concat (car (car cells)) "=" (cdr (car cells))) acc)
                 cells (cdr cells)))
-        (setq process-environment (nreverse acc))))
+        (setq process-environment (nreverse acc))
+        (setq nelisp--initial-environment (copy-sequence process-environment))))
   ;; Refresh the environment-keyed caches here, on the main thread: a registry
   ;; worker's first closure apply would otherwise write them, which the
   ;; mirror-mutation guard refuses.
