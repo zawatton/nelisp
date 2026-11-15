@@ -1,33 +1,26 @@
-# Manual measurement loop for the intermittent Windows-only failure
-# "nelisp-service: disconnected: send failed" (about 5% of windows-latest
-# ERT jobs).  It runs the whole nelisp-service ERT file many times, several
-# copies at once, on a Windows runner and reports the failure count.
-# The tests drive host Emacs only, so no NeLisp build is needed.
+# Raw GNU Emacs loopback TCP reconnect-ordering probe; no NeLisp service code
+# or runtime build is involved.
 name: windows-service-loop
 
 on:
   workflow_dispatch:
     inputs:
-      iterations:
-        description: Number of test runs
+      cycles:
+        description: Cycles for each of the three interleaved controls
+        required: false
         default: '200'
-      parallel:
-        description: Concurrent test runs
-        default: '4'
-      selector:
-        description: ERT test name regex (default runs the full service suite)
-        default: '^nelisp-service-test'
 
 jobs:
-  loop:
-    name: service loop (windows-latest)
+  reconnect-probe:
+    name: raw TCP reconnect probe (windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 120
+    timeout-minutes: 20
+    env:
+      CYCLES: ${{ inputs.cycles }}
     steps:
       - uses: actions/checkout@v4
 
-      # Same host Emacs install as the `ert' job's Windows lane in ci.yml:
-      # GNU publishes emacs-31.1.zip, which setup-emacs-windows cannot fetch.
+      # Match the GNU Emacs 31.1 installation used by the Windows ERT lane.
       - name: Set up Emacs (Windows)
         shell: pwsh
         env:
@@ -46,77 +39,29 @@ jobs:
           $exe.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
           & $exe.FullName --version | Select-Object -First 1
 
-      - name: Run the nelisp-service tests in a loop
+      - name: Run raw reconnect probe
         shell: bash
-        env:
-          ITERATIONS: ${{ inputs.iterations }}
-          PARALLEL: ${{ inputs.parallel }}
-          TEST_SELECTOR: ${{ inputs.selector }}
         run: |
-          set -u
-          logdir="$RUNNER_TEMP/service-loop"
-          rm -rf "$logdir"; mkdir -p "$logdir"
-          # Same load path as the Makefile's test-one target.
-          loads=""
-          for d in packages/*/src packages/*/test; do
-            [ -d "$d" ] && loads="$loads -L $d"
-          done
-          export logdir loads
-          echo "bash=$BASH timeout=$(command -v timeout) emacs=$(command -v emacs)"
-          if ! NELISP_SERVICE_TRACE="$logdir/preflight-trace.txt" \
-               /usr/bin/timeout 30 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
-                 -L scripts -L tools --eval '(setq load-prefer-newer t)' \
-                 -l packages/nelisp-service/src/nelisp-service.el \
-                 --eval '(progn (nelisp-service--trace "P" "preflight-marker") (unless (= 1 (nelisp-service--trace-flush)) (error "Trace preflight flush count mismatch")) (let ((contents (with-temp-buffer (insert-file-contents (getenv "NELISP_SERVICE_TRACE")) (buffer-string)))) (unless (string-match-p "preflight-marker" contents) (error "Trace preflight marker missing"))) (delete-file (getenv "NELISP_SERVICE_TRACE")) (princ "TRACE_PREFLIGHT PASS\n"))' \
-                 </dev/null; then
-            echo "TRACE_PREFLIGHT FAIL"
-            exit 1
+          set -eu
+          logdir="$RUNNER_TEMP/w32-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$logdir"
+          echo "emacs=$(command -v emacs) cycles=$CYCLES artifact_dir=$logdir"
+          ulimit -v 8388608
+          if /usr/bin/timeout 1100 emacs --batch -Q \
+               -l tools/ai/w32-reconnect-probe.el -- \
+               --cycles "$CYCLES" --artifact-dir "$logdir" \
+               >"$logdir/w32-probe-run.log" 2>&1; then
+            cat "$logdir/w32-probe-run.log"
+          else
+            rc=$?
+            cat "$logdir/w32-probe-run.log"
+            exit "$rc"
           fi
-          run_one() {
-            i=$1
-            # Each batch process gets its own flush target on failure.
-            export NELISP_SERVICE_TRACE="$logdir/trace-$i.txt"
-            # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
-            # shellcheck disable=SC2086
-            if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
-                 -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
-                 -l packages/nelisp-service/test/nelisp-service-test.el \
-                 --eval '(let ((selector (or (getenv "TEST_SELECTOR") "^nelisp-service-test"))) (unless (ert-select-tests selector t) (error "No tests match selector %S" selector)) (ert-run-tests-batch-and-exit selector))' \
-                 </dev/null >"$logdir/iter-$i.log" 2>&1; then
-              echo pass >"$logdir/iter-$i.result"
-            else
-              echo "fail rc=$?" >"$logdir/iter-$i.result"
-            fi
-          }
-          # Plain background jobs, PARALLEL at a time (no xargs, no child bash).
-          set +e
-          for i in $(seq 1 "$ITERATIONS"); do
-            run_one "$i" &
-            while [ "$(jobs -rp | wc -l)" -ge "$PARALLEL" ]; do sleep 1; done
-          done
-          wait
-          set -e
-          total=$(find "$logdir" -name '*.result' | wc -l)
-          if [ "$total" -ne "$ITERATIONS" ]; then
-            echo "LOOP harness error: $total of $ITERATIONS iterations recorded a result"
-            exit 1
-          fi
-          # grep exits 1 when nothing failed; under pipefail that must not
-          # end the step before the summary is printed.
-          failed=$({ grep -l '^fail' "$logdir"/*.result 2>/dev/null || true; } | wc -l)
-          for r in $(grep -l '^fail' "$logdir"/*.result 2>/dev/null || true); do
-            log="${r%.result}.log"
-            echo "::group::FAILED ${log##*/}"
-            cat "$log"
-            echo "::endgroup::"
-          done
-          echo "LOOP total=$total failed=$failed"
-          [ "$failed" -eq 0 ]
 
-      - name: Upload service loop diagnostics
+      - name: Upload raw TCP probe artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: service-loop-diagnostics
-          path: ${{ runner.temp }}/service-loop/**
-          if-no-files-found: warn
+          name: w32-reconnect-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/w32-probe-${{ github.run_id }}-${{ github.run_attempt }}/w32-probe*
+          if-no-files-found: error
