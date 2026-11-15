@@ -444,7 +444,8 @@ Return non-nil on success."
   "Return a command that runs SCRIPT with ARGS on the current substrate.
 ARGS is a plist bound to `nelisp-service-bootstrap-args' in the child,
 which also inherits `nelisp-service-state-directory'.  The bootstrap
-file is written next to the state files."
+file is written next to the state files and remains available for replay
+until its state directory is cleaned up."
   (let* ((dir (nelisp-service-state-directory))
          (file (expand-file-name
                 (format "bootstrap-%s.el" (nelisp-service-make-token)) dir)))
@@ -455,8 +456,6 @@ file is written next to the state files."
        `(setq nelisp-service-state-directory ,dir))
       (nelisp-service-encode
        `(setq nelisp-service-bootstrap-args ',args))
-      (nelisp-service-encode
-       `(condition-case nil (delete-file ,file) (error nil)))
       (nelisp-service-encode
        `(load ,(expand-file-name script) nil t)))
      nil file nil 'silent)

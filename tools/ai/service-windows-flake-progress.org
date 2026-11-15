@@ -1,5 +1,5 @@
 #+TITLE: NeLisp service Windows flake investigation
-#+NOTE: Criteria were added for observed-daemon disappearance recovery and Windows connection retirement on 2026-11-15. The denominator is eight; this is additional acceptance scope, not a passing Windows claim.
+#+NOTE: A generated-command replay criterion was added after Windows traces proved recovery reused a deleted bootstrap. The denominator is nine; this is additional acceptance scope, not a passing Windows claim.
 
 * S1 Diagnosis
 
@@ -45,8 +45,15 @@ evidence: target/service-flake/retirement-ert.log sha256=d7767b8d3f587efccf0f3e9
 evidence: target/service-flake/retirement-metrics-on.log sha256=3f41d00553135537f5aa2408541a3c05a4046c4f887a692e7549e3f356120a9e
 cmd: python3 -c 'from pathlib import Path; log = Path("target/service-flake/retirement-focused.log").read_text(); assert log.rstrip().endswith("EXIT_CODE=0"); assert "0 unexpected" in log'
 
-** S2.5 Final Windows workloads and repository checks pass on the final fix
-#+NOTE: The retained logs are historical failures. Current metadata must show successful full and serial uninstrumented runs, the small retirement diagnostic, CI and Stage D on this exact HEAD. Diagnostic run 43697973891 failed autostart once in 20; candidate CI also found a private-boundary namespace violation. Both remain required failures until resolved. The denominator remains eight; the final acceptance check was strengthened to prevent other passing runs from hiding these known failures.
+** S2.5 Generated bootstrap commands survive replay in fresh children
+#+NOTE: Windows diagnostic run 43702017016 failed four autostart iterations; all four reached recovery, respawned the same command after the original child exited, and failed because the first child had deleted its bootstrap. Require a deterministic original-code failure and one real generated command succeeding twice with identical args/state directory; the directory owner must retain and clean the bootstrap for the command lifetime. Initial welcome/closed transport failures remain separate.
+evidence: target/service-flake/bootstrap-replay-red.log sha256=157ee3df8b526b7b5fc2fd4341774a8891925bf20fab50fdf9206eafce29980f
+evidence: target/service-flake/bootstrap-replay-focused.log sha256=eb26bfa5825009bbf9da31463ae201c49b7d6363dadfc174517f2521b08af590
+evidence: target/service-flake/bootstrap-replay-full.log sha256=31e25ed293d3e641b3919c7f89759e10ecd645877a827f05f42af35dd1b72168
+cmd: python3 -c 'from pathlib import Path; log = Path("target/service-flake/bootstrap-replay-focused.log").read_text(); assert log.rstrip().endswith("EXIT_CODE=0"); assert "0 unexpected" in log; assert "script-command-can-be-replayed" in log'
+
+** S2.6 Final Windows workloads and repository checks pass on the final fix
+#+NOTE: The retained logs are historical failures. Current metadata must show successful full and serial uninstrumented runs, the small retirement diagnostic, CI and Stage D on this exact HEAD. Diagnostic run 43697973891 failed autostart once in 20; candidate CI also found a private-boundary namespace violation. Both remain required failures until resolved. The final acceptance check was strengthened to prevent other passing runs from hiding these known failures.
 evidence: target/service-flake/windows-fixed-serial-43685870416.log sha256=2a3cb4055437dcc65a091c069fd1e4661193b957957a8b1b3663db16f82158c0
 evidence: target/service-flake/windows-fixed-full-43685867603.log sha256=a8219e4f67133f9f9e783fe66664ebd07c0b12ee025f018ffb273f6534bfe4a6
 cmd: python3 -c 'import json, subprocess; rows = [json.load(open("target/service-flake/windows-fixed-" + kind + "-current.json")) for kind in ("serial", "full", "metrics", "ci", "stage-d")]; assert all(r["conclusion"] == "success" for r in rows); assert {r["headSha"] for r in rows} == {subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()}'

@@ -98,6 +98,12 @@ Measured on the Windows standalone reader, 2026-10-10:
 - =setenv= values and =command-line-args= do not reach a script the reader
   starts, so settings go through a generated bootstrap file
   (=nelisp-service-script-command=).
+- Generated bootstrap files remain in the state directory so a returned
+  start command can be replayed. The owner of a temporary state directory
+  should remove it only after no command or child can use it. The default
+  persistent state directory retains one bootstrap file, including its
+  serialized arguments, for each command construction over that directory's
+  lifetime.
 - =print-escape-newlines= is ignored, so framing escapes line breaks itself.
 - =secure-hash= returns the empty-string digest and =(random t)= does not
   reseed, so tokens come from the clock and a counter; they guard against

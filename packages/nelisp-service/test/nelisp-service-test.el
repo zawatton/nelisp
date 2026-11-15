@@ -407,6 +407,36 @@
             (should (string-match-p "(:name \"n\" :n 3)" (buffer-string))))
         (delete-file script)))))
 
+(ert-deftest nelisp-service-test-script-command-can-be-replayed ()
+  (let* ((dir (make-temp-file "nelisp-service-replay-" t))
+         (nelisp-service-state-directory dir)
+         (script (make-temp-file
+                  "nelisp-service-replay-script-" nil ".el"
+                  "(princ (format \"%S\\n%S\\n\" nelisp-service-bootstrap-args nelisp-service-state-directory))"))
+         (args '(:name "replay" :values (1 "two")))
+         (command (nelisp-service-script-command script args))
+         (bootstrap (car (last command)))
+         (first-output nil))
+    (unwind-protect
+        (progn
+          (should (file-exists-p bootstrap))
+          (with-temp-buffer
+            (should (= 0 (apply #'call-process
+                                (car command) nil t nil (cdr command))))
+            (setq first-output (buffer-string)))
+          (should (file-exists-p bootstrap))
+          (with-temp-buffer
+            (should (= 0 (apply #'call-process
+                                (car command) nil t nil (cdr command))))
+            (should (equal first-output (buffer-string))))
+          (should (string-match-p (regexp-quote (format "%S" args))
+                                  first-output))
+          (should (string-match-p (regexp-quote (format "%S" dir))
+                                  first-output)))
+      (delete-file script)
+      (delete-directory dir t))
+    (should-not (file-exists-p dir))))
+
 ;;; Worker pool
 
 (defun nelisp-service-test--pool (&rest args)
