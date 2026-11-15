@@ -1,4 +1,6 @@
 #+TITLE: NeLisp service Windows flake investigation
+#+NOTE: A generated-command replay criterion was added after Windows traces proved recovery reused a deleted bootstrap. The denominator is nine; this is additional acceptance scope, not a passing Windows claim.
+#+NOTE: This branch measures whether explicitly deleting an already-terminal EOF-fenced TCP client changes reconnect outcomes. It is a diagnostic comparison only; production bootstrap replay is committed separately at edaf2a71d and final transport acceptance remains failing.
 
 * S1 Diagnosis
 
@@ -9,7 +11,7 @@ evidence: target/service-flake/prior-trace.log sha256=a1294a75fa92d0ed85d50ca65a
 evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e0a534dc3b571c62ab3f74cd87793932e6ed6
 
 ** S1.3 New untraced Windows baseline is collected and classified
-#+NOTE: Run 43683628349 on main completed 200 full-suite iterations at parallel=4 with 11 failures, all new-client version rejection returning nil. This is failure evidence, not a passing baseline.
+#+NOTE: Baseline run 43683628349 failed 11/200, all new-client version rejection; fixed full 43685867603 failed 13/200, focused serial 43685870416 failed 1/100. Failures remain under investigation.
 evidence: target/service-flake/windows-baseline-43683628349.log sha256=4b7765b33fd79d6c7508a2a5db7e4e5fa8f3705b400067837d4ec19d099294cb
 
 * S2 Fix and regression
@@ -25,37 +27,34 @@ evidence: target/service-flake/full-before.log sha256=d832a4b9b98948c80cbb62f792
 evidence: target/service-flake/focused-after.log sha256=96a30005d71d7ad3ba0a3e19f0614ce8239bf1286fe67fca2597fbcad9e41d06
 evidence: target/service-flake/zero-selection.log sha256=b8c193c4c80fd4edabce539d06230efc90829f0b68a53a25ffa397bf96bf38f9
 
-** S2.3 Untraced full and serial Windows loops pass on the final fix
-#+NOTE: All-process/50 ms Windows run 43693424719 reproduced eight new-client resets in 3200 immediate transactions, with zero address errors; the server-close fence completed 1600/1600. Every failure retained reset-before-accept then server REJECT send, with no client reply. The changed pump does not prevent reproduction.
-evidence: target/service-flake/windows-raw-all-43693424719-classification.json sha256=8e73f2e8d72f49cfcecf60cf6b371f506e13652f32c43b479cebc09c4c071afd
-evidence: target/service-flake/windows-raw-all-43693424719.json sha256=7dcef192624adc1935272e0d6490ec7ce1a0f2293cc0406464f340fe2bc6a86f
-#+NOTE: Optional client-EOF fence waits only for OLD client terminal status; peer status is observational. Immediate terminal status or timeout is incomplete. Local GNU EOF API check and four-mode 5/5 smoke pass; missing-response control exits 1. EOF counts are recorded in W32_PROBE_EOF_MODE run-log lines, not the three-mode summary file. Windows validation is still required before any production workaround.
-evidence: target/service-flake/w32-eof-api-probe.log sha256=fd189542bfc4674c9bc84836581fdb5dee2e178b8ce06162074abb36922eca04
-evidence: target/service-flake/w32-probe-eof-control-all/w32-probe-run.log sha256=6511f71774f854fa9e5cd55285a5b9958cc1d2115d835591c4d7ac1f12452c73
-evidence: target/service-flake/w32-probe-eof-control-negative/w32-probe-run.log sha256=05279c88d016f29298d73cbe16f64ad0c370b6696743c5a082b4832a2ca1fa69
-#+NOTE: Raw parallel Windows run 43692785587 reproduced six early new-client resets and one REJECT-to-EJECT response without service code. Separately, 3926 address-allocation failures produced a total 3933 incomplete transactions; exclude these address errors from transport-race conclusions. Same-name reuse is unnecessary. No comparable non-address failure appeared in the close-fenced control, but this does not establish a fix. Next compare all-process/50 ms event pumping at a smaller connection count.
-evidence: target/service-flake/windows-raw-parallel-43692785587-classification.json sha256=af34d78adc9d12512d266d6cd205b7850287ffb030cb3c74b96070a1457a9c03
-evidence: target/service-flake/windows-raw-parallel-43692785587.json sha256=d2b2eb0fc1d6c7b3634eb3581e19d2546868ff0f7df3dc3a4c6ed635763ba2e3
-#+NOTE: Optional all-process pump preserves the original targeted/20 ms default. Linux all-pump smoke completed five cycles per mode; suppressed-response control had exactly one incomplete transaction and exited 1. This changes both process targeting and interval, not either factor separately.
-evidence: target/service-flake/w32-probe-event-pump-all/w32-probe-summary.log sha256=105fe2d5912536d823d9d2ba106f8b8e1a2eab0a132babc10b40f6db3ffb707f
-evidence: target/service-flake/w32-probe-event-pump-negative/w32-probe-summary.log sha256=b24dd943e5540872abf303d4b80cfd2dbd2972b8367343b40675263b9aa7b176
-#+NOTE: Raw Windows run 43692034435 completed 1000/1000 transactions in each of three modes (3000 total) without an incomplete transaction. This single-process result does not reproduce the service reset and does not prove its absence. Same-host parallelism and wait-loop differences remain diagnostic variables.
-evidence: target/service-flake/windows-raw-43692034435/w32-probe-summary.log sha256=70147da85c33a07204b253c9d458c40cdefbaa3f9137b387376da8d3188f57e1
-evidence: target/service-flake/windows-raw-43692034435.json sha256=d57527ac9f28b5ec651f66bb5282a0587c1dec11005e881f52adca91a611353b
-#+NOTE: Buffered diagnostic run 43689707866 failed 5/200 focused iterations (three new-client version rejection, two autostart). All three rejection traces show client remote-close before server accept/reject, with no client rejection input. Both autostart traces show welcome immediately followed by close. Root transport cause is unproven; longer drain/linger is unsupported by this evidence. A standalone GNU Windows TCP close/reconnect probe is the next diagnostic step; it does not satisfy this final criterion.
-#+NOTE: The raw GNU TCP probe compares immediate reconnect with the same process name, a unique process name, and reconnect after observed server-side old-close. Linux smoke completed five cycles per mode; deliberately missing one NEW response produced one incomplete transaction and a failure artifact. These validate the harness, not Windows transport behavior or absence of the original defect.
-evidence: target/service-flake/w32-probe-linux-smoke.log sha256=7bf9f54b8425b0d9b1ed686b259a0057f2a61d6298be02941ef372084f49d7fd
-evidence: target/service-flake/w32-probe-summary.log sha256=105fe2d5912536d823d9d2ba106f8b8e1a2eab0a132babc10b40f6db3ffb707f
-evidence: target/service-flake/w32-probe-negative-control.log sha256=2684af412860155dc8a540b2f74d3f3a71c23e4f873332210ee33cadc628d47b
-evidence: target/service-flake/w32-probe-negative-artifacts/w32-probe-summary.log sha256=b24dd943e5540872abf303d4b80cfd2dbd2972b8367343b40675263b9aa7b176
-evidence: target/service-flake/windows-buffered-43689707866.log sha256=7eeed17b576ca8667858db0fca6184d83e399afb9659d0fefe054ead03acb42c
-evidence: target/service-flake/windows-buffered-43689707866.json sha256=00c553f282acd6b9adb2dbdcb1f7d70f14c188f791deb320f4bc85f6c1d165d6
-#+NOTE: Fixed c70dd6cf serial run 43685870416 failed 1/100 at the older-client assertion (actual return value unknown). Full run 43685867603 failed 13/200 iterations: 15 failed tests across daemon reachability and new-client version rejection. No failure-rate comparison conclusion is established.
-#+NOTE: This branch adds diagnostic-only bounded in-memory tracing, six failure wrappers and workflow artifact preservation. Local 40-test tracing-off/on suites passed; independent Sol review approved a diagnostic Windows launch after fixing connection-argument exposure. These checks do not satisfy the untraced Windows criterion. Autostart child traces remain in child RAM; same-process t1/t4 traces capture both sides.
-#+NOTE: Independent Sol rerun recorded 40/40 pass both off and on; success created no trace file. The worker's unrecoverable benchmark claim was retracted; suite timings are not an overhead benchmark.
-evidence: target/service-flake/independent-trace-off.log sha256=983de2d35f35701b247dc66daca043412cb7d90e71057d0a451eef9f2ca9d92d
-evidence: target/service-flake/independent-trace-on.log sha256=aa602a5b482e94fd2f185f2172adf6a90b78f9b7dcce332c0cbd02334ed697cd
-evidence: target/service-flake/preflight.log sha256=f769ca39dc374c2c8328c341d221a7627c7385235fcd07c2f69883d6680c192f
+** S2.3 Recovery after observed daemon disappearance is verified
+#+NOTE: After a post-spawn state publication, actual absence of both state and lock may clear that spawn suppression once. Never-published, busy, locked and unreadable-existing cases must retain suppression and files. Require deterministic original failure and fixed recovery plus these negative controls.
+#+NOTE: Independent original-code run failed the positive test with actual spawn count 1 versus expected 2; four controls passed. Fixed focused tests passed 5/5; full GNU service suite passed 41/41. This does not claim transport reset prevention.
+evidence: target/service-flake/independent-recovery-red.log sha256=0893e76e568d7b285b88d20488ca887bec75e5b95b126f472cae7a5d672b6ac5
+evidence: target/service-flake/independent-recovery-focused.log sha256=2b11ebd1d6adc569809f7fd58971d1d815c42d8aa1efa9e24a43dec4c09f0456
+evidence: target/service-flake/recovery-gnu.log sha256=fb608015424cad7663ce7be3922209fa5994d4d8123f78ddbceb6f36ba7da7cf
+
+** S2.4 Bounded Windows connection retirement is verified
+#+NOTE: Raw GNU Windows run 43694317202 reproduced six resets across 2400 immediate reconnects, with zero failures across 1200 client EOF fences and 1200 server-close fences. Require deterministic EOF-before-delete ordering, timeout/error cleanup and platform controls, plus actual Windows service workload in the following criterion. This experiment alone does not establish a service fix.
+#+NOTE: Independent final focused run passed 11/11 with 52 tests inventoried. Original public close failed the intended EOF-wait invariant. Metrics controls preserve one invocation, errors and fixture exclusion. Full GNU 51/51 passed before the final narrow guard/clamp corrections; the final full 52-test suite is covered by the following Windows acceptance criterion and CI.
+evidence: target/service-flake/independent-retirement-public-close-red.log sha256=5f589f571411075046881a4bcd9d4833c479c6396517fb03d8986013c0bbba90
+evidence: target/service-flake/independent-retirement-focused-final.log sha256=7c37ee5b54e5d0e0e444cd1f0b30bc6532f72837272606be5e76f43adf737556
+evidence: target/service-flake/independent-retirement-metrics-controls.log sha256=223f2e8ea7b3c05d1b4b638ad9eab96a6923670aa178dc6524f1d944ca0ea586
+#+NOTE: The shared retirement API was renamed publicly without changing behavior after CI found a private-boundary violation. Namespace inventory now passes at 2444/baseline 2444; focused tests and real-call metrics also pass with the public name. The final CI criterion still requires a successful rerun.
+evidence: target/service-flake/ns-inventory.log sha256=3f805f4e86fd057666633926250f15c3574dbed72afb6e4d50f17644a1ff82e5
+evidence: target/service-flake/retirement-ert.log sha256=d7767b8d3f587efccf0f3e9d335501bb9721f48853cb1019385958b81f637791
+evidence: target/service-flake/retirement-metrics-on.log sha256=3f41d00553135537f5aa2408541a3c05a4046c4f887a692e7549e3f356120a9e
+cmd: python3 -c 'from pathlib import Path; log = Path("target/service-flake/retirement-focused.log").read_text(); assert log.rstrip().endswith("EXIT_CODE=0"); assert "0 unexpected" in log'
+
+** S2.5 Generated bootstrap commands survive replay in fresh children
+#+NOTE: Windows diagnostic run 43702017016 failed four autostart iterations; all four reached recovery, respawned the same command after the original child exited, and failed because the first child had deleted its bootstrap. Require a deterministic original-code failure and one real generated command succeeding twice with identical args/state directory; the directory owner must retain and clean the bootstrap for the command lifetime. Initial welcome/closed transport failures remain separate.
+evidence: target/service-flake/bootstrap-replay-red.log sha256=157ee3df8b526b7b5fc2fd4341774a8891925bf20fab50fdf9206eafce29980f
+evidence: target/service-flake/bootstrap-replay-focused.log sha256=eb26bfa5825009bbf9da31463ae201c49b7d6363dadfc174517f2521b08af590
+evidence: target/service-flake/bootstrap-replay-full.log sha256=31e25ed293d3e641b3919c7f89759e10ecd645877a827f05f42af35dd1b72168
+cmd: python3 -c 'from pathlib import Path; log = Path("target/service-flake/bootstrap-replay-focused.log").read_text(); assert log.rstrip().endswith("EXIT_CODE=0"); assert "0 unexpected" in log; assert "script-command-can-be-replayed" in log'
+
+** S2.6 Final Windows workloads and repository checks pass on the final fix
+#+NOTE: The retained logs are historical failures. Current metadata must show successful full and serial uninstrumented runs, the small retirement diagnostic, CI and Stage D on this exact HEAD. Diagnostic run 43697973891 failed autostart once in 20; candidate CI also found a private-boundary namespace violation. Both remain required failures until resolved. The final acceptance check was strengthened to prevent other passing runs from hiding these known failures.
 evidence: target/service-flake/windows-fixed-serial-43685870416.log sha256=2a3cb4055437dcc65a091c069fd1e4661193b957957a8b1b3663db16f82158c0
 evidence: target/service-flake/windows-fixed-full-43685867603.log sha256=a8219e4f67133f9f9e783fe66664ebd07c0b12ee025f018ffb273f6534bfe4a6
-cmd: python3 -c 'import json; rows = [json.load(open("target/service-flake/windows-fixed-" + kind + "-current.json")) for kind in ("serial", "full")]; assert all(r["conclusion"] == "success" for r in rows); assert len({r["headSha"] for r in rows}) == 1'
+cmd: python3 -c 'import json, subprocess; rows = [json.load(open("target/service-flake/windows-fixed-" + kind + "-current.json")) for kind in ("serial", "full", "metrics", "ci", "stage-d")]; assert all(r["conclusion"] == "success" for r in rows); assert {r["headSha"] for r in rows} == {subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()}'

@@ -5,9 +5,9 @@
 ;;; Commentary:
 
 ;; Exercise loopback TCP close/reconnect ordering without loading service code.
-;; Each cycle runs three controls: same process name with immediate reconnect,
-;; distinct process names with immediate reconnect, and the same-name reconnect
-;; only after the listener observed the prior socket's terminal close event.
+;; Default cycles run the three reconnect controls.  The opt-in EOF-delete
+;; mode set runs only a paired client-EOF differential, with explicit deletion
+;; of the terminal old client in one arm.
 
 ;;; Code:
 
@@ -206,22 +206,33 @@
   (w32-probe--reset-events)
   (let* ((mode-name (symbol-name mode))
          (same-name (not (eq mode 'unique-name-immediate)))
-         (base-name (format "w32-probe-%s-%d" mode-name cycle))
+         (process-mode-name
+          (if (memq mode '(same-name-after-client-eof
+                           same-name-after-client-eof-delete))
+              "same-name-after-client-eof"
+            mode-name))
+         (base-name (format "w32-probe-%s-%d" process-mode-name cycle))
          (old-process-name (if same-name base-name (concat base-name "-old")))
          (new-process-name (if same-name base-name (concat base-name "-new")))
          (old-context (list :cycle cycle :mode mode-name :role "old"))
          (new-context (list :cycle cycle :mode mode-name :role "new"))
-         (old nil) (new nil) (reason nil) (failure-context nil))
+         (old nil) (old-reference nil) (old-object-id nil)
+         (new nil) (reason nil) (failure-context nil))
     (w32-probe--bump counts mode :attempted)
     (unwind-protect
         (condition-case err
             (progn
               (setq old (w32-probe--client server port old-context old-process-name "OLD"))
+              (when (memq mode '(same-name-after-client-eof
+                                 same-name-after-client-eof-delete))
+                (setq old-reference old
+                      old-object-id (sxhash-eq old)))
               (unless (equal (process-get old 'w32-probe-reply) "WELCOME")
                 (error "old response was %S" (process-get old 'w32-probe-reply)))
               (w32-probe--bump counts mode :old-welcome)
               (cond
-               ((eq mode 'same-name-after-client-eof)
+               ((memq mode '(same-name-after-client-eof
+                             same-name-after-client-eof-delete))
                 (let* ((id (process-get old 'w32-probe-id))
                        (peer (and id (gethash id w32-probe--connections))))
                   (w32-probe--record old-context id "client-eof-before" old
@@ -242,7 +253,29 @@
                                      (process-status old))
                   (w32-probe--record old-context id "peer-status-after-client-terminal"
                                      peer (and peer (process-status peer)))
-                  (w32-probe--bump counts mode :close-observed)))
+                  (w32-probe--bump counts mode :close-observed)
+                  (let ((status-before (process-status old))
+                        (pid-before (process-id old)))
+                    (w32-probe--record
+                     old-context id "old-terminal-before-reconnect" old
+                     (list :pid pid-before :object-id old-object-id
+                           :same-object (eq old old-reference)))
+                    (w32-probe--bump
+                     counts mode (intern (format ":old-before-%s" status-before)))
+                    (when (eq old old-reference)
+                      (w32-probe--bump counts mode :old-same-object-before))
+                    (when (eq mode 'same-name-after-client-eof-delete)
+                      (delete-process old))
+                    (let ((status-after (process-status old))
+                          (pid-after (process-id old)))
+                      (w32-probe--record
+                       old-context id "old-terminal-after-optional-delete" old
+                       (list :pid pid-after :object-id old-object-id
+                             :same-object (eq old old-reference)))
+                      (w32-probe--bump
+                       counts mode (intern (format ":old-after-%s" status-after)))
+                      (when (eq old old-reference)
+                        (w32-probe--bump counts mode :old-same-object-after))))))
                (t
                 (delete-process old)
                 (when (eq mode 'same-name-after-server-close)
@@ -267,17 +300,29 @@
       (when new (ignore-errors (w32-probe--wait-close new server 1.0)))
       (when old (ignore-errors (w32-probe--wait-close old server 1.0))))))
 
-(defun w32-probe--summary (directory cycles counts failures)
+(defun w32-probe--summary (directory cycles counts failures modes)
   (let ((file (expand-file-name "w32-probe-summary.log" directory)))
     (with-temp-file file
       (insert (format "cycles-per-mode=%d total-incomplete=%d\n" cycles failures))
-      (dolist (mode '(same-name-immediate unique-name-immediate
-                      same-name-after-server-close))
+      (dolist (mode modes)
         (let ((stats (or (gethash mode counts) (w32-probe--stats))))
           (insert (format "mode=%s attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d close-observed=%d\n"
                           mode (plist-get stats :attempted) (plist-get stats :completed)
                           (plist-get stats :incomplete) (plist-get stats :old-welcome)
-                          (plist-get stats :new-reject) (plist-get stats :close-observed))))))
+                          (plist-get stats :new-reject) (plist-get stats :close-observed)))
+          (when (memq mode '(same-name-after-client-eof
+                             same-name-after-client-eof-delete))
+            (insert (format "mode=%s edge-before-closed=%d edge-before-failed=%d edge-before-exit=%d edge-before-signal=%d edge-after-closed=%d edge-after-failed=%d edge-after-exit=%d edge-after-signal=%d same-object-before=%d same-object-after=%d\n"
+                            mode (or (plist-get stats :old-before-closed) 0)
+                            (or (plist-get stats :old-before-failed) 0)
+                            (or (plist-get stats :old-before-exit) 0)
+                            (or (plist-get stats :old-before-signal) 0)
+                            (or (plist-get stats :old-after-closed) 0)
+                            (or (plist-get stats :old-after-failed) 0)
+                            (or (plist-get stats :old-after-exit) 0)
+                            (or (plist-get stats :old-after-signal) 0)
+                            (or (plist-get stats :old-same-object-before) 0)
+                            (or (plist-get stats :old-same-object-after) 0)))))))
     file))
 
 (defun w32-probe--args ()
@@ -295,6 +340,7 @@
   (pcase-let* ((`(,cycles ,directory) (w32-probe--args))
                (event-pump (or (getenv "W32_PROBE_EVENT_PUMP") "client"))
                (eof-control (or (getenv "W32_PROBE_EOF_CONTROL") "false"))
+               (mode-set (or (getenv "W32_PROBE_MODE_SET") "default"))
                (counts (make-hash-table :test #'eq))
                (failures 0)
                (w32-probe--clients-by-local (make-hash-table :test #'equal))
@@ -310,10 +356,19 @@
       (error "W32_PROBE_EVENT_PUMP must be client or all, got %S" event-pump))
     (unless (member eof-control '("true" "false"))
       (error "W32_PROBE_EOF_CONTROL must be true or false, got %S" eof-control))
-    (when (equal eof-control "true")
-      (setq modes (append modes '(same-name-after-client-eof))))
+    (unless (member mode-set '("default" "eof-delete-pair"))
+      (error "W32_PROBE_MODE_SET must be default or eof-delete-pair, got %S" mode-set))
+    (if (equal mode-set "eof-delete-pair")
+        (progn
+          (unless (equal eof-control "true")
+            (error "eof-delete-pair requires W32_PROBE_EOF_CONTROL=true"))
+          (setq modes '(same-name-after-client-eof
+                        same-name-after-client-eof-delete)))
+      (when (equal eof-control "true")
+        (setq modes (append modes '(same-name-after-client-eof)))))
     (princ (format "W32_PROBE_EVENT_PUMP %s\n" event-pump))
     (princ (format "W32_PROBE_EOF_CONTROL %s\n" eof-control))
+    (princ (format "W32_PROBE_MODE_SET %s\n" mode-set))
     (make-directory default-directory t)
     (let* ((server (make-network-process :name "w32-probe-listener" :server t
                                          :host "127.0.0.1" :service 0 :family 'ipv4
@@ -336,10 +391,16 @@
                 (when (= (% cycle 10) 0)
                   (princ (format "W32_PROBE_PROGRESS cycles=%d/%d incomplete=%d\n"
                                  cycle cycles failures)))))
-            (let ((summary (w32-probe--summary default-directory cycles counts failures)))
+            (let ((summary (w32-probe--summary default-directory cycles counts failures modes)))
               (when (equal eof-control "true")
                 (let ((stats (gethash 'same-name-after-client-eof counts)))
                   (princ (format "W32_PROBE_EOF_MODE attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d client-terminal=%d\n"
+                                 (plist-get stats :attempted) (plist-get stats :completed)
+                                 (plist-get stats :incomplete) (plist-get stats :old-welcome)
+                                 (plist-get stats :new-reject) (plist-get stats :close-observed)))))
+              (when (equal mode-set "eof-delete-pair")
+                (let ((stats (gethash 'same-name-after-client-eof-delete counts)))
+                  (princ (format "W32_PROBE_EOF_DELETE_MODE attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d client-terminal=%d\n"
                                  (plist-get stats :attempted) (plist-get stats :completed)
                                  (plist-get stats :incomplete) (plist-get stats :old-welcome)
                                  (plist-get stats :new-reject) (plist-get stats :close-observed)))))

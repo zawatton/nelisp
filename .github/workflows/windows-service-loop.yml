@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       cycles:
-        description: Cycles for each of the three interleaved controls
+        description: Cycles for each selected reconnect mode
         required: false
         default: '200'
       parallel:
@@ -26,6 +26,14 @@ on:
         required: false
         type: boolean
         default: false
+      mode_set:
+        description: Probe all existing controls or only paired terminal-EOF controls
+        required: false
+        type: choice
+        options:
+          - default
+          - eof-delete-pair
+        default: default
 
 jobs:
   reconnect-probe:
@@ -37,6 +45,7 @@ jobs:
       PARALLEL: ${{ inputs.parallel }}
       W32_PROBE_EVENT_PUMP: ${{ inputs.event_pump }}
       W32_PROBE_EOF_CONTROL: ${{ inputs.eof_control }}
+      W32_PROBE_MODE_SET: ${{ inputs.mode_set }}
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +75,17 @@ jobs:
           logdir="$RUNNER_TEMP/w32-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$logdir"
           case "$PARALLEL" in 1|2|3|4) ;; *) echo "parallel must be 1..4: $PARALLEL"; exit 2 ;; esac
-          echo "emacs=$(command -v emacs) cycles_per_mode=$CYCLES parallel=$PARALLEL artifact_dir=$logdir"
+          case "$W32_PROBE_MODE_SET" in
+            default) ;;
+            eof-delete-pair)
+              if [ "$W32_PROBE_EOF_CONTROL" != true ]; then
+                echo 'eof-delete-pair requires eof_control=true'
+                exit 2
+              fi
+              ;;
+            *) echo "unknown or empty W32_PROBE_MODE_SET: $W32_PROBE_MODE_SET"; exit 2 ;;
+          esac
+          echo "emacs=$(command -v emacs) cycles_per_mode=$CYCLES parallel=$PARALLEL mode_set=$W32_PROBE_MODE_SET event_pump=$W32_PROBE_EVENT_PUMP eof_control=$W32_PROBE_EOF_CONTROL artifact_dir=$logdir"
           pids=()
           for i in $(seq 1 "$PARALLEL"); do
             worker_dir="$logdir/worker-$i"
