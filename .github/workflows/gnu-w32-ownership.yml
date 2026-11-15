@@ -39,6 +39,7 @@ jobs:
           update: true
           install: >-
             base-devel
+            autotools
             git
             python
             texinfo
