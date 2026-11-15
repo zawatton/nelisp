@@ -1,0 +1,54 @@
+name: GNU Windows source build capability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    name: pinned GNU Windows build and service baseline
+    runs-on: windows-latest
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set the internal build deadline before toolchain setup
+        shell: pwsh
+        run: |
+          $deadline = [DateTimeOffset]::UtcNow.AddMinutes(30).ToUnixTimeSeconds()
+          "GNU_W32_DEADLINE_EPOCH=$deadline" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install the MinGW64 source-build toolchain
+        uses: msys2/setup-msys2@v2
+        timeout-minutes: 15
+        with:
+          msystem: MINGW64
+          path-type: minimal
+          update: true
+          install: >-
+            base-devel
+            git
+            python
+            texinfo
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-xpm-nox
+            mingw-w64-x86_64-gmp
+            mingw-w64-x86_64-gnutls
+
+      - name: Build pinned GNU source and run one full service suite
+        run: bash tools/ai/gnu-w32-build.sh
+        timeout-minutes: 28
+
+      - name: Preserve build facts and stage logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gnu-w32-ownership-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/gnu-w32-ownership/
+          if-no-files-found: warn
+          retention-days: 14

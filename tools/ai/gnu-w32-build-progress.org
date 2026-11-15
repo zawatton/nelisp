@@ -1,0 +1,13 @@
+#+TITLE: Source-pinned GNU Windows build capability
+#+NOTE: This diagnostic sub-objective establishes an unmodified GNU source build before native ownership instrumentation. It does not change the nine service acceptance criteria or resolve their known-red full Windows check.
+
+* S1 Uninstrumented Windows build and service execution
+
+** S1.1 The exact GNU source revision is verified
+cmd: python3 -c 'import json; p=json.load(open("target/gnu-w32-ownership/build-facts.json")); assert p["source_revision"] == "a360712c9d272d950d8d8255ef74570f7e90b7d9"; assert p["source_verification_exit_code"] == 0; assert p["source_clean"] is True; assert p["mode"] == "baseline"'
+
+** S1.2 The actual source build produces an identified Windows executable
+cmd: python3 -c 'import json,re; p=json.load(open("target/gnu-w32-ownership/build-facts.json")); assert p["configure_exit_code"] == p["make_exit_code"] == 0; assert p["compiler_version"].strip(); assert "31.1" in p["reported_version"]; assert p["binary_exists"] is True; assert re.fullmatch("[0-9a-f]{64}",p["executable_sha256"])'
+
+** S1.3 The new executable runs the real complete service suite
+cmd: python3 -c 'import json; from pathlib import Path; p=json.load(open("target/gnu-w32-ownership/build-facts.json")); log=Path("target/gnu-w32-ownership/service-smoke.log").read_text(); assert p["smoke_exit_code"] == 0; assert p["smoke_test_count"] == 53; assert "53 results as expected" in log and "0 unexpected" in log; assert log.rstrip().endswith("SMOKE_EXIT_CODE=0")'
