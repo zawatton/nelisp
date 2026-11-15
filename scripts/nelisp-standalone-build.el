@@ -476,6 +476,14 @@ property this design needs for free.")
 ;; temporary generation split explicit and robust to future list reordering.
 (defconst nelisp-standalone--arena-chunk-flag-persistent 2)
 (defconst nelisp-standalone--arena-chunk-desc-next-offset #x30)
+;; Windows commit watermark: byte offset (relative to the chunk base, page
+;; aligned) up to which pages are known committed.  Lives in the unused word at
+;; desc+56, inside the 1024-byte metadata prefix (never GC payload and never in
+;; the serialized image `[base+1024,...]').  Written as the literal 56 in the
+;; quoted `nl_chunk_init_descriptor' source; keep the two in step.
+(defconst nelisp-standalone--arena-chunk-desc-committed-offset #x38)
+(defconst nelisp-standalone--arena-chunk-initial-committed 4096
+  "Bytes every Windows chunk has committed right after `nl_os_reserve_chunk'.")
 
 (defconst nelisp-standalone--arena-default-chunk-size #x4000000
   "Default standalone arena chunk size after the fixed first chunk.")
@@ -6880,6 +6888,8 @@ it shares with cons and symbol blocks.")
          (ptr-write-u64 (+ desc 32) 0 (+ base size))
          (ptr-write-u64 (+ desc 40) 0 1)
          (ptr-write-u64 (+ desc 48) 0 0)
+         ;; Windows committed-end watermark (unused word on other targets).
+         (ptr-write-u64 (+ desc 56) 0 4096)
          desc)))
     (defun nl_chunk_alloc_new (want)
       (let* ((size (nl_chunk_size_for want))
@@ -7880,7 +7890,10 @@ with the base literal)."
       (ptr-write-u64 (+ ,b ,(+ d0 32)) 0 (+ ,b ,size)) ; desc.limit
       (ptr-write-u64 (+ ,b ,(+ d0 40)) 0
                      ,(logior 1 nelisp-standalone--arena-chunk-flag-persistent)) ; desc.flags (persistent: boot generation)
-      (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0))))     ; desc.next
+      (ptr-write-u64 (+ ,b ,(+ d0 48)) 0 0)        ; desc.next
+      ;; desc.committed (Windows commit watermark; unused word elsewhere)
+      (ptr-write-u64 (+ ,b ,(+ d0 nelisp-standalone--arena-chunk-desc-committed-offset)) 0
+                     ,nelisp-standalone--arena-chunk-initial-committed))))
 
 (defun nelisp-standalone--linux-arena-init-form ()
   "Return the Linux `nl_arena_init' form (Doc 140 Stage 8: fully chunked).
@@ -8007,7 +8020,16 @@ addressing by a runtime base, never by a fixed reservation."
                    (oldib (heap-read-u64 (+ oldbase 832) 0))
                    (oldie (heap-read-u64 (+ oldbase 840) 0)))
               (if (<= needed oldsize)
-                  (if (= (nl_os_commit_range oldbase 0 needed) 0) -1 0)
+                  (if (= (nl_os_commit_range oldbase 0 needed) 0) -1
+                    ;; [0,needed) is now committed.  The descriptor (chunk-0
+                    ;; desc at base+768, committed-end word at +56) is outside
+                    ;; the serialized image, so raise -- never lower -- it.
+                    (let ((req (nl_align_up needed 4096)))
+                      (seq
+                       (if (< (heap-read-u64 (+ oldbase 824) 0) req)
+                           (ptr-write-u64 (+ oldbase 824) 0 req)
+                         0)
+                       0)))
                 (let ((newbase (nl_os_reserve_chunk needed)))
                   (if (= newbase 0) -1
                     (if (= (nl_os_commit_range newbase 0 needed) 0)
@@ -8017,6 +8039,9 @@ addressing by a runtime base, never by a fixed reservation."
                        ;; old mapping retains pre-load argv/path allocations.
                        (ptr-write-u64 (data-addr nl_arena_base) 0 newbase)
                        (nl_cold_realloc_chunk0 newbase needed)
+                       ;; Fresh descriptor got the 4096 default; [0,needed)
+                       ;; was committed above, so record that known extent.
+                       (ptr-write-u64 (+ newbase 824) 0 (nl_align_up needed 4096))
                        (ptr-write-u64 (+ newbase 832) 0 oldib)
                        (ptr-write-u64 (+ newbase 840) 0 oldie)
                        (ptr-write-u64 (data-addr nl_cold_chunk0_domain) 0 newbase)
@@ -8162,6 +8187,35 @@ arm64 Linux has no legacy x86 numbering)."
           (if (= (nl_os_free_chunk base size) 0) 1 0))))
     (defun nl_os_commit_range (base old new)
       (if (= (extern-call VirtualAlloc (+ base old) (- new old) 4096 4) 0) 0 1))
+    ;; Batched on-demand commit for `nl_chunk_try_alloc'.  Descriptor word +56
+    ;; is a monotonic committed-end byte offset from the chunk base (page
+    ;; aligned).  Answers 1 when [0,NEW) is committed, 0 on commit failure
+    ;; (watermark untouched).  The caller's cursor CAS runs BEFORE this, so a
+    ;; thread may see a watermark below another thread's in-flight commit; it
+    ;; then recommits an overlapping range, which VirtualAlloc MEM_COMMIT
+    ;; treats as idempotent.  The watermark only advances after OS success and
+    ;; is published with a CAS-max so it never moves backwards.
+    (defun nl_windows_chunk_commit_to (chunk new)
+      (let* ((wm_addr (+ chunk 56))
+             (wm (atomic-fetch-add wm_addr 0))
+             (required (nl_align_up new 4096)))
+        (if (>= wm required)
+            1
+          (let* ((size_end (nl_align_up (heap-read-u64 (+ chunk 8) 0) 4096))
+                 (want_end (nl_align_up new 65536))
+                 (end (if (< want_end size_end) want_end size_end)))
+            (if (= (nl_os_commit_range (heap-read-u64 chunk 0) wm end) 0)
+                0
+              (let ((done 0))
+                (seq
+                 (while (= done 0)
+                   (let ((cur (atomic-fetch-add wm_addr 0)))
+                     (if (>= cur end)
+                         (setq done 1)
+                       (if (= (atomic-compare-exchange wm_addr cur end) 1)
+                           (setq done 1)
+                         0))))
+                 1)))))))
     ;; Exit code 88 = standalone arena allocation failure.
     (defun nl_os_alloc_fail ()
       (extern-call ExitProcess 88))))
@@ -8181,7 +8235,7 @@ arm64 Linux has no legacy x86 numbering)."
             (if (> new size)
                 (setq done 1)
               (if (= (atomic-compare-exchange cursor_addr old new) 1)
-                  (if (= (nl_os_commit_range base old new) 0)
+                  (if (= (nl_windows_chunk_commit_to chunk new) 0)
                       (setq done 1)
                     (seq
                      (setq obj (+ base (+ old 8)))
@@ -8434,7 +8488,8 @@ leaves the previous dispatch intact.  The final 32 bytes retain GC telemetry."
                             (cl-remove-if-not
                              (lambda (form)
                                (memq (cadr form)
-                                     '(nl_os_reserve_chunk nl_os_alloc_aligned_group)))
+                                     '(nl_os_reserve_chunk nl_os_alloc_aligned_group
+                                       nl_windows_chunk_commit_to)))
                              chunk-forms))
                           (when (memq (nelisp-standalone-arena-rewrite-target) '(linux-x86_64 windows-x86_64))
                             (nelisp-standalone--cold-domain-forms))
@@ -27481,10 +27536,12 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; events. fx general frame events use {fixnum zero, nil}; byte-code
       ;; array records remain symbol-only. Handler and binding-walker entry
       ;; points spill first, exposing the original list event representation.
-      ;; segment of the event stack (see wf_bytecode_w_aux_spill).  The binding-link record is a 32-byte integer-tagged arena block
-      ;; that the slot at +16 keeps alive: +8 the previous link, +16 the address
-      ;; of the unwinds cell, +24 the binding depth, raw words the collector
-      ;; never reads; N4 state +16 threads it for the thread walkers.  Answers
+      ;; segment of the event stack (see wf_bytecode_w_aux_spill).
+      ;; The binding-link record is a 32-byte integer-tagged block, normally
+      ;; a Sexp root slot, with heap storage used at root-stack capacity.
+      ;; The slot at +16 keeps it alive: +8 the previous link, +16 the address
+      ;; of the unwinds cell, +24 the binding depth. The collector ignores this
+      ;; integer payload; N4 state +16 threads it for the thread walkers. Answers
       ;; the aux address, or 0 when the root stack cannot hold it.
       (let* ((a (ptr-read-u64 foot 40)))
         (if (/= a 3) (sar a 2)
@@ -27498,9 +27555,13 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; byte-code frames (`wf_bytecode_frame_aux', cached in the foot) and fx
       ;; activations (`m5_fx_run_body', held in a local); the owner pops the
       ;; link when it ends.  Answers 0 when the root stack cannot hold it.
+      ;; Owners restore STATE +16 before releasing their root mark, so the
+      ;; checked Sexp slot never outlives its activation. Preserve the existing
+      ;; heap-backed link when no additional root slot is available.
       (let* ((aux (nl_root_frame env 61)))
         (if (= aux 0) 0
-          (let* ((link (alloc-bytes 32 8)))
+          (let* ((slot (nl_root_reserve_checked env))
+                 (link (if (= slot 0) (alloc-bytes 32 8) slot)))
             (seq
              (sexp-int-make link (heap-read-u64 state 16))
              (ptr-write-u64 link 16 (+ aux 8))

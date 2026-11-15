@@ -24316,6 +24316,65 @@ Windows drive path keeps `C:', and a relative path stays relative."
                 (list "Renaming" "No such file or directory"
                       (expand-file-name file) (expand-file-name newname)))))
     nil))
+(unless (fboundp 'copy-file)
+  (defun copy-file (file newname &optional ok-if-already-exists keep-time
+                         preserve-uid-gid preserve-permissions)
+    "Copy FILE to NEWNAME byte for byte; return nil.
+A NEWNAME ending in a directory separator names a directory to copy
+into, under FILE's own base name.  Without OK-IF-ALREADY-EXISTS an
+existing NEWNAME signals `file-already-exists'; an existing directory
+NEWNAME is never replaced.  Copying a file onto itself signals
+`file-error' before anything is written.
+Unsupported options are refused with a plain `error' before anything
+is read or written, never ignored: a non-nil KEEP-TIME (no
+`set-file-times'), PRESERVE-UID-GID (no chown) or PRESERVE-PERMISSIONS
+(`set-file-modes' fails on the Windows standalone binary, and probing it
+would chmod FILE).  An integer
+OK-IF-ALREADY-EXISTS asks GNU to prompt, which has no answerer in this
+headless runtime, and is refused the same way.  Contents travel
+through an undecoded unibyte buffer, so every byte value survives.
+
+(fn FILE NEWNAME &optional OK-IF-ALREADY-EXISTS KEEP-TIME PRESERVE-UID-GID PRESERVE-PERMISSIONS)"
+    (nelisp--check-string file)
+    (nelisp--check-string newname)
+    (when (integerp ok-if-already-exists)
+      (error "copy-file: integer OK-IF-ALREADY-EXISTS (interactive confirmation) is not supported"))
+    (when keep-time
+      (error "copy-file: KEEP-TIME is not supported (no set-file-times primitive)"))
+    (when preserve-uid-gid
+      (error "copy-file: PRESERVE-UID-GID is not supported (no chown primitive)"))
+    (when preserve-permissions
+      (error "copy-file: PRESERVE-PERMISSIONS is not supported (no reliable chmod primitive)"))
+    (let* ((src (expand-file-name file))
+           (dst (let ((n (length newname)))
+                  (if (and (> n 0)
+                           (let ((c (aref newname (1- n))))
+                             (or (= c 47)
+                                 (and (= c 92) (nelisp--windows-paths-p)))))
+                      (expand-file-name (file-name-nondirectory file) newname)
+                    (expand-file-name newname)))))
+      (when (file-directory-p dst)
+        (signal 'file-error (list "File is a directory" dst)))
+      (when (and (not ok-if-already-exists) (file-exists-p dst))
+        (signal 'file-already-exists (list "File already exists" dst)))
+      (unless (file-exists-p src)
+        (signal 'file-missing
+                (list "Copying file" "No such file or directory" src dst)))
+      (when (file-directory-p src)
+        (signal 'file-error (list "Copying file" "Is a directory" src dst)))
+      (when (or (string= src dst)
+                (and (file-exists-p dst) (file-equal-p src dst)))
+        (signal 'file-error (list "Input and output files are the same" src dst)))
+      (let ((dir (file-name-directory dst)))
+        (when (and dir (not (file-directory-p dir)))
+          (signal 'file-missing
+                  (list "Copying file" "No such file or directory" src dst))))
+      (with-temp-buffer
+        (set-buffer-multibyte nil)
+        (insert-file-contents-literally src)
+        (let ((coding-system-for-write 'no-conversion))
+          (write-region (point-min) (point-max) dst nil 'silent)))
+      nil)))
 (unless (fboundp 'make-symbolic-link)
   (defun make-symbolic-link (target linkname &optional ok-if-already-exists)
     (nelisp--check-string target)
