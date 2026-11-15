@@ -9,6 +9,10 @@ on:
         description: Cycles for each of the three interleaved controls
         required: false
         default: '200'
+      parallel:
+        description: Concurrent independent GNU Emacs probe processes (1-4)
+        required: false
+        default: '4'
 
 jobs:
   reconnect-probe:
@@ -17,6 +21,7 @@ jobs:
     timeout-minutes: 20
     env:
       CYCLES: ${{ inputs.cycles }}
+      PARALLEL: ${{ inputs.parallel }}
     steps:
       - uses: actions/checkout@v4
 
@@ -45,23 +50,52 @@ jobs:
           set -eu
           logdir="$RUNNER_TEMP/w32-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           mkdir -p "$logdir"
-          echo "emacs=$(command -v emacs) cycles=$CYCLES artifact_dir=$logdir"
-          ulimit -v 8388608
-          if /usr/bin/timeout 1100 emacs --batch -Q \
-               -l tools/ai/w32-reconnect-probe.el -- \
-               --cycles "$CYCLES" --artifact-dir "$logdir" \
-               >"$logdir/w32-probe-run.log" 2>&1; then
-            cat "$logdir/w32-probe-run.log"
-          else
-            rc=$?
-            cat "$logdir/w32-probe-run.log"
-            exit "$rc"
-          fi
+          case "$PARALLEL" in 1|2|3|4) ;; *) echo "parallel must be 1..4: $PARALLEL"; exit 2 ;; esac
+          echo "emacs=$(command -v emacs) cycles_per_mode=$CYCLES parallel=$PARALLEL artifact_dir=$logdir"
+          pids=()
+          for i in $(seq 1 "$PARALLEL"); do
+            worker_dir="$logdir/worker-$i"
+            mkdir -p "$worker_dir"
+            (
+              set +e
+              ulimit -v 8388608
+              limit_rc=$?
+              if [ "$limit_rc" -ne 0 ]; then
+                printf '%s\n' "$limit_rc" >"$worker_dir/w32-probe-exit-code.txt"
+                exit "$limit_rc"
+              fi
+              /usr/bin/timeout 1100 emacs --batch -Q \
+                -l tools/ai/w32-reconnect-probe.el -- \
+                --cycles "$CYCLES" --artifact-dir "$worker_dir" \
+                >"$worker_dir/w32-probe-run.log" 2>&1
+              rc=$?
+              printf '%s\n' "$rc" >"$worker_dir/w32-probe-exit-code.txt"
+              write_rc=$?
+              if [ "$write_rc" -ne 0 ]; then exit "$write_rc"; fi
+              exit "$rc"
+            ) &
+            pids+=("$!")
+          done
+          failed=0
+          for i in $(seq 1 "$PARALLEL"); do
+            rc=0
+            if wait "${pids[$((i - 1))]}"; then rc=0; else rc=$?; fi
+            echo "W32_PROBE_WORKER worker=$i exit=$rc"
+            if [ -f "$logdir/worker-$i/w32-probe-run.log" ]; then
+              cat "$logdir/worker-$i/w32-probe-run.log"
+            else
+              echo "worker=$i run log missing"
+              failed=1
+            fi
+            if [ "$rc" -ne 0 ]; then failed=1; fi
+          done
+          echo "W32_PROBE_PARALLEL_DONE workers=$PARALLEL failed=$failed"
+          [ "$failed" -eq 0 ]
 
       - name: Upload raw TCP probe artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: w32-reconnect-probe-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/w32-probe-${{ github.run_id }}-${{ github.run_attempt }}/w32-probe*
+          path: ${{ runner.temp }}/w32-probe-${{ github.run_id }}-${{ github.run_attempt }}/**
           if-no-files-found: error
