@@ -27,12 +27,13 @@ on:
         type: boolean
         default: false
       mode_set:
-        description: Probe all existing controls or only paired terminal-EOF controls
+        description: Probe the default controls or an opt-in reconnect differential
         required: false
         type: choice
         options:
           - default
           - eof-delete-pair
+          - listener-lifetime-pair
         default: default
 
 jobs:
@@ -83,6 +84,12 @@ jobs:
                 exit 2
               fi
               ;;
+            listener-lifetime-pair)
+              if [ "$W32_PROBE_EOF_CONTROL" != true ]; then
+                echo 'listener-lifetime-pair requires eof_control=true'
+                exit 2
+              fi
+              ;;
             *) echo "unknown or empty W32_PROBE_MODE_SET: $W32_PROBE_MODE_SET"; exit 2 ;;
           esac
           echo "emacs=$(command -v emacs) cycles_per_mode=$CYCLES parallel=$PARALLEL mode_set=$W32_PROBE_MODE_SET event_pump=$W32_PROBE_EVENT_PUMP eof_control=$W32_PROBE_EOF_CONTROL artifact_dir=$logdir"
@@ -98,15 +105,38 @@ jobs:
                 printf '%s\n' "$limit_rc" >"$worker_dir/w32-probe-exit-code.txt"
                 exit "$limit_rc"
               fi
-              /usr/bin/timeout 1100 emacs --batch -Q \
-                -l tools/ai/w32-reconnect-probe.el -- \
-                --cycles "$CYCLES" --artifact-dir "$worker_dir" \
-                >"$worker_dir/w32-probe-run.log" 2>&1
-              rc=$?
-              printf '%s\n' "$rc" >"$worker_dir/w32-probe-exit-code.txt"
-              write_rc=$?
-              if [ "$write_rc" -ne 0 ]; then exit "$write_rc"; fi
-              exit "$rc"
+              if [ "$W32_PROBE_MODE_SET" = listener-lifetime-pair ]; then
+                if [ "$((i % 2))" -eq 1 ]; then
+                  arms=(reference churn)
+                else
+                  arms=(churn reference)
+                fi
+                worker_failed=0
+                for arm in "${arms[@]}"; do
+                  arm_dir="$worker_dir/$arm"
+                  mkdir -p "$arm_dir"
+                  W32_PROBE_LISTENER_ARM="$arm" /usr/bin/timeout 1100 emacs --batch -Q \
+                    -l tools/ai/w32-reconnect-probe.el -- \
+                    --cycles "$CYCLES" --artifact-dir "$arm_dir" \
+                    >"$arm_dir/w32-probe-run.log" 2>&1
+                  rc=$?
+                  printf '%s\n' "$rc" >"$arm_dir/w32-probe-exit-code.txt"
+                  write_rc=$?
+                  if [ "$write_rc" -ne 0 ]; then exit "$write_rc"; fi
+                  if [ "$rc" -ne 0 ]; then worker_failed=1; fi
+                done
+                exit "$worker_failed"
+              else
+                /usr/bin/timeout 1100 emacs --batch -Q \
+                  -l tools/ai/w32-reconnect-probe.el -- \
+                  --cycles "$CYCLES" --artifact-dir "$worker_dir" \
+                  >"$worker_dir/w32-probe-run.log" 2>&1
+                rc=$?
+                printf '%s\n' "$rc" >"$worker_dir/w32-probe-exit-code.txt"
+                write_rc=$?
+                if [ "$write_rc" -ne 0 ]; then exit "$write_rc"; fi
+                exit "$rc"
+              fi
             ) &
             pids+=("$!")
           done
@@ -117,6 +147,19 @@ jobs:
             echo "W32_PROBE_WORKER worker=$i exit=$rc"
             if [ -f "$logdir/worker-$i/w32-probe-run.log" ]; then
               cat "$logdir/worker-$i/w32-probe-run.log"
+            elif [ "$W32_PROBE_MODE_SET" = listener-lifetime-pair ]; then
+              for arm in reference churn; do
+                arm_dir="$logdir/worker-$i/$arm"
+                if [ ! -f "$arm_dir/w32-probe-exit-code.txt" ] || [ ! -f "$arm_dir/w32-probe-run.log" ]; then
+                  echo "worker=$i arm=$arm status-or-log missing"
+                  failed=1
+                  continue
+                fi
+                arm_rc=$(cat "$arm_dir/w32-probe-exit-code.txt")
+                echo "W32_PROBE_ARM worker=$i arm=$arm exit=$arm_rc"
+                cat "$arm_dir/w32-probe-run.log"
+                if [ "$arm_rc" -ne 0 ]; then failed=1; fi
+              done
             else
               echo "worker=$i run log missing"
               failed=1

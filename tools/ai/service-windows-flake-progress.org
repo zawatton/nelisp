@@ -1,6 +1,6 @@
 #+TITLE: NeLisp service Windows flake investigation
 #+NOTE: A generated-command replay criterion was added after Windows traces proved recovery reused a deleted bootstrap. The denominator is nine; this is additional acceptance scope, not a passing Windows claim.
-#+NOTE: This branch measures whether explicitly deleting an already-terminal EOF-fenced TCP client changes reconnect outcomes. It is a diagnostic comparison only; production bootstrap replay is committed separately at edaf2a71d and final transport acceptance remains failing.
+#+NOTE: Terminal-delete run 43705609759 completed both arms 1200/1200 with zero failures; deletion alone remains unsupported/inconclusive. This branch next isolates listener lifetime in separate fresh processes per arm, without adding refused-port probes. Production bootstrap replay is committed separately at edaf2a71d and final transport acceptance remains failing.
 
 * S1 Diagnosis
 
@@ -13,6 +13,7 @@ evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e
 ** S1.3 New untraced Windows baseline is collected and classified
 #+NOTE: Baseline run 43683628349 failed 11/200, all new-client version rejection; fixed full 43685867603 failed 13/200, focused serial 43685870416 failed 1/100. Failures remain under investigation.
 evidence: target/service-flake/windows-baseline-43683628349.log sha256=4b7765b33fd79d6c7508a2a5db7e4e5fa8f3705b400067837d4ec19d099294cb
+evidence: target/service-flake/windows-terminal-delete-43705609759/verification.json sha256=19e7a6e1eb182eec6db8b1e427c8199cbfb25b88e90bd153862828a853f28f3e
 
 * S2 Fix and regression
 

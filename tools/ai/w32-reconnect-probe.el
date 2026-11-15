@@ -5,9 +5,8 @@
 ;;; Commentary:
 
 ;; Exercise loopback TCP close/reconnect ordering without loading service code.
-;; Default cycles run the three reconnect controls.  The opt-in EOF-delete
-;; mode set runs only a paired client-EOF differential, with explicit deletion
-;; of the terminal old client in one arm.
+;; Default cycles run the three reconnect controls.  Opt-in mode sets run the
+;; paired EOF controls or compare a retained listener with listener churn.
 
 ;;; Code:
 
@@ -24,6 +23,7 @@
 (defvar w32-probe--clients-by-local (make-hash-table :test #'equal))
 (defvar w32-probe--connections (make-hash-table :test #'eql))
 (defvar w32-probe--closed (make-hash-table :test #'eql))
+(defvar w32-probe--listener-profile nil)
 
 (defun w32-probe--endpoint-key (endpoint)
   (format "%S" endpoint))
@@ -95,6 +95,15 @@
     (set-process-sentinel client #'w32-probe--server-sentinel)
     (push client w32-probe--accepted)
     (w32-probe--record context id "accept-callback" client contact)))
+
+(defun w32-probe--make-listener (generation)
+  (let ((process
+         (make-network-process
+          :name "w32-probe-listener"
+          :server t :host "127.0.0.1" :service 0 :family 'ipv4
+          :coding 'binary :noquery t :log #'w32-probe--server-log)))
+    (process-put process 'w32-probe-generation generation)
+    process))
 
 (defun w32-probe--server-filter (process bytes)
   (let* ((context (w32-probe--context process))
@@ -217,9 +226,13 @@
          (old-context (list :cycle cycle :mode mode-name :role "old"))
          (new-context (list :cycle cycle :mode mode-name :role "new"))
          (old nil) (old-reference nil) (old-object-id nil)
-         (new nil) (reason nil) (failure-context nil))
+         (new nil) (reason nil) (failure-context nil)
+         (body-complete nil) (new-peer-closed nil) (old-peer-closed nil)
+         (cleanup-complete nil)
+         (result nil))
     (w32-probe--bump counts mode :attempted)
-    (unwind-protect
+    (setq result
+          (unwind-protect
         (condition-case err
             (progn
               (setq old (w32-probe--client server port old-context old-process-name "OLD"))
@@ -287,6 +300,7 @@
                 (error "new response was %S" (process-get new 'w32-probe-reply)))
               (w32-probe--bump counts mode :new-reject)
               (w32-probe--bump counts mode :completed)
+              (setq body-complete t)
               t)
           (error
            (setq reason (error-message-string err))
@@ -297,8 +311,50 @@
       ;; Close every client and wait briefly for both server terminal events.
       (when (and new (process-live-p new)) (delete-process new))
       (when (and old (process-live-p old)) (delete-process old))
-      (when new (ignore-errors (w32-probe--wait-close new server 1.0)))
-      (when old (ignore-errors (w32-probe--wait-close old server 1.0))))))
+      (when new
+        (if w32-probe--listener-profile
+            (setq new-peer-closed
+                  (or (ignore-errors (w32-probe--wait-close new server 1.0))
+                      (gethash (process-get new 'w32-probe-id) w32-probe--closed)))
+          (ignore-errors (w32-probe--wait-close new server 1.0))))
+      (when old
+        (if w32-probe--listener-profile
+            (setq old-peer-closed
+                  (or (ignore-errors (w32-probe--wait-close old server 1.0))
+                      (gethash (process-get old 'w32-probe-id) w32-probe--closed)))
+          (ignore-errors (w32-probe--wait-close old server 1.0))))
+      (when w32-probe--listener-profile
+        (let* ((new-id (and new (process-get new 'w32-probe-id)))
+               (old-id (and old (process-get old 'w32-probe-id)))
+               (new-peer (and new-id (gethash new-id w32-probe--connections)))
+               (old-peer (and old-id (gethash old-id w32-probe--connections))))
+          (w32-probe--record new-context new-id "listener-boundary-peer-terminal"
+                             new-peer (list :observed (and new-peer-closed t)
+                                            :status (and new-peer (process-status new-peer))))
+          (w32-probe--record old-context old-id "listener-boundary-peer-terminal"
+                             old-peer (list :observed (and old-peer-closed t)
+                                            :status (and old-peer (process-status old-peer))))
+          (when (and old-peer-closed new-peer-closed)
+            (w32-probe--bump counts mode :listener-peer-terminal-pairs))
+          (setq cleanup-complete (and old-peer-closed new-peer-closed))))))
+    (when (and w32-probe--listener-profile (not body-complete) reason)
+      (w32-probe--flush-failure directory failure-context reason))
+    (when (and w32-probe--listener-profile body-complete
+               (not (and old-peer-closed new-peer-closed)))
+      (let ((stats (gethash mode counts)))
+        (puthash mode (plist-put stats :completed
+                                 (max 0 (1- (or (plist-get stats :completed) 0))))
+                 counts))
+      (w32-probe--bump counts mode :incomplete)
+      (setq reason "accepted peer terminal not observed at listener boundary"
+            failure-context (if new new-context old-context)
+            result nil)
+      (w32-probe--flush-failure directory failure-context reason))
+    (if w32-probe--listener-profile
+        (list :transaction-complete (and body-complete t)
+              :cleanup-complete (and cleanup-complete t)
+              :reason reason :failure-context failure-context)
+      result)))
 
 (defun w32-probe--summary (directory cycles counts failures modes)
   (let ((file (expand-file-name "w32-probe-summary.log" directory)))
@@ -322,7 +378,22 @@
                             (or (plist-get stats :old-after-exit) 0)
                             (or (plist-get stats :old-after-signal) 0)
                             (or (plist-get stats :old-same-object-before) 0)
-                            (or (plist-get stats :old-same-object-after) 0)))))))
+                            (or (plist-get stats :old-same-object-after) 0))))
+          (when w32-probe--listener-profile
+            (insert (format "listener-arm=%s created=%d deleted=%d boundaries=%d before-listen=%d after-listen=%d after-closed=%d after-failed=%d same-object-after=%d replacements-distinct=%d replacement-port-changed=%d replacement-port-same=%d peer-terminal-pairs=%d\n"
+                            (getenv "W32_PROBE_LISTENER_ARM")
+                            (or (plist-get stats :listener-created) 0)
+                            (or (plist-get stats :listener-deleted) 0)
+                            (or (plist-get stats :listener-boundaries) 0)
+                            (or (plist-get stats :listener-before-listen) 0)
+                            (or (plist-get stats :listener-after-listen) 0)
+                            (or (plist-get stats :listener-after-closed) 0)
+                            (or (plist-get stats :listener-after-failed) 0)
+                            (or (plist-get stats :listener-same-object-after) 0)
+                            (or (plist-get stats :listener-replacements-distinct) 0)
+                            (or (plist-get stats :listener-replacement-port-changed) 0)
+                            (or (plist-get stats :listener-replacement-port-same) 0)
+                            (or (plist-get stats :listener-peer-terminal-pairs) 0)))))))
     file))
 
 (defun w32-probe--args ()
@@ -341,6 +412,9 @@
                (event-pump (or (getenv "W32_PROBE_EVENT_PUMP") "client"))
                (eof-control (or (getenv "W32_PROBE_EOF_CONTROL") "false"))
                (mode-set (or (getenv "W32_PROBE_MODE_SET") "default"))
+               (listener-arm (getenv "W32_PROBE_LISTENER_ARM"))
+               (w32-probe--listener-profile
+                (equal mode-set "listener-lifetime-pair"))
                (counts (make-hash-table :test #'eq))
                (failures 0)
                (w32-probe--clients-by-local (make-hash-table :test #'equal))
@@ -356,57 +430,157 @@
       (error "W32_PROBE_EVENT_PUMP must be client or all, got %S" event-pump))
     (unless (member eof-control '("true" "false"))
       (error "W32_PROBE_EOF_CONTROL must be true or false, got %S" eof-control))
-    (unless (member mode-set '("default" "eof-delete-pair"))
-      (error "W32_PROBE_MODE_SET must be default or eof-delete-pair, got %S" mode-set))
-    (if (equal mode-set "eof-delete-pair")
-        (progn
-          (unless (equal eof-control "true")
-            (error "eof-delete-pair requires W32_PROBE_EOF_CONTROL=true"))
-          (setq modes '(same-name-after-client-eof
-                        same-name-after-client-eof-delete)))
+    (unless (member mode-set '("default" "eof-delete-pair" "listener-lifetime-pair"))
+      (error "W32_PROBE_MODE_SET must be default, eof-delete-pair, or listener-lifetime-pair, got %S"
+             mode-set))
+    (cond
+     ((equal mode-set "eof-delete-pair")
+      (unless (equal eof-control "true")
+        (error "eof-delete-pair requires W32_PROBE_EOF_CONTROL=true"))
+      (setq modes '(same-name-after-client-eof
+                    same-name-after-client-eof-delete)))
+     (w32-probe--listener-profile
+      (unless (equal eof-control "true")
+        (error "listener-lifetime-pair requires W32_PROBE_EOF_CONTROL=true"))
+      (unless (member listener-arm '("reference" "churn"))
+        (error "W32_PROBE_LISTENER_ARM must be reference or churn, got %S"
+               listener-arm))
+      (setq modes '(same-name-after-client-eof-delete)))
+     (t
       (when (equal eof-control "true")
-        (setq modes (append modes '(same-name-after-client-eof)))))
+        (setq modes (append modes '(same-name-after-client-eof))))))
     (princ (format "W32_PROBE_EVENT_PUMP %s\n" event-pump))
     (princ (format "W32_PROBE_EOF_CONTROL %s\n" eof-control))
     (princ (format "W32_PROBE_MODE_SET %s\n" mode-set))
+    (when w32-probe--listener-profile
+      (princ (format "W32_PROBE_LISTENER_ARM %s\n" listener-arm)))
     (make-directory default-directory t)
-    (let* ((server (make-network-process :name "w32-probe-listener" :server t
-                                         :host "127.0.0.1" :service 0 :family 'ipv4
-                                         :coding 'binary :noquery t
-                                         :log #'w32-probe--server-log))
+    (let* ((server (w32-probe--make-listener 0))
            (port (plist-get (process-contact server t) :service)))
+      (when w32-probe--listener-profile
+        (w32-probe--bump counts 'same-name-after-client-eof-delete :listener-created))
       (unwind-protect
           (progn
             (unless port (error "listener did not report an ephemeral port"))
             (princ (format "W32_PROBE_START emacs=%s cycles=%d port=%s\n"
                            emacs-version cycles port))
-            (dotimes (cycle-index cycles)
+            (catch 'w32-probe-stop-arm
+              (dotimes (cycle-index cycles)
               (let* ((cycle (1+ cycle-index))
-                     (rotation (% cycle (length modes)))
-                     (ordered (append (nthcdr rotation modes)
-                                      (cl-subseq modes 0 rotation))))
+                     (rotation (if w32-probe--listener-profile 0
+                                 (% cycle (length modes))))
+                     (ordered (if w32-probe--listener-profile modes
+                                (append (nthcdr rotation modes)
+                                        (cl-subseq modes 0 rotation)))))
                 (dolist (mode ordered)
-                  (unless (w32-probe--run-one server port default-directory counts cycle mode)
-                    (setq failures (1+ failures))))
+                  (let* ((outcome
+                          (w32-probe--run-one server port default-directory counts cycle mode))
+                         (success (if w32-probe--listener-profile
+                                      (plist-get outcome :transaction-complete)
+                                    outcome))
+                         (cleanup-complete
+                          (if w32-probe--listener-profile
+                              (plist-get outcome :cleanup-complete)
+                            success)))
+                    (unless (if w32-probe--listener-profile
+                                (and success cleanup-complete)
+                              success)
+                      (setq failures (1+ failures)))
+                    (when (and w32-probe--listener-profile cleanup-complete)
+                      (let* ((context (list :cycle cycle :mode (symbol-name mode)
+                                            :role "listener"))
+                             (old-server server)
+                             (old-port port)
+                             (old-id (sxhash-eq old-server))
+                             (before-status (process-status old-server))
+                             (delete-for-next
+                              (and (equal listener-arm "churn") (< cycle cycles))))
+                        (w32-probe--record context nil "listener-before-boundary" old-server
+                                           (list :identity old-id :port old-port
+                                                 :status before-status))
+                        (w32-probe--bump counts mode :listener-boundaries)
+                        (w32-probe--bump counts mode
+                                         (intern (format ":listener-before-%s" before-status)))
+                        (when delete-for-next
+                          (delete-process old-server)
+                          (w32-probe--bump counts mode :listener-deleted)
+                          (w32-probe--bump counts mode :listener-boundary-deletes))
+                        (let ((after-status (process-status old-server)))
+                          (w32-probe--record context nil "listener-after-optional-delete"
+                                             old-server
+                                             (list :identity old-id :port old-port
+                                                   :status after-status
+                                                   :same-object (eq old-server server)))
+                          (w32-probe--bump counts mode
+                                           (intern (format ":listener-after-%s" after-status)))
+                          (when (eq old-server server)
+                            (w32-probe--bump counts mode :listener-same-object-after)))
+                        (when delete-for-next
+                          (setq server (w32-probe--make-listener cycle)
+                                port (plist-get (process-contact server t) :service))
+                          (unless port (error "replacement listener did not report an ephemeral port"))
+                          (w32-probe--bump counts mode :listener-created)
+                          (unless (eq old-server server)
+                            (w32-probe--bump counts mode :listener-replacements-distinct))
+                          (w32-probe--bump counts mode
+                                           (if (equal old-port port)
+                                               :listener-replacement-port-same
+                                             :listener-replacement-port-changed))
+                          (w32-probe--record context nil "listener-replacement-created" server
+                                             (list :identity (sxhash-eq server) :port port
+                                                   :previous-identity old-id
+                                                   :previous-port old-port)))))
+                    (when (and w32-probe--listener-profile
+                               (not cleanup-complete))
+                      (throw 'w32-probe-stop-arm t))
+                    (when (and w32-probe--listener-profile
+                               (not success)
+                               (plist-get outcome :reason))
+                      (w32-probe--flush-failure
+                       default-directory (plist-get outcome :failure-context)
+                       (plist-get outcome :reason))))
                 (when (= (% cycle 10) 0)
                   (princ (format "W32_PROBE_PROGRESS cycles=%d/%d incomplete=%d\n"
-                                 cycle cycles failures)))))
+                                 cycle cycles failures)))))))
+            (when w32-probe--listener-profile
+              (let* ((final-server server)
+                     (status-before (process-status final-server))
+                     (identity (sxhash-eq final-server)))
+                (w32-probe--record (list :cycle cycles :role "listener") nil
+                                   "listener-final-shutdown-before" final-server
+                                   (list :identity identity :port port :status status-before))
+                (delete-process final-server)
+                (setq server nil)
+                (w32-probe--bump counts 'same-name-after-client-eof-delete
+                                 :listener-deleted)
+                (w32-probe--record (list :cycle cycles :role "listener") nil
+                                   "listener-final-shutdown-after" final-server
+                                   (list :identity identity :port port
+                                         :status (process-status final-server)))))
             (let ((summary (w32-probe--summary default-directory cycles counts failures modes)))
-              (when (equal eof-control "true")
+              (when (and (equal eof-control "true")
+                         (not w32-probe--listener-profile))
                 (let ((stats (gethash 'same-name-after-client-eof counts)))
                   (princ (format "W32_PROBE_EOF_MODE attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d client-terminal=%d\n"
                                  (plist-get stats :attempted) (plist-get stats :completed)
                                  (plist-get stats :incomplete) (plist-get stats :old-welcome)
                                  (plist-get stats :new-reject) (plist-get stats :close-observed)))))
-              (when (equal mode-set "eof-delete-pair")
+              (when (member mode-set '("eof-delete-pair" "listener-lifetime-pair"))
                 (let ((stats (gethash 'same-name-after-client-eof-delete counts)))
                   (princ (format "W32_PROBE_EOF_DELETE_MODE attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d client-terminal=%d\n"
                                  (plist-get stats :attempted) (plist-get stats :completed)
                                  (plist-get stats :incomplete) (plist-get stats :old-welcome)
                                  (plist-get stats :new-reject) (plist-get stats :close-observed)))))
+              (when w32-probe--listener-profile
+                (let ((stats (gethash 'same-name-after-client-eof-delete counts)))
+                  (princ (format "W32_PROBE_LISTENER_LIFETIME arm=%s created=%d deleted=%d boundaries=%d peer-terminal-pairs=%d\n"
+                                 listener-arm (or (plist-get stats :listener-created) 0)
+                                 (or (plist-get stats :listener-deleted) 0)
+                                 (or (plist-get stats :listener-boundaries) 0)
+                                 (or (plist-get stats :listener-peer-terminal-pairs) 0)))))
               (princ (format "W32_PROBE_DONE incomplete=%d summary=%s\n" failures summary)))
             (when (> failures 0) (kill-emacs 1)))
-        (delete-process server)))))
+        (when server (delete-process server))))))
 
 (condition-case err
     (w32-probe-main)
