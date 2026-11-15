@@ -13,6 +13,14 @@ on:
         description: Concurrent independent GNU Emacs probe processes (1-4)
         required: false
         default: '4'
+      event_pump:
+        description: Process output pump used while waiting for probe events
+        required: false
+        type: choice
+        options:
+          - client
+          - all
+        default: client
 
 jobs:
   reconnect-probe:
@@ -22,6 +30,7 @@ jobs:
     env:
       CYCLES: ${{ inputs.cycles }}
       PARALLEL: ${{ inputs.parallel }}
+      W32_PROBE_EVENT_PUMP: ${{ inputs.event_pump }}
     steps:
       - uses: actions/checkout@v4
 

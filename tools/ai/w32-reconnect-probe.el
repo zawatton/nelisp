@@ -132,9 +132,12 @@
                      process (string-trim event)))
 
 (defun w32-probe--wait-for (predicate process seconds)
-  (let ((deadline (+ (float-time) seconds)))
+  (let ((deadline (+ (float-time) seconds))
+        (event-pump (or (getenv "W32_PROBE_EVENT_PUMP") "client")))
     (while (and (not (funcall predicate)) (< (float-time) deadline))
-      (accept-process-output process 0.02))
+      (if (equal event-pump "all")
+          (accept-process-output nil 0.05)
+        (accept-process-output process 0.02)))
     (funcall predicate)))
 
 (defun w32-probe--client (server port context process-name payload)
@@ -266,6 +269,7 @@
 
 (defun w32-probe-main ()
   (pcase-let* ((`(,cycles ,directory) (w32-probe--args))
+               (event-pump (or (getenv "W32_PROBE_EVENT_PUMP") "client"))
                (counts (make-hash-table :test #'eq))
                (failures 0)
                (w32-probe--clients-by-local (make-hash-table :test #'equal))
@@ -277,6 +281,9 @@
                (default-directory (expand-file-name directory))
                (modes '(same-name-immediate unique-name-immediate
                         same-name-after-server-close)))
+    (unless (member event-pump '("client" "all"))
+      (error "W32_PROBE_EVENT_PUMP must be client or all, got %S" event-pump))
+    (princ (format "W32_PROBE_EVENT_PUMP %s\n" event-pump))
     (make-directory default-directory t)
     (let* ((server (make-network-process :name "w32-probe-listener" :server t
                                          :host "127.0.0.1" :service 0 :family 'ipv4
