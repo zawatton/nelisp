@@ -158,8 +158,10 @@
 
 (ert-deftest nelisp-service-test-retirement-clamps-deadline-crossing-sample ()
   (nelisp-service-test--with-fake-network-process
-    (let ((clock-values '(1000.0 1000.19 1000.21 1000.21))
+    (let ((process-environment (copy-sequence process-environment))
+          (clock-values '(1000.0 1000.19 1000.21 1000.21))
           (wait-slices nil))
+      (setenv "NELISP_SERVICE_TRACE" nil)
       (cl-letf (((symbol-function 'float-time)
                  (lambda (&optional _time) (pop clock-values)))
                 ((symbol-function 'accept-process-output)
@@ -317,8 +319,8 @@
                  (lambda (&rest _args) process))
                 ((symbol-function 'process-send-string)
                  (lambda (&rest _args) (error "simulated handshake send failure")))
-                ((symbol-function 'nelisp-service--retire-connection)
-                 (lambda (candidate &optional _wait)
+              ((symbol-function 'nelisp-service--retire-connection)
+               (lambda (candidate &optional _wait _caller)
                    (should (eq process candidate))
                    (setq retired (1+ (or retired 0)))
                    'direct)))
@@ -333,14 +335,217 @@
     (let ((retired nil))
       (cl-letf (((symbol-function 'make-network-process)
                  (lambda (&rest _args) process))
-                ((symbol-function 'nelisp-service--retire-connection)
-                 (lambda (candidate &optional _wait)
+              ((symbol-function 'nelisp-service--retire-connection)
+               (lambda (candidate &optional _wait _caller)
                    (should (eq process candidate))
                    (setq retired t)
                    'direct)))
         (should (nelisp-service-port-in-use-p 12345))
         (should retired)
         (should (= 0 delete-count))))))
+(defun nelisp-service-test--trace-tail (&optional lines)
+  "Return the last LINES (default 80) of the configured trace file."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0) (file-readable-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-max))
+        (forward-line (- (or lines 80)))
+        (buffer-substring (point) (point-max))))))
+
+(defmacro nelisp-service-test--with-trace-tail (&rest body)
+  "Run BODY; on failure flush buffered diagnostics and print the final 80 events."
+  (declare (indent 0) (debug t))
+  `(progn
+     (when (getenv "NELISP_SERVICE_TRACE")
+       (nelisp-service--trace "T" "test boundary begin"))
+     (condition-case err
+         (prog1 (progn ,@body)
+           (when (getenv "NELISP_SERVICE_TRACE")
+             (nelisp-service--trace "T" "test boundary pass")))
+       (error
+        (when (getenv "NELISP_SERVICE_TRACE")
+          (condition-case nil
+              (progn
+                (nelisp-service--trace-flush)
+                (message
+                 "--- NELISP_SERVICE_TRACE retained=%d dropped=%d ---\n%s--- end trace ---"
+                 nelisp-service--trace-count nelisp-service--trace-dropped
+                 (or (nelisp-service-test--trace-tail 80) "")))
+            (error nil)))
+        (signal (car err) (cdr err))))))
+
+;;; Diagnostics
+
+(ert-deftest nelisp-service-test-trace-ring-is-bounded-and-flushed-in-order ()
+  (let* ((file (make-temp-file "nelisp-service-trace-"))
+         (nelisp-service--trace-ring
+          (make-vector nelisp-service--trace-capacity nil))
+         (nelisp-service--trace-next 0)
+         (nelisp-service--trace-count 0)
+         (nelisp-service--trace-dropped 0)
+         (real-write (symbol-function 'write-region))
+         (write-count 0))
+    (unwind-protect
+        (let ((process-environment (copy-sequence process-environment)))
+          (setenv "NELISP_SERVICE_TRACE" file)
+          (delete-file file)
+          (cl-letf (((symbol-function 'write-region)
+                     (lambda (&rest args)
+                       (setq write-count (1+ write-count))
+                       (apply real-write args))))
+            (dotimes (i (+ nelisp-service--trace-capacity 8))
+              (nelisp-service--trace "T" "event-%03d" i))
+            (should (= write-count 0))
+            (should-not (file-exists-p file))
+            (should (= nelisp-service--trace-count nelisp-service--trace-capacity))
+            (should (= nelisp-service--trace-dropped 8))
+            (should (= (nelisp-service--trace-flush)
+                       nelisp-service--trace-capacity))
+            (should (= write-count 1)))
+          (let ((contents (with-temp-buffer
+                            (insert-file-contents file)
+                            (buffer-string))))
+            (should (string-match-p "\\`TRACE retained=512 dropped=8\n" contents))
+            (let ((position 0))
+              (dotimes (offset nelisp-service--trace-capacity)
+                (let ((found (string-match
+                              (regexp-quote
+                               (format "event-%03d\n" (+ 8 offset)))
+                              contents position)))
+                  (should found)
+                  (setq position (match-end 0)))))))
+      (when (file-exists-p file) (delete-file file)))))
+
+(ert-deftest nelisp-service-test-trace-event-length-is-bounded ()
+  (let ((nelisp-service--trace-ring
+         (make-vector nelisp-service--trace-capacity nil))
+        (nelisp-service--trace-next 0)
+        (nelisp-service--trace-count 0)
+        (nelisp-service--trace-dropped 0)
+        (process-environment (copy-sequence process-environment)))
+    (setenv "NELISP_SERVICE_TRACE" "trace-test-unused")
+    (nelisp-service--trace "T" "%s" (make-string 10000 ?x))
+    (should (<= (length (aref nelisp-service--trace-ring 0))
+                (+ nelisp-service--trace-event-max-length 64)))
+    (should (string-match-p "\\.\.\.\n\\'"
+                            (aref nelisp-service--trace-ring 0)))))
+
+(ert-deftest nelisp-service-test-trace-boundary-keeps-preceding-events ()
+  (let ((process-environment (copy-sequence process-environment))
+        (nelisp-service--trace-ring
+         (make-vector nelisp-service--trace-capacity nil))
+        (nelisp-service--trace-next 0)
+        (nelisp-service--trace-count 0)
+        (nelisp-service--trace-dropped 0))
+    (setenv "NELISP_SERVICE_TRACE" "trace-test-unused")
+    (nelisp-service--trace "T" "pre-autostart context")
+    (nelisp-service-test--with-trace-tail
+      (nelisp-service--trace "T" "selected test event"))
+    (let ((events (nelisp-service--trace-events)))
+      (should (string-match-p "pre-autostart context" (car events)))
+      (should (string-match-p "test boundary begin" (cadr events)))
+      (should (string-match-p "selected test event" (nth 2 events))))))
+
+(ert-deftest nelisp-service-test-autostart-child-wrapper-is-bounded-and-delegates-once ()
+  (let ((process-environment (copy-sequence process-environment))
+        (nelisp-service--trace-ring
+         (make-vector nelisp-service--trace-capacity nil))
+        (nelisp-service--trace-next 0)
+        (nelisp-service--trace-count 0)
+        (nelisp-service--trace-dropped 0)
+        (process (make-symbol "fake-child"))
+        (make-args nil)
+        (filter-calls 0)
+        (sentinel-calls 0))
+    (setenv "NELISP_SERVICE_TRACE" "trace-test-unused")
+    (cl-letf (((symbol-function 'make-process)
+               (lambda (&rest args) (setq make-args args) process))
+              ((symbol-function 'process-id)
+               (lambda (candidate) (and (eq candidate process) 4242)))
+              ((symbol-function 'process-status)
+               (lambda (candidate) (and (eq candidate process) 'exit)))
+              ((symbol-function 'process-exit-status)
+               (lambda (candidate) (and (eq candidate process) 17)))
+              ((symbol-function 'ignore)
+               (lambda (&rest _args)
+                 (if (= filter-calls 0)
+                     (setq filter-calls (1+ filter-calls))
+                   (setq sentinel-calls (1+ sentinel-calls)))))
+              ((symbol-function 'process-name)
+               (lambda (_candidate) (error "unexpected process-name query")))
+              ((symbol-function 'process-type)
+               (lambda (_candidate) (error "unexpected process-type query"))))
+      (should (eq process
+                  (nelisp-service-client-spawn-detached
+                   "diag" '("/emacs" "-Q" "-l" "server.el"
+                            "sensitive-argument"))))
+      (funcall (plist-get make-args :filter) process (concat (make-string 700 ?x) "TAIL"))
+      (funcall (plist-get make-args :sentinel) process "finished\n")
+      (should (= filter-calls 1))
+      (should (= sentinel-calls 1))
+      (let ((events (mapconcat #'identity (nelisp-service--trace-events) "")))
+        (should (string-match-p "executable=/emacs script=server.el" events))
+        (should (string-match-p "child-output name=diag bytes=704" events))
+        (should (string-match-p "TAIL" events))
+        (should (string-match-p "child-sentinel name=diag pid=4242" events))
+        (should-not (string-match-p "sensitive-argument" events))))))
+
+(ert-deftest nelisp-service-test-command-script-trailing-load-flag-terminates ()
+  (should-not (nelisp-service-client--command-script '("/emacs" "--load")))
+  (should-not (nelisp-service-client--command-script '("/emacs" "--script"))))
+
+(ert-deftest nelisp-service-test-trace-flush-error-preserves-original-failure ()
+  (let ((process-environment (copy-sequence process-environment)))
+    (setenv "NELISP_SERVICE_TRACE" "trace-test-unused")
+    (cl-letf (((symbol-function 'nelisp-service--trace-flush)
+               (lambda () (error "flush failure"))))
+      (let ((caught (condition-case err
+                        (progn
+                          (nelisp-service-test--with-trace-tail
+                            (error "original test failure"))
+                          nil)
+                      (error err))))
+        (should (equal (error-message-string caught) "original test failure"))))))
+
+(ert-deftest nelisp-service-test-trace-failure-prints-dropped-count-and-final-80 ()
+  (let* ((file (make-temp-file "nelisp-service-trace-failure-"))
+         (process-environment (copy-sequence process-environment))
+         (nelisp-service--trace-ring
+          (make-vector nelisp-service--trace-capacity nil))
+         (nelisp-service--trace-next 0)
+         (nelisp-service--trace-count 0)
+         (nelisp-service--trace-dropped 0)
+         (logged nil))
+    (unwind-protect
+        (progn
+          (setenv "NELISP_SERVICE_TRACE" file)
+          (delete-file file)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (&rest args)
+                       (when (string-match-p "NELISP_SERVICE_TRACE retained"
+                                             (car args))
+                         (setq logged (apply #'format args))))))
+            (let ((caught (condition-case err
+                              (progn
+                                (nelisp-service-test--with-trace-tail
+                                  (dotimes (i 520)
+                                    (nelisp-service--trace "T" "event-%03d" i))
+                                  (ert-fail "diagnostic wrapper trigger"))
+                                nil)
+                            (ert-test-failed err))))
+              (should caught)))
+          (should (string-match-p "retained=512 dropped=9" logged))
+          (should (= 80 (with-temp-buffer
+                          (insert logged)
+                          (goto-char (point-min))
+                          (let ((count 0))
+                            (while (re-search-forward "event-[0-9]+" nil t)
+                              (setq count (1+ count)))
+                            count))))
+          (should (string-match-p "event-440" logged))
+          (should (string-match-p "event-519" logged)))
+      (when (file-exists-p file) (delete-file file)))))
 
 ;;; Framing and files
 
@@ -521,7 +726,8 @@
   (funcall reply (if (stringp payload) (concat "echo:" payload) payload)))
 
 (ert-deftest nelisp-service-test-daemon-round-trip-and-sharing ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
                    "t1" :handler #'nelisp-service-test--echo :version "v1")))
       (unwind-protect
@@ -532,7 +738,7 @@
             (should (= 2 (plist-get (nelisp-service-client-ping b) :connections)))
             (nelisp-service-client-close a)
             (nelisp-service-client-close b))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-daemon-single-instance ()
   (nelisp-service-test--with-state-dir
@@ -553,7 +759,8 @@
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-daemon-version-mismatch-stops-daemon ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
                    "t4" :handler #'ignore :version "old")))
       (unwind-protect
@@ -563,7 +770,8 @@
             ;; across an update) is served, and the daemon stays.
             (let ((nelisp-service-client--started (- (float-time) 1000)))
               (let ((old (nelisp-service-client--open "t4" state "older")))
-                (should (and old (not (symbolp old))))
+                (should old)
+                (should-not (symbolp old))
                 (nelisp-service-client-close old)))
             (should-not (nelisp-service-get daemon :stopped))
             ;; A client newer than the daemon replaces it.
@@ -571,7 +779,7 @@
               (should (eq 'version
                           (nelisp-service-client--open "t4" state "new"))))
             (should (nelisp-service-get daemon :stopped)))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-open-drains-reply-seen-after-close ()
   "A rejection whose close is observed first is still reported."
@@ -680,7 +888,8 @@
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-daemon-handler-error-reaches-client ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
                    "t5" :handler (lambda (_c _p _r) (error "Boom")))))
       (unwind-protect
@@ -690,7 +899,7 @@
                                            (nelisp-service-client-request
                                             client "x" 20)))))
             (nelisp-service-client-close client))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 ;; Intermittent Windows failure: `process-send-string' signalled on a
 ;; request frame.  Nothing reached the daemon, so one resend is safe.
@@ -711,7 +920,8 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
        ,@body)))
 
 (ert-deftest nelisp-service-test-request-resends-once-after-send-failure ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let* ((runs 0)
            (daemon (nelisp-service-daemon-start
                     "r1" :handler (lambda (_c payload reply)
@@ -730,7 +940,7 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
             (should (equal "ok:y" (nelisp-service-client-request client "y" 20))))
         (when client (nelisp-service-client-close
                       (nelisp-service-client--current client)))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-superseded-handle-follows-successor ()
   (nelisp-service-test--with-state-dir
@@ -752,7 +962,8 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-request-second-send-failure-surfaces ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let* ((runs 0)
            (daemon (nelisp-service-daemon-start
                     "r2" :handler (lambda (_c _p reply)
@@ -772,7 +983,7 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
             (should (= 0 runs)))
         (when client (nelisp-service-client-close
                       (nelisp-service-client--current client)))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-request-not-resent-after-successful-send ()
   (nelisp-service-test--with-state-dir
@@ -1037,7 +1248,8 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
       (should (file-exists-p lock)))))
 
 (ert-deftest nelisp-service-test-client-autostarts-daemon ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let* ((script (expand-file-name
                     "../bin/nelisp-service-echo-daemon.el"
                     (file-name-directory
@@ -1053,7 +1265,33 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
       (should (nelisp-service-wait-until
                (lambda () (not (file-exists-p
                                 (nelisp-service-state-file "auto" "lock"))))
-               20)))))
+               20))))))
+
+(ert-deftest nelisp-service-test-trace-deadline-snapshots-files-before-cleanup ()
+  (let ((process-environment (copy-sequence process-environment))
+        (nelisp-service--trace-ring
+         (make-vector nelisp-service--trace-capacity nil))
+        (nelisp-service--trace-next 0)
+        (nelisp-service--trace-count 0)
+        (nelisp-service--trace-dropped 0))
+    (setenv "NELISP_SERVICE_TRACE" "trace-test-unused")
+    (nelisp-service-test--with-state-dir
+      (let ((state-file (nelisp-service-state-file "deadline" "state"))
+            (lock-file (nelisp-service-state-file "deadline" "lock")))
+        (nelisp-service-write-plist
+         state-file '(:port 1234 :token "must-not-be-logged" :started 99))
+        (nelisp-service-write-plist lock-file '(:started 99))
+        (cl-letf (((symbol-function 'nelisp-service-client--open)
+                   (lambda (&rest _args) nil))
+                  ((symbol-function 'nelisp-service-port-in-use-p)
+                   (lambda (_port) t)))
+          (should-error
+           (nelisp-service-client-connect "deadline" :timeout 0.01)))
+        (let ((events (mapconcat #'identity (nelisp-service--trace-events) "")))
+          (should (string-match-p
+                   "connect deadline name=deadline state-file=t state-parsed=t port=1234 started=99 token-present=t lock-file=t lock-parsed=t"
+                   events))
+          (should-not (string-match-p "must-not-be-logged" events)))))))
 
 (ert-deftest nelisp-service-test-early-lock-and-lock-held ()
   (nelisp-service-test--with-state-dir

@@ -469,53 +469,141 @@ file is written next to the state files."
 (defvar nelisp-service--retiring-processes (make-hash-table :test 'eq)
   "Processes whose connection retirement is already in progress.")
 
-(defun nelisp-service--retire-connection (process &optional wait)
+(defun nelisp-service--trace-enabled-p ()
+  "Return non-nil when the diagnostic trace has a destination."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (and file (> (length file) 0))))
+
+(defmacro nelisp-service--trace-safely (&rest trace-args)
+  "Record TRACE-ARGS without letting diagnostic errors affect service behavior.
+TRACE-ARGS are evaluated only within the guarded diagnostic call."
+  (declare (indent 0) (debug t))
+  `(when (nelisp-service--trace-enabled-p)
+     (condition-case nil
+         (nelisp-service--trace ,@trace-args)
+       (error nil))))
+
+(defun nelisp-service--retire-connection (process &optional wait caller)
   "Retire PROCESS, briefly pumping it on Windows GNU Emacs.
 WAIT is the optional grace period in seconds (default 0.3).  Return
 `eof' when the connection becomes terminal during the grace period,
 `forced' when its deadline expires or pumping fails, and `direct' when
-no grace period applies or a nested retirement is already active."
-  (let ((grace (if (numberp wait) (max 0 wait) 0.3))
-        (windows-gnu
-         (and (eq system-type 'windows-nt)
-              (not (nelisp-service-standalone-p)))))
-    (if (not windows-gnu)
-        (progn
-          (condition-case nil (delete-process process) (error nil))
-          'direct)
-      (if (gethash process nelisp-service--retiring-processes)
-          'direct
-        (puthash process t nelisp-service--retiring-processes)
-        (let ((result 'direct))
-          (unwind-protect
-              (let ((eligible
-                     (condition-case nil
-                         (and (> grace 0)
-                              (processp process)
-                              (eq (process-type process) 'network)
-                              (memq (process-status process) '(open run)))
-                       (error nil))))
-                (when eligible
-                  (setq result 'forced)
-                  (condition-case nil
-                      (progn
-                        (process-send-eof process)
-                        (let ((deadline (+ (float-time) grace)))
-                          (condition-case nil
-                              (progn
-                                (while (and
-                                        (memq (process-status process) '(open run))
-                                        (< (float-time) deadline))
-                                  (accept-process-output
-                                   nil (max 0 (min 0.05
-                                                   (- deadline (float-time))))))
-                                (unless (memq (process-status process) '(open run))
-                                  (setq result 'eof)))
-                            (error (setq result 'forced)))))
-                    (error (setq result 'forced))))
-                result)
-            (condition-case nil (delete-process process) (error nil))
-            (remhash process nelisp-service--retiring-processes)))))))
+no grace period applies or a nested retirement is already active.
+CALLER is a diagnostic label for the initiating cleanup path."
+  (let* ((started (and (nelisp-service--trace-enabled-p) (float-time)))
+         (grace (if (numberp wait) (max 0 wait) 0.3))
+         (windows-gnu
+          (and (eq system-type 'windows-nt)
+               (not (nelisp-service-standalone-p))))
+         (detail nil)
+         (result nil))
+    (setq result
+          (if (not windows-gnu)
+              (progn
+                (setq detail 'immediate)
+                (condition-case nil (delete-process process) (error nil))
+                'direct)
+            (if (gethash process nelisp-service--retiring-processes)
+                (progn (setq detail 'reentrant) 'direct)
+              (puthash process t nelisp-service--retiring-processes)
+              (unwind-protect
+                  (let ((eligible
+                         (condition-case nil
+                             (and (> grace 0)
+                                  (processp process)
+                                  (eq (process-type process) 'network)
+                                  (memq (process-status process) '(open run)))
+                           (error nil))))
+                    (if (not eligible)
+                        (progn (setq detail 'ineligible) 'direct)
+                      (let ((outcome 'forced))
+                        (setq detail 'eof-sent)
+                        (condition-case nil
+                            (let ((deadline nil))
+                              (process-send-eof process)
+                              (setq deadline (+ (float-time) grace))
+                              (condition-case nil
+                                  (progn
+                                    (while (and
+                                            (memq (process-status process) '(open run))
+                                            (< (float-time) deadline))
+                                      (accept-process-output
+                                       nil (max 0 (min 0.05
+                                                       (- deadline (float-time))))))
+                                    (if (not (memq (process-status process) '(open run)))
+                                        (setq outcome 'eof detail 'terminal)
+                                      (setq detail 'deadline)))
+                                (error (setq outcome 'forced detail 'error))))
+                          (error (setq outcome 'forced detail 'error)))
+                        outcome)))
+                (condition-case nil (delete-process process) (error nil))
+                (remhash process nelisp-service--retiring-processes)))))
+    (nelisp-service--trace-safely
+     "S" "retire caller=%s outcome=%s detail=%s elapsed-ms=%.1f"
+     (or caller 'unspecified) result (or detail 'unknown)
+     (* 1000.0 (- (float-time) started)))
+    result))
+;;; Diagnostics -----------------------------------------------------------
+
+(defconst nelisp-service--trace-capacity 512)
+(defconst nelisp-service--trace-event-max-length 2048)
+(defvar nelisp-service--trace-ring (make-vector nelisp-service--trace-capacity nil))
+(defvar nelisp-service--trace-next 0)
+(defvar nelisp-service--trace-count 0)
+(defvar nelisp-service--trace-dropped 0)
+
+(defun nelisp-service--trace-reset ()
+  "Clear the in-memory diagnostic event ring."
+  (setq nelisp-service--trace-ring
+        (make-vector nelisp-service--trace-capacity nil)
+        nelisp-service--trace-next 0
+        nelisp-service--trace-count 0
+        nelisp-service--trace-dropped 0))
+
+(defun nelisp-service--trace (tag fmt &rest args)
+  "Buffer one timestamped event when NELISP_SERVICE_TRACE names a file.
+TAG is a short origin label and FMT and ARGS form the event text.  Events
+stay in a bounded ring until `nelisp-service--trace-flush' is called."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0))
+      (let* ((text (replace-regexp-in-string
+                    "\n" "\\n" (apply #'format fmt args) t t))
+             (text (if (> (length text) nelisp-service--trace-event-max-length)
+                       (concat (substring text 0 (- nelisp-service--trace-event-max-length 3))
+                               "...")
+                     text))
+             (line (format "%.3f %s %s %s\n" (float-time) tag (emacs-pid) text)))
+        (aset nelisp-service--trace-ring nelisp-service--trace-next line)
+        (setq nelisp-service--trace-next
+              (mod (1+ nelisp-service--trace-next) nelisp-service--trace-capacity))
+        (if (< nelisp-service--trace-count nelisp-service--trace-capacity)
+            (setq nelisp-service--trace-count (1+ nelisp-service--trace-count))
+          (setq nelisp-service--trace-dropped (1+ nelisp-service--trace-dropped)))))))
+
+(defun nelisp-service--trace-events ()
+  "Return retained trace events in chronological order."
+  (let ((start (mod (- nelisp-service--trace-next nelisp-service--trace-count)
+                    nelisp-service--trace-capacity))
+        (events nil))
+    (dotimes (offset nelisp-service--trace-count)
+      (push (aref nelisp-service--trace-ring
+                  (mod (+ start offset) nelisp-service--trace-capacity))
+            events))
+    (nreverse events)))
+
+(defun nelisp-service--trace-flush ()
+  "Append the retained trace tail and drop count to the configured trace file.
+Return the number of written events, or nil when tracing has no destination."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0))
+      (let ((events (nelisp-service--trace-events))
+            (create-lockfiles nil))
+        (write-region
+         (concat (format "TRACE retained=%d dropped=%d\n"
+                         nelisp-service--trace-count nelisp-service--trace-dropped)
+                 (mapconcat #'identity events ""))
+         nil file t 'silent)
+        (length events)))))
 
 (defun nelisp-service-port-in-use-p (port)
   "Return non-nil when something accepts connections on loopback PORT.
@@ -533,7 +621,7 @@ this tells a busy daemon from a dead one."
                            :service port :family 'ipv4 :noquery t))
                     t)
                 (error nil)))
-      (when probe (nelisp-service--retire-connection probe)))
+      (when probe (nelisp-service--retire-connection probe nil 'port-probe)))
     in-use))
 
 (defun nelisp-service-wait (seconds)
