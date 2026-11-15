@@ -65,7 +65,7 @@
 
 (when (and nelisp-service--retirement-metrics-active
            (fboundp 'advice-add))
-  (advice-add 'nelisp-service--retire-connection :around
+  (advice-add 'nelisp-service-retire-connection :around
               #'nelisp-service-test--retirement-metrics-around)
   (add-hook 'kill-emacs-hook
             #'nelisp-service-test--retirement-metrics-report))
@@ -125,7 +125,7 @@
                          status 'closed)
                    (should (= 1 eof-count))
                    t)))
-        (should (eq 'eof (nelisp-service--retire-connection process)))
+        (should (eq 'eof (nelisp-service-retire-connection process)))
         (should (= waits 1))
         (should (= 1 eof-count))
         (should (<= max-slice 0.05))
@@ -148,7 +148,7 @@
                    nil)))
         (let ((system-type 'windows-nt))
           (should (eq 'forced
-                      (nelisp-service--retire-connection process 0.2)))
+                      (nelisp-service-retire-connection process 0.2)))
           (should (<= 4 waits 5))
           (should (< (abs (- now 1000.2)) 0.000001))
           (should (<= max-slice 0.05))
@@ -166,7 +166,7 @@
                  (lambda (_process seconds) (push seconds wait-slices) nil)))
         (let ((system-type 'windows-nt))
           (should (eq 'forced
-                      (nelisp-service--retire-connection process 0.2)))
+                      (nelisp-service-retire-connection process 0.2)))
           (should (equal '(0) (nreverse wait-slices)))
           (should (= 1 eof-count))
           (should (= 1 delete-count)))))))
@@ -180,7 +180,7 @@
                    (setq waits (1+ waits))
                    (error "simulated process wait failure"))))
         (should (eq 'forced
-                    (nelisp-service--retire-connection process 0.2)))
+                    (nelisp-service-retire-connection process 0.2)))
         (should (= 1 waits))
         (should (= 1 eof-count))
         (should (= 1 delete-count))
@@ -195,7 +195,7 @@
                 ((symbol-function 'accept-process-output)
                  (lambda (&rest _args) (setq waits (1+ waits)) nil)))
         (should (eq 'forced
-                    (nelisp-service--retire-connection process 0.2)))
+                    (nelisp-service-retire-connection process 0.2)))
         (should (= 0 waits))
         (should (= 1 delete-count))
         (should-not (process-live-p process))))))
@@ -215,7 +215,7 @@
                      (lambda (&rest _args) (setq eof-sends (1+ eof-sends))))
                     ((symbol-function 'accept-process-output)
                      (lambda (&rest _args) (setq waits (1+ waits)))))
-            (should (eq 'direct (nelisp-service--retire-connection process))))
+            (should (eq 'direct (nelisp-service-retire-connection process))))
           (should-not (process-live-p process))
           (should (= 0 type-queries))
           (should (= 0 eof-sends))
@@ -230,7 +230,7 @@
                      (lambda (&rest _args) (setq eof-sends (1+ eof-sends))))
                     ((symbol-function 'accept-process-output)
                      (lambda (&rest _args) (setq waits (1+ waits)))))
-            (should (eq 'direct (nelisp-service--retire-connection process)))
+            (should (eq 'direct (nelisp-service-retire-connection process)))
             (should-not (process-live-p process))
             (should (= 0 type-queries))
             (should (= 0 eof-sends))
@@ -238,15 +238,15 @@
       (nelisp-service-test--with-fake-network-process
         (let ((system-type 'windows-nt))
           (cl-letf (((symbol-function 'process-type) (lambda (_proc) 'pipe)))
-            (should (eq 'direct (nelisp-service--retire-connection process)))
+            (should (eq 'direct (nelisp-service-retire-connection process)))
             (should-not (process-live-p process)))))
       (nelisp-service-test--with-fake-network-process
         (let ((system-type 'windows-nt))
           (setq status 'closed)
-          (should (eq 'direct (nelisp-service--retire-connection process)))))
+          (should (eq 'direct (nelisp-service-retire-connection process)))))
       (nelisp-service-test--with-fake-network-process
         (let ((system-type 'windows-nt))
-          (should (eq 'direct (nelisp-service--retire-connection process 0)))
+          (should (eq 'direct (nelisp-service-retire-connection process 0)))
           (should-not (process-live-p process)))))
     (should (= 0 waits))))
 
@@ -258,11 +258,11 @@
       (cl-letf (((symbol-function 'accept-process-output)
                  (lambda (_process _seconds)
                    (setq waits (1+ waits))
-                   (setq nested (nelisp-service--retire-connection process 0))
+                   (setq nested (nelisp-service-retire-connection process 0))
                    (should (process-live-p process))
                    (setq status 'closed)
                    nil)))
-        (should (eq 'eof (nelisp-service--retire-connection process)))
+        (should (eq 'eof (nelisp-service-retire-connection process)))
         (should (eq 'direct nested))
         (should (= waits 1))
         (should (= 1 delete-count))
@@ -317,7 +317,7 @@
                  (lambda (&rest _args) process))
                 ((symbol-function 'process-send-string)
                  (lambda (&rest _args) (error "simulated handshake send failure")))
-                ((symbol-function 'nelisp-service--retire-connection)
+                ((symbol-function 'nelisp-service-retire-connection)
                  (lambda (candidate &optional _wait)
                    (should (eq process candidate))
                    (setq retired (1+ (or retired 0)))
@@ -333,7 +333,7 @@
     (let ((retired nil))
       (cl-letf (((symbol-function 'make-network-process)
                  (lambda (&rest _args) process))
-                ((symbol-function 'nelisp-service--retire-connection)
+                ((symbol-function 'nelisp-service-retire-connection)
                  (lambda (candidate &optional _wait)
                    (should (eq process candidate))
                    (setq retired t)

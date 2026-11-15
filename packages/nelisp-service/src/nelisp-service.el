@@ -469,12 +469,15 @@ file is written next to the state files."
 (defvar nelisp-service--retiring-processes (make-hash-table :test 'eq)
   "Processes whose connection retirement is already in progress.")
 
-(defun nelisp-service--retire-connection (process &optional wait)
+(defun nelisp-service-retire-connection (process &optional wait)
   "Retire PROCESS, briefly pumping it on Windows GNU Emacs.
-WAIT is the optional grace period in seconds (default 0.3).  Return
-`eof' when the connection becomes terminal during the grace period,
-`forced' when its deadline expires or pumping fails, and `direct' when
-no grace period applies or a nested retirement is already active."
+WAIT is the optional grace period in seconds (default 0.3).  On Windows,
+pumping may dispatch callbacks.  Return `eof' when the connection becomes
+terminal during the grace period, `forced' when its deadline expires or
+pumping fails, and `direct' when no grace period applies or a nested
+retirement is already active.  WAIT of zero requests immediate deletion.
+Deletion is attempted even after a timeout or error; nested retirement
+defers deletion to the outer call."
   (let ((grace (if (numberp wait) (max 0 wait) 0.3))
         (windows-gnu
          (and (eq system-type 'windows-nt)
@@ -533,7 +536,7 @@ this tells a busy daemon from a dead one."
                            :service port :family 'ipv4 :noquery t))
                     t)
                 (error nil)))
-      (when probe (nelisp-service--retire-connection probe)))
+      (when probe (nelisp-service-retire-connection probe)))
     in-use))
 
 (defun nelisp-service-wait (seconds)

@@ -87,6 +87,12 @@ with the response string, or =""= for a notification.
 
 * Substrate facts this package works around
 
+=nelisp-service-retire-connection= is the shared public helper for closing
+connections.  On Windows GNU Emacs it pumps process output during its grace
+period, which may dispatch callbacks; a zero grace period deletes immediately.
+Deletion is still attempted after timeout or error, and nested retirement
+defers deletion until the outer call completes.
+
 Measured on the Windows standalone reader, 2026-10-10:
 
 - =setenv= values and =command-line-args= do not reach a script the reader

@@ -139,7 +139,7 @@ rejection, or nil when nothing answers."
                       (or (nelisp-service-get client :rejected) nil)))
                 (error nil)))
       (when (and proc (not connected))
-        (nelisp-service--retire-connection proc)))
+        (nelisp-service-retire-connection proc)))
     result))
 
 (defun nelisp-service-client--lock-age (name)
@@ -321,7 +321,7 @@ the daemon may already have run the request."
                     (> (hash-table-count pending) 0)
                     0)))
     (condition-case nil
-        (nelisp-service--retire-connection
+        (nelisp-service-retire-connection
          (nelisp-service-get client :process) wait)
       (error nil))
     t))
