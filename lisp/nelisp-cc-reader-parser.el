@@ -1581,14 +1581,25 @@
     ;; callable representation instead of returning an ordinary vector.
     ;; ===========================================================
 
-    (defun nelisp_reader_p_byte_code_valid_p (vec)
+    ;; A `#N#' reference read inside the literal (the code string or the
+    ;; constants vector shared with an earlier `#N=') is still a proxy cons
+    ;; here; `nelisp_reader_p_label_resolve' swaps in the definition's value
+    ;; when the whole form is done.  Treat the proxy as having the tag the
+    ;; slot needs (GNU .elc files share such strings between functions).
+    (defun nelisp_reader_p_slot_tag (word pool want)
+      (if (and (= (nl_val_tag word) 7)
+               (>= (nelisp_reader_p_label_proxy_number word pool 0) 0))
+          want
+        (nl_val_tag word)))
+
+    (defun nelisp_reader_p_byte_code_valid_p (vec pool)
       (let ((count (vector-len vec)))
         (if (or (< count 4) (> count 6))
             0
           (let* ((arglist (nl_vector_slot_word vec 0))
                  (arg-tag (nl_val_tag arglist))
-                 (code-tag (nl_val_tag (nl_vector_slot_word vec 1)))
-                 (constants-tag (nl_val_tag (nl_vector_slot_word vec 2)))
+                 (code-tag (nelisp_reader_p_slot_tag (nl_vector_slot_word vec 1) pool 5))
+                 (constants-tag (nelisp_reader_p_slot_tag (nl_vector_slot_word vec 2) pool 8))
                  (depth (nl_vector_slot_word vec 3))
                  (depth-value (if (= (nl_val_tag depth) 2)
                                   (nl_word_payload depth) -1))
@@ -1626,7 +1637,7 @@
     ;; Doc 215: parsed values are WORDs throughout the recursive reader.
     (defun nelisp_reader_p_parse_byte_code_w (str-ptr cursor-slot _pad slot-pool depth)
   (let* ((vec (nelisp_reader_p_parse_vector_w str-ptr cursor-slot 0 slot-pool depth 0)))
-    (if (and (and (/= vec 0) (/= vec 2)) (= (nelisp_reader_p_byte_code_valid_p vec) 1))
+    (if (and (and (/= vec 0) (/= vec 2)) (= (nelisp_reader_p_byte_code_valid_p vec slot-pool) 1))
         (let* ((object (alloc-bytes 32 8)))
           (seq (record-make (nl_vector_slot_word vec 0) (vector-len vec) object)
                (nelisp_reader_p_fill_byte_code vec object 0 (vector-len vec))

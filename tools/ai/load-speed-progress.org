@@ -1,0 +1,40 @@
+#+TITLE: Fast `load' of large Elisp source and GNU .elc files
+
+# `load' of a large source file is 3-14x slower than reading the same file
+# into a buffer and evaluating its forms with `read' + `eval' in the same
+# binary (measured 2026-11-15 on Windows, origin/main 002d52fba, newDTW game
+# data: gamedata-conditional.el 9 MB 15.2 s vs 5.0 s; gamedata-state.el
+# 0.5 MB 2.2 s vs 0.16 s), and `load' of a GNU-compiled .elc that `read'
+# parses fine fails with invalid-read-syntax.
+# Run from the repository root after building target/nelisp(.exe):
+#   bin/progress-meter.sh --ledger tools/ai/load-speed-progress.org
+# Probes live in tools/ai/load-speed-probe.sh (MODE as the first argument).
+# NDTW_ROOT points at a newDTW checkout for the end-to-end criteria.
+
+* S1 Speed on a vendored corpus
+
+** S1.1 `load' of the largest vendored .el is at most 1.2x the read+eval loop on the same file in the same binary (median of 3)
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh vendor-ratio
+
+* S2 Semantics
+
+** S2.1 load keeps GNU semantics: load-file-name, lexical-binding cookie, NOERROR on a missing file, nested load, eval-when-compile, load-history entry, after-load hooks; checked against GNU Emacs
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh semantics
+
+** S2.2 A GNU 31.1 byte-compiled .elc with bytecode functions loads and its functions return the same values as in GNU Emacs
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh elc
+
+* S3 End to end on newDTW
+
+** S3.1 newDTW game data: load is at most 1.2x the read+eval loop for gamedata-conditional.el and gamedata-state.el
+#+REQUIRES: NDTW_ROOT
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh ndtw-ratio
+
+** S3.2 newDTW owner-check headless scenarios on this binary give frame records identical to GNU Emacs, and the runtime loads in at most 8 s
+#+REQUIRES: NDTW_ROOT
+#+TIMEOUT: 600
+cmd: sh tools/ai/load-speed-probe.sh ndtw-scenarios
