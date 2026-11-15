@@ -284,6 +284,85 @@
                           (nelisp-service-client--open "t5" state "new")))))
         (nelisp-service-daemon-close daemon)))))
 
+(ert-deftest nelisp-service-test-open-drain-survives-unrelated-wakeups ()
+  "A delayed rejection survives immediate unrelated process wakeups."
+  (nelisp-service-test--with-state-dir
+    (let ((daemon (nelisp-service-daemon-start
+                   "t6" :handler #'ignore :version "old"))
+          (held nil)
+          (closed nil)
+          (drain-wakeups 0)
+          (real-input (symbol-function 'nelisp-service-client--on-input))
+          (real-close (symbol-function 'nelisp-service-client--on-close))
+          (real-accept (symbol-function 'accept-process-output)))
+      (unwind-protect
+          (let ((state (nelisp-service-read-plist
+                        (nelisp-service-state-file "t6" "state")))
+                (nelisp-service-client--started (+ (float-time) 1000)))
+            (cl-letf (((symbol-function 'nelisp-service-client--on-input)
+                       (lambda (client chunk)
+                         (push (cons client chunk) held)))
+                      ((symbol-function 'nelisp-service-client--on-close)
+                       (lambda (client proc)
+                         (funcall real-close client proc)
+                         (setq closed t)))
+                      ((symbol-function 'accept-process-output)
+                       (lambda (&rest args)
+                         (if (not closed)
+                             (apply real-accept args)
+                           (setq drain-wakeups (1+ drain-wakeups))
+                           (when (= drain-wakeups 4)
+                             (dolist (h (nreverse held))
+                               (funcall real-input (car h) (cdr h)))
+                             (setq held nil))
+                           t))))
+              (should (eq 'version
+                          (nelisp-service-client--open "t6" state "new")))
+              (should (>= drain-wakeups 4))))
+        (nelisp-service-daemon-close daemon)))))
+
+(ert-deftest nelisp-service-test-open-does-not-return-closed-welcome ()
+  "A welcome drained after close must not return a dead client."
+  (nelisp-service-test--with-state-dir
+    (let ((daemon (nelisp-service-daemon-start
+                   "t7" :handler #'ignore :version "v1"))
+          (held nil)
+          (closed nil)
+          (closed-client nil)
+          (welcome-decoded nil)
+          (real-input (symbol-function 'nelisp-service-client--on-input))
+          (real-close (symbol-function 'nelisp-service-client--on-close))
+          (real-accept (symbol-function 'accept-process-output)))
+      (unwind-protect
+          (let ((state (nelisp-service-read-plist
+                        (nelisp-service-state-file "t7" "state"))))
+            (cl-letf (((symbol-function 'nelisp-service-client--on-input)
+                       (lambda (client chunk)
+                         (push (cons client chunk) held)
+                         (delete-process
+                          (nelisp-service-get client :process))))
+                      ((symbol-function 'nelisp-service-client--on-close)
+                       (lambda (client proc)
+                         (funcall real-close client proc)
+                         (setq closed-client client)
+                         (setq closed t)))
+                      ((symbol-function 'accept-process-output)
+                       (lambda (&rest args)
+                         (if (not closed)
+                             (apply real-accept args)
+                           (dolist (h (nreverse held))
+                             (funcall real-input (car h) (cdr h)))
+                           (setq welcome-decoded
+                                 (nelisp-service-get (caar held) :welcome))
+                           (setq held nil)
+                           t))))
+              (let ((result (nelisp-service-client--open "t7" state "v1")))
+                (should closed)
+                (should (nelisp-service-get closed-client :closed))
+                (should welcome-decoded)
+                (should-not result))))
+        (nelisp-service-daemon-close daemon)))))
+
 (ert-deftest nelisp-service-test-daemon-handler-error-reaches-client ()
   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start

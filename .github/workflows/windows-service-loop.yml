@@ -14,6 +14,9 @@ on:
       parallel:
         description: Concurrent test runs
         default: '4'
+      selector:
+        description: ERT test name regex (default runs the full service suite)
+        default: '^nelisp-service-test'
 
 jobs:
   loop:
@@ -48,6 +51,7 @@ jobs:
         env:
           ITERATIONS: ${{ inputs.iterations }}
           PARALLEL: ${{ inputs.parallel }}
+          TEST_SELECTOR: ${{ inputs.selector }}
         run: |
           set -u
           logdir="$RUNNER_TEMP/service-loop"
@@ -66,7 +70,7 @@ jobs:
             if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
                  -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
                  -l packages/nelisp-service/test/nelisp-service-test.el \
-                 --eval '(ert-run-tests-batch-and-exit "^nelisp-service-test")' \
+                 --eval '(let ((selector (or (getenv "TEST_SELECTOR") "^nelisp-service-test"))) (unless (ert-select-tests selector t) (error "No tests match selector %S" selector)) (ert-run-tests-batch-and-exit selector))' \
                  </dev/null >"$logdir/iter-$i.log" 2>&1; then
               echo pass >"$logdir/iter-$i.result"
             else

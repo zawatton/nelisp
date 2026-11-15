@@ -1,0 +1,28 @@
+#+TITLE: NeLisp service Windows flake investigation
+
+* S1 Diagnosis
+
+** S1.1 Prior traced Windows run is preserved for diagnosis
+evidence: target/service-flake/prior-trace.log sha256=a1294a75fa92d0ed85d50ca65ad7be544f510a883ad6aaa0117e7044df551a73
+
+** S1.2 Deterministic local repros expose the drain state defects
+evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e0a534dc3b571c62ab3f74cd87793932e6ed6
+
+** S1.3 New untraced Windows baseline is collected and classified
+pending
+
+* S2 Fix and regression
+
+** S2.1 Deterministic repros pass after retaining their pre-fix failures
+#+NOTE: Before the production fix, two of three selected open tests failed, including both new invariants; after the fix, all three passed.
+evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e0a534dc3b571c62ab3f74cd87793932e6ed6
+evidence: target/service-flake/green-open.log sha256=38ab5adc4faffb3ab68451a99629492f89074f31ac4a9e899bcfce809e3c416c
+
+** S2.2 Full default and focused workflow selections are verified
+#+NOTE: Before selector input: full default 36/36 in 6.001 s. With focused selector: 4/4 in 0.655 s (89.1% lower ERT time); default remains the full-suite regex. A no-match selector exits 255 with an explicit error.
+evidence: target/service-flake/full-before.log sha256=d832a4b9b98948c80cbb62f7922eefd01f7ea9f78120ccadb34ffde5bab27288
+evidence: target/service-flake/focused-after.log sha256=96a30005d71d7ad3ba0a3e19f0614ce8239bf1286fe67fca2597fbcad9e41d06
+evidence: target/service-flake/zero-selection.log sha256=b8c193c4c80fd4edabce539d06230efc90829f0b68a53a25ffa397bf96bf38f9
+
+** S2.3 Windows loop repeats end-to-end with the fix
+pending

@@ -117,16 +117,19 @@ rejection, or nil when nothing answers."
            nelisp-service-client-hello-timeout)
           ;; The close can be observed before the reply that preceded it
           ;; has been filtered; drain before giving up.
-          (let ((tries 0))
+          (let ((deadline (+ (float-time) 0.3)))
             (while (and (nelisp-service-get client :closed)
                         (not (nelisp-service-get client :welcome))
                         (not (nelisp-service-get client :rejected))
-                        (< tries 3))
-              (setq tries (1+ tries))
-              (condition-case nil (accept-process-output nil 0.1)
+                        (< (float-time) deadline))
+              (condition-case nil
+                  (accept-process-output
+                   nil (min 0.1 (- deadline (float-time))))
                 (error nil))))
           (cond
-           ((nelisp-service-get client :welcome) client)
+           ((and (nelisp-service-get client :welcome)
+                 (not (nelisp-service-get client :closed)))
+            client)
            (t (condition-case nil (delete-process proc) (error nil))
               (or (nelisp-service-get client :rejected) nil))))
       (error nil))))
