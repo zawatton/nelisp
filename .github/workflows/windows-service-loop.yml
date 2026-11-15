@@ -21,6 +21,11 @@ on:
           - client
           - all
         default: client
+      eof_control:
+        description: Include the client process-send-eof reconnect control
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   reconnect-probe:
@@ -31,6 +36,7 @@ jobs:
       CYCLES: ${{ inputs.cycles }}
       PARALLEL: ${{ inputs.parallel }}
       W32_PROBE_EVENT_PUMP: ${{ inputs.event_pump }}
+      W32_PROBE_EOF_CONTROL: ${{ inputs.eof_control }}
     steps:
       - uses: actions/checkout@v4
 

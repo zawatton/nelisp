@@ -26,6 +26,13 @@ evidence: target/service-flake/focused-after.log sha256=96a30005d71d7ad3ba0a3e19
 evidence: target/service-flake/zero-selection.log sha256=b8c193c4c80fd4edabce539d06230efc90829f0b68a53a25ffa397bf96bf38f9
 
 ** S2.3 Untraced full and serial Windows loops pass on the final fix
+#+NOTE: All-process/50 ms Windows run 43693424719 reproduced eight new-client resets in 3200 immediate transactions, with zero address errors; the server-close fence completed 1600/1600. Every failure retained reset-before-accept then server REJECT send, with no client reply. The changed pump does not prevent reproduction.
+evidence: target/service-flake/windows-raw-all-43693424719-classification.json sha256=8e73f2e8d72f49cfcecf60cf6b371f506e13652f32c43b479cebc09c4c071afd
+evidence: target/service-flake/windows-raw-all-43693424719.json sha256=7dcef192624adc1935272e0d6490ec7ce1a0f2293cc0406464f340fe2bc6a86f
+#+NOTE: Optional client-EOF fence waits only for OLD client terminal status; peer status is observational. Immediate terminal status or timeout is incomplete. Local GNU EOF API check and four-mode 5/5 smoke pass; missing-response control exits 1. EOF counts are recorded in W32_PROBE_EOF_MODE run-log lines, not the three-mode summary file. Windows validation is still required before any production workaround.
+evidence: target/service-flake/w32-eof-api-probe.log sha256=fd189542bfc4674c9bc84836581fdb5dee2e178b8ce06162074abb36922eca04
+evidence: target/service-flake/w32-probe-eof-control-all/w32-probe-run.log sha256=6511f71774f854fa9e5cd55285a5b9958cc1d2115d835591c4d7ac1f12452c73
+evidence: target/service-flake/w32-probe-eof-control-negative/w32-probe-run.log sha256=05279c88d016f29298d73cbe16f64ad0c370b6696743c5a082b4832a2ca1fa69
 #+NOTE: Raw parallel Windows run 43692785587 reproduced six early new-client resets and one REJECT-to-EJECT response without service code. Separately, 3926 address-allocation failures produced a total 3933 incomplete transactions; exclude these address errors from transport-race conclusions. Same-name reuse is unnecessary. No comparable non-address failure appeared in the close-fenced control, but this does not establish a fix. Next compare all-process/50 ms event pumping at a smaller connection count.
 evidence: target/service-flake/windows-raw-parallel-43692785587-classification.json sha256=af34d78adc9d12512d266d6cd205b7850287ffb030cb3c74b96070a1457a9c03
 evidence: target/service-flake/windows-raw-parallel-43692785587.json sha256=d2b2eb0fc1d6c7b3634eb3581e19d2546868ff0f7df3dc3a4c6ed635763ba2e3

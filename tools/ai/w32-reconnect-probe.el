@@ -220,11 +220,35 @@
               (unless (equal (process-get old 'w32-probe-reply) "WELCOME")
                 (error "old response was %S" (process-get old 'w32-probe-reply)))
               (w32-probe--bump counts mode :old-welcome)
-              (delete-process old)
-              (when (eq mode 'same-name-after-server-close)
-                (unless (w32-probe--wait-close old server 2.0)
-                  (error "old server close not observed before reconnect"))
-                (w32-probe--bump counts mode :close-observed))
+              (cond
+               ((eq mode 'same-name-after-client-eof)
+                (let* ((id (process-get old 'w32-probe-id))
+                       (peer (and id (gethash id w32-probe--connections))))
+                  (w32-probe--record old-context id "client-eof-before" old
+                                     (process-status old))
+                  (process-send-eof old)
+                  (w32-probe--record old-context id "client-eof-immediate" old
+                                     (process-status old))
+                  (w32-probe--record old-context id "peer-status-after-eof" peer
+                                     (and peer (process-status peer)))
+                  (unless (process-live-p old)
+                    (error "EOF control unsupported: client became terminal immediately"))
+                  (unless (w32-probe--wait-for
+                           (lambda ()
+                             (memq (process-status old) '(closed failed exit signal)))
+                           old 2.0)
+                    (error "EOF control incomplete: old client did not become terminal"))
+                  (w32-probe--record old-context id "old-client-terminal-after-eof" old
+                                     (process-status old))
+                  (w32-probe--record old-context id "peer-status-after-client-terminal"
+                                     peer (and peer (process-status peer)))
+                  (w32-probe--bump counts mode :close-observed)))
+               (t
+                (delete-process old)
+                (when (eq mode 'same-name-after-server-close)
+                  (unless (w32-probe--wait-close old server 2.0)
+                    (error "old server close not observed before reconnect"))
+                  (w32-probe--bump counts mode :close-observed))))
               (setq new (w32-probe--client server port new-context new-process-name "NEW"))
               (unless (equal (process-get new 'w32-probe-reply) "REJECT")
                 (error "new response was %S" (process-get new 'w32-probe-reply)))
@@ -270,6 +294,7 @@
 (defun w32-probe-main ()
   (pcase-let* ((`(,cycles ,directory) (w32-probe--args))
                (event-pump (or (getenv "W32_PROBE_EVENT_PUMP") "client"))
+               (eof-control (or (getenv "W32_PROBE_EOF_CONTROL") "false"))
                (counts (make-hash-table :test #'eq))
                (failures 0)
                (w32-probe--clients-by-local (make-hash-table :test #'equal))
@@ -283,7 +308,12 @@
                         same-name-after-server-close)))
     (unless (member event-pump '("client" "all"))
       (error "W32_PROBE_EVENT_PUMP must be client or all, got %S" event-pump))
+    (unless (member eof-control '("true" "false"))
+      (error "W32_PROBE_EOF_CONTROL must be true or false, got %S" eof-control))
+    (when (equal eof-control "true")
+      (setq modes (append modes '(same-name-after-client-eof))))
     (princ (format "W32_PROBE_EVENT_PUMP %s\n" event-pump))
+    (princ (format "W32_PROBE_EOF_CONTROL %s\n" eof-control))
     (make-directory default-directory t)
     (let* ((server (make-network-process :name "w32-probe-listener" :server t
                                          :host "127.0.0.1" :service 0 :family 'ipv4
@@ -297,7 +327,7 @@
                            emacs-version cycles port))
             (dotimes (cycle-index cycles)
               (let* ((cycle (1+ cycle-index))
-                     (rotation (% cycle 3))
+                     (rotation (% cycle (length modes)))
                      (ordered (append (nthcdr rotation modes)
                                       (cl-subseq modes 0 rotation))))
                 (dolist (mode ordered)
@@ -307,6 +337,12 @@
                   (princ (format "W32_PROBE_PROGRESS cycles=%d/%d incomplete=%d\n"
                                  cycle cycles failures)))))
             (let ((summary (w32-probe--summary default-directory cycles counts failures)))
+              (when (equal eof-control "true")
+                (let ((stats (gethash 'same-name-after-client-eof counts)))
+                  (princ (format "W32_PROBE_EOF_MODE attempted=%d completed=%d incomplete=%d old-welcome=%d new-reject=%d client-terminal=%d\n"
+                                 (plist-get stats :attempted) (plist-get stats :completed)
+                                 (plist-get stats :incomplete) (plist-get stats :old-welcome)
+                                 (plist-get stats :new-reject) (plist-get stats :close-observed)))))
               (princ (format "W32_PROBE_DONE incomplete=%d summary=%s\n" failures summary)))
             (when (> failures 0) (kill-emacs 1)))
         (delete-process server)))))
