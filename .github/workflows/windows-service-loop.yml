@@ -92,6 +92,21 @@ jobs:
               ;;
             *) echo "unknown or empty W32_PROBE_MODE_SET: $W32_PROBE_MODE_SET"; exit 2 ;;
           esac
+          emacs_exe=$(command -v emacs)
+          emacs_version=$(emacs --version | head -n 1)
+          emacs_build_facts=$(ulimit -v 8388608 && /usr/bin/timeout 30 emacs --batch -Q --eval '(princ (format "configuration=%s system-type=%s" system-configuration system-type))')
+          archive_version=31.1
+          archive_major=${archive_version%%.*}
+          archive_url="https://ftp.gnu.org/gnu/emacs/windows/emacs-$archive_major/emacs-$archive_version.zip"
+          emacs_executable_hash=$(sha256sum "$emacs_exe")
+          {
+            printf 'archive_configured_url=%s\n' "$archive_url"
+            printf 'reported_version=%s\n' "$emacs_version"
+            printf 'reported_build_facts=%s\n' "$emacs_build_facts"
+            printf 'executable_path=%s\n' "$emacs_exe"
+            printf 'executable_sha256=%s\n' "$emacs_executable_hash"
+            printf 'verified_source_commit=unverified (archive source commit is not pinned or independently verified)\n'
+          } | tee "$logdir/emacs-build-facts.txt"
           echo "emacs=$(command -v emacs) cycles_per_mode=$CYCLES parallel=$PARALLEL mode_set=$W32_PROBE_MODE_SET event_pump=$W32_PROBE_EVENT_PUMP eof_control=$W32_PROBE_EOF_CONTROL artifact_dir=$logdir"
           pids=()
           for i in $(seq 1 "$PARALLEL"); do

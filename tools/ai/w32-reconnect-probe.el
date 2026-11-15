@@ -14,9 +14,15 @@
 
 (defconst w32-probe--event-limit 128)
 (defconst w32-probe--event-length 1024)
+(defconst w32-probe--history-limit 256)
 (defvar w32-probe--events nil)
 (defvar w32-probe--event-sequence 0)
 (defvar w32-probe--event-dropped 0)
+(defvar w32-probe--history-slots (make-vector w32-probe--history-limit nil))
+(defvar w32-probe--history-next 0)
+(defvar w32-probe--history-count 0)
+(defvar w32-probe--history-sequence 0)
+(defvar w32-probe--history-dropped 0)
 (defvar w32-probe--next-id 0)
 (defvar w32-probe--pending-context nil)
 (defvar w32-probe--accepted nil)
@@ -24,6 +30,47 @@
 (defvar w32-probe--connections (make-hash-table :test #'eql))
 (defvar w32-probe--closed (make-hash-table :test #'eql))
 (defvar w32-probe--listener-profile nil)
+(defvar w32-probe--listener-arm nil)
+(defvar w32-probe--active-listener-generation 0)
+
+(defun w32-probe--record-history (line)
+  (when w32-probe--listener-profile
+    (aset w32-probe--history-slots w32-probe--history-next
+          (cons (setq w32-probe--history-sequence (1+ w32-probe--history-sequence)) line))
+    (setq w32-probe--history-next
+          (% (1+ w32-probe--history-next) w32-probe--history-limit))
+    (if (< w32-probe--history-count w32-probe--history-limit)
+        (setq w32-probe--history-count (1+ w32-probe--history-count))
+      (setq w32-probe--history-dropped (1+ w32-probe--history-dropped)))))
+
+(defun w32-probe--reset-history ()
+  (setq w32-probe--history-slots (make-vector w32-probe--history-limit nil)
+        w32-probe--history-next 0
+        w32-probe--history-count 0
+        w32-probe--history-sequence 0
+        w32-probe--history-dropped 0))
+
+(defun w32-probe--flush-history-failure (directory context reason)
+  (when w32-probe--listener-profile
+    (condition-case nil
+        (let ((file (expand-file-name
+                     (format "w32-probe-history-failure-c%s-%s.log"
+                             (plist-get context :cycle) (plist-get context :mode))
+                     directory))
+              (start (if (= w32-probe--history-count w32-probe--history-limit)
+                         w32-probe--history-next 0)))
+          (with-temp-file file
+            (insert (format "HISTORY identity=lisp-object-hash nativefd=unavailable sourcecommit=unverified arm=%s generation=%s context=%S reason=%s retained=%d overwritten=%d\n"
+                            (or w32-probe--listener-arm "?")
+                            w32-probe--active-listener-generation context reason
+                            w32-probe--history-count w32-probe--history-dropped))
+            (dotimes (offset w32-probe--history-count)
+              (let ((entry (aref w32-probe--history-slots
+                                 (% (+ start offset) w32-probe--history-limit))))
+                (when entry (insert (format "history-seq=%d %s\n"
+                                            (car entry) (cdr entry)))))))
+          file)
+      (error nil))))
 
 (defun w32-probe--endpoint-key (endpoint)
   (format "%S" endpoint))
@@ -36,14 +83,27 @@
          (local (or (plist-get contact :local) (plist-get contact :service) "?"))
          (remote (or (plist-get contact :remote) "?"))
          (status (if (processp process) (process-status process) 'none))
+         (sequence (setq w32-probe--event-sequence (1+ w32-probe--event-sequence)))
          (line (format "seq=%d time=%.6f cycle=%s mode=%s conn=%s event=%s local=%S remote=%S status=%s detail=%S"
-                       (setq w32-probe--event-sequence (1+ w32-probe--event-sequence))
-                       (float-time) (or (plist-get context :cycle) "?")
+                       sequence (float-time) (or (plist-get context :cycle) "?")
                        (or (plist-get context :mode) "?") (or id "-") event
                        local remote status detail)))
     (setq line (if (> (length line) w32-probe--event-length)
                    (concat (substring line 0 (- w32-probe--event-length 3)) "...")
                  line))
+    (when w32-probe--listener-profile
+      (w32-probe--record-history
+       (let ((history-line
+              (format "arm=%s generation=%s lisp-object-hash=%s %s"
+                      (or w32-probe--listener-arm "-")
+                      (or (and (processp process)
+                               (process-get process 'w32-probe-generation))
+                          (plist-get context :listener-generation)
+                          w32-probe--active-listener-generation "?")
+                      (if (processp process) (sxhash-eq process) "-") line)))
+         (if (> (length history-line) w32-probe--event-length)
+             (concat (substring history-line 0 (- w32-probe--event-length 3)) "...")
+           history-line))))
     (if (< (length w32-probe--events) w32-probe--event-limit)
         (setq w32-probe--events (append w32-probe--events (list line)))
       (setq w32-probe--events (append (cdr w32-probe--events) (list line))
@@ -60,6 +120,7 @@
       (insert (format "FAIL context=%S reason=%s retained=%d dropped=%d\n"
                       context reason (length w32-probe--events) w32-probe--event-dropped))
       (dolist (event w32-probe--events) (insert event "\n")))
+    (w32-probe--flush-history-failure directory context reason)
     file))
 
 (defun w32-probe--link-client (client)
@@ -415,6 +476,8 @@
                (listener-arm (getenv "W32_PROBE_LISTENER_ARM"))
                (w32-probe--listener-profile
                 (equal mode-set "listener-lifetime-pair"))
+               (w32-probe--listener-arm listener-arm)
+               (w32-probe--active-listener-generation 0)
                (counts (make-hash-table :test #'eq))
                (failures 0)
                (w32-probe--clients-by-local (make-hash-table :test #'equal))
@@ -426,6 +489,7 @@
                (default-directory (expand-file-name directory))
                (modes '(same-name-immediate unique-name-immediate
                         same-name-after-server-close)))
+    (w32-probe--reset-history)
     (unless (member event-pump '("client" "all"))
       (error "W32_PROBE_EVENT_PUMP must be client or all, got %S" event-pump))
     (unless (member eof-control '("true" "false"))
@@ -517,7 +581,8 @@
                             (w32-probe--bump counts mode :listener-same-object-after)))
                         (when delete-for-next
                           (setq server (w32-probe--make-listener cycle)
-                                port (plist-get (process-contact server t) :service))
+                                port (plist-get (process-contact server t) :service)
+                                w32-probe--active-listener-generation cycle)
                           (unless port (error "replacement listener did not report an ephemeral port"))
                           (w32-probe--bump counts mode :listener-created)
                           (unless (eq old-server server)

@@ -1,6 +1,6 @@
 #+TITLE: NeLisp service Windows flake investigation
 #+NOTE: A generated-command replay criterion was added after Windows traces proved recovery reused a deleted bootstrap. The denominator is nine; this is additional acceptance scope, not a passing Windows claim.
-#+NOTE: Terminal-delete run 43705609759 completed both arms 1200/1200 with zero failures; deletion alone remains unsupported/inconclusive. This branch next isolates listener lifetime in separate fresh processes per arm, without adding refused-port probes. Production bootstrap replay is committed separately at edaf2a71d and final transport acceptance remains failing.
+#+NOTE: Terminal-delete run 43705609759 completed both arms 1200/1200 with zero failures; deletion alone remains unsupported/inconclusive. Listener-lifetime run 43708773060 completed reference1200/1200 and churn1195/1196 attempted, with one welcome/closed failure and four unrun. Its ten-event trace excludes the preceding listener replacement. This branch adds bounded cross-cycle failure history and binary provenance facts without changing waits or cleanup. The source audit identifies a possible stale-reader ordering, not observed causality. Production bootstrap replay remains separate at edaf2a71d; final transport acceptance remains failing, and no criteria were added.
 
 * S1 Diagnosis
 
@@ -14,6 +14,8 @@ evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e
 #+NOTE: Baseline run 43683628349 failed 11/200, all new-client version rejection; fixed full 43685867603 failed 13/200, focused serial 43685870416 failed 1/100. Failures remain under investigation.
 evidence: target/service-flake/windows-baseline-43683628349.log sha256=4b7765b33fd79d6c7508a2a5db7e4e5fa8f3705b400067837d4ec19d099294cb
 evidence: target/service-flake/windows-terminal-delete-43705609759/verification.json sha256=19e7a6e1eb182eec6db8b1e427c8199cbfb25b88e90bd153862828a853f28f3e
+evidence: target/service-flake/windows-listener-lifetime-43708773060/verification.json sha256=63355b9cd305722c5453b3f184132c14aed90dcf7ac4902ff8fdfe57e545e779
+evidence: target/service-flake/native-lifecycle-audit.md sha256=751da72a0a83a881a5add867fc4e176204a01b6fc12b25bc421bce9f497b791c
 
 * S2 Fix and regression
 
