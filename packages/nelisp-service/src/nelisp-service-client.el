@@ -55,6 +55,8 @@ A daemon only lets a client newer than itself replace it.")
 
 (defun nelisp-service-client--on-input (client chunk)
   "Handle CHUNK received by CLIENT."
+  (nelisp-service--trace "C" "input name=%s bytes=%d"
+                         (nelisp-service-get client :name) (length chunk))
   (dolist (message (nelisp-service-reader-feed
                     (nelisp-service-get client :reader) chunk))
     (progn
@@ -62,6 +64,7 @@ A daemon only lets a client newer than itself replace it.")
         (let ((kind (car message))
               (a (nth 1 message))
               (b (nth 2 message)))
+          (nelisp-service--trace "C" "message kind=%s" kind)
           (cond
            ((eq kind 'welcome) (nelisp-service-put client :welcome t))
            ((eq kind 'reject) (nelisp-service-put client :rejected a))
@@ -75,6 +78,9 @@ A daemon only lets a client newer than itself replace it.")
 
 (defun nelisp-service-client--on-close (client proc)
   "Fail CLIENT's outstanding requests once PROC has closed."
+  (nelisp-service--trace "C" "sentinel proc=%s status=%s closed-now=%s"
+                         (process-name proc) (process-status proc)
+                         (not (memq (process-status proc) '(open run))))
   (unless (memq (process-status proc) '(open run))
     (nelisp-service-put client :closed t)
     (let ((pending (nelisp-service-get client :pending))
@@ -94,7 +100,7 @@ rejection, or nil when nothing answers."
                  :reader (nelisp-service-reader-create)
                  :pending (make-hash-table :test 'eql)
                  :next-id 0 :welcome nil :rejected nil :closed nil)))
-    (condition-case nil
+    (condition-case err
         (let ((proc (apply
                      #'make-network-process
                      :name (format "nelisp-service-client-%s" name)
@@ -102,19 +108,31 @@ rejection, or nil when nothing answers."
                      :family 'ipv4 :noquery t
                      :filter (lambda (_p chunk)
                                (nelisp-service-client--on-input client chunk))
-                     :sentinel (lambda (p _event)
+                     :sentinel (lambda (p event)
+                                 (nelisp-service--trace
+                                  "C" "sentinel event=%S" event)
                                  (nelisp-service-client--on-close client p))
                      (nelisp-service-network-coding-args))))
           (nelisp-service-put client :process proc)
+          (nelisp-service--trace "C" "open connected proc=%s port=%s status=%s"
+                                 (process-name proc) (plist-get state :port)
+                                 (process-status proc))
           (process-send-string
            proc (nelisp-service-encode
                  (list 'hello (plist-get state :token) version
                        nelisp-service-client--started)))
+          (nelisp-service--trace "C" "open hello sent version=%S status=%s"
+                                 version (process-status proc))
           (nelisp-service-wait-until
            (lambda () (or (nelisp-service-get client :welcome)
                           (nelisp-service-get client :rejected)
                           (nelisp-service-get client :closed)))
            nelisp-service-client-hello-timeout)
+          (nelisp-service--trace
+           "C" "open wait done welcome=%s rejected=%s closed=%s status=%s"
+           (nelisp-service-get client :welcome)
+           (nelisp-service-get client :rejected)
+           (nelisp-service-get client :closed) (process-status proc))
           ;; The close can be observed before the reply that preceded it
           ;; has been filtered; drain before giving up.
           (let ((tries 0))
@@ -124,12 +142,25 @@ rejection, or nil when nothing answers."
                         (< tries 3))
               (setq tries (1+ tries))
               (condition-case nil (accept-process-output nil 0.1)
-                (error nil))))
-          (cond
-           ((nelisp-service-get client :welcome) client)
-           (t (condition-case nil (delete-process proc) (error nil))
-              (or (nelisp-service-get client :rejected) nil))))
-      (error nil))))
+                (error nil))
+              (nelisp-service--trace
+               "C" "open drain pass=%d welcome=%s rejected=%s" tries
+               (nelisp-service-get client :welcome)
+               (nelisp-service-get client :rejected))))
+          (let ((result (cond
+                         ((nelisp-service-get client :welcome) client)
+                         (t (nelisp-service--trace
+                             "C" "open giving up: delete-process proc=%s"
+                             (process-name proc))
+                            (condition-case nil (delete-process proc)
+                              (error nil))
+                            (or (nelisp-service-get client :rejected) nil)))))
+            (nelisp-service--trace "C" "open result=%s"
+                                   (if (eq result client) 'client result))
+            result))
+      (error (nelisp-service--trace "C" "open ERROR: %s"
+                                    (error-message-string err))
+             nil))))
 
 (defun nelisp-service-client--lock-age (name)
   "Return the age in seconds of NAME's lock file, or nil without one."
@@ -156,9 +187,18 @@ Signal an error when no daemon can be reached in time."
       (let ((state (nelisp-service-read-plist
                     (nelisp-service-state-file name "state")))
             (age (nelisp-service-client--lock-age name)))
+        (nelisp-service--trace
+         "C" "connect iter name=%s state-port=%s token=%s pid=%s lock-age=%s left=%.1fs"
+         name (plist-get state :port)
+         (and state (if (plist-get state :token) 'present 'none))
+         (plist-get state :pid) age (- deadline (float-time)))
         (cond
          (state
           (let ((result (nelisp-service-client--open name state version)))
+            (nelisp-service--trace "C" "connect open -> %s"
+                                   (cond ((null result) 'nil)
+                                         ((symbolp result) result)
+                                         (t 'client)))
             (cond
              ((and result (not (symbolp result)))
               ;; Remember how to reconnect (see `nelisp-service-client-request').
@@ -178,6 +218,7 @@ Signal an error when no daemon can be reached in time."
               (accept-process-output nil 0.25))
              ((or (null age) (> age stale-after))
               ;; Nothing answers and no live lock: leftovers of a crash.
+              (nelisp-service--trace "C" "connect: stale state, clearing")
               (nelisp-service-delete-file (nelisp-service-state-file name "state"))
               (nelisp-service-delete-file (nelisp-service-state-file name "lock")))
              (t (accept-process-output nil 0.25)))))
@@ -186,11 +227,14 @@ Signal an error when no daemon can be reached in time."
          (age (accept-process-output nil 0.25))
          ((and command (or (null spawned-at)
                            (> (- (float-time) spawned-at) stale-after)))
+          (nelisp-service--trace "C" "connect: autostart spawn command=%S" command)
           (funcall nelisp-service-client-spawn-function name command)
           (setq spawned-at (float-time)))
          ((null command)
           (error "nelisp-service: daemon %s is not running" name))
          (t (accept-process-output nil 0.25)))))
+    (nelisp-service--trace "C" "connect done name=%s client=%s" name
+                           (and client 'yes))
     (or client
         (error "nelisp-service: could not reach daemon %s" name))))
 
@@ -217,9 +261,17 @@ Return the request id."
   (let ((id (nelisp-service-incf client :next-id)))
     (puthash id callback (nelisp-service-get client :pending))
     (condition-case err
-        (process-send-string (nelisp-service-get client :process)
-                             (nelisp-service-encode (list 'req id payload)))
+        (let ((wire (nelisp-service-encode (list 'req id payload)))
+              (proc (nelisp-service-get client :process)))
+          (nelisp-service--trace "C" "send id=%s bytes=%d status=%s closed=%s"
+                                 id (length wire) (process-status proc)
+                                 (nelisp-service-get client :closed))
+          (process-send-string proc wire)
+          (nelisp-service--trace "C" "send id=%s ok status=%s" id
+                                 (process-status proc)))
       (error
+       (nelisp-service--trace "C" "send id=%s FAILED: %s" id
+                              (error-message-string err))
        (remhash id (nelisp-service-get client :pending))
        (funcall callback 'disconnected
                 (format "send failed: %s" (error-message-string err)))))
@@ -233,8 +285,11 @@ Signal an error after TIMEOUT seconds (default 600)."
                                 (lambda (status value)
                                   (setq result (cons status value))))
     (unless (nelisp-service-wait-until (lambda () result) (or timeout 600) 0.01)
+      (nelisp-service--trace "C" "request TIMEOUT name=%s"
+                             (nelisp-service-get client :name))
       (error "nelisp-service: request to %s timed out"
              (nelisp-service-get client :name)))
+    (nelisp-service--trace "C" "request result status=%s" (car result))
     result))
 
 (defun nelisp-service-client--reconnect (client)
@@ -243,11 +298,17 @@ The new connection uses the arguments CLIENT was connected with, so
 autostart rules are unchanged.  CLIENT is closed and forwards to the
 new connection from then on."
   (let ((args (nelisp-service-get client :connect-args)))
+    (nelisp-service--trace "C" "reconnect begin has-args=%s"
+                           (and (plist-member (cdr client) :connect-args) t))
     (when (plist-member (cdr client) :connect-args)
-      (let ((fresh (condition-case nil
+      (let ((fresh (condition-case err
                        (apply #'nelisp-service-client-connect
                               (nelisp-service-get client :name) args)
-                     (error nil))))
+                     (error (nelisp-service--trace
+                             "C" "reconnect connect ERROR: %s"
+                             (error-message-string err))
+                            nil))))
+        (nelisp-service--trace "C" "reconnect result=%s" (and fresh 'client))
         (when fresh
           (nelisp-service-client-close client)
           (nelisp-service-put client :successor fresh))
@@ -264,6 +325,8 @@ the daemon may already have run the request."
          (result (nelisp-service-client--request-once client payload timeout)))
     (when (and (eq (car result) 'disconnected)
                (string-prefix-p "send failed" (cdr result)))
+      (nelisp-service--trace "C" "request: send failed, reconnecting once (%s)"
+                             (cdr result))
       (let ((fresh (nelisp-service-client--reconnect client)))
         (when fresh
           (setq result (nelisp-service-client--request-once
@@ -294,6 +357,9 @@ the daemon may already have run the request."
 (defun nelisp-service-client-close (client)
   "Close CLIENT's connection, or that of the client that replaced it."
   (setq client (nelisp-service-client--current client))
+  (nelisp-service--trace "C" "client-close name=%s status=%s"
+                         (nelisp-service-get client :name)
+                         (process-status (nelisp-service-get client :process)))
   (condition-case nil (delete-process (nelisp-service-get client :process))
     (error nil))
   (nelisp-service-put client :closed t))

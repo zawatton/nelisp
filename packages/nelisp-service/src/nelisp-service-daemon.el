@@ -144,9 +144,10 @@ Call `nelisp-service-daemon-run' to serve."
     (while (and (not server) (< attempt 40))
       (let ((port (nelisp-service-daemon--candidate-port
                    (nelisp-service-get daemon :name) attempt)))
-        (unless (nelisp-service-daemon--port-in-use-p port)
+        (if (nelisp-service-daemon--port-in-use-p port)
+            (nelisp-service--trace "D" "listen skip port=%s (in use)" port)
           (setq server
-                (condition-case nil
+                (condition-case err
                     (apply
                      #'make-network-process
                      :name (format "nelisp-service-%s"
@@ -155,11 +156,17 @@ Call `nelisp-service-daemon-run' to serve."
                      :noquery t
                      :filter (lambda (conn chunk)
                                (nelisp-service-daemon--on-input daemon conn chunk))
-                     :sentinel (lambda (conn _event)
-                                 (nelisp-service-daemon--on-change daemon conn))
+                     :sentinel (lambda (conn event)
+                                 (nelisp-service-daemon--on-change
+                                  daemon conn event))
                      (nelisp-service-network-coding-args))
-                  (error nil)))
-          (when server (nelisp-service-put daemon :port port))))
+                  (error (nelisp-service--trace
+                          "D" "listen port=%s failed: %s" port
+                          (error-message-string err))
+                         nil)))
+          (when server
+            (nelisp-service--trace "D" "listen port=%s attempt=%d" port attempt)
+            (nelisp-service-put daemon :port port))))
       (setq attempt (1+ attempt)))
     (unless server
       (error "nelisp-service-daemon: no free port for %s"
@@ -174,6 +181,10 @@ Call `nelisp-service-daemon-run' to serve."
       (let ((record (list conn
                           :reader (nelisp-service-reader-create)
                           :authenticated nil)))
+        (nelisp-service--trace "D" "accept conn=%s peer-port=%s status=%s"
+                               (process-name conn)
+                               (process-contact conn :service)
+                               (process-status conn))
         (nelisp-service-put daemon :connections
                             (cons record (nelisp-service-get daemon :connections)))
         record)))
@@ -188,12 +199,23 @@ Call `nelisp-service-daemon-run' to serve."
 
 (defun nelisp-service-daemon--send (conn object)
   "Send OBJECT to CONN, ignoring a connection that has gone away."
-  (condition-case nil
-      (process-send-string conn (nelisp-service-encode object))
-    (error nil)))
+  (condition-case err
+      (progn
+        (process-send-string conn (nelisp-service-encode object))
+        (nelisp-service--trace "D" "reply conn=%s kind=%s status=%s"
+                               (process-name conn)
+                               (if (consp object) (car object) object)
+                               (process-status conn)))
+    (error (nelisp-service--trace "D" "reply FAILED conn=%s kind=%s: %s"
+                                  (process-name conn)
+                                  (if (consp object) (car object) object)
+                                  (error-message-string err))
+           nil)))
 
-(defun nelisp-service-daemon--on-change (daemon conn)
-  "Track the end of connection CONN of DAEMON."
+(defun nelisp-service-daemon--on-change (daemon conn &optional event)
+  "Track the end of connection CONN of DAEMON; EVENT is the sentinel string."
+  (nelisp-service--trace "D" "sentinel conn=%s event=%S status=%s"
+                         (process-name conn) event (process-status conn))
   (unless (or (eq conn (nelisp-service-get daemon :server))
               (memq (process-status conn) '(open run listen)))
     (nelisp-service-daemon--forget daemon conn)
@@ -202,6 +224,9 @@ Call `nelisp-service-daemon-run' to serve."
 (defun nelisp-service-daemon--on-input (daemon conn chunk)
   "Handle CHUNK received by DAEMON on connection CONN."
   (let ((record (nelisp-service-daemon--connection daemon conn)))
+    (nelisp-service--trace "D" "input conn=%s bytes=%d closing=%s"
+                           (process-name conn) (length chunk)
+                           (plist-get (cdr record) :closing))
     (nelisp-service-put daemon :last-activity (float-time))
     (unless (plist-get (cdr record) :closing)
       (dolist (message (nelisp-service-reader-feed
@@ -215,6 +240,9 @@ Call `nelisp-service-daemon-run' to serve."
   "Refuse CONN for REASON and close it after a short linger.
 Closing at once can let the client see the close before the reply."
   (nelisp-service-incf daemon :rejected)
+  (nelisp-service--trace "D" "reject conn=%s reason=%s (close in %ss)"
+                         (process-name conn) reason
+                         nelisp-service-daemon-reject-linger)
   (nelisp-service-daemon--send
    conn (list 'reject reason (nelisp-service-get daemon :version)))
   (let ((record (nelisp-service-daemon--connection daemon conn)))
@@ -222,11 +250,17 @@ Closing at once can let the client see the close before the reply."
       (setcdr record (plist-put (cdr record) :closing t))
       (run-at-time nelisp-service-daemon-reject-linger nil
                    (lambda ()
+                     (nelisp-service--trace
+                      "D" "close conn=%s reason=reject-linger-timer:%s status=%s"
+                      (process-name conn) reason (process-status conn))
                      (condition-case nil (delete-process conn) (error nil))
                      (nelisp-service-daemon--forget daemon conn))))))
 
 (defun nelisp-service-daemon--on-message (daemon conn record message)
   "Act on MESSAGE from CONN, whose connection RECORD DAEMON keeps."
+  (nelisp-service--trace "D" "message conn=%s type=%s"
+                         (process-name conn)
+                         (if (consp message) (car message) 'non-cons))
   (cond
    ((not (consp message)) nil)
    ((eq (car message) 'hello)
@@ -247,6 +281,7 @@ Closing at once can let the client see the close before the reply."
         (nelisp-service-daemon-stop daemon)))
      (t
       (setcdr record (plist-put (cdr record) :authenticated t))
+      (nelisp-service--trace "D" "hello accepted conn=%s" (process-name conn))
       (nelisp-service-daemon--send
        conn (list 'welcome (nelisp-service-get daemon :version))))))
    ((not (plist-get (cdr record) :authenticated))
@@ -263,6 +298,8 @@ Closing at once can let the client see the close before the reply."
                        (setq answered t)
                        (nelisp-service-daemon--send conn (list 'res id payload)))))
         (error
+         (nelisp-service--trace "D" "handler error conn=%s: %s"
+                                (process-name conn) (error-message-string err))
          (unless answered
            (setq answered t)
            (nelisp-service-daemon--send
@@ -287,6 +324,8 @@ Closing at once can let the client see the close before the reply."
 
 (defun nelisp-service-daemon-stop (daemon)
   "Make `nelisp-service-daemon-run' return after the current event."
+  (nelisp-service--trace "D" "stop requested name=%s"
+                         (nelisp-service-get daemon :name))
   (nelisp-service-put daemon :stopped t))
 
 (defun nelisp-service-daemon--idle-p (daemon)
@@ -321,6 +360,8 @@ the reason: `stopped', `idle' or `superseded'."
                (or (nelisp-service-get daemon :connections)
                    (nelisp-service-daemon--owns-state-p daemon))))
        (t (setq reason 'superseded))))
+    (nelisp-service--trace "D" "run exit reason=%s connections=%d" reason
+                           (length (nelisp-service-get daemon :connections)))
     ;; Let replies queued by the last handler reach their clients.
     (accept-process-output nil 0.05)
     (nelisp-service-daemon-close daemon)
@@ -337,8 +378,12 @@ when it names DAEMON, the lock only when it predates DAEMON's start."
     (when (nelisp-service-daemon--owns-state-p daemon)
       (nelisp-service-delete-file (nelisp-service-state-file name "state")))
     (dolist (c (nelisp-service-get daemon :connections))
+      (nelisp-service--trace "D" "close conn=%s reason=daemon-close status=%s"
+                             (process-name (car c)) (process-status (car c)))
       (condition-case nil (delete-process (car c)) (error nil)))
     (nelisp-service-put daemon :connections nil)
+    (nelisp-service--trace "D" "close server reason=daemon-close name=%s"
+                           (nelisp-service-get daemon :name))
     (condition-case nil (delete-process (nelisp-service-get daemon :server))
       (error nil))
     (when own-lock

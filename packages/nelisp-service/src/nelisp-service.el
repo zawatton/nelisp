@@ -466,17 +466,39 @@ file is written next to the state files."
 
 ;;; Event loop helper -----------------------------------------------------
 
+;;; Diagnostics -----------------------------------------------------------
+
+(defvar create-lockfiles)
+
+(defun nelisp-service--trace (tag fmt &rest args)
+  "Append a timestamped diagnostic line when NELISP_SERVICE_TRACE names a file.
+TAG is a short origin label (\"D\" daemon, \"C\" client, \"S\" shared).  The
+line is FLOAT-TIME, TAG, the process id and the formatted message.  Do
+nothing when the variable is unset or empty."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0))
+      ;; Several processes append to one file; a lock file would make the
+      ;; second writer fail with a lock conflict.
+      (let ((create-lockfiles nil))
+        (write-region (format "%.3f %s %s %s\n" (float-time) tag (emacs-pid)
+                              (replace-regexp-in-string
+                               "\n" "\\n" (apply #'format fmt args) t t))
+                      nil file t 'silent)))))
+
 (defun nelisp-service-port-in-use-p (port)
   "Return non-nil when something accepts connections on loopback PORT.
 A daemon busy in a long handler still accepts at the socket level, so
 this tells a busy daemon from a dead one."
-  (condition-case nil
+  (condition-case err
       (let ((probe (make-network-process
                     :name "nelisp-service-port-probe" :host "127.0.0.1"
                     :service port :family 'ipv4 :noquery t)))
         (delete-process probe)
+        (nelisp-service--trace "S" "probe port=%s in-use=t" port)
         t)
-    (error nil)))
+    (error (nelisp-service--trace "S" "probe port=%s in-use=nil err=%s"
+                                  port (error-message-string err))
+           nil)))
 
 (defun nelisp-service-wait (seconds)
   "Service process I/O for up to SECONDS.

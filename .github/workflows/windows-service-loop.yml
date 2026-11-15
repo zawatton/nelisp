@@ -62,6 +62,8 @@ jobs:
           run_one() {
             i=$1
             # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
+            # Per-iteration diagnostics, see nelisp-service--trace.
+            export NELISP_SERVICE_TRACE="$logdir/trace-$i.txt"
             # shellcheck disable=SC2086
             if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
                  -L scripts -L tools --eval '(setq load-prefer-newer t)' -l ert \
@@ -94,6 +96,12 @@ jobs:
             echo "::group::FAILED ${log##*/}"
             cat "$log"
             echo "::endgroup::"
+            trace="$logdir/trace-${log##*iter-}"; trace="${trace%.log}.txt"
+            if [ -f "$trace" ]; then
+              echo "::group::TRACE ${trace##*/} ($(wc -l <"$trace") lines, last 200)"
+              tail -n 200 "$trace"
+              echo "::endgroup::"
+            fi
           done
           echo "LOOP total=$total failed=$failed"
           [ "$failed" -eq 0 ]

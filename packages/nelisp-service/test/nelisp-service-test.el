@@ -26,6 +26,29 @@
      (unwind-protect (progn ,@body)
        (delete-directory dir t))))
 
+;;; Trace tail on failure
+
+(defun nelisp-service-test--trace-tail (&optional lines)
+  "Return the last LINES (default 80) of the NELISP_SERVICE_TRACE file, or nil."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0) (file-readable-p file))
+      (with-temp-buffer
+        (insert-file-contents file)
+        (goto-char (point-max))
+        (forward-line (- (or lines 80)))
+        (buffer-substring (point) (point-max))))))
+
+(defmacro nelisp-service-test--with-trace-tail (&rest body)
+  "Run BODY; when it signals, print the trace tail and re-signal.
+Does nothing extra unless NELISP_SERVICE_TRACE is set."
+  (declare (indent 0))
+  `(condition-case err
+       (progn ,@body)
+     (t (let ((tail (nelisp-service-test--trace-tail 80)))
+          (when tail
+            (message "--- NELISP_SERVICE_TRACE tail ---\n%s--- end trace ---" tail)))
+        (signal (car err) (cdr err)))))
+
 ;;; Framing and files
 
 (ert-deftest nelisp-service-test-encode-is-one-line ()
@@ -205,7 +228,8 @@
   (funcall reply (if (stringp payload) (concat "echo:" payload) payload)))
 
 (ert-deftest nelisp-service-test-daemon-round-trip-and-sharing ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
                    "t1" :handler #'nelisp-service-test--echo :version "v1")))
       (unwind-protect
@@ -216,7 +240,7 @@
             (should (= 2 (plist-get (nelisp-service-client-ping b) :connections)))
             (nelisp-service-client-close a)
             (nelisp-service-client-close b))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-daemon-single-instance ()
   (nelisp-service-test--with-state-dir
@@ -237,7 +261,8 @@
         (nelisp-service-daemon-close daemon)))))
 
 (ert-deftest nelisp-service-test-daemon-version-mismatch-stops-daemon ()
-  (nelisp-service-test--with-state-dir
+  (nelisp-service-test--with-trace-tail
+   (nelisp-service-test--with-state-dir
     (let ((daemon (nelisp-service-daemon-start
                    "t4" :handler #'ignore :version "old")))
       (unwind-protect
@@ -255,7 +280,7 @@
               (should (eq 'version
                           (nelisp-service-client--open "t4" state "new"))))
             (should (nelisp-service-get daemon :stopped)))
-        (nelisp-service-daemon-close daemon)))))
+        (nelisp-service-daemon-close daemon))))))
 
 (ert-deftest nelisp-service-test-open-drains-reply-seen-after-close ()
   "A rejection whose close is observed first is still reported."
