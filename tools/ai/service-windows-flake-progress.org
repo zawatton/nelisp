@@ -9,7 +9,8 @@ evidence: target/service-flake/prior-trace.log sha256=a1294a75fa92d0ed85d50ca65a
 evidence: target/service-flake/red-final.log sha256=8be70cb40e1d983f114a4aff537e0a534dc3b571c62ab3f74cd87793932e6ed6
 
 ** S1.3 New untraced Windows baseline is collected and classified
-pending
+#+NOTE: Run 43683628349 on main completed 200 full-suite iterations at parallel=4 with 11 failures, all new-client version rejection returning nil. This is failure evidence, not a passing baseline.
+evidence: target/service-flake/windows-baseline-43683628349.log sha256=4b7765b33fd79d6c7508a2a5db7e4e5fa8f3705b400067837d4ec19d099294cb
 
 * S2 Fix and regression
 
@@ -24,5 +25,13 @@ evidence: target/service-flake/full-before.log sha256=d832a4b9b98948c80cbb62f792
 evidence: target/service-flake/focused-after.log sha256=96a30005d71d7ad3ba0a3e19f0614ce8239bf1286fe67fca2597fbcad9e41d06
 evidence: target/service-flake/zero-selection.log sha256=b8c193c4c80fd4edabce539d06230efc90829f0b68a53a25ffa397bf96bf38f9
 
-** S2.3 Windows loop repeats end-to-end with the fix
-pending
+** S2.3 Untraced full and serial Windows loops pass on the final fix
+#+NOTE: Fixed c70dd6cf serial run 43685870416 failed 1/100 at the older-client assertion (actual return value unknown). Full run 43685867603 failed 13/200 iterations: 15 failed tests across daemon reachability and new-client version rejection. No failure-rate comparison conclusion is established.
+#+NOTE: This branch adds diagnostic-only bounded in-memory tracing, six failure wrappers and workflow artifact preservation. Local 40-test tracing-off/on suites passed; independent Sol review approved a diagnostic Windows launch after fixing connection-argument exposure. These checks do not satisfy the untraced Windows criterion. Autostart child traces remain in child RAM; same-process t1/t4 traces capture both sides.
+#+NOTE: Independent Sol rerun recorded 40/40 pass both off and on; success created no trace file. The worker's unrecoverable benchmark claim was retracted; suite timings are not an overhead benchmark.
+evidence: target/service-flake/independent-trace-off.log sha256=983de2d35f35701b247dc66daca043412cb7d90e71057d0a451eef9f2ca9d92d
+evidence: target/service-flake/independent-trace-on.log sha256=aa602a5b482e94fd2f185f2172adf6a90b78f9b7dcce332c0cbd02334ed697cd
+evidence: target/service-flake/preflight.log sha256=f769ca39dc374c2c8328c341d221a7627c7385235fcd07c2f69883d6680c192f
+evidence: target/service-flake/windows-fixed-serial-43685870416.log sha256=2a3cb4055437dcc65a091c069fd1e4661193b957957a8b1b3663db16f82158c0
+evidence: target/service-flake/windows-fixed-full-43685867603.log sha256=a8219e4f67133f9f9e783fe66664ebd07c0b12ee025f018ffb273f6534bfe4a6
+cmd: python3 -c 'import json; rows = [json.load(open("target/service-flake/windows-fixed-" + kind + "-current.json")) for kind in ("serial", "full")]; assert all(r["conclusion"] == "success" for r in rows); assert len({r["headSha"] for r in rows}) == 1'

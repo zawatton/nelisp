@@ -63,8 +63,19 @@ jobs:
           done
           export logdir loads
           echo "bash=$BASH timeout=$(command -v timeout) emacs=$(command -v emacs)"
+          if ! NELISP_SERVICE_TRACE="$logdir/preflight-trace.txt" \
+               /usr/bin/timeout 30 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
+                 -L scripts -L tools --eval '(setq load-prefer-newer t)' \
+                 -l packages/nelisp-service/src/nelisp-service.el \
+                 --eval '(progn (nelisp-service--trace "P" "preflight-marker") (unless (= 1 (nelisp-service--trace-flush)) (error "Trace preflight flush count mismatch")) (let ((contents (with-temp-buffer (insert-file-contents (getenv "NELISP_SERVICE_TRACE")) (buffer-string)))) (unless (string-match-p "preflight-marker" contents) (error "Trace preflight marker missing"))) (delete-file (getenv "NELISP_SERVICE_TRACE")) (princ "TRACE_PREFLIGHT PASS\n"))' \
+                 </dev/null; then
+            echo "TRACE_PREFLIGHT FAIL"
+            exit 1
+          fi
           run_one() {
             i=$1
+            # Each batch process gets its own flush target on failure.
+            export NELISP_SERVICE_TRACE="$logdir/trace-$i.txt"
             # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
             # shellcheck disable=SC2086
             if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
@@ -101,3 +112,11 @@ jobs:
           done
           echo "LOOP total=$total failed=$failed"
           [ "$failed" -eq 0 ]
+
+      - name: Upload service loop diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-loop-diagnostics
+          path: ${{ runner.temp }}/service-loop/**
+          if-no-files-found: warn

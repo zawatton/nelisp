@@ -466,6 +466,68 @@ file is written next to the state files."
 
 ;;; Event loop helper -----------------------------------------------------
 
+;;; Diagnostics -----------------------------------------------------------
+
+(defconst nelisp-service--trace-capacity 512)
+(defconst nelisp-service--trace-event-max-length 2048)
+(defvar nelisp-service--trace-ring (make-vector nelisp-service--trace-capacity nil))
+(defvar nelisp-service--trace-next 0)
+(defvar nelisp-service--trace-count 0)
+(defvar nelisp-service--trace-dropped 0)
+
+(defun nelisp-service--trace-reset ()
+  "Clear the in-memory diagnostic event ring."
+  (setq nelisp-service--trace-ring
+        (make-vector nelisp-service--trace-capacity nil)
+        nelisp-service--trace-next 0
+        nelisp-service--trace-count 0
+        nelisp-service--trace-dropped 0))
+
+(defun nelisp-service--trace (tag fmt &rest args)
+  "Buffer one timestamped event when NELISP_SERVICE_TRACE names a file.
+TAG is a short origin label and FMT and ARGS form the event text.  Events
+stay in a bounded ring until `nelisp-service--trace-flush' is called."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0))
+      (let* ((text (replace-regexp-in-string
+                    "\n" "\\n" (apply #'format fmt args) t t))
+             (text (if (> (length text) nelisp-service--trace-event-max-length)
+                       (concat (substring text 0 (- nelisp-service--trace-event-max-length 3))
+                               "...")
+                     text))
+             (line (format "%.3f %s %s %s\n" (float-time) tag (emacs-pid) text)))
+        (aset nelisp-service--trace-ring nelisp-service--trace-next line)
+        (setq nelisp-service--trace-next
+              (mod (1+ nelisp-service--trace-next) nelisp-service--trace-capacity))
+        (if (< nelisp-service--trace-count nelisp-service--trace-capacity)
+            (setq nelisp-service--trace-count (1+ nelisp-service--trace-count))
+          (setq nelisp-service--trace-dropped (1+ nelisp-service--trace-dropped)))))))
+
+(defun nelisp-service--trace-events ()
+  "Return retained trace events in chronological order."
+  (let ((start (mod (- nelisp-service--trace-next nelisp-service--trace-count)
+                    nelisp-service--trace-capacity))
+        (events nil))
+    (dotimes (offset nelisp-service--trace-count)
+      (push (aref nelisp-service--trace-ring
+                  (mod (+ start offset) nelisp-service--trace-capacity))
+            events))
+    (nreverse events)))
+
+(defun nelisp-service--trace-flush ()
+  "Append the retained trace tail and drop count to the configured trace file.
+Return the number of written events, or nil when tracing has no destination."
+  (let ((file (getenv "NELISP_SERVICE_TRACE")))
+    (when (and file (> (length file) 0))
+      (let ((events (nelisp-service--trace-events))
+            (create-lockfiles nil))
+        (write-region
+         (concat (format "TRACE retained=%d dropped=%d\n"
+                         nelisp-service--trace-count nelisp-service--trace-dropped)
+                 (mapconcat #'identity events ""))
+         nil file t 'silent)
+        (length events)))))
+
 (defun nelisp-service-port-in-use-p (port)
   "Return non-nil when something accepts connections on loopback PORT.
 A daemon busy in a long handler still accepts at the socket level, so
