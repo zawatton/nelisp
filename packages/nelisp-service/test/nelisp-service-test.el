@@ -18,6 +18,58 @@
 (require 'nelisp-service-daemon)
 (require 'nelisp-service-client)
 
+(defvar nelisp-service--retirement-metrics-fixture nil)
+(defvar nelisp-service--retirement-metrics-active
+  (equal (getenv "NELISP_SERVICE_RETIREMENT_METRICS") "1"))
+(defvar nelisp-service--retirement-metrics
+  (let ((metrics (make-hash-table :test 'eq)))
+    (dolist (key '(eof forced direct max_eof_ms max_forced_ms))
+      (puthash key 0 metrics))
+    metrics))
+
+(defun nelisp-service-test--retirement-metrics-around (original &rest args)
+  "Call ORIGINAL once and record its result and elapsed time."
+  (if (or (not nelisp-service--retirement-metrics-active)
+          nelisp-service--retirement-metrics-fixture)
+      (apply original args)
+    (let ((started (float-time))
+          (result nil)
+          (failure nil))
+      (condition-case err
+          (setq result (apply original args))
+        (error (setq failure err)))
+      (let ((elapsed-ms (* 1000.0 (- (float-time) started))))
+        (when (memq result '(eof forced direct))
+          (puthash result (1+ (gethash result nelisp-service--retirement-metrics 0))
+                   nelisp-service--retirement-metrics)
+          (when (memq result '(eof forced))
+            (let ((key (if (eq result 'eof) 'max_eof_ms 'max_forced_ms)))
+              (puthash key (max elapsed-ms
+                                 (gethash key nelisp-service--retirement-metrics 0))
+                       nelisp-service--retirement-metrics)))))
+      (if failure
+          (signal (car failure) (cdr failure))
+        result))))
+
+(defun nelisp-service-test--retirement-metrics-report ()
+  "Print one aggregate line for the optional retirement diagnostic."
+  (condition-case nil
+      (message
+       "RETIREMENT_METRICS eof=%d forced=%d direct=%d max_eof_ms=%.1f max_forced_ms=%.1f"
+       (gethash 'eof nelisp-service--retirement-metrics 0)
+       (gethash 'forced nelisp-service--retirement-metrics 0)
+       (gethash 'direct nelisp-service--retirement-metrics 0)
+       (gethash 'max_eof_ms nelisp-service--retirement-metrics 0)
+       (gethash 'max_forced_ms nelisp-service--retirement-metrics 0))
+    (error nil)))
+
+(when (and nelisp-service--retirement-metrics-active
+           (fboundp 'advice-add))
+  (advice-add 'nelisp-service--retire-connection :around
+              #'nelisp-service-test--retirement-metrics-around)
+  (add-hook 'kill-emacs-hook
+            #'nelisp-service-test--retirement-metrics-report))
+
 (defmacro nelisp-service-test--with-state-dir (&rest body)
   "Run BODY with a fresh, private state directory."
   (declare (indent 0))
@@ -25,6 +77,270 @@
           (nelisp-service-state-directory dir))
      (unwind-protect (progn ,@body)
        (delete-directory dir t))))
+
+(defmacro nelisp-service-test--with-fake-network-process (&rest body)
+  "Run BODY with a deterministic fake network process named PROCESS."
+  (declare (indent 0))
+  `(let* ((process (make-symbol "fake-network-process"))
+          (nelisp-service--retirement-metrics-fixture t)
+          (status 'open)
+          (kind 'network)
+          (delete-count 0)
+          (eof-count 0)
+          (delete-observed-status nil)
+          (process-on-delete nil))
+     (cl-letf (((symbol-function 'processp)
+                (lambda (candidate) (eq candidate process)))
+               ((symbol-function 'process-type)
+                (lambda (candidate) (and (eq candidate process) kind)))
+               ((symbol-function 'process-status)
+                (lambda (candidate) (and (eq candidate process) status)))
+               ((symbol-function 'process-live-p)
+                (lambda (candidate)
+                  (and (eq candidate process) (memq status '(open run)))))
+               ((symbol-function 'process-send-eof)
+                (lambda (candidate)
+                  (when (eq candidate process)
+                    (setq eof-count (1+ eof-count)))))
+               ((symbol-function 'delete-process)
+                (lambda (candidate)
+                  (when (eq candidate process)
+                    (setq delete-count (1+ delete-count)
+                          delete-observed-status status
+                          status 'closed)
+                    (when process-on-delete (funcall process-on-delete)))))
+               ((symbol-function 'accept-process-output)
+                (lambda (&rest _args) nil)))
+       ,@body)))
+
+(ert-deftest nelisp-service-test-retirement-drains-idle-eof-before-delete ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((system-type 'windows-nt)
+          (waits 0)
+          (max-slice 0))
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (_process seconds)
+                   (setq waits (1+ waits)
+                         max-slice (max max-slice seconds)
+                         status 'closed)
+                   (should (= 1 eof-count))
+                   t)))
+        (should (eq 'eof (nelisp-service--retire-connection process)))
+        (should (= waits 1))
+        (should (= 1 eof-count))
+        (should (<= max-slice 0.05))
+        (should (= 1 delete-count))
+        (should (eq 'closed delete-observed-status))
+        (should-not (process-live-p process))))))
+
+(ert-deftest nelisp-service-test-retirement-times-out-and-deletes-process ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((now 1000.0)
+          (waits 0)
+          (max-slice 0))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (_process seconds)
+                   (setq waits (1+ waits)
+                         max-slice (max max-slice seconds)
+                         now (+ now seconds))
+                   nil)))
+        (let ((system-type 'windows-nt))
+          (should (eq 'forced
+                      (nelisp-service--retire-connection process 0.2)))
+          (should (<= 4 waits 5))
+          (should (< (abs (- now 1000.2)) 0.000001))
+          (should (<= max-slice 0.05))
+          (should (= 1 eof-count))
+          (should (= 1 delete-count))
+          (should-not (process-live-p process)))))))
+
+(ert-deftest nelisp-service-test-retirement-clamps-deadline-crossing-sample ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((clock-values '(1000.0 1000.19 1000.21 1000.21))
+          (wait-slices nil))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) (pop clock-values)))
+                ((symbol-function 'accept-process-output)
+                 (lambda (_process seconds) (push seconds wait-slices) nil)))
+        (let ((system-type 'windows-nt))
+          (should (eq 'forced
+                      (nelisp-service--retire-connection process 0.2)))
+          (should (equal '(0) (nreverse wait-slices)))
+          (should (= 1 eof-count))
+          (should (= 1 delete-count)))))))
+
+(ert-deftest nelisp-service-test-retirement-wait-error-still-deletes-process ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((system-type 'windows-nt)
+          (waits 0))
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (&rest _args)
+                   (setq waits (1+ waits))
+                   (error "simulated process wait failure"))))
+        (should (eq 'forced
+                    (nelisp-service--retire-connection process 0.2)))
+        (should (= 1 waits))
+        (should (= 1 eof-count))
+        (should (= 1 delete-count))
+        (should-not (process-live-p process))))))
+
+(ert-deftest nelisp-service-test-retirement-eof-error-still-deletes-process ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((system-type 'windows-nt)
+          (waits 0))
+      (cl-letf (((symbol-function 'process-send-eof)
+                 (lambda (_process) (error "simulated EOF send failure")))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (setq waits (1+ waits)) nil)))
+        (should (eq 'forced
+                    (nelisp-service--retire-connection process 0.2)))
+        (should (= 0 waits))
+        (should (= 1 delete-count))
+        (should-not (process-live-p process))))))
+
+(ert-deftest nelisp-service-test-retirement-bypasses-ineligible-processes ()
+  (let ((waits 0)
+        (type-queries 0)
+        (eof-sends 0))
+    (cl-letf (((symbol-function 'accept-process-output)
+               (lambda (&rest _args) (setq waits (1+ waits)) nil)))
+      (nelisp-service-test--with-fake-network-process
+        (let ((system-type 'gnu/linux))
+          (cl-letf (((symbol-function 'process-type)
+                     (lambda (&rest _args)
+                       (setq type-queries (1+ type-queries)) 'network))
+                    ((symbol-function 'process-send-eof)
+                     (lambda (&rest _args) (setq eof-sends (1+ eof-sends))))
+                    ((symbol-function 'accept-process-output)
+                     (lambda (&rest _args) (setq waits (1+ waits)))))
+            (should (eq 'direct (nelisp-service--retire-connection process))))
+          (should-not (process-live-p process))
+          (should (= 0 type-queries))
+          (should (= 0 eof-sends))
+          (should (= 0 waits)))
+      (nelisp-service-test--with-fake-network-process
+        (let ((system-type 'windows-nt))
+          (cl-letf (((symbol-function 'read-stdin-bytes) #'ignore)
+                    ((symbol-function 'process-type)
+                     (lambda (&rest _args)
+                       (setq type-queries (1+ type-queries)) 'network))
+                    ((symbol-function 'process-send-eof)
+                     (lambda (&rest _args) (setq eof-sends (1+ eof-sends))))
+                    ((symbol-function 'accept-process-output)
+                     (lambda (&rest _args) (setq waits (1+ waits)))))
+            (should (eq 'direct (nelisp-service--retire-connection process)))
+            (should-not (process-live-p process))
+            (should (= 0 type-queries))
+            (should (= 0 eof-sends))
+            (should (= 0 waits))))))
+      (nelisp-service-test--with-fake-network-process
+        (let ((system-type 'windows-nt))
+          (cl-letf (((symbol-function 'process-type) (lambda (_proc) 'pipe)))
+            (should (eq 'direct (nelisp-service--retire-connection process)))
+            (should-not (process-live-p process)))))
+      (nelisp-service-test--with-fake-network-process
+        (let ((system-type 'windows-nt))
+          (setq status 'closed)
+          (should (eq 'direct (nelisp-service--retire-connection process)))))
+      (nelisp-service-test--with-fake-network-process
+        (let ((system-type 'windows-nt))
+          (should (eq 'direct (nelisp-service--retire-connection process 0)))
+          (should-not (process-live-p process)))))
+    (should (= 0 waits))))
+
+(ert-deftest nelisp-service-test-retirement-reentrancy-defers-nested-delete ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((system-type 'windows-nt)
+          (nested nil)
+          (waits 0))
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (_process _seconds)
+                   (setq waits (1+ waits))
+                   (setq nested (nelisp-service--retire-connection process 0))
+                   (should (process-live-p process))
+                   (setq status 'closed)
+                   nil)))
+        (should (eq 'eof (nelisp-service--retire-connection process)))
+        (should (eq 'direct nested))
+        (should (= waits 1))
+        (should (= 1 delete-count))
+        (should-not (process-live-p process))))))
+
+(ert-deftest nelisp-service-test-client-close-marks-idle-handle-before-pump ()
+  (nelisp-service-test--with-fake-network-process
+    (let* ((client-record
+            (nelisp-service-record 'nelisp-service-client
+                                   :process process :pending (make-hash-table)))
+           (system-type 'windows-nt)
+           (waits 0))
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (_process _seconds)
+                   (setq waits (1+ waits))
+                   (should (nelisp-service-get client-record :closed))
+                   (should (= 1 eof-count))
+                   (setq status 'closed)
+                   nil)))
+        (nelisp-service-client-close client-record)
+        (should (nelisp-service-get client-record :closed))
+        (should (= 1 waits))
+        (should (eq 'closed delete-observed-status))
+        (should-not (process-live-p process))))))
+
+(ert-deftest nelisp-service-test-client-close-with-pending-skips-pump ()
+  (nelisp-service-test--with-fake-network-process
+    (let* ((calls 0)
+           (reply-status nil)
+           (client-record
+            (nelisp-service-record 'nelisp-service-client
+                                   :process process :pending (make-hash-table)))
+           (system-type 'windows-nt))
+      (puthash 1 (lambda (result _value)
+                   (setq calls (1+ calls) reply-status result))
+               (nelisp-service-get client-record :pending))
+      (setq process-on-delete
+            (lambda () (nelisp-service-client--on-close client-record process)))
+      (cl-letf (((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (error "pending close must not pump"))))
+        (nelisp-service-client-close client-record))
+      (should (= 1 calls))
+      (should (eq 'disconnected reply-status))
+      (should (nelisp-service-get client-record :closed))
+      (should (= 1 delete-count))
+      (should-not (process-live-p process)))))
+
+(ert-deftest nelisp-service-test-open-failure-retires-created-process-once ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((retired nil))
+      (cl-letf (((symbol-function 'make-network-process)
+                 (lambda (&rest _args) process))
+                ((symbol-function 'process-send-string)
+                 (lambda (&rest _args) (error "simulated handshake send failure")))
+                ((symbol-function 'nelisp-service--retire-connection)
+                 (lambda (candidate &optional _wait)
+                   (should (eq process candidate))
+                   (setq retired (1+ (or retired 0)))
+                   'direct)))
+        (should-not
+         (nelisp-service-client--open
+          "failed-open" (list :port 12345 :token "token") nil))
+        (should (= 1 retired))
+        (should (= 0 delete-count))))))
+
+(ert-deftest nelisp-service-test-port-probe-retires-created-process ()
+  (nelisp-service-test--with-fake-network-process
+    (let ((retired nil))
+      (cl-letf (((symbol-function 'make-network-process)
+                 (lambda (&rest _args) process))
+                ((symbol-function 'nelisp-service--retire-connection)
+                 (lambda (candidate &optional _wait)
+                   (should (eq process candidate))
+                   (setq retired t)
+                   'direct)))
+        (should (nelisp-service-port-in-use-p 12345))
+        (should retired)
+        (should (= 0 delete-count))))))
 
 ;;; Framing and files
 
@@ -532,6 +848,179 @@ Hello frames are untouched.  Bind `req-sends' (all request sends seen) in BODY."
             (should (file-exists-p (nelisp-service-state-file "t10" "state")))
             (should (file-exists-p (nelisp-service-state-file "t10" "lock"))))
         (delete-process mute)))))
+
+(ert-deftest nelisp-service-test-respawns-after-published-state-disappears ()
+  (nelisp-service-test--with-state-dir
+    (let* ((now 1000.0)
+           (spawned 0)
+           (opens 0)
+           (state-file (nelisp-service-state-file "recovery" "state"))
+           (lock-file (nelisp-service-state-file "recovery" "lock"))
+           (replacement (cons 'fake-client nil))
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command)
+              (setq spawned (1+ spawned))
+              (nelisp-service-write-plist lock-file (list :started now))
+              (nelisp-service-write-plist
+               state-file (list :port 12345 :token (number-to-string spawned)))))
+           (nelisp-service-client-hello-timeout 0.01))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args)
+                   (setq now (+ now 0.1))
+                   (when (and (= opens 1)
+                              (file-exists-p state-file)
+                              (file-exists-p lock-file))
+                     (delete-file state-file)
+                     (delete-file lock-file))
+                   nil))
+                ((symbol-function 'nelisp-service-client--lock-age)
+                 (lambda (_name) (and (file-exists-p lock-file) 0)))
+                ((symbol-function 'nelisp-service-port-in-use-p)
+                 (lambda (_port) nil))
+                ((symbol-function 'nelisp-service-client--open)
+                 (lambda (_name _state _version)
+                   (setq opens (1+ opens))
+                   (when (= opens 2) replacement)))
+                ((symbol-function 'nelisp-service-put) (lambda (&rest _args) nil)))
+        (let ((result
+               (condition-case nil
+                   (nelisp-service-client-connect
+                    "recovery" :version "v" :start-command '("unused")
+                    :timeout 1 :stale-after 10)
+                 (error nil))))
+          (should (= 2 spawned))
+          (should (= 2 opens))
+          (should (eq replacement result)))))))
+
+(ert-deftest nelisp-service-test-unpublished-start-keeps-cooldown ()
+  (nelisp-service-test--with-state-dir
+    (let* ((now 1000.0)
+           (spawned 0)
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command) (setq spawned (1+ spawned)))))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (setq now (+ now 0.1)) nil))
+                ((symbol-function 'nelisp-service-client--lock-age)
+                 (lambda (_name) nil)))
+        (should-error
+         (nelisp-service-client-connect
+          "unpublished" :start-command '("unused")
+          :timeout 0.5 :stale-after 10))
+        (should (= 1 spawned))
+        (should-not (file-exists-p
+                     (nelisp-service-state-file "unpublished" "state")))
+        (should-not (file-exists-p
+                     (nelisp-service-state-file "unpublished" "lock")))))))
+
+(ert-deftest nelisp-service-test-disappeared-state-with-lock-keeps-cooldown ()
+  (nelisp-service-test--with-state-dir
+    (let* ((now 1000.0)
+           (spawned 0)
+           (opened nil)
+           (state-file (nelisp-service-state-file "locked" "state"))
+           (lock-file (nelisp-service-state-file "locked" "lock"))
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command)
+              (setq spawned (1+ spawned))
+              (nelisp-service-write-plist lock-file (list :started now))
+              (nelisp-service-write-plist
+               state-file (list :port 12345 :token "first")))))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (setq now (+ now 0.1)) nil))
+                ((symbol-function 'nelisp-service-client--lock-age)
+                 (lambda (_name) nil))
+                ((symbol-function 'nelisp-service-port-in-use-p)
+                 (lambda (_port) t))
+                ((symbol-function 'nelisp-service-client--open)
+                 (lambda (&rest _args)
+                   (unless opened
+                     (setq opened t)
+                     (delete-file state-file))
+                   nil)))
+        (should-error
+         (nelisp-service-client-connect
+          "locked" :start-command '("unused")
+          :timeout 0.5 :stale-after 10))
+        (should (= 1 spawned))
+        (should-not (file-exists-p state-file))
+        (should (file-exists-p lock-file))))))
+
+(ert-deftest nelisp-service-test-busy-published-daemon-keeps-files-and-cooldown ()
+  (nelisp-service-test--with-state-dir
+    (let* ((now 1000.0)
+           (spawned 0)
+           (state-file (nelisp-service-state-file "busy-recovery" "state"))
+           (lock-file (nelisp-service-state-file "busy-recovery" "lock"))
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command)
+              (setq spawned (1+ spawned))
+              (nelisp-service-write-plist lock-file (list :started now))
+              (nelisp-service-write-plist
+               state-file (list :port 12345 :token "first")))))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (setq now (+ now 0.1)) nil))
+                ((symbol-function 'nelisp-service-client--lock-age)
+                 (lambda (_name) (and (> spawned 0) 0)))
+                ((symbol-function 'nelisp-service-port-in-use-p)
+                 (lambda (_port) t))
+                ((symbol-function 'nelisp-service-client--open)
+                 (lambda (&rest _args) nil)))
+        (should-error
+         (nelisp-service-client-connect
+          "busy-recovery" :start-command '("unused")
+          :timeout 0.5 :stale-after 10))
+        (should (= 1 spawned))
+        (should (file-exists-p state-file))
+        (should (file-exists-p lock-file))))))
+
+(ert-deftest nelisp-service-test-malformed-published-files-keep-cooldown ()
+  (nelisp-service-test--with-state-dir
+    (let* ((now 1000.0)
+           (spawned 0)
+           (state-file (nelisp-service-state-file "malformed" "state"))
+           (lock-file (nelisp-service-state-file "malformed" "lock"))
+           (nelisp-service-client-spawn-function
+            (lambda (_name _command)
+              (setq spawned (1+ spawned))
+              (nelisp-service-write-plist lock-file (list :started now))
+              (nelisp-service-write-plist
+               state-file (list :port 12345 :token "first")))))
+      (cl-letf (((symbol-function 'float-time)
+                 (lambda (&optional _time) now))
+                ((symbol-function 'accept-process-output)
+                 (lambda (&rest _args) (setq now (+ now 0.1)) nil))
+                ((symbol-function 'nelisp-service-port-in-use-p)
+                 (lambda (_port) nil))
+                ((symbol-function 'nelisp-service-client--open)
+                 (lambda (&rest _args)
+                   (with-temp-file state-file (insert "("))
+                   (with-temp-file lock-file (insert "("))
+                   nil)))
+        (should-error
+         (nelisp-service-client-connect
+          "malformed" :start-command '("unused")
+          :timeout 0.5 :stale-after 10))
+        (should (= 1 spawned))
+        (should (file-exists-p state-file))
+        (should (file-exists-p lock-file))
+        (should-not (nelisp-service-read-plist state-file))
+        (should-not (nelisp-service-read-plist lock-file))
+        (should (equal "("
+                       (with-temp-buffer
+                         (insert-file-contents state-file)
+                         (buffer-string))))
+        (should (equal "("
+                       (with-temp-buffer
+                         (insert-file-contents lock-file)
+                         (buffer-string))))))))
 
 (ert-deftest nelisp-service-test-superseded-daemon-exits-and-keeps-files ()
   (nelisp-service-test--with-state-dir

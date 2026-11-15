@@ -93,46 +93,54 @@ rejection, or nil when nothing answers."
                  :name name :version version
                  :reader (nelisp-service-reader-create)
                  :pending (make-hash-table :test 'eql)
-                 :next-id 0 :welcome nil :rejected nil :closed nil)))
-    (condition-case nil
-        (let ((proc (apply
-                     #'make-network-process
-                     :name (format "nelisp-service-client-%s" name)
-                     :host "127.0.0.1" :service (plist-get state :port)
-                     :family 'ipv4 :noquery t
-                     :filter (lambda (_p chunk)
-                               (nelisp-service-client--on-input client chunk))
-                     :sentinel (lambda (p _event)
-                                 (nelisp-service-client--on-close client p))
-                     (nelisp-service-network-coding-args))))
-          (nelisp-service-put client :process proc)
-          (process-send-string
-           proc (nelisp-service-encode
-                 (list 'hello (plist-get state :token) version
-                       nelisp-service-client--started)))
-          (nelisp-service-wait-until
-           (lambda () (or (nelisp-service-get client :welcome)
-                          (nelisp-service-get client :rejected)
-                          (nelisp-service-get client :closed)))
-           nelisp-service-client-hello-timeout)
-          ;; The close can be observed before the reply that preceded it
-          ;; has been filtered; drain before giving up.
-          (let ((deadline (+ (float-time) 0.3)))
-            (while (and (nelisp-service-get client :closed)
-                        (not (nelisp-service-get client :welcome))
-                        (not (nelisp-service-get client :rejected))
-                        (< (float-time) deadline))
+                 :next-id 0 :welcome nil :rejected nil :closed nil))
+        (proc nil)
+        (connected nil)
+        (result nil))
+    (unwind-protect
+        (setq result
               (condition-case nil
-                  (accept-process-output
-                   nil (min 0.1 (- deadline (float-time))))
-                (error nil))))
-          (cond
-           ((and (nelisp-service-get client :welcome)
-                 (not (nelisp-service-get client :closed)))
-            client)
-           (t (condition-case nil (delete-process proc) (error nil))
-              (or (nelisp-service-get client :rejected) nil))))
-      (error nil))))
+                  (progn
+                    (setq proc
+                          (apply
+                           #'make-network-process
+                           :name (format "nelisp-service-client-%s" name)
+                           :host "127.0.0.1" :service (plist-get state :port)
+                           :family 'ipv4 :noquery t
+                           :filter (lambda (_p chunk)
+                                     (nelisp-service-client--on-input client chunk))
+                           :sentinel (lambda (p _event)
+                                       (nelisp-service-client--on-close client p))
+                           (nelisp-service-network-coding-args)))
+                    (nelisp-service-put client :process proc)
+                    (process-send-string
+                     proc (nelisp-service-encode
+                           (list 'hello (plist-get state :token) version
+                                 nelisp-service-client--started)))
+                    (nelisp-service-wait-until
+                     (lambda () (or (nelisp-service-get client :welcome)
+                                    (nelisp-service-get client :rejected)
+                                    (nelisp-service-get client :closed)))
+                     nelisp-service-client-hello-timeout)
+                    ;; The close can be observed before the reply that preceded
+                    ;; it has been filtered; drain before giving up.
+                    (let ((deadline (+ (float-time) 0.3)))
+                      (while (and (nelisp-service-get client :closed)
+                                  (not (nelisp-service-get client :welcome))
+                                  (not (nelisp-service-get client :rejected))
+                                  (< (float-time) deadline))
+                        (condition-case nil
+                            (accept-process-output
+                             nil (min 0.1 (- deadline (float-time))))
+                          (error nil))))
+                    (if (and (nelisp-service-get client :welcome)
+                             (not (nelisp-service-get client :closed)))
+                        (progn (setq connected t) client)
+                      (or (nelisp-service-get client :rejected) nil)))
+                (error nil)))
+      (when (and proc (not connected))
+        (nelisp-service--retire-connection proc)))
+    result))
 
 (defun nelisp-service-client--lock-age (name)
   "Return the age in seconds of NAME's lock file, or nil without one."
@@ -154,11 +162,20 @@ Signal an error when no daemon can be reached in time."
          (stale-after (or (plist-get args :stale-after) 120))
          (deadline (+ (float-time) (or (plist-get args :timeout) 180)))
          (spawned-at nil)
+         (observed-state-after-spawn nil)
          (client nil))
     (while (and (not client) (< (float-time) deadline))
-      (let ((state (nelisp-service-read-plist
-                    (nelisp-service-state-file name "state")))
-            (age (nelisp-service-client--lock-age name)))
+      (let* ((state-file (nelisp-service-state-file name "state"))
+             (lock-file (nelisp-service-state-file name "lock"))
+             (state (nelisp-service-read-plist state-file))
+             (age (nelisp-service-client--lock-age name)))
+        (when (and state spawned-at)
+          (setq observed-state-after-spawn t))
+        (when (and observed-state-after-spawn
+                   (not (file-exists-p state-file))
+                   (not (file-exists-p lock-file)))
+          (setq spawned-at nil
+                observed-state-after-spawn nil))
         (cond
          (state
           (let ((result (nelisp-service-client--open name state version)))
@@ -190,7 +207,8 @@ Signal an error when no daemon can be reached in time."
          ((and command (or (null spawned-at)
                            (> (- (float-time) spawned-at) stale-after)))
           (funcall nelisp-service-client-spawn-function name command)
-          (setq spawned-at (float-time)))
+          (setq spawned-at (float-time)
+                observed-state-after-spawn nil))
          ((null command)
           (error "nelisp-service: daemon %s is not running" name))
          (t (accept-process-output nil 0.25)))))
@@ -297,9 +315,16 @@ the daemon may already have run the request."
 (defun nelisp-service-client-close (client)
   "Close CLIENT's connection, or that of the client that replaced it."
   (setq client (nelisp-service-client--current client))
-  (condition-case nil (delete-process (nelisp-service-get client :process))
-    (error nil))
-  (nelisp-service-put client :closed t))
+  (nelisp-service-put client :closed t)
+  (let* ((pending (nelisp-service-get client :pending))
+         (wait (and (hash-table-p pending)
+                    (> (hash-table-count pending) 0)
+                    0)))
+    (condition-case nil
+        (nelisp-service--retire-connection
+         (nelisp-service-get client :process) wait)
+      (error nil))
+    t))
 
 ;;; MCP stdio proxy -------------------------------------------------------
 

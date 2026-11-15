@@ -17,6 +17,10 @@ on:
       selector:
         description: ERT test name regex (default runs the full service suite)
         default: '^nelisp-service-test'
+      retirement_metrics:
+        description: Collect aggregate connection retirement metrics (diagnostic only)
+        type: boolean
+        default: false
 
 jobs:
   loop:
@@ -52,6 +56,7 @@ jobs:
           ITERATIONS: ${{ inputs.iterations }}
           PARALLEL: ${{ inputs.parallel }}
           TEST_SELECTOR: ${{ inputs.selector }}
+          NELISP_SERVICE_RETIREMENT_METRICS: ${{ inputs.retirement_metrics && '1' || '' }}
         run: |
           set -u
           logdir="$RUNNER_TEMP/service-loop"
@@ -65,6 +70,10 @@ jobs:
           echo "bash=$BASH timeout=$(command -v timeout) emacs=$(command -v emacs)"
           run_one() {
             i=$1
+            if ! ulimit -v 8388608; then
+              echo 'fail memory-limit' >"$logdir/iter-$i.result"
+              return
+            fi
             # /usr/bin/timeout: a bare `timeout' can be Windows' timeout.exe.
             # shellcheck disable=SC2086
             if /usr/bin/timeout 300 emacs --batch -Q -L lisp -L src -L test -L bench $loads \
@@ -101,3 +110,11 @@ jobs:
           done
           echo "LOOP total=$total failed=$failed"
           [ "$failed" -eq 0 ]
+
+      - name: Preserve service loop results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-loop-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/service-loop
+          if-no-files-found: warn

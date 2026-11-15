@@ -466,17 +466,75 @@ file is written next to the state files."
 
 ;;; Event loop helper -----------------------------------------------------
 
+(defvar nelisp-service--retiring-processes (make-hash-table :test 'eq)
+  "Processes whose connection retirement is already in progress.")
+
+(defun nelisp-service--retire-connection (process &optional wait)
+  "Retire PROCESS, briefly pumping it on Windows GNU Emacs.
+WAIT is the optional grace period in seconds (default 0.3).  Return
+`eof' when the connection becomes terminal during the grace period,
+`forced' when its deadline expires or pumping fails, and `direct' when
+no grace period applies or a nested retirement is already active."
+  (let ((grace (if (numberp wait) (max 0 wait) 0.3))
+        (windows-gnu
+         (and (eq system-type 'windows-nt)
+              (not (nelisp-service-standalone-p)))))
+    (if (not windows-gnu)
+        (progn
+          (condition-case nil (delete-process process) (error nil))
+          'direct)
+      (if (gethash process nelisp-service--retiring-processes)
+          'direct
+        (puthash process t nelisp-service--retiring-processes)
+        (let ((result 'direct))
+          (unwind-protect
+              (let ((eligible
+                     (condition-case nil
+                         (and (> grace 0)
+                              (processp process)
+                              (eq (process-type process) 'network)
+                              (memq (process-status process) '(open run)))
+                       (error nil))))
+                (when eligible
+                  (setq result 'forced)
+                  (condition-case nil
+                      (progn
+                        (process-send-eof process)
+                        (let ((deadline (+ (float-time) grace)))
+                          (condition-case nil
+                              (progn
+                                (while (and
+                                        (memq (process-status process) '(open run))
+                                        (< (float-time) deadline))
+                                  (accept-process-output
+                                   nil (max 0 (min 0.05
+                                                   (- deadline (float-time))))))
+                                (unless (memq (process-status process) '(open run))
+                                  (setq result 'eof)))
+                            (error (setq result 'forced)))))
+                    (error (setq result 'forced))))
+                result)
+            (condition-case nil (delete-process process) (error nil))
+            (remhash process nelisp-service--retiring-processes)))))))
+
 (defun nelisp-service-port-in-use-p (port)
   "Return non-nil when something accepts connections on loopback PORT.
 A daemon busy in a long handler still accepts at the socket level, so
 this tells a busy daemon from a dead one."
-  (condition-case nil
-      (let ((probe (make-network-process
-                    :name "nelisp-service-port-probe" :host "127.0.0.1"
-                    :service port :family 'ipv4 :noquery t)))
-        (delete-process probe)
-        t)
-    (error nil)))
+  (let ((probe nil)
+        (in-use nil))
+    (unwind-protect
+        (setq in-use
+              (condition-case nil
+                  (progn
+                    (setq probe
+                          (make-network-process
+                           :name "nelisp-service-port-probe" :host "127.0.0.1"
+                           :service port :family 'ipv4 :noquery t))
+                    t)
+                (error nil)))
+      (when probe (nelisp-service--retire-connection probe)))
+    in-use))
 
 (defun nelisp-service-wait (seconds)
   "Service process I/O for up to SECONDS.
