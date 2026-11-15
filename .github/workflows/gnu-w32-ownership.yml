@@ -2,6 +2,13 @@ name: GNU Windows source build capability
 
 on:
   workflow_dispatch:
+  # Register this new workflow on its diagnostic branch; keep the first run scoped to its inputs.
+  push:
+    branches:
+      - diag/gnu-w32-ownership-20261115
+    paths:
+      - .github/workflows/gnu-w32-ownership.yml
+      - tools/ai/gnu-w32-build.sh
 
 permissions:
   contents: read
