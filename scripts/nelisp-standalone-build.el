@@ -8850,6 +8850,17 @@ REPL-facing module it feeds."
     ;; cached across reclaim, compaction, cursor growth or cold-image restore.
     ;; Unusual chunks retain the complete linked walk with the same half-open
     ;; [data-start, base+cursor) membership (control metadata is excluded).
+    ;; Growth chunks after the head, walked by recursion.  The former
+    ;; `while' over locals CHUNK/FOUND was miscompiled: the loop exit reloaded
+    ;; both from registers holding their initial values, so the walk always
+    ;; answered 0 and a heap with 3 or more chunks lost every middle-chunk
+    ;; block (vector slots unwalked, dump refused with out-of-image refs).
+    (defun nl_gc_in_arena_rest (chunk addr)
+      (if (<= chunk 0) 0
+        (if (and (>= addr (heap-read-u64 chunk 24))
+                 (< addr (+ (heap-read-u64 chunk 0) (heap-read-u64 chunk 16))))
+            1
+          (nl_gc_in_arena_rest (heap-read-u64 chunk 48) addr))))
     (defun nl_gc_in_arena (addr)
       (let* ((head (heap-read-u64 268436160 0))
              (tail (heap-read-u64 268436168 0)))
@@ -8863,16 +8874,7 @@ REPL-facing module it feeds."
                    (< addr (+ (heap-read-u64 tail 0)
                               (heap-read-u64 tail 16))))
               1
-            (let* ((chunk (if (= head 0) 0 (heap-read-u64 head 48)))
-                   (found 0))
-              (seq
-               (while (and (> chunk 0) (= found 0))
-                 (if (and (>= addr (heap-read-u64 chunk 24))
-                          (< addr (+ (heap-read-u64 chunk 0)
-                                     (heap-read-u64 chunk 16))))
-                     (setq found 1)
-                   (setq chunk (heap-read-u64 chunk 48))))
-               found))))))
+            (nl_gc_in_arena_rest (if (= head 0) 0 (heap-read-u64 head 48)) addr)))))
     ;; BOOT-GENERATION predicate.  The boot image is the prefix of CHUNK 0
     ;; [chunk0_base, watermark).  The old test was a bare `(< addr watermark)'
     ;; scalar compare, which is UNSOUND once growth chunks exist: the OS can
