@@ -22641,7 +22641,7 @@ eval applyfn.")
                          (let* ((mark (nl_root_mark env))
                                 ;; The starter set of `wf_bytecode_execute_frame' (keep in step).
                                 (state (if (= (if (< first-op 64)
-                                                  (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
+                                                  (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
                                                 (if (< first-op 128)
                                                     (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
                                                   (if (< first-op 192)
@@ -27549,6 +27549,90 @@ bytes are written into a fresh 8-byte buffer instead."
             (if (= aux 0) 0
               (seq (ptr-write-u64 foot 40 (+ (shl aux 2) 1))
                    aux))))))
+    (defun wf_bytecode_w_aux_idle_p (aux)
+      ;; dynbind: 1 when the block AUX holds no handler, no event and no
+      ;; in-place record, so dropping it with its frame needs nothing but the
+      ;; binding-chain pop.  Pure reads.
+      (if (/= (ptr-read-u64 aux 0) 3) 0
+        (if (/= (ptr-read-u64 aux 8) 3) 0
+          (if (/= (ptr-read-u64 aux 96) 1) 0 1))))
+    ;; dynbind: `nl_root_frame' for the 61-slot aux block with the nil fill straight-line (a loop of 61 stores cost
+    ;; four to six instructions a slot).  Same frame as `nl_root_frame' makes: header, 61 nil WORDs, top advanced
+    ;; by 544; any state but the plain main thread with room takes `nl_root_frame'.
+    (defun wf_bytecode_aux_frame (env)
+      (let* ((top (heap-read-u64 (data-addr nl_rootstack_top) 0))
+             (next (+ top 544)))
+        (if (if (= (heap-read-u64 (data-addr nl_thread_registry) 0) 0)
+                (if (= top 0) 0 (<= next (nl_rootstack_end))) 0)
+            (seq
+               (ptr-write-u64 top 0 1464226381)
+               (ptr-write-u64 top 8 61)
+               (ptr-write-u64 top 16 0)
+               (ptr-write-u64 top 24 0)
+               (ptr-write-u64 top 32 3)
+               (ptr-write-u64 top 40 3)
+               (ptr-write-u64 top 48 3)
+               (ptr-write-u64 top 56 3)
+               (ptr-write-u64 top 64 3)
+               (ptr-write-u64 top 72 3)
+               (ptr-write-u64 top 80 3)
+               (ptr-write-u64 top 88 3)
+               (ptr-write-u64 top 96 3)
+               (ptr-write-u64 top 104 3)
+               (ptr-write-u64 top 112 3)
+               (ptr-write-u64 top 120 3)
+               (ptr-write-u64 top 128 3)
+               (ptr-write-u64 top 136 3)
+               (ptr-write-u64 top 144 3)
+               (ptr-write-u64 top 152 3)
+               (ptr-write-u64 top 160 3)
+               (ptr-write-u64 top 168 3)
+               (ptr-write-u64 top 176 3)
+               (ptr-write-u64 top 184 3)
+               (ptr-write-u64 top 192 3)
+               (ptr-write-u64 top 200 3)
+               (ptr-write-u64 top 208 3)
+               (ptr-write-u64 top 216 3)
+               (ptr-write-u64 top 224 3)
+               (ptr-write-u64 top 232 3)
+               (ptr-write-u64 top 240 3)
+               (ptr-write-u64 top 248 3)
+               (ptr-write-u64 top 256 3)
+               (ptr-write-u64 top 264 3)
+               (ptr-write-u64 top 272 3)
+               (ptr-write-u64 top 280 3)
+               (ptr-write-u64 top 288 3)
+               (ptr-write-u64 top 296 3)
+               (ptr-write-u64 top 304 3)
+               (ptr-write-u64 top 312 3)
+               (ptr-write-u64 top 320 3)
+               (ptr-write-u64 top 328 3)
+               (ptr-write-u64 top 336 3)
+               (ptr-write-u64 top 344 3)
+               (ptr-write-u64 top 352 3)
+               (ptr-write-u64 top 360 3)
+               (ptr-write-u64 top 368 3)
+               (ptr-write-u64 top 376 3)
+               (ptr-write-u64 top 384 3)
+               (ptr-write-u64 top 392 3)
+               (ptr-write-u64 top 400 3)
+               (ptr-write-u64 top 408 3)
+               (ptr-write-u64 top 416 3)
+               (ptr-write-u64 top 424 3)
+               (ptr-write-u64 top 432 3)
+               (ptr-write-u64 top 440 3)
+               (ptr-write-u64 top 448 3)
+               (ptr-write-u64 top 456 3)
+               (ptr-write-u64 top 464 3)
+               (ptr-write-u64 top 472 3)
+               (ptr-write-u64 top 480 3)
+               (ptr-write-u64 top 488 3)
+               (ptr-write-u64 top 496 3)
+               (ptr-write-u64 top 504 3)
+               (ptr-write-u64 top 512 3)
+               (ptr-write-u64 (data-addr nl_rootstack_top) 0 next)
+               (+ top 32))
+          (nl_root_frame env 61))))
     (defun wf_bytecode_aux_new (env state)
       ;; fxlet: a fresh aux block (layout above) on the root stack, its
       ;; binding-link record pushed on STATE's chain (N4 state +16).  Shared by
@@ -27558,7 +27642,7 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Owners restore STATE +16 before releasing their root mark, so the
       ;; checked Sexp slot never outlives its activation. Preserve the existing
       ;; heap-backed link when no additional root slot is available.
-      (let* ((aux (nl_root_frame env 61)))
+      (let* ((aux (wf_bytecode_aux_frame env)))
         (if (= aux 0) 0
           (let* ((slot (nl_root_reserve_checked env))
                  (link (if (= slot 0) (alloc-bytes 32 8) slot)))
@@ -27586,8 +27670,9 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Leave the final instruction and invalid targets to the ordinary
     ;; dispatcher so malformed bytecode keeps its exact error offset.
     ;; Mirror identities are checked after each lookup in this pure batch.
-    ;; No allocation or callout occurs; registered workers cannot mutate
-    ;; the shared mirror. Every return drops the cache before mutation,
+    ;; No callout or GC/Lisp safepoint occurs (the constructor arms
+    ;; Bcons/Blist1 allocate, but the allocator never collects); registered
+    ;; workers cannot mutate the shared mirror. Every return drops the cache before mutation,
     ;; parking or GC. Slot 0 remains a live read on every hit.
     ;; GNU bytecode.c Bnegate (91), Bmax (93), Bmin (94), Bquo (165) and Brem (166) on two fixnum words, in place, for the fast
     ;; loop below.  Bmax and Bmin keep the first operand unless the second orders after it (so a tie answers the first), Bquo and
@@ -27701,7 +27786,9 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; are overwritten before the original hot arms use them. Do not borrow
       ;; LAST-* cache state, FAILED, the rooted frame fields, or BACK.
       ;; These leaves never run arbitrary Lisp, and none allocates except the lean
-      ;; varbind arm (only when wf_bytecode_w_lean_bind spills a full record array) and the w1f text
+      ;; varbind arm (only when wf_bytecode_w_lean_bind spills a full record array), the
+      ;; Bcons/Blist1 constructor arms (one cell via wf_bytecode_w_cons2; allocation is not
+      ;; a GC point) and the w1f text
       ;; arms (raw 79-82: one string via wf_bytecode_w_text_op), which therefore drop
       ;; the dead varref cache flag (last-name, written by other arms) afterwards. Rejecting an opcode
       ;; leaves PC/SP/operand memory untouched; bounded list walks replay long,
@@ -27875,6 +27962,19 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (or (= env 0) (<= sp 0)) (setq go 0)
                                        (seq
                                         (setq ref (ptr-read-u64 foot 40))
+                                        ;; dynbind: a frame without a specpdl block makes its
+                                        ;; block here, without leaving the loop (the exit and
+                                        ;; re-entry cost more than the block).  The block is
+                                        ;; the frame's own (`wf_bytecode_frame_aux' caches it
+                                        ;; in the foot); the dispatcher adopts it from the foot
+                                        ;; when the loop stops.  0 (root stack full) declines
+                                        ;; to the dispatcher, which reports the exhaustion.
+                                        (if (if (= ref 3) (/= (heap-read-u64 env 176) 0) 0)
+                                            (seq
+                                             (setq a (wf_bytecode_frame_aux env foot (heap-read-u64 env 176)))
+                                             (setq last-name -1)
+                                             (if (/= a 0) (setq ref (+ (shl a 2) 1)) 0))
+                                          0)
                                         (if (= ref 3) (setq go 0)
                                           (seq
                                            (setq a (if (< raw 30) 0 (if (= raw 30) 1 2)))
@@ -28755,7 +28855,8 @@ bytes are written into a fresh 8-byte buffer instead."
                                                0)
                                              (setq pc (+ pc 1)))
                                           (setq go 0)))))))
-                                    ((or (= raw 61) (= raw 63))
+                                    ((or (= raw 61) (= raw 63) (= raw 58) (= raw 57) (= raw 59) (= raw 60))
+                                     ;; dynbind: raw 58 (Bconsp) is the same unary shape as Bnot (63).
                                      (if (< sp (if (= raw 61) 2 1))
                                          (setq go 0)
                                        (seq
@@ -28794,17 +28895,20 @@ bytes are written into a fresh 8-byte buffer instead."
                                                             1)
                                                            7
                                                          3)
-                                                     (if
-                                                         (=
-                                                          (wf_bytecode_w_consp
-                                                           a)
-                                                          1)
-                                                         (nl_cons_car_word
-                                                          a)
-                                                       3))))
-                                           (ptr-write-u64 mem (* b 8) word)
-                                           (setq sp (+ b 1))
-                                           (setq pc (+ pc 1)))))))
+                                                     (if (= raw 58)
+                                                         (if (= (wf_bytecode_w_consp a) 1) 7 3)
+                                                       ;; dynbind: symbolp (57), stringp (59), listp (60) on the word's tag, as
+                                                       ;; `wf_bytecode_predicate' tests it; a positioned symbol (tag 19) declines.
+                                                       (let* ((tg (wf_bytecode_w_tag a)))
+                                                         (if (= raw 57)
+                                                             (if (or (= tg 0) (= tg 1) (= tg 4) (= tg 16)) 7 (if (= tg 19) -1 3))
+                                                           (if (= raw 59)
+                                                               (if (or (= tg 5) (= tg 6) (= tg 14) (= tg 15)) 7 3)
+                                                             (if (or (= tg 0) (= tg 7)) 7 3))))))))
+                                             (if (= word -1) (setq go 0)
+                                               (seq (ptr-write-u64 mem (* b 8) word)
+                                                    (setq sp (+ b 1))
+                                                    (setq pc (+ pc 1)))))))))
                                     ((and (>= raw 40) (< raw 48))
                                      ;; Lean unbind of the frame's own events; see
                                      ;; wf_bytecode_w_fast_unbind for what declines.
@@ -29027,10 +29131,24 @@ bytes are written into a fresh 8-byte buffer instead."
                                      (if (< raw 79)
                                          ;; corecall: length (71), aref (72) and aset (73) stay in
                                          ;; this loop (`wf_bytecode_fast_slot'); -1 punts as before.
-                                         (if (if (< raw 71) 1 (> raw 73)) (setq go 0)
+                                         (if (if (< raw 71) (if (= raw 66) 0 (if (= raw 67) 0 1)) (> raw 73)) (setq go 0)
+                                           (if (< raw 71)
+                                               ;; dynbind: Bcons (66) and Blist1 (67).  The operands stay on the
+                                               ;; rooted stack until the cell exists, so an allocation that
+                                               ;; collects sees them; the result then replaces them.
+                                               (if (< sp (if (= raw 66) 2 1)) (setq go 0)
+                                                 (seq
+                                                  (setq word (if (= raw 66)
+                                                                 (wf_bytecode_w_cons2 (heap-read-u64 mem (* (- sp 2) 8))
+                                                                                      (heap-read-u64 mem (* (- sp 1) 8)))
+                                                               (wf_bytecode_w_cons2 (heap-read-u64 mem (* (- sp 1) 8)) 3)))
+                                                  (if (= raw 66) (setq sp (- sp 1)) 0)
+                                                  (ptr-write-u64 mem (* (- sp 1) 8) word)
+                                                  (setq last-name -1)
+                                                  (setq pc (+ pc 1))))
                                            (let* ((nsp (wf_bytecode_fast_slot mem sp raw)))
                                              (if (< nsp 0) (setq go 0)
-                                               (seq (setq sp nsp) (setq pc (+ pc 1))))))
+                                               (seq (setq sp nsp) (setq pc (+ pc 1)))))))
                                        ;; w1f: substring (79) and concat2..4 (80-82) on the WORD stack through
                                        ;; the directcall text body; -3 leaves everything untouched (go 0).
                                        (let* ((cnt (if (= raw 79) 3 (- raw 78))))
@@ -29330,7 +29448,13 @@ bytes are written into a fresh 8-byte buffer instead."
                            (if (< raw 136)
                                (if
                                    (if (= (ptr-read-u64 foot 16) 3) 1
-                                     (if (/= (ptr-read-u64 foot 40) 3) 1
+                                     (if (/= (ptr-read-u64 foot 40) 3)
+                                         ;; dynbind: an idle block (no handler, no event, no
+                                         ;; record) is dropped with the frame, below.
+                                         (if (= (wf_bytecode_w_aux_idle_p
+                                                 (sar (ptr-read-u64 foot 40) 2)) 1)
+                                             (<= sp 0)
+                                           1)
                                        (<= sp 0)))
                                    (setq go 0)
                                  (let*
@@ -29361,6 +29485,15 @@ bytes are written into a fresh 8-byte buffer instead."
                                            (sar (ptr-read-u64 foot 0) 2))
                                           (nt (- mem 32)))
                                        (seq
+                                        ;; dynbind: leave the binding chain as the activation
+                                        ;; epilogue does, before the block is released.
+                                        (if (/= (ptr-read-u64 foot 40) 3)
+                                            (ptr-write-u64 state 16
+                                                           (heap-read-u64
+                                                            (heap-read-u64
+                                                             (+ (sar (ptr-read-u64 foot 40) 2) 16) 0)
+                                                            8))
+                                          0)
                                         (ptr-write-u64 caller (* fi 8)
                                                        (heap-read-u64 mem
                                                                       (-
@@ -30004,8 +30137,15 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; the frame left keeps its binding count.
                   (if (/= reload 0)
                       (seq
+                       ;; dynbind: the frame left may have been popped by the fast
+                       ;; loop (an idle block is dropped with its frame), its block
+                       ;; then freed and maybe reused: save the count only when
+                       ;; there is one (such a block is never idle).  The count is
+                       ;; reset when read back, so +64 is 0 while a frame runs.
                        (if (/= aux 0)
-                           (ptr-write-u64 (+ aux 64) 0 (+ (shl bindings 2) 1))
+                           (if (/= bindings 0)
+                               (ptr-write-u64 (+ aux 64) 0 (+ (shl bindings 2) 1))
+                             0)
                          0)
                        (setq mem reload)
                        (setq reload 0)
@@ -30052,8 +30192,18 @@ bytes are written into a fresh 8-byte buffer instead."
                               (if (= a2 3)
                                   (seq (setq aux 0) (setq bindings 0))
                                 (seq (setq aux (sar a2 2))
-                                     (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2))))))
+                                     (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2))
+                                     (ptr-write-u64 (+ aux 64) 0 1)))))
                        (setq unwind-rc 0))
+                    0)
+                  ;; dynbind: the fast loop makes the current frame's specpdl
+                  ;; block itself at its first lean binding, caching it in the
+                  ;; foot; adopt it, so that this frame's exit unwinds it.
+                  (if (= aux 0)
+                      (let* ((fa (heap-read-u64 foot 40)))
+                        (if (= fa 3) 0
+                          (seq (setq aux (sar fa 2))
+                               (setq bindings (sar (heap-read-u64 (+ aux 64) 0) 2)))))
                     0)
                   (if (and (= done 0) (>= pc code-len)) (setq done 2) 0)
                   (if (and (/= done 0) (/= done 4))
@@ -30099,7 +30249,7 @@ bytes are written into a fresh 8-byte buffer instead."
                   ;; unsupported operands replay in the outer handler.
                   ;; Constants 192..255 also enter the existing batch runner.
                   (if (= (if (< first-op 64)
-			     (if (/= (logand -2233504769110966273 (shl 1 first-op)) 0) 1 0)
+			     (if (/= (logand -1945274392959254529 (shl 1 first-op)) 0) 1 0)
 			   (if (< first-op 128)
 			       (if (/= (logand 2146959491 (shl 1 (- first-op 64))) 0) 1 0)
 			     (if (< first-op 192)
