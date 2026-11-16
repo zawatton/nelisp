@@ -1,0 +1,64 @@
+#+TITLE: NeLisp fx compiler: inline non-escaping local lambdas (macroexp mutable-capture rejection)
+
+# Run from the lane root.  Checks needing the frozen coordinator runtime
+# require LL_BIN (path to that complete bundle's target/nelisp) and
+# LL_EMACS (host Emacs).  Artifacts: target/ai/local-lambda-inline/.
+
+* S1 Baseline rejection and bounded context
+
+** S1.1 Frozen runtime query of macroexp--expand-all recorded as rejected (exit 3)
+evidence: target/ai/local-lambda-inline/s1-baseline-query.out sha256=9eb199999ab0f481b5e2adf51c6bb2b1938a6a3ae976a9d6929f983d5521fd3f
+
+** S1.2 The copy-capture mutable guard is present in the genuine generator
+cmd: grep -qF '(when (memq (car v) nelisp--fxc-mutated) (nelisp--fxc-unsupported x))' scripts/nelisp-stdlib-prelude.el
+
+** S1.3 Fresh frozen-runtime query still rejects with compiler-returned-nil (exit 3)
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 120
+cmd: sh target/ai/local-lambda-inline/s1-query.sh
+
+* S2 Generic semantic prototype and negative controls
+
+** S2.1 Host-Emacs ERT semantic suite (60 tests) passes against the candidate transform
+#+REQUIRES: LL_EMACS
+cmd: sh target/ai/local-lambda-inline/run-ert.sh candidate
+
+** S2.2 Naive (unguarded) inliner is rejected by the same suite
+#+REQUIRES: LL_EMACS
+cmd: sh target/ai/local-lambda-inline/run-ert.sh naive
+
+** S2.3 Identity (transform-disabled) control is rejected by the same suite
+#+REQUIRES: LL_EMACS
+cmd: sh target/ai/local-lambda-inline/run-ert.sh identity
+
+** S2.4 Fixture equivalence (60 tests) and naive control also hold on the frozen NeLisp runtime
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 120
+cmd: sh target/ai/local-lambda-inline/run-nelisp-fixtures.sh
+
+* S3 Genuine transformed target compilation and checked execution
+
+** S3.1 Genuine analyzer accepts transformed macroexp--expand-all (identity control rejected)
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 180
+cmd: LL_POLICY=bytecode sh target/ai/local-lambda-inline/run-genuine.sh admit
+
+** S3.2 Compiled transformed code reproduces original expansions, with forced GC
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 300
+cmd: LL_POLICY=bytecode sh target/ai/local-lambda-inline/run-genuine.sh exec && ! LL_POLICY=bytecode LL_BREAK=1 sh target/ai/local-lambda-inline/run-genuine.sh exec
+
+** S3.3 Dependencies keep funcall and inlined helpers; helper redefinition is honoured
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 180
+cmd: LL_POLICY=bytecode sh target/ai/local-lambda-inline/run-genuine.sh redef && ! LL_POLICY=bytecode LL_BREAK=1 sh target/ai/local-lambda-inline/run-genuine.sh redef
+
+** S3.4 Runtime specialness changes: transformed compiled code adds no divergence beyond the untransformed compiled code
+#+NOTE: Red by design under the user-approved policy A (2026-11-16): an inner let moved by inlining is classified at the outer compile time (inner-let: transformed 0 vs untransformed bound), as GNU's byte compiler does. Param and binder rows match. Kept as a failing cmd rather than rewritten.
+#+REQUIRES: LL_BIN,NOTES
+#+TIMEOUT: 180
+cmd: LL_POLICY=bytecode sh target/ai/local-lambda-inline/run-genuine.sh specialness
+
+** S3.5 Independent gpt-6.1-sol review of proof, controls and artifacts recorded
+#+NOTE: Prototype reviews 1-5 were REJECT (findings fixed/narrowed); user chose policy A; production-integration review verdict ACCEPT-INTEGRATION.
+evidence: target/ai/local-lambda-inline/review/sol-review-prod.md sha256=2d778bc74ef728ed5609a9e013de83aeb6b12fb0bcafd2b41d28958e9d8f93dd

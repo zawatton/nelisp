@@ -852,7 +852,7 @@ ns-collision-divergent 898
 # 2026-11-09 (integ/hub-owner-20261109): +4 -- the GNU-named prelude
 # definitions `xor', `subr-name', `subr-primitive-p', `primitive-function-p'
 # (S3, 48342b978), measured against the hub tree 3bdf30706.
-ns-prefix-violation 2428
+ns-prefix-violation 2430
 # 328 -> 329 on 2026-10-20 (prim-alias): the same GNU public built-in
 # variable is intentionally initialized in the buffer-local provider.
 # 322 -> 328 on 2026-09-21 (segment F): +6, from the `rx'/`rx-to-string'/
@@ -2978,3 +2978,9 @@ pinned-collision ns-collision-divergent	type-of	lisp/nelisp-stdlib-misc.el scrip
 # come from the standalone prelude's new guarded `copy-file' (hostcopy slice).
 # The only other definition, emacs-lib-core's install-guarded MVP, is not part
 # of the standalone prelude path and differs (no directory/same-file checks).
+#
+# 2026-11-17: ns-prefix-violation 2428 -> 2430 come from the standalone
+# prelude's late GNU 31.1 `with-current-buffer' and `with-temp-buffer'
+# macros (local-lambda/macroexp slice). They are genuine GNU names that the
+# stdlib prelude must define after `save-current-buffer' gets its special
+# form, so they sit outside the file's inferred `nelisp-' prefix.
