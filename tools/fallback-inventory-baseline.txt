@@ -901,7 +901,7 @@ pinned-site silent-fallback	nelisp-prelude-bytecode.el	defun nelisp-prelude-byte
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-bytecode-source	09db60440f5b 1
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--prelude-compiled-defun	e3f2648caa3a 1
 pinned-site silent-fallback	nelisp-standalone-build.el	defun nelisp-standalone--vendor-menu-bar-final-items-source	09db60440f5b 1
-pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun autoload-do-load	50ac4a8a8727 1
+pinned-site silent-fallback	nelisp-stdlib-prelude.el	defun nelisp--autoload-do-load-1	50ac4a8a8727 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	7100283652a8 1
 pinned-site silent-fallback	nelisp-stdlib-prelude.el	unless	6b8661b10f65 1
 pinned-site silent-fallback	nelisp-vendor-bytecode-triparity.el	defun nelisp-vendor-bytecode-triparity--child-form	04786ea61955 1

@@ -1123,12 +1123,11 @@ records obsolescence via `make-obsolete-variable'; installs no warning."
       (fset function (list 'autoload file docstring interactive type)))
     function))
 
-(defun autoload-do-load (autoload &optional name macro-only)
-  "Load AUTOLOAD transactionally and return NAME's replacement function.
-Only explicit calls use this transaction path; ordinary `load' remains
-incremental and non-transactional."
-  (if (not (autoloadp autoload))
-      autoload
+(defun nelisp--autoload-do-load-1 (autoload name macro-only)
+  "Transactional body of `autoload-do-load' for a real AUTOLOAD object.
+Split out so the common non-autoload path of `autoload-do-load' is a small
+function the prelude byte-code adoption can compile."
+  (progn
     (let ((kind (nth 4 autoload)))
       (if (and (eq macro-only 'macro)
                (not (memq kind '(t macro))))
@@ -1154,6 +1153,14 @@ incremental and non-transactional."
                   (error "Autoloading file %s failed to define function %s"
                          (nth 1 autoload) name)
                 (symbol-function name)))))))))
+
+(defun autoload-do-load (autoload &optional name macro-only)
+  "Load AUTOLOAD transactionally and return NAME's replacement function.
+Only explicit calls use this transaction path; ordinary `load' remains
+incremental and non-transactional."
+  (if (not (autoloadp autoload))
+      autoload
+    (nelisp--autoload-do-load-1 autoload name macro-only)))
 
 (unless (fboundp 'cl-ldiff)
   (defun cl-ldiff (list sublist)

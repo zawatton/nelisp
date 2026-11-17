@@ -2130,7 +2130,8 @@ pinned-collision ns-collision-divergent	assoc-default	packages/emacs-lib-core/sr
 pinned-collision ns-collision-divergent	assoc-string	packages/emacs-lib-core/src/emacs-string.el scripts/nelisp-stdlib-prelude.el	e141a64a3734
 pinned-collision ns-collision-divergent	assq	lisp/nelisp-stdlib-search.el packages/emacs-lib-core/src/emacs-list.el scripts/nelisp-stdlib-prelude.el	dd3b123a8507
 pinned-collision ns-collision-divergent	autoload	lisp/nelisp-stdlib-misc.el packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	c7b28080d10e
-pinned-collision ns-collision-divergent	autoload-do-load	packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	839b94897348
+# 2026-11-17: autoload-do-load re-pinned (839b94897348 -> a1b95fb17113): the prelude definition became a thin dispatcher over nelisp--autoload-do-load-1 so its common path is adopted as bytecode; the divergence from emacs-eval.el is unchanged in kind.
+pinned-collision ns-collision-divergent	autoload-do-load	packages/emacs-lib-core/src/emacs-eval.el scripts/nelisp-stdlib-prelude.el	a1b95fb17113
 pinned-collision ns-collision-divergent	back-to-indentation	packages/emacs-lib-core/src/regi.el scripts/nelisp-stdlib-prelude.el	7759c3e114ce
 pinned-collision ns-collision-divergent	backquote	packages/emacs-lib-core/src/emacs-backquote.el packages/emacs-lib-core/src/emacs-parity-macros2.el	401dfa22d712
 pinned-collision ns-collision-divergent	backward-char	packages/emacs-lib-core/src/emacs-buffer-builtins.el packages/emacs-lib-core/src/emacs-stub-bulk.el packages/emacs-lib-core/src/emacs-stub.el scripts/nelisp-stdlib-prelude.el	707dad9e29fd

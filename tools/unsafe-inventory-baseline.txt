@@ -593,7 +593,12 @@ pinned-kernel-call scripts/nelisp-gc-pause-growth.el 2
 # Taken from the scanner (875) and cross-checked against `git diff', not
 # summed on paper.
 # 2026-11-07: scripts/nelisp-standalone-build.el 1971 -> 1972.  `nl_n4_finish_w_fail' (backtrace capture before the pop of a failing VM activation) adds one ptr-write-u64 to the pop, mirroring the existing pop in `nl_n4_finish_w'.
-pinned-kernel-call scripts/nelisp-standalone-build.el 1972
+# 2026-11-17: scripts/nelisp-standalone-build.el 1972 -> 1975.  Macroexpansion speed stages 2a-3a add three
+# raw-pointer writes: the in-loop setcar/setcdr/nreverse/nconc arms of `wf_bytecode_w_fast_run' write the cons
+# cell and the VM stack slot directly instead of leaving the fast loop, and `wf_bytecode_w_get_fast' fills its
+# result word.  Scanner delta measured against 8cd4fa972.  The separate 1972 -> 1973 excess inherited from
+# 982ed65a is not covered here and stays red.
+pinned-kernel-call scripts/nelisp-standalone-build.el 1975
 # 2026-09-11: one GC snapshot raw-address probe, bounded by the named table
 # contract and used only for structured diagnostics.
 pinned-kernel-call lisp/nelisp-repl-gc.el 1

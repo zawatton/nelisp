@@ -239,7 +239,17 @@
    nelisp-prelude-bytecode-parity--fx-helper-cases
    (mapcar (lambda (name)
              (list name (list name (list 'quote nelisp-prelude-bytecode-parity--cxxr-tree))))
-           nelisp-prelude-bytecode-parity--cxxr-names))
+           nelisp-prelude-bytecode-parity--cxxr-names)
+   ;; Keep last: the smoke joins these cases to the fixture rows positionally.
+   '((function-get
+      (list (progn (put 'nl--fg-a 'p 7) (fset 'nl--fg-a 'car) (fset 'nl--fg-b 'nl--fg-a)
+                   (function-get 'nl--fg-b 'p))
+            (function-get 'nl--fg-b 'q t) (function-get 5 'p) (function-get nil 'p)
+            (function-get 'nl--fg-b 'p 'macro)))
+     (autoload-do-load
+      (list (autoload-do-load 5) (autoload-do-load nil 'x 'macro) (autoload-do-load '(a b))
+            (autoload-do-load '(autoload "f" nil nil nil) 'zz 'macro)
+            (autoload-do-load "s" 'y)))))
   "One deterministic, meaningful invocation for each selected prelude defun.")
 
 (defun nelisp-prelude-bytecode-parity--host-source-defuns ()
