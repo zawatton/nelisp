@@ -23,7 +23,7 @@
         nelisp-thread-allocating-standalone-smoke \
         nelisp-thread-mirror-guard-standalone-smoke \
         nelisp-thread-percpu-roots-smoke \
-        nelisp-prognleak-standalone-smoke
+        nelisp-prognleak-standalone-smoke nelisp-aot-bytecode-standalone-smoke
 
 EMACS ?= emacs
 # Standalone builds verify the GNU 31.1 dialect; host gates may use 30.2.
@@ -966,6 +966,19 @@ nelisp-prognleak-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.e
 	  exit 0; \
 	fi; \
 	NELISP_BIN="$$bin" NELISP_ROOT=$(CURDIR) sh test/nelisp-prognleak-standalone-smoke.sh
+
+# Build-time AOT of GNU bytecode (scripts/nelisp-aot-bytecode.el): install
+# count, digest equality with the VM, redefinition/advice, mutated-copy refusal,
+# dynamic binding across signals, eval depth and GC stress, with negative
+# controls -- see the header of test/nelisp-aot-bytecode-standalone-smoke.sh.
+.PHONY: nelisp-aot-bytecode-standalone-smoke
+nelisp-aot-bytecode-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)
+	@bin=$(STANDALONE_BIN); \
+	if [ ! -f "$$bin" ]; then \
+	  echo "GATE-SKIP no nelisp binary in target/ after build attempt"; \
+	  exit 0; \
+	fi; \
+	NELISP_BIN="$$bin" NELISP_ROOT=$(CURDIR) sh test/nelisp-aot-bytecode-standalone-smoke.sh
 
 # Runnable-host guard: see `nl-condition-standalone-smoke' above.
 nl-resource-standalone-smoke: $(if $(wildcard target/nelisp target/nelisp.exe),,standalone-reader)

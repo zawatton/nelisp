@@ -168,7 +168,9 @@ target is entry-named, or a raw ptr/heap write at object offset 24 through
     (setq size (nelisp-function-epoch-test--defun
                 forms 'nelisp-standalone--driver-bss-size))
     (let ((tail (memq 2072 (nelisp-function-epoch-test--atoms size))))
-      (should (equal (cl-subseq tail 0 8) '(2072 64 if nelisp-standalone--census-p 512 0 8 16))))))
+      ;; The 208-byte `nl_aot_state' block (scripts/nelisp-aot-bytecode.el) sits
+      ;; between the function epoch word and `nl_cold_chunk0_domain'.
+      (should (equal (cl-subseq tail 0 9) '(2072 64 if nelisp-standalone--census-p 512 0 8 208 16))))))
 
 (ert-deftest nelisp-function-epoch-builtin-registered ()
   (with-temp-buffer

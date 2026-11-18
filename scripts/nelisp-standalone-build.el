@@ -245,6 +245,7 @@ Records in `nelisp-standalone--toolchain-elc-status' which copy is used."
 (require 'nelisp-boot-image)
 (require 'nelisp-version)
 (require 'nelisp-prelude-bytecode)
+(require 'nelisp-aot-bytecode)
 (require 'nelisp-cc-eln-callback)
 (require 'nelisp-cc-eln-callback7)
 
@@ -988,6 +989,12 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      ;; `nl_function_epoch' (Doc 238 B0): one u64, the global function epoch,
      ;; placed after `nl_repr_census'; zero-fresh on every start.
      8
+     ;; `nl_aot_state' (scripts/nelisp-aot-bytecode.el): the AOT install-table
+     ;; cache.  +0 table mirror entry, +8 its compaction epoch, +16 call-arm miss
+     ;; filter, +24 filter epoch+1, +32+8i installed object words (8), +96 table
+     ;; data address, +104+8i constants data addresses (8), +176 lean counter
+     ;; region address.  Zero-fresh on every start.
+     208
      ;; `nl_cold_chunk0_domain'.
      16
      ;; `nl_gc_weak_head': the transient weak-table chain (Doc 228).
@@ -1429,6 +1436,11 @@ storage — not an arena reservation."
     (list (nelisp-link-symbol "nl_function_epoch"
                               (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64 2048 24 32 272 2072 64
                                  (if (nelisp-standalone--census-p) 512 0))
+                              :section 'bss :bind 'global :type 'object))
+    (list (nelisp-link-symbol "nl_aot_state"
+                              (+ (nelisp-standalone--catch-head-offset) 8 128 32 56 96 512 16 128 64 2048 24 32 272 2072 64
+                                 (if (nelisp-standalone--census-p) 512 0)
+                                 8)
                               :section 'bss :bind 'global :type 'object))
     (list (nelisp-link-symbol "nl_cold_chunk0_domain"
                               (- (nelisp-standalone--driver-bss-size) 32)
@@ -26754,12 +26766,16 @@ bytes are written into a fresh 8-byte buffer instead."
                       (if (or (< argc mandatory)
                               (and (= rest 0) (> argc maxargs)))
                           (bf_wrong_number_of_args func argc)
-                        (wf_bytecode_execute_frame
-                         (ptr-read-u64 rp 8)
-                         (ptr-read-u64 rp 16)
-                         (wf_bytecode_w_int (ptr-read-u64 rp 24))
-                         env out 0 argc maxargs rest 0
-                         (+ mem (* first 8)) outw 0 pre)))))))))))
+                        (let* ((aw (wf_aot_try func mem first argc env)))
+                          (if (= aw 2)
+                              (wf_bytecode_execute_frame
+                               (ptr-read-u64 rp 8)
+                               (ptr-read-u64 rp 16)
+                               (wf_bytecode_w_int (ptr-read-u64 rp 24))
+                               env out 0 argc maxargs rest 0
+                               (+ mem (* first 8)) outw 0 pre)
+                            (if (= aw 0) 1
+                              (seq (ptr-write-u64 outw 0 aw) 0))))))))))))))
     (defun wf_bytecode_w_dynamic_function (func formals mem first argc env outw out)
       ;; Dynamic-binding bytecode: the callee activation binds FORMALS to the
       ;; argument words itself (`wf_bytecode_w_bind_formals').
@@ -27463,7 +27479,8 @@ bytes are written into a fresh 8-byte buffer instead."
                              (logand (ptr-read-u8 func -6) 63))))
                    (p (if (= lowf 0) (ptr-read-u64 func 8) (- func 6))))
               (if (if (/= ftag 17) 1
-                    (< (sar (ptr-read-u64 p 0) 8) 4))
+                    (if (< (sar (ptr-read-u64 p 0) 8) 4) 1
+                      (if (= (wf_aot_maybe p) 0) 0 (/= (wf_aot_find func env) 0))))
                   -2
                 (let* ((tw (ptr-read-u64 p 16))
                        (sw (ptr-read-u64 p 40)))
@@ -28104,11 +28121,14 @@ bytes are written into a fresh 8-byte buffer instead."
                                                    -2
                                                  (let* ((p (- func 6)))
                                                    (if
-                                                       (<
-                                                        (sar
-                                                         (ptr-read-u64 p 0)
-                                                         8)
-                                                        4)
+                                                       (if
+                                                           (<
+                                                            (sar
+                                                             (ptr-read-u64 p 0)
+                                                             8)
+                                                            4)
+                                                           1
+                                                         (if (= (wf_aot_maybe p) 0) 0 (/= (wf_aot_find func env) 0)))
                                                        -2
                                                      (let*
                                                          ((tw
@@ -28740,11 +28760,10 @@ bytes are written into a fresh 8-byte buffer instead."
                                          (if (= isp -2)
                                              (let*
                                                  ((rc
-                                                   (wf_bytecode_call_subr env
-                                                                          mem
-                                                                          sp
-                                                                          argc
-                                                                          cell)))
+                                                   (let* ((aq (wf_aot_vm_call env mem sp argc cell)))
+                                                     (if (= aq 2)
+                                                         (wf_bytecode_call_subr env mem sp argc cell)
+                                                       aq))))
                                                (seq (setq last-name -1)
                                                     (if (= rc 0)
                                                         (seq
@@ -43581,6 +43600,7 @@ extern arms in dynamic builds."
          nelisp-standalone--applyfn-bignum-helpers
          (nelisp-standalone--argframe-m5-helpers)
          (append (nelisp-standalone--target-bytecode-helpers)
+                 (nelisp-aot-bytecode-dsl-defuns)
                  nelisp-cc-eln-callback--source
                  nelisp-cc-eln-callback7--source)
          nelisp-standalone--applyfn-bf-helpers
@@ -51049,7 +51069,8 @@ resolved fine.  Same feature, different answer per entry point."
    ;; GNU Emacs 31.1 preloads this special variable from src/lread.c
    ;; (DEFVAR_LISP, initialized to Qnil); macroexp uses it during expansion.
    "(defvar macroexp--dynvars nil \"List of variables declared dynamic in the current scope. Only valid during macro-expansion. Internal use only.\")\n"
-   (nelisp-boot-image-provider 'macroexp)
+   (nelisp-aot-bytecode-macroexp-text)
+   (nelisp-aot-bytecode-install-source)
    ;; Other command bootstraps retain their historical eager providers.
    ;; The reader installs relocatable autoloads after its matcher is ready.
    (unless defer-libraries "(require 'inline)\n(require 'json)\n")
