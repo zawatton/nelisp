@@ -993,7 +993,8 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      ;; cache.  +0 table mirror entry, +8 its compaction epoch, +16 call-arm miss
      ;; filter, +24 filter epoch+1, +32+8i installed object words (8), +96 table
      ;; data address, +104+8i constants data addresses (8), +176 lean counter
-     ;; region address.  Zero-fresh on every start.
+     ;; region address, +184 captured `autoload-do-load' object, +192 the
+     ;; symbol `autoload'.  Zero-fresh on every start.
      208
      ;; `nl_cold_chunk0_domain'.
      16
@@ -51166,6 +51167,8 @@ resolved fine.  Same feature, different answer per entry point."
    "\n;; --- GNU Emacs 31.1 subr.el: function-get ---\n"
    (nelisp-standalone--vendor-function-source
     "vendor/staged-emacs-lisp/subr.el" 'function-get)
+   ;; AOT rows defined by staged subr.el (function-get) install here, then the table is sealed.
+   (nelisp-aot-bytecode-late-install-source)
    ;; Association helpers are exact GNU forms shared with the source evaluator.
    "\n;; --- GNU Emacs 31.1 subr.el: association-list helpers ---\n"
    (nelisp-standalone--vendor-function-source
@@ -51442,6 +51445,12 @@ prelude adoption gates accept them."
         (nelisp-standalone--vendor-defun-bytecode-source
          relative-file function-name text)
       text)))
+
+;; The AOT translator compiles the staged subr.el rows (`function-get') from the
+;; exact boot text this build compiles, so its install guard sees `equal' objects.
+(setq nelisp-aot-bytecode-subr-source-function
+      (lambda (name)
+        (nelisp-standalone--vendor-function-source "vendor/staged-emacs-lisp/subr.el" name)))
 
 (defun nelisp-standalone--vendor-define-error-source (relative-file name)
   "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.

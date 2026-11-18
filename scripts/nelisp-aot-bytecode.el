@@ -22,7 +22,9 @@
 ;;  - `nl_aot_state' (208 BSS bytes) caches the table: +0 mirror entry, +8
 ;;    its `nl_mxcache_epoch', +16 callee miss filter, +24 filter epoch+1,
 ;;    +32+8i installed object words, +96 table data address, +104+8i constants
-;;    data addresses, +176 lean counter region address.
+;;    data addresses, +176 lean counter region address, +184 the captured
+;;    `autoload-do-load' object and +192 the symbol `autoload' (0 when not
+;;    heap words), which guard the inline autoload-do-load fast path.
 ;;
 ;; Build-time switches (environment variables):
 ;;  - NELISP_AOT_LIST: comma separated override of the translated functions.
@@ -43,9 +45,34 @@
     (if env
         (mapcar #'intern (split-string env "," t))
       '(macroexp--cons macroexp--all-forms macroexpand-1 macroexp--all-clauses
-        macroexp-macroexpand macroexp--expand-all)))
-  "Functions of vendor macroexp.el the build tries to translate, in id order.
+        macroexp-macroexpand macroexp--expand-all function-get)))
+  "Functions the build tries to translate, in id order.
+Names in `nelisp-aot-bytecode-subr-names' come from the staged GNU subr.el, the
+others from vendor macroexp.el.
 NELISP_AOT_LIST (comma separated, possibly empty) overrides it for measurements.")
+
+(defconst nelisp-aot-bytecode-subr-names '(function-get)
+  "Build-list functions whose bytecode object comes from staged subr.el.
+They are defined after the macroexp provider, so their install forms are emitted
+late (`nelisp-aot-bytecode-late-install-source').")
+
+(defvar nelisp-aot-bytecode-subr-source-function nil
+  "Function of one argument NAME returning the boot text that defines NAME in
+staged subr.el, exactly as the standalone build compiles it, or nil.  The
+standalone build sets it; when nil, the subr.el rows are not translated.")
+
+(defvar nelisp-aot-bytecode--subr-texts nil)
+(defun nelisp-aot-bytecode-subr-text (name)
+  "Return the staged subr.el boot text defining NAME, or nil.
+The text is the one the standalone build compiles."
+  (let ((hit (assq name nelisp-aot-bytecode--subr-texts)))
+    (if hit (cdr hit)
+      (let ((text (and nelisp-aot-bytecode-subr-source-function
+                       (funcall nelisp-aot-bytecode-subr-source-function name))))
+        (push (cons name text) nelisp-aot-bytecode--subr-texts)
+        text))))
+
+(defun nelisp-aot-bytecode--late-name-p (name) (and (memq name nelisp-aot-bytecode-subr-names) t))
 
 (define-error 'nelisp-aot-refused "AOT translation refused")
 
@@ -59,8 +86,9 @@ NELISP_AOT_LIST (comma separated, possibly empty) overrides it for measurements.
 
 (defun nelisp-aot-bytecode--make-form (text name)
   "Return the `make-byte-code' form NAME is defined by in TEXT, or nil."
-  (let ((pos (string-match (format "(fset '%s (make-byte-code " (regexp-quote (symbol-name name)))
-                           text)))
+  (let ((pos (and (stringp text)
+                  (string-match (format "(fset '%s (make-byte-code " (regexp-quote (symbol-name name)))
+                                text))))
     (when pos
       (let ((form (car (read-from-string text pos))))
         (and (eq (car-safe form) 'fset)
@@ -74,7 +102,8 @@ NELISP_AOT_LIST (comma separated, possibly empty) overrides it for measurements.
 ;;;; Translator
 
 (defun nelisp-aot--refuse (fmt &rest args)
-  "Signal `nelisp-aot-refused' with the formatted reason; the function stays on the VM."
+  "Signal `nelisp-aot-refused' with the formatted reason.
+The refused function stays on the VM."
   (signal 'nelisp-aot-refused (list (apply #'format fmt args))))
 
 ;; Opcode classes.
@@ -274,7 +303,7 @@ block leaders, deepest stack, the condition-case region of each pc
      0))
 (defconst nelisp-aot--scr
   '(seq (if (= scb 0) (setq scb (wf_aot_xb 160 0)) 0) scb))
-(defconst nelisp-aot--gc-poll '(if (< (heap-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0))
+(defconst nelisp-aot--gc-poll '(if (< (ptr-read-u64 (data-addr nl_gc_until) 0) 0) (wf_bytecode_poll) 0))
 (defconst nelisp-aot--back-poll
   '(seq (setq bec (+ bec 1))
         (if (>= bec 255) (seq (setq bec 0) (wf_bytecode_poll)) 0)))
@@ -299,7 +328,7 @@ block leaders, deepest stack, the condition-case region of each pc
             (mapcar (lambda (_e) (setq j (1+ j))
                       `(ptr-write-u64 xb ,(* j 8) ,(nelisp-aot--x (+ (- sp k) j))))
                     (make-list k nil)))
-        (if (= ,call 0) (setq ,(nelisp-aot--x (- sp k)) (heap-read-u64 xb 0)) ,failf)))
+        (if (= ,call 0) (setq ,(nelisp-aot--x (- sp k)) (ptr-read-u64 xb 0)) ,failf)))
 
 (defun nelisp-aot--named (sp k name failf)
   "Call builtin NAME on K operands through the VM's named-primitive route."
@@ -337,12 +366,12 @@ block leaders, deepest stack, the condition-case region of each pc
              ((= op 136) nil)
              ((or (= op 129) (>= op 192))
               (let ((i (if (= op 129) arg (- op 192))))
-                (add `(setq ,(x sp) (heap-read-u64 cdata ,(* i 8))))))
+                (add `(setq ,(x sp) (ptr-read-u64 cdata ,(* i 8))))))
              ((= op 178) (add `(setq ,(x (- sp 1 arg)) ,(x top))))
              ((memq op '(64 65))
               (add `(let* ((w ,(x top)))
                       (if (= (logand w 7) 2)
-                          (setq ,(x top) (heap-read-u64 (- w 2) ,(if (= op 64) 0 8)))
+                          (setq ,(x top) (ptr-read-u64 (- w 2) ,(if (= op 64) 0 8)))
                         (if (= (wf_bytecode_w_consp w) 1)
                             (setq ,(x top) (,(if (= op 64) 'nl_cons_car_word 'nl_cons_cdr_word) w))
                           (if (= (wf_bytecode_w_nilp w) 1)
@@ -353,7 +382,7 @@ block leaders, deepest stack, the condition-case region of each pc
              ((memq op '(162 163))
               (add `(let* ((w ,(x top)))
                       (setq ,(x top)
-                            (if (= (logand w 7) 2) (heap-read-u64 (- w 2) ,(if (= op 162) 0 8))
+                            (if (= (logand w 7) 2) (ptr-read-u64 (- w 2) ,(if (= op 162) 0 8))
                               (if (= (wf_bytecode_w_consp w) 1)
                                   (,(if (= op 162) 'nl_cons_car_word 'nl_cons_cdr_word) w)
                                 3))))))
@@ -458,15 +487,25 @@ block leaders, deepest stack, the condition-case region of each pc
                                           (make-list (1+ n) nil)))
                               ;; Leaf subrs (symbol-with-pos-p, fboundp, ...) first, as the VM's
                               ;; call arm does (`wf_bytecode_call_subr'): 0 done, 1 signalled, 2 not a leaf.
-                              (let* ((ll (wf_bytecode_call_leaf env xb 0 ,n (heap-read-u64 xb 0))))
-                                (if (= ll 0) (setq ,(x fi) (heap-read-u64 xb 0))
+                              (let* ((ll (wf_bytecode_call_leaf env xb 0 ,n (ptr-read-u64 xb 0))))
+                                (if (= ll 0) (setq ,(x fi) (ptr-read-u64 xb 0))
                                   (if (= ll 1) ,failf
                                     (let* ((lr (wf_aot_lean_call env xb ,n)))
-                                      (if (= lr 0) (setq ,(x fi) (heap-read-u64 xb 0))
+                                      (if (= lr 0) (setq ,(x fi) (ptr-read-u64 xb 0))
                                         (if (= lr 1) ,failf
                                           (if (= (wf_bytecode_call env xb ,(1+ n) ,n 0 1) 0)
-                                              (setq ,(x fi) (heap-read-u64 xb 0))
+                                              (setq ,(x fi) (ptr-read-u64 xb 0))
                                             ,failf)))))))))))
+                ;; (autoload-do-load FUNDEF ...) with the constant callee symbol: GNU's C
+                ;; `Fautoload_do_load' returns FUNDEF unless (car-safe FUNDEF) is `autoload'.
+                ;; `wf_aot_adl' answers 1 only when the callee's live function cell is still
+                ;; the captured prelude object and FUNDEF is no autoload form; otherwise the
+                ;; generic call (redefinition, advice, a real autoload) runs as before.
+                (when (and (eq callee 'autoload-do-load) (<= 1 n 3))
+                  (setq generic
+                        `(if (= (wf_aot_adl ,(x fi) ,(x (+ fi 1))) 1)
+                             (setq ,(x fi) ,(x (+ fi 1)))
+                           ,generic)))
                 (add (if did
                          (let* ((e (assq callee nelisp-aot--direct)) (maxargs (nth 3 e)))
                            `(if (= (wf_aot_gd ,(x fi) ,(+ 32 (* did 8))) 1)
@@ -496,19 +535,19 @@ block leaders, deepest stack, the condition-case region of each pc
                 (setq term `(if ,nilp ,jump (setq blk ,fall)))))
              ((<= 8 op 15)
               (let ((i (nelisp-aot--var-index op arg)))
-                (add `(let* ((nm (heap-read-u64 cdata ,(* i 8)))
+                (add `(let* ((nm (ptr-read-u64 cdata ,(* i 8)))
                              (g (extern-call nl_gv_fast env nm)))
                         (if (if (= g -1) 1 (= g 2))
                             (seq ,nelisp-aot--ensure
                                  (if (= (wf_bytecode_w_varref env nm xb (+ ,scr 96)) 0)
-                                     (setq ,(x sp) (heap-read-u64 xb 0))
+                                     (setq ,(x sp) (ptr-read-u64 xb 0))
                                    ,failf))
                           (setq ,(x sp) g)))
                      t)))
              ((<= 16 op 23)
               (let ((i (nelisp-aot--var-index op arg)))
                 (add `(seq ,nelisp-aot--ensure
-                           (if (= (bf_set_dynamic_value env (heap-read-u64 cdata ,(* i 8))
+                           (if (= (bf_set_dynamic_value env (ptr-read-u64 cdata ,(* i 8))
                                                         (wf_bytecode_w_view ,(x top) ,scr)) 0)
                                0 ,failf))
                      t)))
@@ -516,7 +555,7 @@ block leaders, deepest stack, the condition-case region of each pc
               (let* ((i (nelisp-aot--var-index op arg))
                      (bn (intern (format "bn%d" bd))) (bv (intern (format "bv%d" bd)))
                      (bg (intern (format "bg%d" bd))))
-                (add `(let* ((sym (heap-read-u64 cdata ,(* i 8))) (val ,(x top))
+                (add `(let* ((sym (ptr-read-u64 cdata ,(* i 8))) (val ,(x top))
                              (sv (wf_aot_lean_bind env sym val)))
                         (if (/= sv 0)
                             (seq (setq ,bn sym) (setq ,bv sv) (setq ,bg 0) (setq nb ,(1+ bd)))
@@ -605,12 +644,12 @@ block leaders, deepest stack, the condition-case region of each pc
                 (build 0 (1- (length vec)))))
              (m (1+ nelisp-aot--maxarr))
              (body
-              `(let* ((rec (heap-read-u64 env 96)))
+              `(let* ((rec (ptr-read-u64 env 96)))
                  (if (if (< rec 100) 0 (>= rec (nl_eval_depth_limit env rec)))
                      (seq (wf_bytecode_signal_nesting) 0)
                    (let* (,@(mapcar (lambda (j) (list (nelisp-aot--x j) 0)) (number-sequence nargs (1- nslots)))
                           (res 0) (fail 0) (blk 0) (bec 0) (nb 0) (xb 0) (xbm 0) (scb 0) (cnd 0)
-                          (cdata (heap-read-u64 (data-addr nl_aot_state) ,(+ 104 (* id 8))))
+                          (cdata (ptr-read-u64 (data-addr nl_aot_state) ,(+ 104 (* id 8))))
                           ,@(apply #'append
                                    (mapcar (lambda (j) (list (list (intern (format "bn%d" j)) 0)
                                                              (list (intern (format "bv%d" j)) 0)
@@ -620,10 +659,10 @@ block leaders, deepest stack, the condition-case region of each pc
                       (ptr-write-u64 env 96 (+ rec 1))
                       ;; Entry counter (4 per entry, fixnum-coded): the observable the regression
                       ;; smoke reads to prove the AOT body ran.  One load, add and store.
-                      (let* ((tb (heap-read-u64 (data-addr nl_aot_state) 96)))
+                      (let* ((tb (ptr-read-u64 (data-addr nl_aot_state) 96)))
                         (if (/= tb 0)
                             (let* ((ca (+ tb ,(* (+ nelisp-aot--k id) 8))))
-                              (ptr-write-u64 ca 0 (+ (heap-read-u64 ca 0) 4)))
+                              (ptr-write-u64 ca 0 (+ (ptr-read-u64 ca 0) 4)))
                           0))
                       ,nelisp-aot--gc-poll
                       (while (>= blk 0)
@@ -646,7 +685,11 @@ block leaders, deepest stack, the condition-case region of each pc
       (let ((id 0))
         (setq rows nil nelisp-aot--sites nil)
         (dolist (name nelisp-aot-bytecode-build-list)
-          (let* ((mf (nelisp-aot-bytecode--make-form text name))
+          (let* ((mf (nelisp-aot-bytecode--make-form
+                      (if (nelisp-aot-bytecode--late-name-p name)
+                          (nelisp-aot-bytecode-subr-text name)
+                        text)
+                      name))
                  (obj (and mf (nelisp-aot-bytecode--object mf))))
             (condition-case err
                 (progn
@@ -674,6 +717,37 @@ block leaders, deepest stack, the condition-case region of each pc
 (defun nelisp-aot-bytecode--live-rows ()
   "The translated rows as a list (nil when nothing was translated)."
   (let ((r (nelisp-aot-bytecode-rows))) (if (eq r 'none) nil r)))
+
+(defun nelisp-aot-bytecode--install-rows (rows)
+  (mapconcat
+   (lambda (row)
+     (let ((mf (nth 2 row)))
+       (format "(nelisp--aot-install '%s %d %S %S %S)\n"
+               (nth 1 row) (nth 0 row) (nth 1 mf) (nth 2 mf) (nth 3 mf))))
+   rows ""))
+
+(defun nelisp-aot-bytecode--seal-source (k)
+  "Boot text capturing `autoload-do-load' and `autoload', then sealing the table.
+Lean words 6 and 7 (spare) hold the autoload-do-load object captured when it is
+the prelude's byte-code function, and the symbol `autoload'; `wf_aot_mask_sync'
+mirrors them for the inline call-site fast path (`wf_aot_adl')."
+  (concat
+   (format "(let ((f (and (fboundp 'autoload-do-load) (symbol-function 'autoload-do-load))))\n  (when (byte-code-function-p f)\n    (aset nelisp--aot-table %d f)\n    (aset nelisp--aot-table %d 'autoload)))\n"
+           (+ 6 (* 2 k)) (+ 7 (* 2 k)))
+   (format "(aset nelisp--aot-table %d t)\n" (+ nelisp-aot--lw (* 2 k)))))
+
+(defun nelisp-aot-bytecode-late-install-source ()
+  "Boot text installing the late rows (subr.el functions) and sealing the table.
+Empty when there is no late row (the seal is then part of the install source)."
+  (let* ((rows (nelisp-aot-bytecode--live-rows)) (k (length rows))
+         (late (cl-remove-if-not (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows)))
+    (if (null late) ""
+      (concat "\n;; --- nelisp AOT of GNU bytecode: late rows and seal ---\n"
+              (nelisp-aot-bytecode--install-rows late)
+              (nelisp-aot-bytecode--seal-source k)
+              (if (equal (getenv "NELISP_AOT_DEFER") "1")
+                  "(defvar nelisp--aot-table-saved nelisp--aot-table)\n(setq nelisp--aot-table nil)\n"
+                "")))))
 
 (defun nelisp-aot-bytecode-install-source ()
   "Return boot Lisp text defining the install table and installing each row."
@@ -711,17 +785,16 @@ block leaders, deepest stack, the condition-case region of each pc
      (if rows
          (format "(let ((i 0)) (while (< i %d) (aset nelisp--aot-table i nil) (setq i (1+ i))))\n" k)
        "")
-     (mapconcat
-      (lambda (row)
-        (let ((mf (nth 2 row)))
-          (format "(nelisp--aot-install '%s %d %S %S %S)\n"
-                  (nth 1 row) (nth 0 row) (nth 1 mf) (nth 2 mf) (nth 3 mf))))
-      rows "")
+     (nelisp-aot-bytecode--install-rows
+      (cl-remove-if (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows))
      ;; Seal: until it is t the call-arm filter stays all-maybe (see wf_aot_mask_sync).
-     (format "(aset nelisp--aot-table %d t)\n" (+ nelisp-aot--lw (* 2 k)))
+     ;; With late rows the seal moves to `nelisp-aot-bytecode-late-install-source'.
+     (if (cl-some (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows) ""
+       (nelisp-aot-bytecode--seal-source k))
      ;; Debug aid: NELISP_AOT_DEFER=1 builds an image whose AOT table is detached
      ;; (everything runs on the VM); scripts re-enable it from `nelisp--aot-table-saved'.
-     (if (equal (getenv "NELISP_AOT_DEFER") "1")
+     (if (and (equal (getenv "NELISP_AOT_DEFER") "1")
+              (not (cl-some (lambda (r) (nelisp-aot-bytecode--late-name-p (nth 1 r))) rows)))
          "(defvar nelisp--aot-table-saved nelisp--aot-table)\n(setq nelisp--aot-table nil)\n"
        ""))))
 
@@ -747,9 +820,9 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; The mirror entry is cached in `nl_aot_state' and validated by
          ;; `nl_mxcache_epoch', like `nl_fx_tbl_cache'; the miss path builds the
          ;; symbol name `nelisp--aot-table' from raw words and looks it up once.
-         (let* ((entry (if (= (heap-read-u64 (data-addr nl_aot_state) 8)
-                              (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
-                           (heap-read-u64 (data-addr nl_aot_state) 0)
+         (let* ((entry (if (= (ptr-read-u64 (data-addr nl_aot_state) 8)
+                              (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
+                           (ptr-read-u64 (data-addr nl_aot_state) 0)
                          0)))
            (if (/= entry 0)
                (wf_aot_entry_vec entry)
@@ -764,7 +837,7 @@ block leaders, deepest stack, the condition-case region of each pc
                     (if (= e 0) 0
                       (seq (ptr-write-u64 (data-addr nl_aot_state) 0 0)
                            (ptr-write-u64 (data-addr nl_aot_state) 8
-                                          (heap-read-u64 (data-addr nl_mxcache_epoch) 0))
+                                          (ptr-read-u64 (data-addr nl_mxcache_epoch) 0))
                            (ptr-write-u64 (data-addr nl_aot_state) 0 e)
                            (wf_aot_entry_vec e))))))))))
        (defun wf_aot_lean_bind (env name valw)
@@ -785,14 +858,14 @@ block leaders, deepest stack, the condition-case region of each pc
                    (if (/= (ptr-read-u64 env 168) 0) 0
                      (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 0
                        (if (= (ptr-read-u64 (data-addr nl_root_pin_control) 48) 2) 0
-                         (if (= (let* ((nm (heap-read-u64 (- name 6) 8)))
+                         (if (= (let* ((nm (ptr-read-u64 (- name 6) 8)))
                                   (if (= (logand nm 7) 4)
-                                      (let* ((sb (- nm 4)) (n0 (heap-read-u64 sb 8))
+                                      (let* ((sb (- nm 4)) (n0 (ptr-read-u64 sb 8))
                                              (n (if (< n0 0)
-                                                    (logand (heap-read-u64 sb 0) 9223372036854775807)
+                                                    (logand (ptr-read-u64 sb 0) 9223372036854775807)
                                                   n0)))
                                         (if (< n 1) 0
-                                          (if (= (heap-read-u8 (heap-read-u64 sb 24) 0) 58) 1 0)))
+                                          (if (= (heap-read-u8 (ptr-read-u64 sb 24) 0) 58) 1 0)))
                                     (bf_keyword_raw name)))
                                 1)
                              0
@@ -819,9 +892,9 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; certainly not installed (a 64-bit bloom word, state +16).  Valid only
          ;; for the compaction epoch it was built in (state +24 holds epoch+1, so
          ;; a zero-fresh state is never valid).
-         (if (= (heap-read-u64 (data-addr nl_aot_state) 24)
-                (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
-             (logand (shr (heap-read-u64 (data-addr nl_aot_state) 16)
+         (if (= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+             (logand (shr (ptr-read-u64 (data-addr nl_aot_state) 16)
                           (logand (+ (shr p 3) (shr p 9)) 63))
                      1)
            1))
@@ -831,8 +904,8 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; installed object WORD, +96 the table data address (entry counters),
          ;; +104+8i the constants data address.  Lisp objects do not move (the
          ;; production collector is mark+sweep).
-         (if (= (heap-read-u64 (data-addr nl_aot_state) 24)
-                (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+         (if (= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
              0
            (let* ((n (- (/ (vector-len v) 2) %HL2%)) (i 0) (m 0))
              (if (if (/= (nl_vector_slot_word v (+ %L% (* 2 n))) 7) 1 (> n 8)) 0
@@ -847,6 +920,14 @@ block leaders, deepest stack, the condition-case region of each pc
                     (ptr-write-u64 (data-addr nl_aot_state) 16 m)
                     (ptr-write-u64 (data-addr nl_aot_state) 96 (+ (nl_word_payload v) 8))
                     (ptr-write-u64 (data-addr nl_aot_state) 176 (+ (nl_word_payload v) (+ 8 (* 16 n))))
+                    ;; Lean words 6/7: the captured autoload-do-load object and `autoload',
+                    ;; kept only when both are heap words (else 0: the inline path declines).
+                    (let* ((aw (nl_vector_slot_word v (+ (* 2 n) 6)))
+                           (sw (nl_vector_slot_word v (+ (* 2 n) 7))))
+                      (seq (ptr-write-u64 (data-addr nl_aot_state) 184
+                                          (if (= (logand aw 7) 6) (if (= (logand sw 7) 6) aw 0) 0))
+                           (ptr-write-u64 (data-addr nl_aot_state) 192
+                                          (if (= (logand sw 7) 6) sw 0))))
                     (setq i 0)
                     (while (< i n)
                       (let* ((w (nl_vector_slot_word v i)))
@@ -860,7 +941,7 @@ block leaders, deepest stack, the condition-case region of each pc
                                               0))
                              (setq i (+ i 1)))))
                     (ptr-write-u64 (data-addr nl_aot_state) 24
-                                   (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                                   (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
                     0)))))
        (defun wf_aot_gd (fw off)
          ;; No VM arm; guards the direct native call of an AOT callee.  1 when FW
@@ -871,9 +952,33 @@ block leaders, deepest stack, the condition-case region of each pc
              (if (= (logand (ptr-read-u8 fw -6) 63) 4)
                  (let* ((slot (ptr-read-u64 fw 18)))
                    (if (= slot 0) 0
-                     (if (= (heap-read-u64 (data-addr nl_aot_state) 24)
-                            (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
-                         (if (= slot (heap-read-u64 (data-addr nl_aot_state) off)) 1 0)
+                     (if (= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                            (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                         (if (= slot (ptr-read-u64 (data-addr nl_aot_state) off)) 1 0)
+                       0)))
+               0)
+           0))
+       (defun wf_aot_adl (fw a)
+         ;; 1 when the call (autoload-do-load A ...) through the constant callee
+         ;; symbol word FW may answer A directly: FW's function cell is exactly the
+         ;; original autoload-do-load object captured at state+184 (state valid),
+         ;; and A is not a cons whose car is the symbol `autoload' (state+192).
+         ;; Declines (0) on anything else, including an unusual cons shape.
+         (if (= (logand fw 7) 6)
+             (if (= (logand (ptr-read-u8 fw -6) 63) 4)
+                 (let* ((slot (ptr-read-u64 fw 18)))
+                   (if (= slot 0) 0
+                     (if (= slot (ptr-read-u64 (data-addr nl_aot_state) 184))
+                         (if (= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                                (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                             (if (= (logand a 7) 2)
+                                 (if (= (ptr-read-u64 (- a 2) 0)
+                                        (ptr-read-u64 (data-addr nl_aot_state) 192))
+                                     0 1)
+                               (if (= (logand a 1) 1) 1
+                                 (if (= a 3) 1
+                                   (if (= (wf_bytecode_w_consp a) 1) 0 1))))
+                           0)
                        0)))
                0)
            0))
@@ -891,7 +996,7 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; (pushconditioncase, raw 49).  The condition object (SIGNAL . DATA) when
          ;; the stashed signal matches the condition list CND (exit state cleared,
          ;; as the VM does when it resumes a handler); 0 otherwise.
-         (if (= (heap-read-u64 268435472 0) 1)
+         (if (= (ptr-read-u64 268435472 0) 1)
              (if (= (wf_bytecode_condition_matches env (nl_exit_tag_w) cnd) 1)
                  (let* ((c (wf_bytecode_w_cons2 (nl_exit_tag_w) (nl_exit_val_w))))
                    (seq (ptr-write-u64 268435472 0 0)
@@ -905,13 +1010,13 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; path).  2 = FUNC is not installed (run the VM); else the result WORD,
          ;; 0 = signalled.  Worker threads always run the VM (their stacks are not
          ;; scanned).
-         (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 2
+         (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 2
            (let* ((v (if (= (wf_aot_maybe (nl_word_payload func)) 0) 0 (wf_aot_vec env))))
              (if (= v 0) 2
                (let* ((aid (seq (wf_aot_mask_sync v) (wf_aot_find_in v func))))
                  (if (= aid 0) 2
-                   (if (= (heap-read-u64 (data-addr nl_aot_state) 24)
-                          (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                   (if (= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                          (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
                        (wf_aot_call (- aid 1) func mem first argc env)
                      2)))))))
        (defun wf_aot_vm_call (env mem sp argc cell)
@@ -948,14 +1053,14 @@ block leaders, deepest stack, the condition-case region of each pc
          ;; Counters (lean region at nl_aot_state+176): +0 hits, +8 callee not a
          ;; bytecode closure, +16 AOT-installed callee, +24 other declines before the
          ;; reservation, +32 declines in the lean checks, +40 disable flag.
-         (let* ((lc (heap-read-u64 (data-addr nl_aot_state) 176)))
+         (let* ((lc (ptr-read-u64 (data-addr nl_aot_state) 176)))
            (if (if (= lc 0) 1
                  (if (/= (ptr-read-u64 lc 40) 1) 1
-                   (if (/= (heap-read-u64 (data-addr nl_thread_registry) 0) 0) 1
-                     (/= (heap-read-u64 (data-addr nl_aot_state) 24)
-                         (+ (heap-read-u64 (data-addr nl_mxcache_epoch) 0) 1)))))
+                   (if (/= (ptr-read-u64 (data-addr nl_thread_registry) 0) 0) 1
+                     (/= (ptr-read-u64 (data-addr nl_aot_state) 24)
+                         (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1)))))
                2
-             (let* ((fw (heap-read-u64 xb 0))
+             (let* ((fw (ptr-read-u64 xb 0))
                     ;; Cheap pre-filter: a symbol whose function slot is a cons or a
                     ;; non-closure object (subr, macro, interpreted function) is declined
                     ;; without the environment lookup.
@@ -996,12 +1101,12 @@ block leaders, deepest stack, the condition-case region of each pc
                                 (lean (wf_cb_lean_call target (- xb 24) argc env cell)))
                            (if (= lean 2)
                                (seq (if (= frame 0) 0
-                                      (ptr-write-u64 (heap-read-u64 env 176) 0
-                                                     (- (heap-read-u64 (heap-read-u64 env 176) 0) 1)))
+                                      (ptr-write-u64 (ptr-read-u64 env 176) 0
+                                                     (- (ptr-read-u64 (ptr-read-u64 env 176) 0) 1)))
                                     (nl_root_release env mark)
                                     (ptr-write-u64 lc 32 (+ (ptr-read-u64 lc 32) 4))
                                     2)
-                             (let* ((r (if (= (nl_n4_finish_w (if (= lean 0) (heap-read-u64 xb 0) 0)
+                             (let* ((r (if (= (nl_n4_finish_w (if (= lean 0) (ptr-read-u64 xb 0) 0)
                                                               env 0 frame) 0)
                                            1 0)))
                                (seq (nl_root_release env mark)
@@ -1102,7 +1207,7 @@ block leaders, deepest stack, the condition-case region of each pc
      (when nelisp-aot--prof
        '((defun wf_aot_prof (i)
            ;; Count one execution of profiled site I (words from lean region +64).
-           (let* ((lc (heap-read-u64 (data-addr nl_aot_state) 176)))
+           (let* ((lc (ptr-read-u64 (data-addr nl_aot_state) 176)))
              (if (= lc 0) 0
                (ptr-write-u64 lc (+ 64 (* i 8)) (+ (ptr-read-u64 lc (+ 64 (* i 8))) 4)))))))
      ;; The generated call chain: `wf_aot_call' dispatches on the install id to the
@@ -1120,7 +1225,7 @@ block leaders, deepest stack, the condition-case region of each pc
                (let* ((id (nth 0 row)) (nargs (ash (aref (nth 3 row) 0) -8)))
                  `(defun ,(intern (format "wf_aot_ent_%d" id)) (mem first argc env)
                     (,(intern (format "wf_aot_%d" id)) env
-                     ,@(mapcar (lambda (j) `(if (< ,j argc) (heap-read-u64 mem (* (+ first ,j) 8)) 3))
+                     ,@(mapcar (lambda (j) `(if (< ,j argc) (ptr-read-u64 mem (* (+ first ,j) 8)) 3))
                                (number-sequence 0 (1- nargs)))))))
              rows)
      (mapcar (lambda (row) (nth 4 row)) rows))))

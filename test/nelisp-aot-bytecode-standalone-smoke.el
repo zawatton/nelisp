@@ -7,8 +7,11 @@
 ;; line, and exits 0 only when nothing failed.
 ;;
 ;; What it covers (see scripts/nelisp-aot-bytecode.el):
-;;  - the six vendor macroexp.el functions are installed, and every installed
-;;    slot is `eq' to the live function;
+;;  - the six vendor macroexp.el functions and `function-get' (staged subr.el)
+;;    are installed, and every installed slot is `eq' to the live function;
+;;  - the `autoload-do-load' fast path at the AOT `macroexpand-1' call site
+;;    still loads real autoload macros, and honours a redefined or advised
+;;    `autoload-do-load';
 ;;  - AOT entries are taken (the per-function entry counters of
 ;;    `nelisp--aot-table' grow) and so are lean native->VM calls;
 ;;  - results (printed form and SHA-256 digest) equal the VM's with the table
@@ -43,7 +46,7 @@
 (defvar aot-smoke-control (getenv "NELISP_AOT_SMOKE_CONTROL"))
 (defvar aot-smoke-names
   '(macroexp--cons macroexp--all-forms macroexpand-1 macroexp--all-clauses
-    macroexp-macroexpand macroexp--expand-all))
+    macroexp-macroexpand macroexp--expand-all function-get))
 
 ;; The table vector is captured once so the helpers keep working while the
 ;; variable is detached.
@@ -92,6 +95,7 @@
 (defvar aot-smoke-c-forms (aot-smoke-make-caller 'macroexp--all-forms 1))
 (defvar aot-smoke-c-clauses (aot-smoke-make-caller 'macroexp--all-clauses 1))
 (defvar aot-smoke-c-m1 (aot-smoke-make-caller 'macroexpand-1 1))
+(defvar aot-smoke-c-fg (aot-smoke-make-caller 'function-get 3))
 (defun aot-smoke-ref-cons (a b c)
   (if (and (eq a (car c)) (eq b (cdr c))) c (cons a b)))
 (defun aot-smoke-deep (n)
@@ -114,7 +118,11 @@
         '(let ((x 1) (y 2)) (cond ((> x y) x) (t (setf (car z) y))))
         '(condition-case e (foo 1) (error (bar e)))
         '(lambda (a &optional b) (if a (pcase b (1 2) (_ 3)) (while a (setq a nil))))
-        '(progn (defvar zz 1) (function (lambda (q) (quote q))) (unwind-protect (a) (b)))))
+        '(progn (defvar zz 1) (function (lambda (q) (quote q))) (unwind-protect (a) (b)))
+        ;; A compiler macro: `macroexp--compiler-macro' (not translated) is a
+        ;; bytecode callee of AOT code, so this form takes the lean entry.
+        '(progn (aot-smoke-cm 1) (when a (aot-smoke-cm 2)))))
+(put 'aot-smoke-cm 'compiler-macro (lambda (f &rest _) f))
 (defun aot-smoke-run-all ()
   (list (mapcar (lambda (f) (aot-smoke-wrap (lambda () (funcall aot-smoke-c-forms f)))) aot-smoke-forms)
         (mapcar (lambda (c) (aot-smoke-wrap (lambda () (funcall aot-smoke-c-clauses c)))) aot-smoke-clauses)
@@ -145,7 +153,7 @@
     (aot-smoke-disable)))
 
 (let* ((installed (aot-smoke-installed)))
-  ;; Install count: all six functions, each slot `eq' to the live function.
+  ;; Install count: all seven functions, each slot `eq' to the live function.
   (aot-smoke-check "install-count" (= installed (length aot-smoke-names)))
   (dolist (n aot-smoke-names)
     (aot-smoke-check (format "installed-eq %s" n) (aot-smoke-id n))
@@ -295,6 +303,77 @@
                                                     (macroexpand-all (aot-smoke-deep 500))))))
                             'aot-smoke-error)))
   (aot-smoke-check "after-limit" (equal (funcall aot-smoke-c-forms (list 'a)) '(a)))
+
+  ;; autoload-do-load fast path at the AOT macroexpand-1 call site: the lean
+  ;; words cache the live `autoload-do-load' object and the symbol `autoload'.
+  (let ((k (aot-smoke-k)))
+    (when (> k 0)
+      (aot-smoke-check "adl-object-captured"
+                       (eq (aot-smoke-lean 6) (symbol-function 'autoload-do-load)))
+      (aot-smoke-check "adl-autoload-sym" (eq (aot-smoke-lean 7) 'autoload))))
+  ;; A real autoload macro reached through the call site is loaded, not skipped.
+  (let* ((file (make-temp-file "aot-smoke-al" nil ".el"
+                               "(defmacro aot-smoke-almac (x) (list 'list x 'aot-smoke-loaded))\n"))
+         (run (lambda ()
+                (fset 'aot-smoke-almac (list 'autoload file nil nil 'macro))
+                (aot-smoke-wrap (lambda () (funcall aot-smoke-c-m1 '(aot-smoke-almac 5)))))))
+    (let ((a (funcall run)))
+      (aot-smoke-disable)
+      (let ((v (funcall run)))
+        (aot-smoke-enable)
+        (aot-smoke-check "adl-real-autoload-equal-vm" (equal a v))
+        (aot-smoke-check "adl-real-autoload-loaded" (equal a '(list 5 aot-smoke-loaded)))))
+    (aot-smoke-check "adl-plain-macro" (equal (funcall aot-smoke-c-m1 '(when a b)) '(if a (progn b))))
+    (aot-smoke-check "adl-plain-fn" (equal (funcall aot-smoke-c-m1 '(car x)) '(car x)))
+    (aot-smoke-check "adl-nonsym-head" (equal (funcall aot-smoke-c-m1 '(5 x)) '(5 x)))
+    ;; An autoload that is not a macro: the form comes back unchanged.
+    (fset 'aot-smoke-alfn (list 'autoload file nil nil nil))
+    (aot-smoke-check "adl-autoload-nonmacro"
+                     (equal (aot-smoke-wrap (lambda () (funcall aot-smoke-c-m1 '(aot-smoke-alfn 1))))
+                            '(aot-smoke-alfn 1)))
+    (delete-file file))
+  ;; A redefined `autoload-do-load' is honoured; restoring it restores the fast path.
+  (let ((orig (symbol-function 'autoload-do-load)) (hits 0))
+    (fset 'autoload-do-load (lambda (def &rest _) (setq hits (1+ hits)) def))
+    (funcall aot-smoke-c-m1 '(when a b))
+    (aot-smoke-check "adl-redefined-honoured" (> hits 0))
+    (fset 'autoload-do-load orig)
+    (let ((h hits))
+      (funcall aot-smoke-c-m1 '(when a b))
+      (aot-smoke-check "adl-restored-fast" (= h hits))))
+  ;; Advised `autoload-do-load' (nadvice replaces the function cell).
+  (let ((orig (symbol-function 'autoload-do-load)) (hits 0))
+    (when (condition-case nil
+              (progn (advice-add 'autoload-do-load :around
+                                 (lambda (f &rest a) (setq hits (1+ hits)) (apply f a))
+                                 '((name . aot-smoke-adl-adv)))
+                     t)
+            (error nil))
+      (funcall aot-smoke-c-m1 '(when a b))
+      (aot-smoke-check "adl-advised-honoured" (> hits 0))
+      (advice-remove 'autoload-do-load 'aot-smoke-adl-adv)
+      (aot-smoke-check "adl-advice-removed" (eq (symbol-function 'autoload-do-load) orig))))
+  ;; function-get (an AOT row from staged subr.el) equals the VM on plain,
+  ;; unknown, alias, property and failing-autoload arguments.  It is entered
+  ;; from bytecode callers (here a hand-made one), not from interpreted calls.
+  (let ((fg (lambda ()
+              (list (funcall aot-smoke-c-fg 'when 'lisp-indent-function nil)
+                    (funcall aot-smoke-c-fg 'aot-smoke-no-such-fn 'x nil)
+                    (progn (fset 'aot-smoke-fg-alias 'when)
+                           (funcall aot-smoke-c-fg 'aot-smoke-fg-alias 'lisp-indent-function nil))
+                    (progn (put 'aot-smoke-fg-p 'aot-smoke-prop 'val)
+                           (funcall aot-smoke-c-fg 'aot-smoke-fg-p 'aot-smoke-prop nil))
+                    (progn (fset 'aot-smoke-fg-al (list 'autoload "aot-smoke-no-such-file" nil nil 'macro))
+                           (aot-smoke-wrap (lambda () (let ((inhibit-message t))
+                                                        (funcall aot-smoke-c-fg 'aot-smoke-fg-al 'x nil)))))
+                    (aot-smoke-wrap (lambda () (let ((inhibit-message t))
+                                                 (funcall aot-smoke-c-fg 'aot-smoke-fg-al 'x t))))))))
+    (let ((c0 (aot-smoke-count-of 'function-get)) (a (funcall fg)))
+      (aot-smoke-check "function-get-entry-taken" (> (aot-smoke-count-of 'function-get) c0))
+      (aot-smoke-disable)
+      (let ((v (funcall fg)))
+        (aot-smoke-enable)
+        (aot-smoke-check "function-get-equal-vm" (equal (format "%S" a) (format "%S" v))))))
 
   ;; Reduced GC stress: expansions interleaved with collections equal the VM's.
   (let ((ok t) (i 0) (expected (format "%S" (aot-smoke-vm-result))))

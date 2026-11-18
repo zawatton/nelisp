@@ -39,7 +39,7 @@ run_case() {
 }
 
 run_case clean "$binary" ""
-if [ "$rc" = 0 ] && grep -q '^AOT-SMOKE aot=6 .* fail=0$' "$out_dir/clean.out"; then
+if [ "$rc" = 0 ] && grep -q '^AOT-SMOKE aot=7 .* fail=0$' "$out_dir/clean.out"; then
     echo "PASS aot smoke: $(grep '^AOT-SMOKE aot=' "$out_dir/clean.out")"
 else
     echo "FAIL aot smoke (rc=$rc)"; tail -15 "$out_dir/clean.out"
