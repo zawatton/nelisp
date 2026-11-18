@@ -51448,9 +51448,13 @@ prelude adoption gates accept them."
 
 ;; The AOT translator compiles the staged subr.el rows (`function-get') from the
 ;; exact boot text this build compiles, so its install guard sees `equal' objects.
+;; Each name is a literal call so `nelisp-staged-handler-guard' can read it.
 (setq nelisp-aot-bytecode-subr-source-function
       (lambda (name)
-        (nelisp-standalone--vendor-function-source "vendor/staged-emacs-lisp/subr.el" name)))
+        (pcase name
+          ('function-get
+           (nelisp-standalone--vendor-function-source
+            "vendor/staged-emacs-lisp/subr.el" 'function-get)))))
 
 (defun nelisp-standalone--vendor-define-error-source (relative-file name)
   "Return the exact source text of RELATIVE-FILE's `(define-error \\='NAME ...)'.

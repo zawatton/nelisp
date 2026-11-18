@@ -506,6 +506,16 @@ block leaders, deepest stack, the condition-case region of each pc
                         `(if (= (wf_aot_adl ,(x fi) ,(x (+ fi 1))) 1)
                              (setq ,(x fi) ,(x (+ fi 1)))
                            ,generic)))
+                ;; Leaf subrs with an inline fast path (`wf_aot_swp', `wf_aot_fb'): 0 declines
+                ;; (redefinition, advice, an unusual argument word) to the generic call.
+                (when (and (eq callee 'symbol-with-pos-p) (= n 1))
+                  (setq generic
+                        `(let* ((sw (wf_aot_swp env ,(x fi) ,(x (+ fi 1)))))
+                           (if (/= sw 0) (setq ,(x fi) sw) ,generic))))
+                (when (and (eq callee 'fboundp) (= n 1))
+                  (setq generic
+                        `(let* ((sw (wf_aot_fb env ,(x fi) ,(x (+ fi 1)))))
+                           (if (/= sw 0) (setq ,(x fi) sw) ,generic))))
                 (add (if did
                          (let* ((e (assq callee nelisp-aot--direct)) (maxargs (nth 3 e)))
                            `(if (= (wf_aot_gd ,(x fi) ,(+ 32 (* did 8))) 1)
@@ -798,6 +808,61 @@ Empty when there is no late row (the seal is then part of the install source)."
          "(defvar nelisp--aot-table-saved nelisp--aot-table)\n(setq nelisp--aot-table nil)\n"
        ""))))
 
+
+(defun nelisp-aot--leaf-guarded (lo body)
+  "DSL form: BODY when FW (a constant callee symbol word) currently has as its
+function cell a Subr whose descriptor id byte is LO and the preconditions of
+`wf_bytecode_call_leaf' hold (debug policy clear, evaluation depth below the
+leaf limit), else 0.  BODY runs only then and must yield a nonzero result word.
+FW and ENV are free in BODY."
+  `(if (= (logand fw 7) 6)
+       (if (= (logand (ptr-read-u8 fw -6) 63) 4)
+           (let* ((cell (ptr-read-u64 fw 18)))
+             (if (= (logand cell 7) 6)
+                 (if (< cell 4096) 0
+                   (let* ((hdr (ptr-read-u64 (- cell 6) 0)))
+                     (if (= (logand hdr 63) 20)
+                         (if (= (logand (sar hdr 8) 255) ,lo)
+                             (if (= (logand (ptr-read-u64 env 112) 3145728) 0)
+                                 (let* ((state (ptr-read-u64 env 176)))
+                                   (if (= state 0) 0
+                                     (if (>= (ptr-read-u64 state 0) 32768) 0 ,body)))
+                               0)
+                           0)
+                       0)))
+               0))
+         0)
+     0))
+
+(defun nelisp-aot--leaf-helpers ()
+  "Inline leaf-subr fast paths for the AOT call sites.
+See `wf_aot_swp' and `wf_aot_fb'."
+  (list
+   ;; (symbol-with-pos-p A): the :word body answers t iff A's tag is 19.  Immediates and
+   ;; conses are never positioned symbols; a vectorlike word is one iff its kind is 19.
+   ;; Anything else (a legacy box) answers 0 and takes the generic call.
+   `(defun wf_aot_swp (env fw a)
+      ,(nelisp-aot--leaf-guarded
+        107
+        '(if (= (logand a 1) 1) 3
+           (if (= (logand a 7) 2) 3
+             (if (= (logand a 7) 6)
+                 (if (= (logand (ptr-read-u8 a -6) 63) 19) 7 3)
+               0)))))
+   ;; (fboundp A) as `nl_directcall_run' id 94: nil and t are never fbound, a symbol
+   ;; object asks the mirror for the live function cell.  Anything else answers 0.
+   `(defun wf_aot_fb (env fw a)
+      ,(nelisp-aot--leaf-guarded
+        111
+        '(if (= (logand a 1) 1)
+             (if (= (logand a 3) 1) 0 3)
+           (if (= (logand a 7) 6)
+               (if (if (= (logand (ptr-read-u8 a -6) 63) 4) 1 (= (logand (ptr-read-u8 a -6) 63) 16))
+                   (let* ((v (nelisp_env_lookup_function_w (+ env 0) (+ env 64) a 0)))
+                     (if (= v 0) 0
+                       (if (= v 2) 3 (if (= (nl_word_tag64 v) 0) 3 7))))
+                 0)
+             0))))))
 
 (defun nelisp-aot-bytecode-dsl-defuns ()
   "Return the DSL defuns: fixed helpers, call chain and generated functions."
@@ -1202,6 +1267,7 @@ Empty when there is no late row (the seal is then part of the install source)."
              (seq (wf_aot_mask_sync v)
                   (wf_aot_find_in v func)))))
        ))
+     (nelisp-aot--leaf-helpers)
      ;; Profiling counter helper: emitted only by an NELISP_AOT_PROF=1 build, so
      ;; the default image carries no profiling code.
      (when nelisp-aot--prof

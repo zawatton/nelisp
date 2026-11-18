@@ -375,6 +375,41 @@
         (aot-smoke-enable)
         (aot-smoke-check "function-get-equal-vm" (equal (format "%S" a) (format "%S" v))))))
 
+  ;; Inline leaf subrs (`symbol-with-pos-p', `fboundp') at AOT call sites: a redefined
+  ;; or advised subr is honoured, and restoring it restores the fast path.  The
+  ;; replacement counts only calls on a marker symbol, which the AOT functions
+  ;; (entered through the hand-made bytecode callers) pass to the leaf.
+  (dolist (leaf '(symbol-with-pos-p fboundp))
+    (let ((orig (symbol-function leaf)) (hits 0)
+          (probe (lambda ()
+                   (funcall aot-smoke-c-m1 '(aot-smoke-leaf-marker 1))
+                   (funcall aot-smoke-c-m1 'aot-smoke-leaf-marker)
+                   (funcall aot-smoke-c-forms '((aot-smoke-leaf-marker 1) aot-smoke-leaf-marker))))
+          (base (format "%S" (aot-smoke-run-all))))
+      (aot-smoke-check (format "leaf-equal-vm %s" leaf) (equal base (format "%S" (aot-smoke-vm-result))))
+      (fset leaf (lambda (a &rest r)
+                   (when (eq a 'aot-smoke-leaf-marker) (setq hits (1+ hits)))
+                   (apply orig a r)))
+      (funcall probe)
+      (aot-smoke-check (format "leaf-redefined-honoured %s" leaf) (> hits 0))
+      (fset leaf orig)
+      (setq hits 0)
+      (funcall probe)
+      (aot-smoke-check (format "leaf-restored-fast %s" leaf) (= hits 0))
+      (aot-smoke-check (format "leaf-restored-result %s" leaf) (equal base (format "%S" (aot-smoke-run-all))))
+      (when (condition-case nil
+                (progn (advice-add leaf :around
+                                   (lambda (f a &rest r)
+                                     (when (eq a 'aot-smoke-leaf-marker) (setq hits (1+ hits)))
+                                     (apply f a r))
+                                   '((name . aot-smoke-leaf-adv)))
+                       t)
+              (error nil))
+        (funcall probe)
+        (aot-smoke-check (format "leaf-advised-honoured %s" leaf) (> hits 0))
+        (advice-remove leaf 'aot-smoke-leaf-adv)
+        (aot-smoke-check (format "leaf-advice-removed %s" leaf) (eq (symbol-function leaf) orig)))))
+
   ;; Reduced GC stress: expansions interleaved with collections equal the VM's.
   (let ((ok t) (i 0) (expected (format "%S" (aot-smoke-vm-result))))
     (while (< i 12)
