@@ -739,7 +739,13 @@ file).")
           ;; execute_frame's hottest slots (136 Ir/trip) while arg-index's register was never read.
           ;; Four names keep rbx for the function's call-free regions.
           '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
-            (wf_bytecode_execute_frame pc sp done depth))
+            (wf_bytecode_execute_frame pc sp done depth)
+            ;; S10 prototype: macroexp AOT rows (scripts/nelisp-aot-bytecode.el), hottest locals first.
+            (wf_aot_5 blk fail x1 x2 env)
+            (wf_aot_4 blk x5 x4 x3 env)
+            (wf_aot_1 x7 blk x8 fail x4)
+            (wf_aot_2 blk fail env x2 x3)
+            (wf_aot_6 blk fail env x2 x3))
         '((wf_bytecode_w_fast_run pc sp raw data mem length go depth)
           (wf_bytecode_execute_frame arg-index pc sp cb-n done code-len mem depth)))
     '((wf_bytecode_w_fast_run pc sp raw data length mem)))
