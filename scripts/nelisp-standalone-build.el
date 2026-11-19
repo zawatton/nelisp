@@ -994,7 +994,8 @@ WORD, m5_fx_word_ptr for a non-symbol pointer WORD that is not a view).")
      ;; filter, +24 filter epoch+1, +32+8i installed object words (8), +96 table
      ;; data address, +104+8i constants data addresses (8), +176 lean counter
      ;; region address, +184 captured `autoload-do-load' object, +192 the
-     ;; symbol `autoload'.  Zero-fresh on every start.
+     ;; symbol `autoload', +200 the function epoch + 1 of the last validation of the
+     ;; plain-head fast paths.  Zero-fresh on every start.
      208
      ;; `nl_cold_chunk0_domain'.
      16
@@ -1839,7 +1840,57 @@ cross-unit call) before the freed payload is poisoned."
                  (setq o (+ o 16)))
                (if (< o (- want 8)) (ptr-write-u64 (+ obj o) 0 0) 0)
                obj))
-          (nl_alloc_bytes_slow size align))))
+          (nl_alloc_bump_try size align want r))))
+    ;; Bump shortcut (lane C1).  Reached from `nl_alloc_bytes_run' (gate on,
+    ;; exact bucket head empty) when the run cannot serve WANT.  When every
+    ;; structure the full path would consult is provably empty -- the
+    ;; exact-fit mask bit is clear, no collection has run yet or the run is
+    ;; absent/too short (and not an exact fit that run_take would take whole),
+    ;; no small bucket above WANT is occupied, large bin 0 and every large
+    ;; mask word are empty -- `nl_alloc_bytes_uncheck' would walk bucket_pop,
+    ;; run_take, bucket_split and scan_large only to bump.  Do the same bump
+    ;; directly: one CAS reserve (header BT=WANT, mark 0, OS-zeroed payload),
+    ;; then bill the debt once.  Only reads happen before the reserve, so any
+    ;; failed test or a full chunk goes to `nl_alloc_bytes_slow', which bills
+    ;; and grows exactly as before.
+    (defun nl_alloc_bump_try (size align want r)
+      (let* ((mask (heap-read-u64 (data-addr nl_freelist_small_mask) 0))
+             (rbt (if (= r 0) 0 (logand (heap-read-u64 r 0) 4294967288)))
+             (chunk (heap-read-u64 268436168 0))
+             (got 0))
+        (seq
+         (if (= (logand mask (shl 1 (/ (- want 16) 8))) 0)
+             (if (if (= (heap-read-u64 268435632 0) 0) 1
+                   (if (if (= r 0) 1
+                         (if (< rbt (+ want 16)) (if (= rbt want) 0 1) 0))
+                       (if (= (sar mask (/ want 8)) 0)
+                           (if (= (heap-read-u64 (data-addr nl_freelist_large_bins) 0) 0)
+                               (if (= (logior
+                                       (heap-read-u64 (data-addr nl_freelist_large_mask) 0)
+                                       (logior
+                                        (heap-read-u64 (data-addr nl_freelist_large_mask) 8)
+                                        (logior
+                                         (heap-read-u64 (data-addr nl_freelist_large_mask) 16)
+                                         (logior
+                                          (heap-read-u64 (data-addr nl_freelist_large_mask) 24)
+                                          (logior
+                                           (heap-read-u64 (data-addr nl_freelist_large_mask) 32)
+                                           (logior
+                                            (heap-read-u64 (data-addr nl_freelist_large_mask) 40)
+                                            (heap-read-u64 (data-addr nl_freelist_large_mask) 48)))))))
+                                      0)
+                                   1 0)
+                             0)
+                         0)
+                     0))
+                 (if (= chunk 0) 0 (setq got (nl_chunk_try_alloc chunk want)))
+               0)
+           0)
+         (if (= got 0) (nl_alloc_bytes_slow size align)
+           (seq
+            (ptr-write-u64 (data-addr nl_gc_until) 0
+                           (- (heap-read-u64 (data-addr nl_gc_until) 0) want))
+            got)))))
     ;; Redzone verify on free (called from `nl_gc_free_block_link'
     ;; BEFORE poison-on-free overwrites the suffix).  Armed only via
     ;; the boot env probe, so every freed block carries a guard; the
@@ -21751,10 +21802,10 @@ eval applyfn.")
 
 (defconst nelisp-standalone--applyfn-search-helpers
   '((defun wf_memq_walk_w (elt_ptr list_ptr _pad)
-      (if (= (heap-sexp-tag-word list_ptr) 7)
+      (if (= (nl_val_tag list_ptr) 7)
           (if (= (bf_eq2 elt_ptr (nl_cons_car_ptr list_ptr)) 1)
               list_ptr
-            (wf_memq_walk_w elt_ptr (nl_cons_cdr_ptr list_ptr) 0))
+            (wf_memq_walk_w elt_ptr (nl_cons_cdr_word list_ptr) 0))
         3))
     (defun wf_memq_walk (elt_ptr list_ptr out)
       (nl_abi_word_to_rc (wf_memq_walk_w elt_ptr list_ptr 0) out))
@@ -21771,14 +21822,14 @@ eval applyfn.")
     (defun wf_member_w (args _pad)
       (wf_member_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
     (defun wf_assq_walk_w (key_ptr alist_ptr _pad)
-      (if (= (heap-sexp-tag-word alist_ptr) 7)
+      (if (= (nl_val_tag alist_ptr) 7)
           (let* ((pair_ptr (nl_cons_car_word alist_ptr)))
             (if (= (if (= (nl_word_tag64 pair_ptr) 7)
                        (bf_eq2 key_ptr (nl_cons_car_ptr pair_ptr))
                      0)
                    1)
                 pair_ptr
-              (wf_assq_walk_w key_ptr (nl_cons_cdr_ptr alist_ptr) 0)))
+              (wf_assq_walk_w key_ptr (nl_cons_cdr_word alist_ptr) 0)))
         3))
     (defun wf_assq_w (args _pad)
       (wf_assq_walk_w (wf_arg_ptr args 0) (wf_arg_ptr args 1) 0))
@@ -37658,11 +37709,13 @@ bytes are written into a fresh 8-byte buffer instead."
     ;; Emacs, naming the WHOLE list: (memq 9 '(1 2 . 3)) signals, it does not
     ;; answer nil.  Answering nil said "not present" about a list that could
     ;; not be searched.
+    ;; The cdr is read as a WORD: the nil terminator is an immediate and
+    ;; `nl_cons_cdr_ptr' boxed it on every call just to test its tag.
     (defun bf_proper_list_raw (p)
-      (if (= (heap-sexp-tag-word p) 0)
+      (if (= (nl_val_tag p) 0)
           1
-        (if (= (heap-sexp-tag-word p) 7)
-            (bf_proper_list_raw (nl_cons_cdr_ptr p))
+        (if (= (nl_val_tag p) 7)
+            (bf_proper_list_raw (nl_cons_cdr_word p))
           0)))
     ;; String (5), MutStr (6), Vector (8): what `arrayp' accepts here.
     ;; nil and t compare by their NAMES: (string< " a b " nil) is t because
@@ -61793,13 +61846,18 @@ signalled abort it builds err_out=(TAG . VAL) from the M6 arena stash so
               (nl_clx_symbol_filter_walk_raw_w (nl_cons_cdr_word node)
                 (nl_clx_symbol_filter_walk_raw_w (nl_cons_car_word node) acc roots) roots)
             acc))))
+    ;; Read-only scan: car/cdr are taken as WORDs, so an immediate cdr (the
+    ;; nil terminator of every list) no longer materialises a fresh 32-byte
+    ;; box per call.  A pointer WORD is exactly what `nl_cons_*_ptr' returned
+    ;; for a non-immediate, and an immediate has tag 0/1/2 (neither a symbol
+    ;; nor a cons), so the answer is unchanged.
     (defun nl_clx_formals_contain_symbol (node-ptr name-ptr)
-      (let* ((tag (sexp-tag node-ptr)))
+      (let* ((tag (nl_val_tag node-ptr)))
         (if (or (= tag 4) (= tag 16))
             (nelisp_symbol_key_equal node-ptr name-ptr)
           (if (= tag 7)
-              (let* ((car-ptr (nl_cons_car_ptr node-ptr))
-                     (cdr-ptr (nl_cons_cdr_ptr node-ptr)))
+              (let* ((car-ptr (nl_cons_car_word node-ptr))
+                     (cdr-ptr (nl_cons_cdr_word node-ptr)))
                 (if (= (nl_clx_formals_contain_symbol car-ptr name-ptr) 1)
                     1
                   (nl_clx_formals_contain_symbol cdr-ptr name-ptr)))

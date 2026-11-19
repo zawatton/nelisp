@@ -390,6 +390,121 @@
         (aot-smoke-enable)
         (aot-smoke-check "function-get-equal-vm" (equal (format "%S" a) (format "%S" v))))))
 
+  ;; Plain-function head fast paths (target/ai/A-design.md): at the macroexp--expand-all call sites,
+  ;; (macroexp-macroexpand FORM nil) answers FORM and (function-get F PROP) answers the live plist value
+  ;; or nil for a head whose function cell is a plain object (Subr, byte-code), without entering
+  ;; macroexp-macroexpand, macroexpand-1 or function-get.  The head cell and the plist are read live
+  ;; on every node; the guards of the skipped calls are validated against the function epoch.
+  (fset 'aot-smoke-pbc aot-smoke-c-m1)     ; byte-code function head
+  (defmacro aot-smoke-pmac (x) (list 'car x))
+  (defvar aot-smoke-plain-hits 0)
+  (defvar aot-smoke-plain-form '(car (aot-smoke-pbc (cdr x) (car y))))
+  (defun aot-smoke-plain-run (form)
+    "Expand FORM through the AOT call sites: (RESULT EXPAND-ENTRIES MM-ENTRIES M1-ENTRIES FG-ENTRIES)."
+    (let* ((e0 (aot-smoke-count-of 'macroexp--expand-all)) (m0 (aot-smoke-count-of 'macroexp-macroexpand))
+           (a0 (aot-smoke-count-of 'macroexpand-1)) (g0 (aot-smoke-count-of 'function-get))
+           (r (aot-smoke-wrap (lambda () (funcall aot-smoke-c-forms (list form))))))
+      (list r (- (aot-smoke-count-of 'macroexp--expand-all) e0) (- (aot-smoke-count-of 'macroexp-macroexpand) m0)
+            (- (aot-smoke-count-of 'macroexpand-1) a0) (- (aot-smoke-count-of 'function-get) g0))))
+  (defun aot-smoke-plain-fast-p (r)
+    (and (> (nth 1 r) 0) (= (nth 2 r) 0) (= (nth 3 r) 0) (= (nth 4 r) 0)))
+  (defun aot-smoke-plain-vm (form)
+    (aot-smoke-disable)
+    (prog1 (car (aot-smoke-plain-run form)) (aot-smoke-enable)))
+  (aot-smoke-plain-run aot-smoke-plain-form)  ; warm: validate the guards once
+  (let ((r (aot-smoke-plain-run aot-smoke-plain-form)))
+    (aot-smoke-check "plain-fast" (aot-smoke-plain-fast-p r))
+    (aot-smoke-check "plain-result" (equal (car r) (list aot-smoke-plain-form)))
+    (aot-smoke-check "plain-equal-vm" (equal (car r) (aot-smoke-plain-vm aot-smoke-plain-form))))
+  ;; Mixed forms (macros, special forms, lambda heads, compiler macro, unknown heads) equal the VM's.
+  (dolist (f (list '(when a (car x)) '(progn (car x) (aot-smoke-pmac y)) '((lambda (z) (cdr z)) 1)
+                   '(let ((x (car y))) (cond ((car x) (cdr x)) (t (aot-smoke-pbc x))))
+                   '(aot-smoke-cm 1) '(aot-smoke-no-such-fn (car x)) '(funcall (function car) x)
+                   '(setq p (car q)) '(condition-case e (car x) (error (cdr e)))))
+    (let ((a (car (aot-smoke-plain-run f))))
+      (aot-smoke-check (format "plain-mixed-equal-vm %S" f) (equal (format "%S" a) (format "%S" (aot-smoke-plain-vm f))))))
+  (let ((r (aot-smoke-plain-run '(when a (car x)))))
+    (aot-smoke-check "plain-macro-slow" (and (equal (car r) '((if a (progn (car x))))) (> (nth 2 r) 0))))
+  ;; A non-nil macroexpand-all-environment takes the slow path.
+  (let ((r (let ((macroexpand-all-environment '((aot-smoke-leaf-m . nil))))
+             (aot-smoke-plain-run aot-smoke-plain-form))))
+    (aot-smoke-check "plain-env-slow" (and (equal (car r) (list aot-smoke-plain-form)) (> (nth 2 r) 0)))
+    (let ((env (list (cons 'aot-smoke-pbc (lambda (&rest a) (cons 'cdr a))))))
+      (let ((r (let ((macroexpand-all-environment env)) (aot-smoke-plain-run '(aot-smoke-pbc x)))))
+        (aot-smoke-check "plain-env-expander" (and (equal (car r) '((cdr x))) (> (nth 2 r) 0))))))
+  ;; fset of the head to a macro, to an alias of a macro, to nil; restored, the fast path returns.
+  (dolist (def (list (symbol-function 'aot-smoke-pmac) 'aot-smoke-pmac nil))
+    (let ((tag (cond ((null def) "nil") ((symbolp def) "alias") (t "macro"))))
+      (if (null def) (fmakunbound 'aot-smoke-pbc) (fset 'aot-smoke-pbc def))
+      (let ((r (aot-smoke-plain-run '(progn (aot-smoke-pbc x)))))
+        (aot-smoke-check (format "plain-fset-honoured %s" tag)
+                         (and (equal (car r) (if def '((progn (car x))) '((progn (aot-smoke-pbc x)))))
+                              (equal (car r) (aot-smoke-plain-vm '(progn (aot-smoke-pbc x)))))))
+      (fset 'aot-smoke-pbc aot-smoke-c-m1)
+      (let ((r (aot-smoke-plain-run aot-smoke-plain-form)))
+        (aot-smoke-check (format "plain-fset-restored-fast %s" tag)
+                         (and (aot-smoke-plain-fast-p r) (equal (car r) (list aot-smoke-plain-form)))))))
+  ;; A compiler-macro property put on the head is honoured at once (the plist is read live);
+  ;; removed, the fast path returns.
+  (put 'aot-smoke-pbc 'compiler-macro (lambda (form &rest _) (cons 'aot-smoke-cm-hit (cdr form))))
+  (let ((r (aot-smoke-plain-run '(progn (aot-smoke-pbc x)))))
+    (aot-smoke-check "plain-compiler-macro-honoured" (equal (car r) '((progn (aot-smoke-cm-hit x))))))
+  (put 'aot-smoke-pbc 'compiler-macro nil)
+  (let ((r (aot-smoke-plain-run aot-smoke-plain-form)))
+    (aot-smoke-check "plain-compiler-macro-restored-fast"
+                     (and (aot-smoke-plain-fast-p r) (equal (car r) (list aot-smoke-plain-form)))))
+  ;; An autoload macro head is loaded, not skipped.
+  (let* ((file (make-temp-file "aot-smoke-pal" nil ".el"
+                               "(defmacro aot-smoke-pal (x) (list 'list x 'aot-smoke-pal-loaded))\n"))
+         (run (lambda ()
+                (fset 'aot-smoke-pal (list 'autoload file nil nil 'macro))
+                (car (aot-smoke-plain-run '(progn (aot-smoke-pal 5)))))))
+    (let ((a (funcall run)))
+      (aot-smoke-disable)
+      (let ((v (funcall run))) (aot-smoke-enable)
+        (aot-smoke-check "plain-autoload-equal-vm" (equal a v))
+        (aot-smoke-check "plain-autoload-loaded" (equal a '((progn (list 5 aot-smoke-pal-loaded)))))))
+    (delete-file file))
+  ;; Redefinition or advice of a function skipped by the fast path is honoured (the replacement is
+  ;; called while the original chain would call it); once undone the fast path returns.
+  ;; The Subrs (fboundp, symbol-with-pos-p) go last and have no restored-fast check: an fset round
+  ;; trip of a Subr stores a different object than the original, so the identity guard (the same
+  ;; one `wf_aot_fb' and `wf_aot_swp' use) declines for good, which is correct, only slower.
+  (dolist (fn '(autoload-do-load macroexpand-1 macroexp-macroexpand function-get fboundp symbol-with-pos-p))
+    (let ((orig (symbol-function fn)) (subr (memq fn '(fboundp symbol-with-pos-p))))
+      (setq aot-smoke-plain-hits 0)
+      (fset fn (lambda (&rest a) (setq aot-smoke-plain-hits (1+ aot-smoke-plain-hits)) (apply orig a)))
+      (let ((r (aot-smoke-plain-run aot-smoke-plain-form)))
+        (aot-smoke-check (format "plain-fset-honoured %s" fn)
+                         (and (> aot-smoke-plain-hits 0) (equal (car r) (list aot-smoke-plain-form)))))
+      (fset fn orig)
+      (aot-smoke-plain-run aot-smoke-plain-form)
+      (let ((r (aot-smoke-plain-run aot-smoke-plain-form)))
+        (unless subr
+        (aot-smoke-check (format "plain-fset-restored-fast %s" fn) (aot-smoke-plain-fast-p r))))
+      (when (condition-case nil
+                (progn (advice-add fn :around
+                                   (lambda (f &rest a) (setq aot-smoke-plain-hits (1+ aot-smoke-plain-hits)) (apply f a))
+                                   '((name . aot-smoke-plain-adv)))
+                       t)
+              (error nil))
+        (setq aot-smoke-plain-hits 0)
+        (aot-smoke-plain-run aot-smoke-plain-form)
+        (aot-smoke-check (format "plain-advice-honoured %s" fn) (> aot-smoke-plain-hits 0))
+        (advice-remove fn 'aot-smoke-plain-adv)
+        (aot-smoke-plain-run aot-smoke-plain-form)
+        (aot-smoke-check (format "plain-advice-removed %s" fn) (eq (symbol-function fn) orig))
+        (unless subr
+          (aot-smoke-check (format "plain-advice-restored-fast %s" fn)
+                           (aot-smoke-plain-fast-p (aot-smoke-plain-run aot-smoke-plain-form)))))))
+  ;; An interpreted closure head: result equal to the VM's whichever path it takes.
+  (defun aot-smoke-pcl (x) x)
+  (aot-smoke-check "plain-closure-equal-vm"
+                   (equal (format "%S" (car (aot-smoke-plain-run '(progn (aot-smoke-pcl (car x))))))
+                          (format "%S" (aot-smoke-plain-vm '(progn (aot-smoke-pcl (car x)))))))
+  (princ (format "AOT-SMOKE note plain-closure-fast=%S\n"
+                 (aot-smoke-plain-fast-p (aot-smoke-plain-run '(progn (aot-smoke-pcl (car x)))))))
+
   ;; Inline leaf subrs (`symbol-with-pos-p', `fboundp') at AOT call sites: a redefined
   ;; or advised subr is honoured, and restoring it restores the fast path.  The
   ;; replacement counts only calls on a marker symbol, which the AOT functions

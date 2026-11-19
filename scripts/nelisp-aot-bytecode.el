@@ -281,6 +281,31 @@ only non-symbol atoms.  See target/ai/s11-design.md for the proof.")
                   :e-mm e-mm :mm-m1 mm-m1 :mm-env mm-env)))))))
 
 
+;; Plain-function head fast paths (lever 1, target/ai/A-design.md).
+(defvar nelisp-aot--plain nil
+  "Plist for the plain-head fast paths, or nil.
+Keys :mm :m1 are the install ids of macroexp-macroexpand and macroexpand-1;
+:mm-m1 and :mm-swp are the constants indexes of macroexpand-1 and
+symbol-with-pos-p in the first, :m1-fb and :m1-adl those of fboundp and
+autoload-do-load in the second.  Set once by `nelisp-aot-bytecode--objects'
+\(nil unless both rows translate and every constant is present).")
+
+(defconst nelisp-aot--plain-state-slot 200
+  "Byte offset in `nl_aot_state' of the last validated function epoch + 1.")
+
+(defun nelisp-aot--plain-info (rows)
+  "The `nelisp-aot--plain' plist for the translated ROWS, or nil."
+  (cl-flet ((row (name) (cl-find name rows :key #'cadr)))
+    (let* ((mm (row 'macroexp-macroexpand)) (m1 (row 'macroexpand-1)))
+      (when (and mm m1)
+        (let ((mm-m1 (cl-position 'macroexpand-1 (aref (nth 3 mm) 2)))
+              (mm-swp (cl-position 'symbol-with-pos-p (aref (nth 3 mm) 2)))
+              (m1-fb (cl-position 'fboundp (aref (nth 3 m1) 2)))
+              (m1-adl (cl-position 'autoload-do-load (aref (nth 3 m1) 2))))
+          (when (and mm-m1 mm-swp m1-fb m1-adl)
+            (list :mm (nth 0 mm) :m1 (nth 0 m1)
+                  :mm-m1 mm-m1 :mm-swp mm-swp :m1-fb m1-fb :m1-adl m1-adl)))))))
+
 ;;;; Native-locals code generation (stage 4c).
 ;;
 ;; The bytecode operand stack lives in DSL locals x0..xN (one per stack
@@ -551,11 +576,23 @@ only non-symbol atoms.  See target/ai/s11-design.md for the proof.")
                                            (if (= r 0) ,failf (setq ,(x fi) r)))))
                                    ;; (macroexp--expand-all ATOM) is ATOM while the chain is the
                                    ;; original one (`wf_aot_leaf', target/ai/s11-design.md).
-                                   (if (and nelisp-aot--leaf (eq callee 'macroexp--expand-all) (= n 1))
-                                       `(if (= (wf_aot_leaf env ,(x (+ fi 1))) 1)
-                                            (setq ,(x fi) ,(x (+ fi 1)))
-                                          ,direct)
-                                     direct))
+                                   (cond
+                                    ((and nelisp-aot--leaf (eq callee 'macroexp--expand-all) (= n 1))
+                                     `(if (= (wf_aot_leaf env ,(x (+ fi 1))) 1)
+                                          (setq ,(x fi) ,(x (+ fi 1)))
+                                        ,direct))
+                                    ;; (macroexp-macroexpand FORM nil) is FORM for a plain-function
+                                    ;; head while the chain is the original one (`wf_aot_mm').
+                                    ((and nelisp-aot--plain (eq callee 'macroexp-macroexpand) (= n 2))
+                                     `(if (= (wf_aot_mm env ,(x (+ fi 1)) ,(x (+ fi 2))) 1)
+                                          (setq ,(x fi) ,(x (+ fi 1)))
+                                        ,direct))
+                                    ;; (function-get F PROP) for an interned symbol F with a plain
+                                    ;; function cell, read from the live plist (`wf_aot_fg').
+                                    ((and nelisp-aot--plain (eq callee 'function-get) (= n 2))
+                                     `(let* ((fgr (wf_aot_fg env ,(x (+ fi 1)) ,(x (+ fi 2)))))
+                                        (if (/= fgr 0) (setq ,(x fi) fgr) ,direct)))
+                                    (t direct)))
                               ,generic))
                        generic)
                      t)))
@@ -744,6 +781,7 @@ only non-symbol atoms.  See target/ai/s11-design.md for the proof.")
         (setq rows (nreverse rows))
         (when (= pass 0)
           (setq nelisp-aot--leaf (nelisp-aot--leaf-info rows))
+          (setq nelisp-aot--plain (nelisp-aot--plain-info rows))
           (setq nelisp-aot--k (length rows))
           (setq nelisp-aot--direct
                 (mapcar (lambda (r)
@@ -899,11 +937,109 @@ and macroexpand-all-environment is nil.  Anything else answers 0."
                             0)))
                     0))))))))))
 
+(defun nelisp-aot--plain-helpers ()
+  "The plain-function head helpers (list of defuns), or nil without a plan.
+`wf_aot_mm' answers 1 when (macroexp-macroexpand FORM nil) may answer FORM,
+`wf_aot_fg' the value of (function-get F PROP) or 0 to decline; both rest on the
+live function cell of the head and the epoch-validated guards of
+`wf_aot_plain_ok'.  See target/ai/A-design.md."
+  (when nelisp-aot--plain
+    (let* ((l nelisp-aot--plain)
+           (st '(data-addr nl_aot_state))
+           (slot nelisp-aot--plain-state-slot)
+           (off (lambda (k) (+ 32 (* 8 (plist-get l k)))))
+           (cd (lambda (k) `(ptr-read-u64 ,st ,(+ 104 (* 8 (plist-get l k)))))))
+      (list
+       `(defun wf_aot_plain_cell (h)
+          ;; 1 when H is an interned symbol object whose function cell holds a heap
+          ;; object that is neither a symbol (alias, unbound marker) nor a cons
+          ;; (macro, autoload, lambda list): a Subr, byte-code function or closure.
+          (if (= (logand h 7) 6)
+              (if (= (logand (ptr-read-u8 h -6) 63) 4)
+                  (let* ((c (ptr-read-u64 h 18)))
+                    (if (= (logand c 7) 6)
+                        (if (< c 4096) 0
+                          (let* ((k (logand (ptr-read-u8 c -6) 63)))
+                            (if (= k 4) 0 (if (= k 16) 0 (if (= k 19) 0 1)))))
+                      0))
+                0)
+            0))
+       `(defun wf_aot_subr_is (fw lo)
+          ;; 1 when FW's live function cell is a Subr whose descriptor id byte is LO.
+          (if (= (logand fw 7) 6)
+              (if (= (logand (ptr-read-u8 fw -6) 63) 4)
+                  (let* ((cell (ptr-read-u64 fw 18)))
+                    (if (= (logand cell 7) 6)
+                        (if (< cell 4096) 0
+                          (let* ((hdr (ptr-read-u64 (- cell 6) 0)))
+                            (if (= (logand hdr 63) 20)
+                                (if (= (logand (sar hdr 8) 255) lo) 1 0)
+                              0)))
+                      0))
+                0)
+            0))
+       `(defun wf_aot_plain_validate (ep)
+          ;; Full check of the guards of the skipped chain; on success records EP
+          ;; (function epoch + 1) at state+200 and answers 1.  The skipped calls are
+          ;; macroexpand-1 (installed object), fboundp and symbol-with-pos-p (original
+          ;; Subrs) and autoload-do-load (the captured prelude object).
+          (if (= (ptr-read-u64 ,st 24) (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1))
+                (let* ((cdm ,(funcall cd :mm)) (cd1 ,(funcall cd :m1)))
+                  (if (= cdm 0) 0
+                    (if (= cd1 0) 0
+                      (if (= (wf_aot_gd (ptr-read-u64 cdm ,(* 8 (plist-get l :mm-m1))) ,(funcall off :m1)) 1)
+                          (if (= (wf_aot_subr_is (ptr-read-u64 cdm ,(* 8 (plist-get l :mm-swp))) 107) 1)
+                              (if (= (wf_aot_subr_is (ptr-read-u64 cd1 ,(* 8 (plist-get l :m1-fb))) 111) 1)
+                                  (let* ((aw (ptr-read-u64 ,st 184))
+                                         (adl (ptr-read-u64 cd1 ,(* 8 (plist-get l :m1-adl)))))
+                                    (if (= aw 0) 0
+                                      (if (= (logand adl 7) 6)
+                                          (if (= (logand (ptr-read-u8 adl -6) 63) 4)
+                                              (if (= (ptr-read-u64 adl 18) aw)
+                                                  (seq (ptr-write-u64 ,st ,slot ep) 1)
+                                                0)
+                                            0)
+                                        0)))
+                                0)
+                            0)
+                        0))))
+              0))
+       `(defun wf_aot_plain_ok (env)
+          ;; 1 when the guards of the skipped chain hold now: the debug policy is
+          ;; clear and the last validation is current for the function epoch.
+          (if (/= (logand (ptr-read-u64 env 112) 3145728) 0) 0
+            (let* ((ep (+ (ptr-read-u64 (data-addr nl_function_epoch) 0) 1)))
+              (if (= (ptr-read-u64 ,st ,slot) ep)
+                  (if (= (ptr-read-u64 ,st 24) (+ (ptr-read-u64 (data-addr nl_mxcache_epoch) 0) 1)) 1 0)
+                (wf_aot_plain_validate ep)))))
+       `(defun wf_aot_mm (env form envarg)
+          ;; 1 when (macroexp-macroexpand FORM ENVARG) may answer FORM: ENVARG is nil,
+          ;; FORM is a cons whose head has a plain function cell and the guards hold.
+          (if (/= envarg 3) 0
+            (if (/= (logand form 7) 2) 0
+              (if (= (wf_aot_plain_cell (ptr-read-u64 (- form 2) 0)) 0) 0
+                (wf_aot_plain_ok env)))))
+       `(defun wf_aot_fg (env f prop)
+          ;; (function-get F PROP) with AUTOLOAD nil, for an interned symbol F: the
+          ;; plist value when non-nil, nil when F's function cell is a plain object
+          ;; (the alias loop ends at once), else 0 (decline, nothing done).
+          (if (= (logand f 7) 6)
+              (if (= (logand (ptr-read-u8 f -6) 63) 4)
+                  (let* ((r (wf_bytecode_w_get_fast f prop)))
+                    (if (= r 0) 0
+                      (if (/= r 3) r
+                        (if (= (wf_aot_plain_cell f) 1)
+                            (if (= (wf_aot_plain_ok env) 1) 3 0)
+                          0))))
+                0)
+            0))))))
+
 (defun nelisp-aot--leaf-helpers ()
   "Inline leaf-subr fast paths for the AOT call sites.
 See `wf_aot_swp' and `wf_aot_fb'."
   (append
    (nelisp-aot--expand-leaf-helper)
+   (nelisp-aot--plain-helpers)
    (nelisp-aot--leaf-helpers-1)))
 
 (defun nelisp-aot--leaf-helpers-1 ()
