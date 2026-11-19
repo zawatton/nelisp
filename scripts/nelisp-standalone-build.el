@@ -25285,41 +25285,57 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Unequal symbol objects really are distinct, even after reinterning;
       ;; object/view and view/view comparisons still need the existing test.
       ;; The backing vectors are addressed once (PB/HB/NB/IB = slot 0 of each).
+      ;; Direct vectorlike tables read the meta and index slots inline and take
+      ;; `nl_ht_identity_sync' only when its own up-to-date test fails; a symbol
+      ;; object key takes `nl_ht_symbol_hash' directly (what `bf_identity_hash'
+      ;; answers for one, after three immediate-word tests that cannot match).
       (if (or (= mode 1) (= mode 2))
-          (seq
-           (nl_ht_identity_sync table)
-           (let* ((meta (nl_ht_meta_slot table))
-                  (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
-                  (pairs (ptr-read-u64 mb 88))
-                  (index (nl_ht_data_slot table))
-                  (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
-                  (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
-                  (hb 0) (nb 0)
-                  (hash (nl_ht_hash key mode))
-                  (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
-                  (kimm (if (= (logand key 3) 1) 1 0))
-                  (kso (nl_so_p key))
-                  (entry 0))
-             (seq
-              (while (and (>= i 0) (= entry 0))
-                (let ((other (ptr-read-u64 pb (* 16 i))))
-                  (if (= key other) (setq entry (+ i 1))
-                    (seq
-                     ;; the hashes and next vectors are needed only once the first probe misses
-                     (if (= hb 0)
-                         (let* ((hw (ptr-read-u64 mb 96)) (nw (ptr-read-u64 mb 112)))
-                           (seq (setq hb (if (= (logand hw 7) 6) (+ hw 2) (+ (nl_word_payload hw) 8)))
-                                (setq nb (if (= (logand nw 7) 6) (+ nw 2) (+ (nl_word_payload nw) 8)))))
+          (let* ((direct (if (= (logand table 7) 6) 1 0))
+                 (fm (if (= direct 1) (ptr-read-u64 (- table 6) 8) 0)))
+            (seq
+             (if (if (= (logand fm 7) 6)
+                     (if (= (sar (ptr-read-u64 (- fm 6) 56) 2) (ptr-read-u64 268436376 0))
+                         (= (sar (ptr-read-u64 (- fm 6) 64) 2) (- fm 6))
                        0)
-                     (if (or (and (= kimm 1) (= (logand other 3) 1))
-                             (and (= kso 1) (= (nl_so_p other) 1)))
-                         (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))
-                       (if (or (= (bf_eq2 key other) 1)
-                               (and (= hash (sar (ptr-read-u64 hb (* 8 i)) 2))
-                                    (= (nl_ht_key_match key other mode) 1)))
-                           (setq entry (+ i 1))
-                         (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))))))))
-              entry)))
+                   0)
+                 0
+               (nl_ht_identity_sync table))
+             (let* ((meta (if (= direct 1) (ptr-read-u64 (- table 6) 8) (nl_ht_meta_slot table)))
+                    (mb (if (= (logand meta 7) 6) (+ meta 2) (+ (nl_word_payload meta) 8)))
+                    (pairs (ptr-read-u64 mb 88))
+                    (index (if (= direct 1) (ptr-read-u64 (- table 6) 16) (nl_ht_data_slot table)))
+                    (pb (if (= (logand pairs 7) 6) (+ pairs 2) (+ (nl_word_payload pairs) 8)))
+                    (ib (if (= (logand index 7) 6) (+ index 2) (+ (nl_word_payload index) 8)))
+                    (hb 0) (nb 0)
+                    (hash (if (if (= (logand key 7) 6)
+                                  (= (logand (ptr-read-u64 (- key 6) 0) 63) 4)
+                                0)
+                              (logand (nl_ht_symbol_hash key) 1073741823)
+                            (nl_ht_hash key mode)))
+                    (i (sar (ptr-read-u64 ib (* 8 (nl_ht_hash_index hash (sar (ptr-read-u64 (- ib 8) 0) 8)))) 2))
+                    (kso -1)
+                    (entry 0))
+               (seq
+                (while (and (>= i 0) (= entry 0))
+                  (let ((other (ptr-read-u64 pb (* 16 i))))
+                    (if (= key other) (setq entry (+ i 1))
+                      (seq
+                       ;; the hashes and next vectors are needed only once the first probe misses
+                       (if (= hb 0)
+                           (let* ((hw (ptr-read-u64 mb 96)) (nw (ptr-read-u64 mb 112)))
+                             (seq (setq hb (if (= (logand hw 7) 6) (+ hw 2) (+ (nl_word_payload hw) 8)))
+                                  (setq nb (if (= (logand nw 7) 6) (+ nw 2) (+ (nl_word_payload nw) 8)))
+                                  (setq kso (nl_so_p key))))
+                         0)
+                       (if (or (and (= (logand key 3) 1) (= (logand other 3) 1))
+                               (and (= kso 1) (= (nl_so_p other) 1)))
+                           (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))
+                         (if (or (= (bf_eq2 key other) 1)
+                                 (and (= hash (sar (ptr-read-u64 hb (* 8 i)) 2))
+                                      (= (nl_ht_key_match key other mode) 1)))
+                             (setq entry (+ i 1))
+                           (setq i (sar (ptr-read-u64 nb (* 8 i)) 2))))))))
+                entry))))
         (nl_ht_find_in table key)))
     (defun wf_bytecode_switch (mem sp code-len scratch)
       ;; GNU byte-switch consumes KEY then TABLE.  A hit contains the absolute
@@ -26065,6 +26081,13 @@ bytes are written into a fresh 8-byte buffer instead."
     (defun wf_bytecode_rest_marker_p (sym)
       (if (= (wf_bytecode_amp_name_p sym) 0) 0
         (symbol-name-eq sym "&rest")))
+    (defun wf_bytecode_amp_kind (sym)
+      ;; One decode of SYM for the formals walkers: 1 when it is the `&optional'
+      ;; marker, 2 for `&rest', else 0 (the same answers as `wf_bytecode_optional_marker_p'
+      ;; and `wf_bytecode_rest_marker_p', which a walker used to ask one after the other).
+      (if (= (wf_bytecode_amp_name_p sym) 0) 0
+        (if (= (symbol-name-eq sym "&optional") 1) 1
+          (if (= (symbol-name-eq sym "&rest") 1) 2 0))))
     (defun wf_bytecode_amp_name_p (sym)
       ;; vmfast: 0 when SYM is a symbol object whose name does not start with
       ;; `&' (GNU funcall_lambda compares with EQ against Qand_optional and
@@ -26085,43 +26108,48 @@ bytes are written into a fresh 8-byte buffer instead."
                   (if (= (ptr-read-u8 (ptr-read-u64 sb 24) 0) 38) 1 0))))))))
     (defun wf_bytecode_arglist_shape (formals state required maximum)
       ;; FORMALS is a word.  Return counts packed with a private, wider
-      ;; layout: required[0..15], maximum[16..31], rest[32].
-      (if (= (wf_bytecode_w_nilp formals) 1)
-          (+ required (* maximum 65536))
-        (if (= (wf_bytecode_w_consp formals) 1)
-            (let* ((name (heap-read-u64 (nl_word_payload formals) 0))
-                   (tail (heap-read-u64 (nl_word_payload formals) 8)))
-              (if (= (wf_bytecode_w_tag name) 4)
-                  (if (= (wf_bytecode_optional_marker_p name) 1)
-                      (if (= state 0)
-                          (wf_bytecode_arglist_shape tail 1 required maximum)
-                        -1)
-                    (if (= (wf_bytecode_rest_marker_p name) 1)
-                        (if (= (wf_bytecode_w_consp tail) 1)
-                            (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0))
-                                   (after-rest (heap-read-u64 (nl_word_payload tail) 8)))
-                              (if (if (= (wf_bytecode_w_tag rest-name) 4)
-                                      (if (= (wf_bytecode_w_nilp after-rest) 1)
-                                          (if (= (wf_bytecode_optional_marker_p rest-name) 0)
-                                              (if (= (wf_bytecode_rest_marker_p rest-name) 0) 1 0)
-                                            0)
-                                        0)
-                                    0)
-                                  (+ required (* maximum 65536) 4294967296)
-                                -1))
-                          -1)
-                      (if (if (= state 0)
-                              (if (< required 65535) 1 0)
-                            (if (< maximum 65535) 1 0))
-                          (if (= state 0)
-                              (wf_bytecode_arglist_shape tail 0
-                                                         (+ required 1)
-                                                         (+ maximum 1))
-                            (wf_bytecode_arglist_shape tail 1 required
-                                                       (+ maximum 1)))
-                        -1)))
-                -1))
-          -1)))
+      ;; layout: required[0..15], maximum[16..31], rest[32]; -1 when the list is
+      ;; malformed.  One loop over the list, one `wf_bytecode_amp_kind' decode per name.
+      (let* ((cur formals) (st state) (req required) (mx maximum) (result 0) (done 0))
+        (seq
+         (while (= done 0)
+           (if (= (wf_bytecode_w_nilp cur) 1)
+               (seq (setq result (+ req (* mx 65536))) (setq done 1))
+             (if (= (wf_bytecode_w_consp cur) 1)
+                 (let* ((name (heap-read-u64 (nl_word_payload cur) 0))
+                        (tail (heap-read-u64 (nl_word_payload cur) 8)))
+                   (if (= (wf_bytecode_w_tag name) 4)
+                       (let* ((kind (wf_bytecode_amp_kind name)))
+                         (if (= kind 1)
+                             (if (= st 0)
+                                 (seq (setq st 1) (setq cur tail))
+                               (seq (setq result -1) (setq done 1)))
+                           (if (= kind 2)
+                               (seq
+                                (setq done 1)
+                                (setq result
+                                      (if (= (wf_bytecode_w_consp tail) 1)
+                                          (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0))
+                                                 (after-rest (heap-read-u64 (nl_word_payload tail) 8)))
+                                            (if (if (= (wf_bytecode_w_tag rest-name) 4)
+                                                    (if (= (wf_bytecode_w_nilp after-rest) 1)
+                                                        (if (= (wf_bytecode_amp_kind rest-name) 0) 1 0)
+                                                      0)
+                                                  0)
+                                                (+ req (* mx 65536) 4294967296)
+                                              -1))
+                                        -1)))
+                             (if (if (= st 0)
+                                     (if (< req 65535) 1 0)
+                                   (if (< mx 65535) 1 0))
+                                 (seq
+                                  (if (= st 0) (setq req (+ req 1)) 0)
+                                  (setq mx (+ mx 1))
+                                  (setq cur tail))
+                               (seq (setq result -1) (setq done 1))))))
+                     (seq (setq result -1) (setq done 1))))
+               (seq (setq result -1) (setq done 1)))))
+         result)))
     (defun wf_bytecode_copy_arg_tail (env source)
       ;; &rest receives a fresh list spine, while its elements retain
       ;; their original identities as in funcall_lambda.  Answers the spine
@@ -26146,10 +26174,11 @@ bytes are written into a fresh 8-byte buffer instead."
         (seq
          (while (if (= done 0) (wf_bytecode_w_consp params) 0)
            (let* ((name (heap-read-u64 (nl_word_payload params) 0))
-                  (tail (heap-read-u64 (nl_word_payload params) 8)))
-             (if (= (wf_bytecode_optional_marker_p name) 1)
+                  (tail (heap-read-u64 (nl_word_payload params) 8))
+                  (kind (wf_bytecode_amp_kind name)))
+             (if (= kind 1)
                  (seq (setq state 1) (setq params tail))
-               (if (= (wf_bytecode_rest_marker_p name) 1)
+               (if (= kind 2)
                    (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0)))
                      (seq (wf_bytecode_varbind env rest-name
                                                (wf_bytecode_copy_arg_tail env arg-cursor))
@@ -26194,10 +26223,11 @@ bytes are written into a fresh 8-byte buffer instead."
         (wf_write_nil value)
         (while (if (= done 0) (wf_bytecode_w_consp params) 0)
           (let* ((name (heap-read-u64 (nl_word_payload params) 0))
-                 (tail (heap-read-u64 (nl_word_payload params) 8)))
-            (if (= (wf_bytecode_optional_marker_p name) 1)
+                 (tail (heap-read-u64 (nl_word_payload params) 8))
+                 (kind (wf_bytecode_amp_kind name)))
+            (if (= kind 1)
                 (setq params tail)
-              (if (= (wf_bytecode_rest_marker_p name) 1)
+              (if (= kind 2)
                   (let* ((rest-name (heap-read-u64 (nl_word_payload tail) 0)))
                     (seq (wf_write_nil value)
                          (wf_bytecode_build_args frame index (- argc index) value)
@@ -27391,16 +27421,17 @@ bytes are written into a fresh 8-byte buffer instead."
       ;; Bind a dynamic-binding function's FORMALS to the ARGC argument words
       ;; at ARGS (arity already checked) as events of this activation.
       ;; Answers 2 * (frame bindings made) + (1 if a binder signalled).
-      (let* ((params formals) (index 0) (bound 0) (stop 0) (rc 0) (k 0) (name 0))
+      (let* ((params formals) (index 0) (bound 0) (stop 0) (rc 0) (k 0) (name 0) (kind 0))
         (seq
          (while (if (= stop 0) (wf_bytecode_w_consp params) 0)
            (seq
             (setq name (heap-read-u64 (nl_word_payload params) 0))
             (setq params (heap-read-u64 (nl_word_payload params) 8))
-            (if (= (wf_bytecode_optional_marker_p name) 1)
+            (setq kind (wf_bytecode_amp_kind name))
+            (if (= kind 1)
                 0
               (seq
-               (if (= (wf_bytecode_rest_marker_p name) 1)
+               (if (= kind 2)
                    (seq (ptr-write-u64 wtmp 0 3)
                         (setq k (- argc 1))
                         (while (>= k index)
